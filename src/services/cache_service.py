@@ -10,12 +10,13 @@ from cachetools import TTLCache
 logger = logging.getLogger(__name__)
 
 # Default TTL for all cache entries (seconds).
-# Metrics dashboards update every few minutes; 5 min is a safe balance.
-DEFAULT_TTL = 300  # 5 minutes
+# Background scheduler refreshes data every 15 minutes; TTL is set slightly higher
+# (20 min) so stale data is never served between refresh cycles.
+DEFAULT_TTL = 1200  # 20 minutes — scheduler refreshes every 15 min
 
 # Module-level cache — shared across all instances of DatabaseService.
-# maxsize=50 covers 9 DCs + global overview + headroom for future keys.
-_cache: TTLCache = TTLCache(maxsize=50, ttl=DEFAULT_TTL)
+# maxsize=100 covers many DCs + global overview + dc_details per DC + headroom.
+_cache: TTLCache = TTLCache(maxsize=100, ttl=DEFAULT_TTL)
 _lock = threading.Lock()
 
 

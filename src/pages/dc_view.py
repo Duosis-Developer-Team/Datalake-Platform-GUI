@@ -2,12 +2,10 @@ import dash
 from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
-from src.services.db_service import DatabaseService
+from src.services.shared import service
 from src.components.charts import create_usage_donut_chart, create_bar_chart
 
 dash.register_page(__name__, path_template='/datacenter/<dc_id>')
-
-service = DatabaseService()
 
 def kpi_card(title, value, icon, is_text=False):
     return html.Div(

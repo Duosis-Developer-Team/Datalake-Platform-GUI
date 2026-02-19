@@ -1,8 +1,9 @@
-# Energy SQL query definitions — sources: loki_racks, ibm_server_power_sum, vmhost_metrics
+# Energy SQL query definitions
+# Sources: loki_racks, ibm_server_power (NOT ibm_server_power_sum), vmhost_metrics
 
 # --- Individual queries ---
 
-# loki_racks uses exact match (=) on location_name, not wildcard
+# loki_racks: exact match (=) on location_name — loki_locations hierarchy determines DC name
 RACKS = r"""
 SELECT SUM(
     CASE
@@ -18,9 +19,10 @@ WHERE location_name = %s
   AND id IN (SELECT DISTINCT id FROM public.loki_racks)
 """
 
+# ibm_server_power — ibm_server_power_sum does not exist in the schema
 IBM = """
 SELECT SUM(power_watts)
-FROM public.ibm_server_power_sum
+FROM public.ibm_server_power
 WHERE server_name ILIKE %s
 """
 
@@ -36,7 +38,7 @@ FROM latest_per_host
 """
 
 # --- Batch queries ---
-# For racks, location_name is exact per-DC, so we pass an array of exact DC codes
+
 BATCH_RACKS = r"""
 SELECT
     location_name,
@@ -55,11 +57,12 @@ WHERE location_name = ANY(%s)
 GROUP BY location_name
 """
 
+# ibm_server_power — corrected table name
 BATCH_IBM = """
 SELECT
     server_name,
     SUM(power_watts) AS total_watts
-FROM public.ibm_server_power_sum
+FROM public.ibm_server_power
 WHERE server_name ILIKE ANY(%s)
 GROUP BY server_name
 """

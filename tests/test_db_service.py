@@ -9,8 +9,13 @@ from contextlib import contextmanager
 
 # Patch the pool init before importing the service so no real DB connection is attempted.
 with patch("psycopg2.pool.ThreadedConnectionPool"):
-    from src.services.db_service import DatabaseService, DC_LIST, _EMPTY_DC
+    from src.services.db_service import (
+        DatabaseService, _EMPTY_DC, _FALLBACK_DC_LIST
+    )
 from src.services import cache_service as cache
+
+# Alias for backward compatibility in existing tests
+DC_LIST = _FALLBACK_DC_LIST
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +438,199 @@ class TestDcList(unittest.TestCase):
     def test_dc_list_contains_expected_codes(self):
         expected = {"AZ11", "DC11", "DC12", "DC13", "DC14", "DC15", "DC16", "DC17", "ICT11"}
         self.assertEqual(set(DC_LIST), expected)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic DC list (_load_dc_list)
+# ---------------------------------------------------------------------------
+
+class TestLoadDcList(unittest.TestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.svc = _make_service()
+
+    def _attach_conn(self, cursor):
+        conn_mock = MagicMock()
+        conn_mock.__enter__ = MagicMock(return_value=conn_mock)
+        conn_mock.__exit__ = MagicMock(return_value=False)
+        conn_mock.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
+        conn_mock.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        self.svc._pool.getconn.return_value = conn_mock
+
+    def test_load_dc_list_from_db(self):
+        cur = MagicMock()
+        # First call (with status filter) returns data
+        cur.fetchall.return_value = [("DC11",), ("AZ11",), ("ICT11",)]
+        self._attach_conn(cur)
+        result = self.svc._load_dc_list()
+        self.assertEqual(set(result), {"DC11", "AZ11", "ICT11"})
+
+    def test_load_dc_list_falls_back_to_no_status(self):
+        cur = MagicMock()
+        # First call returns empty (status filter), second call returns data
+        cur.fetchall.side_effect = [[], [("DC12",), ("DC13",)]]
+        self._attach_conn(cur)
+        result = self.svc._load_dc_list()
+        self.assertIn("DC12", result)
+        self.assertIn("DC13", result)
+
+    def test_load_dc_list_fallback_on_db_error(self):
+        from psycopg2 import OperationalError
+        self.svc._pool.getconn.side_effect = OperationalError("timeout")
+        result = self.svc._load_dc_list()
+        self.assertEqual(set(result), set(_FALLBACK_DC_LIST))
+
+    def test_load_dc_list_fallback_on_empty_result(self):
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        self._attach_conn(cur)
+        result = self.svc._load_dc_list()
+        self.assertEqual(set(result), set(_FALLBACK_DC_LIST))
+
+    def test_dc_list_property(self):
+        self.svc._dc_list = ["DC11", "AZ11"]
+        self.assertEqual(self.svc.dc_list, ["DC11", "AZ11"])
+
+    def test_dc_list_property_returns_copy(self):
+        self.svc._dc_list = ["DC11"]
+        lst = self.svc.dc_list
+        lst.append("INJECTED")
+        self.assertNotIn("INJECTED", self.svc.dc_list)
+
+
+# ---------------------------------------------------------------------------
+# warm_cache and refresh_all_data
+# ---------------------------------------------------------------------------
+
+class TestCacheWarming(unittest.TestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.svc = _make_service()
+
+    def _mock_empty_cursor(self):
+        cur = MagicMock()
+        cur.fetchone.return_value = None
+        cur.fetchall.return_value = []
+        return cur
+
+    def _attach_conn(self, cursor):
+        conn_mock = MagicMock()
+        conn_mock.__enter__ = MagicMock(return_value=conn_mock)
+        conn_mock.__exit__ = MagicMock(return_value=False)
+        conn_mock.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
+        conn_mock.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        self.svc._pool.getconn.return_value = conn_mock
+
+    def test_warm_cache_populates_summary(self):
+        cur = self._mock_empty_cursor()
+        self._attach_conn(cur)
+        self.svc.warm_cache()
+        self.assertIsNotNone(cache.get("all_dc_summary"))
+
+    def test_warm_cache_populates_global_overview(self):
+        cur = self._mock_empty_cursor()
+        self._attach_conn(cur)
+        self.svc.warm_cache()
+        self.assertIsNotNone(cache.get("global_overview"))
+
+    def test_warm_cache_does_not_raise_on_db_error(self):
+        from psycopg2 import OperationalError
+        self.svc._pool.getconn.side_effect = OperationalError("down")
+        try:
+            self.svc.warm_cache()
+        except Exception as exc:
+            self.fail(f"warm_cache() raised unexpectedly: {exc}")
+
+    def test_refresh_all_data_clears_and_rebuilds(self):
+        cache.set("all_dc_summary", [{"stale": True}])
+        cache.set("global_overview", {"stale": True})
+        cur = self._mock_empty_cursor()
+        self._attach_conn(cur)
+        self.svc.refresh_all_data()
+        summary = cache.get("all_dc_summary")
+        self.assertIsNotNone(summary)
+        # Stale marker should be gone
+        self.assertFalse(any(item.get("stale") for item in summary))
+
+    def test_refresh_all_data_does_not_raise_on_db_error(self):
+        from psycopg2 import OperationalError
+        self.svc._pool.getconn.side_effect = OperationalError("down")
+        try:
+            self.svc.refresh_all_data()
+        except Exception as exc:
+            self.fail(f"refresh_all_data() raised unexpectedly: {exc}")
+
+    def test_rebuild_summary_populates_per_dc_cache(self):
+        cur = self._mock_empty_cursor()
+        self._attach_conn(cur)
+        self.svc._dc_list = ["DC11", "AZ11"]
+        self.svc._rebuild_summary()
+        self.assertIsNotNone(cache.get("dc_details:DC11"))
+        self.assertIsNotNone(cache.get("dc_details:AZ11"))
+
+
+# ---------------------------------------------------------------------------
+# Scheduler service
+# ---------------------------------------------------------------------------
+
+class TestSchedulerService(unittest.TestCase):
+
+    def test_start_scheduler_calls_warm_cache(self):
+        from src.services.scheduler_service import start_scheduler
+        svc_mock = MagicMock()
+        scheduler = start_scheduler(svc_mock)
+        svc_mock.warm_cache.assert_called_once()
+        scheduler.shutdown(wait=False)
+
+    def test_start_scheduler_returns_running_scheduler(self):
+        from src.services.scheduler_service import start_scheduler
+        svc_mock = MagicMock()
+        scheduler = start_scheduler(svc_mock)
+        self.assertTrue(scheduler.running)
+        scheduler.shutdown(wait=False)
+
+    def test_refresh_job_registered(self):
+        from src.services.scheduler_service import start_scheduler
+        svc_mock = MagicMock()
+        scheduler = start_scheduler(svc_mock)
+        job_ids = [job.id for job in scheduler.get_jobs()]
+        self.assertIn("cache_refresh", job_ids)
+        scheduler.shutdown(wait=False)
+
+
+# ---------------------------------------------------------------------------
+# loki query module
+# ---------------------------------------------------------------------------
+
+class TestLokiQueries(unittest.TestCase):
+
+    def test_dc_list_query_is_string(self):
+        from src.queries.loki import DC_LIST, DC_LIST_NO_STATUS
+        self.assertIsInstance(DC_LIST, str)
+        self.assertIsInstance(DC_LIST_NO_STATUS, str)
+
+    def test_dc_list_query_contains_loki_locations(self):
+        from src.queries.loki import DC_LIST
+        self.assertIn("loki_locations", DC_LIST)
+
+    def test_dc_list_query_handles_hierarchy(self):
+        from src.queries.loki import DC_LIST
+        self.assertIn("parent_id", DC_LIST)
+        self.assertIn("parent_name", DC_LIST)
+
+    def test_energy_ibm_uses_correct_table(self):
+        from src.queries.energy import IBM, BATCH_IBM
+        self.assertIn("ibm_server_power", IBM)
+        self.assertNotIn("ibm_server_power_sum", IBM)
+        self.assertIn("ibm_server_power", BATCH_IBM)
+        self.assertNotIn("ibm_server_power_sum", BATCH_IBM)
+
+    def test_nutanix_batch_uses_datacenter_name(self):
+        from src.queries.nutanix import BATCH_HOST_COUNT, BATCH_MEMORY, BATCH_STORAGE, BATCH_CPU
+        for sql in [BATCH_HOST_COUNT, BATCH_MEMORY, BATCH_STORAGE, BATCH_CPU]:
+            self.assertIn("datacenter_name", sql, "Nutanix batch query must use datacenter_name column")
 
 
 if __name__ == "__main__":

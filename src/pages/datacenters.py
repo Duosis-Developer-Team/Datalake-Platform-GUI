@@ -2,11 +2,9 @@ import dash
 from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
-from src.services.db_service import DatabaseService
+from src.services.shared import service
 
 dash.register_page(__name__, path='/datacenters')
-
-service = DatabaseService()
 
 def layout():
     # Fetch real data on page load

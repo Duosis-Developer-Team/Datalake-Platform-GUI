@@ -7,19 +7,24 @@ from psycopg2 import pool as pg_pool
 from psycopg2 import OperationalError
 
 from src.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
+from src.queries import loki as lq
 from src.services import cache_service as cache
 
 logger = logging.getLogger(__name__)
 
-# Supported data centers — single source of truth.
-DC_LIST = ["AZ11", "DC11", "DC12", "DC13", "DC14", "DC15", "DC16", "DC17", "ICT11"]
+# Fallback DC list used when loki_locations is unreachable.
+_FALLBACK_DC_LIST = [
+    "AZ11", "DC11", "DC12", "DC13", "DC14", "DC15", "DC16", "DC17", "ICT11"
+]
 
-DC_LOCATIONS = {
+# Known DC → human-readable location mapping (for display only; dynamic list drives logic).
+DC_LOCATIONS: dict[str, str] = {
     "AZ11": "Azerbaycan",
     "DC11": "Istanbul",
     "DC13": "Istanbul",
     "ICT11": "Almanya",
 }
+
 
 def _EMPTY_DC(dc_code: str) -> dict:
     """Return a zeroed-out DC details dict for when the DB is unreachable."""
@@ -38,13 +43,15 @@ def _EMPTY_DC(dc_code: str) -> dict:
 
 class DatabaseService:
     """
-    Centralized database service.
+    Centralized database service with full optimization stack:
 
-    Optimizations over previous version:
-    - ThreadedConnectionPool: reuses connections; eliminates per-call connect/close overhead.
-    - TTL Cache (cache_service): module-level, 5-minute expiry; fixes broken lru_cache pattern.
-    - Batch queries: fetches all 9 DCs in ~10 DB roundtrips instead of ~90.
-    - Public method signatures unchanged: pages require zero modification.
+    - ThreadedConnectionPool   : reuses connections; no per-call overhead.
+    - TTL Cache (cache_service): module-level 20-min expiry; fixes broken lru_cache.
+    - Batch queries            : all DCs fetched in ~10 DB roundtrips instead of ~90.
+    - Dynamic DC list          : resolved from loki_locations at startup; fallback to hardcoded.
+    - warm_cache()             : pre-loads all data at startup so first user request is instant.
+    - refresh_all_data()       : called by scheduler every 15 min to keep cache fresh.
+    - Singleton-ready          : designed to be imported from src.services.shared (one instance).
     """
 
     def __init__(self):
@@ -54,6 +61,7 @@ class DatabaseService:
         self._db_user = os.getenv("DB_USER", "datalakeui")
         self._db_pass = os.getenv("DB_PASS")
         self._pool: pg_pool.ThreadedConnectionPool | None = None
+        self._dc_list: list[str] = _FALLBACK_DC_LIST.copy()
         self._init_pool()
 
     # ------------------------------------------------------------------
@@ -65,14 +73,14 @@ class DatabaseService:
         try:
             self._pool = pg_pool.ThreadedConnectionPool(
                 minconn=2,
-                maxconn=5,
+                maxconn=8,
                 host=self._db_host,
                 port=self._db_port,
                 dbname=self._db_name,
                 user=self._db_user,
                 password=self._db_pass,
             )
-            logger.info("DB connection pool initialized (min=2, max=5).")
+            logger.info("DB connection pool initialized (min=2, max=8).")
         except OperationalError as exc:
             logger.error("Failed to initialize DB pool: %s", exc)
             self._pool = None
@@ -102,6 +110,10 @@ class DatabaseService:
                 return row[0]
         except Exception as exc:
             logger.warning("Query error (value): %s", exc)
+            try:
+                cursor.execute("ROLLBACK")
+            except Exception:
+                pass
         return 0
 
     @staticmethod
@@ -112,6 +124,10 @@ class DatabaseService:
             return cursor.fetchone()
         except Exception as exc:
             logger.warning("Query error (row): %s", exc)
+            try:
+                cursor.execute("ROLLBACK")
+            except Exception:
+                pass
         return None
 
     @staticmethod
@@ -122,7 +138,41 @@ class DatabaseService:
             return cursor.fetchall() or []
         except Exception as exc:
             logger.warning("Query error (rows): %s", exc)
+            try:
+                cursor.execute("ROLLBACK")
+            except Exception:
+                pass
         return []
+
+    # ------------------------------------------------------------------
+    # Dynamic DC list from loki_locations
+    # ------------------------------------------------------------------
+
+    def _load_dc_list(self) -> list[str]:
+        """
+        Fetch active datacenter names from loki_locations.
+        Falls back to the hardcoded list if the query fails or returns nothing.
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Try with status filter first
+                    rows = self._run_rows(cur, lq.DC_LIST)
+                    dc_names = [row[0] for row in rows if row[0]]
+                    if not dc_names:
+                        # Retry without status filter
+                        rows = self._run_rows(cur, lq.DC_LIST_NO_STATUS)
+                        dc_names = [row[0] for row in rows if row[0]]
+        except OperationalError as exc:
+            logger.warning("Could not load DC list from DB: %s — using fallback.", exc)
+            return _FALLBACK_DC_LIST.copy()
+
+        if dc_names:
+            logger.info("Loaded %d datacenters from loki_locations: %s", len(dc_names), dc_names)
+            return dc_names
+
+        logger.warning("loki_locations returned empty DC list — using fallback.")
+        return _FALLBACK_DC_LIST.copy()
 
     # ------------------------------------------------------------------
     # Individual query methods (single DC) — kept for dc_view.py
@@ -170,7 +220,7 @@ class DatabaseService:
         return self._run_value(cursor, eq.VCENTER, (dc_param,))
 
     # ------------------------------------------------------------------
-    # Aggregation helper (shared by get_dc_details and batch path)
+    # Unit normalization & aggregation (shared by single + batch paths)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -190,13 +240,13 @@ class DatabaseService:
         vcenter_w,
     ) -> dict:
         """Apply unit normalization and build the standard DC detail dictionary."""
-        nutanix_mem    = nutanix_mem    or (0, 0)
+        nutanix_mem     = nutanix_mem     or (0, 0)
         nutanix_storage = nutanix_storage or (0, 0)
-        nutanix_cpu    = nutanix_cpu    or (0, 0)
-        vmware_counts  = vmware_counts  or (0, 0, 0)
-        vmware_mem     = vmware_mem     or (0, 0)
-        vmware_storage = vmware_storage or (0, 0)
-        vmware_cpu     = vmware_cpu     or (0, 0)
+        nutanix_cpu     = nutanix_cpu     or (0, 0)
+        vmware_counts   = vmware_counts   or (0, 0, 0)
+        vmware_mem      = vmware_mem      or (0, 0)
+        vmware_storage  = vmware_storage  or (0, 0)
+        vmware_cpu      = vmware_cpu      or (0, 0)
 
         # Memory → GB
         # Nutanix raw: TB  → × 1024
@@ -223,7 +273,9 @@ class DatabaseService:
         v_cpu_used_ghz = (vmware_cpu[1] or 0) / 1_000_000_000
 
         # Energy → kW
-        total_energy_kw = (float(racks_w or 0) + float(ibm_w or 0) + float(vcenter_w or 0)) / 1000.0
+        total_energy_kw = (
+            float(racks_w or 0) + float(ibm_w or 0) + float(vcenter_w or 0)
+        ) / 1000.0
 
         return {
             "meta": {
@@ -251,20 +303,20 @@ class DatabaseService:
         }
 
     # ------------------------------------------------------------------
-    # Public API — dc_view.py uses this for a single DC
+    # Public API — dc_view.py: single DC detail
     # ------------------------------------------------------------------
 
     def get_dc_details(self, dc_code: str) -> dict:
         """Return full metrics dict for a single data center. Result is TTL-cached."""
         cache_key = f"dc_details:{dc_code}"
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
 
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    dc_wc = f"%{dc_code}%"   # wildcard parameter
+                    dc_wc = f"%{dc_code}%"
                     result = self._aggregate_dc(
                         dc_code,
                         nutanix_host_count=self.get_nutanix_host_count(cur, dc_wc),
@@ -276,33 +328,29 @@ class DatabaseService:
                         vmware_storage=self.get_vmware_storage(cur, dc_wc),
                         vmware_cpu=self.get_vmware_cpu(cur, dc_wc),
                         power_hosts=self.get_ibm_host_count(cur, dc_wc),
-                        racks_w=self.get_racks_energy(cur, dc_code),   # exact match
+                        racks_w=self.get_racks_energy(cur, dc_code),
                         ibm_w=self.get_ibm_energy(cur, dc_wc),
                         vcenter_w=self.get_vcenter_energy(cur, dc_wc),
                     )
         except OperationalError as exc:
-            logger.error("DB unavailable for dc_details(%s): %s", dc_code, exc)
+            logger.error("DB unavailable for get_dc_details(%s): %s", dc_code, exc)
             return _EMPTY_DC(dc_code)
 
         cache.set(cache_key, result)
         return result
 
     # ------------------------------------------------------------------
-    # Batch helpers — used internally by get_all_datacenters_summary
+    # Batch fetch (internal) — used by get_all_datacenters_summary
     # ------------------------------------------------------------------
 
-    def _fetch_all_batch(self, cursor) -> dict[str, dict]:
+    def _fetch_all_batch(self, cursor, dc_list: list[str]) -> dict[str, dict]:
         """
-        Execute all batch queries in a single connection and return a dict keyed
-        by DC code, containing raw query results for every provider/metric.
-
-        Reduces DB roundtrips from 9 × 10 = 90  →  ~10.
+        Execute all batch queries in one connection and map results back to DC codes.
+        Reduces DB roundtrips from 9×10=90 → ~10.
         """
-        dc_list = DC_LIST
         wildcard_patterns = [f"%{dc}%" for dc in dc_list]
 
-        # Nutanix — cluster_name contains DC code (e.g. "AZ11-cluster")
-        # Use wildcard array for LIKE ANY(...)
+        # Nutanix — uses datacenter_name column (exact DC code)
         n_host_rows  = self._run_rows(cursor, nq.BATCH_HOST_COUNT, (dc_list,))
         n_mem_rows   = self._run_rows(cursor, nq.BATCH_MEMORY,     (dc_list,))
         n_stor_rows  = self._run_rows(cursor, nq.BATCH_STORAGE,    (dc_list,))
@@ -318,23 +366,24 @@ class DatabaseService:
         ibm_rows     = self._run_rows(cursor, iq.BATCH_HOST_COUNT, (wildcard_patterns,))
 
         # Energy
-        rack_rows    = self._run_rows(cursor, eq.BATCH_RACKS,    (dc_list,))
-        ibm_e_rows   = self._run_rows(cursor, eq.BATCH_IBM,      (wildcard_patterns,))
-        vcenter_rows = self._run_rows(cursor, eq.BATCH_VCENTER,  (wildcard_patterns,))
+        rack_rows    = self._run_rows(cursor, eq.BATCH_RACKS,   (dc_list,))
+        ibm_e_rows   = self._run_rows(cursor, eq.BATCH_IBM,     (wildcard_patterns,))
+        vcenter_rows = self._run_rows(cursor, eq.BATCH_VCENTER, (wildcard_patterns,))
 
         # --- Map batch rows back to DC codes ---
+
         def _match_dc(name: str) -> str | None:
-            """Find which DC code appears in a string (cluster_name, datacenter, server, etc.)."""
+            """Find which DC code appears in a string."""
             if not name:
                 return None
             upper = name.upper()
             for dc in dc_list:
-                if dc in upper:
+                if dc.upper() in upper:
                     return dc
             return None
 
-        def _index_by_dc(rows, col_idx=0) -> dict[str, tuple]:
-            """Build {dc_code: row} from rows where rows[col_idx] is the name field."""
+        def _index_by_dc(rows, col_idx: int = 0) -> dict[str, tuple]:
+            """First row per DC: {dc_code: row}."""
             out: dict[str, tuple] = {}
             for row in rows:
                 dc = _match_dc(str(row[col_idx]))
@@ -342,8 +391,12 @@ class DatabaseService:
                     out[dc] = row
             return out
 
-        def _sum_by_dc(rows, value_col: int, col_idx=0) -> dict[str, float]:
-            """Aggregate numeric column per DC (e.g. IBM host count, energy watts)."""
+        def _index_exact(rows, col_idx: int = 0) -> dict[str, tuple]:
+            """Exact key match: {row[col_idx]: row}. Used for datacenter_name batches."""
+            return {row[col_idx]: row for row in rows if row[col_idx]}
+
+        def _sum_by_dc(rows, value_col: int, col_idx: int = 0) -> dict[str, float]:
+            """Sum numeric column per DC (e.g. energy watts, IBM hosts)."""
             out: dict[str, float] = {}
             for row in rows:
                 dc = _match_dc(str(row[col_idx]))
@@ -351,20 +404,24 @@ class DatabaseService:
                     out[dc] = out.get(dc, 0) + float(row[value_col] or 0)
             return out
 
-        n_host  = _index_by_dc(n_host_rows)
-        n_mem   = _index_by_dc(n_mem_rows)
-        n_stor  = _index_by_dc(n_stor_rows)
-        n_cpu   = _index_by_dc(n_cpu_rows)
+        # Nutanix batch results use datacenter_name as exact key (col 0)
+        n_host  = _index_exact(n_host_rows)
+        n_mem   = _index_exact(n_mem_rows)
+        n_stor  = _index_exact(n_stor_rows)
+        n_cpu   = _index_exact(n_cpu_rows)
+
+        # VMware / IBM use wildcard-matched name
         v_cnt   = _index_by_dc(v_cnt_rows)
         v_mem   = _index_by_dc(v_mem_rows)
         v_stor  = _index_by_dc(v_stor_rows)
         v_cpu   = _index_by_dc(v_cpu_rows)
         ibm_h   = _sum_by_dc(ibm_rows, value_col=1)
-        rack_e  = {row[0]: float(row[1] or 0) for row in rack_rows}
+
+        # Energy: racks by exact location_name; IBM/vCenter by wildcard
+        rack_e  = {row[0]: float(row[1] or 0) for row in rack_rows if row[0]}
         ibm_e   = _sum_by_dc(ibm_e_rows, value_col=1)
         vctr_e  = _sum_by_dc(vcenter_rows, value_col=1)
 
-        # Build per-DC result dict
         results: dict[str, dict] = {}
         for dc in dc_list:
             nh_row   = n_host.get(dc)
@@ -391,43 +448,52 @@ class DatabaseService:
                 ibm_w=ibm_e.get(dc, 0.0),
                 vcenter_w=vctr_e.get(dc, 0.0),
             )
+
         return results
 
     # ------------------------------------------------------------------
-    # Public API — datacenters.py uses this for the summary list
+    # Public API — datacenters.py: summary list
     # ------------------------------------------------------------------
 
     def get_all_datacenters_summary(self) -> list[dict]:
         """
-        Returns summary list for all 9 DCs.
-        Uses batch queries → ~10 DB roundtrips (down from ~90).
-        Result is TTL-cached (5 minutes).
+        Returns summary list for all active DCs (dynamic list from loki_locations).
+        Uses batch queries → ~10 DB roundtrips.
+        Result is TTL-cached; background scheduler keeps it warm.
         """
         cache_key = "all_dc_summary"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
 
+        return self._rebuild_summary()
+
+    def _rebuild_summary(self) -> list[dict]:
+        """Fetch fresh data and rebuild the summary list. Also populates per-DC cache."""
+        # Reload DC list on every rebuild so new DCs are picked up automatically
+        self._dc_list = self._load_dc_list()
+        dc_list = self._dc_list
+
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    all_dc_data = self._fetch_all_batch(cur)
+                    all_dc_data = self._fetch_all_batch(cur, dc_list)
         except OperationalError as exc:
             logger.error("DB unavailable for get_all_datacenters_summary: %s", exc)
-            all_dc_data = {dc: _EMPTY_DC(dc) for dc in DC_LIST}
+            all_dc_data = {dc: _EMPTY_DC(dc) for dc in dc_list}
 
         summary_list = []
-        for dc in DC_LIST:
+        for dc in dc_list:
             d = all_dc_data.get(dc, _EMPTY_DC(dc))
             intel = d["intel"]
             power = d["power"]
 
-            cpu_cap  = intel["cpu_cap"]  or 0
-            cpu_used = intel["cpu_used"] or 0
-            ram_cap  = intel["ram_cap"]  or 0
-            ram_used = intel["ram_used"] or 0
-            stor_cap  = intel["storage_cap"]  or 0
-            stor_used = intel["storage_used"] or 0
+            cpu_cap   = intel["cpu_cap"]       or 0
+            cpu_used  = intel["cpu_used"]      or 0
+            ram_cap   = intel["ram_cap"]       or 0
+            ram_used  = intel["ram_used"]      or 0
+            stor_cap  = intel["storage_cap"]   or 0
+            stor_used = intel["storage_used"]  or 0
 
             summary_list.append({
                 "id": dc,
@@ -449,16 +515,19 @@ class DatabaseService:
                 },
             })
 
-        cache.set(cache_key, summary_list)
-        logger.debug("Loaded summary for %d DCs via batch queries.", len(summary_list))
+            # Also populate per-DC cache so dc_view benefits from the batch fetch
+            cache.set(f"dc_details:{dc}", d)
+
+        cache.set("all_dc_summary", summary_list)
+        logger.info("Rebuilt summary for %d DCs.", len(summary_list))
         return summary_list
 
     # ------------------------------------------------------------------
-    # Public API — home.py uses this for global totals
+    # Public API — home.py: global totals
     # ------------------------------------------------------------------
 
     def get_global_overview(self) -> dict:
-        """Return global totals. Derived from get_all_datacenters_summary (also cached)."""
+        """Return global totals. Always derived from get_all_datacenters_summary (cached)."""
         cache_key = "global_overview"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
@@ -473,3 +542,42 @@ class DatabaseService:
         }
         cache.set(cache_key, result)
         return result
+
+    # ------------------------------------------------------------------
+    # Cache warming / background refresh API
+    # ------------------------------------------------------------------
+
+    def warm_cache(self) -> None:
+        """
+        Pre-load all data into cache at app startup.
+        Called once immediately so the first user request is served from cache.
+        """
+        logger.info("Warming cache at startup…")
+        try:
+            self._rebuild_summary()
+            self.get_global_overview()
+            logger.info("Cache warm-up complete.")
+        except Exception as exc:
+            logger.warning("Cache warm-up failed (DB may be unavailable): %s", exc)
+
+    def refresh_all_data(self) -> None:
+        """
+        Called by the background scheduler every 15 minutes.
+        Clears and rebuilds the summary + global caches without blocking user requests.
+        Per-DC caches are refreshed as a side-effect of _rebuild_summary.
+        """
+        logger.info("Background cache refresh started.")
+        try:
+            # Evict stale top-level keys so _rebuild_summary fetches fresh data
+            cache.delete("all_dc_summary")
+            cache.delete("global_overview")
+            self._rebuild_summary()
+            self.get_global_overview()
+            logger.info("Background cache refresh complete.")
+        except Exception as exc:
+            logger.error("Background cache refresh failed: %s", exc)
+
+    @property
+    def dc_list(self) -> list[str]:
+        """Expose current dynamic DC list (read-only)."""
+        return list(self._dc_list)

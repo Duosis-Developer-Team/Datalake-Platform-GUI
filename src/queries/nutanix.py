@@ -42,44 +42,76 @@ LIMIT 1
 """
 
 # --- Batch queries (all DCs in a single roundtrip) ---
-# Returns one row per DC code. Caller maps rows by dc_code.
-# Parameter: list of DC codes passed as PostgreSQL array via psycopg2 (ANY(%s))
+# Uses `datacenter_name` column (exact DC code) instead of cluster_name LIKE wildcard.
+# `datacenter_name` is a direct column in nutanix_cluster_metrics → exact match is safe and fast.
+# When multiple clusters exist per DC, we SUM metrics across all clusters per DC.
 
 BATCH_HOST_COUNT = """
-SELECT DISTINCT ON (cluster_name)
-    cluster_name,
-    num_nodes
-FROM public.nutanix_cluster_metrics
-WHERE cluster_name = ANY(%s)
-ORDER BY cluster_name, collection_time DESC
+SELECT
+    datacenter_name,
+    SUM(num_nodes) AS num_nodes
+FROM (
+    SELECT DISTINCT ON (cluster_name)
+        datacenter_name,
+        cluster_name,
+        num_nodes
+    FROM public.nutanix_cluster_metrics
+    WHERE datacenter_name = ANY(%s)
+    ORDER BY cluster_name, collection_time DESC
+) latest
+GROUP BY datacenter_name
 """
 
 BATCH_MEMORY = """
-SELECT DISTINCT ON (cluster_name)
-    cluster_name,
-    total_memory_capacity,
-    ((memory_usage_avg / 1000) * total_memory_capacity) / 1000 AS used_memory
-FROM public.nutanix_cluster_metrics
-WHERE cluster_name = ANY(%s)
-ORDER BY cluster_name, collection_time DESC
+SELECT
+    datacenter_name,
+    SUM(total_memory_capacity) AS total_memory_capacity,
+    SUM(((memory_usage_avg / 1000) * total_memory_capacity) / 1000) AS used_memory
+FROM (
+    SELECT DISTINCT ON (cluster_name)
+        datacenter_name,
+        cluster_name,
+        total_memory_capacity,
+        memory_usage_avg
+    FROM public.nutanix_cluster_metrics
+    WHERE datacenter_name = ANY(%s)
+    ORDER BY cluster_name, collection_time DESC
+) latest
+GROUP BY datacenter_name
 """
 
 BATCH_STORAGE = """
-SELECT DISTINCT ON (cluster_name)
-    cluster_name,
-    storage_capacity / 2 AS storage_cap,
-    storage_usage / 2    AS storage_used
-FROM public.nutanix_cluster_metrics
-WHERE cluster_name = ANY(%s)
-ORDER BY cluster_name, collection_time DESC
+SELECT
+    datacenter_name,
+    SUM(storage_capacity / 2) AS storage_cap,
+    SUM(storage_usage / 2)    AS storage_used
+FROM (
+    SELECT DISTINCT ON (cluster_name)
+        datacenter_name,
+        cluster_name,
+        storage_capacity,
+        storage_usage
+    FROM public.nutanix_cluster_metrics
+    WHERE datacenter_name = ANY(%s)
+    ORDER BY cluster_name, collection_time DESC
+) latest
+GROUP BY datacenter_name
 """
 
 BATCH_CPU = """
-SELECT DISTINCT ON (cluster_name)
-    cluster_name,
-    total_cpu_capacity,
-    (cpu_usage_avg * total_cpu_capacity) / 1000000 AS cpu_used
-FROM public.nutanix_cluster_metrics
-WHERE cluster_name = ANY(%s)
-ORDER BY cluster_name, collection_time DESC
+SELECT
+    datacenter_name,
+    SUM(total_cpu_capacity) AS total_cpu_capacity,
+    SUM((cpu_usage_avg * total_cpu_capacity) / 1000000) AS cpu_used
+FROM (
+    SELECT DISTINCT ON (cluster_name)
+        datacenter_name,
+        cluster_name,
+        total_cpu_capacity,
+        cpu_usage_avg
+    FROM public.nutanix_cluster_metrics
+    WHERE datacenter_name = ANY(%s)
+    ORDER BY cluster_name, collection_time DESC
+) latest
+GROUP BY datacenter_name
 """
