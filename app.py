@@ -1,7 +1,11 @@
 import dash
 from dash import Dash, html, dcc, page_container, _dash_renderer
 import dash_mantine_components as dmc
+from dotenv import load_dotenv
 from src.components.sidebar import create_sidebar
+
+# 0. Ortam değişkenlerini .env dosyasından yükle
+load_dotenv()
 
 # 1. KRİTİK AYAR: React 18 Ayarı
 _dash_renderer._set_react_version("18.2.0")

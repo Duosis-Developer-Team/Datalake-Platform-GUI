@@ -7,3 +7,4 @@ faker>=24.0.0
 gunicorn
 psycopg2-binary>=2.9.9
 cachetools>=5.3.0
+python-dotenv>=1.0.0
