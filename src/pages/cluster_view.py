@@ -2,12 +2,9 @@ import dash
 from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
-# Replaced MockService with DatabaseService to fix crash
-from src.services.db_service import DatabaseService
+from src.services.shared import service
 
 dash.register_page(__name__, path_template='/cluster/<cluster_id>')
-
-service = DatabaseService()
 
 def layout(cluster_id=None):
     # Cluster view logic is currently placeholder as we transition from mock data.

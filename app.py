@@ -1,9 +1,16 @@
 import dash
 from dash import Dash, html, dcc, page_container, _dash_renderer
 import dash_mantine_components as dmc
-from src.components.sidebar import create_sidebar
+from dotenv import load_dotenv
 
-# 1. KRİTİK AYAR: React 18 Ayarı
+# 0. Load .env before any service import so DB credentials are available
+load_dotenv()
+
+from src.components.sidebar import create_sidebar
+from src.services.shared import service
+from src.services.scheduler_service import start_scheduler
+
+# 1. React 18 requirement for DMC
 _dash_renderer._set_react_version("18.2.0")
 
 # 2. STİL DOSYALARI (DMC 0.14 için ZORUNLU)
@@ -75,6 +82,10 @@ app.layout = dmc.MantineProvider(
 )
 def update_sidebar(pathname):
     return create_sidebar(pathname or "/")
+
+# 4. Start background cache scheduler (warm cache now + refresh every 15 min)
+# Runs outside __main__ guard so it also starts under Gunicorn / production.
+_scheduler = start_scheduler(service)
 
 if __name__ == "__main__":
     app.run(debug=True, port=8050)

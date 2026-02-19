@@ -4,12 +4,10 @@ import dash_mantine_components as dmc
 import pandas as pd
 import random
 from dash_iconify import DashIconify
-from src.services.db_service import DatabaseService
+from src.services.shared import service
 from src.components.charts import create_gradient_area_chart
 
 dash.register_page(__name__, path='/')
-
-service = DatabaseService()
 
 # Fake Data Trend for Chart (preserving visual appeal as DB has no traffic data yet)
 def get_traffic_data():
