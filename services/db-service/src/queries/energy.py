@@ -21,9 +21,15 @@ WHERE location_name = $1
 """
 
 IBM = """
-SELECT SUM(power_watts)
-FROM public.ibm_server_power
-WHERE server_name ILIKE $1
+WITH latest_per_server AS (
+    SELECT DISTINCT ON (server_name)
+        power_watts
+    FROM public.ibm_server_power
+    WHERE server_name ILIKE $1
+      AND "timestamp" >= NOW() - INTERVAL '4 hours'
+    ORDER BY server_name, "timestamp" DESC
+)
+SELECT SUM(power_watts) FROM latest_per_server
 """
 
 VCENTER = """
@@ -61,8 +67,15 @@ BATCH_IBM = """
 SELECT
     server_name,
     SUM(power_watts) AS total_watts
-FROM public.ibm_server_power
-WHERE server_name ILIKE ANY($1::text[])
+FROM (
+    SELECT DISTINCT ON (server_name)
+        server_name,
+        power_watts
+    FROM public.ibm_server_power
+    WHERE server_name ILIKE ANY($1::text[])
+      AND "timestamp" >= NOW() - INTERVAL '4 hours'
+    ORDER BY server_name, "timestamp" DESC
+) latest
 GROUP BY server_name
 """
 

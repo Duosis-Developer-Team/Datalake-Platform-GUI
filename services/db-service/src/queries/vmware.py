@@ -7,6 +7,7 @@ COUNTS = """
 SELECT total_cluster_count, total_host_count, total_vm_count
 FROM public.datacenter_metrics
 WHERE datacenter ILIKE $1
+  AND timestamp >= NOW() - INTERVAL '4 hours'
 ORDER BY timestamp DESC
 LIMIT 1
 """
@@ -17,6 +18,7 @@ SELECT
     total_memory_used_gb     * 1024 * 1024 * 1024
 FROM public.datacenter_metrics
 WHERE datacenter ILIKE $1
+  AND timestamp >= NOW() - INTERVAL '4 hours'
 ORDER BY timestamp DESC
 LIMIT 1
 """
@@ -27,6 +29,7 @@ SELECT
     total_used_storage_gb     * (1024 * 1024)
 FROM public.datacenter_metrics
 WHERE datacenter ILIKE $1
+  AND timestamp >= NOW() - INTERVAL '4 hours'
 ORDER BY timestamp DESC
 LIMIT 1
 """
@@ -37,6 +40,7 @@ SELECT
     total_cpu_ghz_used     * 1000000000
 FROM public.datacenter_metrics
 WHERE datacenter ILIKE $1
+  AND timestamp >= NOW() - INTERVAL '4 hours'
 ORDER BY timestamp DESC
 LIMIT 1
 """

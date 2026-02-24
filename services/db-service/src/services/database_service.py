@@ -145,7 +145,7 @@ class DatabaseService:
 
         Nutanix raw → hedef birim:
           Memory  : TB  × 1024  → GB
-          Storage : TB           → TB  (değişmez)
+          Storage : Bytes ÷ 1024⁴ → TB (nutanix_cluster_metrics.storage_capacity bytes cinsinden)
           CPU     : GHz          → GHz (değişmez)
 
         VMware raw → hedef birim:
@@ -163,23 +163,23 @@ class DatabaseService:
         vmware_storage  = vmware_storage  or (0, 0)
         vmware_cpu      = vmware_cpu      or (0, 0)
 
-        # Memory → GB
-        n_mem_cap_gb  = (nutanix_mem[0] or 0) * 1024
-        n_mem_used_gb = (nutanix_mem[1] or 0) * 1024
-        v_mem_cap_gb  = (vmware_mem[0]  or 0) / (1024 ** 3)
-        v_mem_used_gb = (vmware_mem[1]  or 0) / (1024 ** 3)
+        # Memory → GB  (explicit float() — asyncpg Numeric döndürebilir)
+        n_mem_cap_gb  = float(nutanix_mem[0] or 0) * 1024
+        n_mem_used_gb = float(nutanix_mem[1] or 0) * 1024
+        v_mem_cap_gb  = float(vmware_mem[0]  or 0) / (1024 ** 3)
+        v_mem_used_gb = float(vmware_mem[1]  or 0) / (1024 ** 3)
 
-        # Storage → TB
-        n_stor_cap_tb  = (nutanix_storage[0] or 0)
-        n_stor_used_tb = (nutanix_storage[1] or 0)
-        v_stor_cap_tb  = (vmware_storage[0]  or 0) / (1024 ** 4)
-        v_stor_used_tb = (vmware_storage[1]  or 0) / (1024 ** 4)
+        # Storage → TB (nutanix_cluster_metrics.storage_capacity bytes cinsinden → ÷ 1024⁴)
+        n_stor_cap_tb  = float(nutanix_storage[0] or 0) / (1024 ** 4)
+        n_stor_used_tb = float(nutanix_storage[1] or 0) / (1024 ** 4)
+        v_stor_cap_tb  = float(vmware_storage[0]  or 0) / (1024 ** 4)
+        v_stor_used_tb = float(vmware_storage[1]  or 0) / (1024 ** 4)
 
         # CPU → GHz
-        n_cpu_cap_ghz  = (nutanix_cpu[0] or 0)
-        n_cpu_used_ghz = (nutanix_cpu[1] or 0)
-        v_cpu_cap_ghz  = (vmware_cpu[0]  or 0) / 1_000_000_000
-        v_cpu_used_ghz = (vmware_cpu[1]  or 0) / 1_000_000_000
+        n_cpu_cap_ghz  = float(nutanix_cpu[0] or 0)
+        n_cpu_used_ghz = float(nutanix_cpu[1] or 0)
+        v_cpu_cap_ghz  = float(vmware_cpu[0]  or 0) / 1_000_000_000
+        v_cpu_used_ghz = float(vmware_cpu[1]  or 0) / 1_000_000_000
 
         # Energy → kW
         total_energy_kw = (

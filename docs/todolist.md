@@ -10,10 +10,10 @@ Hedef: Temel orkestrasyonun kurulması ve veritabanı erişiminin API haline get
 
 ## 🟡 AŞAMA 2: İş Mantığı ve Sorgu Motoru (Query-Service)
 Hedef: Veri kaynaklarına özel sorguların yönetilmesi ve performans optimizasyonu.
-[ ] Task 2.1: query-service FastAPI iskeletinin ve servisler arası iletişim (httpx) yapısının kurulması.
-[ ] Task 2.2: VMware, Nutanix ve IBM özel sorgu mantıklarının docs/legacy/query_logic.md üzerinden taşınması.
-[ ] Task 2.3: Redis entegrasyonu ile 15 dakikalık veri önbellekleme (Caching) mekanizmasının kurulması.
-[ ] Task 2.4: db-service ve query-service arasındaki veri akışının doğrulanması.
+[x] Task 2.1: query-service FastAPI iskeletinin ve servisler arası iletişim (httpx) yapısının kurulması.
+[x] Task 2.2: VMware, Nutanix ve IBM özel sorgu mantıklarının docs/legacy/query_logic.md üzerinden taşınması.
+[x] Task 2.3: Redis entegrasyonu ile 15 dakikalık veri önbellekleme (Caching) mekanizmasının kurulması.
+[x] Task 2.4: db-service ve query-service arasındaki veri akışının doğrulanması.
 
 ## 🔵 AŞAMA 3: Kullanıcı Arayüzü ve Entegrasyon (GUI-Service)
 Hedef: Plotly Dash ve DMC ile modern, hızlı ve dinamik bir dashboard sunumu.

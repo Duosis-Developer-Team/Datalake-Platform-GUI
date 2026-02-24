@@ -7,6 +7,7 @@ HOST_COUNT = """
 SELECT num_nodes
 FROM public.nutanix_cluster_metrics
 WHERE cluster_name LIKE $1
+  AND collection_time >= NOW() - INTERVAL '4 hours'
 ORDER BY collection_time DESC
 LIMIT 1
 """
@@ -17,6 +18,7 @@ SELECT
     ((memory_usage_avg / 1000) * total_memory_capacity) / 1000
 FROM public.nutanix_cluster_metrics
 WHERE cluster_name LIKE $1
+  AND collection_time >= NOW() - INTERVAL '4 hours'
 ORDER BY collection_time DESC
 LIMIT 1
 """
@@ -27,6 +29,7 @@ SELECT
     storage_usage    / 2
 FROM public.nutanix_cluster_metrics
 WHERE cluster_name LIKE $1
+  AND collection_time >= NOW() - INTERVAL '4 hours'
 ORDER BY collection_time DESC
 LIMIT 1
 """
@@ -37,6 +40,7 @@ SELECT
     (cpu_usage_avg * total_cpu_capacity) / 1000000
 FROM public.nutanix_cluster_metrics
 WHERE cluster_name LIKE $1
+  AND collection_time >= NOW() - INTERVAL '4 hours'
 ORDER BY collection_time DESC
 LIMIT 1
 """
