@@ -26,9 +26,10 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
 
     Returns the running BackgroundScheduler instance.
     """
-    # Step 1: warm cache synchronously so the first page load is instant
-    logger.info("Starting initial cache warm-up before scheduler launch.")
-    db_service.warm_cache()
+    # Step 1-removed: warm cache synchronously so the first page load is instant
+    # logger.info("Starting initial cache warm-up before scheduler launch.")
+    # db_service.warm_cache()
+    # (Removed to fix startup hang/timeout issues; cache will auto-warm on first request)
 
     # Step 2: launch background scheduler
     scheduler = BackgroundScheduler(daemon=True)
