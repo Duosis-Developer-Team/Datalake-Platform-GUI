@@ -1,0 +1,7 @@
+dash
+dash-mantine-components
+dash-iconify
+pandas
+requests
+gunicorn
+python-dotenv

@@ -1,28 +1,19 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-*.egg-info/
-dist/
-build/
-.eggs/
-
-# Virtual environments
+*$py.class
 .venv/
-venv/
-env/
+build/
+dist/
+*.egg-info/
 
-# Environment variables
+# Environments
 .env
 
-# pytest
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Editors
-.DS_Store
-.idea/
+# IDEs
 .vscode/
-*.swp
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,101 @@
+version: '3.8'
+
+# ─────────────────────────────────────────────
+#  Networks
+#  internal-net : servisler arası iletişim (bridge)
+#  external-net : gui-service'i dış dünyaya açar
+# ─────────────────────────────────────────────
+networks:
+  internal-net:
+    driver: bridge
+    name: datalake_internal
+  external-net:
+    driver: bridge
+    name: datalake_external
+
+# ─────────────────────────────────────────────
+#  Services
+# ─────────────────────────────────────────────
+services:
+
+  # ── 1. DB-Service (DAL) ─────────────────────
+  db-service:
+    build:
+      context: .                                   # Proje kökü — shared/ dahil edilebilir
+      dockerfile: services/db-service/Dockerfile
+    expose:
+      - "8001"          # Sadece internal-net üzerinden erişilebilir
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+    networks:
+      - internal-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── 2. Redis (Cache) ─────────────────────────
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"          # Sadece internal-net üzerinden erişilebilir
+    networks:
+      - internal-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── 3. Query-Service (Business Logic) ────────
+  query-service:
+    build:
+      context: .                                   # Proje kökü — shared/ dahil edilebilir
+      dockerfile: services/query-service/Dockerfile
+    expose:
+      - "8002"          # Sadece internal-net üzerinden erişilebilir
+    environment:
+      - DB_SERVICE_URL=http://db-service:8001
+      - REDIS_URL=redis://redis:6379/0
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+    depends_on:
+      db-service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── 4. GUI-Service (Frontend) ─────────────────
+  gui-service:
+    build:
+      context: .                                   # Proje kökü — shared/ dahil edilebilir
+      dockerfile: services/gui-service/Dockerfile
+    ports:
+      - "8050:8050"     # Dış dünyaya açık olan tek servis
+    environment:
+      - QUERY_SERVICE_URL=http://query-service:8002
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+    depends_on:
+      query-service:
+        condition: service_healthy
+    networks:
+      - internal-net    # query-service'e ulaşmak için
+      - external-net    # Kullanıcı trafiği için
+    restart: unless-stopped
