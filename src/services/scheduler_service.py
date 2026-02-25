@@ -5,10 +5,14 @@
 
 import logging
 import atexit
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.date import DateTrigger
+
+from src.utils.time_range import preset_to_range, PRESET_30_DAYS
 
 if TYPE_CHECKING:
     from src.services.db_service import DatabaseService
@@ -46,7 +50,22 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
         REFRESH_INTERVAL_MINUTES,
     )
 
-    # Step 3: clean shutdown on process exit
+    # Step 3: immediately warm customer cache for Boyner (last 30 days) in background
+    try:
+        customer_range = preset_to_range(PRESET_30_DAYS)
+        scheduler.add_job(
+            func=lambda: db_service.get_customer_resources("Boyner", customer_range),
+            trigger=DateTrigger(run_date=datetime.now()),
+            id="customer_boyner_initial_warm",
+            name="Initial Boyner customer cache warm-up (30d)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled initial Boyner customer cache warm-up (last 30 days).")
+    except Exception as exc:
+        logger.warning("Failed to schedule initial Boyner customer cache warm-up: %s", exc)
+
+    # Step 4: clean shutdown on process exit
     atexit.register(lambda: _stop(scheduler))
 
     return scheduler

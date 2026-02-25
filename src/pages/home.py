@@ -76,13 +76,13 @@ def build_overview(time_range=None):
     energy_breakdown = data.get("energy_breakdown", {})
     summaries = service.get_all_datacenters_summary(tr)
 
-    # KPI strip
+    # KPI strip (platforms = Nutanix + vCenter + IBM per DC, summed)
     kpis = [
         metric_card("Data Centers", str(overview.get("dc_count", 0)), "solar:server-square-bold-duotone", "Sites"),
+        metric_card("Platforms", f"{overview.get('total_platforms', 0):,}", "solar:box-bold-duotone", "Nutanix + vCenter + IBM"),
         metric_card("Total Hosts", f"{overview.get('total_hosts', 0):,}", "material-symbols:dns-outline", "All platforms", color="teal"),
         metric_card("Total VMs", f"{overview.get('total_vms', 0):,}", "material-symbols:laptop-mac-outline", "Virtual Machines", color="teal"),
-        metric_card("Total Clusters", f"{overview.get('total_clusters', 0):,}", "solar:box-bold-duotone", "Intel virtualization"),
-        metric_card("Total Energy", f"{overview.get('total_energy_kw', 0):,.0f} kW", "material-symbols:bolt-outline", "Real-time Power", color="orange"),
+        metric_card("Total Energy", f"{overview.get('total_energy_kw', 0):,.0f} kW", "material-symbols:bolt-outline", "Daily average", color="orange"),
     ]
 
     # Platform breakdown
@@ -146,6 +146,7 @@ def build_overview(time_range=None):
                     html.Div(
                         [
                             html.H3("Resource usage", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
+                            html.P("Daily average over report period", style={"margin": "0 0 12px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
                             dmc.SimpleGrid(
                                 cols=3,
                                 spacing="md",
@@ -187,6 +188,7 @@ def build_overview(time_range=None):
                     html.Div(
                         [
                             html.H3("Energy by source", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
+                            html.P("Daily average (kW)", style={"margin": "0 0 12px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
                             dcc.Graph(
                                 figure=create_energy_breakdown_chart(eb_labels, eb_values, "Energy (kW)", height=260),
                                 config={"displayModeBar": False},
@@ -217,7 +219,8 @@ def build_overview(time_range=None):
                 className="nexus-card nexus-table",
                 style={"margin": "0 30px", "padding": "20px", "overflowX": "auto"},
                 children=[
-                    html.H3("DC summary", style={"margin": "0 0 16px 0", "color": "#2B3674"}),
+                    html.H3("DC summary", style={"margin": "0 0 4px 0", "color": "#2B3674"}),
+                    html.P("CPU % and RAM % are daily averages over the report period.", style={"margin": "0 0 16px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
                     dmc.Table(
                         striped=True,
                         highlightOnHover=True,

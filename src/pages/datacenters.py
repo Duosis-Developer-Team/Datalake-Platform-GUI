@@ -3,13 +3,13 @@ from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services.shared import service
+from src.utils.time_range import default_time_range
 
-dash.register_page(__name__, path='/datacenters')
 
-def layout():
-    # Fetch real data on page load
-    datacenters = service.get_all_datacenters_summary()
-
+def build_datacenters(time_range=None):
+    """Build Data Centers page content for the given time range."""
+    tr = time_range or default_time_range()
+    datacenters = service.get_all_datacenters_summary(tr)
     return html.Div([
         # Header
         html.Div(
@@ -19,7 +19,7 @@ def layout():
                     DashIconify(icon="solar:server-square-bold-duotone", width=30, color="#4318FF"),
                     html.H1("Data Centers", style={"margin": "0 0 0 10px", "color": "#2B3674", "fontSize": "1.8rem"}),
                 ], style={"display": "flex", "alignItems": "center"}),
-                html.P("Manage and monitor your global infrastructure nodes.", style={"margin": "5px 0 0 40px", "color": "#A3AED0"})
+                html.P(f"Report period: {tr.get('start', '')} – {tr.get('end', '')}", style={"margin": "5px 0 0 40px", "color": "#A3AED0"})
             ],
             style={"padding": "24px 32px", "marginBottom": "32px", "display": "flex", "flexDirection": "column", "justifyContent": "center"}
         ),
@@ -121,3 +121,7 @@ def layout():
             style={"padding": "0 32px"}
         )
     ])
+
+
+def layout():
+    return build_datacenters(default_time_range())

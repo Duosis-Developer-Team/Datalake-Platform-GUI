@@ -1,0 +1,22 @@
+CREATE TABLE public.raw_zerto_vm_metrics (
+	data_type varchar(50) NOT NULL,
+	collection_timestamp timestamptz NOT NULL,
+	zerto_host varchar(50) DEFAULT ''::character varying NOT NULL,
+	id varchar(255) NOT NULL,
+	vm_identifier varchar(255) NULL,
+	vm_name varchar(255) NULL,
+	"name" varchar(255) NULL,
+	status int4 NULL,
+	vpg_identifier varchar(255) NULL,
+	cpu_count int4 NULL,
+	memory_mb int8 NULL,
+	disk_count int4 NULL,
+	vm_network_count int4 NULL,
+	os varchar(100) NULL,
+	ip_addresses jsonb NULL,
+	disk_info jsonb NULL,
+	is_protected bool NULL,
+	is_archived bool NULL,
+	is_offline bool NULL,
+	CONSTRAINT zerto_vm_metrics_pkey PRIMARY KEY (id, collection_timestamp)
+);

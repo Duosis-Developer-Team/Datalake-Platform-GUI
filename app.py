@@ -1,112 +1,224 @@
 import logging
 import dash
-from dash import Dash, html, dcc, page_container, _dash_renderer
+from dash import Dash, html, dcc, _dash_renderer
 import dash_mantine_components as dmc
 from dotenv import load_dotenv
 
-# 0. Load .env before any service import so DB credentials are available
 load_dotenv()
 
-# Configure logging so scheduler and DB service INFO messages appear in the terminal
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-from src.components.sidebar import create_sidebar
+from src.components.sidebar import create_sidebar_nav
 from src.services.shared import service
 from src.services.scheduler_service import start_scheduler
+from src.utils.time_range import default_time_range, preset_to_range
 
-# 1. React 18 requirement for DMC
 _dash_renderer._set_react_version("18.2.0")
 
-# 2. STİL DOSYALARI (DMC 0.14 için ZORUNLU)
-# Eski sürümde 'withNormalizeCSS' vardı, şimdi bu linkleri ekliyoruz.
 stylesheets = [
     "https://unpkg.com/@mantine/core@7.10.0/styles.css",
     "https://unpkg.com/@mantine/dates@7.10.0/styles.css",
-    "https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" # Senin fontun
+    "https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap",
 ]
 
 app = Dash(
-    __name__, 
-    use_pages=True, 
-    pages_folder="src/pages", # <-- Klasör hatasını çözen satır
-    external_stylesheets=stylesheets, # <-- Stil hatasını çözen satır
+    __name__,
+    use_pages=False,
+    external_stylesheets=stylesheets,
     suppress_callback_exceptions=True,
-    title="Bulutistan Dashboard"
+    title="Bulutistan Dashboard",
 )
 server = app.server
 
-# 3. Global Layout
+# Import pages once at startup (routing is manual via render_main_content)
+from src.pages import home, datacenters, dc_view, customer_view, query_explorer
+
+# --- Build static sidebar with controls always in layout ---
+_default_tr = default_time_range()
+_customers = service.get_customer_list()
+_default_customer = _customers[0] if _customers else "Boyner"
+_customer_options = [{"value": c, "label": c} for c in _customers] if _customers else [{"value": "Boyner", "label": "Boyner"}]
+
+_sidebar = html.Div(
+    style={
+        "width": "260px",
+        "position": "fixed",
+        "top": 0,
+        "left": 0,
+        "height": "100vh",
+        "zIndex": 999,
+        "padding": "24px",
+        "backgroundColor": "#FFFFFF",
+        "overflowY": "auto",
+    },
+    children=[
+        # Brand + nav links — only this part is updated by callback
+        html.Div(id="sidebar-nav"),
+
+        # Time range controls — static, always in DOM
+        html.Div(
+            [
+                dmc.Text("Report period", size="xs", fw=600, c="#A3AED0", style={"marginBottom": "8px"}),
+                dmc.SegmentedControl(
+                    id="time-range-preset",
+                    value=_default_tr.get("preset", "7d"),
+                    data=[
+                        {"label": "1 Day", "value": "1d"},
+                        {"label": "7 Days", "value": "7d"},
+                        {"label": "30 Days", "value": "30d"},
+                        {"label": "Custom", "value": "custom"},
+                    ],
+                    size="xs",
+                    fullWidth=True,
+                    style={"marginBottom": "8px"},
+                ),
+                html.Div(
+                    id="time-range-custom-container",
+                    children=[
+                        dcc.DatePickerRange(
+                            id="time-range-picker",
+                            start_date=_default_tr["start"],
+                            end_date=_default_tr["end"],
+                            display_format="YYYY-MM-DD",
+                            start_date_placeholder_text="Start",
+                            end_date_placeholder_text="End",
+                            style={"width": "100%"},
+                        ),
+                    ],
+                    style={"marginTop": "8px"},
+                ),
+            ],
+            style={"marginTop": "24px", "padding": "12px", "borderTop": "1px solid #E9ECEF"},
+        ),
+
+        # Customer select — static, always in DOM; visibility toggled by callback
+        html.Div(
+            id="customer-section",
+            children=[
+                dmc.Text("Customer", size="xs", fw=600, c="#A3AED0", style={"marginBottom": "6px"}),
+                dmc.Select(
+                    id="customer-select",
+                    data=_customer_options,
+                    value=_default_customer,
+                    style={"width": "100%"},
+                ),
+            ],
+            style={
+                "marginTop": "16px",
+                "paddingTop": "12px",
+                "borderTop": "1px solid #E9ECEF",
+                "display": "none",
+            },
+        ),
+    ],
+)
+
 app.layout = dmc.MantineProvider(
-    # HATA ÇIKARAN 'withNormalizeCSS' ve 'withGlobalStyles' SİLİNDİ.
     theme={
         "fontFamily": "'DM Sans', sans-serif",
-        "headings": {
-            "fontFamily": "'DM Sans', sans-serif"
-        },
+        "headings": {"fontFamily": "'DM Sans', sans-serif"},
         "primaryColor": "indigo",
     },
     children=[
         dcc.Location(id="url", refresh=False),
+        dcc.Store(id="app-time-range", data=_default_tr),
         html.Div(
             [
-                # Sol Sidebar Konteyneri
+                _sidebar,
                 html.Div(
-                    id="sidebar-container",
-                    style={
-                        "width": "260px",
-                        "position": "fixed",
-                        "top": 0,
-                        "left": 0,
-                        "height": "100vh",
-                        "zIndex": 999
-                    }
-                ),
-                
-                # Sağ İçerik Alanı
-                html.Div(
-                    page_container,
+                    html.Div(id="main-content", children=[]),
                     style={
                         "marginLeft": "260px",
                         "padding": "30px",
                         "minHeight": "100vh",
                         "width": "calc(100% - 260px)",
-                        "backgroundColor": "#F4F7FE"
-                    }
-                )
+                        "backgroundColor": "#F4F7FE",
+                    },
+                ),
             ],
-            style={"display": "flex", "backgroundColor": "#F4F7FE", "minHeight": "100vh"}
-        )
-    ]
+            style={"display": "flex", "backgroundColor": "#F4F7FE", "minHeight": "100vh"},
+        ),
+    ],
 )
 
-# Sidebar Callback'i
+
+# --- Callbacks ---
+
+# 1. Sidebar nav links (brand + active highlighting)
 @app.callback(
-    dash.Output("sidebar-container", "children"),
-    dash.Input("url", "pathname")
+    dash.Output("sidebar-nav", "children"),
+    dash.Input("url", "pathname"),
 )
-def update_sidebar(pathname):
-    return create_sidebar(pathname or "/")
+def update_sidebar_nav(pathname):
+    return create_sidebar_nav(pathname or "/")
 
 
-# Customer View: update content when customer dropdown changes
+# 2. Show/hide customer section based on page
 @app.callback(
-    dash.Output("customer-view-content", "children"),
+    dash.Output("customer-section", "style"),
+    dash.Input("url", "pathname"),
+)
+def toggle_customer_section(pathname):
+    base = {"marginTop": "16px", "paddingTop": "12px", "borderTop": "1px solid #E9ECEF"}
+    if (pathname or "/") == "/customer-view":
+        return {**base, "display": "block"}
+    return {**base, "display": "none"}
+
+
+# 3. Time range store from preset or date picker (no cycle — no reverse sync)
+@app.callback(
+    dash.Output("app-time-range", "data"),
+    dash.Input("time-range-preset", "value"),
+    dash.Input("time-range-picker", "start_date"),
+    dash.Input("time-range-picker", "end_date"),
+    dash.State("app-time-range", "data"),
+)
+def update_time_range_store(preset, start_date, end_date, current):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+    tid = ctx.triggered[0]["prop_id"]
+    if "time-range-preset" in tid and preset != "custom":
+        return preset_to_range(preset)
+    if "time-range-picker" in tid and (start_date or end_date):
+        return {
+            "start": start_date or (current or {}).get("start"),
+            "end": end_date or (current or {}).get("end"),
+            "preset": "custom",
+        }
+    return dash.no_update
+
+
+# 4. Main content: dispatch by pathname + time range + customer
+@app.callback(
+    dash.Output("main-content", "children"),
+    dash.Input("url", "pathname"),
+    dash.Input("app-time-range", "data"),
     dash.Input("customer-select", "value"),
 )
-def update_customer_view(selected_customer):
-    from src.pages import customer_view
-    return customer_view._customer_content(selected_customer)
+def render_main_content(pathname, time_range, selected_customer):
+    pathname = pathname or "/"
+    tr = time_range or default_time_range()
+    if pathname in ("/", ""):
+        return home.build_overview(tr)
+    if pathname == "/datacenters":
+        return datacenters.build_datacenters(tr)
+    if pathname and pathname.startswith("/datacenter/"):
+        dc_id = pathname.replace("/datacenter/", "").strip("/")
+        return dc_view.build_dc_view(dc_id, tr)
+    if pathname == "/customer-view":
+        return customer_view.build_customer_layout(tr, selected_customer)
+    if pathname == "/query-explorer":
+        return query_explorer.layout()
+    return home.build_overview(tr)
 
-# 4. Start background cache scheduler (warm cache now + refresh every 15 min)
-# Runs outside __main__ guard so it also starts under Gunicorn / production.
+
+# 5. Start background cache scheduler
 _scheduler = start_scheduler(service)
 
 if __name__ == "__main__":
-    # use_reloader=False: single process so Ctrl+C fully stops the app.
-    # With reloader (default when debug=True), a child process keeps listening on 8050
-    # and the UI stays reachable after Ctrl+C.
     app.run(debug=True, port=8050, use_reloader=False)

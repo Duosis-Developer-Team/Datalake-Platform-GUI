@@ -7,7 +7,7 @@ from src.utils.time_range import default_time_range
 from src.components.charts import create_usage_donut_chart, create_bar_chart, create_gauge_chart
 
 
-def kpi_card(title, value, icon, is_text=False):
+def kpi_card(title, value, icon, is_text=False, color="indigo"):
     return html.Div(
         className="nexus-card",
         style={"padding": "20px", "display": "flex", "alignItems": "center", "justifyContent": "space-between"},
@@ -17,7 +17,7 @@ def kpi_card(title, value, icon, is_text=False):
                 html.H3(str(value), style={"color": "#2B3674", "fontSize": "1.5rem" if not is_text else "1.1rem", "margin": "4px 0 0 0"})
             ]),
             dmc.ThemeIcon(
-                size="xl", radius="md", variant="light", color="indigo",
+                size="xl", radius="md", variant="light", color=color,
                 children=DashIconify(icon=icon, width=24)
             )
         ]
@@ -124,17 +124,39 @@ def build_dc_view(dc_id, time_range=None):
                                 ]
                             ),
 
-                            # 3. Filter
-                            html.Div(className="nexus-card", style={"padding": "20px"}, children=[
-                                dmc.Group([
-                                    DashIconify(icon="solar:filter-bold-duotone", color="#4318FF", width=20),
-                                    html.Span("Filter / Search Criteria", style={"fontWeight": 500, "color": "#2B3674"})
-                                ], style={"marginBottom": "15px"}),
-                                dmc.Grid([
-                                    dmc.GridCol(dmc.TextInput(placeholder="Search Cluster Name..."), span=4),
-                                    dmc.GridCol(dmc.Select(data=["Active", "Inactive"], placeholder="Status"), span=4)
-                                ])
-                            ]),
+                            # 3. Power usage (daily average) and billing (total kWh)
+                            html.Div(
+                                className="nexus-card",
+                                style={"padding": "20px"},
+                                children=[
+                                    html.H3("Power usage", style={"margin": "0 0 4px 0", "color": "#2B3674"}),
+                                    html.P("Daily average over report period", style={"margin": "0 0 12px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
+                                    dmc.SimpleGrid(
+                                        cols=2,
+                                        spacing="lg",
+                                        children=[
+                                            kpi_card("vCenter", f"{data['energy'].get('vcenter_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
+                                            kpi_card("Total", f"{data['energy'].get('total_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                            html.Div(
+                                className="nexus-card",
+                                style={"padding": "20px"},
+                                children=[
+                                    html.H3("Energy consumption (billing)", style={"margin": "0 0 4px 0", "color": "#2B3674"}),
+                                    html.P("Total consumption in report period (kWh)", style={"margin": "0 0 12px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
+                                    dmc.SimpleGrid(
+                                        cols=2,
+                                        spacing="lg",
+                                        children=[
+                                            kpi_card("vCenter", f"{data['energy'].get('vcenter_kwh', 0):,.0f} kWh", "material-symbols:bolt-outline", color="orange"),
+                                            kpi_card("Total", f"{data['energy'].get('total_kwh', 0):,.0f} kWh", "material-symbols:bolt-outline", color="orange"),
+                                        ],
+                                    ),
+                                ],
+                            ),
 
                             # 4. Cluster List (Empty/Placeholder)
                             html.Div(
@@ -163,6 +185,38 @@ def build_dc_view(dc_id, time_range=None):
                                     kpi_card("VIOS", power.get("vios", 0), "solar:server-square-bold-duotone"),
                                     kpi_card("LPARs (VMs)", power.get("lpar_count", 0), "solar:laptop-bold-duotone"),
                                     kpi_card("Last Updated", "Live", "solar:clock-circle-bold-duotone", is_text=True),
+                                ],
+                            ),
+                            html.Div(
+                                className="nexus-card",
+                                style={"padding": "20px"},
+                                children=[
+                                    html.H3("Power usage", style={"margin": "0 0 4px 0", "color": "#2B3674"}),
+                                    html.P("Daily average over report period", style={"margin": "0 0 12px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
+                                    dmc.SimpleGrid(
+                                        cols=2,
+                                        spacing="lg",
+                                        children=[
+                                            kpi_card("IBM Power", f"{data['energy'].get('ibm_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
+                                            kpi_card("Total", f"{data['energy'].get('total_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                            html.Div(
+                                className="nexus-card",
+                                style={"padding": "20px"},
+                                children=[
+                                    html.H3("Energy consumption (billing)", style={"margin": "0 0 4px 0", "color": "#2B3674"}),
+                                    html.P("Total consumption in report period (kWh)", style={"margin": "0 0 12px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
+                                    dmc.SimpleGrid(
+                                        cols=2,
+                                        spacing="lg",
+                                        children=[
+                                            kpi_card("IBM Power", f"{data['energy'].get('ibm_kwh', 0):,.0f} kWh", "material-symbols:bolt-outline", color="orange"),
+                                            kpi_card("Total", f"{data['energy'].get('total_kwh', 0):,.0f} kWh", "material-symbols:bolt-outline", color="orange"),
+                                        ],
+                                    ),
                                 ],
                             ),
                             dmc.SimpleGrid(
@@ -225,13 +279,31 @@ def build_dc_view(dc_id, time_range=None):
                                 className="nexus-card",
                                 style={"padding": "20px"},
                                 children=[
-                                    html.H3("Energy breakdown", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
+                                    html.H3("Energy breakdown", style={"margin": "0 0 4px 0", "color": "#2B3674"}),
+                                    html.P("Daily average over report period", style={"margin": "0 0 12px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
                                     dmc.SimpleGrid(
                                         cols=2,
                                         spacing="lg",
                                         children=[
                                             kpi_card("IBM Power", f"{data['energy'].get('ibm_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
                                             kpi_card("vCenter", f"{data['energy'].get('vcenter_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                            html.Div(
+                                className="nexus-card",
+                                style={"padding": "20px"},
+                                children=[
+                                    html.H3("Energy consumption (billing)", style={"margin": "0 0 4px 0", "color": "#2B3674"}),
+                                    html.P("Total consumption in report period (kWh)", style={"margin": "0 0 12px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
+                                    dmc.SimpleGrid(
+                                        cols=3,
+                                        spacing="lg",
+                                        children=[
+                                            kpi_card("IBM Power", f"{data['energy'].get('ibm_kwh', 0):,.0f} kWh", "material-symbols:bolt-outline", color="orange"),
+                                            kpi_card("vCenter", f"{data['energy'].get('vcenter_kwh', 0):,.0f} kWh", "material-symbols:bolt-outline", color="orange"),
+                                            kpi_card("Total", f"{data['energy'].get('total_kwh', 0):,.0f} kWh", "material-symbols:bolt-outline", color="orange"),
                                         ],
                                     ),
                                 ],

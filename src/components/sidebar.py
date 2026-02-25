@@ -2,18 +2,20 @@ import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from dash import html
 
-def create_sidebar(active_path):
-    # Sidebar Marka Alanı
+
+def create_sidebar_nav(active_path):
+    """Return brand + nav links only. Controls (time range, customer) are static in app.layout."""
     brand = html.Div(
         [
             DashIconify(icon="solar:widget-5-bold-duotone", width=30, color="#4318FF"),
-            html.Span("BULUTİSTAN", style={"fontSize": "24px", "fontWeight": "700", "color": "#2B3674", "marginLeft": "10px"})
+            html.Span(
+                "BULUTİSTAN",
+                style={"fontSize": "24px", "fontWeight": "700", "color": "#2B3674", "marginLeft": "10px"},
+            ),
         ],
-        style={"display": "flex", "alignItems": "center", "marginBottom": "40px", "paddingLeft": "16px"}
+        style={"display": "flex", "alignItems": "center", "marginBottom": "40px", "paddingLeft": "16px"},
     )
 
-    # Linkler
-    # Düzeltme: DMC 0.14'te 'icon' yerine 'leftSection' kullanılır.
     links = [
         dmc.NavLink(
             label="Overview",
@@ -23,7 +25,7 @@ def create_sidebar(active_path):
             active=active_path == "/" or active_path == "",
             variant="subtle",
             color="indigo",
-            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"}
+            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"},
         ),
         dmc.NavLink(
             label="Data Centers",
@@ -33,7 +35,7 @@ def create_sidebar(active_path):
             active=active_path.startswith("/datacenter") or active_path == "/datacenters",
             variant="subtle",
             color="indigo",
-            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"}
+            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"},
         ),
         dmc.NavLink(
             label="Customer View",
@@ -43,7 +45,7 @@ def create_sidebar(active_path):
             active=active_path == "/customer-view",
             variant="subtle",
             color="indigo",
-            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"}
+            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"},
         ),
         dmc.NavLink(
             label="Query Explorer",
@@ -53,9 +55,8 @@ def create_sidebar(active_path):
             active=active_path == "/query-explorer",
             variant="subtle",
             color="indigo",
-            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"}
+            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"},
         ),
-        # Pasif Linkler (Görsellik İçin)
         dmc.NavLink(
             label="Analytics",
             leftSection=DashIconify(icon="solar:chart-square-bold-duotone", width=20),
@@ -72,15 +73,4 @@ def create_sidebar(active_path):
         ),
     ]
 
-    return html.Div(
-        [
-            brand,
-            dmc.Stack(links, gap=4)
-        ],
-        style={
-            "height": "100%",
-            "width": "100%",
-            "padding": "24px",
-            "backgroundColor": "#FFFFFF",
-        }
-    )
+    return html.Div([brand, dmc.Stack(links, gap=4)])

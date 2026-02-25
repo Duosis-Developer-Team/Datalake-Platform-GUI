@@ -8,8 +8,6 @@ from dash_iconify import DashIconify
 from src.services.shared import service
 from src.services import query_overrides as qo
 
-dash.register_page(__name__, path="/query-explorer")
-
 # Build options once at module load (refresh on add via callback)
 def _query_options():
     return [{"label": k, "value": k} for k in qo.list_all_query_keys()]

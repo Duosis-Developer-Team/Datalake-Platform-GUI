@@ -4,7 +4,6 @@ import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services.shared import service
 
-dash.register_page(__name__, path_template='/cluster/<cluster_id>')
 
 def layout(cluster_id=None):
     # Cluster view logic is currently placeholder as we transition from mock data.

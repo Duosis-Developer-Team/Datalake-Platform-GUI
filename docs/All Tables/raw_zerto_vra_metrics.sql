@@ -1,0 +1,22 @@
+CREATE TABLE public.raw_zerto_vra_metrics (
+	data_type varchar(50) NOT NULL,
+	collection_timestamp timestamptz NOT NULL,
+	zerto_host varchar(50) DEFAULT ''::character varying NOT NULL,
+	id varchar(255) NOT NULL,
+	"name" varchar(255) NULL,
+	ip varchar(50) NULL,
+	status int4 NULL,
+	"version" varchar(100) NULL,
+	host_name varchar(255) NULL,
+	datastore_identifier varchar(255) NULL,
+	datastore_name varchar(255) NULL,
+	network_name varchar(255) NULL,
+	is_connected bool NULL,
+	is_stale bool NULL,
+	cpu_count int4 NULL,
+	memory_mb int8 NULL,
+	vpgcount int4 NULL,
+	vmcount int4 NULL,
+	alarmstatus int4 NULL,
+	CONSTRAINT zerto_vra_metrics_pkey PRIMARY KEY (id, collection_timestamp)
+);

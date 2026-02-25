@@ -1,0 +1,22 @@
+CREATE TABLE public.raw_veeam_sessions (
+	id text NOT NULL,
+	"name" text NULL,
+	job_id text NOT NULL,
+	session_type text NULL,
+	state text NULL,
+	creation_time timestamptz NOT NULL,
+	end_time timestamptz NULL,
+	result_result text NULL,
+	result_message text NULL,
+	result_is_canceled bool NULL,
+	progress_percent int4 NULL,
+	usn int8 NULL,
+	platform_id text NULL,
+	platform_name text NULL,
+	resource_id text NULL,
+	resource_reference text NULL,
+	parent_session_id text NULL,
+	source_ip text NOT NULL,
+	collection_time timestamptz NULL,
+	CONSTRAINT veeam_sessions_pkey PRIMARY KEY (source_ip, id, job_id, creation_time)
+);

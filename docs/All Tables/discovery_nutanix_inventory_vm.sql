@@ -1,0 +1,22 @@
+CREATE TABLE public.discovery_nutanix_inventory_vm (
+	id varchar DEFAULT nextval('discovery_nutanix_inventory_vm_id_seq'::regclass) NOT NULL,
+	first_observed timestamptz DEFAULT CURRENT_TIMESTAMP NULL,
+	last_observed timestamptz DEFAULT CURRENT_TIMESTAMP NULL,
+	data_type varchar(50) NOT NULL,
+	component_moid varchar(255) NOT NULL,
+	nutanix_uuid varchar(255) NULL,
+	parent_component_moid varchar(255) NULL,
+	component_uuid varchar(255) NULL,
+	"name" text NULL,
+	status varchar(20) NULL,
+	status_description text NULL,
+	guest_os varchar(255) NULL,
+	memory_mb int8 NULL,
+	num_vcpus int4 NULL,
+	CONSTRAINT discovery_nutanix_inventory_vm_pkey PRIMARY KEY (id),
+	CONSTRAINT nut_vm_uid UNIQUE (component_moid),
+	CONSTRAINT nut_vm_unq UNIQUE (component_moid),
+	CONSTRAINT nutanix_vm_unique_moid UNIQUE (component_moid),
+	CONSTRAINT uniq_vm_identity UNIQUE (component_moid, nutanix_uuid),
+	CONSTRAINT uniq_vm_parent_moid UNIQUE (parent_component_moid, component_moid)
+);
