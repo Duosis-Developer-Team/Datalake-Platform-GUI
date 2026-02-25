@@ -217,7 +217,7 @@ QUERY_REGISTRY: dict[str, dict] = {
         "provider": "ibm",
         "batch_key": "server_details_servername",
     },
-    # --- Energy (individual); Loki/racks not used ---
+    # --- Energy (individual) ---
     "energy_ibm": {
         "sql": energy.IBM,
         "source": "ibm_server_power",
@@ -226,6 +226,15 @@ QUERY_REGISTRY: dict[str, dict] = {
         "provider": "energy",
     },
     "energy_vcenter": {
+        "sql": energy.VCENTER,
+        "source": "vmhost_metrics",
+        "result_type": "value",
+        "params_style": "exact",
+        "provider": "energy",
+    },
+    # Legacy key kept for backward compatibility with existing overrides/tests.
+    # Uses same SQL/metadata as energy_vcenter.
+    "energy_racks": {
         "sql": energy.VCENTER,
         "source": "vmhost_metrics",
         "result_type": "value",

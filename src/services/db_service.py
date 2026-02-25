@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import psycopg2
 from psycopg2 import pool as pg_pool
 from psycopg2 import OperationalError
+from psycopg2.pool import PoolError
 
 from src.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
 from src.queries import loki as lq, customer as cq
@@ -44,7 +45,7 @@ def _EMPTY_DC(dc_code: str) -> dict:
             "cpu": 0, "cpu_used": 0.0, "cpu_assigned": 0.0,
             "ram": 0, "memory_total": 0.0, "memory_assigned": 0.0,
         },
-        "energy": {"total_kw": 0.0, "ibm_kw": 0.0, "vcenter_kw": 0.0},
+        "energy": {"total_kw": 0.0, "ibm_kw": 0.0, "vcenter_kw": 0.0, "total_kwh": 0.0, "ibm_kwh": 0.0, "vcenter_kwh": 0.0},
         "platforms": {
             "nutanix": {"hosts": 0, "vms": 0},
             "vmware": {"clusters": 0, "hosts": 0, "vms": 0},
@@ -85,14 +86,14 @@ class DatabaseService:
         try:
             self._pool = pg_pool.ThreadedConnectionPool(
                 minconn=2,
-                maxconn=8,
+                maxconn=16,
                 host=self._db_host,
                 port=self._db_port,
                 dbname=self._db_name,
                 user=self._db_user,
                 password=self._db_pass,
             )
-            logger.info("DB connection pool initialized (min=2, max=8).")
+            logger.info("DB connection pool initialized (min=2, max=16).")
         except OperationalError as exc:
             logger.error("Failed to initialize DB pool: %s", exc)
             self._pool = None
@@ -291,6 +292,12 @@ class DatabaseService:
     def get_vcenter_energy(self, cursor, dc_param: str, start_ts, end_ts) -> float:
         return self._run_value(cursor, eq.VCENTER, (dc_param, start_ts, end_ts))
 
+    def get_ibm_kwh(self, cursor, dc_param: str, start_ts, end_ts) -> float:
+        return self._run_value(cursor, eq.IBM_KWH, (dc_param, start_ts, end_ts))
+
+    def get_vcenter_kwh(self, cursor, dc_param: str, start_ts, end_ts) -> float:
+        return self._run_value(cursor, eq.VCENTER_KWH, (dc_param, start_ts, end_ts))
+
     def get_ibm_vios_count(self, cursor, dc_param: str, start_ts, end_ts) -> int:
         return self._run_value(cursor, iq.VIOS_COUNT, (dc_param, start_ts, end_ts))
 
@@ -326,6 +333,8 @@ class DatabaseService:
         power_cpu,
         ibm_w,
         vcenter_w,
+        ibm_kwh=None,
+        vcenter_kwh=None,
     ) -> dict:
         """Apply unit normalization and build the standard DC detail dictionary."""
         nutanix_mem     = nutanix_mem     or (0, 0)
@@ -358,6 +367,8 @@ class DatabaseService:
 
         # Energy → kW (IBM + vCenter only; Loki/racks not used)
         total_energy_kw = (float(ibm_w or 0) + float(vcenter_w or 0)) / 1000.0
+        # Total energy for billing (kWh in report period)
+        total_energy_kwh = float(ibm_kwh or 0) + float(vcenter_kwh or 0)
 
         return {
             "meta": {
@@ -367,6 +378,9 @@ class DatabaseService:
             "intel": {
                 "clusters": int(vmware_counts[0] or 0),
                 "hosts": int((nutanix_host_count or 0) + (vmware_counts[1] or 0)),
+                # VM count is taken from VMware only; Nutanix VM metrics are
+                # already included in vmware_counts via the deduplicated view
+                # used by the reporting layer, so we avoid double counting here.
                 "vms": int(vmware_counts[2] or 0),
                 "cpu_cap": round(n_cpu_cap_ghz + v_cpu_cap_ghz, 2),
                 "cpu_used": round(n_cpu_used_ghz + v_cpu_used_ghz, 2),
@@ -389,6 +403,9 @@ class DatabaseService:
                 "total_kw": round(total_energy_kw, 2),
                 "ibm_kw": round(float(ibm_w or 0) / 1000.0, 2),
                 "vcenter_kw": round(float(vcenter_w or 0) / 1000.0, 2),
+                "total_kwh": round(total_energy_kwh, 2),
+                "ibm_kwh": round(float(ibm_kwh or 0), 2),
+                "vcenter_kwh": round(float(vcenter_kwh or 0), 2),
             },
             "platforms": {
                 "nutanix": {"hosts": int(nutanix_host_count or 0), "vms": int(nutanix_vms or 0)},
@@ -432,6 +449,8 @@ class DatabaseService:
                         power_cpu=self.get_ibm_cpu(cur, dc_wc, start_ts, end_ts),
                         ibm_w=self.get_ibm_energy(cur, dc_wc, start_ts, end_ts),
                         vcenter_w=self.get_vcenter_energy(cur, dc_code, start_ts, end_ts),
+                        ibm_kwh=self.get_ibm_kwh(cur, dc_wc, start_ts, end_ts),
+                        vcenter_kwh=self.get_vcenter_kwh(cur, dc_code, start_ts, end_ts),
                     )
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_details(%s): %s", dc_code, exc)
@@ -448,22 +467,27 @@ class DatabaseService:
         """
         Execute all batch queries in one connection and map results back to DC codes.
         start_ts, end_ts: time range for report (all time-series queries filtered).
+        Nutanix: match by cluster_name LIKE '%dc%'. VMware/vCenter: match by datacenter ILIKE '%dc%'.
         """
-        # Nutanix — params (dc_list, start_ts, end_ts)
+        # Patterns for LIKE/ILIKE: one per DC (e.g. ['%AZ11%', '%DC11%', ...])
+        pattern_list = [f"%{dc}%" for dc in dc_list]
+        # Nutanix — params (dc_list, pattern_list, start_ts, end_ts); returns (dc_code, ...)
         t0 = time.perf_counter()
-        n_host_rows  = self._run_rows(cursor, nq.BATCH_HOST_COUNT, (dc_list, start_ts, end_ts))
-        n_vm_rows    = self._run_rows(cursor, nq.BATCH_VM_COUNT, (dc_list, start_ts, end_ts))
-        n_mem_rows   = self._run_rows(cursor, nq.BATCH_MEMORY,     (dc_list, start_ts, end_ts))
-        n_stor_rows  = self._run_rows(cursor, nq.BATCH_STORAGE,    (dc_list, start_ts, end_ts))
-        n_cpu_rows   = self._run_rows(cursor, nq.BATCH_CPU,        (dc_list, start_ts, end_ts))
+        n_host_rows  = self._run_rows(cursor, nq.BATCH_HOST_COUNT, (dc_list, pattern_list, start_ts, end_ts))
+        n_vm_rows    = self._run_rows(cursor, nq.BATCH_VM_COUNT, (dc_list, pattern_list, start_ts, end_ts))
+        n_mem_rows   = self._run_rows(cursor, nq.BATCH_MEMORY,     (dc_list, pattern_list, start_ts, end_ts))
+        n_stor_rows  = self._run_rows(cursor, nq.BATCH_STORAGE,    (dc_list, pattern_list, start_ts, end_ts))
+        n_cpu_rows   = self._run_rows(cursor, nq.BATCH_CPU,        (dc_list, pattern_list, start_ts, end_ts))
+        n_platform_rows = self._run_rows(cursor, nq.BATCH_PLATFORM_COUNT, (dc_list, pattern_list, start_ts, end_ts))
         logger.info("Batch fetch: Nutanix done in %.2fs", time.perf_counter() - t0)
 
-        # VMware — params (dc_list, start_ts, end_ts); returns (dc, ...)
+        # VMware — params (dc_list, pattern_list, start_ts, end_ts); returns (dc_code, ...)
         t0 = time.perf_counter()
-        v_cnt_rows   = self._run_rows(cursor, vq.BATCH_COUNTS,  (dc_list, start_ts, end_ts))
-        v_mem_rows   = self._run_rows(cursor, vq.BATCH_MEMORY,  (dc_list, start_ts, end_ts))
-        v_stor_rows  = self._run_rows(cursor, vq.BATCH_STORAGE, (dc_list, start_ts, end_ts))
-        v_cpu_rows   = self._run_rows(cursor, vq.BATCH_CPU,     (dc_list, start_ts, end_ts))
+        v_cnt_rows   = self._run_rows(cursor, vq.BATCH_COUNTS,  (dc_list, pattern_list, start_ts, end_ts))
+        v_mem_rows   = self._run_rows(cursor, vq.BATCH_MEMORY,  (dc_list, pattern_list, start_ts, end_ts))
+        v_stor_rows  = self._run_rows(cursor, vq.BATCH_STORAGE, (dc_list, pattern_list, start_ts, end_ts))
+        v_cpu_rows   = self._run_rows(cursor, vq.BATCH_CPU,     (dc_list, pattern_list, start_ts, end_ts))
+        v_platform_rows = self._run_rows(cursor, vq.BATCH_PLATFORM_COUNT, (dc_list, pattern_list, start_ts, end_ts))
         logger.info("Batch fetch: VMware done in %.2fs", time.perf_counter() - t0)
 
         # IBM — params (start_ts, end_ts, dc_list); returns (dc_code, ...)
@@ -475,16 +499,41 @@ class DatabaseService:
         ibm_cpu_rows  = self._run_rows(cursor, iq.BATCH_CPU, (start_ts, end_ts, dc_list))
         logger.info("Batch fetch: IBM done in %.2fs", time.perf_counter() - t0)
 
-        # Energy — IBM/vCenter only; params (dc_list, start_ts, end_ts) for vCenter; (start_ts, end_ts, dc_list) for IBM
+        # Energy — IBM/vCenter only; vCenter params (dc_list, pattern_list, start_ts, end_ts); IBM (start_ts, end_ts, dc_list)
         t0 = time.perf_counter()
         ibm_e_rows   = self._run_rows(cursor, eq.BATCH_IBM, (start_ts, end_ts, dc_list))
-        vcenter_rows = self._run_rows(cursor, eq.BATCH_VCENTER, (dc_list, start_ts, end_ts))
+        vcenter_rows = self._run_rows(cursor, eq.BATCH_VCENTER, (dc_list, pattern_list, start_ts, end_ts))
+        ibm_kwh_rows = self._run_rows(cursor, eq.BATCH_IBM_KWH, (start_ts, end_ts, dc_list))
+        vcenter_kwh_rows = self._run_rows(cursor, eq.BATCH_VCENTER_KWH, (dc_list, pattern_list, start_ts, end_ts))
         logger.info("Batch fetch: Energy done in %.2fs", time.perf_counter() - t0)
 
         # --- Map batch rows back to DC codes ---
+        # Nutanix/VMware/IBM may store DC with different case or trailing spaces than loki_locations.
+        # We map batch keys to the canonical dc_list entry so per-DC cards get the right data.
+
+        def _canonical_dc(raw_key) -> str | None:
+            """Map raw key from DB (e.g. datacenter_name, dc) to the canonical DC code in dc_list.
+            Tries: exact match on dc_list, case-insensitive on dc_list, then location name (DC_LOCATIONS
+            value) match so Nutanix rows keyed by e.g. 'Azerbaycan' map to DC code 'AZ11'.
+            """
+            if raw_key is None or not str(raw_key).strip():
+                return None
+            s = str(raw_key).strip()
+            for dc in dc_list:
+                if dc == s:
+                    return dc
+            for dc in dc_list:
+                if dc.strip().upper() == s.upper():
+                    return dc
+            # Nutanix (and similar) may use location name instead of DC code (e.g. Azerbaycan vs AZ11)
+            for dc in dc_list:
+                loc = DC_LOCATIONS.get(dc)
+                if loc and str(loc).strip().upper() == s.upper():
+                    return dc
+            return None
 
         def _match_dc(name: str) -> str | None:
-            """Find which DC code appears in a string."""
+            """Find which DC code appears in a string (substring; used for free-text)."""
             if not name:
                 return None
             upper = name.upper()
@@ -505,8 +554,17 @@ class DatabaseService:
             return out
 
         def _index_exact(rows, col_idx: int = 0) -> dict[str, tuple]:
-            """Exact key match: {row[col_idx]: row}. Used for datacenter_name batches."""
-            return {row[col_idx]: row for row in rows if row and len(row) > col_idx and row[col_idx]}
+            """Index by first column, but map key to canonical dc from dc_list (strip + case-insensitive).
+            Ensures Nutanix/VMware batch rows match dc_list even if DB has different case or spaces.
+            """
+            out: dict[str, tuple] = {}
+            for row in rows:
+                if not row or len(row) <= col_idx or row[col_idx] is None:
+                    continue
+                dc = _canonical_dc(row[col_idx])
+                if dc is not None and dc not in out:
+                    out[dc] = row
+            return out
 
         def _sum_by_dc(rows, value_col: int, col_idx: int = 0) -> dict[str, float]:
             """Sum numeric column per DC (e.g. energy watts, IBM hosts)."""
@@ -539,9 +597,31 @@ class DatabaseService:
         ibm_mem     = {row[0]: (row[1], row[2]) for row in ibm_mem_rows if row and len(row) > 2}
         ibm_cpu_map = {row[0]: (row[1], row[2], row[3]) for row in ibm_cpu_rows if row and len(row) > 3}
 
-        # Energy: batch returns (dc_code, avg_power_watts)
+        # Energy: batch returns (dc_code, avg_power_watts) or (dc_code, total_kwh)
         ibm_e   = {row[0]: float(row[1] or 0) for row in ibm_e_rows if row and len(row) >= 2 and row[0]}
         vctr_e  = {row[0]: float(row[1] or 0) for row in vcenter_rows if row and len(row) >= 2 and row[0]}
+        ibm_kwh_map   = {row[0]: float(row[1] or 0) for row in ibm_kwh_rows if row and len(row) >= 2 and row[0]}
+        vctr_kwh_map  = {row[0]: float(row[1] or 0) for row in vcenter_kwh_rows if row and len(row) >= 2 and row[0]}
+
+        # Platform count per DC = Nutanix clusters + VMware hypervisors + IBM (0 or 1 per DC; servername = hosts)
+        n_platform: dict[str, int] = {}
+        for row in n_platform_rows:
+            if row and row[0] is not None and len(row) > 1:
+                dc = _canonical_dc(row[0])
+                if dc is not None:
+                    n_platform[dc] = int(row[1] or 0)
+        v_platform: dict[str, int] = {}
+        for row in v_platform_rows:
+            if row and row[0] is not None and len(row) > 1:
+                dc = _canonical_dc(row[0])
+                if dc is not None:
+                    v_platform[dc] = int(row[1] or 0)
+        # IBM: at most one platform per DC (hosts are identified by servername)
+        ibm_platform = {dc: (1 if (ibm_h.get(dc, 0) or 0) > 0 else 0) for dc in dc_list}
+        platform_counts: dict[str, int] = {
+            dc: int(n_platform.get(dc, 0) or 0) + int(v_platform.get(dc, 0) or 0) + int(ibm_platform.get(dc, 0) or 0)
+            for dc in dc_list
+        }
 
         results: dict[str, dict] = {}
         for dc in dc_list:
@@ -575,9 +655,11 @@ class DatabaseService:
                 power_cpu=power_cpu_tup,
                 ibm_w=ibm_e.get(dc, 0.0),
                 vcenter_w=vctr_e.get(dc, 0.0),
+                ibm_kwh=ibm_kwh_map.get(dc, 0.0),
+                vcenter_kwh=vctr_kwh_map.get(dc, 0.0),
             )
 
-        return results
+        return results, platform_counts
 
     # ------------------------------------------------------------------
     # Public API — datacenters.py: summary list
@@ -608,11 +690,12 @@ class DatabaseService:
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    all_dc_data = self._fetch_all_batch(cur, dc_list, start_ts, end_ts)
+                    all_dc_data, platform_counts = self._fetch_all_batch(cur, dc_list, start_ts, end_ts)
             logger.info("Batch fetch complete, aggregating per-DC...")
         except OperationalError as exc:
             logger.error("DB unavailable for get_all_datacenters_summary: %s", exc)
             all_dc_data = {dc: _EMPTY_DC(dc) for dc in dc_list}
+            platform_counts = {dc: 0 for dc in dc_list}
 
         summary_list = []
         for dc in dc_list:
@@ -627,10 +710,8 @@ class DatabaseService:
             stor_cap  = intel["storage_cap"]   or 0
             stor_used = intel["storage_used"]  or 0
 
-            # Platform count: 1 if any Intel (Nutanix/VMware), 1 if any IBM Power
-            has_intel = (intel["clusters"] > 0 or intel["hosts"] > 0 or intel["vms"] > 0)
-            has_ibm = (power["hosts"] > 0 or power["vios"] > 0 or power["lpar_count"] > 0)
-            platform_count = (1 if has_intel else 0) + (1 if has_ibm else 0)
+            # Platform count = Nutanix clusters + VMware hypervisors + IBM hosts in this DC
+            platform_count = platform_counts.get(dc, 0)
 
             summary_list.append({
                 "id": dc,
@@ -672,7 +753,7 @@ class DatabaseService:
             "dc_count": len(summary_list),
             "total_hosts": sum(s["host_count"] for s in summary_list),
             "total_vms": sum(s["vm_count"] for s in summary_list),
-            "total_clusters": sum(s["cluster_count"] for s in summary_list),
+            "total_platforms": sum(s["platform_count"] for s in summary_list),
             "total_energy_kw": round(sum(s["stats"]["total_energy_kw"] for s in summary_list), 2),
         }
         cpu_cap = cpu_used = ram_cap = ram_used = stor_cap = stor_used = 0.0
@@ -726,6 +807,7 @@ class DatabaseService:
         result = {
             "total_hosts": sum(s["host_count"] for s in summaries),
             "total_vms": sum(s["vm_count"] for s in summaries),
+            "total_platforms": sum(s["platform_count"] for s in summaries),
             "total_energy_kw": round(sum(s["stats"]["total_energy_kw"] for s in summaries), 2),
             "dc_count": len(summaries),
         }
@@ -746,64 +828,326 @@ class DatabaseService:
             "energy_breakdown": {"ibm_kw": 0, "vcenter_kw": 0},
         }
 
-    def get_customer_resources(self, customer_pattern: str, time_range: dict | None = None) -> dict:
-        """Return resource totals and per-DC breakdown for a customer (e.g. ILIKE '%boyner%') for the given time range."""
+    def get_customer_resources(self, customer_name: str, time_range: dict | None = None) -> dict:
+        """
+        Return customer assets for a given customer name and time range.
+
+        Mirrors the Grafana `_DL - Datalake - Customer Assets` dashboard:
+        - Intel virtualization (VMware + Nutanix) CPU/VM/memory/disk and VM list
+        - Power/HANA (IBM LPAR) CPU/LPAR/memory and VM list
+        - Backup (Veeam/Zerto/storage) summary metrics
+        """
         tr = time_range or default_time_range()
-        cache_key = f"customer:{customer_pattern}:{tr.get('start','')}:{tr.get('end','')}"
+        cache_key = f"customer_assets:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
-        pattern = f"%{customer_pattern.strip()}%" if customer_pattern else "%"
+
+        name = (customer_name or "").strip()
+        # Patterns aligned with Grafana:
+        # - Intel (VMs): prefix + '-' (e.g. 'Boyner-%')
+        # - Power/backup: simple prefix (e.g. 'Boyner%')
+        # - Storage/NetBackup: contains customer anywhere (e.g. '%Boyner%')
+        vm_pattern = f"{name}-%" if name else "%"
+        lpar_pattern = f"{name}%" if name else "%"
+        veeam_pattern = f"{name}%" if name else "%"
+        storage_like_pattern = f"%{name}%" if name else "%"
+        netbackup_workload_pattern = f"%{name}%" if name else "%"
+        # Zerto uses name LIKE '$customer' || '%-%'
+        zerto_name_like = f"{name}%-%" if name else "%"
+
         start_ts, end_ts = time_range_to_bounds(tr)
+
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    nutanix_tot = self._run_row(cur, cq.NUTANIX_TOTALS, (pattern, start_ts, end_ts))
-                    nutanix_by_dc = self._run_rows(cur, cq.NUTANIX_BY_DC, (pattern, start_ts, end_ts))
-                    vmware_tot = self._run_row(cur, cq.VMWARE_TOTALS, (pattern, start_ts, end_ts))
-                    vmware_by_dc = self._run_rows(cur, cq.VMWARE_BY_DC, (pattern, start_ts, end_ts))
-                    ibm_lpar = self._run_value(cur, cq.IBM_LPAR_TOTALS, (pattern, start_ts, end_ts))
-                    ibm_vios = self._run_value(cur, cq.IBM_VIOS_TOTALS, (pattern, pattern, start_ts, end_ts))
-                    ibm_host = self._run_value(cur, cq.IBM_HOST_TOTALS, (pattern, start_ts, end_ts))
-                    vcenter_host = self._run_value(cur, cq.VCENTER_HOST_TOTALS, (pattern, start_ts, end_ts))
-        except OperationalError as exc:
+                    # Intel VM counts
+                    intel_vm_counts = self._run_row(
+                        cur,
+                        cq.CUSTOMER_INTEL_VM_COUNTS,
+                        (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts),
+                    )
+                    vmware_vms = int(intel_vm_counts[0] or 0) if intel_vm_counts else 0
+                    nutanix_vms = int(intel_vm_counts[1] or 0) if intel_vm_counts else 0
+                    intel_vms_total = int(intel_vm_counts[2] or 0) if intel_vm_counts else 0
+
+                    # Intel CPU / memory / disk totals
+                    cpu_row = self._run_row(
+                        cur,
+                        cq.CUSTOMER_INTEL_CPU_TOTALS,
+                        (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts),
+                    )
+                    intel_cpu_vmware = float(cpu_row[0] or 0.0) if cpu_row else 0.0
+                    intel_cpu_nutanix = float(cpu_row[1] or 0.0) if cpu_row else 0.0
+                    intel_cpu_total = float(cpu_row[2] or 0.0) if cpu_row else 0.0
+
+                    mem_row = self._run_row(
+                        cur,
+                        cq.CUSTOMER_INTEL_MEMORY_TOTALS,
+                        (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts),
+                    )
+                    intel_mem_vmware = float(mem_row[0] or 0.0) if mem_row else 0.0
+                    intel_mem_nutanix = float(mem_row[1] or 0.0) if mem_row else 0.0
+                    intel_mem_total = float(mem_row[2] or 0.0) if mem_row else 0.0
+
+                    disk_row = self._run_row(
+                        cur,
+                        cq.CUSTOMER_INTEL_DISK_TOTALS,
+                        (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts),
+                    )
+                    intel_disk_vmware = float(disk_row[0] or 0.0) if disk_row else 0.0
+                    intel_disk_nutanix = float(disk_row[1] or 0.0) if disk_row else 0.0
+                    intel_disk_total = float(disk_row[2] or 0.0) if disk_row else 0.0
+
+                    # Intel VM list with source and resource details
+                    intel_vm_detail_rows = self._run_rows(
+                        cur,
+                        cq.CUSTOMER_INTEL_VM_DETAIL_LIST,
+                        (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts),
+                    )
+                    intel_vm_list = [
+                        {
+                            "name": r[0],
+                            "source": r[1],
+                            "cpu": float(r[2] or 0.0),
+                            "memory_gb": float(r[3] or 0.0),
+                            "disk_gb": float(r[4] or 0.0),
+                        }
+                        for r in (intel_vm_detail_rows or [])
+                        if r and r[0]
+                    ]
+
+                    # Power / HANA (IBM LPAR)
+                    power_cpu = float(
+                        self._run_value(cur, cq.CUSTOMER_POWER_CPU_TOTAL, (lpar_pattern, start_ts, end_ts)) or 0.0
+                    )
+                    power_lpars = int(
+                        self._run_value(cur, cq.IBM_LPAR_TOTALS, (lpar_pattern, start_ts, end_ts)) or 0
+                    )
+                    power_memory = float(
+                        self._run_value(cur, cq.CUSTOMER_POWER_MEMORY_TOTAL, (lpar_pattern, start_ts, end_ts))
+                        or 0.0
+                    )
+                    power_lpar_detail_rows = self._run_rows(
+                        cur, cq.CUSTOMER_POWER_LPAR_DETAIL_LIST, (lpar_pattern, start_ts, end_ts)
+                    )
+                    power_vm_list = [
+                        {
+                            "name": r[0],
+                            "source": r[1],
+                            "cpu": float(r[2] or 0.0),
+                            "memory_gb": float(r[3] or 0.0),
+                            "state": r[4],
+                        }
+                        for r in (power_lpar_detail_rows or [])
+                        if r and r[0]
+                    ]
+
+                    # Backup – Veeam
+                    veeam_defined_sessions = int(
+                        self._run_value(cur, cq.CUSTOMER_VEEAM_DEFINED_SESSIONS, (veeam_pattern,)) or 0
+                    )
+                    veeam_type_rows = self._run_rows(
+                        cur, cq.CUSTOMER_VEEAM_SESSION_TYPES, (veeam_pattern,)
+                    )
+                    veeam_types = [
+                        {"type": r[0], "count": int(r[1] or 0)}
+                        for r in (veeam_type_rows or [])
+                        if r and r[0] is not None
+                    ]
+                    veeam_platform_rows = self._run_rows(
+                        cur, cq.CUSTOMER_VEEAM_SESSION_PLATFORMS, (veeam_pattern,)
+                    )
+                    veeam_platforms = [
+                        {"platform": r[0], "count": int(r[1] or 0)}
+                        for r in (veeam_platform_rows or [])
+                        if r and r[0] is not None
+                    ]
+
+                    # Backup – NetBackup (size and dedup summary)
+                    netbackup_summary_row = self._run_row(
+                        cur,
+                        cq.CUSTOMER_NETBACKUP_BACKUP_SUMMARY,
+                        (netbackup_workload_pattern, start_ts, end_ts),
+                    )
+                    netbackup_pre_dedup_gib = (
+                        float(netbackup_summary_row[0] or 0.0) if netbackup_summary_row else 0.0
+                    )
+                    netbackup_post_dedup_gib = (
+                        float(netbackup_summary_row[1] or 0.0) if netbackup_summary_row else 0.0
+                    )
+                    netbackup_dedup_factor = (
+                        netbackup_summary_row[2] if netbackup_summary_row and netbackup_summary_row[2] else "1x"
+                    )
+
+                    # Backup – Zerto protected VMs
+                    zerto_protected_vms = int(
+                        self._run_value(
+                            cur,
+                            cq.CUSTOMER_ZERTO_PROTECTED_VMS,
+                            (start_ts, end_ts, zerto_name_like),
+                        )
+                        or 0
+                    )
+
+                    # Backup – Zerto provisioned storage per VPG (last 30 days)
+                    zerto_provisioned_rows = self._run_rows(
+                        cur,
+                        cq.CUSTOMER_ZERTO_PROVISIONED_STORAGE,
+                        (zerto_name_like,),
+                    )
+                    zerto_vpgs = [
+                        {
+                            "name": r[0],
+                            "provisioned_storage_gib": float(r[1] or 0.0),
+                        }
+                        for r in (zerto_provisioned_rows or [])
+                        if r and r[0]
+                    ]
+                    zerto_provisioned_total_gib = sum(v["provisioned_storage_gib"] for v in zerto_vpgs)
+
+                    # Backup – IBM storage volume capacity (optional)
+                    storage_volume_gb = 0.0
+                    try:
+                        storage_volume_gb = float(
+                            self._run_value(
+                                cur,
+                                cq.CUSTOMER_STORAGE_VOLUME_CAPACITY,
+                                (storage_like_pattern, start_ts, end_ts),
+                            )
+                            or 0.0
+                        )
+                    except Exception as exc:  # missing table or other non-fatal issues
+                        logger.warning("CUSTOMER_STORAGE_VOLUME_CAPACITY failed: %s", exc)
+
+        except (OperationalError, PoolError) as exc:
             logger.warning("get_customer_resources failed: %s", exc)
             return {
-                "totals": {"hosts": 0, "vms": 0, "dcs_used": 0},
-                "by_platform": {"nutanix": {}, "vmware": {}, "ibm": {}, "vcenter": {}},
-                "by_dc": [],
+                "totals": {
+                    "vms_total": 0,
+                    "intel_vms_total": 0,
+                    "power_lpar_total": 0,
+                    "cpu_total": 0.0,
+                    "intel_cpu_total": 0.0,
+                    "power_cpu_total": 0.0,
+                    "backup": {
+                        "veeam_defined_sessions": 0,
+                        "zerto_protected_vms": 0,
+                        "storage_volume_gb": 0.0,
+                        "netbackup_pre_dedup_gib": 0.0,
+                        "netbackup_post_dedup_gib": 0.0,
+                        "zerto_provisioned_gib": 0.0,
+                    },
+                },
+                "assets": {
+                    "intel": {
+                        "vms": {"vmware": 0, "nutanix": 0, "total": 0},
+                        "cpu": {"vmware": 0.0, "nutanix": 0.0, "total": 0.0},
+                        "memory_gb": {"vmware": 0.0, "nutanix": 0.0, "total": 0.0},
+                        "disk_gb": {"vmware": 0.0, "nutanix": 0.0, "total": 0.0},
+                        "vm_list": [],
+                    },
+                    "power": {
+                        "cpu_total": 0.0,
+                        "lpar_count": 0,
+                        "memory_total_gb": 0.0,
+                        "vm_list": [],
+                    },
+                    "backup": {
+                        "veeam": {
+                            "defined_sessions": 0,
+                            "session_types": [],
+                            "platforms": [],
+                        },
+                        "zerto": {
+                            "protected_total_vms": 0,
+                            "provisioned_storage_gib_total": 0.0,
+                            "vpgs": [],
+                        },
+                        "storage": {
+                            "total_volume_capacity_gb": 0.0,
+                        },
+                        "netbackup": {
+                            "pre_dedup_size_gib": 0.0,
+                            "post_dedup_size_gib": 0.0,
+                            "deduplication_factor": "1x",
+                        },
+                    },
+                },
             }
-        nh = int(nutanix_tot[0] or 0) if nutanix_tot else 0
-        nv = int(nutanix_tot[1] or 0) if nutanix_tot and len(nutanix_tot) > 1 else 0
-        vc = int(vmware_tot[0] or 0) if vmware_tot else 0
-        vh = int(vmware_tot[1] or 0) if vmware_tot and len(vmware_tot) > 1 else 0
-        vv = int(vmware_tot[2] or 0) if vmware_tot and len(vmware_tot) > 2 else 0
-        dcs_used = set()
-        for row in nutanix_by_dc:
-            if row[0]:
-                dcs_used.add(str(row[0]))
-        for row in vmware_by_dc:
-            if row[0]:
-                dcs_used.add(str(row[0]))
-        result = {
-            "totals": {
-                "hosts": nh + vh + ibm_host + vcenter_host,
-                "vms": nv + vv + ibm_lpar,
-                "dcs_used": len(dcs_used),
+
+        # Build final assets structure when DB call succeeds
+        assets = {
+            "intel": {
+                "vms": {"vmware": vmware_vms, "nutanix": nutanix_vms, "total": intel_vms_total},
+                "cpu": {
+                    "vmware": intel_cpu_vmware,
+                    "nutanix": intel_cpu_nutanix,
+                    "total": intel_cpu_total,
+                },
+                "memory_gb": {
+                    "vmware": intel_mem_vmware,
+                    "nutanix": intel_mem_nutanix,
+                    "total": intel_mem_total,
+                },
+                "disk_gb": {
+                    "vmware": intel_disk_vmware,
+                    "nutanix": intel_disk_nutanix,
+                    "total": intel_disk_total,
+                },
+                "vm_list": intel_vm_list,
             },
-            "by_platform": {
-                "nutanix": {"hosts": nh, "vms": nv},
-                "vmware": {"clusters": vc, "hosts": vh, "vms": vv},
-                "ibm": {"hosts": ibm_host, "vios": ibm_vios, "lpars": ibm_lpar},
-                "vcenter": {"hosts": vcenter_host},
+            "power": {
+                "cpu_total": power_cpu,
+                "lpar_count": power_lpars,
+                "memory_total_gb": power_memory,
+                "vm_list": power_vm_list,
             },
-            "by_dc": [{"dc": r[0], "hosts": r[1], "vms": r[2]} for r in nutanix_by_dc] if nutanix_by_dc else [],
+            "backup": {
+                "veeam": {
+                    "defined_sessions": veeam_defined_sessions,
+                    "session_types": veeam_types,
+                    "platforms": veeam_platforms,
+                },
+                "zerto": {
+                    "protected_total_vms": zerto_protected_vms,
+                    "provisioned_storage_gib_total": zerto_provisioned_total_gib,
+                    "vpgs": zerto_vpgs,
+                },
+                "storage": {
+                    "total_volume_capacity_gb": storage_volume_gb,
+                },
+                "netbackup": {
+                    "pre_dedup_size_gib": netbackup_pre_dedup_gib,
+                    "post_dedup_size_gib": netbackup_post_dedup_gib,
+                    "deduplication_factor": netbackup_dedup_factor,
+                },
+            },
         }
+
+        totals = {
+            "vms_total": intel_vms_total + power_lpars,
+            "intel_vms_total": intel_vms_total,
+            "power_lpar_total": power_lpars,
+            "cpu_total": intel_cpu_total + power_cpu,
+            "intel_cpu_total": intel_cpu_total,
+            "power_cpu_total": power_cpu,
+            "backup": {
+                "veeam_defined_sessions": veeam_defined_sessions,
+                "zerto_protected_vms": zerto_protected_vms,
+                "storage_volume_gb": storage_volume_gb,
+                 "netbackup_pre_dedup_gib": netbackup_pre_dedup_gib,
+                 "netbackup_post_dedup_gib": netbackup_post_dedup_gib,
+                 "zerto_provisioned_gib": zerto_provisioned_total_gib,
+            },
+        }
+
+        result = {"totals": totals, "assets": assets}
         cache.set(cache_key, result)
         return result
 
     def get_customer_list(self) -> list[str]:
-        """Return list of customer names for selector (beta: Boyner only)."""
+        """Return list of customer names for selector (fixed to Boyner)."""
         return ["Boyner"]
 
     # ------------------------------------------------------------------

@@ -393,13 +393,14 @@ class TestGetGlobalOverview(unittest.TestCase):
     def test_returns_aggregated_totals(self):
         tr = default_time_range()
         mock_summary = [
-            {"host_count": 10, "vm_count": 50, "stats": {"total_energy_kw": 5.0}},
-            {"host_count": 5,  "vm_count": 30, "stats": {"total_energy_kw": 3.0}},
+            {"host_count": 10, "vm_count": 50, "platform_count": 3, "stats": {"total_energy_kw": 5.0}},
+            {"host_count": 5,  "vm_count": 30, "platform_count": 2, "stats": {"total_energy_kw": 3.0}},
         ]
         cache.set(f"all_dc_summary:{tr.get('start','')}:{tr.get('end','')}", mock_summary)
         result = self.svc.get_global_overview()
         self.assertEqual(result["total_hosts"], 15)
         self.assertEqual(result["total_vms"], 80)
+        self.assertEqual(result["total_platforms"], 5)
         self.assertAlmostEqual(result["total_energy_kw"], 8.0)
         self.assertEqual(result["dc_count"], 2)
 
@@ -442,30 +443,114 @@ class TestGetCustomerResources(unittest.TestCase):
 
     def test_returns_totals_and_by_platform(self):
         tr = default_time_range()
-        cache.set(f"customer:boyner:{tr.get('start','')}:{tr.get('end','')}", {
-            "totals": {"hosts": 10, "vms": 50, "dcs_used": 3},
-            "by_platform": {"nutanix": {"hosts": 4, "vms": 20}, "vmware": {}, "ibm": {}, "vcenter": {}},
-            "by_dc": [{"dc": "DC11", "hosts": 5, "vms": 25}],
+        cache.set(f"customer_assets:boyner:{tr.get('start','')}:{tr.get('end','')}", {
+            "totals": {
+                "vms_total": 13,
+                "intel_vms_total": 10,
+                "power_lpar_total": 3,
+                "cpu_total": 42.0,
+                "intel_cpu_total": 30.0,
+                "power_cpu_total": 12.0,
+                "backup": {
+                    "veeam_defined_sessions": 5,
+                    "zerto_protected_vms": 7,
+                    "storage_volume_gb": 100.0,
+                    "netbackup_pre_dedup_gib": 200.0,
+                    "netbackup_post_dedup_gib": 50.0,
+                    "zerto_provisioned_gib": 75.0,
+                },
+            },
+            "assets": {
+                "intel": {
+                    "vms": {"vmware": 6, "nutanix": 8, "total": 10},
+                    "cpu": {"vmware": 10.0, "nutanix": 20.0, "total": 30.0},
+                    "memory_gb": {"vmware": 100.0, "nutanix": 200.0, "total": 300.0},
+                    "disk_gb": {"vmware": 50.0, "nutanix": 75.0, "total": 125.0},
+                    "vm_list": [
+                        {"name": "vm1", "source": "VMware", "cpu": 2.0, "memory_gb": 8.0, "disk_gb": 100.0},
+                    ],
+                },
+                "power": {
+                    "cpu_total": 12.0,
+                    "lpar_count": 3,
+                    "memory_total_gb": 64.0,
+                    "vm_list": [
+                        {"name": "lpar1", "source": "Power HMC", "cpu": 4.0, "memory_gb": 16.0, "state": "Running"},
+                    ],
+                },
+                "backup": {
+                    "veeam": {
+                        "defined_sessions": 5,
+                        "session_types": [],
+                        "platforms": [],
+                    },
+                    "zerto": {
+                        "protected_total_vms": 7,
+                        "provisioned_storage_gib_total": 75.0,
+                        "vpgs": [
+                            {"name": "vpg1", "provisioned_storage_gib": 50.0},
+                            {"name": "vpg2", "provisioned_storage_gib": 25.0},
+                        ],
+                    },
+                    "storage": {
+                        "total_volume_capacity_gb": 100.0,
+                    },
+                    "netbackup": {
+                        "pre_dedup_size_gib": 200.0,
+                        "post_dedup_size_gib": 50.0,
+                        "deduplication_factor": "4x",
+                    },
+                },
+            },
         })
         result = self.svc.get_customer_resources("boyner")
-        self.assertEqual(result["totals"]["hosts"], 10)
-        self.assertEqual(result["totals"]["vms"], 50)
-        self.assertEqual(result["by_platform"]["nutanix"]["hosts"], 4)
-        self.assertEqual(len(result["by_dc"]), 1)
+        self.assertEqual(result["totals"]["vms_total"], 13)
+        self.assertEqual(result["totals"]["intel_vms_total"], 10)
+        self.assertEqual(result["totals"]["power_lpar_total"], 3)
+        self.assertEqual(result["totals"]["cpu_total"], 42.0)
+        self.assertEqual(result["totals"]["backup"]["zerto_protected_vms"], 7)
+        self.assertEqual(result["totals"]["backup"]["netbackup_pre_dedup_gib"], 200.0)
+        self.assertEqual(result["totals"]["backup"]["netbackup_post_dedup_gib"], 50.0)
+        self.assertEqual(result["totals"]["backup"]["zerto_provisioned_gib"], 75.0)
+        self.assertIn("intel", result["assets"])
+        self.assertIn("power", result["assets"])
+        # Intel VM detail list
+        intel_vms = result["assets"]["intel"]["vm_list"]
+        self.assertGreaterEqual(len(intel_vms), 1)
+        self.assertIn("cpu", intel_vms[0])
+        self.assertIn("memory_gb", intel_vms[0])
+        self.assertIn("disk_gb", intel_vms[0])
+        # Power LPAR detail list
+        power_vms = result["assets"]["power"]["vm_list"]
+        self.assertGreaterEqual(len(power_vms), 1)
+        self.assertIn("cpu", power_vms[0])
+        self.assertIn("memory_gb", power_vms[0])
+        self.assertIn("state", power_vms[0])
+        # Backup services detail structures
+        backup_assets = result["assets"]["backup"]
+        self.assertIn("netbackup", backup_assets)
+        self.assertIn("zerto", backup_assets)
+        self.assertIn("storage", backup_assets)
+        self.assertEqual(backup_assets["netbackup"]["pre_dedup_size_gib"], 200.0)
+        self.assertEqual(backup_assets["netbackup"]["post_dedup_size_gib"], 50.0)
+        self.assertEqual(backup_assets["zerto"]["provisioned_storage_gib_total"], 75.0)
 
     def test_db_error_returns_empty_structure(self):
         from psycopg2 import OperationalError
         self.svc._pool.getconn.side_effect = OperationalError("timeout")
         result = self.svc.get_customer_resources("boyner")
         self.assertIn("totals", result)
-        self.assertEqual(result["totals"]["hosts"], 0)
+        self.assertEqual(result["totals"]["vms_total"], 0)
 
 
 class TestGetCustomerList(unittest.TestCase):
 
     def test_returns_list(self):
+        from psycopg2 import OperationalError
         with patch("psycopg2.pool.ThreadedConnectionPool"):
             svc = DatabaseService()
+        # Force DB error so fallback path is exercised (no real DB in tests).
+        svc._pool.getconn.side_effect = OperationalError("timeout")
         result = svc.get_customer_list()
         self.assertIsInstance(result, list)
         self.assertIn("Boyner", result)
@@ -759,10 +844,11 @@ class TestLokiQueries(unittest.TestCase):
         self.assertIn("ibm_server_power", BATCH_IBM)
         self.assertNotIn("ibm_server_power_sum", BATCH_IBM)
 
-    def test_nutanix_batch_uses_datacenter_name(self):
+    def test_nutanix_batch_uses_cluster_name_pattern(self):
         from src.queries.nutanix import BATCH_HOST_COUNT, BATCH_MEMORY, BATCH_STORAGE, BATCH_CPU
         for sql in [BATCH_HOST_COUNT, BATCH_MEMORY, BATCH_STORAGE, BATCH_CPU]:
-            self.assertIn("datacenter_name", sql, "Nutanix batch query must use datacenter_name column")
+            self.assertIn("cluster_name", sql, "Nutanix batch query must filter by cluster_name")
+            self.assertIn("unnest", sql, "Nutanix batch query must use unnest for dc/pattern list")
 
 
 if __name__ == "__main__":
