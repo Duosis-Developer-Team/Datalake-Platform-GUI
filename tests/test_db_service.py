@@ -13,6 +13,7 @@ with patch("psycopg2.pool.ThreadedConnectionPool"):
         DatabaseService, _EMPTY_DC, _FALLBACK_DC_LIST
     )
 from src.services import cache_service as cache
+from src.utils.time_range import default_time_range, cache_time_ranges
 
 # Alias for backward compatibility in existing tests
 DC_LIST = _FALLBACK_DC_LIST
@@ -186,7 +187,6 @@ class TestAggregatedc(unittest.TestCase):
             power_lpar_count=5,
             power_mem=(64.0, 32.0),
             power_cpu=(4.0, 2.0, 8.0),
-            racks_w=1000.0,   # W
             ibm_w=500.0,      # W
             vcenter_w=500.0,  # W
         )
@@ -209,9 +209,10 @@ class TestAggregatedc(unittest.TestCase):
         self.assertEqual(result["platforms"]["nutanix"]["hosts"], 4)
         self.assertEqual(result["platforms"]["nutanix"]["vms"], 10)
         self.assertEqual(result["platforms"]["ibm"]["lpars"], 5)
-        # Energy: (1000+500+500)/1000 = 2.0 kW
-        self.assertAlmostEqual(result["energy"]["total_kw"], 2.0, places=2)
-        self.assertAlmostEqual(result["energy"]["racks_kw"], 1.0, places=2)
+        # Energy: (500+500)/1000 = 1.0 kW (IBM + vCenter only)
+        self.assertAlmostEqual(result["energy"]["total_kw"], 1.0, places=2)
+        self.assertAlmostEqual(result["energy"]["ibm_kw"], 0.5, places=2)
+        self.assertAlmostEqual(result["energy"]["vcenter_kw"], 0.5, places=2)
 
     def test_none_inputs_default_to_zero(self):
         result = DatabaseService._aggregate_dc(
@@ -230,7 +231,6 @@ class TestAggregatedc(unittest.TestCase):
             power_lpar_count=None,
             power_mem=None,
             power_cpu=None,
-            racks_w=None,
             ibm_w=None,
             vcenter_w=None,
         )
@@ -256,7 +256,6 @@ class TestAggregatedc(unittest.TestCase):
             power_lpar_count=0,
             power_mem=None,
             power_cpu=None,
-            racks_w=0,
             ibm_w=0,
             vcenter_w=0,
         )
@@ -296,7 +295,8 @@ class TestGetDcDetails(unittest.TestCase):
         self.assertIn("platforms", result)
 
     def test_cache_hit_skips_db(self):
-        cache.set("dc_details:DC11", {"meta": {"name": "DC11"}, "cached": True})
+        tr = default_time_range()
+        cache.set(f"dc_details:DC11:{tr.get('start','')}:{tr.get('end','')}", {"meta": {"name": "DC11"}, "cached": True})
         result = self.svc.get_dc_details("DC11")
         self.assertTrue(result.get("cached"))
         self.svc._pool.getconn.assert_not_called()
@@ -317,8 +317,9 @@ class TestGetDcDetails(unittest.TestCase):
         conn_mock.cursor.return_value.__exit__ = MagicMock(return_value=False)
         self.svc._pool.getconn.return_value = conn_mock
 
+        tr = default_time_range()
         self.svc.get_dc_details("DC12")
-        self.assertIsNotNone(cache.get("dc_details:DC12"))
+        self.assertIsNotNone(cache.get(f"dc_details:DC12:{tr.get('start','')}:{tr.get('end','')}"))
 
 
 # ---------------------------------------------------------------------------
@@ -363,8 +364,9 @@ class TestGetAllDatacentersSummary(unittest.TestCase):
             self.assertIn("vm_count", item)
 
     def test_cached_result_skips_db(self):
+        tr = default_time_range()
         cached_summary = [{"id": dc, "name": dc} for dc in DC_LIST]
-        cache.set("all_dc_summary", cached_summary)
+        cache.set(f"all_dc_summary:{tr.get('start','')}:{tr.get('end','')}", cached_summary)
         result = self.svc.get_all_datacenters_summary()
         self.svc._pool.getconn.assert_not_called()
         self.assertEqual(result, cached_summary)
@@ -389,11 +391,12 @@ class TestGetGlobalOverview(unittest.TestCase):
         self.svc = _make_service()
 
     def test_returns_aggregated_totals(self):
+        tr = default_time_range()
         mock_summary = [
             {"host_count": 10, "vm_count": 50, "stats": {"total_energy_kw": 5.0}},
             {"host_count": 5,  "vm_count": 30, "stats": {"total_energy_kw": 3.0}},
         ]
-        cache.set("all_dc_summary", mock_summary)
+        cache.set(f"all_dc_summary:{tr.get('start','')}:{tr.get('end','')}", mock_summary)
         result = self.svc.get_global_overview()
         self.assertEqual(result["total_hosts"], 15)
         self.assertEqual(result["total_vms"], 80)
@@ -401,7 +404,8 @@ class TestGetGlobalOverview(unittest.TestCase):
         self.assertEqual(result["dc_count"], 2)
 
     def test_cached_global_overview_skips_db(self):
-        cache.set("global_overview", {"total_hosts": 99})
+        tr = default_time_range()
+        cache.set(f"global_overview:{tr.get('start','')}:{tr.get('end','')}", {"total_hosts": 99})
         result = self.svc.get_global_overview()
         self.assertEqual(result["total_hosts"], 99)
 
@@ -417,15 +421,17 @@ class TestGetGlobalDashboard(unittest.TestCase):
         self.svc = _make_service()
 
     def test_returns_overview_and_platforms(self):
-        cache.set("global_dashboard", {
+        tr = default_time_range()
+        cache.set(f"global_dashboard:{tr.get('start','')}:{tr.get('end','')}", {
             "overview": {"dc_count": 5, "total_hosts": 100},
             "platforms": {"nutanix": {"hosts": 40, "vms": 200}, "vmware": {}, "ibm": {}},
-            "energy_breakdown": {"racks_kw": 10, "ibm_kw": 5, "vcenter_kw": 3},
+            "energy_breakdown": {"ibm_kw": 5, "vcenter_kw": 3},
         })
         result = self.svc.get_global_dashboard()
         self.assertEqual(result["overview"]["dc_count"], 5)
         self.assertEqual(result["platforms"]["nutanix"]["hosts"], 40)
-        self.assertEqual(result["energy_breakdown"]["racks_kw"], 10)
+        self.assertEqual(result["energy_breakdown"]["ibm_kw"], 5)
+        self.assertEqual(result["energy_breakdown"]["vcenter_kw"], 3)
 
 
 class TestGetCustomerResources(unittest.TestCase):
@@ -435,7 +441,8 @@ class TestGetCustomerResources(unittest.TestCase):
         self.svc = _make_service()
 
     def test_returns_totals_and_by_platform(self):
-        cache.set("customer:boyner", {
+        tr = default_time_range()
+        cache.set(f"customer:boyner:{tr.get('start','')}:{tr.get('end','')}", {
             "totals": {"hosts": 10, "vms": 50, "dcs_used": 3},
             "by_platform": {"nutanix": {"hosts": 4, "vms": 20}, "vmware": {}, "ibm": {}, "vcenter": {}},
             "by_dc": [{"dc": "DC11", "hosts": 5, "vms": 25}],
@@ -477,7 +484,8 @@ class TestEmptyDc(unittest.TestCase):
         self.assertIn("vmware", empty["platforms"])
         self.assertIn("ibm", empty["platforms"])
         self.assertIn("energy", empty)
-        self.assertIn("racks_kw", empty["energy"])
+        self.assertIn("ibm_kw", empty["energy"])
+        self.assertIn("vcenter_kw", empty["energy"])
 
 
 class TestPrepareParams(unittest.TestCase):
@@ -515,7 +523,7 @@ class TestQueryModules(unittest.TestCase):
 
     def test_energy_queries_are_strings(self):
         from src.queries import energy
-        for attr in ["RACKS", "IBM", "VCENTER", "BATCH_RACKS", "BATCH_IBM", "BATCH_VCENTER"]:
+        for attr in ["IBM", "VCENTER", "BATCH_IBM", "BATCH_VCENTER"]:
             self.assertIsInstance(getattr(energy, attr), str, f"energy.{attr} should be a string")
 
     def test_registry_has_all_expected_keys(self):
@@ -524,7 +532,7 @@ class TestQueryModules(unittest.TestCase):
             "nutanix_host_count", "nutanix_memory", "nutanix_storage", "nutanix_cpu",
             "vmware_counts", "vmware_memory", "vmware_storage", "vmware_cpu",
             "ibm_host_count", "ibm_vios_count", "ibm_lpar_count", "ibm_memory", "ibm_cpu",
-            "energy_racks", "energy_ibm", "energy_vcenter",
+            "energy_ibm", "energy_vcenter",
         ]
         for key in expected_keys:
             self.assertIn(key, QUERY_REGISTRY, f"Registry missing key: {key}")
@@ -644,13 +652,17 @@ class TestCacheWarming(unittest.TestCase):
         cur = self._mock_empty_cursor()
         self._attach_conn(cur)
         self.svc.warm_cache()
-        self.assertIsNotNone(cache.get("all_dc_summary"))
+        tr = cache_time_ranges()[0]
+        key = f"all_dc_summary:{tr.get('start','')}:{tr.get('end','')}"
+        self.assertIsNotNone(cache.get(key))
 
     def test_warm_cache_populates_global_overview(self):
         cur = self._mock_empty_cursor()
         self._attach_conn(cur)
         self.svc.warm_cache()
-        self.assertIsNotNone(cache.get("global_overview"))
+        tr = cache_time_ranges()[0]
+        key = f"global_overview:{tr.get('start','')}:{tr.get('end','')}"
+        self.assertIsNotNone(cache.get(key))
 
     def test_warm_cache_does_not_raise_on_db_error(self):
         from psycopg2 import OperationalError
@@ -661,14 +673,15 @@ class TestCacheWarming(unittest.TestCase):
             self.fail(f"warm_cache() raised unexpectedly: {exc}")
 
     def test_refresh_all_data_clears_and_rebuilds(self):
-        cache.set("all_dc_summary", [{"stale": True}])
-        cache.set("global_overview", {"stale": True})
+        tr = cache_time_ranges()[0]
+        suffix = f"{tr.get('start','')}:{tr.get('end','')}"
+        cache.set(f"all_dc_summary:{suffix}", [{"stale": True}])
         cur = self._mock_empty_cursor()
         self._attach_conn(cur)
         self.svc.refresh_all_data()
-        summary = cache.get("all_dc_summary")
+        summary = cache.get(f"all_dc_summary:{suffix}")
         self.assertIsNotNone(summary)
-        # Stale marker should be gone
+        # Stale marker should be gone after rebuild
         self.assertFalse(any(item.get("stale") for item in summary))
 
     def test_refresh_all_data_does_not_raise_on_db_error(self):
@@ -683,9 +696,11 @@ class TestCacheWarming(unittest.TestCase):
         cur = self._mock_empty_cursor()
         self._attach_conn(cur)
         self.svc._dc_list = ["DC11", "AZ11"]
-        self.svc._rebuild_summary()
-        self.assertIsNotNone(cache.get("dc_details:DC11"))
-        self.assertIsNotNone(cache.get("dc_details:AZ11"))
+        tr = default_time_range()
+        self.svc._rebuild_summary(tr)
+        suffix = f"{tr.get('start','')}:{tr.get('end','')}"
+        self.assertIsNotNone(cache.get(f"dc_details:DC11:{suffix}"))
+        self.assertIsNotNone(cache.get(f"dc_details:AZ11:{suffix}"))
 
 
 # ---------------------------------------------------------------------------

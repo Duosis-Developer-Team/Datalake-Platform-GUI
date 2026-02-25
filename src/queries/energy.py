@@ -1,95 +1,54 @@
 # Energy SQL query definitions
-# Sources: loki_racks, ibm_server_power, vmhost_metrics
-# Racks: include child locations via loki_locations parent_name hierarchy
+# Sources: vmhost_metrics (vCenter), ibm_server_power (IBM HMC). Loki/racks not used.
+# Individual: params (dc_param or wildcard, start_ts, end_ts). Batch: (dc_list, start_ts, end_ts) or (start_ts, end_ts, dc_list).
+# All energy values as AVG over time range (daily average).
 
 # --- Individual queries ---
 
-# loki_racks: DC + child locations (parent_name in loki_locations)
-RACKS = r"""
-SELECT SUM(
-    CASE
-        WHEN kabin_enerji ~ '^[0-9]+(\.[0-9]+)?$' THEN kabin_enerji::float
-        ELSE NULLIF(
-            regexp_replace(replace(kabin_enerji, ',', '.'), '[^0-9.]', '', 'g'),
-            ''
-        )::float
-    END * 1000
-)
-FROM public.loki_racks
-WHERE (location_name = %s OR location_name IN (SELECT name FROM public.loki_locations WHERE parent_name = %s))
-  AND id IN (SELECT DISTINCT id FROM public.loki_racks)
-"""
-
-IBM = """
-SELECT SUM(power_watts)
-FROM public.ibm_server_power
-WHERE server_name ILIKE %s
-"""
-
+# vCenter: params (dc_code, start_ts, end_ts). Map DC to datacenter(s) via datacenter_metrics.
 VCENTER = """
-WITH latest_per_host AS (
-    SELECT DISTINCT ON (vm.vmhost) vm.power_usage
-    FROM public.vmhost_metrics vm
-    WHERE vm.vmhost ILIKE %s
-    ORDER BY vm.vmhost, vm."timestamp" DESC
+SELECT COALESCE(AVG(vm.power_usage), 0)
+FROM public.vmhost_metrics vm
+WHERE vm.datacenter IN (
+    SELECT DISTINCT datacenter FROM public.datacenter_metrics WHERE dc = %s
 )
-SELECT SUM(power_usage)
-FROM latest_per_host
+AND vm."timestamp" BETWEEN %s AND %s
+"""
+
+# IBM: params (wildcard, start_ts, end_ts). Average power per server in range.
+IBM = """
+SELECT COALESCE(AVG(power_watts), 0)
+FROM public.ibm_server_power
+WHERE server_name ILIKE %s AND "timestamp" BETWEEN %s AND %s
 """
 
 # --- Batch queries ---
-# Racks: aggregate by DC including child locations, return (dc_code, total_watts)
-BATCH_RACKS = r"""
-WITH dc_list AS (SELECT unnest(%s::text[]) AS dc_code),
-     rack_totals AS (
-         SELECT location_name,
-                SUM(
-                    CASE
-                        WHEN kabin_enerji ~ '^[0-9]+(\.[0-9]+)?$' THEN kabin_enerji::float
-                        ELSE NULLIF(
-                            regexp_replace(replace(kabin_enerji, ',', '.'), '[^0-9.]', '', 'g'),
-                            ''
-                        )::float
-                    END * 1000
-                ) AS total_watts
-         FROM public.loki_racks
-         WHERE (location_name = ANY(%s) OR location_name IN (SELECT name FROM public.loki_locations WHERE parent_name = ANY(%s)))
-           AND id IN (SELECT DISTINCT id FROM public.loki_racks)
-         GROUP BY location_name
-     ),
-     with_dc AS (
-         SELECT r.location_name, r.total_watts, COALESCE(l.parent_name, l.name) AS dc_code
-         FROM rack_totals r
-         JOIN public.loki_locations l ON r.location_name = l.name
-     )
-SELECT dc_code, SUM(total_watts) AS total_watts
-FROM with_dc
+
+# vCenter batch: params (dc_list, start_ts, end_ts). Returns (dc, avg_power_watts).
+BATCH_VCENTER = """
+WITH dc_map AS (
+    SELECT DISTINCT dc, datacenter
+    FROM public.datacenter_metrics
+    WHERE dc = ANY(%s)
+)
+SELECT dm.dc, AVG(vm.power_usage) AS avg_power_watts
+FROM public.vmhost_metrics vm
+JOIN dc_map dm ON vm.datacenter = dm.datacenter
+WHERE vm."timestamp" BETWEEN %s AND %s
+GROUP BY dm.dc
+"""
+
+# IBM batch: params (start_ts, end_ts, dc_list). DC extracted from server_name; returns (dc_code, avg_power_watts).
+BATCH_IBM = """
+WITH extracted AS (
+    SELECT
+        (regexp_matches(UPPER(server_name), 'DC[0-9]+|AZ[0-9]+|ICT[0-9]+'))[1] AS dc_code,
+        power_watts
+    FROM public.ibm_server_power
+    WHERE "timestamp" BETWEEN %s AND %s
+)
+SELECT dc_code, AVG(power_watts) AS avg_power_watts
+FROM extracted
 WHERE dc_code = ANY(%s)
 GROUP BY dc_code
-"""
-
-# ibm_server_power — corrected table name
-BATCH_IBM = """
-SELECT
-    server_name,
-    SUM(power_watts) AS total_watts
-FROM public.ibm_server_power
-WHERE server_name ILIKE ANY(%s)
-GROUP BY server_name
-"""
-
-BATCH_VCENTER = """
-WITH latest_per_host AS (
-    SELECT DISTINCT ON (vm.vmhost)
-        vm.vmhost,
-        vm.power_usage
-    FROM public.vmhost_metrics vm
-    WHERE vm.vmhost ILIKE ANY(%s)
-    ORDER BY vm.vmhost, vm."timestamp" DESC
-)
-SELECT
-    vmhost,
-    SUM(power_usage) AS total_watts
-FROM latest_per_host
-GROUP BY vmhost
 """

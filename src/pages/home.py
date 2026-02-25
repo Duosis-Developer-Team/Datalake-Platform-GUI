@@ -3,13 +3,17 @@ from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services.shared import service
+from src.utils.time_range import default_time_range
 from src.components.charts import (
     create_usage_donut_chart,
     create_energy_breakdown_chart,
     create_grouped_bar_chart,
 )
 
-dash.register_page(__name__, path="/")
+
+def layout():
+    """Default layout (initial load uses default time range)."""
+    return build_overview(default_time_range())
 
 
 def metric_card(title, value, icon_name, subtext=None, color="#4318FF"):
@@ -63,12 +67,14 @@ def platform_card(title, hosts, vms, clusters=None, color="#4318FF"):
     )
 
 
-def layout():
-    data = service.get_global_dashboard()
+def build_overview(time_range=None):
+    """Build Overview page content for the given time range (used by app callback)."""
+    tr = time_range or default_time_range()
+    data = service.get_global_dashboard(tr)
     overview = data.get("overview", {})
     platforms = data.get("platforms", {})
     energy_breakdown = data.get("energy_breakdown", {})
-    summaries = service.get_all_datacenters_summary()
+    summaries = service.get_all_datacenters_summary(tr)
 
     # KPI strip
     kpis = [
@@ -97,15 +103,14 @@ def layout():
     ram_pct = round((overview.get("total_ram_used", 0) or 0) / ram_cap * 100, 1) if ram_cap > 0 else 0
     stor_pct = round((overview.get("total_storage_used", 0) or 0) / stor_cap * 100, 1) if stor_cap > 0 else 0
 
-    # Energy breakdown
-    eb_labels = ["Racks", "IBM", "vCenter"]
+    # Energy breakdown (IBM Power + vCenter only; Loki/racks not used)
+    eb_labels = ["IBM Power", "vCenter"]
     eb_values = [
-        energy_breakdown.get("racks_kw", 0) or 0,
         energy_breakdown.get("ibm_kw", 0) or 0,
         energy_breakdown.get("vcenter_kw", 0) or 0,
     ]
     if sum(eb_values) == 0:
-        eb_values = [1, 1, 1]
+        eb_values = [1, 1]
 
     # DC comparison table
     dc_names = [s["name"] for s in summaries]
@@ -120,7 +125,7 @@ def layout():
                 className="nexus-glass",
                 children=[
                     html.H1("Executive Dashboard", style={"margin": 0, "color": "#2B3674", "fontSize": "1.5rem"}),
-                    html.P("Real-time system performance metrics", style={"margin": "5px 0 0 0", "color": "#A3AED0"}),
+                    html.P(f"Report period: {tr.get('start', '')} – {tr.get('end', '')}", style={"margin": "5px 0 0 0", "color": "#A3AED0"}),
                 ],
                 style={"padding": "20px 30px", "marginBottom": "30px", "borderRadius": "0 0 20px 20px"},
             ),

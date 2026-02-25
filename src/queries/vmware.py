@@ -1,87 +1,94 @@
 # VMware SQL query definitions — source: datacenter_metrics
-# Individual queries (single DC) and batch queries (all DCs at once)
+# dc = datacenter code (e.g. DC13); datacenter = hypervisor name.
+# Individual: params (dc_code, start_ts, end_ts). Batch: (dc_list, start_ts, end_ts).
+# No LIMIT 1: counts sum across all hypervisors per DC; usage is AVG over time range.
 
-# --- Individual queries (parameterized with ILIKE %s wildcard) ---
+# --- Individual queries ---
 
 COUNTS = """
-SELECT total_cluster_count, total_host_count, total_vm_count
-FROM public.datacenter_metrics
-WHERE datacenter ILIKE %s
-ORDER BY timestamp DESC
-LIMIT 1
+WITH latest_per_hypervisor AS (
+    SELECT DISTINCT ON (dc, datacenter)
+        dc, datacenter, total_cluster_count, total_host_count, total_vm_count
+    FROM public.datacenter_metrics
+    WHERE dc = %s AND timestamp BETWEEN %s AND %s
+    ORDER BY dc, datacenter, timestamp DESC
+)
+SELECT
+    COALESCE(SUM(total_cluster_count), 0),
+    COALESCE(SUM(total_host_count), 0),
+    COALESCE(SUM(total_vm_count), 0)
+FROM latest_per_hypervisor
 """
 
 MEMORY = """
 SELECT
-    total_memory_capacity_gb * 1024 * 1024 * 1024,
-    total_memory_used_gb * 1024 * 1024 * 1024
+    AVG(total_memory_capacity_gb) * 1024 * 1024 * 1024,
+    AVG(total_memory_used_gb) * 1024 * 1024 * 1024
 FROM public.datacenter_metrics
-WHERE datacenter ILIKE %s
-ORDER BY timestamp DESC
-LIMIT 1
+WHERE dc = %s AND timestamp BETWEEN %s AND %s
 """
 
 STORAGE = """
 SELECT
-    total_storage_capacity_gb * (1024 * 1024),
-    total_used_storage_gb * (1024 * 1024)
+    AVG(total_storage_capacity_gb) * (1024 * 1024),
+    AVG(total_used_storage_gb) * (1024 * 1024)
 FROM public.datacenter_metrics
-WHERE datacenter ILIKE %s
-ORDER BY timestamp DESC
-LIMIT 1
+WHERE dc = %s AND timestamp BETWEEN %s AND %s
 """
 
 CPU = """
 SELECT
-    total_cpu_ghz_capacity * 1000000000,
-    total_cpu_ghz_used * 1000000000
+    AVG(total_cpu_ghz_capacity) * 1000000000,
+    AVG(total_cpu_ghz_used) * 1000000000
 FROM public.datacenter_metrics
-WHERE datacenter ILIKE %s
-ORDER BY timestamp DESC
-LIMIT 1
+WHERE dc = %s AND timestamp BETWEEN %s AND %s
 """
 
-# --- Batch queries (all DCs in a single roundtrip) ---
-# Uses ILIKE with pattern matching via LIKE ANY(...)
-# PostgreSQL supports: WHERE col ILIKE ANY(ARRAY['%AZ11%', '%DC11%', ...])
+# --- Batch queries (params: dc_list, start_ts, end_ts) ---
 
 BATCH_COUNTS = """
-SELECT DISTINCT ON (datacenter)
-    datacenter,
-    total_cluster_count,
-    total_host_count,
-    total_vm_count
-FROM public.datacenter_metrics
-WHERE datacenter ILIKE ANY(%s)
-ORDER BY datacenter, timestamp DESC
+WITH latest_per_hypervisor AS (
+    SELECT DISTINCT ON (dc, datacenter)
+        dc, datacenter, total_cluster_count, total_host_count, total_vm_count
+    FROM public.datacenter_metrics
+    WHERE dc = ANY(%s) AND timestamp BETWEEN %s AND %s
+    ORDER BY dc, datacenter, timestamp DESC
+)
+SELECT
+    dc,
+    COALESCE(SUM(total_cluster_count), 0) AS total_cluster_count,
+    COALESCE(SUM(total_host_count), 0) AS total_host_count,
+    COALESCE(SUM(total_vm_count), 0) AS total_vm_count
+FROM latest_per_hypervisor
+GROUP BY dc
 """
 
 BATCH_MEMORY = """
-SELECT DISTINCT ON (datacenter)
-    datacenter,
-    total_memory_capacity_gb * 1024 * 1024 * 1024 AS mem_cap,
-    total_memory_used_gb * 1024 * 1024 * 1024     AS mem_used
+SELECT
+    dc,
+    AVG(total_memory_capacity_gb) * 1024 * 1024 * 1024 AS mem_cap,
+    AVG(total_memory_used_gb) * 1024 * 1024 * 1024     AS mem_used
 FROM public.datacenter_metrics
-WHERE datacenter ILIKE ANY(%s)
-ORDER BY datacenter, timestamp DESC
+WHERE dc = ANY(%s) AND timestamp BETWEEN %s AND %s
+GROUP BY dc
 """
 
 BATCH_STORAGE = """
-SELECT DISTINCT ON (datacenter)
-    datacenter,
-    total_storage_capacity_gb * (1024 * 1024) AS stor_cap,
-    total_used_storage_gb * (1024 * 1024)      AS stor_used
+SELECT
+    dc,
+    AVG(total_storage_capacity_gb) * (1024 * 1024) AS stor_cap,
+    AVG(total_used_storage_gb) * (1024 * 1024)      AS stor_used
 FROM public.datacenter_metrics
-WHERE datacenter ILIKE ANY(%s)
-ORDER BY datacenter, timestamp DESC
+WHERE dc = ANY(%s) AND timestamp BETWEEN %s AND %s
+GROUP BY dc
 """
 
 BATCH_CPU = """
-SELECT DISTINCT ON (datacenter)
-    datacenter,
-    total_cpu_ghz_capacity * 1000000000 AS cpu_cap,
-    total_cpu_ghz_used * 1000000000     AS cpu_used
+SELECT
+    dc,
+    AVG(total_cpu_ghz_capacity) * 1000000000 AS cpu_cap,
+    AVG(total_cpu_ghz_used) * 1000000000     AS cpu_used
 FROM public.datacenter_metrics
-WHERE datacenter ILIKE ANY(%s)
-ORDER BY datacenter, timestamp DESC
+WHERE dc = ANY(%s) AND timestamp BETWEEN %s AND %s
+GROUP BY dc
 """

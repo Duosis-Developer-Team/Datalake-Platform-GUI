@@ -217,14 +217,7 @@ QUERY_REGISTRY: dict[str, dict] = {
         "provider": "ibm",
         "batch_key": "server_details_servername",
     },
-    # --- Energy (individual) ---
-    "energy_racks": {
-        "sql": energy.RACKS,
-        "source": "loki_racks",
-        "result_type": "value",
-        "params_style": "exact",
-        "provider": "energy",
-    },
+    # --- Energy (individual); Loki/racks not used ---
     "energy_ibm": {
         "sql": energy.IBM,
         "source": "ibm_server_power",
@@ -236,18 +229,10 @@ QUERY_REGISTRY: dict[str, dict] = {
         "sql": energy.VCENTER,
         "source": "vmhost_metrics",
         "result_type": "value",
-        "params_style": "wildcard",
+        "params_style": "exact",
         "provider": "energy",
     },
     # --- Energy (batch) ---
-    "energy_batch_racks": {
-        "sql": energy.BATCH_RACKS,
-        "source": "loki_racks",
-        "result_type": "rows",
-        "params_style": "array_exact",
-        "provider": "energy",
-        "batch_key": "dc_code",
-    },
     "energy_batch_ibm": {
         "sql": energy.BATCH_IBM,
         "source": "ibm_server_power",

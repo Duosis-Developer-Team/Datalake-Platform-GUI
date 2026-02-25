@@ -3,9 +3,9 @@ from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services.shared import service
+from src.utils.time_range import default_time_range
 from src.components.charts import create_usage_donut_chart, create_bar_chart, create_gauge_chart
 
-dash.register_page(__name__, path_template='/datacenter/<dc_id>')
 
 def kpi_card(title, value, icon, is_text=False):
     return html.Div(
@@ -30,12 +30,12 @@ def chart_card(graph_component):
         children=graph_component
     )
 
-def layout(dc_id=None):
+def build_dc_view(dc_id, time_range=None):
+    """Build DC detail page content for the given time range."""
     if not dc_id:
         return html.Div("No Data Center ID provided", style={"padding": "20px"})
-
-    # Fetch Real Data
-    data = service.get_dc_details(dc_id)
+    tr = time_range or default_time_range()
+    data = service.get_dc_details(dc_id, tr)
     
     # meta data
     dc_name = data["meta"]["name"]
@@ -74,7 +74,7 @@ def layout(dc_id=None):
                 ),
                 html.Div([
                     html.H1(dc_name, style={"margin": "0", "color": "#2B3674", "fontSize": "1.8rem"}),
-                    html.Span(f"Region: {dc_loc}", style={"color": "#A3AED0", "fontSize": "0.9rem", "fontWeight": "500", "marginLeft": "12px"})
+                    html.Span(f"Region: {dc_loc}  |  Report: {tr.get('start', '')} – {tr.get('end', '')}", style={"color": "#A3AED0", "fontSize": "0.9rem", "fontWeight": "500", "marginLeft": "12px"})
                 ], style={"display": "flex", "alignItems": "baseline"}),
             ],
             style={"padding": "20px 30px", "marginBottom": "20px", "display": "flex", "alignItems": "center"}
@@ -227,11 +227,10 @@ def layout(dc_id=None):
                                 children=[
                                     html.H3("Energy breakdown", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
                                     dmc.SimpleGrid(
-                                        cols=3,
+                                        cols=2,
                                         spacing="lg",
                                         children=[
-                                            kpi_card("Racks", f"{data['energy'].get('racks_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
-                                            kpi_card("IBM", f"{data['energy'].get('ibm_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
+                                            kpi_card("IBM Power", f"{data['energy'].get('ibm_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
                                             kpi_card("vCenter", f"{data['energy'].get('vcenter_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
                                         ],
                                     ),
@@ -243,3 +242,7 @@ def layout(dc_id=None):
             ]
         )
     ])
+
+
+def layout(dc_id=None):
+    return build_dc_view(dc_id, default_time_range())
