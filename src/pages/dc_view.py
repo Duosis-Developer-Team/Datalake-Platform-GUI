@@ -3,7 +3,7 @@ from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services.shared import service
-from src.components.charts import create_usage_donut_chart, create_bar_chart
+from src.components.charts import create_usage_donut_chart, create_bar_chart, create_gauge_chart
 
 dash.register_page(__name__, path_template='/datacenter/<dc_id>')
 
@@ -48,7 +48,7 @@ def layout(dc_id=None):
     # KPI Logic
     kpi_clusters = intel["clusters"]
     kpi_hosts = intel["hosts"] + power["hosts"]
-    kpi_vms = intel["vms"]
+    kpi_vms = intel["vms"] + power.get("vms", 0)  # Intel VMs + IBM LPARs
     kpi_updated = "Live"
 
     # Usage Percentages
@@ -91,8 +91,7 @@ def layout(dc_id=None):
                     children=[
                         dmc.TabsTab("Intel Virtualization", value="intel"),
                         dmc.TabsTab("Power Virtualization", value="power"),
-                        dmc.TabsTab("OpenStack", value="openstack"),
-                        dmc.TabsTab("Backup Virtualization", value="backup"),
+                        dmc.TabsTab("Summary", value="summary"),
                     ],
                     style={"padding": "0 30px", "marginBottom": "24px"}
                 ),
@@ -150,9 +149,97 @@ def layout(dc_id=None):
                         ]
                     )
                 ),
-                dmc.TabsPanel(value="power", children=html.Div("No Data", style={"padding": "30px", "textAlign": "center", "color": "#A3AED0"})),
-                dmc.TabsPanel(value="openstack", children=html.Div("No Data", style={"padding": "30px", "textAlign": "center", "color": "#A3AED0"})),
-                dmc.TabsPanel(value="backup", children=html.Div("No Data", style={"padding": "30px", "textAlign": "center", "color": "#A3AED0"})),
+                dmc.TabsPanel(
+                    value="power",
+                    children=dmc.Stack(
+                        gap="lg",
+                        style={"padding": "0 30px"},
+                        children=[
+                            dmc.SimpleGrid(
+                                cols=4,
+                                spacing="lg",
+                                children=[
+                                    kpi_card("IBM Hosts", power.get("hosts", 0), "solar:server-bold-duotone"),
+                                    kpi_card("VIOS", power.get("vios", 0), "solar:server-square-bold-duotone"),
+                                    kpi_card("LPARs (VMs)", power.get("lpar_count", 0), "solar:laptop-bold-duotone"),
+                                    kpi_card("Last Updated", "Live", "solar:clock-circle-bold-duotone", is_text=True),
+                                ],
+                            ),
+                            dmc.SimpleGrid(
+                                cols=2,
+                                spacing="lg",
+                                children=[
+                                    chart_card(
+                                        dcc.Graph(
+                                            figure=create_gauge_chart(
+                                                power.get("memory_assigned", 0),
+                                                power.get("memory_total", 1) or 1,
+                                                "Memory assigned",
+                                                color="#05CD99",
+                                            ),
+                                            config={"displayModeBar": False},
+                                            style={"height": "100%", "width": "100%"},
+                                        )
+                                    ),
+                                    chart_card(
+                                        dcc.Graph(
+                                            figure=create_gauge_chart(
+                                                power.get("cpu_used", 0),
+                                                power.get("cpu_assigned", 1) or 1,
+                                                "CPU used",
+                                                color="#4318FF",
+                                            ),
+                                            config={"displayModeBar": False},
+                                            style={"height": "100%", "width": "100%"},
+                                        )
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                ),
+                dmc.TabsPanel(
+                    value="summary",
+                    children=dmc.Stack(
+                        gap="lg",
+                        style={"padding": "0 30px"},
+                        children=[
+                            html.Div(
+                                className="nexus-card",
+                                style={"padding": "20px"},
+                                children=[
+                                    html.H3("Combined metrics", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
+                                    dmc.SimpleGrid(
+                                        cols=4,
+                                        spacing="lg",
+                                        children=[
+                                            kpi_card("Total Hosts", kpi_hosts, "solar:server-bold-duotone"),
+                                            kpi_card("Total VMs", kpi_vms, "solar:laptop-bold-duotone"),
+                                            kpi_card("CPU used", f"{intel['cpu_used'] + (power.get('cpu_used') or 0):.1f} GHz", "solar:cpu-bold-duotone", is_text=True),
+                                            kpi_card("RAM used", f"{intel['ram_used'] + (power.get('memory_assigned') or 0):.0f} GB", "solar:ram-bold-duotone", is_text=True),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                            html.Div(
+                                className="nexus-card",
+                                style={"padding": "20px"},
+                                children=[
+                                    html.H3("Energy breakdown", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
+                                    dmc.SimpleGrid(
+                                        cols=3,
+                                        spacing="lg",
+                                        children=[
+                                            kpi_card("Racks", f"{data['energy'].get('racks_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
+                                            kpi_card("IBM", f"{data['energy'].get('ibm_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
+                                            kpi_card("vCenter", f"{data['energy'].get('vcenter_kw', 0):.1f} kW", "material-symbols:bolt-outline", color="orange"),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                ),
             ]
         )
     ])

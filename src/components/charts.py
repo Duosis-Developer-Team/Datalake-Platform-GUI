@@ -76,3 +76,108 @@ def create_usage_donut_chart(value, label, color="#4318FF"):
         plot_bgcolor='rgba(0,0,0,0)'
     )
     return fig
+
+
+def create_stacked_bar_chart(labels, series_dict, title, height=300):
+    """Stacked bar chart: labels on x, multiple series stacked. series_dict e.g. {'Nutanix': [1,2], 'VMware': [3,4], 'IBM': [0,1]}."""
+    fig = go.Figure()
+    colors = ["#4318FF", "#05CD99", "#FFB547"]
+    for i, (name, values) in enumerate(series_dict.items()):
+        fig.add_trace(go.Bar(
+            x=labels,
+            y=values,
+            name=name,
+            marker_color=colors[i % len(colors)],
+        ))
+    fig.update_layout(
+        barmode="stack",
+        title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans")),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        margin=dict(l=20, r=20, t=50, b=40),
+        height=height,
+        xaxis=dict(showgrid=False, zeroline=False),
+        yaxis=dict(showgrid=False, zeroline=False),
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+    return fig
+
+
+def create_grouped_bar_chart(labels, series_dict, title, height=300):
+    """Grouped bar chart: labels on x, multiple series side by side."""
+    fig = go.Figure()
+    colors = ["#4318FF", "#05CD99", "#FFB547"]
+    for i, (name, values) in enumerate(series_dict.items()):
+        fig.add_trace(go.Bar(
+            x=labels,
+            y=values,
+            name=name,
+            marker_color=colors[i % len(colors)],
+        ))
+    fig.update_layout(
+        barmode="group",
+        title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans")),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        margin=dict(l=20, r=20, t=50, b=40),
+        height=height,
+        xaxis=dict(showgrid=False, zeroline=False),
+        yaxis=dict(showgrid=False, zeroline=False),
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+    return fig
+
+
+def create_gauge_chart(value, max_value, title, color="#4318FF", height=200):
+    """Gauge (indicator) for usage: value / max_value as percentage."""
+    try:
+        val = float(value)
+        mx = float(max_value) if max_value else 100
+    except (TypeError, ValueError):
+        val, mx = 0, 100
+    pct = (val / mx * 100) if mx > 0 else 0
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=pct,
+        number={"suffix": "%"},
+        gauge={
+            "axis": {"range": [0, 100]},
+            "bar": {"color": color},
+            "steps": [{"range": [0, 50], "color": "#E9EDF7"}, {"range": [50, 80], "color": "rgba(67, 24, 255, 0.3)"}, {"range": [80, 100], "color": "rgba(238, 93, 80, 0.3)"}],
+            "threshold": {"line": {"color": "#2B3674", "width": 4}, "value": 90},
+        },
+        title={"text": title},
+    ))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=20, r=20, t=40, b=20),
+        height=height,
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+    return fig
+
+
+def create_energy_breakdown_chart(labels, values, title="Energy by source", height=250):
+    """Pie or bar for energy breakdown (e.g. Racks, IBM, vCenter)."""
+    fig = go.Figure(data=[go.Pie(
+        labels=labels,
+        values=values,
+        hole=0.5,
+        marker=dict(colors=["#4318FF", "#05CD99", "#FFB547"]),
+        textinfo="label+percent",
+        hoverinfo="label+value+percent",
+    )])
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans")),
+        showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=20, r=20, t=40, b=20),
+        height=height,
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+    return fig

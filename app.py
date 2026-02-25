@@ -91,6 +91,16 @@ app.layout = dmc.MantineProvider(
 def update_sidebar(pathname):
     return create_sidebar(pathname or "/")
 
+
+# Customer View: update content when customer dropdown changes
+@app.callback(
+    dash.Output("customer-view-content", "children"),
+    dash.Input("customer-select", "value"),
+)
+def update_customer_view(selected_customer):
+    from src.pages import customer_view
+    return customer_view._customer_content(selected_customer)
+
 # 4. Start background cache scheduler (warm cache now + refresh every 15 min)
 # Runs outside __main__ guard so it also starts under Gunicorn / production.
 _scheduler = start_scheduler(service)

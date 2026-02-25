@@ -11,6 +11,14 @@ ORDER BY collection_time DESC
 LIMIT 1
 """
 
+VM_COUNT = """
+SELECT total_vms
+FROM public.nutanix_cluster_metrics
+WHERE cluster_name LIKE %s
+ORDER BY collection_time DESC
+LIMIT 1
+"""
+
 MEMORY = """
 SELECT
     total_memory_capacity,
@@ -109,6 +117,22 @@ FROM (
         cluster_name,
         total_cpu_capacity,
         cpu_usage_avg
+    FROM public.nutanix_cluster_metrics
+    WHERE datacenter_name = ANY(%s)
+    ORDER BY cluster_name, collection_time DESC
+) latest
+GROUP BY datacenter_name
+"""
+
+BATCH_VM_COUNT = """
+SELECT
+    datacenter_name,
+    SUM(total_vms) AS total_vms
+FROM (
+    SELECT DISTINCT ON (cluster_name)
+        datacenter_name,
+        cluster_name,
+        total_vms
     FROM public.nutanix_cluster_metrics
     WHERE datacenter_name = ANY(%s)
     ORDER BY cluster_name, collection_time DESC

@@ -69,6 +69,17 @@ def layout():
                         dmc.Stack(
                             gap="sm",
                             children=[
+                                # Platforms
+                                dmc.Group(
+                                    justify="space-between",
+                                    children=[
+                                        dmc.Group(gap="xs", children=[
+                                            DashIconify(icon="solar:layers-minimalistic-bold-duotone", width=20, color="#A3AED0"),
+                                            dmc.Text("Platforms", size="sm", c="#A3AED0")
+                                        ]),
+                                        dmc.Text(f"{dc.get('platform_count', 0)}", fw=700, size="sm", c="#2B3674")
+                                    ]
+                                ),
                                 # Row 1: Clusters
                                 dmc.Group(
                                     justify="space-between",

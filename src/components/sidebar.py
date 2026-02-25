@@ -16,7 +16,7 @@ def create_sidebar(active_path):
     # Düzeltme: DMC 0.14'te 'icon' yerine 'leftSection' kullanılır.
     links = [
         dmc.NavLink(
-            label="Dashboard",
+            label="Overview",
             leftSection=DashIconify(icon="solar:home-smile-bold-duotone", width=20),
             href="/",
             className="sidebar-link",
@@ -31,6 +31,16 @@ def create_sidebar(active_path):
             href="/datacenters",
             className="sidebar-link",
             active=active_path.startswith("/datacenter") or active_path == "/datacenters",
+            variant="subtle",
+            color="indigo",
+            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"}
+        ),
+        dmc.NavLink(
+            label="Customer View",
+            leftSection=DashIconify(icon="solar:users-group-rounded-bold-duotone", width=20),
+            href="/customer-view",
+            className="sidebar-link",
+            active=active_path == "/customer-view",
             variant="subtle",
             color="indigo",
             style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"}

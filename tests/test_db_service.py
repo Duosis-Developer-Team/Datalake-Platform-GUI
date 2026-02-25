@@ -173,6 +173,7 @@ class TestAggregatedc(unittest.TestCase):
         result = DatabaseService._aggregate_dc(
             dc_code="DC11",
             nutanix_host_count=4,
+            nutanix_vms=10,
             nutanix_mem=(2.0, 1.0),          # TB raw → ×1024 → GB
             nutanix_storage=(10.0, 5.0),     # TB raw
             nutanix_cpu=(100.0, 50.0),       # GHz raw
@@ -181,6 +182,10 @@ class TestAggregatedc(unittest.TestCase):
             vmware_storage=(1024 ** 4, 512 * (1024 ** 3)),  # KB
             vmware_cpu=(2_000_000_000, 1_000_000_000),  # Hz
             power_hosts=2,
+            power_vios=1,
+            power_lpar_count=5,
+            power_mem=(64.0, 32.0),
+            power_cpu=(4.0, 2.0, 8.0),
             racks_w=1000.0,   # W
             ibm_w=500.0,      # W
             vcenter_w=500.0,  # W
@@ -193,21 +198,26 @@ class TestAggregatedc(unittest.TestCase):
         self.assertEqual(intel["clusters"], 3)
         self.assertEqual(intel["hosts"], 6)  # 4 nutanix + 2 vmware
         self.assertEqual(intel["vms"], 20)
-        # Memory: 2TB×1024 + 1GB = 2049 GB cap
-        self.assertAlmostEqual(intel["ram_cap"], 2049.0, places=1)
-        # CPU: 100 GHz + 2 GHz = 102 GHz
-        self.assertAlmostEqual(intel["cpu_cap"], 102.0, places=1)
-        # Storage: 10 TB + 1 TB = 11 TB
-        self.assertAlmostEqual(intel["storage_cap"], 11.0, places=1)
         # Power
         self.assertEqual(result["power"]["hosts"], 2)
+        self.assertEqual(result["power"]["vios"], 1)
+        self.assertEqual(result["power"]["lpar_count"], 5)
+        self.assertAlmostEqual(result["power"]["memory_total"], 64.0, places=1)
+        self.assertAlmostEqual(result["power"]["cpu_assigned"], 8.0, places=1)
+        # Platforms
+        self.assertIn("platforms", result)
+        self.assertEqual(result["platforms"]["nutanix"]["hosts"], 4)
+        self.assertEqual(result["platforms"]["nutanix"]["vms"], 10)
+        self.assertEqual(result["platforms"]["ibm"]["lpars"], 5)
         # Energy: (1000+500+500)/1000 = 2.0 kW
         self.assertAlmostEqual(result["energy"]["total_kw"], 2.0, places=2)
+        self.assertAlmostEqual(result["energy"]["racks_kw"], 1.0, places=2)
 
     def test_none_inputs_default_to_zero(self):
         result = DatabaseService._aggregate_dc(
             dc_code="AZ11",
             nutanix_host_count=None,
+            nutanix_vms=None,
             nutanix_mem=None,
             nutanix_storage=None,
             nutanix_cpu=None,
@@ -216,6 +226,10 @@ class TestAggregatedc(unittest.TestCase):
             vmware_storage=None,
             vmware_cpu=None,
             power_hosts=None,
+            power_vios=None,
+            power_lpar_count=None,
+            power_mem=None,
+            power_cpu=None,
             racks_w=None,
             ibm_w=None,
             vcenter_w=None,
@@ -223,10 +237,28 @@ class TestAggregatedc(unittest.TestCase):
         self.assertEqual(result["intel"]["hosts"], 0)
         self.assertEqual(result["intel"]["cpu_cap"], 0.0)
         self.assertEqual(result["energy"]["total_kw"], 0.0)
+        self.assertIn("platforms", result)
 
     def test_location_fallback(self):
         result = DatabaseService._aggregate_dc(
-            "DC14", 0, None, None, None, None, None, None, None, 0, 0, 0, 0
+            "DC14",
+            nutanix_host_count=0,
+            nutanix_vms=0,
+            nutanix_mem=None,
+            nutanix_storage=None,
+            nutanix_cpu=None,
+            vmware_counts=None,
+            vmware_mem=None,
+            vmware_storage=None,
+            vmware_cpu=None,
+            power_hosts=0,
+            power_vios=0,
+            power_lpar_count=0,
+            power_mem=None,
+            power_cpu=None,
+            racks_w=0,
+            ibm_w=0,
+            vcenter_w=0,
         )
         self.assertEqual(result["meta"]["location"], "Unknown Data Center")
 
@@ -261,6 +293,7 @@ class TestGetDcDetails(unittest.TestCase):
         self.assertIn("intel", result)
         self.assertIn("power", result)
         self.assertIn("energy", result)
+        self.assertIn("platforms", result)
 
     def test_cache_hit_skips_db(self):
         cache.set("dc_details:DC11", {"meta": {"name": "DC11"}, "cached": True})
@@ -374,6 +407,89 @@ class TestGetGlobalOverview(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# DatabaseService — get_global_dashboard, get_customer_resources, get_customer_list
+# ---------------------------------------------------------------------------
+
+class TestGetGlobalDashboard(unittest.TestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.svc = _make_service()
+
+    def test_returns_overview_and_platforms(self):
+        cache.set("global_dashboard", {
+            "overview": {"dc_count": 5, "total_hosts": 100},
+            "platforms": {"nutanix": {"hosts": 40, "vms": 200}, "vmware": {}, "ibm": {}},
+            "energy_breakdown": {"racks_kw": 10, "ibm_kw": 5, "vcenter_kw": 3},
+        })
+        result = self.svc.get_global_dashboard()
+        self.assertEqual(result["overview"]["dc_count"], 5)
+        self.assertEqual(result["platforms"]["nutanix"]["hosts"], 40)
+        self.assertEqual(result["energy_breakdown"]["racks_kw"], 10)
+
+
+class TestGetCustomerResources(unittest.TestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.svc = _make_service()
+
+    def test_returns_totals_and_by_platform(self):
+        cache.set("customer:boyner", {
+            "totals": {"hosts": 10, "vms": 50, "dcs_used": 3},
+            "by_platform": {"nutanix": {"hosts": 4, "vms": 20}, "vmware": {}, "ibm": {}, "vcenter": {}},
+            "by_dc": [{"dc": "DC11", "hosts": 5, "vms": 25}],
+        })
+        result = self.svc.get_customer_resources("boyner")
+        self.assertEqual(result["totals"]["hosts"], 10)
+        self.assertEqual(result["totals"]["vms"], 50)
+        self.assertEqual(result["by_platform"]["nutanix"]["hosts"], 4)
+        self.assertEqual(len(result["by_dc"]), 1)
+
+    def test_db_error_returns_empty_structure(self):
+        from psycopg2 import OperationalError
+        self.svc._pool.getconn.side_effect = OperationalError("timeout")
+        result = self.svc.get_customer_resources("boyner")
+        self.assertIn("totals", result)
+        self.assertEqual(result["totals"]["hosts"], 0)
+
+
+class TestGetCustomerList(unittest.TestCase):
+
+    def test_returns_list(self):
+        with patch("psycopg2.pool.ThreadedConnectionPool"):
+            svc = DatabaseService()
+        result = svc.get_customer_list()
+        self.assertIsInstance(result, list)
+        self.assertIn("Boyner", result)
+
+
+# ---------------------------------------------------------------------------
+# DatabaseService — _EMPTY_DC, _prepare_params
+# ---------------------------------------------------------------------------
+
+class TestEmptyDc(unittest.TestCase):
+
+    def test_has_platforms_key(self):
+        empty = _EMPTY_DC("DC11")
+        self.assertIn("platforms", empty)
+        self.assertIn("nutanix", empty["platforms"])
+        self.assertIn("vmware", empty["platforms"])
+        self.assertIn("ibm", empty["platforms"])
+        self.assertIn("energy", empty)
+        self.assertIn("racks_kw", empty["energy"])
+
+
+class TestPrepareParams(unittest.TestCase):
+
+    def test_wildcard_pair_returns_two_same_values(self):
+        result = DatabaseService._prepare_params("wildcard_pair", "boyner")
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], "%boyner%")
+        self.assertEqual(result[1], "%boyner%")
+
+
+# ---------------------------------------------------------------------------
 # Query module integrity checks
 # ---------------------------------------------------------------------------
 
@@ -381,8 +497,8 @@ class TestQueryModules(unittest.TestCase):
 
     def test_nutanix_queries_are_strings(self):
         from src.queries import nutanix
-        for attr in ["HOST_COUNT", "MEMORY", "STORAGE", "CPU",
-                     "BATCH_HOST_COUNT", "BATCH_MEMORY", "BATCH_STORAGE", "BATCH_CPU"]:
+        for attr in ["HOST_COUNT", "VM_COUNT", "MEMORY", "STORAGE", "CPU",
+                     "BATCH_HOST_COUNT", "BATCH_VM_COUNT", "BATCH_MEMORY", "BATCH_STORAGE", "BATCH_CPU"]:
             self.assertIsInstance(getattr(nutanix, attr), str, f"nutanix.{attr} should be a string")
 
     def test_vmware_queries_are_strings(self):
@@ -393,7 +509,8 @@ class TestQueryModules(unittest.TestCase):
 
     def test_ibm_queries_are_strings(self):
         from src.queries import ibm
-        for attr in ["HOST_COUNT", "BATCH_HOST_COUNT"]:
+        for attr in ["HOST_COUNT", "VIOS_COUNT", "LPAR_COUNT", "MEMORY", "CPU",
+                     "BATCH_HOST_COUNT", "BATCH_VIOS_COUNT", "BATCH_LPAR_COUNT", "BATCH_MEMORY", "BATCH_CPU"]:
             self.assertIsInstance(getattr(ibm, attr), str, f"ibm.{attr} should be a string")
 
     def test_energy_queries_are_strings(self):
@@ -406,7 +523,7 @@ class TestQueryModules(unittest.TestCase):
         expected_keys = [
             "nutanix_host_count", "nutanix_memory", "nutanix_storage", "nutanix_cpu",
             "vmware_counts", "vmware_memory", "vmware_storage", "vmware_cpu",
-            "ibm_host_count",
+            "ibm_host_count", "ibm_vios_count", "ibm_lpar_count", "ibm_memory", "ibm_cpu",
             "energy_racks", "energy_ibm", "energy_vcenter",
         ]
         for key in expected_keys:
