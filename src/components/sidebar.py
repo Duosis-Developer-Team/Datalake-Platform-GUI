@@ -35,6 +35,16 @@ def create_sidebar(active_path):
             color="indigo",
             style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"}
         ),
+        dmc.NavLink(
+            label="Query Explorer",
+            leftSection=DashIconify(icon="solar:code-square-bold-duotone", width=20),
+            href="/query-explorer",
+            className="sidebar-link",
+            active=active_path == "/query-explorer",
+            variant="subtle",
+            color="indigo",
+            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"}
+        ),
         # Pasif Linkler (Görsellik İçin)
         dmc.NavLink(
             label="Analytics",

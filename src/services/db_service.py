@@ -9,6 +9,7 @@ from psycopg2 import OperationalError
 from src.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
 from src.queries import loki as lq
 from src.services import cache_service as cache
+from src.services import query_overrides as qo
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,68 @@ class DatabaseService:
             except Exception:
                 pass
         return []
+
+    # ------------------------------------------------------------------
+    # Query Explorer: run registered query by key and return structured result
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _prepare_params(params_style: str, user_input: str):
+        """
+        Convert user input string to (tuple or list) for cursor.execute.
+        user_input: single value or comma-separated for array_*.
+        """
+        if params_style in ("array_wildcard", "array_exact"):
+            parts = [p.strip() for p in user_input.split(",") if p.strip()]
+            if params_style == "array_wildcard":
+                return ([f"%{p}%" for p in parts],)
+            return (parts,)
+        if params_style == "wildcard":
+            return (f"%{user_input.strip()}%",)
+        return (user_input.strip(),)
+
+    def execute_registered_query(self, query_key: str, params_input: str) -> dict:
+        """
+        Execute a query by registry key with given params (string; array params as comma-separated).
+        Returns:
+          - value: {"result_type": "value", "value": ...}
+          - row:   {"result_type": "row", "columns": [...], "data": [...]}
+          - rows:  {"result_type": "rows", "columns": [...], "data": [[...], ...]}
+          - error: {"error": "message"}
+        """
+        entry = qo.get_merged_entry(query_key)
+        if not entry:
+            return {"error": f"Unknown query key: {query_key}"}
+        sql = entry.get("sql")
+        result_type = entry.get("result_type", "value")
+        params_style = entry.get("params_style", "wildcard")
+        if not sql:
+            return {"error": f"No SQL for query: {query_key}"}
+        try:
+            params = self._prepare_params(params_style, params_input or "")
+        except Exception as exc:
+            return {"error": f"Invalid params: {exc}"}
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    desc = cur.description
+                    columns = [d[0] for d in desc] if desc else []
+                    if result_type == "value":
+                        row = cur.fetchone()
+                        value = row[0] if row and row[0] is not None else 0
+                        return {"result_type": "value", "value": value}
+                    if result_type == "row":
+                        row = cur.fetchone()
+                        return {"result_type": "row", "columns": columns, "data": list(row) if row else []}
+                    rows = cur.fetchall()
+                    return {"result_type": "rows", "columns": columns, "data": [list(r) for r in rows]}
+        except OperationalError as exc:
+            logger.warning("execute_registered_query %s: %s", query_key, exc)
+            return {"error": f"Database error: {exc}"}
+        except Exception as exc:
+            logger.warning("execute_registered_query %s: %s", query_key, exc)
+            return {"error": str(exc)}
 
     # ------------------------------------------------------------------
     # Dynamic DC list from loki_locations

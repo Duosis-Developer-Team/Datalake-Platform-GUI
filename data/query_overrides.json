@@ -1,0 +1,7 @@
+{
+  "nutanix_host_count": {
+    "sql": "SELECT SUM(t.\"Host Count\") as \"Total Host Count\"\nFROM (\n    SELECT DISTINCT ON (cluster_name)\n    num_nodes as \"Host Count\"\n    FROM nutanix_cluster_metrics\n    WHERE cluster_name ILIKE %s\n    AND (collection_time >= NOW() - interval '1 month')\n    ORDER BY cluster_name, \"collection_time\" DESC\n) t",
+    "result_type": "value",
+    "params_style": "wildcard"
+  }
+}

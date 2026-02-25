@@ -1,3 +1,4 @@
+import logging
 import dash
 from dash import Dash, html, dcc, page_container, _dash_renderer
 import dash_mantine_components as dmc
@@ -5,6 +6,13 @@ from dotenv import load_dotenv
 
 # 0. Load .env before any service import so DB credentials are available
 load_dotenv()
+
+# Configure logging so scheduler and DB service INFO messages appear in the terminal
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 from src.components.sidebar import create_sidebar
 from src.services.shared import service
@@ -88,4 +96,7 @@ def update_sidebar(pathname):
 _scheduler = start_scheduler(service)
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8050)
+    # use_reloader=False: single process so Ctrl+C fully stops the app.
+    # With reloader (default when debug=True), a child process keeps listening on 8050
+    # and the UI stays reachable after Ctrl+C.
+    app.run(debug=True, port=8050, use_reloader=False)
