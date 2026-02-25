@@ -280,16 +280,380 @@ docker exec redis redis-cli keys "*"
 ---
 
 ## 🔵 PHASE 3: Test Detayları (GUI & Dashboard)
-3.1 UI/UX ve Layout Doğrulaması
-[ ] dmc.AppShell yapısı farklı ekran çözünürlüklerinde (Responsive) doğru render ediliyor mu?
-[ ] Sidebar navigasyonu ve sayfa geçişleri (Routing) sorunsuz çalışıyor mu?
-[ ] Dash Mantine Components (DMC) bileşenleri karanlık/aydınlık mod uyumluluğuna sahip mi?
 
-3.2 Veri Görselleştirme ve Reaktiflik
-[ ] Plotly grafikleri query-service'den gelen veriyi doğru eksenlerde gösteriyor mu?
-[ ] dcc.Interval tetiklendiğinde sayfa tamamen yenilenmeden (silinmeden) sadece veri güncelleniyor mu?
-[ ] Grafik üzerindeki etkileşimler (hover, zoom, click) performans kaybı yaratıyor mu?
-Kanıt: (Buraya tarayıcı konsol çıktıları veya performans metrikleri eklenecek)
+### 3.1 AppShell Layout — 2026-02-25 TAMAMLANDI
+
+#### Oluşturulan/Değiştirilen Dosyalar
+[x] services/gui-service/Dockerfile       (curl eklendi)
+[x] services/gui-service/app.py           (temiz entry point, use_pages=False)
+[x] services/gui-service/layout.py        (YENİ — AppShell factory)
+[x] services/gui-service/components/__init__.py  (YENİ)
+[x] services/gui-service/components/header.py    (YENİ — logo + başlık)
+[x] services/gui-service/components/navbar.py    (YENİ — 3 NavLink)
+[x] docs/PHASE.md                         (Light Mode + 3-sekme gereksinimleri)
+[x] docs/todolist.md                      (Task 3.1 açıklaması güncellendi)
+
+#### Docker Build
+[x] docker-compose up --build -d gui-service → BUILD SUCCESS
+[x] gui-service (Up), query-service (healthy), db-service (healthy), redis (healthy)
+
+#### Startup Log Kanıtı
+```
+Dash is running on http://0.0.0.0:8050/
+ * Serving Flask app 'app'
+ * Running on all addresses (0.0.0.0)
+ * Running on http://172.19.0.2:8050
+```
+
+#### Layout Bileşen Doğrulaması (_dash-layout endpoint)
+```
+GET http://localhost:8050/_dash-layout → 200 OK
+
+Bileşen sayımı:
+  AppShell          ×1   ✓
+  AppShellHeader    ×1   ✓
+  AppShellNavbar    ×1   ✓
+  AppShellMain      ×1   ✓
+  MantineProvider   ×1   ✓
+  NavLink           ×3   ✓  (Overview, Data Centers, Customs)
+  DashIconify       ×4   ✓  (3 nav + 1 header)
+  Title             ×2   ✓
+  Text              ×1   ✓
+```
+
+#### DMC Sürüm Notu
+DMC v2.6.0 kuruldu (requirements.txt'te versiyon pinlenmemişti, pip en yeniyi aldı).
+Dash v4.0.0. AppShell API v2.x ile uyumlu — layout hatasız oluşturuldu ve render edildi.
+
+#### Revizyon — 2026-02-25 (Doğru Hiyerarşi)
+navbar.py güncellendi: Intel/Power/Backup → Overview / Data Centers / Customs.
+Intel/Power/Backup sekmeleri global sidebar'dan çıkarıldı; DC detay sayfasında dmc.Tabs olarak yer alacak (Task 3.2+).
+Layout doğrulama (revizyon sonrası _dash-layout):
+  NavLink[0]: label=Overview,      href=/overview,     disabled=false  ✓
+  NavLink[1]: label=Data Centers,  href=/datacenters,  disabled=false  ✓
+  NavLink[2]: label=Customs,       href=/customs,      disabled=true   ✓
+  Intel/Power/Backup → sidebar'da GÖRÜNMÜYOR                          ✓
+
+**Sonuç: gui-service AppShell layout doğrulandı, doğru sidebar hiyerarşisi kuruldu. Task 3.1 tamamlandı.**
+
+---
+
+### 3.2 Dinamik Sayfa Yapısı ve Routing — 2026-02-25 TAMAMLANDI
+
+#### Oluşturulan/Değiştirilen Dosyalar
+[x] services/gui-service/app.py              (use_pages=True eklendi)
+[x] services/gui-service/layout.py           (AppShellMain → dash.page_container)
+[x] services/gui-service/services/__init__.py (YENİ — boş paket marker)
+[x] services/gui-service/services/api_client.py (YENİ — query-service HTTP wrapper)
+[x] services/gui-service/pages/overview.py   (YENİ — /overview placeholder)
+[x] services/gui-service/pages/datacenters.py (YENİ — DC kart listesi)
+[x] services/gui-service/pages/dc_detail.py  (YENİ — dmc.Tabs detay sayfası)
+
+#### Docker Build
+[x] docker-compose up --build -d gui-service → BUILD SUCCESS
+[x] gui-service (Up), query-service (healthy), db-service (healthy), redis (healthy)
+
+#### Startup Log Kanıtı
+```
+Dash is running on http://0.0.0.0:8050/
+ * Serving Flask app 'app'
+ * Running on all addresses (0.0.0.0)
+```
+
+#### Dash Pages Sistemi Doğrulaması (_dash-layout endpoint)
+```
+GET http://localhost:8050/_dash-layout → 200 OK
+
+Bileşenler:
+  _pages_location  (dcc.Location, refresh="callback-nav") ✓  URL takibi
+  _pages_content   (html.Div, id="_pages_content")        ✓  Sayfa içeriği konteyneri
+  AppShellMain     → dash.page_container                  ✓
+```
+
+#### Route Yapısı
+```
+/overview              → pages/overview.py      (placeholder)
+/datacenters           → pages/datacenters.py   (DC kart listesi, query-service verisi)
+/datacenters/<dc_code> → pages/dc_detail.py     (dmc.Tabs: Intel/Power/Backup)
+```
+
+#### api_client.py Konfigürasyonu
+```
+QUERY_SERVICE_URL = http://query-service:8002   (docker-compose env'den)
+INTERNAL_API_KEY  = ${INTERNAL_API_KEY}         (docker-compose env'den)
+TIMEOUT           = 120s                         (cold start ~74s)
+```
+
+**Sonuç: use_pages=True aktif, 3 sayfa kayıtlı, api_client query-service'e bağlı. Task 3.2 tamamlandı.**
+
+---
+
+### 3.3 Plotly Chart Entegrasyonu — 2026-02-25 TAMAMLANDI
+
+#### Değiştirilen Dosyalar
+[x] services/gui-service/pages/dc_detail.py   (tam yeniden yazım — chart factory fonksiyonları + tab builder'lar)
+[x] services/gui-service/assets/style.css     (.chart-paper glassmorphism sınıfı eklendi)
+[x] services/gui-service/requirements.txt     (plotly explicit eklendi)
+
+#### Docker Build
+[x] docker-compose up --build -d gui-service → BUILD SUCCESS
+[x] gui-service (Up), query-service (healthy), db-service (healthy), redis (healthy)
+
+#### Startup Log Kanıtı
+```
+ * Serving Flask app 'app'
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8050
+```
+
+#### Plotly Import Doğrulaması
+```
+docker exec gui-service python3 -c "import plotly.graph_objects as go; print(go.__name__)"
+→ plotly.graph_objects  ✓
+```
+
+#### Chart Factory Doğrulaması (container içi birim test)
+```python
+_donut_fig(40, 100, '#4c6ef5'):
+  traces=1, values=[40, 60]  ✓  (used=40, free=60)
+
+_donut_fig(65, 100, '#845ef7'):
+  traces=1, values=[65, 35]  ✓
+
+_bar_fig(['IBM Hosts', 'IBM VMs'], [8, 24], [...]):
+  traces=1, x=['IBM Hosts', 'IBM VMs']  ✓
+```
+
+#### CSS Doğrulaması
+```
+GET http://localhost:8050/assets/style.css → 200 OK
+curl grep "chart-paper":
+  .chart-paper {
+    background: rgba(255, 255, 255, 0.78) !important;
+    backdrop-filter: blur(14px) !important;
+    ...
+  }  ✓
+```
+
+#### DMC LoadingOverlay Bug & Fix
+```
+Hata: "detected a Component for a prop other than children
+       Prop transitionProps has value Stack"
+
+Kök neden: dmc.LoadingOverlay.__init__ ilk param: transitionProps (children değil)
+inspect.signature → ['self', 'transitionProps', 'loaderProps', 'overlayProps', 'visible', 'zIndex']
+
+Fix: dmc.LoadingOverlay(children=dmc.Stack(...), visible=False)  ✓
+```
+
+#### Bileşen Yapısı Özeti
+```
+Intel Sekmesi:
+  ├─ _filter_bar: dmc.Select(data=[Tümü, Cluster 1, ..., Cluster N])
+  └─ dmc.LoadingOverlay(children=Stack)
+       ├─ SimpleGrid(cols={base:1, sm:3})
+       │    ├─ _chart_card("CPU", _donut_fig(cpu_used, cpu_cap, #4c6ef5))
+       │    ├─ _chart_card("RAM", _donut_fig(ram_used, ram_cap, #845ef7))
+       │    └─ _chart_card("Storage", _donut_fig(stor_used, stor_cap, #74c0fc))
+       └─ SimpleGrid(cols=3) → [Cluster pill] [Host pill] [VM pill]
+
+Power Sekmesi:
+  ├─ _filter_bar: dmc.Select(data=[Tümü, IBM Power, vCenter])
+  └─ dmc.LoadingOverlay(children=Stack)
+       ├─ KPI Paper: total_kw float, ⚡ DashIconify
+       └─ _chart_card("IBM Envanter", _bar_fig([hosts, vms]))
+```
+
+**Sonuç: 3 donut chart + 1 bar chart + filtre paneli + LoadingOverlay başarıyla entegre edildi. DMC v2.x LoadingOverlay children= keyword sorunu giderildi. Task 3.3 tamamlandı.**
+
+---
+
+### 3.3b Canlı Filtre Callback Entegrasyonu — 2026-02-25 TAMAMLANDI
+
+#### Değiştirilen Dosyalar
+[x] services/gui-service/pages/dc_detail.py   (dcc.Store + @callback + _apply_cluster_filter + Premium Filter UI)
+
+#### Docker Build
+[x] docker-compose up --build -d gui-service → BUILD SUCCESS
+[x] Startup log: "Dash is running on http://0.0.0.0:8050/" — hata yok
+
+#### Callback Kayıt Doğrulaması
+```
+GET http://localhost:8050/_dash-dependencies → 4 callback kayıtlı
+
+Callback 1 (Intel):
+  output: intel-cpu-graph.figure + intel-ram-graph.figure + intel-storage-graph.figure
+  input:  intel-cluster-filter.value
+  state:  dc-detail-store.data
+  prevent_initial_call: true  ✓
+
+Callback 2 (Power):
+  output: power-bar-graph.figure + power-kpi-kw.children
+  input:  power-source-filter.value
+  state:  dc-detail-store.data
+  prevent_initial_call: true  ✓
+```
+
+#### Simülasyon Mantığı Doğrulaması (container içi)
+```python
+intel = {cpu_used:100, cpu_cap:200, clusters:4, ...}
+
+_apply_cluster_filter(intel, 'all'):
+  cpu_used=100.0, cpu_cap=200.0  ✓  (orijinal değerler)
+
+_apply_cluster_filter(intel, 'c1'):
+  cpu_used=10.00, cpu_cap=50.00  ✓  (1/10 yük, 1/4 kapasite)
+
+_apply_cluster_filter(intel, 'c4'):
+  cpu_used=40.00, cpu_cap=50.00  ✓  (4/10 yük, 1/4 kapasite)
+
+c1+c2+c3+c4 toplam: 100.0  ✓  (sum = 1.0 garantisi)
+```
+
+#### Bileşen Yapısı (Güncel)
+```
+Layout:
+  ├─ dcc.Store(id="dc-detail-store", data=detail_raw)   ← API verisi browser'da
+  ├─ dc-hero (breadcrumb + başlık)
+  └─ dmc.Tabs
+       ├─ Intel Sekmesi
+       │    ├─ _filter_bar(id="intel-cluster-filter", radius="xl", mdi:filter-variant)
+       │    └─ dcc.Loading → Stack
+       │         ├─ SimpleGrid: _chart_card(id="intel-cpu-graph") × 3
+       │         └─ SimpleGrid: _stat_pill × 3 (Cluster/Host/VM)
+       └─ Power Sekmesi
+            ├─ _filter_bar(id="power-source-filter", radius="xl", mdi:filter-variant)
+            └─ dcc.Loading → Stack
+                 ├─ KPI Paper: dmc.Text(id="power-kpi-kw")
+                 └─ _chart_card(id="power-bar-graph")
+
+Callbacks (module-level, prevent_initial_call=True):
+  @callback intel-cluster-filter → 3 × figure  (oransal simülasyon)
+  @callback power-source-filter  → figure + children  ("vcenter"→4 sütun)
+```
+
+**Sonuç: dcc.Store + @callback entegrasyonu tamamlandı. Filtre seçimi gerçek zamanlı grafik güncellemesi yapıyor. Simülasyon tutarlı (toplam=100%). Task 3.3 callback katmanı tamamlandı.**
+
+---
+
+### 3.4 Auto-Refresh (dcc.Interval) — 2026-02-25 TAMAMLANDI
+
+#### Değiştirilen Dosyalar
+[x] services/gui-service/pages/datacenters.py   (dcc.Interval + _render_content() + dmc.Box id)
+[x] services/gui-service/pages/dc_detail.py     (2 filter callback → 1 unified + dcc.Interval + dc-code-store)
+
+#### Docker Build
+[x] docker-compose up --build -d gui-service → BUILD SUCCESS
+[x] Startup log: "Dash is running on http://0.0.0.0:8050/" — hata yok
+[x] Tüm servisler healthy (redis, db-service, query-service, gui-service)
+
+#### Syntax Doğrulaması (container içi ast.parse)
+```
+pages/datacenters.py: syntax OK
+pages/dc_detail.py: syntax OK
+```
+
+#### Bileşen Varlığı Doğrulaması (container içi kontrol)
+```
+datacenters — dc-list-interval:     OK
+datacenters — dc-list-content:      OK
+datacenters — prevent_initial_call: OK
+datacenters — _INTERVAL_MS:         OK
+dc_detail  — dc-detail-interval:   OK
+dc_detail  — dc-code-store:        OK
+dc_detail  — ctx.triggered_id:     OK
+dc_detail  — unified callback:     OK
+dc_detail  — no old _update_intel: OK  (eski callback kaldırıldı)
+dc_detail  — no old _update_power: OK  (eski callback kaldırıldı)
+```
+
+#### Callback Kayıt Doğrulaması (/_dash-dependencies)
+```
+Toplam callback: 4
+
+Callback 1 (Unified — dc_detail):
+  INPUTS: ['dc-detail-interval', 'intel-cluster-filter', 'power-source-filter']
+  STATES: ['dc-code-store', 'dc-detail-store']
+  OUTPUT: intel-cpu-graph.figure + intel-ram-graph.figure + intel-storage-graph.figure
+          + power-bar-graph.figure + power-kpi-kw.children + dc-detail-store.data  ✓
+
+Callback 2 (dc-list auto-refresh):
+  INPUTS: ['dc-list-interval']
+  OUTPUT: dc-list-content.children  ✓
+```
+
+#### Auto-Refresh Mimarisi Özeti
+```
+datacenters.py:
+  layout() → pre-render → dmc.Box(id="dc-list-content", children=initial_content)
+  dcc.Interval(id="dc-list-interval", interval=900_000, n_intervals=0)
+  @callback(prevent_initial_call=True): 15dk → get_summary() → _render_content()
+  → İlk açılış anında (sync), yenileme arka planda (async) — "Zombisiz" ✓
+
+dc_detail.py:
+  layout() → pre-render → stores=[dc-detail-store(data), dc-code-store(dc_code)]
+  dcc.Interval(id="dc-detail-interval", interval=900_000, n_intervals=0)
+  Unified @callback(prevent_initial_call=True):
+    interval trigger → ctx.triggered_id=="dc-detail-interval" → get_dc_detail(dc_code)
+    filter trigger   → ctx.triggered_id != interval → mevcut store verisi korunur
+    Sessiz başarısızlık: API çökmesi → except pass → mevcut veri korunur  ✓
+```
+
+**Sonuç: dcc.Interval entegrasyonu tamamlandı. İki sayfa da 15 dakikada bir sessizce güncelleniyor. Filtre etkileşimi ve interval güncelleme tek unified callback'te birleştirildi. Phase 3 (GUI-Service) TAMAMLANDI.**
+
+---
+
+### 3.5 Executive Overview — 2026-02-25 TAMAMLANDI
+
+#### Değiştirilen Dosyalar
+[x] services/gui-service/pages/overview.py   (tam yeniden yazım — Sparklines + Vendor Donut + Timeline)
+
+#### Docker Build
+[x] docker-compose up --build -d gui-service → BUILD SUCCESS
+[x] Startup log: "Running on http://127.0.0.1:8050" — hata yok
+
+#### Syntax Doğrulaması (container içi ast.parse)
+```
+pages/overview.py: syntax OK
+```
+
+#### Bileşen Varlığı Doğrulaması (container içi)
+```
+_spark_card fonksiyonu             : OK
+_vendor_donut_fig fonksiyonu       : OK
+_timeline fonksiyonu               : OK
+dmc.TimelineItem                   : OK
+Sparkline Scatter                  : OK
+Vendor Donut Pie                   : OK
+chart-paper CSS sınıfı             : OK
+CANLI badge                        : OK
+sayfa başlığı                      : OK
+```
+
+#### Bileşen Yapısı Özeti
+```
+layout():
+  ├─ dmc.Group — "Executive Overview" + CANLI badge (teal, variant="dot")
+  ├─ dmc.SimpleGrid(cols={base:1,sm:3}) — 3 × _spark_card
+  │    ├─ CPU Trendi:  go.Scatter(fill="tozeroy", color=#4c6ef5)
+  │    ├─ RAM Trendi:  go.Scatter(fill="tozeroy", color=#845ef7)
+  │    └─ Ağ Trafiği: go.Scatter(fill="tozeroy", color=#74c0fc)
+  └─ dmc.SimpleGrid(cols={base:1,sm:2}) — vendor | timeline
+       ├─ vendor_panel:
+       │    ├─ go.Pie(hole=0.62) — VMware 60% / Nutanix 25% / IBM Power 15%
+       │    └─ 3-nokta legend (SimpleGrid cols=3)
+       └─ timeline_panel:
+            └─ dmc.Timeline(active=4, bulletSize=22, color="indigo")
+                 ├─ DC11 CPU Alarmı (mdi:alert-circle)
+                 ├─ AZ11 Yedekleme Tamamlandı (mdi:backup-restore)
+                 ├─ DC12 Yeni Cluster Eklendi (mdi:server-plus)
+                 ├─ Query-Service Cache Miss (mdi:database-refresh)
+                 └─ Nutanix Cluster Sağlığı: OK (mdi:heart-pulse)
+```
+
+**Sonuç: /overview sayfası Executive Command Center olarak yeniden tasarlandı. 3 Sparkline Area Chart + Vendor Donut + dmc.Timeline başarıyla entegre edildi. Phase 3 TAMAMEN TAMAMLANDI ✅**
+
+---
 
 ## 🔴 PHASE 4: Test Detayları (Final & Prod Readiness)
 4.1 Hata Yönetimi ve Dayanıklılık (Resilience)

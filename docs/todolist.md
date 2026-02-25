@@ -17,10 +17,11 @@ Hedef: Veri kaynaklarına özel sorguların yönetilmesi ve performans optimizas
 
 ## 🔵 AŞAMA 3: Kullanıcı Arayüzü ve Entegrasyon (GUI-Service)
 Hedef: Plotly Dash ve DMC ile modern, hızlı ve dinamik bir dashboard sunumu.
-[ ] Task 3.1: dmc.AppShell kullanarak Sidebar ve Header yapısının (Layout) kurulması.
-[ ] Task 3.2: Dinamik sayfa yapısının (Multi-page app) ve routing mekanizmasının oluşturulması.
-[ ] Task 3.3: Plotly grafik bileşenlerinin (Charts) query-service verileriyle beslenmesi.
-[ ] Task 3.4: dcc.Interval kullanarak 15 dakikalık otomatik veri yenileme (Auto-refresh) döngüsünün kurulması.
+[x] Task 3.1: dmc.AppShell + Light Mode layout; Header (logo+başlık), Global Sidebar (3 NavLink: Overview, Data Centers, Customs), Dockerfile curl fix. NOT: Intel/Power/Backup global sidebar'da değil, DC detay sayfasında dmc.Tabs olarak yer alacak (Task 3.2+).
+[x] Task 3.2: /datacenters (DC kart listesi + 4'lü Stats Row + RingProgress) + /datacenters/{dc_code} detay sayfası (Hero Section + dmc.Tabs: Intel/Power/Backup) + dcc.Location routing + Bulutistan Kurumsal Görsel Standardı: Mesh Gradient body, Glassmorphism, Floating Sidebar (cam panel, border-radius 20px), Active NavLink neon indikatör şerit, DC Card hover glow+lift.
+[x] Task 3.3: Plotly grafik bileşenlerinin (Charts) query-service verileriyle beslenmesi — Intel sekmesi (CPU/RAM/Storage go.Pie donut + merkez % annotation), Power sekmesi (enerji KPI kutusu + IBM Hosts/VMs go.Bar), dmc.LoadingOverlay→dcc.Loading(type="dot"), chart-paper glassmorphism, responsive SimpleGrid (base:1 → sm:3) + Canlı Filtre Callback'leri: dcc.Store(dc-detail-store) + @callback (Intel: cluster seçimi → 3 donut güncelleme, oransal simülasyon; Power: kaynak seçimi → bar + KPI metni güncelleme, vcenter → 4 sütun), Premium Filter UI (mdi:filter-variant ThemeIcon, radius="xl", glassmorphism Paper).
+[x] Task 3.4: dcc.Interval(900_000ms) ile 15 dakikalık "Zombisiz" otomatik veri yenileme döngüsünün kurulması — datacenters.py: dcc.Interval + _render_content() callback (prevent_initial_call=True, initial render fast); dc_detail.py: eski 2 filter callback → 1 unified _refresh_and_render() (interval+filtre Input, dc-code-store State, ctx.triggered_id ile veri fetch kararı, sessiz başarısızlık).
+[x] Task 3.5: /overview Executive Command Center — 3 Sparkline (go.Scatter fill=tozeroy, CPU/RAM/Ağ, 24 saatlik mock seri), Vendor Donut (go.Pie hole=0.62, VMware/Nutanix/IBM), dmc.Timeline Sistem Olay Günlüğü (5 simüle olay, DashIconify bullet), CANLI badge, tüm paneller chart-paper glassmorphism. Phase 3 TAMAMEN TAMAMLANDI ✅
 
 ## 🔴 AŞAMA 4: Yayına Hazırlık ve Optimizasyon
 Hedef: Hata yönetimi, loglama ve stabilite.

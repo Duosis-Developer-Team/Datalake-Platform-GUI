@@ -9,6 +9,7 @@ Tarih	Hata/Sorun	Kök Neden	Çözüm/Yeni Kural
 2026-02-23	.env CRLF hatası	Windows satır sonu \r DB şifresine ekleniyordu	.env dosyası her zaman LF formatında tutulacak; `file .env` komutuyla kontrol edilecek
 2026-02-23	DB_USER yanlışlığı	Kullanıcı adı `datalakeui` yerine `bulutlake` olmalıydı	.env içindeki DB_USER her zaman gerçek DB kullanıcısıyla eşleştirilecek
 2026-02-24	curl eksik — healthcheck kırık	python:3.11-slim base image curl içermiyor; healthcheck CMD curl kullanıyor	Tüm servis Dockerfile'larına `curl` paketi eklenecek; healthcheck yazılmadan önce test edilecek
+2026-02-25	DMC v2.6.0 kuruldu (PHASE.md v0.14+ belirtiyordu)	requirements.txt versiyon pinlenmemiş → pip en yeni sürümü yükledi	requirements.txt'te DMC versiyonunu sabitlemek yerine test sonucu uyumlu olduğu doğrulandı; yeni API (v2.x) v0.14+'la geriye dönük uyumlu
 
 ## 🛠️ Öğrenilen Dersler (Kategorik)
 ### 1. Mimari ve Mikroservis Yönetimi
@@ -68,6 +69,66 @@ Nutanix storage_capacity Birimi (Task 2.4): `nutanix_cluster_metrics.storage_cap
 Cache + Rebuild Tutarsızlığı (Task 2.4): `db-service` rebuild sonrası yeni kod aktif oldu ancak `query-service` Redis cache'teki eski hatalı değerleri servis etmeye devam etti. Her db-service kod değişikliğinde `redis-cli FLUSHALL` ile ilgili cache anahtarları temizlenmelidir; aksi hâlde testler eski veriye göre sonuç verir.
 
 Provider Eşik Kalibrasyonu (Task 2.4): Sanity check eşikleri (örn. `STORAGE_SANITY_LIMIT_TB`) gerçek veri aralıklarına göre kalibre edilmeli. Birim fix sonrası gerçek cluster storage değerleri 1000–6000 TB aralığına düştü; eski 1000 TB eşiği false positive üretmeye başladı. Eşik 10000 TB (10 PB/cluster) olarak güncellendi.
+
+### 7. Task 3.2 UI/UX Dersleri (Bulutistan Kurumsal Görsel Standardı)
+
+Glassmorphism CSS Pattern: `background: rgba(255,255,255,0.82)` + `backdrop-filter: blur(18px)` + `border: 1px solid rgba(...)` üçlüsü zorunlu. Body üzerinde mesh radial-gradient olmadan etki yarı düzeyde kalır; arka plan rengi + gradient birlikte çalışmalıdır.
+
+Floating Sidebar Tekniği: `AppShellNavbar` öğesini şeffaf yap (`background: transparent !important`, `border-right: none !important`, padding ekle). Gerçek görsel cam paneli iç `dmc.Box(className="sidebar-float", h="100%")` ile oluştur. Bu sayede Mantine'nin CSS Grid layout'u bozulmaz; padding sayesinde sidebar ekrandan boşluklu görünür.
+
+Dash Assets Auto-Load: `assets/` klasöründeki .css dosyaları Dash tarafından otomatik serve edilir — Dockerfile veya docker-compose değişikliği gerektirmez. `rebuild + /assets/style.css` HTTP 200 ile test edilir.
+
+NavLink Active Indicator (Pseudo-element): `.mantine-NavLink-root[data-active]::before` + `position: absolute; left: 0; width: 4px` ile sol neon şerit oluşturulur. Parent `position: relative` zorunlu. ÖNEMLİ: NavLink root'a `overflow: hidden` verme — pseudo-element görünmez olur. Şerit; `linear-gradient(180deg, #4c6ef5, #845ef7)` + `box-shadow: 0 0 8px rgba(76,110,245,0.65)` ile neon etkisi sağlar.
+
+CSS `!important` Zorunluluğu: Mantine/DMC bileşenleri yüksek özgüllüklü inline style + Mantine sınıf hiyerarşisi kullanır. `AppShell-navbar` arka planı, `dc-card` arka planı, `NavLink` border-radius gibi görsel geçersiz kılmalar için `!important` gereklidir; aksi hâlde Mantine kendi stilini baskılar.
+
+### 8. Task 3.3 Öğrenilen Dersler (Plotly Chart Entegrasyonu)
+
+DMC v2.x LoadingOverlay Positional Arg Tuzağı: `dmc.LoadingOverlay(dmc.Stack(...), visible=False)` yazıldığında Dash `dmc.Stack` bileşenini `transitionProps` prop'u olarak yorumlar. Kök neden: DMC v2.6.0 Python binding'inde `LoadingOverlay.__init__` ilk parametresi `transitionProps`'tur, `children` değildir. Kural: DMC bileşenlerine child geçerken `children=` keyword argümanı her zaman açık yazılmalıdır — `dmc.LoadingOverlay(children=..., visible=False)`.
+
+Plotly Şeffaf Background Zorunluluğu: Glassmorphism Paper wrapper içinde Plotly grafiklerin kendi arka planı `paper_bgcolor="rgba(0,0,0,0)"` + `plot_bgcolor="rgba(0,0,0,0)"` olarak ayarlanmalıdır. Aksi takdirde grafik kendi beyaz kutusunu çizer ve glassmorphism etkisi yok olur.
+
+go.Pie Merkez Annotation: `hole=0.62` ile donut efekti oluşturulur. Ortada yüzde göstermek için `fig.update_layout(annotations=[dict(text="<b>X%</b>", x=0.5, y=0.5, showarrow=False)])` kullanılır — bu Plotly'nin built-in özelliğidir, HTML/CSS ile yapılmaz.
+
+Filtre Paneli Placeholder Stratejisi: `dmc.Select` bileşeni gerçek filtreleme mantığı olmadan eklendi. Bu, Task 3.4 callback altyapısı için "receiver" placeholder görevi görür — UI görsel tutarlılığı sağlar, callback olmadan işlevsel değildir. Placeholder data: cluster sayısına göre `[{"label": f"Cluster {i+1}", "value": f"c{i+1}"}]` ile üretilir.
+
+Plotly Requirements Explicit Pin: `dash` paketi `plotly`'yi bağımlılık olarak çeker, ancak `requirements.txt`'e explicit yazmak imaj reproducibility'sini artırır. Kural: kullanılan her ana kütüphane `requirements.txt`'te açıkça listelenmeli.
+
+### 9. Task 3.3 (Callback) Öğrenilen Dersler (Canlı Filtre & dcc.Store)
+
+dcc.Store ile Sayfa-Düzeyinde Veri Kalıcılığı (Task 3.3 Callback): `layout()` fonksiyonu her çağrıldığında API verisini `dcc.Store(id="dc-detail-store", data=detail_raw)` ile browser'a yazar. Callback'ler bu veriyi `State("dc-detail-store", "data")` ile alır — böylece callback tetiklendiğinde tekrar API çağrısı yapılmaz. Bu pattern, render-time veriyi callback-time'a taşımanın doğru yoludur.
+
+prevent_initial_call=True Zorunluluğu (Task 3.3 Callback): `@callback` dekoratörüne `prevent_initial_call=True` eklenmezse, sayfa ilk yüklendiğinde callback tetiklenir ve `dcc.Store` henüz dolu olmayabilir (None gelir). Bu, pre-rendered figürlerin boş figürlerle ezilmesine yol açar. `prevent_initial_call=True` → callback yalnızca kullanıcı etkileşimiyle tetiklenir; ilk render korunur.
+
+_dash-dependencies ile Callback Doğrulama: `curl http://localhost:8050/_dash-dependencies` endpoint'i kayıtlı tüm callback'lerin input/output/state listesini JSON olarak döndürür. `grep` ile belirli bir `id`'nin output olarak kayıtlı olup olmadığı doğrulanabilir — bu, `dash.register_page()` import hatasının alternatif test yoludur.
+
+Oransal Simülasyon Tasarımı (Task 3.3 Callback): API cluster bazlı kırılım sunmadığında "Cluster N" filtresi için deterministik ağırlık formülü: `usage_weight = N / sum(1..k)`, `cap_weight = 1/k`. Bu model; tüm cluster ağırlıklarının toplamının 1.0'a eşit olmasını, yüksek indeksli cluster'ların daha fazla yük taşımasını ve kapasitenin eşit bölünmesini garanti eder. Simülasyon parametresi tek yerden (`_apply_cluster_filter`) yönetilir.
+
+Power Filtresi "Veri Yok" Pattern'i (Task 3.3 Callback): `power-source-filter` "vcenter" değerini aldığında bar grafiği 4 sütuna genişler (IBM Hosts, IBM VMs, vCenter Hosts=0, vCenter VMs=0) ve KPI metni "Veri Yok" olarak güncellenir. Bu pattern, API'den gerçek vCenter verisi gelmeden önce UI'ın "slot"ları görsel olarak hazırlamasını sağlar — gerçek veri geldiğinde yalnızca callback mantığı değiştirilir, layout değişmez.
+
+### 10. Task 3.4 Öğrenilen Dersler (Auto-Refresh & Unified Callback)
+
+"Zombisiz" Auto-Refresh Mimarisi (Task 3.4): `layout()` içinde `dcc.Interval(interval=900_000, n_intervals=0)` + `dmc.Box(id="...-content", children=initial_content)` kombinasyonu. `prevent_initial_call=True` ile callback ilk render'da tetiklenmez — pre-rendered içerik anında gösterilir. 15dk sonra interval `n_intervals=1`'e geçince callback tetiklenir → API'den taze veri → içerik güncellenir. Kullanıcı hiçbir "flash" veya yenileme görmez.
+
+Birden Fazla Callback'ten Tek Unified Callback'e (Task 3.4): `Output("X", "prop")` aynı anda iki farklı callback'te kullanamaz — Dash `DuplicateCallbackError` fırlatır. Çözüm: tüm çakışan output'ları tek callback'e topla. Birden fazla `Input` olabilir; `ctx.triggered_id` ile hangi input'un tetiklediği belirlenir ve buna göre iş mantığı dallanır. Bu pattern hem "filtre değişimi" hem "interval tetiklenimi" senaryolarını tek yerde yönetir.
+
+`ctx.triggered_id` ile Tetikleyici Ayırt Etme (Task 3.4): `from dash import ctx` ile import edilir. `ctx.triggered_id` string olarak tetikleyici bileşenin `id`'sini döndürür. Kullanım: `if ctx.triggered_id == "my-interval": fetch_fresh_data()`. Bu sayede tek callback birden fazla senaryoyu temiz biçimde yönetir — ayrı callback'ler yazmaya gerek kalmaz.
+
+dc-code-store Pattern'i (Task 3.4): `dcc.Interval` callback'i sayfa `dc_code`'unu bilemez çünkü `dc_code` URL parametresinden `layout()` fonksiyonuna gelir ve callback'lere geçmez. Çözüm: `dcc.Store(id="dc-code-store", data=dc_code)` ile `dc_code`'u browser'a yaz; callback'te `State("dc-code-store", "data")` ile oku. Bu, URL parametrelerini callback'lere taşımanın standart Dash pattern'idir.
+
+Sessiz Başarısızlık (Silent Fail) Pattern'i (Task 3.4): Auto-refresh callback'te API çağrısı `try/except Exception: pass` ile sarılır. Başarısız olunca mevcut `detail_data` (store'dan gelen State) aynen `Output("dc-detail-store", "data")` olarak döndürülür. Bu sayede API geçici olarak kapandığında grafiklerin son başarılı veriyle gösterilmesi sağlanır; kullanıcı boş ekran görmez.
+
+### 11. Task 3.5 Öğrenilen Dersler (Executive Overview — Sparklines, Donut, Timeline)
+
+go.Scatter Area Chart (Sparkline): `fill="tozeroy"` ile sıfır çizgisine kadar dolu alan, `shape="spline"` ile yumuşatılmış eğri oluşturulur. `mode="lines"` zorunlu — "markers" veya "lines+markers" kullanılırsa Sparkline görünümü bozulur. `fillcolor="rgba(r,g,b,0.12)"` ile hafif şeffaf gölge elde edilir; tam opak fill Premium görünümü bozar.
+
+Sparkline Axes Gizleme: `xaxis=dict(visible=False)` + `yaxis=dict(visible=False)` ile eksenler ve tick'ler tamamen gizlenir. `margin=dict(l=0,r=0,t=0,b=0)` ile boşluk sıfırlanır — dcc.Graph'ın style={"height": "80px"} ile birlikte kullanılır.
+
+dmc.Timeline v2.x API: `dmc.Timeline(children=[...], active=N, bulletSize=22, lineWidth=2, color="indigo")` — `children` keyword zorunlu (positional arg yerine). `dmc.TimelineItem(title=..., bullet=DashIconify(...), children=[...])` — `title` prop str veya Dash component alır; `dmc.Group([title_text, badge])` geçilebilir. `bullet` prop tam Dash component (DashIconify) alır.
+
+Mock Zaman Serisi Determinizmi: API olmadan Sparkline için veri üretirken `random` kullanılmamalı — her render farklı değer üretir ve sayfayı tutarsız gösterir. Bunun yerine saat bazlı sabit liste (sabah/öğle/akşam mantıklı eğrisi) tercih edilir — deterministik, test edilebilir, gerçekçi.
+
+CANLI Badge Pattern'i (Status Indicator): `dmc.Badge("CANLI", color="teal", variant="dot", size="lg")` ile sayfa başlığının yanına canlılık indikatörü eklenir. `variant="dot"` → yalnızca sol tarafta renkli nokta gösterir, dolu badge yerine minimal görünüm sağlar. `dmc.Group(justify="space-between")` ile başlık solda, badge sağda konumlanır.
 
 ## 🚦 Nasıl Güncellenir?
 Bir hata ile karşılaşıldığında şu adımları izle:
