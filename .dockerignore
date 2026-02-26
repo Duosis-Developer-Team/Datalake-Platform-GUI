@@ -4,3 +4,11 @@ __pycache__
 .git
 .env
 docs
+
+# Test dizinleri — prod imajına dahil edilmez
+services/*/tests/
+shared/tests/
+
+# Dokümantasyon ve scriptler
+*.md
+scripts/

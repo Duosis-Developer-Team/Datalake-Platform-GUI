@@ -32,6 +32,7 @@ services:
       - DB_USER=${DB_USER}
       - DB_PASS=${DB_PASS}
       - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - ALLOWED_SUBNETS=172.16.0.0/12,10.0.0.0/8,127.0.0.1/32
     networks:
       - internal-net
     restart: unless-stopped
@@ -67,6 +68,7 @@ services:
       - DB_SERVICE_URL=http://db-service:8001
       - REDIS_URL=redis://redis:6379/0
       - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - ALLOWED_SUBNETS=172.16.0.0/12,10.0.0.0/8,127.0.0.1/32
     depends_on:
       db-service:
         condition: service_healthy

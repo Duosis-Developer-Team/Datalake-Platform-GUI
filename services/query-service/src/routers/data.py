@@ -13,7 +13,7 @@ import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Path
 
-from shared.schemas.responses import DCDetail, DCSummary, GlobalOverview
+from shared.schemas.responses import DCDetail, DCSummary, GlobalOverview, OverviewTrends
 from src.dependencies import get_db_client, get_redis, verify_internal_key
 from src.services.query_service import QueryService
 
@@ -60,3 +60,15 @@ async def get_overview(
 ) -> GlobalOverview:
     """Platform geneli KPI özeti: toplam host, VM, DC sayısı ve enerji."""
     return await service.get_overview()
+
+
+@overview_router.get("/overview/trends", response_model=OverviewTrends)
+async def get_overview_trends(
+    service: QueryService = Depends(_get_service),
+) -> OverviewTrends:
+    """
+    Son 30 örneklik zaman serisi (max 2.5 saatlik pencere).
+    Her 5 dakikada bir sampler tarafından Redis'e yazılır.
+    Redis boşsa veya hata olursa boş seriler döner (503 yerine graceful).
+    """
+    return await service.get_overview_trends()

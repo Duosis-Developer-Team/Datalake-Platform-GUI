@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 import asyncpg
 from fastapi import FastAPI
 
+from shared.utils.trusted_network import TrustedNetworkMiddleware
 from src.routers.data import overview_router, router as data_router
 from src.routers.health import router as health_router
 
@@ -72,6 +73,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(TrustedNetworkMiddleware)
 
 app.include_router(health_router)
 app.include_router(data_router)

@@ -12,24 +12,26 @@ Mimari notu:
   - Aynı DI pattern: client ve redis, app.state üzerinde yaşar; dependency ile sunulur.
 """
 
-import logging
+import asyncio
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import httpx
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 
+from shared.utils.logger import setup_logger
+from shared.utils.trusted_network import TrustedNetworkMiddleware
+from src.tasks.sampler import run_sampler
+
 from src.routers.data import overview_router, router as data_router
 from src.routers.health import router as health_router
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# ── Logging ──────────────────────────────────────────────────────────────────
+# Servis root logger — tüm src.* alt logger'ları formatı hiyerarşi üzerinden
+# miras alır; modüllerdeki getLogger(__name__) satırlarına dokunulmaz.
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-)
-logger = logging.getLogger(__name__)
+logger = setup_logger("query-service")
 
 
 # ── Lifespan: httpx.AsyncClient + redis.asyncio ───────────────────────────────
@@ -89,7 +91,18 @@ async def lifespan(app: FastAPI):
 
     app.state.db_client = client
     app.state.redis = redis_client
+
+    # ── Arka plan örnekleyici görevi ──────────────────────────────────────────
+    sampler_task = asyncio.create_task(run_sampler(app))
+    logger.info("Sampler task created.")
+
     yield  # ← Uygulama buradan çalışır
+
+    # ── Shutdown: sampler'ı temizce durdur ───────────────────────────────────
+    sampler_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await sampler_task
+    logger.info("Sampler task stopped.")
 
     await client.aclose()
     logger.info("httpx client closed.")
@@ -106,6 +119,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(TrustedNetworkMiddleware)
 
 app.include_router(health_router)
 app.include_router(data_router)

@@ -52,3 +52,31 @@ class GlobalOverview(BaseModel):
     total_vms:       int   = Field(ge=0, description="Tüm DC'lerdeki VM sayısı")
     total_energy_kw: float = Field(ge=0, description="Platform toplam enerji tüketimi (kW)")
     dc_count:        int   = Field(ge=0, description="Aktif datacenter sayısı")
+
+
+class TrendSeries(BaseModel):
+    """
+    Tek bir metriğe ait zaman serisi.
+    Her eleman çifti (labels[i], values[i]) bir ölçüm noktasını temsil eder.
+    """
+
+    labels: list[str]   = Field(description="ISO-8601 timestamp dizisi (en eskiden en yeniye)")
+    values: list[float] = Field(description="Ölçüm değerleri — labels ile eş boyutlu")
+
+
+class OverviewTrends(BaseModel):
+    """
+    GET /overview/trends yanıtı — 3 Sparkline grafiği için zaman serileri.
+
+    Redis'teki sliding window (LPUSH + LTRIM, max 30 nokta) verilerini
+    kronolojik sıraya çevirerek döndürür.
+
+    Veri kaynakları:
+      cpu_pct   → /datacenters/summary ağırlıksız ortalama CPU
+      ram_pct   → /datacenters/summary ağırlıksız ortalama RAM
+      energy_kw → /overview total_energy_kw
+    """
+
+    cpu_pct:   TrendSeries = Field(description="Platform geneli CPU kullanım yüzdesi (0-100)")
+    ram_pct:   TrendSeries = Field(description="Platform geneli RAM kullanım yüzdesi (0-100)")
+    energy_kw: TrendSeries = Field(description="Platform toplam enerji tüketimi (kW)")

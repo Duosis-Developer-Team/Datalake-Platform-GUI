@@ -1,52 +1,60 @@
+"""
+pages/overview.py — Executive Command Center
+
+Task 4.1: Mock veriler kaldırıldı. Sparkline grafikleri artık Redis sliding
+window (trend:cpu_pct, trend:ram_pct, trend:energy_kw) verilerinden besleniyor.
+
+Mimari:
+  - dcc.Interval(id="overview-trends-interval", interval=300_000ms)
+    → Her 5 dakikada bir + ilk yükleme anında callback tetiklenir.
+  - @callback → GET /overview/trends (api_client) → 3 Scatter figür güncellenir.
+  - prevent_initial_call=False: İlk açılışta da callback çalışır,
+    sampler'ın anında yazdığı ilk veri hemen görünür.
+  - API hatası veya boş Redis → no_update (sessiz degradation, sayfa çökmez).
+"""
+
+from datetime import datetime, timezone
+
 import dash
 import dash_mantine_components as dmc
 import plotly.graph_objects as go
-from dash import dcc
+from dash import Input, Output, callback, dcc, no_update
 from dash_iconify import DashIconify
+
+from services.api_client import get_overview_trends
 
 dash.register_page(__name__, path="/overview", name="Overview")
 
 # ── Renk Paleti ─────────────────────────────────────────────────────────────
 _INDIGO = "#4c6ef5"
 _VIOLET = "#845ef7"
-_SKY    = "#74c0fc"
 _TEAL   = "#38d9a9"
-
-
-# ── Mock Zaman Serisi Verileri (saatlik, son 24 saat) ───────────────────────
-
-def _hours():
-    return [f"{i:02d}:00" for i in range(24)]
-
-
-def _cpu_series():
-    """Sabah düşük, öğleden sonra pik, akşam düşer."""
-    return [55, 52, 50, 48, 50, 56, 63, 71, 78, 82, 80, 77,
-            75, 74, 76, 79, 77, 73, 68, 64, 60, 57, 55, 53]
-
-
-def _ram_series():
-    """RAM sürekli yüksek seyreder, gece biraz düşer."""
-    return [68, 67, 66, 65, 66, 68, 71, 74, 77, 79, 80, 81,
-            82, 82, 83, 84, 83, 82, 80, 78, 76, 74, 72, 70]
-
-
-def _net_series():
-    """Ağ trafiği mesai saatlerinde pik yapar."""
-    return [12, 10, 9, 8, 9, 15, 28, 45, 62, 71, 74, 78,
-            75, 72, 70, 68, 65, 55, 40, 28, 22, 18, 15, 13]
+_SKY    = "#74c0fc"
 
 
 # ── Sparkline Figür Fabrikası ────────────────────────────────────────────────
 
-def _sparkline_fig(series, color):
+def _sparkline_fig(labels: list, values: list, color: str) -> go.Figure:
+    """
+    Verilen labels (X ekseni) ve values (Y ekseni) ile dolgu çizgi grafiği oluşturur.
+    labels boşsa boş, şeffaf bir figür döner — sayfa çökmez.
+    """
     r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
     fill_color = f"rgba({r},{g},{b},0.12)"
 
+    # ISO timestamp'leri HH:MM formatına dönüştür (eksen okunabilirliği)
+    x_labels: list = []
+    for lbl in labels:
+        try:
+            dt = datetime.fromisoformat(lbl)
+            x_labels.append(dt.astimezone(timezone.utc).strftime("%H:%M"))
+        except (ValueError, TypeError):
+            x_labels.append(str(lbl))
+
     fig = go.Figure(
         go.Scatter(
-            x=_hours(),
-            y=series,
+            x=x_labels if x_labels else [None],
+            y=values    if values    else [None],
             mode="lines",
             line=dict(color=color, width=2, shape="spline"),
             fill="tozeroy",
@@ -66,9 +74,17 @@ def _sparkline_fig(series, color):
     return fig
 
 
+def _empty_fig(color: str) -> go.Figure:
+    """Redis boşken veya hata olduğunda gösterilecek boş figür."""
+    return _sparkline_fig([], [], color)
+
+
 # ── Sparkline Kart Bileşeni ─────────────────────────────────────────────────
 
-def _spark_card(title, subtitle, value_str, series, color, icon):
+def _spark_card(title: str, subtitle: str, graph_id: str, color: str, icon: str):
+    """
+    Başlangıç render'ında boş figür gösterir; callback anında veriyi doldurur.
+    """
     return dmc.Paper(
         [
             dmc.Group(
@@ -83,7 +99,8 @@ def _spark_card(title, subtitle, value_str, series, color, icon):
                     dmc.Stack(
                         [
                             dmc.Text(title, fw=700, size="sm"),
-                            dmc.Text(value_str, fw=800, size="xl", c=color),
+                            dmc.Text(id=f"{graph_id}-value", fw=800, size="xl", c=color,
+                                     children="—"),
                         ],
                         gap=0,
                     ),
@@ -93,7 +110,8 @@ def _spark_card(title, subtitle, value_str, series, color, icon):
                 mb="xs",
             ),
             dcc.Graph(
-                figure=_sparkline_fig(series, color),
+                id=graph_id,
+                figure=_empty_fig(color),
                 config={"displayModeBar": False},
                 style={"height": "80px"},
             ),
@@ -230,27 +248,24 @@ def layout(**kwargs):
         [
             _spark_card(
                 "Global CPU Trendi",
-                "Son 24 saatin platform geneli CPU kullanımı",
-                f"{_cpu_series()[-1]}%",
-                _cpu_series(),
+                "Son örneklerin platform geneli CPU kullanımı",
+                "spark-cpu",
                 _INDIGO,
                 "mdi:cpu-64-bit",
             ),
             _spark_card(
                 "Global RAM Trendi",
-                "Son 24 saatin platform geneli bellek kullanımı",
-                f"{_ram_series()[-1]}%",
-                _ram_series(),
+                "Son örneklerin platform geneli bellek kullanımı",
+                "spark-ram",
                 _VIOLET,
                 "mdi:memory",
             ),
             _spark_card(
-                "Ağ Trafiği",
-                "Son 24 saatin ortalama bant genişliği",
-                f"{_net_series()[-1]} Gbps",
-                _net_series(),
+                "Toplam Enerji",
+                "Son örneklerin platform toplam enerji tüketimi",
+                "spark-energy",
                 _SKY,
-                "mdi:network",
+                "mdi:lightning-bolt",
             ),
         ],
         cols={"base": 1, "sm": 3},
@@ -339,6 +354,12 @@ def layout(**kwargs):
 
     return dmc.Container(
         [
+            # ── Interval: her 5 dk'da bir (prevent_initial_call=False → ilk açılışta da) ──
+            dcc.Interval(
+                id="overview-trends-interval",
+                interval=300_000,   # 5 dakika (ms)
+                n_intervals=0,
+            ),
             dmc.Group(
                 [
                     dmc.Stack(
@@ -369,3 +390,45 @@ def layout(**kwargs):
         pt="xl",
         fluid=True,
     )
+
+
+# ── Callback: Sparkline Güncelleme ───────────────────────────────────────────
+
+@callback(
+    Output("spark-cpu",          "figure"),
+    Output("spark-ram",          "figure"),
+    Output("spark-energy",       "figure"),
+    Output("spark-cpu-value",    "children"),
+    Output("spark-ram-value",    "children"),
+    Output("spark-energy-value", "children"),
+    Input("overview-trends-interval", "n_intervals"),
+    prevent_initial_call=False,  # İlk yükleme anında da tetiklenir
+)
+def _refresh_sparklines(n_intervals):
+    """
+    GET /overview/trends → 3 Sparkline figür + anlık değer metni günceller.
+
+    Hata veya boş Redis durumunda no_update dönerek mevcut durumu korur
+    (boş figür başlangıçta zaten render edilmiş olur).
+    """
+    try:
+        data = get_overview_trends()
+
+        cpu    = data.get("cpu_pct",   {})
+        ram    = data.get("ram_pct",   {})
+        energy = data.get("energy_kw", {})
+
+        fig_cpu    = _sparkline_fig(cpu.get("labels",    []), cpu.get("values",    []), _INDIGO)
+        fig_ram    = _sparkline_fig(ram.get("labels",    []), ram.get("values",    []), _VIOLET)
+        fig_energy = _sparkline_fig(energy.get("labels", []), energy.get("values", []), _SKY)
+
+        # Anlık değer: son eleman (listenin son elemanı = en yeni ölçüm)
+        cpu_val    = f"{cpu['values'][-1]:.1f}%"    if cpu.get("values")    else "—"
+        ram_val    = f"{ram['values'][-1]:.1f}%"    if ram.get("values")    else "—"
+        energy_val = f"{energy['values'][-1]:.1f} kW" if energy.get("values") else "—"
+
+        return fig_cpu, fig_ram, fig_energy, cpu_val, ram_val, energy_val
+
+    except Exception:  # noqa: BLE001
+        # API çökmüş veya Redis henüz dolu değil — mevcut görseli koru
+        return no_update, no_update, no_update, no_update, no_update, no_update

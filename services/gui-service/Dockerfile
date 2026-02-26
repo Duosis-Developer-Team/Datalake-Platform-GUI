@@ -18,4 +18,4 @@ COPY services/gui-service/ .
 
 EXPOSE 8050
 
-CMD ["python", "app.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8050", "--workers", "2", "--timeout", "120", "app:server"]

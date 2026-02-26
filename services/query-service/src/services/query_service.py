@@ -23,7 +23,7 @@ import httpx
 import redis.asyncio as aioredis
 from fastapi import HTTPException, status
 
-from shared.schemas.responses import DCDetail, DCSummary, GlobalOverview
+from shared.schemas.responses import DCDetail, DCSummary, GlobalOverview, OverviewTrends, TrendSeries
 from src.providers.base import BaseProvider
 from src.providers.ibm import IBMProvider
 from src.providers.nutanix import NutanixProvider
@@ -167,6 +167,48 @@ class QueryService:
             logger.warning("Redis SET error on %s: %s — data returned but not cached", key, exc)
 
         return overview
+
+    async def get_overview_trends(self) -> OverviewTrends:
+        """
+        Redis sliding window listelerinden trend verilerini okur.
+
+        Her liste: [en yeni, ..., en eski]  (LPUSH ile solön ekleniyor)
+        LRANGE 0 -1 → reversed() ile kronolojik sıraya çevrilir.
+
+        Redis yoksa veya listeler boşsa → boş TrendSeries dönülür (graceful).
+        """
+        _KEY_MAP = {
+            "cpu_pct":   "trend:cpu_pct",
+            "ram_pct":   "trend:ram_pct",
+            "energy_kw": "trend:energy_kw",
+        }
+
+        results: dict[str, TrendSeries] = {}
+
+        for field, redis_key in _KEY_MAP.items():
+            try:
+                raw_items = await self._redis.lrange(redis_key, 0, -1)  # [yeni...eski]
+                # Kronolojik sıra (eski → yeni)
+                items = list(reversed(raw_items))
+                labels: list[str]   = []
+                values: list[float] = []
+                for item in items:
+                    parsed = json.loads(item)
+                    labels.append(parsed["ts"])
+                    values.append(float(parsed["v"]))
+                results[field] = TrendSeries(labels=labels, values=values)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Trends: Redis okuma hatası (%s): %s — boş seri döndürülüyor",
+                    redis_key, exc,
+                )
+                results[field] = TrendSeries(labels=[], values=[])
+
+        return OverviewTrends(
+            cpu_pct=results["cpu_pct"],
+            ram_pct=results["ram_pct"],
+            energy_kw=results["energy_kw"],
+        )
 
     # ── Private helpers ───────────────────────────────────────────────────────
 

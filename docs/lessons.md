@@ -130,6 +130,31 @@ Mock Zaman Serisi Determinizmi: API olmadan Sparkline için veri üretirken `ran
 
 CANLI Badge Pattern'i (Status Indicator): `dmc.Badge("CANLI", color="teal", variant="dot", size="lg")` ile sayfa başlığının yanına canlılık indikatörü eklenir. `variant="dot"` → yalnızca sol tarafta renkli nokta gösterir, dolu badge yerine minimal görünüm sağlar. `dmc.Group(justify="space-between")` ile başlık solda, badge sağda konumlanır.
 
+### 12. Task 4.3 Öğrenilen Dersler (Unit Tests — pytest + DI İzolasyonu)
+
+**Container Build Tutarsızlığı — Test Dosyaları (Task 4.3):**
+Test dosyası yerel olarak güncellendiğinde (örn. conftest.py'e fix eklendi), container eski versiyonu taşımaya devam eder. `docker compose up --build` sadece uygulama kaynak kodunu yeniden build eder — test dosyaları `COPY services/query-service/ .` ile kopyalanır. Eğer container build'den önce test dosyası güncellenmediyse eski versiyon container'da kalır. Kural: Test dosyası değişikliği sonrası her zaman `docker compose up --build -d <service>` veya `docker cp` uygula; container'daki dosyayı `docker exec ... python -c "open(...).read()"` ile doğrula.
+
+**httpx.Response + raise_for_status() — request Zorunluluğu (Task 4.3):**
+`httpx.Response(status_code=200, content=...)` → `resp.raise_for_status()` → `RuntimeError: Cannot call raise_for_status as the request instance has not been set on this response.`
+Kök neden: httpx, `Response._request` None ise `raise_for_status()` çağrısını reddeder. Test mock'larında `httpx.Response` oluşturulurken `request=` parametresi HER ZAMAN zorunludur:
+```python
+dummy_request = httpx.Request("GET", url)
+resp = httpx.Response(200, content=b"[]", request=dummy_request)  # ← zorunlu
+```
+Bu kural httpx 0.28.x (test edilen versiyon) ile doğrulandı.
+
+**pytest Nested Test Discovery Sorunu (Task 4.3):**
+Container'da `/app/tests/tests/` nested dizini varsa pytest her test dosyasını iki kez keşfeder (toplam 2N test). Bu, eski Docker layer'larından, yanlış dizinde `pytest` çalıştırmaktan veya CI/CD artifact kalıntısından kaynaklanır. Tespit: `docker exec ... ls /app/tests/` ile nested dizin varlığını kontrol et. Çözüm: `shutil.rmtree('/app/tests/tests')` veya `pytest tests/ --ignore=tests/tests/` flag'i.
+
+**FastAPI dependency_overrides ile Tam DI İzolasyonu (Task 4.3):**
+`app.dependency_overrides[get_db_client] = lambda: mock_db_client` kalıbı; `get_db_client` dependency'sini (ve bunu kullanan tüm alt dependency'leri) override eder. Override, bağımlılık fonksiyonunu REFERANS olarak anahtar (key) alır — bu nedenle conftest.py ve router'ın aynı Python modülünden import etmesi zorunludur (aynı fonksiyon objesi). Lifespan (gerçek bağlantılar) çalışmaya devam eder; ancak endpoint handler'lar override'dan alır. Bu sayede testler gerçek servislere ihtiyaç duymadan çalışır.
+
+**AsyncMock(spec=) + Attribute Assignment (Task 4.3):**
+`client = AsyncMock(spec=httpx.AsyncClient); client.get = _mock_get` kalıbı doğru çalışır. `client.get` `_mock_get`'e (async fonksiyon) eşlenir; `await client.get(url)` doğrudan `_mock_get(url)` çalıştırır. `spec=` ile `side_effect=` veya `return_value=` ayarlamak gerekli değildir — direkt attribute assignment yeterlidir ve daha okunabilirdir.
+
+---
+
 ## 🚦 Nasıl Güncellenir?
 Bir hata ile karşılaşıldığında şu adımları izle:
 Sorunun kök nedenini (Root Cause) analiz et.

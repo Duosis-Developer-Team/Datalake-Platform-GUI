@@ -106,13 +106,64 @@ Tüm paneller: className="chart-paper" + p="xl" + radius="xl" glassmorphism
 ## 🔴 PHASE 4: Production Readiness & Observability
 Odak: Sistemin hatasız, hızlı ve izlenebilir olduğunu kanıtlamak.
 
-4.1 Logging & Utilities
-Centralized Logs: shared/utils altında yapılandırılmış (Structured) loglama sistemi.
-Error Handling: Global Exception Handler ile tüm mikroservis hatalarını kullanıcıya anlamlı mesajlar olarak dön.
+4.1 Redis Sliding Window Zaman Serisi (Task 4.1 — TAMAMLANDI ✅)
+  - shared/schemas/responses.py: TrendSeries + OverviewTrends modelleri eklendi.
+  - tasks/sampler.py (YENİ): Her 5 dakikada bir CPU%, RAM%, Enerji kW → Redis LPUSH+LTRIM (max 30 nokta). Başlangıçta anında 1 örnek (warm-up). Pipeline atomik yazma. Hata → warn log, sessiz geçiş.
+  - query_service.py: get_overview_trends() —LRANGE → reversed → kronolojik TrendSeries. Boş Redis → boş liste, graceful.
+  - routers/data.py: GET /overview/trends endpoint'i eklendi (OverviewTrends response_model).
+  - api_client.py (gui-service): get_overview_trends() HTTP wrapper.
+  - overview.py (gui-service): Mock seriler kaldırıldı. dcc.Interval(300s) + @callback(prevent_initial_call=False) → gerçek veri. 3. sparkline: "Ağ Trafiği" → "Toplam Enerji (kW)" (mdi:lightning-bolt).
+  - main.py: asyncio.create_task(run_sampler(app)) lifespan'da; shutdown'da cancel+suppress(CancelledError).
 
-4.2 Optimization & Security
-Image Squashing: Docker imaj boyutlarını optimize et.
-Security: API endpointlerini internal IP kısıtlamalarıyla koruma altına al.
+4.2 Merkezi Loglama (Task 4.2 — TAMAMLANDI ✅)
+  - shared/utils/logger.py (YENİ): setup_logger(service_name, level) API.
+    Format: [%(asctime)s] [%(levelname)-8s] [%(name)s] - %(message)s
+    Özellikler: idempotent handler (Dash hot-reload güvenli), stdout StreamHandler,
+    LOG_LEVEL env override, Python hiyerarşik logging ile tam uyumlu (propagation korunuyor).
+  - shared/utils/__init__.py (YENİ): paket işaretçisi + setup_logger public export.
+  - query-service/src/main.py: logging.basicConfig kaldırıldı → setup_logger("query-service").
+    Tüm src.* modülleri (sampler, query_service, providers) getLogger(__name__) ile child
+    logger açmaya devam eder — Python hiyerarşisi formatı otomatik yayar.
+  - gui-service/app.py: setup_logger("gui-service") eklendi (Dash entry-point).
+  - gui-service/services/api_client.py: Her 3 fonksiyon (get_summary, get_dc_detail,
+    get_overview_trends) için Timeout / HTTPError / RequestException ayrı ayrı
+    logger.error ile loglanıp yeniden fırlatılıyor.
+
+
+4.3 Unit Tests (Task 4.3 — TAMAMLANDI ✅)
+  Kapsam: 3 servis × pytest — shared (11) + query-service (14) + gui-service (10) = 35/35 PASS.
+  Mimari Karar: FastAPI dependency_overrides ile tam DI izolasyonu (Option B) — QueryService mock'lanmaz.
+  query-service conftest.py:
+    - _httpx_response(url): dummy_request = httpx.Request("GET", url) + httpx.Response(request=dummy_request)
+      → raise_for_status() RuntimeError çözüldü.
+    - mock_db_client.get = _mock_get (async) → URL "summary" içeriyorsa SAMPLE_SUMMARY_RAW döner.
+    - mock_redis: get→None (cache miss), lrange→[SAMPLE_TREND_ENTRY], set→True.
+    - api_client fixture: dependency_overrides[3 bağımlılık] → TestClient(raise_server_exceptions=True).
+  gui-service tests: pytest-mock mocker fixture + caplog.at_level(ERROR) + pytest.raises pattern.
+  Container build notu: conftest.py değişirse container yeniden build edilmeli veya docker cp uygulanmalı.
+
+4.4 Optimization & Security (Task 4.4 — TAMAMLANDI ✅)
+
+Docker İmaj Optimizasyonu (Multi-Stage Build):
+  db-service: builder stage (build-essential + libpq-dev) → production stage (libpq5 runtime only).
+  773 MB → 270 MB (-65%). query-service 304→281 MB (-8%). gui-service 607→589 MB (-3%).
+  requirements.txt ayrıştırması: requirements-dev.txt (pytest/*) oluşturuldu; prod imajından test deps çıkarıldı.
+  .dockerignore: services/*/tests/, shared/tests/, *.md, scripts/ eklendi.
+
+Production Server:
+  gui-service: CMD python app.py → gunicorn --bind 0.0.0.0:8050 --workers 2 --timeout 120 app:server
+  db-service: uvicorn --workers 2 (asyncpg pool per-worker, güvenli)
+  query-service: 1 worker (sampler task çakışma riski nedeniyle)
+
+Security — IP Kısıtlama (Defense-in-Depth):
+  shared/utils/trusted_network.py (YENİ): TrustedNetworkMiddleware — Starlette BaseHTTPMiddleware,
+  stdlib ipaddress, ALLOWED_SUBNETS env var (CIDR liste), /health bypass, 403 JSON response.
+  db-service + query-service main.py: app.add_middleware(TrustedNetworkMiddleware)
+  docker-compose.yml: ALLOWED_SUBNETS=172.16.0.0/12,10.0.0.0/8,127.0.0.1/32 her iki servise eklendi.
+
+Yük Testi:
+  scripts/load_test.py: asyncio + httpx, 3 endpoint, --concurrency / --rounds argümanları.
+  Kullanım: python scripts/load_test.py --host http://localhost:8050
 
 ## 🛠️ Teknik Bağımlılık Matrisi
 PHASE 1 bitmeden hiçbir kod query-service içine yazılamaz.
