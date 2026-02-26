@@ -65,7 +65,30 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
     except Exception as exc:
         logger.warning("Failed to schedule initial Boyner customer cache warm-up: %s", exc)
 
-    # Step 4: clean shutdown on process exit
+    # Step 4: schedule periodic Boyner customer cache refresh without clearing existing data first.
+    # This keeps the Customer View cache warm in the background and replaces entries in place.
+    try:
+        def _refresh_boyner_customer_cache():
+            # Always use a fresh 30-day range so the cache represents the latest period.
+            current_range = preset_to_range(PRESET_30_DAYS)
+            db_service.get_customer_resources("Boyner", current_range)
+
+        scheduler.add_job(
+            func=_refresh_boyner_customer_cache,
+            trigger=IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
+            id="customer_boyner_refresh",
+            name="Boyner customer cache refresh (30d)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info(
+            "Scheduled Boyner customer cache refresh every %d minutes (30-day range).",
+            REFRESH_INTERVAL_MINUTES,
+        )
+    except Exception as exc:
+        logger.warning("Failed to schedule Boyner customer cache refresh: %s", exc)
+
+    # Step 5: clean shutdown on process exit
     atexit.register(lambda: _stop(scheduler))
 
     return scheduler

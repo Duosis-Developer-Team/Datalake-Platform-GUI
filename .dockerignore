@@ -1,0 +1,17 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+tests/
+env/
+.venv/
+venv/
+*.log
+agent-transcripts/
+.cursor/
+terminals/
+mcps/
+

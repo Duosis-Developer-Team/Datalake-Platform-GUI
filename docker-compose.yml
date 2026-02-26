@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    container_name: datalake-platform-gui-app
+    ports:
+      - "8050:8050"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+
+  db:
+    image: postgres:15
+    container_name: datalake-platform-gui-db
+    environment:
+      POSTGRES_DB: bulutlake
+      POSTGRES_USER: datalakeui
+      POSTGRES_PASSWORD: change_me
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    profiles:
+      - with-db
+
+volumes:
+  pgdata:
+
