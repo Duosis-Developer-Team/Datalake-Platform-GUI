@@ -47,34 +47,45 @@ _sidebar = html.Div(
     style={
         "width": "260px",
         "position": "fixed",
-        "top": 0,
-        "left": 0,
-        "height": "100vh",
+        "top": "16px",
+        "left": "16px",
+        "height": "calc(100vh - 32px)",
         "zIndex": 999,
         "padding": "24px",
         "backgroundColor": "#FFFFFF",
         "overflowY": "auto",
+        "overflowX": "hidden",
+        "borderRadius": "16px",
+        "boxShadow": "0 10px 30px rgba(0, 0, 0, 0.08), 0 4px 12px rgba(0, 0, 0, 0.04)",
+        "display": "flex",
+        "flexDirection": "column",
     },
     children=[
         # Brand + nav links — only this part is updated by callback
         html.Div(id="sidebar-nav"),
 
         # Time range controls — static, always in DOM
-        html.Div(
+        dmc.Stack(
             [
-                dmc.Text("Report period", size="xs", fw=600, c="#A3AED0", style={"marginBottom": "8px"}),
+                dmc.Divider(mt="xl", style={"marginBottom": "4px"}),
+                dmc.Text(
+                    "REPORT PERIOD",
+                    size="xs",
+                    fw=600,
+                    c="dimmed",
+                    style={"letterSpacing": "0.06em"},
+                ),
                 dmc.SegmentedControl(
                     id="time-range-preset",
                     value=_default_tr.get("preset", "7d"),
                     data=[
-                        {"label": "1 Day", "value": "1d"},
-                        {"label": "7 Days", "value": "7d"},
-                        {"label": "30 Days", "value": "30d"},
-                        {"label": "Custom", "value": "custom"},
+                        {"label": "1D", "value": "1d"},
+                        {"label": "7D", "value": "7d"},
+                        {"label": "30D", "value": "30d"},
+                        {"label": "Cstm", "value": "custom"},
                     ],
-                    size="xs",
+                    size="sm",
                     fullWidth=True,
-                    style={"marginBottom": "8px"},
                 ),
                 html.Div(
                     id="time-range-custom-container",
@@ -83,16 +94,23 @@ _sidebar = html.Div(
                             id="time-range-picker",
                             start_date=_default_tr["start"],
                             end_date=_default_tr["end"],
-                            display_format="YYYY-MM-DD",
+                            display_format="DD/MM/YY",
                             start_date_placeholder_text="Start",
                             end_date_placeholder_text="End",
-                            style={"width": "100%"},
+                            calendar_orientation="vertical",
+                            style={
+                                "width": "100%",
+                                "fontSize": "12px",
+                                "borderRadius": "8px",
+                            },
                         ),
                     ],
-                    style={"marginTop": "8px"},
+                    style={"position": "relative"},
                 ),
             ],
-            style={"marginTop": "24px", "padding": "12px", "borderTop": "1px solid #E9ECEF"},
+            gap="xs",
+            px="md",
+            mt="auto",
         ),
 
         # Customer select — static, always in DOM; visibility toggled by callback
@@ -104,6 +122,9 @@ _sidebar = html.Div(
                     id="customer-select",
                     data=_customer_options,
                     value=_default_customer,
+                    radius="md",
+                    variant="default",
+                    size="sm",
                     style={"width": "100%"},
                 ),
             ],
@@ -132,10 +153,10 @@ app.layout = dmc.MantineProvider(
                 html.Div(
                     html.Div(id="main-content", children=[]),
                     style={
-                        "marginLeft": "260px",
+                        "marginLeft": "292px",
                         "padding": "30px",
                         "minHeight": "100vh",
-                        "width": "calc(100% - 260px)",
+                        "width": "calc(100% - 292px)",
                         "backgroundColor": "#F4F7FE",
                     },
                 ),

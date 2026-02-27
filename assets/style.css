@@ -65,8 +65,8 @@ body {
 /* --- 4. SIDEBAR --- */
 .sidebar-link {
     border-radius: 12px !important;
-    color: #A3AED0 !important;
-    /* Inactive Gray */
+    color: #495057 !important;
+    /* gray.7 — okunabilir ama aktiften farklı */
     font-weight: 500 !important;
     margin-bottom: 8px !important;
     padding: 12px 16px !important;
@@ -163,4 +163,86 @@ body {
 .nexus-table tr:hover td {
     color: #4318FF !important;
     cursor: pointer;
+}
+
+/* --- 7. REPORT PERIOD PREMIUM TRANSITIONS --- */
+
+/* SegmentedControl: seçili segment yumuşak geçiş */
+#time-range-preset .mantine-SegmentedControl-indicator {
+    transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+}
+
+/* SegmentedControl: her label hover'da hafif mor tona döner */
+#time-range-preset .mantine-SegmentedControl-label:hover {
+    color: #4318FF !important;
+    transition: color 0.15s ease !important;
+}
+
+/* DatePickerRange: input alanı hover'da belirginleşir */
+#time-range-picker input:hover {
+    border-color: rgba(67, 24, 255, 0.3) !important;
+    transition: border-color 0.2s ease !important;
+}
+
+/* DatePickerRange: input alanı focus'ta marka rengine kavuşur */
+#time-range-picker input:focus {
+    border-color: #4318FF !important;
+    box-shadow: 0 0 0 2px rgba(67, 24, 255, 0.12) !important;
+    outline: none !important;
+    transition: all 0.2s ease !important;
+}
+
+/* Search box: hover'da hafif derinleşme */
+.sidebar-search input:hover {
+    background-color: #EDF0F7 !important;
+    transition: background-color 0.2s ease !important;
+}
+
+/* --- 8. DATEPICKER PORTAL & PREMIUM CALENDAR --- */
+
+/* Takvim popup'ını body seviyesine taşı ve tüm içeriğin üstüne çıkar */
+.DateRangePicker_picker {
+    z-index: 9999 !important;
+    position: fixed !important;
+}
+
+/* Premium takvim görünümü: derin gölge + yuvarlatılmış köşeler */
+.DayPicker,
+.DayPicker__withBorder {
+    border-radius: 12px !important;
+    box-shadow:
+        0 20px 60px rgba(0, 0, 0, 0.12),
+        0 8px 24px rgba(0, 0, 0, 0.06) !important;
+    border: 1px solid rgba(233, 236, 239, 0.8) !important;
+    overflow: hidden !important;
+}
+
+/* Takvim üst başlık: ay/yıl navigation zarif görünsün */
+.CalendarMonth_caption {
+    color: #2B3674 !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+}
+
+/* Seçili tarih aralığı: marka moru */
+.CalendarDay__selected,
+.CalendarDay__selected:hover {
+    background: #4318FF !important;
+    border-color: #4318FF !important;
+    color: #FFFFFF !important;
+}
+
+/* Seçili aralık arası günler: soluk mor */
+.CalendarDay__selected_span {
+    background: rgba(67, 24, 255, 0.1) !important;
+    border-color: rgba(67, 24, 255, 0.2) !important;
+    color: #4318FF !important;
+}
+
+/* Hover günü */
+.CalendarDay__hovered_span,
+.CalendarDay__hovered_span:hover {
+    background: rgba(67, 24, 255, 0.08) !important;
+    border-color: rgba(67, 24, 255, 0.15) !important;
+    color: #4318FF !important;
 }

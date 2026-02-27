@@ -7,13 +7,33 @@ def create_sidebar_nav(active_path):
     """Return brand + nav links only. Controls (time range, customer) are static in app.layout."""
     brand = html.Div(
         [
-            DashIconify(icon="solar:widget-5-bold-duotone", width=30, color="#4318FF"),
+            DashIconify(icon="mdi:cloud", width=32, color="#4318FF"),
             html.Span(
                 "BULUTİSTAN",
                 style={"fontSize": "24px", "fontWeight": "700", "color": "#2B3674", "marginLeft": "10px"},
             ),
         ],
         style={"display": "flex", "alignItems": "center", "marginBottom": "40px", "paddingLeft": "16px"},
+    )
+
+    search_box = dmc.TextInput(
+        placeholder="Search...",
+        leftSection=DashIconify(icon="solar:magnifer-linear", width=16, color="#A3AED0"),
+        rightSection=dmc.Text("⌘K", size="xs", c="dimmed", style={"whiteSpace": "nowrap"}),
+        size="sm",
+        radius="md",
+        variant="filled",
+        className="sidebar-search",
+        style={"marginBottom": "24px"},
+        styles={
+            "input": {
+                "backgroundColor": "#F4F7FE",
+                "border": "none",
+                "color": "#2B3674",
+                "fontSize": "13px",
+                "cursor": "default",
+            }
+        },
     )
 
     links = [
@@ -73,4 +93,4 @@ def create_sidebar_nav(active_path):
         ),
     ]
 
-    return html.Div([brand, dmc.Stack(links, gap=4)])
+    return html.Div([brand, search_box, dmc.Stack(links, gap=4)])
