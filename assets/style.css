@@ -246,3 +246,51 @@ body {
     border-color: rgba(67, 24, 255, 0.15) !important;
     color: #4318FF !important;
 }
+
+/* --- 9. DMC DATEPICKER PREMIUM PILL STYLE --- */
+/* dmc 0.14.1: day button CSS module class = m_396ce5cb */
+
+/* Seçili gün: tam yuvarlak, marka moru */
+.m_396ce5cb[data-selected] {
+    background-color: #4318FF !important;
+    border-radius: 50% !important;
+    color: #ffffff !important;
+}
+
+/* Seçili gün hover */
+.m_396ce5cb[data-selected]:hover {
+    background-color: #5630FF !important;
+}
+
+/* Aralık içindeki günler: soluk mor zemin */
+.m_396ce5cb[data-in-range] {
+    background-color: rgba(67, 24, 255, 0.08) !important;
+    border-radius: 0 !important;
+    color: #4318FF !important;
+}
+
+/* Aralığın ilk günü: sol yuvarlak */
+.m_396ce5cb[data-first-in-range] {
+    border-radius: 50% 0 0 50% !important;
+    background-color: rgba(67, 24, 255, 0.15) !important;
+}
+
+/* Aralığın son günü: sağ yuvarlak */
+.m_396ce5cb[data-last-in-range] {
+    border-radius: 0 50% 50% 0 !important;
+    background-color: rgba(67, 24, 255, 0.15) !important;
+}
+
+/* Bugün işareti */
+.m_396ce5cb[data-today] {
+    border: 2px solid rgba(67, 24, 255, 0.4) !important;
+    border-radius: 50% !important;
+    font-weight: 700 !important;
+}
+
+/* Hover: seçili olmayan günler */
+.m_396ce5cb:hover:not([data-selected]):not([data-in-range]) {
+    background-color: rgba(67, 24, 255, 0.06) !important;
+    border-radius: 50% !important;
+    color: #4318FF !important;
+}

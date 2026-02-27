@@ -90,18 +90,35 @@ _sidebar = html.Div(
                 html.Div(
                     id="time-range-custom-container",
                     children=[
-                        dcc.DatePickerRange(
+                        dmc.DatePicker(
                             id="time-range-picker",
-                            start_date=_default_tr["start"],
-                            end_date=_default_tr["end"],
-                            display_format="DD/MM/YY",
-                            start_date_placeholder_text="Start",
-                            end_date_placeholder_text="End",
-                            calendar_orientation="vertical",
-                            style={
-                                "width": "100%",
-                                "fontSize": "12px",
-                                "borderRadius": "8px",
+                            type="range",
+                            value=[_default_tr["start"], _default_tr["end"]],
+                            valueFormat="DD/MM/YY",
+                            placeholder="Select date range",
+                            radius="md",
+                            size="sm",
+                            w="100%",
+                            numberOfColumns=2,
+                            styles={
+                                "day": {
+                                    "borderRadius": "50%",
+                                    "fontWeight": "500",
+                                    "transition": "background-color 0.15s ease, color 0.15s ease",
+                                },
+                            },
+                            popoverProps={
+                                "withinPortal": True,
+                                "zIndex": 9999,
+                                "position": "right-start",
+                                "radius": "xl",
+                                "styles": {
+                                    "dropdown": {
+                                        "border": "1px solid rgba(67, 24, 255, 0.08)",
+                                        "boxShadow": "0 10px 40px rgba(67, 24, 255, 0.12), 0 4px 16px rgba(0, 0, 0, 0.06)",
+                                        "borderRadius": "16px",
+                                    }
+                                },
                             },
                         ),
                     ],
@@ -194,23 +211,29 @@ def toggle_customer_section(pathname):
 @app.callback(
     dash.Output("app-time-range", "data"),
     dash.Input("time-range-preset", "value"),
-    dash.Input("time-range-picker", "start_date"),
-    dash.Input("time-range-picker", "end_date"),
+    dash.Input("time-range-picker", "value"),
     dash.State("app-time-range", "data"),
 )
-def update_time_range_store(preset, start_date, end_date, current):
+def update_time_range_store(preset, date_value, current):
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update
     tid = ctx.triggered[0]["prop_id"]
     if "time-range-preset" in tid and preset != "custom":
         return preset_to_range(preset)
-    if "time-range-picker" in tid and (start_date or end_date):
-        return {
-            "start": start_date or (current or {}).get("start"),
-            "end": end_date or (current or {}).get("end"),
-            "preset": "custom",
-        }
+    if "time-range-picker" in tid and date_value:
+        # Range modunda value = [start, end] listesi
+        # Güvenli unpack — None veya eksik eleman gelirse bekle
+        if isinstance(date_value, (list, tuple)) and len(date_value) == 2:
+            start, end = date_value
+        else:
+            # Eski tek-değer uyumluluğu (geçiş güvencesi)
+            start = (current or {}).get("start")
+            end = date_value if isinstance(date_value, str) else None
+        # İki tarih de seçilmişse kaydet; biri eksikse beklemeye devam
+        if start and end:
+            return {"start": start, "end": end, "preset": "custom"}
+        return dash.no_update
     return dash.no_update
 
 

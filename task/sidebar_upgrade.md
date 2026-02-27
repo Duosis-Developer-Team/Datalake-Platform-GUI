@@ -1638,3 +1638,887 @@ DEĞİŞMEYEN:
 ```
 
 **Toplam:** 2 dosya (`app.py`, `style.css`). `sidebar.py` değişmez. Yeni dosya yok. Callback yok.
+
+---
+---
+
+## 🎯 Revizyon 5 — Takvim Açılır Menüsü Premium Cila
+
+**Tarih:** 28 Şubat 2026, 01:25
+**Kaynak:** CEO nihai inceleme — takvim popup hâlâ standart görünüyor
+**Durum:** ⏳ Executor uygulaması bekleniyor
+
+---
+
+### ⚠️ KRİTİK MİMARİ UYARI — Executor OKUMADAN BAŞLAMA
+
+CEO'nun önerdiği `popoverProps={'radius': 'md', 'shadow': 'lg'}` yaklaşımı **yalnızca `dmc.DatePicker`** (Mantine bileşeni) için geçerlidir.
+
+Mevcut kodda kullanılan bileşen:
+
+```python
+# app.py, Satır 93 — MEVCUT
+dcc.DatePickerRange(...)   # Bu Dash/React-Dates bileşeni — popoverProps DESTEKLEMEZ
+```
+
+`dcc.DatePickerRange` Plotly Dash'in kendi bileşenidir. `popoverProps`, `radius`, `shadow` prop'larını **desteklemez.** Bu prop'ları eklersen Python hata vermez ama hiçbir görsel etki olmaz.
+
+**İki yol sunuluyor. Yol A hızlı doğrulama, Yol B kalıcı çözüm.**
+
+---
+
+### 📍 YOL A — CSS Section 8'i Doğrula ve Tamamla
+
+#### Amaç
+Revizyon 4'te `style.css` sonuna eklenen Section 8 zaten React-Dates takvim penceresini stillemek için yazıldı. Eğer takvim hâlâ standart duruyorsa, CSS ya uygulanmamış ya da DOM class adları eşleşmiyor.
+
+#### Adımlar
+
+1. `assets/style.css` dosyasını aç.
+2. Dosyanın sonunda `/* --- 8. DATEPICKER PORTAL & PREMIUM CALENDAR --- */` başlığını ara.
+   - **Yoksa:** Revizyon 4 uygulanmamış — önce o revizyonu uygula.
+   - **Varsa:** Adım 3'e geç.
+3. Tarayıcıda F12 → açılan takvim popup'ının DOM'unu incele.
+4. Şu class adlarını kontrol et:
+
+| Beklenen CSS Class | Bulunduysa | Bulunmadıysa |
+|-------------------|-----------|-------------|
+| `.DateRangePicker_picker` | CSS çalışmalı | Yol B'ye geç |
+| `.DayPicker` | Gölge/radius CSS çalışmalı | Yol B'ye geç |
+| `.CalendarDay__selected` | Renk CSS çalışmalı | Yol B'ye geç |
+
+5. Class'lar eşleşiyor ama görsel fark yoksa — Section 8 mevcut mu diye **tekrar kontrol et**. Eşleşiyor ve stil hâlâ yok → **Yol B'ye geç**.
+
+---
+
+### 📍 YOL B — `dcc.DatePickerRange` → `dmc.DatePicker` Migrasyonu (Kalıcı Çözüm)
+
+#### Amaç
+`popoverProps` prop'unu kullanabilmek için bileşeni Mantine'in kendi `dmc.DatePicker` bileşeniyle değiştirmek. Bu sayede `popoverProps={'radius': 'md', 'shadow': 'xl', 'withinPortal': True}` ile takvim popup'ı tam kontrol altına girer.
+
+> ⚠️ **Bu migrasyon hem bileşen kodunu hem de callback'ı etkiler. İkisi beraber güncellenecek.**
+
+#### Hedef Dosya
+`app.py` — iki ayrı bölüm
+
+---
+
+**DEĞİŞİKLİK 1 — Bileşeni değiştir (Satır 90-109):**
+
+```python
+# MEVCUT (Satır 90-109):
+                html.Div(
+                    id="time-range-custom-container",
+                    children=[
+                        dcc.DatePickerRange(
+                            id="time-range-picker",
+                            start_date=_default_tr["start"],
+                            end_date=_default_tr["end"],
+                            display_format="DD/MM/YY",
+                            start_date_placeholder_text="Start",
+                            end_date_placeholder_text="End",
+                            calendar_orientation="vertical",
+                            style={
+                                "width": "100%",
+                                "fontSize": "12px",
+                                "borderRadius": "8px",
+                            },
+                        ),
+                    ],
+                    style={"position": "relative"},
+                ),
+```
+
+```python
+# YENİ:
+                html.Div(
+                    id="time-range-custom-container",
+                    children=[
+                        dmc.DatePicker(
+                            id="time-range-picker",
+                            value=_default_tr["end"],
+                            valueFormat="DD/MM/YY",
+                            placeholder="Select end date",
+                            radius="md",
+                            size="sm",
+                            w="100%",
+                            popoverProps={
+                                "radius": "md",
+                                "shadow": "xl",
+                                "withinPortal": True,
+                                "zIndex": 9999,
+                                "styles": {
+                                    "dropdown": {
+                                        "border": "1px solid rgba(0, 0, 0, 0.05)",
+                                    }
+                                },
+                            },
+                        ),
+                    ],
+                    style={"position": "relative"},
+                ),
+```
+
+| Değişen | Eski | Yeni | Neden |
+|---------|------|------|-------|
+| Bileşen | `dcc.DatePickerRange` | `dmc.DatePicker` | `popoverProps` desteği |
+| Prop: tarih formatı | `display_format="DD/MM/YY"` | `valueFormat="DD/MM/YY"` | Mantine prop adı |
+| Prop: başlangıç değeri | `start_date + end_date` | `value=_default_tr["end"]` | Tek tarih seçici |
+| Prop: genişlik | `style={"width":"100%"}` | `w="100%"` | Mantine kısayolu |
+| Yeni: `popoverProps` | *(yok)* | `radius, shadow, withinPortal, zIndex` | Takvim popup stili |
+
+---
+
+**DEĞİŞİKLİK 2 — Callback'ı güncelle:**
+
+Mevcut callback'ta `Input("time-range-picker", "start_date")` ve `Input("time-range-picker", "end_date")` var. `dmc.DatePicker` bunlar yerine tek `Input("time-range-picker", "value")` döndürür.
+
+**Callback'ı bulmak için:** `app.py` içinde `"time-range-picker"` geçen `@app.callback` bloğunu ara.
+
+```python
+# MEVCUT callback Input'ları (nasıl görünüyorsa):
+Input("time-range-picker", "start_date"),
+Input("time-range-picker", "end_date"),
+
+# YENİ — bu iki satırı tek satırla değiştir:
+Input("time-range-picker", "value"),
+```
+
+**Callback fonksiyon parametrelerini de güncelle:**
+
+```python
+# MEVCUT fonksiyon imzası (örnek):
+def update_time_range(preset, start_date, end_date, ...):
+
+# YENİ:
+def update_time_range(preset, date_value, ...):
+    # date_value = seçilen tarihi end_date olarak kullan
+    # start_date'i preset veya mevcut mantıktan hesapla
+```
+
+> ⚠️ Callback fonksiyonunun **iç mantığını (return değerlerini, hesaplamalarını) BOZMA**. Sadece parametre adını ve Input prop adını değiştir. `date_value` gelen değeri `end_date` yerine kullan.
+
+---
+
+**DEĞİŞİKLİK 3 — `dmc.DatePicker` import kontrolü:**
+
+`dmc` zaten yüklü (`import dash_mantine_components as dmc`). Ek import gerekmez. Ama `dmc` 0.14.1 sürümünde bileşen adının `dmc.DatePicker` mı yoksa `dmc.DatePickerInput` mı olduğunu kontrol et:
+
+```python
+# Test: Python konsolda çalıştır veya app.py başına temp print ekle
+import dash_mantine_components as dmc
+print(dir(dmc))  # DatePicker veya DatePickerInput göreceksin
+```
+
+Eğer `DatePickerInput` ise, tüm snippet'lerde `dmc.DatePicker` → `dmc.DatePickerInput` olarak değiştir.
+
+---
+
+**DEĞİŞİKLİK 4 — Section 8 CSS temizliği (opsiyonel):**
+
+Yol B uygulandıktan sonra `style.css` Section 8'deki React-Dates class'ları (`.DateRangePicker_picker`, `.DayPicker`, `.CalendarDay__*`) artık DOM'da eşleşecek element bulamaz — zararsız ama gereksiz. İsteğe bağlı kaldırılabilir.
+
+---
+
+#### Yol B Dikkat Noktaları
+
+- `id="time-range-picker"` **değişmez** — callback bu ID'ye bağlı.
+- `dcc.DatePickerRange` kaldırıldı; ama `dcc` import'u başka yerde kullanılıyorsa silme.
+- `popoverProps` içindeki `"styles": {"dropdown": {...}}` Mantine'in `styles` prop API'sı — sözlük içinde sözlük.
+- `withinPortal: True` takvimi `<body>`'e bağlar — CSS Section 8'deki `position: fixed` fix'ine gerek kalmaz.
+- `shadow="xl"` Mantine'in en derin preset gölgesi — `nexus-card`'ın `0px 18px 40px rgba(112,144,176,0.12)` değeriyle uyumlu premium his.
+
+---
+
+### ✅ Kabul Kriterleri (Her İki Yol İçin)
+
+- [ ] DatePicker input'a tıklandığında açılan takvim **köşeleri yuvarlatılmış**.
+- [ ] Açılan takvim etrafında **belirgin ama zarif bir gölge** var.
+- [ ] Takvim kenarında **çok ince gri bir kenarlık** görünüyor.
+- [ ] Takvim popup'ı sayfa içeriğiyle **çakışmıyor** — her şeyin üstünde açılıyor.
+- [ ] Tarih seçimi callback'ı tetikliyor — `python app.py` konsol'da hata yok.
+- [ ] Sidebar ve menü işlevleri bozulmamış.
+
+---
+
+### 🧪 Test Senaryosu
+
+| # | Test | Beklenen |
+|---|------|---------|
+| 1 | `python app.py` | Hatasız başlangıç |
+| 2 | SegmentedControl → `Cstm` seç | DatePicker input görünüyor |
+| 3 | DatePicker'a tıkla | Takvim açılıyor |
+| 4 | Takvim köşe kontrolü | **Yuvarlatılmış köşeler** |
+| 5 | Takvim gölge kontrolü | **Belirgin kutu gölgesi** — havada süzülüyor |
+| 6 | Takvim kenarlık kontrolü | Çok ince gri kenarlık, göze batmıyor |
+| 7 | Takvim z-index | Sayfa içeriğinin üstünde açılıyor |
+| 8 | Tarih seç | Store güncelleniyor, sayfa verisi yenileniyor |
+
+---
+
+### 📝 Revizyon 5 Değişiklik Özeti
+
+```
+YOL A:
+  assets/style.css → Section 8 varlığı doğrulanır, CSS class eşleşmesi kontrol edilir.
+  Python dosyası değişmez.
+
+YOL B:
+  Dosya: app.py
+    Satır 90-109: dcc.DatePickerRange → dmc.DatePicker
+      + popoverProps={radius:"md", shadow:"xl", withinPortal:True, zIndex:9999}
+      + valueFormat="DD/MM/YY", value=end_date, w="100%", radius="md", size="sm"
+    Satır ~200+: Callback Input güncellendi
+      start_date + end_date → value (tek prop)
+
+  Dosya: assets/style.css (opsiyonel)
+    Section 8 React-Dates kuralları → kaldırılabilir
+
+DEĞİŞMEYEN:
+  - id="time-range-picker" (her iki yolda)
+  - Aktif menü tasarımı
+  - Sidebar flex layout (display:flex, flexDirection:column, mt=auto)
+  - Main content marginLeft:292px
+  - sidebar.py (değişmez)
+```
+
+**Toplam (Yol A):** 0 Python değişikliği — doğrulama.
+**Toplam (Yol B):** 1 Python dosyası (`app.py`), 1 CSS dosyası opsiyonel.
+
+---
+---
+
+## 🏆 Revizyon 6 — Efsanevi Takvim Deneyimi ve Premium UI
+
+**Tarih:** 28 Şubat 2026, 01:45
+**Kaynak:** CEO onayı — Dünya standartlarında Executive takvim tasarımı
+**Durum:** ⏳ Executor uygulaması bekleniyor
+
+> Yol B başarıyla uygulandı. `dmc.DatePicker` aktif, `popoverProps` çalışıyor. Bu revizyon mevcut `popoverProps` ve `styles` bloğunu genişleterek 3 kritik görsel iyileştirme yapacak. **Callback'a ve Python mantığına kesinlikle dokunulmayacak.**
+
+---
+
+### Mevcut Kod Durumu (Başlamadan Önce Kontrol Et)
+
+`app.py` Satır 93-112:
+
+```python
+dmc.DatePicker(
+    id="time-range-picker",
+    value=_default_tr["end"],
+    valueFormat="DD/MM/YY",
+    placeholder="Select end date",
+    radius="md",
+    size="sm",
+    w="100%",
+    popoverProps={
+        "radius": "md",
+        "shadow": "xl",
+        "withinPortal": True,
+        "zIndex": 9999,
+        "styles": {
+            "dropdown": {
+                "border": "1px solid rgba(0, 0, 0, 0.05)",
+            }
+        },
+    },
+),
+```
+
+---
+
+### MADDE 1 — Yön Değişikliği: Sağa Açılım (Right-Side Float)
+
+#### Sorun
+Takvim şu an yukarı veya aşağı açılıyor — sidebar'ı, arama çubuğunu ve menü linklerini kapatıyor/eziyor.
+
+#### Çözüm
+`popoverProps` içine `"position": "right-start"` ekle. Takvim, sidebar'ın **sağından**, menünün yanından havada süzülerek çıkacak; içerik ezilmeyecek.
+
+#### Yapılacak Değişiklik
+
+`popoverProps` sözlüğüne tek bir key ekle:
+
+```python
+# MEVCUT popoverProps:
+popoverProps={
+    "radius": "md",
+    "shadow": "xl",
+    "withinPortal": True,
+    "zIndex": 9999,
+    "styles": { ... },
+},
+
+# YENİ — "position" key'i eklendi:
+popoverProps={
+    "radius": "md",
+    "shadow": "xl",
+    "withinPortal": True,
+    "zIndex": 9999,
+    "position": "right-start",   # ← TEK SATIR EKLEME
+    "styles": { ... },
+},
+```
+
+#### Dikkat Noktaları
+- `"position": "right-start"` — Mantine Popover'ın position değerleri: `"right"`, `"right-start"`, `"right-end"`. `"right-start"` takvimi referans noktanın üst-sağına hizalar — sidebar'ın üstünde değil, yanında açılır.
+- `withinPortal: True` zaten var — bu kombinasyon viewport sınırlarını bilgisayar önce `right-start` dener, sığmazsa otomatik `left-start`'a geçer (Mantine'in Floating UI'ı). Bu **flip** davranışı kasıtlı — küçük ekranlarda kırılmaz.
+- `"right-start"` için sidebar'ın sağında yeterli ekran alanı olması gerekir. `marginLeft: 292px` ile ana içerik zaten sağda — takvim buraya açılacak, çakışmaz.
+
+#### Kabul Kriterleri
+- [ ] DatePicker tıklandığında takvim penceresinin sidebar'ın **sağından** açılıyor.
+- [ ] Takvim sidebar'ın herhangi bir menü elemanını **kaplamıyor**.
+- [ ] Daraltılmış ekranda (küçük viewport) takvim sol tarafa flip yapıyor — görünür kalıyor.
+
+---
+
+### MADDE 2 — Ekstra Yumuşak Köşeler ve Aura (Ambient Glow) Gölgesi
+
+#### Sorun
+`shadow: "xl"` standart Mantine gri gölgesi. Köşeler `radius: "md"` ile yeterince yumuşamamış.
+
+#### Çözüm
+1. `radius: "md"` → `radius: "xl"` (Mantine'de ≈ 16px)
+2. Gölgeyi `shadow: "xl"` yerine `popoverProps.styles.dropdown` içinde **marka rengi aura** olarak özelleştir.
+
+#### Yapılacak Değişiklik
+
+`popoverProps` içindeki `"radius"` ve `"styles.dropdown"` bloğunu güncelle:
+
+```python
+# MEVCUT:
+popoverProps={
+    "radius": "md",                              # ← değişecek
+    "shadow": "xl",                              # ← kaldırılacak (styles'a taşınıyor)
+    "withinPortal": True,
+    "zIndex": 9999,
+    "position": "right-start",
+    "styles": {
+        "dropdown": {
+            "border": "1px solid rgba(0, 0, 0, 0.05)",
+        }
+    },
+},
+
+# YENİ:
+popoverProps={
+    "radius": "xl",                              # md → xl
+    "withinPortal": True,
+    "zIndex": 9999,
+    "position": "right-start",
+    "styles": {
+        "dropdown": {
+            "border": "1px solid rgba(67, 24, 255, 0.08)",
+            "boxShadow": "0 10px 40px rgba(67, 24, 255, 0.12), 0 4px 16px rgba(0, 0, 0, 0.06)",
+            "borderRadius": "16px",
+        }
+    },
+},
+```
+
+| Değişen | Eski | Yeni | Gerekçe |
+|---------|------|------|---------|
+| `radius` | `"md"` | `"xl"` | Daha belirgin köşe yuvarlama (≈16px) |
+| `shadow` prop | `"xl"` | **kaldırıldı** | `boxShadow` styles'a taşındı — özelleştirilebilir |
+| `border` | `rgba(0,0,0,0.05)` | `rgba(67,24,255,0.08)` | Marka morunda çok soluk kenarlık |
+| `boxShadow` | *(styles'ta yoktu)* | Aura gölgesi | `rgba(67,24,255,0.12)` = Bulutistan mor aura |
+| `borderRadius` | *(styles'ta yoktu)* | `"16px"` | `radius:"xl"` ile koordineli — styles API override |
+
+#### Dikkat Noktaları
+- `rgba(67, 24, 255, ...)` = `#4318FF` hex değerinin RGB karşılığı. Projede kullanılan marka morunu dönüştürüyoruz.
+- `shadow` prop'unu kaldırınca Mantine kendi varsayılan gölgesini sıfırlamaz — `boxShadow` styles içinde belirtildiğinde o kazanır (`styles` inline style gibi çalışır, specificity yüksekti).
+- `borderRadius: "16px"` styles.dropdown içinde ekliyoruz çünkü `radius: "xl"` bazen Mantine'in `dropdown` wrapper'ına tam uygulanmayabiliyor — emin olmak için çift taraflı uygulama.
+
+#### Kabul Kriterleri
+- [ ] Takvim köşeleri belirgin biçimde yuvarlatılmış — keskin değil, `xl` derinliğinde.
+- [ ] Takvim etrafında standart gri gölge yok; **mor tonlu, yayılmacı bir aura** görünüyor.
+- [ ] Takvimin çerçevesi `rgba(67, 24, 255, 0.08)` — çok soluk ama marka rengiyle bağlı.
+
+---
+
+### MADDE 3 — Pill (Hap) Seçim Stili ve Aralık Arka Planı
+
+#### Sorun
+Seçili başlangıç/bitiş günleri kare/dikdörtgen görünüyor. Premium takvimler (Google Calendar, Linear, Notion) tam yuvarlak "pill" stili kullanır.
+
+#### Çözüm
+`dmc.DatePicker`'ın `styles` prop'unu (bileşenin kendisinin `styles`'ı — `popoverProps.styles` değil!) kullanarak takvim gün hücrelerini stillemek.
+
+> **Teknik Ayrım:** `popoverProps.styles` → açılan **pencere** (dropdown wrapper). `dmc.DatePicker`'ın kendi `styles` prop'u → **iç bileşenler** (günler, başlıklar, vs.). İkisi ayrı.
+
+#### Yapılacak Değişiklik
+
+`dmc.DatePicker` bileşenine `styles` prop'u ekle (bileşenin kendi prop'u):
+
+```python
+# MEVCUT dmc.DatePicker (Satır 93-112) — bileşenin kendi styles prop'u YOK:
+dmc.DatePicker(
+    id="time-range-picker",
+    value=_default_tr["end"],
+    valueFormat="DD/MM/YY",
+    placeholder="Select end date",
+    radius="md",
+    size="sm",
+    w="100%",
+    popoverProps={ ... },
+),
+
+# YENİ — styles prop'u EKLENİYOR (popoverProps'tan ayrı, bileşenin kendi prop'u):
+dmc.DatePicker(
+    id="time-range-picker",
+    value=_default_tr["end"],
+    valueFormat="DD/MM/YY",
+    placeholder="Select end date",
+    radius="md",
+    size="sm",
+    w="100%",
+    popoverProps={ ... },          # değişmiyor (Madde 1 ve 2'deki haliyle)
+    styles={
+        "day": {
+            "borderRadius": "50%",
+            "fontWeight": "500",
+            "transition": "background-color 0.15s ease, color 0.15s ease",
+        },
+    },
+),
+```
+
+#### Styles Prop Açıklaması
+
+| Key | Değer | Etki |
+|-----|-------|------|
+| `"day"` | `{"borderRadius": "50%"}` | Her gün hücresi tam yuvarlak — kare değil pill |
+| `"day"` | `{"fontWeight": "500"}` | Sayılar biraz daha belirgin |
+| `"day"` | `{"transition": "..."}` | Hover ve seçim renk geçişi yumuşak |
+
+#### Seçim Aralığı Rengi — CSS ile Tamamla
+
+`styles` prop Mantine'in `"day"` hücresini stilliyor. Ama seçim aralığı (başlangıç ile bitiş arasındaki günler) Mantine'in kendi CSS class'ı tarafından yönetiliyor. Bunu `assets/style.css` sonuna ekle:
+
+```css
+/* --- 9. DMC DATEPICKER PREMIUM PILL STYLE --- */
+
+/* Seçili gün: tam yuvarlak, marka moru */
+[data-mantine-color-scheme] .mantine-DatePicker-day[data-selected] {
+    background-color: #4318FF !important;
+    border-radius: 50% !important;
+    color: #ffffff !important;
+}
+
+/* Seçili gün hover */
+[data-mantine-color-scheme] .mantine-DatePicker-day[data-selected]:hover {
+    background-color: #5630FF !important;
+}
+
+/* Aralık içindeki günler: soluk mor zemin, düz dikdörtgen */
+[data-mantine-color-scheme] .mantine-DatePicker-day[data-in-range] {
+    background-color: rgba(67, 24, 255, 0.08) !important;
+    border-radius: 0 !important;
+    color: #4318FF !important;
+}
+
+/* Aralığın ilk günü: sol yuvarlak */
+[data-mantine-color-scheme] .mantine-DatePicker-day[data-first-in-range] {
+    border-radius: 50% 0 0 50% !important;
+    background-color: rgba(67, 24, 255, 0.15) !important;
+}
+
+/* Aralığın son günü: sağ yuvarlak */
+[data-mantine-color-scheme] .mantine-DatePicker-day[data-last-in-range] {
+    border-radius: 0 50% 50% 0 !important;
+    background-color: rgba(67, 24, 255, 0.15) !important;
+}
+
+/* Bugün işareti */
+[data-mantine-color-scheme] .mantine-DatePicker-day[data-today] {
+    border: 2px solid rgba(67, 24, 255, 0.4) !important;
+    border-radius: 50% !important;
+    font-weight: 700 !important;
+}
+
+/* Hover: seçili olmayan günler */
+[data-mantine-color-scheme] .mantine-DatePicker-day:hover:not([data-selected]):not([data-in-range]) {
+    background-color: rgba(67, 24, 255, 0.06) !important;
+    border-radius: 50% !important;
+    color: #4318FF !important;
+}
+```
+
+#### Detaylı Adımlar
+
+1. `app.py` dosyasını aç.
+2. `dmc.DatePicker(...)` bloğuna (Satır 93) `styles` prop'unu ekle — `popoverProps` ile aynı seviyede, yanına.
+3. `assets/style.css` dosyasını aç.
+4. Dosya sonuna yukarıdaki `/* --- 9. DMC DATEPICKER ... --- */` bloğunu yapıştır.
+
+#### Dikkat Noktaları
+- `dmc.DatePicker` **tek tarih seçici**. `data-in-range`, `data-first-in-range`, `data-last-in-range` attribute'ları **DateRangePicker** için tanımlı CSS class'ları. `dmc.DatePicker` tek tarih seçtiği için bu attribute'lar aktif olmayabilir. **Bunları bırakıyoruz** — ileride `dmc.DateRangePicker`'a geçilirse hazır olacak; şimdilik sadece `data-selected` ve `data-today` aktif olacak.
+- `[data-mantine-color-scheme]` seçicisi Mantine 7+ versiyonu için. `dmc` 0.14.1 bu versiyonu kullanıyorsa çalışır. Eğer class eşleşmezse F12 ile takvim DOM'unu incele ve gerçek class adını bul.
+- `styles` prop'unda `"day"` key'i Mantine'in `DatePicker` için tanımladığı slot. Bu prop TypeScript'te tip-güvenli — geçersiz bir key eklenirse Mantine bunu yok sayar, hata vermez.
+
+#### Kabul Kriterleri
+- [ ] Seçili gün hücresi **tam yuvarlak** (pill/circle) — kare veya dikdörtgen değil.
+- [ ] Seçili gün **marka moru** arka planlı, beyaz yazılı.
+- [ ] Bugünün tarihi üzerinde ince mor daire kenarlığı görünüyor.
+- [ ] Herhangi bir günün üzerine gelindiğinde yumuşak mor hover efekti oluyor.
+- [ ] Hover ve seçim renk geçişleri `transition` ile akıcı.
+
+---
+
+### 🔧 Revizyon 6 — Tam `dmc.DatePicker` Kodu (Madde 1+2+3 Birleşik)
+
+Executor, Satır 93-112 arasındaki tüm `dmc.DatePicker(...)` bloğunu **bununla değiştir:**
+
+```python
+dmc.DatePicker(
+    id="time-range-picker",
+    value=_default_tr["end"],
+    valueFormat="DD/MM/YY",
+    placeholder="Select date",
+    radius="md",
+    size="sm",
+    w="100%",
+    styles={
+        "day": {
+            "borderRadius": "50%",
+            "fontWeight": "500",
+            "transition": "background-color 0.15s ease, color 0.15s ease",
+        },
+    },
+    popoverProps={
+        "withinPortal": True,
+        "zIndex": 9999,
+        "position": "right-start",
+        "radius": "xl",
+        "styles": {
+            "dropdown": {
+                "border": "1px solid rgba(67, 24, 255, 0.08)",
+                "boxShadow": "0 10px 40px rgba(67, 24, 255, 0.12), 0 4px 16px rgba(0, 0, 0, 0.06)",
+                "borderRadius": "16px",
+            }
+        },
+    },
+),
+```
+
+**Ve `assets/style.css` sonuna Section 9 CSS bloğunu ekle.**
+
+---
+
+### 🧪 Revizyon 6 Test Senaryosu
+
+| # | Test | Beklenen |
+|---|------|---------|
+| 1 | `python app.py` | Hatasız başlangıç |
+| 2 | SegmentedControl → `Cstm` seç | DatePicker input görünüyor |
+| 3 | DatePicker'a tıkla | Takvim sidebar'ın **sağından** açılıyor |
+| 4 | Takvim konum kontrolü | Menü linkleri ve arama çubuğu ezilmiyor |
+| 5 | Takvim köşe kontrolü | Köşeler `xl` (≈16px) yuvarlatılmış |
+| 6 | Takvim gölge kontrolü | **Mor aura gölgesi** — standart gri değil |
+| 7 | Takvim kenarlık rengi | Çok soluk mor kenarlık (`rgba 67,24,255, 0.08`) |
+| 8 | Gün hücreleri | Sayılar tam yuvarlak hücreler içinde |
+| 9 | Seçili gün | **Mor daire** — kare değil |
+| 10 | Bugünün tarihi | İnce mor çerçeve |
+| 11 | Gün hover | Soluk mor daire hover efekti |
+| 12 | Tarih seç → callback | Store güncelleniyor, veri yenileniyor |
+| 13 | Küçük ekran | Takvim sağa sığmazsa **otomatik flip** — görünür kalıyor |
+
+---
+
+### 📝 Revizyon 6 Değişiklik Özeti
+
+```
+Dosya: app.py
+  Satır 93-112: dmc.DatePicker bloğu güncellendi
+    [Madde 1] popoverProps += "position": "right-start"
+    [Madde 2] popoverProps.radius: "md" → "xl"
+              popoverProps.shadow kaldırıldı
+              popoverProps.styles.dropdown:
+                border: rgba(67,24,255,0.08)
+                boxShadow: mor aura + siyah depth
+                borderRadius: "16px"
+    [Madde 3] styles prop EKLENDİ (bileşenin kendi prop'u):
+                "day": borderRadius:50%, fontWeight:500, transition
+
+Dosya: assets/style.css
+  [Madde 3] Dosya sonuna Section 9 eklendi:
+    .mantine-DatePicker-day[data-selected]      → mor daire, beyaz yazı
+    .mantine-DatePicker-day[data-selected]:hover → koyu mor hover
+    .mantine-DatePicker-day[data-in-range]       → soluk mor zemin (ileride DateRange için)
+    .mantine-DatePicker-day[data-first-in-range] → sol yuvarlak
+    .mantine-DatePicker-day[data-last-in-range]  → sağ yuvarlak
+    .mantine-DatePicker-day[data-today]          → mor kenarlık daire
+    .mantine-DatePicker-day:hover                → soluk mor hover daire
+
+DEĞİŞMEYEN:
+  - id="time-range-picker"
+  - value, valueFormat, placeholder, size, w prop'ları
+  - Callback mantığı (Satır 199-219)
+  - Aktif menü tasarımı
+  - Sidebar flex layout
+  - Main content marginLeft:292px
+  - sidebar.py
+```
+
+**Toplam:** 2 dosya (`app.py` Satır 93-112 güncelleme + `style.css` Section 9 ekleme). Callback değişmez. Yeni dosya yok.
+
+---
+---
+
+## 🔁 Revizyon 6B — Tarih Aralığı (Range) Seçimini Aktif Et
+
+**Tarih:** 28 Şubat 2026, 02:14
+**Kaynak:** Teknik eksiklik — DatePicker tek tarih, Report Period başlangıç+bitiş çifti gerektiriyor
+**Durum:** ⏳ Executor uygulaması bekleniyor
+
+> Revizyon 6 uygulanmış olmalı. Bu revizyon 3 cerrahi değişiklik yapar: bileşen tipi, başlangıç değeri formatı, callback unpack mantığı. CSS Section 9 değişmez — zaten range için hazırdı.
+
+---
+
+### Mevcut Sorun (Kod Durumu)
+
+```python
+# app.py Satır 93-95 — ŞU AN:
+dmc.DatePicker(
+    id="time-range-picker",
+    value=_default_tr["end"],        # ← TEK string — start yok, range yok
+
+# app.py Satır 222-227 — ŞU AN:
+    if "time-range-picker" in tid and date_value:
+        return {
+            "start": (current or {}).get("start"),  # ← eski start korunuyor — kullanıcı seçimi yok
+            "end": date_value,                       # ← tek string → date_value[1] olmalı
+```
+
+---
+
+### DEĞİŞİKLİK 1 — Bileşen: Tek Tarih → Range Picker
+
+#### Adım 0 — Hangi Bileşen Mevcut? (Kontrol Et)
+
+```python
+# Geçici test — app.py başına ekle, çalıştır, kaldır:
+import dash_mantine_components as dmc
+print([x for x in dir(dmc) if 'Date' in x])
+```
+
+Çıktıya göre:
+- `DatePickerInput` varsa → **Senaryo A**
+- `DateRangePicker` varsa → **Senaryo B**
+- Sadece `DatePicker` varsa → **Senaryo C**
+
+---
+
+**SENARYO A — `dmc.DatePickerInput` (Önerilen):**
+
+`app.py` Satır 93-121'i TAMAMEN şununla değiştir:
+
+```python
+dmc.DatePickerInput(
+    id="time-range-picker",
+    type="range",
+    value=[_default_tr["start"], _default_tr["end"]],
+    valueFormat="DD/MM/YY",
+    placeholder="Select date range",
+    radius="md",
+    size="sm",
+    w="100%",
+    numberOfColumns=2,
+    styles={
+        "day": {
+            "borderRadius": "50%",
+            "fontWeight": "500",
+            "transition": "background-color 0.15s ease, color 0.15s ease",
+        },
+    },
+    popoverProps={
+        "withinPortal": True,
+        "zIndex": 9999,
+        "position": "right-start",
+        "radius": "xl",
+        "styles": {
+            "dropdown": {
+                "border": "1px solid rgba(67, 24, 255, 0.08)",
+                "boxShadow": "0 10px 40px rgba(67, 24, 255, 0.12), 0 4px 16px rgba(0, 0, 0, 0.06)",
+                "borderRadius": "16px",
+            }
+        },
+    },
+),
+```
+
+**SENARYO B — `dmc.DateRangePicker`:**
+
+Aynı blok, sadece açılış satırını değiştir:
+```python
+dmc.DateRangePicker(       # DatePickerInput → DateRangePicker
+    id="time-range-picker",
+    # type="range" prop'u YOK — bu bileşen zaten range
+    value=[_default_tr["start"], _default_tr["end"]],
+    ... # geri kalan prop'lar Senaryo A ile aynı
+),
+```
+
+**SENARYO C — `dmc.DatePicker` + `type` prop:**
+
+```python
+dmc.DatePicker(
+    id="time-range-picker",
+    type="range",                                       # ← prop ekle
+    value=[_default_tr["start"], _default_tr["end"]],  # ← liste
+    ... # geri kalan prop'lar Senaryo A ile aynı
+),
+```
+
+#### Prop Değişiklik Tablosu (Tüm Senaryolar)
+
+| Prop | Eski | Yeni | Zorunlu mu |
+|------|------|------|-----------|
+| `value` | `_default_tr["end"]` (string) | `[_default_tr["start"], _default_tr["end"]]` (liste) | ✅ Zorunlu |
+| `type` | *(yok)* | `"range"` | ✅ DatePickerInput için |
+| `placeholder` | `"Select date"` | `"Select date range"` | Tavsiye |
+| `numberOfColumns` | *(yok)* | `2` | ✅ Önerilen (2 ay yan yana) |
+
+---
+
+### DEĞİŞİKLİK 2 — Callback: Güvenli Range Unpack
+
+#### Hedef
+`app.py` — Satır 208-228 (Callback #3)
+
+`type="range"` modunda `value` prop **`[start_date, end_date]` listesi** döndürür.
+Kullanıcı henüz ikinci tarihi seçmemişse `[start_date, None]` gelebilir.
+Guard olmadan `start, end = date_value` → `ValueError` hatası.
+
+#### Mevcut Kod (Satır 208-228)
+```python
+@app.callback(
+    dash.Output("app-time-range", "data"),
+    dash.Input("time-range-preset", "value"),
+    dash.Input("time-range-picker", "value"),
+    dash.State("app-time-range", "data"),
+)
+def update_time_range_store(preset, date_value, current):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+    tid = ctx.triggered[0]["prop_id"]
+    if "time-range-preset" in tid and preset != "custom":
+        return preset_to_range(preset)
+    if "time-range-picker" in tid and date_value:
+        return {
+            "start": (current or {}).get("start"),
+            "end": date_value,
+            "preset": "custom",
+        }
+    return dash.no_update
+```
+
+#### Yeni Kod (Satır 208-228'i TAMAMEN bununla değiştir)
+```python
+@app.callback(
+    dash.Output("app-time-range", "data"),
+    dash.Input("time-range-preset", "value"),
+    dash.Input("time-range-picker", "value"),
+    dash.State("app-time-range", "data"),
+)
+def update_time_range_store(preset, date_value, current):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+    tid = ctx.triggered[0]["prop_id"]
+    if "time-range-preset" in tid and preset != "custom":
+        return preset_to_range(preset)
+    if "time-range-picker" in tid and date_value:
+        # Range modunda value = [start, end] listesi
+        # Güvenli unpack — None veya eksik eleman gelirse bekle
+        if isinstance(date_value, (list, tuple)) and len(date_value) == 2:
+            start, end = date_value
+        else:
+            # Eski tek-değer uyumluluğu (geçiş güvencesi)
+            start = (current or {}).get("start")
+            end = date_value if isinstance(date_value, str) else None
+        # İki tarih de seçilmişse kaydet; biri eksikse beklemeye devam
+        if start and end:
+            return {"start": start, "end": end, "preset": "custom"}
+        return dash.no_update
+    return dash.no_update
+```
+
+#### Değişiklik Tablosu
+
+| Satır | Eski Mantık | Yeni Mantık | Neden |
+|-------|------------|------------|-------|
+| `date_value` kullanımı | String olarak davranır | `isinstance(list)` ile liste kontrol | Range liste döndürür |
+| `"start"` kaynağı | `current.get("start")` — eski korunur | `date_value[0]` — kullanıcının seçimi | Her iki tarih kullanıcıdan gelmeli |
+| `"end"` kaynağı | `date_value` (string) | `date_value[1]` — listeden ikinci | Range'in ikinci elemanı |
+| Yeni guard | *(yok)* | `if start and end:` | Kullanıcı ikinci tarihi seçmeden kaydetme |
+| Hata koruması | *(yok)* | `isinstance` + `len` check | `ValueError: not enough values` önleme |
+
+---
+
+### ⚠️ Kritik Dikkat Noktaları
+
+**`numberOfColumns=2` genişlik etkisi:**
+- İki ay yan yana → popup ~600px+ genişlik. `position="right-start"` ile sidebar sağından açılır. Ana içerik `marginLeft: 292px` ile yeterli yer var — çakışmaz.
+- Dar monitörlerde Floating UI otomatik flip yapar — normaldir.
+
+**`value` listesinin içeriği:**
+- `_default_tr["start"]` ve `_default_tr["end"]` ISO string olmalı: `"2024-01-20"`.
+- Listedeki her eleman ya ISO string ya da `None`. `dmc.DatePickerInput` bunu handle eder.
+
+**CSS Section 9 artık TAM aktif:**
+- `data-in-range`, `data-first-in-range`, `data-last-in-range` Mantine'in range seçimde gerçekten set ettiği attribute'lar. Section 9 kuralları artık görünür olacak — aralık soluk morla bağlanacak.
+
+**`id="time-range-picker"` değişmez:**
+- Callback `Input("time-range-picker", "value")` — ID aynı kalmalı.
+
+---
+
+### ✅ Kabul Kriterleri
+
+- [ ] `python app.py` hatasız başlangıç.
+- [ ] DatePicker alanı tıklanınca **iki ay yan yana** takvim açılıyor.
+- [ ] Takvimde **başlangıç** tarihi seçilebiliyor.
+- [ ] Takvimde **bitiş** tarihi seçilebiliyor.
+- [ ] Seçim tamamlanınca popup kapanıyor.
+- [ ] Aralıktaki günler soluk mor zeminle bağlı (Section 9 CSS aktif).
+- [ ] Store `{"start": "...", "end": "...", "preset": "custom"}` güncelleniyor.
+- [ ] Grafikler yeni aralığa göre yenileniyor.
+- [ ] Preset (1D/7D/30D) butonları hâlâ çalışıyor.
+- [ ] Tek tarih seçilip bırakılınca hata yok — store güncellenmez, bekler.
+- [ ] Konsol'da `ValueError: not enough values to unpack` yok.
+
+---
+
+### 📝 Revizyon 6B Değişiklik Özeti
+
+```
+Dosya: app.py
+
+  [DEĞİŞİKLİK 1] Satır 93-121 — Bileşen:
+    dmc.DatePicker  →  dmc.DatePickerInput(type="range")
+                       VEYA dmc.DateRangePicker
+    value: string  →  [start, end] liste
+    + numberOfColumns=2
+    + placeholder güncellendi
+    type="range" (DatePickerInput için)
+
+  [DEĞİŞİKLİK 2] Satır 208-228 — Callback #3:
+    date_value string kabul  →  list unpack
+    + isinstance(date_value, list) guard
+    + start=date_value[0], end=date_value[1]
+    + if start and end guard — ikisi doluysa kaydet
+
+DEĞİŞMEYEN:
+  - id="time-range-picker"
+  - Input("time-range-picker", "value") — aynı prop
+  - Callback preset dalı (Satır 220-221)
+  - CSS Section 9 (değişmez — artık tam aktif olacak)
+  - sidebar.py
+  - Aktif menü tasarımı
+  - Sidebar flex layout
+  - Main content marginLeft:292px
+```
+
+**Toplam:** 1 dosya (`app.py`). 2 blok değişim. CSS yok. Yeni dosya yok.
