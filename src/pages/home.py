@@ -5,9 +5,12 @@ from dash_iconify import DashIconify
 from src.services.shared import service
 from src.utils.time_range import default_time_range
 from src.components.charts import (
-    create_usage_donut_chart,
     create_energy_breakdown_chart,
     create_grouped_bar_chart,
+    create_energy_semi_circle,
+    create_dc_treemap,
+    create_energy_elite,
+    create_energy_elite_v2,
 )
 
 
@@ -55,15 +58,164 @@ def metric_card(title, value, icon_name, subtext=None, color="#4318FF"):
 
 def platform_card(title, hosts, vms, clusters=None, color="#4318FF"):
     children = [
-        dmc.Text(title, fw=700, size="sm", c="#2B3674", style={"marginBottom": "8px"}),
-        dmc.Group(gap="lg", children=[dmc.Text(f"Hosts: {hosts}", size="sm", c="#A3AED0"), dmc.Text(f"VMs: {vms}", size="sm", c="#A3AED0")]),
+        dmc.Group(
+            gap="xs",
+            align="center",
+            style={"marginBottom": "10px"},
+            children=[
+                html.Div(style={
+                    "width": "10px", "height": "10px",
+                    "borderRadius": "50%",
+                    "backgroundColor": color,
+                    "flexShrink": 0,
+                }),
+                dmc.Text(title, fw=700, size="sm", c="#2B3674"),
+            ],
+        ),
+        dmc.Stack(
+            gap=4,
+            children=[
+                dmc.Group(gap="xs", children=[
+                    dmc.Text("Hosts", size="xs", c="dimmed", style={"width": "52px"}),
+                    dmc.Text(str(hosts), size="sm", fw=600, c="#2B3674"),
+                ]),
+                dmc.Group(gap="xs", children=[
+                    dmc.Text("VMs", size="xs", c="dimmed", style={"width": "52px"}),
+                    dmc.Text(str(vms), size="sm", fw=600, c="#2B3674"),
+                ]),
+            ],
+        ),
     ]
     if clusters is not None:
-        children.insert(1, dmc.Text(f"Clusters: {clusters}", size="sm", c="#A3AED0"))
+        children[1].children.insert(1, dmc.Group(gap="xs", children=[
+            dmc.Text("Clusters", size="xs", c="dimmed", style={"width": "52px"}),
+            dmc.Text(str(clusters), size="sm", fw=600, c="#2B3674"),
+        ]))
     return html.Div(
-        className="nexus-card",
-        style={"padding": "16px", "borderLeft": f"4px solid {color}"},
+        style={
+            "padding": "14px 16px",
+            "borderRadius": "12px",
+            "backgroundColor": "#f8f9fa",
+            "border": f"1px solid #e9ecef",
+            "borderLeftWidth": "3px",
+            "borderLeftColor": color,
+        },
         children=children,
+    )
+
+
+def _ring_stat(value, label, color):
+    """dmc.RingProgress ile tek kaynak kullanım halkası."""
+    try:
+        v = max(0.0, min(100.0, float(value)))
+    except (TypeError, ValueError):
+        v = 0.0
+
+    glow_map = {
+        "#4318FF": "rgba(67, 24, 255, 0.18)",
+        "#05CD99": "rgba(5, 205, 153, 0.18)",
+        "#FFB547": "rgba(255, 181, 71, 0.18)",
+    }
+    glow = glow_map.get(color, "rgba(67,24,255,0.12)")
+
+    return html.Div(
+        style={
+            "display": "flex",
+            "flexDirection": "column",
+            "alignItems": "center",
+            "gap": "10px",
+        },
+        children=[
+            dmc.RingProgress(
+                size=130,
+                thickness=10,
+                roundCaps=True,
+                sections=[{"value": v, "color": color}],
+                style={"filter": f"drop-shadow(0 0 8px {glow})"},
+                label=html.Div(
+                    style={"textAlign": "center"},
+                    children=[
+                        dmc.Text(
+                            f"{int(v)}%",
+                            fw=900,
+                            size="xl",
+                            c="#2B3674",
+                            style={"lineHeight": 1},
+                        ),
+                    ],
+                ),
+            ),
+            dmc.Text(label, size="sm", fw=600, c="#A3AED0"),
+        ],
+    )
+
+
+def _pct_badge(value):
+    """CPU/RAM yüzdesini değere göre renk kodlu dmc.Badge ile döndür."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        v = 0.0
+
+    if v >= 80:
+        color, variant = "red", "light"
+    elif v >= 50:
+        color, variant = "blue", "light"
+    else:
+        color, variant = "teal", "light"
+
+    if v == 0.0:
+        return dmc.Text("—", size="sm", c="dimmed", style={"textAlign": "right"})
+
+    return dmc.Badge(
+        f"{v:.1f}%",
+        color=color,
+        variant=variant,
+        radius="sm",
+        size="sm",
+        style={
+            "fontWeight": 600,
+            "letterSpacing": 0,
+            "fontVariantNumeric": "tabular-nums",
+            "minWidth": "52px",
+            "textAlign": "center",
+        },
+    )
+
+
+def _num_cell(value, suffix=""):
+    """Sayısal değeri sağa hizalı, tabular-nums formatında döndür.
+    0 ise soluklaştırılmış tire göster."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        v = 0
+
+    if v == 0:
+        return dmc.Text("—", size="sm", c="dimmed",
+                        style={"textAlign": "right", "fontVariantNumeric": "tabular-nums"})
+
+    return dmc.Text(
+        f"{v:,}{suffix}",
+        size="sm",
+        fw=500,
+        c="#2B3674",
+        style={"textAlign": "right", "fontVariantNumeric": "tabular-nums"},
+    )
+
+
+def _dc_link(name, dc_id):
+    """DC ismini altı çizgisiz, marka renginde, kalın link olarak döndür."""
+    return dcc.Link(
+        dmc.Text(
+            name,
+            size="sm",
+            fw=700,
+            c="#4318FF",
+            style={"letterSpacing": "-0.01em"},
+        ),
+        href=f"/datacenter/{dc_id}",
+        style={"textDecoration": "none"},
     )
 
 
@@ -121,13 +273,64 @@ def build_overview(time_range=None):
 
     return html.Div(
         [
-            html.Div(
-                className="nexus-glass",
+            dmc.Paper(
+                p="xl",
+                radius="md",
+                style={
+                    "background": "rgba(255, 255, 255, 0.80)",
+                    "backdropFilter": "blur(12px)",
+                    "WebkitBackdropFilter": "blur(12px)",
+                    "boxShadow": "0 4px 24px rgba(67, 24, 255, 0.07), 0 1px 4px rgba(0, 0, 0, 0.04)",
+                    "borderBottom": "1px solid rgba(255, 255, 255, 0.6)",
+                    "marginBottom": "28px",
+                },
                 children=[
-                    html.H1("Executive Dashboard", style={"margin": 0, "color": "#2B3674", "fontSize": "1.5rem"}),
-                    html.P(f"Report period: {tr.get('start', '')} – {tr.get('end', '')}", style={"margin": "5px 0 0 0", "color": "#A3AED0"}),
+                    dmc.Group(
+                        justify="space-between",
+                        align="center",
+                        children=[
+                            dmc.Stack(
+                                gap=10,
+                                children=[
+                                    html.H2(
+                                        "Executive Dashboard",
+                                        style={
+                                            "margin": 0,
+                                            "fontWeight": 900,
+                                            "letterSpacing": "-0.02em",
+                                            "lineHeight": 1.2,
+                                            "fontSize": "1.75rem",
+                                            "background": "linear-gradient(90deg, #1a1b41 0%, #4318FF 100%)",
+                                            "WebkitBackgroundClip": "text",
+                                            "WebkitTextFillColor": "transparent",
+                                            "backgroundClip": "text",
+                                        },
+                                    ),
+                                    dmc.Badge(
+                                        children=[
+                                            dmc.Group(
+                                                gap=6,
+                                                align="center",
+                                                children=[
+                                                    DashIconify(
+                                                        icon="solar:calendar-mark-bold-duotone",
+                                                        width=13,
+                                                    ),
+                                                    f"{tr.get('start', '')} – {tr.get('end', '')}",
+                                                ],
+                                            )
+                                        ],
+                                        variant="light",
+                                        color="indigo",
+                                        radius="xl",
+                                        size="md",
+                                        style={"textTransform": "none", "fontWeight": 500, "letterSpacing": 0},
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
                 ],
-                style={"padding": "20px 30px", "marginBottom": "30px", "borderRadius": "0 0 20px 20px"},
             ),
             dmc.SimpleGrid(cols=5, spacing="lg", children=kpis, style={"marginBottom": "24px", "padding": "0 30px"}),
             dmc.SimpleGrid(
@@ -137,46 +340,29 @@ def build_overview(time_range=None):
                 children=[
                     html.Div(
                         [
-                            html.H3("Platform breakdown", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
+                            dmc.Text("Platform Breakdown", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
+                            dmc.Text("Nutanix · VMware · IBM Power", size="xs", c="dimmed", style={"marginBottom": "16px"}),
                             dmc.SimpleGrid(cols=3, spacing="md", children=platform_cards),
                         ],
                         className="nexus-card",
-                        style={"padding": "20px"},
+                        style={"padding": "24px"},
                     ),
                     html.Div(
                         [
-                            html.H3("Resource usage", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
-                            html.P("Daily average over report period", style={"margin": "0 0 12px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
+                            dmc.Text("Resource Usage", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
+                            dmc.Text("Daily average over report period", size="xs", c="dimmed", style={"marginBottom": "20px"}),
                             dmc.SimpleGrid(
                                 cols=3,
-                                spacing="md",
+                                spacing="xl",
                                 children=[
-                                    html.Div(
-                                        dcc.Graph(
-                                            figure=create_usage_donut_chart(cpu_pct, "CPU", "#4318FF"),
-                                            config={"displayModeBar": False},
-                                            style={"height": "160px"},
-                                        )
-                                    ),
-                                    html.Div(
-                                        dcc.Graph(
-                                            figure=create_usage_donut_chart(ram_pct, "RAM", "#05CD99"),
-                                            config={"displayModeBar": False},
-                                            style={"height": "160px"},
-                                        )
-                                    ),
-                                    html.Div(
-                                        dcc.Graph(
-                                            figure=create_usage_donut_chart(stor_pct, "Storage", "#FFB547"),
-                                            config={"displayModeBar": False},
-                                            style={"height": "160px"},
-                                        )
-                                    ),
+                                    _ring_stat(cpu_pct,  "CPU",     "#4318FF"),
+                                    _ring_stat(ram_pct,  "RAM",     "#05CD99"),
+                                    _ring_stat(stor_pct, "Storage", "#FFB547"),
                                 ],
                             ),
                         ],
                         className="nexus-card",
-                        style={"padding": "20px"},
+                        style={"padding": "24px"},
                     ),
                 ],
             ),
@@ -187,73 +373,194 @@ def build_overview(time_range=None):
                 children=[
                     html.Div(
                         [
-                            html.H3("Energy by source", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
-                            html.P("Daily average (kW)", style={"margin": "0 0 12px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
-                            dcc.Graph(
-                                figure=create_energy_breakdown_chart(eb_labels, eb_values, "Energy (kW)", height=260),
-                                config={"displayModeBar": False},
+                            dmc.Text("Energy by Source", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
+                            dmc.Text("Daily average (kW) — IBM Power & vCenter", size="xs", c="dimmed", style={"marginBottom": "12px"}),
+                            html.Div(
+                                dcc.Graph(
+                                    id="energy-elite-graph",
+                                    figure=create_energy_elite_v2(eb_labels, eb_values, height=300),
+                                    config={"displayModeBar": False},
+                                    style={"height": "300px"},
+                                ),
+                                style={
+                                    "filter": "drop-shadow(0 0 10px rgba(67, 24, 255, 0.35))",
+                                    "WebkitFilter": "drop-shadow(0 0 10px rgba(67, 24, 255, 0.35))",
+                                    "borderRadius": "50%",
+                                    "overflow": "hidden",
+                                },
                             ),
                         ],
                         className="nexus-card",
-                        style={"padding": "20px"},
+                        style={"padding": "24px"},
                     ),
                     html.Div(
                         [
-                            html.H3("DC comparison", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
+                            dmc.Text("DC Landscape", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
+                            dmc.Text("VM distribution across Data Centers — area = VM count", size="xs", c="dimmed", style={"marginBottom": "12px"}),
                             dcc.Graph(
-                                figure=create_grouped_bar_chart(
-                                    dc_names,
-                                    {"Hosts": dc_hosts, "VMs": dc_vms},
-                                    "Hosts & VMs by DC",
-                                    height=260,
-                                ),
+                                figure=create_dc_treemap(dc_names, dc_vms, height=320),
                                 config={"displayModeBar": False},
+                                style={"height": "320px", "borderRadius": "12px", "overflow": "hidden"},
                             ),
                         ],
                         className="nexus-card",
-                        style={"padding": "20px"},
+                        style={"padding": "24px"},
                     ),
                 ],
             ),
             html.Div(
                 className="nexus-card nexus-table",
-                style={"margin": "0 30px", "padding": "20px", "overflowX": "auto"},
+                style={
+                    "margin": "0 30px",
+                    "padding": "24px",
+                    "overflowX": "auto",
+                },
                 children=[
-                    html.H3("DC summary", style={"margin": "0 0 4px 0", "color": "#2B3674"}),
-                    html.P("CPU % and RAM % are daily averages over the report period.", style={"margin": "0 0 16px 0", "color": "#A3AED0", "fontSize": "0.8rem"}),
+                    dmc.Text(
+                        "DC Summary",
+                        fw=700,
+                        size="lg",
+                        c="#2B3674",
+                        style={"marginBottom": "4px"},
+                    ),
+                    dmc.Text(
+                        "CPU & RAM: daily averages over the report period.",
+                        size="xs",
+                        c="dimmed",
+                        style={"marginBottom": "18px"},
+                    ),
                     dmc.Table(
                         striped=True,
                         highlightOnHover=True,
+                        withTableBorder=False,
+                        withColumnBorders=False,
+                        verticalSpacing="sm",
+                        horizontalSpacing="md",
                         children=[
                             html.Thead(
-                                html.Tr(
-                                    [
-                                        html.Th("DC"),
-                                        html.Th("Location"),
-                                        html.Th("Platforms"),
-                                        html.Th("Hosts"),
-                                        html.Th("VMs"),
-                                        html.Th("CPU %"),
-                                        html.Th("RAM %"),
-                                    ]
-                                )
+                                html.Tr([
+                                    html.Th(
+                                        "Data Center",
+                                        style={
+                                            "color": "#A3AED0",
+                                            "fontWeight": 600,
+                                            "fontSize": "0.72rem",
+                                            "textTransform": "uppercase",
+                                            "letterSpacing": "0.07em",
+                                            "paddingBottom": "12px",
+                                            "borderBottom": "2px solid #f1f3f5",
+                                            "textAlign": "left",
+                                        },
+                                    ),
+                                    html.Th(
+                                        "Location",
+                                        style={
+                                            "color": "#A3AED0",
+                                            "fontWeight": 600,
+                                            "fontSize": "0.72rem",
+                                            "textTransform": "uppercase",
+                                            "letterSpacing": "0.07em",
+                                            "paddingBottom": "12px",
+                                            "borderBottom": "2px solid #f1f3f5",
+                                            "textAlign": "left",
+                                        },
+                                    ),
+                                    html.Th(
+                                        "Platforms",
+                                        style={
+                                            "color": "#A3AED0",
+                                            "fontWeight": 600,
+                                            "fontSize": "0.72rem",
+                                            "textTransform": "uppercase",
+                                            "letterSpacing": "0.07em",
+                                            "paddingBottom": "12px",
+                                            "borderBottom": "2px solid #f1f3f5",
+                                            "textAlign": "right",
+                                        },
+                                    ),
+                                    html.Th(
+                                        "Hosts",
+                                        style={
+                                            "color": "#A3AED0",
+                                            "fontWeight": 600,
+                                            "fontSize": "0.72rem",
+                                            "textTransform": "uppercase",
+                                            "letterSpacing": "0.07em",
+                                            "paddingBottom": "12px",
+                                            "borderBottom": "2px solid #f1f3f5",
+                                            "textAlign": "right",
+                                        },
+                                    ),
+                                    html.Th(
+                                        "VMs",
+                                        style={
+                                            "color": "#A3AED0",
+                                            "fontWeight": 600,
+                                            "fontSize": "0.72rem",
+                                            "textTransform": "uppercase",
+                                            "letterSpacing": "0.07em",
+                                            "paddingBottom": "12px",
+                                            "borderBottom": "2px solid #f1f3f5",
+                                            "textAlign": "right",
+                                        },
+                                    ),
+                                    html.Th(
+                                        "CPU %",
+                                        style={
+                                            "color": "#A3AED0",
+                                            "fontWeight": 600,
+                                            "fontSize": "0.72rem",
+                                            "textTransform": "uppercase",
+                                            "letterSpacing": "0.07em",
+                                            "paddingBottom": "12px",
+                                            "borderBottom": "2px solid #f1f3f5",
+                                            "textAlign": "right",
+                                        },
+                                    ),
+                                    html.Th(
+                                        "RAM %",
+                                        style={
+                                            "color": "#A3AED0",
+                                            "fontWeight": 600,
+                                            "fontSize": "0.72rem",
+                                            "textTransform": "uppercase",
+                                            "letterSpacing": "0.07em",
+                                            "paddingBottom": "12px",
+                                            "borderBottom": "2px solid #f1f3f5",
+                                            "textAlign": "right",
+                                        },
+                                    ),
+                                ])
                             ),
-                            html.Tbody(
-                                [
-                                    html.Tr(
-                                        [
-                                            html.Td(dcc.Link(s["name"], href=f"/datacenter/{s['id']}", style={"color": "#4318FF", "fontWeight": 600})),
-                                            html.Td(s["location"]),
-                                            html.Td(s.get("platform_count", 0)),
-                                            html.Td(s["host_count"]),
-                                            html.Td(s["vm_count"]),
-                                            html.Td(f"{s['stats'].get('used_cpu_pct', 0)}%"),
-                                            html.Td(f"{s['stats'].get('used_ram_pct', 0)}%"),
-                                        ]
-                                    )
-                                    for s in summaries
-                                ]
-                            ),
+                            html.Tbody([
+                                html.Tr([
+                                    html.Td(_dc_link(s["name"], s["id"])),
+                                    html.Td(
+                                        dmc.Text(s["location"], size="sm", c="dimmed")
+                                    ),
+                                    html.Td(
+                                        _num_cell(s.get("platform_count", 0)),
+                                        style={"textAlign": "right"},
+                                    ),
+                                    html.Td(
+                                        _num_cell(s["host_count"]),
+                                        style={"textAlign": "right"},
+                                    ),
+                                    html.Td(
+                                        _num_cell(s["vm_count"]),
+                                        style={"textAlign": "right"},
+                                    ),
+                                    html.Td(
+                                        _pct_badge(s["stats"].get("used_cpu_pct", 0)),
+                                        style={"textAlign": "right"},
+                                    ),
+                                    html.Td(
+                                        _pct_badge(s["stats"].get("used_ram_pct", 0)),
+                                        style={"textAlign": "right"},
+                                    ),
+                                ])
+                                for s in summaries
+                            ]),
                         ],
                     ),
                 ],

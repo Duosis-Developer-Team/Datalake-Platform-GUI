@@ -45,10 +45,10 @@ body {
 }
 
 .nexus-card:hover {
-    transform: translateY(-5px);
+    transform: translateY(-3px);
     box-shadow:
-        0px 30px 60px rgba(112, 144, 176, 0.20),
-        0px 10px 20px rgba(112, 144, 176, 0.10) !important;
+        0px 20px 50px rgba(67, 24, 255, 0.10),
+        0px 8px 20px rgba(112, 144, 176, 0.08) !important;
 }
 
 /* --- 3. GLASSMORPHISM HEADER --- */

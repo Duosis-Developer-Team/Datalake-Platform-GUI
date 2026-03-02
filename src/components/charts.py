@@ -44,36 +44,51 @@ def create_bar_chart(data, x_col, y_col, title, color="#4318FF", height=250):
     )
     return fig
 
+
 def create_usage_donut_chart(value, label, color="#4318FF"):
+    """Donut chart for resource usage — kept for dc_view.py compatibility."""
     try:
         val = float(value)
-    except:
-        val = 0
-    remaining = 100 - val
-    
+    except (TypeError, ValueError):
+        val = 0.0
+    val = max(0.0, min(100.0, val))
+    remaining = 100.0 - val
+
     fig = go.Figure(data=[go.Pie(
         values=[val, remaining],
         labels=["Used", "Free"],
-        hole=0.7,
-        marker=dict(colors=[color, "#E9EDF7"]),
+        hole=0.82,
+        marker=dict(
+            colors=[color, "#EEF2FF"],
+            line=dict(color="rgba(0,0,0,0)", width=0),
+        ),
         sort=False,
-        textinfo='none',
-        hoverinfo='label+value'
+        textinfo="none",
+        hoverinfo="skip",
+        direction="clockwise",
     )])
 
     fig.update_layout(
         annotations=[dict(
-            text=f"{int(val)}%",
-            x=0.5, y=0.5,
-            font=dict(size=24, color="#2B3674", family="DM Sans", weight="bold"),
-            showarrow=False
+            text=f"<b>{int(val)}%</b>",
+            x=0.5,
+            y=0.5,
+            xanchor="center",
+            yanchor="middle",
+            font=dict(size=28, color="#2B3674", family="DM Sans"),
+            showarrow=False,
         )],
-        title=dict(text=label, x=0.5, xanchor='center', font=dict(size=14, color="#A3AED0", family="DM Sans")),
+        title=dict(
+            text=f"<b>{label}</b>",
+            x=0.5,
+            xanchor="center",
+            font=dict(size=12, color="#A3AED0", family="DM Sans"),
+        ),
         showlegend=False,
-        margin=dict(l=20, r=20, t=40, b=20),
-        height=200,
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)'
+        margin=dict(l=8, r=8, t=44, b=8),
+        height=180,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
 
@@ -105,30 +120,85 @@ def create_stacked_bar_chart(labels, series_dict, title, height=300):
     return fig
 
 
-def create_grouped_bar_chart(labels, series_dict, title, height=300):
-    """Grouped bar chart: labels on x, multiple series side by side."""
+def create_grouped_bar_chart(labels, series_dict, title, height=380):
+    """Executive horizontal grouped bar chart with avg reference line and unified hover."""
     fig = go.Figure()
-    colors = ["#4318FF", "#05CD99", "#FFB547"]
+    colors     = ["#4318FF",              "#05CD99"]
+    colors_dim = ["rgba(67,24,255,0.55)", "rgba(5,205,153,0.55)"]
+
+    all_vals = [v for vals in series_dict.values() for v in vals if v]
+    avg = (sum(all_vals) / len(all_vals)) if all_vals else 0
+
     for i, (name, values) in enumerate(series_dict.items()):
         fig.add_trace(go.Bar(
-            x=labels,
-            y=values,
+            y=labels,
+            x=values,
             name=name,
-            marker_color=colors[i % len(colors)],
+            orientation="h",
+            marker=dict(
+                color=colors[i % len(colors)],
+                opacity=0.85,
+                line=dict(color="rgba(0,0,0,0)", width=0),
+            ),
+            hovertemplate=f"<b>%{{y}}</b><br>{name}: %{{x:,}}<extra></extra>",
         ))
+
+    # Sistem ortalaması referans çizgisi
+    fig.add_vline(
+        x=avg,
+        line_dash="dot",
+        line_color="rgba(67, 24, 255, 0.35)",
+        line_width=1.5,
+        annotation_text=f"Avg: {avg:,.0f}",
+        annotation_position="top",
+        annotation_font=dict(family="DM Sans", size=11, color="rgba(67,24,255,0.7)"),
+    )
+
     fig.update_layout(
         barmode="group",
-        title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans")),
+        hovermode="y unified",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        margin=dict(l=20, r=20, t=50, b=40),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.12,
+            xanchor="center",
+            x=0.5,
+            font=dict(family="DM Sans", size=12, color="#2B3674"),
+            bgcolor="rgba(0,0,0,0)",
+        ),
+        margin=dict(l=10, r=20, t=24, b=50),
         height=height,
-        xaxis=dict(showgrid=False, zeroline=False),
-        yaxis=dict(showgrid=False, zeroline=False),
+        bargap=0.15,
+        bargroupgap=0.06,
+        xaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+            tickfont=dict(family="DM Sans", size=11, color="#A3AED0"),
+        ),
+        yaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            tickfont=dict(family="DM Sans", size=13, color="#2B3674", weight=600),
+            autorange="reversed",
+        ),
+        hoverlabel=dict(
+            bgcolor="rgba(255,255,255,0.95)",
+            bordercolor="rgba(67,24,255,0.2)",
+            font=dict(family="DM Sans", size=12, color="#2B3674"),
+        ),
         font=dict(family="DM Sans", color="#A3AED0"),
     )
+
+    # Yuvarlak bar köşeleri — Plotly >= 5.12
+    try:
+        fig.update_traces(marker_cornerradius=6)
+    except Exception:
+        pass
+
     return fig
 
 
@@ -161,23 +231,453 @@ def create_gauge_chart(value, max_value, title, color="#4318FF", height=200):
     return fig
 
 
-def create_energy_breakdown_chart(labels, values, title="Energy by source", height=250):
-    """Pie or bar for energy breakdown (e.g. Racks, IBM, vCenter)."""
+def create_energy_semi_circle(labels, values, height=280):
+    """
+    Energy by Source — Yarım Halka (Semi-Circle Donut).
+    Düz taban altta; toplam kW merkez alt noktada büyük tipografiyle.
+    """
+    try:
+        total = sum(float(v) for v in values if v is not None)
+    except (TypeError, ValueError):
+        total = 0.0
+
+    # Dummy dilim: diğer tüm dilimlerin toplamı kadar, tamamen şeffaf
+    dummy_val = total if total > 0 else 1
+
+    full_labels = list(labels) + [""]
+    full_values = list(values) + [dummy_val]
+    full_colors = ["#4318FF", "#05CD99", "#FFB547", "rgba(0,0,0,0)"]
+
+    # Renk sayısını veri sayısına göre kırp
+    color_slice = full_colors[: len(labels)] + ["rgba(0,0,0,0)"]
+
     fig = go.Figure(data=[go.Pie(
-        labels=labels,
-        values=values,
-        hole=0.5,
-        marker=dict(colors=["#4318FF", "#05CD99", "#FFB547"]),
-        textinfo="label+percent",
-        hoverinfo="label+value+percent",
+        labels=full_labels,
+        values=full_values,
+        hole=0.60,
+        rotation=180,
+        direction="clockwise",
+        sort=False,
+        marker=dict(
+            colors=color_slice,
+            line=dict(color="rgba(0,0,0,0)", width=0),
+        ),
+        textinfo="none",
+        hovertemplate="<b>%{label}</b><br>%{value:,.0f} kW<extra></extra>",
     )])
+
+    center_text = (
+        f"<span style='font-size:26px;font-weight:900;color:#2B3674'>"
+        f"{total:,.0f}"
+        f"</span>"
+        f"<br>"
+        f"<span style='font-size:11px;color:#A3AED0'>kW Total</span>"
+    )
+
     fig.update_layout(
-        title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans")),
-        showlegend=False,
+        annotations=[dict(
+            text=center_text,
+            x=0.5,
+            y=0.10,
+            xanchor="center",
+            yanchor="middle",
+            showarrow=False,
+            align="center",
+        )],
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.04,
+            xanchor="center",
+            x=0.5,
+            font=dict(family="DM Sans", size=12, color="#2B3674"),
+            bgcolor="rgba(0,0,0,0)",
+            itemsizing="constant",
+            traceorder="normal",
+        ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=40, b=20),
+        margin=dict(l=10, r=10, t=10, b=50),
         height=height,
         font=dict(family="DM Sans", color="#A3AED0"),
     )
+
+    return fig
+
+
+def create_dc_treemap(dc_names, dc_vms, height=320):
+    """
+    DC Comparison — Treemap.
+    Kutu büyüklüğü VM sayısını temsil eder.
+    Büyük DC (yüksek VM) geniş kutu, küçük DC dar kutu.
+    Renk: VM sayısına göre mor → turkuaz gradyan.
+    """
+    safe_vms = [max(1, int(v or 0)) for v in dc_vms]
+
+    fig = go.Figure(go.Treemap(
+        labels=dc_names,
+        values=safe_vms,
+        parents=[""] * len(dc_names),
+        branchvalues="total",
+        marker=dict(
+            colorscale=[
+                [0.0,  "#7B2FFF"],
+                [0.35, "#4318FF"],
+                [0.70, "#2196F3"],
+                [1.0,  "#05CD99"],
+            ],
+            colors=safe_vms,
+            showscale=False,
+            line=dict(
+                color="rgba(255,255,255,0.15)",
+                width=2,
+            ),
+            pad=dict(t=4, l=4, r=4, b=4),
+        ),
+        textfont=dict(
+            family="DM Sans",
+            color="rgba(255,255,255,0.92)",
+        ),
+        textposition="middle center",
+        texttemplate=(
+            "<b>%{label}</b><br>"
+            "<span style='font-size:11px;opacity:0.85'>%{value:,} VMs</span>"
+        ),
+        hovertemplate=(
+            "<b>%{label}</b><br>"
+            "VM Count: %{value:,}<br>"
+            "%{percentRoot:.1%} of total"
+            "<extra></extra>"
+        ),
+        tiling=dict(
+            packing="squarify",
+        ),
+    ))
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=height,
+        font=dict(family="DM Sans", color="rgba(255,255,255,0.9)"),
+    )
+
+    return fig
+
+
+def create_energy_breakdown_chart(labels, values, title="Energy by source", height=260):
+    """Premium ring chart — total kW centered, legend right outside, no inline labels."""
+    try:
+        total = sum(float(v) for v in values if v is not None)
+    except (TypeError, ValueError):
+        total = 0.0
+
+    center_text = (
+        f"<span style='font-size:28px;font-weight:900;color:#2B3674'>"
+        f"{total:,.0f}"
+        f"</span>"
+        f"<br>"
+        f"<span style='font-size:11px;color:#A3AED0'>kW Total</span>"
+    )
+
+    fig = go.Figure(data=[go.Pie(
+        labels=labels,
+        values=values,
+        hole=0.68,
+        marker=dict(
+            colors=["#4318FF", "#05CD99"],
+            line=dict(color="rgba(0,0,0,0)", width=0),
+        ),
+        textinfo="none",
+        hovertemplate="<b>%{label}</b><br>%{value:,.0f} kW — %{percent}<extra></extra>",
+        direction="clockwise",
+        sort=False,
+    )])
+
+    fig.update_layout(
+        annotations=[dict(
+            text=center_text,
+            x=0.5,
+            y=0.5,
+            xanchor="center",
+            yanchor="middle",
+            showarrow=False,
+            align="center",
+        )],
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            x=1.05,
+            y=0.5,
+            xanchor="left",
+            yanchor="middle",
+            font=dict(family="DM Sans", size=12, color="#2B3674"),
+            bgcolor="rgba(0,0,0,0)",
+            itemsizing="constant",
+            tracegroupgap=10,
+        ),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=120, t=16, b=16),
+        height=height,
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+    return fig
+
+
+# Elite icon map — enerji kaynaklarına göre sembol
+_ENERGY_ICONS = {
+    "IBM Power": "⚡",
+    "vCenter":   "☁️",
+    "Rack":      "🏗️",
+    "Solar":     "☀️",
+    "Wind":      "💨",
+}
+
+
+def create_energy_elite(labels, values, height=300):
+    """
+    Elite Energy Gauge — Tesla tarzı fütüristik yarım halka.
+
+    Özellikler:
+    - Semi-circle (rotation=180, dummy slice)
+    - 42px ultra-bold merkez rakam
+    - Segmented beyaz çizgiler (parçalı donanım hissi)
+    - Emoji pill legend
+    - customdata ile hover altyapısı
+    """
+    try:
+        total = sum(float(v) for v in values if v is not None)
+    except (TypeError, ValueError):
+        total = 0.0
+
+    dummy_val = total if total > 0 else 1.0
+
+    # Legend için emoji prefix
+    icon_labels = [
+        f"{_ENERGY_ICONS.get(lbl, '●')} {lbl}"
+        for lbl in labels
+    ]
+    full_labels = icon_labels + [""]       # "" → dummy (legend'da görünmez)
+    full_values = list(values) + [dummy_val]
+
+    # Renk paleti — son eleman dummy için şeffaf
+    palette = ["#4318FF", "#05CD99", "#FFB547", "#A78BFA"]
+    color_slice = palette[: len(labels)] + ["rgba(0,0,0,0)"]
+
+    # customdata — dilim yüzdesi ve kW değeri (hover için)
+    total_safe = total if total > 0 else 1
+    pcts = [round(100 * float(v) / total_safe, 1) for v in values] + [0]
+
+    fig = go.Figure(data=[go.Pie(
+        labels=full_labels,
+        values=full_values,
+        hole=0.62,
+        rotation=180,
+        direction="clockwise",
+        sort=False,
+        marker=dict(
+            colors=color_slice,
+            line=dict(
+                color="rgba(255,255,255,1)",
+                width=3,
+            ),
+        ),
+        textinfo="none",
+        hovertemplate=(
+            "<b>%{label}</b><br>"
+            "%{value:,.0f} kW<br>"
+            "%{customdata:.1f}%"
+            "<extra></extra>"
+        ),
+        customdata=pcts,
+        pull=[0] * (len(labels) + 1),
+    )])
+
+    # Annotation 1: Büyük rakam (42px, ultra-bold, lacivert)
+    number_text = (
+        f"<span style='"
+        f"font-size:42px;"
+        f"font-weight:900;"
+        f"color:#1a1b41;"
+        f"line-height:1;"
+        f"font-family:DM Sans,sans-serif;"
+        f"'>{total:,.0f}</span>"
+    )
+
+    # Annotation 2: "kW TOTAL" label (12px, gri, letter-spaced)
+    unit_text = (
+        "<span style='"
+        "font-size:12px;"
+        "font-weight:600;"
+        "color:#A3AED0;"
+        "letter-spacing:0.12em;"
+        "text-transform:uppercase;"
+        "font-family:DM Sans,sans-serif;"
+        "'>kW TOTAL</span>"
+    )
+
+    fig.update_layout(
+        annotations=[
+            dict(
+                text=number_text,
+                x=0.5,
+                y=0.14,
+                xanchor="center",
+                yanchor="middle",
+                showarrow=False,
+                align="center",
+            ),
+            dict(
+                text=unit_text,
+                x=0.5,
+                y=0.02,
+                xanchor="center",
+                yanchor="middle",
+                showarrow=False,
+                align="center",
+            ),
+        ],
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.06,
+            xanchor="center",
+            x=0.5,
+            font=dict(
+                family="DM Sans",
+                size=12,
+                color="#2B3674",
+            ),
+            bgcolor="rgba(0,0,0,0)",
+            itemsizing="constant",
+            traceorder="normal",
+        ),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=10, b=60),
+        height=height,
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+
+    return fig
+
+
+def create_energy_elite_v2(labels, values, height=300):
+    """
+    Elite Energy Gauge v2 — Full Donut, Zero-Overlap Typography.
+
+    Task 6 değişiklikleri:
+    - Semi-circle (dummy + rotation) KALDIRILDI → Tam Donut
+    - Annotation: y=0.55 rakam / y=0.45 etiket → asla üst üste gelmiyor
+    - Neon glow: wrapper div'de (bu fonksiyon değil, home.py'de)
+    - Segmented gaps: marker.line korunuyor
+    - Emoji legend: korunuyor
+    """
+    try:
+        total = sum(float(v) for v in values if v is not None)
+    except (TypeError, ValueError):
+        total = 0.0
+
+    # Emoji prefix legend
+    icon_labels = [
+        f"{_ENERGY_ICONS.get(lbl, '●')} {lbl}"
+        for lbl in labels
+    ]
+
+    # Renk paleti
+    palette = ["#4318FF", "#05CD99", "#FFB547", "#A78BFA"]
+    color_slice = palette[: len(labels)]
+
+    # customdata — hover için yüzde
+    total_safe = total if total > 0 else 1
+    pcts = [round(100 * float(v) / total_safe, 1) for v in values]
+
+    fig = go.Figure(data=[go.Pie(
+        labels=icon_labels,
+        values=list(values),
+        hole=0.65,
+        sort=False,
+        marker=dict(
+            colors=color_slice,
+            line=dict(
+                color="rgba(255,255,255,1)",
+                width=3,
+            ),
+        ),
+        textinfo="none",
+        hovertemplate=(
+            "<b>%{label}</b><br>"
+            "%{value:,.0f} kW<br>"
+            "%{customdata:.1f}%"
+            "<extra></extra>"
+        ),
+        customdata=pcts,
+        direction="clockwise",
+    )])
+
+    # Annotation 1: Büyük rakam — y=0.55 (ortanın 5 birim üstü)
+    number_text = (
+        f"<span style='"
+        f"font-size:42px;"
+        f"font-weight:900;"
+        f"color:#1a1b41;"
+        f"line-height:1;"
+        f"font-family:DM Sans,sans-serif;"
+        f"'>{total:,.0f}</span>"
+    )
+
+    # Annotation 2: "kW TOTAL" etiket — y=0.45 (ortanın 5 birim altı)
+    unit_text = (
+        "<span style='"
+        "font-size:12px;"
+        "font-weight:600;"
+        "color:#A3AED0;"
+        "letter-spacing:0.12em;"
+        "text-transform:uppercase;"
+        "font-family:DM Sans,sans-serif;"
+        "'>kW TOTAL</span>"
+    )
+
+    fig.update_layout(
+        annotations=[
+            dict(
+                text=number_text,
+                x=0.5,
+                y=0.55,
+                xanchor="center",
+                yanchor="middle",
+                showarrow=False,
+                align="center",
+            ),
+            dict(
+                text=unit_text,
+                x=0.5,
+                y=0.45,
+                xanchor="center",
+                yanchor="middle",
+                showarrow=False,
+                align="center",
+            ),
+        ],
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.06,
+            xanchor="center",
+            x=0.5,
+            font=dict(family="DM Sans", size=12, color="#2B3674"),
+            bgcolor="rgba(0,0,0,0)",
+            itemsizing="constant",
+        ),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=16, b=60),
+        height=height,
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+
     return fig

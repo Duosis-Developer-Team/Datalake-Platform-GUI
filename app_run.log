@@ -1,0 +1,75 @@
+2026-03-02 02:05:18 [INFO] src.services.db_service: DB connection pool initialized (min=2, max=16).
+2026-03-02 02:05:18 [INFO] src.services.scheduler_service: Starting initial cache warm-up before scheduler launch.
+2026-03-02 02:05:18 [INFO] src.services.db_service: Warming cache at startup (last 7d, last 30d, previous month)…
+2026-03-02 02:05:18 [INFO] src.services.db_service: Loaded 14 datacenters from loki_locations: ['AZ11', 'DC11', 'DC12', 'DC13', 'DC14', 'DC15', 'DC16', 'DC17', 'DC18', 'DH3', 'ICT11', 'ICT21', 'UZ11', 'Vadi Ofis']
+2026-03-02 02:05:18 [INFO] src.services.db_service: Rebuilding summary for 14 DCs (batch fetch + aggregate)...
+2026-03-02 02:05:19 [INFO] src.services.db_service: Batch fetch: Nutanix done in 0.78s
+2026-03-02 02:05:20 [INFO] src.services.db_service: Batch fetch: VMware done in 0.60s
+2026-03-02 02:05:45 [INFO] src.services.db_service: Batch fetch: IBM done in 24.82s
+2026-03-02 02:05:49 [INFO] src.services.db_service: Batch fetch: Energy done in 3.91s
+2026-03-02 02:05:49 [INFO] src.services.db_service: Batch fetch complete, aggregating per-DC...
+2026-03-02 02:05:49 [INFO] src.services.db_service: Rebuilt summary for 14 DCs.
+2026-03-02 02:05:49 [INFO] src.services.db_service: Loaded 14 datacenters from loki_locations: ['AZ11', 'DC11', 'DC12', 'DC13', 'DC14', 'DC15', 'DC16', 'DC17', 'DC18', 'DH3', 'ICT11', 'ICT21', 'UZ11', 'Vadi Ofis']
+2026-03-02 02:05:49 [INFO] src.services.db_service: Rebuilding summary for 14 DCs (batch fetch + aggregate)...
+2026-03-02 02:05:50 [INFO] src.services.db_service: Batch fetch: Nutanix done in 1.41s
+2026-03-02 02:05:52 [INFO] src.services.db_service: Batch fetch: VMware done in 2.29s
+2026-03-02 02:06:34 [INFO] src.services.db_service: Batch fetch: IBM done in 41.90s
+2026-03-02 02:06:41 [INFO] src.services.db_service: Batch fetch: Energy done in 6.50s
+2026-03-02 02:06:41 [INFO] src.services.db_service: Batch fetch complete, aggregating per-DC...
+2026-03-02 02:06:41 [INFO] src.services.db_service: Rebuilt summary for 14 DCs.
+2026-03-02 02:06:41 [INFO] src.services.db_service: Loaded 14 datacenters from loki_locations: ['AZ11', 'DC11', 'DC12', 'DC13', 'DC14', 'DC15', 'DC16', 'DC17', 'DC18', 'DH3', 'ICT11', 'ICT21', 'UZ11', 'Vadi Ofis']
+2026-03-02 02:06:41 [INFO] src.services.db_service: Rebuilding summary for 14 DCs (batch fetch + aggregate)...
+2026-03-02 02:06:42 [INFO] src.services.db_service: Batch fetch: Nutanix done in 1.10s
+2026-03-02 02:06:44 [INFO] src.services.db_service: Batch fetch: VMware done in 1.76s
+2026-03-02 02:07:20 [INFO] src.services.db_service: Batch fetch: IBM done in 35.84s
+2026-03-02 02:07:26 [INFO] src.services.db_service: Batch fetch: Energy done in 5.99s
+2026-03-02 02:07:26 [INFO] src.services.db_service: Batch fetch complete, aggregating per-DC...
+2026-03-02 02:07:26 [INFO] src.services.db_service: Rebuilt summary for 14 DCs.
+2026-03-02 02:07:26 [INFO] src.services.db_service: Cache warm-up complete.
+2026-03-02 02:07:26 [INFO] apscheduler.scheduler: Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2026-03-02 02:07:26 [INFO] apscheduler.scheduler: Added job "DB cache refresh" to job store "default"
+2026-03-02 02:07:26 [INFO] apscheduler.scheduler: Scheduler started
+2026-03-02 02:07:26 [INFO] src.services.scheduler_service: Background scheduler started. Cache refresh every 15 minutes.
+2026-03-02 02:07:26 [INFO] apscheduler.scheduler: Added job "Initial Boyner customer cache warm-up (30d)" to job store "default"
+2026-03-02 02:07:26 [INFO] src.services.scheduler_service: Scheduled initial Boyner customer cache warm-up (last 30 days).
+2026-03-02 02:07:26 [INFO] apscheduler.executors.default: Running job "Initial Boyner customer cache warm-up (30d) (trigger: date[2026-03-02 02:07:26 +03], next run at: 2026-03-02 02:07:26 +03)" (scheduled at 2026-03-02 02:07:26.050593+03:00)
+2026-03-02 02:07:26 [INFO] apscheduler.scheduler: Removed job customer_boyner_initial_warm
+2026-03-02 02:07:26 [INFO] apscheduler.scheduler: Added job "Boyner customer cache refresh (30d)" to job store "default"
+2026-03-02 02:07:26 [INFO] src.services.scheduler_service: Scheduled Boyner customer cache refresh every 15 minutes (30-day range).
+Dash is running on http://127.0.0.1:8050/
+
+2026-03-02 02:07:26 [INFO] dash.dash: Dash is running on http://127.0.0.1:8050/
+
+ * Serving Flask app 'app'
+ * Debug mode: on
+2026-03-02 02:10:02 [INFO] apscheduler.executors.default: Job "Initial Boyner customer cache warm-up (30d) (trigger: date[2026-03-02 02:07:26 +03], next run at: 2026-03-02 02:07:26 +03)" executed successfully
+2026-03-02 02:22:26 [INFO] apscheduler.executors.default: Running job "DB cache refresh (trigger: interval[0:15:00], next run at: 2026-03-02 02:37:26 +03)" (scheduled at 2026-03-02 02:22:26.049809+03:00)
+2026-03-02 02:22:26 [INFO] src.services.db_service: Background cache refresh started (last 7d, last 30d, previous month).
+2026-03-02 02:22:26 [INFO] apscheduler.executors.default: Running job "Boyner customer cache refresh (30d) (trigger: interval[0:15:00], next run at: 2026-03-02 02:22:26 +03)" (scheduled at 2026-03-02 02:22:26.050878+03:00)
+2026-03-02 02:22:26 [INFO] apscheduler.executors.default: Job "Boyner customer cache refresh (30d) (trigger: interval[0:15:00], next run at: 2026-03-02 02:22:26 +03)" executed successfully
+2026-03-02 02:22:26 [INFO] src.services.db_service: Loaded 14 datacenters from loki_locations: ['AZ11', 'DC11', 'DC12', 'DC13', 'DC14', 'DC15', 'DC16', 'DC17', 'DC18', 'DH3', 'ICT11', 'ICT21', 'UZ11', 'Vadi Ofis']
+2026-03-02 02:22:26 [INFO] src.services.db_service: Rebuilding summary for 14 DCs (batch fetch + aggregate)...
+2026-03-02 02:22:26 [INFO] src.services.db_service: Batch fetch: Nutanix done in 0.55s
+2026-03-02 02:22:27 [INFO] src.services.db_service: Batch fetch: VMware done in 0.47s
+2026-03-02 02:22:35 [INFO] src.services.db_service: Batch fetch: IBM done in 8.48s
+2026-03-02 02:22:39 [INFO] src.services.db_service: Batch fetch: Energy done in 3.46s
+2026-03-02 02:22:39 [INFO] src.services.db_service: Batch fetch complete, aggregating per-DC...
+2026-03-02 02:22:39 [INFO] src.services.db_service: Rebuilt summary for 14 DCs.
+2026-03-02 02:22:39 [INFO] src.services.db_service: Loaded 14 datacenters from loki_locations: ['AZ11', 'DC11', 'DC12', 'DC13', 'DC14', 'DC15', 'DC16', 'DC17', 'DC18', 'DH3', 'ICT11', 'ICT21', 'UZ11', 'Vadi Ofis']
+2026-03-02 02:22:39 [INFO] src.services.db_service: Rebuilding summary for 14 DCs (batch fetch + aggregate)...
+2026-03-02 02:22:40 [INFO] src.services.db_service: Batch fetch: Nutanix done in 1.14s
+2026-03-02 02:22:41 [INFO] src.services.db_service: Batch fetch: VMware done in 1.66s
+2026-03-02 02:23:19 [INFO] src.services.db_service: Batch fetch: IBM done in 37.39s
+2026-03-02 02:23:25 [INFO] src.services.db_service: Batch fetch: Energy done in 6.13s
+2026-03-02 02:23:25 [INFO] src.services.db_service: Batch fetch complete, aggregating per-DC...
+2026-03-02 02:23:25 [INFO] src.services.db_service: Rebuilt summary for 14 DCs.
+2026-03-02 02:23:25 [INFO] src.services.db_service: Loaded 14 datacenters from loki_locations: ['AZ11', 'DC11', 'DC12', 'DC13', 'DC14', 'DC15', 'DC16', 'DC17', 'DC18', 'DH3', 'ICT11', 'ICT21', 'UZ11', 'Vadi Ofis']
+2026-03-02 02:23:25 [INFO] src.services.db_service: Rebuilding summary for 14 DCs (batch fetch + aggregate)...
+2026-03-02 02:23:26 [INFO] src.services.db_service: Batch fetch: Nutanix done in 1.10s
+2026-03-02 02:23:28 [INFO] src.services.db_service: Batch fetch: VMware done in 1.74s
+2026-03-02 02:24:03 [INFO] src.services.db_service: Batch fetch: IBM done in 35.32s
+2026-03-02 02:24:09 [INFO] src.services.db_service: Batch fetch: Energy done in 5.88s
+2026-03-02 02:24:09 [INFO] src.services.db_service: Batch fetch complete, aggregating per-DC...
+2026-03-02 02:24:09 [INFO] src.services.db_service: Rebuilt summary for 14 DCs.
+2026-03-02 02:24:09 [INFO] src.services.db_service: Background cache refresh complete.
+2026-03-02 02:24:09 [INFO] apscheduler.executors.default: Job "DB cache refresh (trigger: interval[0:15:00], next run at: 2026-03-02 02:37:26 +03)" executed successfully
