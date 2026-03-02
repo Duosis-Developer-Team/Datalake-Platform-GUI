@@ -2,7 +2,7 @@
 # To add a new query for a future dashboard, register it here.
 # The db_service uses this registry for dynamic query execution.
 
-from src.queries import nutanix, vmware, ibm, energy, customer, intel_dc
+from src.queries import nutanix, vmware, ibm, energy, customer
 
 # Schema for each entry:
 #   sql           : SQL string (from the provider module)
@@ -316,20 +316,5 @@ QUERY_REGISTRY: dict[str, dict] = {
         "result_type": "value",
         "params_style": "wildcard",
         "provider": "customer",
-    },
-    # --- Intel DC-level raw VM fetch (dedup done in Python) ---
-    "intel_dc_vmware_vms": {
-        "sql": intel_dc.VMWARE_VMS_FOR_DC,
-        "source": "vm_metrics",
-        "result_type": "rows",
-        "params_style": "wildcard",
-        "provider": "intel",
-    },
-    "intel_dc_nutanix_vms": {
-        "sql": intel_dc.NUTANIX_VMS_FOR_DC,
-        "source": "nutanix_vm_metrics, nutanix_cluster_metrics",
-        "result_type": "rows",
-        "params_style": "wildcard",
-        "provider": "intel",
     },
 }

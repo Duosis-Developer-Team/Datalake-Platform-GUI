@@ -40,8 +40,48 @@ FROM public.ibm_server_general
 WHERE server_details_servername LIKE %s AND time BETWEEN %s AND %s
 """
 
-# --- Batch queries (params: dc_list, start_ts, end_ts) ---
-# DC code extracted from server name via regex (e.g. G2HV19DC13 -> DC13).
+# --- Batch queries (lightweight — no regex) ---
+# These fetch raw rows; DC code extraction is done in Python to minimise
+# database CPU load and allow the queries to leverage simple time-range
+# indexes instead of computing regexp_matches on every row.
+#
+# Params: (start_ts, end_ts)
+
+BATCH_RAW_HOST = """
+SELECT server_details_servername
+FROM public.ibm_server_general
+WHERE time BETWEEN %s AND %s
+"""
+
+BATCH_RAW_VIOS = """
+SELECT vios_details_servername, viosname
+FROM public.ibm_vios_general
+WHERE time BETWEEN %s AND %s
+"""
+
+BATCH_RAW_LPAR = """
+SELECT lpar_details_servername, lparname
+FROM public.ibm_lpar_general
+WHERE time BETWEEN %s AND %s
+"""
+
+BATCH_RAW_MEMORY = """
+SELECT server_details_servername, server_memory_configurablemem, server_memory_assignedmemtolpars
+FROM public.ibm_server_general
+WHERE time BETWEEN %s AND %s
+"""
+
+BATCH_RAW_CPU = """
+SELECT server_details_servername,
+       server_processor_utilizedprocunits,
+       server_processor_utilizedprocunitsdeductidle,
+       server_physicalprocessorpool_assignedprocunits
+FROM public.ibm_server_general
+WHERE time BETWEEN %s AND %s
+"""
+
+# Legacy batch queries kept for registry/explorer use but no longer called
+# by _fetch_all_batch (which now uses the raw+Python approach above).
 
 BATCH_HOST_COUNT = """
 WITH extracted AS (

@@ -1,7 +1,9 @@
 import os
+import re
 import logging
 import time
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import psycopg2
 from psycopg2 import pool as pg_pool
@@ -9,10 +11,12 @@ from psycopg2 import OperationalError
 from psycopg2.pool import PoolError
 
 from src.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
-from src.queries import loki as lq, customer as cq, intel_dc as idq
+from src.queries import loki as lq, customer as cq
 from src.services import cache_service as cache
 from src.services import query_overrides as qo
 from src.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
+
+_DC_CODE_RE = re.compile(r'(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)', re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 
@@ -423,41 +427,6 @@ class DatabaseService:
         }
 
     # ------------------------------------------------------------------
-    # Intel DC-level helpers (VMware + Nutanix, Python-side dedup)
-    # ------------------------------------------------------------------
-
-    def _get_intel_dc_metrics(self, cursor, dc_code: str, start_ts, end_ts) -> dict:
-        """Fetch raw VMware & Nutanix VM lists and compute deduplicated Intel metrics in Python.
-
-        Returns dict with keys: vm_count, vmware_only, nutanix_count, overlap.
-        Two lightweight SELECTs replace the former heavy CTE query, keeping the
-        DB load minimal while all deduplication happens here.
-        """
-        vmware_rows = self._run_rows(
-            cursor, idq.VMWARE_VMS_FOR_DC, (dc_code, start_ts, end_ts),
-        )
-        nutanix_rows = self._run_rows(
-            cursor, idq.NUTANIX_VMS_FOR_DC, (dc_code, start_ts, end_ts),
-        )
-
-        vmware_names = {r[0] for r in vmware_rows if r and r[0]}
-        nutanix_names = {r[0] for r in nutanix_rows if r and r[0]}
-
-        all_unique = vmware_names | nutanix_names
-        overlap = vmware_names & nutanix_names
-
-        return {
-            "vm_count": len(all_unique),
-            "vmware_only": len(vmware_names - nutanix_names),
-            "nutanix_count": len(nutanix_names),
-            "overlap": len(overlap),
-        }
-
-    def _get_intel_dc_vm_total(self, cursor, dc_code: str, start_ts, end_ts) -> int:
-        """Convenience wrapper: returns deduplicated VM total for a DC."""
-        return self._get_intel_dc_metrics(cursor, dc_code, start_ts, end_ts)["vm_count"]
-
-    # ------------------------------------------------------------------
     # Public API — dc_view.py: single DC detail
     # ------------------------------------------------------------------
 
@@ -474,9 +443,6 @@ class DatabaseService:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     dc_wc = f"%{dc_code}%"
-                    # Intel: VMware + Nutanix VM-level deduplicated total for this DC
-                    intel_vms_total = self._get_intel_dc_vm_total(cur, dc_code, start_ts, end_ts)
-
                     result = self._aggregate_dc(
                         dc_code,
                         nutanix_host_count=self.get_nutanix_host_count(cur, dc_code, start_ts, end_ts),
@@ -498,11 +464,6 @@ class DatabaseService:
                         ibm_kwh=self.get_ibm_kwh(cur, dc_wc, start_ts, end_ts),
                         vcenter_kwh=self.get_vcenter_kwh(cur, dc_code, start_ts, end_ts),
                     )
-                    # Override Intel VM count with deduplicated VMware+Nutanix total
-                    try:
-                        result["intel"]["vms"] = int(intel_vms_total)
-                    except (TypeError, ValueError, KeyError):
-                        pass
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_details(%s): %s", dc_code, exc)
             return _EMPTY_DC(dc_code)
@@ -514,131 +475,143 @@ class DatabaseService:
     # Batch fetch (internal) — used by get_all_datacenters_summary
     # ------------------------------------------------------------------
 
-    def _fetch_all_batch(self, cursor, dc_list: list[str], start_ts, end_ts) -> dict[str, dict]:
-        """
-        Execute all batch queries in one connection and map results back to DC codes.
-        start_ts, end_ts: time range for report (all time-series queries filtered).
-        Nutanix: match by cluster_name LIKE '%dc%'. VMware/vCenter: match by datacenter ILIKE '%dc%'.
+    def _fetch_all_batch(self, cursor, dc_list: list[str], start_ts, end_ts) -> tuple[dict, dict]:
+        """Execute batch queries in **parallel** across separate DB connections.
+
+        Four query groups (Nutanix, VMware, IBM, Energy) each get their own
+        connection from the pool and run concurrently.  IBM queries no longer
+        use ``regexp_matches`` on the server — raw rows are fetched and DC code
+        extraction + aggregation happens in Python via ``_DC_CODE_RE``.
         """
         logger.info(
             "Batch fetch: starting for %d DCs, range %s -> %s",
-            len(dc_list),
-            start_ts,
-            end_ts,
+            len(dc_list), start_ts, end_ts,
         )
-        # Patterns for LIKE/ILIKE: one per DC (e.g. ['%AZ11%', '%DC11%', ...])
         pattern_list = [f"%{dc}%" for dc in dc_list]
-        # Nutanix — params (dc_list, pattern_list, start_ts, end_ts); returns (dc_code, ...)
-        logger.info("Batch fetch: Nutanix START")
+        dc_set_upper = {dc.upper() for dc in dc_list}
+
+        # ---- helper: run a group of queries on its own connection ----------
+        def _run_group(queries: list[tuple[str, str, tuple]]) -> dict[str, list]:
+            """queries: [(label, sql, params), ...] → {label: rows}"""
+            out = {}
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    for label, sql, params in queries:
+                        out[label] = self._run_rows(cur, sql, params)
+            return out
+
+        nutanix_params = (dc_list, pattern_list, start_ts, end_ts)
+        vmware_params  = (dc_list, pattern_list, start_ts, end_ts)
+        ibm_ts_params  = (start_ts, end_ts)
+
+        nutanix_queries = [
+            ("n_host",     nq.BATCH_HOST_COUNT,    nutanix_params),
+            ("n_vm",       nq.BATCH_VM_COUNT,      nutanix_params),
+            ("n_mem",      nq.BATCH_MEMORY,        nutanix_params),
+            ("n_stor",     nq.BATCH_STORAGE,       nutanix_params),
+            ("n_cpu",      nq.BATCH_CPU,           nutanix_params),
+            ("n_platform", nq.BATCH_PLATFORM_COUNT, nutanix_params),
+        ]
+        vmware_queries = [
+            ("v_cnt",      vq.BATCH_COUNTS,         vmware_params),
+            ("v_mem",      vq.BATCH_MEMORY,         vmware_params),
+            ("v_stor",     vq.BATCH_STORAGE,        vmware_params),
+            ("v_cpu",      vq.BATCH_CPU,            vmware_params),
+            ("v_platform", vq.BATCH_PLATFORM_COUNT, vmware_params),
+        ]
+        ibm_queries = [
+            ("ibm_host_raw",   iq.BATCH_RAW_HOST,   ibm_ts_params),
+            ("ibm_vios_raw",   iq.BATCH_RAW_VIOS,   ibm_ts_params),
+            ("ibm_lpar_raw",   iq.BATCH_RAW_LPAR,   ibm_ts_params),
+            ("ibm_mem_raw",    iq.BATCH_RAW_MEMORY,  ibm_ts_params),
+            ("ibm_cpu_raw",    iq.BATCH_RAW_CPU,     ibm_ts_params),
+        ]
+        energy_queries = [
+            ("e_ibm",      eq.BATCH_IBM,          (start_ts, end_ts, dc_list)),
+            ("e_vcenter",  eq.BATCH_VCENTER,      (dc_list, pattern_list, start_ts, end_ts)),
+            ("e_ibm_kwh",  eq.BATCH_IBM_KWH,      (start_ts, end_ts, dc_list)),
+            ("e_vctr_kwh", eq.BATCH_VCENTER_KWH,  (dc_list, pattern_list, start_ts, end_ts)),
+        ]
+
         t0 = time.perf_counter()
-        n_host_rows  = self._run_rows(cursor, nq.BATCH_HOST_COUNT, (dc_list, pattern_list, start_ts, end_ts))
-        n_vm_rows    = self._run_rows(cursor, nq.BATCH_VM_COUNT, (dc_list, pattern_list, start_ts, end_ts))
-        n_mem_rows   = self._run_rows(cursor, nq.BATCH_MEMORY,     (dc_list, pattern_list, start_ts, end_ts))
-        n_stor_rows  = self._run_rows(cursor, nq.BATCH_STORAGE,    (dc_list, pattern_list, start_ts, end_ts))
-        n_cpu_rows   = self._run_rows(cursor, nq.BATCH_CPU,        (dc_list, pattern_list, start_ts, end_ts))
-        n_platform_rows = self._run_rows(cursor, nq.BATCH_PLATFORM_COUNT, (dc_list, pattern_list, start_ts, end_ts))
-        logger.info("Batch fetch: Nutanix DONE in %.2fs", time.perf_counter() - t0)
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="batch") as pool:
+            fut_nutanix = pool.submit(_run_group, nutanix_queries)
+            fut_vmware  = pool.submit(_run_group, vmware_queries)
+            fut_ibm     = pool.submit(_run_group, ibm_queries)
+            fut_energy  = pool.submit(_run_group, energy_queries)
 
-        # VMware — params (dc_list, pattern_list, start_ts, end_ts); returns (dc_code, ...)
-        logger.info("Batch fetch: VMware START")
-        t0 = time.perf_counter()
-        v_cnt_rows   = self._run_rows(cursor, vq.BATCH_COUNTS,  (dc_list, pattern_list, start_ts, end_ts))
-        v_mem_rows   = self._run_rows(cursor, vq.BATCH_MEMORY,  (dc_list, pattern_list, start_ts, end_ts))
-        v_stor_rows  = self._run_rows(cursor, vq.BATCH_STORAGE, (dc_list, pattern_list, start_ts, end_ts))
-        v_cpu_rows   = self._run_rows(cursor, vq.BATCH_CPU,     (dc_list, pattern_list, start_ts, end_ts))
-        v_platform_rows = self._run_rows(cursor, vq.BATCH_PLATFORM_COUNT, (dc_list, pattern_list, start_ts, end_ts))
-        logger.info("Batch fetch: VMware DONE in %.2fs", time.perf_counter() - t0)
+            n = fut_nutanix.result()
+            v = fut_vmware.result()
+            ibm_raw = fut_ibm.result()
+            e = fut_energy.result()
 
-        # IBM — params (start_ts, end_ts, dc_list); returns (dc_code, ...)
-        logger.info("Batch fetch: IBM START")
-        t0 = time.perf_counter()
-        t_q = time.perf_counter()
-        ibm_rows = self._run_rows(cursor, iq.BATCH_HOST_COUNT, (start_ts, end_ts, dc_list))
-        logger.info(
-            "Batch fetch: IBM HOST_COUNT took %.2fs (rows=%d)",
-            time.perf_counter() - t_q,
-            len(ibm_rows),
-        )
-        t_q = time.perf_counter()
-        logger.info("Batch fetch: IBM VIOS_COUNT START")
-        ibm_vios_rows = self._run_rows(cursor, iq.BATCH_VIOS_COUNT, (start_ts, end_ts, dc_list))
-        logger.info(
-            "Batch fetch: IBM VIOS_COUNT took %.2fs (rows=%d)",
-            time.perf_counter() - t_q,
-            len(ibm_vios_rows),
-        )
-        t_q = time.perf_counter()
-        logger.info("Batch fetch: IBM LPAR_COUNT START")
-        ibm_lpar_rows = self._run_rows(cursor, iq.BATCH_LPAR_COUNT, (start_ts, end_ts, dc_list))
-        logger.info(
-            "Batch fetch: IBM LPAR_COUNT took %.2fs (rows=%d)",
-            time.perf_counter() - t_q,
-            len(ibm_lpar_rows),
-        )
-        t_q = time.perf_counter()
-        logger.info("Batch fetch: IBM MEMORY START")
-        ibm_mem_rows = self._run_rows(cursor, iq.BATCH_MEMORY, (start_ts, end_ts, dc_list))
-        logger.info(
-            "Batch fetch: IBM MEMORY took %.2fs (rows=%d)",
-            time.perf_counter() - t_q,
-            len(ibm_mem_rows),
-        )
-        t_q = time.perf_counter()
-        logger.info("Batch fetch: IBM CPU START")
-        ibm_cpu_rows = self._run_rows(cursor, iq.BATCH_CPU, (start_ts, end_ts, dc_list))
-        logger.info(
-            "Batch fetch: IBM CPU took %.2fs (rows=%d)",
-            time.perf_counter() - t_q,
-            len(ibm_cpu_rows),
-        )
-        logger.info("Batch fetch: IBM total time %.2fs", time.perf_counter() - t0)
+        logger.info("Batch fetch: all groups finished in %.2fs (parallel)", time.perf_counter() - t0)
 
-        # Energy — IBM/vCenter only; vCenter params (dc_list, pattern_list, start_ts, end_ts); IBM (start_ts, end_ts, dc_list)
-        logger.info("Batch fetch: Energy START")
-        t0 = time.perf_counter()
-        t_q = time.perf_counter()
-        logger.info("Batch fetch: Energy IBM_METRICS START")
-        ibm_e_rows = self._run_rows(cursor, eq.BATCH_IBM, (start_ts, end_ts, dc_list))
-        logger.info(
-            "Batch fetch: Energy IBM_METRICS took %.2fs (rows=%d)",
-            time.perf_counter() - t_q,
-            len(ibm_e_rows),
-        )
-        t_q = time.perf_counter()
-        logger.info("Batch fetch: Energy VCENTER_METRICS START")
-        vcenter_rows = self._run_rows(cursor, eq.BATCH_VCENTER, (dc_list, pattern_list, start_ts, end_ts))
-        logger.info(
-            "Batch fetch: Energy VCENTER_METRICS took %.2fs (rows=%d)",
-            time.perf_counter() - t_q,
-            len(vcenter_rows),
-        )
-        t_q = time.perf_counter()
-        logger.info("Batch fetch: Energy IBM_KWH START")
-        ibm_kwh_rows = self._run_rows(cursor, eq.BATCH_IBM_KWH, (start_ts, end_ts, dc_list))
-        logger.info(
-            "Batch fetch: Energy IBM_KWH took %.2fs (rows=%d)",
-            time.perf_counter() - t_q,
-            len(ibm_kwh_rows),
-        )
-        t_q = time.perf_counter()
-        logger.info("Batch fetch: Energy VCENTER_KWH START")
-        vcenter_kwh_rows = self._run_rows(cursor, eq.BATCH_VCENTER_KWH, (dc_list, pattern_list, start_ts, end_ts))
-        logger.info(
-            "Batch fetch: Energy VCENTER_KWH took %.2fs (rows=%d)",
-            time.perf_counter() - t_q,
-            len(vcenter_kwh_rows),
-        )
-        logger.info("Batch fetch: Energy total time %.2fs", time.perf_counter() - t0)
+        # ---- IBM: Python-side DC code extraction & aggregation -------------
+        def _extract_dc(server_name: str) -> str | None:
+            if not server_name:
+                return None
+            m = _DC_CODE_RE.search(server_name.upper())
+            if m and m.group(1) in dc_set_upper:
+                return m.group(1)
+            return None
 
-        # --- Map batch rows back to DC codes ---
-        # Nutanix/VMware/IBM may store DC with different case or trailing spaces than loki_locations.
-        # We map batch keys to the canonical dc_list entry so per-DC cards get the right data.
+        ibm_h: dict[str, int] = {}
+        for row in ibm_raw["ibm_host_raw"]:
+            dc = _extract_dc(row[0]) if row else None
+            if dc:
+                ibm_h.setdefault(dc, set()).add(row[0])  # type: ignore[arg-type]
+        ibm_h = {dc: len(names) for dc, names in ibm_h.items()}  # type: ignore[assignment]
 
+        ibm_vios: dict[str, int] = {}
+        for row in ibm_raw["ibm_vios_raw"]:
+            dc = _extract_dc(row[0]) if row and len(row) > 1 else None
+            if dc:
+                ibm_vios.setdefault(dc, set()).add(row[1])  # type: ignore[arg-type]
+        ibm_vios = {dc: len(names) for dc, names in ibm_vios.items()}  # type: ignore[assignment]
+
+        ibm_lpar: dict[str, int] = {}
+        for row in ibm_raw["ibm_lpar_raw"]:
+            dc = _extract_dc(row[0]) if row and len(row) > 1 else None
+            if dc:
+                ibm_lpar.setdefault(dc, set()).add(row[1])  # type: ignore[arg-type]
+        ibm_lpar = {dc: len(names) for dc, names in ibm_lpar.items()}  # type: ignore[assignment]
+
+        ibm_mem_acc: dict[str, list] = {}
+        for row in ibm_raw["ibm_mem_raw"]:
+            if not row or len(row) < 3:
+                continue
+            dc = _extract_dc(row[0])
+            if dc:
+                ibm_mem_acc.setdefault(dc, []).append((float(row[1] or 0), float(row[2] or 0)))
+        ibm_mem: dict[str, tuple] = {}
+        for dc, vals in ibm_mem_acc.items():
+            n_vals = len(vals)
+            ibm_mem[dc] = (
+                sum(v[0] for v in vals) / n_vals,
+                sum(v[1] for v in vals) / n_vals,
+            )
+
+        ibm_cpu_acc: dict[str, list] = {}
+        for row in ibm_raw["ibm_cpu_raw"]:
+            if not row or len(row) < 4:
+                continue
+            dc = _extract_dc(row[0])
+            if dc:
+                ibm_cpu_acc.setdefault(dc, []).append(
+                    (float(row[1] or 0), float(row[2] or 0), float(row[3] or 0))
+                )
+        ibm_cpu_map: dict[str, tuple] = {}
+        for dc, vals in ibm_cpu_acc.items():
+            n_vals = len(vals)
+            ibm_cpu_map[dc] = (
+                sum(v[0] for v in vals) / n_vals,
+                sum(v[1] for v in vals) / n_vals,
+                sum(v[2] for v in vals) / n_vals,
+            )
+
+        # ---- Map batch rows back to DC codes ----
         def _canonical_dc(raw_key) -> str | None:
-            """Map raw key from DB (e.g. datacenter_name, dc) to the canonical DC code in dc_list.
-            Tries: exact match on dc_list, case-insensitive on dc_list, then location name (DC_LOCATIONS
-            value) match so Nutanix rows keyed by e.g. 'Azerbaycan' map to DC code 'AZ11'.
-            """
             if raw_key is None or not str(raw_key).strip():
                 return None
             s = str(raw_key).strip()
@@ -648,38 +621,13 @@ class DatabaseService:
             for dc in dc_list:
                 if dc.strip().upper() == s.upper():
                     return dc
-            # Nutanix (and similar) may use location name instead of DC code (e.g. Azerbaycan vs AZ11)
             for dc in dc_list:
                 loc = DC_LOCATIONS.get(dc)
                 if loc and str(loc).strip().upper() == s.upper():
                     return dc
             return None
 
-        def _match_dc(name: str) -> str | None:
-            """Find which DC code appears in a string (substring; used for free-text)."""
-            if not name:
-                return None
-            upper = name.upper()
-            for dc in dc_list:
-                if dc.upper() in upper:
-                    return dc
-            return None
-
-        def _index_by_dc(rows, col_idx: int = 0) -> dict[str, tuple]:
-            """First row per DC: {dc_code: row}."""
-            out: dict[str, tuple] = {}
-            for row in rows:
-                if not row or len(row) <= col_idx:
-                    continue
-                dc = _match_dc(str(row[col_idx]))
-                if dc and dc not in out:
-                    out[dc] = row
-            return out
-
         def _index_exact(rows, col_idx: int = 0) -> dict[str, tuple]:
-            """Index by first column, but map key to canonical dc from dc_list (strip + case-insensitive).
-            Ensures Nutanix/VMware batch rows match dc_list even if DB has different case or spaces.
-            """
             out: dict[str, tuple] = {}
             for row in rows:
                 if not row or len(row) <= col_idx or row[col_idx] is None:
@@ -689,44 +637,36 @@ class DatabaseService:
                     out[dc] = row
             return out
 
-        def _sum_by_dc(rows, value_col: int, col_idx: int = 0) -> dict[str, float]:
-            """Sum numeric column per DC (e.g. energy watts, IBM hosts)."""
-            out: dict[str, float] = {}
-            for row in rows:
-                if not row or len(row) <= max(col_idx, value_col):
-                    continue
-                dc = _match_dc(str(row[col_idx]))
-                if dc:
-                    out[dc] = out.get(dc, 0) + float(row[value_col] or 0)
-            return out
+        n_host_rows, n_vm_rows = n["n_host"], n["n_vm"]
+        n_mem_rows, n_stor_rows, n_cpu_rows = n["n_mem"], n["n_stor"], n["n_cpu"]
+        n_platform_rows = n["n_platform"]
 
-        # Nutanix batch results use datacenter_name as exact key (col 0)
+        v_cnt_rows, v_mem_rows = v["v_cnt"], v["v_mem"]
+        v_stor_rows, v_cpu_rows = v["v_stor"], v["v_cpu"]
+        v_platform_rows = v["v_platform"]
+
         n_host  = _index_exact(n_host_rows)
         n_vms   = _index_exact(n_vm_rows)
         n_mem   = _index_exact(n_mem_rows)
         n_stor  = _index_exact(n_stor_rows)
         n_cpu   = _index_exact(n_cpu_rows)
 
-        # VMware batch returns (dc, ...); use exact match
         v_cnt   = _index_exact(v_cnt_rows)
-        v_mem   = _index_exact(v_mem_rows)
+        v_mem_m = _index_exact(v_mem_rows)
         v_stor  = _index_exact(v_stor_rows)
         v_cpu   = _index_exact(v_cpu_rows)
 
-        # IBM batch returns (dc_code, ...); use exact match
-        ibm_h       = {row[0]: (row[1] if len(row) > 1 else 0) for row in ibm_rows if row and row[0]}
-        ibm_vios    = {row[0]: (row[1] if len(row) > 1 else 0) for row in ibm_vios_rows if row and row[0]}
-        ibm_lpar    = {row[0]: (row[1] if len(row) > 1 else 0) for row in ibm_lpar_rows if row and row[0]}
-        ibm_mem     = {row[0]: (row[1], row[2]) for row in ibm_mem_rows if row and len(row) > 2}
-        ibm_cpu_map = {row[0]: (row[1], row[2], row[3]) for row in ibm_cpu_rows if row and len(row) > 3}
+        ibm_e_rows = e["e_ibm"]
+        vcenter_rows = e["e_vcenter"]
+        ibm_kwh_rows = e["e_ibm_kwh"]
+        vcenter_kwh_rows = e["e_vctr_kwh"]
 
-        # Energy: batch returns (dc_code, avg_power_watts) or (dc_code, total_kwh)
         ibm_e   = {row[0]: float(row[1] or 0) for row in ibm_e_rows if row and len(row) >= 2 and row[0]}
         vctr_e  = {row[0]: float(row[1] or 0) for row in vcenter_rows if row and len(row) >= 2 and row[0]}
-        ibm_kwh_map   = {row[0]: float(row[1] or 0) for row in ibm_kwh_rows if row and len(row) >= 2 and row[0]}
-        vctr_kwh_map  = {row[0]: float(row[1] or 0) for row in vcenter_kwh_rows if row and len(row) >= 2 and row[0]}
+        ibm_kwh_m   = {row[0]: float(row[1] or 0) for row in ibm_kwh_rows if row and len(row) >= 2 and row[0]}
+        vctr_kwh_m  = {row[0]: float(row[1] or 0) for row in vcenter_kwh_rows if row and len(row) >= 2 and row[0]}
 
-        # Platform count per DC = Nutanix clusters + VMware hypervisors + IBM (0 or 1 per DC; servername = hosts)
+        # Platform counts
         n_platform: dict[str, int] = {}
         for row in n_platform_rows:
             if row and row[0] is not None and len(row) > 1:
@@ -739,13 +679,13 @@ class DatabaseService:
                 dc = _canonical_dc(row[0])
                 if dc is not None:
                     v_platform[dc] = int(row[1] or 0)
-        # IBM: at most one platform per DC (hosts are identified by servername)
         ibm_platform = {dc: (1 if (ibm_h.get(dc, 0) or 0) > 0 else 0) for dc in dc_list}
         platform_counts: dict[str, int] = {
             dc: int(n_platform.get(dc, 0) or 0) + int(v_platform.get(dc, 0) or 0) + int(ibm_platform.get(dc, 0) or 0)
             for dc in dc_list
         }
 
+        # ---- Build per-DC aggregate dicts ----
         results: dict[str, dict] = {}
         for dc in dc_list:
             nh_row   = n_host.get(dc)
@@ -754,7 +694,7 @@ class DatabaseService:
             ns_row   = n_stor.get(dc)
             nc_row   = n_cpu.get(dc)
             vc_row   = v_cnt.get(dc)
-            vm_row   = v_mem.get(dc)
+            vm_row   = v_mem_m.get(dc)
             vs_row   = v_stor.get(dc)
             vcpu_row = v_cpu.get(dc)
             power_mem_tup = ibm_mem.get(dc, (0.0, 0.0))
@@ -778,8 +718,8 @@ class DatabaseService:
                 power_cpu=power_cpu_tup,
                 ibm_w=ibm_e.get(dc, 0.0),
                 vcenter_w=vctr_e.get(dc, 0.0),
-                ibm_kwh=ibm_kwh_map.get(dc, 0.0),
-                vcenter_kwh=vctr_kwh_map.get(dc, 0.0),
+                ibm_kwh=ibm_kwh_m.get(dc, 0.0),
+                vcenter_kwh=vctr_kwh_m.get(dc, 0.0),
             )
 
         return results, platform_counts
@@ -812,42 +752,21 @@ class DatabaseService:
 
         t_total_start = time.perf_counter()
         try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    t_batch_start = time.perf_counter()
-                    all_dc_data, platform_counts = self._fetch_all_batch(cur, dc_list, start_ts, end_ts)
-                    logger.info(
-                        "Summary rebuild: batch queries finished in %.2fs.",
-                        time.perf_counter() - t_batch_start,
-                    )
-                    # Precompute Intel VM totals per DC using VMware+Nutanix deduplicated query
-                    t_intel_start = time.perf_counter()
-                    intel_vm_totals: dict[str, int] = {}
-                    for dc in dc_list:
-                        intel_vm_totals[dc] = self._get_intel_dc_vm_total(cur, dc, start_ts, end_ts)
-                    logger.info(
-                        "Summary rebuild: Intel DC VM totals computed for %d DCs in %.2fs.",
-                        len(dc_list),
-                        time.perf_counter() - t_intel_start,
-                    )
-            logger.info("Batch fetch complete, aggregating per-DC...")
+            all_dc_data, platform_counts = self._fetch_all_batch(None, dc_list, start_ts, end_ts)
+            logger.info(
+                "Summary rebuild: batch queries finished in %.2fs.",
+                time.perf_counter() - t_total_start,
+            )
         except OperationalError as exc:
             logger.error("DB unavailable for get_all_datacenters_summary: %s", exc)
             all_dc_data = {dc: _EMPTY_DC(dc) for dc in dc_list}
             platform_counts = {dc: 0 for dc in dc_list}
-            intel_vm_totals = {dc: 0 for dc in dc_list}
 
         summary_list = []
         for dc in dc_list:
             d = all_dc_data.get(dc, _EMPTY_DC(dc))
             intel = d["intel"]
             power = d["power"]
-
-            # Override Intel VM count with deduplicated VMware+Nutanix total for this DC
-            try:
-                intel["vms"] = int(intel_vm_totals.get(dc, intel.get("vms", 0)))
-            except (TypeError, ValueError):
-                pass
 
             # Compute combined host and VM counts (Intel + IBM/Power)
             host_count = (intel["hosts"] or 0) + (power["hosts"] or 0)
