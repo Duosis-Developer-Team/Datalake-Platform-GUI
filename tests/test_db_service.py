@@ -259,7 +259,8 @@ class TestAggregatedc(unittest.TestCase):
             ibm_w=0,
             vcenter_w=0,
         )
-        self.assertEqual(result["meta"]["location"], "Unknown Data Center")
+        # DC14 is present in DC_LOCATIONS mapping, so location should resolve.
+        self.assertEqual(result["meta"]["location"], "Ankara")
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +322,74 @@ class TestGetDcDetails(unittest.TestCase):
         self.svc.get_dc_details("DC12")
         self.assertIsNotNone(cache.get(f"dc_details:DC12:{tr.get('start','')}:{tr.get('end','')}"))
 
+    def test_dc_details_overrides_intel_vms_with_dedup_total(self):
+        """get_dc_details should replace raw intel['vms'] with deduplicated VMware+Nutanix total."""
+        cur = self._mock_cursor()
+        conn_mock = MagicMock()
+        conn_mock.__enter__ = MagicMock(return_value=conn_mock)
+        conn_mock.__exit__ = MagicMock(return_value=False)
+        conn_mock.cursor.return_value.__enter__ = MagicMock(return_value=cur)
+        conn_mock.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        self.svc._pool.getconn.return_value = conn_mock
+
+        base_dc = _EMPTY_DC("DC11")
+        base_dc["intel"]["vms"] = 10
+
+        with patch.object(
+            DatabaseService,
+            "_aggregate_dc",
+            return_value=base_dc,
+        ) as mock_agg, patch.object(
+            self.svc,
+            "_get_intel_dc_vm_total",
+            return_value=42,
+        ) as mock_intel_total:
+            result = self.svc.get_dc_details("DC11")
+
+        mock_agg.assert_called_once()
+        mock_intel_total.assert_called_once()
+        self.assertEqual(result["intel"]["vms"], 42)
+
+    def test_intel_dc_metrics_python_dedup(self):
+        """_get_intel_dc_metrics deduplicates VMware+Nutanix VMs in Python."""
+        cur = self._mock_cursor()
+
+        vmware_rows = [
+            ("vm-alpha", 4, 16.0, 100.0),
+            ("vm-beta", 2, 8.0, 50.0),
+            ("vm-gamma", 8, 32.0, 200.0),
+        ]
+        nutanix_rows = [
+            ("vm-beta", 2, 8_589_934_592, 53_687_091_200),
+            ("vm-delta", 4, 17_179_869_184, 107_374_182_400),
+        ]
+
+        with patch.object(
+            DatabaseService, "_run_rows",
+            side_effect=[vmware_rows, nutanix_rows],
+        ):
+            metrics = self.svc._get_intel_dc_metrics(cur, "DC11", "2025-01-01", "2025-01-07")
+
+        self.assertEqual(metrics["vm_count"], 4)
+        self.assertEqual(metrics["vmware_only"], 2)
+        self.assertEqual(metrics["nutanix_count"], 2)
+        self.assertEqual(metrics["overlap"], 1)
+
+    def test_intel_dc_metrics_empty_results(self):
+        """_get_intel_dc_metrics returns zeros when both sources are empty."""
+        cur = self._mock_cursor()
+
+        with patch.object(
+            DatabaseService, "_run_rows",
+            return_value=[],
+        ):
+            metrics = self.svc._get_intel_dc_metrics(cur, "DC11", "2025-01-01", "2025-01-07")
+
+        self.assertEqual(metrics["vm_count"], 0)
+        self.assertEqual(metrics["vmware_only"], 0)
+        self.assertEqual(metrics["nutanix_count"], 0)
+        self.assertEqual(metrics["overlap"], 0)
+
 
 # ---------------------------------------------------------------------------
 # DatabaseService — get_all_datacenters_summary
@@ -346,12 +415,6 @@ class TestGetAllDatacentersSummary(unittest.TestCase):
         conn_mock.cursor.return_value.__exit__ = MagicMock(return_value=False)
         self.svc._pool.getconn.return_value = conn_mock
 
-    def test_returns_list_of_9_dcs(self):
-        cur = self._mock_cursor_empty()
-        self._attach_conn(cur)
-        result = self.svc.get_all_datacenters_summary()
-        self.assertEqual(len(result), 9)
-
     def test_each_item_has_required_keys(self):
         cur = self._mock_cursor_empty()
         self._attach_conn(cur)
@@ -371,13 +434,92 @@ class TestGetAllDatacentersSummary(unittest.TestCase):
         self.svc._pool.getconn.assert_not_called()
         self.assertEqual(result, cached_summary)
 
-    def test_db_error_returns_empty_dcs(self):
-        from psycopg2 import OperationalError
-        self.svc._pool.getconn.side_effect = OperationalError("down")
-        result = self.svc.get_all_datacenters_summary()
-        self.assertEqual(len(result), 9)
-        for item in result:
-            self.assertEqual(item["host_count"], 0)
+    def test_rebuild_summary_uses_dedup_intel_vm_total(self):
+        """_rebuild_summary should use deduplicated VMware+Nutanix Intel VM totals in vm_count."""
+        dc_code = "DC11"
+
+        base_dc = _EMPTY_DC(dc_code)
+        base_dc["intel"]["vms"] = 5  # raw value that should be overridden
+        platform_counts = {code: 1 for code in DC_LIST}
+
+        def _fake_fetch_all_batch(cursor, dc_list, start_ts, end_ts):
+            # Only DC11 has custom intel data; others use EMPTY_DC defaults.
+            all_dc_data = {code: (base_dc if code == dc_code else _EMPTY_DC(code)) for code in dc_list}
+            return all_dc_data, platform_counts
+
+        with patch.object(
+            self.svc,
+            "_fetch_all_batch",
+            side_effect=_fake_fetch_all_batch,
+        ) as mock_fetch, patch.object(
+            self.svc,
+            "_get_intel_dc_vm_total",
+            return_value=21,
+        ) as mock_intel_total:
+            result = self.svc._rebuild_summary(default_time_range())
+
+        mock_fetch.assert_called_once()
+
+        # Find DC11 in the summary and assert vm_count uses deduplicated total
+        dc_summary = next(item for item in result if item["id"] == dc_code)
+        # vm_count = intel['vms'] (overridden to 21) + power['vms'] (0 in EMPTY_DC)
+        self.assertEqual(dc_summary["vm_count"], 21)
+
+    def test_rebuild_summary_filters_out_fully_empty_dcs(self):
+        """Datacenters with both host_count and vm_count equal to 0 should be excluded from the summary."""
+        # Prepare three DCs with different combinations of hosts/VMs
+        dc_codes = ["DC_A", "DC_B", "DC_C"]
+
+        dc_a = _EMPTY_DC("DC_A")
+        dc_a["intel"]["hosts"] = 1
+        dc_a["intel"]["vms"] = 0
+
+        dc_b = _EMPTY_DC("DC_B")
+        dc_b["intel"]["hosts"] = 0
+        dc_b["intel"]["vms"] = 2
+
+        dc_c = _EMPTY_DC("DC_C")
+        # fully empty: hosts == 0 and vms == 0 on both intel and power
+
+        platform_counts = {code: 0 for code in dc_codes}
+
+        def _fake_fetch_all_batch(cursor, dc_list, start_ts, end_ts):
+            all_dc_data = {
+                "DC_A": dc_a,
+                "DC_B": dc_b,
+                "DC_C": dc_c,
+            }
+            return all_dc_data, platform_counts
+
+        def _fake_intel_total(cursor, dc_code, start_ts, end_ts):
+            if dc_code == "DC_A":
+                return 0
+            if dc_code == "DC_B":
+                return 2
+            return 0
+
+        with patch.object(
+            self.svc,
+            "_fetch_all_batch",
+            side_effect=_fake_fetch_all_batch,
+        ) as mock_fetch, patch.object(
+            self.svc,
+            "_get_intel_dc_vm_total",
+            side_effect=_fake_intel_total,
+        ), patch.object(
+            self.svc,
+            "_load_dc_list",
+            return_value=dc_codes,
+        ):
+            result = self.svc._rebuild_summary(default_time_range())
+
+        mock_fetch.assert_called_once()
+
+        ids = {item["id"] for item in result}
+        # DC_A and DC_B should remain, DC_C should be filtered out
+        self.assertIn("DC_A", ids)
+        self.assertIn("DC_B", ids)
+        self.assertNotIn("DC_C", ids)
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +760,8 @@ class TestQueryModules(unittest.TestCase):
             "vmware_counts", "vmware_memory", "vmware_storage", "vmware_cpu",
             "ibm_host_count", "ibm_vios_count", "ibm_lpar_count", "ibm_memory", "ibm_cpu",
             "energy_ibm", "energy_vcenter",
+            # Intel DC-level raw VM fetch queries (dedup in Python)
+            "intel_dc_vmware_vms", "intel_dc_nutanix_vms",
         ]
         for key in expected_keys:
             self.assertIn(key, QUERY_REGISTRY, f"Registry missing key: {key}")

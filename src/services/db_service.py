@@ -9,7 +9,7 @@ from psycopg2 import OperationalError
 from psycopg2.pool import PoolError
 
 from src.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
-from src.queries import loki as lq, customer as cq
+from src.queries import loki as lq, customer as cq, intel_dc as idq
 from src.services import cache_service as cache
 from src.services import query_overrides as qo
 from src.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
@@ -25,8 +25,16 @@ _FALLBACK_DC_LIST = [
 DC_LOCATIONS: dict[str, str] = {
     "AZ11": "Azerbaycan",
     "DC11": "Istanbul",
+    "DC12": "İzmir",
     "DC13": "Istanbul",
+    "DC14": "Ankara",
+    "DC15": "Istanbul",
+    "DC16": "Ankara",
+    "DC17": "Istanbul",
+    "DC18": "Istanbul",
     "ICT11": "Almanya",
+    "ICT11": "İngiltere",
+    "UZ11": "Özbekistan",
 }
 
 
@@ -415,6 +423,41 @@ class DatabaseService:
         }
 
     # ------------------------------------------------------------------
+    # Intel DC-level helpers (VMware + Nutanix, Python-side dedup)
+    # ------------------------------------------------------------------
+
+    def _get_intel_dc_metrics(self, cursor, dc_code: str, start_ts, end_ts) -> dict:
+        """Fetch raw VMware & Nutanix VM lists and compute deduplicated Intel metrics in Python.
+
+        Returns dict with keys: vm_count, vmware_only, nutanix_count, overlap.
+        Two lightweight SELECTs replace the former heavy CTE query, keeping the
+        DB load minimal while all deduplication happens here.
+        """
+        vmware_rows = self._run_rows(
+            cursor, idq.VMWARE_VMS_FOR_DC, (dc_code, start_ts, end_ts),
+        )
+        nutanix_rows = self._run_rows(
+            cursor, idq.NUTANIX_VMS_FOR_DC, (dc_code, start_ts, end_ts),
+        )
+
+        vmware_names = {r[0] for r in vmware_rows if r and r[0]}
+        nutanix_names = {r[0] for r in nutanix_rows if r and r[0]}
+
+        all_unique = vmware_names | nutanix_names
+        overlap = vmware_names & nutanix_names
+
+        return {
+            "vm_count": len(all_unique),
+            "vmware_only": len(vmware_names - nutanix_names),
+            "nutanix_count": len(nutanix_names),
+            "overlap": len(overlap),
+        }
+
+    def _get_intel_dc_vm_total(self, cursor, dc_code: str, start_ts, end_ts) -> int:
+        """Convenience wrapper: returns deduplicated VM total for a DC."""
+        return self._get_intel_dc_metrics(cursor, dc_code, start_ts, end_ts)["vm_count"]
+
+    # ------------------------------------------------------------------
     # Public API — dc_view.py: single DC detail
     # ------------------------------------------------------------------
 
@@ -431,6 +474,9 @@ class DatabaseService:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     dc_wc = f"%{dc_code}%"
+                    # Intel: VMware + Nutanix VM-level deduplicated total for this DC
+                    intel_vms_total = self._get_intel_dc_vm_total(cur, dc_code, start_ts, end_ts)
+
                     result = self._aggregate_dc(
                         dc_code,
                         nutanix_host_count=self.get_nutanix_host_count(cur, dc_code, start_ts, end_ts),
@@ -452,6 +498,11 @@ class DatabaseService:
                         ibm_kwh=self.get_ibm_kwh(cur, dc_wc, start_ts, end_ts),
                         vcenter_kwh=self.get_vcenter_kwh(cur, dc_code, start_ts, end_ts),
                     )
+                    # Override Intel VM count with deduplicated VMware+Nutanix total
+                    try:
+                        result["intel"]["vms"] = int(intel_vms_total)
+                    except (TypeError, ValueError, KeyError):
+                        pass
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_details(%s): %s", dc_code, exc)
             return _EMPTY_DC(dc_code)
@@ -469,9 +520,16 @@ class DatabaseService:
         start_ts, end_ts: time range for report (all time-series queries filtered).
         Nutanix: match by cluster_name LIKE '%dc%'. VMware/vCenter: match by datacenter ILIKE '%dc%'.
         """
+        logger.info(
+            "Batch fetch: starting for %d DCs, range %s -> %s",
+            len(dc_list),
+            start_ts,
+            end_ts,
+        )
         # Patterns for LIKE/ILIKE: one per DC (e.g. ['%AZ11%', '%DC11%', ...])
         pattern_list = [f"%{dc}%" for dc in dc_list]
         # Nutanix — params (dc_list, pattern_list, start_ts, end_ts); returns (dc_code, ...)
+        logger.info("Batch fetch: Nutanix START")
         t0 = time.perf_counter()
         n_host_rows  = self._run_rows(cursor, nq.BATCH_HOST_COUNT, (dc_list, pattern_list, start_ts, end_ts))
         n_vm_rows    = self._run_rows(cursor, nq.BATCH_VM_COUNT, (dc_list, pattern_list, start_ts, end_ts))
@@ -479,33 +537,98 @@ class DatabaseService:
         n_stor_rows  = self._run_rows(cursor, nq.BATCH_STORAGE,    (dc_list, pattern_list, start_ts, end_ts))
         n_cpu_rows   = self._run_rows(cursor, nq.BATCH_CPU,        (dc_list, pattern_list, start_ts, end_ts))
         n_platform_rows = self._run_rows(cursor, nq.BATCH_PLATFORM_COUNT, (dc_list, pattern_list, start_ts, end_ts))
-        logger.info("Batch fetch: Nutanix done in %.2fs", time.perf_counter() - t0)
+        logger.info("Batch fetch: Nutanix DONE in %.2fs", time.perf_counter() - t0)
 
         # VMware — params (dc_list, pattern_list, start_ts, end_ts); returns (dc_code, ...)
+        logger.info("Batch fetch: VMware START")
         t0 = time.perf_counter()
         v_cnt_rows   = self._run_rows(cursor, vq.BATCH_COUNTS,  (dc_list, pattern_list, start_ts, end_ts))
         v_mem_rows   = self._run_rows(cursor, vq.BATCH_MEMORY,  (dc_list, pattern_list, start_ts, end_ts))
         v_stor_rows  = self._run_rows(cursor, vq.BATCH_STORAGE, (dc_list, pattern_list, start_ts, end_ts))
         v_cpu_rows   = self._run_rows(cursor, vq.BATCH_CPU,     (dc_list, pattern_list, start_ts, end_ts))
         v_platform_rows = self._run_rows(cursor, vq.BATCH_PLATFORM_COUNT, (dc_list, pattern_list, start_ts, end_ts))
-        logger.info("Batch fetch: VMware done in %.2fs", time.perf_counter() - t0)
+        logger.info("Batch fetch: VMware DONE in %.2fs", time.perf_counter() - t0)
 
         # IBM — params (start_ts, end_ts, dc_list); returns (dc_code, ...)
+        logger.info("Batch fetch: IBM START")
         t0 = time.perf_counter()
-        ibm_rows     = self._run_rows(cursor, iq.BATCH_HOST_COUNT, (start_ts, end_ts, dc_list))
+        t_q = time.perf_counter()
+        ibm_rows = self._run_rows(cursor, iq.BATCH_HOST_COUNT, (start_ts, end_ts, dc_list))
+        logger.info(
+            "Batch fetch: IBM HOST_COUNT took %.2fs (rows=%d)",
+            time.perf_counter() - t_q,
+            len(ibm_rows),
+        )
+        t_q = time.perf_counter()
+        logger.info("Batch fetch: IBM VIOS_COUNT START")
         ibm_vios_rows = self._run_rows(cursor, iq.BATCH_VIOS_COUNT, (start_ts, end_ts, dc_list))
+        logger.info(
+            "Batch fetch: IBM VIOS_COUNT took %.2fs (rows=%d)",
+            time.perf_counter() - t_q,
+            len(ibm_vios_rows),
+        )
+        t_q = time.perf_counter()
+        logger.info("Batch fetch: IBM LPAR_COUNT START")
         ibm_lpar_rows = self._run_rows(cursor, iq.BATCH_LPAR_COUNT, (start_ts, end_ts, dc_list))
-        ibm_mem_rows  = self._run_rows(cursor, iq.BATCH_MEMORY, (start_ts, end_ts, dc_list))
-        ibm_cpu_rows  = self._run_rows(cursor, iq.BATCH_CPU, (start_ts, end_ts, dc_list))
-        logger.info("Batch fetch: IBM done in %.2fs", time.perf_counter() - t0)
+        logger.info(
+            "Batch fetch: IBM LPAR_COUNT took %.2fs (rows=%d)",
+            time.perf_counter() - t_q,
+            len(ibm_lpar_rows),
+        )
+        t_q = time.perf_counter()
+        logger.info("Batch fetch: IBM MEMORY START")
+        ibm_mem_rows = self._run_rows(cursor, iq.BATCH_MEMORY, (start_ts, end_ts, dc_list))
+        logger.info(
+            "Batch fetch: IBM MEMORY took %.2fs (rows=%d)",
+            time.perf_counter() - t_q,
+            len(ibm_mem_rows),
+        )
+        t_q = time.perf_counter()
+        logger.info("Batch fetch: IBM CPU START")
+        ibm_cpu_rows = self._run_rows(cursor, iq.BATCH_CPU, (start_ts, end_ts, dc_list))
+        logger.info(
+            "Batch fetch: IBM CPU took %.2fs (rows=%d)",
+            time.perf_counter() - t_q,
+            len(ibm_cpu_rows),
+        )
+        logger.info("Batch fetch: IBM total time %.2fs", time.perf_counter() - t0)
 
         # Energy — IBM/vCenter only; vCenter params (dc_list, pattern_list, start_ts, end_ts); IBM (start_ts, end_ts, dc_list)
+        logger.info("Batch fetch: Energy START")
         t0 = time.perf_counter()
-        ibm_e_rows   = self._run_rows(cursor, eq.BATCH_IBM, (start_ts, end_ts, dc_list))
+        t_q = time.perf_counter()
+        logger.info("Batch fetch: Energy IBM_METRICS START")
+        ibm_e_rows = self._run_rows(cursor, eq.BATCH_IBM, (start_ts, end_ts, dc_list))
+        logger.info(
+            "Batch fetch: Energy IBM_METRICS took %.2fs (rows=%d)",
+            time.perf_counter() - t_q,
+            len(ibm_e_rows),
+        )
+        t_q = time.perf_counter()
+        logger.info("Batch fetch: Energy VCENTER_METRICS START")
         vcenter_rows = self._run_rows(cursor, eq.BATCH_VCENTER, (dc_list, pattern_list, start_ts, end_ts))
+        logger.info(
+            "Batch fetch: Energy VCENTER_METRICS took %.2fs (rows=%d)",
+            time.perf_counter() - t_q,
+            len(vcenter_rows),
+        )
+        t_q = time.perf_counter()
+        logger.info("Batch fetch: Energy IBM_KWH START")
         ibm_kwh_rows = self._run_rows(cursor, eq.BATCH_IBM_KWH, (start_ts, end_ts, dc_list))
+        logger.info(
+            "Batch fetch: Energy IBM_KWH took %.2fs (rows=%d)",
+            time.perf_counter() - t_q,
+            len(ibm_kwh_rows),
+        )
+        t_q = time.perf_counter()
+        logger.info("Batch fetch: Energy VCENTER_KWH START")
         vcenter_kwh_rows = self._run_rows(cursor, eq.BATCH_VCENTER_KWH, (dc_list, pattern_list, start_ts, end_ts))
-        logger.info("Batch fetch: Energy done in %.2fs", time.perf_counter() - t0)
+        logger.info(
+            "Batch fetch: Energy VCENTER_KWH took %.2fs (rows=%d)",
+            time.perf_counter() - t_q,
+            len(vcenter_kwh_rows),
+        )
+        logger.info("Batch fetch: Energy total time %.2fs", time.perf_counter() - t0)
 
         # --- Map batch rows back to DC codes ---
         # Nutanix/VMware/IBM may store DC with different case or trailing spaces than loki_locations.
@@ -687,21 +810,54 @@ class DatabaseService:
         dc_list = self._dc_list
         logger.info("Rebuilding summary for %d DCs (batch fetch + aggregate)...", len(dc_list))
 
+        t_total_start = time.perf_counter()
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
+                    t_batch_start = time.perf_counter()
                     all_dc_data, platform_counts = self._fetch_all_batch(cur, dc_list, start_ts, end_ts)
+                    logger.info(
+                        "Summary rebuild: batch queries finished in %.2fs.",
+                        time.perf_counter() - t_batch_start,
+                    )
+                    # Precompute Intel VM totals per DC using VMware+Nutanix deduplicated query
+                    t_intel_start = time.perf_counter()
+                    intel_vm_totals: dict[str, int] = {}
+                    for dc in dc_list:
+                        intel_vm_totals[dc] = self._get_intel_dc_vm_total(cur, dc, start_ts, end_ts)
+                    logger.info(
+                        "Summary rebuild: Intel DC VM totals computed for %d DCs in %.2fs.",
+                        len(dc_list),
+                        time.perf_counter() - t_intel_start,
+                    )
             logger.info("Batch fetch complete, aggregating per-DC...")
         except OperationalError as exc:
             logger.error("DB unavailable for get_all_datacenters_summary: %s", exc)
             all_dc_data = {dc: _EMPTY_DC(dc) for dc in dc_list}
             platform_counts = {dc: 0 for dc in dc_list}
+            intel_vm_totals = {dc: 0 for dc in dc_list}
 
         summary_list = []
         for dc in dc_list:
             d = all_dc_data.get(dc, _EMPTY_DC(dc))
             intel = d["intel"]
             power = d["power"]
+
+            # Override Intel VM count with deduplicated VMware+Nutanix total for this DC
+            try:
+                intel["vms"] = int(intel_vm_totals.get(dc, intel.get("vms", 0)))
+            except (TypeError, ValueError):
+                pass
+
+            # Compute combined host and VM counts (Intel + IBM/Power)
+            host_count = (intel["hosts"] or 0) + (power["hosts"] or 0)
+            vm_count = (intel["vms"] or 0) + (power.get("vms", 0) or 0)
+
+            # Skip datacenters that have no Intel/IBM resources at all
+            if host_count == 0 and vm_count == 0:
+                # Per-DC cache is still populated below so dc_view can render details if needed.
+                cache.set(f"dc_details:{dc}:{tr.get('start','')}:{tr.get('end','')}", d)
+                continue
 
             cpu_cap   = intel["cpu_cap"]       or 0
             cpu_used  = intel["cpu_used"]      or 0
@@ -720,8 +876,8 @@ class DatabaseService:
                 "status": "Healthy",
                 "platform_count": platform_count,
                 "cluster_count": intel["clusters"],
-                "host_count": intel["hosts"] + power["hosts"],
-                "vm_count": intel["vms"] + power["vms"],
+                "host_count": host_count,
+                "vm_count": vm_count,
                 "stats": {
                     "total_cpu": f"{cpu_used:,} / {cpu_cap:,} GHz",
                     "used_cpu_pct": round((cpu_used / cpu_cap * 100) if cpu_cap > 0 else 0, 1),
@@ -790,7 +946,11 @@ class DatabaseService:
         })
 
         cache.set(f"all_dc_summary:{range_suffix}", summary_list)
-        logger.info("Rebuilt summary for %d DCs.", len(summary_list))
+        logger.info(
+            "Rebuilt summary for %d DCs in %.2fs.",
+            len(summary_list),
+            time.perf_counter() - t_total_start,
+        )
         return summary_list
 
     # ------------------------------------------------------------------
@@ -1158,18 +1318,39 @@ class DatabaseService:
 
     def warm_cache(self) -> None:
         """
-        Pre-load all data into cache at app startup for the three fixed ranges:
-        last 7 days, last 30 days, and previous calendar month.
+        Pre-load last 7 days into cache at app startup.
         Called once immediately so the first user request is served from cache.
+        Longer ranges (30 days, previous calendar month) are warmed in background
+        by the scheduler after the app has started.
         """
-        logger.info("Warming cache at startup (last 7d, last 30d, previous month)…")
+        logger.info("Warming cache at startup (last 7d only)…")
+        t0 = time.perf_counter()
         try:
-            for tr in cache_time_ranges():
-                self._rebuild_summary(tr)
-                self.get_global_overview(tr)
-            logger.info("Cache warm-up complete.")
+            tr = default_time_range()
+            self._rebuild_summary(tr)
+            self.get_global_overview(tr)
+            logger.info(
+                "Cache warm-up complete for last 7d in %.2fs.",
+                time.perf_counter() - t0,
+            )
         except Exception as exc:
             logger.warning("Cache warm-up failed (DB may be unavailable): %s", exc)
+
+    def warm_additional_ranges(self) -> None:
+        """
+        Warm additional fixed ranges (last 30 days, previous calendar month).
+        Intended to run in background after app startup so it does not block
+        the initial application launch.
+        """
+        logger.info("Warming additional cache ranges (30d, previous month)…")
+        try:
+            ranges = cache_time_ranges()[1:]  # skip 7d, warm 30d + previous month
+            for tr in ranges:
+                self._rebuild_summary(tr)
+                self.get_global_overview(tr)
+            logger.info("Additional cache warm-up complete.")
+        except Exception as exc:
+            logger.warning("Additional cache warm-up failed: %s", exc)
 
     def refresh_all_data(self) -> None:
         """
