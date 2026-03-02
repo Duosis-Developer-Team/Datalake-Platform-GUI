@@ -294,3 +294,34 @@ body {
     border-radius: 50% !important;
     color: #4318FF !important;
 }
+
+/* ── Live Pulse Animasyonu ── */
+@keyframes dc-pulse {
+    0%   { opacity: 1;    transform: scale(1); }
+    50%  { opacity: 0.35; transform: scale(0.85); }
+    100% { opacity: 1;    transform: scale(1); }
+}
+
+.dc-pulse-dot {
+    width: 7px;
+    height: 7px;
+    background-color: #05CD99;
+    border-radius: 50%;
+    display: inline-block;
+    animation: dc-pulse 1.8s ease-in-out infinite;
+    flex-shrink: 0;
+}
+
+/* ── DC Vault Card Hover Efekti ── */
+.dc-vault-card {
+    transition: transform 0.28s cubic-bezier(0.25, 0.8, 0.25, 1),
+                box-shadow 0.28s cubic-bezier(0.25, 0.8, 0.25, 1);
+    cursor: pointer;
+}
+
+.dc-vault-card:hover {
+    transform: translateY(-5px);
+    box-shadow:
+        0px 24px 52px rgba(67, 24, 255, 0.13),
+        0px 8px 18px rgba(67, 24, 255, 0.07) !important;
+}

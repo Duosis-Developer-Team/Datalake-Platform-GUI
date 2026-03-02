@@ -292,19 +292,30 @@ def build_overview(time_range=None):
                             dmc.Stack(
                                 gap=10,
                                 children=[
-                                    html.H2(
-                                        "Executive Dashboard",
-                                        style={
-                                            "margin": 0,
-                                            "fontWeight": 900,
-                                            "letterSpacing": "-0.02em",
-                                            "lineHeight": 1.2,
-                                            "fontSize": "1.75rem",
-                                            "background": "linear-gradient(90deg, #1a1b41 0%, #4318FF 100%)",
-                                            "WebkitBackgroundClip": "text",
-                                            "WebkitTextFillColor": "transparent",
-                                            "backgroundClip": "text",
-                                        },
+                                    dmc.Group(
+                                        gap="sm",
+                                        align="center",
+                                        children=[
+                                            DashIconify(
+                                                icon="solar:chart-2-bold-duotone",
+                                                width=28,
+                                                color="#4318FF",
+                                            ),
+                                            html.H2(
+                                                "Executive Dashboard",
+                                                style={
+                                                    "margin": 0,
+                                                    "fontWeight": 900,
+                                                    "letterSpacing": "-0.02em",
+                                                    "lineHeight": 1.2,
+                                                    "fontSize": "1.75rem",
+                                                    "background": "linear-gradient(90deg, #1a1b41 0%, #4318FF 100%)",
+                                                    "WebkitBackgroundClip": "text",
+                                                    "WebkitTextFillColor": "transparent",
+                                                    "backgroundClip": "text",
+                                                },
+                                            ),
+                                        ],
                                     ),
                                     dmc.Badge(
                                         children=[

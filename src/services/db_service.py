@@ -731,6 +731,8 @@ class DatabaseService:
                     "used_storage_pct": round((stor_used / stor_cap * 100) if stor_cap > 0 else 0, 1),
                     "last_updated": "Live",
                     "total_energy_kw": d["energy"]["total_kw"],
+                    "ibm_kw":          d["energy"].get("ibm_kw", 0.0),
+                    "vcenter_kw":      d["energy"].get("vcenter_kw", 0.0),
                 },
             })
 
