@@ -5,6 +5,7 @@
 
 import logging
 import atexit
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -32,7 +33,12 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
     """
     # Step 1: warm cache synchronously so the first page load is instant
     logger.info("Starting initial cache warm-up before scheduler launch.")
+    t0 = time.perf_counter()
     db_service.warm_cache()
+    logger.info(
+        "Initial cache warm-up finished in %.2fs.",
+        time.perf_counter() - t0,
+    )
 
     # Step 2: launch background scheduler
     scheduler = BackgroundScheduler(daemon=True)
@@ -49,6 +55,21 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
         "Background scheduler started. Cache refresh every %d minutes.",
         REFRESH_INTERVAL_MINUTES,
     )
+
+    # Step 2a: schedule background warm-up for longer DC ranges
+    # (last 30 days and previous calendar month) so they do not delay startup.
+    try:
+        scheduler.add_job(
+            func=db_service.warm_additional_ranges,
+            trigger=DateTrigger(run_date=datetime.now()),
+            id="dc_long_ranges_initial_warm",
+            name="Initial DC cache warm-up (30d + previous month)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled initial DC cache warm-up for 30d and previous month.")
+    except Exception as exc:
+        logger.warning("Failed to schedule initial DC long-range warm-up: %s", exc)
 
     # Step 3: immediately warm customer cache for Boyner (last 30 days) in background
     try:
