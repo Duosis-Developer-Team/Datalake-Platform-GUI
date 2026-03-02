@@ -5,6 +5,7 @@ from dash_iconify import DashIconify
 import plotly.graph_objs as go
 from src.services.shared import service
 from src.utils.time_range import default_time_range
+from src.components.header import create_detail_header
 
 
 def metric_card(title, value, icon_name, color="#4318FF"):
@@ -39,13 +40,15 @@ def build_customer_layout(time_range=None, selected_customer=None):
     chosen = "Boyner"
     return html.Div(
         [
-            html.Div(
-                className="nexus-glass",
-                children=[
-                    html.H1("Customer View", style={"margin": 0, "color": "#2B3674", "fontSize": "1.5rem"}),
-                    html.P(f"Report period: {tr.get('start', '')} – {tr.get('end', '')}", style={"margin": "5px 0 0 0", "color": "#A3AED0"}),
-                ],
-                style={"padding": "20px 30px", "marginBottom": "24px", "borderRadius": "0 0 20px 20px"},
+            create_detail_header(
+                title="Customer View",
+                back_href="/",
+                back_label="Overview",
+                subtitle_badge="👤 Boyner",
+                subtitle_color="teal",
+                time_range=tr,
+                icon="solar:users-group-two-rounded-bold-duotone",
+                tabs=None,
             ),
             dmc.SimpleGrid(
                 cols=3,

@@ -3,6 +3,7 @@ from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services.shared import service
+from src.components.header import create_detail_header
 
 
 def layout(cluster_id=None):
@@ -13,20 +14,15 @@ def layout(cluster_id=None):
     
     return html.Div([
         # Header
-        html.Div(
-            className="nexus-glass",
-            children=[
-                dcc.Link(
-                    DashIconify(icon="solar:arrow-left-linear", width=24, color="#2B3674"),
-                    href="/datacenters", # Fallback to DC list for now
-                    style={"marginRight": "16px"}
-                ),
-                html.Div([
-                    html.H1(f"Cluster: {cluster_id}", style={"margin": "0", "color": "#2B3674", "fontSize": "1.5rem"}),
-                    html.P("Detailed cluster view is under construction.", style={"margin": "0 0 0 12px", "color": "#A3AED0", "fontSize": "0.9rem"})
-                ], style={"display": "flex", "alignItems": "baseline"}),
-            ],
-            style={"padding": "20px 30px", "marginBottom": "30px", "display": "flex", "alignItems": "center"}
+        create_detail_header(
+            title=f"Cluster: {cluster_id or '—'}",
+            back_href="/datacenters",
+            back_label="Data Centers",
+            subtitle_badge="🚧 Under Construction",
+            subtitle_color="yellow",
+            time_range=None,
+            icon="solar:box-bold-duotone",
+            tabs=None,
         ),
 
         # Placeholder Card

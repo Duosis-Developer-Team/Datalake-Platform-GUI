@@ -5,6 +5,7 @@ from dash_iconify import DashIconify
 from src.services.shared import service
 from src.utils.time_range import default_time_range
 from src.components.charts import create_usage_donut_chart, create_bar_chart, create_gauge_chart
+from src.components.header import create_detail_header
 
 
 def kpi_card(title, value, icon, is_text=False, color="indigo"):
@@ -64,36 +65,28 @@ def build_dc_view(dc_id, time_range=None):
     clusters = [] # No individual cluster list in current Service implementation
 
     return html.Div([
-        # --- Header ---
-        html.Div(
-            className="nexus-glass",
-            children=[
-                dcc.Link(
-                    DashIconify(icon="solar:arrow-left-linear", width=24, color="#2B3674"),
-                    href="/datacenters", style={"marginRight": "16px", "display": "flex", "alignItems": "center"}
-                ),
-                html.Div([
-                    html.H1(dc_name, style={"margin": "0", "color": "#2B3674", "fontSize": "1.8rem"}),
-                    html.Span(f"Region: {dc_loc}  |  Report: {tr.get('start', '')} – {tr.get('end', '')}", style={"color": "#A3AED0", "fontSize": "0.9rem", "fontWeight": "500", "marginLeft": "12px"})
-                ], style={"display": "flex", "alignItems": "baseline"}),
-            ],
-            style={"padding": "20px 30px", "marginBottom": "20px", "display": "flex", "alignItems": "center"}
-        ),
-
-        # --- TABS ---
         dmc.Tabs(
             color="indigo",
             variant="pills",
             radius="md",
             value="intel",
             children=[
-                dmc.TabsList(
-                    children=[
-                        dmc.TabsTab("Intel Virtualization", value="intel"),
-                        dmc.TabsTab("Power Virtualization", value="power"),
-                        dmc.TabsTab("Summary", value="summary"),
-                    ],
-                    style={"padding": "0 30px", "marginBottom": "24px"}
+                create_detail_header(
+                    title=dc_name,
+                    back_href="/datacenters",
+                    back_label="Data Centers",
+                    subtitle_badge=f"📍 {dc_loc}" if dc_loc else None,
+                    subtitle_color="indigo",
+                    time_range=tr,
+                    icon="solar:server-square-bold-duotone",
+                    tabs=dmc.TabsList(
+                        style={"paddingTop": "8px"},
+                        children=[
+                            dmc.TabsTab("Intel Virtualization", value="intel"),
+                            dmc.TabsTab("Power Virtualization", value="power"),
+                            dmc.TabsTab("Summary", value="summary"),
+                        ],
+                    ),
                 ),
 
                 dmc.TabsPanel(
