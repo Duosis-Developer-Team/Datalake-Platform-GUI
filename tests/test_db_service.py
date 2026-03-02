@@ -197,7 +197,7 @@ class TestAggregatedc(unittest.TestCase):
         intel = result["intel"]
         self.assertEqual(intel["clusters"], 3)
         self.assertEqual(intel["hosts"], 6)  # 4 nutanix + 2 vmware
-        self.assertEqual(intel["vms"], 20)
+        self.assertEqual(intel["vms"], 30)  # 10 nutanix + 20 vmware
         # Power
         self.assertEqual(result["power"]["hosts"], 2)
         self.assertEqual(result["power"]["vios"], 1)

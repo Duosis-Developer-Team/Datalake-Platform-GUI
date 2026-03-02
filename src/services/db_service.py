@@ -390,10 +390,7 @@ class DatabaseService:
             "intel": {
                 "clusters": int(vmware_counts[0] or 0),
                 "hosts": int((nutanix_host_count or 0) + (vmware_counts[1] or 0)),
-                # VM count is taken from VMware only; Nutanix VM metrics are
-                # already included in vmware_counts via the deduplicated view
-                # used by the reporting layer, so we avoid double counting here.
-                "vms": int(vmware_counts[2] or 0),
+                "vms": int(nutanix_vms or 0) + int(vmware_counts[2] or 0),
                 "cpu_cap": round(n_cpu_cap_ghz + v_cpu_cap_ghz, 2),
                 "cpu_used": round(n_cpu_used_ghz + v_cpu_used_ghz, 2),
                 "ram_cap": round(n_mem_cap_gb + v_mem_cap_gb, 2),
