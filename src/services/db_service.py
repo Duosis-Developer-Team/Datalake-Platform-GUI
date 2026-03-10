@@ -409,14 +409,14 @@ class DatabaseService:
         # Memory → GB (coerce to float for DB Decimal)
         n_mem_cap_gb  = float(nutanix_mem[0] or 0) * 1024
         n_mem_used_gb = float(nutanix_mem[1] or 0) * 1024
-        v_mem_cap_gb  = float(vmware_mem[0] or 0) / (1024 ** 3)
-        v_mem_used_gb = float(vmware_mem[1] or 0) / (1024 ** 3)
+        v_mem_cap_gb  = float(vmware_mem[0] or 0)
+        v_mem_used_gb = float(vmware_mem[1] or 0)
 
         # Storage → TB
         n_stor_cap_tb  = float(nutanix_storage[0] or 0)
         n_stor_used_tb = float(nutanix_storage[1] or 0)
-        v_stor_cap_tb  = float(vmware_storage[0] or 0) / (1024 ** 4)
-        v_stor_used_tb = float(vmware_storage[1] or 0) / (1024 ** 4)
+        v_stor_cap_tb  = float(vmware_storage[0] or 0) / 1024.0
+        v_stor_used_tb = float(vmware_storage[1] or 0) / 1024.0
 
         # CPU → GHz
         n_cpu_cap_ghz  = float(nutanix_cpu[0] or 0)
@@ -604,7 +604,7 @@ class DatabaseService:
             ("n_host",     nq.BATCH_HOST_COUNT,    nutanix_params),
             ("n_vm",       nq.BATCH_VM_COUNT,      nutanix_params),
             ("n_mem",      nq.BATCH_MEMORY,        nutanix_params),
-            ("n_stor",     nq.BATCH_STORAGE,       nutanix_params),
+            ("n_stor",     nq.BATCH_STORAGE,       (start_ts, end_ts, dc_list, pattern_list)),
             ("n_cpu",      nq.BATCH_CPU,           nutanix_params),
             ("n_platform", nq.BATCH_PLATFORM_COUNT, nutanix_params),
         ]
@@ -678,19 +678,37 @@ class DatabaseService:
                 ibm_lpar.setdefault(dc, set()).add(row[1])  # type: ignore[arg-type]
         ibm_lpar = {dc: len(names) for dc, names in ibm_lpar.items()}  # type: ignore[assignment]
 
-        ibm_mem_acc: dict[str, list] = {}
+        ibm_mem_hosts: dict[str, dict[str, list[tuple[float, float, object]]]] = {}
         for row in ibm_raw["ibm_mem_raw"]:
-            if not row or len(row) < 3:
+            if not row or len(row) < 4:
                 continue
-            dc = _extract_dc(row[0])
-            if dc:
-                ibm_mem_acc.setdefault(dc, []).append((float(row[1] or 0), float(row[2] or 0)))
+            server_name = row[0]
+            dc = _extract_dc(server_name)
+            if not dc:
+                continue
+            try:
+                total_mem = float(row[1] or 0)
+                assigned_mem = float(row[2] or 0)
+            except (TypeError, ValueError):
+                continue
+            ts = row[3]
+            dc_hosts = ibm_mem_hosts.setdefault(dc, {})
+            dc_hosts.setdefault(server_name, []).append((total_mem, assigned_mem, ts))
+
         ibm_mem: dict[str, tuple] = {}
-        for dc, vals in ibm_mem_acc.items():
-            n_vals = len(vals)
+        for dc, hosts in ibm_mem_hosts.items():
+            total_cfg = 0.0
+            total_assigned = 0.0
+            for server_name, samples in hosts.items():
+                if not samples:
+                    continue
+                latest_total, latest_assigned, _ = max(samples, key=lambda v: v[2])
+                total_cfg += latest_total
+                total_assigned += latest_assigned
+            # HMC bellek metrikleri MB cinsinden geldiği için burada GB'e çeviriyoruz.
             ibm_mem[dc] = (
-                sum(v[0] for v in vals) / n_vals,
-                sum(v[1] for v in vals) / n_vals,
+                total_cfg / 1024.0,
+                total_assigned / 1024.0,
             )
 
         ibm_cpu_acc: dict[str, list] = {}
