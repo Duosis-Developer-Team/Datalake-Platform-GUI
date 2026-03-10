@@ -5,6 +5,7 @@ from dash_iconify import DashIconify
 import plotly.graph_objs as go
 from src.services.shared import service
 from src.utils.time_range import default_time_range
+from src.utils.format_units import smart_storage, smart_memory
 from src.components.header import create_detail_header
 
 
@@ -200,7 +201,7 @@ def _customer_content(customer_name, time_range=None):
                                         children=[
                                             metric_card("Veeam sessions", veeam_defined, "material-symbols:backup-outline"),
                                             metric_card("Protected VMs (Zerto)", zerto_protected, "material-symbols:shield-outline", color="teal"),
-                                            metric_card("IBM storage volume (GB)", f"{storage_gb:.1f}", "solar:hdd-bold-duotone", color="orange"),
+                                            metric_card("IBM storage volume", smart_storage(storage_gb), "solar:hdd-bold-duotone", color="orange"),
                                         ],
                                     ),
                                 ],
@@ -230,16 +231,16 @@ def _customer_content(customer_name, time_range=None):
                         gap="lg",
                         style={"padding": "0 30px"},
                         children=[
-                            dmc.SimpleGrid(
-                                cols=4,
-                                spacing="lg",
-                                children=[
-                                    metric_card("Total Intel VMs", intel_vms.get("total", 0), "solar:laptop-bold-duotone", color="teal"),
-                                    metric_card("Total CPU (Intel)", intel_cpu.get("total", 0.0), "solar:cpu-bold-duotone"),
-                                    metric_card("Total Memory (Intel, GB)", f"{intel_mem.get('total', 0.0):.1f}", "solar:ram-bold-duotone"),
-                                    metric_card("Total Disk (Intel, GB)", f"{intel_disk.get('total', 0.0):.1f}", "solar:hdd-bold-duotone", color="orange"),
-                                ],
-                            ),
+                                    dmc.SimpleGrid(
+                                        cols=4,
+                                        spacing="lg",
+                                        children=[
+                                            metric_card("Total Intel VMs", intel_vms.get("total", 0), "solar:laptop-bold-duotone", color="teal"),
+                                            metric_card("Total CPU (Intel)", intel_cpu.get("total", 0.0), "solar:cpu-bold-duotone"),
+                                            metric_card("Total Memory (Intel)", smart_memory(intel_mem.get("total", 0.0)), "solar:ram-bold-duotone"),
+                                            metric_card("Total Disk (Intel)", smart_storage(intel_disk.get("total", 0.0)), "solar:hdd-bold-duotone", color="orange"),
+                                        ],
+                                    ),
                             html.Div(
                                 className="nexus-card",
                                 style={"padding": "20px"},
@@ -304,8 +305,8 @@ def _customer_content(customer_name, time_range=None):
                                                                     html.Td(row.get("name")),
                                                                     html.Td(row.get("source")),
                                                                     html.Td(f"{row.get('cpu', 0.0):.1f}"),
-                                                                    html.Td(f"{row.get('memory_gb', 0.0):.1f}"),
-                                                                    html.Td(f"{row.get('disk_gb', 0.0):.1f}"),
+                                                                    html.Td(smart_memory(row.get("memory_gb", 0.0))),
+                                                                    html.Td(smart_storage(row.get("disk_gb", 0.0))),
                                                                 ]
                                                             )
                                                             for row in intel_vm_list
@@ -328,15 +329,15 @@ def _customer_content(customer_name, time_range=None):
                         gap="lg",
                         style={"padding": "0 30px"},
                         children=[
-                            dmc.SimpleGrid(
-                                cols=3,
-                                spacing="lg",
-                                children=[
-                                    metric_card("HANA VMs (LPARs)", power_lpars, "solar:laptop-bold-duotone", color="teal"),
-                                    metric_card("Total CPU (Power HMC)", f"{power_cpu:.1f}", "solar:cpu-bold-duotone"),
-                                    metric_card("Total Memory (Power HMC, GB)", f"{power_mem:.1f}", "solar:ram-bold-duotone", color="orange"),
-                                ],
-                            ),
+                                    dmc.SimpleGrid(
+                                        cols=3,
+                                        spacing="lg",
+                                        children=[
+                                            metric_card("HANA VMs (LPARs)", power_lpars, "solar:laptop-bold-duotone", color="teal"),
+                                            metric_card("Total CPU (Power HMC)", f"{power_cpu:.1f}", "solar:cpu-bold-duotone"),
+                                            metric_card("Total Memory (Power HMC)", smart_memory(power_mem), "solar:ram-bold-duotone", color="orange"),
+                                        ],
+                                    ),
                             html.Div(
                                 className="nexus-card",
                                 style={"padding": "20px"},
@@ -376,7 +377,7 @@ def _customer_content(customer_name, time_range=None):
                                                                 html.Th("LPAR"),
                                                                 html.Th("Source"),
                                                                 html.Th("CPU (vCPU)"),
-                                                                html.Th("Memory (GB)"),
+                                                                html.Th("Memory"),
                                                                 html.Th("State"),
                                                             ]
                                                         )
@@ -388,7 +389,7 @@ def _customer_content(customer_name, time_range=None):
                                                                     html.Td(row.get("name")),
                                                                     html.Td(row.get("source")),
                                                                     html.Td(f"{row.get('cpu', 0.0):.1f}"),
-                                                                    html.Td(f"{row.get('memory_gb', 0.0):.1f}"),
+                                                                    html.Td(smart_memory(row.get("memory_gb", 0.0))),
                                                                     html.Td(row.get("state") or "-"),
                                                                 ]
                                                             )

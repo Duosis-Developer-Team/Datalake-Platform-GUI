@@ -420,17 +420,70 @@ class TestGetAllDatacentersSummary(unittest.TestCase):
         dc_summary = next(item for item in result if item["id"] == dc_code)
         self.assertEqual(dc_summary["vm_count"], 15)
 
+    def test_rebuild_summary_host_count_uses_classic_hyperconv_and_power(self):
+        """host_count must be derived from classic.hosts + hyperconv.hosts + power.hosts."""
+        dc_code = "DC11"
+
+        base_dc = _EMPTY_DC(dc_code)
+        base_dc["classic"] = {"hosts": 10}
+        base_dc["hyperconv"] = {"hosts": 5}
+        base_dc["power"]["hosts"] = 2
+        # intel.hosts should not affect the final host_count
+        base_dc["intel"]["hosts"] = 999
+
+        platform_counts = {code: 1 for code in DC_LIST}
+
+        def _fake_fetch_all_batch(cursor, dc_list, start_ts, end_ts):
+            all_dc_data = {code: (base_dc if code == dc_code else _EMPTY_DC(code)) for code in dc_list}
+            return all_dc_data, platform_counts
+
+        with patch.object(
+            self.svc,
+            "_fetch_all_batch",
+            side_effect=_fake_fetch_all_batch,
+        ):
+            result = self.svc._rebuild_summary(default_time_range())
+
+        dc_summary = next(item for item in result if item["id"] == dc_code)
+        self.assertEqual(dc_summary["host_count"], 17)
+
+    def test_rebuild_summary_vm_count_uses_intel_vms_plus_power_lpars(self):
+        """vm_count must be intel.vms + power.lpar_count."""
+        dc_code = "DC11"
+
+        base_dc = _EMPTY_DC(dc_code)
+        base_dc["intel"]["vms"] = 80
+        base_dc["power"]["lpar_count"] = 20
+
+        platform_counts = {code: 1 for code in DC_LIST}
+
+        def _fake_fetch_all_batch(cursor, dc_list, start_ts, end_ts):
+            all_dc_data = {code: (base_dc if code == dc_code else _EMPTY_DC(code)) for code in dc_list}
+            return all_dc_data, platform_counts
+
+        with patch.object(
+            self.svc,
+            "_fetch_all_batch",
+            side_effect=_fake_fetch_all_batch,
+        ):
+            result = self.svc._rebuild_summary(default_time_range())
+
+        dc_summary = next(item for item in result if item["id"] == dc_code)
+        self.assertEqual(dc_summary["vm_count"], 100)
+
     def test_rebuild_summary_filters_out_fully_empty_dcs(self):
         """Datacenters with both host_count and vm_count equal to 0 should be excluded from the summary."""
         dc_codes = ["DC_A", "DC_B", "DC_C"]
 
         dc_a = _EMPTY_DC("DC_A")
-        dc_a["intel"]["hosts"] = 1
+        # Non-empty host_count via classic hosts
+        dc_a["classic"] = {"hosts": 1}
         dc_a["intel"]["vms"] = 0
 
         dc_b = _EMPTY_DC("DC_B")
-        dc_b["intel"]["hosts"] = 0
-        dc_b["intel"]["vms"] = 2
+        # Non-empty vm_count via Power LPARs
+        dc_b["power"]["lpar_count"] = 2
+        dc_b["intel"]["vms"] = 0
 
         dc_c = _EMPTY_DC("DC_C")
 

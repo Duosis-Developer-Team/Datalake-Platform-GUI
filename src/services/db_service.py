@@ -15,6 +15,7 @@ from src.queries import loki as lq, customer as cq
 from src.services import cache_service as cache
 from src.services import query_overrides as qo
 from src.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
+from src.utils.format_units import smart_cpu, smart_memory, smart_storage
 
 _DC_CODE_RE = re.compile(r'(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)', re.IGNORECASE)
 
@@ -764,10 +765,18 @@ class DatabaseService:
             d = all_dc_data.get(dc, _EMPTY_DC(dc))
             intel = d["intel"]
             power = d["power"]
+            classic = d.get("classic", {})
+            hyperconv = d.get("hyperconv", {})
 
-            # Compute combined host and VM counts (Intel + IBM/Power)
-            host_count = (intel["hosts"] or 0) + (power["hosts"] or 0)
-            vm_count = (intel["vms"] or 0) + (power.get("vms", 0) or 0)
+            # Compute combined host and VM counts using the same logic as dc_view:
+            # - Hosts: Classic (KM) + Hyperconverged (Nutanix) + IBM/Power
+            # - VMs  : Intel (deduplicated Classic + Nutanix) + IBM LPARs
+            host_count = (
+                (classic.get("hosts", 0) or 0)
+                + (hyperconv.get("hosts", 0) or 0)
+                + (power.get("hosts", 0) or 0)
+            )
+            vm_count = (intel.get("vms", 0) or 0) + (power.get("lpar_count", 0) or 0)
 
             # Skip datacenters that have no Intel/IBM resources at all
             if host_count == 0 and vm_count == 0:
@@ -785,6 +794,10 @@ class DatabaseService:
             # Platform count = Nutanix clusters + VMware hypervisors + IBM hosts in this DC
             platform_count = platform_counts.get(dc, 0)
 
+            # Storage values are in TB here; convert to GB for formatting helpers.
+            stor_cap_gb = stor_cap * 1024
+            stor_used_gb = stor_used * 1024
+
             summary_list.append({
                 "id": dc,
                 "name": dc,
@@ -795,11 +808,11 @@ class DatabaseService:
                 "host_count": host_count,
                 "vm_count": vm_count,
                 "stats": {
-                    "total_cpu": f"{cpu_used:,} / {cpu_cap:,} GHz",
+                    "total_cpu": f"{smart_cpu(cpu_used)} / {smart_cpu(cpu_cap)}",
                     "used_cpu_pct": round((cpu_used / cpu_cap * 100) if cpu_cap > 0 else 0, 1),
-                    "total_ram": f"{ram_used:,} / {ram_cap:,} GB",
+                    "total_ram": f"{smart_memory(ram_used)} / {smart_memory(ram_cap)}",
                     "used_ram_pct": round((ram_used / ram_cap * 100) if ram_cap > 0 else 0, 1),
-                    "total_storage": f"{stor_used:,} / {stor_cap:,} TB",
+                    "total_storage": f"{smart_storage(stor_used_gb)} / {smart_storage(stor_cap_gb)}",
                     "used_storage_pct": round((stor_used / stor_cap * 100) if stor_cap > 0 else 0, 1),
                     "last_updated": "Live",
                     "total_energy_kw": d["energy"]["total_kw"],

@@ -4,6 +4,7 @@ import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services.shared import service
 from src.utils.time_range import default_time_range
+from src.utils.format_units import smart_cpu, smart_memory
 from src.components.charts import create_usage_donut_chart, create_bar_chart, create_gauge_chart
 from src.components.header import create_detail_header
 
@@ -262,8 +263,18 @@ def build_dc_view(dc_id, time_range=None):
                                         children=[
                                             kpi_card("Total Hosts", kpi_hosts, "solar:server-bold-duotone"),
                                             kpi_card("Total VMs", kpi_vms, "solar:laptop-bold-duotone"),
-                                            kpi_card("CPU used", f"{intel['cpu_used'] + (power.get('cpu_used') or 0):.1f} GHz", "solar:cpu-bold-duotone", is_text=True),
-                                            kpi_card("RAM used", f"{intel['ram_used'] + (power.get('memory_assigned') or 0):.0f} GB", "solar:ram-bold-duotone", is_text=True),
+                                            kpi_card(
+                                                "CPU used",
+                                                smart_cpu(intel["cpu_used"] + (power.get("cpu_used") or 0)),
+                                                "solar:cpu-bold-duotone",
+                                                is_text=True,
+                                            ),
+                                            kpi_card(
+                                                "RAM used",
+                                                smart_memory(intel["ram_used"] + (power.get("memory_assigned") or 0)),
+                                                "solar:ram-bold-duotone",
+                                                is_text=True,
+                                            ),
                                         ],
                                     ),
                                 ],
