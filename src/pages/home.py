@@ -56,7 +56,7 @@ def metric_card(title, value, icon_name, subtext=None, color="#4318FF"):
     )
 
 
-def platform_card(title, hosts, vms, clusters=None, vios=None, color="#4318FF"):
+def platform_card(title, hosts, vms, clusters=None, color="#4318FF"):
     children = [
         dmc.Group(
             gap="xs",
@@ -90,11 +90,6 @@ def platform_card(title, hosts, vms, clusters=None, vios=None, color="#4318FF"):
         children[1].children.insert(1, dmc.Group(gap="xs", children=[
             dmc.Text("Clusters", size="xs", c="dimmed", style={"width": "52px"}),
             dmc.Text(str(clusters), size="sm", fw=600, c="#2B3674"),
-        ]))
-    if vios is not None:
-        children[1].children.append(dmc.Group(gap="xs", children=[
-            dmc.Text("VIOSes", size="xs", c="dimmed", style={"width": "52px"}),
-            dmc.Text(str(vios), size="sm", fw=600, c="#2B3674"),
         ]))
     return html.Div(
         style={
@@ -242,15 +237,14 @@ def build_overview(time_range=None):
         metric_card("Total Energy", f"{overview.get('total_energy_kw', 0):,.0f} kW", "material-symbols:bolt-outline", "Daily average", color="orange"),
     ]
 
-    # Compute architecture breakdown (Classic / Hyperconverged / Power)
-    compute   = data.get("compute", {})
-    classic   = compute.get("classic",   {})
-    hyperconv = compute.get("hyperconv", {})
-    power     = compute.get("power",     {})
+    # Platform breakdown
+    nutanix = platforms.get("nutanix", {})
+    vmware = platforms.get("vmware", {})
+    ibm = platforms.get("ibm", {})
     platform_cards = [
-        platform_card("Classic Compute", classic.get("hosts", 0),   classic.get("vms", 0),   color="#4318FF"),
-        platform_card("Hyperconverged",  hyperconv.get("hosts", 0), hyperconv.get("vms", 0), color="#05CD99"),
-        platform_card("Power (IBM)",     power.get("hosts", 0),     power.get("lpars", 0),   vios=power.get("vios", 0), color="#FFB547"),
+        platform_card("Nutanix", nutanix.get("hosts", 0), nutanix.get("vms", 0), color="#4318FF"),
+        platform_card("VMware", vmware.get("hosts", 0), vmware.get("vms", 0), vmware.get("clusters"), color="#05CD99"),
+        platform_card("IBM Power", ibm.get("hosts", 0), ibm.get("lpars", 0), color="#FFB547"),
     ]
 
     # Resource usage percentages
@@ -357,8 +351,8 @@ def build_overview(time_range=None):
                 children=[
                     html.Div(
                         [
-                            dmc.Text("Compute Architecture", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("Classic · Hyperconverged · Power", size="xs", c="dimmed", style={"marginBottom": "16px"}),
+                            dmc.Text("Platform Breakdown", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
+                            dmc.Text("Nutanix · VMware · IBM Power", size="xs", c="dimmed", style={"marginBottom": "16px"}),
                             dmc.SimpleGrid(cols=3, spacing="md", children=platform_cards),
                         ],
                         className="nexus-card",

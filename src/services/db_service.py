@@ -960,7 +960,6 @@ class DatabaseService:
 
         # Build global dashboard (platform breakdown + overview) from same data
         nutanix_h = nutanix_v = vmware_c = vmware_h = vmware_v = ibm_h = ibm_v = ibm_l = 0
-        cl_hosts = cl_vms = hc_hosts = hc_vms = 0
         for d in all_dc_data.values():
             p = d.get("platforms", {})
             nutanix_h += p.get("nutanix", {}).get("hosts", 0)
@@ -971,12 +970,6 @@ class DatabaseService:
             ibm_h += p.get("ibm", {}).get("hosts", 0)
             ibm_v += p.get("ibm", {}).get("vios", 0)
             ibm_l += p.get("ibm", {}).get("lpars", 0)
-            c = d.get("classic", {})
-            cl_hosts += c.get("hosts", 0)
-            cl_vms   += c.get("vms", 0)
-            h = d.get("hyperconv", {})
-            hc_hosts += h.get("hosts", 0)
-            hc_vms   += h.get("vms", 0)
         overview = {
             "dc_count": len(summary_list),
             "total_hosts": sum(s["host_count"] for s in summary_list),
@@ -1011,11 +1004,6 @@ class DatabaseService:
                 "nutanix": {"hosts": nutanix_h, "vms": nutanix_v},
                 "vmware": {"clusters": vmware_c, "hosts": vmware_h, "vms": vmware_v},
                 "ibm": {"hosts": ibm_h, "vios": ibm_v, "lpars": ibm_l},
-            },
-            "compute": {
-                "classic":   {"hosts": cl_hosts, "vms": cl_vms},
-                "hyperconv": {"hosts": hc_hosts, "vms": hc_vms},
-                "power":     {"hosts": ibm_h, "vios": ibm_v, "lpars": ibm_l},
             },
             "energy_breakdown": {"ibm_kw": round(ei, 2), "vcenter_kw": round(ev, 2)},
         })
