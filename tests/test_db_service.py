@@ -950,5 +950,222 @@ class TestLokiQueries(unittest.TestCase):
             self.assertIn("unnest", sql, "Nutanix batch query must use unnest for dc/pattern list")
 
 
+# ---------------------------------------------------------------------------
+# format_units utility
+# ---------------------------------------------------------------------------
+
+class TestFormatUnits(unittest.TestCase):
+
+    def test_smart_storage_mb(self):
+        from src.utils.format_units import smart_storage
+        result = smart_storage(0.5)
+        self.assertIn("MB", result)
+
+    def test_smart_storage_gb(self):
+        from src.utils.format_units import smart_storage
+        result = smart_storage(500)
+        self.assertIn("GB", result)
+
+    def test_smart_storage_tb(self):
+        from src.utils.format_units import smart_storage
+        result = smart_storage(2048)
+        self.assertIn("TB", result)
+        self.assertIn("2.0", result)
+
+    def test_smart_storage_zero(self):
+        from src.utils.format_units import smart_storage
+        result = smart_storage(0)
+        self.assertIn("0", result)
+
+    def test_smart_storage_none(self):
+        from src.utils.format_units import smart_storage
+        result = smart_storage(None)
+        self.assertIn("0", result)
+
+    def test_smart_memory_matches_storage(self):
+        from src.utils.format_units import smart_memory, smart_storage
+        self.assertEqual(smart_memory(100), smart_storage(100))
+
+    def test_smart_cpu_mhz(self):
+        from src.utils.format_units import smart_cpu
+        result = smart_cpu(0.5)
+        self.assertIn("MHz", result)
+
+    def test_smart_cpu_ghz(self):
+        from src.utils.format_units import smart_cpu
+        result = smart_cpu(2.4)
+        self.assertIn("GHz", result)
+        self.assertIn("2.4", result)
+
+    def test_smart_cpu_none(self):
+        from src.utils.format_units import smart_cpu
+        result = smart_cpu(None)
+        self.assertIn("0", result)
+
+    def test_pct_float_returns_correct_percentage(self):
+        from src.utils.format_units import pct_float
+        self.assertAlmostEqual(pct_float(50, 200), 25.0)
+
+    def test_pct_float_zero_cap_returns_zero(self):
+        from src.utils.format_units import pct_float
+        self.assertEqual(pct_float(100, 0), 0.0)
+
+    def test_pct_float_caps_at_100(self):
+        from src.utils.format_units import pct_float
+        self.assertEqual(pct_float(200, 100), 100.0)
+
+    def test_pct_str_format(self):
+        from src.utils.format_units import pct_str
+        result = pct_str(1, 4)
+        self.assertIn("25.0%", result)
+
+
+# ---------------------------------------------------------------------------
+# _aggregate_dc — Classic / Hyperconv sections
+# ---------------------------------------------------------------------------
+
+class TestAggregateClassicHyperconv(unittest.TestCase):
+
+    def _call(self, classic_row=None, classic_avg30=None,
+              hyperconv_row=None, hyperconv_avg30=None):
+        return DatabaseService._aggregate_dc(
+            dc_code="DC13",
+            nutanix_host_count=4,
+            nutanix_vms=20,
+            nutanix_mem=(2.0, 1.0),
+            nutanix_storage=(10.0, 5.0),
+            nutanix_cpu=(100.0, 50.0),
+            vmware_counts=(3, 2, 20),
+            vmware_mem=(1024 ** 3, 512 * (1024 ** 2)),
+            vmware_storage=(1024 ** 4, 512 * (1024 ** 3)),
+            vmware_cpu=(2_000_000_000, 1_000_000_000),
+            power_hosts=2,
+            power_vios=1,
+            power_lpar_count=5,
+            power_mem=(64.0, 32.0),
+            power_cpu=(4.0, 2.0, 8.0),
+            ibm_w=500.0,
+            vcenter_w=500.0,
+            classic_row=classic_row,
+            classic_avg30=classic_avg30,
+            hyperconv_row=hyperconv_row,
+            hyperconv_avg30=hyperconv_avg30,
+        )
+
+    def test_classic_section_present(self):
+        result = self._call()
+        self.assertIn("classic", result)
+        classic = result["classic"]
+        for key in ("hosts", "vms", "cpu_cap", "cpu_used", "mem_cap", "mem_used",
+                    "stor_cap", "stor_used", "cpu_pct", "mem_pct"):
+            self.assertIn(key, classic, f"classic missing key: {key}")
+
+    def test_hyperconv_section_present(self):
+        result = self._call()
+        self.assertIn("hyperconv", result)
+
+    def test_classic_defaults_to_zero_when_no_row(self):
+        result = self._call()
+        self.assertEqual(result["classic"]["hosts"], 0)
+        self.assertEqual(result["classic"]["cpu_cap"], 0.0)
+
+    def test_classic_row_populated_correctly(self):
+        # (hosts, vms, cpu_cap_ghz, cpu_used_ghz, mem_cap_gb, mem_used_gb, stor_cap_gb, stor_used_gb)
+        cl_row = (10, 50, 200.0, 120.0, 1024.0, 600.0, 20480.0, 10240.0)
+        result = self._call(classic_row=cl_row)
+        classic = result["classic"]
+        self.assertEqual(classic["hosts"], 10)
+        self.assertEqual(classic["vms"], 50)
+        self.assertAlmostEqual(classic["cpu_cap"], 200.0)
+        self.assertAlmostEqual(classic["mem_cap"], 1024.0)
+        # Storage: 20480 GB → 20 TB
+        self.assertAlmostEqual(classic["stor_cap"], 20480.0 / 1024.0, places=2)
+
+    def test_classic_avg30_populated(self):
+        cl_avg = (65.5, 72.3)
+        result = self._call(classic_avg30=cl_avg)
+        self.assertAlmostEqual(result["classic"]["cpu_pct"], 65.5)
+        self.assertAlmostEqual(result["classic"]["mem_pct"], 72.3)
+
+    def test_hyperconv_storage_uses_nutanix(self):
+        # nutanix_storage = (10.0, 5.0) TB
+        result = self._call()
+        hc = result["hyperconv"]
+        self.assertAlmostEqual(hc["stor_cap"], 10.0)
+        self.assertAlmostEqual(hc["stor_used"], 5.0)
+
+    def test_legacy_intel_section_still_present(self):
+        result = self._call()
+        self.assertIn("intel", result)
+        self.assertIn("hosts", result["intel"])
+
+    def test_empty_dc_contains_classic_hyperconv(self):
+        from src.services.db_service import _EMPTY_DC
+        empty = _EMPTY_DC("DC11")
+        self.assertIn("classic", empty)
+        self.assertIn("hyperconv", empty)
+        self.assertEqual(empty["classic"]["hosts"], 0)
+        self.assertEqual(empty["hyperconv"]["vms"], 0)
+
+
+# ---------------------------------------------------------------------------
+# New VMware cluster_metrics queries
+# ---------------------------------------------------------------------------
+
+class TestVmwareClusterQueries(unittest.TestCase):
+
+    def test_classic_metrics_query_filters_km(self):
+        from src.queries.vmware import CLASSIC_METRICS, CLASSIC_AVG30
+        self.assertIn("KM", CLASSIC_METRICS)
+        self.assertIn("cluster_metrics", CLASSIC_METRICS)
+        self.assertIn("KM", CLASSIC_AVG30)
+
+    def test_hyperconv_metrics_query_excludes_km(self):
+        from src.queries.vmware import HYPERCONV_METRICS, HYPERCONV_AVG30
+        self.assertIn("NOT ILIKE", HYPERCONV_METRICS)
+        self.assertIn("cluster_metrics", HYPERCONV_METRICS)
+
+    def test_batch_classic_has_unnest(self):
+        from src.queries.vmware import BATCH_CLASSIC_METRICS, BATCH_HYPERCONV_METRICS
+        self.assertIn("unnest", BATCH_CLASSIC_METRICS)
+        self.assertIn("unnest", BATCH_HYPERCONV_METRICS)
+
+    def test_batch_classic_avg30_exists(self):
+        from src.queries.vmware import BATCH_CLASSIC_AVG30, BATCH_HYPERCONV_AVG30
+        self.assertIn("cpu_usage_avg_perc", BATCH_CLASSIC_AVG30)
+        self.assertIn("cpu_usage_avg_perc", BATCH_HYPERCONV_AVG30)
+
+
+# ---------------------------------------------------------------------------
+# New customer.py queries — Classic / Hyperconv split
+# ---------------------------------------------------------------------------
+
+class TestCustomerClassicHyperconvQueries(unittest.TestCase):
+
+    def test_classic_vm_count_filters_km(self):
+        from src.queries.customer import CUSTOMER_CLASSIC_VM_COUNT
+        self.assertIn("KM", CUSTOMER_CLASSIC_VM_COUNT)
+        self.assertIn("vm_metrics", CUSTOMER_CLASSIC_VM_COUNT)
+
+    def test_hyperconv_vm_count_excludes_km(self):
+        from src.queries.customer import CUSTOMER_HYPERCONV_VM_COUNT
+        self.assertIn("NOT ILIKE", CUSTOMER_HYPERCONV_VM_COUNT)
+        self.assertIn("nutanix_vm_metrics", CUSTOMER_HYPERCONV_VM_COUNT)
+
+    def test_classic_vm_list_includes_cluster(self):
+        from src.queries.customer import CUSTOMER_CLASSIC_VM_LIST
+        self.assertIn("cluster", CUSTOMER_CLASSIC_VM_LIST)
+        self.assertIn("Classic", CUSTOMER_CLASSIC_VM_LIST)
+
+    def test_hyperconv_vm_list_includes_source_classification(self):
+        from src.queries.customer import CUSTOMER_HYPERCONV_VM_LIST
+        self.assertIn("Nutanix (VMware Managed)", CUSTOMER_HYPERCONV_VM_LIST)
+
+    def test_classic_resource_totals_has_required_columns(self):
+        from src.queries.customer import CUSTOMER_CLASSIC_RESOURCE_TOTALS
+        for col in ("cpu_total", "memory_gb", "disk_gb"):
+            self.assertIn(col, CUSTOMER_CLASSIC_RESOURCE_TOTALS)
+
+
 if __name__ == "__main__":
     unittest.main()
