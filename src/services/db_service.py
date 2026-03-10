@@ -475,10 +475,14 @@ class DatabaseService:
                 "stor_cap": hc_stor_cap, "stor_used": hc_stor_used,
             },
             # Legacy combined Intel section — kept for home.py / datacenters.py
+            # VM count uses cluster-level dedup: Classic (KM) VMs from VMware cluster_metrics
+            # + all Nutanix VMs (covers Nutanix-only and VMware-managed Nutanix VMs once each).
+            # vmware_counts[2] (datacenter_metrics.total_vm_count) is intentionally excluded here
+            # because it overlaps with nutanix_vms for hyperconverged clusters.
             "intel": {
                 "clusters": int(vmware_counts[0] or 0),
                 "hosts": int((nutanix_host_count or 0) + (vmware_counts[1] or 0)),
-                "vms": int(nutanix_vms or 0) + int(vmware_counts[2] or 0),
+                "vms": cl_vms + int(nutanix_vms or 0),
                 "cpu_cap": round(n_cpu_cap_ghz + v_cpu_cap_ghz, 2),
                 "cpu_used": round(n_cpu_used_ghz + v_cpu_used_ghz, 2),
                 "ram_cap": round(n_mem_cap_gb + v_mem_cap_gb, 2),
@@ -506,7 +510,9 @@ class DatabaseService:
             },
             "platforms": {
                 "nutanix": {"hosts": int(nutanix_host_count or 0), "vms": int(nutanix_vms or 0)},
-                "vmware": {"clusters": int(vmware_counts[0] or 0), "hosts": int(vmware_counts[1] or 0), "vms": int(vmware_counts[2] or 0)},
+                # vmware.vms shows only Classic (KM) cluster VMs to avoid overlap with Nutanix.
+                # Hyperconverged VMs on Nutanix hardware are already represented in nutanix.vms.
+                "vmware": {"clusters": int(vmware_counts[0] or 0), "hosts": int(vmware_counts[1] or 0), "vms": cl_vms},
                 "ibm": {"hosts": int(power_hosts or 0), "vios": int(power_vios or 0), "lpars": int(power_lpar_count or 0)},
             },
         }

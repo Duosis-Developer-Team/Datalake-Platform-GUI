@@ -221,12 +221,14 @@ def _build_summary_tab(data: dict, tr: dict):
     """Summary tab — combined capacity planning view."""
     classic    = data.get("classic", {})
     hyperconv  = data.get("hyperconv", {})
+    intel      = data.get("intel", {})
     power      = data.get("power", {})
     energy     = data.get("energy", {})
 
     # Combined totals
     total_hosts = (classic.get("hosts", 0) + hyperconv.get("hosts", 0) + power.get("hosts", 0))
-    total_vms   = (classic.get("vms", 0) + hyperconv.get("vms", 0) + power.get("lpar_count", 0))
+    # intel.vms = cl_vms + nutanix_vms (cluster-level dedup: no double-count of hyperconv VMs)
+    total_vms   = intel.get("vms", 0) + power.get("lpar_count", 0)
 
     # Total CPU capacity (GHz) across all compute types
     total_cpu_cap  = classic.get("cpu_cap", 0) + hyperconv.get("cpu_cap", 0)

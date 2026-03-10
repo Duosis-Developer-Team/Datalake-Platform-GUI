@@ -197,7 +197,8 @@ class TestAggregatedc(unittest.TestCase):
         intel = result["intel"]
         self.assertEqual(intel["clusters"], 3)
         self.assertEqual(intel["hosts"], 6)  # 4 nutanix + 2 vmware
-        self.assertEqual(intel["vms"], 30)  # 10 nutanix + 20 vmware
+        # No classic_row → cl_vms=0; intel.vms = cl_vms(0) + nutanix_vms(10) = 10
+        self.assertEqual(intel["vms"], 10)
         # Power
         self.assertEqual(result["power"]["hosts"], 2)
         self.assertEqual(result["power"]["vios"], 1)
@@ -1165,6 +1166,104 @@ class TestCustomerClassicHyperconvQueries(unittest.TestCase):
         from src.queries.customer import CUSTOMER_CLASSIC_RESOURCE_TOTALS
         for col in ("cpu_total", "memory_gb", "disk_gb"):
             self.assertIn(col, CUSTOMER_CLASSIC_RESOURCE_TOTALS)
+
+
+# ---------------------------------------------------------------------------
+# Cluster-level VM deduplication — _aggregate_dc
+# ---------------------------------------------------------------------------
+
+class TestClusterLevelVmDedup(unittest.TestCase):
+    """Verifies that intel.vms uses cluster-level dedup (cl_vms + nutanix_vms)
+    instead of naively summing nutanix_vms + vmware_counts[2], which would
+    double-count VMs on Nutanix hardware managed by vCenter."""
+
+    def _call(self, nutanix_vms, vmware_counts_vm_total, classic_row_vms):
+        """Helper: build _aggregate_dc result with controlled VM inputs."""
+        classic_row = (0, classic_row_vms, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        return DatabaseService._aggregate_dc(
+            dc_code="DC11",
+            nutanix_host_count=4,
+            nutanix_vms=nutanix_vms,
+            nutanix_mem=None,
+            nutanix_storage=None,
+            nutanix_cpu=None,
+            vmware_counts=(2, 4, vmware_counts_vm_total),
+            vmware_mem=None,
+            vmware_storage=None,
+            vmware_cpu=None,
+            power_hosts=0,
+            power_vios=0,
+            power_lpar_count=0,
+            power_mem=None,
+            power_cpu=None,
+            ibm_w=0,
+            vcenter_w=0,
+            classic_row=classic_row,
+        )
+
+    def test_intel_vms_equals_classic_plus_nutanix(self):
+        """intel.vms must be cl_vms + nutanix_vms, not nutanix_vms + vmware_total."""
+        # Scenario: 30 Classic KM VMs + 50 Nutanix VMs = 80 unique VMs.
+        # vmware_counts[2]=70 would double-count 40 hyperconv VMs (in both Nutanix and VMware).
+        result = self._call(nutanix_vms=50, vmware_counts_vm_total=70, classic_row_vms=30)
+        self.assertEqual(result["intel"]["vms"], 80)  # 30 classic + 50 nutanix
+
+    def test_intel_vms_no_classic_uses_only_nutanix(self):
+        """When there are no KM clusters (cl_vms=0), intel.vms = nutanix_vms only."""
+        result = self._call(nutanix_vms=25, vmware_counts_vm_total=20, classic_row_vms=0)
+        self.assertEqual(result["intel"]["vms"], 25)
+
+    def test_intel_vms_no_nutanix_uses_only_classic(self):
+        """When there are no Nutanix VMs, intel.vms = cl_vms (Classic KM VMs only)."""
+        result = self._call(nutanix_vms=0, vmware_counts_vm_total=15, classic_row_vms=15)
+        self.assertEqual(result["intel"]["vms"], 15)
+
+    def test_intel_vms_does_not_include_vmware_total(self):
+        """intel.vms must NOT equal nutanix_vms + vmware_counts[2] (old formula)."""
+        result = self._call(nutanix_vms=50, vmware_counts_vm_total=70, classic_row_vms=30)
+        old_formula_result = 50 + 70  # 120 — the double-count value
+        self.assertNotEqual(result["intel"]["vms"], old_formula_result)
+
+    def test_platforms_vmware_vms_is_classic_only(self):
+        """platforms.vmware.vms must equal cl_vms (Classic/KM only), not vmware_counts[2]."""
+        result = self._call(nutanix_vms=50, vmware_counts_vm_total=70, classic_row_vms=30)
+        self.assertEqual(result["platforms"]["vmware"]["vms"], 30)
+
+    def test_platforms_vmware_vms_excludes_hyperconv_overlap(self):
+        """platforms.vmware.vms must NOT include hyperconv VMs (overlap with Nutanix)."""
+        result = self._call(nutanix_vms=50, vmware_counts_vm_total=70, classic_row_vms=30)
+        # If it used vmware_counts[2]=70, it would include ~40 hyperconv VMs (overlap with Nutanix).
+        self.assertLess(result["platforms"]["vmware"]["vms"], 70)
+
+    def test_platforms_nutanix_vms_unchanged(self):
+        """platforms.nutanix.vms must still equal the full nutanix_vms count."""
+        result = self._call(nutanix_vms=50, vmware_counts_vm_total=70, classic_row_vms=30)
+        self.assertEqual(result["platforms"]["nutanix"]["vms"], 50)
+
+    def test_intel_plus_power_equals_dc_card_vm_count(self):
+        """DC card vm_count = intel.vms + power.lpars — verify consistency."""
+        result = DatabaseService._aggregate_dc(
+            dc_code="DC11",
+            nutanix_host_count=4,
+            nutanix_vms=50,
+            nutanix_mem=None,
+            nutanix_storage=None,
+            nutanix_cpu=None,
+            vmware_counts=(2, 4, 70),
+            vmware_mem=None,
+            vmware_storage=None,
+            vmware_cpu=None,
+            power_hosts=2,
+            power_vios=1,
+            power_lpar_count=8,
+            power_mem=None,
+            power_cpu=None,
+            ibm_w=0,
+            vcenter_w=0,
+            classic_row=(0, 30, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        )
+        expected_dc_vm_count = result["intel"]["vms"] + result["power"]["lpar_count"]
+        self.assertEqual(expected_dc_vm_count, 88)  # (30 classic + 50 nutanix) + 8 lpars
 
 
 if __name__ == "__main__":
