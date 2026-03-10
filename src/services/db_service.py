@@ -444,7 +444,9 @@ class DatabaseService:
         cl_stor_used = round(float(classic_row[7] or 0) / 1024.0, 3)
 
         # Hyperconverged compute section — cluster_metrics non-KM (CPU/RAM) + Nutanix (storage)
-        hc_hosts    = int(hyperconv_row[0] or 0)
+        # Hosts are taken from Nutanix node count so Classic/Hyperconverged host
+        # numbers are properly split by cluster type.
+        hc_hosts    = int(nutanix_host_count or 0)
         hc_vms      = int(hyperconv_row[1] or 0)
         hc_cpu_cap  = round(float(hyperconv_row[2] or 0), 2)
         hc_cpu_used = round(float(hyperconv_row[3] or 0), 2)
@@ -1473,8 +1475,15 @@ class DatabaseService:
         t0 = time.perf_counter()
         try:
             tr = default_time_range()
+            # Datacenter-level caches
             self._rebuild_summary(tr)
             self.get_global_overview(tr)
+            # Customer-level cache for Boyner so the Customer tab is instant after startup.
+            try:
+                self.get_customer_resources("Boyner", tr)
+            except Exception as exc:
+                logger.warning("Customer cache warm-up for Boyner failed: %s", exc)
+
             logger.info(
                 "Cache warm-up complete for last 7d in %.2fs.",
                 time.perf_counter() - t0,

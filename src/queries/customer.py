@@ -425,7 +425,7 @@ FROM latest_lpar_stats
 CUSTOMER_POWER_MEMORY_TOTAL = """
 WITH latest_lpar_stats AS (
     SELECT DISTINCT ON (lparname)
-        lpar_memory_logicalmem / 1.048576 AS lpar_memory_logicalmem
+        lpar_memory_logicalmem / 1024.0 AS lpar_memory_logicalmem
     FROM public.ibm_lpar_general
     WHERE lparname ILIKE %s AND time BETWEEN %s AND %s
     ORDER BY lparname, time DESC
@@ -453,7 +453,7 @@ WITH latest_lpar AS (
     SELECT DISTINCT ON (lparname)
         lparname,
         lpar_processor_currentvirtualprocessors,
-        lpar_memory_logicalmem / 1.048576 AS memory_gb,
+        lpar_memory_logicalmem / 1024.0 AS memory_gb,
         lpar_details_state
     FROM public.ibm_lpar_general
     WHERE lparname ILIKE %s AND time BETWEEN %s AND %s

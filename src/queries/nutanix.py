@@ -27,26 +27,47 @@ FROM (
 
 MEMORY = """
 SELECT
-    AVG(total_memory_capacity),
-    AVG(((memory_usage_avg / 1000) * total_memory_capacity) / 1000)
-FROM public.nutanix_cluster_metrics
-WHERE cluster_name LIKE ('%%' || %s || '%%') AND collection_time BETWEEN %s AND %s
+    COALESCE(SUM(total_memory_capacity), 0) AS total_memory_capacity,
+    COALESCE(SUM(used_memory), 0) AS used_memory
+FROM (
+    SELECT DISTINCT ON (cluster_name)
+        cluster_name,
+        total_memory_capacity,
+        ((memory_usage_avg / 1000.0) * total_memory_capacity) / 1000.0 AS used_memory
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%') AND collection_time BETWEEN %s AND %s
+    ORDER BY cluster_name, collection_time DESC
+) latest
 """
 
 STORAGE = """
 SELECT
-    AVG(storage_capacity / 2),
-    AVG(storage_usage / 2)
-FROM public.nutanix_cluster_metrics
-WHERE cluster_name LIKE ('%%' || %s || '%%') AND collection_time BETWEEN %s AND %s
+    COALESCE(SUM(storage_capacity) / 2, 0) AS storage_capacity,
+    COALESCE(SUM(storage_usage) / 2, 0) AS storage_usage
+FROM (
+    SELECT DISTINCT ON (cluster_name)
+        cluster_name,
+        storage_capacity,
+        storage_usage
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%') AND collection_time BETWEEN %s AND %s
+    ORDER BY cluster_name, collection_time DESC
+) latest
 """
 
 CPU = """
 SELECT
-    AVG(total_cpu_capacity),
-    AVG((cpu_usage_avg * total_cpu_capacity) / 1000000)
-FROM public.nutanix_cluster_metrics
-WHERE cluster_name LIKE ('%%' || %s || '%%') AND collection_time BETWEEN %s AND %s
+    COALESCE(SUM(total_cpu_capacity), 0) AS total_cpu_capacity,
+    COALESCE(SUM(cpu_used), 0) AS cpu_used
+FROM (
+    SELECT DISTINCT ON (cluster_name)
+        cluster_name,
+        total_cpu_capacity,
+        (cpu_usage_avg * total_cpu_capacity) / 1000000.0 AS cpu_used
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%') AND collection_time BETWEEN %s AND %s
+    ORDER BY cluster_name, collection_time DESC
+) latest
 """
 
 # --- Batch queries (params: dc_list, pattern_list, start_ts, end_ts) ---
@@ -80,15 +101,15 @@ WITH matched AS (
         ON n.cluster_name LIKE u.pattern
     WHERE n.collection_time BETWEEN %s AND %s
 ),
-one_dc_per_row AS (
-    SELECT DISTINCT ON (cluster_name, collection_time) dc_code, total_memory_capacity, used_memory
+latest AS (
+    SELECT DISTINCT ON (cluster_name) dc_code, total_memory_capacity, used_memory
     FROM matched
-    ORDER BY cluster_name, collection_time, ord
+    ORDER BY cluster_name, ord, collection_time DESC
 )
 SELECT dc_code,
-    AVG(total_memory_capacity) AS total_memory_capacity,
-    AVG(used_memory) AS used_memory
-FROM one_dc_per_row
+    COALESCE(SUM(total_memory_capacity), 0) AS total_memory_capacity,
+    COALESCE(SUM(used_memory), 0) AS used_memory
+FROM latest
 GROUP BY dc_code
 """
 
@@ -129,17 +150,17 @@ WITH matched AS (
         ON n.cluster_name LIKE u.pattern
     WHERE n.collection_time BETWEEN %s AND %s
 ),
-one_dc_per_row AS (
-    SELECT DISTINCT ON (cluster_name, collection_time) dc_code,
+latest AS (
+    SELECT DISTINCT ON (cluster_name) dc_code,
         total_cpu_capacity,
         (cpu_usage_avg * total_cpu_capacity) / 1000000.0 AS cpu_used
     FROM matched
-    ORDER BY cluster_name, collection_time, ord
+    ORDER BY cluster_name, ord, collection_time DESC
 )
 SELECT dc_code,
-    AVG(total_cpu_capacity) AS total_cpu_capacity,
-    AVG(cpu_used) AS cpu_used
-FROM one_dc_per_row
+    COALESCE(SUM(total_cpu_capacity), 0) AS total_cpu_capacity,
+    COALESCE(SUM(cpu_used), 0) AS cpu_used
+FROM latest
 GROUP BY dc_code
 """
 

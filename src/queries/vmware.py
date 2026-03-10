@@ -30,27 +30,54 @@ FROM latest_per_hypervisor
 """
 
 MEMORY = """
+WITH latest_per_hypervisor AS (
+    SELECT DISTINCT ON (dc, datacenter)
+        dc,
+        datacenter,
+        total_memory_capacity_gb * 1024 * 1024 * 1024 AS mem_cap,
+        total_memory_used_gb * 1024 * 1024 * 1024 AS mem_used
+    FROM public.datacenter_metrics
+    WHERE datacenter ILIKE ('%%' || %s || '%%') AND timestamp BETWEEN %s AND %s
+    ORDER BY dc, datacenter, timestamp DESC
+)
 SELECT
-    AVG(total_memory_capacity_gb) * 1024 * 1024 * 1024,
-    AVG(total_memory_used_gb) * 1024 * 1024 * 1024
-FROM public.datacenter_metrics
-WHERE datacenter ILIKE ('%%' || %s || '%%') AND timestamp BETWEEN %s AND %s
+    COALESCE(SUM(mem_cap), 0),
+    COALESCE(SUM(mem_used), 0)
+FROM latest_per_hypervisor
 """
 
 STORAGE = """
+WITH latest_per_hypervisor AS (
+    SELECT DISTINCT ON (dc, datacenter)
+        dc,
+        datacenter,
+        total_storage_capacity_gb * (1024 * 1024) AS stor_cap,
+        total_used_storage_gb * (1024 * 1024) AS stor_used
+    FROM public.datacenter_metrics
+    WHERE datacenter ILIKE ('%%' || %s || '%%') AND timestamp BETWEEN %s AND %s
+    ORDER BY dc, datacenter, timestamp DESC
+)
 SELECT
-    AVG(total_storage_capacity_gb) * (1024 * 1024),
-    AVG(total_used_storage_gb) * (1024 * 1024)
-FROM public.datacenter_metrics
-WHERE datacenter ILIKE ('%%' || %s || '%%') AND timestamp BETWEEN %s AND %s
+    COALESCE(SUM(stor_cap), 0),
+    COALESCE(SUM(stor_used), 0)
+FROM latest_per_hypervisor
 """
 
 CPU = """
+WITH latest_per_hypervisor AS (
+    SELECT DISTINCT ON (dc, datacenter)
+        dc,
+        datacenter,
+        total_cpu_ghz_capacity * 1000000000 AS cpu_cap,
+        total_cpu_ghz_used * 1000000000 AS cpu_used
+    FROM public.datacenter_metrics
+    WHERE datacenter ILIKE ('%%' || %s || '%%') AND timestamp BETWEEN %s AND %s
+    ORDER BY dc, datacenter, timestamp DESC
+)
 SELECT
-    AVG(total_cpu_ghz_capacity) * 1000000000,
-    AVG(total_cpu_ghz_used) * 1000000000
-FROM public.datacenter_metrics
-WHERE datacenter ILIKE ('%%' || %s || '%%') AND timestamp BETWEEN %s AND %s
+    COALESCE(SUM(cpu_cap), 0),
+    COALESCE(SUM(cpu_used), 0)
+FROM latest_per_hypervisor
 """
 
 # --- Batch queries (params: dc_list, pattern_list, start_ts, end_ts) ---
@@ -86,17 +113,18 @@ WITH matched AS (
         ON d.datacenter ILIKE u.pattern
     WHERE d.timestamp BETWEEN %s AND %s
 ),
-one_dc_per_row AS (
-    SELECT DISTINCT ON (datacenter, timestamp) dc_code,
+latest_per_hypervisor AS (
+    SELECT DISTINCT ON (dc_code, datacenter)
+        dc_code,
         total_memory_capacity_gb * 1024 * 1024 * 1024 AS mem_cap,
         total_memory_used_gb * 1024 * 1024 * 1024 AS mem_used
     FROM matched
-    ORDER BY datacenter, timestamp, ord
+    ORDER BY dc_code, datacenter, ord, timestamp DESC
 )
 SELECT dc_code,
-    AVG(mem_cap) AS mem_cap,
-    AVG(mem_used) AS mem_used
-FROM one_dc_per_row
+    COALESCE(SUM(mem_cap), 0) AS mem_cap,
+    COALESCE(SUM(mem_used), 0) AS mem_used
+FROM latest_per_hypervisor
 GROUP BY dc_code
 """
 
@@ -108,17 +136,18 @@ WITH matched AS (
         ON d.datacenter ILIKE u.pattern
     WHERE d.timestamp BETWEEN %s AND %s
 ),
-one_dc_per_row AS (
-    SELECT DISTINCT ON (datacenter, timestamp) dc_code,
+latest_per_hypervisor AS (
+    SELECT DISTINCT ON (dc_code, datacenter)
+        dc_code,
         total_storage_capacity_gb * (1024 * 1024) AS stor_cap,
         total_used_storage_gb * (1024 * 1024) AS stor_used
     FROM matched
-    ORDER BY datacenter, timestamp, ord
+    ORDER BY dc_code, datacenter, ord, timestamp DESC
 )
 SELECT dc_code,
-    AVG(stor_cap) AS stor_cap,
-    AVG(stor_used) AS stor_used
-FROM one_dc_per_row
+    COALESCE(SUM(stor_cap), 0) AS stor_cap,
+    COALESCE(SUM(stor_used), 0) AS stor_used
+FROM latest_per_hypervisor
 GROUP BY dc_code
 """
 
@@ -130,17 +159,18 @@ WITH matched AS (
         ON d.datacenter ILIKE u.pattern
     WHERE d.timestamp BETWEEN %s AND %s
 ),
-one_dc_per_row AS (
-    SELECT DISTINCT ON (datacenter, timestamp) dc_code,
+latest_per_hypervisor AS (
+    SELECT DISTINCT ON (dc_code, datacenter)
+        dc_code,
         total_cpu_ghz_capacity * 1000000000 AS cpu_cap,
         total_cpu_ghz_used * 1000000000 AS cpu_used
     FROM matched
-    ORDER BY datacenter, timestamp, ord
+    ORDER BY dc_code, datacenter, ord, timestamp DESC
 )
 SELECT dc_code,
-    AVG(cpu_cap) AS cpu_cap,
-    AVG(cpu_used) AS cpu_used
-FROM one_dc_per_row
+    COALESCE(SUM(cpu_cap), 0) AS cpu_cap,
+    COALESCE(SUM(cpu_used), 0) AS cpu_used
+FROM latest_per_hypervisor
 GROUP BY dc_code
 """
 
