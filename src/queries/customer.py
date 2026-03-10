@@ -1,7 +1,14 @@
-# Customer (tenant) SQL query definitions
-# Filter by VM/Host naming pattern (e.g. ILIKE '%boyner%')
-# Sources: nutanix_cluster_metrics, datacenter_metrics, ibm_lpar_general, ibm_vios_general, ibm_server_general, vmhost_metrics
-# VM counts use VM-level deduplication (vm_metrics + nutanix_vm_metrics) so VMs present in both platforms are counted once.
+# Customer (tenant) SQL query definitions.
+# Filter by VM/Host naming pattern (e.g. ILIKE '%boyner%').
+# Sources: vm_metrics, nutanix_vm_metrics, ibm_lpar_general, ibm_vios_general, ibm_server_general.
+#
+# Compute type split (vm_metrics.cluster field):
+#   Classic Compute      — vm_metrics WHERE cluster ILIKE '%KM%'
+#   Hyperconverged       — vm_metrics WHERE cluster NOT ILIKE '%KM%'  +  nutanix_vm_metrics (Acropolis)
+#   Power/SAP Compute    — ibm_lpar_general
+#
+# VM counts use VM-level deduplication (vm_metrics + nutanix_vm_metrics)
+# so VMs present in both platforms are counted exactly once.
 
 # --- VM-level deduplication (correct totals: no double-count of VMs in both VMware and Nutanix) ---
 # Params: (pattern, start_ts, end_ts, pattern, start_ts, end_ts)
@@ -418,7 +425,7 @@ FROM latest_lpar_stats
 CUSTOMER_POWER_MEMORY_TOTAL = """
 WITH latest_lpar_stats AS (
     SELECT DISTINCT ON (lparname)
-        lpar_memory_logicalmem / 1.048576 AS lpar_memory_logicalmem
+        lpar_memory_logicalmem / 1024.0 AS lpar_memory_logicalmem
     FROM public.ibm_lpar_general
     WHERE lparname ILIKE %s AND time BETWEEN %s AND %s
     ORDER BY lparname, time DESC
@@ -446,7 +453,7 @@ WITH latest_lpar AS (
     SELECT DISTINCT ON (lparname)
         lparname,
         lpar_processor_currentvirtualprocessors,
-        lpar_memory_logicalmem / 1.048576 AS memory_gb,
+        lpar_memory_logicalmem / 1024.0 AS memory_gb,
         lpar_details_state
     FROM public.ibm_lpar_general
     WHERE lparname ILIKE %s AND time BETWEEN %s AND %s
@@ -585,4 +592,188 @@ SELECT
     COALESCE(provisioned_storage_mb / 1024.0, 0) AS "Provisioned Storage (GiB)"
 FROM latest
 ORDER BY name
+"""
+
+# =============================================================================
+# Classic Compute — VMs on KM clusters (vm_metrics.cluster ILIKE '%KM%')
+# =============================================================================
+
+# Classic VM count
+# Params: (vm_pattern, start_ts, end_ts)
+CUSTOMER_CLASSIC_VM_COUNT = """
+SELECT COUNT(DISTINCT vmname) AS vm_count
+FROM public.vm_metrics
+WHERE vmname ILIKE %s
+  AND cluster ILIKE '%%KM%%'
+  AND timestamp BETWEEN %s AND %s
+"""
+
+# Classic VM resource totals (CPU cores, memory GB, disk GB)
+# Params: (vm_pattern, start_ts, end_ts)
+CUSTOMER_CLASSIC_RESOURCE_TOTALS = """
+WITH latest AS (
+    SELECT DISTINCT ON (vmname)
+        vmname,
+        number_of_cpus,
+        total_memory_capacity_gb,
+        provisioned_space_gb
+    FROM public.vm_metrics
+    WHERE vmname ILIKE %s
+      AND cluster ILIKE '%%KM%%'
+      AND timestamp BETWEEN %s AND %s
+    ORDER BY vmname, timestamp DESC
+)
+SELECT
+    COALESCE(SUM(number_of_cpus), 0)          AS cpu_total,
+    COALESCE(SUM(total_memory_capacity_gb), 0) AS memory_gb,
+    COALESCE(SUM(provisioned_space_gb), 0)     AS disk_gb
+FROM latest
+"""
+
+# Classic VM detail list for billing
+# Params: (vm_pattern, start_ts, end_ts)
+CUSTOMER_CLASSIC_VM_LIST = """
+WITH latest AS (
+    SELECT DISTINCT ON (vmname)
+        vmname,
+        cluster,
+        number_of_cpus,
+        total_memory_capacity_gb,
+        provisioned_space_gb
+    FROM public.vm_metrics
+    WHERE vmname ILIKE %s
+      AND cluster ILIKE '%%KM%%'
+      AND timestamp BETWEEN %s AND %s
+    ORDER BY vmname, timestamp DESC
+)
+SELECT
+    vmname           AS "VM Name",
+    'Classic'        AS "Source",
+    cluster          AS "Cluster",
+    COALESCE(number_of_cpus, 0)           AS "CPU",
+    COALESCE(total_memory_capacity_gb, 0) AS "Memory (GB)",
+    COALESCE(provisioned_space_gb, 0)     AS "Disk (GB)"
+FROM latest
+ORDER BY vmname
+"""
+
+# =============================================================================
+# Hyperconverged Compute — VMs on non-KM VMware clusters + Nutanix Acropolis
+# =============================================================================
+
+# Hyperconverged VM count (VMware non-KM + Nutanix, deduplicated)
+# Params: (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts)
+CUSTOMER_HYPERCONV_VM_COUNT = """
+WITH vmware_vms AS (
+    SELECT DISTINCT vmname
+    FROM public.vm_metrics
+    WHERE vmname ILIKE %s
+      AND cluster NOT ILIKE '%%KM%%'
+      AND timestamp BETWEEN %s AND %s
+),
+nutanix_vms AS (
+    SELECT DISTINCT vm_name
+    FROM public.nutanix_vm_metrics
+    WHERE vm_name ILIKE %s AND collection_time BETWEEN %s AND %s
+)
+SELECT
+    (SELECT COUNT(*) FROM vmware_vms v
+     WHERE NOT EXISTS (SELECT 1 FROM nutanix_vms n WHERE n.vm_name = v.vmname)) AS vmware_only,
+    (SELECT COUNT(*) FROM nutanix_vms)                                          AS nutanix_total,
+    (SELECT COUNT(*) FROM (
+        SELECT vmname AS vm_name FROM vmware_vms
+        UNION
+        SELECT vm_name FROM nutanix_vms
+    ) all_unique)                                                                AS total
+"""
+
+# Hyperconverged VM resource totals (CPU / memory / disk, deduplicated)
+# Params: (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts)
+CUSTOMER_HYPERCONV_RESOURCE_TOTALS = """
+WITH vmware_latest AS (
+    SELECT DISTINCT ON (vmname)
+        vmname,
+        number_of_cpus,
+        total_memory_capacity_gb,
+        provisioned_space_gb
+    FROM public.vm_metrics
+    WHERE vmname ILIKE %s
+      AND cluster NOT ILIKE '%%KM%%'
+      AND timestamp BETWEEN %s AND %s
+    ORDER BY vmname, timestamp DESC
+),
+nutanix_latest AS (
+    SELECT DISTINCT ON (vm_name)
+        vm_name,
+        cpu_count,
+        (memory_capacity / 1024.0 / 1024.0 / 1024.0) AS memory_gb,
+        (disk_capacity  / 1024.0 / 1024.0 / 1024.0) AS disk_gb
+    FROM public.nutanix_vm_metrics
+    WHERE vm_name ILIKE %s AND collection_time BETWEEN %s AND %s
+    ORDER BY vm_name, collection_time DESC
+)
+SELECT
+    (
+        (SELECT COALESCE(SUM(v.number_of_cpus), 0) FROM vmware_latest v
+         WHERE NOT EXISTS (SELECT 1 FROM nutanix_latest n WHERE n.vm_name = v.vmname))
+        + (SELECT COALESCE(SUM(n.cpu_count), 0) FROM nutanix_latest n)
+    ) AS cpu_total,
+    (
+        (SELECT COALESCE(SUM(v.total_memory_capacity_gb), 0) FROM vmware_latest v
+         WHERE NOT EXISTS (SELECT 1 FROM nutanix_latest n WHERE n.vm_name = v.vmname))
+        + (SELECT COALESCE(SUM(n.memory_gb), 0) FROM nutanix_latest n)
+    ) AS memory_gb,
+    (
+        (SELECT COALESCE(SUM(v.provisioned_space_gb), 0) FROM vmware_latest v
+         WHERE NOT EXISTS (SELECT 1 FROM nutanix_latest n WHERE n.vm_name = v.vmname))
+        + (SELECT COALESCE(SUM(n.disk_gb), 0) FROM nutanix_latest n)
+    ) AS disk_gb
+"""
+
+# Hyperconverged VM detail list for billing (VMware non-KM + Nutanix, deduplicated)
+# Params: (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts)
+CUSTOMER_HYPERCONV_VM_LIST = """
+WITH vmware_latest AS (
+    SELECT DISTINCT ON (vmname)
+        vmname,
+        cluster,
+        number_of_cpus,
+        total_memory_capacity_gb,
+        provisioned_space_gb
+    FROM public.vm_metrics
+    WHERE vmname ILIKE %s
+      AND cluster NOT ILIKE '%%KM%%'
+      AND timestamp BETWEEN %s AND %s
+    ORDER BY vmname, timestamp DESC
+),
+nutanix_latest AS (
+    SELECT DISTINCT ON (vm_name)
+        vm_name,
+        cpu_count,
+        (memory_capacity / 1024.0 / 1024.0 / 1024.0) AS memory_gb,
+        (disk_capacity  / 1024.0 / 1024.0 / 1024.0) AS disk_gb
+    FROM public.nutanix_vm_metrics
+    WHERE vm_name ILIKE %s AND collection_time BETWEEN %s AND %s
+    ORDER BY vm_name, collection_time DESC
+),
+all_unique AS (
+    SELECT vmname AS vm_name FROM vmware_latest
+    UNION
+    SELECT vm_name FROM nutanix_latest
+)
+SELECT
+    u.vm_name AS "VM Name",
+    CASE
+        WHEN v.vmname IS NOT NULL AND n.vm_name IS NOT NULL THEN 'Nutanix (VMware Managed)'
+        WHEN v.vmname IS NOT NULL                           THEN 'VMware'
+        ELSE 'Nutanix'
+    END AS "Source",
+    COALESCE(v.cluster, 'Nutanix') AS "Cluster",
+    COALESCE(v.number_of_cpus, n.cpu_count, 0)           AS "CPU",
+    COALESCE(v.total_memory_capacity_gb, n.memory_gb, 0) AS "Memory (GB)",
+    COALESCE(v.provisioned_space_gb, n.disk_gb, 0)       AS "Disk (GB)"
+FROM all_unique u
+LEFT JOIN vmware_latest v ON v.vmname = u.vm_name
+LEFT JOIN nutanix_latest n ON n.vm_name = u.vm_name
+ORDER BY "Source", "VM Name"
 """
