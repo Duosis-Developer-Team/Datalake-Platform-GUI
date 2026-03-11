@@ -9,6 +9,7 @@ from src.utils.time_range import default_time_range
 from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_float
 from src.components.charts import create_usage_donut_chart, create_gauge_chart
 from src.components.header import create_detail_header
+from src.components.s3_panel import build_dc_s3_panel
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +370,10 @@ def build_dc_view(dc_id, time_range=None):
     tr   = time_range or default_time_range()
     data = service.get_dc_details(dc_id, tr)
 
+    # S3 pool metrics (may be empty for DCs without S3 pools)
+    s3_data = service.get_dc_s3_pools(dc_id, tr)
+    has_s3 = bool(s3_data.get("pools"))
+
     dc_name = data["meta"]["name"]
     dc_loc  = data["meta"]["location"]
 
@@ -398,6 +403,7 @@ def build_dc_view(dc_id, time_range=None):
                             dmc.TabsTab("Summary",          value="summary"),
                             dmc.TabsTab("Virtualization",   value="virt"),
                             dmc.TabsTab("Backup",           value="backup"),
+                            dmc.TabsTab("S3 Object Storage", value="s3") if has_s3 else None,
                         ],
                     ),
                 ),
@@ -476,6 +482,16 @@ def build_dc_view(dc_id, time_range=None):
                         ],
                     ),
                 ),
+
+                # ── S3 Object Storage ───────────────────────────────────────
+                dmc.TabsPanel(
+                    value="s3",
+                    children=html.Div(
+                        id="s3-dc-metrics-panel",
+                        style={"padding": "0 30px", "marginTop": "16px"},
+                        children=build_dc_s3_panel(dc_name, s3_data, tr, None) if has_s3 else html.Div(),
+                    ),
+                ) if has_s3 else None,
             ],
         )
     ])

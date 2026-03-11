@@ -113,6 +113,34 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
     except Exception as exc:
         logger.warning("Failed to schedule Boyner customer cache refresh: %s", exc)
 
+    # Step 6: warm S3 cache once in the background (default range) so first S3 visits are fast.
+    try:
+        scheduler.add_job(
+            func=db_service.warm_s3_cache,
+            trigger=DateTrigger(run_date=datetime.now()),
+            id="s3_initial_warm",
+            name="Initial S3 cache warm-up (default range)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled initial S3 cache warm-up for default range.")
+    except Exception as exc:
+        logger.warning("Failed to schedule initial S3 cache warm-up: %s", exc)
+
+    # Step 7: schedule periodic S3 cache refresh (every 30 minutes, write-through pattern).
+    try:
+        scheduler.add_job(
+            func=db_service.refresh_s3_cache,
+            trigger=IntervalTrigger(minutes=30),
+            id="s3_refresh",
+            name="S3 cache refresh (30 minutes)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled S3 cache refresh every 30 minutes.")
+    except Exception as exc:
+        logger.warning("Failed to schedule S3 cache refresh: %s", exc)
+
     # Step 5: clean shutdown on process exit
     atexit.register(lambda: _stop(scheduler))
 

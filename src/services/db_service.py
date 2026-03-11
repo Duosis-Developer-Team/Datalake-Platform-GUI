@@ -11,7 +11,7 @@ from psycopg2 import OperationalError
 from psycopg2.pool import PoolError
 
 from src.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
-from src.queries import loki as lq, customer as cq
+from src.queries import loki as lq, customer as cq, s3 as s3q
 from src.services import cache_service as cache
 from src.services import query_overrides as qo
 from src.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
@@ -41,6 +41,28 @@ DC_LOCATIONS: dict[str, str] = {
     "ICT11": "İngiltere",
     "UZ11": "Özbekistan",
 }
+
+
+def _s3_trend_interval_hours(start_ts, end_ts) -> int:
+    """
+    Decide S3 trend bucketing interval in hours based on report length.
+
+    Rules:
+        1 day   → 1 hour
+        7 days  → 6 hours
+        30 days → 12 hours
+        > 30d   → 24 hours (1 day)
+    """
+    if not start_ts or not end_ts:
+        return 6
+    delta_days = (end_ts.date() - start_ts.date()).days
+    if delta_days <= 1:
+        return 1
+    if delta_days <= 7:
+        return 6
+    if delta_days <= 30:
+        return 12
+    return 24
 
 
 def _empty_compute_section() -> dict:
@@ -1469,6 +1491,225 @@ class DatabaseService:
         cache.set(cache_key, result)
         return result
 
+    # ------------------------------------------------------------------
+    # S3 (IBM iCOS) helpers — DC pools & customer vaults
+    # ------------------------------------------------------------------
+
+    def _fetch_dc_s3_pools(self, dc_code: str, start_ts, end_ts) -> dict:
+        """
+        Fetch raw S3 pool metrics for a single DC directly from the database.
+
+        Returns a dict with:
+            {
+              "pools": [pool_name, ...],
+              "latest": {pool_name: {...}},
+              "growth": {pool_name: {...}},
+              "trend": [{"bucket": ts, "pool": name, "usable_bytes": x, "used_bytes": y}, ...],
+            }
+        """
+        pattern = f"%{dc_code}%" if dc_code else "%"
+
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                pool_rows = self._run_rows(
+                    cur,
+                    s3q.POOL_LIST,
+                    (pattern, start_ts, end_ts),
+                )
+                pools = [r[0] for r in (pool_rows or []) if r and r[0]]
+                if not pools:
+                    return {"pools": [], "latest": {}, "growth": {}, "trend": []}
+
+                # Latest snapshot per pool
+                latest_rows = self._run_rows(
+                    cur,
+                    s3q.POOL_LATEST,
+                    (pools, start_ts, end_ts),
+                )
+                latest: dict[str, dict] = {}
+                for r in latest_rows or []:
+                    name, usable, used, ts = r
+                    if not name:
+                        continue
+                    latest[name] = {
+                        "usable_bytes": int(usable or 0),
+                        "used_bytes": int(used or 0),
+                        "timestamp": ts,
+                    }
+
+                # First/last snapshot for growth
+                growth_rows = self._run_rows(
+                    cur,
+                    s3q.POOL_FIRST_LAST,
+                    (pools, start_ts, end_ts),
+                )
+                growth: dict[str, dict] = {}
+                for r in growth_rows or []:
+                    name, first_used, last_used, first_ts, last_ts = r
+                    if not name:
+                        continue
+                    first_used_val = int(first_used or 0)
+                    last_used_val = int(last_used or 0)
+                    growth[name] = {
+                        "first_used_bytes": first_used_val,
+                        "last_used_bytes": last_used_val,
+                        "delta_used_bytes": last_used_val - first_used_val,
+                        "first_timestamp": first_ts,
+                        "last_timestamp": last_ts,
+                    }
+
+                # Trend series (bucketed)
+                interval_hours = _s3_trend_interval_hours(start_ts, end_ts)
+                trend_sql = s3q.POOL_TREND_TEMPLATE.format(interval_hours=interval_hours)
+                trend_rows = self._run_rows(
+                    cur,
+                    trend_sql,
+                    (pools, start_ts, end_ts),
+                )
+                trend = [
+                    {
+                        "bucket": bucket,
+                        "pool": name,
+                        "usable_bytes": int(usable or 0),
+                        "used_bytes": int(used or 0),
+                    }
+                    for (bucket, name, usable, used) in (trend_rows or [])
+                    if name and bucket
+                ]
+
+        return {
+            "pools": pools,
+            "latest": latest,
+            "growth": growth,
+            "trend": trend,
+        }
+
+    def get_dc_s3_pools(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """Return cached S3 pool metrics for a DC and time range."""
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        cache_key = f"dc_s3_pools:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            result = self._fetch_dc_s3_pools(dc_code, start_ts, end_ts)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_dc_s3_pools failed for %s: %s", dc_code, exc)
+            return {"pools": [], "latest": {}, "growth": {}, "trend": []}
+
+        cache.set(cache_key, result)
+        return result
+
+    def _fetch_customer_s3_vaults(self, customer_name: str, start_ts, end_ts) -> dict:
+        """
+        Fetch raw S3 vault metrics for a customer directly from the database.
+
+        Returns a dict with:
+            {
+              "vaults": [vault_name, ...],
+              "latest": {vault_name: {...}},
+              "growth": {vault_name: {...}},
+              "trend": [{"bucket": ts, "vault": name, "used_bytes": x, "hard_quota_bytes": y}, ...],
+            }
+        """
+        name = (customer_name or "").strip()
+        pattern = f"%{name}%" if name else "%"
+
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                vault_rows = self._run_rows(
+                    cur,
+                    s3q.VAULT_LIST,
+                    (pattern, start_ts, end_ts),
+                )
+                vaults = [r[0] for r in (vault_rows or []) if r and r[0]]
+                if not vaults:
+                    return {"vaults": [], "latest": {}, "growth": {}, "trend": []}
+
+                latest_rows = self._run_rows(
+                    cur,
+                    s3q.VAULT_LATEST,
+                    (vaults, start_ts, end_ts),
+                )
+                latest: dict[str, dict] = {}
+                for r in latest_rows or []:
+                    vault_id, name_val, hard_quota, used, ts = r
+                    if not name_val:
+                        continue
+                    latest[name_val] = {
+                        "vault_id": int(vault_id or 0),
+                        "hard_quota_bytes": int(hard_quota or 0),
+                        "used_bytes": int(used or 0),
+                        "timestamp": ts,
+                    }
+
+                growth_rows = self._run_rows(
+                    cur,
+                    s3q.VAULT_FIRST_LAST,
+                    (vaults, start_ts, end_ts),
+                )
+                growth: dict[str, dict] = {}
+                for r in growth_rows or []:
+                    vault_id, name_val, first_used, last_used, first_ts, last_ts, hard_quota = r
+                    if not name_val:
+                        continue
+                    first_used_val = int(first_used or 0)
+                    last_used_val = int(last_used or 0)
+                    growth[name_val] = {
+                        "vault_id": int(vault_id or 0),
+                        "first_used_bytes": first_used_val,
+                        "last_used_bytes": last_used_val,
+                        "delta_used_bytes": last_used_val - first_used_val,
+                        "first_timestamp": first_ts,
+                        "last_timestamp": last_ts,
+                        "hard_quota_bytes": int(hard_quota or 0),
+                    }
+
+                interval_hours = _s3_trend_interval_hours(start_ts, end_ts)
+                trend_sql = s3q.VAULT_TREND_TEMPLATE.format(interval_hours=interval_hours)
+                trend_rows = self._run_rows(
+                    cur,
+                    trend_sql,
+                    (vaults, start_ts, end_ts),
+                )
+                trend = [
+                    {
+                        "bucket": bucket,
+                        "vault": name_val,
+                        "used_bytes": int(used or 0),
+                        "hard_quota_bytes": int(quota or 0),
+                    }
+                    for (bucket, name_val, used, quota) in (trend_rows or [])
+                    if name_val and bucket
+                ]
+
+        return {
+            "vaults": vaults,
+            "latest": latest,
+            "growth": growth,
+            "trend": trend,
+        }
+
+    def get_customer_s3_vaults(self, customer_name: str, time_range: dict | None = None) -> dict:
+        """Return cached S3 vault metrics for a customer and time range."""
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        cache_key = f"customer_s3:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            result = self._fetch_customer_s3_vaults(customer_name, start_ts, end_ts)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_customer_s3_vaults failed for %s: %s", customer_name, exc)
+            return {"vaults": [], "latest": {}, "growth": {}, "trend": []}
+
+        cache.set(cache_key, result)
+        return result
+
     def get_customer_list(self) -> list[str]:
         """Return list of customer names for selector (fixed to Boyner)."""
         return ["Boyner"]
@@ -1520,6 +1761,36 @@ class DatabaseService:
         except Exception as exc:
             logger.warning("Additional cache warm-up failed: %s", exc)
 
+    def warm_s3_cache(self) -> None:
+        """
+        Warm S3 (pool/vault) cache for the default reporting range.
+
+        This is triggered once in the background after startup so that S3 panels
+        open quickly when first visited.
+        """
+        logger.info("Warming S3 cache for default time range…")
+        try:
+            tr = default_time_range()
+            start_ts, end_ts = time_range_to_bounds(tr)
+            for dc_code in self.dc_list:
+                try:
+                    key = f"dc_s3_pools:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+                    data = self._fetch_dc_s3_pools(dc_code, start_ts, end_ts)
+                    cache.set(key, data)
+                except Exception as exc:
+                    logger.warning("warm_s3_cache failed for DC %s: %s", dc_code, exc)
+
+            try:
+                key_c = f"customer_s3:Boyner:{tr.get('start','')}:{tr.get('end','')}"
+                data_c = self._fetch_customer_s3_vaults("Boyner", start_ts, end_ts)
+                cache.set(key_c, data_c)
+            except Exception as exc:
+                logger.warning("warm_s3_cache failed for customer Boyner: %s", exc)
+
+            logger.info("S3 cache warm-up complete for default range.")
+        except Exception as exc:
+            logger.warning("S3 cache warm-up failed: %s", exc)
+
     def refresh_all_data(self) -> None:
         """
         Called by the background scheduler every 15 minutes.
@@ -1534,6 +1805,38 @@ class DatabaseService:
             logger.info("Background cache refresh complete.")
         except Exception as exc:
             logger.error("Background cache refresh failed: %s", exc)
+
+    def refresh_s3_cache(self) -> None:
+        """
+        Refresh S3 (pool/vault) cache for the standard reporting ranges.
+
+        This is called by the background scheduler every 30 minutes. Cache entries
+        are updated in place: existing cached values remain valid until new data
+        has been fetched and written, so UI panels never see an empty gap.
+        """
+        logger.info("Background S3 cache refresh started.")
+        try:
+            for tr in cache_time_ranges():
+                start_ts, end_ts = time_range_to_bounds(tr)
+                for dc_code in self.dc_list:
+                    try:
+                        key = f"dc_s3_pools:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+                        data = self._fetch_dc_s3_pools(dc_code, start_ts, end_ts)
+                        cache.set(key, data)
+                    except Exception as exc:
+                        logger.warning("refresh_s3_cache failed for DC %s: %s", dc_code, exc)
+
+                # For now, customer S3 is implemented for Boyner only, aligned with customer view.
+                try:
+                    key_c = f"customer_s3:Boyner:{tr.get('start','')}:{tr.get('end','')}"
+                    data_c = self._fetch_customer_s3_vaults("Boyner", start_ts, end_ts)
+                    cache.set(key_c, data_c)
+                except Exception as exc:
+                    logger.warning("refresh_s3_cache failed for customer Boyner: %s", exc)
+
+            logger.info("Background S3 cache refresh complete.")
+        except Exception as exc:
+            logger.error("Background S3 cache refresh failed: %s", exc)
 
     @property
     def dc_list(self) -> list[str]:

@@ -16,6 +16,7 @@ from src.components.sidebar import create_sidebar_nav
 from src.services.shared import service
 from src.services.scheduler_service import start_scheduler
 from src.utils.time_range import default_time_range, preset_to_range
+from src.components.s3_panel import build_dc_s3_panel, build_customer_s3_panel
 
 _dash_renderer._set_react_version("18.2.0")
 
@@ -261,7 +262,53 @@ def render_main_content(pathname, time_range, selected_customer):
     return home.build_overview(tr)
 
 
-# 5. Start background cache scheduler
+# 5. S3 DC panel: reacts to pool selection and time range.
+@app.callback(
+    dash.Output("s3-dc-metrics-panel", "children"),
+    dash.Input("s3-dc-pool-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_s3_dc_panel(selected_pools, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    s3_data = service.get_dc_s3_pools(dc_id, tr)
+    if not s3_data.get("pools"):
+        # If DC has no S3 pools, keep panel empty (tab will be hidden by dc_view).
+        return html.Div()
+    # Normalise selected_pools to list[str]
+    pools = s3_data.get("pools") or []
+    if not selected_pools:
+        selected = pools
+    else:
+        selected = [p for p in selected_pools if p in pools] or pools
+    return build_dc_s3_panel(dc_id, s3_data, tr, selected)
+
+
+# 6. S3 Customer panel: reacts to vault selection, time range, and customer.
+@app.callback(
+    dash.Output("s3-customer-metrics-panel", "children"),
+    dash.Input("s3-customer-vault-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("customer-select", "value"),
+)
+def update_s3_customer_panel(selected_vaults, time_range, customer_name):
+    name = customer_name or "Boyner"
+    tr = time_range or default_time_range()
+    s3_data = service.get_customer_s3_vaults(name, tr)
+    if not s3_data.get("vaults"):
+        return html.Div()
+    vaults = s3_data.get("vaults") or []
+    if not selected_vaults:
+        selected = vaults
+    else:
+        selected = [v for v in selected_vaults if v in vaults] or vaults
+    return build_customer_s3_panel(name, s3_data, tr, selected)
+
+
+# 7. Start background cache scheduler
 _scheduler = start_scheduler(service)
 
 if __name__ == "__main__":
