@@ -10,6 +10,7 @@ from src.services.shared import service
 from src.utils.time_range import default_time_range
 from src.components.header import create_detail_header
 from src.pages.home import metric_card
+from src.components.s3_panel import build_customer_s3_panel
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +383,10 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     backup_assets = assets.get("backup", {}) or {}
     backup_totals = totals.get("backup", {}) or {}
 
+    # S3 vault metrics (may be empty if customer has no S3 vaults)
+    s3_data = service.get_customer_s3_vaults(customer_name or "Boyner", tr)
+    has_s3 = bool(s3_data.get("vaults"))
+
     # --- agent debug logs (NDJSON) ---
     def _agent_log(hypothesis_id: str, message: str, data_obj: dict):
         try:
@@ -514,6 +519,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
                         dmc.TabsTab("Summary",        value="summary"),
                         dmc.TabsTab("Virtualization", value="virt"),
                         dmc.TabsTab("Backup",         value="backup"),
+                        dmc.TabsTab("S3",             value="s3") if has_s3 else None,
                     ],
                     style={"padding": "0 30px", "marginBottom": "24px"},
                 ),
@@ -767,6 +773,16 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
                         ],
                     ),
                 ),
+
+                # ── S3 Object Storage (vault-level) ────────────────────────
+                dmc.TabsPanel(
+                    value="s3",
+                    children=html.Div(
+                        id="s3-customer-metrics-panel",
+                        style={"padding": "0 30px"},
+                        children=build_customer_s3_panel(customer_name or "Boyner", s3_data, tr, None) if has_s3 else html.Div(),
+                    ),
+                ) if has_s3 else None,
             ],
         )
     ]
