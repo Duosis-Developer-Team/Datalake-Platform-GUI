@@ -9,6 +9,7 @@ import plotly.graph_objs as go
 from src.services.shared import service
 from src.utils.time_range import default_time_range
 from src.components.header import create_detail_header
+from src.pages.home import metric_card
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +381,126 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     assets = data.get("assets", {})
     backup_assets = assets.get("backup", {}) or {}
     backup_totals = totals.get("backup", {}) or {}
+
+    # --- agent debug logs (NDJSON) ---
+    def _agent_log(hypothesis_id: str, message: str, data_obj: dict):
+        try:
+            import json, time
+            with open("/Users/duosis-can/Datalake-Platform-GUI/.cursor/debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "id": f"customer_view_{int(time.time()*1000)}",
+                    "timestamp": int(time.time() * 1000),
+                    "location": "src/pages/customer_view.py:_customer_content",
+                    "message": message,
+                    "data": data_obj,
+                    "runId": "pre-fix",
+                    "hypothesisId": hypothesis_id,
+                }) + "\n")
+        except Exception:
+            pass
+
+    _agent_log("H1", "enter _customer_content", {
+        "customer_name": customer_name,
+        "has_data": bool(data),
+        "data_keys": sorted(list(data.keys())) if isinstance(data, dict) else str(type(data)),
+        "totals_keys": sorted(list(totals.keys())) if isinstance(totals, dict) else str(type(totals)),
+        "assets_keys": sorted(list(assets.keys())) if isinstance(assets, dict) else str(type(assets)),
+        "backup_totals_keys": sorted(list(backup_totals.keys())) if isinstance(backup_totals, dict) else str(type(backup_totals)),
+    })
+
+    # Values used by Summary "Backup summary" cards (kept here to avoid NameError).
+    veeam_defined = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
+    zerto_protected = int(backup_totals.get("zerto_protected_vms", 0) or 0)
+    netbackup_pre_gib = float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0)
+    netbackup_post_gib = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
+    zerto_provisioned_gib = float(backup_totals.get("zerto_provisioned_gib", 0) or 0)
+    storage_gb = float(backup_totals.get("ibm_storage_volume_gb", 0) or 0)
+
+    _agent_log("H2", "computed backup metrics", {
+        "veeam_defined": veeam_defined,
+        "zerto_protected": zerto_protected,
+        "netbackup_pre_gib": netbackup_pre_gib,
+        "netbackup_post_gib": netbackup_post_gib,
+        "zerto_provisioned_gib": zerto_provisioned_gib,
+        "storage_gb": storage_gb,
+    })
+
+    # Intel (Virtualization tab) aggregates
+    intel_asset = assets.get("intel", {}) or {}
+    intel_vm_list = intel_asset.get("vm_list", []) or []
+
+    intel_vms = {
+        "total": int(totals.get("intel_vms_total", 0) or 0),
+        "vmware": int(intel_asset.get("vmware_vm_count", 0) or 0),
+        "nutanix": int(intel_asset.get("nutanix_vm_count", 0) or 0),
+    }
+    intel_cpu = {
+        "total": float(totals.get("intel_cpu_total", 0) or 0),
+        "vmware": float(intel_asset.get("vmware_cpu_total", 0) or 0),
+        "nutanix": float(intel_asset.get("nutanix_cpu_total", 0) or 0),
+    }
+
+    intel_mem_raw = intel_asset.get("memory_gb", 0)
+    intel_disk_raw = intel_asset.get("disk_gb", 0)
+
+    _agent_log("H4", "intel mem/disk raw", {
+        "intel_mem_raw_type": type(intel_mem_raw).__name__,
+        "intel_mem_raw_keys": sorted(list(intel_mem_raw.keys())) if isinstance(intel_mem_raw, dict) else None,
+        "intel_disk_raw_type": type(intel_disk_raw).__name__,
+        "intel_disk_raw_keys": sorted(list(intel_disk_raw.keys())) if isinstance(intel_disk_raw, dict) else None,
+    })
+
+    def _coerce_float(x):
+        if x is None:
+            return 0.0
+        if isinstance(x, (int, float)):
+            return float(x)
+        if isinstance(x, dict):
+            for k in ("total", "value", "gb", "amount"):
+                if k in x and isinstance(x.get(k), (int, float, str)):
+                    try:
+                        return float(x.get(k) or 0)
+                    except Exception:
+                        pass
+            return 0.0
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
+
+    intel_mem = {"total": _coerce_float(intel_mem_raw)}
+    intel_disk = {"total": _coerce_float(intel_disk_raw)}
+
+    # Power / HANA (Backup tab uses these)
+    power_asset = assets.get("power", {}) or {}
+    power_vm_list = (
+        power_asset.get("vm_list")
+        or power_asset.get("lpar_list")
+        or power_asset.get("lpars")
+        or []
+    )
+    power_lpars = int(totals.get("power_lpar_total", power_asset.get("lpar_count", 0)) or 0)
+    power_cpu = float(totals.get("power_cpu_total", power_asset.get("cpu_total", 0)) or 0)
+    power_mem = _coerce_float(
+        power_asset.get("memory_total_gb", power_asset.get("memory_gb", 0))
+    )
+
+    _agent_log("H5", "computed power aggregates", {
+        "power_keys": sorted(list(power_asset.keys())) if isinstance(power_asset, dict) else str(type(power_asset)),
+        "power_lpars": power_lpars,
+        "power_cpu": power_cpu,
+        "power_mem": power_mem,
+        "power_vm_list_len": len(power_vm_list) if isinstance(power_vm_list, list) else str(type(power_vm_list)),
+    })
+
+    _agent_log("H3", "computed intel aggregates", {
+        "intel_keys": sorted(list(intel_asset.keys())) if isinstance(intel_asset, dict) else str(type(intel_asset)),
+        "intel_vms": intel_vms,
+        "intel_cpu": intel_cpu,
+        "intel_mem_total": intel_mem.get("total"),
+        "intel_disk_total": intel_disk.get("total"),
+        "intel_vm_list_len": len(intel_vm_list) if isinstance(intel_vm_list, list) else str(type(intel_vm_list)),
+    })
 
     return [
         dmc.Tabs(
