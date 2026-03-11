@@ -25,6 +25,18 @@ services:
     profiles:
       - with-db
 
+  backend:
+    build: ./backend
+    container_name: datalake-platform-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    profiles:
+      - microservice
+
 volumes:
   pgdata:
 
