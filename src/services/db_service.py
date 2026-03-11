@@ -15,6 +15,7 @@ from src.queries import loki as lq, customer as cq
 from src.services import cache_service as cache
 from src.services import query_overrides as qo
 from src.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
+from src.utils.format_units import smart_cpu, smart_memory, smart_storage
 
 _DC_CODE_RE = re.compile(r'(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)', re.IGNORECASE)
 
@@ -42,10 +43,24 @@ DC_LOCATIONS: dict[str, str] = {
 }
 
 
+def _empty_compute_section() -> dict:
+    """Return a zeroed-out compute-type section (classic / hyperconv)."""
+    return {
+        "hosts": 0, "vms": 0,
+        "cpu_cap": 0.0, "cpu_used": 0.0, "cpu_pct": 0.0,
+        "mem_cap": 0.0, "mem_used": 0.0, "mem_pct": 0.0,
+        "stor_cap": 0.0, "stor_used": 0.0,
+    }
+
+
 def _EMPTY_DC(dc_code: str) -> dict:
     """Return a zeroed-out DC details dict for when the DB is unreachable."""
     return {
         "meta": {"name": dc_code, "location": DC_LOCATIONS.get(dc_code, "Unknown Data Center")},
+        # New compute-type split sections (used by dc_view)
+        "classic": _empty_compute_section(),
+        "hyperconv": _empty_compute_section(),
+        # Legacy combined Intel section (used by home.py / datacenters.py)
         "intel": {
             "clusters": 0, "hosts": 0, "vms": 0,
             "cpu_cap": 0.0, "cpu_used": 0.0,
@@ -322,6 +337,25 @@ class DatabaseService:
     def get_ibm_cpu(self, cursor, dc_param: str, start_ts, end_ts) -> tuple | None:
         return self._run_row(cursor, iq.CPU, (dc_param, start_ts, end_ts))
 
+    # cluster_metrics — Classic / Hyperconverged split
+    # dc_wc is the full ILIKE wildcard string e.g. '%DC13%'
+
+    def get_classic_metrics(self, cursor, dc_wc: str, start_ts, end_ts) -> tuple | None:
+        """Return Classic (KM) cluster aggregate row: hosts, vms, cpu_cap, cpu_used, mem_cap, mem_used, stor_cap, stor_used."""
+        return self._run_row(cursor, vq.CLASSIC_METRICS, (dc_wc, start_ts, end_ts))
+
+    def get_classic_avg30(self, cursor, dc_wc: str, start_ts, end_ts) -> tuple | None:
+        """Return Classic cluster average utilization: cpu_avg_pct, mem_avg_pct."""
+        return self._run_row(cursor, vq.CLASSIC_AVG30, (dc_wc, start_ts, end_ts))
+
+    def get_hyperconv_metrics(self, cursor, dc_wc: str, start_ts, end_ts) -> tuple | None:
+        """Return Hyperconverged (non-KM) cluster aggregate row."""
+        return self._run_row(cursor, vq.HYPERCONV_METRICS, (dc_wc, start_ts, end_ts))
+
+    def get_hyperconv_avg30(self, cursor, dc_wc: str, start_ts, end_ts) -> tuple | None:
+        """Return Hyperconverged cluster average utilization: cpu_avg_pct, mem_avg_pct."""
+        return self._run_row(cursor, vq.HYPERCONV_AVG30, (dc_wc, start_ts, end_ts))
+
     # ------------------------------------------------------------------
     # Unit normalization & aggregation (shared by single + batch paths)
     # ------------------------------------------------------------------
@@ -347,8 +381,18 @@ class DatabaseService:
         vcenter_w,
         ibm_kwh=None,
         vcenter_kwh=None,
+        classic_row=None,
+        classic_avg30=None,
+        hyperconv_row=None,
+        hyperconv_avg30=None,
     ) -> dict:
-        """Apply unit normalization and build the standard DC detail dictionary."""
+        """Apply unit normalization and build the standard DC detail dictionary.
+
+        classic_row / hyperconv_row — rows from CLASSIC_METRICS / HYPERCONV_METRICS:
+            (hosts, vms, cpu_cap_ghz, cpu_used_ghz, mem_cap_gb, mem_used_gb, stor_cap_gb, stor_used_gb)
+        classic_avg30 / hyperconv_avg30 — rows from CLASSIC_AVG30 / HYPERCONV_AVG30:
+            (cpu_avg_pct, mem_avg_pct)
+        """
         nutanix_mem     = nutanix_mem     or (0, 0)
         nutanix_storage = nutanix_storage or (0, 0)
         nutanix_cpu     = nutanix_cpu     or (0, 0)
@@ -358,18 +402,22 @@ class DatabaseService:
         vmware_cpu      = vmware_cpu      or (0, 0)
         power_mem       = power_mem       or (0, 0)
         power_cpu       = power_cpu       or (0, 0, 0)
+        classic_row     = classic_row     or (0,) * 8
+        classic_avg30   = classic_avg30   or (0, 0)
+        hyperconv_row   = hyperconv_row   or (0,) * 8
+        hyperconv_avg30 = hyperconv_avg30 or (0, 0)
 
         # Memory → GB (coerce to float for DB Decimal)
         n_mem_cap_gb  = float(nutanix_mem[0] or 0) * 1024
         n_mem_used_gb = float(nutanix_mem[1] or 0) * 1024
-        v_mem_cap_gb  = float(vmware_mem[0] or 0) / (1024 ** 3)
-        v_mem_used_gb = float(vmware_mem[1] or 0) / (1024 ** 3)
+        v_mem_cap_gb  = float(vmware_mem[0] or 0)
+        v_mem_used_gb = float(vmware_mem[1] or 0)
 
         # Storage → TB
         n_stor_cap_tb  = float(nutanix_storage[0] or 0)
         n_stor_used_tb = float(nutanix_storage[1] or 0)
-        v_stor_cap_tb  = float(vmware_storage[0] or 0) / (1024 ** 4)
-        v_stor_used_tb = float(vmware_storage[1] or 0) / (1024 ** 4)
+        v_stor_cap_tb  = float(vmware_storage[0] or 0) / 1024.0
+        v_stor_used_tb = float(vmware_storage[1] or 0) / 1024.0
 
         # CPU → GHz
         n_cpu_cap_ghz  = float(nutanix_cpu[0] or 0)
@@ -382,15 +430,62 @@ class DatabaseService:
         # Total energy for billing (kWh in report period)
         total_energy_kwh = float(ibm_kwh or 0) + float(vcenter_kwh or 0)
 
+        # Classic compute section — cluster_metrics rows (KM clusters)
+        # Units: CPU in GHz, memory in GB, storage in GB (convert to TB for display key)
+        cl_hosts    = int(classic_row[0] or 0)
+        cl_vms      = int(classic_row[1] or 0)
+        cl_cpu_cap  = round(float(classic_row[2] or 0), 2)
+        cl_cpu_used = round(float(classic_row[3] or 0), 2)
+        cl_mem_cap  = round(float(classic_row[4] or 0), 2)
+        cl_mem_used = round(float(classic_row[5] or 0), 2)
+        cl_cpu_pct  = round(float(classic_avg30[0] or 0), 1)
+        cl_mem_pct  = round(float(classic_avg30[1] or 0), 1)
+        # cluster_metrics.total_capacity_gb is in GB → convert to TB
+        cl_stor_cap  = round(float(classic_row[6] or 0) / 1024.0, 3)
+        cl_stor_used = round(float(classic_row[7] or 0) / 1024.0, 3)
+
+        # Hyperconverged compute section — cluster_metrics non-KM (CPU/RAM) + Nutanix (storage)
+        # Hosts are taken from Nutanix node count so Classic/Hyperconverged host
+        # numbers are properly split by cluster type.
+        hc_hosts    = int(nutanix_host_count or 0)
+        hc_vms      = int(hyperconv_row[1] or 0)
+        hc_cpu_cap  = round(float(hyperconv_row[2] or 0), 2)
+        hc_cpu_used = round(float(hyperconv_row[3] or 0), 2)
+        hc_mem_cap  = round(float(hyperconv_row[4] or 0), 2)
+        hc_mem_used = round(float(hyperconv_row[5] or 0), 2)
+        hc_cpu_pct  = round(float(hyperconv_avg30[0] or 0), 1)
+        hc_mem_pct  = round(float(hyperconv_avg30[1] or 0), 1)
+        # Storage from Nutanix (already in TB from the nutanix query)
+        hc_stor_cap  = round(n_stor_cap_tb, 3)
+        hc_stor_used = round(n_stor_used_tb, 3)
+
         return {
             "meta": {
                 "name": dc_code,
                 "location": DC_LOCATIONS.get(dc_code, "Unknown Data Center"),
             },
+            # Compute-type split (new) — used by dc_view tabs
+            "classic": {
+                "hosts": cl_hosts, "vms": cl_vms,
+                "cpu_cap": cl_cpu_cap, "cpu_used": cl_cpu_used, "cpu_pct": cl_cpu_pct,
+                "mem_cap": cl_mem_cap, "mem_used": cl_mem_used, "mem_pct": cl_mem_pct,
+                "stor_cap": cl_stor_cap, "stor_used": cl_stor_used,
+            },
+            "hyperconv": {
+                "hosts": hc_hosts, "vms": hc_vms,
+                "cpu_cap": hc_cpu_cap, "cpu_used": hc_cpu_used, "cpu_pct": hc_cpu_pct,
+                "mem_cap": hc_mem_cap, "mem_used": hc_mem_used, "mem_pct": hc_mem_pct,
+                "stor_cap": hc_stor_cap, "stor_used": hc_stor_used,
+            },
+            # Legacy combined Intel section — kept for home.py / datacenters.py
+            # VM count uses cluster-level dedup: Classic (KM) VMs from VMware cluster_metrics
+            # + all Nutanix VMs (covers Nutanix-only and VMware-managed Nutanix VMs once each).
+            # vmware_counts[2] (datacenter_metrics.total_vm_count) is intentionally excluded here
+            # because it overlaps with nutanix_vms for hyperconverged clusters.
             "intel": {
                 "clusters": int(vmware_counts[0] or 0),
                 "hosts": int((nutanix_host_count or 0) + (vmware_counts[1] or 0)),
-                "vms": int(nutanix_vms or 0) + int(vmware_counts[2] or 0),
+                "vms": cl_vms + int(nutanix_vms or 0),
                 "cpu_cap": round(n_cpu_cap_ghz + v_cpu_cap_ghz, 2),
                 "cpu_used": round(n_cpu_used_ghz + v_cpu_used_ghz, 2),
                 "ram_cap": round(n_mem_cap_gb + v_mem_cap_gb, 2),
@@ -418,7 +513,9 @@ class DatabaseService:
             },
             "platforms": {
                 "nutanix": {"hosts": int(nutanix_host_count or 0), "vms": int(nutanix_vms or 0)},
-                "vmware": {"clusters": int(vmware_counts[0] or 0), "hosts": int(vmware_counts[1] or 0), "vms": int(vmware_counts[2] or 0)},
+                # vmware.vms shows only Classic (KM) cluster VMs to avoid overlap with Nutanix.
+                # Hyperconverged VMs on Nutanix hardware are already represented in nutanix.vms.
+                "vmware": {"clusters": int(vmware_counts[0] or 0), "hosts": int(vmware_counts[1] or 0), "vms": cl_vms},
                 "ibm": {"hosts": int(power_hosts or 0), "vios": int(power_vios or 0), "lpars": int(power_lpar_count or 0)},
             },
         }
@@ -460,6 +557,11 @@ class DatabaseService:
                         vcenter_w=self.get_vcenter_energy(cur, dc_code, start_ts, end_ts),
                         ibm_kwh=self.get_ibm_kwh(cur, dc_wc, start_ts, end_ts),
                         vcenter_kwh=self.get_vcenter_kwh(cur, dc_code, start_ts, end_ts),
+                        # Compute-type split (Classic / Hyperconverged)
+                        classic_row=self.get_classic_metrics(cur, dc_wc, start_ts, end_ts),
+                        classic_avg30=self.get_classic_avg30(cur, dc_wc, start_ts, end_ts),
+                        hyperconv_row=self.get_hyperconv_metrics(cur, dc_wc, start_ts, end_ts),
+                        hyperconv_avg30=self.get_hyperconv_avg30(cur, dc_wc, start_ts, end_ts),
                     )
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_details(%s): %s", dc_code, exc)
@@ -505,16 +607,21 @@ class DatabaseService:
             ("n_host",     nq.BATCH_HOST_COUNT,    nutanix_params),
             ("n_vm",       nq.BATCH_VM_COUNT,      nutanix_params),
             ("n_mem",      nq.BATCH_MEMORY,        nutanix_params),
-            ("n_stor",     nq.BATCH_STORAGE,       nutanix_params),
+            ("n_stor",     nq.BATCH_STORAGE,       (start_ts, end_ts, dc_list, pattern_list)),
             ("n_cpu",      nq.BATCH_CPU,           nutanix_params),
             ("n_platform", nq.BATCH_PLATFORM_COUNT, nutanix_params),
         ]
         vmware_queries = [
-            ("v_cnt",      vq.BATCH_COUNTS,         vmware_params),
-            ("v_mem",      vq.BATCH_MEMORY,         vmware_params),
-            ("v_stor",     vq.BATCH_STORAGE,        vmware_params),
-            ("v_cpu",      vq.BATCH_CPU,            vmware_params),
-            ("v_platform", vq.BATCH_PLATFORM_COUNT, vmware_params),
+            ("v_cnt",      vq.BATCH_COUNTS,           vmware_params),
+            ("v_mem",      vq.BATCH_MEMORY,           vmware_params),
+            ("v_stor",     vq.BATCH_STORAGE,          vmware_params),
+            ("v_cpu",      vq.BATCH_CPU,              vmware_params),
+            ("v_platform", vq.BATCH_PLATFORM_COUNT,   vmware_params),
+            # Compute-type split queries (Classic KM / Hyperconverged non-KM)
+            ("v_classic",       vq.BATCH_CLASSIC_METRICS,  vmware_params),
+            ("v_classic_avg",   vq.BATCH_CLASSIC_AVG30,    vmware_params),
+            ("v_hyperconv",     vq.BATCH_HYPERCONV_METRICS, vmware_params),
+            ("v_hyperconv_avg", vq.BATCH_HYPERCONV_AVG30,   vmware_params),
         ]
         ibm_queries = [
             ("ibm_host_raw",   iq.BATCH_RAW_HOST,   ibm_ts_params),
@@ -574,19 +681,37 @@ class DatabaseService:
                 ibm_lpar.setdefault(dc, set()).add(row[1])  # type: ignore[arg-type]
         ibm_lpar = {dc: len(names) for dc, names in ibm_lpar.items()}  # type: ignore[assignment]
 
-        ibm_mem_acc: dict[str, list] = {}
+        ibm_mem_hosts: dict[str, dict[str, list[tuple[float, float, object]]]] = {}
         for row in ibm_raw["ibm_mem_raw"]:
-            if not row or len(row) < 3:
+            if not row or len(row) < 4:
                 continue
-            dc = _extract_dc(row[0])
-            if dc:
-                ibm_mem_acc.setdefault(dc, []).append((float(row[1] or 0), float(row[2] or 0)))
+            server_name = row[0]
+            dc = _extract_dc(server_name)
+            if not dc:
+                continue
+            try:
+                total_mem = float(row[1] or 0)
+                assigned_mem = float(row[2] or 0)
+            except (TypeError, ValueError):
+                continue
+            ts = row[3]
+            dc_hosts = ibm_mem_hosts.setdefault(dc, {})
+            dc_hosts.setdefault(server_name, []).append((total_mem, assigned_mem, ts))
+
         ibm_mem: dict[str, tuple] = {}
-        for dc, vals in ibm_mem_acc.items():
-            n_vals = len(vals)
+        for dc, hosts in ibm_mem_hosts.items():
+            total_cfg = 0.0
+            total_assigned = 0.0
+            for server_name, samples in hosts.items():
+                if not samples:
+                    continue
+                latest_total, latest_assigned, _ = max(samples, key=lambda v: v[2])
+                total_cfg += latest_total
+                total_assigned += latest_assigned
+            # HMC bellek metrikleri MB cinsinden geldiği için burada GB'e çeviriyoruz.
             ibm_mem[dc] = (
-                sum(v[0] for v in vals) / n_vals,
-                sum(v[1] for v in vals) / n_vals,
+                total_cfg / 1024.0,
+                total_assigned / 1024.0,
             )
 
         ibm_cpu_acc: dict[str, list] = {}
@@ -641,6 +766,10 @@ class DatabaseService:
         v_cnt_rows, v_mem_rows = v["v_cnt"], v["v_mem"]
         v_stor_rows, v_cpu_rows = v["v_stor"], v["v_cpu"]
         v_platform_rows = v["v_platform"]
+        v_classic_rows      = v.get("v_classic", [])
+        v_classic_avg_rows  = v.get("v_classic_avg", [])
+        v_hyperconv_rows    = v.get("v_hyperconv", [])
+        v_hyperconv_avg_rows = v.get("v_hyperconv_avg", [])
 
         n_host  = _index_exact(n_host_rows)
         n_vms   = _index_exact(n_vm_rows)
@@ -652,6 +781,10 @@ class DatabaseService:
         v_mem_m = _index_exact(v_mem_rows)
         v_stor  = _index_exact(v_stor_rows)
         v_cpu   = _index_exact(v_cpu_rows)
+        v_classic      = _index_exact(v_classic_rows)
+        v_classic_avg  = _index_exact(v_classic_avg_rows)
+        v_hyperconv    = _index_exact(v_hyperconv_rows)
+        v_hyperconv_avg = _index_exact(v_hyperconv_avg_rows)
 
         ibm_e_rows = e["e_ibm"]
         vcenter_rows = e["e_vcenter"]
@@ -697,6 +830,19 @@ class DatabaseService:
             power_mem_tup = ibm_mem.get(dc, (0.0, 0.0))
             power_cpu_tup = ibm_cpu_map.get(dc, (0.0, 0.0, 0.0))
 
+            # Classic / Hyperconverged rows from cluster_metrics
+            vcl_row  = v_classic.get(dc)
+            vcla_row = v_classic_avg.get(dc)
+            vhc_row  = v_hyperconv.get(dc)
+            vhca_row = v_hyperconv_avg.get(dc)
+
+            # Batch CLASSIC_METRICS: (dc_code, hosts, vms, cpu_cap, cpu_used, mem_cap, mem_used, stor_cap, stor_used)
+            cl_data = (vcl_row[1], vcl_row[2], vcl_row[3], vcl_row[4], vcl_row[5], vcl_row[6], vcl_row[7], vcl_row[8]) if (vcl_row and len(vcl_row) > 8) else None
+            # Batch CLASSIC_AVG30: (dc_code, cpu_avg_pct, mem_avg_pct)
+            cl_avg  = (vcla_row[1], vcla_row[2]) if (vcla_row and len(vcla_row) > 2) else None
+            hc_data = (vhc_row[1], vhc_row[2], vhc_row[3], vhc_row[4], vhc_row[5], vhc_row[6], vhc_row[7], vhc_row[8]) if (vhc_row and len(vhc_row) > 8) else None
+            hc_avg  = (vhca_row[1], vhca_row[2]) if (vhca_row and len(vhca_row) > 2) else None
+
             results[dc] = self._aggregate_dc(
                 dc_code=dc,
                 nutanix_host_count=nh_row[1] if (nh_row and len(nh_row) > 1) else 0,
@@ -717,6 +863,10 @@ class DatabaseService:
                 vcenter_w=vctr_e.get(dc, 0.0),
                 ibm_kwh=ibm_kwh_m.get(dc, 0.0),
                 vcenter_kwh=vctr_kwh_m.get(dc, 0.0),
+                classic_row=cl_data,
+                classic_avg30=cl_avg,
+                hyperconv_row=hc_data,
+                hyperconv_avg30=hc_avg,
             )
 
         return results, platform_counts
@@ -764,10 +914,18 @@ class DatabaseService:
             d = all_dc_data.get(dc, _EMPTY_DC(dc))
             intel = d["intel"]
             power = d["power"]
+            classic = d.get("classic", {})
+            hyperconv = d.get("hyperconv", {})
 
-            # Compute combined host and VM counts (Intel + IBM/Power)
-            host_count = (intel["hosts"] or 0) + (power["hosts"] or 0)
-            vm_count = (intel["vms"] or 0) + (power.get("vms", 0) or 0)
+            # Compute combined host and VM counts using the same logic as dc_view:
+            # - Hosts: Classic (KM) + Hyperconverged (Nutanix) + IBM/Power
+            # - VMs  : Intel (deduplicated Classic + Nutanix) + IBM LPARs
+            host_count = (
+                (classic.get("hosts", 0) or 0)
+                + (hyperconv.get("hosts", 0) or 0)
+                + (power.get("hosts", 0) or 0)
+            )
+            vm_count = (intel.get("vms", 0) or 0) + (power.get("lpar_count", 0) or 0)
 
             # Skip datacenters that have no Intel/IBM resources at all
             if host_count == 0 and vm_count == 0:
@@ -785,6 +943,10 @@ class DatabaseService:
             # Platform count = Nutanix clusters + VMware hypervisors + IBM hosts in this DC
             platform_count = platform_counts.get(dc, 0)
 
+            # Storage values are in TB here; convert to GB for formatting helpers.
+            stor_cap_gb = stor_cap * 1024
+            stor_used_gb = stor_used * 1024
+
             summary_list.append({
                 "id": dc,
                 "name": dc,
@@ -795,11 +957,11 @@ class DatabaseService:
                 "host_count": host_count,
                 "vm_count": vm_count,
                 "stats": {
-                    "total_cpu": f"{cpu_used:,} / {cpu_cap:,} GHz",
+                    "total_cpu": f"{smart_cpu(cpu_used)} / {smart_cpu(cpu_cap)}",
                     "used_cpu_pct": round((cpu_used / cpu_cap * 100) if cpu_cap > 0 else 0, 1),
-                    "total_ram": f"{ram_used:,} / {ram_cap:,} GB",
+                    "total_ram": f"{smart_memory(ram_used)} / {smart_memory(ram_cap)}",
                     "used_ram_pct": round((ram_used / ram_cap * 100) if ram_cap > 0 else 0, 1),
-                    "total_storage": f"{stor_used:,} / {stor_cap:,} TB",
+                    "total_storage": f"{smart_storage(stor_used_gb)} / {smart_storage(stor_cap_gb)}",
                     "used_storage_pct": round((stor_used / stor_cap * 100) if stor_cap > 0 else 0, 1),
                     "last_updated": "Live",
                     "total_energy_kw": d["energy"]["total_kw"],
@@ -995,6 +1157,61 @@ class DatabaseService:
                         if r and r[0]
                     ]
 
+                    # --- Classic Compute (KM clusters) ---
+                    classic_vm_count = int(
+                        self._run_value(cur, cq.CUSTOMER_CLASSIC_VM_COUNT, (vm_pattern, start_ts, end_ts)) or 0
+                    )
+                    classic_res = self._run_row(
+                        cur, cq.CUSTOMER_CLASSIC_RESOURCE_TOTALS, (vm_pattern, start_ts, end_ts)
+                    )
+                    classic_cpu    = float(classic_res[0] or 0.0) if classic_res else 0.0
+                    classic_mem_gb = float(classic_res[1] or 0.0) if classic_res else 0.0
+                    classic_disk_gb = float(classic_res[2] or 0.0) if classic_res else 0.0
+
+                    classic_vm_rows = self._run_rows(
+                        cur, cq.CUSTOMER_CLASSIC_VM_LIST, (vm_pattern, start_ts, end_ts)
+                    )
+                    classic_vm_list = [
+                        {
+                            "name": r[0], "source": r[1], "cluster": r[2],
+                            "cpu": float(r[3] or 0.0),
+                            "memory_gb": float(r[4] or 0.0),
+                            "disk_gb": float(r[5] or 0.0),
+                        }
+                        for r in (classic_vm_rows or []) if r and r[0]
+                    ]
+
+                    # --- Hyperconverged Compute (non-KM VMware + Nutanix) ---
+                    hc_count_row = self._run_row(
+                        cur, cq.CUSTOMER_HYPERCONV_VM_COUNT,
+                        (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts),
+                    )
+                    hc_vmware_only = int(hc_count_row[0] or 0) if hc_count_row else 0
+                    hc_nutanix     = int(hc_count_row[1] or 0) if hc_count_row else 0
+                    hc_total       = int(hc_count_row[2] or 0) if hc_count_row else 0
+
+                    hc_res = self._run_row(
+                        cur, cq.CUSTOMER_HYPERCONV_RESOURCE_TOTALS,
+                        (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts),
+                    )
+                    hc_cpu     = float(hc_res[0] or 0.0) if hc_res else 0.0
+                    hc_mem_gb  = float(hc_res[1] or 0.0) if hc_res else 0.0
+                    hc_disk_gb = float(hc_res[2] or 0.0) if hc_res else 0.0
+
+                    hc_vm_rows = self._run_rows(
+                        cur, cq.CUSTOMER_HYPERCONV_VM_LIST,
+                        (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts),
+                    )
+                    hc_vm_list = [
+                        {
+                            "name": r[0], "source": r[1], "cluster": r[2],
+                            "cpu": float(r[3] or 0.0),
+                            "memory_gb": float(r[4] or 0.0),
+                            "disk_gb": float(r[5] or 0.0),
+                        }
+                        for r in (hc_vm_rows or []) if r and r[0]
+                    ]
+
                     # Power / HANA (IBM LPAR)
                     power_cpu = float(
                         self._run_value(cur, cq.CUSTOMER_POWER_CPU_TOTAL, (lpar_pattern, start_ts, end_ts)) or 0.0
@@ -1100,13 +1317,18 @@ class DatabaseService:
 
         except (OperationalError, PoolError) as exc:
             logger.warning("get_customer_resources failed: %s", exc)
+            _empty_compute = {"vm_count": 0, "cpu_total": 0.0, "memory_gb": 0.0, "disk_gb": 0.0, "vm_list": []}
             return {
                 "totals": {
                     "vms_total": 0,
                     "intel_vms_total": 0,
+                    "classic_vms_total": 0,
+                    "hyperconv_vms_total": 0,
                     "power_lpar_total": 0,
                     "cpu_total": 0.0,
                     "intel_cpu_total": 0.0,
+                    "classic_cpu_total": 0.0,
+                    "hyperconv_cpu_total": 0.0,
                     "power_cpu_total": 0.0,
                     "backup": {
                         "veeam_defined_sessions": 0,
@@ -1125,6 +1347,8 @@ class DatabaseService:
                         "disk_gb": {"vmware": 0.0, "nutanix": 0.0, "total": 0.0},
                         "vm_list": [],
                     },
+                    "classic": {**_empty_compute},
+                    "hyperconv": {**_empty_compute, "vmware_only": 0, "nutanix_count": 0},
                     "power": {
                         "cpu_total": 0.0,
                         "lpar_count": 0,
@@ -1175,6 +1399,23 @@ class DatabaseService:
                 },
                 "vm_list": intel_vm_list,
             },
+            # Compute-type split (new billing sections)
+            "classic": {
+                "vm_count": classic_vm_count,
+                "cpu_total": classic_cpu,
+                "memory_gb": classic_mem_gb,
+                "disk_gb": classic_disk_gb,
+                "vm_list": classic_vm_list,
+            },
+            "hyperconv": {
+                "vm_count": hc_total,
+                "vmware_only": hc_vmware_only,
+                "nutanix_count": hc_nutanix,
+                "cpu_total": hc_cpu,
+                "memory_gb": hc_mem_gb,
+                "disk_gb": hc_disk_gb,
+                "vm_list": hc_vm_list,
+            },
             "power": {
                 "cpu_total": power_cpu,
                 "lpar_count": power_lpars,
@@ -1206,17 +1447,21 @@ class DatabaseService:
         totals = {
             "vms_total": intel_vms_total + power_lpars,
             "intel_vms_total": intel_vms_total,
+            "classic_vms_total": classic_vm_count,
+            "hyperconv_vms_total": hc_total,
             "power_lpar_total": power_lpars,
             "cpu_total": intel_cpu_total + power_cpu,
             "intel_cpu_total": intel_cpu_total,
+            "classic_cpu_total": classic_cpu,
+            "hyperconv_cpu_total": hc_cpu,
             "power_cpu_total": power_cpu,
             "backup": {
                 "veeam_defined_sessions": veeam_defined_sessions,
                 "zerto_protected_vms": zerto_protected_vms,
                 "storage_volume_gb": storage_volume_gb,
-                 "netbackup_pre_dedup_gib": netbackup_pre_dedup_gib,
-                 "netbackup_post_dedup_gib": netbackup_post_dedup_gib,
-                 "zerto_provisioned_gib": zerto_provisioned_total_gib,
+                "netbackup_pre_dedup_gib": netbackup_pre_dedup_gib,
+                "netbackup_post_dedup_gib": netbackup_post_dedup_gib,
+                "zerto_provisioned_gib": zerto_provisioned_total_gib,
             },
         }
 
@@ -1243,8 +1488,15 @@ class DatabaseService:
         t0 = time.perf_counter()
         try:
             tr = default_time_range()
+            # Datacenter-level caches
             self._rebuild_summary(tr)
             self.get_global_overview(tr)
+            # Customer-level cache for Boyner so the Customer tab is instant after startup.
+            try:
+                self.get_customer_resources("Boyner", tr)
+            except Exception as exc:
+                logger.warning("Customer cache warm-up for Boyner failed: %s", exc)
+
             logger.info(
                 "Cache warm-up complete for last 7d in %.2fs.",
                 time.perf_counter() - t0,

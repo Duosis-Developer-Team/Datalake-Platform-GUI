@@ -92,6 +92,10 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
         def _refresh_boyner_customer_cache():
             # Always use a fresh 30-day range so the cache represents the latest period.
             current_range = preset_to_range(PRESET_30_DAYS)
+            from src.services import cache_service as cache
+
+            cache_key = f"customer_assets:Boyner:{current_range.get('start','')}:{current_range.get('end','')}"
+            cache.delete(cache_key)
             db_service.get_customer_resources("Boyner", current_range)
 
         scheduler.add_job(
