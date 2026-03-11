@@ -166,7 +166,6 @@ def build_dc_s3_panel(dc_name: str, s3_data: dict, time_range: dict | None, sele
             dmc.SimpleGrid(
                 cols=4,
                 spacing="lg",
-                breakpoints=[{"maxWidth": "md", "cols": 2}, {"maxWidth": "sm", "cols": 1}],
                 children=[
                     _kpi_card("Total usable capacity", smart_bytes(total_usable), "solar:database-bold-duotone"),
                     _kpi_card("Total used", smart_bytes(total_used), "solar:pie-chart-2-bold-duotone"),
@@ -282,28 +281,22 @@ def build_customer_s3_panel(customer_name: str, s3_data: dict, time_range: dict 
                             ),
                         ],
                     ),
-                    dmc.ChipGroup(
+                    dmc.MultiSelect(
                         id="s3-customer-vault-selector",
+                        data=[{"label": v, "value": v} for v in vaults],
                         value=selector_value,
-                        multiple=True,
-                        spacing="xs",
-                        children=[
-                            dmc.Chip(
-                                value=v,
-                                children=v,
-                                size="sm",
-                                variant="outline",
-                                radius="md",
-                            )
-                            for v in vaults
-                        ],
+                        clearable=True,
+                        searchable=True,
+                        nothingFoundMessage="No S3 vaults",
+                        placeholder="Select S3 vaults",
+                        size="sm",
+                        style={"minWidth": "260px"},
                     ),
                 ],
             ),
             dmc.SimpleGrid(
                 cols=4,
                 spacing="lg",
-                breakpoints=[{"maxWidth": "md", "cols": 2}, {"maxWidth": "sm", "cols": 1}],
                 children=[
                     _kpi_card("Total hard limit", smart_bytes(total_limit), "solar:database-bold-duotone"),
                     _kpi_card("Total used (logical)", smart_bytes(total_used), "solar:pie-chart-2-bold-duotone"),

@@ -141,7 +141,7 @@ WITH per_timestamp AS (
         vault_id,
         vault_name,
         collection_timestamp,
-        MAX(hard_quota_bytes)                         AS hard_quota_bytes,
+        MAX(allotted_size_bytes)                      AS hard_quota_bytes,
         SUM(estimate_usable_used_logical_size_bytes)  AS used_logical_bytes
     FROM public.raw_s3icos_vault_metrics
     WHERE vault_name = ANY(%s)
@@ -171,7 +171,7 @@ WITH per_timestamp AS (
         vault_id,
         vault_name,
         collection_timestamp,
-        MAX(hard_quota_bytes)                        AS hard_quota_bytes,
+        MAX(allotted_size_bytes)                     AS hard_quota_bytes,
         SUM(estimate_usable_used_logical_size_bytes) AS used_logical_bytes
     FROM public.raw_s3icos_vault_metrics
     WHERE vault_name = ANY(%s)
@@ -210,7 +210,7 @@ SELECT
         - (EXTRACT(HOUR FROM collection_timestamp)::int % {interval_hours}) * INTERVAL '1 hour' AS bucket,
     vault_name,
     SUM(estimate_usable_used_logical_size_bytes) AS used_logical_bytes,
-    MAX(hard_quota_bytes)                        AS hard_quota_bytes
+    MAX(allotted_size_bytes)                     AS hard_quota_bytes
 FROM public.raw_s3icos_vault_metrics
 WHERE vault_name = ANY(%s)
   AND collection_timestamp BETWEEN %s AND %s
