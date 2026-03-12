@@ -5,36 +5,10 @@ All DB calls are mocked — tests only exercise helper logic and service wiring.
 
 import unittest
 from unittest.mock import MagicMock, patch
-from datetime import datetime, timezone, timedelta
 
 # Patch the pool init before importing the service so no real DB connection is attempted.
 with patch("psycopg2.pool.ThreadedConnectionPool"):
-    from src.services.db_service import DatabaseService, _s3_trend_interval_hours
-
-
-class TestS3TrendInterval(unittest.TestCase):
-    def test_interval_1_day(self):
-        start = datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
-        end = datetime(2025, 1, 1, 23, 59, tzinfo=timezone.utc)
-        self.assertEqual(_s3_trend_interval_hours(start, end), 1)
-
-    def test_interval_7_days(self):
-        start = datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
-        end = start + timedelta(days=6)
-        self.assertEqual(_s3_trend_interval_hours(start, end), 6)
-
-    def test_interval_30_days(self):
-        start = datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
-        end = start + timedelta(days=29)
-        self.assertEqual(_s3_trend_interval_hours(start, end), 12)
-
-    def test_interval_more_than_30_days(self):
-        start = datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
-        end = start + timedelta(days=40)
-        self.assertEqual(_s3_trend_interval_hours(start, end), 24)
-
-    def test_interval_handles_missing_dates(self):
-        self.assertIsInstance(_s3_trend_interval_hours(None, None), int)
+    from src.services.db_service import DatabaseService
 
 
 class TestS3ServiceHelpers(unittest.TestCase):
@@ -61,7 +35,6 @@ class TestS3ServiceHelpers(unittest.TestCase):
         self.assertEqual(result.get("pools"), [])
         self.assertEqual(result.get("latest"), {})
         self.assertEqual(result.get("growth"), {})
-        self.assertEqual(result.get("trend"), [])
 
     def test_get_customer_s3_vaults_returns_empty_when_no_vaults(self):
         cursor = MagicMock()
@@ -80,7 +53,6 @@ class TestS3ServiceHelpers(unittest.TestCase):
         self.assertEqual(result.get("vaults"), [])
         self.assertEqual(result.get("latest"), {})
         self.assertEqual(result.get("growth"), {})
-        self.assertEqual(result.get("trend"), [])
 
 
 if __name__ == "__main__":

@@ -1,10 +1,8 @@
-from datetime import datetime
 from typing import Iterable
 
-from dash import html, dcc
+from dash import html
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
-import plotly.graph_objects as go
 
 from src.utils.format_units import smart_bytes, pct_float
 
@@ -45,69 +43,6 @@ def _compute_dc_aggregates(s3_data: dict, selected_pools: Iterable[str] | None) 
     }
 
 
-def _build_trend_figure(trend_rows: list[dict], selected_items: Iterable[str] | None, is_dc: bool) -> go.Figure:
-    """Build a simple area trend chart for utilisation percentage over time."""
-    fig = go.Figure()
-    if not trend_rows:
-        fig.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=10, r=10, t=10, b=20),
-            showlegend=False,
-        )
-        return fig
-
-    key_name = "pool" if is_dc else "vault"
-    chosen = set(selected_items) if selected_items else None
-
-    # Group by pool/vault
-    series: dict[str, list[tuple[datetime, float]]] = {}
-    for row in trend_rows:
-        name = row.get(key_name)
-        if not name:
-            continue
-        if chosen and name not in chosen:
-            continue
-        bucket = row.get("bucket")
-        if not isinstance(bucket, datetime):
-            continue
-        used = float(row.get("used_bytes", 0) or 0)
-        cap = float(row.get("hard_quota_bytes" if not is_dc else "usable_bytes", 0) or 0)
-        pct = pct_float(used, cap) if cap else 0.0
-        series.setdefault(name, []).append((bucket, pct))
-
-    for name, points in series.items():
-        points_sorted = sorted(points, key=lambda x: x[0])
-        xs = [p[0] for p in points_sorted]
-        ys = [p[1] for p in points_sorted]
-        fig.add_trace(
-            go.Scatter(
-                x=xs,
-                y=ys,
-                mode="lines",
-                name=name,
-                line=dict(width=2),
-                hovertemplate="<b>%{x}</b><br>%{y:.1f}%<extra></extra>",
-            )
-        )
-
-    fig.update_layout(
-        title=dict(
-            text="Utilisation trend",
-            font=dict(size=14, color="#2B3674", family="DM Sans"),
-        ),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10, r=10, t=40, b=30),
-        hovermode="x unified",
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-        xaxis=dict(showgrid=False, zeroline=False),
-        yaxis=dict(showgrid=False, zeroline=False, title="Utilisation %"),
-    )
-    return fig
-
-
 def build_dc_s3_panel(dc_name: str, s3_data: dict, time_range: dict | None, selected_pools: Iterable[str] | None):
     """Build S3 panel for a single datacenter."""
     pools = s3_data.get("pools") or []
@@ -121,9 +56,6 @@ def build_dc_s3_panel(dc_name: str, s3_data: dict, time_range: dict | None, sele
     total_used = aggregates["total_used"]
     total_growth = aggregates["growth"]
     utilisation_pct = pct_float(total_used, total_usable) if total_usable else 0.0
-
-    trend_rows = s3_data.get("trend") or []
-    fig = _build_trend_figure(trend_rows, aggregates["pools"], is_dc=True)
 
     selector_value = list(selected_pools) if selected_pools else list(pools)
 
@@ -174,26 +106,6 @@ def build_dc_s3_panel(dc_name: str, s3_data: dict, time_range: dict | None, sele
                 ],
             ),
             html.Div(style={"height": "20px"}),
-            dmc.Grid(
-                gutter="lg",
-                children=[
-                    dmc.GridCol(
-                        span=12,
-                        children=dmc.Paper(
-                            className="nexus-card",
-                            shadow="sm",
-                            radius="md",
-                            withBorder=False,
-                            style={"padding": "16px"},
-                            children=dcc.Graph(
-                                id="s3-dc-trend-graph",
-                                figure=fig,
-                                config={"displayModeBar": False},
-                            ),
-                        ),
-                    ),
-                ],
-            ),
             html.Div(style={"marginTop": "16px"}, children=[
                 html.Span(
                     f"Total growth over period: {smart_bytes(total_growth)}",
@@ -253,9 +165,6 @@ def build_customer_s3_panel(customer_name: str, s3_data: dict, time_range: dict 
     total_growth = aggregates["growth"]
     utilisation_pct = pct_float(total_used, total_limit) if total_limit else 0.0
 
-    trend_rows = s3_data.get("trend") or []
-    fig = _build_trend_figure(trend_rows, aggregates["vaults"], is_dc=False)
-
     selector_value = list(selected_vaults) if selected_vaults else list(vaults)
 
     return html.Div(
@@ -305,26 +214,6 @@ def build_customer_s3_panel(customer_name: str, s3_data: dict, time_range: dict 
                 ],
             ),
             html.Div(style={"height": "20px"}),
-            dmc.Grid(
-                gutter="lg",
-                children=[
-                    dmc.GridCol(
-                        span=12,
-                        children=dmc.Paper(
-                            className="nexus-card",
-                            shadow="sm",
-                            radius="md",
-                            withBorder=False,
-                            style={"padding": "16px"},
-                            children=dcc.Graph(
-                                id="s3-customer-trend-graph",
-                                figure=fig,
-                                config={"displayModeBar": False},
-                            ),
-                        ),
-                    ),
-                ],
-            ),
             html.Div(style={"marginTop": "16px"}, children=[
                 html.Span(
                     f"Total growth over period: {smart_bytes(total_growth)}",

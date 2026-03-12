@@ -43,28 +43,6 @@ DC_LOCATIONS: dict[str, str] = {
 }
 
 
-def _s3_trend_interval_hours(start_ts, end_ts) -> int:
-    """
-    Decide S3 trend bucketing interval in hours based on report length.
-
-    Rules:
-        1 day   → 1 hour
-        7 days  → 6 hours
-        30 days → 12 hours
-        > 30d   → 24 hours (1 day)
-    """
-    if not start_ts or not end_ts:
-        return 6
-    delta_days = (end_ts.date() - start_ts.date()).days
-    if delta_days <= 1:
-        return 1
-    if delta_days <= 7:
-        return 6
-    if delta_days <= 30:
-        return 12
-    return 24
-
-
 def _empty_compute_section() -> dict:
     """Return a zeroed-out compute-type section (classic / hyperconv)."""
     return {
@@ -1518,7 +1496,7 @@ class DatabaseService:
                 )
                 pools = [r[0] for r in (pool_rows or []) if r and r[0]]
                 if not pools:
-                    return {"pools": [], "latest": {}, "growth": {}, "trend": []}
+                    return {"pools": [], "latest": {}, "growth": {}}
 
                 # Latest snapshot per pool
                 latest_rows = self._run_rows(
@@ -1558,30 +1536,10 @@ class DatabaseService:
                         "last_timestamp": last_ts,
                     }
 
-                # Trend series (bucketed)
-                interval_hours = _s3_trend_interval_hours(start_ts, end_ts)
-                trend_sql = s3q.POOL_TREND_TEMPLATE.format(interval_hours=interval_hours)
-                trend_rows = self._run_rows(
-                    cur,
-                    trend_sql,
-                    (pools, start_ts, end_ts),
-                )
-                trend = [
-                    {
-                        "bucket": bucket,
-                        "pool": name,
-                        "usable_bytes": int(usable or 0),
-                        "used_bytes": int(used or 0),
-                    }
-                    for (bucket, name, usable, used) in (trend_rows or [])
-                    if name and bucket
-                ]
-
         return {
             "pools": pools,
             "latest": latest,
             "growth": growth,
-            "trend": trend,
         }
 
     def get_dc_s3_pools(self, dc_code: str, time_range: dict | None = None) -> dict:
@@ -1597,7 +1555,7 @@ class DatabaseService:
             result = self._fetch_dc_s3_pools(dc_code, start_ts, end_ts)
         except (OperationalError, PoolError) as exc:
             logger.warning("get_dc_s3_pools failed for %s: %s", dc_code, exc)
-            return {"pools": [], "latest": {}, "growth": {}, "trend": []}
+            return {"pools": [], "latest": {}, "growth": {}}
 
         cache.set(cache_key, result)
         return result
@@ -1611,7 +1569,6 @@ class DatabaseService:
               "vaults": [vault_name, ...],
               "latest": {vault_name: {...}},
               "growth": {vault_name: {...}},
-              "trend": [{"bucket": ts, "vault": name, "used_bytes": x, "hard_quota_bytes": y}, ...],
             }
         """
         name = (customer_name or "").strip()
@@ -1626,7 +1583,7 @@ class DatabaseService:
                 )
                 vaults = [r[0] for r in (vault_rows or []) if r and r[0]]
                 if not vaults:
-                    return {"vaults": [], "latest": {}, "growth": {}, "trend": []}
+                    return {"vaults": [], "latest": {}, "growth": {}}
 
                 latest_rows = self._run_rows(
                     cur,
@@ -1667,29 +1624,10 @@ class DatabaseService:
                         "hard_quota_bytes": int(hard_quota or 0),
                     }
 
-                interval_hours = _s3_trend_interval_hours(start_ts, end_ts)
-                trend_sql = s3q.VAULT_TREND_TEMPLATE.format(interval_hours=interval_hours)
-                trend_rows = self._run_rows(
-                    cur,
-                    trend_sql,
-                    (vaults, start_ts, end_ts),
-                )
-                trend = [
-                    {
-                        "bucket": bucket,
-                        "vault": name_val,
-                        "used_bytes": int(used or 0),
-                        "hard_quota_bytes": int(quota or 0),
-                    }
-                    for (bucket, name_val, used, quota) in (trend_rows or [])
-                    if name_val and bucket
-                ]
-
         return {
             "vaults": vaults,
             "latest": latest,
             "growth": growth,
-            "trend": trend,
         }
 
     def get_customer_s3_vaults(self, customer_name: str, time_range: dict | None = None) -> dict:
