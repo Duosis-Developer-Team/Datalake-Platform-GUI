@@ -2,19 +2,16 @@ import dash
 from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
-from src.services.shared import service
+from src.services import api_client as api
 from src.utils.time_range import default_time_range
 
 
 def _dc_vault_card(dc):
-    """Elite DC Vault kartı — 2 sütunlu, Power Dial + Metrik Satırları."""
-    # ── Güç verisi ──────────────────────────────────────────────────
     ibm_kw   = float(dc["stats"].get("ibm_kw", 0.0) or 0.0)
     total_kw = float(dc["stats"].get("total_energy_kw", 0.0) or 0.0)
     power_ratio = round((ibm_kw / total_kw * 100) if total_kw > 0 else 0.0, 1)
     remaining   = max(0.0, 100.0 - power_ratio)
 
-    # ── Renk-ikon Metrik Tanımları ───────────────────────────────────
     metrics = [
         {
             "icon": "solar:layers-minimalistic-bold-duotone",
@@ -73,7 +70,6 @@ def _dc_vault_card(dc):
         for m in metrics
     ]
 
-    # ── Power Dial (dmc.RingProgress) ───────────────────────────────
     power_dial = dmc.Stack(
         gap=6,
         align="center",
@@ -115,7 +111,6 @@ def _dc_vault_card(dc):
         ],
     )
 
-    # ── Dikey Frosted Divider (Sol/Sağ arasında) ─────────────────────
     frosty_divider = html.Div(
         style={
             "width": "1px",
@@ -141,7 +136,6 @@ def _dc_vault_card(dc):
             "gap": "14px",
         },
         children=[
-            # ── Kart Başlığı: İsim + Pulse Dot + Details Badge ──────
             dmc.Group(
                 justify="space-between",
                 align="flex-start",
@@ -150,7 +144,6 @@ def _dc_vault_card(dc):
                         gap="xs",
                         align="center",
                         children=[
-                            # Live Pulse Dot
                             html.Div(className="dc-pulse-dot"),
                             dmc.Stack(
                                 gap=0,
@@ -181,7 +174,6 @@ def _dc_vault_card(dc):
                 ],
             ),
 
-            # ── Ana 2-Sütunlu İçerik ─────────────────────────────────
             html.Div(
                 style={
                     "display": "flex",
@@ -191,15 +183,12 @@ def _dc_vault_card(dc):
                     "flex": 1,
                 },
                 children=[
-                    # Sol: Metrik satırları
                     dmc.Stack(
                         gap="xs",
                         style={"flex": 1},
                         children=metric_rows,
                     ),
-                    # Ortada: Frosted Divider
                     frosty_divider,
-                    # Sağ: Power Dial
                     html.Div(
                         style={"display": "flex", "alignItems": "center", "justifyContent": "center"},
                         children=[power_dial],
@@ -211,11 +200,9 @@ def _dc_vault_card(dc):
 
 
 def build_datacenters(time_range=None):
-    """Build Data Centers page content for the given time range."""
     tr = time_range or default_time_range()
-    datacenters = service.get_all_datacenters_summary(tr)
+    datacenters = api.get_all_datacenters_summary(tr)
     return html.Div([
-        # Header
         dmc.Paper(
             p="xl",
             radius="md",
@@ -232,11 +219,9 @@ def build_datacenters(time_range=None):
                     justify="space-between",
                     align="center",
                     children=[
-                        # ---- SOL TARAF: Başlık + Tarih Rozeti ----
                         dmc.Stack(
                             gap=10,
                             children=[
-                                # Başlık satırı: İkon + Gradyan H2
                                 dmc.Group(
                                     gap="sm",
                                     align="center",
@@ -262,7 +247,6 @@ def build_datacenters(time_range=None):
                                         ),
                                     ],
                                 ),
-                                # Tarih rozeti — Overview ile aynı pattern
                                 dmc.Badge(
                                     children=[
                                         dmc.Group(
@@ -285,7 +269,6 @@ def build_datacenters(time_range=None):
                                 ),
                             ],
                         ),
-                        # ---- SAĞ TARAF: Aktif DC Sayacı Badge ----
                         dmc.Badge(
                             children=[
                                 dmc.Group(
@@ -317,7 +300,6 @@ def build_datacenters(time_range=None):
             ],
         ),
 
-        # Elite DC Vault Grid
         dmc.SimpleGrid(
             cols=3,
             spacing="lg",

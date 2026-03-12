@@ -3,7 +3,7 @@ from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objs as go
-from src.services.shared import service
+from src.services import api_client as api
 from src.utils.time_range import default_time_range
 from src.components.header import create_detail_header
 
@@ -34,9 +34,7 @@ def metric_card(title, value, icon_name, color="#4318FF"):
 
 
 def build_customer_layout(time_range=None, selected_customer=None):
-    """Build Customer View page (header + selector + content area). selected_customer preserved when time range changes."""
     tr = time_range or default_time_range()
-    # Currently UI supports a single customer (Boyner) as a fixed card.
     chosen = "Boyner"
     return html.Div(
         [
@@ -103,9 +101,8 @@ def layout():
 
 
 def _customer_content(customer_name, time_range=None):
-    """Build content block for the selected customer and time range (used by layout and app callback)."""
     tr = time_range or default_time_range()
-    data = service.get_customer_resources(customer_name or "Boyner", tr)
+    data = api.get_customer_resources(customer_name or "Boyner", tr)
     totals = data.get("totals", {})
     assets = data.get("assets", {})
     intel = assets.get("intel", {})
@@ -502,4 +499,3 @@ def _customer_content(customer_name, time_range=None):
             ],
         ),
     ]
-

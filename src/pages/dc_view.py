@@ -2,7 +2,7 @@ import dash
 from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
-from src.services.shared import service
+from src.services import api_client as api
 from src.utils.time_range import default_time_range
 from src.components.charts import create_usage_donut_chart, create_bar_chart, create_gauge_chart
 from src.components.header import create_detail_header
@@ -32,27 +32,22 @@ def chart_card(graph_component):
     )
 
 def build_dc_view(dc_id, time_range=None):
-    """Build DC detail page content for the given time range."""
     if not dc_id:
         return html.Div("No Data Center ID provided", style={"padding": "20px"})
     tr = time_range or default_time_range()
-    data = service.get_dc_details(dc_id, tr)
+    data = api.get_dc_details(dc_id, tr)
     
-    # meta data
     dc_name = data["meta"]["name"]
     dc_loc = data["meta"]["location"]
     
-    # Intel Stats
     intel = data["intel"]
     power = data["power"]
     
-    # KPI Logic
     kpi_clusters = intel["clusters"]
     kpi_hosts = intel["hosts"] + power["hosts"]
-    kpi_vms = intel["vms"] + power.get("vms", 0)  # Intel VMs + IBM LPARs
+    kpi_vms = intel["vms"] + power.get("vms", 0)
     kpi_updated = "Live"
 
-    # Usage Percentages
     def calc_pct(used, cap):
         return (used / cap * 100) if cap > 0 else 0
         
@@ -60,9 +55,8 @@ def build_dc_view(dc_id, time_range=None):
     ram_pct = round(calc_pct(intel["ram_used"], intel["ram_cap"]), 1)
     stor_pct = round(calc_pct(intel["storage_used"], intel["storage_cap"]), 1)
 
-    # Placeholders for missing child data
     bar_data = {"name": [], "cpu": []}
-    clusters = [] # No individual cluster list in current Service implementation
+    clusters = []
 
     return html.Div([
         dmc.Tabs(
@@ -95,7 +89,6 @@ def build_dc_view(dc_id, time_range=None):
                         gap="lg",
                         style={"padding": "0 30px"},
                         children=[
-                            # 1. KPIs
                             dmc.SimpleGrid(
                                 cols=4, spacing="lg",
                                 children=[
@@ -106,7 +99,6 @@ def build_dc_view(dc_id, time_range=None):
                                 ]
                             ),
 
-                            # 2. Charts
                             dmc.SimpleGrid(
                                 cols=4, spacing="lg",
                                 children=[
@@ -117,7 +109,6 @@ def build_dc_view(dc_id, time_range=None):
                                 ]
                             ),
 
-                            # 3. Power usage (daily average) and billing (total kWh)
                             html.Div(
                                 className="nexus-card",
                                 style={"padding": "20px"},
@@ -151,14 +142,12 @@ def build_dc_view(dc_id, time_range=None):
                                 ],
                             ),
 
-                            # 4. Cluster List (Empty/Placeholder)
                             html.Div(
                                 "Detailed Cluster List not available in Global View",
                                 style={"textAlign": "center", "color": "#A3AED0", "padding": "40px"}
                             ) if not clusters else dmc.SimpleGrid(
                                 cols=3, spacing="lg",
                                 children=[
-                                    # Cluster card logic preserved but unreachable for now
                                 ]
                             )
                         ]

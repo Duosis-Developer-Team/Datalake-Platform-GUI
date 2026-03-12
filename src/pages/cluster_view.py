@@ -2,18 +2,11 @@ import dash
 from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
-from src.services.shared import service
 from src.components.header import create_detail_header
 
 
 def layout(cluster_id=None):
-    # Cluster view logic is currently placeholder as we transition from mock data.
-    # The current DB schema aggregates at DC level, so cluster-specific drill-down 
-    # specific to 'cluster_id' needs to be implemented in a future phase.
-    # preventing crash by showing a maintenance/construction message.
-    
     return html.Div([
-        # Header
         create_detail_header(
             title=f"Cluster: {cluster_id or '—'}",
             back_href="/datacenters",
@@ -25,7 +18,6 @@ def layout(cluster_id=None):
             tabs=None,
         ),
 
-        # Placeholder Card
         html.Div(
             className="nexus-card",
             style={"margin": "0 30px", "textAlign": "center", "padding": "50px"},

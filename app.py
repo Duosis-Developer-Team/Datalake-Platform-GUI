@@ -13,8 +13,7 @@ logging.basicConfig(
 )
 
 from src.components.sidebar import create_sidebar_nav
-from src.services.shared import service
-from src.services.scheduler_service import start_scheduler
+from src.services import api_client as api
 from src.utils.time_range import default_time_range, preset_to_range
 
 _dash_renderer._set_react_version("18.2.0")
@@ -34,12 +33,10 @@ app = Dash(
 )
 server = app.server
 
-# Import pages once at startup (routing is manual via render_main_content)
 from src.pages import home, datacenters, dc_view, customer_view, query_explorer
 
-# --- Build static sidebar with controls always in layout ---
 _default_tr = default_time_range()
-_customers = service.get_customer_list()
+_customers = api.get_customer_list()
 _default_customer = _customers[0] if _customers else "Boyner"
 _customer_options = [{"value": c, "label": c} for c in _customers] if _customers else [{"value": "Boyner", "label": "Boyner"}]
 
@@ -61,10 +58,8 @@ _sidebar = html.Div(
         "flexDirection": "column",
     },
     children=[
-        # Brand + nav links — only this part is updated by callback
         html.Div(id="sidebar-nav"),
 
-        # Time range controls — static, always in DOM
         dmc.Stack(
             [
                 dmc.Divider(mt="xl", style={"marginBottom": "4px"}),
@@ -130,7 +125,6 @@ _sidebar = html.Div(
             mt="auto",
         ),
 
-        # Customer select — static, always in DOM; visibility toggled by callback
         html.Div(
             id="customer-section",
             children=[
@@ -184,9 +178,6 @@ app.layout = dmc.MantineProvider(
 )
 
 
-# --- Callbacks ---
-
-# 1. Sidebar nav links (brand + active highlighting)
 @app.callback(
     dash.Output("sidebar-nav", "children"),
     dash.Input("url", "pathname"),
@@ -195,7 +186,6 @@ def update_sidebar_nav(pathname):
     return create_sidebar_nav(pathname or "/")
 
 
-# 2. Show/hide customer section based on page
 @app.callback(
     dash.Output("customer-section", "style"),
     dash.Input("url", "pathname"),
@@ -207,7 +197,6 @@ def toggle_customer_section(pathname):
     return {**base, "display": "none"}
 
 
-# 3. Time range store from preset or date picker (no cycle — no reverse sync)
 @app.callback(
     dash.Output("app-time-range", "data"),
     dash.Input("time-range-preset", "value"),
@@ -222,22 +211,17 @@ def update_time_range_store(preset, date_value, current):
     if "time-range-preset" in tid and preset != "custom":
         return preset_to_range(preset)
     if "time-range-picker" in tid and date_value:
-        # Range modunda value = [start, end] listesi
-        # Güvenli unpack — None veya eksik eleman gelirse bekle
         if isinstance(date_value, (list, tuple)) and len(date_value) == 2:
             start, end = date_value
         else:
-            # Eski tek-değer uyumluluğu (geçiş güvencesi)
             start = (current or {}).get("start")
             end = date_value if isinstance(date_value, str) else None
-        # İki tarih de seçilmişse kaydet; biri eksikse beklemeye devam
         if start and end:
             return {"start": start, "end": end, "preset": "custom"}
         return dash.no_update
     return dash.no_update
 
 
-# 4. Main content: dispatch by pathname + time range + customer
 @app.callback(
     dash.Output("main-content", "children"),
     dash.Input("url", "pathname"),
@@ -260,9 +244,6 @@ def render_main_content(pathname, time_range, selected_customer):
         return query_explorer.layout()
     return home.build_overview(tr)
 
-
-# 5. Start background cache scheduler
-_scheduler = start_scheduler(service)
 
 if __name__ == "__main__":
     app.run(debug=True, port=8050, use_reloader=False)

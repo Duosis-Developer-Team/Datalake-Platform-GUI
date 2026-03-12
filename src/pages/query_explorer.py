@@ -1,21 +1,17 @@
-# Query Explorer: run registered queries, view output, edit SQL, add custom queries.
-
 import dash
 from dash import html, dcc, Input, Output, State, callback
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 
-from src.services.shared import service
+from src.services import api_client as api
 from src.services import query_overrides as qo
 
-# Build options once at module load (refresh on add via callback)
 def _query_options():
     return [{"label": k, "value": k} for k in qo.list_all_query_keys()]
 
 
 def layout():
     return html.Div([
-        # Header
         html.Div(
             className="nexus-glass",
             children=[
@@ -40,7 +36,6 @@ def layout():
         html.Div(
             style={"padding": "0 32px"},
             children=[
-                # Query selector and metadata
                 dmc.Paper(
                     p="md",
                     radius="md",
@@ -147,7 +142,6 @@ def layout():
 
 
 def _render_run_output(result: dict) -> html.Div:
-    """Turn execute_registered_query result into UI."""
     if "error" in result:
         return dmc.Alert(result["error"], color="red", title="Error")
     rt = result.get("result_type", "value")
@@ -171,7 +165,6 @@ def _render_run_output(result: dict) -> html.Div:
                 style={"width": "100%", "borderCollapse": "collapse"},
             ),
         )
-    # rows
     cols = result.get("columns") or []
     rows = result.get("data") or []
     return dmc.Paper(
@@ -215,7 +208,7 @@ def on_query_select(query_key):
 def on_run(n_clicks, query_key, params_input):
     if not query_key:
         return dmc.Text("Select a query first.", c="#A3AED0", size="sm")
-    result = service.execute_registered_query(query_key, params_input or "")
+    result = api.execute_registered_query(query_key, params_input or "")
     return _render_run_output(result)
 
 

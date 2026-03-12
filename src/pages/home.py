@@ -2,7 +2,7 @@ import dash
 from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
-from src.services.shared import service
+from src.services import api_client as api
 from src.utils.time_range import default_time_range
 from src.components.charts import (
     create_energy_breakdown_chart,
@@ -15,7 +15,6 @@ from src.components.charts import (
 
 
 def layout():
-    """Default layout (initial load uses default time range)."""
     return build_overview(default_time_range())
 
 
@@ -105,7 +104,6 @@ def platform_card(title, hosts, vms, clusters=None, color="#4318FF"):
 
 
 def _ring_stat(value, label, color):
-    """dmc.RingProgress ile tek kaynak kullanım halkası."""
     try:
         v = max(0.0, min(100.0, float(value)))
     except (TypeError, ValueError):
@@ -151,7 +149,6 @@ def _ring_stat(value, label, color):
 
 
 def _pct_badge(value):
-    """CPU/RAM yüzdesini değere göre renk kodlu dmc.Badge ile döndür."""
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -184,8 +181,6 @@ def _pct_badge(value):
 
 
 def _num_cell(value, suffix=""):
-    """Sayısal değeri sağa hizalı, tabular-nums formatında döndür.
-    0 ise soluklaştırılmış tire göster."""
     try:
         v = int(value)
     except (TypeError, ValueError):
@@ -205,7 +200,6 @@ def _num_cell(value, suffix=""):
 
 
 def _dc_link(name, dc_id):
-    """DC ismini altı çizgisiz, marka renginde, kalın link olarak döndür."""
     return dcc.Link(
         dmc.Text(
             name,
@@ -220,15 +214,13 @@ def _dc_link(name, dc_id):
 
 
 def build_overview(time_range=None):
-    """Build Overview page content for the given time range (used by app callback)."""
     tr = time_range or default_time_range()
-    data = service.get_global_dashboard(tr)
+    data = api.get_global_dashboard(tr)
     overview = data.get("overview", {})
     platforms = data.get("platforms", {})
     energy_breakdown = data.get("energy_breakdown", {})
-    summaries = service.get_all_datacenters_summary(tr)
+    summaries = api.get_all_datacenters_summary(tr)
 
-    # KPI strip (platforms = Nutanix + vCenter + IBM per DC, summed)
     kpis = [
         metric_card("Data Centers", str(overview.get("dc_count", 0)), "solar:server-square-bold-duotone", "Sites"),
         metric_card("Platforms", f"{overview.get('total_platforms', 0):,}", "solar:box-bold-duotone", "Nutanix + vCenter + IBM"),
@@ -237,7 +229,6 @@ def build_overview(time_range=None):
         metric_card("Total Energy", f"{overview.get('total_energy_kw', 0):,.0f} kW", "material-symbols:bolt-outline", "Daily average", color="orange"),
     ]
 
-    # Platform breakdown
     nutanix = platforms.get("nutanix", {})
     vmware = platforms.get("vmware", {})
     ibm = platforms.get("ibm", {})
@@ -247,7 +238,6 @@ def build_overview(time_range=None):
         platform_card("IBM Power", ibm.get("hosts", 0), ibm.get("lpars", 0), color="#FFB547"),
     ]
 
-    # Resource usage percentages
     cpu_cap = overview.get("total_cpu_cap") or 1
     ram_cap = overview.get("total_ram_cap") or 1
     stor_cap = overview.get("total_storage_cap") or 1
@@ -255,7 +245,6 @@ def build_overview(time_range=None):
     ram_pct = round((overview.get("total_ram_used", 0) or 0) / ram_cap * 100, 1) if ram_cap > 0 else 0
     stor_pct = round((overview.get("total_storage_used", 0) or 0) / stor_cap * 100, 1) if stor_cap > 0 else 0
 
-    # Energy breakdown (IBM Power + vCenter only; Loki/racks not used)
     eb_labels = ["IBM Power", "vCenter"]
     eb_values = [
         energy_breakdown.get("ibm_kw", 0) or 0,
@@ -264,7 +253,6 @@ def build_overview(time_range=None):
     if sum(eb_values) == 0:
         eb_values = [1, 1]
 
-    # DC comparison table
     dc_names = [s["name"] for s in summaries]
     dc_hosts = [s["host_count"] for s in summaries]
     dc_vms = [s["vm_count"] for s in summaries]
