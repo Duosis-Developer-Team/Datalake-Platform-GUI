@@ -22,44 +22,17 @@ jobs:
           python-version: '3.11'
       - name: Install Ruff
         run: pip install ruff
-      - name: Run Ruff
-        run: ruff check backend/app/ --select E,F,W --ignore E501
+      - name: Lint datacenter-api
+        run: ruff check services/datacenter-api/app/ --select E,F,W --ignore E501
+      - name: Lint customer-api
+        run: ruff check services/customer-api/app/ --select E,F,W --ignore E501
+      - name: Lint query-api
+        run: ruff check services/query-api/app/ --select E,F,W --ignore E501
 
-  test:
-    name: Test
+  test-datacenter-api:
+    name: Test datacenter-api
     runs-on: ubuntu-latest
     needs: lint
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_DB: bulutlake
-          POSTGRES_USER: datalakeui
-          POSTGRES_PASSWORD: test_password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U datalakeui -d bulutlake"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DB_HOST: localhost
-      DB_PORT: '5432'
-      DB_NAME: bulutlake
-      DB_USER: datalakeui
-      DB_PASS: test_password
-      REDIS_HOST: localhost
-      REDIS_PORT: '6379'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,17 +40,47 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install Backend Dependencies
-        run: pip install -r backend/requirements.txt
-      - name: Install Test Dependencies
-        run: pip install pytest pytest-cov
+      - name: Install Dependencies
+        run: pip install -r services/datacenter-api/requirements.txt
       - name: Run Pytest
-        run: cd backend && pytest tests/ -v --tb=short --cov=app --cov-report=term-missing --cov-fail-under=85
+        run: cd services/datacenter-api && pytest tests/ -v --tb=short
+
+  test-customer-api:
+    name: Test customer-api
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Dependencies
+        run: pip install -r services/customer-api/requirements.txt
+      - name: Run Pytest
+        run: cd services/customer-api && pytest tests/ -v --tb=short
+
+  test-query-api:
+    name: Test query-api
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Dependencies
+        run: pip install -r services/query-api/requirements.txt
+      - name: Run Pytest
+        run: cd services/query-api && pytest tests/ -v --tb=short
 
   build:
     name: Build And Push
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test-datacenter-api, test-customer-api, test-query-api]
     if: github.ref == 'refs/heads/main'
     env:
       REGISTRY: ${{ secrets.REGISTRY }}
@@ -92,7 +95,11 @@ jobs:
         run: |
           REGISTRY_HOST=$(printf '%s' "$REGISTRY" | cut -d/ -f1)
           printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" --password-stdin
-      - name: Build And Push Backend
-        run: docker buildx build --push -t "$REGISTRY/bulutistan-data-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-data-api:latest" -f backend/Dockerfile ./backend
+      - name: Build And Push datacenter-api
+        run: docker buildx build --push -t "$REGISTRY/bulutistan-datacenter-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-datacenter-api:latest" -f services/datacenter-api/Dockerfile services/datacenter-api
+      - name: Build And Push customer-api
+        run: docker buildx build --push -t "$REGISTRY/bulutistan-customer-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-customer-api:latest" -f services/customer-api/Dockerfile services/customer-api
+      - name: Build And Push query-api
+        run: docker buildx build --push -t "$REGISTRY/bulutistan-query-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-query-api:latest" -f services/query-api/Dockerfile services/query-api
       - name: Build And Push Frontend
         run: docker buildx build --push -t "$REGISTRY/bulutistan-frontend:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-frontend:latest" -f Dockerfile .

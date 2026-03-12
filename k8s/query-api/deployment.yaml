@@ -1,32 +1,32 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bulutistan-data-api
+  name: bulutistan-query-api
   labels:
-    app: bulutistan-data-api
+    app: bulutistan-query-api
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: bulutistan-data-api
+      app: bulutistan-query-api
   template:
     metadata:
       labels:
-        app: bulutistan-data-api
+        app: bulutistan-query-api
     spec:
       containers:
-        - name: bulutistan-data-api
-          image: bulutistan-data-api:latest
+        - name: bulutistan-query-api
+          image: bulutistan-query-api:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
           resources:
             requests:
-              cpu: 250m
-              memory: 256Mi
+              cpu: 100m
+              memory: 128Mi
             limits:
               cpu: 500m
-              memory: 512Mi
+              memory: 256Mi
           livenessProbe:
             httpGet:
               path: /health
@@ -37,41 +37,31 @@ spec:
             httpGet:
               path: /ready
               port: 8000
-            initialDelaySeconds: 25
+            initialDelaySeconds: 5
             periodSeconds: 10
           env:
             - name: DB_HOST
               valueFrom:
                 configMapKeyRef:
-                  name: bulutistan-data-api-config
+                  name: bulutistan-query-api-config
                   key: DB_HOST
             - name: DB_PORT
               valueFrom:
                 configMapKeyRef:
-                  name: bulutistan-data-api-config
+                  name: bulutistan-query-api-config
                   key: DB_PORT
             - name: DB_NAME
               valueFrom:
                 configMapKeyRef:
-                  name: bulutistan-data-api-config
+                  name: bulutistan-query-api-config
                   key: DB_NAME
             - name: DB_USER
               valueFrom:
                 configMapKeyRef:
-                  name: bulutistan-data-api-config
+                  name: bulutistan-query-api-config
                   key: DB_USER
-            - name: REDIS_HOST
-              valueFrom:
-                configMapKeyRef:
-                  name: bulutistan-data-api-config
-                  key: REDIS_HOST
-            - name: REDIS_PORT
-              valueFrom:
-                configMapKeyRef:
-                  name: bulutistan-data-api-config
-                  key: REDIS_PORT
             - name: DB_PASS
               valueFrom:
                 secretKeyRef:
-                  name: bulutistan-data-api-secret
+                  name: bulutistan-query-api-secret
                   key: DB_PASS

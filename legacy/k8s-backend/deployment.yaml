@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bulutistan-data-api
+  labels:
+    app: bulutistan-data-api
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: bulutistan-data-api
+  template:
+    metadata:
+      labels:
+        app: bulutistan-data-api
+    spec:
+      containers:
+        - name: bulutistan-data-api
+          image: bulutistan-data-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          env:
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: bulutistan-data-api-config
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: bulutistan-data-api-config
+                  key: DB_PORT
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: bulutistan-data-api-config
+                  key: DB_NAME
+            - name: DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: bulutistan-data-api-config
+                  key: DB_USER
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: bulutistan-data-api-config
+                  key: REDIS_HOST
+            - name: REDIS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: bulutistan-data-api-config
+                  key: REDIS_PORT
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: bulutistan-data-api-secret
+                  key: DB_PASS

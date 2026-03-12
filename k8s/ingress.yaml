@@ -12,25 +12,39 @@ spec:
     - host: bulutistan.local
       http:
         paths:
-          - path: /api
+          - path: /api/v1/datacenters
             pathType: Prefix
             backend:
               service:
-                name: bulutistan-data-api
+                name: bulutistan-datacenter-api
+                port:
+                  number: 80
+          - path: /api/v1/dashboard
+            pathType: Prefix
+            backend:
+              service:
+                name: bulutistan-datacenter-api
+                port:
+                  number: 80
+          - path: /api/v1/customers
+            pathType: Prefix
+            backend:
+              service:
+                name: bulutistan-customer-api
+                port:
+                  number: 80
+          - path: /api/v1/queries
+            pathType: Prefix
+            backend:
+              service:
+                name: bulutistan-query-api
                 port:
                   number: 80
           - path: /health
             pathType: Exact
             backend:
               service:
-                name: bulutistan-data-api
-                port:
-                  number: 80
-          - path: /ready
-            pathType: Exact
-            backend:
-              service:
-                name: bulutistan-data-api
+                name: bulutistan-datacenter-api
                 port:
                   number: 80
           - path: /

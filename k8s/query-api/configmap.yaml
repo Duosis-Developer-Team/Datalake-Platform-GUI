@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bulutistan-query-api-config
+data:
+  DB_HOST: "10.134.16.6"
+  DB_PORT: "5000"
+  DB_NAME: "bulutlake"
+  DB_USER: "query_svc"
