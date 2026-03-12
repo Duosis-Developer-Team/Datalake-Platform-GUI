@@ -8,6 +8,7 @@ import plotly.graph_objs as go
 
 from src.services.shared import service
 from src.utils.time_range import default_time_range
+from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_float
 from src.components.header import create_detail_header
 from src.pages.home import metric_card
 from src.components.s3_panel import build_customer_s3_panel
@@ -171,6 +172,129 @@ def _tab_summary(totals: dict, assets: dict):
             ]),
         ),
     ])
+
+
+def _tab_billing(totals: dict, assets: dict, backup_totals: dict, s3_data: dict | None = None):
+    """Billing tab — invoice-style view combining compute, backup and S3."""
+    classic   = assets.get("classic", {}) or {}
+    hyperconv = assets.get("hyperconv", {}) or {}
+    power     = assets.get("power", {}) or {}
+
+    total_vms   = int(totals.get("vms_total", 0) or 0)
+    total_cpu   = float(totals.get("cpu_total", 0.0) or 0.0)
+    total_intel_mem = float(classic.get("memory_gb", 0) or 0) + float(hyperconv.get("memory_gb", 0) or 0)
+    total_intel_disk = float(classic.get("disk_gb", 0) or 0) + float(hyperconv.get("disk_gb", 0) or 0)
+    total_power_mem = float(power.get("memory_total_gb", 0) or 0)
+
+    veeam_defined   = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
+    zerto_protected = int(backup_totals.get("zerto_protected_vms", 0) or 0)
+    nb_pre_gib      = float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0)
+    nb_post_gib     = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
+    zerto_prov_gib  = float(backup_totals.get("zerto_provisioned_gib", 0) or 0)
+
+    vaults = (s3_data or {}).get("vaults", []) or []
+    vault_count = len(vaults)
+
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            dmc.SimpleGrid(
+                cols=4,
+                spacing="lg",
+                children=[
+                    _metric("Total Instances", f"{total_vms:,}", "solar:laptop-bold-duotone", color="teal"),
+                    _metric("Total CPU (vCPU)", f"{total_cpu:.1f}", "solar:cpu-bold-duotone"),
+                    _metric("Intel Memory (GB)", smart_memory(total_intel_mem), "solar:ram-bold-duotone"),
+                    _metric("Intel Disk (GB)", smart_storage(total_intel_disk), "solar:hdd-bold-duotone", color="orange"),
+                ],
+            ),
+            _section_card(
+                "Compute billing lines",
+                "Per compute platform billable resource totals",
+                html.Div(
+                    className="nexus-card",
+                    style={"padding": "0", "background": "transparent", "boxShadow": "none"},
+                    children=dmc.Table(
+                        striped=True,
+                        highlightOnHover=True,
+                        children=[
+                            html.Thead(
+                                html.Tr(
+                                    [
+                                        html.Th("Line item"),
+                                        html.Th("Instances"),
+                                        html.Th("CPU (vCPU)"),
+                                        html.Th("Memory"),
+                                        html.Th("Disk"),
+                                    ]
+                                )
+                            ),
+                            html.Tbody(
+                                [
+                                    html.Tr(
+                                        [
+                                            html.Td("Classic Compute"),
+                                            html.Td(f"{int(classic.get('vm_count', 0) or 0):,}"),
+                                            html.Td(f"{float(classic.get('cpu_total', 0) or 0):.1f}"),
+                                            html.Td(smart_memory(float(classic.get('memory_gb', 0) or 0))),
+                                            html.Td(smart_storage(float(classic.get('disk_gb', 0) or 0))),
+                                        ]
+                                    ),
+                                    html.Tr(
+                                        [
+                                            html.Td("Hyperconverged"),
+                                            html.Td(f"{int(hyperconv.get('vm_count', 0) or 0):,}"),
+                                            html.Td(f"{float(hyperconv.get('cpu_total', 0) or 0):.1f}"),
+                                            html.Td(smart_memory(float(hyperconv.get('memory_gb', 0) or 0))),
+                                            html.Td(smart_storage(float(hyperconv.get('disk_gb', 0) or 0))),
+                                        ]
+                                    ),
+                                    html.Tr(
+                                        [
+                                            html.Td("Power Compute (IBM)"),
+                                            html.Td(f"{int(power.get('lpar_count', 0) or 0):,}"),
+                                            html.Td(f"{float(power.get('cpu_total', 0) or 0):.1f}"),
+                                            html.Td(smart_memory(total_power_mem)),
+                                            html.Td("-"),
+                                        ]
+                                    ),
+                                ]
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+            _section_card(
+                "Backup billing lines",
+                "Billable backup services and capacities",
+                dmc.SimpleGrid(
+                    cols=3,
+                    spacing="lg",
+                    children=[
+                        _metric("Veeam sessions", veeam_defined, "material-symbols:backup-outline"),
+                        _metric("Zerto protected VMs", zerto_protected, "material-symbols:shield-outline", color="teal"),
+                        _metric("NetBackup stored (GiB)", f"{nb_post_gib:.2f}", "mdi:database-arrow-down-outline", color="orange"),
+                    ],
+                ),
+            ),
+            _section_card(
+                "S3 Object Storage (billing)",
+                "Vault-level objects relevant for billing",
+                dmc.Group(
+                    gap="xl",
+                    children=[
+                        dmc.Stack(
+                            gap="xs",
+                            children=[
+                                dmc.Text("Vaults", size="sm", c="#A3AED0"),
+                                dmc.Text(f"{vault_count}", fw=700, c="#2B3674"),
+                            ],
+                        ),
+                    ],
+                ),
+            ),
+        ],
+    )
 
 
 def _tab_classic(classic: dict):
@@ -507,285 +631,73 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         "intel_vm_list_len": len(intel_vm_list) if isinstance(intel_vm_list, list) else str(type(intel_vm_list)),
     })
 
-    return [
-        dmc.Tabs(
-            color="indigo",
-            variant="pills",
-            radius="md",
-            value="summary",
+    classic   = assets.get("classic", {}) or {}
+    hyperconv = assets.get("hyperconv", {}) or {}
+
+    virt_content = dmc.Tabs(
+        color="violet",
+        variant="outline",
+        radius="md",
+        value="classic",
+        children=[
+            dmc.TabsList(
+                children=[
+                    dmc.TabsTab("Klasik Mimari", value="classic"),
+                    dmc.TabsTab("Hyperconverged Mimari", value="hyperconv"),
+                    dmc.TabsTab("Power Mimari", value="power"),
+                ]
+            ),
+            dmc.TabsPanel(value="classic", pt="lg", children=_tab_classic(classic)),
+            dmc.TabsPanel(value="hyperconv", pt="lg", children=_tab_hyperconv(hyperconv)),
+            dmc.TabsPanel(value="power", pt="lg", children=_tab_power(power_asset)),
+        ],
+    )
+
+    backup_tabs = dmc.Tabs(
+        color="green",
+        variant="outline",
+        radius="md",
+        value="veeam",
+        children=[
+            dmc.TabsList(
+                children=[
+                    dmc.TabsTab("Veeam", value="veeam"),
+                    dmc.TabsTab("Zerto", value="zerto"),
+                    dmc.TabsTab("Netbackup", value="netbackup"),
+                ]
+            ),
+            dmc.TabsPanel(value="veeam", pt="lg", children=_tab_veeam(backup_assets, backup_totals)),
+            dmc.TabsPanel(value="zerto", pt="lg", children=_tab_zerto(backup_assets, backup_totals)),
+            dmc.TabsPanel(value="netbackup", pt="lg", children=_tab_netbackup(backup_assets, backup_totals)),
+        ],
+    )
+
+    return {
+        "summary": _tab_summary(totals, assets),
+        "virt": virt_content,
+        "backup": dmc.Stack(
+            gap="lg",
             children=[
-                dmc.TabsList(
+                dmc.SimpleGrid(
+                    cols=3,
+                    spacing="lg",
                     children=[
-                        dmc.TabsTab("Summary",        value="summary"),
-                        dmc.TabsTab("Virtualization", value="virt"),
-                        dmc.TabsTab("Backup",         value="backup"),
-                        dmc.TabsTab("S3",             value="s3") if has_s3 else None,
+                        metric_card("HANA VMs (LPARs)", power_lpars, "solar:laptop-bold-duotone", color="teal"),
+                        metric_card("Total CPU (Power HMC)", f"{power_cpu:.1f}", "solar:cpu-bold-duotone"),
+                        metric_card("Total Memory (Power HMC, GB)", f"{power_mem:.1f}", "solar:ram-bold-duotone", color="orange"),
                     ],
-                    style={"padding": "0 30px", "marginBottom": "24px"},
                 ),
-
-                # ── Summary ──────────────────────────────────────────────
-                dmc.TabsPanel(
-                    value="summary",
-                    children=dmc.Stack(
-                        gap="lg",
-                        style={"padding": "0 30px"},
-                        children=[
-                            dmc.SimpleGrid(
-                                cols=3,
-                                spacing="lg",
-                                children=[
-                                    metric_card("Total Customer VMs", totals.get("vms_total", 0), "solar:laptop-bold-duotone", color="teal"),
-                                    metric_card("Intel VMs", totals.get("intel_vms_total", 0), "solar:laptop-bold-duotone"),
-                                    metric_card("HANA LPARs", totals.get("power_lpar_total", 0), "solar:server-square-bold-duotone", color="orange"),
-                                ],
-                            ),
-                            html.Div(
-                                className="nexus-card",
-                                style={"padding": "20px"},
-                                children=[
-                                    html.H3("Compute summary", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
-                                    dmc.SimpleGrid(
-                                        cols=3,
-                                        spacing="lg",
-                                        children=[
-                                            metric_card("Total CPU (vCPU)", f"{totals.get('cpu_total', 0.0):.1f}", "solar:cpu-bold-duotone"),
-                                            metric_card("Intel CPU (vCPU)", f"{totals.get('intel_cpu_total', 0.0):.1f}", "solar:cpu-bold-duotone"),
-                                            metric_card("HANA CPU (vCPU)", f"{totals.get('power_cpu_total', 0.0):.1f}", "solar:cpu-bold-duotone", color="orange"),
-                                        ],
-                                    ),
-                                ],
-                            ),
-                            html.Div(
-                                className="nexus-card",
-                                style={"padding": "20px"},
-                                children=[
-                                    html.H3("Backup summary", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
-                                    dmc.SimpleGrid(
-                                        cols=3,
-                                        spacing="lg",
-                                        children=[
-                                            metric_card("Veeam sessions", veeam_defined, "material-symbols:backup-outline"),
-                                            metric_card("Protected VMs (Zerto)", zerto_protected, "material-symbols:shield-outline", color="teal"),
-                                            metric_card("IBM storage volume (GB)", f"{storage_gb:.1f}", "solar:hdd-bold-duotone", color="orange"),
-                                        ],
-                                    ),
-                                ],
-                            ),
-                            html.Div(
-                                className="nexus-card",
-                                style={"padding": "20px"},
-                                children=[
-                                    html.H3("Backup capacity (billing view)", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
-                                    dmc.SimpleGrid(
-                                        cols=3,
-                                        spacing="lg",
-                                        children=[
-                                            metric_card("NetBackup pre‑dedup (GiB)", f"{netbackup_pre_gib:.2f}", "mdi:database-lock-outline"),
-                                            metric_card("NetBackup stored (GiB)", f"{netbackup_post_gib:.2f}", "mdi:database-arrow-down-outline", color="teal"),
-                                            metric_card("Zerto max provisioned (GiB)", f"{zerto_provisioned_gib:.2f}", "solar:hdd-bold-duotone", color="orange"),
-                                        ],
-                                    ),
-                                ],
-                            ),
-                        ],
-                    ),
-                ),
-                dmc.TabsPanel(
-                    value="virt",
-                    children=html.Div(
-                        style={"padding": "0 30px"},
-                        children=[
-                            dmc.SimpleGrid(
-                                cols=4,
-                                spacing="lg",
-                                children=[
-                                    metric_card("Total Intel VMs", intel_vms.get("total", 0), "solar:laptop-bold-duotone", color="teal"),
-                                    metric_card("Total CPU (Intel)", intel_cpu.get("total", 0.0), "solar:cpu-bold-duotone"),
-                                    metric_card("Total Memory (Intel, GB)", f"{intel_mem.get('total', 0.0):.1f}", "solar:ram-bold-duotone"),
-                                    metric_card("Total Disk (Intel, GB)", f"{intel_disk.get('total', 0.0):.1f}", "solar:hdd-bold-duotone", color="orange"),
-                                ],
-                            ),
-                            html.Div(
-                                className="nexus-card",
-                                style={"padding": "20px"},
-                                children=[
-                                    html.H3("Platform breakdown (Intel)", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
-                                    dmc.Stack(
-                                        gap="sm",
-                                        children=[
-                                            dmc.Group(
-                                                justify="space-between",
-                                                children=[
-                                                    dmc.Text("VMware", size="sm", c="#A3AED0"),
-                                                    dmc.Text(
-                                                        f"VMs: {intel_vms.get('vmware', 0)}, CPU: {intel_cpu.get('vmware', 0.0):.1f}",
-                                                        size="sm",
-                                                        fw=600,
-                                                    ),
-                                                ],
-                                            ),
-                                            dmc.Group(
-                                                justify="space-between",
-                                                children=[
-                                                    dmc.Text("Nutanix", size="sm", c="#A3AED0"),
-                                                    dmc.Text(
-                                                        f"VMs: {intel_vms.get('nutanix', 0)}, CPU: {intel_cpu.get('nutanix', 0.0):.1f}",
-                                                        size="sm",
-                                                        fw=600,
-                                                    ),
-                                                ],
-                                            ),
-                                        ],
-                                    ),
-                                ],
-                            ),
-                            html.Div(
-                                className="nexus-card",
-                                style={"padding": "20px"},
-                                children=[
-                                    html.H3("Intel VMs of customer", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
-                                    html.Div(
-                                        style={"maxHeight": "400px", "overflowY": "auto"},
-                                        children=[
-                                            dmc.Table(
-                                                striped=True,
-                                                highlightOnHover=True,
-                                                children=[
-                                                    html.Thead(
-                                                        html.Tr(
-                                                            [
-                                                                html.Th("VM"),
-                                                                html.Th("Source"),
-                                                                html.Th("CPU (vCPU)"),
-                                                                html.Th("Memory (GB)"),
-                                                                html.Th("Disk (GB)"),
-                                                            ]
-                                                        )
-                                                    ),
-                                                    html.Tbody(
-                                                        [
-                                                            html.Tr(
-                                                                [
-                                                                    html.Td(row.get("name")),
-                                                                    html.Td(row.get("source")),
-                                                                    html.Td(f"{row.get('cpu', 0.0):.1f}"),
-                                                                    html.Td(f"{row.get('memory_gb', 0.0):.1f}"),
-                                                                    html.Td(f"{row.get('disk_gb', 0.0):.1f}"),
-                                                                ]
-                                                            )
-                                                            for row in intel_vm_list
-                                                        ]
-                                                        if intel_vm_list
-                                                        else [html.Tr([html.Td("No data", colSpan=5)])]
-                                                    ),
-                                                ],
-                                            ),
-                                        ],
-                                    ),
-                                ],
-                            ),
-                        ],
-                    ),
-                ),
-
-                # ── Backup (nested) ───────────────────────────────────────
-                dmc.TabsPanel(
-                    value="backup",
-                    children=html.Div(
-                        style={"padding": "0 30px"},
-                        children=[
-                            dmc.SimpleGrid(
-                                cols=3,
-                                spacing="lg",
-                                children=[
-                                    metric_card("HANA VMs (LPARs)", power_lpars, "solar:laptop-bold-duotone", color="teal"),
-                                    metric_card("Total CPU (Power HMC)", f"{power_cpu:.1f}", "solar:cpu-bold-duotone"),
-                                    metric_card("Total Memory (Power HMC, GB)", f"{power_mem:.1f}", "solar:ram-bold-duotone", color="orange"),
-                                ],
-                            ),
-                            html.Div(
-                                className="nexus-card",
-                                style={"padding": "20px"},
-                                children=[
-                                    html.H3("HANA resource distribution", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
-                                    dcc.Graph(
-                                        figure={
-                                            "data": [
-                                                go.Bar(name="CPU (vCPU)", x=["HANA"], y=[power_cpu]),
-                                                go.Bar(name="Memory (GB)", x=["HANA"], y=[power_mem]),
-                                            ],
-                                            "layout": go.Layout(
-                                                barmode="group",
-                                                margin={"l": 40, "r": 10, "t": 10, "b": 40},
-                                                height=260,
-                                            ),
-                                        },
-                                        config={"displayModeBar": False},
-                                    ),
-                                ],
-                            ),
-                            html.Div(
-                                className="nexus-card",
-                                style={"padding": "20px"},
-                                children=[
-                                    html.H3("HANA VMs (LPARs) of customer", style={"margin": "0 0 12px 0", "color": "#2B3674"}),
-                                    html.Div(
-                                        style={"maxHeight": "400px", "overflowY": "auto"},
-                                        children=[
-                                            dmc.Table(
-                                                striped=True,
-                                                highlightOnHover=True,
-                                                children=[
-                                                    html.Thead(
-                                                        html.Tr(
-                                                            [
-                                                                html.Th("LPAR"),
-                                                                html.Th("Source"),
-                                                                html.Th("CPU (vCPU)"),
-                                                                html.Th("Memory (GB)"),
-                                                                html.Th("State"),
-                                                            ]
-                                                        )
-                                                    ),
-                                                    html.Tbody(
-                                                        [
-                                                            html.Tr(
-                                                                [
-                                                                    html.Td(row.get("name")),
-                                                                    html.Td(row.get("source")),
-                                                                    html.Td(f"{row.get('cpu', 0.0):.1f}"),
-                                                                    html.Td(f"{row.get('memory_gb', 0.0):.1f}"),
-                                                                    html.Td(row.get("state") or "-"),
-                                                                ]
-                                                            )
-                                                            for row in power_vm_list
-                                                        ]
-                                                        if power_vm_list
-                                                        else [html.Tr([html.Td("No data", colSpan=5)])]
-                                                    ),
-                                                ],
-                                            ),
-                                        ],
-                                    ),
-                                ],
-                            ),
-                        ],
-                    ),
-                ),
-
-                # ── S3 Object Storage (vault-level) ────────────────────────
-                dmc.TabsPanel(
-                    value="s3",
-                    children=html.Div(
-                        id="s3-customer-metrics-panel",
-                        style={"padding": "0 30px"},
-                        children=build_customer_s3_panel(customer_name or "Boyner", s3_data, tr, None) if has_s3 else html.Div(),
-                    ),
-                ) if has_s3 else None,
+                backup_tabs,
             ],
-        )
-    ]
+        ),
+        "billing": _tab_billing(totals, assets, backup_totals, s3_data),
+        "s3": html.Div(
+            id="s3-customer-metrics-panel",
+            style={"padding": "0 30px"},
+            children=build_customer_s3_panel(customer_name or "Boyner", s3_data, tr, None) if has_s3 else html.Div(),
+        ),
+        "has_s3": has_s3,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -793,48 +705,107 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
 # ---------------------------------------------------------------------------
 
 def build_customer_layout(time_range=None, selected_customer=None):
-    tr     = time_range or default_time_range()
-    chosen = "Boyner"
-    return html.Div([
-        create_detail_header(
-            title="Customer View",
-            back_href="/",
-            back_label="Overview",
-            subtitle_badge="👤 Boyner",
-            subtitle_color="teal",
-            time_range=tr,
-            icon="solar:users-group-two-rounded-bold-duotone",
-            tabs=None,
-        ),
-        dmc.SimpleGrid(
-            cols=3,
-            spacing="lg",
-            style={"padding": "0 30px", "marginBottom": "24px"},
-            children=[
-                html.Div(
-                    className="nexus-card",
-                    style={"padding": "24px"},
-                    children=[
-                        dmc.Group(justify="space-between", mb="lg", children=[
-                            dmc.Group(gap="sm", children=[
-                                dmc.ThemeIcon(size="xl", variant="light", color="indigo", radius="md",
-                                              children=DashIconify(icon="solar:users-group-two-rounded-bold-duotone", width=30)),
-                                dmc.Stack(gap=0, children=[
-                                    dmc.Text("Boyner", fw=700, size="lg", c="#2B3674"),
+    tr = time_range or default_time_range()
+    chosen = selected_customer or "Boyner"
+
+    content = _customer_content(chosen, tr)
+    has_s3 = bool(content.get("has_s3"))
+
+    tabs_list = dmc.TabsList(
+        style={"paddingTop": "8px"},
+        children=[
+            dmc.TabsTab("Summary", value="summary"),
+            dmc.TabsTab("Virtualization", value="virt"),
+            dmc.TabsTab("Backup", value="backup"),
+            dmc.TabsTab("Billing", value="billing"),
+            dmc.TabsTab("S3", value="s3") if has_s3 else None,
+        ],
+    )
+
+    header = create_detail_header(
+        title="Customer View",
+        back_href="/",
+        back_label="Overview",
+        subtitle_badge=f"👤 {chosen}",
+        subtitle_color="teal",
+        time_range=tr,
+        icon="solar:users-group-two-rounded-bold-duotone",
+        tabs=tabs_list,
+    )
+
+    intro_card = dmc.SimpleGrid(
+        cols=3,
+        spacing="lg",
+        style={"padding": "0 30px", "marginBottom": "24px"},
+        children=[
+            html.Div(
+                className="nexus-card",
+                style={"padding": "24px"},
+                children=[
+                    dmc.Group(justify="space-between", mb="lg", children=[
+                        dmc.Group(gap="sm", children=[
+                            dmc.ThemeIcon(
+                                size="xl",
+                                variant="light",
+                                color="indigo",
+                                radius="md",
+                                children=DashIconify(icon="solar:users-group-two-rounded-bold-duotone", width=30),
+                            ),
+                            dmc.Stack(
+                                gap=0,
+                                children=[
+                                    dmc.Text(chosen, fw=700, size="lg", c="#2B3674"),
                                     dmc.Text("Billing assets", size="sm", c="#A3AED0", fw=500),
-                                ]),
-                            ]),
+                                ],
+                            ),
                         ]),
-                        dmc.Text(
-                            "All metrics show resources allocated/provisioned to this customer across all platforms.",
-                            size="sm", c="#A3AED0",
-                        ),
-                    ],
-                ),
-            ],
-        ),
-        html.Div(id="customer-view-content", children=_customer_content(chosen, tr)),
-    ])
+                    ]),
+                    dmc.Text(
+                        "All metrics show resources allocated/provisioned to this customer across all platforms.",
+                        size="sm",
+                        c="#A3AED0",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    return html.Div(
+        children=[
+            dmc.Tabs(
+                color="indigo",
+                variant="pills",
+                radius="md",
+                value="summary",
+                children=[
+                    header,
+                    intro_card,
+                    dmc.TabsPanel(
+                        value="summary",
+                        children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("summary")]),
+                    ),
+                    dmc.TabsPanel(
+                        value="virt",
+                        children=html.Div(style={"padding": "0 30px"}, children=[content.get("virt")]),
+                    ),
+                    dmc.TabsPanel(
+                        value="backup",
+                        children=html.Div(style={"padding": "0 30px"}, children=[content.get("backup")]),
+                    ),
+                    dmc.TabsPanel(
+                        value="billing",
+                        children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("billing")]),
+                    ),
+                    dmc.TabsPanel(
+                        value="s3",
+                        children=content.get("s3") if has_s3 else html.Div(),
+                    )
+                    if has_s3
+                    else None,
+                ],
+            )
+        ]
+    )
 
 
 def layout():
