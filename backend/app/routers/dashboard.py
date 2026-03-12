@@ -1,7 +1,6 @@
-from typing import Optional
+from fastapi import APIRouter, Depends, Request
 
-from fastapi import APIRouter, Depends, Query, Request
-
+from app.core.time_filter import TimeFilter
 from app.models.schemas import GlobalOverview
 from app.services.db_service import DatabaseService
 
@@ -14,9 +13,7 @@ def get_db(request: Request) -> DatabaseService:
 
 @router.get("/dashboard/overview", response_model=GlobalOverview)
 def dashboard_overview(
-    start: Optional[str] = Query(None),
-    end: Optional[str] = Query(None),
+    tf: TimeFilter = Depends(),
     db: DatabaseService = Depends(get_db),
 ):
-    time_range = {"start": start, "end": end} if (start and end) else None
-    return db.get_global_dashboard(time_range)
+    return db.get_global_dashboard(tf.to_dict())

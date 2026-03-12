@@ -1,7 +1,8 @@
-from typing import List, Optional
+from typing import List
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Request
 
+from app.core.time_filter import TimeFilter
 from app.models.schemas import DataCenterDetail, DataCenterSummary
 from app.services.db_service import DatabaseService
 
@@ -14,20 +15,16 @@ def get_db(request: Request) -> DatabaseService:
 
 @router.get("/datacenters/summary", response_model=List[DataCenterSummary])
 def list_datacenters(
-    start: Optional[str] = Query(None),
-    end: Optional[str] = Query(None),
+    tf: TimeFilter = Depends(),
     db: DatabaseService = Depends(get_db),
 ):
-    time_range = {"start": start, "end": end} if (start and end) else None
-    return db.get_all_datacenters_summary(time_range)
+    return db.get_all_datacenters_summary(tf.to_dict())
 
 
 @router.get("/datacenters/{dc_code}", response_model=DataCenterDetail)
 def datacenter_detail(
     dc_code: str,
-    start: Optional[str] = Query(None),
-    end: Optional[str] = Query(None),
+    tf: TimeFilter = Depends(),
     db: DatabaseService = Depends(get_db),
 ):
-    time_range = {"start": start, "end": end} if (start and end) else None
-    return db.get_dc_details(dc_code, time_range)
+    return db.get_dc_details(dc_code, tf.to_dict())

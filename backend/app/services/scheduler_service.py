@@ -1,7 +1,7 @@
 import logging
 import atexit
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REFRESH_INTERVAL_MINUTES = 15
+INITIAL_WARM_DELAY_SECONDS = 2
 
 
 def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
@@ -42,10 +43,12 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
         REFRESH_INTERVAL_MINUTES,
     )
 
+    initial_run_time = datetime.now() + timedelta(seconds=INITIAL_WARM_DELAY_SECONDS)
+
     try:
         scheduler.add_job(
             func=db_service.warm_additional_ranges,
-            trigger=DateTrigger(run_date=datetime.now()),
+            trigger=DateTrigger(run_date=initial_run_time),
             id="dc_long_ranges_initial_warm",
             name="Initial DC cache warm-up (30d + previous month)",
             replace_existing=True,
@@ -59,7 +62,7 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
         customer_range = preset_to_range(PRESET_30_DAYS)
         scheduler.add_job(
             func=lambda: db_service.get_customer_resources("Boyner", customer_range),
-            trigger=DateTrigger(run_date=datetime.now()),
+            trigger=DateTrigger(run_date=initial_run_time),
             id="customer_boyner_initial_warm",
             name="Initial Boyner customer cache warm-up (30d)",
             replace_existing=True,

@@ -1,36 +1,33 @@
-import threading
 import logging
 from typing import Any, Callable, Optional
-from cachetools import TTLCache
+
+from app.core.cache_backend import (
+    cache_get,
+    cache_set,
+    cache_delete,
+    cache_flush_pattern,
+    cache_stats as _backend_stats,
+)
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TTL = 1200
-
-_cache: TTLCache = TTLCache(maxsize=100, ttl=DEFAULT_TTL)
-_lock = threading.Lock()
-
 
 def get(key: str) -> Optional[Any]:
-    with _lock:
-        return _cache.get(key)
+    return cache_get(key)
 
 
 def set(key: str, value: Any) -> None:
-    with _lock:
-        _cache[key] = value
+    cache_set(key, value)
     logger.debug("Cache SET: %s", key)
 
 
 def delete(key: str) -> None:
-    with _lock:
-        _cache.pop(key, None)
+    cache_delete(key)
     logger.debug("Cache DELETE: %s", key)
 
 
 def clear() -> None:
-    with _lock:
-        _cache.clear()
+    cache_flush_pattern("*")
     logger.info("Cache cleared.")
 
 
@@ -53,10 +50,4 @@ def cached(key_fn: Callable[..., str]):
 
 
 def stats() -> dict:
-    with _lock:
-        return {
-            "current_size": len(_cache),
-            "max_size": _cache.maxsize,
-            "ttl_seconds": _cache.ttl,
-            "keys": list(_cache.keys()),
-        }
+    return _backend_stats()

@@ -1,7 +1,8 @@
-from typing import List, Optional
+from typing import List
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Request
 
+from app.core.time_filter import TimeFilter
 from app.models.schemas import CustomerResources
 from app.services.db_service import DatabaseService
 
@@ -20,9 +21,7 @@ def list_customers(db: DatabaseService = Depends(get_db)):
 @router.get("/customers/{customer_name}/resources", response_model=CustomerResources)
 def customer_resources(
     customer_name: str,
-    start: Optional[str] = Query(None),
-    end: Optional[str] = Query(None),
+    tf: TimeFilter = Depends(),
     db: DatabaseService = Depends(get_db),
 ):
-    time_range = {"start": start, "end": end} if (start and end) else None
-    return db.get_customer_resources(customer_name, time_range)
+    return db.get_customer_resources(customer_name, tf.to_dict())

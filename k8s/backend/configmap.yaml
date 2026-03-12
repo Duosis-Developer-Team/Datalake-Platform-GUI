@@ -7,3 +7,5 @@ data:
   DB_PORT: "5000"
   DB_NAME: "bulutlake"
   DB_USER: "datalakeui"
+  REDIS_HOST: "bulutistan-redis"
+  REDIS_PORT: "6379"

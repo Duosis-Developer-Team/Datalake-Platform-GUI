@@ -60,6 +60,16 @@ spec:
                 configMapKeyRef:
                   name: bulutistan-data-api-config
                   key: DB_USER
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: bulutistan-data-api-config
+                  key: REDIS_HOST
+            - name: REDIS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: bulutistan-data-api-config
+                  key: REDIS_PORT
             - name: DB_PASS
               valueFrom:
                 secretKeyRef:

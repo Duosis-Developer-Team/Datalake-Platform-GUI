@@ -95,6 +95,12 @@ def test_deployment_db_env_vars_reference_configmap(deployment):
     assert {"DB_HOST", "DB_PORT", "DB_NAME", "DB_USER"}.issubset(configmap_vars)
 
 
+def test_deployment_redis_env_vars_reference_configmap(deployment):
+    envs = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+    configmap_vars = {e["name"] for e in envs if "configMapKeyRef" in e.get("valueFrom", {})}
+    assert {"REDIS_HOST", "REDIS_PORT"}.issubset(configmap_vars)
+
+
 def test_deployment_selector_matches_pod_labels(deployment):
     selector_labels = deployment["spec"]["selector"]["matchLabels"]
     pod_labels = deployment["spec"]["template"]["metadata"]["labels"]
@@ -130,6 +136,10 @@ def test_configmap_api_version_and_kind(configmap):
 
 def test_configmap_contains_all_required_db_keys(configmap):
     assert {"DB_HOST", "DB_PORT", "DB_NAME", "DB_USER"}.issubset(configmap["data"].keys())
+
+
+def test_configmap_contains_required_redis_keys(configmap):
+    assert {"REDIS_HOST", "REDIS_PORT"}.issubset(configmap["data"].keys())
 
 
 def test_configmap_name_matches_deployment_reference(configmap, deployment):

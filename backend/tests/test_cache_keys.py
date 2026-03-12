@@ -39,20 +39,20 @@ def test_cache_set_overwrites_existing_value():
 
 def test_cache_stats_returns_dict_with_required_fields():
     stats = cache.stats()
-    assert "current_size" in stats
-    assert "max_size" in stats
-    assert "ttl_seconds" in stats
-    assert "keys" in stats
+    assert "redis_available" in stats
+    assert "memory_size" in stats
+    assert "memory_max" in stats
+    assert "ttl" in stats
 
 
-def test_cache_stats_max_size_is_100():
+def test_cache_stats_memory_max_is_configured():
     stats = cache.stats()
-    assert stats["max_size"] == 100
+    assert stats["memory_max"] == 200
 
 
 def test_cache_stats_ttl_is_1200():
     stats = cache.stats()
-    assert stats["ttl_seconds"] == 1200
+    assert stats["ttl"] == 1200
 
 
 def test_dc_details_cache_key_format_is_consistent():

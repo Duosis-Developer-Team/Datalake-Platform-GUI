@@ -28,14 +28,17 @@ def test_datacenters_summary_with_time_range_passes_start_end_to_db(client, mock
     r = client.get("/api/v1/datacenters/summary?start=2026-03-01&end=2026-03-07")
     assert r.status_code == 200
     mock_db.get_all_datacenters_summary.assert_called_once_with(
-        {"start": "2026-03-01", "end": "2026-03-07"}
+        {"start": "2026-03-01", "end": "2026-03-07", "preset": "custom"}
     )
 
 
-def test_datacenters_summary_without_time_range_passes_none_to_db(client, mock_db):
+def test_datacenters_summary_without_time_range_uses_default_7d(client, mock_db):
     r = client.get("/api/v1/datacenters/summary")
     assert r.status_code == 200
-    mock_db.get_all_datacenters_summary.assert_called_once_with(None)
+    call_arg = mock_db.get_all_datacenters_summary.call_args[0][0]
+    assert call_arg["preset"] == "7d"
+    assert "start" in call_arg
+    assert "end" in call_arg
 
 
 def test_datacenter_detail_returns_200_with_meta_and_intel_fields(client):
@@ -54,7 +57,7 @@ def test_datacenter_detail_passes_dc_code_and_time_range_to_db(client, mock_db):
     r = client.get("/api/v1/datacenters/DC12?start=2026-03-01&end=2026-03-07")
     assert r.status_code == 200
     mock_db.get_dc_details.assert_called_once_with(
-        "DC12", {"start": "2026-03-01", "end": "2026-03-07"}
+        "DC12", {"start": "2026-03-01", "end": "2026-03-07", "preset": "custom"}
     )
 
 
@@ -104,8 +107,53 @@ def test_customer_resources_passes_name_and_time_range_to_db(client, mock_db):
     r = client.get("/api/v1/customers/Boyner/resources?start=2026-02-01&end=2026-03-01")
     assert r.status_code == 200
     mock_db.get_customer_resources.assert_called_once_with(
-        "Boyner", {"start": "2026-02-01", "end": "2026-03-01"}
+        "Boyner", {"start": "2026-02-01", "end": "2026-03-01", "preset": "custom"}
     )
+
+
+def test_datacenters_summary_with_preset_7d_passes_7d_range_to_db(client, mock_db):
+    r = client.get("/api/v1/datacenters/summary?preset=7d")
+    assert r.status_code == 200
+    call_arg = mock_db.get_all_datacenters_summary.call_args[0][0]
+    assert call_arg["preset"] == "7d"
+    assert "start" in call_arg
+    assert "end" in call_arg
+
+
+def test_datacenters_summary_with_preset_30d_passes_30d_range_to_db(client, mock_db):
+    r = client.get("/api/v1/datacenters/summary?preset=30d")
+    assert r.status_code == 200
+    call_arg = mock_db.get_all_datacenters_summary.call_args[0][0]
+    assert call_arg["preset"] == "30d"
+
+
+def test_datacenters_summary_with_preset_1d_passes_1d_range_to_db(client, mock_db):
+    r = client.get("/api/v1/datacenters/summary?preset=1d")
+    assert r.status_code == 200
+    call_arg = mock_db.get_all_datacenters_summary.call_args[0][0]
+    assert call_arg["preset"] == "1d"
+    assert call_arg["start"] == call_arg["end"]
+
+
+def test_datacenter_detail_with_preset_7d_passes_range_to_db(client, mock_db):
+    r = client.get("/api/v1/datacenters/DC11?preset=7d")
+    assert r.status_code == 200
+    call_arg = mock_db.get_dc_details.call_args[0][1]
+    assert call_arg["preset"] == "7d"
+
+
+def test_dashboard_overview_with_preset_30d_passes_range_to_db(client, mock_db):
+    r = client.get("/api/v1/dashboard/overview?preset=30d")
+    assert r.status_code == 200
+    call_arg = mock_db.get_global_dashboard.call_args[0][0]
+    assert call_arg["preset"] == "30d"
+
+
+def test_customer_resources_with_preset_7d_passes_range_to_db(client, mock_db):
+    r = client.get("/api/v1/customers/Boyner/resources?preset=7d")
+    assert r.status_code == 200
+    call_arg = mock_db.get_customer_resources.call_args[0][1]
+    assert call_arg["preset"] == "7d"
 
 
 def test_query_endpoint_returns_200_with_result_type_value(client):

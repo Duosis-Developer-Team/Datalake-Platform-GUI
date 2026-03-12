@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.services.db_service import DatabaseService
 from app.services.scheduler_service import start_scheduler
 from app.routers import datacenters, dashboard, customers, queries
+from app.core.redis_client import init_redis_pool, close_redis_pool, redis_is_healthy
 
 logging.basicConfig(level=logging.INFO)
 
@@ -17,11 +18,13 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI):
     db = DatabaseService()
     app.state.db = db
+    init_redis_pool()
     scheduler = start_scheduler(db)
     app.state.scheduler = scheduler
     yield
     if scheduler.running:
         scheduler.shutdown(wait=False)
+    close_redis_pool()
     if db._pool:
         db._pool.closeall()
 
@@ -51,7 +54,11 @@ app.include_router(queries.router, prefix="/api/v1", tags=["queries"])
 @app.get("/health", response_model=dict)
 def health():
     db: DatabaseService = app.state.db
-    return {"status": "ok", "db_pool": "ok" if db._pool else "unavailable"}
+    return {
+        "status": "ok",
+        "db_pool": "ok" if db._pool else "unavailable",
+        "redis": "ok" if redis_is_healthy() else "unavailable",
+    }
 
 
 @app.get("/ready")
