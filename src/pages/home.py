@@ -183,6 +183,47 @@ def _pct_badge(value):
     )
 
 
+def _arch_usage_cell(usage: dict | None):
+    """Render architecture usage cell with CPU/RAM/Disk percentages."""
+    usage = usage or {}
+    cpu = usage.get("cpu_pct", 0.0)
+    ram = usage.get("ram_pct", 0.0)
+    disk = usage.get("disk_pct", None)
+
+    rows = [
+        dmc.Group(
+            gap=6,
+            align="center",
+            children=[
+                dmc.Text("CPU", size="xs", c="dimmed"),
+                _pct_badge(cpu),
+            ],
+        ),
+        dmc.Group(
+            gap=6,
+            align="center",
+            children=[
+                dmc.Text("RAM", size="xs", c="dimmed"),
+                _pct_badge(ram),
+            ],
+        ),
+    ]
+
+    if disk is not None:
+        rows.append(
+            dmc.Group(
+                gap=6,
+                align="center",
+                children=[
+                    dmc.Text("Disk", size="xs", c="dimmed"),
+                    _pct_badge(disk),
+                ],
+            )
+        )
+
+    return dmc.Stack(gap=4, align="flex-end", children=rows)
+
+
 def _num_cell(value, suffix=""):
     """Sayısal değeri sağa hizalı, tabular-nums formatında döndür.
     0 ise soluklaştırılmış tire göster."""
@@ -483,7 +524,7 @@ def build_overview(time_range=None):
                         style={"marginBottom": "4px"},
                     ),
                     dmc.Text(
-                        "CPU & RAM: daily averages over the report period.",
+                        "CPU, RAM & Disk utilisation by architecture — daily averages over the report period.",
                         size="xs",
                         c="dimmed",
                         style={"marginBottom": "18px"},
@@ -564,7 +605,7 @@ def build_overview(time_range=None):
                                         },
                                     ),
                                     html.Th(
-                                        "CPU %",
+                                        "Classic",
                                         style={
                                             "color": "#A3AED0",
                                             "fontWeight": 600,
@@ -577,7 +618,20 @@ def build_overview(time_range=None):
                                         },
                                     ),
                                     html.Th(
-                                        "RAM %",
+                                        "Hyperconverged",
+                                        style={
+                                            "color": "#A3AED0",
+                                            "fontWeight": 600,
+                                            "fontSize": "0.72rem",
+                                            "textTransform": "uppercase",
+                                            "letterSpacing": "0.07em",
+                                            "paddingBottom": "12px",
+                                            "borderBottom": "2px solid #f1f3f5",
+                                            "textAlign": "right",
+                                        },
+                                    ),
+                                    html.Th(
+                                        "IBM Power",
                                         style={
                                             "color": "#A3AED0",
                                             "fontWeight": 600,
@@ -610,11 +664,21 @@ def build_overview(time_range=None):
                                         style={"textAlign": "right"},
                                     ),
                                     html.Td(
-                                        _pct_badge(s["stats"].get("used_cpu_pct", 0)),
+                                        _arch_usage_cell(
+                                            s["stats"].get("arch_usage", {}).get("classic")
+                                        ),
                                         style={"textAlign": "right"},
                                     ),
                                     html.Td(
-                                        _pct_badge(s["stats"].get("used_ram_pct", 0)),
+                                        _arch_usage_cell(
+                                            s["stats"].get("arch_usage", {}).get("hyperconv")
+                                        ),
+                                        style={"textAlign": "right"},
+                                    ),
+                                    html.Td(
+                                        _arch_usage_cell(
+                                            s["stats"].get("arch_usage", {}).get("ibm")
+                                        ),
                                         style={"textAlign": "right"},
                                     ),
                                 ])

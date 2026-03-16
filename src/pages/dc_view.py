@@ -457,17 +457,17 @@ def build_dc_view(dc_id, time_range=None):
                                         pt="lg",
                                         children=dmc.Stack(
                                             gap="lg",
-                                            children=[x for x in [
+                                            children=[
                                                 _cluster_header(
                                                     "virt-classic-cluster-selector",
-                                                    classic_clusters,
+                                                    classic_clusters or [],
                                                     "Select Classic clusters",
-                                                ) if classic_clusters else None,
+                                                ),
                                                 html.Div(
                                                     id="classic-virt-panel",
                                                     children=_build_compute_tab(classic, "Classic Compute", color="blue"),
                                                 ),
-                                            ] if x is not None],
+                                            ],
                                         ),
                                     ),
                                     dmc.TabsPanel(
@@ -475,17 +475,17 @@ def build_dc_view(dc_id, time_range=None):
                                         pt="lg",
                                         children=dmc.Stack(
                                             gap="lg",
-                                            children=[x for x in [
+                                            children=[
                                                 _cluster_header(
                                                     "virt-hyperconv-cluster-selector",
-                                                    hyperconv_clusters,
+                                                    hyperconv_clusters or [],
                                                     "Select Hyperconverged clusters",
-                                                ) if hyperconv_clusters else None,
+                                                ),
                                                 html.Div(
                                                     id="hyperconv-virt-panel",
                                                     children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal"),
                                                 ),
-                                            ] if x is not None],
+                                            ],
                                         ),
                                     ),
                                     dmc.TabsPanel(

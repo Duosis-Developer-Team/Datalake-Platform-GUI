@@ -146,11 +146,20 @@ class TestHyperconvMetricsFiltered(unittest.TestCase):
         conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
         svc._get_connection = MagicMock(return_value=conn)
         svc._run_value = MagicMock(side_effect=[3, 6])
+        # Memory: nutanix_cluster_metrics returns bytes; 256 GB and 128 GB in bytes
+        bytes_256_gb = 256 * (1024**3)
+        bytes_128_gb = 128 * (1024**3)
+        # CPU: nutanix_cluster_metrics returns Hz; 200 GHz and 80 GHz in Hz
+        cpu_cap_hz = 200.0 * 1_000_000_000
+        cpu_used_hz = 80.0 * 1_000_000_000
+        # Storage: nutanix_cluster_metrics returns bytes; 5 TB and 2 TB in bytes
+        bytes_5_tb = 5.0 * (1024**4)
+        bytes_2_tb = 2.0 * (1024**4)
         svc._run_row = MagicMock(
             side_effect=[
-                (1000.0, 500.0),
-                (200.0, 80.0),
-                (5.0, 2.0),
+                (float(bytes_256_gb), float(bytes_128_gb)),
+                (cpu_cap_hz, cpu_used_hz),
+                (bytes_5_tb, bytes_2_tb),
             ]
         )
 
@@ -162,6 +171,15 @@ class TestHyperconvMetricsFiltered(unittest.TestCase):
         self.assertIn("stor_cap", result)
         self.assertIn("cpu_pct", result)
         self.assertIn("mem_pct", result)
+        # Memory converted from bytes to GB (no * 1024 inflation)
+        self.assertAlmostEqual(result["mem_cap"], 256.0, places=1)
+        self.assertAlmostEqual(result["mem_used"], 128.0, places=1)
+        # CPU converted from Hz to GHz (Nutanix schema)
+        self.assertAlmostEqual(result["cpu_cap"], 200.0, places=1)
+        self.assertAlmostEqual(result["cpu_used"], 80.0, places=1)
+        # Storage converted from bytes to TB (Nutanix schema)
+        self.assertAlmostEqual(result["stor_cap"], 5.0, places=2)
+        self.assertAlmostEqual(result["stor_used"], 2.0, places=2)
 
 
 if __name__ == "__main__":

@@ -463,12 +463,18 @@ class DatabaseService:
         n_mem = n_mem or (0, 0)
         n_cpu = n_cpu or (0, 0)
         n_stor = n_stor or (0, 0)
-        mem_cap_gb = float(n_mem[0] or 0) * 1024
-        mem_used_gb = float(n_mem[1] or 0) * 1024
-        cpu_cap_ghz = float(n_cpu[0] or 0)
-        cpu_used_ghz = float(n_cpu[1] or 0)
-        stor_cap_tb = float(n_stor[0] or 0)
-        stor_used_tb = float(n_stor[1] or 0)
+        # nutanix_cluster_metrics.total_memory_capacity is int8 (bytes per schema); convert to GB
+        _bytes_per_gb = 1024**3
+        mem_cap_gb = float(n_mem[0] or 0) / _bytes_per_gb
+        mem_used_gb = float(n_mem[1] or 0) / _bytes_per_gb
+        # nutanix_cluster_metrics.total_cpu_capacity is in Hz; convert to GHz (match VMware)
+        _hz_per_ghz = 1_000_000_000
+        cpu_cap_ghz = float(n_cpu[0] or 0) / _hz_per_ghz
+        cpu_used_ghz = float(n_cpu[1] or 0) / _hz_per_ghz
+        # nutanix_cluster_metrics.storage_capacity/usage are int8 (bytes); convert to TB (match BATCH_STORAGE)
+        _bytes_per_tb = 1024**4
+        stor_cap_tb = float(n_stor[0] or 0) / _bytes_per_tb
+        stor_used_tb = float(n_stor[1] or 0) / _bytes_per_tb
         hc_hosts = int(n_host or 0)
         hc_vms = int(n_vm or 0)
         hc_cpu_cap = round(cpu_cap_ghz, 2)
@@ -549,9 +555,10 @@ class DatabaseService:
         v_mem_cap_gb  = float(vmware_mem[0] or 0)
         v_mem_used_gb = float(vmware_mem[1] or 0)
 
-        # Storage → TB
-        n_stor_cap_tb  = float(nutanix_storage[0] or 0)
-        n_stor_used_tb = float(nutanix_storage[1] or 0)
+        # Storage → TB (nutanix_cluster_metrics: bytes → TB; VMware: query returns stor in scaled GB, /1024 → TB)
+        _bytes_per_tb = 1024**4
+        n_stor_cap_tb  = float(nutanix_storage[0] or 0) / _bytes_per_tb
+        n_stor_used_tb = float(nutanix_storage[1] or 0) / _bytes_per_tb
         v_stor_cap_tb  = float(vmware_storage[0] or 0) / 1024.0
         v_stor_used_tb = float(vmware_storage[1] or 0) / 1024.0
 
@@ -1083,6 +1090,26 @@ class DatabaseService:
             stor_cap_gb = stor_cap * 1024
             stor_used_gb = stor_used * 1024
 
+            # Architecture-specific CPU/RAM/Storage utilisation for DC Summary
+            classic_cpu_pct = float(classic.get("cpu_pct", 0) or 0)
+            classic_ram_pct = float(classic.get("mem_pct", 0) or 0)
+            classic_stor_cap = float(classic.get("stor_cap", 0) or 0)
+            classic_stor_used = float(classic.get("stor_used", 0) or 0)
+            classic_stor_pct = (classic_stor_used / classic_stor_cap * 100.0) if classic_stor_cap > 0 else 0.0
+
+            hyperconv_cpu_pct = float(hyperconv.get("cpu_pct", 0) or 0)
+            hyperconv_ram_pct = float(hyperconv.get("mem_pct", 0) or 0)
+            hyperconv_stor_cap = float(hyperconv.get("stor_cap", 0) or 0)
+            hyperconv_stor_used = float(hyperconv.get("stor_used", 0) or 0)
+            hyperconv_stor_pct = (hyperconv_stor_used / hyperconv_stor_cap * 100.0) if hyperconv_stor_cap > 0 else 0.0
+
+            ibm_mem_total = float(power.get("memory_total", 0) or 0)
+            ibm_mem_assigned = float(power.get("memory_assigned", 0) or 0)
+            ibm_cpu_used = float(power.get("cpu_used", 0) or 0)
+            ibm_cpu_assigned = float(power.get("cpu_assigned", 0) or 0)
+            ibm_mem_pct = (ibm_mem_assigned / ibm_mem_total * 100.0) if ibm_mem_total > 0 else 0.0
+            ibm_cpu_pct = (ibm_cpu_used / ibm_cpu_assigned * 100.0) if ibm_cpu_assigned > 0 else 0.0
+
             summary_list.append({
                 "id": dc,
                 "name": dc,
@@ -1103,6 +1130,24 @@ class DatabaseService:
                     "total_energy_kw": d["energy"]["total_kw"],
                     "ibm_kw":          d["energy"].get("ibm_kw", 0.0),
                     "vcenter_kw":      d["energy"].get("vcenter_kw", 0.0),
+                    "arch_usage": {
+                        "classic": {
+                            "cpu_pct": round(classic_cpu_pct, 1),
+                            "ram_pct": round(classic_ram_pct, 1),
+                            "disk_pct": round(classic_stor_pct, 1),
+                        },
+                        "hyperconv": {
+                            "cpu_pct": round(hyperconv_cpu_pct, 1),
+                            "ram_pct": round(hyperconv_ram_pct, 1),
+                            "disk_pct": round(hyperconv_stor_pct, 1),
+                        },
+                        "ibm": {
+                            "cpu_pct": round(ibm_cpu_pct, 1),
+                            "ram_pct": round(ibm_mem_pct, 1),
+                            # IBM Power storage utilisation is not available in summary data.
+                            "disk_pct": None,
+                        },
+                    },
                 },
             })
 
