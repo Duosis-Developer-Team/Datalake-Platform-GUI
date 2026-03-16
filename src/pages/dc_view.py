@@ -374,6 +374,10 @@ def build_dc_view(dc_id, time_range=None):
     s3_data = service.get_dc_s3_pools(dc_id, tr)
     has_s3 = bool(s3_data.get("pools"))
 
+    # Cluster lists for virtualization tab filters (S3-style)
+    classic_clusters   = service.get_classic_cluster_list(dc_id, tr)
+    hyperconv_clusters = service.get_hyperconv_cluster_list(dc_id, tr)
+
     dc_name = data["meta"]["name"]
     dc_loc  = data["meta"]["location"]
 
@@ -381,6 +385,22 @@ def build_dc_view(dc_id, time_range=None):
     classic   = data.get("classic", {})
     hyperconv = data.get("hyperconv", {})
     power     = data.get("power", {})
+
+    def _cluster_header(selector_id: str, clusters: list[str], placeholder: str):
+        return html.Div(
+            style={"display": "flex", "justifyContent": "flex-end", "alignItems": "center", "marginBottom": "16px"},
+            children=dmc.MultiSelect(
+                id=selector_id,
+                data=[{"label": c, "value": c} for c in clusters],
+                value=list(clusters),
+                clearable=True,
+                searchable=True,
+                nothingFoundMessage="No clusters",
+                placeholder=placeholder,
+                size="sm",
+                style={"minWidth": "260px"},
+            ),
+        )
 
     return html.Div([
         dmc.Tabs(
@@ -435,12 +455,38 @@ def build_dc_view(dc_id, time_range=None):
                                     dmc.TabsPanel(
                                         value="classic",
                                         pt="lg",
-                                        children=_build_compute_tab(classic, "Classic Compute", color="blue"),
+                                        children=dmc.Stack(
+                                            gap="lg",
+                                            children=[x for x in [
+                                                _cluster_header(
+                                                    "virt-classic-cluster-selector",
+                                                    classic_clusters,
+                                                    "Select Classic clusters",
+                                                ) if classic_clusters else None,
+                                                html.Div(
+                                                    id="classic-virt-panel",
+                                                    children=_build_compute_tab(classic, "Classic Compute", color="blue"),
+                                                ),
+                                            ] if x is not None],
+                                        ),
                                     ),
                                     dmc.TabsPanel(
                                         value="hyperconv",
                                         pt="lg",
-                                        children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal"),
+                                        children=dmc.Stack(
+                                            gap="lg",
+                                            children=[x for x in [
+                                                _cluster_header(
+                                                    "virt-hyperconv-cluster-selector",
+                                                    hyperconv_clusters,
+                                                    "Select Hyperconverged clusters",
+                                                ) if hyperconv_clusters else None,
+                                                html.Div(
+                                                    id="hyperconv-virt-panel",
+                                                    children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal"),
+                                                ),
+                                            ] if x is not None],
+                                        ),
                                     ),
                                     dmc.TabsPanel(
                                         value="power",

@@ -357,6 +357,142 @@ class DatabaseService:
         return self._run_row(cursor, vq.HYPERCONV_AVG30, (dc_wc, start_ts, end_ts))
 
     # ------------------------------------------------------------------
+    # Cluster list and filtered metrics (for DC view cluster selector)
+    # ------------------------------------------------------------------
+
+    def get_classic_cluster_list(self, dc_code: str, time_range: dict | None = None) -> list[str]:
+        """Return list of Classic (KM) cluster names for the given DC and time range."""
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        dc_wc = f"%{dc_code}%"
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, vq.CLASSIC_CLUSTER_LIST, (dc_wc, start_ts, end_ts))
+            return [r[0] for r in (rows or []) if r and r[0]]
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_classic_cluster_list(%s): %s", dc_code, exc)
+            return []
+
+    def get_hyperconv_cluster_list(self, dc_code: str, time_range: dict | None = None) -> list[str]:
+        """Return list of Nutanix cluster names (hyperconverged) for the given DC and time range."""
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, nq.CLUSTER_LIST, (dc_code, start_ts, end_ts))
+            return [r[0] for r in (rows or []) if r and r[0]]
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_hyperconv_cluster_list(%s): %s", dc_code, exc)
+            return []
+
+    def get_classic_metrics_filtered(
+        self, dc_code: str, selected_clusters: list[str] | None, time_range: dict | None = None
+    ) -> dict:
+        """Return Classic compute section dict, optionally filtered by selected clusters.
+        If selected_clusters is None or empty, returns unfiltered classic metrics from get_dc_details."""
+        if not selected_clusters:
+            full = self.get_dc_details(dc_code, time_range)
+            return full.get("classic", _empty_compute_section())
+
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        dc_wc = f"%{dc_code}%"
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    row = self._run_row(
+                        cur, vq.CLASSIC_METRICS_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
+                    )
+                    avg30 = self._run_row(
+                        cur, vq.CLASSIC_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
+                    )
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_classic_metrics_filtered(%s): %s", dc_code, exc)
+            return _empty_compute_section()
+
+        row = row or (0,) * 8
+        avg30 = avg30 or (0, 0)
+        cl_hosts = int(row[0] or 0)
+        cl_vms = int(row[1] or 0)
+        cl_cpu_cap = round(float(row[2] or 0), 2)
+        cl_cpu_used = round(float(row[3] or 0), 2)
+        cl_mem_cap = round(float(row[4] or 0), 2)
+        cl_mem_used = round(float(row[5] or 0), 2)
+        cl_stor_cap = round(float(row[6] or 0) / 1024.0, 3)
+        cl_stor_used = round(float(row[7] or 0) / 1024.0, 3)
+        cl_cpu_pct = round(float(avg30[0] or 0), 1)
+        cl_mem_pct = round(float(avg30[1] or 0), 1)
+        return {
+            "hosts": cl_hosts,
+            "vms": cl_vms,
+            "cpu_cap": cl_cpu_cap,
+            "cpu_used": cl_cpu_used,
+            "cpu_pct": cl_cpu_pct,
+            "mem_cap": cl_mem_cap,
+            "mem_used": cl_mem_used,
+            "mem_pct": cl_mem_pct,
+            "stor_cap": cl_stor_cap,
+            "stor_used": cl_stor_used,
+        }
+
+    def get_hyperconv_metrics_filtered(
+        self, dc_code: str, selected_clusters: list[str] | None, time_range: dict | None = None
+    ) -> dict:
+        """Return Hyperconverged compute section dict, filtered by selected Nutanix clusters.
+        If selected_clusters is None or empty, returns unfiltered hyperconv metrics from get_dc_details."""
+        if not selected_clusters:
+            full = self.get_dc_details(dc_code, time_range)
+            return full.get("hyperconv", _empty_compute_section())
+
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    n_host = self._run_value(cur, nq.HOST_COUNT_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
+                    n_vm = self._run_value(cur, nq.VM_COUNT_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
+                    n_mem = self._run_row(cur, nq.MEMORY_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
+                    n_cpu = self._run_row(cur, nq.CPU_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
+                    n_stor = self._run_row(cur, nq.STORAGE_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_hyperconv_metrics_filtered(%s): %s", dc_code, exc)
+            return _empty_compute_section()
+
+        n_mem = n_mem or (0, 0)
+        n_cpu = n_cpu or (0, 0)
+        n_stor = n_stor or (0, 0)
+        mem_cap_gb = float(n_mem[0] or 0) * 1024
+        mem_used_gb = float(n_mem[1] or 0) * 1024
+        cpu_cap_ghz = float(n_cpu[0] or 0)
+        cpu_used_ghz = float(n_cpu[1] or 0)
+        stor_cap_tb = float(n_stor[0] or 0)
+        stor_used_tb = float(n_stor[1] or 0)
+        hc_hosts = int(n_host or 0)
+        hc_vms = int(n_vm or 0)
+        hc_cpu_cap = round(cpu_cap_ghz, 2)
+        hc_cpu_used = round(cpu_used_ghz, 2)
+        hc_mem_cap = round(mem_cap_gb, 2)
+        hc_mem_used = round(mem_used_gb, 2)
+        hc_stor_cap = round(stor_cap_tb, 3)
+        hc_stor_used = round(stor_used_tb, 3)
+        hc_cpu_pct = round(100.0 * hc_cpu_used / hc_cpu_cap, 1) if hc_cpu_cap else 0.0
+        hc_mem_pct = round(100.0 * hc_mem_used / hc_mem_cap, 1) if hc_mem_cap else 0.0
+        return {
+            "hosts": hc_hosts,
+            "vms": hc_vms,
+            "cpu_cap": hc_cpu_cap,
+            "cpu_used": hc_cpu_used,
+            "cpu_pct": hc_cpu_pct,
+            "mem_cap": hc_mem_cap,
+            "mem_used": hc_mem_used,
+            "mem_pct": hc_mem_pct,
+            "stor_cap": hc_stor_cap,
+            "stor_used": hc_stor_used,
+        }
+
+    # ------------------------------------------------------------------
     # Unit normalization & aggregation (shared by single + batch paths)
     # ------------------------------------------------------------------
 

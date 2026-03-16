@@ -37,6 +37,7 @@ server = app.server
 
 # Import pages once at startup (routing is manual via render_main_content)
 from src.pages import home, datacenters, dc_view, customer_view, query_explorer
+from src.pages.dc_view import _build_compute_tab
 
 # --- Build static sidebar with controls always in layout ---
 _default_tr = default_time_range()
@@ -308,7 +309,39 @@ def update_s3_customer_panel(selected_vaults, time_range, customer_name):
     return build_customer_s3_panel(name, s3_data, tr, selected)
 
 
-# 7. Start background cache scheduler
+# 7. Classic virtualization tab: reacts to cluster selection and time range.
+@app.callback(
+    dash.Output("classic-virt-panel", "children"),
+    dash.Input("virt-classic-cluster-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_classic_virt_panel(selected_clusters, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    classic = service.get_classic_metrics_filtered(dc_id, selected_clusters, tr)
+    return _build_compute_tab(classic, "Classic Compute", color="blue")
+
+
+# 8. Hyperconverged virtualization tab: reacts to cluster selection and time range.
+@app.callback(
+    dash.Output("hyperconv-virt-panel", "children"),
+    dash.Input("virt-hyperconv-cluster-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_hyperconv_virt_panel(selected_clusters, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    hyperconv = service.get_hyperconv_metrics_filtered(dc_id, selected_clusters, tr)
+    return _build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal")
+
+
+# 9. Start background cache scheduler
 _scheduler = start_scheduler(service)
 
 if __name__ == "__main__":

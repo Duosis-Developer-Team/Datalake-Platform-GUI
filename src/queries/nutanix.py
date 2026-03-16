@@ -200,3 +200,91 @@ SELECT dc_code, COUNT(*) AS platform_count
 FROM latest
 GROUP BY dc_code
 """
+
+# =============================================================================
+# Cluster list and filtered metrics (for DC view cluster selector)
+# Params for CLUSTER_LIST: (dc_code, start_ts, end_ts)
+# Params for *_FILTERED: (dc_code, cluster_array, start_ts, end_ts). cluster_array non-empty.
+# =============================================================================
+
+CLUSTER_LIST = """
+SELECT DISTINCT cluster_name
+FROM public.nutanix_cluster_metrics
+WHERE cluster_name LIKE ('%%' || %s || '%%') AND collection_time BETWEEN %s AND %s
+ORDER BY cluster_name
+"""
+
+HOST_COUNT_FILTERED = """
+SELECT COALESCE(SUM(num_nodes), 0)
+FROM (
+    SELECT DISTINCT ON (cluster_name) cluster_name, num_nodes
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND cluster_name = ANY(%s::text[])
+      AND collection_time BETWEEN %s AND %s
+    ORDER BY cluster_name, collection_time DESC
+) latest
+"""
+
+VM_COUNT_FILTERED = """
+SELECT COALESCE(SUM(total_vms), 0)
+FROM (
+    SELECT DISTINCT ON (cluster_name) cluster_name, total_vms
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND cluster_name = ANY(%s::text[])
+      AND collection_time BETWEEN %s AND %s
+    ORDER BY cluster_name, collection_time DESC
+) latest
+"""
+
+MEMORY_FILTERED = """
+SELECT
+    COALESCE(SUM(total_memory_capacity), 0) AS total_memory_capacity,
+    COALESCE(SUM(used_memory), 0) AS used_memory
+FROM (
+    SELECT DISTINCT ON (cluster_name)
+        cluster_name,
+        total_memory_capacity,
+        ((memory_usage_avg / 1000.0) * total_memory_capacity) / 1000.0 AS used_memory
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND cluster_name = ANY(%s::text[])
+      AND collection_time BETWEEN %s AND %s
+    ORDER BY cluster_name, collection_time DESC
+) latest
+"""
+
+STORAGE_FILTERED = """
+SELECT
+    COALESCE(SUM(storage_capacity) / 2, 0) AS storage_capacity,
+    COALESCE(SUM(storage_usage) / 2, 0) AS storage_usage
+FROM (
+    SELECT DISTINCT ON (cluster_name)
+        cluster_name,
+        storage_capacity,
+        storage_usage
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND cluster_name = ANY(%s::text[])
+      AND collection_time BETWEEN %s AND %s
+    ORDER BY cluster_name, collection_time DESC
+) latest
+"""
+
+CPU_FILTERED = """
+SELECT
+    COALESCE(SUM(total_cpu_capacity), 0) AS total_cpu_capacity,
+    COALESCE(SUM(cpu_used), 0) AS cpu_used
+FROM (
+    SELECT DISTINCT ON (cluster_name)
+        cluster_name,
+        total_cpu_capacity,
+        (cpu_usage_avg * total_cpu_capacity) / 1000000.0 AS cpu_used
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND cluster_name = ANY(%s::text[])
+      AND collection_time BETWEEN %s AND %s
+    ORDER BY cluster_name, collection_time DESC
+) latest
+"""

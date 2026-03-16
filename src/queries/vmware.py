@@ -393,3 +393,97 @@ SELECT
 FROM matched
 GROUP BY dc_code
 """
+
+# =============================================================================
+# Cluster list and filtered metrics (for DC view cluster selector)
+# Params: (dc_pattern, start_ts, end_ts) for list; (dc_pattern, cluster_array, start_ts, end_ts) for filtered
+# =============================================================================
+
+CLASSIC_CLUSTER_LIST = """
+SELECT DISTINCT cluster
+FROM public.cluster_metrics
+WHERE datacenter ILIKE %s
+  AND cluster ILIKE '%%KM%%'
+  AND timestamp BETWEEN %s AND %s
+ORDER BY cluster
+"""
+
+HYPERCONV_CLUSTER_LIST = """
+SELECT DISTINCT cluster
+FROM public.cluster_metrics
+WHERE datacenter ILIKE %s
+  AND cluster NOT ILIKE '%%KM%%'
+  AND timestamp BETWEEN %s AND %s
+ORDER BY cluster
+"""
+
+# Params: (dc_pattern, cluster_array, start_ts, end_ts). cluster_array must be non-empty.
+CLASSIC_METRICS_FILTERED = """
+WITH latest_per_cluster AS (
+    SELECT DISTINCT ON (cluster)
+        vhost_count, vm_count,
+        cpu_ghz_capacity, cpu_ghz_used,
+        memory_capacity_gb, memory_used_gb,
+        total_capacity_gb, total_freespace_gb
+    FROM public.cluster_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster = ANY(%s::text[])
+      AND timestamp BETWEEN %s AND %s
+    ORDER BY cluster, timestamp DESC
+)
+SELECT
+    COALESCE(SUM(vhost_count), 0)                                   AS hosts,
+    COALESCE(SUM(vm_count), 0)                                      AS vms,
+    COALESCE(SUM(cpu_ghz_capacity), 0)                              AS cpu_cap_ghz,
+    COALESCE(SUM(cpu_ghz_used), 0)                                  AS cpu_used_ghz,
+    COALESCE(SUM(memory_capacity_gb), 0)                            AS mem_cap_gb,
+    COALESCE(SUM(memory_used_gb), 0)                                AS mem_used_gb,
+    COALESCE(SUM(total_capacity_gb), 0)                             AS stor_cap_gb,
+    COALESCE(SUM(total_capacity_gb - total_freespace_gb), 0)        AS stor_used_gb
+FROM latest_per_cluster
+"""
+
+CLASSIC_AVG30_FILTERED = """
+SELECT
+    COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
+    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct
+FROM public.cluster_metrics
+WHERE datacenter ILIKE %s
+  AND cluster = ANY(%s::text[])
+  AND timestamp BETWEEN %s AND %s
+"""
+
+HYPERCONV_METRICS_FILTERED = """
+WITH latest_per_cluster AS (
+    SELECT DISTINCT ON (cluster)
+        vhost_count, vm_count,
+        cpu_ghz_capacity, cpu_ghz_used,
+        memory_capacity_gb, memory_used_gb,
+        total_capacity_gb, total_freespace_gb
+    FROM public.cluster_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster = ANY(%s::text[])
+      AND timestamp BETWEEN %s AND %s
+    ORDER BY cluster, timestamp DESC
+)
+SELECT
+    COALESCE(SUM(vhost_count), 0)                                   AS hosts,
+    COALESCE(SUM(vm_count), 0)                                      AS vms,
+    COALESCE(SUM(cpu_ghz_capacity), 0)                              AS cpu_cap_ghz,
+    COALESCE(SUM(cpu_ghz_used), 0)                                  AS cpu_used_ghz,
+    COALESCE(SUM(memory_capacity_gb), 0)                            AS mem_cap_gb,
+    COALESCE(SUM(memory_used_gb), 0)                                AS mem_used_gb,
+    COALESCE(SUM(total_capacity_gb), 0)                             AS stor_cap_gb,
+    COALESCE(SUM(total_capacity_gb - total_freespace_gb), 0)        AS stor_used_gb
+FROM latest_per_cluster
+"""
+
+HYPERCONV_AVG30_FILTERED = """
+SELECT
+    COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
+    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct
+FROM public.cluster_metrics
+WHERE datacenter ILIKE %s
+  AND cluster = ANY(%s::text[])
+  AND timestamp BETWEEN %s AND %s
+"""
