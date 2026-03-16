@@ -2,7 +2,7 @@
 # To add a new query for a future dashboard, register it here.
 # The db_service uses this registry for dynamic query execution.
 
-from src.queries import nutanix, vmware, ibm, energy, customer
+from src.queries import nutanix, vmware, ibm, energy, customer, backup
 
 # Schema for each entry:
 #   sql           : SQL string (from the provider module)
@@ -316,5 +316,27 @@ QUERY_REGISTRY: dict[str, dict] = {
         "result_type": "value",
         "params_style": "wildcard",
         "provider": "customer",
+    },
+    # --- Backup (raw latest records) ---
+    "backup_netbackup_pools_latest": {
+        "sql": backup.NETBACKUP_DISK_POOLS_LATEST,
+        "source": "raw_netbackup_disk_pools_metrics",
+        "result_type": "rows",
+        "params_style": "exact_pair",  # (start_ts, end_ts)
+        "provider": "backup",
+    },
+    "backup_zerto_sites_latest": {
+        "sql": backup.ZERTO_SITES_LATEST,
+        "source": "raw_zerto_site_metrics",
+        "result_type": "rows",
+        "params_style": "exact_pair",  # (start_ts, end_ts)
+        "provider": "backup",
+    },
+    "backup_veeam_repos_latest": {
+        "sql": backup.VEEAM_REPOSITORIES_LATEST,
+        "source": "raw_veeam_repositories_states",
+        "result_type": "rows",
+        "params_style": "exact_pair",  # (start_ts, end_ts)
+        "provider": "backup",
     },
 }

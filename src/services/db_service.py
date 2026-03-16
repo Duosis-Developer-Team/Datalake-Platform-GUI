@@ -11,7 +11,7 @@ from psycopg2 import OperationalError
 from psycopg2.pool import PoolError
 
 from src.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
-from src.queries import loki as lq, customer as cq, s3 as s3q
+from src.queries import loki as lq, customer as cq, s3 as s3q, backup as bq
 from src.services import cache_service as cache
 from src.services import query_overrides as qo
 from src.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
@@ -183,6 +183,124 @@ class DatabaseService:
             except Exception:
                 pass
         return []
+
+    # ------------------------------------------------------------------
+    # DC detection helpers for backup datasets
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_dc_from_text(value: str | None, dc_set: set[str]) -> str | None:
+        """Extract a DC code (DCxx / AZxx / ICTxx / UZxx / DHxx) from arbitrary text."""
+        if not value:
+            return None
+        match = _DC_CODE_RE.search(str(value).upper())
+        if not match:
+            return None
+        code = match.group(1).upper()
+        return code if code in dc_set else None
+
+    @staticmethod
+    def _ip_prefix(value: str | None) -> str | None:
+        """
+        Return an IP prefix used for grouping hosts by location.
+
+        For IPv4 addresses, this returns the first two octets (e.g. '10.34' for
+        '10.34.17.200'). For anything else, returns None.
+        """
+        if not value:
+            return None
+        parts = str(value).split(".")
+        if len(parts) < 2:
+            return None
+        return f"{parts[0]}.{parts[1]}"
+
+    def _filter_rows_for_dc_by_name_and_host(
+        self,
+        rows: list[tuple],
+        dc_code: str,
+        name_index: int,
+        host_index: int,
+    ) -> list[tuple]:
+        """
+        Assign rows to DCs using name pattern and host IP prefix, then filter for dc_code.
+
+        Strategy:
+        1. Try to extract DC code from the name field using _DC_CODE_RE.
+        2. For rows with a detected DC, record a mapping from IP prefix to DC.
+        3. For rows without a name-based DC, fall back to the IP prefix mapping.
+        4. Return only rows whose final DC assignment equals dc_code.
+        """
+        if not rows:
+            return []
+
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return []
+
+        dc_set = {dc.upper() for dc in self.dc_list}
+        ip_to_dc: dict[str, str] = {}
+        staged: list[tuple[str | None, tuple]] = []
+
+        for row in rows:
+            if row is None or len(row) <= max(name_index, host_index):
+                continue
+            name_val = row[name_index]
+            host_val = row[host_index]
+            dc_from_name = self._extract_dc_from_text(name_val, dc_set)
+            ip_pref = self._ip_prefix(host_val)
+
+            if dc_from_name:
+                if ip_pref and ip_pref not in ip_to_dc:
+                    ip_to_dc[ip_pref] = dc_from_name
+                staged.append((dc_from_name, row))
+            else:
+                staged.append((None, row))
+
+        filtered: list[tuple] = []
+        for dc_hint, row in staged:
+            if row is None or len(row) <= host_index:
+                continue
+            dc_final = dc_hint
+            if not dc_final:
+                ip_pref = self._ip_prefix(row[host_index])
+                if ip_pref and ip_pref in ip_to_dc:
+                    dc_final = ip_to_dc[ip_pref]
+            if dc_final and dc_final.upper() == dc_target:
+                filtered.append(row)
+
+        return filtered
+
+    def _filter_rows_for_dc_by_host_pattern(
+        self,
+        rows: list[tuple],
+        dc_code: str,
+        host_index: int,
+    ) -> list[tuple]:
+        """
+        Assign rows to DCs using only host name patterns (for Veeam).
+
+        The host_name column may contain tokens like 'dc13' or 'ict13'. We extract
+        a DC code using the same regex as other platforms and keep rows that match
+        the requested dc_code. Rows without a detectable DC code are ignored.
+        """
+        if not rows:
+            return []
+
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return []
+
+        dc_set = {dc.upper() for dc in self.dc_list}
+        filtered: list[tuple] = []
+        for row in rows:
+            if row is None or len(row) <= host_index:
+                continue
+            host_val = row[host_index]
+            dc_from_host = self._extract_dc_from_text(host_val, dc_set)
+            if dc_from_host and dc_from_host.upper() == dc_target:
+                filtered.append(row)
+
+        return filtered
 
     # ------------------------------------------------------------------
     # Query Explorer: run registered query by key and return structured result
@@ -1784,6 +1902,235 @@ class DatabaseService:
         cache.set(cache_key, result)
         return result
 
+    # ------------------------------------------------------------------
+    # Backup helpers — NetBackup, Zerto, Veeam (per datacenter)
+    # ------------------------------------------------------------------
+
+    def _fetch_dc_netbackup_pools(self, dc_code: str, start_ts, end_ts) -> dict:
+        """Fetch latest NetBackup pool metrics for a DC and time range."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                raw_rows = self._run_rows(
+                    cur,
+                    bq.NETBACKUP_DISK_POOLS_LATEST,
+                    (start_ts, end_ts),
+                )
+
+        # Columns: collection_timestamp, netbackup_host, name, stype,
+        #          storagecategory, diskvolumes_name, diskvolumes_state,
+        #          usablesizebytes, availablespacebytes, usedcapacitybytes
+        filtered = self._filter_rows_for_dc_by_name_and_host(
+            raw_rows or [],
+            dc_code,
+            name_index=2,
+            host_index=1,
+        )
+
+        pools: list[str] = []
+        rows_out: list[dict] = []
+        for r in filtered:
+            (
+                ts,
+                host,
+                name,
+                stype,
+                storagecategory,
+                diskvolumes_name,
+                diskvolumes_state,
+                usable,
+                available,
+                used,
+            ) = r
+            if not name:
+                continue
+            pools.append(name)
+            rows_out.append(
+                {
+                    "timestamp": ts,
+                    "netbackup_host": host,
+                    "name": name,
+                    "stype": stype,
+                    "storagecategory": storagecategory,
+                    "diskvolumes_name": diskvolumes_name,
+                    "diskvolumes_state": diskvolumes_state,
+                    "usablesizebytes": int(usable or 0),
+                    "availablespacebytes": int(available or 0),
+                    "usedcapacitybytes": int(used or 0),
+                }
+            )
+
+        unique_pools = sorted({p for p in pools if p})
+        return {
+            "pools": unique_pools,
+            "rows": rows_out,
+        }
+
+    def _fetch_dc_zerto_sites(self, dc_code: str, start_ts, end_ts) -> dict:
+        """Fetch latest Zerto site metrics for a DC and time range."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                raw_rows = self._run_rows(
+                    cur,
+                    bq.ZERTO_SITES_LATEST,
+                    (start_ts, end_ts),
+                )
+
+        # Columns: collection_timestamp, zerto_host, name, site_type,
+        #          is_connected, incoming_throughput_mb, outgoing_bandwidth_mb,
+        #          provisioned_storage_mb, used_storage_mb
+        filtered = self._filter_rows_for_dc_by_name_and_host(
+            raw_rows or [],
+            dc_code,
+            name_index=2,
+            host_index=1,
+        )
+
+        sites: list[str] = []
+        rows_out: list[dict] = []
+        for r in filtered:
+            (
+                ts,
+                host,
+                name,
+                site_type,
+                is_connected,
+                incoming_mb,
+                outgoing_mb,
+                prov_mb,
+                used_mb,
+            ) = r
+            if not name:
+                continue
+            sites.append(name)
+            rows_out.append(
+                {
+                    "timestamp": ts,
+                    "zerto_host": host,
+                    "name": name,
+                    "site_type": site_type,
+                    "is_connected": str(is_connected).strip().lower() == "true"
+                    if is_connected is not None
+                    else None,
+                    "incoming_throughput_mb": float(incoming_mb or 0),
+                    "outgoing_bandwidth_mb": float(outgoing_mb or 0),
+                    "provisioned_storage_mb": int(prov_mb or 0),
+                    "used_storage_mb": int(used_mb or 0),
+                }
+            )
+
+        unique_sites = sorted({s for s in sites if s})
+        return {
+            "sites": unique_sites,
+            "rows": rows_out,
+        }
+
+    def _fetch_dc_veeam_repositories(self, dc_code: str, start_ts, end_ts) -> dict:
+        """Fetch latest Veeam repository states for a DC and time range."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                raw_rows = self._run_rows(
+                    cur,
+                    bq.VEEAM_REPOSITORIES_LATEST,
+                    (start_ts, end_ts),
+                )
+
+        # Columns: collection_time, id, name, host_name, type,
+        #          capacity_gb, free_gb, used_space_gb, is_online
+        filtered = self._filter_rows_for_dc_by_host_pattern(
+            raw_rows or [],
+            dc_code,
+            host_index=3,
+        )
+
+        repos: list[str] = []
+        rows_out: list[dict] = []
+        for r in filtered:
+            (
+                ts,
+                _repo_id,
+                name,
+                host_name,
+                repo_type,
+                capacity_gb,
+                free_gb,
+                used_gb,
+                is_online,
+            ) = r
+            if not name:
+                continue
+            repos.append(name)
+            rows_out.append(
+                {
+                    "timestamp": ts,
+                    "name": name,
+                    "host_name": host_name,
+                    "type": repo_type,
+                    "capacity_gb": float(capacity_gb or 0),
+                    "free_gb": float(free_gb or 0),
+                    "used_space_gb": float(used_gb or 0),
+                    "is_online": bool(is_online) if is_online is not None else None,
+                }
+            )
+
+        unique_repos = sorted({r for r in repos if r})
+        return {
+            "repos": unique_repos,
+            "rows": rows_out,
+        }
+
+    def get_dc_netbackup_pools(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """Return cached NetBackup pool metrics for a DC and time range."""
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        cache_key = f"dc_netbackup:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            result = self._fetch_dc_netbackup_pools(dc_code, start_ts, end_ts)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_dc_netbackup_pools failed for %s: %s", dc_code, exc)
+            return {"pools": [], "rows": []}
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_dc_zerto_sites(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """Return cached Zerto site metrics for a DC and time range."""
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        cache_key = f"dc_zerto:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            result = self._fetch_dc_zerto_sites(dc_code, start_ts, end_ts)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_dc_zerto_sites failed for %s: %s", dc_code, exc)
+            return {"sites": [], "rows": []}
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_dc_veeam_repos(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """Return cached Veeam repository states for a DC and time range."""
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        cache_key = f"dc_veeam:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            result = self._fetch_dc_veeam_repositories(dc_code, start_ts, end_ts)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_dc_veeam_repos failed for %s: %s", dc_code, exc)
+            return {"repos": [], "rows": []}
+
+        cache.set(cache_key, result)
+        return result
     def _fetch_customer_s3_vaults(self, customer_name: str, start_ts, end_ts) -> dict:
         """
         Fetch raw S3 vault metrics for a customer directly from the database.
@@ -1999,6 +2346,44 @@ class DatabaseService:
             logger.info("Background S3 cache refresh complete.")
         except Exception as exc:
             logger.error("Background S3 cache refresh failed: %s", exc)
+
+    def refresh_backup_cache(self) -> None:
+        """
+        Refresh backup (NetBackup, Zerto, Veeam) cache for the standard reporting ranges.
+
+        This is called by the background scheduler every 30 minutes. Cache entries
+        are updated in place so UI panels continue to use the previous values until
+        new data has been written.
+        """
+        logger.info("Background backup cache refresh started.")
+        try:
+            for tr in cache_time_ranges():
+                start_ts, end_ts = time_range_to_bounds(tr)
+                for dc_code in self.dc_list:
+                    try:
+                        key_nb = f"dc_netbackup:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+                        data_nb = self._fetch_dc_netbackup_pools(dc_code, start_ts, end_ts)
+                        cache.set(key_nb, data_nb)
+                    except Exception as exc:
+                        logger.warning("refresh_backup_cache (NetBackup) failed for DC %s: %s", dc_code, exc)
+
+                    try:
+                        key_z = f"dc_zerto:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+                        data_z = self._fetch_dc_zerto_sites(dc_code, start_ts, end_ts)
+                        cache.set(key_z, data_z)
+                    except Exception as exc:
+                        logger.warning("refresh_backup_cache (Zerto) failed for DC %s: %s", dc_code, exc)
+
+                    try:
+                        key_v = f"dc_veeam:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+                        data_v = self._fetch_dc_veeam_repositories(dc_code, start_ts, end_ts)
+                        cache.set(key_v, data_v)
+                    except Exception as exc:
+                        logger.warning("refresh_backup_cache (Veeam) failed for DC %s: %s", dc_code, exc)
+
+            logger.info("Background backup cache refresh complete.")
+        except Exception as exc:
+            logger.error("Background backup cache refresh failed: %s", exc)
 
     @property
     def dc_list(self) -> list[str]:

@@ -341,7 +341,81 @@ def update_hyperconv_virt_panel(selected_clusters, time_range, pathname):
     return _build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal")
 
 
-# 9. Start background cache scheduler
+# 9. Backup panels: react to selector changes and time range.
+
+@app.callback(
+    dash.Output("backup-netbackup-panel", "children"),
+    dash.Input("backup-nb-pool-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_backup_netbackup_panel(selected_pools, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    data = service.get_dc_netbackup_pools(dc_id, tr)
+    pools = data.get("pools") or []
+    if not pools:
+        return html.Div()
+    if not selected_pools:
+        selected = pools
+    else:
+        selected = [p for p in selected_pools if p in pools] or pools
+    from src.components.backup_panel import build_netbackup_panel
+
+    return build_netbackup_panel(data, selected)
+
+
+@app.callback(
+    dash.Output("backup-zerto-panel", "children"),
+    dash.Input("backup-zerto-site-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_backup_zerto_panel(selected_sites, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    data = service.get_dc_zerto_sites(dc_id, tr)
+    sites = data.get("sites") or []
+    if not sites:
+        return html.Div()
+    if not selected_sites:
+        selected = sites
+    else:
+        selected = [s for s in selected_sites if s in sites] or sites
+    from src.components.backup_panel import build_zerto_panel
+
+    return build_zerto_panel(data, selected)
+
+
+@app.callback(
+    dash.Output("backup-veeam-panel", "children"),
+    dash.Input("backup-veeam-repo-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_backup_veeam_panel(selected_repos, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    data = service.get_dc_veeam_repos(dc_id, tr)
+    repos = data.get("repos") or []
+    if not repos:
+        return html.Div()
+    if not selected_repos:
+        selected = repos
+    else:
+        selected = [r for r in selected_repos if r in repos] or repos
+    from src.components.backup_panel import build_veeam_panel
+
+    return build_veeam_panel(data, selected)
+
+
+# 10. Start background cache scheduler
 _scheduler = start_scheduler(service)
 
 if __name__ == "__main__":

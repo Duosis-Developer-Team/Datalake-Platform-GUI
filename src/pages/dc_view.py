@@ -10,6 +10,11 @@ from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_f
 from src.components.charts import create_usage_donut_chart, create_gauge_chart
 from src.components.header import create_detail_header
 from src.components.s3_panel import build_dc_s3_panel
+from src.components.backup_panel import (
+    build_netbackup_panel,
+    build_zerto_panel,
+    build_veeam_panel,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -223,14 +228,23 @@ def _build_power_tab(power: dict, energy: dict):
 
 
 def _build_backup_subtab(name: str):
-    """Placeholder for backup sub-tabs not yet fully implemented."""
+    """Legacy placeholder for backup sub-tabs (kept for future use if needed)."""
     return html.Div(
         style={"padding": "60px", "textAlign": "center"},
         children=[
-            DashIconify(icon="solar:shield-check-bold-duotone", width=48,
-                        style={"color": "#A3AED0", "marginBottom": "12px"}),
-            html.P(f"{name} backup metrics", style={"color": "#2B3674", "fontWeight": 600}),
-            html.P("Data will be displayed here.", style={"color": "#A3AED0", "fontSize": "0.85rem"}),
+            DashIconify(
+                icon="solar:shield-check-bold-duotone",
+                width=48,
+                style={"color": "#A3AED0", "marginBottom": "12px"},
+            ),
+            html.P(
+                f"{name} backup metrics",
+                style={"color": "#2B3674", "fontWeight": 600},
+            ),
+            html.P(
+                "Data will be displayed here.",
+                style={"color": "#A3AED0", "fontSize": "0.85rem"},
+            ),
         ],
     )
 
@@ -403,6 +417,11 @@ def build_dc_view(dc_id, time_range=None):
     hyperconv = data.get("hyperconv", {})
     power     = data.get("power", {})
 
+    # Backup datasets (per DC)
+    nb_data = service.get_dc_netbackup_pools(dc_id, tr)
+    zerto_data = service.get_dc_zerto_sites(dc_id, tr)
+    veeam_data = service.get_dc_veeam_repos(dc_id, tr)
+
     # Determine which sections actually have data
     has_classic = _has_compute_data(classic)
     has_hyperconv = _has_compute_data(hyperconv)
@@ -411,10 +430,10 @@ def build_dc_view(dc_id, time_range=None):
     has_virt = has_classic or has_hyperconv or has_power
     has_summary = has_virt
 
-    # Backup subtabs are placeholders; keep flags for future real metrics
-    has_zerto = False
-    has_veeam = False
-    has_netbackup = False
+    # Backup subtabs enabled only when data exists
+    has_zerto = bool(zerto_data.get("sites"))
+    has_veeam = bool(veeam_data.get("repos"))
+    has_netbackup = bool(nb_data.get("pools"))
     has_nutanix_backup = False
     has_backup = has_zerto or has_veeam or has_netbackup or has_nutanix_backup
 
@@ -566,30 +585,39 @@ def build_dc_view(dc_id, time_range=None):
                                 color="green",
                                 variant="outline",
                                 radius="md",
-                                value="zerto",
+                                value="zerto" if has_zerto else "veeam" if has_veeam else "netbackup",
                                 children=[
                                     dmc.TabsList(
                                         children=[
                                             dmc.TabsTab("Zerto", value="zerto") if has_zerto else None,
                                             dmc.TabsTab("Veeam", value="veeam") if has_veeam else None,
-                                            dmc.TabsTab("Netbackup", value="netbackup") if has_netbackup else None,
+                                            dmc.TabsTab("NetBackup", value="netbackup") if has_netbackup else None,
                                             dmc.TabsTab("Nutanix", value="nutanix") if has_nutanix_backup else None,
                                         ]
                                     ),
                                     dmc.TabsPanel(
                                         value="zerto",
                                         pt="lg",
-                                        children=_build_backup_subtab("Zerto"),
+                                        children=html.Div(
+                                            id="backup-zerto-panel",
+                                            children=build_zerto_panel(zerto_data, None) if has_zerto else html.Div(),
+                                        ),
                                     ) if has_zerto else None,
                                     dmc.TabsPanel(
                                         value="veeam",
                                         pt="lg",
-                                        children=_build_backup_subtab("Veeam"),
+                                        children=html.Div(
+                                            id="backup-veeam-panel",
+                                            children=build_veeam_panel(veeam_data, None) if has_veeam else html.Div(),
+                                        ),
                                     ) if has_veeam else None,
                                     dmc.TabsPanel(
                                         value="netbackup",
                                         pt="lg",
-                                        children=_build_backup_subtab("Netbackup"),
+                                        children=html.Div(
+                                            id="backup-netbackup-panel",
+                                            children=build_netbackup_panel(nb_data, None) if has_netbackup else html.Div(),
+                                        ),
                                     ) if has_netbackup else None,
                                     dmc.TabsPanel(
                                         value="nutanix",

@@ -141,6 +141,20 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
     except Exception as exc:
         logger.warning("Failed to schedule S3 cache refresh: %s", exc)
 
+    # Step 8: schedule periodic backup cache refresh (every 30 minutes, write-through pattern).
+    try:
+        scheduler.add_job(
+            func=db_service.refresh_backup_cache,
+            trigger=IntervalTrigger(minutes=30),
+            id="backup_refresh",
+            name="Backup cache refresh (30 minutes)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled Backup cache refresh every 30 minutes.")
+    except Exception as exc:
+        logger.warning("Failed to schedule Backup cache refresh: %s", exc)
+
     # Step 5: clean shutdown on process exit
     atexit.register(lambda: _stop(scheduler))
 
