@@ -16,6 +16,23 @@ from src.components.s3_panel import build_dc_s3_panel
 # Shared UI helpers
 # ---------------------------------------------------------------------------
 
+
+def _has_compute_data(d: dict | None) -> bool:
+    """Return True if any meaningful compute metric exists for a section."""
+    if not d:
+        return False
+    keys = ("hosts", "vms", "cpu_cap", "mem_cap", "stor_cap")
+    return any(d.get(k) not in (None, 0, 0.0, "") for k in keys)
+
+
+def _has_power_data(d: dict | None) -> bool:
+    """Return True if any meaningful IBM Power metric exists for a section."""
+    if not d:
+        return False
+    keys = ("hosts", "lpar_count", "cpu_used", "memory_total")
+    return any(d.get(k) not in (None, 0, 0.0, "") for k in keys)
+
+
 def _kpi(title: str, value, icon: str, color: str = "indigo", is_text: bool = False):
     """Standard KPI card used across all tabs."""
     return html.Div(
@@ -386,6 +403,41 @@ def build_dc_view(dc_id, time_range=None):
     hyperconv = data.get("hyperconv", {})
     power     = data.get("power", {})
 
+    # Determine which sections actually have data
+    has_classic = _has_compute_data(classic)
+    has_hyperconv = _has_compute_data(hyperconv)
+    has_power = _has_power_data(power)
+
+    has_virt = has_classic or has_hyperconv or has_power
+    has_summary = has_virt
+
+    # Backup subtabs are placeholders; keep flags for future real metrics
+    has_zerto = False
+    has_veeam = False
+    has_netbackup = False
+    has_nutanix_backup = False
+    has_backup = has_zerto or has_veeam or has_netbackup or has_nutanix_backup
+
+    # S3 presence already computed above
+    # has_s3 = bool(s3_data.get("pools"))
+
+    # Determine default active outer tab: first tab that actually has data
+    tabs_order = [
+        ("summary", has_summary),
+        ("virt", has_virt),
+        ("backup", has_backup),
+        ("obj-storage", has_s3),
+    ]
+    default_outer_tab = next((t for t, ok in tabs_order if ok), "summary")
+
+    # Determine default virtualization inner tab
+    virt_order = [
+        ("classic", has_classic),
+        ("hyperconv", has_hyperconv),
+        ("power", has_power),
+    ]
+    default_virt_tab = next((t for t, ok in virt_order if ok), "classic")
+
     def _cluster_header(selector_id: str, clusters: list[str], placeholder: str):
         return html.Div(
             style={"display": "flex", "justifyContent": "flex-end", "alignItems": "center", "marginBottom": "16px"},
@@ -407,7 +459,7 @@ def build_dc_view(dc_id, time_range=None):
             color="indigo",
             variant="pills",
             radius="md",
-            value="summary",
+            value=default_outer_tab,
             children=[
                 create_detail_header(
                     title=dc_name,
@@ -420,10 +472,10 @@ def build_dc_view(dc_id, time_range=None):
                     tabs=dmc.TabsList(
                         style={"paddingTop": "8px"},
                         children=[
-                            dmc.TabsTab("Summary",          value="summary"),
-                            dmc.TabsTab("Virtualization",   value="virt"),
-                            dmc.TabsTab("Backup",           value="backup"),
-                            dmc.TabsTab("S3 Object Storage", value="s3") if has_s3 else None,
+                            dmc.TabsTab("Summary", value="summary") if has_summary else None,
+                            dmc.TabsTab("Virtualization", value="virt") if has_virt else None,
+                            dmc.TabsTab("Backup & Replication", value="backup") if has_backup else None,
+                            dmc.TabsTab("Object Storage", value="obj-storage") if has_s3 else None,
                         ],
                     ),
                 ),
@@ -431,9 +483,12 @@ def build_dc_view(dc_id, time_range=None):
                 # ── Summary ──────────────────────────────────────────────
                 dmc.TabsPanel(
                     value="summary",
-                    children=dmc.Stack(gap="lg", style={"padding": "0 30px"},
-                                       children=[_build_summary_tab(data, tr)]),
-                ),
+                    children=dmc.Stack(
+                        gap="lg",
+                        style={"padding": "0 30px"},
+                        children=[_build_summary_tab(data, tr)],
+                    ),
+                ) if has_summary else None,
 
                 # ── Virtualization (nested tabs) ──────────────────────────
                 dmc.TabsPanel(
@@ -445,13 +500,15 @@ def build_dc_view(dc_id, time_range=None):
                                 color="violet",
                                 variant="outline",
                                 radius="md",
-                                value="classic",
+                                value=default_virt_tab,
                                 children=[
-                                    dmc.TabsList(children=[
-                                        dmc.TabsTab("Klasik Mimari",         value="classic"),
-                                        dmc.TabsTab("Hyperconverged Mimari", value="hyperconv"),
-                                        dmc.TabsTab("Power Mimari",          value="power"),
-                                    ]),
+                                    dmc.TabsList(
+                                        children=[
+                                            dmc.TabsTab("Klasik Mimari", value="classic") if has_classic else None,
+                                            dmc.TabsTab("Hyperconverged Mimari", value="hyperconv") if has_hyperconv else None,
+                                            dmc.TabsTab("Power Mimari", value="power") if has_power else None,
+                                        ]
+                                    ),
                                     dmc.TabsPanel(
                                         value="classic",
                                         pt="lg",
@@ -469,7 +526,7 @@ def build_dc_view(dc_id, time_range=None):
                                                 ),
                                             ],
                                         ),
-                                    ),
+                                    ) if has_classic else None,
                                     dmc.TabsPanel(
                                         value="hyperconv",
                                         pt="lg",
@@ -487,12 +544,12 @@ def build_dc_view(dc_id, time_range=None):
                                                 ),
                                             ],
                                         ),
-                                    ),
+                                    ) if has_hyperconv else None,
                                     dmc.TabsPanel(
                                         value="power",
                                         pt="lg",
                                         children=_build_power_tab(power, energy),
-                                    ),
+                                    ) if has_power else None,
                                 ],
                             ),
                         ],
@@ -511,31 +568,69 @@ def build_dc_view(dc_id, time_range=None):
                                 radius="md",
                                 value="zerto",
                                 children=[
-                                    dmc.TabsList(children=[
-                                        dmc.TabsTab("Zerto",     value="zerto"),
-                                        dmc.TabsTab("Veeam",     value="veeam"),
-                                        dmc.TabsTab("Netbackup", value="netbackup"),
-                                        dmc.TabsTab("Nutanix",   value="nutanix"),
-                                        dmc.TabsTab("S3",        value="s3"),
-                                    ]),
-                                    dmc.TabsPanel(value="zerto",     pt="lg", children=_build_backup_subtab("Zerto")),
-                                    dmc.TabsPanel(value="veeam",     pt="lg", children=_build_backup_subtab("Veeam")),
-                                    dmc.TabsPanel(value="netbackup", pt="lg", children=_build_backup_subtab("Netbackup")),
-                                    dmc.TabsPanel(value="nutanix",   pt="lg", children=_build_backup_subtab("Nutanix")),
-                                    dmc.TabsPanel(value="s3",        pt="lg", children=_build_backup_subtab("S3")),
+                                    dmc.TabsList(
+                                        children=[
+                                            dmc.TabsTab("Zerto", value="zerto") if has_zerto else None,
+                                            dmc.TabsTab("Veeam", value="veeam") if has_veeam else None,
+                                            dmc.TabsTab("Netbackup", value="netbackup") if has_netbackup else None,
+                                            dmc.TabsTab("Nutanix", value="nutanix") if has_nutanix_backup else None,
+                                        ]
+                                    ),
+                                    dmc.TabsPanel(
+                                        value="zerto",
+                                        pt="lg",
+                                        children=_build_backup_subtab("Zerto"),
+                                    ) if has_zerto else None,
+                                    dmc.TabsPanel(
+                                        value="veeam",
+                                        pt="lg",
+                                        children=_build_backup_subtab("Veeam"),
+                                    ) if has_veeam else None,
+                                    dmc.TabsPanel(
+                                        value="netbackup",
+                                        pt="lg",
+                                        children=_build_backup_subtab("Netbackup"),
+                                    ) if has_netbackup else None,
+                                    dmc.TabsPanel(
+                                        value="nutanix",
+                                        pt="lg",
+                                        children=_build_backup_subtab("Nutanix"),
+                                    ) if has_nutanix_backup else None,
                                 ],
                             ),
                         ],
                     ),
-                ),
+                ) if has_backup else None,
 
-                # ── S3 Object Storage ───────────────────────────────────────
+                # ── Object Storage (with S3 subtab) ─────────────────────────
                 dmc.TabsPanel(
-                    value="s3",
+                    value="obj-storage",
                     children=html.Div(
-                        id="s3-dc-metrics-panel",
-                        style={"padding": "0 30px", "marginTop": "16px"},
-                        children=build_dc_s3_panel(dc_name, s3_data, tr, None) if has_s3 else html.Div(),
+                        style={"padding": "0 30px"},
+                        children=[
+                            dmc.Tabs(
+                                color="indigo",
+                                variant="outline",
+                                radius="md",
+                                value="s3",
+                                children=[
+                                    dmc.TabsList(
+                                        children=[
+                                            dmc.TabsTab("S3", value="s3") if has_s3 else None,
+                                        ]
+                                    ),
+                                    dmc.TabsPanel(
+                                        value="s3",
+                                        pt="lg",
+                                        children=html.Div(
+                                            id="s3-dc-metrics-panel",
+                                            style={"marginTop": "0"},
+                                            children=build_dc_s3_panel(dc_name, s3_data, tr, None) if has_s3 else html.Div(),
+                                        ),
+                                    ) if has_s3 else None,
+                                ],
+                            ),
+                        ],
                     ),
                 ) if has_s3 else None,
             ],
