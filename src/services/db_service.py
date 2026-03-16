@@ -1148,6 +1148,41 @@ class DatabaseService:
             e = d.get("energy", {})
             ei += float(e.get("ibm_kw", 0) or 0)
             ev += float(e.get("vcenter_kw", 0) or 0)
+        # Architecture-specific totals for home Resource Usage tabs
+        classic_totals = {"cpu_cap": 0.0, "cpu_used": 0.0, "mem_cap": 0.0, "mem_used": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
+        hyperconv_totals = {"cpu_cap": 0.0, "cpu_used": 0.0, "mem_cap": 0.0, "mem_used": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
+        ibm_totals = {"mem_total": 0.0, "mem_assigned": 0.0, "cpu_used": 0.0, "cpu_assigned": 0.0}
+        for d in all_dc_data.values():
+            c = d.get("classic", {})
+            classic_totals["cpu_cap"] += float(c.get("cpu_cap", 0) or 0)
+            classic_totals["cpu_used"] += float(c.get("cpu_used", 0) or 0)
+            classic_totals["mem_cap"] += float(c.get("mem_cap", 0) or 0)
+            classic_totals["mem_used"] += float(c.get("mem_used", 0) or 0)
+            classic_totals["stor_cap"] += float(c.get("stor_cap", 0) or 0)
+            classic_totals["stor_used"] += float(c.get("stor_used", 0) or 0)
+            h = d.get("hyperconv", {})
+            hyperconv_totals["cpu_cap"] += float(h.get("cpu_cap", 0) or 0)
+            hyperconv_totals["cpu_used"] += float(h.get("cpu_used", 0) or 0)
+            hyperconv_totals["mem_cap"] += float(h.get("mem_cap", 0) or 0)
+            hyperconv_totals["mem_used"] += float(h.get("mem_used", 0) or 0)
+            hyperconv_totals["stor_cap"] += float(h.get("stor_cap", 0) or 0)
+            hyperconv_totals["stor_used"] += float(h.get("stor_used", 0) or 0)
+            pw = d.get("power", {})
+            ibm_totals["mem_total"] += float(pw.get("memory_total", 0) or 0)
+            ibm_totals["mem_assigned"] += float(pw.get("memory_assigned", 0) or 0)
+            ibm_totals["cpu_used"] += float(pw.get("cpu_used", 0) or 0)
+            ibm_totals["cpu_assigned"] += float(pw.get("cpu_assigned", 0) or 0)
+        for tot in (classic_totals, hyperconv_totals):
+            tot["cpu_cap"] = round(tot["cpu_cap"], 2)
+            tot["cpu_used"] = round(tot["cpu_used"], 2)
+            tot["mem_cap"] = round(tot["mem_cap"], 2)
+            tot["mem_used"] = round(tot["mem_used"], 2)
+            tot["stor_cap"] = round(tot["stor_cap"], 2)
+            tot["stor_used"] = round(tot["stor_used"], 2)
+        ibm_totals["mem_total"] = round(ibm_totals["mem_total"], 2)
+        ibm_totals["mem_assigned"] = round(ibm_totals["mem_assigned"], 2)
+        ibm_totals["cpu_used"] = round(ibm_totals["cpu_used"], 2)
+        ibm_totals["cpu_assigned"] = round(ibm_totals["cpu_assigned"], 2)
         range_suffix = f"{tr.get('start','')}:{tr.get('end','')}"
         cache.set(f"global_dashboard:{range_suffix}", {
             "overview": overview,
@@ -1157,6 +1192,9 @@ class DatabaseService:
                 "ibm": {"hosts": ibm_h, "vios": ibm_v, "lpars": ibm_l},
             },
             "energy_breakdown": {"ibm_kw": round(ei, 2), "vcenter_kw": round(ev, 2)},
+            "classic_totals": classic_totals,
+            "hyperconv_totals": hyperconv_totals,
+            "ibm_totals": ibm_totals,
         })
 
         cache.set(f"all_dc_summary:{range_suffix}", summary_list)
@@ -1198,10 +1236,15 @@ class DatabaseService:
         if cached is not None:
             return cached
         self.get_all_datacenters_summary(tr)
+        empty_totals = {"cpu_cap": 0.0, "cpu_used": 0.0, "mem_cap": 0.0, "mem_used": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
+        empty_ibm = {"mem_total": 0.0, "mem_assigned": 0.0, "cpu_used": 0.0, "cpu_assigned": 0.0}
         return cache.get(f"global_dashboard:{range_suffix}") or {
             "overview": self.get_global_overview(tr),
             "platforms": {"nutanix": {"hosts": 0, "vms": 0}, "vmware": {"clusters": 0, "hosts": 0, "vms": 0}, "ibm": {"hosts": 0, "vios": 0, "lpars": 0}},
             "energy_breakdown": {"ibm_kw": 0, "vcenter_kw": 0},
+            "classic_totals": dict(empty_totals),
+            "hyperconv_totals": dict(empty_totals),
+            "ibm_totals": dict(empty_ibm),
         }
 
     def get_customer_resources(self, customer_name: str, time_range: dict | None = None) -> dict:

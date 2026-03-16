@@ -226,6 +226,9 @@ def build_overview(time_range=None):
     overview = data.get("overview", {})
     platforms = data.get("platforms", {})
     energy_breakdown = data.get("energy_breakdown", {})
+    classic_totals = data.get("classic_totals", {})
+    hyperconv_totals = data.get("hyperconv_totals", {})
+    ibm_totals = data.get("ibm_totals", {})
     summaries = service.get_all_datacenters_summary(tr)
 
     # KPI strip (platforms = Nutanix + vCenter + IBM per DC, summed)
@@ -247,13 +250,17 @@ def build_overview(time_range=None):
         platform_card("IBM Power", ibm.get("hosts", 0), ibm.get("lpars", 0), color="#FFB547"),
     ]
 
-    # Resource usage percentages
-    cpu_cap = overview.get("total_cpu_cap") or 1
-    ram_cap = overview.get("total_ram_cap") or 1
-    stor_cap = overview.get("total_storage_cap") or 1
-    cpu_pct = round((overview.get("total_cpu_used", 0) or 0) / cpu_cap * 100, 1) if cpu_cap > 0 else 0
-    ram_pct = round((overview.get("total_ram_used", 0) or 0) / ram_cap * 100, 1) if ram_cap > 0 else 0
-    stor_pct = round((overview.get("total_storage_used", 0) or 0) / stor_cap * 100, 1) if stor_cap > 0 else 0
+    # Resource usage percentages per architecture (for tabbed card)
+    def _pct(used, cap):
+        return round(used / cap * 100, 1) if cap and cap > 0 else 0.0
+    classic_cpu_pct = _pct(classic_totals.get("cpu_used", 0) or 0, classic_totals.get("cpu_cap", 0) or 1)
+    classic_ram_pct = _pct(classic_totals.get("mem_used", 0) or 0, classic_totals.get("mem_cap", 0) or 1)
+    classic_stor_pct = _pct(classic_totals.get("stor_used", 0) or 0, classic_totals.get("stor_cap", 0) or 1)
+    hyperconv_cpu_pct = _pct(hyperconv_totals.get("cpu_used", 0) or 0, hyperconv_totals.get("cpu_cap", 0) or 1)
+    hyperconv_ram_pct = _pct(hyperconv_totals.get("mem_used", 0) or 0, hyperconv_totals.get("mem_cap", 0) or 1)
+    hyperconv_stor_pct = _pct(hyperconv_totals.get("stor_used", 0) or 0, hyperconv_totals.get("stor_cap", 0) or 1)
+    ibm_mem_pct = _pct(ibm_totals.get("mem_assigned", 0) or 0, ibm_totals.get("mem_total", 0) or 1)
+    ibm_cpu_pct = _pct(ibm_totals.get("cpu_used", 0) or 0, ibm_totals.get("cpu_assigned", 0) or 1)
 
     # Energy breakdown (IBM Power + vCenter only; Loki/racks not used)
     eb_labels = ["IBM Power", "vCenter"]
@@ -361,14 +368,55 @@ def build_overview(time_range=None):
                     html.Div(
                         [
                             dmc.Text("Resource Usage", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("Daily average over report period", size="xs", c="dimmed", style={"marginBottom": "20px"}),
-                            dmc.SimpleGrid(
-                                cols=3,
-                                spacing="xl",
+                            dmc.Text("By architecture — daily average over report period", size="xs", c="dimmed", style={"marginBottom": "16px"}),
+                            dmc.Tabs(
+                                value="classic",
+                                variant="outline",
+                                radius="md",
                                 children=[
-                                    _ring_stat(cpu_pct,  "CPU",     "#4318FF"),
-                                    _ring_stat(ram_pct,  "RAM",     "#05CD99"),
-                                    _ring_stat(stor_pct, "Storage", "#FFB547"),
+                                    dmc.TabsList(children=[
+                                        dmc.TabsTab("Klasik Mimari", value="classic"),
+                                        dmc.TabsTab("Hyperconverged Mimari", value="hyperconv"),
+                                        dmc.TabsTab("IBM Power", value="ibm"),
+                                    ]),
+                                    dmc.TabsPanel(
+                                        value="classic",
+                                        pt="md",
+                                        children=dmc.SimpleGrid(
+                                            cols=3,
+                                            spacing="xl",
+                                            children=[
+                                                _ring_stat(classic_cpu_pct,  "CPU",     "#4318FF"),
+                                                _ring_stat(classic_ram_pct,  "RAM",     "#05CD99"),
+                                                _ring_stat(classic_stor_pct, "Storage", "#FFB547"),
+                                            ],
+                                        ),
+                                    ),
+                                    dmc.TabsPanel(
+                                        value="hyperconv",
+                                        pt="md",
+                                        children=dmc.SimpleGrid(
+                                            cols=3,
+                                            spacing="xl",
+                                            children=[
+                                                _ring_stat(hyperconv_cpu_pct,  "CPU",     "#4318FF"),
+                                                _ring_stat(hyperconv_ram_pct,  "RAM",     "#05CD99"),
+                                                _ring_stat(hyperconv_stor_pct, "Storage", "#FFB547"),
+                                            ],
+                                        ),
+                                    ),
+                                    dmc.TabsPanel(
+                                        value="ibm",
+                                        pt="md",
+                                        children=dmc.SimpleGrid(
+                                            cols=2,
+                                            spacing="xl",
+                                            children=[
+                                                _ring_stat(ibm_mem_pct, "Memory Assigned", "#05CD99"),
+                                                _ring_stat(ibm_cpu_pct, "CPU Used", "#4318FF"),
+                                            ],
+                                        ),
+                                    ),
                                 ],
                             ),
                         ],
