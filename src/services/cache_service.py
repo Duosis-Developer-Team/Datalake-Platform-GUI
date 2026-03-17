@@ -1,34 +1,34 @@
-# Module-level TTL cache service.
-# Replaces the broken instance-level lru_cache pattern.
-# Uses cachetools.TTLCache so entries expire automatically after TTL seconds.
+# Module-level cache service with stale-while-revalidate semantics.
+# Cache entries never disappear until explicitly overwritten by fresh data.
+# TTL is only used as a staleness hint (not for eviction).
 
 import threading
 import logging
-from typing import Any, Callable, Optional
-from cachetools import TTLCache
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Default TTL for all cache entries (seconds).
-# Background scheduler refreshes data every 15 minutes; TTL is set slightly higher
-# (20 min) so stale data is never served between refresh cycles.
-DEFAULT_TTL = 1200  # 20 minutes — scheduler refreshes every 15 min
+# Max number of distinct cache keys.  Physical inventory adds ~30 keys on top
+# of existing DC/overview/customer/S3/backup keys.
+MAX_SIZE = 512
 
-# Module-level cache — shared across all instances of DatabaseService.
-# maxsize=100 covers many DCs + global overview + dc_details per DC + headroom.
-_cache: TTLCache = TTLCache(maxsize=100, ttl=DEFAULT_TTL)
-_lock = threading.Lock()
+_cache: dict[str, Any] = {}
+_lock = threading.RLock()
 
 
 def get(key: str) -> Optional[Any]:
-    """Return cached value or None if the key is missing / expired."""
+    """Return cached value or None if not present. Never expires."""
     with _lock:
         return _cache.get(key)
 
 
 def set(key: str, value: Any) -> None:
-    """Store a value in the cache under the given key."""
+    """Store / overwrite a value in the cache."""
     with _lock:
+        if len(_cache) >= MAX_SIZE and key not in _cache:
+            oldest = next(iter(_cache))
+            _cache.pop(oldest, None)
+            logger.debug("Cache evicted oldest key: %s", oldest)
         _cache[key] = value
     logger.debug("Cache SET: %s", key)
 
@@ -47,7 +47,7 @@ def clear() -> None:
     logger.info("Cache cleared.")
 
 
-def cached(key_fn: Callable[..., str]):
+def cached(key_fn):
     """
     Decorator factory for caching function results.
 
@@ -56,7 +56,7 @@ def cached(key_fn: Callable[..., str]):
         def get_dc_details(self, dc_code):
             ...
     """
-    def decorator(fn: Callable) -> Callable:
+    def decorator(fn):
         def wrapper(*args, **kwargs):
             cache_key = key_fn(*args, **kwargs)
             hit = get(cache_key)
@@ -78,7 +78,6 @@ def stats() -> dict:
     with _lock:
         return {
             "current_size": len(_cache),
-            "max_size": _cache.maxsize,
-            "ttl_seconds": _cache.ttl,
+            "max_size": MAX_SIZE,
             "keys": list(_cache.keys()),
         }

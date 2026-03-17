@@ -155,7 +155,21 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
     except Exception as exc:
         logger.warning("Failed to schedule Backup cache refresh: %s", exc)
 
-    # Step 5: clean shutdown on process exit
+    # Step 9: schedule periodic physical inventory cache refresh (every 30 minutes).
+    try:
+        scheduler.add_job(
+            func=db_service.warm_physical_inventory,
+            trigger=IntervalTrigger(minutes=30),
+            id="phys_inv_refresh",
+            name="Physical inventory cache refresh (30 minutes)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled physical inventory cache refresh every 30 minutes.")
+    except Exception as exc:
+        logger.warning("Failed to schedule physical inventory cache refresh: %s", exc)
+
+    # Step 10: clean shutdown on process exit
     atexit.register(lambda: _stop(scheduler))
 
     return scheduler
