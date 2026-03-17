@@ -1426,17 +1426,13 @@ class DatabaseService:
             return cached
 
         name = (customer_name or "").strip()
-        # Patterns aligned with Grafana:
-        # - Intel (VMs): prefix + '-' (e.g. 'Boyner-%')
-        # - Power/backup: simple prefix (e.g. 'Boyner%')
-        # - Storage/NetBackup: contains customer anywhere (e.g. '%Boyner%')
-        vm_pattern = f"{name}-%" if name else "%"
-        lpar_pattern = f"{name}%" if name else "%"
-        veeam_pattern = f"{name}%" if name else "%"
+        # Broader ILIKE patterns: customer name anywhere (e.g. '%Boyner%')
+        vm_pattern = f"%{name}%" if name else "%"
+        lpar_pattern = f"%{name}%" if name else "%"
+        veeam_pattern = f"%{name}%" if name else "%"
         storage_like_pattern = f"%{name}%" if name else "%"
         netbackup_workload_pattern = f"%{name}%" if name else "%"
-        # Zerto uses name LIKE '$customer' || '%-%'
-        zerto_name_like = f"{name}%-%" if name else "%"
+        zerto_name_like = f"%{name}%" if name else "%"
 
         start_ts, end_ts = time_range_to_bounds(tr)
 
@@ -2222,6 +2218,116 @@ class DatabaseService:
     def get_customer_list(self) -> list[str]:
         """Return list of customer names for selector (fixed to Boyner)."""
         return ["Boyner"]
+
+    # ------------------------------------------------------------------
+    # Physical Inventory (discovery_netbox_inventory_device)
+    # ------------------------------------------------------------------
+
+    def get_physical_inventory_customer(self) -> list[dict]:
+        """Return Boyner (tenant_id=5) physical device list for Customer View (cached)."""
+        cache_key = "phys_inv:customer_boyner"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_CUSTOMER_DEVICE_LIST)
+                    result = [
+                        {"name": r[0], "device_role_name": r[1], "manufacturer_name": r[2], "location": r[3]}
+                        for r in (rows or [])
+                    ]
+            cache.set(cache_key, result)
+            return result
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_physical_inventory_customer failed: %s", exc)
+            return []
+
+    def get_physical_inventory_dc(self, dc_name: str) -> dict:
+        """Return physical inventory for a DC: total, by_role, by_role_manufacturer (cached)."""
+        result = {"total": 0, "by_role": [], "by_role_manufacturer": []}
+        if not (dc_name or str(dc_name).strip()):
+            return result
+        cache_key = f"phys_inv:dc:{dc_name.strip().lower()}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        pattern = f"%{dc_name.strip()}%"
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    total_row = self._run_row(cur, cq.PHYSICAL_INVENTORY_DC_TOTAL, (pattern, pattern))
+                    result["total"] = int(total_row[0] or 0) if total_row else 0
+                    role_rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_DC_BY_ROLE, (pattern, pattern))
+                    result["by_role"] = [
+                        {"role": r[0] or "Unknown", "count": int(r[1] or 0)}
+                        for r in (role_rows or [])
+                    ]
+                    rm_rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_DC_ROLE_MANUFACTURER, (pattern, pattern))
+                    result["by_role_manufacturer"] = [
+                        {"role": r[0] or "Unknown", "manufacturer": r[1] or "Unknown", "count": int(r[2] or 0)}
+                        for r in (rm_rows or [])
+                    ]
+            cache.set(cache_key, result)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_physical_inventory_dc failed for %s: %s", dc_name, exc)
+        return result
+
+    def get_physical_inventory_overview_by_role(self) -> list[dict]:
+        """Return platform-wide device count by device_role_name (Overview level 0, cached)."""
+        cache_key = "phys_inv:overview_by_role"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_OVERVIEW_BY_ROLE)
+                    result = [{"role": r[0] or "Unknown", "count": int(r[1] or 0)} for r in (rows or [])]
+            cache.set(cache_key, result)
+            return result
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_physical_inventory_overview_by_role failed: %s", exc)
+            return []
+
+    def get_physical_inventory_overview_manufacturer(self, role: str) -> list[dict]:
+        """Return manufacturer distribution for a device role (Overview drill level 1, cached)."""
+        if not (role or str(role).strip()):
+            return []
+        cache_key = f"phys_inv:manufacturer:{role.strip().lower()}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_OVERVIEW_MANUFACTURER, (role.strip(),))
+                    result = [{"manufacturer": r[0], "count": int(r[1] or 0)} for r in (rows or [])]
+            cache.set(cache_key, result)
+            return result
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_physical_inventory_overview_manufacturer failed: %s", exc)
+            return []
+
+    def get_physical_inventory_overview_location(self, role: str, manufacturer: str) -> list[dict]:
+        """Return resolved DC-level location for role+manufacturer (Overview drill level 2, cached)."""
+        if not (role or str(role).strip()) or not (manufacturer or str(manufacturer).strip()):
+            return []
+        cache_key = f"phys_inv:location:{role.strip().lower()}:{manufacturer.strip().lower()}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    mfr_pattern = f"%{manufacturer.strip()}%"
+                    rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_OVERVIEW_LOCATION, (role.strip(), mfr_pattern))
+                    result = [{"location": r[0], "count": int(r[1] or 0)} for r in (rows or [])]
+            cache.set(cache_key, result)
+            return result
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_physical_inventory_overview_location failed: %s", exc)
+            return []
 
     # ------------------------------------------------------------------
     # Cache warming / background refresh API

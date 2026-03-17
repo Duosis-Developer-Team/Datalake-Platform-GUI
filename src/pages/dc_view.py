@@ -1,12 +1,13 @@
 # DC Detail view — Capacity Planning
-# Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup
+# Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup | Physical Inventory
 from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
+import plotly.graph_objects as go
 
 from src.services.shared import service
 from src.utils.time_range import default_time_range
-from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_float
+from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_float, title_case
 from src.components.charts import create_usage_donut_chart, create_gauge_chart
 from src.components.header import create_detail_header
 from src.components.s3_panel import build_dc_s3_panel
@@ -389,6 +390,114 @@ def _build_summary_tab(data: dict, tr: dict):
     )
 
 
+def _build_physical_inventory_dc_tab(phys_inv: dict):
+    """Physical Inventory tab: total devices, by role bar chart, by role+manufacturer bar chart."""
+    total = phys_inv.get("total", 0)
+    by_role = phys_inv.get("by_role", [])
+    by_rm = phys_inv.get("by_role_manufacturer", [])
+
+    # Horizontal bar: device_role_name (title-case display)
+    role_labels = [title_case(r["role"]) for r in by_role]
+    role_counts = [r["count"] for r in by_role]
+    fig_role = go.Figure(
+        data=[go.Bar(
+            x=role_counts or [0],
+            y=role_labels or ["No data"],
+            orientation="h",
+            marker_color="#4318FF",
+            text=role_counts,
+            textposition="outside",
+            textfont=dict(size=12, color="#2B3674"),
+        )]
+    )
+    fig_role.update_layout(
+        margin=dict(l=20, r=50, t=10, b=20),
+        height=280,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+        xaxis=dict(showgrid=False, zeroline=False),
+        yaxis=dict(showgrid=False, zeroline=False, categoryorder="total ascending"),
+        font=dict(family="DM Sans, sans-serif", color="#A3AED0", size=11),
+    )
+
+    # Grouped bar: per role, manufacturers (subset by role for readability; show top roles)
+    roles_for_rm = list(dict.fromkeys(r["role"] for r in by_rm))[:8]
+    rm_filtered = [r for r in by_rm if r["role"] in roles_for_rm]
+    if not rm_filtered:
+        fig_rm = go.Figure()
+        fig_rm.update_layout(
+            margin=dict(l=20, r=20, t=30, b=40),
+            height=300,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            annotations=[dict(text="No role/manufacturer data", x=0.5, y=0.5, showarrow=False, font=dict(size=14))],
+        )
+    else:
+        # Pivot: x = manufacturer (per role), y = count; group by role
+        role_to_manu = {}
+        for r in rm_filtered:
+            ro = r["role"]
+            if ro not in role_to_manu:
+                role_to_manu[ro] = []
+            role_to_manu[ro].append((r["manufacturer"], r["count"]))
+        colors = ["#4318FF", "#05CD99", "#FFB547", "#E85347", "#7551FF", "#00D9FF", "#F7B84B", "#0FBA81"]
+        fig_rm = go.Figure()
+        for i, (role, pairs) in enumerate(role_to_manu.items()):
+            manu = [title_case(p[0]) for p in pairs]
+            cnts = [p[1] for p in pairs]
+            fig_rm.add_trace(go.Bar(
+                name=title_case(role),
+                x=manu,
+                y=cnts,
+                marker_color=colors[i % len(colors)],
+            ))
+        fig_rm.update_layout(
+            barmode="group",
+            margin=dict(l=20, r=20, t=30, b=80),
+            height=320,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="top", y=1.08),
+            xaxis=dict(showgrid=False, zeroline=False, tickangle=-35),
+            yaxis=dict(showgrid=False, zeroline=False),
+            font=dict(family="DM Sans, sans-serif", color="#A3AED0", size=11),
+        )
+
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            html.Div(
+                className="nexus-card",
+                style={"padding": "20px"},
+                children=[
+                    _section_title("Physical Inventory", "NetBox devices in this DC"),
+                    dmc.SimpleGrid(cols=1, spacing="lg", style={"marginTop": "12px"}, children=[
+                        _kpi("Total Devices", f"{total:,}", "solar:server-bold-duotone", color="indigo"),
+                    ]),
+                ],
+            ),
+            html.Div(
+                className="nexus-card",
+                style={"padding": "20px"},
+                children=[
+                    _section_title("Devices by Role", "Device role distribution"),
+                    dcc.Graph(figure=fig_role, config={"displayModeBar": False}, style={"height": "280px"}),
+                ],
+            ),
+            html.Div(
+                className="nexus-card",
+                style={"padding": "20px"},
+                children=[
+                    _section_title("Manufacturer by Role", "Per device role, manufacturer breakdown"),
+                    dcc.Graph(figure=fig_rm, config={"displayModeBar": False}, style={"height": "320px"}),
+                ],
+            ),
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main page builder
 # ---------------------------------------------------------------------------
@@ -411,6 +520,10 @@ def build_dc_view(dc_id, time_range=None):
 
     dc_name = data["meta"]["name"]
     dc_loc  = data["meta"]["location"]
+
+    # Physical inventory (NetBox devices in this DC)
+    phys_inv = service.get_physical_inventory_dc(dc_name)
+    has_phys_inv = phys_inv.get("total", 0) > 0
 
     energy    = data.get("energy", {})
     classic   = data.get("classic", {})
@@ -446,6 +559,7 @@ def build_dc_view(dc_id, time_range=None):
         ("virt", has_virt),
         ("backup", has_backup),
         ("obj-storage", has_s3),
+        ("phys-inv", has_phys_inv),
     ]
     default_outer_tab = next((t for t, ok in tabs_order if ok), "summary")
 
@@ -495,6 +609,7 @@ def build_dc_view(dc_id, time_range=None):
                             dmc.TabsTab("Virtualization", value="virt") if has_virt else None,
                             dmc.TabsTab("Backup & Replication", value="backup") if has_backup else None,
                             dmc.TabsTab("Object Storage", value="obj-storage") if has_s3 else None,
+                            dmc.TabsTab("Physical Inventory", value="phys-inv") if has_phys_inv else None,
                         ],
                     ),
                 ),
@@ -661,6 +776,16 @@ def build_dc_view(dc_id, time_range=None):
                         ],
                     ),
                 ) if has_s3 else None,
+
+                # ── Physical Inventory ─────────────────────────────────────
+                dmc.TabsPanel(
+                    value="phys-inv",
+                    children=dmc.Stack(
+                        gap="lg",
+                        style={"padding": "0 30px"},
+                        children=[_build_physical_inventory_dc_tab(phys_inv)],
+                    ),
+                ) if has_phys_inv else None,
             ],
         )
     ])

@@ -2,8 +2,10 @@ import dash
 from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
+import plotly.graph_objects as go
 from src.services.shared import service
 from src.utils.time_range import default_time_range
+from src.utils.format_units import title_case
 from src.components.charts import (
     create_energy_breakdown_chart,
     create_grouped_bar_chart,
@@ -12,6 +14,41 @@ from src.components.charts import (
     create_energy_elite,
     create_energy_elite_v2,
 )
+
+
+_PHYS_INV_BAR_PX = 50  # pixels per bar — controls visible item count in scroll window
+
+
+def _phys_inv_bar_figure(labels, counts, color="#4318FF", height=None):
+    """Horizontal bar chart for Physical Inventory (Overview drill-down). Labels are title-cased."""
+    labels = labels or ["No data"]
+    counts = counts or [0]
+    labels_display = [title_case(str(l)) for l in labels]
+    if height is None:
+        height = len(labels_display) * _PHYS_INV_BAR_PX
+    fig = go.Figure(
+        data=[go.Bar(
+            x=counts,
+            y=labels_display,
+            orientation="h",
+            marker_color=color,
+            text=counts,
+            textposition="outside",
+            textfont=dict(size=14, color="#2B3674", family="DM Sans, sans-serif"),
+        )]
+    )
+    fig.update_layout(
+        margin=dict(l=20, r=60, t=10, b=20),
+        height=height,
+        bargap=0.35,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=True),
+        yaxis=dict(showgrid=False, zeroline=False, categoryorder="total ascending", tickfont=dict(size=13)),
+        font=dict(family="DM Sans, sans-serif", color="#A3AED0", size=13),
+    )
+    return fig
 
 
 def layout():
@@ -281,15 +318,15 @@ def build_overview(time_range=None):
         metric_card("Total Energy", f"{overview.get('total_energy_kw', 0):,.0f} kW", "material-symbols:bolt-outline", "Daily average", color="orange"),
     ]
 
-    # Platform breakdown
-    nutanix = platforms.get("nutanix", {})
-    vmware = platforms.get("vmware", {})
-    ibm = platforms.get("ibm", {})
-    platform_cards = [
-        platform_card("Nutanix", nutanix.get("hosts", 0), nutanix.get("vms", 0), color="#4318FF"),
-        platform_card("VMware", vmware.get("hosts", 0), vmware.get("vms", 0), vmware.get("clusters"), color="#05CD99"),
-        platform_card("IBM Power", ibm.get("hosts", 0), ibm.get("lpars", 0), color="#FFB547"),
-    ]
+    # Physical Inventory overview (level 0: by device role)
+    # scroll window shows 5 bars; full chart height drives scroll
+    phys_inv_by_role = service.get_physical_inventory_overview_by_role()
+    phys_inv_labels_0 = [r["role"] for r in phys_inv_by_role]
+    phys_inv_counts_0 = [r["count"] for r in phys_inv_by_role]
+    _phys_inv_chart_height = max(_PHYS_INV_BAR_PX * 5, len(phys_inv_labels_0) * _PHYS_INV_BAR_PX)
+    phys_inv_initial_figure = _phys_inv_bar_figure(
+        phys_inv_labels_0, phys_inv_counts_0, height=_phys_inv_chart_height
+    )
 
     # Resource usage percentages per architecture (for tabbed card)
     def _pct(used, cap):
@@ -399,9 +436,37 @@ def build_overview(time_range=None):
                 children=[
                     html.Div(
                         [
-                            dmc.Text("Platform Breakdown", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("Nutanix · VMware · IBM Power", size="xs", c="dimmed", style={"marginBottom": "16px"}),
-                            dmc.SimpleGrid(cols=3, spacing="md", children=platform_cards),
+                            dmc.Group(justify="space-between", align="center", mb="sm", children=[
+                                dmc.Stack(gap=2, children=[
+                                    dmc.Text("Physical Inventory", fw=700, size="lg", c="#2B3674"),
+                                    dmc.Text("Device types · click to drill down", size="xs", c="dimmed"),
+                                ]),
+                                dmc.Button(
+                                    "↩ Reset",
+                                    id="phys-inv-reset-btn",
+                                    size="xs",
+                                    variant="light",
+                                    color="indigo",
+                                    style={"display": "none"},
+                                    n_clicks=0,
+                                ),
+                            ]),
+                            dcc.Store(
+                                id="phys-inv-drill-state",
+                                data={"level": 0, "role": None, "manufacturer": None},
+                            ),
+                            html.Div(
+                                style={
+                                    "maxHeight": f"{_PHYS_INV_BAR_PX * 5 + 20}px",
+                                    "overflowY": "auto",
+                                },
+                                children=dcc.Graph(
+                                    id="phys-inv-overview-chart",
+                                    figure=phys_inv_initial_figure,
+                                    config={"displayModeBar": False},
+                                    style={"height": f"{_phys_inv_chart_height}px"},
+                                ),
+                            ),
                         ],
                         className="nexus-card",
                         style={"padding": "24px"},
@@ -414,6 +479,7 @@ def build_overview(time_range=None):
                                 value="classic",
                                 variant="outline",
                                 radius="md",
+                                style={"flex": "1", "display": "flex", "flexDirection": "column"},
                                 children=[
                                     dmc.TabsList(children=[
                                         dmc.TabsTab("Klasik Mimari", value="classic"),
@@ -422,10 +488,12 @@ def build_overview(time_range=None):
                                     ]),
                                     dmc.TabsPanel(
                                         value="classic",
-                                        pt="md",
+                                        pt="xl",
+                                        style={"flex": "1", "display": "flex", "alignItems": "center"},
                                         children=dmc.SimpleGrid(
                                             cols=3,
                                             spacing="xl",
+                                            style={"width": "100%"},
                                             children=[
                                                 _ring_stat(classic_cpu_pct,  "CPU",     "#4318FF"),
                                                 _ring_stat(classic_ram_pct,  "RAM",     "#05CD99"),
@@ -435,10 +503,12 @@ def build_overview(time_range=None):
                                     ),
                                     dmc.TabsPanel(
                                         value="hyperconv",
-                                        pt="md",
+                                        pt="xl",
+                                        style={"flex": "1", "display": "flex", "alignItems": "center"},
                                         children=dmc.SimpleGrid(
                                             cols=3,
                                             spacing="xl",
+                                            style={"width": "100%"},
                                             children=[
                                                 _ring_stat(hyperconv_cpu_pct,  "CPU",     "#4318FF"),
                                                 _ring_stat(hyperconv_ram_pct,  "RAM",     "#05CD99"),
@@ -448,10 +518,12 @@ def build_overview(time_range=None):
                                     ),
                                     dmc.TabsPanel(
                                         value="ibm",
-                                        pt="md",
+                                        pt="xl",
+                                        style={"flex": "1", "display": "flex", "alignItems": "center"},
                                         children=dmc.SimpleGrid(
                                             cols=2,
                                             spacing="xl",
+                                            style={"width": "100%"},
                                             children=[
                                                 _ring_stat(ibm_mem_pct, "Memory Assigned", "#05CD99"),
                                                 _ring_stat(ibm_cpu_pct, "CPU Used", "#4318FF"),
@@ -462,7 +534,7 @@ def build_overview(time_range=None):
                             ),
                         ],
                         className="nexus-card",
-                        style={"padding": "24px"},
+                        style={"padding": "24px", "display": "flex", "flexDirection": "column"},
                     ),
                 ],
             ),

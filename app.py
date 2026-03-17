@@ -415,7 +415,70 @@ def update_backup_veeam_panel(selected_repos, time_range, pathname):
     return build_veeam_panel(data, selected)
 
 
-# 10. Start background cache scheduler
+# 10. Physical Inventory Overview drill-down (level 0 -> 1 -> 2 -> reset)
+@app.callback(
+    dash.Output("phys-inv-overview-chart", "figure"),
+    dash.Output("phys-inv-overview-chart", "style"),
+    dash.Output("phys-inv-drill-state", "data"),
+    dash.Output("phys-inv-reset-btn", "style"),
+    dash.Input("phys-inv-overview-chart", "clickData"),
+    dash.Input("phys-inv-reset-btn", "n_clicks"),
+    dash.State("phys-inv-drill-state", "data"),
+    prevent_initial_call=True,
+)
+def update_phys_inv_chart(click_data, reset_clicks, state):
+    from src.pages.home import _phys_inv_bar_figure
+
+    state = state or {"level": 0, "role": None, "manufacturer": None}
+    level = state.get("level", 0)
+    role = state.get("role")
+    manufacturer = state.get("manufacturer")
+
+    def chart_height(n):
+        return max(260, min(520, n * 32))
+
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    trigger_id = ctx.triggered[0]["prop_id"]
+    triggered_by_reset = "phys-inv-reset-btn" in trigger_id
+
+    if triggered_by_reset:
+        data = service.get_physical_inventory_overview_by_role()
+        labels = [r["role"] for r in data]
+        counts = [r["count"] for r in data]
+        h = chart_height(len(labels))
+        fig = _phys_inv_bar_figure(labels, counts, height=h)
+        new_state = {"level": 0, "role": None, "manufacturer": None}
+        return fig, {"height": f"{h}px"}, new_state, {"display": "none"}
+
+    if not click_data or "points" not in click_data or not click_data["points"]:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    clicked_label = click_data["points"][0].get("y")
+    if clicked_label is None:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    if level == 0:
+        data = service.get_physical_inventory_overview_manufacturer(clicked_label)
+        labels = [r["manufacturer"] for r in data]
+        counts = [r["count"] for r in data]
+        h = chart_height(len(labels))
+        fig = _phys_inv_bar_figure(labels, counts, height=h)
+        new_state = {"level": 1, "role": clicked_label, "manufacturer": None}
+        return fig, {"height": f"{h}px"}, new_state, {"display": "inline-block"}
+    if level == 1:
+        data = service.get_physical_inventory_overview_location(role or "", clicked_label)
+        labels = [r["location"] for r in data]
+        counts = [r["count"] for r in data]
+        h = chart_height(len(labels))
+        fig = _phys_inv_bar_figure(labels, counts, height=h)
+        new_state = {"level": 2, "role": role, "manufacturer": clicked_label}
+        return fig, {"height": f"{h}px"}, new_state, {"display": "inline-block"}
+    return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+
+# 11. Start background cache scheduler
 _scheduler = start_scheduler(service)
 
 if __name__ == "__main__":

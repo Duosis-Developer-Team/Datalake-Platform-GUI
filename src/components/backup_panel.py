@@ -9,40 +9,48 @@ from src.utils.format_units import smart_bytes, pct_float
 
 
 def _kpi_card(title: str, value: str, icon: str, color: str = "indigo"):
+    """Compact KPI card with no extra vertical space (for stacked layout)."""
     return dmc.Paper(
         className="nexus-card",
         shadow="sm",
         radius="md",
         withBorder=False,
-        style={"padding": "16px"},
+        style={
+            "padding": "8px 12px",
+            "minHeight": 0,
+            "display": "flex",
+            "alignItems": "center",
+        },
         children=[
             dmc.Group(
                 gap="sm",
                 align="center",
                 children=[
                     dmc.ThemeIcon(
-                        size="lg",
+                        size="md",
                         radius="md",
                         variant="light",
                         color=color,
-                        children=DashIconify(icon=icon, width=22),
+                        children=DashIconify(icon=icon, width=20),
                     ),
                     html.Div(
                         children=[
                             html.Div(
                                 title,
                                 style={
-                                    "fontSize": "0.8rem",
+                                    "fontSize": "0.75rem",
                                     "color": "#A3AED0",
-                                    "marginBottom": "2px",
+                                    "marginBottom": "1px",
+                                    "lineHeight": 1.2,
                                 },
                             ),
                             html.Div(
                                 value,
                                 style={
-                                    "fontSize": "1.2rem",
+                                    "fontSize": "1rem",
                                     "color": "#2B3674",
                                     "fontWeight": 700,
+                                    "lineHeight": 1.2,
                                 },
                             ),
                         ]
@@ -51,6 +59,44 @@ def _kpi_card(title: str, value: str, icon: str, color: str = "indigo"):
             ),
         ],
     )
+
+
+def _format_scaled(value: float, base_unit: str) -> str:
+    """
+    Scale numeric value so that the integer part stays within 3 digits,
+    with two decimal places. Units are scaled in powers of 1024:
+    MB → GB → TB → PB, GB → TB → PB, TB → PB.
+    """
+    v = float(value or 0.0)
+    unit = base_unit
+    abs_v = abs(v)
+
+    if base_unit == "MB":
+        if abs_v >= 1000:
+            v /= 1024.0
+            unit = "GB"
+            abs_v = abs(v)
+        if abs_v >= 1000:
+            v /= 1024.0
+            unit = "TB"
+            abs_v = abs(v)
+        if abs_v >= 1000:
+            v /= 1024.0
+            unit = "PB"
+    elif base_unit == "GB":
+        if abs_v >= 1000:
+            v /= 1024.0
+            unit = "TB"
+            abs_v = abs(v)
+        if abs_v >= 1000:
+            v /= 1024.0
+            unit = "PB"
+    elif base_unit == "TB":
+        if abs_v >= 1000:
+            v /= 1024.0
+            unit = "PB"
+
+    return f"{v:.2f} {unit}"
 
 
 def _usage_pie(used: float, total: float, title: str) -> go.Figure:
@@ -62,6 +108,15 @@ def _usage_pie(used: float, total: float, title: str) -> go.Figure:
     else:
         values = [used_val, free_val]
 
+    utilisation_pct = pct_float(used_val, total_val) if total_val > 0 else 0.0
+    if utilisation_pct < 60:
+        used_color = "#4318FF"  # indigo
+    elif utilisation_pct < 80:
+        used_color = "#F59F00"  # amber
+    else:
+        used_color = "#FF4D4F"  # red
+    free_color = "#E9EDF7"
+
     fig = go.Figure(
         data=[
             go.Pie(
@@ -69,7 +124,7 @@ def _usage_pie(used: float, total: float, title: str) -> go.Figure:
                 values=values,
                 hole=0.7,
                 marker=dict(
-                    colors=["#4318FF", "#E9EDF7"],
+                    colors=[used_color, free_color],
                     line=dict(color="#FFFFFF", width=1),
                 ),
                 textinfo="none",
@@ -80,12 +135,36 @@ def _usage_pie(used: float, total: float, title: str) -> go.Figure:
         ]
     )
     fig.update_layout(
-        margin=dict(l=10, r=10, t=30, b=10),
+        margin=dict(l=8, r=8, t=24, b=8),
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.1, xanchor="center", x=0.5),
-        title=dict(text=title, x=0.5, xanchor="center", font=dict(size=12)),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.08, xanchor="center", x=0.5),
+        title=dict(text=title, x=0.5, xanchor="center", font=dict(size=11)),
+        paper_bgcolor="rgba(0,0,0,0)",
     )
     return fig
+
+
+def _pie_card(fig: go.Figure) -> html.Div:
+    """Square panel so the donut chart shape fits without clipping or excess space."""
+    size_px = 280
+    return html.Div(
+        className="nexus-card",
+        style={
+            "padding": "12px",
+            "width": f"{size_px}px",
+            "height": f"{size_px}px",
+            "display": "flex",
+            "flexDirection": "column",
+            "alignItems": "center",
+            "justifyContent": "center",
+            "boxSizing": "border-box",
+        },
+        children=dcc.Graph(
+            figure=fig,
+            config={"displayModeBar": False},
+            style={"height": "100%", "width": "100%"},
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -188,8 +267,8 @@ def build_netbackup_panel(data: dict, selected_pools: Iterable[str] | None):
     )
 
     kpis = dmc.SimpleGrid(
-        cols=4,
-        spacing="lg",
+        cols=1,
+        spacing="xs",
         children=[
             _kpi_card(
                 "Total usable",
@@ -212,23 +291,6 @@ def build_netbackup_panel(data: dict, selected_pools: Iterable[str] | None):
                 "solar:chart-square-bold-duotone",
             ),
         ],
-    )
-
-    pie_card = html.Div(
-        className="nexus-card",
-        style={
-            "padding": "16px",
-            "height": "260px",
-            "display": "flex",
-            "flexDirection": "column",
-            "alignItems": "center",
-            "justifyContent": "center",
-        },
-        children=dcc.Graph(
-            figure=fig,
-            config={"displayModeBar": False},
-            style={"height": "100%", "width": "100%"},
-        ),
     )
 
     # Table
@@ -280,8 +342,15 @@ def build_netbackup_panel(data: dict, selected_pools: Iterable[str] | None):
     return html.Div(
         children=[
             header,
-            dmc.SimpleGrid(cols=2, spacing="lg", children=[kpis, pie_card]),
-            html.Div(style={"height": "20px"}),
+            dmc.Group(
+                align="flex-start",
+                gap="lg",
+                children=[
+                    html.Div(style={"minWidth": "200px"}, children=kpis),
+                    _pie_card(fig),
+                ],
+            ),
+            html.Div(style={"height": "16px"}),
             html.Div(
                 className="nexus-card",
                 style={"padding": "16px", "marginTop": "8px"},
@@ -394,51 +463,34 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
     )
 
     kpis = dmc.SimpleGrid(
-        cols=4,
-        spacing="lg",
+        cols=1,
+        spacing="xs",
         children=[
             _kpi_card(
                 "Total provisioned",
-                f"{agg['total_provisioned_mb']:,} MB",
+                _format_scaled(agg["total_provisioned_mb"], "MB"),
                 "solar:hdd-bold-duotone",
                 color="teal",
             ),
             _kpi_card(
                 "Total used",
-                f"{agg['total_used_mb']:,} MB",
+                _format_scaled(agg["total_used_mb"], "MB"),
                 "solar:pie-chart-2-bold-duotone",
                 color="teal",
             ),
             _kpi_card(
                 "Incoming throughput",
-                f"{agg['incoming_mb']:.1f} MB",
+                _format_scaled(agg["incoming_mb"], "MB"),
                 "solar:incoming-call-bold-duotone",
                 color="teal",
             ),
             _kpi_card(
                 "Outgoing bandwidth",
-                f"{agg['outgoing_mb']:.1f} MB",
+                _format_scaled(agg["outgoing_mb"], "MB"),
                 "solar:outgoing-call-bold-duotone",
                 color="teal",
             ),
         ],
-    )
-
-    pie_card = html.Div(
-        className="nexus-card",
-        style={
-            "padding": "16px",
-            "height": "260px",
-            "display": "flex",
-            "flexDirection": "column",
-            "alignItems": "center",
-            "justifyContent": "center",
-        },
-        children=dcc.Graph(
-            figure=fig,
-            config={"displayModeBar": False},
-            style={"height": "100%", "width": "100%"},
-        ),
     )
 
     # Table with pastel row coloring based on is_connected.
@@ -446,10 +498,10 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
         "Name",
         "Site Type",
         "Connected",
-        "Provisioned (MB)",
-        "Used (MB)",
-        "Incoming (MB)",
-        "Outgoing (MB)",
+        "Provisioned",
+        "Used",
+        "Incoming",
+        "Outgoing",
     ]
     table_head = html.Thead(
         html.Tr(
@@ -477,10 +529,22 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
                     html.Td(r.get("name")),
                     html.Td(r.get("site_type")),
                     html.Td("True" if is_conn else "False"),
-                    html.Td(f"{int(r.get('provisioned_storage_mb', 0) or 0):,}"),
-                    html.Td(f"{int(r.get('used_storage_mb', 0) or 0):,}"),
-                    html.Td(f"{float(r.get('incoming_throughput_mb', 0.0) or 0.0):.1f}"),
-                    html.Td(f"{float(r.get('outgoing_bandwidth_mb', 0.0) or 0.0):.1f}"),
+                    html.Td(
+                        _format_scaled(r.get("provisioned_storage_mb", 0) or 0, "MB")
+                    ),
+                    html.Td(
+                        _format_scaled(r.get("used_storage_mb", 0) or 0, "MB")
+                    ),
+                    html.Td(
+                        _format_scaled(
+                            r.get("incoming_throughput_mb", 0.0) or 0.0, "MB"
+                        )
+                    ),
+                    html.Td(
+                        _format_scaled(
+                            r.get("outgoing_bandwidth_mb", 0.0) or 0.0, "MB"
+                        )
+                    ),
                 ],
             )
         )
@@ -497,8 +561,15 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
     return html.Div(
         children=[
             header,
-            dmc.SimpleGrid(cols=2, spacing="lg", children=[kpis, pie_card]),
-            html.Div(style={"height": "20px"}),
+            dmc.Group(
+                align="flex-start",
+                gap="lg",
+                children=[
+                    html.Div(style={"minWidth": "200px"}, children=kpis),
+                    _pie_card(fig),
+                ],
+            ),
+            html.Div(style={"height": "16px"}),
             html.Div(
                 className="nexus-card",
                 style={"padding": "16px", "marginTop": "8px"},
@@ -608,24 +679,24 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
     )
 
     kpis = dmc.SimpleGrid(
-        cols=4,
-        spacing="lg",
+        cols=1,
+        spacing="xs",
         children=[
             _kpi_card(
                 "Total capacity",
-                f"{agg['total_capacity_gb']:.1f} GB",
+                _format_scaled(agg["total_capacity_gb"], "GB"),
                 "solar:database-bold-duotone",
                 color="cyan",
             ),
             _kpi_card(
                 "Total used",
-                f"{agg['total_used_gb']:.1f} GB",
+                _format_scaled(agg["total_used_gb"], "GB"),
                 "solar:pie-chart-2-bold-duotone",
                 color="cyan",
             ),
             _kpi_card(
                 "Free space",
-                f"{agg['total_free_gb']:.1f} GB",
+                _format_scaled(agg["total_free_gb"], "GB"),
                 "solar:folder-with-files-bold-duotone",
                 color="cyan",
             ),
@@ -638,30 +709,13 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
         ],
     )
 
-    pie_card = html.Div(
-        className="nexus-card",
-        style={
-            "padding": "16px",
-            "height": "260px",
-            "display": "flex",
-            "flexDirection": "column",
-            "alignItems": "center",
-            "justifyContent": "center",
-        },
-        children=dcc.Graph(
-            figure=fig,
-            config={"displayModeBar": False},
-            style={"height": "100%", "width": "100%"},
-        ),
-    )
-
     header_cells = [
         "Name",
         "Host",
         "Type",
-        "Capacity (GB)",
-        "Free (GB)",
-        "Used (GB)",
+        "Capacity",
+        "Free",
+        "Used",
         "Online",
     ]
     table_head = html.Thead(
@@ -681,9 +735,15 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
                     html.Td(r.get("name")),
                     html.Td(r.get("host_name")),
                     html.Td(r.get("type")),
-                    html.Td(f"{float(r.get('capacity_gb', 0.0) or 0.0):.1f}"),
-                    html.Td(f"{float(r.get('free_gb', 0.0) or 0.0):.1f}"),
-                    html.Td(f"{float(r.get('used_space_gb', 0.0) or 0.0):.1f}"),
+                    html.Td(
+                        _format_scaled(r.get("capacity_gb", 0.0) or 0.0, "GB")
+                    ),
+                    html.Td(
+                        _format_scaled(r.get("free_gb", 0.0) or 0.0, "GB")
+                    ),
+                    html.Td(
+                        _format_scaled(r.get("used_space_gb", 0.0) or 0.0, "GB")
+                    ),
                     html.Td("True" if r.get("is_online") else "False"),
                 ]
             )
@@ -701,8 +761,15 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
     return html.Div(
         children=[
             header,
-            dmc.SimpleGrid(cols=2, spacing="lg", children=[kpis, pie_card]),
-            html.Div(style={"height": "20px"}),
+            dmc.Group(
+                align="flex-start",
+                gap="lg",
+                children=[
+                    html.Div(style={"minWidth": "200px"}, children=kpis),
+                    _pie_card(fig),
+                ],
+            ),
+            html.Div(style={"height": "16px"}),
             html.Div(
                 className="nexus-card",
                 style={"padding": "16px", "marginTop": "8px"},

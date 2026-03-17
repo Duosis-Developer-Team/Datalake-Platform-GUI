@@ -777,3 +777,100 @@ LEFT JOIN vmware_latest v ON v.vmname = u.vm_name
 LEFT JOIN nutanix_latest n ON n.vm_name = u.vm_name
 ORDER BY "Source", "VM Name"
 """
+
+# --- Physical Inventory (discovery_netbox_inventory_device) ---
+# Location resolution: 2-level LEFT JOIN on loki_locations (no recursive CTE = no temp files).
+# loki_locations.parent_id IS NULL  → root/DC-level location; name is the DC code.
+# loki_locations.parent_id IS NOT NULL → sub-location; parent_name holds the DC code.
+# CASE WHEN ll.parent_id IS NULL THEN ll.name ELSE ll.parent_name END = resolved DC-level name.
+
+# Customer (Boyner) device list — tenant_id = 5
+PHYSICAL_INVENTORY_CUSTOMER_DEVICE_LIST = """
+SELECT
+    d.name,
+    d.device_role_name,
+    d.manufacturer_name,
+    COALESCE(
+        CASE WHEN ll.parent_id IS NULL THEN ll.name ELSE ll.parent_name END,
+        d.location_name,
+        d.site_name
+    ) AS location
+FROM public.discovery_netbox_inventory_device d
+LEFT JOIN public.loki_locations ll ON ll.name = d.location_name
+WHERE d.tenant_id = 5
+ORDER BY d.device_role_name, d.name
+"""
+
+# DC total device count — match by site_name OR resolved DC-level location
+PHYSICAL_INVENTORY_DC_TOTAL = """
+SELECT COUNT(*)
+FROM public.discovery_netbox_inventory_device d
+LEFT JOIN public.loki_locations ll ON ll.name = d.location_name
+WHERE
+    d.site_name ILIKE %s
+    OR COALESCE(
+        CASE WHEN ll.parent_id IS NULL THEN ll.name ELSE ll.parent_name END,
+        d.location_name
+    ) ILIKE %s
+"""
+
+# DC device_role distribution (bar chart)
+PHYSICAL_INVENTORY_DC_BY_ROLE = """
+SELECT d.device_role_name, COUNT(*) AS cnt
+FROM public.discovery_netbox_inventory_device d
+LEFT JOIN public.loki_locations ll ON ll.name = d.location_name
+WHERE
+    d.site_name ILIKE %s
+    OR COALESCE(
+        CASE WHEN ll.parent_id IS NULL THEN ll.name ELSE ll.parent_name END,
+        d.location_name
+    ) ILIKE %s
+GROUP BY d.device_role_name
+ORDER BY cnt DESC
+"""
+
+# DC role + manufacturer breakdown
+PHYSICAL_INVENTORY_DC_ROLE_MANUFACTURER = """
+SELECT d.device_role_name, d.manufacturer_name, COUNT(*) AS cnt
+FROM public.discovery_netbox_inventory_device d
+LEFT JOIN public.loki_locations ll ON ll.name = d.location_name
+WHERE
+    d.site_name ILIKE %s
+    OR COALESCE(
+        CASE WHEN ll.parent_id IS NULL THEN ll.name ELSE ll.parent_name END,
+        d.location_name
+    ) ILIKE %s
+GROUP BY d.device_role_name, d.manufacturer_name
+ORDER BY d.device_role_name, cnt DESC
+"""
+
+# Overview — platform-wide role distribution
+PHYSICAL_INVENTORY_OVERVIEW_BY_ROLE = """
+SELECT device_role_name, COUNT(*) as cnt
+FROM public.discovery_netbox_inventory_device
+GROUP BY device_role_name ORDER BY cnt DESC
+"""
+
+# Overview drill-down level 1: manufacturer distribution for selected role
+PHYSICAL_INVENTORY_OVERVIEW_MANUFACTURER = """
+SELECT COALESCE(manufacturer_name, 'Unknown') as manufacturer, COUNT(*) as cnt
+FROM public.discovery_netbox_inventory_device
+WHERE device_role_name ILIKE %s
+GROUP BY manufacturer_name ORDER BY cnt DESC
+"""
+
+# Overview drill-down level 2: resolved DC-level location via loki_locations 2-level JOIN
+PHYSICAL_INVENTORY_OVERVIEW_LOCATION = """
+SELECT
+    COALESCE(
+        CASE WHEN ll.parent_id IS NULL THEN ll.name ELSE ll.parent_name END,
+        d.location_name,
+        'Unknown'
+    ) AS location,
+    COUNT(*) AS cnt
+FROM public.discovery_netbox_inventory_device d
+LEFT JOIN public.loki_locations ll ON ll.name = d.location_name
+WHERE d.device_role_name ILIKE %s AND d.manufacturer_name ILIKE %s
+GROUP BY 1
+ORDER BY cnt DESC
+"""

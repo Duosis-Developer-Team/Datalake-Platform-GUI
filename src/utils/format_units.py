@@ -3,6 +3,16 @@
 # automatically picks the most human-readable unit (MB / GB / TB, MHz / GHz).
 
 
+def title_case(s):
+    """Format string so only the first letter of each word is capitalized."""
+    if s is None or not isinstance(s, str):
+        return "" if s is None else str(s)
+    s = s.strip()
+    if not s:
+        return s
+    return " ".join(word.capitalize() for word in s.split())
+
+
 def smart_storage(gb: float) -> str:
     """Format a storage value given in GB to the most appropriate unit string."""
     if gb is None:

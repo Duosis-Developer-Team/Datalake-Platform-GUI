@@ -8,7 +8,7 @@ import plotly.graph_objs as go
 
 from src.services.shared import service
 from src.utils.time_range import default_time_range
-from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_float
+from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_float, title_case
 from src.components.header import create_detail_header
 from src.pages.home import metric_card
 from src.components.s3_panel import build_customer_s3_panel
@@ -494,6 +494,35 @@ def _tab_netbackup(backup_assets: dict, backup_totals: dict):
     ])
 
 
+def _tab_physical_inventory(devices: list[dict]):
+    """Physical Inventory tab — Boyner devices table (name, device_role, manufacturer, location). Title-case display."""
+    total = len(devices or [])
+
+    def row_fn(r):
+        return html.Tr([
+            html.Td(title_case(r.get("name") or "") or "-"),
+            html.Td(title_case(r.get("device_role_name") or "") or "-"),
+            html.Td(title_case(r.get("manufacturer_name") or "") or "-"),
+            html.Td(title_case(r.get("location") or "") or "-"),
+        ])
+
+    return dmc.Stack(gap="lg", children=[
+        dmc.SimpleGrid(cols=1, spacing="lg", children=[
+            _metric("Total Physical Devices", f"{total:,}", "solar:server-bold-duotone", color="indigo"),
+        ]),
+        _section_card(
+            "Device List",
+            "NetBox physical inventory (tenant Boyner)",
+            _vm_table(
+                devices or [],
+                ["Name", "Device Role", "Manufacturer", "Location"],
+                row_fn,
+                empty_cols=4,
+            ),
+        ),
+    ])
+
+
 # ---------------------------------------------------------------------------
 # Main content block
 # ---------------------------------------------------------------------------
@@ -510,6 +539,10 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     # S3 vault metrics (may be empty if customer has no S3 vaults)
     s3_data = service.get_customer_s3_vaults(customer_name or "Boyner", tr)
     has_s3 = bool(s3_data.get("vaults"))
+
+    # Physical inventory (Boyner tenant_id=5) — tab always shown for customer
+    phys_inv_devices = service.get_physical_inventory_customer()
+    has_phys_inv = True
 
     # --- agent debug logs (NDJSON) ---
     def _agent_log(hypothesis_id: str, message: str, data_obj: dict):
@@ -697,6 +730,8 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             children=build_customer_s3_panel(customer_name or "Boyner", s3_data, tr, None) if has_s3 else html.Div(),
         ),
         "has_s3": has_s3,
+        "phys_inv": _tab_physical_inventory(phys_inv_devices),
+        "has_phys_inv": has_phys_inv,
     }
 
 
@@ -710,6 +745,7 @@ def build_customer_layout(time_range=None, selected_customer=None):
 
     content = _customer_content(chosen, tr)
     has_s3 = bool(content.get("has_s3"))
+    has_phys_inv = bool(content.get("has_phys_inv"))
 
     tabs_list = dmc.TabsList(
         style={"paddingTop": "8px"},
@@ -718,6 +754,7 @@ def build_customer_layout(time_range=None, selected_customer=None):
             dmc.TabsTab("Virtualization", value="virt"),
             dmc.TabsTab("Backup", value="backup"),
             dmc.TabsTab("Billing", value="billing"),
+            dmc.TabsTab("Physical Inventory", value="phys-inv") if has_phys_inv else None,
             dmc.TabsTab("S3", value="s3") if has_s3 else None,
         ],
     )
@@ -796,6 +833,12 @@ def build_customer_layout(time_range=None, selected_customer=None):
                         value="billing",
                         children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("billing")]),
                     ),
+                    dmc.TabsPanel(
+                        value="phys-inv",
+                        children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("phys_inv")]),
+                    )
+                    if has_phys_inv
+                    else None,
                     dmc.TabsPanel(
                         value="s3",
                         children=content.get("s3") if has_s3 else html.Div(),
