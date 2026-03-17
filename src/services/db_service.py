@@ -157,13 +157,26 @@ class DatabaseService:
         return 0
 
     @staticmethod
+    def _sql_label(sql: str) -> str:
+        """Extract a short label from SQL for logging (first meaningful keyword line)."""
+        for line in sql.strip().splitlines():
+            stripped = line.strip().upper()
+            if stripped and not stripped.startswith("--") and not stripped.startswith("WITH"):
+                return stripped[:120]
+        return sql.strip()[:120]
+
+    @staticmethod
     def _run_row(cursor, sql: str, params=None) -> tuple | None:
         """Execute SQL and return the first row tuple, or None."""
         try:
+            t0 = time.perf_counter()
             cursor.execute(sql, params)
-            return cursor.fetchone()
+            row = cursor.fetchone()
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.info("SQL row (%.0fms): %s", elapsed, DatabaseService._sql_label(sql))
+            return row
         except Exception as exc:
-            logger.warning("Query error (row): %s", exc)
+            logger.warning("Query error (row): %s | SQL: %s", exc, DatabaseService._sql_label(sql))
             try:
                 cursor.execute("ROLLBACK")
             except Exception:
@@ -174,10 +187,14 @@ class DatabaseService:
     def _run_rows(cursor, sql: str, params=None) -> list[tuple]:
         """Execute SQL and return all rows."""
         try:
+            t0 = time.perf_counter()
             cursor.execute(sql, params)
-            return cursor.fetchall() or []
+            rows = cursor.fetchall() or []
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.info("SQL rows (%.0fms, %d rows): %s", elapsed, len(rows), DatabaseService._sql_label(sql))
+            return rows
         except Exception as exc:
-            logger.warning("Query error (rows): %s", exc)
+            logger.warning("Query error (rows): %s | SQL: %s", exc, DatabaseService._sql_label(sql))
             try:
                 cursor.execute("ROLLBACK")
             except Exception:
@@ -479,28 +496,40 @@ class DatabaseService:
     # ------------------------------------------------------------------
 
     def get_classic_cluster_list(self, dc_code: str, time_range: dict | None = None) -> list[str]:
-        """Return list of Classic (KM) cluster names for the given DC and time range."""
+        """Return list of Classic (KM) cluster names for the given DC and time range (cached)."""
         tr = time_range or default_time_range()
+        cache_key = f"classic_clusters:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
         start_ts, end_ts = time_range_to_bounds(tr)
         dc_wc = f"%{dc_code}%"
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     rows = self._run_rows(cur, vq.CLASSIC_CLUSTER_LIST, (dc_wc, start_ts, end_ts))
-            return [r[0] for r in (rows or []) if r and r[0]]
+            result = [r[0] for r in (rows or []) if r and r[0]]
+            cache.set(cache_key, result)
+            return result
         except OperationalError as exc:
             logger.error("DB unavailable for get_classic_cluster_list(%s): %s", dc_code, exc)
             return []
 
     def get_hyperconv_cluster_list(self, dc_code: str, time_range: dict | None = None) -> list[str]:
-        """Return list of Nutanix cluster names (hyperconverged) for the given DC and time range."""
+        """Return list of Nutanix cluster names (hyperconverged) for the given DC and time range (cached)."""
         tr = time_range or default_time_range()
+        cache_key = f"hyperconv_clusters:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
         start_ts, end_ts = time_range_to_bounds(tr)
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     rows = self._run_rows(cur, nq.CLUSTER_LIST, (dc_code, start_ts, end_ts))
-            return [r[0] for r in (rows or []) if r and r[0]]
+            result = [r[0] for r in (rows or []) if r and r[0]]
+            cache.set(cache_key, result)
+            return result
         except OperationalError as exc:
             logger.error("DB unavailable for get_hyperconv_cluster_list(%s): %s", dc_code, exc)
             return []
@@ -2223,54 +2252,144 @@ class DatabaseService:
     # Physical Inventory (discovery_netbox_inventory_device)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Physical Inventory — raw data loaders (SQL-side)
+    # ------------------------------------------------------------------
+
+    def _get_physical_inventory_raw(self) -> list[dict]:
+        """
+        Fetch all physical devices (latest snapshot per device key) as a plain list of dicts.
+        Result is cached; all derived methods use this single dataset.
+        No JOINs, no aggregations — just a fast DISTINCT ON fetch.
+        """
+        cache_key = "phys_inv:raw_devices"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_ALL_DEVICES)
+            devices = [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "device_type_name": r[2],
+                    "manufacturer_name": r[3] or "Unknown",
+                    "device_role_name": r[4] or "Unknown",
+                    "tenant_id": r[5],
+                    "site_id": r[6],
+                    "site_name": r[7] or "",
+                    "location_id": r[8],
+                    "location_name": r[9] or "",
+                }
+                for r in (rows or [])
+            ]
+            cache.set(cache_key, devices)
+            return devices
+        except (OperationalError, PoolError) as exc:
+            logger.warning("_get_physical_inventory_raw failed: %s", exc)
+            return []
+
+    def _get_location_dc_map(self) -> dict[str, str]:
+        """
+        Fetch loki location_name → dc_name mapping (from loki_locations).
+        Cached in memory; used for in-Python location resolution (no SQL JOINs needed).
+        """
+        cache_key = "loki:location_dc_map"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, lq.LOCATION_DC_MAP)
+            loc_map = {r[0]: r[1] for r in (rows or []) if r[0] and r[1]}
+            cache.set(cache_key, loc_map)
+            return loc_map
+        except (OperationalError, PoolError) as exc:
+            logger.warning("_get_location_dc_map failed: %s", exc)
+            return {}
+
+    @staticmethod
+    def _resolve_device_location(device: dict, loc_map: dict[str, str]) -> str:
+        """Resolve DC-level location name for a device using the in-memory loki map."""
+        loc = device.get("location_name") or ""
+        if loc:
+            dc = loc_map.get(loc)
+            if dc:
+                return dc
+            return loc
+        return device.get("site_name") or "Unknown"
+
+    # ------------------------------------------------------------------
+    # Physical Inventory — derived views (Python-side aggregation)
+    # ------------------------------------------------------------------
+
     def get_physical_inventory_customer(self) -> list[dict]:
         """Return Boyner (tenant_id=5) physical device list for Customer View (cached)."""
         cache_key = "phys_inv:customer_boyner"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_CUSTOMER_DEVICE_LIST)
-                    result = [
-                        {"name": r[0], "device_role_name": r[1], "manufacturer_name": r[2], "location": r[3]}
-                        for r in (rows or [])
-                    ]
-            cache.set(cache_key, result)
-            return result
-        except (OperationalError, PoolError) as exc:
-            logger.warning("get_physical_inventory_customer failed: %s", exc)
-            return []
+        devices = self._get_physical_inventory_raw()
+        loc_map = self._get_location_dc_map()
+        result = [
+            {
+                "name": d["name"],
+                "device_role_name": d["device_role_name"],
+                "manufacturer_name": d["manufacturer_name"],
+                "location": self._resolve_device_location(d, loc_map),
+            }
+            for d in devices
+            if d.get("tenant_id") == 5
+        ]
+        result.sort(key=lambda x: (x["device_role_name"], x["name"]))
+        cache.set(cache_key, result)
+        return result
 
     def get_physical_inventory_dc(self, dc_name: str) -> dict:
         """Return physical inventory for a DC: total, by_role, by_role_manufacturer (cached)."""
-        result = {"total": 0, "by_role": [], "by_role_manufacturer": []}
-        if not (dc_name or str(dc_name).strip()):
-            return result
-        cache_key = f"phys_inv:dc:{dc_name.strip().lower()}"
+        empty: dict = {"total": 0, "by_role": [], "by_role_manufacturer": []}
+        if not dc_name or not dc_name.strip():
+            return empty
+        dc_key = dc_name.strip().lower()
+        cache_key = f"phys_inv:dc:{dc_key}"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
-        pattern = f"%{dc_name.strip()}%"
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    total_row = self._run_row(cur, cq.PHYSICAL_INVENTORY_DC_TOTAL, (pattern, pattern))
-                    result["total"] = int(total_row[0] or 0) if total_row else 0
-                    role_rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_DC_BY_ROLE, (pattern, pattern))
-                    result["by_role"] = [
-                        {"role": r[0] or "Unknown", "count": int(r[1] or 0)}
-                        for r in (role_rows or [])
-                    ]
-                    rm_rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_DC_ROLE_MANUFACTURER, (pattern, pattern))
-                    result["by_role_manufacturer"] = [
-                        {"role": r[0] or "Unknown", "manufacturer": r[1] or "Unknown", "count": int(r[2] or 0)}
-                        for r in (rm_rows or [])
-                    ]
-            cache.set(cache_key, result)
-        except (OperationalError, PoolError) as exc:
-            logger.warning("get_physical_inventory_dc failed for %s: %s", dc_name, exc)
+
+        devices = self._get_physical_inventory_raw()
+        loc_map = self._get_location_dc_map()
+
+        def _matches_dc(d: dict) -> bool:
+            resolved = self._resolve_device_location(d, loc_map).lower()
+            site = (d.get("site_name") or "").lower()
+            return dc_key in resolved or dc_key in site
+
+        dc_devices = [d for d in devices if _matches_dc(d)]
+
+        # by_role
+        role_counts: dict[str, int] = {}
+        for d in dc_devices:
+            role_counts[d["device_role_name"]] = role_counts.get(d["device_role_name"], 0) + 1
+        by_role = sorted(
+            [{"role": k, "count": v} for k, v in role_counts.items()],
+            key=lambda x: x["count"], reverse=True,
+        )
+
+        # by_role_manufacturer
+        rm_counts: dict[tuple[str, str], int] = {}
+        for d in dc_devices:
+            key = (d["device_role_name"], d["manufacturer_name"])
+            rm_counts[key] = rm_counts.get(key, 0) + 1
+        by_role_manufacturer = sorted(
+            [{"role": k[0], "manufacturer": k[1], "count": v} for k, v in rm_counts.items()],
+            key=lambda x: (x["role"], -x["count"]),
+        )
+
+        result = {"total": len(dc_devices), "by_role": by_role, "by_role_manufacturer": by_role_manufacturer}
+        cache.set(cache_key, result)
         return result
 
     def get_physical_inventory_overview_by_role(self) -> list[dict]:
@@ -2279,59 +2398,98 @@ class DatabaseService:
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_OVERVIEW_BY_ROLE)
-                    result = [{"role": r[0] or "Unknown", "count": int(r[1] or 0)} for r in (rows or [])]
-            cache.set(cache_key, result)
-            return result
-        except (OperationalError, PoolError) as exc:
-            logger.warning("get_physical_inventory_overview_by_role failed: %s", exc)
-            return []
+        devices = self._get_physical_inventory_raw()
+        role_counts: dict[str, int] = {}
+        for d in devices:
+            role_counts[d["device_role_name"]] = role_counts.get(d["device_role_name"], 0) + 1
+        result = sorted(
+            [{"role": k, "count": v} for k, v in role_counts.items()],
+            key=lambda x: x["count"], reverse=True,
+        )
+        cache.set(cache_key, result)
+        return result
 
     def get_physical_inventory_overview_manufacturer(self, role: str) -> list[dict]:
         """Return manufacturer distribution for a device role (Overview drill level 1, cached)."""
-        if not (role or str(role).strip()):
+        if not role or not role.strip():
             return []
-        cache_key = f"phys_inv:manufacturer:{role.strip().lower()}"
+        role_key = role.strip().lower()
+        cache_key = f"phys_inv:manufacturer:{role_key}"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_OVERVIEW_MANUFACTURER, (role.strip(),))
-                    result = [{"manufacturer": r[0], "count": int(r[1] or 0)} for r in (rows or [])]
-            cache.set(cache_key, result)
-            return result
-        except (OperationalError, PoolError) as exc:
-            logger.warning("get_physical_inventory_overview_manufacturer failed: %s", exc)
-            return []
+        devices = self._get_physical_inventory_raw()
+        mfr_counts: dict[str, int] = {}
+        for d in devices:
+            if d["device_role_name"].lower() == role_key:
+                mfr = d["manufacturer_name"]
+                mfr_counts[mfr] = mfr_counts.get(mfr, 0) + 1
+        result = sorted(
+            [{"manufacturer": k, "count": v} for k, v in mfr_counts.items()],
+            key=lambda x: x["count"], reverse=True,
+        )
+        cache.set(cache_key, result)
+        return result
 
     def get_physical_inventory_overview_location(self, role: str, manufacturer: str) -> list[dict]:
         """Return resolved DC-level location for role+manufacturer (Overview drill level 2, cached)."""
-        if not (role or str(role).strip()) or not (manufacturer or str(manufacturer).strip()):
+        if not role or not manufacturer:
             return []
-        cache_key = f"phys_inv:location:{role.strip().lower()}:{manufacturer.strip().lower()}"
+        role_key = role.strip().lower()
+        mfr_key = manufacturer.strip().lower()
+        cache_key = f"phys_inv:location:{role_key}:{mfr_key}"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    mfr_pattern = f"%{manufacturer.strip()}%"
-                    rows = self._run_rows(cur, cq.PHYSICAL_INVENTORY_OVERVIEW_LOCATION, (role.strip(), mfr_pattern))
-                    result = [{"location": r[0], "count": int(r[1] or 0)} for r in (rows or [])]
-            cache.set(cache_key, result)
-            return result
-        except (OperationalError, PoolError) as exc:
-            logger.warning("get_physical_inventory_overview_location failed: %s", exc)
-            return []
+        devices = self._get_physical_inventory_raw()
+        loc_map = self._get_location_dc_map()
+        loc_counts: dict[str, int] = {}
+        for d in devices:
+            if d["device_role_name"].lower() == role_key and d["manufacturer_name"].lower() == mfr_key:
+                loc = self._resolve_device_location(d, loc_map)
+                loc_counts[loc] = loc_counts.get(loc, 0) + 1
+        result = sorted(
+            [{"location": k, "count": v} for k, v in loc_counts.items()],
+            key=lambda x: x["count"], reverse=True,
+        )
+        cache.set(cache_key, result)
+        return result
 
     # ------------------------------------------------------------------
     # Cache warming / background refresh API
     # ------------------------------------------------------------------
+
+    def warm_physical_inventory(self) -> None:
+        """
+        Pre-load physical inventory raw data and location map into cache.
+        All derived views (overview, per-DC, customer) are computed from these two datasets.
+        """
+        logger.info("Warming physical inventory cache…")
+        t0 = time.perf_counter()
+        try:
+            # Invalidate raw cache entries so we get fresh data on next access.
+            cache.delete("phys_inv:raw_devices")
+            cache.delete("loki:location_dc_map")
+            # Eagerly load both datasets.
+            devices = self._get_physical_inventory_raw()
+            self._get_location_dc_map()
+            logger.info(
+                "Physical inventory raw data loaded: %d devices. Computing derived views…",
+                len(devices),
+            )
+            # Compute and cache all derived views.
+            self.get_physical_inventory_overview_by_role()
+            self.get_physical_inventory_customer()
+            for dc_code in self.dc_list:
+                try:
+                    # Invalidate per-DC cache so it recomputes from fresh raw data.
+                    cache.delete(f"phys_inv:dc:{dc_code.strip().lower()}")
+                    self.get_physical_inventory_dc(dc_code)
+                except Exception as exc:
+                    logger.warning("PhysInv warm failed for DC %s: %s", dc_code, exc)
+            logger.info("Physical inventory cache warm-up done in %.2fs.", time.perf_counter() - t0)
+        except Exception as exc:
+            logger.warning("Physical inventory cache warm-up failed: %s", exc)
 
     def warm_cache(self) -> None:
         """
@@ -2352,6 +2510,12 @@ class DatabaseService:
                 self.get_customer_resources("Boyner", tr)
             except Exception as exc:
                 logger.warning("Customer cache warm-up for Boyner failed: %s", exc)
+
+            # Physical inventory (time-range independent)
+            try:
+                self.warm_physical_inventory()
+            except Exception as exc:
+                logger.warning("Physical inventory warm-up failed at startup: %s", exc)
 
             logger.info(
                 "Cache warm-up complete for last 7d in %.2fs.",

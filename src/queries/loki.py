@@ -23,3 +23,15 @@ WHERE
     CASE WHEN parent_id IS NULL THEN name ELSE parent_name END IS NOT NULL
 ORDER BY 1
 """
+
+# Maps every location name to its DC-level parent name.
+# Used for in-memory location resolution so physical inventory queries need no JOIN.
+#   parent_id IS NULL  → the row itself is a DC;  name = dc_name
+#   parent_id IS NOT NULL → sub-location;         parent_name = dc_name
+LOCATION_DC_MAP = """
+SELECT
+    name AS location_name,
+    CASE WHEN parent_id IS NULL THEN name ELSE parent_name END AS dc_name
+FROM public.loki_locations
+WHERE CASE WHEN parent_id IS NULL THEN name ELSE parent_name END IS NOT NULL
+"""
