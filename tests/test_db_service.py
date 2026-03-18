@@ -1087,7 +1087,8 @@ class TestAggregateClassicHyperconv(unittest.TestCase):
             nutanix_host_count=4,
             nutanix_vms=20,
             nutanix_mem=(2.0, 1.0),
-            nutanix_storage=(10.0, 5.0),
+            # nutanix_cluster_metrics storage is in bytes; pass 10 TB / 5 TB in bytes.
+            nutanix_storage=(10.0 * (1024 ** 4), 5.0 * (1024 ** 4)),
             nutanix_cpu=(100.0, 50.0),
             vmware_counts=(3, 2, 20),
             vmware_mem=(1024 ** 3, 512 * (1024 ** 2)),

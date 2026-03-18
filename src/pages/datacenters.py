@@ -3,10 +3,11 @@ from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services.shared import service
+from src.services import sla_service
 from src.utils.time_range import default_time_range
 
 
-def _dc_vault_card(dc):
+def _dc_vault_card(dc, sla_entry=None):
     """Elite DC Vault kartı — 2 sütunlu, Power Dial + Metrik Satırları."""
     # ── Güç verisi ──────────────────────────────────────────────────
     ibm_kw   = float(dc["stats"].get("ibm_kw", 0.0) or 0.0)
@@ -151,7 +152,12 @@ def _dc_vault_card(dc):
                         align="center",
                         children=[
                             # Live Pulse Dot
-                            html.Div(className="dc-pulse-dot"),
+                            dmc.Tooltip(
+                                label=sla_service.format_availability_tooltip(sla_entry),
+                                position="top",
+                                withArrow=True,
+                                children=html.Div(className="dc-pulse-dot"),
+                            ),
                             dmc.Stack(
                                 gap=0,
                                 children=[
@@ -214,6 +220,7 @@ def build_datacenters(time_range=None):
     """Build Data Centers page content for the given time range."""
     tr = time_range or default_time_range()
     datacenters = service.get_all_datacenters_summary(tr)
+    sla_by_dc = sla_service.get_sla_data(tr)
     return html.Div([
         # Header
         dmc.Paper(
@@ -323,7 +330,7 @@ def build_datacenters(time_range=None):
             spacing="lg",
             style={"padding": "0 32px"},
             children=[
-                _dc_vault_card(dc) for dc in datacenters
+                _dc_vault_card(dc, sla_by_dc.get(dc.get("id"))) for dc in datacenters
             ],
         ),
     ])

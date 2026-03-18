@@ -16,6 +16,7 @@ from src.components.backup_panel import (
     build_zerto_panel,
     build_veeam_panel,
 )
+from src.services import sla_service
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +511,43 @@ def build_dc_view(dc_id, time_range=None):
     tr   = time_range or default_time_range()
     data = service.get_dc_details(dc_id, tr)
 
+    sla_by_dc = sla_service.get_sla_data(tr)
+    sla_entry = sla_by_dc.get(str(dc_id).upper())
+    sla_badges = []
+    if sla_entry:
+        try:
+            availability = float(sla_entry.get("availability_pct", 0.0))
+            period_h = float(sla_entry.get("period_hours", 0.0))
+            downtime_h = float(sla_entry.get("downtime_hours", 0.0))
+            sla_badges = [
+                dmc.Badge(
+                    f"Availability: {availability:.4f}%",
+                    variant="light",
+                    color="teal" if availability >= 99.9 else "orange",
+                    radius="xl",
+                    size="md",
+                    style={"textTransform": "none", "fontWeight": 600, "letterSpacing": 0},
+                ),
+                dmc.Badge(
+                    f"Period: {period_h:,.0f} h",
+                    variant="light",
+                    color="indigo",
+                    radius="xl",
+                    size="md",
+                    style={"textTransform": "none", "fontWeight": 500, "letterSpacing": 0},
+                ),
+                dmc.Badge(
+                    f"Downtime: {downtime_h:,.1f} h",
+                    variant="light",
+                    color="red" if downtime_h > 0 else "teal",
+                    radius="xl",
+                    size="md",
+                    style={"textTransform": "none", "fontWeight": 500, "letterSpacing": 0},
+                ),
+            ]
+        except Exception:
+            sla_badges = []
+
     # S3 pool metrics (may be empty for DCs without S3 pools)
     s3_data = service.get_dc_s3_pools(dc_id, tr)
     has_s3 = bool(s3_data.get("pools"))
@@ -602,6 +640,7 @@ def build_dc_view(dc_id, time_range=None):
                     subtitle_color="indigo",
                     time_range=tr,
                     icon="solar:server-square-bold-duotone",
+                    right_extra=sla_badges,
                     tabs=dmc.TabsList(
                         style={"paddingTop": "8px"},
                         children=[

@@ -14,6 +14,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.date import DateTrigger
 
 from src.utils.time_range import preset_to_range, PRESET_30_DAYS
+from src.utils.time_range import default_time_range
+from src.services import sla_service
 
 if TYPE_CHECKING:
     from src.services.db_service import DatabaseService
@@ -21,6 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REFRESH_INTERVAL_MINUTES = 15
+SLA_REFRESH_INTERVAL_MINUTES = 60
 
 
 def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
@@ -55,6 +58,37 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
         "Background scheduler started. Cache refresh every %d minutes.",
         REFRESH_INTERVAL_MINUTES,
     )
+
+    # SLA availability cache warm-up + hourly refresh (default report range).
+    try:
+        def _refresh_sla_default_range():
+            tr = default_time_range()
+            sla_service.refresh_sla_cache(tr)
+
+        scheduler.add_job(
+            func=_refresh_sla_default_range,
+            trigger=DateTrigger(run_date=datetime.now()),
+            id="sla_initial_warm",
+            name="Initial SLA availability warm-up (default range)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled initial SLA availability warm-up (default range).")
+    except Exception as exc:
+        logger.warning("Failed to schedule initial SLA warm-up: %s", exc)
+
+    try:
+        scheduler.add_job(
+            func=lambda: sla_service.refresh_sla_cache(default_time_range()),
+            trigger=IntervalTrigger(minutes=SLA_REFRESH_INTERVAL_MINUTES),
+            id="sla_hourly_refresh",
+            name="SLA availability cache refresh (hourly, default range)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled SLA availability refresh every %d minutes.", SLA_REFRESH_INTERVAL_MINUTES)
+    except Exception as exc:
+        logger.warning("Failed to schedule SLA hourly refresh: %s", exc)
 
     # Step 2a: schedule background warm-up for longer DC ranges
     # (last 30 days and previous calendar month) so they do not delay startup.
