@@ -154,7 +154,20 @@ def format_availability_tooltip(entry: Optional[dict]) -> str:
     if not entry:
         return "Availability: —"
     try:
-        return f"Availability: {float(entry.get('availability_pct', 0.0)):.4f}%"
+        return f"Availability: %{format_pct(float(entry.get('availability_pct', 0.0)))}"
     except Exception:
         return "Availability: —"
+
+
+def format_pct(value: float, max_decimals: int = 2) -> str:
+    """
+    Format percentage with up to `max_decimals` digits.
+    Trailing zeros are removed (e.g., 100.00 -> 100, 99.40 -> 99.4).
+    """
+    try:
+        s = f"{float(value):.{int(max_decimals)}f}"
+    except Exception:
+        return "—"
+    s = s.rstrip("0").rstrip(".")
+    return s
 
