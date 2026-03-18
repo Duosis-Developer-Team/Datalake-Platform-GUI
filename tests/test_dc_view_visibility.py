@@ -1,3 +1,4 @@
+from dash import html
 from src.pages import dc_view
 
 
@@ -70,8 +71,8 @@ def test_summary_hidden_when_no_data(monkeypatch):
     layout = dc_view.build_dc_view("DCX", time_range={"from": 0, "to": 0})
     # With no compute and no S3 data, Summary and Virtualization tabs should be absent
     # We approximate this by checking helper functions directly.
-    assert dc_view._has_compute_data(dc_details.get("classic")) is False
-    assert dc_view._has_compute_data(dc_details.get("hyperconv")) is False
+    assert dc_view._has_compute_data(empty_dc.get("classic")) is False
+    assert dc_view._has_compute_data(empty_dc.get("hyperconv")) is False
 
 
 def test_s3_tab_shown_when_pools_present(monkeypatch):

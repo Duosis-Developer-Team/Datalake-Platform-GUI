@@ -256,6 +256,7 @@ class DatabaseService:
 
         dc_set = {dc.upper() for dc in self.dc_list}
         ip_to_dc: dict[str, str] = {}
+        explicit_hosts: set[str] = set()
         staged: list[tuple[str | None, tuple]] = []
 
         for row in rows:
@@ -269,6 +270,8 @@ class DatabaseService:
             if dc_from_name:
                 if ip_pref and ip_pref not in ip_to_dc:
                     ip_to_dc[ip_pref] = dc_from_name
+                if host_val:
+                    explicit_hosts.add(str(host_val))
                 staged.append((dc_from_name, row))
             else:
                 staged.append((None, row))
@@ -279,6 +282,13 @@ class DatabaseService:
                 continue
             dc_final = dc_hint
             if not dc_final:
+                # If the row shares an exact host with an explicit (name-matched) row,
+                # do not auto-assign it by IP prefix. This avoids over-including
+                # generic rows on the same host while still allowing prefix grouping
+                # across sibling hosts (e.g., .200 → .201).
+                host_val = row[host_index]
+                if host_val and str(host_val) in explicit_hosts:
+                    continue
                 ip_pref = self._ip_prefix(row[host_index])
                 if ip_pref and ip_pref in ip_to_dc:
                     dc_final = ip_to_dc[ip_pref]
