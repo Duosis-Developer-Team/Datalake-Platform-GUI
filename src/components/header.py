@@ -126,7 +126,15 @@ def create_detail_header(
             )
         ]
 
-    right_children = list(date_badge_children) + (list(right_extra) if right_extra else [])
+    date_row = dmc.Group(gap="sm", justify="flex-end", children=list(date_badge_children))
+    if right_extra:
+        right_block = dmc.Stack(
+            gap=6,
+            align="flex-end",
+            children=[date_row, *list(right_extra)],
+        )
+    else:
+        right_block = date_row
 
     # ── Üst Katman: Back | İkon+Başlık+Badge | Tarih(+extras) ───────────
     top_layer = dmc.Group(
@@ -147,8 +155,8 @@ def create_detail_header(
                     ),
                 ],
             ),
-            # SAĞ: Tarih rozeti + opsiyonel ekstra rozetler
-            dmc.Group(gap="sm", children=right_children),
+            # SAĞ: Tarih rozeti (üst) + opsiyonel ekstra satırlar
+            right_block,
         ],
     )
 

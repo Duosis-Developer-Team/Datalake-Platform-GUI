@@ -521,28 +521,34 @@ def build_dc_view(dc_id, time_range=None):
             downtime_h = float(sla_entry.get("downtime_hours", 0.0))
             sla_badges = [
                 dmc.Badge(
-                    f"Availability: {availability:.4f}%",
+                    f"Availability: %{sla_service.format_pct(availability, 2)}",
                     variant="light",
                     color="teal" if availability >= 99.9 else "orange",
                     radius="xl",
                     size="md",
                     style={"textTransform": "none", "fontWeight": 600, "letterSpacing": 0},
                 ),
-                dmc.Badge(
-                    f"Period: {period_h:,.0f} h",
-                    variant="light",
-                    color="indigo",
-                    radius="xl",
-                    size="md",
-                    style={"textTransform": "none", "fontWeight": 500, "letterSpacing": 0},
-                ),
-                dmc.Badge(
-                    f"Downtime: {downtime_h:,.1f} h",
-                    variant="light",
-                    color="red" if downtime_h > 0 else "teal",
-                    radius="xl",
-                    size="md",
-                    style={"textTransform": "none", "fontWeight": 500, "letterSpacing": 0},
+                dmc.Group(
+                    gap="sm",
+                    justify="flex-end",
+                    children=[
+                        dmc.Badge(
+                            f"Period: {period_h:,.0f} h",
+                            variant="light",
+                            color="indigo",
+                            radius="xl",
+                            size="md",
+                            style={"textTransform": "none", "fontWeight": 500, "letterSpacing": 0},
+                        ),
+                        dmc.Badge(
+                            f"Downtime: {downtime_h:,.1f} h",
+                            variant="light",
+                            color="red" if downtime_h > 0 else "teal",
+                            radius="xl",
+                            size="md",
+                            style={"textTransform": "none", "fontWeight": 500, "letterSpacing": 0},
+                        ),
+                    ],
                 ),
             ]
         except Exception:
