@@ -241,6 +241,7 @@ Adjust hostnames and service names to match your cluster. Do not store secrets i
 |----------|---------|
 | [APP_RESTART.md](APP_RESTART.md) | Stopping Dash, port 8050, `stop_app.ps1` |
 | [PROJECT_STANDARDS.md](PROJECT_STANDARDS.md) | Project standards |
+| [CACHE_STRATEGY_COMPARISON.md](CACHE_STRATEGY_COMPARISON.md) | Legacy vs Redis cache, warm/refresh pillars |
 | [env.example](../env.example) | Example `.env` for database |
 
 ---
