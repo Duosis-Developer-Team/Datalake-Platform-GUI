@@ -27,3 +27,22 @@ def test_docker_compose_defines_datalake_network_and_app_api_urls() -> None:
     assert "DATACENTER_API_URL" in text
     assert "http://datacenter-api:8000" in text
     assert "microservice" in text
+
+
+def test_docker_compose_no_hardcoded_db_host_for_apis() -> None:
+    """APIs must use .env (external DB); Compose must not override DB_* with internal postgres."""
+    text = _compose_text()
+    assert "DB_HOST: db" not in text
+
+
+def test_docker_compose_apis_use_env_file() -> None:
+    text = _compose_text()
+    assert text.count("env_file:") >= 4  # app + datacenter-api + customer-api + query-api
+
+
+def test_docker_compose_db_service_not_on_microservice_profile() -> None:
+    """Bundled Postgres is optional (with-db only); microservice stack uses external DB."""
+    text = _compose_text()
+    db_block = text.split("  db:")[1].split("  redis:")[0]
+    assert "- microservice" not in db_block
+    assert "- with-db" in db_block

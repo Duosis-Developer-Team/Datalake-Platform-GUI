@@ -191,16 +191,18 @@ gunicorn app:server --bind 0.0.0.0:8050 --workers 4 --timeout 120
 
 [`docker-compose.yml`](../docker-compose.yml) defines the Dash UI and optional infrastructure/APIs on a shared **`datalake`** network.
 
+**PostgreSQL** is **not** started by the `microservice` profile. The three API services load **`DB_HOST`**, **`DB_PORT`**, **`DB_NAME`**, **`DB_USER`**, **`DB_PASS`** from **`env_file: .env`** (your external database). **Redis** still runs inside Compose for the `microservice` profile; **`REDIS_HOST=redis`** / **`REDIS_PORT=6379`** are set in Compose so containers resolve the Redis service name.
+
 | Service | Profile | Ports (host) | Build / image |
 |---------|---------|--------------|---------------|
 | **`app`** | (always) | **8050** | Root [`Dockerfile`](../Dockerfile) |
-| **`db`** | `microservice`, `with-db` | **5432** | `postgres:15` |
+| **`db`** | **`with-db` only** | **5432** | `postgres:15` (optional local Postgres for development) |
 | **`redis`** | `microservice` | **6379** | `redis:7-alpine` |
 | **`datacenter-api`** | `microservice` | **8000** | `./services/datacenter-api` |
 | **`customer-api`** | `microservice` | **8001** | `./services/customer-api` |
 | **`query-api`** | `microservice` | **8002** | `./services/query-api` |
 
-**Full microservice stack** (PostgreSQL, Redis, three APIs, Dash):
+**Full microservice stack** (external DB via `.env`, Redis, three APIs, Dash):
 
 ```bash
 docker compose --profile microservice up -d --build
@@ -210,9 +212,11 @@ Or set **`COMPOSE_PROFILES=microservice`** in `.env` (see [`env.example`](../env
 
 The **`app`** service sets **`DATACENTER_API_URL`**, **`CUSTOMER_API_URL`**, and **`QUERY_API_URL`** to the Compose service names (`http://datacenter-api:8000`, etc.). Override via `.env` if needed.
 
-**Dash only** (no DB/APIs in Compose): `docker compose up -d app`. For API calls from the container to work, point the URLs in `.env` at reachable hosts (e.g. `host.docker.internal` if APIs run on the host).
+**Dash only** (no APIs in Compose): `docker compose up -d app`. For API calls from the container to work, point the URLs in `.env` at reachable hosts (e.g. `host.docker.internal` if APIs run on the host).
 
-**PostgreSQL** in Compose uses user **`datalakeui`** / password **`change_me`** (see `docker-compose.yml`); API services receive matching **`DB_*`** via `environment`. Change secrets and keep them consistent with your database.
+**Database reachability from containers:** use your server IP/hostname in **`DB_HOST`**. If PostgreSQL runs on the **host** (not in Docker), use **`host.docker.internal`** (Docker Desktop on Windows/macOS) or the host’s LAN IP so API containers can connect.
+
+**Optional local Postgres** (e.g. offline development): `docker compose --profile with-db up -d` starts **`db`**; then set **`DB_HOST=db`**, **`DB_PORT=5432`**, and matching **`DB_USER`** / **`DB_PASS`** in `.env` to match the `db` service in `docker-compose.yml`.
 
 ---
 
