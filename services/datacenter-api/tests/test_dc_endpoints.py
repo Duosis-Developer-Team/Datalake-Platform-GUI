@@ -1,3 +1,6 @@
+from unittest.mock import patch
+
+
 def test_health_endpoint_returns_200_with_ok_status(client):
     r = client.get("/health")
     assert r.status_code == 200
@@ -138,3 +141,22 @@ def test_datacenter_detail_energy_has_kwh_fields(client):
     assert "total_kwh" in energy
     assert "ibm_kwh" in energy
     assert "vcenter_kwh" in energy
+
+
+def test_sla_endpoint_returns_by_dc(client):
+    with patch(
+        "app.routers.datacenters.sla_service.get_sla_data",
+        return_value={"DC11": {"availability_pct": 99.9}},
+    ):
+        r = client.get("/api/v1/sla")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["by_dc"]["DC11"]["availability_pct"] == 99.9
+
+
+def test_dc_s3_pools_endpoint_delegates_to_db(client, mock_db):
+    mock_db.get_dc_s3_pools.return_value = {"pools": ["pool-a"], "latest": {}, "growth": {}}
+    r = client.get("/api/v1/datacenters/DC11/s3/pools")
+    assert r.status_code == 200
+    assert r.json()["pools"] == ["pool-a"]
+    mock_db.get_dc_s3_pools.assert_called_once()

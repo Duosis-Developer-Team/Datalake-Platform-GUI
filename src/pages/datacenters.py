@@ -3,15 +3,19 @@ from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services import api_client as api
+from src.services import sla_service
 from src.utils.time_range import default_time_range
 
 
-def _dc_vault_card(dc):
+def _dc_vault_card(dc, sla_entry=None):
+    """Elite DC Vault kart─▒ ÔÇö 2 s├╝tunlu, Power Dial + Metrik Sat─▒rlar─▒."""
+    # ÔöÇÔöÇ G├╝├ğ verisi ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     ibm_kw   = float(dc["stats"].get("ibm_kw", 0.0) or 0.0)
     total_kw = float(dc["stats"].get("total_energy_kw", 0.0) or 0.0)
     power_ratio = round((ibm_kw / total_kw * 100) if total_kw > 0 else 0.0, 1)
     remaining   = max(0.0, 100.0 - power_ratio)
 
+    # ÔöÇÔöÇ Renk-ikon Metrik Tan─▒mlar─▒ ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     metrics = [
         {
             "icon": "solar:layers-minimalistic-bold-duotone",
@@ -70,6 +74,7 @@ def _dc_vault_card(dc):
         for m in metrics
     ]
 
+    # ÔöÇÔöÇ Power Dial (dmc.RingProgress) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     power_dial = dmc.Stack(
         gap=6,
         align="center",
@@ -111,6 +116,7 @@ def _dc_vault_card(dc):
         ],
     )
 
+    # ÔöÇÔöÇ Dikey Frosted Divider (Sol/Sa─ş aras─▒nda) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     frosty_divider = html.Div(
         style={
             "width": "1px",
@@ -136,6 +142,7 @@ def _dc_vault_card(dc):
             "gap": "14px",
         },
         children=[
+            # ÔöÇÔöÇ Kart Ba┼şl─▒─ş─▒: ─░sim + Pulse Dot + Details Badge ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
             dmc.Group(
                 justify="space-between",
                 align="flex-start",
@@ -144,13 +151,19 @@ def _dc_vault_card(dc):
                         gap="xs",
                         align="center",
                         children=[
-                            html.Div(className="dc-pulse-dot"),
+                            # Live Pulse Dot
+                            dmc.Tooltip(
+                                label=sla_service.format_availability_tooltip(sla_entry),
+                                position="top",
+                                withArrow=True,
+                                children=html.Div(className="dc-pulse-dot"),
+                            ),
                             dmc.Stack(
                                 gap=0,
                                 children=[
                                     dmc.Text(dc["name"], fw=700, size="md", c="#2B3674"),
                                     dmc.Text(
-                                        dc.get("location", "—"),
+                                        dc.get("location", "ÔÇö"),
                                         size="xs",
                                         c="#A3AED0",
                                         fw=500,
@@ -161,7 +174,7 @@ def _dc_vault_card(dc):
                     ),
                     dcc.Link(
                         dmc.Badge(
-                            "Details →",
+                            "Details ÔåÆ",
                             variant="light",
                             color="indigo",
                             size="sm",
@@ -174,6 +187,7 @@ def _dc_vault_card(dc):
                 ],
             ),
 
+            # ÔöÇÔöÇ Ana 2-S├╝tunlu ─░├ğerik ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
             html.Div(
                 style={
                     "display": "flex",
@@ -183,12 +197,15 @@ def _dc_vault_card(dc):
                     "flex": 1,
                 },
                 children=[
+                    # Sol: Metrik sat─▒rlar─▒
                     dmc.Stack(
                         gap="xs",
                         style={"flex": 1},
                         children=metric_rows,
                     ),
+                    # Ortada: Frosted Divider
                     frosty_divider,
+                    # Sa─ş: Power Dial
                     html.Div(
                         style={"display": "flex", "alignItems": "center", "justifyContent": "center"},
                         children=[power_dial],
@@ -200,9 +217,12 @@ def _dc_vault_card(dc):
 
 
 def build_datacenters(time_range=None):
+    """Build Data Centers page content for the given time range."""
     tr = time_range or default_time_range()
     datacenters = api.get_all_datacenters_summary(tr)
+    sla_by_dc = api.get_sla_by_dc(tr)
     return html.Div([
+        # Header
         dmc.Paper(
             p="xl",
             radius="md",
@@ -219,9 +239,11 @@ def build_datacenters(time_range=None):
                     justify="space-between",
                     align="center",
                     children=[
+                        # ---- SOL TARAF: Ba┼şl─▒k + Tarih Rozeti ----
                         dmc.Stack(
                             gap=10,
                             children=[
+                                # Ba┼şl─▒k sat─▒r─▒: ─░kon + Gradyan H2
                                 dmc.Group(
                                     gap="sm",
                                     align="center",
@@ -247,6 +269,7 @@ def build_datacenters(time_range=None):
                                         ),
                                     ],
                                 ),
+                                # Tarih rozeti ÔÇö Overview ile ayn─▒ pattern
                                 dmc.Badge(
                                     children=[
                                         dmc.Group(
@@ -257,7 +280,7 @@ def build_datacenters(time_range=None):
                                                     icon="solar:calendar-mark-bold-duotone",
                                                     width=13,
                                                 ),
-                                                f"{tr.get('start', '')} – {tr.get('end', '')}",
+                                                f"{tr.get('start', '')} ÔÇô {tr.get('end', '')}",
                                             ],
                                         )
                                     ],
@@ -269,6 +292,7 @@ def build_datacenters(time_range=None):
                                 ),
                             ],
                         ),
+                        # ---- SA─Ş TARAF: Aktif DC Sayac─▒ Badge ----
                         dmc.Badge(
                             children=[
                                 dmc.Group(
@@ -300,12 +324,13 @@ def build_datacenters(time_range=None):
             ],
         ),
 
+        # Elite DC Vault Grid
         dmc.SimpleGrid(
             cols=3,
             spacing="lg",
             style={"padding": "0 32px"},
             children=[
-                _dc_vault_card(dc) for dc in datacenters
+                _dc_vault_card(dc, sla_by_dc.get(dc.get("id"))) for dc in datacenters
             ],
         ),
     ])

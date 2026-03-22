@@ -1,3 +1,10 @@
+# IBM Power (HMC) SQL query definitions
+# Sources: ibm_server_general (time), ibm_vios_general, ibm_lpar_general
+# Individual: (wildcard, start_ts, end_ts). Batch: (dc_list, start_ts, end_ts) with regex DC extraction.
+# Counts use COUNT(DISTINCT ...); usage (MEMORY, CPU) uses AVG over all rows in time range.
+
+# --- Individual queries ---
+
 HOST_COUNT = """
 SELECT COUNT(DISTINCT server_details_servername)
 FROM public.ibm_server_general
@@ -17,11 +24,19 @@ WHERE lpar_details_servername LIKE %s AND time BETWEEN %s AND %s
 """
 
 MEMORY = """
+WITH latest_per_server AS (
+    SELECT DISTINCT ON (server_details_servername)
+        server_details_servername,
+        server_memory_configurablemem,
+        server_memory_assignedmemtolpars
+    FROM public.ibm_server_general
+    WHERE server_details_servername LIKE %s AND time BETWEEN %s AND %s
+    ORDER BY server_details_servername, time DESC
+)
 SELECT
-    COALESCE(AVG(server_memory_configurablemem), 0) AS total_memory,
-    COALESCE(AVG(server_memory_assignedmemtolpars), 0) AS assigned_memory
-FROM public.ibm_server_general
-WHERE server_details_servername LIKE %s AND time BETWEEN %s AND %s
+    COALESCE(SUM(server_memory_configurablemem), 0) AS total_memory,
+    COALESCE(SUM(server_memory_assignedmemtolpars), 0) AS assigned_memory
+FROM latest_per_server
 """
 
 CPU = """
@@ -32,6 +47,13 @@ SELECT
 FROM public.ibm_server_general
 WHERE server_details_servername LIKE %s AND time BETWEEN %s AND %s
 """
+
+# --- Batch queries (lightweight — no regex) ---
+# These fetch raw rows; DC code extraction is done in Python to minimise
+# database CPU load and allow the queries to leverage simple time-range
+# indexes instead of computing regexp_matches on every row.
+#
+# Params: (start_ts, end_ts)
 
 BATCH_RAW_HOST = """
 SELECT server_details_servername
@@ -52,7 +74,10 @@ WHERE time BETWEEN %s AND %s
 """
 
 BATCH_RAW_MEMORY = """
-SELECT server_details_servername, server_memory_configurablemem, server_memory_assignedmemtolpars
+SELECT server_details_servername,
+       server_memory_configurablemem,
+       server_memory_assignedmemtolpars,
+       time
 FROM public.ibm_server_general
 WHERE time BETWEEN %s AND %s
 """
@@ -65,6 +90,9 @@ SELECT server_details_servername,
 FROM public.ibm_server_general
 WHERE time BETWEEN %s AND %s
 """
+
+# Legacy batch queries kept for registry/explorer use but no longer called
+# by _fetch_all_batch (which now uses the raw+Python approach above).
 
 BATCH_HOST_COUNT = """
 WITH extracted AS (

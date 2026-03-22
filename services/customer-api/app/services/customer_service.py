@@ -5,10 +5,12 @@ import os
 from contextlib import contextmanager
 
 from psycopg2 import OperationalError, pool as pg_pool
+from psycopg2.pool import PoolError
 
 from app.adapters.customer_adapter import CustomerAdapter
+from app.db.queries import s3 as s3q
 from app.services import cache_service as cache
-from app.utils.time_range import default_time_range
+from app.utils.time_range import default_time_range, time_range_to_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -110,3 +112,82 @@ class CustomerService:
 
     def get_customer_list(self) -> list[str]:
         return ["Boyner"]
+
+    def _fetch_customer_s3_vaults(self, customer_name: str, start_ts, end_ts) -> dict:
+        """Fetch S3 vault metrics for a customer (same logic as datacenter-api DatabaseService)."""
+        name = (customer_name or "").strip()
+        pattern = f"%{name}%" if name else "%"
+
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                vault_rows = self._run_rows(
+                    cur,
+                    s3q.VAULT_LIST,
+                    (pattern, start_ts, end_ts),
+                )
+                vaults = [r[0] for r in (vault_rows or []) if r and r[0]]
+                if not vaults:
+                    return {"vaults": [], "latest": {}, "growth": {}}
+
+                latest_rows = self._run_rows(
+                    cur,
+                    s3q.VAULT_LATEST,
+                    (vaults, start_ts, end_ts),
+                )
+                latest: dict[str, dict] = {}
+                for r in latest_rows or []:
+                    vault_id, name_val, hard_quota, used, ts = r
+                    if not name_val:
+                        continue
+                    latest[name_val] = {
+                        "vault_id": int(vault_id or 0),
+                        "hard_quota_bytes": int(hard_quota or 0),
+                        "used_bytes": int(used or 0),
+                        "timestamp": ts,
+                    }
+
+                growth_rows = self._run_rows(
+                    cur,
+                    s3q.VAULT_FIRST_LAST,
+                    (vaults, start_ts, end_ts),
+                )
+                growth: dict[str, dict] = {}
+                for r in growth_rows or []:
+                    vault_id, name_val, first_used, last_used, first_ts, last_ts, hard_quota = r
+                    if not name_val:
+                        continue
+                    first_used_val = int(first_used or 0)
+                    last_used_val = int(last_used or 0)
+                    growth[name_val] = {
+                        "vault_id": int(vault_id or 0),
+                        "first_used_bytes": first_used_val,
+                        "last_used_bytes": last_used_val,
+                        "delta_used_bytes": last_used_val - first_used_val,
+                        "first_timestamp": first_ts,
+                        "last_timestamp": last_ts,
+                        "hard_quota_bytes": int(hard_quota or 0),
+                    }
+
+        return {
+            "vaults": vaults,
+            "latest": latest,
+            "growth": growth,
+        }
+
+    def get_customer_s3_vaults(self, customer_name: str, time_range: dict | None = None) -> dict:
+        """Return cached S3 vault metrics for a customer and time range."""
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        cache_key = f"customer_s3:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            result = self._fetch_customer_s3_vaults(customer_name, start_ts, end_ts)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_customer_s3_vaults failed for %s: %s", customer_name, exc)
+            return {"vaults": [], "latest": {}, "growth": {}, "trend": []}
+
+        cache.set(cache_key, result)
+        return result

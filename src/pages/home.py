@@ -2,8 +2,10 @@ import dash
 from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
+import plotly.graph_objects as go
 from src.services import api_client as api
 from src.utils.time_range import default_time_range
+from src.utils.format_units import title_case
 from src.components.charts import (
     create_energy_breakdown_chart,
     create_grouped_bar_chart,
@@ -14,7 +16,43 @@ from src.components.charts import (
 )
 
 
+_PHYS_INV_BAR_PX = 50  # pixels per bar ÔÇö controls visible item count in scroll window
+
+
+def _phys_inv_bar_figure(labels, counts, color="#4318FF", height=None):
+    """Horizontal bar chart for Physical Inventory (Overview drill-down). Labels are title-cased."""
+    labels = labels or ["No data"]
+    counts = counts or [0]
+    labels_display = [title_case(str(l)) for l in labels]
+    if height is None:
+        height = len(labels_display) * _PHYS_INV_BAR_PX
+    fig = go.Figure(
+        data=[go.Bar(
+            x=counts,
+            y=labels_display,
+            orientation="h",
+            marker_color=color,
+            text=counts,
+            textposition="outside",
+            textfont=dict(size=14, color="#2B3674", family="DM Sans, sans-serif"),
+        )]
+    )
+    fig.update_layout(
+        margin=dict(l=20, r=60, t=10, b=20),
+        height=height,
+        bargap=0.35,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=True),
+        yaxis=dict(showgrid=False, zeroline=False, categoryorder="total ascending", tickfont=dict(size=13)),
+        font=dict(family="DM Sans, sans-serif", color="#A3AED0", size=13),
+    )
+    return fig
+
+
 def layout():
+    """Default layout (initial load uses default time range)."""
     return build_overview(default_time_range())
 
 
@@ -104,6 +142,7 @@ def platform_card(title, hosts, vms, clusters=None, color="#4318FF"):
 
 
 def _ring_stat(value, label, color):
+    """dmc.RingProgress ile tek kaynak kullan─▒m halkas─▒."""
     try:
         v = max(0.0, min(100.0, float(value)))
     except (TypeError, ValueError):
@@ -149,6 +188,7 @@ def _ring_stat(value, label, color):
 
 
 def _pct_badge(value):
+    """CPU/RAM y├╝zdesini de─şere g├Âre renk kodlu dmc.Badge ile d├Ând├╝r."""
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -162,7 +202,7 @@ def _pct_badge(value):
         color, variant = "teal", "light"
 
     if v == 0.0:
-        return dmc.Text("—", size="sm", c="dimmed", style={"textAlign": "right"})
+        return dmc.Text("ÔÇö", size="sm", c="dimmed", style={"textAlign": "right"})
 
     return dmc.Badge(
         f"{v:.1f}%",
@@ -180,14 +220,57 @@ def _pct_badge(value):
     )
 
 
+def _arch_usage_cell(usage: dict | None):
+    """Render architecture usage cell with CPU/RAM/Disk percentages."""
+    usage = usage or {}
+    cpu = usage.get("cpu_pct", 0.0)
+    ram = usage.get("ram_pct", 0.0)
+    disk = usage.get("disk_pct", None)
+
+    rows = [
+        dmc.Group(
+            gap=6,
+            align="center",
+            children=[
+                dmc.Text("CPU", size="xs", c="dimmed"),
+                _pct_badge(cpu),
+            ],
+        ),
+        dmc.Group(
+            gap=6,
+            align="center",
+            children=[
+                dmc.Text("RAM", size="xs", c="dimmed"),
+                _pct_badge(ram),
+            ],
+        ),
+    ]
+
+    if disk is not None:
+        rows.append(
+            dmc.Group(
+                gap=6,
+                align="center",
+                children=[
+                    dmc.Text("Disk", size="xs", c="dimmed"),
+                    _pct_badge(disk),
+                ],
+            )
+        )
+
+    return dmc.Stack(gap=4, align="flex-end", children=rows)
+
+
 def _num_cell(value, suffix=""):
+    """Say─▒sal de─şeri sa─şa hizal─▒, tabular-nums format─▒nda d├Ând├╝r.
+    0 ise solukla┼şt─▒r─▒lm─▒┼ş tire g├Âster."""
     try:
         v = int(value)
     except (TypeError, ValueError):
         v = 0
 
     if v == 0:
-        return dmc.Text("—", size="sm", c="dimmed",
+        return dmc.Text("ÔÇö", size="sm", c="dimmed",
                         style={"textAlign": "right", "fontVariantNumeric": "tabular-nums"})
 
     return dmc.Text(
@@ -200,6 +283,7 @@ def _num_cell(value, suffix=""):
 
 
 def _dc_link(name, dc_id):
+    """DC ismini alt─▒ ├ğizgisiz, marka renginde, kal─▒n link olarak d├Ând├╝r."""
     return dcc.Link(
         dmc.Text(
             name,
@@ -214,13 +298,18 @@ def _dc_link(name, dc_id):
 
 
 def build_overview(time_range=None):
+    """Build Overview page content for the given time range (used by app callback)."""
     tr = time_range or default_time_range()
     data = api.get_global_dashboard(tr)
     overview = data.get("overview", {})
     platforms = data.get("platforms", {})
     energy_breakdown = data.get("energy_breakdown", {})
+    classic_totals = data.get("classic_totals", {})
+    hyperconv_totals = data.get("hyperconv_totals", {})
+    ibm_totals = data.get("ibm_totals", {})
     summaries = api.get_all_datacenters_summary(tr)
 
+    # KPI strip (platforms = Nutanix + vCenter + IBM per DC, summed)
     kpis = [
         metric_card("Data Centers", str(overview.get("dc_count", 0)), "solar:server-square-bold-duotone", "Sites"),
         metric_card("Platforms", f"{overview.get('total_platforms', 0):,}", "solar:box-bold-duotone", "Nutanix + vCenter + IBM"),
@@ -229,22 +318,29 @@ def build_overview(time_range=None):
         metric_card("Total Energy", f"{overview.get('total_energy_kw', 0):,.0f} kW", "material-symbols:bolt-outline", "Daily average", color="orange"),
     ]
 
-    nutanix = platforms.get("nutanix", {})
-    vmware = platforms.get("vmware", {})
-    ibm = platforms.get("ibm", {})
-    platform_cards = [
-        platform_card("Nutanix", nutanix.get("hosts", 0), nutanix.get("vms", 0), color="#4318FF"),
-        platform_card("VMware", vmware.get("hosts", 0), vmware.get("vms", 0), vmware.get("clusters"), color="#05CD99"),
-        platform_card("IBM Power", ibm.get("hosts", 0), ibm.get("lpars", 0), color="#FFB547"),
-    ]
+    # Physical Inventory overview (level 0: by device role)
+    # scroll window shows 5 bars; full chart height drives scroll
+    phys_inv_by_role = api.get_physical_inventory_overview_by_role()
+    phys_inv_labels_0 = [r["role"] for r in phys_inv_by_role]
+    phys_inv_counts_0 = [r["count"] for r in phys_inv_by_role]
+    _phys_inv_chart_height = max(_PHYS_INV_BAR_PX * 5, len(phys_inv_labels_0) * _PHYS_INV_BAR_PX)
+    phys_inv_initial_figure = _phys_inv_bar_figure(
+        phys_inv_labels_0, phys_inv_counts_0, height=_phys_inv_chart_height
+    )
 
-    cpu_cap = overview.get("total_cpu_cap") or 1
-    ram_cap = overview.get("total_ram_cap") or 1
-    stor_cap = overview.get("total_storage_cap") or 1
-    cpu_pct = round((overview.get("total_cpu_used", 0) or 0) / cpu_cap * 100, 1) if cpu_cap > 0 else 0
-    ram_pct = round((overview.get("total_ram_used", 0) or 0) / ram_cap * 100, 1) if ram_cap > 0 else 0
-    stor_pct = round((overview.get("total_storage_used", 0) or 0) / stor_cap * 100, 1) if stor_cap > 0 else 0
+    # Resource usage percentages per architecture (for tabbed card)
+    def _pct(used, cap):
+        return round(used / cap * 100, 1) if cap and cap > 0 else 0.0
+    classic_cpu_pct = _pct(classic_totals.get("cpu_used", 0) or 0, classic_totals.get("cpu_cap", 0) or 1)
+    classic_ram_pct = _pct(classic_totals.get("mem_used", 0) or 0, classic_totals.get("mem_cap", 0) or 1)
+    classic_stor_pct = _pct(classic_totals.get("stor_used", 0) or 0, classic_totals.get("stor_cap", 0) or 1)
+    hyperconv_cpu_pct = _pct(hyperconv_totals.get("cpu_used", 0) or 0, hyperconv_totals.get("cpu_cap", 0) or 1)
+    hyperconv_ram_pct = _pct(hyperconv_totals.get("mem_used", 0) or 0, hyperconv_totals.get("mem_cap", 0) or 1)
+    hyperconv_stor_pct = _pct(hyperconv_totals.get("stor_used", 0) or 0, hyperconv_totals.get("stor_cap", 0) or 1)
+    ibm_mem_pct = _pct(ibm_totals.get("mem_assigned", 0) or 0, ibm_totals.get("mem_total", 0) or 1)
+    ibm_cpu_pct = _pct(ibm_totals.get("cpu_used", 0) or 0, ibm_totals.get("cpu_assigned", 0) or 1)
 
+    # Energy breakdown (IBM Power + vCenter only; Loki/racks not used)
     eb_labels = ["IBM Power", "vCenter"]
     eb_values = [
         energy_breakdown.get("ibm_kw", 0) or 0,
@@ -253,6 +349,7 @@ def build_overview(time_range=None):
     if sum(eb_values) == 0:
         eb_values = [1, 1]
 
+    # DC comparison table
     dc_names = [s["name"] for s in summaries]
     dc_hosts = [s["host_count"] for s in summaries]
     dc_vms = [s["vm_count"] for s in summaries]
@@ -315,7 +412,7 @@ def build_overview(time_range=None):
                                                         icon="solar:calendar-mark-bold-duotone",
                                                         width=13,
                                                     ),
-                                                    f"{tr.get('start', '')} – {tr.get('end', '')}",
+                                                    f"{tr.get('start', '')} ÔÇô {tr.get('end', '')}",
                                                 ],
                                             )
                                         ],
@@ -339,9 +436,37 @@ def build_overview(time_range=None):
                 children=[
                     html.Div(
                         [
-                            dmc.Text("Platform Breakdown", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("Nutanix · VMware · IBM Power", size="xs", c="dimmed", style={"marginBottom": "16px"}),
-                            dmc.SimpleGrid(cols=3, spacing="md", children=platform_cards),
+                            dmc.Group(justify="space-between", align="center", mb="sm", children=[
+                                dmc.Stack(gap=2, children=[
+                                    dmc.Text("Physical Inventory", fw=700, size="lg", c="#2B3674"),
+                                    dmc.Text("Device types ┬À click to drill down", size="xs", c="dimmed"),
+                                ]),
+                                dmc.Button(
+                                    "Ôå® Reset",
+                                    id="phys-inv-reset-btn",
+                                    size="xs",
+                                    variant="light",
+                                    color="indigo",
+                                    style={"display": "none"},
+                                    n_clicks=0,
+                                ),
+                            ]),
+                            dcc.Store(
+                                id="phys-inv-drill-state",
+                                data={"level": 0, "role": None, "manufacturer": None},
+                            ),
+                            html.Div(
+                                style={
+                                    "maxHeight": f"{_PHYS_INV_BAR_PX * 5 + 20}px",
+                                    "overflowY": "auto",
+                                },
+                                children=dcc.Graph(
+                                    id="phys-inv-overview-chart",
+                                    figure=phys_inv_initial_figure,
+                                    config={"displayModeBar": False},
+                                    style={"height": f"{_phys_inv_chart_height}px"},
+                                ),
+                            ),
                         ],
                         className="nexus-card",
                         style={"padding": "24px"},
@@ -349,19 +474,67 @@ def build_overview(time_range=None):
                     html.Div(
                         [
                             dmc.Text("Resource Usage", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("Daily average over report period", size="xs", c="dimmed", style={"marginBottom": "20px"}),
-                            dmc.SimpleGrid(
-                                cols=3,
-                                spacing="xl",
+                            dmc.Text("By architecture ÔÇö daily average over report period", size="xs", c="dimmed", style={"marginBottom": "16px"}),
+                            dmc.Tabs(
+                                value="classic",
+                                variant="outline",
+                                radius="md",
+                                style={"flex": "1", "display": "flex", "flexDirection": "column"},
                                 children=[
-                                    _ring_stat(cpu_pct,  "CPU",     "#4318FF"),
-                                    _ring_stat(ram_pct,  "RAM",     "#05CD99"),
-                                    _ring_stat(stor_pct, "Storage", "#FFB547"),
+                                    dmc.TabsList(children=[
+                                        dmc.TabsTab("Klasik Mimari", value="classic"),
+                                        dmc.TabsTab("Hyperconverged Mimari", value="hyperconv"),
+                                        dmc.TabsTab("IBM Power", value="ibm"),
+                                    ]),
+                                    dmc.TabsPanel(
+                                        value="classic",
+                                        pt="xl",
+                                        style={"flex": "1", "display": "flex", "alignItems": "center"},
+                                        children=dmc.SimpleGrid(
+                                            cols=3,
+                                            spacing="xl",
+                                            style={"width": "100%"},
+                                            children=[
+                                                _ring_stat(classic_cpu_pct,  "CPU",     "#4318FF"),
+                                                _ring_stat(classic_ram_pct,  "RAM",     "#05CD99"),
+                                                _ring_stat(classic_stor_pct, "Storage", "#FFB547"),
+                                            ],
+                                        ),
+                                    ),
+                                    dmc.TabsPanel(
+                                        value="hyperconv",
+                                        pt="xl",
+                                        style={"flex": "1", "display": "flex", "alignItems": "center"},
+                                        children=dmc.SimpleGrid(
+                                            cols=3,
+                                            spacing="xl",
+                                            style={"width": "100%"},
+                                            children=[
+                                                _ring_stat(hyperconv_cpu_pct,  "CPU",     "#4318FF"),
+                                                _ring_stat(hyperconv_ram_pct,  "RAM",     "#05CD99"),
+                                                _ring_stat(hyperconv_stor_pct, "Storage", "#FFB547"),
+                                            ],
+                                        ),
+                                    ),
+                                    dmc.TabsPanel(
+                                        value="ibm",
+                                        pt="xl",
+                                        style={"flex": "1", "display": "flex", "alignItems": "center"},
+                                        children=dmc.SimpleGrid(
+                                            cols=2,
+                                            spacing="xl",
+                                            style={"width": "100%"},
+                                            children=[
+                                                _ring_stat(ibm_mem_pct, "Memory Assigned", "#05CD99"),
+                                                _ring_stat(ibm_cpu_pct, "CPU Used", "#4318FF"),
+                                            ],
+                                        ),
+                                    ),
                                 ],
                             ),
                         ],
                         className="nexus-card",
-                        style={"padding": "24px"},
+                        style={"padding": "24px", "display": "flex", "flexDirection": "column"},
                     ),
                 ],
             ),
@@ -373,7 +546,7 @@ def build_overview(time_range=None):
                     html.Div(
                         [
                             dmc.Text("Energy by Source", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("Daily average (kW) — IBM Power & vCenter", size="xs", c="dimmed", style={"marginBottom": "12px"}),
+                            dmc.Text("Daily average (kW) ÔÇö IBM Power & vCenter", size="xs", c="dimmed", style={"marginBottom": "12px"}),
                             html.Div(
                                 dcc.Graph(
                                     id="energy-elite-graph",
@@ -395,7 +568,7 @@ def build_overview(time_range=None):
                     html.Div(
                         [
                             dmc.Text("DC Landscape", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("VM distribution across Data Centers — area = VM count", size="xs", c="dimmed", style={"marginBottom": "12px"}),
+                            dmc.Text("VM distribution across Data Centers ÔÇö area = VM count", size="xs", c="dimmed", style={"marginBottom": "12px"}),
                             dcc.Graph(
                                 figure=create_dc_treemap(dc_names, dc_vms, height=320),
                                 config={"displayModeBar": False},
@@ -423,7 +596,7 @@ def build_overview(time_range=None):
                         style={"marginBottom": "4px"},
                     ),
                     dmc.Text(
-                        "CPU & RAM: daily averages over the report period.",
+                        "CPU, RAM & Disk utilisation by architecture ÔÇö daily averages over the report period.",
                         size="xs",
                         c="dimmed",
                         style={"marginBottom": "18px"},
@@ -504,7 +677,7 @@ def build_overview(time_range=None):
                                         },
                                     ),
                                     html.Th(
-                                        "CPU %",
+                                        "Classic",
                                         style={
                                             "color": "#A3AED0",
                                             "fontWeight": 600,
@@ -517,7 +690,20 @@ def build_overview(time_range=None):
                                         },
                                     ),
                                     html.Th(
-                                        "RAM %",
+                                        "Hyperconverged",
+                                        style={
+                                            "color": "#A3AED0",
+                                            "fontWeight": 600,
+                                            "fontSize": "0.72rem",
+                                            "textTransform": "uppercase",
+                                            "letterSpacing": "0.07em",
+                                            "paddingBottom": "12px",
+                                            "borderBottom": "2px solid #f1f3f5",
+                                            "textAlign": "right",
+                                        },
+                                    ),
+                                    html.Th(
+                                        "IBM Power",
                                         style={
                                             "color": "#A3AED0",
                                             "fontWeight": 600,
@@ -550,11 +736,21 @@ def build_overview(time_range=None):
                                         style={"textAlign": "right"},
                                     ),
                                     html.Td(
-                                        _pct_badge(s["stats"].get("used_cpu_pct", 0)),
+                                        _arch_usage_cell(
+                                            s["stats"].get("arch_usage", {}).get("classic")
+                                        ),
                                         style={"textAlign": "right"},
                                     ),
                                     html.Td(
-                                        _pct_badge(s["stats"].get("used_ram_pct", 0)),
+                                        _arch_usage_cell(
+                                            s["stats"].get("arch_usage", {}).get("hyperconv")
+                                        ),
+                                        style={"textAlign": "right"},
+                                    ),
+                                    html.Td(
+                                        _arch_usage_cell(
+                                            s["stats"].get("arch_usage", {}).get("ibm")
+                                        ),
                                         style={"textAlign": "right"},
                                     ),
                                 ])

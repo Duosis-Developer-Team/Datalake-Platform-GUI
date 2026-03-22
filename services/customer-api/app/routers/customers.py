@@ -1,4 +1,4 @@
-from typing import List
+from typing import Any, List
 
 from fastapi import APIRouter, Depends, Request
 
@@ -25,3 +25,12 @@ def customer_resources(
     db: CustomerService = Depends(get_db),
 ):
     return db.get_customer_resources(customer_name, tf.to_dict())
+
+
+@router.get("/customers/{customer_name}/s3/vaults", response_model=dict[str, Any])
+def customer_s3_vaults(
+    customer_name: str,
+    tf: TimeFilter = Depends(),
+    db: CustomerService = Depends(get_db),
+):
+    return db.get_customer_s3_vaults(customer_name, tf.to_dict())

@@ -2,7 +2,7 @@
 # To add a new query for a future dashboard, register it here.
 # The db_service uses this registry for dynamic query execution.
 
-from src.queries import nutanix, vmware, ibm, energy, customer, backup
+from app.db.queries import nutanix, vmware, ibm, energy, customer, backup
 
 # Schema for each entry:
 #   sql           : SQL string (from the provider module)

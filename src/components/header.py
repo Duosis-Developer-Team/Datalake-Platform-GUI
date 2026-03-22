@@ -28,6 +28,7 @@ def create_detail_header(
     time_range=None,
     icon="solar:server-square-bold-duotone",
     tabs=None,
+    right_extra=None,
 ):
     """
     Evrensel Executive Detail Header — glassmorphism + sticky + sekmeler.
@@ -125,7 +126,17 @@ def create_detail_header(
             )
         ]
 
-    # ── Üst Katman: Back | İkon+Başlık+Badge | Tarih ────────────────────
+    date_row = dmc.Group(gap="sm", justify="flex-end", children=list(date_badge_children))
+    if right_extra:
+        right_block = dmc.Stack(
+            gap=6,
+            align="flex-end",
+            children=[date_row, *list(right_extra)],
+        )
+    else:
+        right_block = date_row
+
+    # ── Üst Katman: Back | İkon+Başlık+Badge | Tarih(+extras) ───────────
     top_layer = dmc.Group(
         justify="space-between",
         align="center",
@@ -144,8 +155,8 @@ def create_detail_header(
                     ),
                 ],
             ),
-            # SAĞ: Tarih rozeti
-            dmc.Group(gap="sm", children=date_badge_children),
+            # SAĞ: Tarih rozeti (üst) + opsiyonel ekstra satırlar
+            right_block,
         ],
     )
 

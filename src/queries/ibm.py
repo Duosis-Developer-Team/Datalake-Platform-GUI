@@ -24,11 +24,19 @@ WHERE lpar_details_servername LIKE %s AND time BETWEEN %s AND %s
 """
 
 MEMORY = """
+WITH latest_per_server AS (
+    SELECT DISTINCT ON (server_details_servername)
+        server_details_servername,
+        server_memory_configurablemem,
+        server_memory_assignedmemtolpars
+    FROM public.ibm_server_general
+    WHERE server_details_servername LIKE %s AND time BETWEEN %s AND %s
+    ORDER BY server_details_servername, time DESC
+)
 SELECT
-    COALESCE(AVG(server_memory_configurablemem), 0) AS total_memory,
-    COALESCE(AVG(server_memory_assignedmemtolpars), 0) AS assigned_memory
-FROM public.ibm_server_general
-WHERE server_details_servername LIKE %s AND time BETWEEN %s AND %s
+    COALESCE(SUM(server_memory_configurablemem), 0) AS total_memory,
+    COALESCE(SUM(server_memory_assignedmemtolpars), 0) AS assigned_memory
+FROM latest_per_server
 """
 
 CPU = """
@@ -66,7 +74,10 @@ WHERE time BETWEEN %s AND %s
 """
 
 BATCH_RAW_MEMORY = """
-SELECT server_details_servername, server_memory_configurablemem, server_memory_assignedmemtolpars
+SELECT server_details_servername,
+       server_memory_configurablemem,
+       server_memory_assignedmemtolpars,
+       time
 FROM public.ibm_server_general
 WHERE time BETWEEN %s AND %s
 """
