@@ -1,3 +1,11 @@
+# Full microservice stack:
+#   docker compose --profile microservice up -d
+# Or set COMPOSE_PROFILES=microservice in .env so `docker compose up -d` starts the full stack.
+#
+# Dash UI only (no DB/APIs in Compose): docker compose up -d app
+# For app-only, set DATACENTER_API_URL / CUSTOMER_API_URL / QUERY_API_URL in .env to reachable URLs
+# (e.g. host.docker.internal:8000 if APIs run on the host).
+
 services:
   app:
     build: .
@@ -6,8 +14,15 @@ services:
       - "8050:8050"
     env_file:
       - .env
+    environment:
+      # Override .env when APIs run as Compose services (same Docker network)
+      DATACENTER_API_URL: ${DATACENTER_API_URL:-http://datacenter-api:8000}
+      CUSTOMER_API_URL: ${CUSTOMER_API_URL:-http://customer-api:8000}
+      QUERY_API_URL: ${QUERY_API_URL:-http://query-api:8000}
     volumes:
       - ./data:/app/data
+    networks:
+      - datalake
 
   db:
     image: postgres:15
@@ -20,6 +35,13 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datalakeui -d bulutlake"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - datalake
     profiles:
       - microservice
       - with-db
@@ -37,26 +59,115 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - datalake
     profiles:
       - microservice
 
-  backend:
-    build: ./backend
-    container_name: bulutistan-backend-api
+  datacenter-api:
+    build:
+      context: ./services/datacenter-api
+      dockerfile: Dockerfile
+    container_name: bulutistan-datacenter-api
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: bulutlake
+      DB_USER: datalakeui
+      DB_PASS: change_me
       REDIS_HOST: redis
-      REDIS_PORT: 6379
-    volumes:
-      - ./data:/app/data
+      REDIS_PORT: "6379"
+    networks:
+      - datalake
     depends_on:
-      - redis
-      - db
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
     profiles:
       - microservice
+
+  customer-api:
+    build:
+      context: ./services/customer-api
+      dockerfile: Dockerfile
+    container_name: bulutistan-customer-api
+    ports:
+      - "8001:8000"
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: bulutlake
+      DB_USER: datalakeui
+      DB_PASS: change_me
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    networks:
+      - datalake
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    profiles:
+      - microservice
+
+  query-api:
+    build:
+      context: ./services/query-api
+      dockerfile: Dockerfile
+    container_name: bulutistan-query-api
+    ports:
+      - "8002:8000"
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: bulutlake
+      DB_USER: datalakeui
+      DB_PASS: change_me
+    networks:
+      - datalake
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    profiles:
+      - microservice
+
+networks:
+  datalake:
+    driver: bridge
 
 volumes:
   pgdata:
