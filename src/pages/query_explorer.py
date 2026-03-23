@@ -6,6 +6,9 @@ from dash_iconify import DashIconify
 from src.services import api_client as api
 from src.services import query_overrides as qo
 
+_EM_DASH = "\u2014"
+
+
 def _query_options():
     return [{"label": k, "value": k} for k in qo.list_all_query_keys()]
 
@@ -190,9 +193,9 @@ def on_query_select(query_key):
     if not entry:
         return [dmc.Text("Unknown query.", c="red", size="sm")], ""
     meta = [
-        dmc.Text(f"Source: {entry.get('source', '—')}", size="sm", c="#A3AED0"),
-        dmc.Text(f"Result type: {entry.get('result_type', '—')}", size="sm", c="#A3AED0"),
-        dmc.Text(f"Params style: {entry.get('params_style', '—')}", size="sm", c="#A3AED0"),
+        dmc.Text(f"Source: {entry.get('source', _EM_DASH)}", size="sm", c="#A3AED0"),
+        dmc.Text(f"Result type: {entry.get('result_type', _EM_DASH)}", size="sm", c="#A3AED0"),
+        dmc.Text(f"Params style: {entry.get('params_style', _EM_DASH)}", size="sm", c="#A3AED0"),
     ]
     sql = entry.get("sql") or ""
     return dmc.Stack(meta, gap=4), sql

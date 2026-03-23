@@ -8,14 +8,14 @@ from src.utils.time_range import default_time_range
 
 
 def _dc_vault_card(dc, sla_entry=None):
-    """Elite DC Vault kart─▒ ÔÇö 2 s├╝tunlu, Power Dial + Metrik Sat─▒rlar─▒."""
-    # ÔöÇÔöÇ G├╝├ğ verisi ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    """Elite DC Vault card: two columns, Power Dial + metric rows."""
+    # IBM vs total power split
     ibm_kw   = float(dc["stats"].get("ibm_kw", 0.0) or 0.0)
     total_kw = float(dc["stats"].get("total_energy_kw", 0.0) or 0.0)
     power_ratio = round((ibm_kw / total_kw * 100) if total_kw > 0 else 0.0, 1)
     remaining   = max(0.0, 100.0 - power_ratio)
 
-    # ÔöÇÔöÇ Renk-ikon Metrik Tan─▒mlar─▒ ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # Metric rows (icon + label + value)
     metrics = [
         {
             "icon": "solar:layers-minimalistic-bold-duotone",
@@ -74,7 +74,7 @@ def _dc_vault_card(dc, sla_entry=None):
         for m in metrics
     ]
 
-    # ÔöÇÔöÇ Power Dial (dmc.RingProgress) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # Power dial (RingProgress)
     power_dial = dmc.Stack(
         gap=6,
         align="center",
@@ -116,7 +116,7 @@ def _dc_vault_card(dc, sla_entry=None):
         ],
     )
 
-    # ÔöÇÔöÇ Dikey Frosted Divider (Sol/Sa─ş aras─▒nda) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # Vertical frosted divider between columns
     frosty_divider = html.Div(
         style={
             "width": "1px",
@@ -142,7 +142,7 @@ def _dc_vault_card(dc, sla_entry=None):
             "gap": "14px",
         },
         children=[
-            # ÔöÇÔöÇ Kart Ba┼şl─▒─ş─▒: ─░sim + Pulse Dot + Details Badge ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+            # Card header: name + pulse + Details link
             dmc.Group(
                 justify="space-between",
                 align="flex-start",
@@ -163,7 +163,7 @@ def _dc_vault_card(dc, sla_entry=None):
                                 children=[
                                     dmc.Text(dc["name"], fw=700, size="md", c="#2B3674"),
                                     dmc.Text(
-                                        dc.get("location", "ÔÇö"),
+                                        dc.get("location", "\u2014"),
                                         size="xs",
                                         c="#A3AED0",
                                         fw=500,
@@ -174,7 +174,7 @@ def _dc_vault_card(dc, sla_entry=None):
                     ),
                     dcc.Link(
                         dmc.Badge(
-                            "Details ÔåÆ",
+                            "Details \u2192",
                             variant="light",
                             color="indigo",
                             size="sm",
@@ -187,7 +187,7 @@ def _dc_vault_card(dc, sla_entry=None):
                 ],
             ),
 
-            # ÔöÇÔöÇ Ana 2-S├╝tunlu ─░├ğerik ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+            # Main row: metrics | divider | power dial
             html.Div(
                 style={
                     "display": "flex",
@@ -197,7 +197,7 @@ def _dc_vault_card(dc, sla_entry=None):
                     "flex": 1,
                 },
                 children=[
-                    # Sol: Metrik sat─▒rlar─▒
+                    # Left: metric rows
                     dmc.Stack(
                         gap="xs",
                         style={"flex": 1},
@@ -205,7 +205,7 @@ def _dc_vault_card(dc, sla_entry=None):
                     ),
                     # Ortada: Frosted Divider
                     frosty_divider,
-                    # Sa─ş: Power Dial
+                    # Right: power dial
                     html.Div(
                         style={"display": "flex", "alignItems": "center", "justifyContent": "center"},
                         children=[power_dial],
@@ -239,7 +239,7 @@ def build_datacenters(time_range=None):
                     justify="space-between",
                     align="center",
                     children=[
-                        # ---- SOL TARAF: Ba┼şl─▒k + Tarih Rozeti ----
+                        # Left: title + date badge
                         dmc.Stack(
                             gap=10,
                             children=[
@@ -269,7 +269,7 @@ def build_datacenters(time_range=None):
                                         ),
                                     ],
                                 ),
-                                # Tarih rozeti ÔÇö Overview ile ayn─▒ pattern
+                                # Date badge (same pattern as Overview)
                                 dmc.Badge(
                                     children=[
                                         dmc.Group(
@@ -280,7 +280,7 @@ def build_datacenters(time_range=None):
                                                     icon="solar:calendar-mark-bold-duotone",
                                                     width=13,
                                                 ),
-                                                f"{tr.get('start', '')} ÔÇô {tr.get('end', '')}",
+                                                f"{tr.get('start', '')} \u2013 {tr.get('end', '')}",
                                             ],
                                         )
                                     ],
@@ -292,7 +292,7 @@ def build_datacenters(time_range=None):
                                 ),
                             ],
                         ),
-                        # ---- SA─Ş TARAF: Aktif DC Sayac─▒ Badge ----
+                        # Active DC count badge
                         dmc.Badge(
                             children=[
                                 dmc.Group(

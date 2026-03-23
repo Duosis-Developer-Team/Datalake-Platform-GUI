@@ -1,4 +1,4 @@
-# DC Detail view — Capacity Planning
+# DC Detail view - Capacity Planning
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup | Physical Inventory
 from dash import html, dcc
 import dash_mantine_components as dmc
@@ -252,7 +252,7 @@ def _build_backup_subtab(name: str):
 
 
 def _build_summary_tab(data: dict, tr: dict):
-    """Summary tab ÔÇö combined capacity planning view."""
+    """Summary tab: combined capacity planning view."""
     classic    = data.get("classic", {})
     hyperconv  = data.get("hyperconv", {})
     intel      = data.get("intel", {})
@@ -659,7 +659,7 @@ def build_dc_view(dc_id, time_range=None):
                     ),
                 ),
 
-                # ÔöÇÔöÇ Summary ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+                # Summary tab
                 dmc.TabsPanel(
                     value="summary",
                     children=dmc.Stack(
@@ -669,7 +669,7 @@ def build_dc_view(dc_id, time_range=None):
                     ),
                 ) if has_summary else None,
 
-                # ÔöÇÔöÇ Virtualization (nested tabs) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+                # Virtualization (nested tabs)
                 dmc.TabsPanel(
                     value="virt",
                     children=html.Div(
@@ -735,7 +735,7 @@ def build_dc_view(dc_id, time_range=None):
                     ),
                 ),
 
-                # ÔöÇÔöÇ Backup (nested tabs) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+                # Backup (nested tabs)
                 dmc.TabsPanel(
                     value="backup",
                     children=html.Div(
@@ -790,7 +790,7 @@ def build_dc_view(dc_id, time_range=None):
                     ),
                 ) if has_backup else None,
 
-                # ÔöÇÔöÇ Object Storage (with S3 subtab) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+                # Object Storage (S3 subtab)
                 dmc.TabsPanel(
                     value="obj-storage",
                     children=html.Div(
@@ -822,7 +822,7 @@ def build_dc_view(dc_id, time_range=None):
                     ),
                 ) if has_s3 else None,
 
-                # ÔöÇÔöÇ Physical Inventory ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+                # Physical Inventory
                 dmc.TabsPanel(
                     value="phys-inv",
                     children=dmc.Stack(

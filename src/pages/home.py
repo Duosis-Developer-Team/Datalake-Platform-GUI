@@ -16,7 +16,7 @@ from src.components.charts import (
 )
 
 
-_PHYS_INV_BAR_PX = 50  # pixels per bar ÔÇö controls visible item count in scroll window
+_PHYS_INV_BAR_PX = 50  # pixels per bar; controls visible item count in scroll window
 
 
 def _phys_inv_bar_figure(labels, counts, color="#4318FF", height=None):
@@ -188,7 +188,7 @@ def _ring_stat(value, label, color):
 
 
 def _pct_badge(value):
-    """CPU/RAM y├╝zdesini de─şere g├Âre renk kodlu dmc.Badge ile d├Ând├╝r."""
+    """Return a color-coded dmc.Badge for CPU/RAM percentage."""
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -202,7 +202,7 @@ def _pct_badge(value):
         color, variant = "teal", "light"
 
     if v == 0.0:
-        return dmc.Text("ÔÇö", size="sm", c="dimmed", style={"textAlign": "right"})
+        return dmc.Text("\u2014", size="sm", c="dimmed", style={"textAlign": "right"})
 
     return dmc.Badge(
         f"{v:.1f}%",
@@ -262,15 +262,14 @@ def _arch_usage_cell(usage: dict | None):
 
 
 def _num_cell(value, suffix=""):
-    """Say─▒sal de─şeri sa─şa hizal─▒, tabular-nums format─▒nda d├Ând├╝r.
-    0 ise solukla┼şt─▒r─▒lm─▒┼ş tire g├Âster."""
+    """Format integer with tabular nums, right-aligned; show em dash when zero."""
     try:
         v = int(value)
     except (TypeError, ValueError):
         v = 0
 
     if v == 0:
-        return dmc.Text("ÔÇö", size="sm", c="dimmed",
+        return dmc.Text("\u2014", size="sm", c="dimmed",
                         style={"textAlign": "right", "fontVariantNumeric": "tabular-nums"})
 
     return dmc.Text(
@@ -283,7 +282,7 @@ def _num_cell(value, suffix=""):
 
 
 def _dc_link(name, dc_id):
-    """DC ismini alt─▒ ├ğizgisiz, marka renginde, kal─▒n link olarak d├Ând├╝r."""
+    """Return a styled dcc.Link to the DC detail route."""
     return dcc.Link(
         dmc.Text(
             name,
@@ -412,7 +411,7 @@ def build_overview(time_range=None):
                                                         icon="solar:calendar-mark-bold-duotone",
                                                         width=13,
                                                     ),
-                                                    f"{tr.get('start', '')} ÔÇô {tr.get('end', '')}",
+                                                    f"{tr.get('start', '')} \u2013 {tr.get('end', '')}",
                                                 ],
                                             )
                                         ],
@@ -439,10 +438,10 @@ def build_overview(time_range=None):
                             dmc.Group(justify="space-between", align="center", mb="sm", children=[
                                 dmc.Stack(gap=2, children=[
                                     dmc.Text("Physical Inventory", fw=700, size="lg", c="#2B3674"),
-                                    dmc.Text("Device types ┬À click to drill down", size="xs", c="dimmed"),
+                                    dmc.Text("Device types \u00b7 click to drill down", size="xs", c="dimmed"),
                                 ]),
                                 dmc.Button(
-                                    "Ôå® Reset",
+                                    "\u2194 Reset",
                                     id="phys-inv-reset-btn",
                                     size="xs",
                                     variant="light",
@@ -474,7 +473,7 @@ def build_overview(time_range=None):
                     html.Div(
                         [
                             dmc.Text("Resource Usage", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("By architecture ÔÇö daily average over report period", size="xs", c="dimmed", style={"marginBottom": "16px"}),
+                            dmc.Text("By architecture \u2014 daily average over report period", size="xs", c="dimmed", style={"marginBottom": "16px"}),
                             dmc.Tabs(
                                 value="classic",
                                 variant="outline",
@@ -546,7 +545,7 @@ def build_overview(time_range=None):
                     html.Div(
                         [
                             dmc.Text("Energy by Source", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("Daily average (kW) ÔÇö IBM Power & vCenter", size="xs", c="dimmed", style={"marginBottom": "12px"}),
+                            dmc.Text("Daily average (kW) \u2014 IBM Power & vCenter", size="xs", c="dimmed", style={"marginBottom": "12px"}),
                             html.Div(
                                 dcc.Graph(
                                     id="energy-elite-graph",
@@ -568,7 +567,7 @@ def build_overview(time_range=None):
                     html.Div(
                         [
                             dmc.Text("DC Landscape", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("VM distribution across Data Centers ÔÇö area = VM count", size="xs", c="dimmed", style={"marginBottom": "12px"}),
+                            dmc.Text("VM distribution across Data Centers \u2014 area = VM count", size="xs", c="dimmed", style={"marginBottom": "12px"}),
                             dcc.Graph(
                                 figure=create_dc_treemap(dc_names, dc_vms, height=320),
                                 config={"displayModeBar": False},
@@ -596,7 +595,7 @@ def build_overview(time_range=None):
                         style={"marginBottom": "4px"},
                     ),
                     dmc.Text(
-                        "CPU, RAM & Disk utilisation by architecture ÔÇö daily averages over the report period.",
+                        "CPU, RAM & Disk utilisation by architecture \u2014 daily averages over the report period.",
                         size="xs",
                         c="dimmed",
                         style={"marginBottom": "18px"},

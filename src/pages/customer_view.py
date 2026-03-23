@@ -1,4 +1,4 @@
-# Customer View ÔÇö Billing-focused resource breakdown per customer.
+# Customer View - Billing-focused resource breakdown per customer.
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup
 import dash
 from dash import html, dcc
@@ -87,7 +87,7 @@ def _backup_placeholder(name: str):
 # ---------------------------------------------------------------------------
 
 def _tab_summary(totals: dict, assets: dict):
-    """Summary tab ÔÇö aggregated billing overview."""
+    """Summary tab: aggregated billing overview."""
     classic   = assets.get("classic", {})
     hyperconv = assets.get("hyperconv", {})
     power     = assets.get("power", {})
@@ -175,7 +175,7 @@ def _tab_summary(totals: dict, assets: dict):
 
 
 def _tab_billing(totals: dict, assets: dict, backup_totals: dict, s3_data: dict | None = None):
-    """Billing tab ÔÇö invoice-style view combining compute, backup and S3."""
+    """Billing tab: invoice-style view combining compute, backup and S3."""
     classic   = assets.get("classic", {}) or {}
     hyperconv = assets.get("hyperconv", {}) or {}
     power     = assets.get("power", {}) or {}
@@ -495,7 +495,7 @@ def _tab_netbackup(backup_assets: dict, backup_totals: dict):
 
 
 def _tab_physical_inventory(devices: list[dict]):
-    """Physical Inventory tab ÔÇö Boyner devices table (name, device_role, manufacturer, location). Title-case display."""
+    """Physical Inventory tab: Boyner devices table (name, device_role, manufacturer, location). Title-case display."""
     total = len(devices or [])
 
     def row_fn(r):
@@ -540,7 +540,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     s3_data = api.get_customer_s3_vaults(customer_name or "Boyner", tr)
     has_s3 = bool(s3_data.get("vaults"))
 
-    # Physical inventory (Boyner tenant_id=5) ÔÇö tab always shown for customer
+    # Physical inventory (Boyner tenant_id=5): tab always shown for customer
     phys_inv_devices = api.get_physical_inventory_customer()
     has_phys_inv = True
 
