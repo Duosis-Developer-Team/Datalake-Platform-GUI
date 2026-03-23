@@ -68,6 +68,9 @@ def test_dashboard_overview_returns_200_with_all_top_level_fields(client):
     assert "overview" in body
     assert "platforms" in body
     assert "energy_breakdown" in body
+    assert "classic_totals" in body
+    assert "hyperconv_totals" in body
+    assert "ibm_totals" in body
 
 
 def test_dashboard_overview_overview_section_contains_dc_count_and_totals(client):

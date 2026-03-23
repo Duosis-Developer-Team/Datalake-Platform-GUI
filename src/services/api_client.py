@@ -31,6 +31,28 @@ _EMPTY_DASHBOARD = {
         "ibm": {"hosts": 0, "vios": 0, "lpars": 0},
     },
     "energy_breakdown": {"ibm_kw": 0.0, "vcenter_kw": 0.0},
+    "classic_totals": {
+        "cpu_cap": 0.0,
+        "cpu_used": 0.0,
+        "mem_cap": 0.0,
+        "mem_used": 0.0,
+        "stor_cap": 0.0,
+        "stor_used": 0.0,
+    },
+    "hyperconv_totals": {
+        "cpu_cap": 0.0,
+        "cpu_used": 0.0,
+        "mem_cap": 0.0,
+        "mem_used": 0.0,
+        "stor_cap": 0.0,
+        "stor_used": 0.0,
+    },
+    "ibm_totals": {
+        "mem_total": 0.0,
+        "mem_assigned": 0.0,
+        "cpu_used": 0.0,
+        "cpu_assigned": 0.0,
+    },
 }
 
 _EMPTY_DC_DETAIL = {

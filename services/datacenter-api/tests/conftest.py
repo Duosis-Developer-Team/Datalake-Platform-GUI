@@ -90,6 +90,28 @@ FAKE_DASHBOARD = {
         "ibm": {"hosts": 0, "vios": 0, "lpars": 0},
     },
     "energy_breakdown": {"ibm_kw": 50.0, "vcenter_kw": 50.0},
+    "classic_totals": {
+        "cpu_cap": 200.0,
+        "cpu_used": 100.0,
+        "mem_cap": 1000.0,
+        "mem_used": 500.0,
+        "stor_cap": 20.0,
+        "stor_used": 10.0,
+    },
+    "hyperconv_totals": {
+        "cpu_cap": 100.0,
+        "cpu_used": 40.0,
+        "mem_cap": 500.0,
+        "mem_used": 200.0,
+        "stor_cap": 10.0,
+        "stor_used": 4.0,
+    },
+    "ibm_totals": {
+        "mem_total": 256.0,
+        "mem_assigned": 128.0,
+        "cpu_used": 10.0,
+        "cpu_assigned": 20.0,
+    },
 }
 
 

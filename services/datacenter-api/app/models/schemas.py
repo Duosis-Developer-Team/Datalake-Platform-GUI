@@ -117,10 +117,33 @@ class EnergyBreakdown(BaseModel):
     vcenter_kw: float
 
 
+class ArchitectureTotals(BaseModel):
+    """Aggregated classic or hyperconverged compute capacity vs usage (home Resource Usage gauges)."""
+
+    cpu_cap: float
+    cpu_used: float
+    mem_cap: float
+    mem_used: float
+    stor_cap: float
+    stor_used: float
+
+
+class IBMTotals(BaseModel):
+    """Aggregated IBM Power metrics for home Resource Usage tab."""
+
+    mem_total: float
+    mem_assigned: float
+    cpu_used: float
+    cpu_assigned: float
+
+
 class GlobalOverview(BaseModel):
     overview: GlobalStats
     platforms: DCPlatforms
     energy_breakdown: EnergyBreakdown
+    classic_totals: ArchitectureTotals
+    hyperconv_totals: ArchitectureTotals
+    ibm_totals: IBMTotals
 
 
 class HealthResponse(BaseModel):
