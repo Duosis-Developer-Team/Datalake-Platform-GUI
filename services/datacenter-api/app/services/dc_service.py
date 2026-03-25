@@ -823,6 +823,10 @@ LIMIT 20
         cl_mem_used = round(float(classic_row[5] or 0), 2)
         cl_cpu_pct  = round(float(classic_avg30[0] or 0), 1)
         cl_mem_pct  = round(float(classic_avg30[1] or 0), 1)
+        if cl_cpu_pct == 0.0 and cl_cpu_cap > 0:
+            cl_cpu_pct = round(100.0 * cl_cpu_used / cl_cpu_cap, 1)
+        if cl_mem_pct == 0.0 and cl_mem_cap > 0:
+            cl_mem_pct = round(100.0 * cl_mem_used / cl_mem_cap, 1)
         # cluster_metrics.total_capacity_gb is in GB → convert to TB
         cl_stor_cap  = round(float(classic_row[6] or 0) / 1024.0, 3)
         cl_stor_used = round(float(classic_row[7] or 0) / 1024.0, 3)
@@ -838,6 +842,10 @@ LIMIT 20
         hc_mem_used = round(float(hyperconv_row[5] or 0), 2)
         hc_cpu_pct  = round(float(hyperconv_avg30[0] or 0), 1)
         hc_mem_pct  = round(float(hyperconv_avg30[1] or 0), 1)
+        if hc_cpu_pct == 0.0 and hc_cpu_cap > 0:
+            hc_cpu_pct = round(100.0 * hc_cpu_used / hc_cpu_cap, 1)
+        if hc_mem_pct == 0.0 and hc_mem_cap > 0:
+            hc_mem_pct = round(100.0 * hc_mem_used / hc_mem_cap, 1)
         # Storage from Nutanix (already in TB from the nutanix query)
         hc_stor_cap  = round(n_stor_cap_tb, 3)
         hc_stor_used = round(n_stor_used_tb, 3)
@@ -917,8 +925,8 @@ WITH latest AS (
     GROUP BY storage_ip
 )
 SELECT
-    s.capacity,
-    s.allocated_space
+    s.total_mdisk_capacity,
+    s.total_used_capacity
 FROM public.raw_ibm_storage_system s
 JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
@@ -1057,8 +1065,8 @@ WITH latest AS (
 SELECT
     s.name,
     s.location,
-    s.capacity,
-    s.allocated_space
+    s.total_mdisk_capacity,
+    s.total_used_capacity
 FROM public.raw_ibm_storage_system s
 JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             """, ()),

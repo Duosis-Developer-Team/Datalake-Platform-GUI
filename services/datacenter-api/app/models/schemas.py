@@ -3,6 +3,18 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class ArchUsageEntry(BaseModel):
+    cpu_pct: float = 0.0
+    ram_pct: float = 0.0
+    disk_pct: float = 0.0
+
+
+class ArchUsage(BaseModel):
+    classic: ArchUsageEntry = ArchUsageEntry()
+    hyperconv: ArchUsageEntry = ArchUsageEntry()
+    ibm: ArchUsageEntry = ArchUsageEntry()
+
+
 class DCStats(BaseModel):
     total_cpu: str
     used_cpu_pct: float
@@ -14,6 +26,7 @@ class DCStats(BaseModel):
     total_energy_kw: float
     ibm_kw: float
     vcenter_kw: float
+    arch_usage: ArchUsage = ArchUsage()
 
 
 class DataCenterSummary(BaseModel):
@@ -136,6 +149,8 @@ class IBMTotals(BaseModel):
     mem_assigned: float
     cpu_used: float
     cpu_assigned: float
+    stor_cap: float = 0.0
+    stor_used: float = 0.0
 
 
 class GlobalOverview(BaseModel):

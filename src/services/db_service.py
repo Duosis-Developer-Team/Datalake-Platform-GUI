@@ -944,8 +944,8 @@ WITH latest AS (
 SELECT
     s.name,
     s.location,
-    s.capacity,
-    s.allocated_space
+    s.total_mdisk_capacity,
+    s.total_used_capacity
 FROM public.raw_ibm_storage_system s
 JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             """, ()),
