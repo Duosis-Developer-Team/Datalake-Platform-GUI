@@ -34,11 +34,9 @@ app = Dash(
 )
 server = app.server
 
-# Import pages once at startup (routing is manual via render_main_content)
-from src.pages import home, datacenters, dc_view, customer_view, query_explorer
+from src.pages import home, datacenters, dc_view, customer_view, query_explorer, global_view
 from src.pages.dc_view import _build_compute_tab
 
-# --- Build static sidebar with controls always in layout ---
 _default_tr = default_time_range()
 _customers = api.get_customer_list()
 _default_customer = _customers[0] if _customers else "Boyner"
@@ -62,10 +60,8 @@ _sidebar = html.Div(
         "flexDirection": "column",
     },
     children=[
-        # Brand + nav links ÔÇö only this part is updated by callback
         html.Div(id="sidebar-nav"),
 
-        # Time range controls ÔÇö static, always in DOM
         dmc.Stack(
             [
                 dmc.Divider(mt="xl", style={"marginBottom": "4px"}),
@@ -131,7 +127,6 @@ _sidebar = html.Div(
             mt="auto",
         ),
 
-        # Customer select ÔÇö static, always in DOM; visibility toggled by callback
         html.Div(
             id="customer-section",
             children=[
@@ -185,9 +180,6 @@ app.layout = dmc.MantineProvider(
 )
 
 
-# --- Callbacks ---
-
-# 1. Sidebar nav links (brand + active highlighting)
 @app.callback(
     dash.Output("sidebar-nav", "children"),
     dash.Input("url", "pathname"),
@@ -196,7 +188,6 @@ def update_sidebar_nav(pathname):
     return create_sidebar_nav(pathname or "/")
 
 
-# 2. Show/hide customer section based on page
 @app.callback(
     dash.Output("customer-section", "style"),
     dash.Input("url", "pathname"),
@@ -208,7 +199,6 @@ def toggle_customer_section(pathname):
     return {**base, "display": "none"}
 
 
-# 3. Time range store from preset or date picker (no cycle ÔÇö no reverse sync)
 @app.callback(
     dash.Output("app-time-range", "data"),
     dash.Input("time-range-preset", "value"),
@@ -223,22 +213,17 @@ def update_time_range_store(preset, date_value, current):
     if "time-range-preset" in tid and preset != "custom":
         return preset_to_range(preset)
     if "time-range-picker" in tid and date_value:
-        # Range modunda value = [start, end] listesi
-        # G├╝venli unpack ÔÇö None veya eksik eleman gelirse bekle
         if isinstance(date_value, (list, tuple)) and len(date_value) == 2:
             start, end = date_value
         else:
-            # Eski tek-de─şer uyumlulu─şu (ge├ği┼ş g├╝vencesi)
             start = (current or {}).get("start")
             end = date_value if isinstance(date_value, str) else None
-        # ─░ki tarih de se├ğilmi┼şse kaydet; biri eksikse beklemeye devam
         if start and end:
             return {"start": start, "end": end, "preset": "custom"}
         return dash.no_update
     return dash.no_update
 
 
-# 4. Main content: dispatch by pathname + time range + customer
 @app.callback(
     dash.Output("main-content", "children"),
     dash.Input("url", "pathname"),
@@ -255,6 +240,8 @@ def render_main_content(pathname, time_range, selected_customer):
     if pathname and pathname.startswith("/datacenter/"):
         dc_id = pathname.replace("/datacenter/", "").strip("/")
         return dc_view.build_dc_view(dc_id, tr)
+    if pathname == "/global-view":
+        return global_view.build_global_view(tr)
     if pathname == "/customer-view":
         return customer_view.build_customer_layout(tr, selected_customer)
     if pathname == "/query-explorer":
@@ -262,7 +249,6 @@ def render_main_content(pathname, time_range, selected_customer):
     return home.build_overview(tr)
 
 
-# 5. S3 DC panel: reacts to pool selection and time range.
 @app.callback(
     dash.Output("s3-dc-metrics-panel", "children"),
     dash.Input("s3-dc-pool-selector", "value"),
@@ -276,9 +262,7 @@ def update_s3_dc_panel(selected_pools, time_range, pathname):
     tr = time_range or default_time_range()
     s3_data = api.get_dc_s3_pools(dc_id, tr)
     if not s3_data.get("pools"):
-        # If DC has no S3 pools, keep panel empty (tab will be hidden by dc_view).
         return html.Div()
-    # Normalise selected_pools to list[str]
     pools = s3_data.get("pools") or []
     if not selected_pools:
         selected = pools
@@ -287,7 +271,6 @@ def update_s3_dc_panel(selected_pools, time_range, pathname):
     return build_dc_s3_panel(dc_id, s3_data, tr, selected)
 
 
-# 6. S3 Customer panel: reacts to vault selection, time range, and customer.
 @app.callback(
     dash.Output("s3-customer-metrics-panel", "children"),
     dash.Input("s3-customer-vault-selector", "value"),
@@ -308,7 +291,6 @@ def update_s3_customer_panel(selected_vaults, time_range, customer_name):
     return build_customer_s3_panel(name, s3_data, tr, selected)
 
 
-# 7. Classic virtualization tab: reacts to cluster selection and time range.
 @app.callback(
     dash.Output("classic-virt-panel", "children"),
     dash.Input("virt-classic-cluster-selector", "value"),
@@ -324,7 +306,6 @@ def update_classic_virt_panel(selected_clusters, time_range, pathname):
     return _build_compute_tab(classic, "Classic Compute", color="blue")
 
 
-# 8. Hyperconverged virtualization tab: reacts to cluster selection and time range.
 @app.callback(
     dash.Output("hyperconv-virt-panel", "children"),
     dash.Input("virt-hyperconv-cluster-selector", "value"),
@@ -339,8 +320,6 @@ def update_hyperconv_virt_panel(selected_clusters, time_range, pathname):
     hyperconv = api.get_hyperconv_metrics_filtered(dc_id, selected_clusters, tr)
     return _build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal")
 
-
-# 9. Backup panels: react to selector changes and time range.
 
 @app.callback(
     dash.Output("backup-netbackup-panel", "children"),
@@ -414,7 +393,6 @@ def update_backup_veeam_panel(selected_repos, time_range, pathname):
     return build_veeam_panel(data, selected)
 
 
-# 10. Physical Inventory Overview drill-down (level 0 -> 1 -> 2 -> reset)
 @app.callback(
     dash.Output("phys-inv-overview-chart", "figure"),
     dash.Output("phys-inv-overview-chart", "style"),
@@ -475,6 +453,25 @@ def update_phys_inv_chart(click_data, reset_clicks, state):
         new_state = {"level": 2, "role": role, "manufacturer": clicked_label}
         return fig, {"height": f"{h}px"}, new_state, {"display": "inline-block"}
     return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+
+@app.callback(
+    dash.Output("global-dc-info-card", "children"),
+    dash.Input("global-map-graph", "clickData"),
+    dash.State("app-time-range", "data"),
+    prevent_initial_call=True,
+)
+def update_global_info_card(click_data, time_range):
+    if not click_data or "points" not in click_data or not click_data["points"]:
+        return []
+    point = click_data["points"][0]
+    custom = point.get("customdata")
+    if not custom or not custom[0]:
+        return []
+    dc_id = custom[0]
+    tr = time_range or default_time_range()
+    from src.pages.global_view import build_dc_info_card
+    return build_dc_info_card(dc_id, tr)
 
 
 if __name__ == "__main__":

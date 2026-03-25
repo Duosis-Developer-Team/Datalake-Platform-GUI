@@ -20,6 +20,7 @@ class DataCenterSummary(BaseModel):
     id: str
     name: str
     location: str
+    site_name: str | None = None
     status: str
     platform_count: int
     cluster_count: int

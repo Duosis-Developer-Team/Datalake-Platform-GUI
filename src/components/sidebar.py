@@ -4,7 +4,6 @@ from dash import html
 
 
 def create_sidebar_nav(active_path):
-    """Return brand + nav links only. Controls (time range, customer) are static in app.layout."""
     brand = html.Div(
         [
             DashIconify(icon="mdi:cloud", width=32, color="#4318FF"),
@@ -53,6 +52,16 @@ def create_sidebar_nav(active_path):
             href="/datacenters",
             className="sidebar-link",
             active=active_path.startswith("/datacenter") or active_path == "/datacenters",
+            variant="subtle",
+            color="indigo",
+            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"},
+        ),
+        dmc.NavLink(
+            label="Global View",
+            leftSection=DashIconify(icon="solar:global-bold-duotone", width=20),
+            href="/global-view",
+            className="sidebar-link",
+            active=active_path == "/global-view",
             variant="subtle",
             color="indigo",
             style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"},
