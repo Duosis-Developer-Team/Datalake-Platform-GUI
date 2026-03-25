@@ -32,8 +32,11 @@ def _find_all_graphs(node, out):
         _find_all_graphs(children, out)
 
 
-def test_intel_storage_dashboard_maps_utilization_and_disk_rows():
+def test_intel_storage_dashboard_maps_utilization_and_disk_placeholders():
     gb = 1024.0 ** 3
+    device_list = [
+        {"host": "zbx-host-1", "device_name": "Intel Array 1", "total_capacity_bytes": 100 * gb},
+    ]
     zabbix_storage_capacity = {
         "storage_device_count": 1,
         "total_capacity_bytes": 100 * gb,
@@ -46,14 +49,8 @@ def test_intel_storage_dashboard_maps_utilization_and_disk_rows():
             {"ts": "2020-01-02", "used_capacity_bytes": 60 * gb, "total_capacity_bytes": 100 * gb, "used_pct": 60.0},
         ]
     }
-    zabbix_disk_health = {
-        "items": [
-            {"disk_name": "disk1", "health_status": "OK", "avg_total_iops": 1000, "avg_latency_ms": 1.5, "avg_temperature_c": 35.2, "running_status": "up"},
-            {"disk_name": "disk2", "health_status": "WARNING", "avg_total_iops": 500, "avg_latency_ms": 4.0, "avg_temperature_c": 44.0, "running_status": "up"},
-        ]
-    }
 
-    node = dc_view._build_intel_storage_subtab(zabbix_storage_capacity, zabbix_storage_trend, zabbix_disk_health)
+    node = dc_view._build_intel_storage_subtab(device_list, zabbix_storage_capacity, zabbix_storage_trend)
     assert node is not None
 
     # Donut "Used Capacity": used_pct = 50% => annotation contains 50
@@ -77,23 +74,8 @@ def test_intel_storage_dashboard_maps_utilization_and_disk_rows():
     y_vals = list(trend_graph.figure.data[0].y)
     assert y_vals == [50.0, 60.0]
 
-    # Disk rows: find html.Tbody and count its children TRs
-    def _find_tbody_count(n):
-        if n is None:
-            return None
-        if n.__class__.__name__ == "Tbody":
-            ch = getattr(n, "children", []) or []
-            return len(ch) if isinstance(ch, list) else 1
-        children = getattr(n, "children", None)
-        if isinstance(children, (list, tuple)):
-            for c in children:
-                res = _find_tbody_count(c)
-                if res is not None:
-                    return res
-        elif children is not None:
-            return _find_tbody_count(children)
-        return None
-
-    tbody_count = _find_tbody_count(node)
-    assert tbody_count == 2
+    # Disk placeholders (disk health table removed; only containers exist initially)
+    assert _find_by_id(node, "intel-disk-container") is not None
+    assert _find_by_id(node, "intel-disk-trend-container") is not None
+    assert _find_by_id(node, "intel-storage-disk-selector") is None
 

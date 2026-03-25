@@ -234,19 +234,36 @@ ORDER BY interface_name, interface_alias NULLS LAST;
 #   - hosts: list[str]
 #   - start_ts, end_ts: timestamps
 INTERFACE_95TH_PERCENTILE = """
-WITH bucketed AS (
-    SELECT
-        time_bucket('1 hour', zndi.collection_timestamp) AS ts,
+WITH deduped AS (
+    SELECT DISTINCT ON (zndi.host, zndi.interface_name, COALESCE(zndi.interface_alias, ''), zndi.collection_timestamp)
         zndi.host,
         zndi.interface_name,
         zndi.interface_alias,
         zndi.speed,
-        AVG(COALESCE(zndi.bits_received, 0))::double precision AS avg_rx_bps,
-        AVG(COALESCE(zndi.bits_sent, 0))::double precision AS avg_tx_bps
+        zndi.bits_received,
+        zndi.bits_sent,
+        zndi.collection_timestamp
     FROM public.zabbix_network_interface_metrics zndi
     WHERE
         zndi.host = ANY(%s)
         AND zndi.collection_timestamp BETWEEN %s AND %s
+    ORDER BY
+        zndi.host,
+        zndi.interface_name,
+        COALESCE(zndi.interface_alias, ''),
+        zndi.collection_timestamp,
+        zndi.id DESC
+),
+bucketed AS (
+    SELECT
+        time_bucket('1 hour', d.collection_timestamp) AS ts,
+        d.host,
+        d.interface_name,
+        d.interface_alias,
+        d.speed,
+        AVG(COALESCE(d.bits_received, 0))::double precision AS avg_rx_bps,
+        AVG(COALESCE(d.bits_sent, 0))::double precision AS avg_tx_bps
+    FROM deduped d
     GROUP BY 1,2,3,4,5
 ),
 ranked AS (
@@ -278,19 +295,36 @@ ORDER BY p95_total_bps DESC;
 #   - search: str (optional, may be empty string)
 #   - limit, offset: int
 INTERFACE_BANDWIDTH_TABLE_P95 = """
-WITH bucketed AS (
-    SELECT
-        time_bucket('1 hour', zndi.collection_timestamp) AS ts,
+WITH deduped AS (
+    SELECT DISTINCT ON (zndi.host, zndi.interface_name, COALESCE(zndi.interface_alias, ''), zndi.collection_timestamp)
         zndi.host,
         zndi.interface_name,
         zndi.interface_alias,
         zndi.speed,
-        AVG(COALESCE(zndi.bits_received, 0))::double precision AS avg_rx_bps,
-        AVG(COALESCE(zndi.bits_sent, 0))::double precision AS avg_tx_bps
+        zndi.bits_received,
+        zndi.bits_sent,
+        zndi.collection_timestamp
     FROM public.zabbix_network_interface_metrics zndi
     WHERE
         zndi.host = ANY(%s)
         AND zndi.collection_timestamp BETWEEN %s AND %s
+    ORDER BY
+        zndi.host,
+        zndi.interface_name,
+        COALESCE(zndi.interface_alias, ''),
+        zndi.collection_timestamp,
+        zndi.id DESC
+),
+bucketed AS (
+    SELECT
+        time_bucket('1 hour', d.collection_timestamp) AS ts,
+        d.host,
+        d.interface_name,
+        d.interface_alias,
+        d.speed,
+        AVG(COALESCE(d.bits_received, 0))::double precision AS avg_rx_bps,
+        AVG(COALESCE(d.bits_sent, 0))::double precision AS avg_tx_bps
+    FROM deduped d
     GROUP BY 1,2,3,4,5
 ),
 p95 AS (

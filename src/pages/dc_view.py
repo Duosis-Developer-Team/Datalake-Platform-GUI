@@ -1200,12 +1200,36 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
     )
 
 
-def _build_intel_storage_subtab(zabbix_storage_capacity: dict, zabbix_storage_trend: dict, zabbix_disk_health: dict):
+def _build_intel_storage_subtab(device_list: list[dict], zabbix_storage_capacity: dict, zabbix_storage_trend: dict):
     """Intel Storage subtab (Zabbix)."""
+    device_list = device_list or []
     zabbix_storage_capacity = zabbix_storage_capacity or {}
     zabbix_storage_trend = zabbix_storage_trend or {}
-    zabbix_disk_health = zabbix_disk_health or {}
 
+    # Device selector (optional): empty/cleared => aggregate across all devices.
+    device_options_map: dict[str, str] = {}
+    for d in device_list:
+        host_val = d.get("host")
+        if not host_val:
+            continue
+        host_key = str(host_val)
+        label = d.get("device_name") or host_key
+        device_options_map.setdefault(host_key, label)
+
+    device_options = [{"label": device_options_map[k], "value": k} for k in sorted(device_options_map.keys())]
+
+    device_selector = dmc.Select(
+        id="intel-storage-device-selector",
+        data=device_options,
+        value=None,
+        clearable=True,
+        searchable=True,
+        placeholder="All Devices",
+        nothingFoundMessage="No devices",
+        style={"minWidth": "260px"},
+    )
+
+    # Donuts/trend initial values: aggregate (host=None).
     total_bytes = float(zabbix_storage_capacity.get("total_capacity_bytes", 0) or 0)
     used_bytes = float(zabbix_storage_capacity.get("used_capacity_bytes", 0) or 0)
     free_bytes = float(zabbix_storage_capacity.get("free_capacity_bytes", 0) or 0)
@@ -1237,63 +1261,26 @@ def _build_intel_storage_subtab(zabbix_storage_capacity: dict, zabbix_storage_tr
         height=260,
     )
 
-    # Disk health table
-    items = zabbix_disk_health.get("items") or []
-    table_rows = []
-    for d in items:
-        status = d.get("health_status") or ""
-        icon, color = _health_icon(status)
-        table_rows.append(
-            html.Tr(
-                [
-                    html.Td(d.get("disk_name") or "", style={"color": "#2B3674"}),
-                    html.Td(
-                        html.Div(
-                            style={"display": "flex", "alignItems": "center", "gap": "10px"},
-                            children=[
-                                DashIconify(icon=icon, width=18, color=color),
-                                html.Span(status, style={"fontWeight": 700, "color": "#2B3674"}),
-                            ],
-                        )
-                    ),
-                    html.Td(f"{d.get('avg_total_iops', 0):,.0f}", style={"color": "#2B3674", "textAlign": "right"}),
-                    html.Td(f"{float(d.get('avg_latency_ms', 0) or 0):.2f}", style={"color": "#2B3674", "textAlign": "right"}),
-                    html.Td(f"{float(d.get('avg_temperature_c', 0) or 0):.1f} C", style={"color": "#2B3674", "textAlign": "right"}),
-                ]
-            )
-        )
-
-    disk_table = dmc.Table(
-        striped=True,
-        highlightOnHover=True,
-        withTableBorder=False,
-        withColumnBorders=False,
-        style={"tableLayout": "fixed", "width": "100%"},
-        verticalSpacing="sm",
-        horizontalSpacing="md",
+    disk_container = html.Div(
+        id="intel-disk-container",
         children=[
-            html.Thead(
-                html.Tr(
-                    [
-                        html.Th("Disk", style={"color": "#A3AED0", "fontWeight": 600, "fontSize": "0.72rem", "textTransform": "uppercase", "letterSpacing": "0.07em", "width": "28%"}),
-                        html.Th("Health", style={"color": "#A3AED0", "fontWeight": 600, "fontSize": "0.72rem", "textTransform": "uppercase", "letterSpacing": "0.07em", "width": "24%"}),
-                        html.Th("Total IOPS (avg)", style={"color": "#A3AED0", "fontWeight": 600, "fontSize": "0.72rem", "textTransform": "uppercase", "letterSpacing": "0.07em", "width": "16%", "textAlign": "right"}),
-                        html.Th("Latency (avg, ms)", style={"color": "#A3AED0", "fontWeight": 600, "fontSize": "0.72rem", "textTransform": "uppercase", "letterSpacing": "0.07em", "width": "16%", "textAlign": "right"}),
-                        html.Th("Temperature", style={"color": "#A3AED0", "fontWeight": 600, "fontSize": "0.72rem", "textTransform": "uppercase", "letterSpacing": "0.07em", "width": "16%", "textAlign": "right"}),
-                    ]
-                )
-            ),
-            html.Tbody(
-                table_rows
-                if table_rows
-                else [html.Tr([html.Td("No disk metrics found", colSpan=5)])]
-            ),
+            dmc.Text("Select a device to load disks.", size="sm", c="#A3AED0"),
+            html.Div(id="intel-disk-trend-container"),
         ],
     )
 
     return dmc.Stack(
         gap="lg",
         children=[
+            html.Div(
+                className="nexus-card",
+                style={"padding": "20px"},
+                children=[
+                    _section_title("Device Filter", "Optional. Empty selection => show all devices"),
+                    device_selector,
+                    dcc.Store(id="intel-storage-device-store", data=None),
+                ],
+            ),
             dmc.SimpleGrid(
                 cols=3,
                 spacing="lg",
@@ -1308,15 +1295,15 @@ def _build_intel_storage_subtab(zabbix_storage_capacity: dict, zabbix_storage_tr
                 style={"padding": "20px"},
                 children=[
                     _section_title("Capacity Planning", "Capacity utilization over time (downsampled daily)"),
-                    _chart_card(dcc.Graph(figure=trend_fig, config={"displayModeBar": False}, style={"height": "260px"})),
+                    _chart_card(dcc.Graph(id="intel-capacity-trend-chart", figure=trend_fig, config={"displayModeBar": False}, style={"height": "260px"})),
                 ],
             ),
             html.Div(
                 className="nexus-card",
                 style={"padding": "20px"},
                 children=[
-                    _section_title("Disk Health & Performance", "Health and performance averages across the time range"),
-                    disk_table,
+                    _section_title("Disk Performance", "Select a device to view disk metrics"),
+                    disk_container,
                 ],
             ),
         ],
@@ -1629,10 +1616,10 @@ def build_dc_view(dc_id, time_range=None):
     # Intel Storage (Zabbix)
     zabbix_storage_capacity = api.get_dc_zabbix_storage_capacity(dc_id, tr)
     has_intel_storage = int(zabbix_storage_capacity.get("storage_device_count", 0) or 0) > 0
+    zabbix_storage_devices = api.get_dc_zabbix_storage_devices(dc_id, tr) if has_intel_storage else []
     zabbix_storage_trend = api.get_dc_zabbix_storage_trend(dc_id, tr) if has_intel_storage else {}
-    zabbix_disk_health = api.get_dc_zabbix_disk_health(dc_id, tr) if has_intel_storage else {}
 
-    has_storage = bool(has_intel_storage or has_power)
+    has_storage = bool(has_intel_storage or has_power or has_s3)
 
     has_virt = has_classic or has_hyperconv or has_power
     has_summary = has_virt
@@ -1653,7 +1640,6 @@ def build_dc_view(dc_id, time_range=None):
         ("virt", has_virt),
         ("storage", has_storage),
         ("backup", has_backup),
-        ("obj-storage", has_s3),
         ("phys-inv", has_phys_inv),
         ("network", has_network or has_san),
     ]
@@ -1706,7 +1692,6 @@ def build_dc_view(dc_id, time_range=None):
                             dmc.TabsTab("Virtualization", value="virt") if has_virt else None,
                             dmc.TabsTab("Storage", value="storage") if has_storage else None,
                             dmc.TabsTab("Backup & Replication", value="backup") if has_backup else None,
-                            dmc.TabsTab("Object Storage", value="obj-storage") if has_s3 else None,
                             dmc.TabsTab("Physical Inventory", value="phys-inv") if has_phys_inv else None,
                             dmc.TabsTab("Network", value="network") if (has_network or has_san) else None,
                         ],
@@ -1850,38 +1835,6 @@ def build_dc_view(dc_id, time_range=None):
                     ),
                 ) if has_backup else None,
 
-                # Object Storage (S3 subtab)
-                dmc.TabsPanel(
-                    value="obj-storage",
-                    children=html.Div(
-                        style={"padding": "0 30px"},
-                        children=[
-                            dmc.Tabs(
-                                color="indigo",
-                                variant="outline",
-                                radius="md",
-                                value="s3",
-                                children=[
-                                    dmc.TabsList(
-                                        children=[
-                                            dmc.TabsTab("S3", value="s3") if has_s3 else None,
-                                        ]
-                                    ),
-                                    dmc.TabsPanel(
-                                        value="s3",
-                                        pt="lg",
-                                        children=html.Div(
-                                            id="s3-dc-metrics-panel",
-                                            style={"marginTop": "0"},
-                                            children=build_dc_s3_panel(dc_name, s3_data, tr, None) if has_s3 else html.Div(),
-                                        ),
-                                    ) if has_s3 else None,
-                                ],
-                            ),
-                        ],
-                    ),
-                ) if has_s3 else None,
-
                 # Physical Inventory
                 dmc.TabsPanel(
                     value="phys-inv",
@@ -1901,21 +1854,22 @@ def build_dc_view(dc_id, time_range=None):
                                 color="indigo",
                                 variant="outline",
                                 radius="md",
-                                value="intel" if has_intel_storage else "ibm",
+                                value="intel" if has_intel_storage else "ibm" if has_power else "obj-storage",
                                 children=[
                                     dmc.TabsList(
                                         children=[
                                             dmc.TabsTab("Intel Storage", value="intel") if has_intel_storage else None,
                                             dmc.TabsTab("IBM Storage", value="ibm") if has_power else None,
+                                            dmc.TabsTab("Object Storage - S3", value="obj-storage") if has_s3 else None,
                                         ]
                                     ),
                                     dmc.TabsPanel(
                                         value="intel",
                                         pt="lg",
                                         children=_build_intel_storage_subtab(
+                                            zabbix_storage_devices,
                                             zabbix_storage_capacity,
                                             zabbix_storage_trend,
-                                            zabbix_disk_health,
                                         ),
                                     ) if has_intel_storage else None,
                                     dmc.TabsPanel(
@@ -1927,6 +1881,15 @@ def build_dc_view(dc_id, time_range=None):
                                             san_bottleneck,
                                         ),
                                     ) if has_power else None,
+                                    dmc.TabsPanel(
+                                        value="obj-storage",
+                                        pt="lg",
+                                        children=html.Div(
+                                            id="s3-dc-metrics-panel",
+                                            style={"marginTop": "0"},
+                                            children=build_dc_s3_panel(dc_name, s3_data, tr, None) if has_s3 else html.Div(),
+                                        ),
+                                    ) if has_s3 else None,
                                 ],
                             )
                         ],

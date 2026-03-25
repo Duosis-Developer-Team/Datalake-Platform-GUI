@@ -96,14 +96,14 @@ def _fake_service(monkeypatch, dc_details: dict, s3_pools: dict | None = None):
             return {"items": []}
 
         # Intel Storage (Zabbix)
-        def get_dc_zabbix_storage_capacity(self, dc_id, tr):
+        def get_dc_zabbix_storage_capacity(self, dc_id, tr, host=None):
             return {"storage_device_count": 0}
 
-        def get_dc_zabbix_storage_trend(self, dc_id, tr):
+        def get_dc_zabbix_storage_trend(self, dc_id, tr, host=None):
             return {"series": []}
 
-        def get_dc_zabbix_disk_health(self, dc_id, tr):
-            return {"items": []}
+        def get_dc_zabbix_storage_devices(self, dc_id, tr):
+            return []
 
     monkeypatch.setattr(dc_view, "api", FakeApi())
 
@@ -197,14 +197,14 @@ def _fake_service_network(
             return {"items": []}
 
         # Intel Storage (Zabbix)
-        def get_dc_zabbix_storage_capacity(self, dc_id, tr):
+        def get_dc_zabbix_storage_capacity(self, dc_id, tr, host=None):
             return {"storage_device_count": 0}
 
-        def get_dc_zabbix_storage_trend(self, dc_id, tr):
+        def get_dc_zabbix_storage_trend(self, dc_id, tr, host=None):
             return {"series": []}
 
-        def get_dc_zabbix_disk_health(self, dc_id, tr):
-            return {"items": []}
+        def get_dc_zabbix_storage_devices(self, dc_id, tr):
+            return []
 
     monkeypatch.setattr(dc_view, "api", FakeApi())
 
@@ -260,7 +260,7 @@ def test_s3_tab_shown_when_pools_present(monkeypatch):
 
     layout = dc_view.build_dc_view("DCX", time_range={"from": 0, "to": 0})
     labels = _collect_tab_labels(layout)
-    assert "Object Storage" in labels
+    assert "Object Storage - S3" in labels
 
 
 def test_backup_tab_hidden(monkeypatch):

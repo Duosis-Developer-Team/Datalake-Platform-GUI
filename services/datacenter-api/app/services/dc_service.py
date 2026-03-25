@@ -4,6 +4,7 @@ import logging
 import time
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any
 
 import psycopg2
 from psycopg2 import pool as pg_pool
@@ -3137,15 +3138,18 @@ JOIN latest l
     # Zabbix Intel Storage Dashboard (capacity planning + disk health)
     # ------------------------------------------------------------------
 
-    def get_zabbix_storage_capacity(self, dc_code: str, time_range: dict | None = None) -> dict:
+    def get_zabbix_storage_devices(self, dc_code: str, time_range: dict | None = None) -> list[dict[str, Any]]:
         """
-        Return total/used/free capacity for Zabbix storage devices within a DC.
+        Return latest Zabbix storage device rows for the given DC.
+
+        Used as Intel Storage device selector data. Each returned item corresponds
+        to a resolved NetBox device mapped to a Zabbix host (via loki_id).
         """
         tr = time_range or default_time_range()
         dc_target = (dc_code or "").upper()
         start_ts, end_ts = time_range_to_bounds(tr)
 
-        cache_key = f"dc_zabbix_storage_cap:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cache_key = f"dc_zabbix_storage_devices:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
@@ -3158,6 +3162,77 @@ JOIN latest l
                         zsq.STORAGE_DEVICES_FOR_DC_LATEST,
                         (start_ts, end_ts, dc_target),
                     )
+
+            devices: list[dict[str, Any]] = []
+            for (
+                loki_id,
+                host,
+                storage_device_name,
+                manufacturer_name,
+                device_role_name,
+                _location_name,
+                _site_name,
+                total_capacity_bytes,
+                used_capacity_bytes,
+                free_capacity_bytes,
+                health_status,
+                _collection_ts,
+            ) in (rows or []):
+                devices.append(
+                    {
+                        "loki_id": str(loki_id) if loki_id is not None else None,
+                        "host": str(host) if host is not None else None,
+                        "device_name": storage_device_name or "Unknown",
+                        "manufacturer_name": manufacturer_name or "Unknown",
+                        "device_role_name": device_role_name or "Unknown",
+                        "total_capacity_bytes": int(total_capacity_bytes or 0),
+                        "used_capacity_bytes": int(used_capacity_bytes or 0),
+                        "free_capacity_bytes": int(free_capacity_bytes or 0),
+                        "health_status": health_status,
+                    }
+                )
+
+            devices.sort(key=lambda d: d.get("total_capacity_bytes", 0), reverse=True)
+            result = devices
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_zabbix_storage_devices failed for %s: %s", dc_target, exc)
+            result = []
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_zabbix_storage_capacity(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        host: str | None = None,
+    ) -> dict:
+        """
+        Return total/used/free capacity for Zabbix storage devices within a DC.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        cache_key = (
+            f"dc_zabbix_storage_cap:{dc_target}:"
+            f"{tr.get('start','')}:{tr.get('end','')}:{host or ''}"
+        )
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        zsq.STORAGE_DEVICES_FOR_DC_LATEST,
+                        (start_ts, end_ts, dc_target),
+                    )
+
+            if host is not None:
+                rows = [r for r in (rows or []) if r and r[1] and str(r[1]) == str(host)]
 
             # STORAGE_DEVICES_FOR_DC_LATEST select order:
             # 0:loki_id, 1:host, 2:storage_device_name, 3:manufacturer, 4:device_role,
@@ -3180,7 +3255,12 @@ JOIN latest l
         cache.set(cache_key, result)
         return result
 
-    def get_zabbix_storage_trend(self, dc_code: str, time_range: dict | None = None) -> dict:
+    def get_zabbix_storage_trend(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        host: str | None = None,
+    ) -> dict:
         """
         Return daily capacity utilization trend (used/total) for a DC.
         """
@@ -3188,7 +3268,10 @@ JOIN latest l
         dc_target = (dc_code or "").upper()
         start_ts, end_ts = time_range_to_bounds(tr)
 
-        cache_key = f"dc_zabbix_storage_trend:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cache_key = (
+            f"dc_zabbix_storage_trend:{dc_target}:"
+            f"{tr.get('start','')}:{tr.get('end','')}:{host or ''}"
+        )
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
@@ -3202,7 +3285,10 @@ JOIN latest l
                         (start_ts, end_ts, dc_target),
                     )
 
-                    hosts = sorted({str(r[1]) for r in (rows or []) if r and r[1]})
+                    if host is not None:
+                        hosts = sorted({str(r[1]) for r in (rows or []) if r and r[1] and str(r[1]) == str(host)})
+                    else:
+                        hosts = sorted({str(r[1]) for r in (rows or []) if r and r[1]})
                     if not hosts:
                         result = {"series": []}
                         cache.set(cache_key, result)
@@ -3231,6 +3317,123 @@ JOIN latest l
             result = {"series": series}
         except (OperationalError, PoolError) as exc:
             logger.warning("get_zabbix_storage_trend failed for %s: %s", dc_target, exc)
+            result = {"series": []}
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_zabbix_disk_list(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        host: str | None = None,
+    ) -> dict:
+        """
+        Return distinct disk names for the selected storage host within the given DC.
+        """
+        if host is None:
+            return {"items": []}
+
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        cache_key = f"dc_zabbix_disk_list:{dc_target}:{host}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Validate host belongs to this DC (scoping).
+                    dev_rows = self._run_rows(
+                        cur,
+                        zsq.STORAGE_DEVICES_FOR_DC_LATEST,
+                        (start_ts, end_ts, dc_target),
+                    )
+                    valid_hosts = {str(r[1]) for r in (dev_rows or []) if r and r[1]}
+                    if str(host) not in valid_hosts:
+                        result = {"items": []}
+                        cache.set(cache_key, result)
+                        return result
+
+                    disk_rows = self._run_rows(
+                        cur,
+                        zsq.STORAGE_DISK_LIST_BY_HOST,
+                        ([str(host)], start_ts, end_ts),
+                    )
+
+            items: list[str] = [str(r[0]) for r in (disk_rows or []) if r and r[0]]
+            items = sorted(set(items))
+            result = {"items": items}
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_zabbix_disk_list failed for %s/%s: %s", dc_target, host, exc)
+            result = {"items": []}
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_zabbix_disk_trend(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        host: str | None = None,
+        disk_name: str | None = None,
+    ) -> dict:
+        """
+        Return daily disk trend series (latest per host/day) for a given disk.
+        """
+        if host is None or not disk_name:
+            return {"series": []}
+
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        cache_key = (
+            f"dc_zabbix_disk_trend:{dc_target}:{host}:{disk_name}:"
+            f"{tr.get('start','')}:{tr.get('end','')}"
+        )
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Validate host belongs to this DC (scoping).
+                    dev_rows = self._run_rows(
+                        cur,
+                        zsq.STORAGE_DEVICES_FOR_DC_LATEST,
+                        (start_ts, end_ts, dc_target),
+                    )
+                    valid_hosts = {str(r[1]) for r in (dev_rows or []) if r and r[1]}
+                    if str(host) not in valid_hosts:
+                        result = {"series": []}
+                        cache.set(cache_key, result)
+                        return result
+
+                    trend_rows = self._run_rows(
+                        cur,
+                        zsq.STORAGE_DISK_TREND_DAILY,
+                        ([str(host)], str(disk_name), start_ts, end_ts),
+                    )
+
+            series: list[dict[str, Any]] = []
+            for ts, avg_iops, avg_latency_ms, total_capacity_bytes, free_capacity_bytes in (trend_rows or []):
+                series.append(
+                    {
+                        "ts": ts,
+                        "avg_iops": float(avg_iops or 0),
+                        "avg_latency_ms": float(avg_latency_ms or 0),
+                        "total_capacity_bytes": int(total_capacity_bytes or 0),
+                        "free_capacity_bytes": int(free_capacity_bytes or 0),
+                    }
+                )
+            result = {"series": series}
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_zabbix_disk_trend failed for %s/%s/%s: %s", dc_target, host, disk_name, exc)
             result = {"series": []}
 
         cache.set(cache_key, result)

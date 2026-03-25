@@ -519,24 +519,63 @@ def get_dc_network_interface_table(
         return {}
 
 
-def get_dc_zabbix_storage_capacity(dc_code: str, tr: Optional[dict]) -> dict:
+def get_dc_zabbix_storage_capacity(dc_code: str, tr: Optional[dict], host: Optional[str] = None) -> dict:
     try:
         enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+        params = _build_optional_params(_build_time_params(tr), host=host)
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/capacity", params=params)
         return data if isinstance(data, dict) else {}
     except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
         return {}
 
 
-def get_dc_zabbix_storage_trend(dc_code: str, tr: Optional[dict]) -> dict:
+def get_dc_zabbix_storage_trend(dc_code: str, tr: Optional[dict], host: Optional[str] = None) -> dict:
     try:
         enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+        params = _build_optional_params(_build_time_params(tr), host=host)
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/trend", params=params)
         return data if isinstance(data, dict) else {}
     except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
         return {}
+
+
+def get_dc_zabbix_storage_devices(dc_code: str, tr: Optional[dict]) -> list[dict]:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/devices", params=params)
+        return data if isinstance(data, list) else []
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return []
+
+
+def get_dc_zabbix_disk_list(dc_code: str, tr: Optional[dict], host: Optional[str] = None) -> dict:
+    if host is None:
+        return {"items": []}
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_optional_params(_build_time_params(tr), host=host)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/disk-list", params=params)
+        return data if isinstance(data, dict) else {"items": []}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {"items": []}
+
+
+def get_dc_zabbix_disk_trend(
+    dc_code: str,
+    tr: Optional[dict],
+    host: Optional[str] = None,
+    disk_name: Optional[str] = None,
+) -> dict:
+    if host is None or disk_name is None:
+        return {"series": []}
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_optional_params(_build_time_params(tr), host=host, disk=disk_name)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/disk-trend", params=params)
+        return data if isinstance(data, dict) else {"series": []}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {"series": []}
 
 
 def get_dc_zabbix_disk_health(dc_code: str, tr: Optional[dict]) -> dict:

@@ -109,15 +109,82 @@ FROM latest;
 #   - hosts: list[str]
 #   - start_ts, end_ts: timestamps
 STORAGE_CAPACITY_TREND_DAILY = """
+WITH latest_per_host_per_day AS (
+    SELECT DISTINCT ON (time_bucket('1 day', sdm.collection_timestamp), sdm.host)
+        time_bucket('1 day', sdm.collection_timestamp) AS day,
+        sdm.host,
+        sdm.used_capacity_bytes,
+        sdm.total_capacity_bytes
+    FROM public.zabbix_storage_device_metrics sdm
+    WHERE
+        sdm.host = ANY(%s)
+        AND sdm.health_status IS NOT NULL
+        AND sdm.collection_timestamp BETWEEN %s AND %s
+    ORDER BY
+        time_bucket('1 day', sdm.collection_timestamp),
+        sdm.host,
+        sdm.collection_timestamp DESC
+)
 SELECT
-    time_bucket('1 day', sdm.collection_timestamp) AS ts,
-    COALESCE(SUM(sdm.used_capacity_bytes), 0)::bigint AS used_capacity_bytes,
-    COALESCE(SUM(sdm.total_capacity_bytes), 0)::bigint AS total_capacity_bytes
-FROM public.zabbix_storage_device_metrics sdm
-WHERE
-    sdm.host = ANY(%s)
-    AND sdm.health_status IS NOT NULL
-    AND sdm.collection_timestamp BETWEEN %s AND %s
+    day AS ts,
+    COALESCE(SUM(used_capacity_bytes), 0)::bigint AS used_capacity_bytes,
+    COALESCE(SUM(total_capacity_bytes), 0)::bigint AS total_capacity_bytes
+FROM latest_per_host_per_day
+GROUP BY 1
+ORDER BY 1;
+"""
+
+#
+# --- Disk selector list (by selected hosts) ---
+# Params:
+#   - hosts: list[str]
+#   - start_ts, end_ts: timestamps
+STORAGE_DISK_LIST_BY_HOST = """
+SELECT DISTINCT disk_name
+FROM public.zabbix_storage_disk_metrics
+WHERE host = ANY(%s)
+  AND collection_timestamp BETWEEN %s AND %s
+ORDER BY disk_name;
+"""
+
+#
+# --- Disk trend (daily downsample, latest per host/day) ---
+# Params:
+#   - hosts: list[str]
+#   - disk_name: str
+#   - start_ts, end_ts: timestamps
+STORAGE_DISK_TREND_DAILY = """
+WITH latest_per_day AS (
+    SELECT DISTINCT ON (
+        time_bucket('1 day', sdm.collection_timestamp),
+        sdm.host,
+        sdm.disk_name
+    )
+        time_bucket('1 day', sdm.collection_timestamp) AS day,
+        sdm.host,
+        sdm.disk_name,
+        sdm.total_iops,
+        sdm.latency_ms,
+        sdm.total_capacity_bytes,
+        sdm.free_capacity_bytes
+    FROM public.zabbix_storage_disk_metrics sdm
+    WHERE
+        sdm.host = ANY(%s)
+        AND sdm.disk_name = %s
+        AND sdm.collection_timestamp BETWEEN %s AND %s
+    ORDER BY
+        time_bucket('1 day', sdm.collection_timestamp),
+        sdm.host,
+        sdm.disk_name,
+        sdm.collection_timestamp DESC
+)
+SELECT
+    day AS ts,
+    COALESCE(AVG(total_iops), 0)::double precision AS avg_iops,
+    COALESCE(AVG(latency_ms), 0)::double precision AS avg_latency_ms,
+    COALESCE(SUM(total_capacity_bytes), 0)::bigint AS total_capacity_bytes,
+    COALESCE(SUM(free_capacity_bytes), 0)::bigint AS free_capacity_bytes
+FROM latest_per_day
 GROUP BY 1
 ORDER BY 1;
 """
@@ -152,15 +219,28 @@ WITH latest_health AS (
 ),
 stats AS (
     SELECT
-        sdm.host,
-        sdm.disk_name,
-        AVG(COALESCE(sdm.total_iops, 0))::double precision AS avg_total_iops,
-        AVG(COALESCE(sdm.latency_ms, 0))::double precision AS avg_latency_ms,
-        AVG(COALESCE(sdm.temperature_c, 0))::double precision AS avg_temperature_c
-    FROM public.zabbix_storage_disk_metrics sdm
-    WHERE
-        sdm.host = ANY(%s)
-        AND sdm.collection_timestamp BETWEEN %s AND %s
+        disk.host,
+        disk.disk_name,
+        AVG(COALESCE(disk.total_iops, 0))::double precision AS avg_total_iops,
+        AVG(COALESCE(disk.latency_ms, 0))::double precision AS avg_latency_ms,
+        AVG(COALESCE(disk.temperature_c, 0))::double precision AS avg_temperature_c
+    FROM (
+        SELECT DISTINCT ON (sdm.host, sdm.disk_name, sdm.collection_timestamp)
+            sdm.host,
+            sdm.disk_name,
+            sdm.total_iops,
+            sdm.latency_ms,
+            sdm.temperature_c
+        FROM public.zabbix_storage_disk_metrics sdm
+        WHERE
+            sdm.host = ANY(%s)
+            AND sdm.collection_timestamp BETWEEN %s AND %s
+        ORDER BY
+            sdm.host,
+            sdm.disk_name,
+            sdm.collection_timestamp,
+            sdm.id DESC
+    ) disk
     GROUP BY 1,2
 )
 SELECT

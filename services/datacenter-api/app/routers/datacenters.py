@@ -236,13 +236,52 @@ def network_interface_table(
 
 
 @router.get("/datacenters/{dc_code}/zabbix-storage/capacity", response_model=dict[str, Any])
-def zabbix_storage_capacity(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
-    return db.get_zabbix_storage_capacity(dc_code, tf.to_dict())
+def zabbix_storage_capacity(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    host: Optional[str] = Query(None, description="Optional Zabbix storage host filter"),
+):
+    return db.get_zabbix_storage_capacity(dc_code, tf.to_dict(), host=host)
 
 
 @router.get("/datacenters/{dc_code}/zabbix-storage/trend", response_model=dict[str, Any])
-def zabbix_storage_trend(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
-    return db.get_zabbix_storage_trend(dc_code, tf.to_dict())
+def zabbix_storage_trend(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    host: Optional[str] = Query(None, description="Optional Zabbix storage host filter"),
+):
+    return db.get_zabbix_storage_trend(dc_code, tf.to_dict(), host=host)
+
+@router.get("/datacenters/{dc_code}/zabbix-storage/devices", response_model=List[dict[str, Any]])
+def zabbix_storage_devices(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+):
+    return db.get_zabbix_storage_devices(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/zabbix-storage/disk-list", response_model=dict[str, Any])
+def zabbix_storage_disk_list(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    host: Optional[str] = Query(None, description="Selected Zabbix storage host"),
+):
+    return db.get_zabbix_disk_list(dc_code, tf.to_dict(), host=host)
+
+
+@router.get("/datacenters/{dc_code}/zabbix-storage/disk-trend", response_model=dict[str, Any])
+def zabbix_storage_disk_trend(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    host: Optional[str] = Query(None, description="Selected Zabbix storage host"),
+    disk: Optional[str] = Query(None, description="Selected disk name"),
+):
+    return db.get_zabbix_disk_trend(dc_code, tf.to_dict(), host=host, disk_name=disk)
 
 
 @router.get("/datacenters/{dc_code}/zabbix-storage/disk-health", response_model=dict[str, Any])

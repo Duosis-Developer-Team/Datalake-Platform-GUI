@@ -693,5 +693,183 @@ def update_net_interface_table(manufacturer, device_role, device_name, search_va
     return rows
 
 
+@app.callback(
+    dash.Output("intel-donut-total", "figure"),
+    dash.Output("intel-donut-used", "figure"),
+    dash.Output("intel-donut-free", "figure"),
+    dash.Output("intel-capacity-trend-chart", "figure"),
+    dash.Input("intel-storage-device-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_intel_storage_charts(host, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    from src.components.charts import create_capacity_area_chart, create_usage_donut_chart
+    from src.utils.format_units import pct_float, smart_storage
+
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+
+    cap = api.get_dc_zabbix_storage_capacity(dc_id, tr, host=host)
+    trend = api.get_dc_zabbix_storage_trend(dc_id, tr, host=host)
+
+    total_bytes = float(cap.get("total_capacity_bytes", 0) or 0)
+    used_bytes = float(cap.get("used_capacity_bytes", 0) or 0)
+    free_bytes = float(cap.get("free_capacity_bytes", 0) or 0)
+
+    # Zabbix bytes -> GB for smart_storage labels.
+    bytes_to_gb = lambda b: (float(b) / (1024.0**3)) if b else 0.0
+    total_gb = bytes_to_gb(total_bytes)
+    used_gb = bytes_to_gb(used_bytes)
+    free_gb = bytes_to_gb(free_bytes)
+
+    used_pct = pct_float(used_gb, total_gb)
+    free_pct = max(0.0, 100.0 - used_pct)
+
+    donut_total = create_usage_donut_chart(100.0, f"Total {smart_storage(total_gb)}", color="#FFB547")
+    donut_used = create_usage_donut_chart(used_pct, "Used Capacity", color="#4318FF")
+    donut_free = create_usage_donut_chart(free_pct, "Free Capacity", color="#05CD99")
+
+    series = trend.get("series") or []
+    timestamps = [p.get("ts") for p in series if p.get("ts") is not None]
+    used_series = [p.get("used_capacity_bytes") for p in series]
+    total_series = [p.get("total_capacity_bytes") for p in series]
+
+    trend_fig = create_capacity_area_chart(
+        timestamps=timestamps,
+        used=used_series,
+        total=total_series,
+        title="Capacity Utilization Trend",
+        height=260,
+    )
+
+    return donut_total, donut_used, donut_free, trend_fig
+
+
+@app.callback(
+    dash.Output("intel-disk-container", "children"),
+    dash.Input("intel-storage-device-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_intel_disk_container(host, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update
+
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+
+    if host is None:
+        return [
+            dmc.Text("Select a device to load disks.", size="sm", c="#A3AED0"),
+            html.Div(id="intel-disk-trend-container"),
+        ]
+
+    disk_data = api.get_dc_zabbix_disk_list(dc_id, tr, host=host)
+    disks = disk_data.get("items") or []
+    disk_options = [{"label": d, "value": d} for d in disks]
+
+    disk_selector = dmc.Select(
+        id="intel-storage-disk-selector",
+        data=disk_options,
+        value=None,
+        clearable=True,
+        searchable=True,
+        placeholder="Select disk",
+        nothingFoundMessage="No disks",
+        style={"minWidth": "260px"},
+    )
+
+    return [
+        disk_selector,
+        html.Div(id="intel-disk-trend-container"),
+    ]
+
+
+@app.callback(
+    dash.Output("intel-disk-trend-container", "children"),
+    dash.Input("intel-storage-disk-selector", "value"),
+    dash.Input("intel-storage-device-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_intel_disk_trend(disk_name, host, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update
+
+    if host is None or disk_name is None:
+        return html.Div()
+
+    from src.components.charts import create_capacity_area_chart
+    import plotly.graph_objects as go
+
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+
+    trend = api.get_dc_zabbix_disk_trend(dc_id, tr, host=host, disk_name=disk_name)
+    series = trend.get("series") or []
+
+    timestamps = [p.get("ts") for p in series if p.get("ts") is not None]
+    iops_series = [float(p.get("avg_iops") or 0) for p in series]
+    latency_series = [float(p.get("avg_latency_ms") or 0) for p in series]
+
+    total_bytes_series = [float(p.get("total_capacity_bytes") or 0) for p in series]
+    free_bytes_series = [float(p.get("free_capacity_bytes") or 0) for p in series]
+    used_bytes_series = [t - f for t, f in zip(total_bytes_series, free_bytes_series)]
+
+    capacity_fig = create_capacity_area_chart(
+        timestamps=timestamps,
+        used=used_bytes_series,
+        total=total_bytes_series,
+        title=f"Disk Capacity Utilization - {disk_name}",
+        height=260,
+    )
+
+    iops_fig = go.Figure(data=[go.Scatter(x=timestamps, y=iops_series, mode="lines+markers", name="Avg IOPS")])
+    iops_fig.update_layout(height=240, margin=dict(l=30, r=10, t=30, b=20))
+
+    latency_fig = go.Figure(
+        data=[go.Scatter(x=timestamps, y=latency_series, mode="lines+markers", name="Avg Latency (ms)")]
+    )
+    latency_fig.update_layout(height=240, margin=dict(l=30, r=10, t=30, b=20))
+
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            html.Div(
+                className="nexus-card",
+                style={"padding": "20px"},
+                children=[
+                    dc_view._section_title("Disk Capacity Utilization", "Latest daily utilization trend"),
+                    dc_view._chart_card(
+                        dcc.Graph(
+                            figure=capacity_fig,
+                            config={"displayModeBar": False},
+                            style={"height": "260px"},
+                        )
+                    ),
+                ],
+            ),
+            html.Div(
+                className="nexus-card",
+                style={"padding": "20px"},
+                children=[
+                    dc_view._section_title("Disk Performance", "Avg IOPS and latency over time"),
+                    dmc.SimpleGrid(
+                        cols=2,
+                        spacing="lg",
+                        children=[
+                            dc_view._chart_card(dcc.Graph(figure=iops_fig, config={"displayModeBar": False})),
+                            dc_view._chart_card(dcc.Graph(figure=latency_fig, config={"displayModeBar": False})),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=8050, use_reloader=False)
