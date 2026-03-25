@@ -35,6 +35,16 @@ class IBMPowerAdapter(PlatformAdapter):
             ("ibm_lpar_raw", iq.BATCH_RAW_LPAR,   ts_params),
             ("ibm_mem_raw",  iq.BATCH_RAW_MEMORY,  ts_params),
             ("ibm_cpu_raw",  iq.BATCH_RAW_CPU,     ts_params),
+            ("ibm_storage_raw", """
+WITH latest AS (
+    SELECT storage_ip, MAX("timestamp") AS max_ts
+    FROM public.raw_ibm_storage_system
+    GROUP BY storage_ip
+)
+SELECT s.name, s.location, s.capacity, s.allocated_space
+FROM public.raw_ibm_storage_system s
+JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
+            """, ()),
         ]
 
     def process_raw_batch(self, raw_data: dict, dc_set_upper: set[str]) -> dict:
@@ -92,4 +102,42 @@ class IBMPowerAdapter(PlatformAdapter):
                 sum(v[2] for v in vals) / n_vals,
             )
 
-        return {"hosts": ibm_h, "vios": ibm_vios, "lpar": ibm_lpar, "mem": ibm_mem, "cpu": ibm_cpu}
+        def _canonical_dc(raw_key) -> str | None:
+            if raw_key is None or not str(raw_key).strip():
+                return None
+            s = str(raw_key).strip()
+            # Simple match against known DC codes since we don't have DC_LOCATIONS here immediately,
+            # but we can check if it matches exactly. Otherwise we rely on the main loc map if needed.
+            # However, since we don't have DC_LOCATIONS imported, we will just pass it out as-is if it's in the set.
+            if s.upper() in dc_set_upper:
+                return s.upper()
+            return None
+            
+        ibm_storage_tb: dict[str, tuple[float, float]] = {}
+        for row in raw_data.get("ibm_storage_raw", []):
+            if not row or len(row) < 4:
+                continue
+            name_val, loc_val, cap_str, used_str = row
+            dc = _extract_dc(f"{name_val or ''} {loc_val or ''}", dc_set_upper)
+            if not dc:
+                dc = _canonical_dc(name_val)
+            if not dc:
+                dc = _canonical_dc(loc_val)
+
+            if dc:
+                def parse_capacity(val: str) -> float:
+                    if not val: return 0.0
+                    val = str(val).upper().strip()
+                    try:
+                        num = float(''.join(c for c in val if c.isdigit() or c == '.'))
+                        if 'GB' in val: return num / 1024.0
+                        if 'MB' in val: return num / (1024.0**2)
+                        if 'PB' in val: return num * 1024.0
+                        return num
+                    except Exception: return 0.0
+                cap_tb = parse_capacity(cap_str)
+                used_tb = parse_capacity(used_str)
+                curr_cap, curr_used = ibm_storage_tb.get(dc, (0.0, 0.0))
+                ibm_storage_tb[dc] = (curr_cap + cap_tb, curr_used + used_tb)
+
+        return {"hosts": ibm_h, "vios": ibm_vios, "lpar": ibm_lpar, "mem": ibm_mem, "cpu": ibm_cpu, "storage": ibm_storage_tb}

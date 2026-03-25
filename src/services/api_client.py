@@ -52,6 +52,8 @@ _EMPTY_DASHBOARD = {
         "mem_assigned": 0.0,
         "cpu_used": 0.0,
         "cpu_assigned": 0.0,
+        "stor_cap": 0.0,
+        "stor_used": 0.0,
     },
 }
 
@@ -79,6 +81,8 @@ _EMPTY_DC_DETAIL = {
         "ram": 0,
         "memory_total": 0.0,
         "memory_assigned": 0.0,
+        "storage_cap_tb": 0.0,
+        "storage_used_tb": 0.0,
     },
     "energy": {
         "total_kw": 0.0,

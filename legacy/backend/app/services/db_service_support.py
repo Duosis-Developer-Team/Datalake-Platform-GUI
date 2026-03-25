@@ -76,6 +76,7 @@ def aggregate_dc(
     power_lpar_count,
     power_mem,
     power_cpu,
+    power_storage,
     ibm_w,
     vcenter_w,
     ibm_kwh=None,
@@ -126,6 +127,8 @@ def aggregate_dc(
             "cpu_assigned": round(float(power_cpu[2] or 0), 2),
             "memory_total": round(float(power_mem[0] or 0), 2),
             "memory_assigned": round(float(power_mem[1] or 0), 2),
+            "storage_cap_tb": round(float((power_storage or (0.0, 0.0))[0]), 3),
+            "storage_used_tb": round(float((power_storage or (0.0, 0.0))[1]), 3),
         },
         "energy": {
             "total_kw": round(total_energy_kw, 2),
@@ -200,6 +203,7 @@ def rebuild_summary(service, time_range: dict | None = None) -> list[dict]:
         })
     nutanix_h = nutanix_v = vmware_c = vmware_h = vmware_v = ibm_h = ibm_v = ibm_l = 0
     cpu_cap = cpu_used = ram_cap = ram_used = stor_cap = stor_used = ei = ev = 0.0
+    mem_total = mem_assigned = power_cpu_used = power_cpu_assigned = power_stor_cap = power_stor_used = 0.0
     for d in all_dc_data.values():
         p = d.get("platforms", {})
         nutanix_h += p.get("nutanix", {}).get("hosts", 0)
@@ -210,6 +214,13 @@ def rebuild_summary(service, time_range: dict | None = None) -> list[dict]:
         ibm_h += p.get("ibm", {}).get("hosts", 0)
         ibm_v += p.get("ibm", {}).get("vios", 0)
         ibm_l += p.get("ibm", {}).get("lpars", 0)
+        pw = d.get("power", {})
+        mem_total += float(pw.get("memory_total", 0) or 0)
+        mem_assigned += float(pw.get("memory_assigned", 0) or 0)
+        power_cpu_used += float(pw.get("cpu_used", 0) or 0)
+        power_cpu_assigned += float(pw.get("cpu_assigned", 0) or 0)
+        power_stor_cap += float(pw.get("storage_cap_tb", 0) or 0)
+        power_stor_used += float(pw.get("storage_used_tb", 0) or 0)
         i = d.get("intel", {})
         cpu_cap += float(i.get("cpu_cap", 0) or 0)
         cpu_used += float(i.get("cpu_used", 0) or 0)
@@ -241,6 +252,14 @@ def rebuild_summary(service, time_range: dict | None = None) -> list[dict]:
             "ibm": {"hosts": ibm_h, "vios": ibm_v, "lpars": ibm_l},
         },
         "energy_breakdown": {"ibm_kw": round(ei, 2), "vcenter_kw": round(ev, 2)},
+        "ibm_totals": {
+            "mem_total": round(mem_total, 2),
+            "mem_assigned": round(mem_assigned, 2),
+            "cpu_used": round(power_cpu_used, 2),
+            "cpu_assigned": round(power_cpu_assigned, 2),
+            "stor_cap": round(power_stor_cap, 3),
+            "stor_used": round(power_stor_used, 3),
+        },
     })
     cache.set(f"all_dc_summary:{range_suffix}", summary_list)
     logger.info("Rebuilt summary for %d DCs in %.2fs.", len(summary_list), time.perf_counter() - t_total_start)

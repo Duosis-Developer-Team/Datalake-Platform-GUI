@@ -684,6 +684,7 @@ class DatabaseService:
         classic_avg30=None,
         hyperconv_row=None,
         hyperconv_avg30=None,
+        ibm_storage_tb=None,
     ) -> dict:
         """Apply unit normalization and build the standard DC detail dictionary.
 
@@ -712,7 +713,10 @@ class DatabaseService:
         v_mem_cap_gb  = float(vmware_mem[0] or 0)
         v_mem_used_gb = float(vmware_mem[1] or 0)
 
-        # Storage → TB (nutanix_cluster_metrics: bytes → TB; VMware: query returns stor in scaled GB, /1024 → TB)
+        # Storage → TB
+        # BATCH_STORAGE (nutanix_cluster_metrics): returns storage_capacity/2 in bytes (raw bytes, no TB divide).
+        # The STORAGE individual query also returns bytes/2. So we still divide here by bytes_per_tb.
+        # VMware: query returns GB → /1024 gives TB.
         _bytes_per_tb = 1024**4
         n_stor_cap_tb  = float(nutanix_storage[0] or 0) / _bytes_per_tb
         n_stor_used_tb = float(nutanix_storage[1] or 0) / _bytes_per_tb
@@ -802,6 +806,8 @@ class DatabaseService:
                 "cpu_assigned": round(float(power_cpu[2] or 0), 2),
                 "memory_total": round(float(power_mem[0] or 0), 2),
                 "memory_assigned": round(float(power_mem[1] or 0), 2),
+                "storage_cap_tb": round(float(ibm_storage_tb[0] or 0), 3) if ibm_storage_tb else 0.0,
+                "storage_used_tb": round(float(ibm_storage_tb[1] or 0), 3) if ibm_storage_tb else 0.0,
             },
             "energy": {
                 "total_kw": round(total_energy_kw, 2),
@@ -907,7 +913,7 @@ class DatabaseService:
             ("n_host",     nq.BATCH_HOST_COUNT,    nutanix_params),
             ("n_vm",       nq.BATCH_VM_COUNT,      nutanix_params),
             ("n_mem",      nq.BATCH_MEMORY,        nutanix_params),
-            ("n_stor",     nq.BATCH_STORAGE,       (start_ts, end_ts, dc_list, pattern_list)),
+            ("n_stor",     nq.BATCH_STORAGE,       (dc_list, pattern_list, start_ts, end_ts)),
             ("n_cpu",      nq.BATCH_CPU,           nutanix_params),
             ("n_platform", nq.BATCH_PLATFORM_COUNT, nutanix_params),
         ]
@@ -929,6 +935,20 @@ class DatabaseService:
             ("ibm_lpar_raw",   iq.BATCH_RAW_LPAR,   ibm_ts_params),
             ("ibm_mem_raw",    iq.BATCH_RAW_MEMORY,  ibm_ts_params),
             ("ibm_cpu_raw",    iq.BATCH_RAW_CPU,     ibm_ts_params),
+            ("ibm_storage_raw", """
+WITH latest AS (
+    SELECT storage_ip, MAX("timestamp") AS max_ts
+    FROM public.raw_ibm_storage_system
+    GROUP BY storage_ip
+)
+SELECT
+    s.name,
+    s.location,
+    s.capacity,
+    s.allocated_space
+FROM public.raw_ibm_storage_system s
+JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
+            """, ()),
         ]
         energy_queries = [
             ("e_ibm",      eq.BATCH_IBM,          (start_ts, end_ts, dc_list)),
@@ -1031,6 +1051,36 @@ class DatabaseService:
                 sum(v[1] for v in vals) / n_vals,
                 sum(v[2] for v in vals) / n_vals,
             )
+
+        # ---- IBM Storage: Python-side parsing of raw capacity strings ----
+        def _parse_cap_tb(val) -> float:
+            """Parse IBM capacity string like '110.00 TB', '750 GB', '1.2 PB' to TB float."""
+            if not val:
+                return 0.0
+            s = str(val).upper().strip()
+            try:
+                num = float(''.join(c for c in s if c.isdigit() or c == '.'))
+                if 'GB' in s:
+                    return num / 1024.0
+                if 'MB' in s:
+                    return num / (1024.0 ** 2)
+                if 'PB' in s:
+                    return num * 1024.0
+                return num  # assume TB
+            except Exception:
+                return 0.0
+
+        ibm_storage_tb: dict[str, tuple[float, float]] = {}
+        for row in ibm_raw.get("ibm_storage_raw", []):
+            if not row or len(row) < 4:
+                continue
+            name_val, loc_val, cap_str, used_str = row
+            dc = _extract_dc(f"{name_val or ''} {loc_val or ''}")
+            if dc:
+                cap_tb = _parse_cap_tb(cap_str)
+                used_tb = _parse_cap_tb(used_str)
+                curr_cap, curr_used = ibm_storage_tb.get(dc, (0.0, 0.0))
+                ibm_storage_tb[dc] = (curr_cap + cap_tb, curr_used + used_tb)
 
         # ---- Map batch rows back to DC codes ----
         def _canonical_dc(raw_key) -> str | None:
@@ -1159,6 +1209,7 @@ class DatabaseService:
                 power_lpar_count=ibm_lpar.get(dc, 0),
                 power_mem=power_mem_tup,
                 power_cpu=power_cpu_tup,
+                ibm_storage_tb=ibm_storage_tb.get(dc),
                 ibm_w=ibm_e.get(dc, 0.0),
                 vcenter_w=vctr_e.get(dc, 0.0),
                 ibm_kwh=ibm_kwh_m.get(dc, 0.0),
@@ -1266,6 +1317,9 @@ class DatabaseService:
             ibm_cpu_assigned = float(power.get("cpu_assigned", 0) or 0)
             ibm_mem_pct = (ibm_mem_assigned / ibm_mem_total * 100.0) if ibm_mem_total > 0 else 0.0
             ibm_cpu_pct = (ibm_cpu_used / ibm_cpu_assigned * 100.0) if ibm_cpu_assigned > 0 else 0.0
+            ibm_stor_cap = float(power.get("storage_cap_tb", 0) or 0)
+            ibm_stor_used = float(power.get("storage_used_tb", 0) or 0)
+            ibm_stor_pct = (ibm_stor_used / ibm_stor_cap * 100.0) if ibm_stor_cap > 0 else None
 
             summary_list.append({
                 "id": dc,
@@ -1301,8 +1355,7 @@ class DatabaseService:
                         "ibm": {
                             "cpu_pct": round(ibm_cpu_pct, 1),
                             "ram_pct": round(ibm_mem_pct, 1),
-                            # IBM Power storage utilisation is not available in summary data.
-                            "disk_pct": None,
+                            "disk_pct": round(ibm_stor_pct, 1) if ibm_stor_pct is not None else None,
                         },
                     },
                 },
@@ -1353,7 +1406,7 @@ class DatabaseService:
         # Architecture-specific totals for home Resource Usage tabs
         classic_totals = {"cpu_cap": 0.0, "cpu_used": 0.0, "mem_cap": 0.0, "mem_used": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
         hyperconv_totals = {"cpu_cap": 0.0, "cpu_used": 0.0, "mem_cap": 0.0, "mem_used": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
-        ibm_totals = {"mem_total": 0.0, "mem_assigned": 0.0, "cpu_used": 0.0, "cpu_assigned": 0.0}
+        ibm_totals = {"mem_total": 0.0, "mem_assigned": 0.0, "cpu_used": 0.0, "cpu_assigned": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
         for d in all_dc_data.values():
             c = d.get("classic", {})
             classic_totals["cpu_cap"] += float(c.get("cpu_cap", 0) or 0)
@@ -1374,6 +1427,8 @@ class DatabaseService:
             ibm_totals["mem_assigned"] += float(pw.get("memory_assigned", 0) or 0)
             ibm_totals["cpu_used"] += float(pw.get("cpu_used", 0) or 0)
             ibm_totals["cpu_assigned"] += float(pw.get("cpu_assigned", 0) or 0)
+            ibm_totals["stor_cap"] += float(pw.get("storage_cap_tb", 0) or 0)
+            ibm_totals["stor_used"] += float(pw.get("storage_used_tb", 0) or 0)
         for tot in (classic_totals, hyperconv_totals):
             tot["cpu_cap"] = round(tot["cpu_cap"], 2)
             tot["cpu_used"] = round(tot["cpu_used"], 2)
@@ -1385,6 +1440,8 @@ class DatabaseService:
         ibm_totals["mem_assigned"] = round(ibm_totals["mem_assigned"], 2)
         ibm_totals["cpu_used"] = round(ibm_totals["cpu_used"], 2)
         ibm_totals["cpu_assigned"] = round(ibm_totals["cpu_assigned"], 2)
+        ibm_totals["stor_cap"] = round(ibm_totals["stor_cap"], 2)
+        ibm_totals["stor_used"] = round(ibm_totals["stor_used"], 2)
         range_suffix = f"{tr.get('start','')}:{tr.get('end','')}"
         cache.set(f"global_dashboard:{range_suffix}", {
             "overview": overview,

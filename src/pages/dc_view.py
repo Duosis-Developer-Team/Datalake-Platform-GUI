@@ -724,8 +724,8 @@ def _build_summary_tab(data: dict, tr: dict):
     total_mem_cap  = classic.get("mem_cap", 0) + hyperconv.get("mem_cap", 0)
     total_mem_used = classic.get("mem_used", 0) + hyperconv.get("mem_used", 0)
     # Total Storage (TB)
-    total_stor_cap  = classic.get("stor_cap", 0) + hyperconv.get("stor_cap", 0)
-    total_stor_used = classic.get("stor_used", 0) + hyperconv.get("stor_used", 0)
+    total_stor_cap  = classic.get("stor_cap", 0) + hyperconv.get("stor_cap", 0) + power.get("storage_cap_tb", 0)
+    total_stor_used = classic.get("stor_used", 0) + hyperconv.get("stor_used", 0) + power.get("storage_used_tb", 0)
 
     cpu_pct  = pct_float(total_cpu_used, total_cpu_cap)
     mem_pct  = pct_float(total_mem_used, total_mem_cap)
@@ -804,6 +804,10 @@ def _build_summary_tab(data: dict, tr: dict):
                                              hyperconv.get("stor_used", 0) * 1024,
                                              pct_float(hyperconv.get("stor_used", 0), hyperconv.get("stor_cap", 1)),
                                              smart_storage),
+                        _capacity_metric_row("Storage (Power)",  power.get("storage_cap_tb", 0) * 1024,
+                                             power.get("storage_used_tb", 0) * 1024,
+                                             pct_float(power.get("storage_used_tb", 0), power.get("storage_cap_tb", 1)),
+                                             smart_storage) if power.get("storage_cap_tb", 0) > 0 else None,
                     ]),
                 ],
             ),
@@ -813,11 +817,13 @@ def _build_summary_tab(data: dict, tr: dict):
                 style={"padding": "20px"},
                 children=[
                     _section_title("Power Compute (IBM)", "IBM Power resource summary"),
-                    dmc.SimpleGrid(cols=3, spacing="lg", style={"marginTop": "12px"}, children=[
+                    dmc.SimpleGrid(cols=4, spacing="lg", style={"marginTop": "12px"}, children=[
                         _kpi("IBM Hosts",   f"{power.get('hosts', 0):,}",       "solar:server-bold-duotone",       color="grape"),
                         _kpi("LPARs",       f"{power.get('lpar_count', 0):,}",  "solar:laptop-bold-duotone",       color="grape"),
                         _kpi("RAM Assigned", smart_memory(power.get("memory_assigned", 0)),
                              "solar:ram-bold-duotone", color="grape", is_text=True),
+                        _kpi("Storage", smart_storage(power.get("storage_cap_tb", 0) * 1024),
+                             "solar:database-bold-duotone", color="grape", is_text=True) if power.get("storage_cap_tb", 0) > 0 else None,
                     ]),
                 ],
             ),

@@ -338,6 +338,7 @@ def build_overview(time_range=None):
     hyperconv_stor_pct = _pct(hyperconv_totals.get("stor_used", 0) or 0, hyperconv_totals.get("stor_cap", 0) or 1)
     ibm_mem_pct = _pct(ibm_totals.get("mem_assigned", 0) or 0, ibm_totals.get("mem_total", 0) or 1)
     ibm_cpu_pct = _pct(ibm_totals.get("cpu_used", 0) or 0, ibm_totals.get("cpu_assigned", 0) or 1)
+    ibm_stor_pct = _pct(ibm_totals.get("stor_used", 0) or 0, ibm_totals.get("stor_cap", 0) or 1)
 
     # Energy breakdown (IBM Power + vCenter only; Loki/racks not used)
     eb_labels = ["IBM Power", "vCenter"]
@@ -520,12 +521,13 @@ def build_overview(time_range=None):
                                         pt="xl",
                                         style={"flex": "1", "display": "flex", "alignItems": "center"},
                                         children=dmc.SimpleGrid(
-                                            cols=2,
+                                            cols=3,
                                             spacing="xl",
                                             style={"width": "100%"},
                                             children=[
                                                 _ring_stat(ibm_mem_pct, "Memory Assigned", "#05CD99"),
                                                 _ring_stat(ibm_cpu_pct, "CPU Used", "#4318FF"),
+                                                _ring_stat(ibm_stor_pct, "Storage", "#FFB547"),
                                             ],
                                         ),
                                     ),

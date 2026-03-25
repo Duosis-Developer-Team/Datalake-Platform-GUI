@@ -762,6 +762,7 @@ LIMIT 20
         vcenter_w,
         ibm_kwh=None,
         vcenter_kwh=None,
+        power_storage=None,
         classic_row=None,
         classic_avg30=None,
         hyperconv_row=None,
@@ -884,6 +885,8 @@ LIMIT 20
                 "cpu_assigned": round(float(power_cpu[2] or 0), 2),
                 "memory_total": round(float(power_mem[0] or 0), 2),
                 "memory_assigned": round(float(power_mem[1] or 0), 2),
+                "storage_cap_tb": round(float((power_storage or (0.0, 0.0))[0]), 3),
+                "storage_used_tb": round(float((power_storage or (0.0, 0.0))[1]), 3),
             },
             "energy": {
                 "total_kw": round(total_energy_kw, 2),
@@ -905,6 +908,39 @@ LIMIT 20
     # ------------------------------------------------------------------
     # Public API — dc_view.py: single DC detail
     # ------------------------------------------------------------------
+
+    def _get_ibm_storage_single(self, cursor, pattern: str) -> tuple[float, float]:
+        sql = """
+WITH latest AS (
+    SELECT storage_ip, MAX("timestamp") AS max_ts
+    FROM public.raw_ibm_storage_system
+    GROUP BY storage_ip
+)
+SELECT
+    s.capacity,
+    s.allocated_space
+FROM public.raw_ibm_storage_system s
+JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
+WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
+"""
+        rows = self._run_rows(cursor, sql, (pattern, pattern))
+        cap_tb, used_tb = 0.0, 0.0
+        for row in rows:
+            if not row or len(row) < 2: continue
+            cap_str, used_str = row
+            def parse_capacity(val: str) -> float:
+                if not val: return 0.0
+                val = str(val).upper().strip()
+                try:
+                    num = float(''.join(c for c in val if c.isdigit() or c == '.'))
+                    if 'GB' in val: return num / 1024.0
+                    if 'MB' in val: return num / (1024.0**2)
+                    if 'PB' in val: return num * 1024.0
+                    return num
+                except Exception: return 0.0
+            cap_tb += parse_capacity(cap_str)
+            used_tb += parse_capacity(used_str)
+        return (cap_tb, used_tb)
 
     def get_dc_details(self, dc_code: str, time_range: dict | None = None) -> dict:
         """Return full metrics dict for a single data center. Result is TTL-cached per time range."""
@@ -935,6 +971,7 @@ LIMIT 20
                         power_lpar_count=self.get_ibm_lpar_count(cur, dc_wc, start_ts, end_ts),
                         power_mem=self.get_ibm_memory(cur, dc_wc, start_ts, end_ts),
                         power_cpu=self.get_ibm_cpu(cur, dc_wc, start_ts, end_ts),
+                        power_storage=self._get_ibm_storage_single(cur, f"%{dc_code}%"),
                         ibm_w=self.get_ibm_energy(cur, dc_wc, start_ts, end_ts),
                         vcenter_w=self.get_vcenter_energy(cur, dc_code, start_ts, end_ts),
                         ibm_kwh=self.get_ibm_kwh(cur, dc_wc, start_ts, end_ts),
@@ -989,7 +1026,7 @@ LIMIT 20
             ("n_host",     nq.BATCH_HOST_COUNT,    nutanix_params),
             ("n_vm",       nq.BATCH_VM_COUNT,      nutanix_params),
             ("n_mem",      nq.BATCH_MEMORY,        nutanix_params),
-            ("n_stor",     nq.BATCH_STORAGE,       (start_ts, end_ts, dc_list, pattern_list)),
+            ("n_stor",     nq.BATCH_STORAGE,       (dc_list, pattern_list, start_ts, end_ts)),
             ("n_cpu",      nq.BATCH_CPU,           nutanix_params),
             ("n_platform", nq.BATCH_PLATFORM_COUNT, nutanix_params),
         ]
@@ -1011,6 +1048,20 @@ LIMIT 20
             ("ibm_lpar_raw",   iq.BATCH_RAW_LPAR,   ibm_ts_params),
             ("ibm_mem_raw",    iq.BATCH_RAW_MEMORY,  ibm_ts_params),
             ("ibm_cpu_raw",    iq.BATCH_RAW_CPU,     ibm_ts_params),
+            ("ibm_storage_raw", """
+WITH latest AS (
+    SELECT storage_ip, MAX("timestamp") AS max_ts
+    FROM public.raw_ibm_storage_system
+    GROUP BY storage_ip
+)
+SELECT
+    s.name,
+    s.location,
+    s.capacity,
+    s.allocated_space
+FROM public.raw_ibm_storage_system s
+JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
+            """, ()),
         ]
         energy_queries = [
             ("e_ibm",      eq.BATCH_IBM,          (start_ts, end_ts, dc_list)),
@@ -1114,6 +1165,18 @@ LIMIT 20
                 sum(v[2] for v in vals) / n_vals,
             )
 
+        def _parse_capacity(val: str) -> float:
+            if not val: return 0.0
+            val = str(val).upper().strip()
+            try:
+                num = float(''.join(c for c in val if c.isdigit() or c == '.'))
+                if 'GB' in val: return num / 1024.0
+                if 'MB' in val: return num / (1024.0**2)
+                if 'PB' in val: return num * 1024.0
+                return num
+            except Exception: return 0.0
+
+
         # ---- Map batch rows back to DC codes ----
         def _canonical_dc(raw_key) -> str | None:
             if raw_key is None or not str(raw_key).strip():
@@ -1130,6 +1193,22 @@ LIMIT 20
                 if loc and str(loc).strip().upper() == s.upper():
                     return dc
             return None
+
+        ibm_storage_tb: dict[str, tuple[float, float]] = {}
+        for row in ibm_raw.get("ibm_storage_raw", []):
+            if not row or len(row) < 4: continue
+            name_val, loc_val, cap_str, used_str = row
+            dc = _extract_dc(f"{name_val or ''} {loc_val or ''}")
+            if not dc:
+                dc = _canonical_dc(name_val)
+            if not dc:
+                dc = _canonical_dc(loc_val)
+                
+            if dc:
+                cap_tb = _parse_capacity(cap_str)
+                used_tb = _parse_capacity(used_str)
+                curr_cap, curr_used = ibm_storage_tb.get(dc, (0.0, 0.0))
+                ibm_storage_tb[dc] = (curr_cap + cap_tb, curr_used + used_tb)
 
         def _index_exact(rows, col_idx: int = 0) -> dict[str, tuple]:
             out: dict[str, tuple] = {}
@@ -1241,6 +1320,7 @@ LIMIT 20
                 power_lpar_count=ibm_lpar.get(dc, 0),
                 power_mem=power_mem_tup,
                 power_cpu=power_cpu_tup,
+                power_storage=ibm_storage_tb.get(dc, (0.0, 0.0)),
                 ibm_w=ibm_e.get(dc, 0.0),
                 vcenter_w=vctr_e.get(dc, 0.0),
                 ibm_kwh=ibm_kwh_m.get(dc, 0.0),
@@ -1348,6 +1428,9 @@ LIMIT 20
             ibm_cpu_assigned = float(power.get("cpu_assigned", 0) or 0)
             ibm_mem_pct = (ibm_mem_assigned / ibm_mem_total * 100.0) if ibm_mem_total > 0 else 0.0
             ibm_cpu_pct = (ibm_cpu_used / ibm_cpu_assigned * 100.0) if ibm_cpu_assigned > 0 else 0.0
+            ibm_stor_cap = float(power.get("storage_cap_tb", 0) or 0)
+            ibm_stor_used = float(power.get("storage_used_tb", 0) or 0)
+            ibm_stor_pct = (ibm_stor_used / ibm_stor_cap * 100.0) if ibm_stor_cap > 0 else 0.0
 
             summary_list.append({
                 "id": dc,
@@ -1384,8 +1467,7 @@ LIMIT 20
                         "ibm": {
                             "cpu_pct": round(ibm_cpu_pct, 1),
                             "ram_pct": round(ibm_mem_pct, 1),
-                            # IBM Power storage utilisation is not available in summary data.
-                            "disk_pct": None,
+                            "disk_pct": round(ibm_stor_pct, 1),
                         },
                     },
                 },
@@ -1436,7 +1518,7 @@ LIMIT 20
         # Architecture-specific totals for home Resource Usage tabs
         classic_totals = {"cpu_cap": 0.0, "cpu_used": 0.0, "mem_cap": 0.0, "mem_used": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
         hyperconv_totals = {"cpu_cap": 0.0, "cpu_used": 0.0, "mem_cap": 0.0, "mem_used": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
-        ibm_totals = {"mem_total": 0.0, "mem_assigned": 0.0, "cpu_used": 0.0, "cpu_assigned": 0.0}
+        ibm_totals = {"mem_total": 0.0, "mem_assigned": 0.0, "cpu_used": 0.0, "cpu_assigned": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
         for d in all_dc_data.values():
             c = d.get("classic", {})
             classic_totals["cpu_cap"] += float(c.get("cpu_cap", 0) or 0)
@@ -1457,6 +1539,8 @@ LIMIT 20
             ibm_totals["mem_assigned"] += float(pw.get("memory_assigned", 0) or 0)
             ibm_totals["cpu_used"] += float(pw.get("cpu_used", 0) or 0)
             ibm_totals["cpu_assigned"] += float(pw.get("cpu_assigned", 0) or 0)
+            ibm_totals["stor_cap"] += float(pw.get("storage_cap_tb", 0) or 0)
+            ibm_totals["stor_used"] += float(pw.get("storage_used_tb", 0) or 0)
         for tot in (classic_totals, hyperconv_totals):
             tot["cpu_cap"] = round(tot["cpu_cap"], 2)
             tot["cpu_used"] = round(tot["cpu_used"], 2)
@@ -1468,6 +1552,8 @@ LIMIT 20
         ibm_totals["mem_assigned"] = round(ibm_totals["mem_assigned"], 2)
         ibm_totals["cpu_used"] = round(ibm_totals["cpu_used"], 2)
         ibm_totals["cpu_assigned"] = round(ibm_totals["cpu_assigned"], 2)
+        ibm_totals["stor_cap"] = round(ibm_totals["stor_cap"], 2)
+        ibm_totals["stor_used"] = round(ibm_totals["stor_used"], 2)
         range_suffix = f"{tr.get('start','')}:{tr.get('end','')}"
         cache.set(f"global_dashboard:{range_suffix}", {
             "overview": overview,
@@ -1522,7 +1608,7 @@ LIMIT 20
             return cached
         self.get_all_datacenters_summary(tr)
         empty_totals = {"cpu_cap": 0.0, "cpu_used": 0.0, "mem_cap": 0.0, "mem_used": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
-        empty_ibm = {"mem_total": 0.0, "mem_assigned": 0.0, "cpu_used": 0.0, "cpu_assigned": 0.0}
+        empty_ibm = {"mem_total": 0.0, "mem_assigned": 0.0, "cpu_used": 0.0, "cpu_assigned": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
         return cache.get(f"global_dashboard:{range_suffix}") or {
             "overview": self.get_global_overview(tr),
             "platforms": {"nutanix": {"hosts": 0, "vms": 0}, "vmware": {"clusters": 0, "hosts": 0, "vms": 0}, "ibm": {"hosts": 0, "vios": 0, "lpars": 0}},

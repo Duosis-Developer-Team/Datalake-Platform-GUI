@@ -262,6 +262,7 @@ class DatabaseService:
         ibm_lpar = ibm_processed["lpar"]
         ibm_mem = ibm_processed["mem"]
         ibm_cpu_map = ibm_processed["cpu"]
+        ibm_storage_tb = ibm_processed.get("storage", {})
 
         def _canonical_dc(raw_key) -> str | None:
             if raw_key is None or not str(raw_key).strip():
@@ -366,6 +367,7 @@ class DatabaseService:
                 power_lpar_count=ibm_lpar.get(dc, 0),
                 power_mem=power_mem_tup,
                 power_cpu=power_cpu_tup,
+                power_storage=ibm_storage_tb.get(dc, (0.0, 0.0)),
                 ibm_w=ibm_e.get(dc, 0.0),
                 vcenter_w=vctr_e.get(dc, 0.0),
                 ibm_kwh=ibm_kwh_m.get(dc, 0.0),
