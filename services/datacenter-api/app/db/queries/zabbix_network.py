@@ -23,15 +23,17 @@
 NETWORK_DEVICES_FOR_DC_LATEST = """
 WITH dc_map AS (
     SELECT
-        name AS location_name,
+        distinct name AS location_name,
         CASE
             WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
             ELSE parent_name
         END AS dc_name
     FROM public.loki_locations
     WHERE
         CASE
             WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
             ELSE parent_name
         END IS NOT NULL
 ),
@@ -81,18 +83,20 @@ ORDER BY dev.manufacturer_name NULLS LAST, dev.device_role_name NULLS LAST, dev.
 DEVICE_PORT_SUMMARY_LATEST = """
 WITH devices AS (
     WITH dc_map AS (
-        SELECT
-            name AS location_name,
-            CASE
-                WHEN parent_id IS NULL THEN name
-                ELSE parent_name
-            END AS dc_name
-        FROM public.loki_locations
-        WHERE
-            CASE
-                WHEN parent_id IS NULL THEN name
-                ELSE parent_name
-            END IS NOT NULL
+    SELECT
+        distinct name AS location_name,
+        CASE
+            WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
+            ELSE parent_name
+        END AS dc_name
+    FROM public.loki_locations
+    WHERE
+        CASE
+            WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
+            ELSE parent_name
+        END IS NOT NULL
     ),
     latest AS (
         SELECT DISTINCT ON (ndm.loki_id)
@@ -144,15 +148,17 @@ FROM devices;
 DEVICE_LIST_LATEST = """
 WITH dc_map AS (
     SELECT
-        name AS location_name,
+        distinct name AS location_name,
         CASE
             WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
             ELSE parent_name
         END AS dc_name
     FROM public.loki_locations
     WHERE
         CASE
             WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
             ELSE parent_name
         END IS NOT NULL
 ),
