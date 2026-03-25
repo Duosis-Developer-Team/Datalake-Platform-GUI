@@ -681,3 +681,88 @@ def create_energy_elite_v2(labels, values, height=300):
     )
 
     return fig
+
+
+def create_dual_line_chart(timestamps, in_vals, out_vals, title: str, height: int = 260):
+    """
+    Dual line chart for SAN traffic trend.
+    - In rate (blue) with subtle area fill
+    - Out rate (green) as a solid line
+    """
+    try:
+        x = list(timestamps or [])
+        y_in = [float(v or 0) for v in (in_vals or [])]
+        y_out = [float(v or 0) for v in (out_vals or [])]
+    except Exception:
+        x, y_in, y_out = [], [], []
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y_in,
+            mode="lines",
+            name="In",
+            line=dict(width=3, color="#4318FF"),
+            fill="tozeroy",
+            fillcolor="rgba(67, 24, 255, 0.10)",
+            hovertemplate="<b>In</b><br>%{x}<br>%{y:,.0f}<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y_out,
+            mode="lines",
+            name="Out",
+            line=dict(width=3, color="#05CD99"),
+            hovertemplate="<b>Out</b><br>%{x}<br>%{y:,.0f}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans", weight=700)),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+        margin=dict(l=20, r=20, t=40, b=20),
+        height=height,
+        hovermode="x unified",
+        xaxis=dict(showgrid=False, zeroline=False),
+        yaxis=dict(showgrid=False, zeroline=False),
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+    return fig
+
+
+def create_sparkline_chart(values, label: str, unit: str, color: str, height: int = 100):
+    """Minimal sparkline (used inside IBM Power storage KPI cards)."""
+    try:
+        y = [float(v or 0) for v in (values or [])]
+    except Exception:
+        y = []
+
+    x = list(range(len(y)))
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="lines",
+            line=dict(width=3, color=color),
+            fill="tozeroy",
+            fillcolor="rgba(67, 24, 255, 0.08)" if color == "#4318FF" else "rgba(5, 205, 153, 0.06)",
+            hovertemplate=f"<b>{label}</b><br>%{{y:,.2f}} {unit}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=height,
+        showlegend=False,
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+    )
+    return fig

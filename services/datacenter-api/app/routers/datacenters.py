@@ -121,3 +121,43 @@ def phys_inv_overview_manufacturer(role: str, db: DatabaseService = Depends(get_
 @router.get("/physical-inventory/overview/location", response_model=list[dict[str, Any]])
 def phys_inv_overview_location(role: str, manufacturer: str, db: DatabaseService = Depends(get_db)):
     return db.get_physical_inventory_overview_location(role, manufacturer)
+
+
+# ---------------------------------------------------------------------------
+# Network > SAN (Brocade) + Storage (IBM) - DC scoped
+# ---------------------------------------------------------------------------
+
+
+@router.get("/datacenters/{dc_code}/san/switches", response_model=list[str])
+def san_switches(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_san_switches(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/san/port-usage", response_model=dict[str, Any])
+def san_port_usage(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_san_port_usage(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/san/health", response_model=list[dict[str, Any]])
+def san_health(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_san_health_alerts(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/san/traffic-trend", response_model=list[dict[str, Any]])
+def san_traffic_trend(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_san_traffic_trend(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/san/bottleneck", response_model=dict[str, Any])
+def san_bottleneck(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_san_bottleneck(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/storage/capacity", response_model=dict[str, Any])
+def storage_capacity(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_storage_capacity(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/storage/performance", response_model=dict[str, Any])
+def storage_performance(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_storage_performance(dc_code, tf.to_dict())

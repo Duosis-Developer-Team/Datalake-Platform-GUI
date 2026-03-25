@@ -12,6 +12,7 @@ from psycopg2.pool import PoolError
 
 from app.db.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
 from app.db.queries import loki as lq, customer as cq, s3 as s3q, backup as bq
+from app.db.queries import brocade as brq, ibm_storage as isq
 from app.services import cache_service as cache
 from app.services import query_overrides as qo
 from app.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
@@ -103,6 +104,12 @@ class DatabaseService:
         self._pool: pg_pool.ThreadedConnectionPool | None = None
         self._dc_list: list[str] = _FALLBACK_DC_LIST.copy()
         self._dc_site_map: dict[str, str] = {}
+        # Cache for brocade switch_host -> resolved DC code.
+        # Value can be None when no resolution is possible.
+        self._brocade_switch_dc_cache: dict[str, str | None] = {}
+        # Cache for IBM storage storage_ip -> resolved DC code.
+        # Value can be None when no resolution is possible.
+        self._ibm_storage_ip_dc_cache: dict[str, str | None] = {}
         self._init_pool()
 
     # ------------------------------------------------------------------
@@ -216,6 +223,83 @@ class DatabaseService:
             return None
         code = match.group(1).upper()
         return code if code in dc_set else None
+
+    def _resolve_brocade_dc(self, switch_host: str | None) -> str | None:
+        """
+        Resolve DC code for a brocade `switch_host`.
+
+        Strategy:
+        1) Try regex extraction from the switch_host text itself.
+        2) Fallback to NetBox discovery:
+           - search `discovery_netbox_inventory_device` by matching `primary_ip_address`
+             and/or textual fields (name/site_name/location_name) using ILIKE.
+           - extract DC code from site_name/location_name/name.
+
+        Returned value is guaranteed to be in `self._dc_list` (DC set) when not None.
+        """
+        if not switch_host:
+            return None
+
+        host_key = str(switch_host).strip()
+        if not host_key:
+            return None
+
+        if host_key in self._brocade_switch_dc_cache:
+            return self._brocade_switch_dc_cache[host_key]
+
+        dc_set = {dc.upper() for dc in self.dc_list}
+
+        # 1) Direct regex detection
+        match = _DC_CODE_RE.search(host_key.upper())
+        if match:
+            code = match.group(1).upper()
+            resolved = code if code in dc_set else None
+            self._brocade_switch_dc_cache[host_key] = resolved
+            return resolved
+
+        # 2) NetBox fallback: match on IP/name and then infer from site/location/name
+        resolved: str | None = None
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    like = f"%{host_key}%"
+                    rows = self._run_rows(
+                        cur,
+                        """
+SELECT
+    site_name,
+    location_name,
+    "name",
+    primary_ip_address
+FROM public.discovery_netbox_inventory_device
+WHERE
+    primary_ip_address = %s
+ OR primary_ip_address ILIKE %s
+ OR "name" ILIKE %s
+ OR location_name ILIKE %s
+ OR site_name ILIKE %s
+ORDER BY collection_time DESC NULLS LAST
+LIMIT 20
+""",
+                        (host_key, like, like, like, like),
+                    )
+
+            for site_name, location_name, name_val, _primary_ip in rows:
+                resolved = self._extract_dc_from_text(site_name, dc_set)
+                if resolved:
+                    break
+                resolved = self._extract_dc_from_text(location_name, dc_set)
+                if resolved:
+                    break
+                resolved = self._extract_dc_from_text(name_val, dc_set)
+                if resolved:
+                    break
+        except Exception as exc:
+            logger.warning("Could not resolve brocade DC for %s: %s", host_key, exc)
+            resolved = None
+
+        self._brocade_switch_dc_cache[host_key] = resolved
+        return resolved
 
     @staticmethod
     def _ip_prefix(value: str | None) -> str | None:
@@ -2254,6 +2338,483 @@ class DatabaseService:
     def get_customer_list(self) -> list[str]:
         """Return list of customer names for selector (fixed to Boyner)."""
         return ["Boyner"]
+
+    # ------------------------------------------------------------------
+    # Network SAN + Storage (Brocade + IBM Storage)
+    # ------------------------------------------------------------------
+
+    def _resolve_ibm_storage_dc(
+        self,
+        storage_ip: str | None,
+        name: str | None = None,
+        location: str | None = None,
+    ) -> str | None:
+        """
+        Resolve DC code for an IBM storage system.
+
+        Strategy:
+        1) Regex extraction from `name` and `location` fields (and storage_ip as a last resort).
+        2) Fallback: NetBox discovery match by `primary_ip_address` (storage_ip) and
+           DC inference from site/location/name fields.
+        """
+        if not storage_ip:
+            # Try regex from name/location without needing IP.
+            dc_set = {dc.upper() for dc in self.dc_list}
+            blob = f"{name or ''} {location or ''}".upper()
+            match = _DC_CODE_RE.search(blob)
+            if match:
+                code = match.group(1).upper()
+                return code if code in dc_set else None
+            return None
+
+        ip_key = str(storage_ip).strip()
+        if not ip_key:
+            return None
+
+        if ip_key in self._ibm_storage_ip_dc_cache:
+            return self._ibm_storage_ip_dc_cache[ip_key]
+
+        dc_set = {dc.upper() for dc in self.dc_list}
+
+        blob = f"{name or ''} {location or ''} {ip_key}".upper()
+        match = _DC_CODE_RE.search(blob)
+        if match:
+            code = match.group(1).upper()
+            resolved = code if code in dc_set else None
+            self._ibm_storage_ip_dc_cache[ip_key] = resolved
+            return resolved
+
+        resolved: str | None = None
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    like = f"%{ip_key}%"
+                    rows = self._run_rows(
+                        cur,
+                        """
+SELECT
+    site_name,
+    location_name,
+    "name",
+    primary_ip_address
+FROM public.discovery_netbox_inventory_device
+WHERE
+    primary_ip_address = %s
+ OR primary_ip_address ILIKE %s
+ORDER BY collection_time DESC NULLS LAST
+LIMIT 20
+""",
+                        (ip_key, like),
+                    )
+
+            for site_name, location_name, name_val, _primary_ip in rows:
+                resolved = self._extract_dc_from_text(site_name, dc_set)
+                if resolved:
+                    break
+                resolved = self._extract_dc_from_text(location_name, dc_set)
+                if resolved:
+                    break
+                resolved = self._extract_dc_from_text(name_val, dc_set)
+                if resolved:
+                    break
+        except Exception as exc:
+            logger.warning("Could not resolve IBM storage DC for %s: %s", ip_key, exc)
+            resolved = None
+
+        self._ibm_storage_ip_dc_cache[ip_key] = resolved
+        return resolved
+
+    def get_san_switches(self, dc_code: str, time_range: dict | None = None) -> list[str]:
+        """
+        Return DC-scoped Brocade switch_host list for the given time range.
+
+        This is used to gate the Network > SAN tab rendering (has_san).
+        """
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return []
+
+        cache_key = f"dc_san_switches:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    switch_rows = self._run_rows(
+                        cur,
+                        brq.SWITCH_HOSTS_IN_RANGE,
+                        (start_ts, end_ts),
+                    )
+            raw_switches = [r[0] for r in (switch_rows or []) if r and r[0]]
+
+            resolved_switches: set[str] = set()
+            for sh in raw_switches:
+                resolved_dc = self._resolve_brocade_dc(sh)
+                if resolved_dc and resolved_dc.upper() == dc_target:
+                    resolved_switches.add(sh)
+            result = sorted(resolved_switches)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_san_switches failed for %s: %s", dc_target, exc)
+            result = []
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_san_port_usage(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """
+        Return aggregated port/licensing usage for Network > SAN gauges.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+
+        cache_key = f"dc_san_port_usage:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            switches = self.get_san_switches(dc_target, tr)
+            if not switches:
+                result = {
+                    "switch_count": 0,
+                    "total_ports": 0,
+                    "licensed_ports": 0,
+                    "active_ports": 0,
+                    "enabled_ports": 0,
+                    "disabled_ports": 0,
+                }
+            else:
+                with self._get_connection() as conn:
+                    with conn.cursor() as cur:
+                        row = self._run_row(
+                            cur,
+                            brq.PORT_USAGE_LATEST,
+                            (switches,),
+                        )
+
+                row = row or (0, 0, 0, 0, 0)
+                result = {
+                    "switch_count": len(switches),
+                    "total_ports": int(row[0] or 0),
+                    "licensed_ports": int(row[1] or 0),
+                    "active_ports": int(row[2] or 0),
+                    "enabled_ports": int(row[3] or 0),
+                    "disabled_ports": int(row[4] or 0),
+                }
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_san_port_usage failed for %s: %s", dc_target, exc)
+            result = {
+                "switch_count": 0,
+                "total_ports": 0,
+                "licensed_ports": 0,
+                "active_ports": 0,
+                "enabled_ports": 0,
+                "disabled_ports": 0,
+            }
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_san_health_alerts(self, dc_code: str, time_range: dict | None = None) -> list[dict]:
+        """
+        Return latest delta-based SAN health alerts for Network > SAN risk panel.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+
+        cache_key = f"dc_san_health:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            switches = self.get_san_switches(dc_target, tr)
+            if not switches:
+                result: list[dict] = []
+            else:
+                with self._get_connection() as conn:
+                    with conn.cursor() as cur:
+                        rows = self._run_rows(
+                            cur,
+                            brq.HEALTH_ALERTS_LATEST,
+                            (switches,),
+                        )
+
+                result = []
+                for (
+                    switch_host,
+                    port_name,
+                    crc_errors_delta,
+                    link_failures_delta,
+                    loss_of_sync_delta,
+                    loss_of_signal_delta,
+                ) in (rows or []):
+                    result.append(
+                        {
+                            "switch_host": switch_host,
+                            "port_name": port_name,
+                            "crc_errors_delta": int(crc_errors_delta or 0),
+                            "link_failures_delta": int(link_failures_delta or 0),
+                            "loss_of_sync_delta": int(loss_of_sync_delta or 0),
+                            "loss_of_signal_delta": int(loss_of_signal_delta or 0),
+                        }
+                    )
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_san_health_alerts failed for %s: %s", dc_target, exc)
+            result = []
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_san_traffic_trend(self, dc_code: str, time_range: dict | None = None) -> list[dict]:
+        """
+        Return hourly in/out rate trend for Network > SAN traffic chart.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        cache_key = f"dc_san_traffic:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            switches = self.get_san_switches(dc_target, tr)
+            if not switches:
+                result: list[dict] = []
+            else:
+                with self._get_connection() as conn:
+                    with conn.cursor() as cur:
+                        rows = self._run_rows(
+                            cur,
+                            brq.TRAFFIC_TREND_HOURLY,
+                            (switches, start_ts, end_ts),
+                        )
+                result = [
+                    {
+                        "ts": ts,
+                        "in_rate": int(in_rate or 0),
+                        "out_rate": int(out_rate or 0),
+                    }
+                    for ts, in_rate, out_rate in (rows or [])
+                ]
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_san_traffic_trend failed for %s: %s", dc_target, exc)
+            result = []
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_storage_capacity(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """
+        Return IBM Storage capacity snapshot data for DC-scoped systems.
+
+        Capacity fields are returned as the raw varchar values coming from
+        `ibm_storage_system` (e.g. '110.00 TB'); parsing happens in the GUI.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+
+        cache_key = f"dc_storage_capacity:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            # Fetch one latest row per storage_ip (across all DCs), then resolve DC in Python.
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        """
+WITH latest AS (
+    SELECT storage_ip, MAX("timestamp") AS max_ts
+    FROM public.ibm_storage_system
+    GROUP BY storage_ip
+)
+SELECT
+    s.storage_ip,
+    s.name,
+    s.location,
+    s.total_mdisk_capacity,
+    s.total_used_capacity,
+    s.total_free_space,
+    s."timestamp"
+FROM public.ibm_storage_system s
+JOIN latest l
+  ON s.storage_ip = l.storage_ip
+ AND s."timestamp" = l.max_ts;
+""",
+                    )
+
+            systems: list[dict] = []
+            for (
+                storage_ip,
+                name,
+                location,
+                total_mdisk_capacity,
+                total_used_capacity,
+                total_free_space,
+                ts,
+            ) in (rows or []):
+                resolved_dc = self._resolve_ibm_storage_dc(
+                    storage_ip=str(storage_ip) if storage_ip is not None else None,
+                    name=name,
+                    location=location,
+                )
+                if not resolved_dc or resolved_dc.upper() != dc_target:
+                    continue
+
+                systems.append(
+                    {
+                        "storage_ip": storage_ip,
+                        "name": name,
+                        "location": location,
+                        "total_mdisk_capacity": total_mdisk_capacity,
+                        "total_used_capacity": total_used_capacity,
+                        "total_free_space": total_free_space,
+                        "timestamp": ts,
+                    }
+                )
+
+            result = {"systems": systems, "system_count": len(systems)}
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_storage_capacity failed for %s: %s", dc_target, exc)
+            result = {"systems": [], "system_count": 0}
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_storage_performance(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """
+        Return daily average performance time series for DC-scoped IBM storage.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        cache_key = f"dc_storage_perf:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            # Resolve the set of storage_ip values belonging to this DC.
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        """
+WITH latest AS (
+    SELECT storage_ip, MAX("timestamp") AS max_ts
+    FROM public.ibm_storage_system
+    GROUP BY storage_ip
+)
+SELECT
+    s.storage_ip,
+    s.name,
+    s.location
+FROM public.ibm_storage_system s
+JOIN latest l
+  ON s.storage_ip = l.storage_ip
+ AND s."timestamp" = l.max_ts;
+""",
+                    )
+
+            storage_ips: list[str] = []
+            for storage_ip, name, location in (rows or []):
+                resolved_dc = self._resolve_ibm_storage_dc(storage_ip, name=name, location=location)
+                if resolved_dc and resolved_dc.upper() == dc_target and storage_ip:
+                    storage_ips.append(str(storage_ip))
+
+            storage_ips = sorted(set(storage_ips))
+            if not storage_ips:
+                result = {"series": []}
+            else:
+                with self._get_connection() as conn:
+                    with conn.cursor() as cur:
+                        perf_rows = self._run_rows(
+                            cur,
+                            isq.STORAGE_SYSTEM_STATS_DAILY_AVG,
+                            (storage_ips, start_ts, end_ts),
+                        )
+
+                series = [
+                    {
+                        "ts": ts,
+                        "iops": float(avg_iops or 0),
+                        "throughput_mb": float(avg_throughput_mb or 0),
+                        "latency_ms": float(avg_latency_ms or 0),
+                    }
+                    for ts, avg_iops, avg_throughput_mb, avg_latency_ms in (perf_rows or [])
+                ]
+                result = {"series": series, "storage_ip_count": len(storage_ips)}
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_storage_performance failed for %s: %s", dc_target, exc)
+            result = {"series": []}
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_san_bottleneck(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """
+        Return latest SAN bottleneck issues (raw_brocade_san_fcport_1).
+
+        DC association is inferred from `portname` using DC regex.
+        """
+        dc_target = (dc_code or "").upper()
+        # Bottleneck uses latest snapshot; time_range is kept in signature for API consistency.
+        tr = time_range or default_time_range()
+
+        cache_key = f"dc_san_bottleneck:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, brq.SAN_FCPORT_LATEST, (200,))
+
+            issues: list[dict] = []
+            for portname, notxcredits, toomanyrdys, ts in (rows or []):
+                if not portname:
+                    continue
+                match = _DC_CODE_RE.search(str(portname).upper())
+                if not match:
+                    continue
+                code = match.group(1).upper()
+                if code != dc_target:
+                    continue
+
+                issues.append(
+                    {
+                        "portname": portname,
+                        "swfcportnotxcredits": int(notxcredits or 0),
+                        "swfcporttoomanyrdys": int(toomanyrdys or 0),
+                        "timestamp": ts,
+                    }
+                )
+
+            # Sort by severity score
+            issues.sort(
+                key=lambda x: (x["swfcportnotxcredits"] + x["swfcporttoomanyrdys"]),
+                reverse=True,
+            )
+            top_issues = issues[:10]
+            result = {"has_issue": bool(top_issues), "issues": top_issues}
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_san_bottleneck failed for %s: %s", dc_target, exc)
+            result = {"has_issue": False, "issues": []}
+
+        cache.set(cache_key, result)
+        return result
 
     # ------------------------------------------------------------------
     # Physical Inventory (discovery_netbox_inventory_device)

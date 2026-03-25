@@ -336,3 +336,78 @@ def get_physical_inventory_customer() -> list[dict]:
         return data if isinstance(data, list) else []
     except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
         return []
+
+
+# ---------------------------------------------------------------------------
+# Network > SAN (Brocade) + Power Mimari Storage (IBM)
+# ---------------------------------------------------------------------------
+
+
+def get_dc_san_switches(dc_code: str, tr: Optional[dict]) -> list[str]:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/switches", params=params)
+        return data if isinstance(data, list) else []
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return []
+
+
+def get_dc_san_port_usage(dc_code: str, tr: Optional[dict]) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/port-usage", params=params)
+        return data if isinstance(data, dict) else {}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {}
+
+
+def get_dc_san_health(dc_code: str, tr: Optional[dict]) -> list[dict]:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/health", params=params)
+        return data if isinstance(data, list) else []
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return []
+
+
+def get_dc_san_traffic_trend(dc_code: str, tr: Optional[dict]) -> list[dict]:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/traffic-trend", params=params)
+        return data if isinstance(data, list) else []
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return []
+
+
+def get_dc_san_bottleneck(dc_code: str, tr: Optional[dict]) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/bottleneck", params=params)
+        return data if isinstance(data, dict) else {}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {}
+
+
+def get_dc_storage_capacity(dc_code: str, tr: Optional[dict]) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/storage/capacity", params=params)
+        return data if isinstance(data, dict) else {}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {}
+
+
+def get_dc_storage_performance(dc_code: str, tr: Optional[dict]) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/storage/performance", params=params)
+        return data if isinstance(data, dict) else {}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {}

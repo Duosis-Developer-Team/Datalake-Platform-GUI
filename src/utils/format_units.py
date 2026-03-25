@@ -81,3 +81,33 @@ def pct_float(used: float, cap: float) -> float:
     if not cap:
         return 0.0
     return min(float(used) / float(cap) * 100, 100.0)
+
+
+def parse_storage_string(value: str | None) -> float:
+    """
+    Parse a storage capacity string like '110.00 TB' into a float in GB.
+
+    Supports units: PB, TB, GB, MB.
+    Returns 0.0 when the input does not match the expected pattern.
+    """
+    import re
+
+    if value is None:
+        return 0.0
+
+    s = str(value)
+    m = re.search(r"(-?\d+(?:\.\d+)?)\s*(PB|TB|GB|MB)\b", s, flags=re.IGNORECASE)
+    if not m:
+        return 0.0
+
+    num = float(m.group(1))
+    unit = m.group(2).upper()
+
+    # Convert to GB using the same base as smart_storage (1024-based tiers).
+    factors_to_gb = {
+        "PB": 1024 * 1024,
+        "TB": 1024,
+        "GB": 1,
+        "MB": 1 / 1024,
+    }
+    return num * factors_to_gb.get(unit, 0.0)

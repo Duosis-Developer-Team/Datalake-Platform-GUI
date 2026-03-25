@@ -8,6 +8,7 @@ from src.utils.format_units import (
     smart_cpu,
     smart_bytes,
 )
+from src.utils.format_units import parse_storage_string
 
 
 def test_smart_bytes_1024_thresholds():
@@ -56,4 +57,25 @@ def test_smart_storage_and_memory_from_gb():
     # 1024 GB should become 1.00 TB
     assert smart_storage(1024) == "1.00 TB"
     assert smart_memory(1024) == "1.00 TB"
+
+
+def test_parse_storage_string_tb_to_gb():
+    assert math.isclose(parse_storage_string("110.00 TB"), 110.00 * 1024, rel_tol=1e-9)
+
+
+def test_parse_storage_string_gb_to_gb():
+    assert math.isclose(parse_storage_string("1 GB"), 1.0, rel_tol=1e-9)
+
+
+def test_parse_storage_string_mb_to_gb():
+    assert math.isclose(parse_storage_string("500 MB"), 500 / 1024, rel_tol=1e-9)
+
+
+def test_parse_storage_string_invalid_returns_zero():
+    assert parse_storage_string("N/A") == 0.0
+    assert parse_storage_string("unknown") == 0.0
+
+
+def test_parse_storage_string_none_returns_zero():
+    assert parse_storage_string(None) == 0.0
 
