@@ -13,6 +13,7 @@ from psycopg2.pool import PoolError
 from app.db.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
 from app.db.queries import loki as lq, customer as cq, s3 as s3q, backup as bq
 from app.db.queries import brocade as brq, ibm_storage as isq
+from app.db.queries import zabbix_network as znq, zabbix_storage as zsq
 from app.services import cache_service as cache
 from app.services import query_overrides as qo
 from app.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
@@ -2376,8 +2377,10 @@ LIMIT 20
 
         dc_set = {dc.upper() for dc in self.dc_list}
 
-        blob = f"{name or ''} {location or ''} {ip_key}".upper()
-        match = _DC_CODE_RE.search(blob)
+        # Prefer textual signals (name/location) over IP matching. This avoids
+        # cases where the discovery table returns a different site/location.
+        blob_text = f"{name or ''} {location or ''}".upper()
+        match = _DC_CODE_RE.search(blob_text)
         if match:
             code = match.group(1).upper()
             resolved = code if code in dc_set else None
@@ -2486,6 +2489,7 @@ LIMIT 20
                     "licensed_ports": 0,
                     "active_ports": 0,
                     "enabled_ports": 0,
+                    "no_link_ports": 0,
                     "disabled_ports": 0,
                 }
             else:
@@ -2497,14 +2501,15 @@ LIMIT 20
                             (switches,),
                         )
 
-                row = row or (0, 0, 0, 0, 0)
+                row = row or (0, 0, 0, 0, 0, 0)
                 result = {
                     "switch_count": len(switches),
                     "total_ports": int(row[0] or 0),
                     "licensed_ports": int(row[1] or 0),
                     "active_ports": int(row[2] or 0),
                     "enabled_ports": int(row[3] or 0),
-                    "disabled_ports": int(row[4] or 0),
+                    "no_link_ports": int(row[4] or 0),
+                    "disabled_ports": int(row[5] or 0),
                 }
         except (OperationalError, PoolError) as exc:
             logger.warning("get_san_port_usage failed for %s: %s", dc_target, exc)
@@ -2514,6 +2519,7 @@ LIMIT 20
                 "licensed_ports": 0,
                 "active_ports": 0,
                 "enabled_ports": 0,
+                "no_link_ports": 0,
                 "disabled_ports": 0,
             }
 
@@ -2635,7 +2641,7 @@ LIMIT 20
                         """
 WITH latest AS (
     SELECT storage_ip, MAX("timestamp") AS max_ts
-    FROM public.ibm_storage_system
+    FROM public.raw_ibm_storage_system
     GROUP BY storage_ip
 )
 SELECT
@@ -2646,7 +2652,7 @@ SELECT
     s.total_used_capacity,
     s.total_free_space,
     s."timestamp"
-FROM public.ibm_storage_system s
+FROM public.raw_ibm_storage_system s
 JOIN latest l
   ON s.storage_ip = l.storage_ip
  AND s."timestamp" = l.max_ts;
@@ -2713,14 +2719,14 @@ JOIN latest l
                         """
 WITH latest AS (
     SELECT storage_ip, MAX("timestamp") AS max_ts
-    FROM public.ibm_storage_system
+    FROM public.raw_ibm_storage_system
     GROUP BY storage_ip
 )
 SELECT
     s.storage_ip,
     s.name,
     s.location
-FROM public.ibm_storage_system s
+FROM public.raw_ibm_storage_system s
 JOIN latest l
   ON s.storage_ip = l.storage_ip
  AND s."timestamp" = l.max_ts;
@@ -2758,6 +2764,537 @@ JOIN latest l
         except (OperationalError, PoolError) as exc:
             logger.warning("get_storage_performance failed for %s: %s", dc_target, exc)
             result = {"series": []}
+
+        cache.set(cache_key, result)
+        return result
+
+    # ------------------------------------------------------------------
+    # Zabbix Network Dashboard (Intel-capacity oriented Network view)
+    # ------------------------------------------------------------------
+
+    def _resolve_zabbix_dc_devices(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        manufacturer: str | None = None,
+        device_role: str | None = None,
+        device_name: str | None = None,
+    ) -> dict:
+        """
+        Resolve Zabbix network device rows for the given DC (latest per loki_id),
+        then optionally filter by manufacturer / role / device name.
+
+        Returned structure:
+          - devices: list[dict]
+          - hosts: list[str]
+          - loki_ids: list[str]
+        """
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return {"devices": [], "hosts": [], "loki_ids": []}
+
+        cache_key = (
+            f"dc_zabbix_net_devices:{dc_target}:"
+            f"{manufacturer or ''}:{device_role or ''}:{device_name or ''}:"
+            f"{tr.get('start','')}:{tr.get('end','')}"
+        )
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        znq.NETWORK_DEVICES_FOR_DC_LATEST,
+                        (start_ts, end_ts, dc_target),
+                    )
+
+            devices: list[dict] = []
+            for (
+                loki_id,
+                host,
+                device_name_val,
+                manufacturer_val,
+                device_role_val,
+                _location_name,
+                _site_name,
+                total_ports_count,
+                active_ports_count,
+                icmp_loss_pct,
+                _collection_ts,
+            ) in (rows or []):
+                devices.append(
+                    {
+                        "loki_id": str(loki_id) if loki_id is not None else None,
+                        "host": str(host) if host is not None else None,
+                        "device_name": device_name_val or "Unknown",
+                        "manufacturer_name": manufacturer_val or "Unknown",
+                        "device_role_name": device_role_val or "Unknown",
+                        "total_ports_count": int(total_ports_count or 0),
+                        "active_ports_count": int(active_ports_count or 0),
+                        "icmp_loss_pct": float(icmp_loss_pct or 0),
+                    }
+                )
+
+            # Optional hierarchical filters
+            if manufacturer is not None:
+                devices = [d for d in devices if d.get("manufacturer_name") == manufacturer]
+            if device_role is not None:
+                devices = [d for d in devices if d.get("device_role_name") == device_role]
+            if device_name is not None:
+                devices = [d for d in devices if d.get("device_name") == device_name]
+
+            hosts = sorted({d.get("host") for d in devices if d.get("host")})
+            loki_ids = sorted({d.get("loki_id") for d in devices if d.get("loki_id")})
+
+            result = {"devices": devices, "hosts": hosts, "loki_ids": loki_ids}
+        except (OperationalError, PoolError) as exc:
+            logger.warning("Zabbix network dc resolution failed for %s: %s", dc_target, exc)
+            result = {"devices": [], "hosts": [], "loki_ids": []}
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_network_filters(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """
+        Return hierarchical filter options (Manufacturer -> Device Role -> Device).
+        Values are derived from Zabbix network device rows (latest snapshot).
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return {"manufacturers": [], "roles_by_manufacturer": {}, "devices_by_manufacturer_role": {}}
+
+        resolved = self._resolve_zabbix_dc_devices(dc_target, tr)
+        devices = resolved.get("devices") or []
+
+        manufacturers = sorted({d.get("manufacturer_name") or "Unknown" for d in devices})
+        roles_by_manufacturer: dict[str, list[str]] = {}
+        devices_by_manufacturer_role: dict[str, dict[str, list[str]]] = {}
+
+        for d in devices:
+            manu = d.get("manufacturer_name") or "Unknown"
+            role = d.get("device_role_name") or "Unknown"
+            dev_name = d.get("device_name") or "Unknown"
+
+            roles_by_manufacturer.setdefault(manu, set()).add(role)
+            devices_by_manufacturer_role.setdefault(manu, {}).setdefault(role, set()).add(dev_name)
+
+        roles_by_manufacturer = {
+            manu: sorted(list(roles_set)) for manu, roles_set in roles_by_manufacturer.items()
+        }
+        devices_by_manufacturer_role = {
+            manu: {role: sorted(list(dev_set)) for role, dev_set in roles_map.items()}
+            for manu, roles_map in devices_by_manufacturer_role.items()
+        }
+
+        return {
+            "manufacturers": manufacturers,
+            "roles_by_manufacturer": roles_by_manufacturer,
+            "devices_by_manufacturer_role": devices_by_manufacturer_role,
+        }
+
+    def get_network_port_summary(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        manufacturer: str | None = None,
+        device_role: str | None = None,
+        device_name: str | None = None,
+    ) -> dict:
+        """
+        Return KPI numbers for the Network Dashboard port capacity view.
+        Aggregation is done from latest-per-device Zabbix snapshots.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return {"device_count": 0, "total_ports": 0, "active_ports": 0, "avg_icmp_loss_pct": 0.0}
+
+        cache_key = (
+            f"dc_zabbix_net_port_summary:{dc_target}:"
+            f"{manufacturer or ''}:{device_role or ''}:{device_name or ''}:"
+            f"{tr.get('start','')}:{tr.get('end','')}"
+        )
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        resolved = self._resolve_zabbix_dc_devices(
+            dc_target,
+            tr,
+            manufacturer=manufacturer,
+            device_role=device_role,
+            device_name=device_name,
+        )
+        devices = resolved.get("devices") or []
+
+        device_count = len(devices)
+        total_ports = sum(int(d.get("total_ports_count") or 0) for d in devices)
+        active_ports = sum(int(d.get("active_ports_count") or 0) for d in devices)
+        avg_icmp_loss_pct = (
+            sum(float(d.get("icmp_loss_pct") or 0) for d in devices) / device_count if device_count else 0.0
+        )
+
+        result = {
+            "device_count": int(device_count),
+            "total_ports": int(total_ports),
+            "active_ports": int(active_ports),
+            "avg_icmp_loss_pct": float(avg_icmp_loss_pct),
+        }
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_network_95th_percentile(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        manufacturer: str | None = None,
+        device_role: str | None = None,
+        device_name: str | None = None,
+        top_n: int = 20,
+    ) -> dict:
+        """
+        Compute interface 95th percentile bandwidth (p95_rx/p95_tx) for the
+        selected DC and (optional) device filters.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
+
+        cache_key = (
+            f"dc_zabbix_net_95:{dc_target}:"
+            f"{manufacturer or ''}:{device_role or ''}:{device_name or ''}:"
+            f"top={top_n}:{tr.get('start','')}:{tr.get('end','')}"
+        )
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        resolved = self._resolve_zabbix_dc_devices(
+            dc_target,
+            tr,
+            manufacturer=manufacturer,
+            device_role=device_role,
+            device_name=device_name,
+        )
+        hosts: list[str] = resolved.get("hosts") or []
+        if not hosts:
+            result = {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
+            cache.set(cache_key, result)
+            return result
+
+        start_ts, end_ts = time_range_to_bounds(tr)
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        znq.INTERFACE_95TH_PERCENTILE,
+                        (hosts, start_ts, end_ts),
+                    )
+
+            top_n_safe = int(top_n or 20)
+            top_rows = (rows or [])[:top_n_safe]
+            top_interfaces: list[dict] = []
+
+            sum_total = 0.0
+            sum_speed = 0.0
+            for (
+                iface_name,
+                iface_alias,
+                p95_rx_bps,
+                p95_tx_bps,
+                p95_total_bps,
+                speed_bps,
+            ) in top_rows:
+                p95_total = float(p95_total_bps or 0)
+                speed = float(speed_bps or 0)
+                utilization_pct = (p95_total / speed * 100.0) if speed > 0 else 0.0
+                top_interfaces.append(
+                    {
+                        "interface_name": iface_name,
+                        "interface_alias": iface_alias,
+                        "p95_rx_bps": float(p95_rx_bps or 0),
+                        "p95_tx_bps": float(p95_tx_bps or 0),
+                        "p95_total_bps": p95_total,
+                        "speed_bps": speed,
+                        "utilization_pct": float(utilization_pct),
+                    }
+                )
+                sum_total += p95_total
+                sum_speed += speed
+
+            overall_port_utilization_pct = (sum_total / sum_speed * 100.0) if sum_speed > 0 else 0.0
+            result = {
+                "top_interfaces": top_interfaces,
+                "overall_port_utilization_pct": float(overall_port_utilization_pct),
+            }
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_network_95th_percentile failed for %s: %s", dc_target, exc)
+            result = {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_network_interface_table(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        manufacturer: str | None = None,
+        device_role: str | None = None,
+        device_name: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        search: str | None = None,
+    ) -> dict:
+        """
+        Return a paginated, searchable table of interface p95 bandwidth stats.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return {"items": [], "page": 1, "page_size": page_size}
+
+        page_safe = max(1, int(page or 1))
+        page_size_safe = max(1, min(200, int(page_size or 50)))
+        offset = (page_safe - 1) * page_size_safe
+        search_val = (search or "").strip()
+        like = f"%{search_val}%"
+
+        cache_key = (
+            f"dc_zabbix_net_iface_table:{dc_target}:"
+            f"{manufacturer or ''}:{device_role or ''}:{device_name or ''}:"
+            f"p={page_safe}:ps={page_size_safe}:q={search_val}:"
+            f"{tr.get('start','')}:{tr.get('end','')}"
+        )
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        resolved = self._resolve_zabbix_dc_devices(
+            dc_target,
+            tr,
+            manufacturer=manufacturer,
+            device_role=device_role,
+            device_name=device_name,
+        )
+        hosts: list[str] = resolved.get("hosts") or []
+        if not hosts:
+            result = {"items": [], "page": page_safe, "page_size": page_size_safe}
+            cache.set(cache_key, result)
+            return result
+
+        start_ts, end_ts = time_range_to_bounds(tr)
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        znq.INTERFACE_BANDWIDTH_TABLE_P95,
+                        (hosts, start_ts, end_ts, search_val, like, like, page_size_safe, offset),
+                    )
+
+            items: list[dict] = []
+            for (
+                iface_name,
+                iface_alias,
+                p95_rx_bps,
+                p95_tx_bps,
+                p95_total_bps,
+                speed_bps,
+            ) in (rows or []):
+                speed = float(speed_bps or 0)
+                p95_total = float(p95_total_bps or 0)
+                utilization_pct = (p95_total / speed * 100.0) if speed > 0 else 0.0
+                items.append(
+                    {
+                        "interface_name": iface_name,
+                        "interface_alias": iface_alias,
+                        "p95_rx_bps": float(p95_rx_bps or 0),
+                        "p95_tx_bps": float(p95_tx_bps or 0),
+                        "p95_total_bps": p95_total,
+                        "speed_bps": speed,
+                        "utilization_pct": float(utilization_pct),
+                    }
+                )
+
+            result = {"items": items, "page": page_safe, "page_size": page_size_safe, "search": search_val}
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_network_interface_table failed for %s: %s", dc_target, exc)
+            result = {"items": [], "page": page_safe, "page_size": page_size_safe, "search": search_val}
+
+        cache.set(cache_key, result)
+        return result
+
+    # ------------------------------------------------------------------
+    # Zabbix Intel Storage Dashboard (capacity planning + disk health)
+    # ------------------------------------------------------------------
+
+    def get_zabbix_storage_capacity(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """
+        Return total/used/free capacity for Zabbix storage devices within a DC.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        cache_key = f"dc_zabbix_storage_cap:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        zsq.STORAGE_DEVICES_FOR_DC_LATEST,
+                        (start_ts, end_ts, dc_target),
+                    )
+
+            # STORAGE_DEVICES_FOR_DC_LATEST select order:
+            # 0:loki_id, 1:host, 2:storage_device_name, 3:manufacturer, 4:device_role,
+            # 5:location_name, 6:site_name, 7:total_capacity_bytes, 8:used, 9:free, ...
+            total_capacity = sum(int(r[7] or 0) for r in (rows or []))
+            used_capacity = sum(int(r[8] or 0) for r in (rows or []))
+            free_capacity = sum(int(r[9] or 0) for r in (rows or []))
+            device_count = len(rows or [])
+
+            result = {
+                "storage_device_count": int(device_count),
+                "total_capacity_bytes": int(total_capacity),
+                "used_capacity_bytes": int(used_capacity),
+                "free_capacity_bytes": int(free_capacity),
+            }
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_zabbix_storage_capacity failed for %s: %s", dc_target, exc)
+            result = {"storage_device_count": 0, "total_capacity_bytes": 0, "used_capacity_bytes": 0, "free_capacity_bytes": 0}
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_zabbix_storage_trend(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """
+        Return daily capacity utilization trend (used/total) for a DC.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        cache_key = f"dc_zabbix_storage_trend:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        zsq.STORAGE_DEVICES_FOR_DC_LATEST,
+                        (start_ts, end_ts, dc_target),
+                    )
+
+                    hosts = sorted({str(r[1]) for r in (rows or []) if r and r[1]})
+                    if not hosts:
+                        result = {"series": []}
+                        cache.set(cache_key, result)
+                        return result
+
+                    trend_rows = self._run_rows(
+                        cur,
+                        zsq.STORAGE_CAPACITY_TREND_DAILY,
+                        (hosts, start_ts, end_ts),
+                    )
+
+            series = []
+            for ts, used_bytes, total_bytes in (trend_rows or []):
+                used_val = float(used_bytes or 0)
+                total_val = float(total_bytes or 0)
+                used_pct = (used_val / total_val * 100.0) if total_val > 0 else 0.0
+                series.append(
+                    {
+                        "ts": ts,
+                        "used_capacity_bytes": used_val,
+                        "total_capacity_bytes": total_val,
+                        "used_pct": float(used_pct),
+                    }
+                )
+
+            result = {"series": series}
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_zabbix_storage_trend failed for %s: %s", dc_target, exc)
+            result = {"series": []}
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_zabbix_disk_health(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """
+        Return a summary table of disk health/performance for a DC.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        cache_key = f"dc_zabbix_disk_health:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            limit = 500
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        zsq.STORAGE_DEVICES_FOR_DC_LATEST,
+                        (start_ts, end_ts, dc_target),
+                    )
+                    hosts = sorted({str(r[1]) for r in (rows or []) if r and r[1]})
+
+                    if not hosts:
+                        result = {"items": []}
+                        cache.set(cache_key, result)
+                        return result
+
+                    disk_rows = self._run_rows(
+                        cur,
+                        zsq.DISK_HEALTH_PERFORMANCE,
+                        (hosts, start_ts, end_ts, hosts, start_ts, end_ts, limit),
+                    )
+
+            items: list[dict] = []
+            for (
+                disk_name,
+                health_status,
+                avg_total_iops,
+                avg_latency_ms,
+                avg_temperature_c,
+                running_status,
+            ) in (disk_rows or []):
+                items.append(
+                    {
+                        "disk_name": disk_name,
+                        "health_status": health_status,
+                        "avg_total_iops": float(avg_total_iops or 0),
+                        "avg_latency_ms": float(avg_latency_ms or 0),
+                        "avg_temperature_c": float(avg_temperature_c or 0),
+                        "running_status": running_status,
+                    }
+                )
+
+            result = {"items": items}
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_zabbix_disk_health failed for %s: %s", dc_target, exc)
+            result = {"items": []}
 
         cache.set(cache_key, result)
         return result

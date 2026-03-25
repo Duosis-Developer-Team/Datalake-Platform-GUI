@@ -202,6 +202,100 @@ def create_grouped_bar_chart(labels, series_dict, title, height=380):
     return fig
 
 
+def create_horizontal_bar_chart(labels, values, title, color="#4318FF", height=340):
+    """Executive horizontal bar chart (single series)."""
+    labels = labels or []
+    values = values or []
+    x_data = [float(v or 0) for v in values]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            y=labels,
+            x=x_data,
+            orientation="h",
+            marker=dict(
+                color=color,
+                opacity=0.9,
+                line=dict(color="rgba(0,0,0,0)", width=0),
+            ),
+            hovertemplate="<b>%{y}</b><br>%{x:,.2f}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans", weight=700)),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+        margin=dict(l=10, r=20, t=40, b=40),
+        height=height,
+        bargap=0.18,
+        bargroupgap=0.06,
+        xaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+        ),
+        yaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            tickfont=dict(family="DM Sans", size=12, color="#2B3674", weight=600),
+        ),
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+    try:
+        fig.update_traces(marker_cornerradius=6)
+    except Exception:
+        pass
+
+    return fig
+
+
+def create_capacity_area_chart(timestamps, used, total, title, height=260):
+    """
+    Capacity planning trend chart.
+    Inputs are used/total bytes arrays; we plot utilization percentage over time.
+    """
+    x = list(timestamps or [])
+    used_vals = [float(v or 0) for v in (used or [])]
+    total_vals = [float(v or 0) for v in (total or [])]
+
+    y_pct: list[float] = []
+    for u, t in zip(used_vals, total_vals):
+        if t > 0:
+            y_pct.append(min(u / t * 100.0, 100.0))
+        else:
+            y_pct.append(0.0)
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y_pct,
+            mode="lines",
+            fill="tozeroy",
+            line=dict(width=3, color="#4318FF"),
+            fillcolor="rgba(67, 24, 255, 0.12)",
+            hovertemplate="<b>%{x}</b><br>%{y:.1f}% utilized<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans", weight=700)),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+        margin=dict(l=20, r=20, t=40, b=10),
+        height=height,
+        hovermode="x unified",
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=True),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+    return fig
+
+
 def create_gauge_chart(value, max_value, title, color="#4318FF", height=200):
     """Gauge (indicator) for usage: value / max_value as percentage."""
     try:

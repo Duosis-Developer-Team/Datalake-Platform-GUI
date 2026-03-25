@@ -474,5 +474,224 @@ def update_global_info_card(click_data, time_range):
     return build_dc_info_card(dc_id, tr)
 
 
+# ---------------------------------------------------------------------------
+# Network Dashboard (Zabbix) callbacks
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    dash.Output("net-role-selector", "data"),
+    dash.Output("net-role-selector", "value"),
+    dash.Output("net-device-selector", "data"),
+    dash.Output("net-device-selector", "value"),
+    dash.Input("net-manufacturer-selector", "value"),
+    dash.Input("net-filters-store", "data"),
+)
+def update_net_role_device_options(manufacturer, net_filters):
+    net_filters = net_filters or {}
+    roles_by_manu = net_filters.get("roles_by_manufacturer") or {}
+    devices_by_manu_role = net_filters.get("devices_by_manufacturer_role") or {}
+
+    if not roles_by_manu:
+        return [], None, [], None
+
+    if manufacturer:
+        roles = roles_by_manu.get(manufacturer) or []
+        roles = sorted(roles)
+        # All devices within this manufacturer (regardless of role selection)
+        devs_set = set()
+        for r in roles:
+            devs_set.update(devices_by_manu_role.get(manufacturer, {}).get(r, []) or [])
+        devices = sorted(devs_set)
+    else:
+        # Default: all manufacturers => all roles and all devices
+        roles = sorted({r for roles in roles_by_manu.values() for r in (roles or [])})
+        devices = sorted(
+            {
+                d
+                for roles_map in devices_by_manu_role.values()
+                for devs in roles_map.values()
+                for d in (devs or [])
+            }
+        )
+
+    role_data = [{"label": r, "value": r} for r in roles]
+    device_data = [{"label": d, "value": d} for d in devices]
+    # Reset downstream selections
+    return role_data, None, device_data, None
+
+
+@app.callback(
+    dash.Output("net-device-selector", "data"),
+    dash.Output("net-device-selector", "value"),
+    dash.Input("net-role-selector", "value"),
+    dash.Input("net-manufacturer-selector", "value"),
+    dash.Input("net-filters-store", "data"),
+)
+def update_net_device_options(role, manufacturer, net_filters):
+    net_filters = net_filters or {}
+    roles_by_manu = net_filters.get("roles_by_manufacturer") or {}
+    devices_by_manu_role = net_filters.get("devices_by_manufacturer_role") or {}
+
+    if not devices_by_manu_role:
+        return [], None
+
+    if manufacturer and role:
+        devices = devices_by_manu_role.get(manufacturer, {}).get(role, []) or []
+    elif manufacturer and not role:
+        # manufacturer selected, role cleared => all devices under manufacturer
+        devices = []
+        for r in roles_by_manu.get(manufacturer, []) or []:
+            devices.extend(devices_by_manu_role.get(manufacturer, {}).get(r, []) or [])
+    elif not manufacturer and role:
+        # role selected, manufacturer cleared => union across manufacturers
+        devs = set()
+        for manu, roles_map in devices_by_manu_role.items():
+            devs.update((roles_map.get(role, []) or []))
+        devices = sorted(devs)
+    else:
+        # both cleared => all devices
+        devices = sorted(
+            {
+                d
+                for roles_map in devices_by_manu_role.values()
+                for devs in roles_map.values()
+                for d in (devs or [])
+            }
+        )
+
+    device_data = [{"label": d, "value": d} for d in sorted(devices or [])]
+    # Reset device selection whenever options change
+    return device_data, None
+
+
+@app.callback(
+    dash.Output("net-kpi-container", "children"),
+    dash.Output("net-donut-active-ports", "figure"),
+    dash.Output("net-donut-utilization", "figure"),
+    dash.Output("net-donut-icmp", "figure"),
+    dash.Output("net-top-interfaces-bar", "figure"),
+    dash.Input("net-manufacturer-selector", "value"),
+    dash.Input("net-role-selector", "value"),
+    dash.Input("net-device-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_net_kpis_and_charts(manufacturer, device_role, device_name, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+
+    from src.components.charts import create_horizontal_bar_chart, create_usage_donut_chart
+    from src.utils.format_units import pct_float
+    from src.pages.dc_view import _bps_to_gbps  # reuse conversion helper
+
+    port_summary = api.get_dc_network_port_summary(
+        dc_id,
+        tr,
+        manufacturer=manufacturer,
+        device_role=device_role,
+        device_name=device_name,
+    )
+    percentile_data = api.get_dc_network_95th_percentile(
+        dc_id,
+        tr,
+        top_n=20,
+        manufacturer=manufacturer,
+        device_role=device_role,
+        device_name=device_name,
+    )
+
+    device_count = int(port_summary.get("device_count", 0) or 0)
+    total_ports = int(port_summary.get("total_ports", 0) or 0)
+    active_ports = int(port_summary.get("active_ports", 0) or 0)
+    avg_icmp_loss_pct = float(port_summary.get("avg_icmp_loss_pct", 0) or 0)
+
+    port_availability_pct = pct_float(active_ports, total_ports)
+    icmp_availability_pct = max(0.0, min(100.0, 100.0 - avg_icmp_loss_pct))
+    overall_util_pct = float(percentile_data.get("overall_port_utilization_pct", 0) or 0)
+
+    kpis = dmc.SimpleGrid(
+        cols=4,
+        spacing="lg",
+        children=[
+            dc_view._kpi("Total Devices", f"{device_count:,}", "solar:server-bold-duotone", color="indigo"),
+            dc_view._kpi("Active Ports", f"{active_ports:,}", "solar:signal-bold-duotone", color="indigo"),
+            dc_view._kpi("Total Ports", f"{total_ports:,}", "solar:port-bold-duotone", color="indigo"),
+            dc_view._kpi("Port Availability", f"{port_availability_pct:.1f}%", "solar:graph-bold-duotone", color="indigo"),
+        ],
+    )
+
+    donut_active = create_usage_donut_chart(port_availability_pct, "Port Availability", color="#FFB547")
+    donut_util = create_usage_donut_chart(overall_util_pct, "Port Utilization", color="#05CD99")
+    donut_icmp = create_usage_donut_chart(icmp_availability_pct, "ICMP Availability", color="#4318FF")
+
+    top_interfaces = percentile_data.get("top_interfaces") or []
+    bar_labels = [(t.get("interface_name") or "").strip() or "Unknown" for t in top_interfaces]
+    bar_values = [_bps_to_gbps(t.get("p95_total_bps")) for t in top_interfaces]
+    bar_fig = create_horizontal_bar_chart(
+        labels=bar_labels,
+        values=bar_values,
+        title="Top 95th Percentile Interfaces (Gbps)",
+        color="#4318FF",
+        height=320,
+    )
+
+    return kpis, donut_active, donut_util, donut_icmp, bar_fig
+
+
+@app.callback(
+    dash.Output("net-interface-table", "data"),
+    dash.Input("net-manufacturer-selector", "value"),
+    dash.Input("net-role-selector", "value"),
+    dash.Input("net-device-selector", "value"),
+    dash.Input("net-interface-search", "value"),
+    dash.Input("net-interface-table", "page_current"),
+    dash.Input("net-interface-table", "page_size"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_net_interface_table(manufacturer, device_role, device_name, search_value, page_current, page_size, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return []
+
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+
+    page_current_safe = int(page_current or 0)
+    page_size_safe = int(page_size or 50)
+    page_backend = page_current_safe + 1  # backend is 1-based
+
+    interface_data = api.get_dc_network_interface_table(
+        dc_id,
+        tr,
+        page=page_backend,
+        page_size=page_size_safe,
+        search=search_value or "",
+        manufacturer=manufacturer,
+        device_role=device_role,
+        device_name=device_name,
+    )
+
+    items = interface_data.get("items") or []
+    rows = []
+    for it in items:
+        speed_gbps = (float(it.get("speed_bps") or 0) / 1e9) if it.get("speed_bps") is not None else 0.0
+        total_gbps = (float(it.get("p95_total_bps") or 0) / 1e9) if it.get("p95_total_bps") is not None else 0.0
+        rows.append(
+            {
+                "interface_name": it.get("interface_name") or "",
+                "interface_alias": it.get("interface_alias") or "",
+                "p95_total_gbps": round(total_gbps, 3),
+                "speed_gbps": round(speed_gbps, 3),
+                "utilization_pct": round(float(it.get("utilization_pct") or 0), 2),
+            }
+        )
+
+    return rows
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=8050, use_reloader=False)

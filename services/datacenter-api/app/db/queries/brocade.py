@@ -31,6 +31,10 @@ SELECT
     COUNT(*) FILTER (WHERE pod_license_status = true) AS licensed_ports,
     COUNT(*) FILTER (WHERE operational_status = 2 AND is_enabled_state = true) AS active_ports,
     COUNT(*) FILTER (WHERE COALESCE(is_enabled_state, false) = true) AS enabled_ports,
+    COUNT(*) FILTER (
+        WHERE COALESCE(is_enabled_state, false) = true
+          AND operational_status != 2
+    ) AS no_link_ports,
     COUNT(*) FILTER (WHERE COALESCE(is_enabled_state, false) = false) AS disabled_ports
 FROM public.raw_brocade_port_status ps
 JOIN latest l

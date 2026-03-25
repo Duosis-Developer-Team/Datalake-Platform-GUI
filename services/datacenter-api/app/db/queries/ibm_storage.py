@@ -20,7 +20,7 @@ WITH latest AS (
     SELECT
         storage_ip,
         MAX("timestamp") AS max_ts
-    FROM public.ibm_storage_system
+    FROM public.raw_ibm_storage_system
     WHERE storage_ip = ANY(%s)
     GROUP BY storage_ip
 )
@@ -31,7 +31,7 @@ SELECT
     s.total_used_capacity,
     s.total_free_space,
     s."timestamp"
-FROM public.ibm_storage_system s
+FROM public.raw_ibm_storage_system s
 JOIN latest l
   ON s.storage_ip = l.storage_ip
  AND s."timestamp" = l.max_ts;
@@ -50,7 +50,7 @@ SELECT
     AVG(COALESCE(vdisk_io, 0))::double precision AS avg_iops,
     AVG(COALESCE(vdisk_mb, 0))::double precision AS avg_throughput_mb,
     AVG(COALESCE(vdisk_ms, 0))::double precision AS avg_latency_ms
-FROM public.ibm_storage_system_stats
+FROM public.raw_ibm_storage_system_stats
 WHERE
     storage_ip = ANY(%s)
   AND "timestamp" BETWEEN %s AND %s

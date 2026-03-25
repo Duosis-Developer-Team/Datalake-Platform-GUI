@@ -411,3 +411,139 @@ def get_dc_storage_performance(dc_code: str, tr: Optional[dict]) -> dict:
         return data if isinstance(data, dict) else {}
     except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Network Dashboard (Zabbix) + Intel Storage (Zabbix) - DC scoped
+# ---------------------------------------------------------------------------
+
+
+def _build_optional_params(base: dict[str, str], **kwargs: Optional[Any]) -> dict[str, str]:
+    """Add non-None query params to base dict."""
+    for k, v in kwargs.items():
+        if v is not None:
+            base[k] = str(v)
+    return base
+
+
+def get_dc_network_filters(dc_code: str, tr: Optional[dict]) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/network/filters", params=params)
+        return data if isinstance(data, dict) else {}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {}
+
+
+def get_dc_network_port_summary(
+    dc_code: str,
+    tr: Optional[dict],
+    manufacturer: Optional[str] = None,
+    device_role: Optional[str] = None,
+    device_name: Optional[str] = None,
+) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_optional_params(
+            _build_time_params(tr),
+            manufacturer=manufacturer,
+            device_role=device_role,
+            device_name=device_name,
+        )
+        data = _get_json(
+            _client_dc,
+            f"/api/v1/datacenters/{enc}/network/port-summary",
+            params=params,
+        )
+        return data if isinstance(data, dict) else {}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {}
+
+
+def get_dc_network_95th_percentile(
+    dc_code: str,
+    tr: Optional[dict],
+    top_n: int = 20,
+    manufacturer: Optional[str] = None,
+    device_role: Optional[str] = None,
+    device_name: Optional[str] = None,
+) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_optional_params(
+            _build_time_params(tr),
+            top_n=top_n,
+            manufacturer=manufacturer,
+            device_role=device_role,
+            device_name=device_name,
+        )
+        data = _get_json(
+            _client_dc,
+            f"/api/v1/datacenters/{enc}/network/95th-percentile",
+            params=params,
+        )
+        return data if isinstance(data, dict) else {}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {}
+
+
+def get_dc_network_interface_table(
+    dc_code: str,
+    tr: Optional[dict],
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    manufacturer: Optional[str] = None,
+    device_role: Optional[str] = None,
+    device_name: Optional[str] = None,
+) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_optional_params(
+            _build_time_params(tr),
+            page=page,
+            page_size=page_size,
+            search=search or "",
+            manufacturer=manufacturer,
+            device_role=device_role,
+            device_name=device_name,
+        )
+        data = _get_json(
+            _client_dc,
+            f"/api/v1/datacenters/{enc}/network/interface-table",
+            params=params,
+        )
+        return data if isinstance(data, dict) else {}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {}
+
+
+def get_dc_zabbix_storage_capacity(dc_code: str, tr: Optional[dict]) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/capacity", params=params)
+        return data if isinstance(data, dict) else {}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {}
+
+
+def get_dc_zabbix_storage_trend(dc_code: str, tr: Optional[dict]) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/trend", params=params)
+        return data if isinstance(data, dict) else {}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {}
+
+
+def get_dc_zabbix_disk_health(dc_code: str, tr: Optional[dict]) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        params = _build_time_params(tr)
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/disk-health", params=params)
+        return data if isinstance(data, dict) else {}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {}

@@ -82,6 +82,29 @@ def _fake_service(monkeypatch, dc_details: dict, s3_pools: dict | None = None):
         def get_dc_storage_performance(self, dc_id, tr):
             return storage_performance
 
+        # Network Dashboard (Zabbix)
+        def get_dc_network_filters(self, dc_id, tr):
+            return {"manufacturers": [], "roles_by_manufacturer": {}, "devices_by_manufacturer_role": {}}
+
+        def get_dc_network_port_summary(self, dc_id, tr, manufacturer=None, device_role=None, device_name=None):
+            return {}
+
+        def get_dc_network_95th_percentile(self, dc_id, tr, top_n=20, manufacturer=None, device_role=None, device_name=None):
+            return {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
+
+        def get_dc_network_interface_table(self, dc_id, tr, page=1, page_size=50, search="", manufacturer=None, device_role=None, device_name=None):
+            return {"items": []}
+
+        # Intel Storage (Zabbix)
+        def get_dc_zabbix_storage_capacity(self, dc_id, tr):
+            return {"storage_device_count": 0}
+
+        def get_dc_zabbix_storage_trend(self, dc_id, tr):
+            return {"series": []}
+
+        def get_dc_zabbix_disk_health(self, dc_id, tr):
+            return {"items": []}
+
     monkeypatch.setattr(dc_view, "api", FakeApi())
 
 
@@ -158,6 +181,30 @@ def _fake_service_network(
 
         def get_dc_storage_performance(self, dc_id, tr):
             return storage_performance_val
+
+        # Network Dashboard (Zabbix)
+        def get_dc_network_filters(self, dc_id, tr):
+            # Default: no Zabbix network data (only SAN gate is active in existing tests)
+            return {"manufacturers": [], "roles_by_manufacturer": {}, "devices_by_manufacturer_role": {}}
+
+        def get_dc_network_port_summary(self, dc_id, tr, manufacturer=None, device_role=None, device_name=None):
+            return {}
+
+        def get_dc_network_95th_percentile(self, dc_id, tr, top_n=20, manufacturer=None, device_role=None, device_name=None):
+            return {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
+
+        def get_dc_network_interface_table(self, dc_id, tr, page=1, page_size=50, search="", manufacturer=None, device_role=None, device_name=None):
+            return {"items": []}
+
+        # Intel Storage (Zabbix)
+        def get_dc_zabbix_storage_capacity(self, dc_id, tr):
+            return {"storage_device_count": 0}
+
+        def get_dc_zabbix_storage_trend(self, dc_id, tr):
+            return {"series": []}
+
+        def get_dc_zabbix_disk_health(self, dc_id, tr):
+            return {"items": []}
 
     monkeypatch.setattr(dc_view, "api", FakeApi())
 
@@ -259,6 +306,7 @@ def test_network_tab_shown_when_san_present(monkeypatch):
         "total_ports": 10,
         "licensed_ports": 6,
         "active_ports": 3,
+        "no_link_ports": 3,
         "disabled_ports": 4,
     }
     _fake_service_network(

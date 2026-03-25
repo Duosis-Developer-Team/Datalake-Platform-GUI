@@ -161,3 +161,90 @@ def storage_capacity(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseServi
 @router.get("/datacenters/{dc_code}/storage/performance", response_model=dict[str, Any])
 def storage_performance(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
     return db.get_storage_performance(dc_code, tf.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Network Dashboard (Zabbix) + Intel Storage (Zabbix) - DC scoped
+# ---------------------------------------------------------------------------
+
+
+@router.get("/datacenters/{dc_code}/network/filters", response_model=dict[str, Any])
+def network_filters(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_network_filters(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/network/port-summary", response_model=dict[str, Any])
+def network_port_summary(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    manufacturer: Optional[str] = Query(None),
+    device_role: Optional[str] = Query(None),
+    device_name: Optional[str] = Query(None),
+):
+    return db.get_network_port_summary(
+        dc_code,
+        tf.to_dict(),
+        manufacturer=manufacturer,
+        device_role=device_role,
+        device_name=device_name,
+    )
+
+
+@router.get("/datacenters/{dc_code}/network/95th-percentile", response_model=dict[str, Any])
+def network_95th_percentile(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    top_n: int = Query(20, ge=1, le=100),
+    manufacturer: Optional[str] = Query(None),
+    device_role: Optional[str] = Query(None),
+    device_name: Optional[str] = Query(None),
+):
+    return db.get_network_95th_percentile(
+        dc_code,
+        tf.to_dict(),
+        manufacturer=manufacturer,
+        device_role=device_role,
+        device_name=device_name,
+        top_n=top_n,
+    )
+
+
+@router.get("/datacenters/{dc_code}/network/interface-table", response_model=dict[str, Any])
+def network_interface_table(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    search: Optional[str] = Query("", description="Interface name/alias contains filter"),
+    manufacturer: Optional[str] = Query(None),
+    device_role: Optional[str] = Query(None),
+    device_name: Optional[str] = Query(None),
+):
+    return db.get_network_interface_table(
+        dc_code,
+        tf.to_dict(),
+        manufacturer=manufacturer,
+        device_role=device_role,
+        device_name=device_name,
+        page=page,
+        page_size=page_size,
+        search=search,
+    )
+
+
+@router.get("/datacenters/{dc_code}/zabbix-storage/capacity", response_model=dict[str, Any])
+def zabbix_storage_capacity(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_zabbix_storage_capacity(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/zabbix-storage/trend", response_model=dict[str, Any])
+def zabbix_storage_trend(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_zabbix_storage_trend(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/zabbix-storage/disk-health", response_model=dict[str, Any])
+def zabbix_storage_disk_health(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_zabbix_disk_health(dc_code, tf.to_dict())
