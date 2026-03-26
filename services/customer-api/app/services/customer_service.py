@@ -8,11 +8,16 @@ from psycopg2 import OperationalError, pool as pg_pool
 from psycopg2.pool import PoolError
 
 from app.adapters.customer_adapter import CustomerAdapter
+from app.db.queries import customer as cq
 from app.db.queries import s3 as s3q
 from app.services import cache_service as cache
+from app.utils.cluster_match import build_cluster_arch_map
 from app.utils.time_range import default_time_range, time_range_to_bounds
 
 logger = logging.getLogger(__name__)
+
+# Cluster name classification cache (align with DC summary-style TTL)
+CLUSTER_ARCH_MAP_TTL_SECONDS = 1800
 
 
 class CustomerService:
@@ -41,8 +46,9 @@ class CustomerService:
                 dbname=self._db_name,
                 user=self._db_user,
                 password=self._db_pass,
+                options="-c statement_timeout=25000",
             )
-            logger.info("DB connection pool initialized (min=2, max=8).")
+            logger.info("DB connection pool initialized (min=2, max=8, statement_timeout=25000ms).")
         except OperationalError as exc:
             logger.error("Failed to initialize DB pool: %s", exc)
             self._pool = None
@@ -98,6 +104,55 @@ class CustomerService:
                 pass
         return []
 
+    def _get_cluster_arch_map(self, tr: dict) -> dict[str, list[str]]:
+        """Load VMware non-KM vs Nutanix cluster lists and classify managed vs pure Nutanix."""
+        start_ts, end_ts = time_range_to_bounds(tr)
+        cache_key = f"cluster_arch_map:{start_ts}:{end_ts}"
+        cached = cache.get(cache_key)
+        if cached is not None and isinstance(cached, dict):
+            managed = cached.get("managed_nutanix") or []
+            pure = cached.get("pure_nutanix") or []
+            if isinstance(managed, list) and isinstance(pure, list):
+                return {"managed_nutanix": managed, "pure_nutanix": pure}
+
+        if self._pool is None:
+            empty = {"managed_nutanix": [], "pure_nutanix": []}
+            cache.set(cache_key, empty, ttl=CLUSTER_ARCH_MAP_TTL_SECONDS)
+            return empty
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    vmware_rows = self._run_rows(cur, cq.ALL_VMWARE_CLUSTER_NAMES, (start_ts, end_ts))
+                    nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES, (start_ts, end_ts))
+        except (OperationalError, PoolError) as exc:
+            logger.warning("_get_cluster_arch_map failed: %s", exc)
+            empty = {"managed_nutanix": [], "pure_nutanix": []}
+            return empty
+
+        vmware_nonkm: list[str] = []
+        for r in vmware_rows or []:
+            if not r or len(r) < 2:
+                continue
+            cluster_name, arch_type = r[0], r[1]
+            if not cluster_name:
+                continue
+            if str(arch_type).lower() == "hyperconv":
+                vmware_nonkm.append(str(cluster_name))
+
+        nutanix_names: list[str] = []
+        for r in nutanix_rows or []:
+            if r and r[0]:
+                nutanix_names.append(str(r[0]))
+
+        arch = build_cluster_arch_map(vmware_nonkm, nutanix_names)
+        result = {
+            "managed_nutanix": arch["managed_nutanix"],
+            "pure_nutanix": arch["pure_nutanix"],
+        }
+        cache.set(cache_key, result, ttl=CLUSTER_ARCH_MAP_TTL_SECONDS)
+        return result
+
     def get_customer_resources(self, customer_name: str, time_range: dict | None = None) -> dict:
         tr = time_range or default_time_range()
         cache_key = f"customer_assets:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
@@ -106,7 +161,13 @@ class CustomerService:
             return cached
         if self._pool is None:
             return self._customer._empty_result()
-        result = self._customer.fetch(customer_name, tr)
+        arch = self._get_cluster_arch_map(tr)
+        result = self._customer.fetch(
+            customer_name,
+            tr,
+            managed_nutanix_clusters=arch.get("managed_nutanix") or [],
+            pure_nutanix_clusters=arch.get("pure_nutanix") or [],
+        )
         cache.set(cache_key, result)
         return result
 

@@ -29,6 +29,9 @@ def test_get_customer_resources_totals_structure_when_pool_none():
     result = svc.get_customer_resources("Boyner")
     totals = result["totals"]
     assert "intel_vms_total" in totals
+    assert "classic_vms_total" in totals
+    assert "hyperconv_vms_total" in totals
+    assert "pure_nutanix_vms_total" in totals
     assert "power_lpar_total" in totals
     assert "backup" in totals
 
@@ -39,6 +42,9 @@ def test_get_customer_resources_assets_structure_when_pool_none():
     result = svc.get_customer_resources("Boyner")
     assets = result["assets"]
     assert "intel" in assets
+    assert "classic" in assets
+    assert "hyperconv" in assets
+    assert "pure_nutanix" in assets
     assert "power" in assets
     assert "backup" in assets
 

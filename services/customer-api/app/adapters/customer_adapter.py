@@ -25,15 +25,25 @@ class CustomerAdapter:
         self._run_row = run_row
         self._run_rows = run_rows
 
-    def fetch(self, customer_name: str, time_range: dict) -> dict:
+    def fetch(
+        self,
+        customer_name: str,
+        time_range: dict,
+        managed_nutanix_clusters: list[str] | None = None,
+        pure_nutanix_clusters: list[str] | None = None,
+    ) -> dict:
         tr = time_range or default_time_range()
         name = (customer_name or "").strip()
-        vm_pattern = f"{name}-%" if name else "%"
-        lpar_pattern = f"{name}%" if name else "%"
-        veeam_pattern = f"{name}%" if name else "%"
+        # Broader ILIKE: customer name anywhere in VM name (matches datacenter-api)
+        vm_pattern = f"%{name}%" if name else "%"
+        lpar_pattern = f"%{name}%" if name else "%"
+        veeam_pattern = f"%{name}%" if name else "%"
         storage_like_pattern = f"%{name}%" if name else "%"
         netbackup_workload_pattern = f"%{name}%" if name else "%"
-        zerto_name_like = f"{name}%-%" if name else "%"
+        zerto_name_like = f"%{name}%" if name else "%"
+
+        managed = list(managed_nutanix_clusters or [])
+        pure = list(pure_nutanix_clusters or [])
 
         start_ts, end_ts = time_range_to_bounds(tr)
 
@@ -90,6 +100,93 @@ class CustomerAdapter:
                             "disk_gb": float(r[4] or 0.0),
                         }
                         for r in (intel_vm_detail_rows or [])
+                        if r and r[0]
+                    ]
+
+                    # --- Classic Compute (KM clusters) ---
+                    classic_vm_count = int(
+                        self._run_value(cur, cq.CUSTOMER_CLASSIC_VM_COUNT, (vm_pattern, start_ts, end_ts)) or 0
+                    )
+                    classic_res = self._run_row(
+                        cur, cq.CUSTOMER_CLASSIC_RESOURCE_TOTALS, (vm_pattern, start_ts, end_ts)
+                    )
+                    classic_cpu = float(classic_res[0] or 0.0) if classic_res else 0.0
+                    classic_mem_gb = float(classic_res[1] or 0.0) if classic_res else 0.0
+                    classic_disk_gb = float(classic_res[2] or 0.0) if classic_res else 0.0
+
+                    classic_vm_rows = self._run_rows(
+                        cur, cq.CUSTOMER_CLASSIC_VM_LIST, (vm_pattern, start_ts, end_ts)
+                    )
+                    classic_vm_list = [
+                        {
+                            "name": r[0],
+                            "source": r[1],
+                            "cluster": r[2],
+                            "cpu": float(r[3] or 0.0),
+                            "memory_gb": float(r[4] or 0.0),
+                            "disk_gb": float(r[5] or 0.0),
+                        }
+                        for r in (classic_vm_rows or [])
+                        if r and r[0]
+                    ]
+
+                    # --- Hyperconverged (non-KM VMware + Nutanix on VMware-managed clusters only) ---
+                    hc_params = (
+                        vm_pattern,
+                        start_ts,
+                        end_ts,
+                        vm_pattern,
+                        start_ts,
+                        end_ts,
+                        managed,
+                        start_ts,
+                        end_ts,
+                    )
+                    hc_count_row = self._run_row(cur, cq.CUSTOMER_HYPERCONV_VM_COUNT, hc_params)
+                    hc_vmware_only = int(hc_count_row[0] or 0) if hc_count_row else 0
+                    hc_nutanix = int(hc_count_row[1] or 0) if hc_count_row else 0
+                    hc_total = int(hc_count_row[2] or 0) if hc_count_row else 0
+
+                    hc_res = self._run_row(cur, cq.CUSTOMER_HYPERCONV_RESOURCE_TOTALS, hc_params)
+                    hc_cpu = float(hc_res[0] or 0.0) if hc_res else 0.0
+                    hc_mem_gb = float(hc_res[1] or 0.0) if hc_res else 0.0
+                    hc_disk_gb = float(hc_res[2] or 0.0) if hc_res else 0.0
+
+                    hc_vm_rows = self._run_rows(cur, cq.CUSTOMER_HYPERCONV_VM_LIST, hc_params)
+                    hc_vm_list = [
+                        {
+                            "name": r[0],
+                            "source": r[1],
+                            "cluster": r[2],
+                            "cpu": float(r[3] or 0.0),
+                            "memory_gb": float(r[4] or 0.0),
+                            "disk_gb": float(r[5] or 0.0),
+                        }
+                        for r in (hc_vm_rows or [])
+                        if r and r[0]
+                    ]
+
+                    # --- Pure Nutanix (AHV-only clusters) ---
+                    pure_params = (pure, start_ts, end_ts, vm_pattern, start_ts, end_ts)
+                    pure_vm_count = int(
+                        self._run_value(cur, cq.CUSTOMER_PURE_NUTANIX_VM_COUNT, pure_params) or 0
+                    )
+                    pure_res = self._run_row(cur, cq.CUSTOMER_PURE_NUTANIX_RESOURCE_TOTALS, pure_params)
+                    pure_cpu = float(pure_res[0] or 0.0) if pure_res else 0.0
+                    pure_mem_gb = float(pure_res[1] or 0.0) if pure_res else 0.0
+                    pure_disk_gb = float(pure_res[2] or 0.0) if pure_res else 0.0
+
+                    pure_vm_rows = self._run_rows(cur, cq.CUSTOMER_PURE_NUTANIX_VM_LIST, pure_params)
+                    pure_vm_list = [
+                        {
+                            "name": r[0],
+                            "source": r[1],
+                            "cluster": r[2],
+                            "cpu": float(r[3] or 0.0),
+                            "memory_gb": float(r[4] or 0.0),
+                            "disk_gb": float(r[5] or 0.0),
+                        }
+                        for r in (pure_vm_rows or [])
                         if r and r[0]
                     ]
 
@@ -214,6 +311,31 @@ class CustomerAdapter:
                 },
                 "vm_list": intel_vm_list,
             },
+            "classic": {
+                "vm_count": classic_vm_count,
+                "cpu_total": classic_cpu,
+                "memory_gb": classic_mem_gb,
+                "disk_gb": classic_disk_gb,
+                "vm_list": classic_vm_list,
+            },
+            "hyperconv": {
+                "vm_count": hc_total,
+                "vmware_only": hc_vmware_only,
+                "nutanix_count": hc_nutanix,
+                "managed_nutanix_clusters": len(managed),
+                "cpu_total": hc_cpu,
+                "memory_gb": hc_mem_gb,
+                "disk_gb": hc_disk_gb,
+                "vm_list": hc_vm_list,
+            },
+            "pure_nutanix": {
+                "vm_count": pure_vm_count,
+                "cpu_total": pure_cpu,
+                "memory_gb": pure_mem_gb,
+                "disk_gb": pure_disk_gb,
+                "vm_list": pure_vm_list,
+                "cluster_count": len(pure),
+            },
             "power": {
                 "cpu_total": power_cpu,
                 "lpar_count": power_lpars,
@@ -245,9 +367,15 @@ class CustomerAdapter:
         totals = {
             "vms_total": intel_vms_total + power_lpars,
             "intel_vms_total": intel_vms_total,
+            "classic_vms_total": classic_vm_count,
+            "hyperconv_vms_total": hc_total,
+            "pure_nutanix_vms_total": pure_vm_count,
             "power_lpar_total": power_lpars,
             "cpu_total": intel_cpu_total + power_cpu,
             "intel_cpu_total": intel_cpu_total,
+            "classic_cpu_total": classic_cpu,
+            "hyperconv_cpu_total": hc_cpu,
+            "pure_nutanix_cpu_total": pure_cpu,
             "power_cpu_total": power_cpu,
             "backup": {
                 "veeam_defined_sessions": veeam_defined_sessions,
@@ -262,13 +390,26 @@ class CustomerAdapter:
         return {"totals": totals, "assets": assets}
 
     def _empty_result(self) -> dict:
+        _empty_compute = {
+            "vm_count": 0,
+            "cpu_total": 0.0,
+            "memory_gb": 0.0,
+            "disk_gb": 0.0,
+            "vm_list": [],
+        }
         return {
             "totals": {
                 "vms_total": 0,
                 "intel_vms_total": 0,
+                "classic_vms_total": 0,
+                "hyperconv_vms_total": 0,
+                "pure_nutanix_vms_total": 0,
                 "power_lpar_total": 0,
                 "cpu_total": 0.0,
                 "intel_cpu_total": 0.0,
+                "classic_cpu_total": 0.0,
+                "hyperconv_cpu_total": 0.0,
+                "pure_nutanix_cpu_total": 0.0,
                 "power_cpu_total": 0.0,
                 "backup": {
                     "veeam_defined_sessions": 0,
@@ -287,6 +428,14 @@ class CustomerAdapter:
                     "disk_gb": {"vmware": 0.0, "nutanix": 0.0, "total": 0.0},
                     "vm_list": [],
                 },
+                "classic": {**_empty_compute},
+                "hyperconv": {
+                    **_empty_compute,
+                    "vmware_only": 0,
+                    "nutanix_count": 0,
+                    "managed_nutanix_clusters": 0,
+                },
+                "pure_nutanix": {**_empty_compute, "cluster_count": 0},
                 "power": {
                     "cpu_total": 0.0,
                     "lpar_count": 0,
