@@ -90,23 +90,28 @@ def _tab_summary(totals: dict, assets: dict):
     """Summary tab: aggregated billing overview."""
     classic   = assets.get("classic", {})
     hyperconv = assets.get("hyperconv", {})
+    pure_nx   = assets.get("pure_nutanix", {}) or {}
     power     = assets.get("power", {})
 
     classic_vms   = int(classic.get("vm_count", 0) or 0)
     hyperconv_vms = int(hyperconv.get("vm_count", 0) or 0)
+    pure_nx_vms   = int(pure_nx.get("vm_count", 0) or 0)
     power_lpars   = int(power.get("lpar_count", 0) or 0)
     total_vms     = int(totals.get("vms_total", 0) or 0)
 
     classic_cpu   = float(classic.get("cpu_total", 0) or 0)
     hyperconv_cpu = float(hyperconv.get("cpu_total", 0) or 0)
+    pure_nx_cpu   = float(pure_nx.get("cpu_total", 0) or 0)
     power_cpu     = float(power.get("cpu_total", 0) or 0)
 
     classic_mem   = float(classic.get("memory_gb", 0) or 0)
     hyperconv_mem = float(hyperconv.get("memory_gb", 0) or 0)
+    pure_nx_mem   = float(pure_nx.get("memory_gb", 0) or 0)
     power_mem     = float(power.get("memory_total_gb", 0) or 0)
 
     classic_disk   = float(classic.get("disk_gb", 0) or 0)
     hyperconv_disk = float(hyperconv.get("disk_gb", 0) or 0)
+    pure_nx_disk   = float(pure_nx.get("disk_gb", 0) or 0)
 
     backup_totals = totals.get("backup", {}) or {}
     veeam_defined   = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
@@ -115,15 +120,18 @@ def _tab_summary(totals: dict, assets: dict):
     nb_post_gib     = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
     zerto_prov_gib  = float(backup_totals.get("zerto_provisioned_gib", 0) or 0)
 
+    summary_grid = [
+        _metric("Total Instances",   f"{total_vms:,}",     "solar:laptop-bold-duotone",          color="teal"),
+        _metric("Classic VMs",        f"{classic_vms:,}",   "solar:laptop-bold-duotone",          color="blue"),
+        _metric("Hyperconverged VMs", f"{hyperconv_vms:,}", "solar:laptop-bold-duotone",          color="indigo"),
+        _metric("Pure Nutanix (AHV)", f"{pure_nx_vms:,}",   "solar:laptop-bold-duotone",          color="cyan"),
+        _metric("Power LPARs",        f"{power_lpars:,}",   "solar:server-square-bold-duotone",   color="grape"),
+    ]
+
     return dmc.Stack(gap="lg", children=[
         # VM count overview
         _section_card("VM / LPAR Summary", "Total provisioned instances per compute type",
-            dmc.SimpleGrid(cols=4, spacing="lg", children=[
-                _metric("Total Instances",   f"{total_vms:,}",     "solar:laptop-bold-duotone",          color="teal"),
-                _metric("Classic VMs",        f"{classic_vms:,}",   "solar:laptop-bold-duotone",          color="blue"),
-                _metric("Hyperconverged VMs", f"{hyperconv_vms:,}", "solar:laptop-bold-duotone",          color="indigo"),
-                _metric("Power LPARs",        f"{power_lpars:,}",   "solar:server-square-bold-duotone",   color="grape"),
-            ]),
+            dmc.SimpleGrid(cols=5, spacing="lg", children=summary_grid),
         ),
         # Compute resource summary
         _section_card("Compute Resources", "Allocated CPU, Memory and Disk per compute type",
@@ -151,6 +159,7 @@ def _tab_summary(totals: dict, assets: dict):
                     for label, cpu, mem, disk in [
                         ("Classic Compute",      classic_cpu,   classic_mem,   classic_disk),
                         ("Hyperconverged",        hyperconv_cpu, hyperconv_mem, hyperconv_disk),
+                        ("Pure Nutanix (AHV)",    pure_nx_cpu,   pure_nx_mem,   pure_nx_disk),
                         ("Power Compute (IBM)",   power_cpu,     power_mem,     0),
                     ]
                 ],
@@ -178,12 +187,21 @@ def _tab_billing(totals: dict, assets: dict, backup_totals: dict, s3_data: dict 
     """Billing tab: invoice-style view combining compute, backup and S3."""
     classic   = assets.get("classic", {}) or {}
     hyperconv = assets.get("hyperconv", {}) or {}
+    pure_nx   = assets.get("pure_nutanix", {}) or {}
     power     = assets.get("power", {}) or {}
 
     total_vms   = int(totals.get("vms_total", 0) or 0)
     total_cpu   = float(totals.get("cpu_total", 0.0) or 0.0)
-    total_intel_mem = float(classic.get("memory_gb", 0) or 0) + float(hyperconv.get("memory_gb", 0) or 0)
-    total_intel_disk = float(classic.get("disk_gb", 0) or 0) + float(hyperconv.get("disk_gb", 0) or 0)
+    total_intel_mem = (
+        float(classic.get("memory_gb", 0) or 0)
+        + float(hyperconv.get("memory_gb", 0) or 0)
+        + float(pure_nx.get("memory_gb", 0) or 0)
+    )
+    total_intel_disk = (
+        float(classic.get("disk_gb", 0) or 0)
+        + float(hyperconv.get("disk_gb", 0) or 0)
+        + float(pure_nx.get("disk_gb", 0) or 0)
+    )
     total_power_mem = float(power.get("memory_total_gb", 0) or 0)
 
     veeam_defined   = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
@@ -247,6 +265,15 @@ def _tab_billing(totals: dict, assets: dict, backup_totals: dict, s3_data: dict 
                                             html.Td(f"{float(hyperconv.get('cpu_total', 0) or 0):.1f}"),
                                             html.Td(smart_memory(float(hyperconv.get('memory_gb', 0) or 0))),
                                             html.Td(smart_storage(float(hyperconv.get('disk_gb', 0) or 0))),
+                                        ]
+                                    ),
+                                    html.Tr(
+                                        [
+                                            html.Td("Pure Nutanix (AHV)"),
+                                            html.Td(f"{int(pure_nx.get('vm_count', 0) or 0):,}"),
+                                            html.Td(f"{float(pure_nx.get('cpu_total', 0) or 0):.1f}"),
+                                            html.Td(smart_memory(float(pure_nx.get('memory_gb', 0) or 0))),
+                                            html.Td(smart_storage(float(pure_nx.get('disk_gb', 0) or 0))),
                                         ]
                                     ),
                                     html.Tr(
@@ -330,11 +357,13 @@ def _tab_classic(classic: dict):
     ])
 
 
-def _tab_hyperconv(hyperconv: dict):
+def _tab_hyperconv(hyperconv: dict, pure_nutanix: dict | None = None):
     """Hyperconverged (non-KM VMware + Nutanix) billing tab."""
+    pure_nutanix = pure_nutanix or {}
     vm_count    = int(hyperconv.get("vm_count", 0) or 0)
     vmware_only = int(hyperconv.get("vmware_only", 0) or 0)
     nutanix_cnt = int(hyperconv.get("nutanix_count", 0) or 0)
+    pure_nx_vms = int(pure_nutanix.get("vm_count", 0) or 0)
     cpu         = float(hyperconv.get("cpu_total", 0) or 0)
     mem_gb      = float(hyperconv.get("memory_gb", 0) or 0)
     disk_gb     = float(hyperconv.get("disk_gb", 0) or 0)
@@ -357,23 +386,72 @@ def _tab_hyperconv(hyperconv: dict):
             _metric("Memory",          smart_memory(mem_gb),   "solar:ram-bold-duotone",     color="indigo"),
             _metric("Disk",            smart_storage(disk_gb), "solar:hdd-bold-duotone",     color="indigo"),
         ]),
-        _section_card("Platform Breakdown", "VMware-managed vs pure Nutanix (Acropolis)",
-            dmc.Group(gap="xl", children=[
-                dmc.Stack(gap="xs", children=[
-                    dmc.Text("VMware-managed", c="#A3AED0", size="sm"),
-                    dmc.Text(f"{vmware_only:,} VMs", fw=700, c="#2B3674"),
-                ]),
-                dmc.Stack(gap="xs", children=[
-                    dmc.Text("Nutanix / Acropolis", c="#A3AED0", size="sm"),
-                    dmc.Text(f"{nutanix_cnt:,} VMs", fw=700, c="#2B3674"),
-                ]),
-            ]),
+        _section_card(
+            "Platform Breakdown",
+            "VMware non-KM vs Nutanix on VMware-managed clusters vs Pure Nutanix (AHV-only clusters)",
+            dmc.Group(
+                gap="xl",
+                children=[
+                    dmc.Stack(gap="xs", children=[
+                        dmc.Text("VMware (non-KM cluster)", c="#A3AED0", size="sm"),
+                        dmc.Text(f"{vmware_only:,} VMs", fw=700, c="#2B3674"),
+                    ]),
+                    dmc.Stack(gap="xs", children=[
+                        dmc.Text("Nutanix (VMware-managed)", c="#A3AED0", size="sm"),
+                        dmc.Text(f"{nutanix_cnt:,} VMs", fw=700, c="#2B3674"),
+                    ]),
+                    dmc.Stack(gap="xs", children=[
+                        dmc.Text("Pure Nutanix (AHV)", c="#A3AED0", size="sm"),
+                        dmc.Text(f"{pure_nx_vms:,} VMs", fw=700, c="#2B3674"),
+                    ]),
+                ],
+            ),
         ),
         _section_card("Hyperconverged VMs", "VMs on non-KM clusters (VMware-managed Nutanix + Acropolis)",
             _vm_table(vm_list,
                       ["VM Name", "Source", "Cluster", "CPU (vCPU)", "Memory", "Disk"],
                       row_fn,
                       empty_cols=6),
+        ),
+    ])
+
+
+def _tab_pure_nutanix(pure: dict):
+    """Pure Nutanix (AHV-only) clusters — no matching VMware non-KM cluster name."""
+    vm_count  = int(pure.get("vm_count", 0) or 0)
+    clusters  = int(pure.get("cluster_count", 0) or 0)
+    cpu       = float(pure.get("cpu_total", 0) or 0)
+    mem_gb    = float(pure.get("memory_gb", 0) or 0)
+    disk_gb   = float(pure.get("disk_gb", 0) or 0)
+    vm_list   = pure.get("vm_list", []) or []
+
+    def row_fn(r):
+        return html.Tr([
+            html.Td(r.get("name")),
+            html.Td(r.get("source", "-")),
+            html.Td(r.get("cluster", "-")),
+            html.Td(f"{r.get('cpu', 0):.0f}"),
+            html.Td(smart_memory(r.get("memory_gb", 0))),
+            html.Td(smart_storage(r.get("disk_gb", 0))),
+        ])
+
+    return dmc.Stack(gap="lg", children=[
+        dmc.SimpleGrid(cols=5, spacing="lg", children=[
+            _metric("Clusters (AHV-only)", f"{clusters:,}", "solar:cloud-bold-duotone", color="cyan"),
+            _metric("Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", color="cyan"),
+            _metric("CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", color="cyan"),
+            _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="cyan"),
+            _metric("Disk", smart_storage(disk_gb), "solar:hdd-bold-duotone", color="cyan"),
+        ]),
+        _section_card(
+            "Pure Nutanix VMs",
+            "VMs on Nutanix clusters with no VMware vCenter cluster name match (after normalization)",
+            _vm_table(
+                vm_list,
+                ["VM Name", "Source", "Cluster", "CPU (vCPU)", "Memory", "Disk"],
+                row_fn,
+                empty_cols=6,
+            ),
         ),
     ])
 
@@ -666,6 +744,24 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
 
     classic   = assets.get("classic", {}) or {}
     hyperconv = assets.get("hyperconv", {}) or {}
+    pure_nx   = assets.get("pure_nutanix", {}) or {}
+    show_pure_tab = int(pure_nx.get("vm_count", 0) or 0) > 0
+
+    virt_tabs_list = [
+        dmc.TabsTab("Klasik Mimari", value="classic"),
+        dmc.TabsTab("Hyperconverged Mimari", value="hyperconv"),
+    ]
+    if show_pure_tab:
+        virt_tabs_list.append(dmc.TabsTab("Pure Nutanix (AHV)", value="pure_nx"))
+    virt_tabs_list.append(dmc.TabsTab("Power Mimari", value="power"))
+
+    virt_panels_list = [
+        dmc.TabsPanel(value="classic", pt="lg", children=_tab_classic(classic)),
+        dmc.TabsPanel(value="hyperconv", pt="lg", children=_tab_hyperconv(hyperconv, pure_nx)),
+    ]
+    if show_pure_tab:
+        virt_panels_list.append(dmc.TabsPanel(value="pure_nx", pt="lg", children=_tab_pure_nutanix(pure_nx)))
+    virt_panels_list.append(dmc.TabsPanel(value="power", pt="lg", children=_tab_power(power_asset)))
 
     virt_content = dmc.Tabs(
         color="violet",
@@ -673,16 +769,8 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         radius="md",
         value="classic",
         children=[
-            dmc.TabsList(
-                children=[
-                    dmc.TabsTab("Klasik Mimari", value="classic"),
-                    dmc.TabsTab("Hyperconverged Mimari", value="hyperconv"),
-                    dmc.TabsTab("Power Mimari", value="power"),
-                ]
-            ),
-            dmc.TabsPanel(value="classic", pt="lg", children=_tab_classic(classic)),
-            dmc.TabsPanel(value="hyperconv", pt="lg", children=_tab_hyperconv(hyperconv)),
-            dmc.TabsPanel(value="power", pt="lg", children=_tab_power(power_asset)),
+            dmc.TabsList(children=virt_tabs_list),
+            *virt_panels_list,
         ],
     )
 
