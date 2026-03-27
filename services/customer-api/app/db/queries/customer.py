@@ -631,7 +631,7 @@ nutanix_vms AS (
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
       AND nvm.collection_time BETWEEN %s AND %s
-      AND nvm.cluster_uuid IN (
+      AND nvm.cluster_uuid::text IN (
         SELECT DISTINCT ON (cluster_name) cluster_uuid
         FROM public.nutanix_cluster_metrics
         WHERE cluster_name = ANY(%s::text[])
@@ -672,7 +672,7 @@ nutanix_latest AS (
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
       AND nvm.collection_time BETWEEN %s AND %s
-      AND nvm.cluster_uuid IN (
+      AND nvm.cluster_uuid::text IN (
         SELECT DISTINCT ON (cluster_name) cluster_uuid
         FROM public.nutanix_cluster_metrics
         WHERE cluster_name = ANY(%s::text[])
@@ -722,7 +722,7 @@ nutanix_latest AS (
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
       AND nvm.collection_time BETWEEN %s AND %s
-      AND nvm.cluster_uuid IN (
+      AND nvm.cluster_uuid::text IN (
         SELECT DISTINCT ON (cluster_name) cluster_uuid
         FROM public.nutanix_cluster_metrics
         WHERE cluster_name = ANY(%s::text[])
@@ -772,7 +772,7 @@ latest AS (
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
       AND nvm.collection_time BETWEEN %s AND %s
-      AND nvm.cluster_uuid IN (SELECT cluster_uuid FROM cluster_uuids)
+      AND nvm.cluster_uuid::text IN (SELECT cluster_uuid FROM cluster_uuids)
     ORDER BY nvm.vm_name, nvm.collection_time DESC
 )
 SELECT COUNT(*)::int FROM latest
@@ -794,7 +794,7 @@ latest AS (
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
       AND nvm.collection_time BETWEEN %s AND %s
-      AND nvm.cluster_uuid IN (SELECT cluster_uuid FROM cluster_uuids)
+      AND nvm.cluster_uuid::text IN (SELECT cluster_uuid FROM cluster_uuids)
     ORDER BY nvm.vm_name, nvm.collection_time DESC
 )
 SELECT
@@ -822,7 +822,7 @@ latest AS (
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
       AND nvm.collection_time BETWEEN %s AND %s
-      AND nvm.cluster_uuid IN (SELECT cluster_uuid FROM cluster_uuids)
+      AND nvm.cluster_uuid::text IN (SELECT cluster_uuid FROM cluster_uuids)
     ORDER BY nvm.vm_name, nvm.collection_time DESC
 )
 SELECT
@@ -833,6 +833,6 @@ SELECT
     COALESCE(l.memory_gb, 0) AS "Memory (GB)",
     COALESCE(l.disk_gb, 0) AS "Disk (GB)"
 FROM latest l
-JOIN cluster_uuids cu ON l.cluster_uuid = cu.cluster_uuid
+JOIN cluster_uuids cu ON l.cluster_uuid::text = cu.cluster_uuid
 ORDER BY "VM Name"
 """
