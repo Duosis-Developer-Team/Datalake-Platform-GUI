@@ -16,8 +16,8 @@ def get(key: str) -> Optional[Any]:
     return cache_get(key)
 
 
-def set(key: str, value: Any) -> None:
-    cache_set(key, value)
+def set(key: str, value: Any, ttl: Optional[int] = None) -> None:
+    cache_set(key, value, ttl=ttl)
     logger.debug("Cache SET: %s", key)
 
 

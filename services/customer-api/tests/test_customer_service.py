@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 from psycopg2 import OperationalError
 
-from app.services.customer_service import CustomerService
+from app.services.customer_service import CLUSTER_ARCH_MAP_TTL_SECONDS, CustomerService
 
 
 def test_get_customer_list_returns_boyner():
@@ -53,3 +53,20 @@ def test_pool_is_none_when_db_unavailable():
     with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
         svc = CustomerService()
     assert svc._pool is None
+
+
+def test_get_cluster_arch_map_sets_cache_with_ttl_when_pool_none():
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+
+    with patch("app.services.customer_service.time_range_to_bounds", return_value=("start-ts", "end-ts")), \
+         patch("app.services.customer_service.cache.get", return_value=None), \
+         patch("app.services.customer_service.cache.set") as cache_set_mock:
+        result = svc._get_cluster_arch_map({"preset": "7d"})
+
+    assert result == {"managed_nutanix": [], "pure_nutanix": []}
+    cache_set_mock.assert_called_once_with(
+        "cluster_arch_map:start-ts:end-ts",
+        {"managed_nutanix": [], "pure_nutanix": []},
+        ttl=CLUSTER_ARCH_MAP_TTL_SECONDS,
+    )
