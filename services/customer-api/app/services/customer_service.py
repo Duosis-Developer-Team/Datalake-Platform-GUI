@@ -125,6 +125,9 @@ class CustomerService:
                 with conn.cursor() as cur:
                     vmware_rows = self._run_rows(cur, cq.ALL_VMWARE_CLUSTER_NAMES, (start_ts, end_ts))
                     nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES, (start_ts, end_ts))
+                    if not nutanix_rows:
+                        # Fallback: if range-scoped cluster records are missing, use latest known cluster mapping.
+                        nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES_LATEST)
         except (OperationalError, PoolError) as exc:
             logger.warning("_get_cluster_arch_map failed: %s", exc)
             empty = {"managed_nutanix": [], "pure_nutanix": []}

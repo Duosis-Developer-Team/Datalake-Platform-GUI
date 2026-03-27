@@ -555,6 +555,15 @@ WHERE collection_time BETWEEN %s AND %s
 ORDER BY cluster_name, collection_time DESC
 """
 
+# Fallback params: ()
+ALL_NUTANIX_CLUSTER_NAMES_LATEST = """
+SELECT DISTINCT ON (cluster_name)
+    cluster_name,
+    cluster_uuid
+FROM public.nutanix_cluster_metrics
+ORDER BY cluster_name, collection_time DESC
+"""
+
 # =============================================================================
 # Classic Compute — VMs on KM clusters (vm_metrics.cluster ILIKE '%KM%')
 # =============================================================================
