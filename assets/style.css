@@ -1,5 +1,40 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap');
 
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.region-nav-link {
+    border-radius: 8px !important;
+    margin-bottom: 4px !important;
+    transition: all 0.2s ease;
+}
+
+.region-nav-link:hover {
+    background-color: rgba(67, 24, 255, 0.05) !important;
+    padding-left: 20px !important;
+}
+
+.region-nav-link[data-active="true"] {
+    background: linear-gradient(135deg, #4318FF 0%, #5630FF 100%) !important;
+    color: #FFFFFF !important;
+    font-weight: 700 !important;
+    box-shadow: 0px 6px 16px rgba(67, 24, 255, 0.20) !important;
+}
+
+.detail-panel-animate {
+    animation: fadeInUp 0.35s ease-out;
+}
+
+.region-accordion .mantine-Accordion-control:hover {
+    background-color: rgba(67, 24, 255, 0.03) !important;
+}
+
+.region-accordion .mantine-Accordion-content {
+    padding: 4px 8px !important;
+}
+
 /* --- 1. CORE LAYOUT --- */
 body {
     background-color: #F4F7FE;
@@ -324,4 +359,16 @@ body {
     box-shadow:
         0px 24px 52px rgba(67, 24, 255, 0.13),
         0px 8px 18px rgba(67, 24, 255, 0.07) !important;
+}
+
+.detail-dc-card {
+    transition: transform 0.25s cubic-bezier(0.25, 0.8, 0.25, 1),
+                box-shadow 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.detail-dc-card:hover {
+    transform: translateY(-4px);
+    box-shadow:
+        0px 16px 40px rgba(67, 24, 255, 0.12),
+        0px 6px 16px rgba(67, 24, 255, 0.06) !important;
 }

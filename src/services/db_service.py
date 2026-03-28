@@ -399,20 +399,21 @@ class DatabaseService:
     # ------------------------------------------------------------------
 
     def _load_dc_list(self) -> list[str]:
-        """
-        Fetch active datacenter names from loki_locations.
-        Falls back to the hardcoded list if the query fails or returns nothing.
-        """
+        self._dc_site_map = {}
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    # Try with status filter first
-                    rows = self._run_rows(cur, lq.DC_LIST)
+                    rows = self._run_rows(cur, lq.DC_LIST_WITH_SITE)
                     dc_names = [row[0] for row in rows if row[0]]
+                    for row in rows:
+                        if row[0] and len(row) > 1 and row[1]:
+                            self._dc_site_map[row[0]] = row[1]
                     if not dc_names:
-                        # Retry without status filter
-                        rows = self._run_rows(cur, lq.DC_LIST_NO_STATUS)
+                        rows = self._run_rows(cur, lq.DC_LIST_WITH_SITE_NO_STATUS)
                         dc_names = [row[0] for row in rows if row[0]]
+                        for row in rows:
+                            if row[0] and len(row) > 1 and row[1]:
+                                self._dc_site_map[row[0]] = row[1]
         except OperationalError as exc:
             logger.warning("Could not load DC list from DB: %s — using fallback.", exc)
             return _FALLBACK_DC_LIST.copy()
@@ -1271,6 +1272,7 @@ class DatabaseService:
                 "id": dc,
                 "name": dc,
                 "location": d["meta"]["location"],
+                "site_name": self._dc_site_map.get(dc),
                 "status": "Healthy",
                 "platform_count": platform_count,
                 "cluster_count": intel["clusters"],

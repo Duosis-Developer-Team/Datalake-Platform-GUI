@@ -1,6 +1,6 @@
 import logging
 import dash
-from dash import Dash, html, dcc, _dash_renderer
+from dash import Dash, html, dcc, _dash_renderer, ALL
 import dash_mantine_components as dmc
 from dotenv import load_dotenv
 
@@ -34,7 +34,7 @@ app = Dash(
 )
 server = app.server
 
-from src.pages import home, datacenters, dc_view, customer_view, query_explorer, global_view
+from src.pages import home, datacenters, dc_view, customer_view, query_explorer, global_view, region_drilldown
 from src.pages.dc_view import _build_compute_tab
 
 _default_tr = default_time_range()
@@ -229,8 +229,9 @@ def update_time_range_store(preset, date_value, current):
     dash.Input("url", "pathname"),
     dash.Input("app-time-range", "data"),
     dash.Input("customer-select", "value"),
+    dash.State("url", "search"),
 )
-def render_main_content(pathname, time_range, selected_customer):
+def render_main_content(pathname, time_range, selected_customer, search):
     pathname = pathname or "/"
     tr = time_range or default_time_range()
     if pathname in ("/", ""):
@@ -246,6 +247,11 @@ def render_main_content(pathname, time_range, selected_customer):
         return customer_view.build_customer_layout(tr, selected_customer)
     if pathname == "/query-explorer":
         return query_explorer.layout()
+    if pathname == "/region-drilldown":
+        from urllib.parse import parse_qs
+        params = parse_qs((search or "").lstrip("?"))
+        region = params.get("region", [""])[0]
+        return region_drilldown.build_region_drilldown(region, tr)
     return home.build_overview(tr)
 
 
@@ -456,12 +462,12 @@ def update_phys_inv_chart(click_data, reset_clicks, state):
 
 
 @app.callback(
-    dash.Output("global-dc-info-card", "children"),
+    dash.Output("global-detail-panel", "children"),
     dash.Input("global-map-graph", "clickData"),
     dash.State("app-time-range", "data"),
     prevent_initial_call=True,
 )
-def update_global_info_card(click_data, time_range):
+def update_global_detail_from_pin(click_data, time_range):
     if not click_data or "points" not in click_data or not click_data["points"]:
         return []
     point = click_data["points"][0]
@@ -469,9 +475,172 @@ def update_global_info_card(click_data, time_range):
     if not custom or not custom[0]:
         return []
     dc_id = custom[0]
+    site_name = custom[7] if len(custom) > 7 else ""
     tr = time_range or default_time_range()
     from src.pages.global_view import build_dc_info_card
-    return build_dc_info_card(dc_id, tr)
+    return build_dc_info_card(dc_id, tr, site_name=site_name)
+
+
+app.clientside_callback(
+    """
+    function(clickData) {
+        if (!clickData || !clickData.points || !clickData.points.length)
+            return window.dash_clientside.no_update;
+        var point = clickData.points[0];
+        if (!point.customdata || !point.customdata[0])
+            return window.dash_clientside.no_update;
+        var outer = document.getElementById('global-map-graph');
+        if (!outer) return window.dash_clientside.no_update;
+        var gd = outer.querySelector('.js-plotly-plot') || outer;
+        if (!gd._fullLayout || !gd._fullLayout.geo) return window.dash_clientside.no_update;
+        var rot = gd._fullLayout.geo.projection.rotation;
+        var startLon = rot.lon, startLat = rot.lat;
+        var startScale = gd._fullLayout.geo.projection.scale || 1.0;
+        var siteName = (point.customdata && point.customdata[7]) ? point.customdata[7].toUpperCase() : '';
+        var tLon = point.lon, tLat = point.lat;
+        var tScale = siteName === 'ISTANBUL' ? 40.0 : (['ANKARA', 'IZMIR'].indexOf(siteName) >= 0 ? 15.0 : 6.0);
+        var dur = 1100, t0 = null;
+        function ease(t) { return t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2; }
+        function step(ts) {
+            if (!t0) t0 = ts;
+            var p = Math.min((ts-t0)/dur, 1), e = ease(p);
+            window.Plotly.relayout(gd, {
+                'geo.projection.rotation.lon': startLon+(tLon-startLon)*e,
+                'geo.projection.rotation.lat': startLat+(tLat-startLat)*e,
+                'geo.projection.scale':        startScale+(tScale-startScale)*e
+            });
+            if (p < 1) requestAnimationFrame(step);
+        }
+        requestAnimationFrame(step);
+        return window.dash_clientside.no_update;
+    }
+    """,
+    dash.Output("global-map-graph", "figure", allow_duplicate=True),
+    dash.Input("global-map-graph", "clickData"),
+    prevent_initial_call=True,
+)
+
+
+@app.callback(
+    dash.Output("global-detail-panel", "children", allow_duplicate=True),
+    dash.Input("global-map-reset-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def reset_global_detail(n_clicks):
+    if not n_clicks:
+        return dash.no_update
+    return []
+
+
+app.clientside_callback(
+    """
+    function(n_clicks) {
+        if (!n_clicks) return window.dash_clientside.no_update;
+        var outer = document.getElementById('global-map-graph');
+        if (!outer) return window.dash_clientside.no_update;
+        var gd = outer.querySelector('.js-plotly-plot') || outer;
+        if (!gd._fullLayout || !gd._fullLayout.geo) return window.dash_clientside.no_update;
+        var rot = gd._fullLayout.geo.projection.rotation;
+        var startLon = rot.lon, startLat = rot.lat;
+        var startScale = gd._fullLayout.geo.projection.scale || 1.0;
+        var dur = 1000, t0 = null;
+        function ease(t) { return t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2; }
+        function step(ts) {
+            if (!t0) t0 = ts;
+            var p = Math.min((ts-t0)/dur, 1), e = ease(p);
+            window.Plotly.relayout(gd, {
+                'geo.projection.rotation.lon': startLon+(28.96-startLon)*e,
+                'geo.projection.rotation.lat': startLat+(41.01-startLat)*e,
+                'geo.projection.scale':        startScale+(1.0-startScale)*e
+            });
+            if (p < 1) requestAnimationFrame(step);
+        }
+        requestAnimationFrame(step);
+        return window.dash_clientside.no_update;
+    }
+    """,
+    dash.Output("global-map-graph", "figure", allow_duplicate=True),
+    dash.Input("global-map-reset-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+
+
+@app.callback(
+    dash.Output("selected-region-store", "data"),
+    dash.Input({"type": "region-nav", "region": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def update_region_store(n_clicks_list):
+    import time as _time
+    import json
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+    triggered = ctx.triggered[0]
+    if not triggered.get("value"):
+        return dash.no_update
+    prop_id = json.loads(triggered["prop_id"].rsplit(".", 1)[0])
+    region = prop_id.get("region", "")
+    from src.pages.global_view import REGION_ZOOM_TARGETS
+    target = REGION_ZOOM_TARGETS.get(region, {})
+    if not target:
+        return dash.no_update
+    return {
+        "region": region,
+        "lon": target["lon"],
+        "lat": target["lat"],
+        "scale": target["scale"],
+        "ts": _time.time(),
+    }
+
+
+app.clientside_callback(
+    """
+    function(storeData) {
+        if (!storeData || !storeData.lon) return window.dash_clientside.no_update;
+        var outer = document.getElementById('global-map-graph');
+        if (!outer) return window.dash_clientside.no_update;
+        var gd = outer.querySelector('.js-plotly-plot') || outer;
+        if (!gd._fullLayout || !gd._fullLayout.geo) return window.dash_clientside.no_update;
+        var rot = gd._fullLayout.geo.projection.rotation;
+        var startLon = rot.lon, startLat = rot.lat;
+        var startScale = gd._fullLayout.geo.projection.scale || 1.0;
+        var tLon = storeData.lon, tLat = storeData.lat, tScale = storeData.scale;
+        var dur = 1100, t0 = null;
+        function ease(t) { return t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2; }
+        function step(ts) {
+            if (!t0) t0 = ts;
+            var p = Math.min((ts-t0)/dur, 1), e = ease(p);
+            window.Plotly.relayout(gd, {
+                'geo.projection.rotation.lon': startLon+(tLon-startLon)*e,
+                'geo.projection.rotation.lat': startLat+(tLat-startLat)*e,
+                'geo.projection.scale':        startScale+(tScale-startScale)*e
+            });
+            if (p < 1) requestAnimationFrame(step);
+        }
+        requestAnimationFrame(step);
+        return window.dash_clientside.no_update;
+    }
+    """,
+    dash.Output("global-map-graph", "figure", allow_duplicate=True),
+    dash.Input("selected-region-store", "data"),
+    prevent_initial_call=True,
+)
+
+
+@app.callback(
+    dash.Output("global-detail-panel", "children", allow_duplicate=True),
+    dash.Input("selected-region-store", "data"),
+    dash.State("app-time-range", "data"),
+    prevent_initial_call=True,
+)
+def update_global_detail_from_menu(store_data, time_range):
+    if not store_data or not store_data.get("region"):
+        return dash.no_update
+    region = store_data["region"]
+    tr = time_range or default_time_range()
+    from src.pages.global_view import build_region_detail_panel
+    return build_region_detail_panel(region, tr)
 
 
 if __name__ == "__main__":
