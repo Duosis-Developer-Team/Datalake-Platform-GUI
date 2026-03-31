@@ -16,6 +16,7 @@ from apscheduler.triggers.date import DateTrigger
 from src.utils.time_range import preset_to_range, PRESET_30_DAYS
 from src.utils.time_range import default_time_range
 from src.services import sla_service
+from src.services.db_service import WARMED_CUSTOMERS
 
 if TYPE_CHECKING:
     from src.services.db_service import DatabaseService
@@ -105,47 +106,47 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
     except Exception as exc:
         logger.warning("Failed to schedule initial DC long-range warm-up: %s", exc)
 
-    # Step 3: immediately warm customer cache for Boyner (last 30 days) in background
+    # Step 3: immediately warm customer cache (last 30 days) in background
     try:
         customer_range = preset_to_range(PRESET_30_DAYS)
+
+        def _warm_all_customers():
+            for name in WARMED_CUSTOMERS:
+                db_service.get_customer_resources(name, customer_range)
+
         scheduler.add_job(
-            func=lambda: db_service.get_customer_resources("Boyner", customer_range),
+            func=_warm_all_customers,
             trigger=DateTrigger(run_date=datetime.now()),
-            id="customer_boyner_initial_warm",
-            name="Initial Boyner customer cache warm-up (30d)",
+            id="customer_initial_warm",
+            name="Initial warmed-customers cache warm-up (30d)",
             replace_existing=True,
             misfire_grace_time=60,
         )
-        logger.info("Scheduled initial Boyner customer cache warm-up (last 30 days).")
+        logger.info("Scheduled initial customer cache warm-up (last 30 days).")
     except Exception as exc:
-        logger.warning("Failed to schedule initial Boyner customer cache warm-up: %s", exc)
+        logger.warning("Failed to schedule initial customer cache warm-up: %s", exc)
 
-    # Step 4: schedule periodic Boyner customer cache refresh without clearing existing data first.
-    # This keeps the Customer View cache warm in the background and replaces entries in place.
+    # Step 4: periodic customer cache refresh (write-through: get_customer_resources overwrites cache).
     try:
-        def _refresh_boyner_customer_cache():
-            # Always use a fresh 30-day range so the cache represents the latest period.
+        def _refresh_warmed_customer_caches():
             current_range = preset_to_range(PRESET_30_DAYS)
-            from src.services import cache_service as cache
-
-            cache_key = f"customer_assets:Boyner:{current_range.get('start','')}:{current_range.get('end','')}"
-            cache.delete(cache_key)
-            db_service.get_customer_resources("Boyner", current_range)
+            for name in WARMED_CUSTOMERS:
+                db_service.get_customer_resources(name, current_range)
 
         scheduler.add_job(
-            func=_refresh_boyner_customer_cache,
+            func=_refresh_warmed_customer_caches,
             trigger=IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
-            id="customer_boyner_refresh",
-            name="Boyner customer cache refresh (30d)",
+            id="customer_warmed_refresh",
+            name="Warmed customers cache refresh (30d)",
             replace_existing=True,
             misfire_grace_time=60,
         )
         logger.info(
-            "Scheduled Boyner customer cache refresh every %d minutes (30-day range).",
+            "Scheduled customer cache refresh every %d minutes (30-day range).",
             REFRESH_INTERVAL_MINUTES,
         )
     except Exception as exc:
-        logger.warning("Failed to schedule Boyner customer cache refresh: %s", exc)
+        logger.warning("Failed to schedule customer cache refresh: %s", exc)
 
     # Step 6: warm S3 cache once in the background (default range) so first S3 visits are fast.
     try:

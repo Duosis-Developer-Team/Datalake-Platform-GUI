@@ -233,7 +233,9 @@ FROM latest_per_cluster
 CLASSIC_AVG30 = """
 SELECT
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct
+    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
+    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster ILIKE '%%KM%%'
@@ -270,7 +272,9 @@ FROM latest_per_cluster
 HYPERCONV_AVG30 = """
 SELECT
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct
+    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
+    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster NOT ILIKE '%%KM%%'
@@ -369,7 +373,9 @@ WITH matched AS (
 SELECT
     dc_code,
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct
+    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
+    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
 FROM matched
 GROUP BY dc_code
 """
@@ -389,7 +395,9 @@ WITH matched AS (
 SELECT
     dc_code,
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct
+    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
+    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
 FROM matched
 GROUP BY dc_code
 """
@@ -446,7 +454,9 @@ FROM latest_per_cluster
 CLASSIC_AVG30_FILTERED = """
 SELECT
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct
+    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
+    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster = ANY(%s::text[])
@@ -481,7 +491,9 @@ FROM latest_per_cluster
 HYPERCONV_AVG30_FILTERED = """
 SELECT
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct
+    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
+    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster = ANY(%s::text[])

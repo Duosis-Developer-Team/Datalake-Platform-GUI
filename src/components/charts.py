@@ -1,25 +1,59 @@
 import plotly.graph_objects as go
 
-def create_gradient_area_chart(df, x_col, y_col, title):
+_LEGEND_STYLE = dict(
+    orientation="h",
+    yanchor="bottom",
+    y=-0.15,
+    xanchor="center",
+    x=0.5,
+    font=dict(size=11, family="DM Sans", color="#A3AED0"),
+    bgcolor="rgba(0,0,0,0)",
+)
+_LEGEND_MINIMAL = dict(
+    orientation="h",
+    yanchor="bottom",
+    y=-0.12,
+    xanchor="center",
+    x=0.5,
+    font=dict(size=9, family="DM Sans", color="#A3AED0"),
+    bgcolor="rgba(0,0,0,0)",
+)
+
+
+def _resolve_legend(show_legend):
+    """show_legend: bool | 'minimal' | None — None/false hides legend."""
+    if show_legend is None or show_legend is False:
+        return False, None
+    if show_legend == "minimal":
+        return True, _LEGEND_MINIMAL
+    return True, _LEGEND_STYLE
+
+
+def create_gradient_area_chart(df, x_col, y_col, title, show_legend=True):
+    show, leg = _resolve_legend(show_legend)
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=df[x_col], y=df[y_col], mode='lines', fill='tozeroy',
         line=dict(width=3, color='#4318FF'),
         fillcolor='rgba(67, 24, 255, 0.1)',
+        name=str(y_col),
     ))
-    fig.update_layout(
+    layout_updates = dict(
         title=dict(text=title, font=dict(size=14, color='#2B3674', family="DM Sans")),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        showlegend=False,
-        margin=dict(l=0, r=0, t=30, b=0),
+        showlegend=show,
+        margin=dict(l=0, r=0, t=30, b=24 if show else 0),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=True),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        hovermode="x unified"
+        hovermode="x unified",
     )
+    if show and leg:
+        layout_updates["legend"] = leg
+    fig.update_layout(**layout_updates)
     return fig
 
-def create_bar_chart(data, x_col, y_col, title, color="#4318FF", height=250):
+def create_bar_chart(data, x_col, y_col, title, color="#4318FF", height=250, show_legend=True):
     fig = go.Figure()
     # Data bir dict gelirse listeye çevir, DataFrame gelirse sütunu al
     x_data = data[x_col] if isinstance(data, dict) else data[x_col].tolist()
@@ -31,17 +65,21 @@ def create_bar_chart(data, x_col, y_col, title, color="#4318FF", height=250):
         name=title
     ))
     
-    fig.update_layout(
+    show, leg = _resolve_legend(show_legend)
+    layout_updates = dict(
         title=dict(text=title, font=dict(family="DM Sans, sans-serif", size=16, color="#2B3674", weight=700)),
-        margin=dict(l=20, r=20, t=40, b=20),
+        margin=dict(l=20, r=20, t=40, b=36 if show else 20),
         height=height,
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        showlegend=False,
+        showlegend=show,
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=True),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=True),
-        font=dict(family="DM Sans, sans-serif", color="#A3AED0")
+        font=dict(family="DM Sans, sans-serif", color="#A3AED0"),
     )
+    if show and leg:
+        layout_updates["legend"] = leg
+    fig.update_layout(**layout_updates)
     return fig
 
 
@@ -84,8 +122,80 @@ def create_usage_donut_chart(value, label, color="#4318FF"):
             xanchor="center",
             font=dict(size=12, color="#A3AED0", family="DM Sans"),
         ),
-        showlegend=False,
-        margin=dict(l=8, r=8, t=44, b=8),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.08,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=10, color="#A3AED0", family="DM Sans"),
+            bgcolor="rgba(0,0,0,0)",
+        ),
+        margin=dict(l=8, r=8, t=44, b=28),
+        height=180,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
+def create_avg_max_donut_chart(avg_val, max_val, label, color="#4318FF"):
+    """Donut emphasizing peak utilization (max) with avg as secondary annotation (capacity planning)."""
+    try:
+        avg_v = float(avg_val)
+        max_v = float(max_val)
+    except (TypeError, ValueError):
+        avg_v, max_v = 0.0, 0.0
+    avg_v = max(0.0, min(100.0, avg_v))
+    max_v = max(0.0, min(100.0, max_v))
+    remaining = 100.0 - max_v
+    fig = go.Figure(
+        data=[
+            go.Pie(
+                values=[max_v, remaining],
+                labels=["Peak used", "Headroom"],
+                hole=0.82,
+                marker=dict(
+                    colors=[color, "#EEF2FF"],
+                    line=dict(color="rgba(0,0,0,0)", width=0),
+                ),
+                sort=False,
+                textinfo="none",
+                hovertemplate="<b>%{label}</b>: %{value:.1f}%<extra></extra>",
+                direction="clockwise",
+            )
+        ]
+    )
+    fig.update_layout(
+        annotations=[
+            dict(
+                text=f"<b>{int(max_v)}%</b><br><span style='font-size:11px;color:#A3AED0;font-weight:400'>avg {int(avg_v)}%</span>",
+                x=0.5,
+                y=0.5,
+                xanchor="center",
+                yanchor="middle",
+                font=dict(size=26, color="#2B3674", family="DM Sans"),
+                showarrow=False,
+            )
+        ],
+        title=dict(
+            text=f"<b>{label}</b>",
+            x=0.5,
+            xanchor="center",
+            font=dict(size=12, color="#A3AED0", family="DM Sans"),
+        ),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.1,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=10, color="#A3AED0", family="DM Sans"),
+            bgcolor="rgba(0,0,0,0)",
+        ),
+        margin=dict(l=8, r=8, t=44, b=32),
         height=180,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -202,7 +312,7 @@ def create_grouped_bar_chart(labels, series_dict, title, height=380):
     return fig
 
 
-def create_horizontal_bar_chart(labels, values, title, color="#4318FF", height=340):
+def create_horizontal_bar_chart(labels, values, title, color="#4318FF", height=340, show_legend=True):
     """Executive horizontal bar chart (single series)."""
     labels = labels or []
     values = values or []
@@ -220,15 +330,17 @@ def create_horizontal_bar_chart(labels, values, title, color="#4318FF", height=3
                 line=dict(color="rgba(0,0,0,0)", width=0),
             ),
             hovertemplate="<b>%{y}</b><br>%{x:,.2f}<extra></extra>",
+            name=title,
         )
     )
 
-    fig.update_layout(
+    show, leg = _resolve_legend(show_legend)
+    layout_updates = dict(
         title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans", weight=700)),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=False,
-        margin=dict(l=10, r=20, t=40, b=40),
+        showlegend=show,
+        margin=dict(l=10, r=20, t=40, b=48 if show else 40),
         height=height,
         bargap=0.18,
         bargroupgap=0.06,
@@ -244,6 +356,9 @@ def create_horizontal_bar_chart(labels, values, title, color="#4318FF", height=3
         ),
         font=dict(family="DM Sans", color="#A3AED0"),
     )
+    if show and leg:
+        layout_updates["legend"] = leg
+    fig.update_layout(**layout_updates)
     try:
         fig.update_traces(marker_cornerradius=6)
     except Exception:
@@ -252,7 +367,7 @@ def create_horizontal_bar_chart(labels, values, title, color="#4318FF", height=3
     return fig
 
 
-def create_capacity_area_chart(timestamps, used, total, title, height=260):
+def create_capacity_area_chart(timestamps, used, total, title, height=260, show_legend=True):
     """
     Capacity planning trend chart.
     Inputs are used/total bytes arrays; we plot utilization percentage over time.
@@ -278,21 +393,26 @@ def create_capacity_area_chart(timestamps, used, total, title, height=260):
             line=dict(width=3, color="#4318FF"),
             fillcolor="rgba(67, 24, 255, 0.12)",
             hovertemplate="<b>%{x}</b><br>%{y:.1f}% utilized<extra></extra>",
+            name="Utilization %",
         )
     )
 
-    fig.update_layout(
+    show, leg = _resolve_legend(show_legend)
+    layout_updates = dict(
         title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans", weight=700)),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=False,
-        margin=dict(l=20, r=20, t=40, b=10),
+        showlegend=show,
+        margin=dict(l=20, r=20, t=40, b=28 if show else 10),
         height=height,
         hovermode="x unified",
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=True),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         font=dict(family="DM Sans", color="#A3AED0"),
     )
+    if show and leg:
+        layout_updates["legend"] = leg
+    fig.update_layout(**layout_updates)
     return fig
 
 
@@ -777,7 +897,7 @@ def create_energy_elite_v2(labels, values, height=300):
     return fig
 
 
-def create_dual_line_chart(timestamps, in_vals, out_vals, title: str, height: int = 260):
+def create_dual_line_chart(timestamps, in_vals, out_vals, title: str, height: int = 260, show_legend=True):
     """
     Dual line chart for SAN traffic trend.
     - In rate (blue) with subtle area fill
@@ -814,22 +934,26 @@ def create_dual_line_chart(timestamps, in_vals, out_vals, title: str, height: in
         )
     )
 
-    fig.update_layout(
+    show, leg = _resolve_legend(show_legend)
+    layout_updates = dict(
         title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans", weight=700)),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=False,
-        margin=dict(l=20, r=20, t=40, b=20),
+        showlegend=show,
+        margin=dict(l=20, r=20, t=40, b=36 if show else 20),
         height=height,
         hovermode="x unified",
         xaxis=dict(showgrid=False, zeroline=False),
         yaxis=dict(showgrid=False, zeroline=False),
         font=dict(family="DM Sans", color="#A3AED0"),
     )
+    if show and leg:
+        layout_updates["legend"] = leg
+    fig.update_layout(**layout_updates)
     return fig
 
 
-def create_sparkline_chart(values, label: str, unit: str, color: str, height: int = 100):
+def create_sparkline_chart(values, label: str, unit: str, color: str, height: int = 100, show_legend=False):
     """Minimal sparkline (used inside IBM Power storage KPI cards)."""
     try:
         y = [float(v or 0) for v in (values or [])]
@@ -838,11 +962,13 @@ def create_sparkline_chart(values, label: str, unit: str, color: str, height: in
 
     x = list(range(len(y)))
     fig = go.Figure()
+    show, leg = _resolve_legend(show_legend)
     fig.add_trace(
         go.Scatter(
             x=x,
             y=y,
             mode="lines",
+            name=label,
             line=dict(width=3, color=color),
             fill="tozeroy",
             fillcolor="rgba(67, 24, 255, 0.08)" if color == "#4318FF" else "rgba(5, 205, 153, 0.06)",
@@ -850,13 +976,16 @@ def create_sparkline_chart(values, label: str, unit: str, color: str, height: in
         )
     )
 
-    fig.update_layout(
+    layout_updates = dict(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=0, r=0, t=0, b=0),
+        margin=dict(l=0, r=0, t=0, b=16 if show else 0),
         height=height,
-        showlegend=False,
+        showlegend=show,
         xaxis=dict(visible=False),
         yaxis=dict(visible=False),
     )
+    if show and leg:
+        layout_updates["legend"] = leg
+    fig.update_layout(**layout_updates)
     return fig

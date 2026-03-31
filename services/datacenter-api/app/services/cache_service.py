@@ -5,6 +5,7 @@ from app.core.cache_backend import (
     cache_get,
     cache_set,
     cache_delete,
+    cache_delete_prefix,
     cache_flush_pattern,
     cache_stats as _backend_stats,
 )
@@ -24,6 +25,11 @@ def set(key: str, value: Any) -> None:
 def delete(key: str) -> None:
     cache_delete(key)
     logger.debug("Cache DELETE: %s", key)
+
+
+def delete_prefix(prefix: str) -> None:
+    cache_delete_prefix(prefix)
+    logger.debug("Cache DELETE_PREFIX: %s", prefix)
 
 
 def clear() -> None:

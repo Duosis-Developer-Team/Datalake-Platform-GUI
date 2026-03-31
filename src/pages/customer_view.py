@@ -1,13 +1,14 @@
 # Customer View - Billing-focused resource breakdown per customer.
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup
 import dash
-from dash import html, dcc
+from dash import html, dcc, callback, Input, Output, State
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objs as go
 
 from src.services import api_client as api
 from src.utils.time_range import default_time_range
+from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe
 from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_float, title_case
 from src.components.header import create_detail_header
 from src.pages.home import metric_card
@@ -705,6 +706,33 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         ],
     )
 
+    def _export_scalar(v):
+        if isinstance(v, (dict, list)):
+            return str(v)[:4000]
+        return v
+
+    export_rows = [{"section": "meta", "key": "customer", "value": customer_name}]
+    for k, v in (totals or {}).items():
+        export_rows.append({"section": "totals", "key": str(k), "value": _export_scalar(v)})
+    for k, v in (backup_totals or {}).items():
+        export_rows.append({"section": "backup_totals", "key": str(k), "value": _export_scalar(v)})
+    for d in phys_inv_devices or []:
+        if isinstance(d, dict):
+            export_rows.append({
+                "section": "phys_device",
+                "key": str(d.get("name", "")),
+                "value": " | ".join(
+                    filter(
+                        None,
+                        [
+                            str(d.get("device_role_name") or ""),
+                            str(d.get("manufacturer_name") or ""),
+                            str(d.get("location") or ""),
+                        ],
+                    )
+                ),
+            })
+
     return {
         "summary": _tab_summary(totals, assets),
         "virt": virt_content,
@@ -732,6 +760,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         "has_s3": has_s3,
         "phys_inv": _tab_physical_inventory(phys_inv_devices),
         "has_phys_inv": has_phys_inv,
+        "export_rows": export_rows,
     }
 
 
@@ -759,6 +788,18 @@ def build_customer_layout(time_range=None, selected_customer=None):
         ],
     )
 
+    export_rows = content.get("export_rows") or []
+    export_group = dmc.Group(
+        gap=6,
+        align="center",
+        children=[
+            dmc.Text("Export", size="xs", c="dimmed"),
+            dmc.Button("CSV", id="customer-export-csv", size="xs", variant="light", color="gray"),
+            dmc.Button("Excel", id="customer-export-xlsx", size="xs", variant="light", color="gray"),
+            dmc.Button("PDF", id="customer-export-pdf", size="xs", variant="light", color="gray"),
+        ],
+    )
+
     header = create_detail_header(
         title="Customer View",
         back_href="/",
@@ -768,6 +809,7 @@ def build_customer_layout(time_range=None, selected_customer=None):
         time_range=tr,
         icon="solar:users-group-two-rounded-bold-duotone",
         tabs=tabs_list,
+        right_extra=[export_group],
     )
 
     intro_card = dmc.SimpleGrid(
@@ -809,6 +851,11 @@ def build_customer_layout(time_range=None, selected_customer=None):
 
     return html.Div(
         children=[
+            dcc.Store(
+                id="customer-export-store",
+                data={"customer": chosen, "rows": export_rows},
+            ),
+            dcc.Download(id="customer-export-download"),
             dmc.Tabs(
                 color="indigo",
                 variant="pills",
@@ -853,3 +900,27 @@ def build_customer_layout(time_range=None, selected_customer=None):
 
 def layout():
     return build_customer_layout(default_time_range())
+
+
+@callback(
+    Output("customer-export-download", "data"),
+    Input("customer-export-csv", "n_clicks"),
+    Input("customer-export-xlsx", "n_clicks"),
+    Input("customer-export-pdf", "n_clicks"),
+    State("customer-export-store", "data"),
+    prevent_initial_call=True,
+)
+def export_customer_view(nc, nx, np, store):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+    tid = ctx.triggered[0]["prop_id"].split(".")[0]
+    fmt_map = {"customer-export-csv": "csv", "customer-export-xlsx": "xlsx", "customer-export-pdf": "pdf"}
+    fmt = fmt_map.get(tid)
+    if not fmt:
+        return dash.no_update
+    store = store or {}
+    rows = store.get("rows") or []
+    base = str(store.get("customer") or "customer_view")
+    df = records_to_dataframe(rows)
+    return dash_send_dataframe(df, base, fmt)

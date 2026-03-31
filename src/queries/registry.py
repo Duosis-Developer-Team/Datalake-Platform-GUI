@@ -340,3 +340,44 @@ QUERY_REGISTRY: dict[str, dict] = {
         "provider": "backup",
     },
 }
+
+
+def _usage_for_registry_key(key: str, meta: dict) -> dict:
+    """Heuristic usage map for Query Explorer (pages / service layer hints)."""
+    provider = meta.get("provider", "unknown")
+    pages: list[str] = []
+    methods: list[str] = []
+
+    if provider == "nutanix":
+        pages = ["DC View (Hyperconverged)", "Home / Datacenters aggregation", "Customer View"]
+        methods = ["DatabaseService / datacenter-api — Nutanix cluster metrics"]
+    elif provider == "vmware":
+        pages = ["DC View (Classic / Summary)", "Datacenters list", "Home overview"]
+        methods = ["DatabaseService / datacenter-api — VMware datacenter & cluster_metrics"]
+    elif provider == "ibm":
+        pages = ["DC View (Power)", "Home / Global views"]
+        methods = ["DatabaseService — IBM LPAR / VIOS / server tables"]
+    elif provider == "energy":
+        pages = ["Datacenters (power / kW)", "Home energy widgets"]
+        methods = ["DatabaseService — power / vmhost energy"]
+    elif provider == "customer":
+        pages = ["Customer View"]
+        methods = ["Customer resource rollups"]
+    elif provider == "backup":
+        pages = ["DC View — Backup & Replication", "Backup panels"]
+        methods = ["DatabaseService — raw backup vendor tables"]
+    else:
+        pages = ["Query Explorer"]
+        methods = ["execute_registered_query / internal"]
+
+    api_hint = "datacenter-api: /api/dc/* , customer-api; GUI: api_client.execute_registered_query"
+    return {
+        "pages": pages,
+        "methods": methods,
+        "api_endpoint": api_hint,
+        "source_table": meta.get("source", ""),
+    }
+
+
+# Per-key usage hints for Query Explorer ("Where is this query used?")
+QUERY_USAGE: dict[str, dict] = {k: _usage_for_registry_key(k, v) for k, v in QUERY_REGISTRY.items()}

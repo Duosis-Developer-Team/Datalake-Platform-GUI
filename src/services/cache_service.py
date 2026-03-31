@@ -40,6 +40,19 @@ def delete(key: str) -> None:
     logger.debug("Cache DELETE: %s", key)
 
 
+def delete_prefix(prefix: str) -> None:
+    """Remove all in-memory keys that start with prefix (used after raw dataset refresh)."""
+    if not prefix:
+        return
+    with _lock:
+        to_remove = [k for k in _cache if isinstance(k, str) and k.startswith(prefix)]
+        for k in to_remove:
+            _cache.pop(k, None)
+        n = len(to_remove)
+    if n:
+        logger.debug("Cache DELETE_PREFIX %s (%d keys)", prefix, n)
+
+
 def clear() -> None:
     """Flush the entire cache (e.g. on config reload or forced refresh)."""
     with _lock:

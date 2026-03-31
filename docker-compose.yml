@@ -10,13 +10,18 @@
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        APP_BUILD_ID: ${APP_BUILD_ID:-local}
     container_name: datalake-platform-gui-app
     ports:
       - "8050:8050"
     env_file:
       - .env
     environment:
+      # Matches image label; override when rebuilding to verify new UI: APP_BUILD_ID=$(git rev-parse --short HEAD) docker compose up -d --build app
+      APP_BUILD_ID: ${APP_BUILD_ID:-local}
       # Override .env when APIs run as Compose services (same Docker network)
       DATACENTER_API_URL: ${DATACENTER_API_URL:-http://datacenter-api:8000}
       CUSTOMER_API_URL: ${CUSTOMER_API_URL:-http://customer-api:8000}

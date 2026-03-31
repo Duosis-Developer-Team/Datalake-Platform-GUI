@@ -17,9 +17,13 @@ from src.services import query_overrides as qo
 from src.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
 from src.utils.format_units import smart_cpu, smart_memory, smart_storage
 
-_DC_CODE_RE = re.compile(r'(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)', re.IGNORECASE)
-
 logger = logging.getLogger(__name__)
+
+_DC_CODE_RE = re.compile(r"(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)", re.IGNORECASE)
+
+# Customers pre-warmed by scheduler / warm_cache (extend when adding tenants).
+WARMED_CUSTOMERS: tuple[str, ...] = ("Boyner",)
+DEFAULT_CUSTOMER_NAME: str = WARMED_CUSTOMERS[0] if WARMED_CUSTOMERS else "Boyner"
 
 # Fallback DC list used when loki_locations is unreachable.
 _FALLBACK_DC_LIST = [
@@ -38,7 +42,7 @@ DC_LOCATIONS: dict[str, str] = {
     "DC17": "Istanbul",
     "DC18": "Istanbul",
     "ICT11": "Almanya",
-    "ICT11": "İngiltere",
+    "ICT21": "İngiltere",
     "UZ11": "Özbekistan",
 }
 
@@ -48,7 +52,9 @@ def _empty_compute_section() -> dict:
     return {
         "hosts": 0, "vms": 0,
         "cpu_cap": 0.0, "cpu_used": 0.0, "cpu_pct": 0.0,
+        "cpu_pct_max": 0.0,
         "mem_cap": 0.0, "mem_used": 0.0, "mem_pct": 0.0,
+        "mem_pct_max": 0.0,
         "stor_cap": 0.0, "stor_used": 0.0,
     }
 
@@ -95,13 +101,14 @@ class DatabaseService:
     """
 
     def __init__(self):
-        self._db_host = os.getenv("DB_HOST", "10.134.16.6")
-        self._db_port = os.getenv("DB_PORT", "5000")   # Non-standard port — not 5432
-        self._db_name = os.getenv("DB_NAME", "bulutlake")
-        self._db_user = os.getenv("DB_USER", "datalakeui")
+        self._db_host = (os.getenv("DB_HOST") or "").strip()
+        self._db_port = (os.getenv("DB_PORT") or "5000").strip()
+        self._db_name = (os.getenv("DB_NAME") or "bulutlake").strip()
+        self._db_user = (os.getenv("DB_USER") or "datalakeui").strip()
         self._db_pass = os.getenv("DB_PASS")
         self._pool: pg_pool.ThreadedConnectionPool | None = None
         self._dc_list: list[str] = _FALLBACK_DC_LIST.copy()
+        self._dc_site_map: dict[str, str] = {}
         self._init_pool()
 
     # ------------------------------------------------------------------
@@ -110,6 +117,12 @@ class DatabaseService:
 
     def _init_pool(self) -> None:
         """Create the connection pool. Logs a warning if DB is unreachable at startup."""
+        if not self._db_host or not self._db_pass:
+            logger.warning(
+                "DB_HOST and/or DB_PASS not set; database pool will not be initialized.",
+            )
+            self._pool = None
+            return
         try:
             self._pool = pg_pool.ThreadedConnectionPool(
                 minconn=2,
@@ -570,7 +583,7 @@ class DatabaseService:
             return _empty_compute_section()
 
         row = row or (0,) * 8
-        avg30 = avg30 or (0, 0)
+        avg30 = DatabaseService._normalize_avg30_row(avg30)
         cl_hosts = int(row[0] or 0)
         cl_vms = int(row[1] or 0)
         cl_cpu_cap = round(float(row[2] or 0), 2)
@@ -581,15 +594,19 @@ class DatabaseService:
         cl_stor_used = round(float(row[7] or 0) / 1024.0, 3)
         cl_cpu_pct = round(float(avg30[0] or 0), 1)
         cl_mem_pct = round(float(avg30[1] or 0), 1)
+        cl_cpu_pct_max = round(float(avg30[2] or 0), 1)
+        cl_mem_pct_max = round(float(avg30[3] or 0), 1)
         return {
             "hosts": cl_hosts,
             "vms": cl_vms,
             "cpu_cap": cl_cpu_cap,
             "cpu_used": cl_cpu_used,
             "cpu_pct": cl_cpu_pct,
+            "cpu_pct_max": cl_cpu_pct_max,
             "mem_cap": cl_mem_cap,
             "mem_used": cl_mem_used,
             "mem_pct": cl_mem_pct,
+            "mem_pct_max": cl_mem_pct_max,
             "stor_cap": cl_stor_cap,
             "stor_used": cl_stor_used,
         }
@@ -605,6 +622,7 @@ class DatabaseService:
 
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
+        dc_wc = f"%{dc_code}%"
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
@@ -613,6 +631,9 @@ class DatabaseService:
                     n_mem = self._run_row(cur, nq.MEMORY_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
                     n_cpu = self._run_row(cur, nq.CPU_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
                     n_stor = self._run_row(cur, nq.STORAGE_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
+                    hc_avg30 = self._run_row(
+                        cur, vq.HYPERCONV_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
+                    )
         except OperationalError as exc:
             logger.error("DB unavailable for get_hyperconv_metrics_filtered(%s): %s", dc_code, exc)
             return _empty_compute_section()
@@ -640,17 +661,28 @@ class DatabaseService:
         hc_mem_used = round(mem_used_gb, 2)
         hc_stor_cap = round(stor_cap_tb, 3)
         hc_stor_used = round(stor_used_tb, 3)
-        hc_cpu_pct = round(100.0 * hc_cpu_used / hc_cpu_cap, 1) if hc_cpu_cap else 0.0
-        hc_mem_pct = round(100.0 * hc_mem_used / hc_mem_cap, 1) if hc_mem_cap else 0.0
+        hc_cpu_pct_cap = round(100.0 * hc_cpu_used / hc_cpu_cap, 1) if hc_cpu_cap else 0.0
+        hc_mem_pct_cap = round(100.0 * hc_mem_used / hc_mem_cap, 1) if hc_mem_cap else 0.0
+        avg30 = DatabaseService._normalize_avg30_row(hc_avg30)
+        hc_cpu_pct = round(float(avg30[0] or 0), 1) if (avg30[0] or avg30[2]) else hc_cpu_pct_cap
+        hc_mem_pct = round(float(avg30[1] or 0), 1) if (avg30[1] or avg30[3]) else hc_mem_pct_cap
+        hc_cpu_pct_max = round(float(avg30[2] or 0), 1)
+        hc_mem_pct_max = round(float(avg30[3] or 0), 1)
+        if hc_cpu_pct_max <= 0 and hc_cpu_pct_cap > 0:
+            hc_cpu_pct = hc_cpu_pct_cap
+        if hc_mem_pct_max <= 0 and hc_mem_pct_cap > 0:
+            hc_mem_pct = hc_mem_pct_cap
         return {
             "hosts": hc_hosts,
             "vms": hc_vms,
             "cpu_cap": hc_cpu_cap,
             "cpu_used": hc_cpu_used,
             "cpu_pct": hc_cpu_pct,
+            "cpu_pct_max": hc_cpu_pct_max,
             "mem_cap": hc_mem_cap,
             "mem_used": hc_mem_used,
             "mem_pct": hc_mem_pct,
+            "mem_pct_max": hc_mem_pct_max,
             "stor_cap": hc_stor_cap,
             "stor_used": hc_stor_used,
         }
@@ -658,6 +690,17 @@ class DatabaseService:
     # ------------------------------------------------------------------
     # Unit normalization & aggregation (shared by single + batch paths)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_avg30_row(row) -> tuple:
+        """Support (avg_cpu, avg_mem) legacy rows and (avg_cpu, avg_mem, max_cpu, max_mem)."""
+        if not row:
+            return (0, 0, 0, 0)
+        if len(row) >= 4:
+            return (row[0], row[1], row[2], row[3])
+        if len(row) >= 2:
+            return (row[0], row[1], row[0], row[1])
+        return (0, 0, 0, 0)
 
     @staticmethod
     def _aggregate_dc(
@@ -690,7 +733,7 @@ class DatabaseService:
         classic_row / hyperconv_row — rows from CLASSIC_METRICS / HYPERCONV_METRICS:
             (hosts, vms, cpu_cap_ghz, cpu_used_ghz, mem_cap_gb, mem_used_gb, stor_cap_gb, stor_used_gb)
         classic_avg30 / hyperconv_avg30 — rows from CLASSIC_AVG30 / HYPERCONV_AVG30:
-            (cpu_avg_pct, mem_avg_pct)
+            (cpu_avg_pct, mem_avg_pct, cpu_max_pct, mem_max_pct)
         """
         nutanix_mem     = nutanix_mem     or (0, 0)
         nutanix_storage = nutanix_storage or (0, 0)
@@ -702,9 +745,9 @@ class DatabaseService:
         power_mem       = power_mem       or (0, 0)
         power_cpu       = power_cpu       or (0, 0, 0)
         classic_row     = classic_row     or (0,) * 8
-        classic_avg30   = classic_avg30   or (0, 0)
+        classic_avg30   = DatabaseService._normalize_avg30_row(classic_avg30)
         hyperconv_row   = hyperconv_row   or (0,) * 8
-        hyperconv_avg30 = hyperconv_avg30 or (0, 0)
+        hyperconv_avg30 = DatabaseService._normalize_avg30_row(hyperconv_avg30)
 
         # Memory → GB (coerce to float for DB Decimal)
         n_mem_cap_gb  = float(nutanix_mem[0] or 0) * 1024
@@ -740,6 +783,8 @@ class DatabaseService:
         cl_mem_used = round(float(classic_row[5] or 0), 2)
         cl_cpu_pct  = round(float(classic_avg30[0] or 0), 1)
         cl_mem_pct  = round(float(classic_avg30[1] or 0), 1)
+        cl_cpu_pct_max = round(float(classic_avg30[2] or 0), 1)
+        cl_mem_pct_max = round(float(classic_avg30[3] or 0), 1)
         # cluster_metrics.total_capacity_gb is in GB → convert to TB
         cl_stor_cap  = round(float(classic_row[6] or 0) / 1024.0, 3)
         cl_stor_used = round(float(classic_row[7] or 0) / 1024.0, 3)
@@ -755,6 +800,8 @@ class DatabaseService:
         hc_mem_used = round(float(hyperconv_row[5] or 0), 2)
         hc_cpu_pct  = round(float(hyperconv_avg30[0] or 0), 1)
         hc_mem_pct  = round(float(hyperconv_avg30[1] or 0), 1)
+        hc_cpu_pct_max = round(float(hyperconv_avg30[2] or 0), 1)
+        hc_mem_pct_max = round(float(hyperconv_avg30[3] or 0), 1)
         # Storage from Nutanix (already in TB from the nutanix query)
         hc_stor_cap  = round(n_stor_cap_tb, 3)
         hc_stor_used = round(n_stor_used_tb, 3)
@@ -768,13 +815,17 @@ class DatabaseService:
             "classic": {
                 "hosts": cl_hosts, "vms": cl_vms,
                 "cpu_cap": cl_cpu_cap, "cpu_used": cl_cpu_used, "cpu_pct": cl_cpu_pct,
+                "cpu_pct_max": cl_cpu_pct_max,
                 "mem_cap": cl_mem_cap, "mem_used": cl_mem_used, "mem_pct": cl_mem_pct,
+                "mem_pct_max": cl_mem_pct_max,
                 "stor_cap": cl_stor_cap, "stor_used": cl_stor_used,
             },
             "hyperconv": {
                 "hosts": hc_hosts, "vms": hc_vms,
                 "cpu_cap": hc_cpu_cap, "cpu_used": hc_cpu_used, "cpu_pct": hc_cpu_pct,
+                "cpu_pct_max": hc_cpu_pct_max,
                 "mem_cap": hc_mem_cap, "mem_used": hc_mem_used, "mem_pct": hc_mem_pct,
+                "mem_pct_max": hc_mem_pct_max,
                 "stor_cap": hc_stor_cap, "stor_used": hc_stor_used,
             },
             # Legacy combined Intel section — kept for home.py / datacenters.py
@@ -1138,10 +1189,18 @@ class DatabaseService:
 
             # Batch CLASSIC_METRICS: (dc_code, hosts, vms, cpu_cap, cpu_used, mem_cap, mem_used, stor_cap, stor_used)
             cl_data = (vcl_row[1], vcl_row[2], vcl_row[3], vcl_row[4], vcl_row[5], vcl_row[6], vcl_row[7], vcl_row[8]) if (vcl_row and len(vcl_row) > 8) else None
-            # Batch CLASSIC_AVG30: (dc_code, cpu_avg_pct, mem_avg_pct)
-            cl_avg  = (vcla_row[1], vcla_row[2]) if (vcla_row and len(vcla_row) > 2) else None
+            # Batch CLASSIC_AVG30: (dc_code, cpu_avg_pct, mem_avg_pct, cpu_max_pct, mem_max_pct)
+            cl_avg = (
+                (vcla_row[1], vcla_row[2], vcla_row[3], vcla_row[4])
+                if (vcla_row and len(vcla_row) > 4)
+                else ((vcla_row[1], vcla_row[2]) if (vcla_row and len(vcla_row) > 2) else None)
+            )
             hc_data = (vhc_row[1], vhc_row[2], vhc_row[3], vhc_row[4], vhc_row[5], vhc_row[6], vhc_row[7], vhc_row[8]) if (vhc_row and len(vhc_row) > 8) else None
-            hc_avg  = (vhca_row[1], vhca_row[2]) if (vhca_row and len(vhca_row) > 2) else None
+            hc_avg = (
+                (vhca_row[1], vhca_row[2], vhca_row[3], vhca_row[4])
+                if (vhca_row and len(vhca_row) > 4)
+                else ((vhca_row[1], vhca_row[2]) if (vhca_row and len(vhca_row) > 2) else None)
+            )
 
             results[dc] = self._aggregate_dc(
                 dc_code=dc,
@@ -2255,8 +2314,8 @@ class DatabaseService:
         return result
 
     def get_customer_list(self) -> list[str]:
-        """Return list of customer names for selector (fixed to Boyner)."""
-        return ["Boyner"]
+        """Return list of customer names for selector (aligned with WARMED_CUSTOMERS)."""
+        return list(WARMED_CUSTOMERS)
 
     # ------------------------------------------------------------------
     # Physical Inventory (discovery_netbox_inventory_device)
@@ -2266,16 +2325,17 @@ class DatabaseService:
     # Physical Inventory — raw data loaders (SQL-side)
     # ------------------------------------------------------------------
 
-    def _get_physical_inventory_raw(self) -> list[dict]:
+    def _get_physical_inventory_raw(self, *, force: bool = False) -> list[dict]:
         """
         Fetch all physical devices (latest snapshot per device key) as a plain list of dicts.
         Result is cached; all derived methods use this single dataset.
         No JOINs, no aggregations — just a fast DISTINCT ON fetch.
         """
         cache_key = "phys_inv:raw_devices"
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
+        if not force:
+            cached_val = cache.get(cache_key)
+            if cached_val is not None:
+                return cached_val
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
@@ -2301,15 +2361,16 @@ class DatabaseService:
             logger.warning("_get_physical_inventory_raw failed: %s", exc)
             return []
 
-    def _get_location_dc_map(self) -> dict[str, str]:
+    def _get_location_dc_map(self, *, force: bool = False) -> dict[str, str]:
         """
         Fetch loki location_name → dc_name mapping (from loki_locations).
         Cached in memory; used for in-Python location resolution (no SQL JOINs needed).
         """
         cache_key = "loki:location_dc_map"
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
+        if not force:
+            cached_val = cache.get(cache_key)
+            if cached_val is not None:
+                return cached_val
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
@@ -2477,23 +2538,22 @@ class DatabaseService:
         logger.info("Warming physical inventory cache…")
         t0 = time.perf_counter()
         try:
-            # Invalidate raw cache entries so we get fresh data on next access.
-            cache.delete("phys_inv:raw_devices")
-            cache.delete("loki:location_dc_map")
-            # Eagerly load both datasets.
-            devices = self._get_physical_inventory_raw()
-            self._get_location_dc_map()
+            # Write-through: refresh raw + map first (no delete-before-fetch gap), then drop stale derived keys.
+            devices = self._get_physical_inventory_raw(force=True)
+            self._get_location_dc_map(force=True)
             logger.info(
                 "Physical inventory raw data loaded: %d devices. Computing derived views…",
                 len(devices),
             )
-            # Compute and cache all derived views.
+            cache.delete_prefix("phys_inv:overview_by_role")
+            cache.delete_prefix("phys_inv:customer_")
+            cache.delete_prefix("phys_inv:dc:")
+            cache.delete_prefix("phys_inv:manufacturer:")
+            cache.delete_prefix("phys_inv:location:")
             self.get_physical_inventory_overview_by_role()
             self.get_physical_inventory_customer()
             for dc_code in self.dc_list:
                 try:
-                    # Invalidate per-DC cache so it recomputes from fresh raw data.
-                    cache.delete(f"phys_inv:dc:{dc_code.strip().lower()}")
                     self.get_physical_inventory_dc(dc_code)
                 except Exception as exc:
                     logger.warning("PhysInv warm failed for DC %s: %s", dc_code, exc)
@@ -2515,11 +2575,11 @@ class DatabaseService:
             # Datacenter-level caches
             self._rebuild_summary(tr)
             self.get_global_overview(tr)
-            # Customer-level cache for Boyner so the Customer tab is instant after startup.
-            try:
-                self.get_customer_resources("Boyner", tr)
-            except Exception as exc:
-                logger.warning("Customer cache warm-up for Boyner failed: %s", exc)
+            for cust in WARMED_CUSTOMERS:
+                try:
+                    self.get_customer_resources(cust, tr)
+                except Exception as exc:
+                    logger.warning("Customer cache warm-up for %s failed: %s", cust, exc)
 
             # Physical inventory (time-range independent)
             try:
@@ -2569,12 +2629,13 @@ class DatabaseService:
                 except Exception as exc:
                     logger.warning("warm_s3_cache failed for DC %s: %s", dc_code, exc)
 
-            try:
-                key_c = f"customer_s3:Boyner:{tr.get('start','')}:{tr.get('end','')}"
-                data_c = self._fetch_customer_s3_vaults("Boyner", start_ts, end_ts)
-                cache.set(key_c, data_c)
-            except Exception as exc:
-                logger.warning("warm_s3_cache failed for customer Boyner: %s", exc)
+            for cust in WARMED_CUSTOMERS:
+                try:
+                    key_c = f"customer_s3:{cust}:{tr.get('start','')}:{tr.get('end','')}"
+                    data_c = self._fetch_customer_s3_vaults(cust, start_ts, end_ts)
+                    cache.set(key_c, data_c)
+                except Exception as exc:
+                    logger.warning("warm_s3_cache failed for customer %s: %s", cust, exc)
 
             logger.info("S3 cache warm-up complete for default range.")
         except Exception as exc:
@@ -2615,13 +2676,13 @@ class DatabaseService:
                     except Exception as exc:
                         logger.warning("refresh_s3_cache failed for DC %s: %s", dc_code, exc)
 
-                # For now, customer S3 is implemented for Boyner only, aligned with customer view.
-                try:
-                    key_c = f"customer_s3:Boyner:{tr.get('start','')}:{tr.get('end','')}"
-                    data_c = self._fetch_customer_s3_vaults("Boyner", start_ts, end_ts)
-                    cache.set(key_c, data_c)
-                except Exception as exc:
-                    logger.warning("refresh_s3_cache failed for customer Boyner: %s", exc)
+                for cust in WARMED_CUSTOMERS:
+                    try:
+                        key_c = f"customer_s3:{cust}:{tr.get('start','')}:{tr.get('end','')}"
+                        data_c = self._fetch_customer_s3_vaults(cust, start_ts, end_ts)
+                        cache.set(key_c, data_c)
+                    except Exception as exc:
+                        logger.warning("refresh_s3_cache failed for customer %s: %s", cust, exc)
 
             logger.info("Background S3 cache refresh complete.")
         except Exception as exc:

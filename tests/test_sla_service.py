@@ -34,6 +34,7 @@ class TestSlaService(unittest.TestCase):
         self.assertAlmostEqual(e.downtime_hours, 0.5, places=6)
         self.assertIn(3, by_group)
 
+    @patch.object(sla_service, "SLA_API_KEY", "test-key-for-unit-test")
     @patch("src.services.sla_service.requests.get")
     def test_refresh_sla_cache_fetches_and_caches(self, mock_get):
         tr = {"start": "2020-01-01", "end": "2020-01-02"}

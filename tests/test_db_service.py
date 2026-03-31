@@ -74,6 +74,15 @@ class TestCacheService(unittest.TestCase):
         self.assertIn("x", stats["keys"])
         self.assertEqual(stats["current_size"], 1)
 
+    def test_delete_prefix_removes_matching_keys(self):
+        cache.set("phys_inv:dc:dc11", {"a": 1})
+        cache.set("phys_inv:overview_by_role", [])
+        cache.set("other:key", 1)
+        cache.delete_prefix("phys_inv:")
+        self.assertIsNone(cache.get("phys_inv:dc:dc11"))
+        self.assertIsNone(cache.get("phys_inv:overview_by_role"))
+        self.assertEqual(cache.get("other:key"), 1)
+
     def test_cached_decorator_calls_fn_once(self):
         call_count = [0]
 

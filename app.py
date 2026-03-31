@@ -1,8 +1,15 @@
+import json
 import logging
+import os
+import time as time_module
+from urllib.parse import parse_qs
+
 import dash
+import plotly.graph_objects as go
 from dash import Dash, html, dcc, _dash_renderer
 import dash_mantine_components as dmc
 from dotenv import load_dotenv
+from flask import request
 
 load_dotenv()
 
@@ -13,9 +20,18 @@ logging.basicConfig(
 )
 
 from src.components.sidebar import create_sidebar_nav
+from src.components.backup_panel import build_netbackup_panel, build_zerto_panel, build_veeam_panel
+from src.components.charts import (
+    create_capacity_area_chart,
+    create_horizontal_bar_chart,
+    create_usage_donut_chart,
+)
 from src.services import api_client as api
+from src.services.db_service import DEFAULT_CUSTOMER_NAME, WARMED_CUSTOMERS
 from src.utils.time_range import default_time_range, preset_to_range
+from src.utils.format_units import pct_float, smart_storage
 from src.components.s3_panel import build_dc_s3_panel, build_customer_s3_panel
+from src.pages.home import _phys_inv_bar_figure
 
 _dash_renderer._set_react_version("18.2.0")
 
@@ -34,13 +50,39 @@ app = Dash(
 )
 server = app.server
 
+APP_BUILD_ID = (os.environ.get("APP_BUILD_ID") or "dev").strip()
+
+
+@server.after_request
+def _prevent_stale_dash_cache(response):
+    """Avoid browsers/CDNs serving an old Dash shell after a new image is deployed."""
+    try:
+        path = request.path
+        ct = (response.content_type or "").lower()
+        if path.startswith("/_dash") or "text/html" in ct:
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+    except Exception:
+        pass
+    return response
+
+
+_log = logging.getLogger(__name__)
+_log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
+
 from src.pages import home, datacenters, dc_view, customer_view, query_explorer, global_view
-from src.pages.dc_view import _build_compute_tab
+from src.pages.dc_view import _bps_to_gbps, _build_compute_tab
 
 _default_tr = default_time_range()
-_customers = api.get_customer_list()
-_default_customer = _customers[0] if _customers else "Boyner"
-_customer_options = [{"value": c, "label": c} for c in _customers] if _customers else [{"value": "Boyner", "label": "Boyner"}]
+try:
+    _customers = api.get_customer_list()
+except Exception as exc:
+    logging.getLogger(__name__).warning("get_customer_list failed at startup (using defaults): %s", exc)
+    _customers = []
+if not _customers:
+    _customers = list(WARMED_CUSTOMERS)
+_default_customer = _customers[0] if _customers else DEFAULT_CUSTOMER_NAME
+_customer_options = [{"value": c, "label": c} for c in _customers]
 
 _sidebar = html.Div(
     style={
@@ -159,12 +201,33 @@ app.layout = dmc.MantineProvider(
     },
     children=[
         dcc.Location(id="url", refresh=False),
+        html.Div(
+            APP_BUILD_ID,
+            id="app-deploy-revision",
+            title="Deploy revision (env APP_BUILD_ID)",
+            style={
+                "position": "fixed",
+                "bottom": "2px",
+                "right": "8px",
+                "fontSize": "10px",
+                "color": "#ADB5BD",
+                "zIndex": 9998,
+                "pointerEvents": "none",
+                "userSelect": "none",
+            },
+        ),
         dcc.Store(id="app-time-range", data=_default_tr),
         html.Div(
             [
                 _sidebar,
                 html.Div(
-                    html.Div(id="main-content", children=[]),
+                    dcc.Loading(
+                        id="main-content-loading",
+                        type="circle",
+                        color="#4318FF",
+                        children=html.Div(id="main-content", children=[]),
+                        style={"minHeight": "240px"},
+                    ),
                     style={
                         "marginLeft": "292px",
                         "padding": "30px",
@@ -278,7 +341,7 @@ def update_s3_dc_panel(selected_pools, time_range, pathname):
     dash.State("customer-select", "value"),
 )
 def update_s3_customer_panel(selected_vaults, time_range, customer_name):
-    name = customer_name or "Boyner"
+    name = customer_name or DEFAULT_CUSTOMER_NAME
     tr = time_range or default_time_range()
     s3_data = api.get_customer_s3_vaults(name, tr)
     if not s3_data.get("vaults"):
@@ -340,8 +403,6 @@ def update_backup_netbackup_panel(selected_pools, time_range, pathname):
         selected = pools
     else:
         selected = [p for p in selected_pools if p in pools] or pools
-    from src.components.backup_panel import build_netbackup_panel
-
     return build_netbackup_panel(data, selected)
 
 
@@ -364,8 +425,6 @@ def update_backup_zerto_panel(selected_sites, time_range, pathname):
         selected = sites
     else:
         selected = [s for s in selected_sites if s in sites] or sites
-    from src.components.backup_panel import build_zerto_panel
-
     return build_zerto_panel(data, selected)
 
 
@@ -388,8 +447,6 @@ def update_backup_veeam_panel(selected_repos, time_range, pathname):
         selected = repos
     else:
         selected = [r for r in selected_repos if r in repos] or repos
-    from src.components.backup_panel import build_veeam_panel
-
     return build_veeam_panel(data, selected)
 
 
@@ -404,8 +461,6 @@ def update_backup_veeam_panel(selected_repos, time_range, pathname):
     prevent_initial_call=True,
 )
 def update_phys_inv_chart(click_data, reset_clicks, state):
-    from src.pages.home import _phys_inv_bar_figure
-
     state = state or {"level": 0, "role": None, "manufacturer": None}
     level = state.get("level", 0)
     role = state.get("role")
@@ -471,6 +526,7 @@ def update_global_info_card(click_data, time_range):
     dc_id = custom[0]
     tr = time_range or default_time_range()
     from src.pages.global_view import build_dc_info_card
+
     return build_dc_info_card(dc_id, tr)
 
 
@@ -485,9 +541,11 @@ def update_global_info_card(click_data, time_range):
     dash.Output("net-device-selector", "data"),
     dash.Output("net-device-selector", "value"),
     dash.Input("net-manufacturer-selector", "value"),
+    dash.Input("net-role-selector", "value"),
     dash.Input("net-filters-store", "data"),
 )
-def update_net_role_device_options(manufacturer, net_filters):
+def update_net_selectors(manufacturer, role, net_filters):
+    """Single callback for role + device dropdowns (avoids duplicate Output writers)."""
     net_filters = net_filters or {}
     roles_by_manu = net_filters.get("roles_by_manufacturer") or {}
     devices_by_manu_role = net_filters.get("devices_by_manufacturer_role") or {}
@@ -496,73 +554,45 @@ def update_net_role_device_options(manufacturer, net_filters):
         return [], None, [], None
 
     if manufacturer:
-        roles = roles_by_manu.get(manufacturer) or []
-        roles = sorted(roles)
-        # All devices within this manufacturer (regardless of role selection)
-        devs_set = set()
+        roles = sorted(roles_by_manu.get(manufacturer) or [])
+        devs_set: set = set()
         for r in roles:
             devs_set.update(devices_by_manu_role.get(manufacturer, {}).get(r, []) or [])
-        devices = sorted(devs_set)
+        devices_all = sorted(devs_set)
     else:
-        # Default: all manufacturers => all roles and all devices
-        roles = sorted({r for roles in roles_by_manu.values() for r in (roles or [])})
-        devices = sorted(
-            {
-                d
-                for roles_map in devices_by_manu_role.values()
-                for devs in roles_map.values()
-                for d in (devs or [])
-            }
+        roles = sorted({r for rs in roles_by_manu.values() for r in (rs or [])})
+        devices_all = sorted(
+            d
+            for rm in devices_by_manu_role.values()
+            for devs in rm.values()
+            for d in (devs or [])
         )
 
     role_data = [{"label": r, "value": r} for r in roles]
-    device_data = [{"label": d, "value": d} for d in devices]
-    # Reset downstream selections
+    ctx = dash.callback_context
+    triggered_id = getattr(ctx, "triggered_id", None)
+    if triggered_id is None and ctx.triggered:
+        triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+
+    if triggered_id == "net-role-selector":
+        if manufacturer and role:
+            devices = devices_by_manu_role.get(manufacturer, {}).get(role, []) or []
+        elif manufacturer and not role:
+            devices = []
+            for r in roles_by_manu.get(manufacturer, []) or []:
+                devices.extend(devices_by_manu_role.get(manufacturer, {}).get(r, []) or [])
+        elif not manufacturer and role:
+            devs = set()
+            for roles_map in devices_by_manu_role.values():
+                devs.update(roles_map.get(role, []) or [])
+            devices = sorted(devs)
+        else:
+            devices = devices_all
+        device_data = [{"label": d, "value": d} for d in sorted(devices or [])]
+        return role_data, dash.no_update, device_data, None
+
+    device_data = [{"label": d, "value": d} for d in devices_all]
     return role_data, None, device_data, None
-
-
-@app.callback(
-    dash.Output("net-device-selector", "data"),
-    dash.Output("net-device-selector", "value"),
-    dash.Input("net-role-selector", "value"),
-    dash.Input("net-manufacturer-selector", "value"),
-    dash.Input("net-filters-store", "data"),
-)
-def update_net_device_options(role, manufacturer, net_filters):
-    net_filters = net_filters or {}
-    roles_by_manu = net_filters.get("roles_by_manufacturer") or {}
-    devices_by_manu_role = net_filters.get("devices_by_manufacturer_role") or {}
-
-    if not devices_by_manu_role:
-        return [], None
-
-    if manufacturer and role:
-        devices = devices_by_manu_role.get(manufacturer, {}).get(role, []) or []
-    elif manufacturer and not role:
-        # manufacturer selected, role cleared => all devices under manufacturer
-        devices = []
-        for r in roles_by_manu.get(manufacturer, []) or []:
-            devices.extend(devices_by_manu_role.get(manufacturer, {}).get(r, []) or [])
-    elif not manufacturer and role:
-        # role selected, manufacturer cleared => union across manufacturers
-        devs = set()
-        for manu, roles_map in devices_by_manu_role.items():
-            devs.update((roles_map.get(role, []) or []))
-        devices = sorted(devs)
-    else:
-        # both cleared => all devices
-        devices = sorted(
-            {
-                d
-                for roles_map in devices_by_manu_role.values()
-                for devs in roles_map.values()
-                for d in (devs or [])
-            }
-        )
-
-    device_data = [{"label": d, "value": d} for d in sorted(devices or [])]
-    # Reset device selection whenever options change
-    return device_data, None
 
 
 @app.callback(
@@ -583,10 +613,6 @@ def update_net_kpis_and_charts(manufacturer, device_role, device_name, time_rang
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
-
-    from src.components.charts import create_horizontal_bar_chart, create_usage_donut_chart
-    from src.utils.format_units import pct_float
-    from src.pages.dc_view import _bps_to_gbps  # reuse conversion helper
 
     port_summary = api.get_dc_network_port_summary(
         dc_id,
@@ -706,9 +732,6 @@ def update_intel_storage_charts(host, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-    from src.components.charts import create_capacity_area_chart, create_usage_donut_chart
-    from src.utils.format_units import pct_float, smart_storage
-
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
 
@@ -801,9 +824,6 @@ def update_intel_disk_trend(disk_name, host, time_range, pathname):
 
     if host is None or disk_name is None:
         return html.Div()
-
-    from src.components.charts import create_capacity_area_chart
-    import plotly.graph_objects as go
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()

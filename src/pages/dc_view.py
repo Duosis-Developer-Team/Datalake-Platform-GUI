@@ -1,11 +1,13 @@
 # DC Detail view - Capacity Planning
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup | Physical Inventory
-from dash import html, dcc, dash_table
+import dash
+from dash import html, dcc, dash_table, callback, Input, Output, State
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objects as go
 
 from src.services import api_client as api
+from src.utils.api_parallel import parallel_execute
 from src.utils.time_range import default_time_range
 from src.utils.format_units import (
     smart_storage,
@@ -15,7 +17,13 @@ from src.utils.format_units import (
     title_case,
     parse_storage_string,
 )
-from src.components.charts import create_usage_donut_chart, create_gauge_chart, create_dual_line_chart, create_sparkline_chart
+from src.components.charts import (
+    create_usage_donut_chart,
+    create_avg_max_donut_chart,
+    create_gauge_chart,
+    create_dual_line_chart,
+    create_sparkline_chart,
+)
 from src.components.charts import create_horizontal_bar_chart, create_capacity_area_chart, create_grouped_bar_chart
 from src.components.header import create_detail_header
 from src.components.s3_panel import build_dc_s3_panel
@@ -25,11 +33,37 @@ from src.components.backup_panel import (
     build_veeam_panel,
 )
 from src.services import sla_service
+from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe
 
 
 # ---------------------------------------------------------------------------
 # Shared UI helpers
 # ---------------------------------------------------------------------------
+
+
+def _build_dc_export_rows(dc_code: str, data: dict, phys_inv: dict) -> list[dict]:
+    """Flatten DC detail payload for CSV/Excel/PDF export."""
+    rows: list[dict] = []
+    meta = data.get("meta") or {}
+    rows.append({"section": "meta", "key": "dc_code", "value": dc_code})
+    for k, v in meta.items():
+        rows.append({"section": "meta", "key": str(k), "value": v})
+    for block_name in ("classic", "hyperconv", "power", "energy"):
+        block = data.get(block_name)
+        if not isinstance(block, dict):
+            continue
+        for k, v in block.items():
+            rows.append({"section": block_name, "key": str(k), "value": v})
+    br = phys_inv.get("by_role") or []
+    if isinstance(br, list):
+        for item in br:
+            if isinstance(item, dict):
+                rows.append({
+                    "section": "phys_inv_by_role",
+                    "key": str(item.get("role", "")),
+                    "value": item.get("count", ""),
+                })
+    return rows
 
 
 def _has_compute_data(d: dict | None) -> bool:
@@ -123,6 +157,8 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     mem_cap  = compute.get("mem_cap", 0.0)
     mem_used = compute.get("mem_used", 0.0)
     mem_pct  = compute.get("mem_pct", pct_float(mem_used, mem_cap))
+    cpu_pct_max = float(compute.get("cpu_pct_max") or 0)
+    mem_pct_max = float(compute.get("mem_pct_max") or 0)
     stor_cap  = compute.get("stor_cap", 0.0)
     stor_used = compute.get("stor_used", 0.0)
     stor_pct  = pct_float(stor_used, stor_cap)
@@ -144,12 +180,20 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
             # Donut charts
             dmc.SimpleGrid(cols=3, spacing="lg", children=[
                 _chart_card(dcc.Graph(
-                    figure=create_usage_donut_chart(cpu_pct, "CPU Usage"),
+                    figure=(
+                        create_avg_max_donut_chart(cpu_pct, cpu_pct_max, "CPU Usage (avg / peak)")
+                        if cpu_pct_max > 0
+                        else create_usage_donut_chart(cpu_pct, "CPU Usage")
+                    ),
                     config={"displayModeBar": False},
                     style={"height": "100%", "width": "100%"},
                 )),
                 _chart_card(dcc.Graph(
-                    figure=create_usage_donut_chart(mem_pct, "RAM Usage"),
+                    figure=(
+                        create_avg_max_donut_chart(mem_pct, mem_pct_max, "RAM Usage (avg / peak)")
+                        if mem_pct_max > 0
+                        else create_usage_donut_chart(mem_pct, "RAM Usage")
+                    ),
                     config={"displayModeBar": False},
                     style={"height": "100%", "width": "100%"},
                 )),
@@ -1515,10 +1559,22 @@ def build_dc_view(dc_id, time_range=None):
     if not dc_id:
         return html.Div("No Data Center ID provided", style={"padding": "20px"})
 
-    tr   = time_range or default_time_range()
-    data = api.get_dc_details(dc_id, tr)
+    tr = time_range or default_time_range()
+    batch1 = parallel_execute(
+        {
+            "data": lambda: api.get_dc_details(dc_id, tr),
+            "sla_by_dc": lambda: api.get_sla_by_dc(tr),
+            "s3_data": lambda: api.get_dc_s3_pools(dc_id, tr),
+            "classic_clusters": lambda: api.get_classic_cluster_list(dc_id, tr),
+            "hyperconv_clusters": lambda: api.get_hyperconv_cluster_list(dc_id, tr),
+        }
+    )
+    data = batch1["data"]
+    sla_by_dc = batch1["sla_by_dc"]
+    s3_data = batch1["s3_data"]
+    classic_clusters = batch1["classic_clusters"]
+    hyperconv_clusters = batch1["hyperconv_clusters"]
 
-    sla_by_dc = api.get_sla_by_dc(tr)
     sla_entry = sla_by_dc.get(str(dc_id).upper())
     sla_badges = []
     if sla_entry:
@@ -1561,30 +1617,41 @@ def build_dc_view(dc_id, time_range=None):
         except Exception:
             sla_badges = []
 
-    # S3 pool metrics (may be empty for DCs without S3 pools)
-    s3_data = api.get_dc_s3_pools(dc_id, tr)
     has_s3 = bool(s3_data.get("pools"))
-
-    # Cluster lists for virtualization tab filters (S3-style)
-    classic_clusters   = api.get_classic_cluster_list(dc_id, tr)
-    hyperconv_clusters = api.get_hyperconv_cluster_list(dc_id, tr)
 
     dc_name = data["meta"]["name"]
     dc_loc  = data["meta"]["location"]
 
-    # Physical inventory (NetBox devices in this DC)
-    phys_inv = api.get_physical_inventory_dc(dc_name)
+    batch2 = parallel_execute(
+        {
+            "phys_inv": lambda: api.get_physical_inventory_dc(dc_name),
+            "san_switches": lambda: api.get_dc_san_switches(dc_id, tr),
+            "net_filters": lambda: api.get_dc_network_filters(dc_id, tr),
+        }
+    )
+    phys_inv = batch2["phys_inv"]
     has_phys_inv = phys_inv.get("total", 0) > 0
 
-    # Network (Brocade SAN) - DC scoped presence gate + executive data
-    san_switches = api.get_dc_san_switches(dc_id, tr)
+    export_rows = _build_dc_export_rows(str(dc_id), data, phys_inv)
+    export_group = dmc.Group(
+        gap=6,
+        align="center",
+        children=[
+            dmc.Text("Export", size="xs", c="dimmed"),
+            dmc.Button("CSV", id="dc-export-csv", size="xs", variant="light", color="gray"),
+            dmc.Button("Excel", id="dc-export-xlsx", size="xs", variant="light", color="gray"),
+            dmc.Button("PDF", id="dc-export-pdf", size="xs", variant="light", color="gray"),
+        ],
+    )
+    header_right_extra = list(sla_badges or []) + [export_group]
+
+    san_switches = batch2["san_switches"]
     has_san = _has_san_data(san_switches)
     san_port_usage = api.get_dc_san_port_usage(dc_id, tr) if has_san else {}
     san_health_alerts = api.get_dc_san_health(dc_id, tr) if has_san else []
     san_traffic_trend = api.get_dc_san_traffic_trend(dc_id, tr) if has_san else []
 
-    # Network Dashboard (Zabbix) - hierarchical executive view
-    net_filters = api.get_dc_network_filters(dc_id, tr)
+    net_filters = batch2["net_filters"]
     has_network = bool((net_filters or {}).get("manufacturers"))
     net_port_summary = api.get_dc_network_port_summary(dc_id, tr) if has_network else {}
     net_percentile = api.get_dc_network_95th_percentile(dc_id, tr, top_n=20) if has_network else {}
@@ -1670,6 +1737,11 @@ def build_dc_view(dc_id, time_range=None):
         )
 
     return html.Div([
+        dcc.Store(
+            id="dc-export-store",
+            data={"dc_name": dc_name, "rows": export_rows},
+        ),
+        dcc.Download(id="dc-export-download"),
         dmc.Tabs(
             color="indigo",
             variant="pills",
@@ -1684,7 +1756,7 @@ def build_dc_view(dc_id, time_range=None):
                     subtitle_color="indigo",
                     time_range=tr,
                     icon="solar:server-square-bold-duotone",
-                    right_extra=sla_badges,
+                    right_extra=header_right_extra,
                     tabs=dmc.TabsList(
                         style={"paddingTop": "8px"},
                         children=[
@@ -1945,3 +2017,27 @@ def build_dc_view(dc_id, time_range=None):
 
 def layout(dc_id=None):
     return build_dc_view(dc_id, default_time_range())
+
+
+@callback(
+    Output("dc-export-download", "data"),
+    Input("dc-export-csv", "n_clicks"),
+    Input("dc-export-xlsx", "n_clicks"),
+    Input("dc-export-pdf", "n_clicks"),
+    State("dc-export-store", "data"),
+    prevent_initial_call=True,
+)
+def export_dc_detail(nc, nx, np, store):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+    tid = ctx.triggered[0]["prop_id"].split(".")[0]
+    fmt_map = {"dc-export-csv": "csv", "dc-export-xlsx": "xlsx", "dc-export-pdf": "pdf"}
+    fmt = fmt_map.get(tid)
+    if not fmt:
+        return dash.no_update
+    store = store or {}
+    rows = store.get("rows") or []
+    base = str(store.get("dc_name") or "dc_detail")
+    df = records_to_dataframe(rows)
+    return dash_send_dataframe(df, base, fmt)
