@@ -53,8 +53,10 @@ def _empty_compute_section() -> dict:
         "hosts": 0, "vms": 0,
         "cpu_cap": 0.0, "cpu_used": 0.0, "cpu_pct": 0.0,
         "cpu_pct_max": 0.0,
+        "cpu_pct_min": 0.0,
         "mem_cap": 0.0, "mem_used": 0.0, "mem_pct": 0.0,
         "mem_pct_max": 0.0,
+        "mem_pct_min": 0.0,
         "stor_cap": 0.0, "stor_used": 0.0,
     }
 
@@ -597,6 +599,8 @@ class DatabaseService:
         cl_mem_pct = round(float(avg30[1] or 0), 1)
         cl_cpu_pct_max = round(float(avg30[2] or 0), 1)
         cl_mem_pct_max = round(float(avg30[3] or 0), 1)
+        cl_cpu_pct_min = round(float(avg30[4] or 0), 1)
+        cl_mem_pct_min = round(float(avg30[5] or 0), 1)
         return {
             "hosts": cl_hosts,
             "vms": cl_vms,
@@ -604,10 +608,12 @@ class DatabaseService:
             "cpu_used": cl_cpu_used,
             "cpu_pct": cl_cpu_pct,
             "cpu_pct_max": cl_cpu_pct_max,
+            "cpu_pct_min": cl_cpu_pct_min,
             "mem_cap": cl_mem_cap,
             "mem_used": cl_mem_used,
             "mem_pct": cl_mem_pct,
             "mem_pct_max": cl_mem_pct_max,
+            "mem_pct_min": cl_mem_pct_min,
             "stor_cap": cl_stor_cap,
             "stor_used": cl_stor_used,
         }
@@ -669,6 +675,8 @@ class DatabaseService:
         hc_mem_pct = round(float(avg30[1] or 0), 1) if (avg30[1] or avg30[3]) else hc_mem_pct_cap
         hc_cpu_pct_max = round(float(avg30[2] or 0), 1)
         hc_mem_pct_max = round(float(avg30[3] or 0), 1)
+        hc_cpu_pct_min = round(float(avg30[4] or 0), 1)
+        hc_mem_pct_min = round(float(avg30[5] or 0), 1)
         if hc_cpu_pct_max <= 0 and hc_cpu_pct_cap > 0:
             hc_cpu_pct = hc_cpu_pct_cap
         if hc_mem_pct_max <= 0 and hc_mem_pct_cap > 0:
@@ -680,10 +688,12 @@ class DatabaseService:
             "cpu_used": hc_cpu_used,
             "cpu_pct": hc_cpu_pct,
             "cpu_pct_max": hc_cpu_pct_max,
+            "cpu_pct_min": hc_cpu_pct_min,
             "mem_cap": hc_mem_cap,
             "mem_used": hc_mem_used,
             "mem_pct": hc_mem_pct,
             "mem_pct_max": hc_mem_pct_max,
+            "mem_pct_min": hc_mem_pct_min,
             "stor_cap": hc_stor_cap,
             "stor_used": hc_stor_used,
         }
@@ -694,14 +704,16 @@ class DatabaseService:
 
     @staticmethod
     def _normalize_avg30_row(row) -> tuple:
-        """Support (avg_cpu, avg_mem) legacy rows and (avg_cpu, avg_mem, max_cpu, max_mem)."""
+        """Normalize to (avg_cpu, avg_mem, max_cpu, max_mem, min_cpu, min_mem)."""
         if not row:
-            return (0, 0, 0, 0)
+            return (0, 0, 0, 0, 0, 0)
+        if len(row) >= 6:
+            return (row[0], row[1], row[2], row[3], row[4], row[5])
         if len(row) >= 4:
-            return (row[0], row[1], row[2], row[3])
+            return (row[0], row[1], row[2], row[3], 0.0, 0.0)
         if len(row) >= 2:
-            return (row[0], row[1], row[0], row[1])
-        return (0, 0, 0, 0)
+            return (row[0], row[1], row[0], row[1], row[0], row[1])
+        return (0, 0, 0, 0, 0, 0)
 
     @staticmethod
     def _aggregate_dc(
@@ -735,7 +747,7 @@ class DatabaseService:
         classic_row / hyperconv_row — rows from CLASSIC_METRICS / HYPERCONV_METRICS:
             (hosts, vms, cpu_cap_ghz, cpu_used_ghz, mem_cap_gb, mem_used_gb, stor_cap_gb, stor_used_gb)
         classic_avg30 / hyperconv_avg30 — rows from CLASSIC_AVG30 / HYPERCONV_AVG30:
-            (cpu_avg_pct, mem_avg_pct, cpu_max_pct, mem_max_pct)
+            (cpu_avg_pct, mem_avg_pct, cpu_max_pct, mem_max_pct, cpu_min_pct, mem_min_pct)
         """
         nutanix_mem     = nutanix_mem     or (0, 0)
         nutanix_storage = nutanix_storage or (0, 0)
@@ -790,6 +802,8 @@ class DatabaseService:
         cl_mem_pct  = round(float(classic_avg30[1] or 0), 1)
         cl_cpu_pct_max = round(float(classic_avg30[2] or 0), 1)
         cl_mem_pct_max = round(float(classic_avg30[3] or 0), 1)
+        cl_cpu_pct_min = round(float(classic_avg30[4] or 0), 1)
+        cl_mem_pct_min = round(float(classic_avg30[5] or 0), 1)
         # cluster_metrics.total_capacity_gb is in GB → convert to TB
         cl_stor_cap  = round(float(classic_row[6] or 0) / 1024.0, 3)
         cl_stor_used = round(float(classic_row[7] or 0) / 1024.0, 3)
@@ -807,6 +821,8 @@ class DatabaseService:
         hc_mem_pct  = round(float(hyperconv_avg30[1] or 0), 1)
         hc_cpu_pct_max = round(float(hyperconv_avg30[2] or 0), 1)
         hc_mem_pct_max = round(float(hyperconv_avg30[3] or 0), 1)
+        hc_cpu_pct_min = round(float(hyperconv_avg30[4] or 0), 1)
+        hc_mem_pct_min = round(float(hyperconv_avg30[5] or 0), 1)
         # Storage from Nutanix (already in TB from the nutanix query)
         hc_stor_cap  = round(n_stor_cap_tb, 3)
         hc_stor_used = round(n_stor_used_tb, 3)
@@ -821,16 +837,20 @@ class DatabaseService:
                 "hosts": cl_hosts, "vms": cl_vms,
                 "cpu_cap": cl_cpu_cap, "cpu_used": cl_cpu_used, "cpu_pct": cl_cpu_pct,
                 "cpu_pct_max": cl_cpu_pct_max,
+                "cpu_pct_min": cl_cpu_pct_min,
                 "mem_cap": cl_mem_cap, "mem_used": cl_mem_used, "mem_pct": cl_mem_pct,
                 "mem_pct_max": cl_mem_pct_max,
+                "mem_pct_min": cl_mem_pct_min,
                 "stor_cap": cl_stor_cap, "stor_used": cl_stor_used,
             },
             "hyperconv": {
                 "hosts": hc_hosts, "vms": hc_vms,
                 "cpu_cap": hc_cpu_cap, "cpu_used": hc_cpu_used, "cpu_pct": hc_cpu_pct,
                 "cpu_pct_max": hc_cpu_pct_max,
+                "cpu_pct_min": hc_cpu_pct_min,
                 "mem_cap": hc_mem_cap, "mem_used": hc_mem_used, "mem_pct": hc_mem_pct,
                 "mem_pct_max": hc_mem_pct_max,
+                "mem_pct_min": hc_mem_pct_min,
                 "stor_cap": hc_stor_cap, "stor_used": hc_stor_used,
             },
             # Legacy combined Intel section — kept for home.py / datacenters.py
@@ -1240,17 +1260,25 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
             # Batch CLASSIC_METRICS: (dc_code, hosts, vms, cpu_cap, cpu_used, mem_cap, mem_used, stor_cap, stor_used)
             cl_data = (vcl_row[1], vcl_row[2], vcl_row[3], vcl_row[4], vcl_row[5], vcl_row[6], vcl_row[7], vcl_row[8]) if (vcl_row and len(vcl_row) > 8) else None
-            # Batch CLASSIC_AVG30: (dc_code, cpu_avg_pct, mem_avg_pct, cpu_max_pct, mem_max_pct)
+            # Batch CLASSIC_AVG30: (dc_code, cpu_avg, mem_avg, cpu_max, mem_max, cpu_min, mem_min)
             cl_avg = (
-                (vcla_row[1], vcla_row[2], vcla_row[3], vcla_row[4])
-                if (vcla_row and len(vcla_row) > 4)
-                else ((vcla_row[1], vcla_row[2]) if (vcla_row and len(vcla_row) > 2) else None)
+                (vcla_row[1], vcla_row[2], vcla_row[3], vcla_row[4], vcla_row[5], vcla_row[6])
+                if (vcla_row and len(vcla_row) > 6)
+                else (
+                    (vcla_row[1], vcla_row[2], vcla_row[3], vcla_row[4])
+                    if (vcla_row and len(vcla_row) > 4)
+                    else ((vcla_row[1], vcla_row[2]) if (vcla_row and len(vcla_row) > 2) else None)
+                )
             )
             hc_data = (vhc_row[1], vhc_row[2], vhc_row[3], vhc_row[4], vhc_row[5], vhc_row[6], vhc_row[7], vhc_row[8]) if (vhc_row and len(vhc_row) > 8) else None
             hc_avg = (
-                (vhca_row[1], vhca_row[2], vhca_row[3], vhca_row[4])
-                if (vhca_row and len(vhca_row) > 4)
-                else ((vhca_row[1], vhca_row[2]) if (vhca_row and len(vhca_row) > 2) else None)
+                (vhca_row[1], vhca_row[2], vhca_row[3], vhca_row[4], vhca_row[5], vhca_row[6])
+                if (vhca_row and len(vhca_row) > 6)
+                else (
+                    (vhca_row[1], vhca_row[2], vhca_row[3], vhca_row[4])
+                    if (vhca_row and len(vhca_row) > 4)
+                    else ((vhca_row[1], vhca_row[2]) if (vhca_row and len(vhca_row) > 2) else None)
+                )
             )
 
             results[dc] = self._aggregate_dc(
@@ -1405,12 +1433,20 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                     "arch_usage": {
                         "classic": {
                             "cpu_pct": round(classic_cpu_pct, 1),
+                            "cpu_pct_min": round(float(classic.get("cpu_pct_min", 0) or 0), 1),
+                            "cpu_pct_max": round(float(classic.get("cpu_pct_max", 0) or 0), 1),
                             "ram_pct": round(classic_ram_pct, 1),
+                            "ram_pct_min": round(float(classic.get("mem_pct_min", 0) or 0), 1),
+                            "ram_pct_max": round(float(classic.get("mem_pct_max", 0) or 0), 1),
                             "disk_pct": round(classic_stor_pct, 1),
                         },
                         "hyperconv": {
                             "cpu_pct": round(hyperconv_cpu_pct, 1),
+                            "cpu_pct_min": round(float(hyperconv.get("cpu_pct_min", 0) or 0), 1),
+                            "cpu_pct_max": round(float(hyperconv.get("cpu_pct_max", 0) or 0), 1),
                             "ram_pct": round(hyperconv_ram_pct, 1),
+                            "ram_pct_min": round(float(hyperconv.get("mem_pct_min", 0) or 0), 1),
+                            "ram_pct_max": round(float(hyperconv.get("mem_pct_max", 0) or 0), 1),
                             "disk_pct": round(hyperconv_stor_pct, 1),
                         },
                         "ibm": {

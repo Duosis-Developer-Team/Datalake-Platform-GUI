@@ -181,7 +181,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
             dmc.SimpleGrid(cols=3, spacing="lg", children=[
                 _chart_card(dcc.Graph(
                     figure=(
-                        create_avg_max_donut_chart(cpu_pct, cpu_pct_max, "CPU Usage (avg / peak)")
+                        create_avg_max_donut_chart(cpu_pct, cpu_pct_max, "CPU Usage (peak)")
                         if cpu_pct_max > 0
                         else create_usage_donut_chart(cpu_pct, "CPU Usage")
                     ),
@@ -190,7 +190,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
                 )),
                 _chart_card(dcc.Graph(
                     figure=(
-                        create_avg_max_donut_chart(mem_pct, mem_pct_max, "RAM Usage (avg / peak)")
+                        create_avg_max_donut_chart(mem_pct, mem_pct_max, "RAM Usage (peak)")
                         if mem_pct_max > 0
                         else create_usage_donut_chart(mem_pct, "RAM Usage")
                     ),

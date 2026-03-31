@@ -1151,6 +1151,17 @@ class TestAggregateClassicHyperconv(unittest.TestCase):
         self.assertAlmostEqual(result["classic"]["cpu_pct"], 65.5)
         self.assertAlmostEqual(result["classic"]["mem_pct"], 72.3)
 
+    def test_classic_avg30_six_tuple_includes_min_max(self):
+        cl_avg = (40.0, 50.0, 90.0, 88.0, 12.0, 15.0)
+        result = self._call(classic_avg30=cl_avg)
+        c = result["classic"]
+        self.assertAlmostEqual(c["cpu_pct"], 40.0)
+        self.assertAlmostEqual(c["mem_pct"], 50.0)
+        self.assertAlmostEqual(c["cpu_pct_max"], 90.0)
+        self.assertAlmostEqual(c["mem_pct_max"], 88.0)
+        self.assertAlmostEqual(c["cpu_pct_min"], 12.0)
+        self.assertAlmostEqual(c["mem_pct_min"], 15.0)
+
     def test_hyperconv_storage_uses_nutanix(self):
         # nutanix_storage = (10.0, 5.0) TB
         result = self._call()
@@ -1198,6 +1209,8 @@ class TestVmwareClusterQueries(unittest.TestCase):
         from src.queries.vmware import BATCH_CLASSIC_AVG30, BATCH_HYPERCONV_AVG30
         self.assertIn("cpu_usage_avg_perc", BATCH_CLASSIC_AVG30)
         self.assertIn("cpu_usage_avg_perc", BATCH_HYPERCONV_AVG30)
+        self.assertIn("MIN(cpu_usage_avg_perc)", BATCH_CLASSIC_AVG30)
+        self.assertIn("MIN(memory_usage_avg_perc)", BATCH_HYPERCONV_AVG30)
 
 
 # ---------------------------------------------------------------------------

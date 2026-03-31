@@ -237,6 +237,25 @@ def _pct_badge(value):
     )
 
 
+def _arch_usage_min_avg_max_row(label: str, mn, avg, mx):
+    """One resource line: label + min / avg / max badges (VMware time-series metrics)."""
+    return dmc.Group(
+        gap=6,
+        align="center",
+        wrap="wrap",
+        justify="flex-end",
+        children=[
+            dmc.Text(label, size="xs", c="dimmed", style={"minWidth": "28px"}),
+            dmc.Text("min", size="xs", c="dimmed"),
+            _pct_badge(mn),
+            dmc.Text("avg", size="xs", c="dimmed"),
+            _pct_badge(avg),
+            dmc.Text("max", size="xs", c="dimmed"),
+            _pct_badge(mx),
+        ],
+    )
+
+
 def _arch_usage_cell(usage: dict | None):
     """Render architecture usage cell with CPU/RAM/Disk percentages."""
     usage = usage or {}
@@ -244,25 +263,53 @@ def _arch_usage_cell(usage: dict | None):
     ram = usage.get("ram_pct", 0.0)
     disk = usage.get("disk_pct", None)
 
+    # IBM Power snapshot: no min/max time series — single badge per metric.
+    if "cpu_pct_max" not in usage:
+        rows = [
+            dmc.Group(
+                gap=6,
+                align="center",
+                children=[
+                    dmc.Text("CPU", size="xs", c="dimmed"),
+                    _pct_badge(cpu),
+                ],
+            ),
+            dmc.Group(
+                gap=6,
+                align="center",
+                children=[
+                    dmc.Text("RAM", size="xs", c="dimmed"),
+                    _pct_badge(ram),
+                ],
+            ),
+        ]
+        if disk is not None:
+            rows.append(
+                dmc.Group(
+                    gap=6,
+                    align="center",
+                    children=[
+                        dmc.Text("Disk", size="xs", c="dimmed"),
+                        _pct_badge(disk),
+                    ],
+                )
+            )
+        return dmc.Stack(gap=4, align="flex-end", children=rows)
+
     rows = [
-        dmc.Group(
-            gap=6,
-            align="center",
-            children=[
-                dmc.Text("CPU", size="xs", c="dimmed"),
-                _pct_badge(cpu),
-            ],
+        _arch_usage_min_avg_max_row(
+            "CPU",
+            usage.get("cpu_pct_min", 0.0),
+            cpu,
+            usage.get("cpu_pct_max", 0.0),
         ),
-        dmc.Group(
-            gap=6,
-            align="center",
-            children=[
-                dmc.Text("RAM", size="xs", c="dimmed"),
-                _pct_badge(ram),
-            ],
+        _arch_usage_min_avg_max_row(
+            "RAM",
+            usage.get("ram_pct_min", 0.0),
+            ram,
+            usage.get("ram_pct_max", 0.0),
         ),
     ]
-
     if disk is not None:
         rows.append(
             dmc.Group(
@@ -274,7 +321,6 @@ def _arch_usage_cell(usage: dict | None):
                 ],
             )
         )
-
     return dmc.Stack(gap=4, align="flex-end", children=rows)
 
 
@@ -651,7 +697,8 @@ def build_overview(time_range=None):
                         style={"marginBottom": "4px"},
                     ),
                     dmc.Text(
-                        "CPU, RAM & Disk utilisation by architecture \u2014 daily averages over the report period.",
+                        "CPU & RAM: min / avg / max from cluster_metrics over the report period. "
+                        "Disk: allocated vs capacity (single value). IBM Power: current snapshot.",
                         size="xs",
                         c="dimmed",
                         style={"marginBottom": "18px"},
