@@ -160,6 +160,8 @@ class TestHyperconvMetricsFiltered(unittest.TestCase):
                 (float(bytes_256_gb), float(bytes_128_gb)),
                 (cpu_cap_hz, cpu_used_hz),
                 (bytes_5_tb, bytes_2_tb),
+                # HYPERCONV_AVG30_FILTERED — zeros => fallback to capacity-based pct
+                (0, 0, 0, 0),
             ]
         )
 
@@ -171,6 +173,8 @@ class TestHyperconvMetricsFiltered(unittest.TestCase):
         self.assertIn("stor_cap", result)
         self.assertIn("cpu_pct", result)
         self.assertIn("mem_pct", result)
+        self.assertIn("cpu_pct_max", result)
+        self.assertIn("mem_pct_max", result)
         # Memory converted from bytes to GB (no * 1024 inflation)
         self.assertAlmostEqual(result["mem_cap"], 256.0, places=1)
         self.assertAlmostEqual(result["mem_used"], 128.0, places=1)

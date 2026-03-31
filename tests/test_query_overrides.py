@@ -197,5 +197,20 @@ class TestExecuteRegisteredQuery(unittest.TestCase):
         self.assertIn("error", result)
 
 
+class TestQueryUsageMap(unittest.TestCase):
+    """QUERY_USAGE aligns with QUERY_REGISTRY for Query Explorer."""
+
+    def test_query_usage_covers_registry(self):
+        from src.queries.registry import QUERY_REGISTRY, QUERY_USAGE
+
+        for key in QUERY_REGISTRY:
+            self.assertIn(key, QUERY_USAGE, msg=f"QUERY_USAGE missing key: {key}")
+            entry = QUERY_USAGE[key]
+            self.assertIn("pages", entry)
+            self.assertIn("methods", entry)
+            self.assertIsInstance(entry["pages"], list)
+            self.assertIsInstance(entry["methods"], list)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,11 +2,13 @@ import math
 import random
 import pandas as pd
 import plotly.graph_objects as go
-from dash import html, dcc
+import dash
+from dash import html, dcc, callback, Input, Output, State
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services import api_client as api
 from src.utils.time_range import default_time_range
+from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe
 
 CITY_COORDINATES = {
     "ISTANBUL":    {"lat": 41.01, "lon": 28.96},
@@ -64,6 +66,25 @@ _CITY_OFFSETS = [
     (0.00, 0.18), (0.00, -0.18), (0.12, 0.18),
     (-0.12, 0.18), (0.12, -0.18),
 ]
+
+
+def _global_export_rows(summaries: list) -> list[dict]:
+    """Flatten DC summary list for CSV/Excel/PDF."""
+    rows: list[dict] = []
+    for dc in summaries or []:
+        if not isinstance(dc, dict):
+            continue
+        dc_id = dc.get("id", "")
+        site = dc.get("site_name", "")
+        rows.append({"dc_id": dc_id, "field": "site_name", "value": site})
+        stats = dc.get("stats") or {}
+        if isinstance(stats, dict):
+            for k, v in stats.items():
+                rows.append({"dc_id": dc_id, "field": str(k), "value": v})
+        for k in ("host_count", "vm_count", "cluster_count", "platform_count"):
+            if k in dc and k not in (stats or {}):
+                rows.append({"dc_id": dc_id, "field": k, "value": dc.get(k)})
+    return rows
 
 
 def _build_map_dataframe(summaries):
@@ -551,9 +572,12 @@ def build_global_view(time_range=None):
     df = _build_map_dataframe(summaries)
     map_fig = _create_map_figure(df)
 
+    export_rows = _global_export_rows(summaries)
+
     return html.Div([
         dcc.Store(id="selected-region-store", data=None),
-
+        dcc.Store(id="global-export-store", data={"rows": export_rows}),
+        dcc.Download(id="global-export-download"),
         dmc.Paper(
             p="xl",
             radius="md",
@@ -620,31 +644,65 @@ def build_global_view(time_range=None):
                                 ),
                             ],
                         ),
-                        dmc.Badge(
+                        dmc.Group(
+                            gap="sm",
+                            align="center",
                             children=[
                                 dmc.Group(
                                     gap=6,
                                     align="center",
                                     children=[
-                                        DashIconify(
-                                            icon="solar:check-circle-bold-duotone",
-                                            width=15,
-                                            color="#05CD99",
+                                        dmc.Text("Export", size="xs", c="dimmed"),
+                                        dmc.Button(
+                                            "CSV",
+                                            id="global-export-csv",
+                                            size="xs",
+                                            variant="light",
+                                            color="gray",
                                         ),
-                                        f"{len(summaries)} Active DCs",
+                                        dmc.Button(
+                                            "Excel",
+                                            id="global-export-xlsx",
+                                            size="xs",
+                                            variant="light",
+                                            color="gray",
+                                        ),
+                                        dmc.Button(
+                                            "PDF",
+                                            id="global-export-pdf",
+                                            size="xs",
+                                            variant="light",
+                                            color="gray",
+                                        ),
                                     ],
-                                )
+                                ),
+                                dmc.Badge(
+                                    children=[
+                                        dmc.Group(
+                                            gap=6,
+                                            align="center",
+                                            children=[
+                                                DashIconify(
+                                                    icon="solar:check-circle-bold-duotone",
+                                                    width=15,
+                                                    color="#05CD99",
+                                                ),
+                                                f"{len(summaries)} Active DCs",
+                                            ],
+                                        )
+                                    ],
+                                    variant="light",
+                                    color="teal",
+                                    radius="xl",
+                                    size="lg",
+                                    style={
+                                        "textTransform": "none",
+                                        "fontWeight": 600,
+                                        "letterSpacing": 0,
+                                        "padding": "8px 14px",
+                                    },
+                                ),
                             ],
-                            variant="light",
-                            color="teal",
-                            radius="xl",
-                            size="lg",
-                            style={
-                                "textTransform": "none",
-                                "fontWeight": 600,
-                                "letterSpacing": 0,
-                                "padding": "8px 14px",
-                            },
                         ),
                     ],
                 ),
@@ -902,3 +960,26 @@ def build_dc_info_card(dc_id, tr, site_name=""):
             ]),
         ],
     )
+
+
+@callback(
+    Output("global-export-download", "data"),
+    Input("global-export-csv", "n_clicks"),
+    Input("global-export-xlsx", "n_clicks"),
+    Input("global-export-pdf", "n_clicks"),
+    State("global-export-store", "data"),
+    prevent_initial_call=True,
+)
+def export_global_view(nc, nx, np, store):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+    tid = ctx.triggered[0]["prop_id"].split(".")[0]
+    fmt_map = {"global-export-csv": "csv", "global-export-xlsx": "xlsx", "global-export-pdf": "pdf"}
+    fmt = fmt_map.get(tid)
+    if not fmt:
+        return dash.no_update
+    store = store or {}
+    rows = store.get("rows") or []
+    df = records_to_dataframe(rows)
+    return dash_send_dataframe(df, "global_view_dc_summary", fmt)

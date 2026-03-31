@@ -87,6 +87,30 @@ def cache_delete(key: str) -> None:
         _memory_cache.pop(key, None)
 
 
+def cache_delete_prefix(prefix: str) -> None:
+    """Remove keys starting with prefix from Redis (SCAN) and in-memory cache."""
+    if not prefix:
+        return
+    redis_client = get_redis_client()
+    pattern = f"{prefix}*"
+    if redis_client:
+        try:
+            cursor = 0
+            while True:
+                scan_result = cast(tuple[int, list[str]], redis_client.scan(cursor=cursor, match=pattern, count=100))
+                cursor, keys = scan_result
+                if keys:
+                    redis_client.delete(*keys)
+                if cursor == 0:
+                    break
+        except Exception as exc:
+            logger.warning("Redis SCAN delete_prefix error: %s", exc)
+    with _memory_lock:
+        to_remove = [k for k in list(_memory_cache.keys()) if isinstance(k, str) and k.startswith(prefix)]
+        for k in to_remove:
+            _memory_cache.pop(k, None)
+
+
 def cache_flush_pattern(pattern: str) -> None:
     redis_client = get_redis_client()
     if redis_client:

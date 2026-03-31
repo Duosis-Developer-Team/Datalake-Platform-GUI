@@ -1,10 +1,11 @@
 import dash
-from dash import html, dcc
+from dash import html, dcc, callback, Input, Output, State, callback_context
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services import api_client as api
 from src.services import sla_service
 from src.utils.time_range import default_time_range
+from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe, dataframes_to_excel_bytes, dataframe_to_csv_bytes
 
 
 def _dc_vault_card(dc, sla_entry=None):
@@ -221,7 +222,23 @@ def build_datacenters(time_range=None):
     tr = time_range or default_time_range()
     datacenters = api.get_all_datacenters_summary(tr)
     sla_by_dc = api.get_sla_by_dc(tr)
+    export_rows = []
+    for dc in datacenters:
+        dc_id = dc.get("id", "")
+        sla = sla_by_dc.get(dc_id) or sla_by_dc.get(str(dc_id).upper()) if sla_by_dc else None
+        export_rows.append(
+            {
+                "DC": dc.get("name", dc_id),
+                "Location": dc.get("location", ""),
+                "Hosts": dc.get("host_count", 0),
+                "VMs": dc.get("vm_count", 0),
+                "Platforms": dc.get("platform_count", 0),
+                "SLA_pct": (sla or {}).get("availability_pct", "") if sla else "",
+            }
+        )
     return html.Div([
+        dcc.Store(id="datacenters-export-store", data={"rows": export_rows, "period": f"{tr.get('start', '')}_{tr.get('end', '')}"}),
+        dcc.Download(id="datacenters-export-download"),
         # Header
         dmc.Paper(
             p="xl",
@@ -292,32 +309,52 @@ def build_datacenters(time_range=None):
                                 ),
                             ],
                         ),
-                        # Active DC count badge
-                        dmc.Badge(
+                        dmc.Group(
+                            gap="md",
+                            align="center",
                             children=[
-                                dmc.Group(
+                                dmc.Stack(
                                     gap=6,
-                                    align="center",
+                                    align="flex-end",
                                     children=[
-                                        DashIconify(
-                                            icon="solar:check-circle-bold-duotone",
-                                            width=15,
-                                            color="#05CD99",
+                                        dmc.Text("Export", size="xs", c="dimmed", fw=600),
+                                        dmc.Group(
+                                            gap="xs",
+                                            children=[
+                                                dmc.Button("CSV", id="datacenters-export-csv", size="xs", variant="light", color="indigo"),
+                                                dmc.Button("Excel", id="datacenters-export-xlsx", size="xs", variant="light", color="indigo"),
+                                                dmc.Button("PDF", id="datacenters-export-pdf", size="xs", variant="light", color="indigo"),
+                                            ],
                                         ),
-                                        f"{len(datacenters)} Active DCs",
                                     ],
-                                )
+                                ),
+                                dmc.Badge(
+                                    children=[
+                                        dmc.Group(
+                                            gap=6,
+                                            align="center",
+                                            children=[
+                                                DashIconify(
+                                                    icon="solar:check-circle-bold-duotone",
+                                                    width=15,
+                                                    color="#05CD99",
+                                                ),
+                                                f"{len(datacenters)} Active DCs",
+                                            ],
+                                        )
+                                    ],
+                                    variant="light",
+                                    color="teal",
+                                    radius="xl",
+                                    size="lg",
+                                    style={
+                                        "textTransform": "none",
+                                        "fontWeight": 600,
+                                        "letterSpacing": 0,
+                                        "padding": "8px 14px",
+                                    },
+                                ),
                             ],
-                            variant="light",
-                            color="teal",
-                            radius="xl",
-                            size="lg",
-                            style={
-                                "textTransform": "none",
-                                "fontWeight": 600,
-                                "letterSpacing": 0,
-                                "padding": "8px 14px",
-                            },
                         ),
                     ],
                 ),
@@ -338,3 +375,28 @@ def build_datacenters(time_range=None):
 
 def layout():
     return build_datacenters(default_time_range())
+
+
+@callback(
+    Output("datacenters-export-download", "data"),
+    Input("datacenters-export-csv", "n_clicks"),
+    Input("datacenters-export-xlsx", "n_clicks"),
+    Input("datacenters-export-pdf", "n_clicks"),
+    State("datacenters-export-store", "data"),
+    prevent_initial_call=True,
+)
+def export_datacenters_page(nc1, nc2, nc3, store):
+    if not store:
+        raise dash.exceptions.PreventUpdate
+    tid = str(callback_context.triggered_id)
+    rows = store.get("rows") or []
+    period = store.get("period", "report")
+    df = records_to_dataframe(rows if isinstance(rows, list) else [])
+    from dash import dcc
+
+    if "xlsx" in tid:
+        content = dataframes_to_excel_bytes({"Datacenters": df})
+        return dcc.send_bytes(content, filename=f"datacenters_{period}.xlsx")
+    if "pdf" in tid:
+        return dash_send_dataframe(df, "datacenters", "pdf")
+    return dcc.send_bytes(dataframe_to_csv_bytes(df), filename=f"datacenters_{period}.csv")

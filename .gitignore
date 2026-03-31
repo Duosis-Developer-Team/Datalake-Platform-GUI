@@ -27,3 +27,21 @@ htmlcov/
 .vscode/
 *.swp
 loadtest/reports/
+
+# Local query overrides (optional; remove this line if the team commits shared overrides)
+data/query_overrides.json
+
+# Docker / local volume names (documentation only; not always present as dirs)
+pgdata/
+redis_data/
+
+# OS / logs
+Thumbs.db
+*.log
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/

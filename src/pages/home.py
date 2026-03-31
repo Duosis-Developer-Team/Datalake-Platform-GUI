@@ -1,9 +1,15 @@
 import dash
-from dash import html, dcc
+from dash import html, dcc, callback, Input, Output, State, callback_context
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objects as go
 from src.services import api_client as api
+from src.utils.export_helpers import (
+    records_to_dataframe,
+    dash_send_dataframe,
+    dataframes_to_excel_bytes,
+    dataframe_to_csv_bytes,
+)
 from src.utils.time_range import default_time_range
 from src.utils.format_units import title_case
 from src.components.charts import (
@@ -17,6 +23,15 @@ from src.components.charts import (
 
 
 _PHYS_INV_BAR_PX = 50  # pixels per bar; controls visible item count in scroll window
+_PHYS_INV_LEGEND = dict(
+    orientation="h",
+    yanchor="bottom",
+    y=-0.12,
+    xanchor="center",
+    x=0.5,
+    font=dict(size=9, family="DM Sans", color="#A3AED0"),
+    bgcolor="rgba(0,0,0,0)",
+)
 
 
 def _phys_inv_bar_figure(labels, counts, color="#4318FF", height=None):
@@ -32,18 +47,20 @@ def _phys_inv_bar_figure(labels, counts, color="#4318FF", height=None):
             y=labels_display,
             orientation="h",
             marker_color=color,
+            name="Devices",
             text=counts,
             textposition="outside",
             textfont=dict(size=14, color="#2B3674", family="DM Sans, sans-serif"),
         )]
     )
     fig.update_layout(
-        margin=dict(l=20, r=60, t=10, b=20),
+        margin=dict(l=20, r=60, t=10, b=28),
         height=height,
         bargap=0.35,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=False,
+        showlegend=True,
+        legend=_PHYS_INV_LEGEND,
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=True),
         yaxis=dict(showgrid=False, zeroline=False, categoryorder="total ascending", tickfont=dict(size=13)),
         font=dict(family="DM Sans, sans-serif", color="#A3AED0", size=13),
@@ -356,8 +373,30 @@ def build_overview(time_range=None):
     dc_cpu_pct = [s["stats"].get("used_cpu_pct", 0) for s in summaries]
     dc_ram_pct = [s["stats"].get("used_ram_pct", 0) for s in summaries]
 
+    export_summary_rows = [
+        {
+            "DC": s.get("name", ""),
+            "Location": s.get("location", ""),
+            "Hosts": s.get("host_count", 0),
+            "VMs": s.get("vm_count", 0),
+            "CPU_pct": s["stats"].get("used_cpu_pct", 0),
+            "RAM_pct": s["stats"].get("used_ram_pct", 0),
+        }
+        for s in summaries
+    ]
+    export_phys_rows = [{"Role": r["role"], "Count": r["count"]} for r in phys_inv_by_role]
+
     return html.Div(
         [
+            dcc.Store(
+                id="home-export-store",
+                data={
+                    "summaries": export_summary_rows,
+                    "phys_inv": export_phys_rows,
+                    "period": f"{tr.get('start', '')}_{tr.get('end', '')}",
+                },
+            ),
+            dcc.Download(id="home-export-download"),
             dmc.Paper(
                 p="xl",
                 radius="md",
@@ -421,6 +460,21 @@ def build_overview(time_range=None):
                                         radius="xl",
                                         size="md",
                                         style={"textTransform": "none", "fontWeight": 500, "letterSpacing": 0},
+                                    ),
+                                ],
+                            ),
+                            dmc.Stack(
+                                gap=6,
+                                align="flex-end",
+                                children=[
+                                    dmc.Text("Export", size="xs", c="dimmed", fw=600),
+                                    dmc.Group(
+                                        gap="xs",
+                                        children=[
+                                            dmc.Button("CSV", id="home-export-csv", size="xs", variant="light", color="indigo"),
+                                            dmc.Button("Excel", id="home-export-xlsx", size="xs", variant="light", color="indigo"),
+                                            dmc.Button("PDF", id="home-export-pdf", size="xs", variant="light", color="indigo"),
+                                        ],
                                     ),
                                 ],
                             ),
@@ -763,3 +817,48 @@ def build_overview(time_range=None):
             ),
         ]
     )
+
+
+@callback(
+    Output("home-export-download", "data"),
+    Input("home-export-csv", "n_clicks"),
+    Input("home-export-xlsx", "n_clicks"),
+    Input("home-export-pdf", "n_clicks"),
+    State("home-export-store", "data"),
+    prevent_initial_call=True,
+)
+def export_home_overview(nc_csv, nc_xlsx, nc_pdf, store):
+    if not store or not isinstance(store, dict):
+        raise dash.exceptions.PreventUpdate
+    tid = callback_context.triggered_id
+    fmt_map = {
+        "home-export-csv": "csv",
+        "home-export-xlsx": "xlsx",
+        "home-export-pdf": "pdf",
+    }
+    fmt = fmt_map.get(str(tid), "csv")
+    summaries = store.get("summaries") or []
+    phys = store.get("phys_inv") or []
+    df_sum = records_to_dataframe(summaries if isinstance(summaries, list) else [])
+    df_phys = records_to_dataframe(phys if isinstance(phys, list) else [])
+    period = store.get("period", "report")
+    from dash import dcc
+
+    if fmt == "xlsx":
+        content = dataframes_to_excel_bytes({"DC_Summary": df_sum, "Physical_Inventory": df_phys})
+        return dcc.send_bytes(content, filename=f"home_overview_{period}.xlsx")
+    if fmt == "pdf":
+        df = df_sum if not df_sum.empty else df_phys
+        return dash_send_dataframe(df, "home_overview", "pdf")
+    # CSV: DC summary then physical inventory blocks
+    import pandas as pd
+
+    parts = []
+    if not df_sum.empty:
+        parts.append(df_sum)
+    if not df_phys.empty:
+        if parts:
+            parts.append(pd.DataFrame([{"": ""}]))
+        parts.append(df_phys)
+    df_csv = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame({"Message": ["No data"]})
+    return dcc.send_bytes(dataframe_to_csv_bytes(df_csv), filename=f"home_overview_{period}.csv")
