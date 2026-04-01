@@ -58,7 +58,7 @@ _EMPTY_DASHBOARD = {
 }
 
 _EMPTY_DC_DETAIL = {
-    "meta": {"name": "", "location": ""},
+    "meta": {"name": "", "location": "", "description": ""},
     "intel": {
         "clusters": 0,
         "hosts": 0,

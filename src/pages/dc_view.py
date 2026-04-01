@@ -33,6 +33,8 @@ from src.components.backup_panel import (
     build_veeam_panel,
 )
 from src.services import sla_service
+from src.services import product_catalog as product_catalog_service
+from src.utils.dc_display import format_dc_display_name
 from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe
 
 
@@ -66,26 +68,206 @@ def _build_dc_export_rows(dc_code: str, data: dict, phys_inv: dict) -> list[dict
     return rows
 
 
+def _availability_downtime_table(downtimes: list):
+    """Table for AuraNotify downtime dict rows."""
+    rows_dt = []
+    for d in downtimes or []:
+        if not isinstance(d, dict):
+            continue
+        rows_dt.append(
+            html.Tr(
+                [
+                    html.Td(str(d.get("start_time") or "-")),
+                    html.Td(str(d.get("end_time") or "-")),
+                    html.Td(str(d.get("duration_minutes") or "-")),
+                    html.Td(str(d.get("reason") or "-")),
+                    html.Td(str(d.get("senaryo") or "-")),
+                    html.Td(str(d.get("outage_status") or "-")),
+                    html.Td(str(d.get("service_impact") or "-")),
+                    html.Td(str(d.get("dc_impact") or "-")),
+                ]
+            )
+        )
+    if not rows_dt:
+        return dmc.Text("No rows", size="xs", c="dimmed")
+    return dmc.Table(
+        striped=True,
+        highlightOnHover=True,
+        withTableBorder=True,
+        withColumnBorders=True,
+        children=[
+            html.Thead(
+                html.Tr(
+                    [
+                        html.Th("Start"),
+                        html.Th("End"),
+                        html.Th("Duration (min)"),
+                        html.Th("Reason"),
+                        html.Th("Senaryo"),
+                        html.Th("Outage"),
+                        html.Th("Service impact"),
+                        html.Th("DC impact"),
+                    ]
+                )
+            ),
+            html.Tbody(rows_dt),
+        ],
+    )
+
+
 def _build_dc_availability_tab(item: dict | None, dc_display_name: str):
-    """AuraNotify datacenter-services SLA: overall % + per-category downtime (matches AuraNotify UI)."""
+    """
+    AuraNotify datacenter-services SLA plus full product-catalog service tree.
+
+    Every Excel service is listed under its hierarchy; availability comes from the
+    best-matching AuraNotify category, or 100%% when there is no match/outage data.
+    """
+    hierarchy = product_catalog_service.load_service_hierarchy()
+    tree = product_catalog_service.nest_service_catalog(hierarchy)
+    categories = (item.get("categories") or []) if item else []
+
+    alerts = []
     if not item:
-        return dmc.Stack(
-            gap="md",
-            children=[
-                dmc.Alert(
-                    "No matching AuraNotify datacenter group for this DC. "
-                    "Set AURANOTIFY_API_KEY or ANOTIFY_API_KEY and ensure `group_name` matches the DC name or code.",
-                    color="yellow",
-                ),
-                dmc.Text(f"DC: {dc_display_name}", size="sm", c="dimmed"),
-            ],
+        alerts.append(
+            dmc.Alert(
+                "No matching AuraNotify datacenter group for this DC. "
+                "Set AURANOTIFY_API_KEY or ANOTIFY_API_KEY and ensure `group_name` matches the DC name or code. "
+                "Services below show 100% until a match exists.",
+                color="yellow",
+            )
+        )
+    if not hierarchy:
+        alerts.append(
+            dmc.Alert(
+                "Product catalog not loaded (expected data/product_catalog.xlsx, sheet Ana Servis Kategorileri).",
+                color="orange",
+            )
         )
 
-    pct = float(item.get("availability_pct") or 0.0)
-    period_min = item.get("period_min")
-    total_dm = item.get("total_downtime_min")
-    group_name = item.get("group_name") or "-"
-    categories = item.get("categories") or []
+    pct = float(item.get("availability_pct") or 0.0) if item else 0.0
+    period_min = item.get("period_min") if item else None
+    total_dm = item.get("total_downtime_min") if item else None
+    group_name = (item.get("group_name") or "—") if item else "—"
+
+    main_items = []
+    for mi, (main_title, subs) in enumerate(tree.items()):
+        sub_acc_items = []
+        for sj, (sub_title, services) in enumerate(subs.items()):
+            service_blocks = []
+            for svc_name in services:
+                av_pct, matched = product_catalog_service.service_availability_pct(svc_name, categories)
+                dts = (matched or {}).get("downtimes") or [] if matched else []
+                matched_cat = (matched or {}).get("category") if matched else None
+                downtime_min = (matched or {}).get("total_downtime_min") if matched else None
+                badge_color = "teal" if av_pct >= 99.999 else "yellow" if av_pct >= 99.9 else "red"
+                detail = []
+                if matched_cat:
+                    detail.append(
+                        dmc.Text(f"AuraNotify category: {matched_cat}", size="xs", c="dimmed"),
+                    )
+                if dts:
+                    detail.append(
+                        dmc.Stack(
+                            gap="xs",
+                            mt="xs",
+                            children=[
+                                dmc.Text("Downtime records", size="xs", fw=600, c="#2B3674"),
+                                _availability_downtime_table(dts),
+                            ],
+                        )
+                    )
+                paper_children = [
+                    dmc.Group(
+                        justify="space-between",
+                        align="flex-start",
+                        wrap="wrap",
+                        children=[
+                            dmc.Text(svc_name, size="sm", fw=600, style={"flex": "1 1 200px"}),
+                            dmc.Group(
+                                gap="xs",
+                                align="center",
+                                children=[
+                                    dmc.Badge(f"{av_pct:.4f} %", color=badge_color, variant="light"),
+                                    dmc.Text(
+                                        f"{downtime_min} min" if downtime_min is not None else "—",
+                                        size="xs",
+                                        c="dimmed",
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                ]
+                if detail:
+                    paper_children.append(dmc.Stack(gap=4, mt="xs", children=detail))
+                service_blocks.append(
+                    dmc.Paper(
+                        withBorder=True,
+                        p="sm",
+                        radius="md",
+                        mb="xs",
+                        children=paper_children,
+                    )
+                )
+            sub_acc_items.append(
+                dmc.AccordionItem(
+                    value=f"avail-m{mi}-s{sj}",
+                    children=[
+                        dmc.AccordionControl(
+                            dmc.Text(sub_title, fw=600, size="sm", c="#2B3674"),
+                        ),
+                        dmc.AccordionPanel(
+                            p="sm",
+                            children=[dmc.Stack(gap="xs", children=service_blocks)],
+                        ),
+                    ],
+                )
+            )
+        inner = (
+            dmc.Accordion(
+                multiple=True,
+                variant="separated",
+                radius="md",
+                chevronPosition="right",
+                children=sub_acc_items,
+            )
+            if sub_acc_items
+            else dmc.Text("No sub-categories", size="sm", c="dimmed")
+        )
+        main_items.append(
+            dmc.AccordionItem(
+                value=f"avail-main-{mi}",
+                children=[
+                    dmc.AccordionControl(
+                        dmc.Text(main_title, fw=700, size="sm", c="#2B3674"),
+                    ),
+                    dmc.AccordionPanel(p="sm", children=[inner]),
+                ],
+            )
+        )
+
+    hierarchy_section = html.Div(
+        className="nexus-card",
+        style={"padding": "24px", "overflowX": "auto"},
+        children=[
+            dmc.Text("Service availability (product catalog)", fw=700, size="lg", c="#2B3674", mb="xs"),
+            dmc.Text(
+                "All services from the product list hierarchy; values merge from AuraNotify when a category matches.",
+                size="xs",
+                c="dimmed",
+                mb="md",
+            ),
+            dmc.Accordion(
+                multiple=True,
+                variant="separated",
+                radius="md",
+                chevronPosition="right",
+                children=main_items,
+            )
+            if main_items
+            else dmc.Text("No catalog entries.", c="dimmed"),
+        ],
+    )
 
     cat_rows = []
     for cat in categories:
@@ -102,157 +284,79 @@ def _build_dc_availability_tab(item: dict | None, dc_display_name: str):
             )
         )
 
-    detail_papers = []
-    for cat in categories:
-        if not isinstance(cat, dict):
-            continue
-        dts = cat.get("downtimes") or []
-        if not dts:
-            inner = dmc.Text("No detailed records", size="sm", c="dimmed")
-        else:
-            rows_dt = []
-            for d in dts:
-                if not isinstance(d, dict):
-                    continue
-                rows_dt.append(
-                    html.Tr(
-                        [
-                            html.Td(str(d.get("start_time") or "-")),
-                            html.Td(str(d.get("end_time") or "-")),
-                            html.Td(str(d.get("duration_minutes") or "-")),
-                            html.Td(str(d.get("reason") or "-")),
-                            html.Td(str(d.get("senaryo") or "-")),
-                            html.Td(str(d.get("outage_status") or "-")),
-                            html.Td(str(d.get("service_impact") or "-")),
-                            html.Td(str(d.get("dc_impact") or "-")),
-                        ]
-                    )
-                )
-            inner = dmc.Table(
-                striped=True,
-                highlightOnHover=True,
-                children=[
-                    html.Thead(
-                        html.Tr(
-                            [
-                                html.Th("Start"),
-                                html.Th("End"),
-                                html.Th("Duration (min)"),
-                                html.Th("Reason"),
-                                html.Th("Senaryo"),
-                                html.Th("Outage"),
-                                html.Th("Service impact"),
-                                html.Th("DC impact"),
-                            ]
-                        )
-                    ),
-                    html.Tbody(rows_dt),
-                ],
-            )
-        detail_papers.append(
-            dmc.Paper(
-                withBorder=True,
-                p="md",
-                radius="md",
-                children=[
-                    dmc.Text(
-                        f"{cat.get('category') or 'Category'} — "
-                        f"SLA {float(cat.get('availability_pct') or 0):.4f}%, "
-                        f"{cat.get('total_downtime_min') or 0} min downtime",
-                        fw=600,
-                        size="sm",
-                        mb="sm",
-                        c="#2B3674",
-                    ),
-                    inner,
-                ],
-            )
+    stack_children: list = [
+        dmc.Text(f"DC: {dc_display_name}", size="sm", c="dimmed"),
+    ]
+    stack_children.extend(alerts)
+    stack_children.append(
+        dmc.SimpleGrid(
+            cols=3,
+            spacing="lg",
+            children=[
+                dmc.Card(
+                    withBorder=True,
+                    padding="lg",
+                    radius="md",
+                    children=[
+                        dmc.Text("Overall availability", size="xs", c="dimmed", tt="uppercase"),
+                        dmc.Text(f"{pct:.4f} %" if item else "—", fw=800, size="xl", c="#2B3674"),
+                        dmc.Text(str(group_name), size="sm", c="dimmed"),
+                    ],
+                ),
+                dmc.Card(
+                    withBorder=True,
+                    padding="lg",
+                    radius="md",
+                    children=[
+                        dmc.Text("Period (minutes)", size="xs", c="dimmed"),
+                        dmc.Text(str(period_min if period_min is not None else "—"), fw=700, size="lg"),
+                    ],
+                ),
+                dmc.Card(
+                    withBorder=True,
+                    padding="lg",
+                    radius="md",
+                    children=[
+                        dmc.Text("Total downtime (min)", size="xs", c="dimmed"),
+                        dmc.Text(str(total_dm if total_dm is not None else "—"), fw=700, size="lg"),
+                    ],
+                ),
+            ],
         )
-
-    return dmc.Stack(
-        gap="lg",
-        children=[
-            dmc.SimpleGrid(
-                cols=3,
-                spacing="lg",
-                children=[
-                    dmc.Card(
-                        withBorder=True,
-                        padding="lg",
-                        radius="md",
-                        children=[
-                            dmc.Text("Overall availability", size="xs", c="dimmed", tt="uppercase"),
-                            dmc.Text(f"{pct:.3f} %", fw=800, size="xl", c="#2B3674"),
-                            dmc.Text(str(group_name), size="sm", c="dimmed"),
-                        ],
-                    ),
-                    dmc.Card(
-                        withBorder=True,
-                        padding="lg",
-                        radius="md",
-                        children=[
-                            dmc.Text("Period (minutes)", size="xs", c="dimmed"),
-                            dmc.Text(str(period_min if period_min is not None else "—"), fw=700, size="lg"),
-                        ],
-                    ),
-                    dmc.Card(
-                        withBorder=True,
-                        padding="lg",
-                        radius="md",
-                        children=[
-                            dmc.Text("Total downtime (min)", size="xs", c="dimmed"),
-                            dmc.Text(str(total_dm if total_dm is not None else "—"), fw=700, size="lg"),
-                        ],
-                    ),
-                ],
-            ),
-            html.Div(
-                className="nexus-card nexus-table",
-                style={"padding": "24px", "overflowX": "auto"},
-                children=[
-                    dmc.Text("Categories", fw=700, size="lg", c="#2B3674", mb="xs"),
-                    dmc.Text(
-                        "Partial SLA and downtime per service category (from AuraNotify).",
-                        size="xs",
-                        c="dimmed",
-                        mb="md",
-                    ),
-                    dmc.Table(
-                        striped=True,
-                        highlightOnHover=True,
-                        children=[
-                            html.Thead(
-                                html.Tr(
-                                    [
-                                        html.Th("Category"),
-                                        html.Th("Availability %"),
-                                        html.Th("Total downtime (min)"),
-                                        html.Th("Records"),
-                                    ]
-                                )
-                            ),
-                            html.Tbody(
-                                cat_rows
-                                if cat_rows
-                                else [html.Tr([html.Td("No categories", colSpan=4)])],
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-            html.Div(
-                className="nexus-card",
-                style={"padding": "24px"},
-                children=[
-                    dmc.Text("Downtime records by category", fw=700, size="lg", c="#2B3674", mb="sm"),
-                    dmc.Stack(
-                        gap="md",
-                        children=detail_papers if detail_papers else [dmc.Text("No data", c="dimmed")],
-                    ),
-                ],
-            ),
-        ],
     )
+    stack_children.append(hierarchy_section)
+    stack_children.append(
+        html.Div(
+            className="nexus-card nexus-table",
+            style={"padding": "24px", "overflowX": "auto"},
+            children=[
+                dmc.Text("AuraNotify categories (raw)", fw=700, size="lg", c="#2B3674", mb="xs"),
+                dmc.Table(
+                    striped=True,
+                    highlightOnHover=True,
+                    children=[
+                        html.Thead(
+                            html.Tr(
+                                [
+                                    html.Th("Category"),
+                                    html.Th("Availability %"),
+                                    html.Th("Total downtime (min)"),
+                                    html.Th("Records"),
+                                ]
+                            )
+                        ),
+                        html.Tbody(
+                            cat_rows
+                            if cat_rows
+                            else [html.Tr([html.Td("No categories", colSpan=4)])],
+                        ),
+                    ],
+                ),
+            ],
+        )
+    )
+
+    return dmc.Stack(gap="lg", children=stack_children)
 
 
 def _has_compute_data(d: dict | None) -> bool:
@@ -1815,7 +1919,9 @@ def build_dc_view(dc_id, time_range=None):
     has_s3 = bool(s3_data.get("pools"))
 
     dc_name = data["meta"]["name"]
-    dc_loc  = data["meta"]["location"]
+    dc_loc = data["meta"]["location"]
+    dc_desc = (data.get("meta") or {}).get("description") or ""
+    dc_display = format_dc_display_name(dc_name, dc_desc)
 
     batch2 = parallel_execute(
         {
@@ -1949,7 +2055,7 @@ def build_dc_view(dc_id, time_range=None):
             value=default_outer_tab,
             children=[
                 create_detail_header(
-                    title=dc_name,
+                    title=dc_display,
                     back_href="/datacenters",
                     back_label="Data Centers",
                     subtitle_badge=f"­şôı {dc_loc}" if dc_loc else None,
@@ -2217,7 +2323,7 @@ def build_dc_view(dc_id, time_range=None):
                     children=dmc.Stack(
                         gap="lg",
                         style={"padding": "0 30px"},
-                        children=[_build_dc_availability_tab(aura_dc_item, dc_name)],
+                        children=[_build_dc_availability_tab(aura_dc_item, dc_display)],
                     ),
                 )
                 if has_avail

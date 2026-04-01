@@ -22,6 +22,7 @@ def test_datacenters_summary_returns_200_and_non_empty_list(client):
     assert isinstance(body, list)
     assert len(body) == 1
     assert body[0]["id"] == "DC11"
+    assert body[0]["description"] == "Premier DC"
 
 
 def test_datacenters_summary_with_time_range_passes_start_end_to_db(client, mock_db):
@@ -47,6 +48,7 @@ def test_datacenter_detail_returns_200_with_meta_and_intel_fields(client):
     body = r.json()
     assert body["meta"]["name"] == "DC11"
     assert body["meta"]["location"] == "Istanbul"
+    assert body["meta"]["description"] == "Premier DC"
     assert "intel" in body
     assert "power" in body
     assert "energy" in body

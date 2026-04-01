@@ -65,7 +65,11 @@ def _empty_compute_section() -> dict:
 def _EMPTY_DC(dc_code: str) -> dict:
     """Return a zeroed-out DC details dict for when the DB is unreachable."""
     return {
-        "meta": {"name": dc_code, "location": DC_LOCATIONS.get(dc_code, "Unknown Data Center")},
+        "meta": {
+            "name": dc_code,
+            "location": DC_LOCATIONS.get(dc_code, "Unknown Data Center"),
+            "description": "",
+        },
         # New compute-type split sections (used by dc_view)
         "classic": _empty_compute_section(),
         "hyperconv": _empty_compute_section(),
@@ -112,6 +116,7 @@ class DatabaseService:
         self._pool: pg_pool.ThreadedConnectionPool | None = None
         self._dc_list: list[str] = _FALLBACK_DC_LIST.copy()
         self._dc_site_map: dict[str, str] = {}
+        self._dc_description_map: dict[str, str] = {}
         # Cache for brocade switch_host -> resolved DC code.
         # Value can be None when no resolution is possible.
         self._brocade_switch_dc_cache: dict[str, str | None] = {}
@@ -492,6 +497,7 @@ LIMIT 20
     # ------------------------------------------------------------------
 
     def _load_dc_list(self) -> list[str]:
+        self._dc_description_map = {}
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
@@ -501,6 +507,12 @@ LIMIT 20
                         rows = self._run_rows(cur, lq.DC_LIST_WITH_SITE_NO_STATUS)
                         dc_names = [row[0] for row in rows if row[0]]
                     self._dc_site_map = {row[0]: row[1] for row in rows if row[0] and row[1]}
+                    desc_rows = self._run_rows(cur, lq.DC_NAME_DESCRIPTION_MAP)
+                    if not desc_rows:
+                        desc_rows = self._run_rows(cur, lq.DC_NAME_DESCRIPTION_MAP_NO_STATUS)
+                    for row in desc_rows:
+                        if row and row[0] and len(row) > 1 and row[1]:
+                            self._dc_description_map[str(row[0]).strip()] = str(row[1]).strip()
         except OperationalError as exc:
             logger.warning("Could not load DC list from DB: %s — using fallback.", exc)
             return _FALLBACK_DC_LIST.copy()
@@ -511,6 +523,20 @@ LIMIT 20
 
         logger.warning("loki_locations returned empty DC list — using fallback.")
         return _FALLBACK_DC_LIST.copy()
+
+    def _ensure_dc_description_map(self, cur) -> None:
+        """Lazy-load NetBox location descriptions (name → facility description) once per process."""
+        if self._dc_description_map:
+            return
+        try:
+            rows = self._run_rows(cur, lq.DC_NAME_DESCRIPTION_MAP)
+            if not rows:
+                rows = self._run_rows(cur, lq.DC_NAME_DESCRIPTION_MAP_NO_STATUS)
+            for row in rows:
+                if row and row[0] and len(row) > 1 and row[1]:
+                    self._dc_description_map[str(row[0]).strip()] = str(row[1]).strip()
+        except Exception as exc:
+            logger.warning("Could not load DC description map: %s", exc)
 
     # ------------------------------------------------------------------
     # Individual query methods (single DC) — kept for dc_view.py
@@ -815,6 +841,7 @@ LIMIT 20
         classic_avg30=None,
         hyperconv_row=None,
         hyperconv_avg30=None,
+        dc_description: str = "",
     ) -> dict:
         """Apply unit normalization and build the standard DC detail dictionary.
 
@@ -906,10 +933,12 @@ LIMIT 20
         hc_stor_cap  = round(n_stor_cap_tb, 3)
         hc_stor_used = round(n_stor_used_tb, 3)
 
+        desc = (dc_description or "").strip()
         return {
             "meta": {
                 "name": dc_code,
                 "location": DC_LOCATIONS.get(dc_code, "Unknown Data Center"),
+                "description": desc,
             },
             # Compute-type split (new) — used by dc_view tabs
             "classic": {
@@ -1026,9 +1055,11 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
+                    self._ensure_dc_description_map(cur)
                     dc_wc = f"%{dc_code}%"
                     result = self._aggregate_dc(
                         dc_code,
+                        dc_description=self._dc_description_map.get(dc_code, ""),
                         nutanix_host_count=self.get_nutanix_host_count(cur, dc_code, start_ts, end_ts),
                         nutanix_vms=self.get_nutanix_vm_count(cur, dc_code, start_ts, end_ts),
                         nutanix_mem=self.get_nutanix_memory(cur, dc_code, start_ts, end_ts),
@@ -1457,6 +1488,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 classic_avg30=cl_avg,
                 hyperconv_row=hc_data,
                 hyperconv_avg30=hc_avg,
+                dc_description=self._dc_description_map.get(dc, ""),
             )
 
         return results, platform_counts
@@ -1564,6 +1596,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 "id": dc,
                 "name": dc,
                 "location": d["meta"]["location"],
+                "description": (d.get("meta") or {}).get("description") or "",
                 "site_name": self._dc_site_map.get(dc),
                 "status": "Healthy",
                 "platform_count": platform_count,

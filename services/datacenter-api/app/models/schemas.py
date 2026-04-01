@@ -33,6 +33,7 @@ class DataCenterSummary(BaseModel):
     id: str
     name: str
     location: str
+    description: str = ""
     site_name: str | None = None
     status: str
     platform_count: int
@@ -45,6 +46,7 @@ class DataCenterSummary(BaseModel):
 class DCMeta(BaseModel):
     name: str
     location: str
+    description: str = ""
 
 
 class DCIntel(BaseModel):

@@ -45,3 +45,25 @@ SELECT
 FROM public.loki_locations
 WHERE CASE WHEN parent_id IS NULL THEN name ELSE parent_name END IS NOT NULL
 """
+
+# NetBox DC root rows: name + facility description (e.g. DC13 + Equinix IL2 DC)
+DC_NAME_DESCRIPTION_MAP = """
+SELECT
+    name AS dc_name,
+    MAX(NULLIF(TRIM(description), '')) AS description
+FROM public.loki_locations
+WHERE parent_id IS NULL
+  AND status_value = 'active'
+GROUP BY name
+ORDER BY name
+"""
+
+DC_NAME_DESCRIPTION_MAP_NO_STATUS = """
+SELECT
+    name AS dc_name,
+    MAX(NULLIF(TRIM(description), '')) AS description
+FROM public.loki_locations
+WHERE parent_id IS NULL
+GROUP BY name
+ORDER BY name
+"""

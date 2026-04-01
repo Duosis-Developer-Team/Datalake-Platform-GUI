@@ -6,10 +6,12 @@ from src.services import api_client as api
 from src.services import sla_service
 from src.utils.time_range import default_time_range
 from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe, dataframes_to_excel_bytes, dataframe_to_csv_bytes
+from src.utils.dc_display import format_dc_display_name
 
 
 def _dc_vault_card(dc, sla_entry=None):
     """Elite DC Vault card: two columns, Power Dial + metric rows."""
+    dc_title = format_dc_display_name(dc.get("name"), dc.get("description"))
     # IBM vs total power split
     ibm_kw   = float(dc["stats"].get("ibm_kw", 0.0) or 0.0)
     total_kw = float(dc["stats"].get("total_energy_kw", 0.0) or 0.0)
@@ -162,7 +164,7 @@ def _dc_vault_card(dc, sla_entry=None):
                             dmc.Stack(
                                 gap=0,
                                 children=[
-                                    dmc.Text(dc["name"], fw=700, size="md", c="#2B3674"),
+                                    dmc.Text(dc_title, fw=700, size="md", c="#2B3674"),
                                     dmc.Text(
                                         dc.get("location", "\u2014"),
                                         size="xs",
@@ -228,7 +230,7 @@ def build_datacenters(time_range=None):
         sla = sla_by_dc.get(dc_id) or sla_by_dc.get(str(dc_id).upper()) if sla_by_dc else None
         export_rows.append(
             {
-                "DC": dc.get("name", dc_id),
+                "DC": format_dc_display_name(dc.get("name"), dc.get("description")) or dc.get("name", dc_id),
                 "Location": dc.get("location", ""),
                 "Hosts": dc.get("host_count", 0),
                 "VMs": dc.get("vm_count", 0),
