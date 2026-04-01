@@ -114,8 +114,15 @@ class CustomerAdapter:
                     classic_mem_gb = float(classic_res[1] or 0.0) if classic_res else 0.0
                     classic_disk_gb = float(classic_res[2] or 0.0) if classic_res else 0.0
 
+                    classic_deleted_rows = self._run_rows(
+                        cur, cq.CUSTOMER_CLASSIC_DELETED_VM_NAMES, (vm_pattern, start_ts, end_ts)
+                    )
+                    classic_deleted_vm_list = [str(r[0]) for r in (classic_deleted_rows or []) if r and r[0]]
+
                     classic_vm_rows = self._run_rows(
-                        cur, cq.CUSTOMER_CLASSIC_VM_LIST, (vm_pattern, start_ts, end_ts)
+                        cur,
+                        cq.CUSTOMER_CLASSIC_VM_LIST,
+                        (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts),
                     )
                     classic_vm_list = [
                         {
@@ -123,8 +130,16 @@ class CustomerAdapter:
                             "source": r[1],
                             "cluster": r[2],
                             "cpu": float(r[3] or 0.0),
-                            "memory_gb": float(r[4] or 0.0),
-                            "disk_gb": float(r[5] or 0.0),
+                            "cpu_pct_min": float(r[4] or 0.0),
+                            "cpu_pct_avg": float(r[5] or 0.0),
+                            "cpu_pct_max": float(r[6] or 0.0),
+                            "memory_gb": float(r[7] or 0.0),
+                            "mem_pct_min": float(r[8] or 0.0),
+                            "mem_pct_avg": float(r[9] or 0.0),
+                            "mem_pct_max": float(r[10] or 0.0),
+                            "disk_gb": float(r[11] or 0.0),
+                            "disk_used_min_gb": float(r[12] or 0.0),
+                            "disk_used_max_gb": float(r[13] or 0.0),
                         }
                         for r in (classic_vm_rows or [])
                         if r and r[0]
@@ -152,15 +167,46 @@ class CustomerAdapter:
                     hc_mem_gb = float(hc_res[1] or 0.0) if hc_res else 0.0
                     hc_disk_gb = float(hc_res[2] or 0.0) if hc_res else 0.0
 
-                    hc_vm_rows = self._run_rows(cur, cq.CUSTOMER_HYPERCONV_VM_LIST, hc_params)
+                    hc_deleted_rows = self._run_rows(cur, cq.CUSTOMER_HYPERCONV_DELETED_VM_NAMES, hc_params)
+                    hc_deleted_vm_list = [str(r[0]) for r in (hc_deleted_rows or []) if r and r[0]]
+
+                    hc_list_params = (
+                        vm_pattern,
+                        start_ts,
+                        end_ts,
+                        vm_pattern,
+                        start_ts,
+                        end_ts,
+                        vm_pattern,
+                        start_ts,
+                        end_ts,
+                        managed,
+                        start_ts,
+                        end_ts,
+                        vm_pattern,
+                        start_ts,
+                        end_ts,
+                        managed,
+                        start_ts,
+                        end_ts,
+                    )
+                    hc_vm_rows = self._run_rows(cur, cq.CUSTOMER_HYPERCONV_VM_LIST, hc_list_params)
                     hc_vm_list = [
                         {
                             "name": r[0],
                             "source": r[1],
                             "cluster": r[2],
                             "cpu": float(r[3] or 0.0),
-                            "memory_gb": float(r[4] or 0.0),
-                            "disk_gb": float(r[5] or 0.0),
+                            "cpu_pct_min": float(r[4] or 0.0),
+                            "cpu_pct_avg": float(r[5] or 0.0),
+                            "cpu_pct_max": float(r[6] or 0.0),
+                            "memory_gb": float(r[7] or 0.0),
+                            "mem_pct_min": float(r[8] or 0.0),
+                            "mem_pct_avg": float(r[9] or 0.0),
+                            "mem_pct_max": float(r[10] or 0.0),
+                            "disk_gb": float(r[11] or 0.0),
+                            "disk_used_min_gb": float(r[12] or 0.0),
+                            "disk_used_max_gb": float(r[13] or 0.0),
                         }
                         for r in (hc_vm_rows or [])
                         if r and r[0]
@@ -176,15 +222,39 @@ class CustomerAdapter:
                     pure_mem_gb = float(pure_res[1] or 0.0) if pure_res else 0.0
                     pure_disk_gb = float(pure_res[2] or 0.0) if pure_res else 0.0
 
-                    pure_vm_rows = self._run_rows(cur, cq.CUSTOMER_PURE_NUTANIX_VM_LIST, pure_params)
+                    pure_deleted_rows = self._run_rows(
+                        cur, cq.CUSTOMER_PURE_NUTANIX_DELETED_VM_NAMES, pure_params
+                    )
+                    pure_deleted_vm_list = [str(r[0]) for r in (pure_deleted_rows or []) if r and r[0]]
+
+                    pure_list_params = (
+                        pure,
+                        start_ts,
+                        end_ts,
+                        vm_pattern,
+                        start_ts,
+                        end_ts,
+                        vm_pattern,
+                        start_ts,
+                        end_ts,
+                    )
+                    pure_vm_rows = self._run_rows(cur, cq.CUSTOMER_PURE_NUTANIX_VM_LIST, pure_list_params)
                     pure_vm_list = [
                         {
                             "name": r[0],
                             "source": r[1],
                             "cluster": r[2],
                             "cpu": float(r[3] or 0.0),
-                            "memory_gb": float(r[4] or 0.0),
-                            "disk_gb": float(r[5] or 0.0),
+                            "cpu_pct_min": float(r[4] or 0.0),
+                            "cpu_pct_avg": float(r[5] or 0.0),
+                            "cpu_pct_max": float(r[6] or 0.0),
+                            "memory_gb": float(r[7] or 0.0),
+                            "mem_pct_min": float(r[8] or 0.0),
+                            "mem_pct_avg": float(r[9] or 0.0),
+                            "mem_pct_max": float(r[10] or 0.0),
+                            "disk_gb": float(r[11] or 0.0),
+                            "disk_used_min_gb": float(r[12] or 0.0),
+                            "disk_used_max_gb": float(r[13] or 0.0),
                         }
                         for r in (pure_vm_rows or [])
                         if r and r[0]
@@ -200,16 +270,29 @@ class CustomerAdapter:
                         self._run_value(cur, cq.CUSTOMER_POWER_MEMORY_TOTAL, (lpar_pattern, start_ts, end_ts))
                         or 0.0
                     )
+                    power_deleted_rows = self._run_rows(
+                        cur, cq.CUSTOMER_POWER_DELETED_LPAR_NAMES, (lpar_pattern, start_ts, end_ts)
+                    )
+                    power_deleted_vm_list = [str(r[0]) for r in (power_deleted_rows or []) if r and r[0]]
+
                     power_lpar_detail_rows = self._run_rows(
-                        cur, cq.CUSTOMER_POWER_LPAR_DETAIL_LIST, (lpar_pattern, start_ts, end_ts)
+                        cur,
+                        cq.CUSTOMER_POWER_LPAR_DETAIL_LIST,
+                        (lpar_pattern, start_ts, end_ts, lpar_pattern, start_ts, end_ts),
                     )
                     power_vm_list = [
                         {
                             "name": r[0],
                             "source": r[1],
                             "cpu": float(r[2] or 0.0),
-                            "memory_gb": float(r[3] or 0.0),
-                            "state": r[4],
+                            "cpu_pct_min": float(r[3] or 0.0),
+                            "cpu_pct_avg": float(r[4] or 0.0),
+                            "cpu_pct_max": float(r[5] or 0.0),
+                            "memory_gb": float(r[6] or 0.0),
+                            "mem_pct_min": float(r[7] or 0.0),
+                            "mem_pct_avg": float(r[8] or 0.0),
+                            "mem_pct_max": float(r[9] or 0.0),
+                            "state": r[10],
                         }
                         for r in (power_lpar_detail_rows or [])
                         if r and r[0]
@@ -317,6 +400,7 @@ class CustomerAdapter:
                 "memory_gb": classic_mem_gb,
                 "disk_gb": classic_disk_gb,
                 "vm_list": classic_vm_list,
+                "deleted_vm_list": classic_deleted_vm_list,
             },
             "hyperconv": {
                 "vm_count": hc_total,
@@ -327,6 +411,7 @@ class CustomerAdapter:
                 "memory_gb": hc_mem_gb,
                 "disk_gb": hc_disk_gb,
                 "vm_list": hc_vm_list,
+                "deleted_vm_list": hc_deleted_vm_list,
             },
             "pure_nutanix": {
                 "vm_count": pure_vm_count,
@@ -335,12 +420,14 @@ class CustomerAdapter:
                 "disk_gb": pure_disk_gb,
                 "vm_list": pure_vm_list,
                 "cluster_count": len(pure),
+                "deleted_vm_list": pure_deleted_vm_list,
             },
             "power": {
                 "cpu_total": power_cpu,
                 "lpar_count": power_lpars,
                 "memory_total_gb": power_memory,
                 "vm_list": power_vm_list,
+                "deleted_vm_list": power_deleted_vm_list,
             },
             "backup": {
                 "veeam": {
@@ -428,19 +515,21 @@ class CustomerAdapter:
                     "disk_gb": {"vmware": 0.0, "nutanix": 0.0, "total": 0.0},
                     "vm_list": [],
                 },
-                "classic": {**_empty_compute},
+                "classic": {**_empty_compute, "deleted_vm_list": []},
                 "hyperconv": {
                     **_empty_compute,
                     "vmware_only": 0,
                     "nutanix_count": 0,
                     "managed_nutanix_clusters": 0,
+                    "deleted_vm_list": [],
                 },
-                "pure_nutanix": {**_empty_compute, "cluster_count": 0},
+                "pure_nutanix": {**_empty_compute, "cluster_count": 0, "deleted_vm_list": []},
                 "power": {
                     "cpu_total": 0.0,
                     "lpar_count": 0,
                     "memory_total_gb": 0.0,
                     "vm_list": [],
+                    "deleted_vm_list": [],
                 },
                 "backup": {
                     "veeam": {

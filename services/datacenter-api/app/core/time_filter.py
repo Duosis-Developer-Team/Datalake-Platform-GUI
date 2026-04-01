@@ -10,7 +10,7 @@ class TimeFilter:
         self,
         start: Optional[str] = Query(None, description="Başlangıç tarihi (YYYY-MM-DD)"),
         end: Optional[str] = Query(None, description="Bitiş tarihi (YYYY-MM-DD)"),
-        preset: Optional[str] = Query(None, description="Preset: 1d, 7d, 30d"),
+        preset: Optional[str] = Query(None, description="Preset: 1h, 1d, 7d, 30d"),
     ):
         if start and end:
             self.time_range = {"start": start, "end": end, "preset": "custom"}

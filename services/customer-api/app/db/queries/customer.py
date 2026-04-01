@@ -335,7 +335,9 @@ ORDER BY datacenter, timestamp DESC
 IBM_LPAR_TOTALS = """
 SELECT COUNT(DISTINCT lparname) AS lpar_count
 FROM public.ibm_lpar_general
-WHERE lparname ILIKE %s AND time BETWEEN %s AND %s
+WHERE lparname ILIKE %s
+  AND LEFT(lparname, 1) <> '_'
+  AND time BETWEEN %s AND %s
 """
 
 IBM_VIOS_TOTALS = """
@@ -376,7 +378,9 @@ WITH latest_lpar_stats AS (
     SELECT DISTINCT ON (lparname)
         lpar_processor_currentvirtualprocessors
     FROM public.ibm_lpar_general
-    WHERE lparname ILIKE %s AND time BETWEEN %s AND %s
+    WHERE lparname ILIKE %s
+      AND LEFT(lparname, 1) <> '_'
+      AND time BETWEEN %s AND %s
     ORDER BY lparname, time DESC
 )
 SELECT
@@ -389,7 +393,9 @@ WITH latest_lpar_stats AS (
     SELECT DISTINCT ON (lparname)
         lpar_memory_logicalmem / 1.048576 AS lpar_memory_logicalmem
     FROM public.ibm_lpar_general
-    WHERE lparname ILIKE %s AND time BETWEEN %s AND %s
+    WHERE lparname ILIKE %s
+      AND LEFT(lparname, 1) <> '_'
+      AND time BETWEEN %s AND %s
     ORDER BY lparname, time DESC
 )
 SELECT
@@ -406,24 +412,62 @@ WHERE lparname ILIKE %s AND time BETWEEN %s AND %s
 ORDER BY "VM Name"
 """
 
+CUSTOMER_POWER_DELETED_LPAR_NAMES = """
+SELECT DISTINCT lparname
+FROM public.ibm_lpar_general
+WHERE lparname ILIKE %s
+  AND LEFT(lparname, 1) = '_'
+  AND time BETWEEN %s AND %s
+ORDER BY lparname
+"""
+
 CUSTOMER_POWER_LPAR_DETAIL_LIST = """
-WITH latest_lpar AS (
+WITH agg AS (
+    SELECT lparname,
+        MIN(lpar_processor_utilizedprocunits
+            / NULLIF(lpar_processor_currentvirtualprocessors, 0) * 100.0) AS cpu_pct_min,
+        AVG(lpar_processor_utilizedprocunits
+            / NULLIF(lpar_processor_currentvirtualprocessors, 0) * 100.0) AS cpu_pct_avg,
+        MAX(lpar_processor_utilizedprocunits
+            / NULLIF(lpar_processor_currentvirtualprocessors, 0) * 100.0) AS cpu_pct_max,
+        MIN(lpar_memory_backedphysicalmem
+            / NULLIF(lpar_memory_logicalmem, 0) * 100.0) AS mem_pct_min,
+        AVG(lpar_memory_backedphysicalmem
+            / NULLIF(lpar_memory_logicalmem, 0) * 100.0) AS mem_pct_avg,
+        MAX(lpar_memory_backedphysicalmem
+            / NULLIF(lpar_memory_logicalmem, 0) * 100.0) AS mem_pct_max
+    FROM public.ibm_lpar_general
+    WHERE lparname ILIKE %s
+      AND LEFT(lparname, 1) <> '_'
+      AND time BETWEEN %s AND %s
+    GROUP BY lparname
+),
+latest_lpar AS (
     SELECT DISTINCT ON (lparname)
         lparname,
         lpar_processor_currentvirtualprocessors,
         lpar_memory_logicalmem / 1.048576 AS memory_gb,
         lpar_details_state
     FROM public.ibm_lpar_general
-    WHERE lparname ILIKE %s AND time BETWEEN %s AND %s
+    WHERE lparname ILIKE %s
+      AND LEFT(lparname, 1) <> '_'
+      AND time BETWEEN %s AND %s
     ORDER BY lparname, time DESC
 )
 SELECT
-    lparname AS "VM Name",
+    l.lparname AS "VM Name",
     'Power HMC' AS "Source",
-    COALESCE(lpar_processor_currentvirtualprocessors, 0) AS "CPU",
-    COALESCE(memory_gb, 0) AS "Memory (GB)",
-    COALESCE(lpar_details_state, '') AS "State"
-FROM latest_lpar
+    COALESCE(l.lpar_processor_currentvirtualprocessors, 0) AS "CPU",
+    ROUND(COALESCE(a.cpu_pct_min, 0)::numeric, 2) AS "CPU min pct",
+    ROUND(COALESCE(a.cpu_pct_avg, 0)::numeric, 2) AS "CPU avg pct",
+    ROUND(COALESCE(a.cpu_pct_max, 0)::numeric, 2) AS "CPU max pct",
+    COALESCE(l.memory_gb, 0) AS "Memory (GB)",
+    ROUND(COALESCE(a.mem_pct_min, 0)::numeric, 2) AS "Mem min pct",
+    ROUND(COALESCE(a.mem_pct_avg, 0)::numeric, 2) AS "Mem avg pct",
+    ROUND(COALESCE(a.mem_pct_max, 0)::numeric, 2) AS "Mem max pct",
+    COALESCE(l.lpar_details_state, '') AS "State"
+FROM latest_lpar l
+JOIN agg a ON a.lparname = l.lparname
 ORDER BY "VM Name"
 """
 
@@ -573,6 +617,7 @@ SELECT COUNT(DISTINCT vmname) AS vm_count
 FROM public.vm_metrics
 WHERE vmname ILIKE %s
   AND cluster ILIKE '%%KM%%'
+  AND LEFT(vmname, 1) <> '_'
   AND timestamp BETWEEN %s AND %s
 """
 
@@ -586,6 +631,7 @@ WITH latest AS (
     FROM public.vm_metrics
     WHERE vmname ILIKE %s
       AND cluster ILIKE '%%KM%%'
+      AND LEFT(vmname, 1) <> '_'
       AND timestamp BETWEEN %s AND %s
     ORDER BY vmname, timestamp DESC
 )
@@ -596,8 +642,38 @@ SELECT
 FROM latest
 """
 
+CUSTOMER_CLASSIC_DELETED_VM_NAMES = """
+SELECT DISTINCT vmname
+FROM public.vm_metrics
+WHERE vmname ILIKE %s
+  AND cluster ILIKE '%%KM%%'
+  AND LEFT(vmname, 1) = '_'
+  AND timestamp BETWEEN %s AND %s
+ORDER BY vmname
+"""
+
 CUSTOMER_CLASSIC_VM_LIST = """
-WITH latest AS (
+WITH agg AS (
+    SELECT vmname,
+        MIN(CASE WHEN COALESCE(total_cpu_capacity_mhz, 0) > 0
+            THEN cpu_usage_min_mhz / total_cpu_capacity_mhz * 100.0 END) AS cpu_pct_min,
+        AVG(CASE WHEN COALESCE(total_cpu_capacity_mhz, 0) > 0
+            THEN cpu_usage_avg_mhz / total_cpu_capacity_mhz * 100.0 END) AS cpu_pct_avg,
+        MAX(CASE WHEN COALESCE(total_cpu_capacity_mhz, 0) > 0
+            THEN cpu_usage_max_mhz / total_cpu_capacity_mhz * 100.0 END) AS cpu_pct_max,
+        MIN(memory_usage_min_perc) AS mem_pct_min,
+        AVG(memory_usage_avg_perc) AS mem_pct_avg,
+        MAX(memory_usage_max_perc) AS mem_pct_max,
+        MIN(used_space_gb) AS disk_used_min_gb,
+        MAX(used_space_gb) AS disk_used_max_gb
+    FROM public.vm_metrics
+    WHERE vmname ILIKE %s
+      AND cluster ILIKE '%%KM%%'
+      AND LEFT(vmname, 1) <> '_'
+      AND timestamp BETWEEN %s AND %s
+    GROUP BY vmname
+),
+latest AS (
     SELECT DISTINCT ON (vmname)
         vmname,
         cluster,
@@ -607,18 +683,28 @@ WITH latest AS (
     FROM public.vm_metrics
     WHERE vmname ILIKE %s
       AND cluster ILIKE '%%KM%%'
+      AND LEFT(vmname, 1) <> '_'
       AND timestamp BETWEEN %s AND %s
     ORDER BY vmname, timestamp DESC
 )
 SELECT
-    vmname           AS "VM Name",
-    'Classic'        AS "Source",
-    cluster          AS "Cluster",
-    COALESCE(number_of_cpus, 0)           AS "CPU",
-    COALESCE(total_memory_capacity_gb, 0) AS "Memory (GB)",
-    COALESCE(provisioned_space_gb, 0)     AS "Disk (GB)"
-FROM latest
-ORDER BY vmname
+    l.vmname AS "VM Name",
+    'Classic' AS "Source",
+    l.cluster AS "Cluster",
+    COALESCE(l.number_of_cpus, 0) AS "CPU",
+    ROUND(COALESCE(a.cpu_pct_min, 0)::numeric, 2) AS "CPU min pct",
+    ROUND(COALESCE(a.cpu_pct_avg, 0)::numeric, 2) AS "CPU avg pct",
+    ROUND(COALESCE(a.cpu_pct_max, 0)::numeric, 2) AS "CPU max pct",
+    COALESCE(l.total_memory_capacity_gb, 0) AS "Memory (GB)",
+    ROUND(COALESCE(a.mem_pct_min, 0)::numeric, 2) AS "Mem min pct",
+    ROUND(COALESCE(a.mem_pct_avg, 0)::numeric, 2) AS "Mem avg pct",
+    ROUND(COALESCE(a.mem_pct_max, 0)::numeric, 2) AS "Mem max pct",
+    COALESCE(l.provisioned_space_gb, 0) AS "Disk (GB)",
+    ROUND(COALESCE(a.disk_used_min_gb, 0)::numeric, 2) AS "Disk used min (GB)",
+    ROUND(COALESCE(a.disk_used_max_gb, 0)::numeric, 2) AS "Disk used max (GB)"
+FROM latest l
+JOIN agg a ON a.vmname = l.vmname
+ORDER BY l.vmname
 """
 
 # =============================================================================
@@ -633,12 +719,14 @@ WITH vmware_vms AS (
     FROM public.vm_metrics
     WHERE vmname ILIKE %s
       AND cluster NOT ILIKE '%%KM%%'
+      AND LEFT(vmname, 1) <> '_'
       AND timestamp BETWEEN %s AND %s
 ),
 nutanix_vms AS (
     SELECT DISTINCT nvm.vm_name
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
+      AND LEFT(nvm.vm_name, 1) <> '_'
       AND nvm.collection_time BETWEEN %s AND %s
       AND nvm.cluster_uuid::text IN (
         SELECT DISTINCT ON (cluster_name) cluster_uuid
@@ -669,6 +757,7 @@ WITH vmware_latest AS (
     FROM public.vm_metrics
     WHERE vmname ILIKE %s
       AND cluster NOT ILIKE '%%KM%%'
+      AND LEFT(vmname, 1) <> '_'
       AND timestamp BETWEEN %s AND %s
     ORDER BY vmname, timestamp DESC
 ),
@@ -680,6 +769,7 @@ nutanix_latest AS (
         (nvm.disk_capacity  / 1024.0 / 1024.0 / 1024.0) AS disk_gb
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
+      AND LEFT(nvm.vm_name, 1) <> '_'
       AND nvm.collection_time BETWEEN %s AND %s
       AND nvm.cluster_uuid::text IN (
         SELECT DISTINCT ON (cluster_name) cluster_uuid
@@ -708,8 +798,53 @@ SELECT
     ) AS disk_gb
 """
 
+CUSTOMER_HYPERCONV_DELETED_VM_NAMES = """
+SELECT DISTINCT vm_name FROM (
+    SELECT vmname AS vm_name
+    FROM public.vm_metrics
+    WHERE vmname ILIKE %s
+      AND cluster NOT ILIKE '%%KM%%'
+      AND LEFT(vmname, 1) = '_'
+      AND timestamp BETWEEN %s AND %s
+    UNION
+    SELECT nvm.vm_name
+    FROM public.nutanix_vm_metrics nvm
+    WHERE nvm.vm_name ILIKE %s
+      AND LEFT(nvm.vm_name, 1) = '_'
+      AND nvm.collection_time BETWEEN %s AND %s
+      AND nvm.cluster_uuid::text IN (
+        SELECT DISTINCT ON (cluster_name) cluster_uuid
+        FROM public.nutanix_cluster_metrics
+        WHERE cluster_name = ANY(%s::text[])
+          AND collection_time BETWEEN %s AND %s
+        ORDER BY cluster_name, collection_time DESC
+      )
+) d
+ORDER BY vm_name
+"""
+
 CUSTOMER_HYPERCONV_VM_LIST = """
-WITH vmware_latest AS (
+WITH vmware_agg AS (
+    SELECT vmname,
+        MIN(CASE WHEN COALESCE(total_cpu_capacity_mhz, 0) > 0
+            THEN cpu_usage_min_mhz / total_cpu_capacity_mhz * 100.0 END) AS cpu_pct_min,
+        AVG(CASE WHEN COALESCE(total_cpu_capacity_mhz, 0) > 0
+            THEN cpu_usage_avg_mhz / total_cpu_capacity_mhz * 100.0 END) AS cpu_pct_avg,
+        MAX(CASE WHEN COALESCE(total_cpu_capacity_mhz, 0) > 0
+            THEN cpu_usage_max_mhz / total_cpu_capacity_mhz * 100.0 END) AS cpu_pct_max,
+        MIN(memory_usage_min_perc) AS mem_pct_min,
+        AVG(memory_usage_avg_perc) AS mem_pct_avg,
+        MAX(memory_usage_max_perc) AS mem_pct_max,
+        MIN(used_space_gb) AS disk_used_min_gb,
+        MAX(used_space_gb) AS disk_used_max_gb
+    FROM public.vm_metrics
+    WHERE vmname ILIKE %s
+      AND cluster NOT ILIKE '%%KM%%'
+      AND LEFT(vmname, 1) <> '_'
+      AND timestamp BETWEEN %s AND %s
+    GROUP BY vmname
+),
+vmware_latest AS (
     SELECT DISTINCT ON (vmname)
         vmname,
         cluster,
@@ -719,8 +854,32 @@ WITH vmware_latest AS (
     FROM public.vm_metrics
     WHERE vmname ILIKE %s
       AND cluster NOT ILIKE '%%KM%%'
+      AND LEFT(vmname, 1) <> '_'
       AND timestamp BETWEEN %s AND %s
     ORDER BY vmname, timestamp DESC
+),
+nutanix_agg AS (
+    SELECT nvm.vm_name,
+        MIN(nvm.cpu_usage_min / 10000.0) AS cpu_pct_min,
+        AVG(nvm.cpu_usage_avg / 10000.0) AS cpu_pct_avg,
+        MAX(nvm.cpu_usage_max / 10000.0) AS cpu_pct_max,
+        MIN(nvm.memory_usage_min / 10000.0) AS mem_pct_min,
+        AVG(nvm.memory_usage_avg / 10000.0) AS mem_pct_avg,
+        MAX(nvm.memory_usage_max / 10000.0) AS mem_pct_max,
+        MIN(nvm.used_storage / 1073741824.0) AS disk_used_min_gb,
+        MAX(nvm.used_storage / 1073741824.0) AS disk_used_max_gb
+    FROM public.nutanix_vm_metrics nvm
+    WHERE nvm.vm_name ILIKE %s
+      AND LEFT(nvm.vm_name, 1) <> '_'
+      AND nvm.collection_time BETWEEN %s AND %s
+      AND nvm.cluster_uuid::text IN (
+        SELECT DISTINCT ON (cluster_name) cluster_uuid
+        FROM public.nutanix_cluster_metrics
+        WHERE cluster_name = ANY(%s::text[])
+          AND collection_time BETWEEN %s AND %s
+        ORDER BY cluster_name, collection_time DESC
+      )
+    GROUP BY nvm.vm_name
 ),
 nutanix_latest AS (
     SELECT DISTINCT ON (nvm.vm_name)
@@ -730,6 +889,7 @@ nutanix_latest AS (
         (nvm.disk_capacity  / 1024.0 / 1024.0 / 1024.0) AS disk_gb
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
+      AND LEFT(nvm.vm_name, 1) <> '_'
       AND nvm.collection_time BETWEEN %s AND %s
       AND nvm.cluster_uuid::text IN (
         SELECT DISTINCT ON (cluster_name) cluster_uuid
@@ -753,12 +913,46 @@ SELECT
         ELSE 'Nutanix'
     END AS "Source",
     COALESCE(v.cluster, 'Nutanix') AS "Cluster",
-    COALESCE(v.number_of_cpus, n.cpu_count, 0)           AS "CPU",
+    COALESCE(v.number_of_cpus, n.cpu_count, 0) AS "CPU",
+    ROUND(
+        (CASE WHEN v.vmname IS NOT NULL THEN va.cpu_pct_min ELSE na.cpu_pct_min END)::numeric,
+        2
+    ) AS "CPU min pct",
+    ROUND(
+        (CASE WHEN v.vmname IS NOT NULL THEN va.cpu_pct_avg ELSE na.cpu_pct_avg END)::numeric,
+        2
+    ) AS "CPU avg pct",
+    ROUND(
+        (CASE WHEN v.vmname IS NOT NULL THEN va.cpu_pct_max ELSE na.cpu_pct_max END)::numeric,
+        2
+    ) AS "CPU max pct",
     COALESCE(v.total_memory_capacity_gb, n.memory_gb, 0) AS "Memory (GB)",
-    COALESCE(v.provisioned_space_gb, n.disk_gb, 0)       AS "Disk (GB)"
+    ROUND(
+        (CASE WHEN v.vmname IS NOT NULL THEN va.mem_pct_min ELSE na.mem_pct_min END)::numeric,
+        2
+    ) AS "Mem min pct",
+    ROUND(
+        (CASE WHEN v.vmname IS NOT NULL THEN va.mem_pct_avg ELSE na.mem_pct_avg END)::numeric,
+        2
+    ) AS "Mem avg pct",
+    ROUND(
+        (CASE WHEN v.vmname IS NOT NULL THEN va.mem_pct_max ELSE na.mem_pct_max END)::numeric,
+        2
+    ) AS "Mem max pct",
+    COALESCE(v.provisioned_space_gb, n.disk_gb, 0) AS "Disk (GB)",
+    ROUND(
+        (CASE WHEN v.vmname IS NOT NULL THEN va.disk_used_min_gb ELSE na.disk_used_min_gb END)::numeric,
+        2
+    ) AS "Disk used min (GB)",
+    ROUND(
+        (CASE WHEN v.vmname IS NOT NULL THEN va.disk_used_max_gb ELSE na.disk_used_max_gb END)::numeric,
+        2
+    ) AS "Disk used max (GB)"
 FROM all_unique u
 LEFT JOIN vmware_latest v ON v.vmname = u.vm_name
 LEFT JOIN nutanix_latest n ON n.vm_name = u.vm_name
+LEFT JOIN vmware_agg va ON va.vmname = u.vm_name
+LEFT JOIN nutanix_agg na ON na.vm_name = u.vm_name
 ORDER BY "Source", "VM Name"
 """
 
@@ -780,6 +974,7 @@ latest AS (
         nvm.vm_name
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
+      AND LEFT(nvm.vm_name, 1) <> '_'
       AND nvm.collection_time BETWEEN %s AND %s
       AND nvm.cluster_uuid::text IN (SELECT cluster_uuid FROM cluster_uuids)
     ORDER BY nvm.vm_name, nvm.collection_time DESC
@@ -802,6 +997,7 @@ latest AS (
         (nvm.disk_capacity  / 1024.0 / 1024.0 / 1024.0) AS disk_gb
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
+      AND LEFT(nvm.vm_name, 1) <> '_'
       AND nvm.collection_time BETWEEN %s AND %s
       AND nvm.cluster_uuid::text IN (SELECT cluster_uuid FROM cluster_uuids)
     ORDER BY nvm.vm_name, nvm.collection_time DESC
@@ -813,6 +1009,23 @@ SELECT
 FROM latest
 """
 
+CUSTOMER_PURE_NUTANIX_DELETED_VM_NAMES = """
+WITH cluster_uuids AS (
+    SELECT DISTINCT ON (cluster_name) cluster_uuid
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name = ANY(%s::text[])
+      AND collection_time BETWEEN %s AND %s
+    ORDER BY cluster_name, collection_time DESC
+)
+SELECT DISTINCT nvm.vm_name
+FROM public.nutanix_vm_metrics nvm
+WHERE nvm.vm_name ILIKE %s
+  AND LEFT(nvm.vm_name, 1) = '_'
+  AND nvm.collection_time BETWEEN %s AND %s
+  AND nvm.cluster_uuid::text IN (SELECT cluster_uuid FROM cluster_uuids)
+ORDER BY nvm.vm_name
+"""
+
 CUSTOMER_PURE_NUTANIX_VM_LIST = """
 WITH cluster_uuids AS (
     SELECT DISTINCT ON (cluster_name) cluster_uuid, cluster_name
@@ -820,6 +1033,23 @@ WITH cluster_uuids AS (
     WHERE cluster_name = ANY(%s::text[])
       AND collection_time BETWEEN %s AND %s
     ORDER BY cluster_name, collection_time DESC
+),
+agg AS (
+    SELECT nvm.vm_name,
+        MIN(nvm.cpu_usage_min / 10000.0) AS cpu_pct_min,
+        AVG(nvm.cpu_usage_avg / 10000.0) AS cpu_pct_avg,
+        MAX(nvm.cpu_usage_max / 10000.0) AS cpu_pct_max,
+        MIN(nvm.memory_usage_min / 10000.0) AS mem_pct_min,
+        AVG(nvm.memory_usage_avg / 10000.0) AS mem_pct_avg,
+        MAX(nvm.memory_usage_max / 10000.0) AS mem_pct_max,
+        MIN(nvm.used_storage / 1073741824.0) AS disk_used_min_gb,
+        MAX(nvm.used_storage / 1073741824.0) AS disk_used_max_gb
+    FROM public.nutanix_vm_metrics nvm
+    WHERE nvm.vm_name ILIKE %s
+      AND LEFT(nvm.vm_name, 1) <> '_'
+      AND nvm.collection_time BETWEEN %s AND %s
+      AND nvm.cluster_uuid::text IN (SELECT cluster_uuid FROM cluster_uuids)
+    GROUP BY nvm.vm_name
 ),
 latest AS (
     SELECT DISTINCT ON (nvm.vm_name)
@@ -830,6 +1060,7 @@ latest AS (
         (nvm.disk_capacity  / 1024.0 / 1024.0 / 1024.0) AS disk_gb
     FROM public.nutanix_vm_metrics nvm
     WHERE nvm.vm_name ILIKE %s
+      AND LEFT(nvm.vm_name, 1) <> '_'
       AND nvm.collection_time BETWEEN %s AND %s
       AND nvm.cluster_uuid::text IN (SELECT cluster_uuid FROM cluster_uuids)
     ORDER BY nvm.vm_name, nvm.collection_time DESC
@@ -839,9 +1070,18 @@ SELECT
     'Pure Nutanix (AHV)' AS "Source",
     cu.cluster_name AS "Cluster",
     COALESCE(l.cpu_count, 0) AS "CPU",
+    ROUND(COALESCE(a.cpu_pct_min, 0)::numeric, 2) AS "CPU min pct",
+    ROUND(COALESCE(a.cpu_pct_avg, 0)::numeric, 2) AS "CPU avg pct",
+    ROUND(COALESCE(a.cpu_pct_max, 0)::numeric, 2) AS "CPU max pct",
     COALESCE(l.memory_gb, 0) AS "Memory (GB)",
-    COALESCE(l.disk_gb, 0) AS "Disk (GB)"
+    ROUND(COALESCE(a.mem_pct_min, 0)::numeric, 2) AS "Mem min pct",
+    ROUND(COALESCE(a.mem_pct_avg, 0)::numeric, 2) AS "Mem avg pct",
+    ROUND(COALESCE(a.mem_pct_max, 0)::numeric, 2) AS "Mem max pct",
+    COALESCE(l.disk_gb, 0) AS "Disk (GB)",
+    ROUND(COALESCE(a.disk_used_min_gb, 0)::numeric, 2) AS "Disk used min (GB)",
+    ROUND(COALESCE(a.disk_used_max_gb, 0)::numeric, 2) AS "Disk used max (GB)"
 FROM latest l
+JOIN agg a ON a.vm_name = l.vm_name
 JOIN cluster_uuids cu ON l.cluster_uuid::text = cu.cluster_uuid
 ORDER BY "VM Name"
 """

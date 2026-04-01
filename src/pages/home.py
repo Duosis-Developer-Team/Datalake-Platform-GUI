@@ -238,7 +238,7 @@ def _pct_badge(value):
 
 
 def _arch_usage_min_avg_max_row(label: str, mn, avg, mx):
-    """One resource line: label + min / avg / max badges (VMware time-series metrics)."""
+    """One resource line: label + max / avg / min badges (VMware time-series metrics)."""
     return dmc.Group(
         gap=6,
         align="center",
@@ -246,12 +246,12 @@ def _arch_usage_min_avg_max_row(label: str, mn, avg, mx):
         justify="flex-end",
         children=[
             dmc.Text(label, size="xs", c="dimmed", style={"minWidth": "28px"}),
-            dmc.Text("min", size="xs", c="dimmed"),
-            _pct_badge(mn),
-            dmc.Text("avg", size="xs", c="dimmed"),
-            _pct_badge(avg),
             dmc.Text("max", size="xs", c="dimmed"),
             _pct_badge(mx),
+            dmc.Text("avg", size="xs", c="dimmed"),
+            _pct_badge(avg),
+            dmc.Text("min", size="xs", c="dimmed"),
+            _pct_badge(mn),
         ],
     )
 

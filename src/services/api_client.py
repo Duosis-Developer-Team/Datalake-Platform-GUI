@@ -119,7 +119,7 @@ def _build_time_params(tr: Optional[dict]) -> dict[str, str]:
     if not tr:
         return {}
     preset = tr.get("preset")
-    if preset in {"1d", "7d", "30d"}:
+    if preset in {"1h", "1d", "7d", "30d"}:
         return {"preset": preset}
     start = tr.get("start")
     end = tr.get("end")
@@ -590,3 +590,40 @@ def get_dc_zabbix_disk_health(dc_code: str, tr: Optional[dict]) -> dict:
         return data if isinstance(data, dict) else {}
     except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
         return {}
+
+
+def _auranotify_start_date(tr: Optional[dict]) -> str:
+    from src.utils.time_range import time_range_to_bounds
+
+    start_ts, _ = time_range_to_bounds(tr)
+    return start_ts.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def get_customer_availability_bundle(customer_name: str, tr: Optional[dict]) -> dict[str, Any]:
+    """AuraNotify: service + VM downtimes and per-VM outage counts for the selected customer."""
+    try:
+        from src.services import auranotify_client as aura
+
+        return aura.get_customer_availability_bundle(customer_name or "", _auranotify_start_date(tr))
+    except Exception:
+        return {
+            "service_downtimes": [],
+            "vm_downtimes": [],
+            "vm_outage_counts": {},
+            "customer_id": None,
+        }
+
+
+def get_dc_availability_sla_item(dc_code: str, dc_display_name: str, tr: Optional[dict]) -> Optional[dict[str, Any]]:
+    """AuraNotify: one datacenter-services item matched to this DC (by name or code)."""
+    try:
+        from src.services import auranotify_client as aura
+
+        items = aura.get_dc_services_availability(_auranotify_start_date(tr))
+        for hint in (dc_display_name or "", dc_code or ""):
+            it = aura.match_dc_group_item(items, hint)
+            if it:
+                return it
+        return None
+    except Exception:
+        return None

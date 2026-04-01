@@ -28,7 +28,12 @@ from src.components.charts import (
 )
 from src.services import api_client as api
 from src.services.db_service import DEFAULT_CUSTOMER_NAME, WARMED_CUSTOMERS
-from src.utils.time_range import default_time_range, preset_to_range
+from src.utils.time_range import (
+    PRESET_CUSTOM,
+    default_time_range,
+    preset_to_range,
+    time_range_to_bounds,
+)
 from src.utils.format_units import pct_float, smart_storage
 from src.components.s3_panel import build_dc_s3_panel, build_customer_s3_panel
 from src.pages.home import _phys_inv_bar_figure
@@ -74,6 +79,9 @@ from src.pages import home, datacenters, dc_view, customer_view, query_explorer,
 from src.pages.dc_view import _bps_to_gbps, _build_compute_tab
 
 _default_tr = default_time_range()
+_custom_st, _custom_en = time_range_to_bounds(_default_tr)
+_custom_picker_start = _custom_st.strftime("%Y-%m-%dT%H:%M:%S")
+_custom_picker_end = _custom_en.strftime("%Y-%m-%dT%H:%M:%S")
 try:
     _customers = api.get_customer_list()
 except Exception as exc:
@@ -118,6 +126,7 @@ _sidebar = html.Div(
                     id="time-range-preset",
                     value=_default_tr.get("preset", "7d"),
                     data=[
+                        {"label": "1H", "value": "1h"},
                         {"label": "1D", "value": "1d"},
                         {"label": "7D", "value": "7d"},
                         {"label": "30D", "value": "30d"},
@@ -129,39 +138,35 @@ _sidebar = html.Div(
                 html.Div(
                     id="time-range-custom-container",
                     children=[
-                        dmc.DatePicker(
-                            id="time-range-picker",
-                            type="range",
-                            value=[_default_tr["start"], _default_tr["end"]],
-                            valueFormat="DD/MM/YY",
-                            placeholder="Select date range",
-                            radius="md",
-                            size="sm",
-                            w="100%",
-                            numberOfColumns=2,
-                            styles={
-                                "day": {
-                                    "borderRadius": "50%",
-                                    "fontWeight": "500",
-                                    "transition": "background-color 0.15s ease, color 0.15s ease",
-                                },
-                            },
-                            popoverProps={
-                                "withinPortal": True,
-                                "zIndex": 9999,
-                                "position": "right-start",
-                                "radius": "xl",
-                                "styles": {
-                                    "dropdown": {
-                                        "border": "1px solid rgba(67, 24, 255, 0.08)",
-                                        "boxShadow": "0 10px 40px rgba(67, 24, 255, 0.12), 0 4px 16px rgba(0, 0, 0, 0.06)",
-                                        "borderRadius": "16px",
-                                    }
-                                },
-                            },
+                        dmc.Stack(
+                            gap="xs",
+                            children=[
+                                dmc.Text("Start", size="xs", c="dimmed", fw=500),
+                                dmc.DateTimePicker(
+                                    id="time-range-start-datetime",
+                                    value=_custom_picker_start,
+                                    valueFormat="DD/MM/YYYY HH:mm",
+                                    placeholder="Start",
+                                    radius="md",
+                                    size="sm",
+                                    w="100%",
+                                    popoverProps={"withinPortal": True, "zIndex": 9999},
+                                ),
+                                dmc.Text("End", size="xs", c="dimmed", fw=500),
+                                dmc.DateTimePicker(
+                                    id="time-range-end-datetime",
+                                    value=_custom_picker_end,
+                                    valueFormat="DD/MM/YYYY HH:mm",
+                                    placeholder="End",
+                                    radius="md",
+                                    size="sm",
+                                    w="100%",
+                                    popoverProps={"withinPortal": True, "zIndex": 9999},
+                                ),
+                            ],
                         ),
                     ],
-                    style={"position": "relative"},
+                    style={"position": "relative", "display": "none"},
                 ),
             ],
             gap="xs",
@@ -262,27 +267,75 @@ def toggle_customer_section(pathname):
     return {**base, "display": "none"}
 
 
+def _normalize_custom_iso(v: str | None) -> str | None:
+    if not v:
+        return None
+    s = str(v).strip()
+    if s.endswith("Z"):
+        return s
+    if "+" in s[-6:] or s.endswith("UTC"):
+        return s
+    if "T" in s:
+        return s + "Z"
+    return s
+
+
+@app.callback(
+    dash.Output("time-range-custom-container", "style"),
+    dash.Input("time-range-preset", "value"),
+)
+def toggle_custom_time_container(preset):
+    base = {"position": "relative"}
+    if preset == PRESET_CUSTOM:
+        return {**base, "display": "block"}
+    return {**base, "display": "none"}
+
+
+@app.callback(
+    dash.Output("time-range-start-datetime", "value"),
+    dash.Output("time-range-end-datetime", "value"),
+    dash.Input("time-range-preset", "value"),
+    dash.State("app-time-range", "data"),
+)
+def sync_custom_datetime_pickers(preset, store):
+    if preset != PRESET_CUSTOM:
+        return dash.no_update, dash.no_update
+    tr = store or default_time_range()
+    st, en = time_range_to_bounds(tr)
+    return st.strftime("%Y-%m-%dT%H:%M:%S"), en.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 @app.callback(
     dash.Output("app-time-range", "data"),
     dash.Input("time-range-preset", "value"),
-    dash.Input("time-range-picker", "value"),
+    dash.Input("time-range-start-datetime", "value"),
+    dash.Input("time-range-end-datetime", "value"),
     dash.State("app-time-range", "data"),
 )
-def update_time_range_store(preset, date_value, current):
+def update_time_range_store(preset, start_dt, end_dt, current):
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update
-    tid = ctx.triggered[0]["prop_id"]
-    if "time-range-preset" in tid and preset != "custom":
+    tid = ctx.triggered[0]["prop_id"].split(".")[0]
+    if tid == "time-range-preset":
+        if preset == PRESET_CUSTOM:
+            cur = current or default_time_range()
+            st, en = time_range_to_bounds(cur)
+            return {
+                "start": st.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+                "end": en.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+                "preset": PRESET_CUSTOM,
+            }
         return preset_to_range(preset)
-    if "time-range-picker" in tid and date_value:
-        if isinstance(date_value, (list, tuple)) and len(date_value) == 2:
-            start, end = date_value
-        else:
-            start = (current or {}).get("start")
-            end = date_value if isinstance(date_value, str) else None
-        if start and end:
-            return {"start": start, "end": end, "preset": "custom"}
+    if tid in ("time-range-start-datetime", "time-range-end-datetime"):
+        if (current or {}).get("preset") != PRESET_CUSTOM:
+            return dash.no_update
+        s = start_dt or (current or {}).get("start")
+        e = end_dt or (current or {}).get("end")
+        s = _normalize_custom_iso(s) if isinstance(s, str) else s
+        e = _normalize_custom_iso(e) if isinstance(e, str) else e
+        if s and e:
+            return {"start": s, "end": e, "preset": PRESET_CUSTOM}
         return dash.no_update
     return dash.no_update
 

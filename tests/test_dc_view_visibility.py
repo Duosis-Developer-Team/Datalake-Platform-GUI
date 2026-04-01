@@ -105,6 +105,9 @@ def _fake_service(monkeypatch, dc_details: dict, s3_pools: dict | None = None):
         def get_dc_zabbix_storage_devices(self, dc_id, tr):
             return []
 
+        def get_dc_availability_sla_item(self, dc_code, dc_display_name, tr):
+            return None
+
     monkeypatch.setattr(dc_view, "api", FakeApi())
 
 
@@ -205,6 +208,9 @@ def _fake_service_network(
 
         def get_dc_zabbix_storage_devices(self, dc_id, tr):
             return []
+
+        def get_dc_availability_sla_item(self, dc_code, dc_display_name, tr):
+            return None
 
     monkeypatch.setattr(dc_view, "api", FakeApi())
 

@@ -66,6 +66,193 @@ def _build_dc_export_rows(dc_code: str, data: dict, phys_inv: dict) -> list[dict
     return rows
 
 
+def _build_dc_availability_tab(item: dict | None, dc_display_name: str):
+    """AuraNotify datacenter-services SLA: overall % + per-category downtime (matches AuraNotify UI)."""
+    if not item:
+        return dmc.Stack(
+            gap="md",
+            children=[
+                dmc.Alert(
+                    "No matching AuraNotify datacenter group for this DC. "
+                    "Set AURANOTIFY_API_KEY and ensure `group_name` matches the DC name or code.",
+                    color="yellow",
+                ),
+                dmc.Text(f"DC: {dc_display_name}", size="sm", c="dimmed"),
+            ],
+        )
+
+    pct = float(item.get("availability_pct") or 0.0)
+    period_min = item.get("period_min")
+    total_dm = item.get("total_downtime_min")
+    group_name = item.get("group_name") or "-"
+    categories = item.get("categories") or []
+
+    cat_rows = []
+    for cat in categories:
+        if not isinstance(cat, dict):
+            continue
+        cat_rows.append(
+            html.Tr(
+                [
+                    html.Td(str(cat.get("category") or "-")),
+                    html.Td(f"{float(cat.get('availability_pct') or 0):.4f}"),
+                    html.Td(str(cat.get("total_downtime_min") or "-")),
+                    html.Td(str(cat.get("record_count") or "-")),
+                ]
+            )
+        )
+
+    detail_papers = []
+    for cat in categories:
+        if not isinstance(cat, dict):
+            continue
+        dts = cat.get("downtimes") or []
+        if not dts:
+            inner = dmc.Text("No detailed records", size="sm", c="dimmed")
+        else:
+            rows_dt = []
+            for d in dts:
+                if not isinstance(d, dict):
+                    continue
+                rows_dt.append(
+                    html.Tr(
+                        [
+                            html.Td(str(d.get("start_time") or "-")),
+                            html.Td(str(d.get("end_time") or "-")),
+                            html.Td(str(d.get("duration_minutes") or "-")),
+                            html.Td(str(d.get("reason") or "-")),
+                            html.Td(str(d.get("outage_status") or "-")),
+                            html.Td(str(d.get("service_impact") or "-")),
+                            html.Td(str(d.get("dc_impact") or "-")),
+                        ]
+                    )
+                )
+            inner = dmc.Table(
+                striped=True,
+                highlightOnHover=True,
+                children=[
+                    html.Thead(
+                        html.Tr(
+                            [
+                                html.Th("Start"),
+                                html.Th("End"),
+                                html.Th("Duration (min)"),
+                                html.Th("Reason"),
+                                html.Th("Outage"),
+                                html.Th("Service impact"),
+                                html.Th("DC impact"),
+                            ]
+                        )
+                    ),
+                    html.Tbody(rows_dt),
+                ],
+            )
+        detail_papers.append(
+            dmc.Paper(
+                withBorder=True,
+                p="md",
+                radius="md",
+                children=[
+                    dmc.Text(
+                        f"{cat.get('category') or 'Category'} — "
+                        f"SLA {float(cat.get('availability_pct') or 0):.4f}%, "
+                        f"{cat.get('total_downtime_min') or 0} min downtime",
+                        fw=600,
+                        size="sm",
+                        mb="sm",
+                        c="#2B3674",
+                    ),
+                    inner,
+                ],
+            )
+        )
+
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            dmc.SimpleGrid(
+                cols=3,
+                spacing="lg",
+                children=[
+                    dmc.Card(
+                        withBorder=True,
+                        padding="lg",
+                        radius="md",
+                        children=[
+                            dmc.Text("Overall availability", size="xs", c="dimmed", tt="uppercase"),
+                            dmc.Text(f"{pct:.3f} %", fw=800, size="xl", c="#2B3674"),
+                            dmc.Text(str(group_name), size="sm", c="dimmed"),
+                        ],
+                    ),
+                    dmc.Card(
+                        withBorder=True,
+                        padding="lg",
+                        radius="md",
+                        children=[
+                            dmc.Text("Period (minutes)", size="xs", c="dimmed"),
+                            dmc.Text(str(period_min if period_min is not None else "—"), fw=700, size="lg"),
+                        ],
+                    ),
+                    dmc.Card(
+                        withBorder=True,
+                        padding="lg",
+                        radius="md",
+                        children=[
+                            dmc.Text("Total downtime (min)", size="xs", c="dimmed"),
+                            dmc.Text(str(total_dm if total_dm is not None else "—"), fw=700, size="lg"),
+                        ],
+                    ),
+                ],
+            ),
+            html.Div(
+                className="nexus-card nexus-table",
+                style={"padding": "24px", "overflowX": "auto"},
+                children=[
+                    dmc.Text("Categories", fw=700, size="lg", c="#2B3674", mb="xs"),
+                    dmc.Text(
+                        "Partial SLA and downtime per service category (from AuraNotify).",
+                        size="xs",
+                        c="dimmed",
+                        mb="md",
+                    ),
+                    dmc.Table(
+                        striped=True,
+                        highlightOnHover=True,
+                        children=[
+                            html.Thead(
+                                html.Tr(
+                                    [
+                                        html.Th("Category"),
+                                        html.Th("Availability %"),
+                                        html.Th("Total downtime (min)"),
+                                        html.Th("Records"),
+                                    ]
+                                )
+                            ),
+                            html.Tbody(
+                                cat_rows
+                                if cat_rows
+                                else [html.Tr([html.Td("No categories", colSpan=4)])],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            html.Div(
+                className="nexus-card",
+                style={"padding": "24px"},
+                children=[
+                    dmc.Text("Downtime records by category", fw=700, size="lg", c="#2B3674", mb="sm"),
+                    dmc.Stack(
+                        gap="md",
+                        children=detail_papers if detail_papers else [dmc.Text("No data", c="dimmed")],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
 def _has_compute_data(d: dict | None) -> bool:
     """Return True if any meaningful compute metric exists for a section."""
     if not d:
@@ -1633,8 +1820,10 @@ def build_dc_view(dc_id, time_range=None):
             "phys_inv": lambda: api.get_physical_inventory_dc(dc_name),
             "san_switches": lambda: api.get_dc_san_switches(dc_id, tr),
             "net_filters": lambda: api.get_dc_network_filters(dc_id, tr),
+            "aura_dc": lambda: api.get_dc_availability_sla_item(str(dc_id), dc_name, tr),
         }
     )
+    aura_dc_item = batch2.get("aura_dc")
     phys_inv = batch2["phys_inv"]
     has_phys_inv = phys_inv.get("total", 0) > 0
 
@@ -1708,6 +1897,8 @@ def build_dc_view(dc_id, time_range=None):
     # has_s3 = bool(s3_data.get("pools"))
 
     # Determine default active outer tab: first tab that actually has data
+    has_avail = True
+
     tabs_order = [
         ("summary", has_summary),
         ("virt", has_virt),
@@ -1715,6 +1906,7 @@ def build_dc_view(dc_id, time_range=None):
         ("backup", has_backup),
         ("phys-inv", has_phys_inv),
         ("network", has_network or has_san),
+        ("avail", has_avail),
     ]
     default_outer_tab = next((t for t, ok in tabs_order if ok), "summary")
 
@@ -1772,6 +1964,7 @@ def build_dc_view(dc_id, time_range=None):
                             dmc.TabsTab("Backup & Replication", value="backup") if has_backup else None,
                             dmc.TabsTab("Physical Inventory", value="phys-inv") if has_phys_inv else None,
                             dmc.TabsTab("Network", value="network") if (has_network or has_san) else None,
+                            dmc.TabsTab("Availability", value="avail"),
                         ],
                     ),
                 ),
@@ -2016,6 +2209,17 @@ def build_dc_view(dc_id, time_range=None):
                         ],
                     ),
                 ) if (has_network or has_san) else None,
+
+                dmc.TabsPanel(
+                    value="avail",
+                    children=dmc.Stack(
+                        gap="lg",
+                        style={"padding": "0 30px"},
+                        children=[_build_dc_availability_tab(aura_dc_item, dc_name)],
+                    ),
+                )
+                if has_avail
+                else None,
             ],
         )
     ])

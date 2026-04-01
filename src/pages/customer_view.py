@@ -71,6 +71,68 @@ def _section_card(title: str, subtitle: str | None = None, children=None):
     )
 
 
+def _usage_max_avg_min_cell(mx: float, avg: float, mn: float, suffix: str = "%"):
+    """Format usage as max / avg / min (suffix default % for CPU/Memory)."""
+    return dmc.Text(
+        f"max {float(mx or 0):.1f} / avg {float(avg or 0):.1f} / min {float(mn or 0):.1f}{suffix}",
+        size="xs",
+        c="#2B3674",
+        style={"fontVariantNumeric": "tabular-nums", "whiteSpace": "nowrap"},
+    )
+
+
+def _disk_min_max_cell(mn_gb: float, mx_gb: float):
+    return dmc.Text(
+        f"min {float(mn_gb or 0):.1f} / max {float(mx_gb or 0):.1f} GiB",
+        size="xs",
+        c="#2B3674",
+        style={"fontVariantNumeric": "tabular-nums", "whiteSpace": "nowrap"},
+    )
+
+
+def _availability_cell(vm_name: str | None, vm_outage_counts: dict | None):
+    """vm_outage_counts: lowercased VM name -> number of downtime records in period."""
+    key = (vm_name or "").strip().lower()
+    c = int((vm_outage_counts or {}).get(key, 0))
+    if c <= 0:
+        return dmc.Badge("OK", color="green", size="sm", variant="light")
+    return dmc.Badge(f"{c} outage(s)", color="red", size="sm", variant="light")
+
+
+def _deleted_vms_panel(deleted_names: list[str] | None):
+    """Names-only list for VMs whose name starts with underscore (removed inventory)."""
+    names = [n for n in (deleted_names or []) if n]
+    if not names:
+        return html.Div()
+    return html.Div(
+        style={"marginTop": "16px"},
+        children=[
+            dmc.Text("Deleted VMs (name prefix _)", size="sm", fw=600, c="#2B3674", mb="xs"),
+            dmc.Text(
+                "These VMs are not included in the main list.",
+                size="xs",
+                c="dimmed",
+                mb="sm",
+            ),
+            html.Div(
+                style={"maxHeight": "200px", "overflowY": "auto"},
+                children=[
+                    dmc.Table(
+                        striped=True,
+                        highlightOnHover=True,
+                        children=[
+                            html.Thead(html.Tr([html.Th("VM name")])),
+                            html.Tbody(
+                                [html.Tr([html.Td(n)]) for n in sorted(names)],
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+
+
 def _backup_placeholder(name: str):
     return html.Div(
         style={"padding": "60px", "textAlign": "center"},
@@ -325,50 +387,97 @@ def _tab_billing(totals: dict, assets: dict, backup_totals: dict, s3_data: dict 
     )
 
 
-def _tab_classic(classic: dict):
+def _tab_classic(classic: dict, vm_outage_counts: dict | None = None):
     """Classic Compute (KM cluster) billing tab."""
-    vm_count  = int(classic.get("vm_count", 0) or 0)
-    cpu       = float(classic.get("cpu_total", 0) or 0)
-    mem_gb    = float(classic.get("memory_gb", 0) or 0)
-    disk_gb   = float(classic.get("disk_gb", 0) or 0)
-    vm_list   = classic.get("vm_list", []) or []
+    vm_count = int(classic.get("vm_count", 0) or 0)
+    cpu = float(classic.get("cpu_total", 0) or 0)
+    mem_gb = float(classic.get("memory_gb", 0) or 0)
+    disk_gb = float(classic.get("disk_gb", 0) or 0)
+    vm_list = classic.get("vm_list", []) or []
+    deleted = classic.get("deleted_vm_list", []) or []
 
     def row_fn(r):
         return html.Tr([
             html.Td(r.get("name")),
             html.Td(r.get("cluster", "-")),
             html.Td(f"{r.get('cpu', 0):.0f}"),
+            html.Td(
+                _usage_max_avg_min_cell(
+                    r.get("cpu_pct_max", 0),
+                    r.get("cpu_pct_avg", 0),
+                    r.get("cpu_pct_min", 0),
+                )
+            ),
             html.Td(smart_memory(r.get("memory_gb", 0))),
+            html.Td(
+                _usage_max_avg_min_cell(
+                    r.get("mem_pct_max", 0),
+                    r.get("mem_pct_avg", 0),
+                    r.get("mem_pct_min", 0),
+                )
+            ),
             html.Td(smart_storage(r.get("disk_gb", 0))),
+            html.Td(
+                _disk_min_max_cell(r.get("disk_used_min_gb", 0), r.get("disk_used_max_gb", 0))
+            ),
+            html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
         ])
 
-    return dmc.Stack(gap="lg", children=[
-        dmc.SimpleGrid(cols=4, spacing="lg", children=[
-            _metric("Total VMs",  f"{vm_count:,}",          "solar:laptop-bold-duotone",  color="blue"),
-            _metric("CPU (vCPU)", f"{cpu:.0f}",             "solar:cpu-bold-duotone",     color="blue"),
-            _metric("Memory",     smart_memory(mem_gb),     "solar:ram-bold-duotone",     color="blue", ),
-            _metric("Disk",       smart_storage(disk_gb),   "solar:hdd-bold-duotone",     color="blue"),
-        ]),
-        _section_card("Classic VMs", "VMs hosted on Classic (KM) VMware clusters",
-            _vm_table(vm_list,
-                      ["VM Name", "Cluster", "CPU (vCPU)", "Memory", "Disk"],
-                      row_fn,
-                      empty_cols=5),
-        ),
-    ])
+    cols = [
+        "VM Name",
+        "Cluster",
+        "CPU (vCPU)",
+        "CPU usage %",
+        "Memory",
+        "Mem usage %",
+        "Disk (prov.)",
+        "Disk used (min/max)",
+        "Availability",
+    ]
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            dmc.SimpleGrid(
+                cols=4,
+                spacing="lg",
+                children=[
+                    _metric("Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", color="blue"),
+                    _metric("CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", color="blue"),
+                    _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="blue"),
+                    _metric("Disk", smart_storage(disk_gb), "solar:hdd-bold-duotone", color="blue"),
+                ],
+            ),
+            _section_card(
+                "Classic VMs",
+                "VMs hosted on Classic (KM) VMware clusters — usage min/avg/max over report period",
+                dmc.Stack(
+                    gap="md",
+                    children=[
+                        _vm_table(vm_list, cols, row_fn, empty_cols=len(cols)),
+                        _deleted_vms_panel(deleted),
+                    ],
+                ),
+            ),
+        ],
+    )
 
 
-def _tab_hyperconv(hyperconv: dict, pure_nutanix: dict | None = None):
+def _tab_hyperconv(
+    hyperconv: dict,
+    pure_nutanix: dict | None = None,
+    vm_outage_counts: dict | None = None,
+):
     """Hyperconverged (non-KM VMware + Nutanix) billing tab."""
     pure_nutanix = pure_nutanix or {}
-    vm_count    = int(hyperconv.get("vm_count", 0) or 0)
+    vm_count = int(hyperconv.get("vm_count", 0) or 0)
     vmware_only = int(hyperconv.get("vmware_only", 0) or 0)
     nutanix_cnt = int(hyperconv.get("nutanix_count", 0) or 0)
     pure_nx_vms = int(pure_nutanix.get("vm_count", 0) or 0)
-    cpu         = float(hyperconv.get("cpu_total", 0) or 0)
-    mem_gb      = float(hyperconv.get("memory_gb", 0) or 0)
-    disk_gb     = float(hyperconv.get("disk_gb", 0) or 0)
-    vm_list     = hyperconv.get("vm_list", []) or []
+    cpu = float(hyperconv.get("cpu_total", 0) or 0)
+    mem_gb = float(hyperconv.get("memory_gb", 0) or 0)
+    disk_gb = float(hyperconv.get("disk_gb", 0) or 0)
+    vm_list = hyperconv.get("vm_list", []) or []
+    deleted = hyperconv.get("deleted_vm_list", []) or []
 
     def row_fn(r):
         return html.Tr([
@@ -376,55 +485,107 @@ def _tab_hyperconv(hyperconv: dict, pure_nutanix: dict | None = None):
             html.Td(r.get("source", "-")),
             html.Td(r.get("cluster", "-")),
             html.Td(f"{r.get('cpu', 0):.0f}"),
+            html.Td(
+                _usage_max_avg_min_cell(
+                    r.get("cpu_pct_max", 0),
+                    r.get("cpu_pct_avg", 0),
+                    r.get("cpu_pct_min", 0),
+                )
+            ),
             html.Td(smart_memory(r.get("memory_gb", 0))),
+            html.Td(
+                _usage_max_avg_min_cell(
+                    r.get("mem_pct_max", 0),
+                    r.get("mem_pct_avg", 0),
+                    r.get("mem_pct_min", 0),
+                )
+            ),
             html.Td(smart_storage(r.get("disk_gb", 0))),
+            html.Td(
+                _disk_min_max_cell(r.get("disk_used_min_gb", 0), r.get("disk_used_max_gb", 0))
+            ),
+            html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
         ])
 
-    return dmc.Stack(gap="lg", children=[
-        dmc.SimpleGrid(cols=4, spacing="lg", children=[
-            _metric("Total VMs",       f"{vm_count:,}",        "solar:laptop-bold-duotone",  color="indigo"),
-            _metric("CPU (vCPU)",      f"{cpu:.0f}",           "solar:cpu-bold-duotone",     color="indigo"),
-            _metric("Memory",          smart_memory(mem_gb),   "solar:ram-bold-duotone",     color="indigo"),
-            _metric("Disk",            smart_storage(disk_gb), "solar:hdd-bold-duotone",     color="indigo"),
-        ]),
-        _section_card(
-            "Platform Breakdown",
-            "VMware non-KM vs Nutanix on VMware-managed clusters vs Pure Nutanix (AHV-only clusters)",
-            dmc.Group(
-                gap="xl",
+    cols = [
+        "VM Name",
+        "Source",
+        "Cluster",
+        "CPU (vCPU)",
+        "CPU usage %",
+        "Memory",
+        "Mem usage %",
+        "Disk (prov.)",
+        "Disk used (min/max)",
+        "Availability",
+    ]
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            dmc.SimpleGrid(
+                cols=4,
+                spacing="lg",
                 children=[
-                    dmc.Stack(gap="xs", children=[
-                        dmc.Text("VMware (non-KM cluster)", c="#A3AED0", size="sm"),
-                        dmc.Text(f"{vmware_only:,} VMs", fw=700, c="#2B3674"),
-                    ]),
-                    dmc.Stack(gap="xs", children=[
-                        dmc.Text("Nutanix (VMware-managed)", c="#A3AED0", size="sm"),
-                        dmc.Text(f"{nutanix_cnt:,} VMs", fw=700, c="#2B3674"),
-                    ]),
-                    dmc.Stack(gap="xs", children=[
-                        dmc.Text("Pure Nutanix (AHV)", c="#A3AED0", size="sm"),
-                        dmc.Text(f"{pure_nx_vms:,} VMs", fw=700, c="#2B3674"),
-                    ]),
+                    _metric("Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", color="indigo"),
+                    _metric("CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", color="indigo"),
+                    _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="indigo"),
+                    _metric("Disk", smart_storage(disk_gb), "solar:hdd-bold-duotone", color="indigo"),
                 ],
             ),
-        ),
-        _section_card("Hyperconverged VMs", "VMs on non-KM clusters (VMware-managed Nutanix + Acropolis)",
-            _vm_table(vm_list,
-                      ["VM Name", "Source", "Cluster", "CPU (vCPU)", "Memory", "Disk"],
-                      row_fn,
-                      empty_cols=6),
-        ),
-    ])
+            _section_card(
+                "Platform Breakdown",
+                "VMware non-KM vs Nutanix on VMware-managed clusters vs Pure Nutanix (AHV-only clusters)",
+                dmc.Group(
+                    gap="xl",
+                    children=[
+                        dmc.Stack(
+                            gap="xs",
+                            children=[
+                                dmc.Text("VMware (non-KM cluster)", c="#A3AED0", size="sm"),
+                                dmc.Text(f"{vmware_only:,} VMs", fw=700, c="#2B3674"),
+                            ],
+                        ),
+                        dmc.Stack(
+                            gap="xs",
+                            children=[
+                                dmc.Text("Nutanix (VMware-managed)", c="#A3AED0", size="sm"),
+                                dmc.Text(f"{nutanix_cnt:,} VMs", fw=700, c="#2B3674"),
+                            ],
+                        ),
+                        dmc.Stack(
+                            gap="xs",
+                            children=[
+                                dmc.Text("Pure Nutanix (AHV)", c="#A3AED0", size="sm"),
+                                dmc.Text(f"{pure_nx_vms:,} VMs", fw=700, c="#2B3674"),
+                            ],
+                        ),
+                    ],
+                ),
+            ),
+            _section_card(
+                "Hyperconverged VMs",
+                "VMs on non-KM clusters (VMware-managed Nutanix + Acropolis)",
+                dmc.Stack(
+                    gap="md",
+                    children=[
+                        _vm_table(vm_list, cols, row_fn, empty_cols=len(cols)),
+                        _deleted_vms_panel(deleted),
+                    ],
+                ),
+            ),
+        ],
+    )
 
 
-def _tab_pure_nutanix(pure: dict):
+def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
     """Pure Nutanix (AHV-only) clusters — no matching VMware non-KM cluster name."""
-    vm_count  = int(pure.get("vm_count", 0) or 0)
-    clusters  = int(pure.get("cluster_count", 0) or 0)
-    cpu       = float(pure.get("cpu_total", 0) or 0)
-    mem_gb    = float(pure.get("memory_gb", 0) or 0)
-    disk_gb   = float(pure.get("disk_gb", 0) or 0)
-    vm_list   = pure.get("vm_list", []) or []
+    vm_count = int(pure.get("vm_count", 0) or 0)
+    clusters = int(pure.get("cluster_count", 0) or 0)
+    cpu = float(pure.get("cpu_total", 0) or 0)
+    mem_gb = float(pure.get("memory_gb", 0) or 0)
+    disk_gb = float(pure.get("disk_gb", 0) or 0)
+    vm_list = pure.get("vm_list", []) or []
+    deleted = pure.get("deleted_vm_list", []) or []
 
     def row_fn(r):
         return html.Tr([
@@ -432,60 +593,136 @@ def _tab_pure_nutanix(pure: dict):
             html.Td(r.get("source", "-")),
             html.Td(r.get("cluster", "-")),
             html.Td(f"{r.get('cpu', 0):.0f}"),
+            html.Td(
+                _usage_max_avg_min_cell(
+                    r.get("cpu_pct_max", 0),
+                    r.get("cpu_pct_avg", 0),
+                    r.get("cpu_pct_min", 0),
+                )
+            ),
             html.Td(smart_memory(r.get("memory_gb", 0))),
+            html.Td(
+                _usage_max_avg_min_cell(
+                    r.get("mem_pct_max", 0),
+                    r.get("mem_pct_avg", 0),
+                    r.get("mem_pct_min", 0),
+                )
+            ),
             html.Td(smart_storage(r.get("disk_gb", 0))),
+            html.Td(
+                _disk_min_max_cell(r.get("disk_used_min_gb", 0), r.get("disk_used_max_gb", 0))
+            ),
+            html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
         ])
 
-    return dmc.Stack(gap="lg", children=[
-        dmc.SimpleGrid(cols=5, spacing="lg", children=[
-            _metric("Clusters (AHV-only)", f"{clusters:,}", "solar:cloud-bold-duotone", color="cyan"),
-            _metric("Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", color="cyan"),
-            _metric("CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", color="cyan"),
-            _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="cyan"),
-            _metric("Disk", smart_storage(disk_gb), "solar:hdd-bold-duotone", color="cyan"),
-        ]),
-        _section_card(
-            "Pure Nutanix VMs",
-            "VMs on Nutanix clusters with no VMware vCenter cluster name match (after normalization)",
-            _vm_table(
-                vm_list,
-                ["VM Name", "Source", "Cluster", "CPU (vCPU)", "Memory", "Disk"],
-                row_fn,
-                empty_cols=6,
+    cols = [
+        "VM Name",
+        "Source",
+        "Cluster",
+        "CPU (vCPU)",
+        "CPU usage %",
+        "Memory",
+        "Mem usage %",
+        "Disk (prov.)",
+        "Disk used (min/max)",
+        "Availability",
+    ]
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            dmc.SimpleGrid(
+                cols=5,
+                spacing="lg",
+                children=[
+                    _metric("Clusters (AHV-only)", f"{clusters:,}", "solar:cloud-bold-duotone", color="cyan"),
+                    _metric("Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", color="cyan"),
+                    _metric("CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", color="cyan"),
+                    _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="cyan"),
+                    _metric("Disk", smart_storage(disk_gb), "solar:hdd-bold-duotone", color="cyan"),
+                ],
             ),
-        ),
-    ])
+            _section_card(
+                "Pure Nutanix VMs",
+                "VMs on Nutanix clusters with no VMware vCenter cluster name match (after normalization)",
+                dmc.Stack(
+                    gap="md",
+                    children=[
+                        _vm_table(vm_list, cols, row_fn, empty_cols=len(cols)),
+                        _deleted_vms_panel(deleted),
+                    ],
+                ),
+            ),
+        ],
+    )
 
 
-def _tab_power(power: dict):
+def _tab_power(power: dict, vm_outage_counts: dict | None = None):
     """Power Mimari (IBM LPAR) billing tab."""
-    lpars    = int(power.get("lpar_count", 0) or 0)
-    cpu      = float(power.get("cpu_total", 0) or 0)
-    mem_gb   = float(power.get("memory_total_gb", 0) or 0)
-    vm_list  = power.get("vm_list", []) or []
+    lpars = int(power.get("lpar_count", 0) or 0)
+    cpu = float(power.get("cpu_total", 0) or 0)
+    mem_gb = float(power.get("memory_total_gb", 0) or 0)
+    vm_list = power.get("vm_list", []) or []
+    deleted = power.get("deleted_vm_list", []) or []
 
     def row_fn(r):
         return html.Tr([
             html.Td(r.get("name")),
             html.Td(r.get("source", "Power HMC")),
             html.Td(f"{r.get('cpu', 0):.1f}"),
+            html.Td(
+                _usage_max_avg_min_cell(
+                    r.get("cpu_pct_max", 0),
+                    r.get("cpu_pct_avg", 0),
+                    r.get("cpu_pct_min", 0),
+                )
+            ),
             html.Td(smart_memory(r.get("memory_gb", 0))),
+            html.Td(
+                _usage_max_avg_min_cell(
+                    r.get("mem_pct_max", 0),
+                    r.get("mem_pct_avg", 0),
+                    r.get("mem_pct_min", 0),
+                )
+            ),
             html.Td(r.get("state", "-")),
+            html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
         ])
 
-    return dmc.Stack(gap="lg", children=[
-        dmc.SimpleGrid(cols=3, spacing="lg", children=[
-            _metric("LPARs",       f"{lpars:,}",          "solar:server-square-bold-duotone", color="grape"),
-            _metric("CPU (vCPU)", f"{cpu:.1f}",           "solar:cpu-bold-duotone",           color="grape"),
-            _metric("Memory",      smart_memory(mem_gb),  "solar:ram-bold-duotone",           color="grape"),
-        ]),
-        _section_card("IBM LPARs", "IBM Power LPAR allocation for billing",
-            _vm_table(vm_list,
-                      ["LPAR Name", "Source", "CPU (vProc)", "Memory", "State"],
-                      row_fn,
-                      empty_cols=5),
-        ),
-    ])
+    cols = [
+        "LPAR Name",
+        "Source",
+        "CPU (vProc)",
+        "CPU usage %",
+        "Memory",
+        "Mem usage %",
+        "State",
+        "Availability",
+    ]
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            dmc.SimpleGrid(
+                cols=3,
+                spacing="lg",
+                children=[
+                    _metric("LPARs", f"{lpars:,}", "solar:server-square-bold-duotone", color="grape"),
+                    _metric("CPU (vCPU)", f"{cpu:.1f}", "solar:cpu-bold-duotone", color="grape"),
+                    _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="grape"),
+                ],
+            ),
+            _section_card(
+                "IBM LPARs",
+                "IBM Power LPAR allocation — CPU/Memory usage % over report period",
+                dmc.Stack(
+                    gap="md",
+                    children=[
+                        _vm_table(vm_list, cols, row_fn, empty_cols=len(cols)),
+                        _deleted_vms_panel(deleted),
+                    ],
+                ),
+            ),
+        ],
+    )
 
 
 def _tab_veeam(backup_assets: dict, backup_totals: dict):
@@ -602,6 +839,92 @@ def _tab_physical_inventory(devices: list[dict]):
     ])
 
 
+def _tab_customer_availability(avail: dict):
+    """AuraNotify: service outages and VM-level outages for the customer."""
+    svc = avail.get("service_downtimes") or []
+    vm = avail.get("vm_downtimes") or []
+    cid = avail.get("customer_id")
+
+    def _svc_row(e: dict):
+        return html.Tr(
+            [
+                html.Td(str(e.get("category") or "-")),
+                html.Td(str(e.get("group_name") or "-")),
+                html.Td(str(e.get("type") or "-")),
+                html.Td(str(e.get("start_time") or "-")),
+                html.Td(str(e.get("end_time") or "-")),
+                html.Td(str(e.get("duration_minutes") or "-")),
+                html.Td(str(e.get("service_impact") or e.get("outage_status") or "-")),
+            ]
+        )
+
+    def _vm_row(e: dict):
+        return html.Tr(
+            [
+                html.Td(str(e.get("vm_name") or e.get("vm") or e.get("category") or "-")),
+                html.Td(str(e.get("group_name") or "-")),
+                html.Td(str(e.get("start_time") or "-")),
+                html.Td(str(e.get("end_time") or "-")),
+                html.Td(str(e.get("duration_minutes") or "-")),
+                html.Td(str(e.get("reason") or "-")),
+            ]
+        )
+
+    svc_cols = [
+        "Category",
+        "Datacenter group",
+        "Type",
+        "Start",
+        "End",
+        "Duration (min)",
+        "Impact",
+    ]
+    vm_cols = ["VM / Subject", "Datacenter group", "Start", "End", "Duration (min)", "Reason"]
+
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            dmc.Text(
+                f"AuraNotify availability (customer id: {cid}) — aligned with report period start.",
+                size="sm",
+                c="dimmed",
+            ),
+            _section_card(
+                "Service outages",
+                "Infrastructure / service interruptions (source=service)",
+                dmc.Table(
+                    striped=True,
+                    highlightOnHover=True,
+                    children=[
+                        html.Thead(html.Tr([html.Th(c) for c in svc_cols])),
+                        html.Tbody(
+                            [_svc_row(e) for e in svc if isinstance(e, dict)]
+                            if svc
+                            else [html.Tr([html.Td("No data", colSpan=len(svc_cols))])],
+                        ),
+                    ],
+                ),
+            ),
+            _section_card(
+                "VM outages",
+                "Virtual machine downtime records (source=vm)",
+                dmc.Table(
+                    striped=True,
+                    highlightOnHover=True,
+                    children=[
+                        html.Thead(html.Tr([html.Th(c) for c in vm_cols])),
+                        html.Tbody(
+                            [_vm_row(e) for e in vm if isinstance(e, dict)]
+                            if vm
+                            else [html.Tr([html.Td("No data", colSpan=len(vm_cols))])],
+                        ),
+                    ],
+                ),
+            ),
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main content block
 # ---------------------------------------------------------------------------
@@ -609,6 +932,8 @@ def _tab_physical_inventory(devices: list[dict]):
 def _customer_content(customer_name: str, time_range: dict | None = None):
     tr   = time_range or default_time_range()
     data = api.get_customer_resources(customer_name or "Boyner", tr)
+    avail_bundle = api.get_customer_availability_bundle(customer_name or "Boyner", tr)
+    vm_outage_counts = avail_bundle.get("vm_outage_counts") or {}
 
     totals = data.get("totals", {})
     assets = data.get("assets", {})
@@ -757,12 +1082,18 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     virt_tabs_list.append(dmc.TabsTab("Power Mimari", value="power"))
 
     virt_panels_list = [
-        dmc.TabsPanel(value="classic", pt="lg", children=_tab_classic(classic)),
-        dmc.TabsPanel(value="hyperconv", pt="lg", children=_tab_hyperconv(hyperconv, pure_nx)),
+        dmc.TabsPanel(value="classic", pt="lg", children=_tab_classic(classic, vm_outage_counts)),
+        dmc.TabsPanel(
+            value="hyperconv", pt="lg", children=_tab_hyperconv(hyperconv, pure_nx, vm_outage_counts)
+        ),
     ]
     if show_pure_tab:
-        virt_panels_list.append(dmc.TabsPanel(value="pure_nx", pt="lg", children=_tab_pure_nutanix(pure_nx)))
-    virt_panels_list.append(dmc.TabsPanel(value="power", pt="lg", children=_tab_power(power_asset)))
+        virt_panels_list.append(
+            dmc.TabsPanel(value="pure_nx", pt="lg", children=_tab_pure_nutanix(pure_nx, vm_outage_counts))
+        )
+    virt_panels_list.append(
+        dmc.TabsPanel(value="power", pt="lg", children=_tab_power(power_asset, vm_outage_counts))
+    )
 
     virt_content = dmc.Tabs(
         color="violet",
@@ -824,6 +1155,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     return {
         "summary": _tab_summary(totals, assets),
         "virt": virt_content,
+        "avail": _tab_customer_availability(avail_bundle),
         "backup": dmc.Stack(
             gap="lg",
             children=[
@@ -869,6 +1201,7 @@ def build_customer_layout(time_range=None, selected_customer=None):
         children=[
             dmc.TabsTab("Summary", value="summary"),
             dmc.TabsTab("Virtualization", value="virt"),
+            dmc.TabsTab("Availability", value="avail"),
             dmc.TabsTab("Backup", value="backup"),
             dmc.TabsTab("Billing", value="billing"),
             dmc.TabsTab("Physical Inventory", value="phys-inv") if has_phys_inv else None,
@@ -959,6 +1292,12 @@ def build_customer_layout(time_range=None, selected_customer=None):
                     dmc.TabsPanel(
                         value="virt",
                         children=html.Div(style={"padding": "0 30px"}, children=[content.get("virt")]),
+                    ),
+                    dmc.TabsPanel(
+                        value="avail",
+                        children=dmc.Stack(
+                            gap="lg", style={"padding": "0 30px"}, children=[content.get("avail")]
+                        ),
                     ),
                     dmc.TabsPanel(
                         value="backup",
