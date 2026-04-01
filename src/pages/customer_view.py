@@ -36,16 +36,63 @@ def _metric(title: str, value, icon: str, color: str = "indigo"):
     )
 
 
-def _vm_table(vm_list: list, columns: list[str], row_fn, empty_cols: int = 5):
-    """Generic scrollable VM/LPAR billing table."""
+def format_vm_metric_value(value, decimals: int = 1, suffix: str = "") -> str:
+    """Plain-text metric for VM table cells (unit-testable)."""
+    v = float(value or 0)
+    body = f"{v:.{decimals}f}"
+    if suffix == "%":
+        return f"{body}%"
+    return f"{body}{suffix}" if suffix else body
+
+
+def _vm_metric_td(value, decimals: int = 1, suffix: str = ""):
+    """Right-aligned numeric cell for VM/LPAR billing tables."""
+    return html.Td(
+        format_vm_metric_value(value, decimals, suffix),
+        style={
+            "textAlign": "right",
+            "fontVariantNumeric": "tabular-nums",
+            "fontSize": "0.8125rem",
+            "color": "#2B3674",
+            "fontWeight": 600,
+            "verticalAlign": "middle",
+        },
+    )
+
+
+def _vm_table(
+    vm_list: list,
+    columns: list[str],
+    row_fn,
+    empty_cols: int = 5,
+    numeric_col_indices: frozenset | None = None,
+):
+    """Generic scrollable VM/LPAR billing table (horizontal + vertical scroll when wide)."""
+    numeric_col_indices = numeric_col_indices or frozenset()
+    header_cells = [
+        html.Th(
+            c,
+            style={
+                "textAlign": "right" if i in numeric_col_indices else "left",
+                "verticalAlign": "bottom",
+            },
+        )
+        for i, c in enumerate(columns)
+    ]
     return html.Div(
-        style={"maxHeight": "420px", "overflowY": "auto"},
+        style={
+            "maxHeight": "420px",
+            "overflowY": "auto",
+            "overflowX": "auto",
+            "WebkitOverflowScrolling": "touch",
+        },
         children=[
             dmc.Table(
                 striped=True,
                 highlightOnHover=True,
+                withColumnBorders=True,
                 children=[
-                    html.Thead(html.Tr([html.Th(c) for c in columns])),
+                    html.Thead(html.Tr(header_cells)),
                     html.Tbody(
                         [row_fn(r) for r in vm_list]
                         if vm_list
@@ -68,35 +115,6 @@ def _section_card(title: str, subtitle: str | None = None, children=None):
                                      "fontSize": "0.8rem"}) if subtitle else None,
             children or html.Div(),
         ],
-    )
-
-
-def _usage_max_avg_min_cell(mx: float, avg: float, mn: float, suffix: str = "%"):
-    """Format usage as max / avg / min (suffix default % for CPU/Memory)."""
-    return dmc.Text(
-        f"max {float(mx or 0):.1f} / avg {float(avg or 0):.1f} / min {float(mn or 0):.1f}{suffix}",
-        size="xs",
-        c="#2B3674",
-        style={"fontVariantNumeric": "tabular-nums", "whiteSpace": "nowrap"},
-    )
-
-
-def _intel_vm_cpu_usage_cell(r: dict):
-    """VMware/Nutanix VM rows: CPU MHz min/avg/max (vm_metrics MHz fields or Nutanix raw counters)."""
-    return _usage_max_avg_min_cell(
-        r.get("cpu_mhz_max", 0),
-        r.get("cpu_mhz_avg", 0),
-        r.get("cpu_mhz_min", 0),
-        suffix=" MHz",
-    )
-
-
-def _disk_min_max_cell(mn_gb: float, mx_gb: float):
-    return dmc.Text(
-        f"min {float(mn_gb or 0):.1f} / max {float(mx_gb or 0):.1f} GiB",
-        size="xs",
-        c="#2B3674",
-        style={"fontVariantNumeric": "tabular-nums", "whiteSpace": "nowrap"},
     )
 
 
@@ -410,20 +428,33 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None):
         return html.Tr([
             html.Td(r.get("name")),
             html.Td(r.get("cluster", "-")),
-            html.Td(f"{r.get('cpu', 0):.0f}"),
-            html.Td(_intel_vm_cpu_usage_cell(r)),
-            html.Td(smart_memory(r.get("memory_gb", 0))),
+            _vm_metric_td(r.get("cpu", 0), decimals=0),
+            _vm_metric_td(r.get("cpu_mhz_max", 0), suffix=" MHz"),
+            _vm_metric_td(r.get("cpu_mhz_avg", 0), suffix=" MHz"),
+            _vm_metric_td(r.get("cpu_mhz_min", 0), suffix=" MHz"),
             html.Td(
-                _usage_max_avg_min_cell(
-                    r.get("mem_pct_max", 0),
-                    r.get("mem_pct_avg", 0),
-                    r.get("mem_pct_min", 0),
-                )
+                smart_memory(r.get("memory_gb", 0)),
+                style={
+                    "textAlign": "right",
+                    "fontVariantNumeric": "tabular-nums",
+                    "fontSize": "0.8125rem",
+                    "verticalAlign": "middle",
+                },
             ),
-            html.Td(smart_storage(r.get("disk_gb", 0))),
+            _vm_metric_td(r.get("mem_pct_max", 0), suffix="%"),
+            _vm_metric_td(r.get("mem_pct_avg", 0), suffix="%"),
+            _vm_metric_td(r.get("mem_pct_min", 0), suffix="%"),
             html.Td(
-                _disk_min_max_cell(r.get("disk_used_min_gb", 0), r.get("disk_used_max_gb", 0))
+                smart_storage(r.get("disk_gb", 0)),
+                style={
+                    "textAlign": "right",
+                    "fontVariantNumeric": "tabular-nums",
+                    "fontSize": "0.8125rem",
+                    "verticalAlign": "middle",
+                },
             ),
+            _vm_metric_td(r.get("disk_used_min_gb", 0), suffix=" GiB"),
+            _vm_metric_td(r.get("disk_used_max_gb", 0), suffix=" GiB"),
             html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
         ])
 
@@ -431,13 +462,19 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None):
         "VM Name",
         "Cluster",
         "CPU (vCPU)",
-        "CPU (MHz)",
+        "MHz max",
+        "MHz avg",
+        "MHz min",
         "Memory",
-        "Mem usage %",
+        "Mem % max",
+        "Mem % avg",
+        "Mem % min",
         "Disk (prov.)",
-        "Disk used (min/max)",
+        "Disk used min (GiB)",
+        "Disk used max (GiB)",
         "Availability",
     ]
+    _classic_numeric_cols = frozenset(range(2, 13))
     return dmc.Stack(
         gap="lg",
         children=[
@@ -457,7 +494,13 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None):
                 dmc.Stack(
                     gap="md",
                     children=[
-                        _vm_table(vm_list, cols, row_fn, empty_cols=len(cols)),
+                        _vm_table(
+                            vm_list,
+                            cols,
+                            row_fn,
+                            empty_cols=len(cols),
+                            numeric_col_indices=_classic_numeric_cols,
+                        ),
                         _deleted_vms_panel(deleted),
                     ],
                 ),
@@ -488,20 +531,33 @@ def _tab_hyperconv(
             html.Td(r.get("name")),
             html.Td(r.get("source", "-")),
             html.Td(r.get("cluster", "-")),
-            html.Td(f"{r.get('cpu', 0):.0f}"),
-            html.Td(_intel_vm_cpu_usage_cell(r)),
-            html.Td(smart_memory(r.get("memory_gb", 0))),
+            _vm_metric_td(r.get("cpu", 0), decimals=0),
+            _vm_metric_td(r.get("cpu_mhz_max", 0), suffix=" MHz"),
+            _vm_metric_td(r.get("cpu_mhz_avg", 0), suffix=" MHz"),
+            _vm_metric_td(r.get("cpu_mhz_min", 0), suffix=" MHz"),
             html.Td(
-                _usage_max_avg_min_cell(
-                    r.get("mem_pct_max", 0),
-                    r.get("mem_pct_avg", 0),
-                    r.get("mem_pct_min", 0),
-                )
+                smart_memory(r.get("memory_gb", 0)),
+                style={
+                    "textAlign": "right",
+                    "fontVariantNumeric": "tabular-nums",
+                    "fontSize": "0.8125rem",
+                    "verticalAlign": "middle",
+                },
             ),
-            html.Td(smart_storage(r.get("disk_gb", 0))),
+            _vm_metric_td(r.get("mem_pct_max", 0), suffix="%"),
+            _vm_metric_td(r.get("mem_pct_avg", 0), suffix="%"),
+            _vm_metric_td(r.get("mem_pct_min", 0), suffix="%"),
             html.Td(
-                _disk_min_max_cell(r.get("disk_used_min_gb", 0), r.get("disk_used_max_gb", 0))
+                smart_storage(r.get("disk_gb", 0)),
+                style={
+                    "textAlign": "right",
+                    "fontVariantNumeric": "tabular-nums",
+                    "fontSize": "0.8125rem",
+                    "verticalAlign": "middle",
+                },
             ),
+            _vm_metric_td(r.get("disk_used_min_gb", 0), suffix=" GiB"),
+            _vm_metric_td(r.get("disk_used_max_gb", 0), suffix=" GiB"),
             html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
         ])
 
@@ -510,13 +566,19 @@ def _tab_hyperconv(
         "Source",
         "Cluster",
         "CPU (vCPU)",
-        "CPU (MHz)",
+        "MHz max",
+        "MHz avg",
+        "MHz min",
         "Memory",
-        "Mem usage %",
+        "Mem % max",
+        "Mem % avg",
+        "Mem % min",
         "Disk (prov.)",
-        "Disk used (min/max)",
+        "Disk used min (GiB)",
+        "Disk used max (GiB)",
         "Availability",
     ]
+    _hyperconv_numeric_cols = frozenset(range(3, 14))
     return dmc.Stack(
         gap="lg",
         children=[
@@ -566,7 +628,13 @@ def _tab_hyperconv(
                 dmc.Stack(
                     gap="md",
                     children=[
-                        _vm_table(vm_list, cols, row_fn, empty_cols=len(cols)),
+                        _vm_table(
+                            vm_list,
+                            cols,
+                            row_fn,
+                            empty_cols=len(cols),
+                            numeric_col_indices=_hyperconv_numeric_cols,
+                        ),
                         _deleted_vms_panel(deleted),
                     ],
                 ),
@@ -590,20 +658,33 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
             html.Td(r.get("name")),
             html.Td(r.get("source", "-")),
             html.Td(r.get("cluster", "-")),
-            html.Td(f"{r.get('cpu', 0):.0f}"),
-            html.Td(_intel_vm_cpu_usage_cell(r)),
-            html.Td(smart_memory(r.get("memory_gb", 0))),
+            _vm_metric_td(r.get("cpu", 0), decimals=0),
+            _vm_metric_td(r.get("cpu_mhz_max", 0), suffix=" MHz"),
+            _vm_metric_td(r.get("cpu_mhz_avg", 0), suffix=" MHz"),
+            _vm_metric_td(r.get("cpu_mhz_min", 0), suffix=" MHz"),
             html.Td(
-                _usage_max_avg_min_cell(
-                    r.get("mem_pct_max", 0),
-                    r.get("mem_pct_avg", 0),
-                    r.get("mem_pct_min", 0),
-                )
+                smart_memory(r.get("memory_gb", 0)),
+                style={
+                    "textAlign": "right",
+                    "fontVariantNumeric": "tabular-nums",
+                    "fontSize": "0.8125rem",
+                    "verticalAlign": "middle",
+                },
             ),
-            html.Td(smart_storage(r.get("disk_gb", 0))),
+            _vm_metric_td(r.get("mem_pct_max", 0), suffix="%"),
+            _vm_metric_td(r.get("mem_pct_avg", 0), suffix="%"),
+            _vm_metric_td(r.get("mem_pct_min", 0), suffix="%"),
             html.Td(
-                _disk_min_max_cell(r.get("disk_used_min_gb", 0), r.get("disk_used_max_gb", 0))
+                smart_storage(r.get("disk_gb", 0)),
+                style={
+                    "textAlign": "right",
+                    "fontVariantNumeric": "tabular-nums",
+                    "fontSize": "0.8125rem",
+                    "verticalAlign": "middle",
+                },
             ),
+            _vm_metric_td(r.get("disk_used_min_gb", 0), suffix=" GiB"),
+            _vm_metric_td(r.get("disk_used_max_gb", 0), suffix=" GiB"),
             html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
         ])
 
@@ -612,13 +693,19 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
         "Source",
         "Cluster",
         "CPU (vCPU)",
-        "CPU (MHz)",
+        "MHz max",
+        "MHz avg",
+        "MHz min",
         "Memory",
-        "Mem usage %",
+        "Mem % max",
+        "Mem % avg",
+        "Mem % min",
         "Disk (prov.)",
-        "Disk used (min/max)",
+        "Disk used min (GiB)",
+        "Disk used max (GiB)",
         "Availability",
     ]
+    _pure_nx_numeric_cols = frozenset(range(3, 14))
     return dmc.Stack(
         gap="lg",
         children=[
@@ -639,7 +726,13 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
                 dmc.Stack(
                     gap="md",
                     children=[
-                        _vm_table(vm_list, cols, row_fn, empty_cols=len(cols)),
+                        _vm_table(
+                            vm_list,
+                            cols,
+                            row_fn,
+                            empty_cols=len(cols),
+                            numeric_col_indices=_pure_nx_numeric_cols,
+                        ),
                         _deleted_vms_panel(deleted),
                     ],
                 ),
@@ -660,22 +753,22 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None):
         return html.Tr([
             html.Td(r.get("name")),
             html.Td(r.get("source", "Power HMC")),
-            html.Td(f"{r.get('cpu', 0):.1f}"),
+            _vm_metric_td(r.get("cpu", 0), decimals=1),
+            _vm_metric_td(r.get("cpu_pct_max", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_pct_avg", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_pct_min", 0), suffix="%"),
             html.Td(
-                _usage_max_avg_min_cell(
-                    r.get("cpu_pct_max", 0),
-                    r.get("cpu_pct_avg", 0),
-                    r.get("cpu_pct_min", 0),
-                )
+                smart_memory(r.get("memory_gb", 0)),
+                style={
+                    "textAlign": "right",
+                    "fontVariantNumeric": "tabular-nums",
+                    "fontSize": "0.8125rem",
+                    "verticalAlign": "middle",
+                },
             ),
-            html.Td(smart_memory(r.get("memory_gb", 0))),
-            html.Td(
-                _usage_max_avg_min_cell(
-                    r.get("mem_pct_max", 0),
-                    r.get("mem_pct_avg", 0),
-                    r.get("mem_pct_min", 0),
-                )
-            ),
+            _vm_metric_td(r.get("mem_pct_max", 0), suffix="%"),
+            _vm_metric_td(r.get("mem_pct_avg", 0), suffix="%"),
+            _vm_metric_td(r.get("mem_pct_min", 0), suffix="%"),
             html.Td(r.get("state", "-")),
             html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
         ])
@@ -684,12 +777,17 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None):
         "LPAR Name",
         "Source",
         "CPU (vProc)",
-        "CPU usage %",
+        "CPU % max",
+        "CPU % avg",
+        "CPU % min",
         "Memory",
-        "Mem usage %",
+        "Mem % max",
+        "Mem % avg",
+        "Mem % min",
         "State",
         "Availability",
     ]
+    _power_numeric_cols = frozenset(range(2, 10))
     return dmc.Stack(
         gap="lg",
         children=[
@@ -708,7 +806,13 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None):
                 dmc.Stack(
                     gap="md",
                     children=[
-                        _vm_table(vm_list, cols, row_fn, empty_cols=len(cols)),
+                        _vm_table(
+                            vm_list,
+                            cols,
+                            row_fn,
+                            empty_cols=len(cols),
+                            numeric_col_indices=_power_numeric_cols,
+                        ),
                         _deleted_vms_panel(deleted),
                     ],
                 ),
