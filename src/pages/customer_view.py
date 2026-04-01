@@ -81,6 +81,16 @@ def _usage_max_avg_min_cell(mx: float, avg: float, mn: float, suffix: str = "%")
     )
 
 
+def _intel_vm_cpu_usage_cell(r: dict):
+    """VMware/Nutanix VM rows: CPU MHz min/avg/max (vm_metrics MHz fields or Nutanix raw counters)."""
+    return _usage_max_avg_min_cell(
+        r.get("cpu_mhz_max", 0),
+        r.get("cpu_mhz_avg", 0),
+        r.get("cpu_mhz_min", 0),
+        suffix=" MHz",
+    )
+
+
 def _disk_min_max_cell(mn_gb: float, mx_gb: float):
     return dmc.Text(
         f"min {float(mn_gb or 0):.1f} / max {float(mx_gb or 0):.1f} GiB",
@@ -401,13 +411,7 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None):
             html.Td(r.get("name")),
             html.Td(r.get("cluster", "-")),
             html.Td(f"{r.get('cpu', 0):.0f}"),
-            html.Td(
-                _usage_max_avg_min_cell(
-                    r.get("cpu_pct_max", 0),
-                    r.get("cpu_pct_avg", 0),
-                    r.get("cpu_pct_min", 0),
-                )
-            ),
+            html.Td(_intel_vm_cpu_usage_cell(r)),
             html.Td(smart_memory(r.get("memory_gb", 0))),
             html.Td(
                 _usage_max_avg_min_cell(
@@ -427,7 +431,7 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None):
         "VM Name",
         "Cluster",
         "CPU (vCPU)",
-        "CPU usage %",
+        "CPU (MHz)",
         "Memory",
         "Mem usage %",
         "Disk (prov.)",
@@ -485,13 +489,7 @@ def _tab_hyperconv(
             html.Td(r.get("source", "-")),
             html.Td(r.get("cluster", "-")),
             html.Td(f"{r.get('cpu', 0):.0f}"),
-            html.Td(
-                _usage_max_avg_min_cell(
-                    r.get("cpu_pct_max", 0),
-                    r.get("cpu_pct_avg", 0),
-                    r.get("cpu_pct_min", 0),
-                )
-            ),
+            html.Td(_intel_vm_cpu_usage_cell(r)),
             html.Td(smart_memory(r.get("memory_gb", 0))),
             html.Td(
                 _usage_max_avg_min_cell(
@@ -512,7 +510,7 @@ def _tab_hyperconv(
         "Source",
         "Cluster",
         "CPU (vCPU)",
-        "CPU usage %",
+        "CPU (MHz)",
         "Memory",
         "Mem usage %",
         "Disk (prov.)",
@@ -593,13 +591,7 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
             html.Td(r.get("source", "-")),
             html.Td(r.get("cluster", "-")),
             html.Td(f"{r.get('cpu', 0):.0f}"),
-            html.Td(
-                _usage_max_avg_min_cell(
-                    r.get("cpu_pct_max", 0),
-                    r.get("cpu_pct_avg", 0),
-                    r.get("cpu_pct_min", 0),
-                )
-            ),
+            html.Td(_intel_vm_cpu_usage_cell(r)),
             html.Td(smart_memory(r.get("memory_gb", 0))),
             html.Td(
                 _usage_max_avg_min_cell(
@@ -620,7 +612,7 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
         "Source",
         "Cluster",
         "CPU (vCPU)",
-        "CPU usage %",
+        "CPU (MHz)",
         "Memory",
         "Mem usage %",
         "Disk (prov.)",
@@ -844,6 +836,9 @@ def _tab_customer_availability(avail: dict):
     svc = avail.get("service_downtimes") or []
     vm = avail.get("vm_downtimes") or []
     cid = avail.get("customer_id")
+    cids = [x for x in (avail.get("customer_ids") or []) if x is not None]
+    if not cids and cid is not None:
+        cids = [cid]
 
     def _svc_row(e: dict):
         return html.Tr(
@@ -885,7 +880,8 @@ def _tab_customer_availability(avail: dict):
         gap="lg",
         children=[
             dmc.Text(
-                f"AuraNotify availability (customer id: {cid}) — aligned with report period start.",
+                f"AuraNotify availability (customer ids: {cids or 'none'}) — "
+                "aligned with report period start.",
                 size="sm",
                 c="dimmed",
             ),

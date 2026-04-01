@@ -710,7 +710,7 @@ class DatabaseService:
         if len(row) >= 6:
             return (row[0], row[1], row[2], row[3], row[4], row[5])
         if len(row) >= 4:
-            return (row[0], row[1], row[2], row[3], 0.0, 0.0)
+            return (row[0], row[1], row[2], row[3], row[0], row[1])
         if len(row) >= 2:
             return (row[0], row[1], row[0], row[1], row[0], row[1])
         return (0, 0, 0, 0, 0, 0)
@@ -1433,18 +1433,22 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                     "arch_usage": {
                         "classic": {
                             "cpu_pct": round(classic_cpu_pct, 1),
+                            "cpu_pct_avg": round(classic_cpu_pct, 1),
                             "cpu_pct_min": round(float(classic.get("cpu_pct_min", 0) or 0), 1),
                             "cpu_pct_max": round(float(classic.get("cpu_pct_max", 0) or 0), 1),
                             "ram_pct": round(classic_ram_pct, 1),
+                            "ram_pct_avg": round(classic_ram_pct, 1),
                             "ram_pct_min": round(float(classic.get("mem_pct_min", 0) or 0), 1),
                             "ram_pct_max": round(float(classic.get("mem_pct_max", 0) or 0), 1),
                             "disk_pct": round(classic_stor_pct, 1),
                         },
                         "hyperconv": {
                             "cpu_pct": round(hyperconv_cpu_pct, 1),
+                            "cpu_pct_avg": round(hyperconv_cpu_pct, 1),
                             "cpu_pct_min": round(float(hyperconv.get("cpu_pct_min", 0) or 0), 1),
                             "cpu_pct_max": round(float(hyperconv.get("cpu_pct_max", 0) or 0), 1),
                             "ram_pct": round(hyperconv_ram_pct, 1),
+                            "ram_pct_avg": round(hyperconv_ram_pct, 1),
                             "ram_pct_min": round(float(hyperconv.get("mem_pct_min", 0) or 0), 1),
                             "ram_pct_max": round(float(hyperconv.get("mem_pct_max", 0) or 0), 1),
                             "disk_pct": round(hyperconv_stor_pct, 1),

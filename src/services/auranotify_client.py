@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Optional
 
 import httpx
@@ -14,7 +15,10 @@ import httpx
 logger = logging.getLogger(__name__)
 
 AURANOTIFY_BASE = os.getenv("AURANOTIFY_BASE_URL", "http://10.34.8.154:5001").rstrip("/")
-AURANOTIFY_KEY = os.getenv("AURANOTIFY_API_KEY", "").strip()
+AURANOTIFY_KEY = (
+    os.getenv("AURANOTIFY_API_KEY", "").strip()
+    or os.getenv("ANOTIFY_API_KEY", "").strip()
+)
 
 _transport = httpx.HTTPTransport(retries=2)
 
@@ -32,7 +36,7 @@ def _headers() -> dict[str, str]:
 def get_dc_services_availability(start_date: str) -> list[dict[str, Any]]:
     """GET /api/sla/datacenter-services — all DC groups with category SLA breakdown."""
     if not AURANOTIFY_KEY:
-        logger.debug("AURANOTIFY_API_KEY not set; skipping datacenter-services")
+        logger.debug("AURANOTIFY_API_KEY / ANOTIFY_API_KEY not set; skipping datacenter-services")
         return []
     try:
         with _client() as c:
@@ -43,7 +47,10 @@ def get_dc_services_availability(start_date: str) -> list[dict[str, Any]]:
             )
             r.raise_for_status()
             data = r.json()
-            return data.get("items") or []
+            if isinstance(data, list):
+                return data
+            items = data.get("items") or data.get("data") or data.get("results")
+            return items if isinstance(items, list) else []
     except Exception as exc:
         logger.warning("get_dc_services_availability failed: %s", exc)
         return []
@@ -62,6 +69,14 @@ def match_dc_group_item(items: list[dict[str, Any]], hint: str) -> Optional[dict
         gn = str(it.get("group_name") or "").strip().lower()
         if hint in gn or gn in hint:
             return it
+    # Match DC/site code token (e.g. DC13 in "Equinix IL2 - DC13")
+    for tok in re.findall(r"\b(dc\d+|ict\d+|az\d+|uz\d+)\b", hint, flags=re.I):
+        t = tok.lower()
+        pat = re.compile(r"\b" + re.escape(t) + r"\b", flags=re.I)
+        for it in items:
+            gn = str(it.get("group_name") or "")
+            if pat.search(gn):
+                return it
     return None
 
 
@@ -99,18 +114,29 @@ def get_customer_downtimes(customer_id: int, start_date: str, source: str) -> di
         return {}
 
 
-def resolve_customer_id(customer_name: str) -> Optional[int]:
-    name = (customer_name or "").strip().lower()
-    if not name:
-        return None
+def resolve_customer_ids(customer_name: str) -> list[int]:
+    """
+    All AuraNotify customer IDs for this GUI customer: exact name match plus names
+    like ``Boyner_Dr`` when the selected customer is ``Boyner``.
+    """
+    prefix = (customer_name or "").strip().lower()
+    if not prefix:
+        return []
+    ids: list[int] = []
     for row in get_customer_list_aura():
-        if str(row.get("name", "")).strip().lower() == name:
+        name = str(row.get("name", "")).strip().lower()
+        if name == prefix or name.startswith(prefix + "_"):
             cid = row.get("id")
             try:
-                return int(cid)
+                ids.append(int(cid))
             except (TypeError, ValueError):
-                return None
-    return None
+                continue
+    return sorted(set(ids))
+
+
+def resolve_customer_id(customer_name: str) -> Optional[int]:
+    ids = resolve_customer_ids(customer_name)
+    return ids[0] if ids else None
 
 
 def _collect_vm_names_from_event(event: dict[str, Any]) -> list[str]:
@@ -158,21 +184,26 @@ def get_customer_availability_bundle(customer_name: str, start_date: str) -> dic
         "vm_downtimes": [],
         "vm_outage_counts": {},
         "customer_id": None,
+        "customer_ids": [],
     }
-    cid = resolve_customer_id(customer_name)
-    if cid is None:
+    cids = resolve_customer_ids(customer_name)
+    if not cids:
         return empty
-    svc_body = get_customer_downtimes(cid, start_date, "service")
-    vm_body = get_customer_downtimes(cid, start_date, "vm")
-    svc_events = svc_body.get("datacenter_downtimes") or []
-    vm_events = vm_body.get("datacenter_downtimes") or []
-    if not isinstance(svc_events, list):
-        svc_events = []
-    if not isinstance(vm_events, list):
-        vm_events = []
+    svc_events: list[Any] = []
+    vm_events: list[Any] = []
+    for cid in cids:
+        svc_body = get_customer_downtimes(cid, start_date, "service")
+        vm_body = get_customer_downtimes(cid, start_date, "vm")
+        se = svc_body.get("datacenter_downtimes") or []
+        ve = vm_body.get("datacenter_downtimes") or []
+        if isinstance(se, list):
+            svc_events.extend(se)
+        if isinstance(ve, list):
+            vm_events.extend(ve)
     return {
         "service_downtimes": svc_events,
         "vm_downtimes": vm_events,
         "vm_outage_counts": vm_outage_counts_from_events(vm_events),
-        "customer_id": cid,
+        "customer_id": cids[0],
+        "customer_ids": cids,
     }

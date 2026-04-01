@@ -74,7 +74,7 @@ def _build_dc_availability_tab(item: dict | None, dc_display_name: str):
             children=[
                 dmc.Alert(
                     "No matching AuraNotify datacenter group for this DC. "
-                    "Set AURANOTIFY_API_KEY and ensure `group_name` matches the DC name or code.",
+                    "Set AURANOTIFY_API_KEY or ANOTIFY_API_KEY and ensure `group_name` matches the DC name or code.",
                     color="yellow",
                 ),
                 dmc.Text(f"DC: {dc_display_name}", size="sm", c="dimmed"),
@@ -121,6 +121,7 @@ def _build_dc_availability_tab(item: dict | None, dc_display_name: str):
                             html.Td(str(d.get("end_time") or "-")),
                             html.Td(str(d.get("duration_minutes") or "-")),
                             html.Td(str(d.get("reason") or "-")),
+                            html.Td(str(d.get("senaryo") or "-")),
                             html.Td(str(d.get("outage_status") or "-")),
                             html.Td(str(d.get("service_impact") or "-")),
                             html.Td(str(d.get("dc_impact") or "-")),
@@ -138,6 +139,7 @@ def _build_dc_availability_tab(item: dict | None, dc_display_name: str):
                                 html.Th("End"),
                                 html.Th("Duration (min)"),
                                 html.Th("Reason"),
+                                html.Th("Senaryo"),
                                 html.Th("Outage"),
                                 html.Th("Service impact"),
                                 html.Th("DC impact"),

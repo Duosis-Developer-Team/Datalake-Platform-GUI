@@ -611,6 +611,7 @@ def get_customer_availability_bundle(customer_name: str, tr: Optional[dict]) -> 
             "vm_downtimes": [],
             "vm_outage_counts": {},
             "customer_id": None,
+            "customer_ids": [],
         }
 
 
