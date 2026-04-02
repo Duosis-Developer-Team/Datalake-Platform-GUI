@@ -66,8 +66,13 @@ def _vm_table(
     row_fn,
     empty_cols: int = 5,
     numeric_col_indices: frozenset | None = None,
+    comfortable: bool = False,
 ):
-    """Generic scrollable VM/LPAR billing table (horizontal + vertical scroll when wide)."""
+    """Generic scrollable VM/LPAR billing table (horizontal + vertical scroll when wide).
+
+    When comfortable=True, applies customer-vm-table-wrap / customer-vm-table classes
+    for padding, min-width, and sticky header (see assets/style.css).
+    """
     numeric_col_indices = numeric_col_indices or frozenset()
     header_cells = [
         html.Th(
@@ -79,18 +84,19 @@ def _vm_table(
         )
         for i, c in enumerate(columns)
     ]
-    return html.Div(
-        style={
+    wrap_kwargs: dict = {
+        "style": {
             "maxHeight": "420px",
             "overflowY": "auto",
             "overflowX": "auto",
             "WebkitOverflowScrolling": "touch",
         },
-        children=[
+        "children": [
             dmc.Table(
                 striped=True,
                 highlightOnHover=True,
                 withColumnBorders=True,
+                className="customer-vm-table" if comfortable else None,
                 children=[
                     html.Thead(html.Tr(header_cells)),
                     html.Tbody(
@@ -101,7 +107,10 @@ def _vm_table(
                 ],
             )
         ],
-    )
+    }
+    if comfortable:
+        wrap_kwargs["className"] = "customer-vm-table-wrap"
+    return html.Div(**wrap_kwargs)
 
 
 def _section_card(title: str, subtitle: str | None = None, children=None):
@@ -429,9 +438,9 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None):
             html.Td(r.get("name")),
             html.Td(r.get("cluster", "-")),
             _vm_metric_td(r.get("cpu", 0), decimals=0),
-            _vm_metric_td(r.get("cpu_pct_max", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_avg", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_min", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_mhz_max", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_mhz_avg", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_mhz_min", 0), suffix="%"),
             html.Td(
                 smart_memory(r.get("memory_gb", 0)),
                 style={
@@ -500,6 +509,7 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None):
                             row_fn,
                             empty_cols=len(cols),
                             numeric_col_indices=_classic_numeric_cols,
+                            comfortable=True,
                         ),
                         _deleted_vms_panel(deleted),
                     ],
@@ -532,9 +542,9 @@ def _tab_hyperconv(
             html.Td(r.get("source", "-")),
             html.Td(r.get("cluster", "-")),
             _vm_metric_td(r.get("cpu", 0), decimals=0),
-            _vm_metric_td(r.get("cpu_pct_max", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_avg", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_min", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_mhz_max", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_mhz_avg", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_mhz_min", 0), suffix="%"),
             html.Td(
                 smart_memory(r.get("memory_gb", 0)),
                 style={
@@ -634,6 +644,7 @@ def _tab_hyperconv(
                             row_fn,
                             empty_cols=len(cols),
                             numeric_col_indices=_hyperconv_numeric_cols,
+                            comfortable=True,
                         ),
                         _deleted_vms_panel(deleted),
                     ],
@@ -659,9 +670,9 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
             html.Td(r.get("source", "-")),
             html.Td(r.get("cluster", "-")),
             _vm_metric_td(r.get("cpu", 0), decimals=0),
-            _vm_metric_td(r.get("cpu_pct_max", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_avg", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_min", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_mhz_max", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_mhz_avg", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_mhz_min", 0), suffix="%"),
             html.Td(
                 smart_memory(r.get("memory_gb", 0)),
                 style={
@@ -732,6 +743,7 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
                             row_fn,
                             empty_cols=len(cols),
                             numeric_col_indices=_pure_nx_numeric_cols,
+                            comfortable=True,
                         ),
                         _deleted_vms_panel(deleted),
                     ],
@@ -812,6 +824,7 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None):
                             row_fn,
                             empty_cols=len(cols),
                             numeric_col_indices=_power_numeric_cols,
+                            comfortable=True,
                         ),
                         _deleted_vms_panel(deleted),
                     ],

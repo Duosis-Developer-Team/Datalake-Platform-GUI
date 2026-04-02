@@ -119,6 +119,7 @@ class CustomerAdapter:
                     )
                     classic_deleted_vm_list = [str(r[0]) for r in (classic_deleted_rows or []) if r and r[0]]
 
+                    # cpu_mhz_{min,avg,max} in VM dicts are CPU usage percent (legacy DB column names).
                     classic_vm_rows = self._run_rows(
                         cur,
                         cq.CUSTOMER_CLASSIC_VM_LIST,
@@ -130,9 +131,9 @@ class CustomerAdapter:
                             "source": r[1],
                             "cluster": r[2],
                             "cpu": float(r[3] or 0.0),
-                            "cpu_pct_min": float(r[4] or 0.0),
-                            "cpu_pct_avg": float(r[5] or 0.0),
-                            "cpu_pct_max": float(r[6] or 0.0),
+                            "cpu_mhz_min": float(r[4] or 0.0),
+                            "cpu_mhz_avg": float(r[5] or 0.0),
+                            "cpu_mhz_max": float(r[6] or 0.0),
                             "memory_gb": float(r[7] or 0.0),
                             "mem_pct_min": float(r[8] or 0.0),
                             "mem_pct_avg": float(r[9] or 0.0),
@@ -197,9 +198,9 @@ class CustomerAdapter:
                             "source": r[1],
                             "cluster": r[2],
                             "cpu": float(r[3] or 0.0),
-                            "cpu_pct_min": float(r[4] or 0.0),
-                            "cpu_pct_avg": float(r[5] or 0.0),
-                            "cpu_pct_max": float(r[6] or 0.0),
+                            "cpu_mhz_min": float(r[4] or 0.0),
+                            "cpu_mhz_avg": float(r[5] or 0.0),
+                            "cpu_mhz_max": float(r[6] or 0.0),
                             "memory_gb": float(r[7] or 0.0),
                             "mem_pct_min": float(r[8] or 0.0),
                             "mem_pct_avg": float(r[9] or 0.0),
@@ -245,9 +246,9 @@ class CustomerAdapter:
                             "source": r[1],
                             "cluster": r[2],
                             "cpu": float(r[3] or 0.0),
-                            "cpu_pct_min": float(r[4] or 0.0),
-                            "cpu_pct_avg": float(r[5] or 0.0),
-                            "cpu_pct_max": float(r[6] or 0.0),
+                            "cpu_mhz_min": float(r[4] or 0.0),
+                            "cpu_mhz_avg": float(r[5] or 0.0),
+                            "cpu_mhz_max": float(r[6] or 0.0),
                             "memory_gb": float(r[7] or 0.0),
                             "mem_pct_min": float(r[8] or 0.0),
                             "mem_pct_avg": float(r[9] or 0.0),
