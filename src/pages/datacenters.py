@@ -5,7 +5,14 @@ from dash_iconify import DashIconify
 from src.services import api_client as api
 from src.services import sla_service
 from src.utils.time_range import default_time_range
-from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe, dataframes_to_excel_bytes, dataframe_to_csv_bytes
+from src.utils.export_helpers import (
+    records_to_dataframe,
+    dataframes_to_excel_with_meta,
+    csv_bytes_with_report_header,
+    dash_send_excel_workbook,
+    dash_send_csv_bytes,
+    build_report_info_df,
+)
 from src.utils.dc_display import format_dc_display_name
 
 
@@ -227,14 +234,22 @@ def build_datacenters(time_range=None):
     export_rows = []
     for dc in datacenters:
         dc_id = dc.get("id", "")
+        stats = dc.get("stats") or {}
         sla = sla_by_dc.get(dc_id) or sla_by_dc.get(str(dc_id).upper()) if sla_by_dc else None
         export_rows.append(
             {
                 "DC": format_dc_display_name(dc.get("name"), dc.get("description")) or dc.get("name", dc_id),
+                "DC_ID": dc_id,
                 "Location": dc.get("location", ""),
+                "Site_Name": dc.get("site_name", ""),
                 "Hosts": dc.get("host_count", 0),
                 "VMs": dc.get("vm_count", 0),
+                "Clusters": dc.get("cluster_count", 0),
                 "Platforms": dc.get("platform_count", 0),
+                "CPU_Used_pct": stats.get("used_cpu_pct", ""),
+                "RAM_Used_pct": stats.get("used_ram_pct", ""),
+                "Total_Energy_kW": stats.get("total_energy_kw", ""),
+                "IBM_Energy_kW": stats.get("ibm_kw", ""),
                 "SLA_pct": (sla or {}).get("availability_pct", "") if sla else "",
             }
         )
@@ -383,22 +398,23 @@ def layout():
     Output("datacenters-export-download", "data"),
     Input("datacenters-export-csv", "n_clicks"),
     Input("datacenters-export-xlsx", "n_clicks"),
-    Input("datacenters-export-pdf", "n_clicks"),
     State("datacenters-export-store", "data"),
+    State("app-time-range", "data"),
     prevent_initial_call=True,
 )
-def export_datacenters_page(nc1, nc2, nc3, store):
+def export_datacenters_page(nc1, nc2, store, time_range):
     if not store:
         raise dash.exceptions.PreventUpdate
     tid = str(callback_context.triggered_id)
     rows = store.get("rows") or []
-    period = store.get("period", "report")
     df = records_to_dataframe(rows if isinstance(rows, list) else [])
-    from dash import dcc
+    sheets = {"DC_List": df}
 
     if "xlsx" in tid:
-        content = dataframes_to_excel_bytes({"Datacenters": df})
-        return dcc.send_bytes(content, filename=f"datacenters_{period}.xlsx")
-    if "pdf" in tid:
-        return dash_send_dataframe(df, "datacenters", "pdf")
-    return dcc.send_bytes(dataframe_to_csv_bytes(df), filename=f"datacenters_{period}.csv")
+        content = dataframes_to_excel_with_meta(sheets, time_range, "Data_Centers", None)
+        return dash_send_excel_workbook(content, "datacenters")
+    report_info = build_report_info_df(time_range, "Data_Centers", None)
+    return dash_send_csv_bytes(
+        csv_bytes_with_report_header(report_info, [("DC_List", df)]),
+        "datacenters",
+    )

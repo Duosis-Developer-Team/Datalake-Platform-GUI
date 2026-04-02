@@ -1,5 +1,6 @@
 # DC Detail view - Capacity Planning
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup | Physical Inventory
+import json
 import dash
 from dash import html, dcc, dash_table, callback, Input, Output, State
 import dash_mantine_components as dmc
@@ -35,7 +36,14 @@ from src.components.backup_panel import (
 from src.services import sla_service
 from src.services import product_catalog as product_catalog_service
 from src.utils.dc_display import format_dc_display_name
-from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe
+from src.utils.export_helpers import (
+    records_to_dataframe,
+    build_report_info_df,
+    dataframes_to_excel_with_meta,
+    csv_bytes_with_report_header,
+    dash_send_excel_workbook,
+    dash_send_csv_bytes,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -43,29 +51,139 @@ from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe
 # ---------------------------------------------------------------------------
 
 
-def _build_dc_export_rows(dc_code: str, data: dict, phys_inv: dict) -> list[dict]:
-    """Flatten DC detail payload for CSV/Excel/PDF export."""
-    rows: list[dict] = []
-    meta = data.get("meta") or {}
-    rows.append({"section": "meta", "key": "dc_code", "value": dc_code})
-    for k, v in meta.items():
-        rows.append({"section": "meta", "key": str(k), "value": v})
-    for block_name in ("classic", "hyperconv", "power", "energy"):
-        block = data.get(block_name)
-        if not isinstance(block, dict):
-            continue
-        for k, v in block.items():
-            rows.append({"section": block_name, "key": str(k), "value": v})
+def _export_cell_value(v):
+    if isinstance(v, (dict, list)):
+        try:
+            return json.dumps(v, ensure_ascii=False, default=str)[:8000]
+        except Exception:
+            return str(v)[:8000]
+    return v
+
+
+def _scalar_block_to_wide_row(block: dict | None) -> list[dict]:
+    if not isinstance(block, dict) or not block:
+        return []
+    row = {str(k): _export_cell_value(block[k]) for k in sorted(block.keys(), key=str)}
+    return [row]
+
+
+def _meta_export_rows(meta: dict | None, dc_code: str) -> list[dict]:
+    rows = [{"field": "dc_code", "value": dc_code}]
+    if not isinstance(meta, dict):
+        return rows
+    for k in sorted(meta.keys(), key=str):
+        rows.append({"field": str(k), "value": _export_cell_value(meta[k])})
+    return rows
+
+
+def _phys_by_role_export_rows(phys_inv: dict) -> list[dict]:
     br = phys_inv.get("by_role") or []
+    out: list[dict] = []
     if isinstance(br, list):
         for item in br:
             if isinstance(item, dict):
-                rows.append({
-                    "section": "phys_inv_by_role",
-                    "key": str(item.get("role", "")),
-                    "value": item.get("count", ""),
-                })
-    return rows
+                out.append({"role": str(item.get("role", "")), "count": item.get("count", "")})
+    return out
+
+
+def _network_interface_export_rows(interface_table: dict | None) -> list[dict]:
+    if not isinstance(interface_table, dict):
+        return []
+    items = interface_table.get("items") or []
+    out: list[dict] = []
+    for r in items:
+        if isinstance(r, dict):
+            out.append({str(k): _export_cell_value(v) for k, v in r.items()})
+    return out
+
+
+def _backup_rows_for_export(product: str, payload: dict | None) -> list[dict]:
+    if not isinstance(payload, dict):
+        return []
+    raw_rows = payload.get("rows")
+    if isinstance(raw_rows, list) and raw_rows:
+        out: list[dict] = []
+        for r in raw_rows:
+            if isinstance(r, dict):
+                row = {"product": product}
+                for k, v in r.items():
+                    row[str(k)] = _export_cell_value(v)
+                out.append(row)
+        return out
+    if product == "NetBackup":
+        pools = payload.get("pools") or []
+        return [
+            {"product": product, **{str(k): _export_cell_value(v) for k, v in p.items()}}
+            for p in pools
+            if isinstance(p, dict)
+        ]
+    if product == "Zerto":
+        sites = payload.get("sites") or []
+        return [
+            {"product": product, **{str(k): _export_cell_value(v) for k, v in s.items()}}
+            for s in sites
+            if isinstance(s, dict)
+        ]
+    if product == "Veeam":
+        repos = payload.get("repos") or []
+        return [
+            {"product": product, **{str(k): _export_cell_value(v) for k, v in x.items()}}
+            for x in repos
+            if isinstance(x, dict)
+        ]
+    return []
+
+
+def _build_dc_export_sheets(
+    dc_code: str,
+    data: dict,
+    phys_inv: dict,
+    net_interface_table: dict | None,
+    nb_data: dict | None,
+    zerto_data: dict | None,
+    veeam_data: dict | None,
+) -> dict[str, list[dict]]:
+    """Tabular sections for CSV/Excel export (JSON-serializable)."""
+    sheets: dict[str, list[dict]] = {}
+    meta = data.get("meta") or {}
+    sheets["Meta"] = _meta_export_rows(meta, dc_code)
+
+    classic = data.get("classic")
+    if isinstance(classic, dict) and classic:
+        sheets["Classic_Metrics"] = _scalar_block_to_wide_row(classic)
+
+    hyperconv = data.get("hyperconv")
+    if isinstance(hyperconv, dict) and hyperconv:
+        sheets["HyperConv_Metrics"] = _scalar_block_to_wide_row(hyperconv)
+
+    power = data.get("power")
+    if isinstance(power, dict) and power:
+        sheets["Power_Metrics"] = _scalar_block_to_wide_row(power)
+
+    energy = data.get("energy")
+    if isinstance(energy, dict) and energy:
+        sheets["Energy_Metrics"] = _scalar_block_to_wide_row(energy)
+
+    intel = data.get("intel")
+    if isinstance(intel, dict) and intel:
+        sheets["Intel_Legacy"] = _scalar_block_to_wide_row(intel)
+
+    phys = _phys_by_role_export_rows(phys_inv)
+    if phys:
+        sheets["Physical_Inventory"] = phys
+
+    net_rows = _network_interface_export_rows(net_interface_table)
+    if net_rows:
+        sheets["Network_Interfaces"] = net_rows
+
+    backup_combined: list[dict] = []
+    backup_combined.extend(_backup_rows_for_export("NetBackup", nb_data))
+    backup_combined.extend(_backup_rows_for_export("Zerto", zerto_data))
+    backup_combined.extend(_backup_rows_for_export("Veeam", veeam_data))
+    if backup_combined:
+        sheets["Backup"] = backup_combined
+
+    return sheets
 
 
 def _availability_downtime_table(downtimes: list):
@@ -1436,7 +1554,6 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
     return dmc.Stack(
         gap="lg",
         children=[
-            dcc.Store(id="net-filters-store", data=net_filters),
             dmc.SimpleGrid(
                 cols=3,
                 spacing="lg",
@@ -1935,7 +2052,6 @@ def build_dc_view(dc_id, time_range=None):
     phys_inv = batch2["phys_inv"]
     has_phys_inv = phys_inv.get("total", 0) > 0
 
-    export_rows = _build_dc_export_rows(str(dc_id), data, phys_inv)
     export_group = dmc.Group(
         gap=6,
         align="center",
@@ -1969,6 +2085,16 @@ def build_dc_view(dc_id, time_range=None):
     nb_data = api.get_dc_netbackup_pools(dc_id, tr)
     zerto_data = api.get_dc_zerto_sites(dc_id, tr)
     veeam_data = api.get_dc_veeam_repos(dc_id, tr)
+
+    export_sheets = _build_dc_export_sheets(
+        str(dc_id),
+        data,
+        phys_inv,
+        net_interface_table,
+        nb_data,
+        zerto_data,
+        veeam_data,
+    )
 
     # Determine which sections actually have data
     has_classic = _has_compute_data(classic)
@@ -2043,9 +2169,14 @@ def build_dc_view(dc_id, time_range=None):
         )
 
     return html.Div([
+        dcc.Store(id="net-filters-store", data=net_filters or {}),
         dcc.Store(
             id="dc-export-store",
-            data={"dc_name": dc_name, "rows": export_rows},
+            data={
+                "dc_name": dc_name,
+                "dc_code": str(dc_id),
+                "sheets": export_sheets,
+            },
         ),
         dcc.Download(id="dc-export-download"),
         dmc.Tabs(
@@ -2341,21 +2472,59 @@ def layout(dc_id=None):
     Output("dc-export-download", "data"),
     Input("dc-export-csv", "n_clicks"),
     Input("dc-export-xlsx", "n_clicks"),
-    Input("dc-export-pdf", "n_clicks"),
     State("dc-export-store", "data"),
+    State("app-time-range", "data"),
+    State("net-filters-store", "data"),
     prevent_initial_call=True,
 )
-def export_dc_detail(nc, nx, np, store):
+def export_dc_detail(nc, nx, store, time_range, net_filters):
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update
     tid = ctx.triggered[0]["prop_id"].split(".")[0]
-    fmt_map = {"dc-export-csv": "csv", "dc-export-xlsx": "xlsx", "dc-export-pdf": "pdf"}
+    fmt_map = {"dc-export-csv": "csv", "dc-export-xlsx": "xlsx"}
     fmt = fmt_map.get(tid)
     if not fmt:
         return dash.no_update
     store = store or {}
-    rows = store.get("rows") or []
     base = str(store.get("dc_name") or "dc_detail")
-    df = records_to_dataframe(rows)
-    return dash_send_dataframe(df, base, fmt)
+    extra = {
+        "dc_code": store.get("dc_code", ""),
+        "network_filters": net_filters,
+    }
+    sheets_raw = store.get("sheets")
+    if not isinstance(sheets_raw, dict):
+        sheets_raw = {}
+    if not sheets_raw and store.get("rows"):
+        sheets_raw = {"Legacy": store.get("rows") or []}
+
+    sheet_order = [
+        "Meta",
+        "Classic_Metrics",
+        "HyperConv_Metrics",
+        "Power_Metrics",
+        "Energy_Metrics",
+        "Intel_Legacy",
+        "Physical_Inventory",
+        "Network_Interfaces",
+        "Backup",
+        "Legacy",
+    ]
+    dfs = {}
+    for name in sheet_order:
+        recs = sheets_raw.get(name)
+        if recs:
+            dfs[name] = records_to_dataframe(recs if isinstance(recs, list) else [])
+    for name, recs in sheets_raw.items():
+        if name not in dfs and isinstance(recs, list):
+            dfs[name] = records_to_dataframe(recs)
+
+    if fmt == "xlsx":
+        content = dataframes_to_excel_with_meta(dfs, time_range, "DC_Detail", extra)
+        return dash_send_excel_workbook(content, base)
+    report_info = build_report_info_df(time_range, "DC_Detail", extra)
+    sections = [(k, v) for k, v in dfs.items()]
+    if not sections:
+        sections = [("Data", records_to_dataframe([]))]
+    csv_body = csv_bytes_with_report_header(report_info, sections)
+    return dash_send_csv_bytes(csv_body, base)

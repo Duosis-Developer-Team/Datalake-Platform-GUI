@@ -1,5 +1,6 @@
 # Customer View - Billing-focused resource breakdown per customer.
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup
+import json
 import dash
 from dash import html, dcc, callback, Input, Output, State
 import dash_mantine_components as dmc
@@ -8,7 +9,14 @@ import plotly.graph_objs as go
 
 from src.services import api_client as api
 from src.utils.time_range import default_time_range
-from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe
+from src.utils.export_helpers import (
+    records_to_dataframe,
+    build_report_info_df,
+    dataframes_to_excel_with_meta,
+    csv_bytes_with_report_header,
+    dash_send_excel_workbook,
+    dash_send_csv_bytes,
+)
 from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_float, title_case
 from src.components.header import create_detail_header
 from src.pages.home import metric_card
@@ -134,6 +142,128 @@ def _availability_cell(vm_name: str | None, vm_outage_counts: dict | None):
     if c <= 0:
         return dmc.Badge("OK", color="green", size="sm", variant="light")
     return dmc.Badge(f"{c} outage(s)", color="red", size="sm", variant="light")
+
+
+def _export_cell(v):
+    if isinstance(v, (dict, list)):
+        try:
+            return json.dumps(v, ensure_ascii=False, default=str)[:8000]
+        except Exception:
+            return str(v)[:8000]
+    return v
+
+
+def _dict_to_wide_row(d: dict | None) -> list[dict]:
+    if not isinstance(d, dict) or not d:
+        return []
+    return [{str(k): _export_cell(d[k]) for k in sorted(d.keys(), key=str)}]
+
+
+def _vm_records_for_export(vm_list: list | None) -> list[dict]:
+    if not vm_list:
+        return []
+    out: list[dict] = []
+    for r in vm_list:
+        if isinstance(r, dict):
+            out.append({str(k): _export_cell(v) for k, v in r.items()})
+    return out
+
+
+def _device_records_for_export(devices: list | None) -> list[dict]:
+    return _vm_records_for_export(devices)
+
+
+def _s3_vault_rows(s3_data: dict | None) -> list[dict]:
+    if not isinstance(s3_data, dict):
+        return []
+    vaults = s3_data.get("vaults") or []
+    out: list[dict] = []
+    for v in vaults:
+        if isinstance(v, dict):
+            out.append({str(k): _export_cell(x) for k, x in v.items()})
+    return out
+
+
+def _build_customer_export_sheets(
+    customer_name: str,
+    totals: dict,
+    backup_totals: dict,
+    assets: dict,
+    classic: dict,
+    hyperconv: dict,
+    pure_nx: dict,
+    power_asset: dict,
+    s3_data: dict,
+    phys_inv_devices: list,
+) -> dict[str, list[dict]]:
+    sheets: dict[str, list[dict]] = {}
+    sheets["Customer_Meta"] = [{"customer": customer_name}]
+    trow = _dict_to_wide_row(totals)
+    if trow:
+        sheets["Summary_Totals"] = trow
+    brow = _dict_to_wide_row(backup_totals)
+    if brow:
+        sheets["Backup_Totals"] = brow
+
+    for label, block in (
+        ("Assets_Classic_Block", classic),
+        ("Assets_Hyperconv_Block", hyperconv),
+        ("Assets_Pure_Nutanix_Block", pure_nx),
+        ("Assets_Power_Block", power_asset),
+    ):
+        w = _dict_to_wide_row(block)
+        if w:
+            sheets[label] = w
+
+    intel_asset = assets.get("intel", {}) or {}
+    iw = _dict_to_wide_row(intel_asset)
+    if iw:
+        sheets["Assets_Intel_Aggregate"] = iw
+
+    sheets["Classic_VMs"] = _vm_records_for_export(classic.get("vm_list") or [])
+    sheets["HyperConv_VMs"] = _vm_records_for_export(hyperconv.get("vm_list") or [])
+    sheets["Pure_Nutanix_VMs"] = _vm_records_for_export(pure_nx.get("vm_list") or [])
+    pl = (
+        power_asset.get("vm_list")
+        or power_asset.get("lpar_list")
+        or power_asset.get("lpars")
+        or []
+    )
+    sheets["Power_LPARS"] = _vm_records_for_export(pl)
+
+    backup_assets = assets.get("backup", {}) or {}
+    for bk, key in (
+        ("Backup_Veeam_Detail", "veeam"),
+        ("Backup_Zerto_Detail", "zerto"),
+        ("Backup_Netbackup_Detail", "netbackup"),
+    ):
+        sub = backup_assets.get(key)
+        if isinstance(sub, dict) and sub:
+            br = _dict_to_wide_row(sub)
+            if br:
+                sheets[bk] = br
+
+    bill = _dict_to_wide_row(
+        {
+            "intel_vms_total": totals.get("intel_vms_total"),
+            "power_lpar_total": totals.get("power_lpar_total"),
+            "vms_total": totals.get("vms_total"),
+            "intel_cpu_total": totals.get("intel_cpu_total"),
+            "power_cpu_total": totals.get("power_cpu_total"),
+        }
+    )
+    if bill:
+        sheets["Billing_Key_Metrics"] = bill
+
+    sv = _s3_vault_rows(s3_data)
+    if sv:
+        sheets["S3_Vaults"] = sv
+
+    phys = _device_records_for_export(phys_inv_devices)
+    if phys:
+        sheets["Physical_Inventory"] = phys
+
+    return sheets
 
 
 def _deleted_vms_panel(deleted_names: list[str] | None):
@@ -1238,32 +1368,18 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         ],
     )
 
-    def _export_scalar(v):
-        if isinstance(v, (dict, list)):
-            return str(v)[:4000]
-        return v
-
-    export_rows = [{"section": "meta", "key": "customer", "value": customer_name}]
-    for k, v in (totals or {}).items():
-        export_rows.append({"section": "totals", "key": str(k), "value": _export_scalar(v)})
-    for k, v in (backup_totals or {}).items():
-        export_rows.append({"section": "backup_totals", "key": str(k), "value": _export_scalar(v)})
-    for d in phys_inv_devices or []:
-        if isinstance(d, dict):
-            export_rows.append({
-                "section": "phys_device",
-                "key": str(d.get("name", "")),
-                "value": " | ".join(
-                    filter(
-                        None,
-                        [
-                            str(d.get("device_role_name") or ""),
-                            str(d.get("manufacturer_name") or ""),
-                            str(d.get("location") or ""),
-                        ],
-                    )
-                ),
-            })
+    export_sheets = _build_customer_export_sheets(
+        customer_name or "",
+        totals or {},
+        backup_totals or {},
+        assets or {},
+        classic,
+        hyperconv,
+        pure_nx,
+        power_asset,
+        s3_data,
+        phys_inv_devices or [],
+    )
 
     return {
         "summary": _tab_summary(totals, assets),
@@ -1293,7 +1409,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         "has_s3": has_s3,
         "phys_inv": _tab_physical_inventory(phys_inv_devices),
         "has_phys_inv": has_phys_inv,
-        "export_rows": export_rows,
+        "export_sheets": export_sheets,
     }
 
 
@@ -1322,7 +1438,7 @@ def build_customer_layout(time_range=None, selected_customer=None):
         ],
     )
 
-    export_rows = content.get("export_rows") or []
+    export_sheets = content.get("export_sheets") or {}
     export_group = dmc.Group(
         gap=6,
         align="center",
@@ -1387,7 +1503,7 @@ def build_customer_layout(time_range=None, selected_customer=None):
         children=[
             dcc.Store(
                 id="customer-export-store",
-                data={"customer": chosen, "rows": export_rows},
+                data={"customer": chosen, "sheets": export_sheets},
             ),
             dcc.Download(id="customer-export-download"),
             dmc.Tabs(
@@ -1446,21 +1562,63 @@ def layout():
     Output("customer-export-download", "data"),
     Input("customer-export-csv", "n_clicks"),
     Input("customer-export-xlsx", "n_clicks"),
-    Input("customer-export-pdf", "n_clicks"),
     State("customer-export-store", "data"),
+    State("app-time-range", "data"),
     prevent_initial_call=True,
 )
-def export_customer_view(nc, nx, np, store):
+def export_customer_view(nc, nx, store, time_range):
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update
     tid = ctx.triggered[0]["prop_id"].split(".")[0]
-    fmt_map = {"customer-export-csv": "csv", "customer-export-xlsx": "xlsx", "customer-export-pdf": "pdf"}
+    fmt_map = {"customer-export-csv": "csv", "customer-export-xlsx": "xlsx"}
     fmt = fmt_map.get(tid)
     if not fmt:
         return dash.no_update
     store = store or {}
-    rows = store.get("rows") or []
     base = str(store.get("customer") or "customer_view")
-    df = records_to_dataframe(rows)
-    return dash_send_dataframe(df, base, fmt)
+    extra = {"customer": base}
+    sheets_raw = store.get("sheets")
+    if not isinstance(sheets_raw, dict):
+        sheets_raw = {}
+    if not sheets_raw and store.get("rows"):
+        sheets_raw = {"Legacy": store.get("rows") or []}
+
+    order = [
+        "Customer_Meta",
+        "Summary_Totals",
+        "Backup_Totals",
+        "Assets_Classic_Block",
+        "Assets_Hyperconv_Block",
+        "Assets_Pure_Nutanix_Block",
+        "Assets_Power_Block",
+        "Assets_Intel_Aggregate",
+        "Classic_VMs",
+        "HyperConv_VMs",
+        "Pure_Nutanix_VMs",
+        "Power_LPARS",
+        "Backup_Veeam_Detail",
+        "Backup_Zerto_Detail",
+        "Backup_Netbackup_Detail",
+        "Billing_Key_Metrics",
+        "S3_Vaults",
+        "Physical_Inventory",
+        "Legacy",
+    ]
+    dfs = {}
+    for name in order:
+        recs = sheets_raw.get(name)
+        if recs:
+            dfs[name] = records_to_dataframe(recs if isinstance(recs, list) else [])
+    for name, recs in sheets_raw.items():
+        if name not in dfs and isinstance(recs, list):
+            dfs[name] = records_to_dataframe(recs)
+
+    if fmt == "xlsx":
+        content = dataframes_to_excel_with_meta(dfs, time_range, "Customer_View", extra)
+        return dash_send_excel_workbook(content, base)
+    report_info = build_report_info_df(time_range, "Customer_View", extra)
+    sections = [(k, v) for k, v in dfs.items()]
+    if not sections:
+        sections = [("Data", records_to_dataframe([]))]
+    return dash_send_csv_bytes(csv_bytes_with_report_header(report_info, sections), base)

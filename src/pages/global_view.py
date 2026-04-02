@@ -8,7 +8,14 @@ import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from src.services import api_client as api
 from src.utils.time_range import default_time_range
-from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe
+from src.utils.export_helpers import (
+    records_to_dataframe,
+    dataframes_to_excel_with_meta,
+    csv_bytes_with_report_header,
+    dash_send_excel_workbook,
+    dash_send_csv_bytes,
+    build_report_info_df,
+)
 
 CITY_COORDINATES = {
     "ISTANBUL":    {"lat": 41.01, "lon": 28.96},
@@ -68,22 +75,30 @@ _CITY_OFFSETS = [
 ]
 
 
-def _global_export_rows(summaries: list) -> list[dict]:
-    """Flatten DC summary list for CSV/Excel/PDF."""
+def _global_export_table(summaries: list) -> list[dict]:
+    """One row per DC with readable columns for CSV/Excel."""
     rows: list[dict] = []
     for dc in summaries or []:
         if not isinstance(dc, dict):
             continue
-        dc_id = dc.get("id", "")
-        site = dc.get("site_name", "")
-        rows.append({"dc_id": dc_id, "field": "site_name", "value": site})
         stats = dc.get("stats") or {}
-        if isinstance(stats, dict):
-            for k, v in stats.items():
-                rows.append({"dc_id": dc_id, "field": str(k), "value": v})
-        for k in ("host_count", "vm_count", "cluster_count", "platform_count"):
-            if k in dc and k not in (stats or {}):
-                rows.append({"dc_id": dc_id, "field": k, "value": dc.get(k)})
+        site = dc.get("site_name", "")
+        rows.append(
+            {
+                "DC_ID": dc.get("id", ""),
+                "Site_Name": site,
+                "Location": dc.get("location", ""),
+                "Region": site or dc.get("location", ""),
+                "Hosts": dc.get("host_count", 0),
+                "VMs": dc.get("vm_count", 0),
+                "Clusters": dc.get("cluster_count", 0),
+                "Platforms": dc.get("platform_count", 0),
+                "CPU_Used_pct": stats.get("used_cpu_pct", ""),
+                "RAM_Used_pct": stats.get("used_ram_pct", ""),
+                "Total_Energy_kW": stats.get("total_energy_kw", ""),
+                "IBM_Energy_kW": stats.get("ibm_kw", ""),
+            }
+        )
     return rows
 
 
@@ -572,7 +587,7 @@ def build_global_view(time_range=None):
     df = _build_map_dataframe(summaries)
     map_fig = _create_map_figure(df)
 
-    export_rows = _global_export_rows(summaries)
+    export_rows = _global_export_table(summaries)
 
     return html.Div([
         dcc.Store(id="selected-region-store", data=None),
@@ -966,20 +981,32 @@ def build_dc_info_card(dc_id, tr, site_name=""):
     Output("global-export-download", "data"),
     Input("global-export-csv", "n_clicks"),
     Input("global-export-xlsx", "n_clicks"),
-    Input("global-export-pdf", "n_clicks"),
     State("global-export-store", "data"),
+    State("app-time-range", "data"),
+    State("selected-region-store", "data"),
     prevent_initial_call=True,
 )
-def export_global_view(nc, nx, np, store):
+def export_global_view(nc, nx, store, time_range, selected_region):
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update
     tid = ctx.triggered[0]["prop_id"].split(".")[0]
-    fmt_map = {"global-export-csv": "csv", "global-export-xlsx": "xlsx", "global-export-pdf": "pdf"}
+    fmt_map = {"global-export-csv": "csv", "global-export-xlsx": "xlsx"}
     fmt = fmt_map.get(tid)
     if not fmt:
         return dash.no_update
     store = store or {}
     rows = store.get("rows") or []
     df = records_to_dataframe(rows)
-    return dash_send_dataframe(df, "global_view_dc_summary", fmt)
+    extra = {}
+    if selected_region is not None:
+        extra["map_selected_region"] = selected_region
+    sheets = {"DC_Summary": df}
+    if fmt == "xlsx":
+        content = dataframes_to_excel_with_meta(sheets, time_range, "Global_View", extra or None)
+        return dash_send_excel_workbook(content, "global_view")
+    report_info = build_report_info_df(time_range, "Global_View", extra or None)
+    return dash_send_csv_bytes(
+        csv_bytes_with_report_header(report_info, [("DC_Summary", df)]),
+        "global_view",
+    )

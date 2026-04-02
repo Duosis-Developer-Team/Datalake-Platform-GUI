@@ -6,9 +6,11 @@ import plotly.graph_objects as go
 from src.services import api_client as api
 from src.utils.export_helpers import (
     records_to_dataframe,
-    dash_send_dataframe,
-    dataframes_to_excel_bytes,
-    dataframe_to_csv_bytes,
+    dataframes_to_excel_with_meta,
+    csv_bytes_with_report_header,
+    dash_send_excel_workbook,
+    dash_send_csv_bytes,
+    build_report_info_df,
 )
 from src.utils.time_range import default_time_range
 from src.utils.format_units import title_case
@@ -897,42 +899,28 @@ def build_overview(time_range=None):
     Output("home-export-download", "data"),
     Input("home-export-csv", "n_clicks"),
     Input("home-export-xlsx", "n_clicks"),
-    Input("home-export-pdf", "n_clicks"),
     State("home-export-store", "data"),
+    State("app-time-range", "data"),
     prevent_initial_call=True,
 )
-def export_home_overview(nc_csv, nc_xlsx, nc_pdf, store):
+def export_home_overview(nc_csv, nc_xlsx, store, time_range):
     if not store or not isinstance(store, dict):
         raise dash.exceptions.PreventUpdate
     tid = callback_context.triggered_id
     fmt_map = {
         "home-export-csv": "csv",
         "home-export-xlsx": "xlsx",
-        "home-export-pdf": "pdf",
     }
     fmt = fmt_map.get(str(tid), "csv")
     summaries = store.get("summaries") or []
     phys = store.get("phys_inv") or []
     df_sum = records_to_dataframe(summaries if isinstance(summaries, list) else [])
     df_phys = records_to_dataframe(phys if isinstance(phys, list) else [])
-    period = store.get("period", "report")
-    from dash import dcc
+    sheets = {"DC_Summary": df_sum, "Physical_Inventory": df_phys}
 
     if fmt == "xlsx":
-        content = dataframes_to_excel_bytes({"DC_Summary": df_sum, "Physical_Inventory": df_phys})
-        return dcc.send_bytes(content, filename=f"home_overview_{period}.xlsx")
-    if fmt == "pdf":
-        df = df_sum if not df_sum.empty else df_phys
-        return dash_send_dataframe(df, "home_overview", "pdf")
-    # CSV: DC summary then physical inventory blocks
-    import pandas as pd
-
-    parts = []
-    if not df_sum.empty:
-        parts.append(df_sum)
-    if not df_phys.empty:
-        if parts:
-            parts.append(pd.DataFrame([{"": ""}]))
-        parts.append(df_phys)
-    df_csv = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame({"Message": ["No data"]})
-    return dcc.send_bytes(dataframe_to_csv_bytes(df_csv), filename=f"home_overview_{period}.csv")
+        content = dataframes_to_excel_with_meta(sheets, time_range, "Executive_Overview", None)
+        return dash_send_excel_workbook(content, "home_overview")
+    report_info = build_report_info_df(time_range, "Executive_Overview", None)
+    sections = [("DC_Summary", df_sum), ("Physical_Inventory", df_phys)]
+    return dash_send_csv_bytes(csv_bytes_with_report_header(report_info, sections), "home_overview")

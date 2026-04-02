@@ -222,6 +222,7 @@ app.layout = dmc.MantineProvider(
             },
         ),
         dcc.Store(id="app-time-range", data=_default_tr),
+        html.Div(id="export-pdf-clientside-dummy", style={"display": "none"}),
         html.Div(
             [
                 _sidebar,
@@ -245,6 +246,45 @@ app.layout = dmc.MantineProvider(
             style={"display": "flex", "backgroundColor": "#F4F7FE", "minHeight": "100vh"},
         ),
     ],
+)
+
+
+app.clientside_callback(
+    """
+    function(homePdf, dcListPdf, dcPdf, globalPdf, customerPdf, qePdf) {
+        const triggered = dash_clientside.callback_context.triggered;
+        if (!triggered || !triggered.length || !triggered[0]) {
+            return window.dash_clientside.no_update;
+        }
+        const propId = triggered[0].prop_id || "";
+        const id = propId.split(".")[0];
+        const map = {
+            "home-export-pdf": "home_overview",
+            "datacenters-export-pdf": "datacenters",
+            "dc-export-pdf": "dc_detail",
+            "global-export-pdf": "global_view",
+            "customer-export-pdf": "customer_view",
+            "qe-export-pdf": "query_explorer"
+        };
+        const prefix = map[id];
+        if (!prefix) {
+            return window.dash_clientside.no_update;
+        }
+        const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        if (typeof window.triggerPagePDF === "function") {
+            window.triggerPagePDF("main-content", prefix + "_" + ts + ".pdf");
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    dash.Output("export-pdf-clientside-dummy", "children"),
+    dash.Input("home-export-pdf", "n_clicks"),
+    dash.Input("datacenters-export-pdf", "n_clicks"),
+    dash.Input("dc-export-pdf", "n_clicks"),
+    dash.Input("global-export-pdf", "n_clicks"),
+    dash.Input("customer-export-pdf", "n_clicks"),
+    dash.Input("qe-export-pdf", "n_clicks"),
+    prevent_initial_call=True,
 )
 
 
