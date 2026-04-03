@@ -1244,6 +1244,15 @@ class TestCustomerClassicHyperconvQueries(unittest.TestCase):
             self.assertIn(col, CUSTOMER_CLASSIC_RESOURCE_TOTALS)
 
 
+class TestPhysicalInventoryQuery(unittest.TestCase):
+    """NetBox discovery inventory: align with loki_locations active-only convention."""
+
+    def test_physical_inventory_filters_active_devices(self):
+        from src.queries.customer import PHYSICAL_INVENTORY_ALL_DEVICES
+        self.assertIn("discovery_netbox_inventory_device", PHYSICAL_INVENTORY_ALL_DEVICES)
+        self.assertIn("status_value = 'active'", PHYSICAL_INVENTORY_ALL_DEVICES)
+
+
 # ---------------------------------------------------------------------------
 # Cluster-level VM deduplication — _aggregate_dc
 # ---------------------------------------------------------------------------

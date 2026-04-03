@@ -2459,9 +2459,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
     def _get_physical_inventory_raw(self, *, force: bool = False) -> list[dict]:
         """
-        Fetch all physical devices (latest snapshot per device key) as a plain list of dicts.
+        Fetch active physical devices (status_value = 'active', latest snapshot per device key).
         Result is cached; all derived methods use this single dataset.
-        No JOINs, no aggregations — just a fast DISTINCT ON fetch.
+        No JOINs, no aggregations — DISTINCT ON with SQL-side status filter.
         """
         cache_key = "phys_inv:raw_devices"
         if not force:

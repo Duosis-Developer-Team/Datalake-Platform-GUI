@@ -286,11 +286,14 @@ SELECT
     primary_ip_address
 FROM public.discovery_netbox_inventory_device
 WHERE
+    status_value = 'active'
+    AND (
     primary_ip_address = %s
  OR primary_ip_address ILIKE %s
  OR "name" ILIKE %s
  OR location_name ILIKE %s
  OR site_name ILIKE %s
+    )
 ORDER BY collection_time DESC NULLS LAST
 LIMIT 20
 """,
@@ -2662,8 +2665,11 @@ SELECT
     primary_ip_address
 FROM public.discovery_netbox_inventory_device
 WHERE
+    status_value = 'active'
+    AND (
     primary_ip_address = %s
  OR primary_ip_address ILIKE %s
+    )
 ORDER BY collection_time DESC NULLS LAST
 LIMIT 20
 """,
@@ -3825,9 +3831,9 @@ JOIN latest l
 
     def _get_physical_inventory_raw(self, *, force: bool = False) -> list[dict]:
         """
-        Fetch all physical devices (latest snapshot per device key) as a plain list of dicts.
+        Fetch active physical devices (status_value = 'active', latest snapshot per device key).
         Result is cached; all derived methods use this single dataset.
-        No JOINs, no aggregations — just a fast DISTINCT ON fetch.
+        No JOINs, no aggregations — DISTINCT ON with SQL-side status filter.
         """
         cache_key = "phys_inv:raw_devices"
         if not force:
