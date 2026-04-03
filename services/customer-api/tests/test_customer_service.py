@@ -61,8 +61,8 @@ def test_get_cluster_arch_map_sets_cache_with_ttl_when_pool_none():
         svc = CustomerService()
 
     with patch("app.services.customer_service.time_range_to_bounds", return_value=("start-ts", "end-ts")), \
-         patch("app.services.customer_service.cache.get", return_value=None), \
-         patch("app.services.customer_service.cache.set") as cache_set_mock:
+         patch("app.core.cache_backend.cache_get", return_value=None), \
+         patch("app.core.cache_backend.cache_set") as cache_set_mock:
         result = svc._get_cluster_arch_map({"preset": "7d"})
 
     assert result == {"managed_nutanix": [], "pure_nutanix": []}
@@ -107,8 +107,8 @@ def test_get_cluster_arch_map_uses_latest_fallback_when_range_clusters_missing()
     with patch.object(svc, "_get_connection", return_value=_ConnCtx()), \
          patch.object(svc, "_run_rows", side_effect=_run_rows_side_effect) as run_rows_mock, \
          patch("app.services.customer_service.time_range_to_bounds", return_value=("start-ts", "end-ts")), \
-         patch("app.services.customer_service.cache.get", return_value=None), \
-         patch("app.services.customer_service.cache.set"), \
+         patch("app.core.cache_backend.cache_get", return_value=None), \
+         patch("app.core.cache_backend.cache_set"), \
          patch("app.services.customer_service.build_cluster_arch_map", return_value={"managed_nutanix": ["ntx-cluster"], "pure_nutanix": []}):
         result = svc._get_cluster_arch_map({"preset": "7d"})
 

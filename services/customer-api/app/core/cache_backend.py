@@ -3,7 +3,7 @@ import logging
 import threading
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Optional, cast
+from typing import Any, Callable, Optional, cast
 
 from cachetools import TTLCache
 
@@ -18,6 +18,10 @@ _memory_cache: TTLCache = TTLCache(
     maxsize=settings.cache_max_memory_items,
     ttl=settings.cache_ttl_seconds,
 )
+
+# Single-flight: only one concurrent compute per cache key (reduces cache stampede).
+_inflight_events: dict[str, threading.Event] = {}
+_inflight_master_lock = threading.Lock()
 
 
 class _CustomEncoder(json.JSONEncoder):
@@ -87,6 +91,30 @@ def cache_delete(key: str) -> None:
         _memory_cache.pop(key, None)
 
 
+def cache_delete_prefix(prefix: str) -> None:
+    """Remove keys starting with prefix from Redis (SCAN) and in-memory cache."""
+    if not prefix:
+        return
+    redis_client = get_redis_client()
+    pattern = f"{prefix}*"
+    if redis_client:
+        try:
+            cursor = 0
+            while True:
+                scan_result = cast(tuple[int, list[str]], redis_client.scan(cursor=cursor, match=pattern, count=100))
+                cursor, keys = scan_result
+                if keys:
+                    redis_client.delete(*keys)
+                if cursor == 0:
+                    break
+        except Exception as exc:
+            logger.warning("Redis SCAN delete_prefix error: %s", exc)
+    with _memory_lock:
+        to_remove = [k for k in list(_memory_cache.keys()) if isinstance(k, str) and k.startswith(prefix)]
+        for k in to_remove:
+            _memory_cache.pop(k, None)
+
+
 def cache_flush_pattern(pattern: str) -> None:
     redis_client = get_redis_client()
     if redis_client:
@@ -103,6 +131,44 @@ def cache_flush_pattern(pattern: str) -> None:
             logger.warning("Redis SCAN/flush error: %s", exc)
     with _memory_lock:
         _memory_cache.clear()
+
+
+def cache_run_singleflight(key: str, factory: Callable[[], Any], ttl: Optional[int] = None) -> Any:
+    """
+    Return cached value for key, or run factory() once per concurrent key miss.
+    Follower threads wait for the leader to finish, then read the cache again.
+    """
+    max_rounds = 8
+    for _ in range(max_rounds):
+        val = cache_get(key)
+        if val is not None:
+            return val
+        with _inflight_master_lock:
+            if key in _inflight_events:
+                ev = _inflight_events[key]
+                is_leader = False
+            else:
+                ev = threading.Event()
+                _inflight_events[key] = ev
+                is_leader = True
+        if not is_leader:
+            ev.wait(timeout=120)
+            continue
+        try:
+            val = cache_get(key)
+            if val is not None:
+                return val
+            val = factory()
+            cache_set(key, val, ttl=ttl)
+            return val
+        finally:
+            with _inflight_master_lock:
+                _inflight_events.pop(key, None)
+            ev.set()
+    val = cache_get(key)
+    if val is not None:
+        return val
+    return factory()
 
 
 def cache_stats() -> dict:

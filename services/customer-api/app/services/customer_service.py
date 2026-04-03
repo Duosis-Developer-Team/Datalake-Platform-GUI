@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from contextlib import contextmanager
 
 from psycopg2 import OperationalError, pool as pg_pool
@@ -16,8 +17,9 @@ from app.utils.time_range import default_time_range, time_range_to_bounds
 
 logger = logging.getLogger(__name__)
 
-# Cluster name classification cache (align with DC summary-style TTL)
-CLUSTER_ARCH_MAP_TTL_SECONDS = 1800
+# Aligned with datacenter scheduler (15m): avoid long stale windows and key TTL mismatch.
+CLUSTER_ARCH_MAP_TTL_SECONDS = 900
+CUSTOMER_DATA_CACHE_TTL_SECONDS = 900
 
 
 class CustomerService:
@@ -64,14 +66,26 @@ class CustomerService:
             self._pool.putconn(conn)
 
     @staticmethod
+    def _sql_label(sql: str) -> str:
+        """Extract a short label from SQL for logging (first meaningful keyword line)."""
+        for line in sql.strip().splitlines():
+            stripped = line.strip().upper()
+            if stripped and not stripped.startswith("--") and not stripped.startswith("WITH"):
+                return stripped[:120]
+        return sql.strip()[:120]
+
+    @staticmethod
     def _run_value(cursor, sql: str, params=None):
         try:
+            t0 = time.perf_counter()
             cursor.execute(sql, params)
             row = cursor.fetchone()
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.info("SQL value (%.0fms): %s", elapsed, CustomerService._sql_label(sql))
             if row and row[0] is not None:
                 return row[0]
         except Exception as exc:
-            logger.warning("Query error (value): %s", exc)
+            logger.warning("Query error (value): %s | SQL: %s", exc, CustomerService._sql_label(sql))
             try:
                 cursor.execute("ROLLBACK")
             except Exception:
@@ -81,10 +95,14 @@ class CustomerService:
     @staticmethod
     def _run_row(cursor, sql: str, params=None):
         try:
+            t0 = time.perf_counter()
             cursor.execute(sql, params)
-            return cursor.fetchone()
+            row = cursor.fetchone()
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.info("SQL row (%.0fms): %s", elapsed, CustomerService._sql_label(sql))
+            return row
         except Exception as exc:
-            logger.warning("Query error (row): %s", exc)
+            logger.warning("Query error (row): %s | SQL: %s", exc, CustomerService._sql_label(sql))
             try:
                 cursor.execute("ROLLBACK")
             except Exception:
@@ -94,10 +112,14 @@ class CustomerService:
     @staticmethod
     def _run_rows(cursor, sql: str, params=None):
         try:
+            t0 = time.perf_counter()
             cursor.execute(sql, params)
-            return cursor.fetchall() or []
+            rows = cursor.fetchall() or []
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.info("SQL rows (%.0fms, %d rows): %s", elapsed, len(rows), CustomerService._sql_label(sql))
+            return rows
         except Exception as exc:
-            logger.warning("Query error (rows): %s", exc)
+            logger.warning("Query error (rows): %s | SQL: %s", exc, CustomerService._sql_label(sql))
             try:
                 cursor.execute("ROLLBACK")
             except Exception:
@@ -115,64 +137,64 @@ class CustomerService:
             if isinstance(managed, list) and isinstance(pure, list):
                 return {"managed_nutanix": managed, "pure_nutanix": pure}
 
-        if self._pool is None:
-            empty = {"managed_nutanix": [], "pure_nutanix": []}
-            cache.set(cache_key, empty, ttl=CLUSTER_ARCH_MAP_TTL_SECONDS)
-            return empty
+        def _compute() -> dict[str, list[str]]:
+            if self._pool is None:
+                return {"managed_nutanix": [], "pure_nutanix": []}
 
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    vmware_rows = self._run_rows(cur, cq.ALL_VMWARE_CLUSTER_NAMES, (start_ts, end_ts))
-                    nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES, (start_ts, end_ts))
-                    if not nutanix_rows:
-                        # Fallback: if range-scoped cluster records are missing, use latest known cluster mapping.
-                        nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES_LATEST)
-        except (OperationalError, PoolError) as exc:
-            logger.warning("_get_cluster_arch_map failed: %s", exc)
-            empty = {"managed_nutanix": [], "pure_nutanix": []}
-            return empty
+            try:
+                with self._get_connection() as conn:
+                    with conn.cursor() as cur:
+                        vmware_rows = self._run_rows(cur, cq.ALL_VMWARE_CLUSTER_NAMES, (start_ts, end_ts))
+                        nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES, (start_ts, end_ts))
+                        if not nutanix_rows:
+                            # Fallback: if range-scoped cluster records are missing, use latest known cluster mapping.
+                            nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES_LATEST)
+            except (OperationalError, PoolError) as exc:
+                logger.warning("_get_cluster_arch_map failed: %s", exc)
+                return {"managed_nutanix": [], "pure_nutanix": []}
 
-        vmware_nonkm: list[str] = []
-        for r in vmware_rows or []:
-            if not r or len(r) < 2:
-                continue
-            cluster_name, arch_type = r[0], r[1]
-            if not cluster_name:
-                continue
-            if str(arch_type).lower() == "hyperconv":
-                vmware_nonkm.append(str(cluster_name))
+            vmware_nonkm: list[str] = []
+            for r in vmware_rows or []:
+                if not r or len(r) < 2:
+                    continue
+                cluster_name, arch_type = r[0], r[1]
+                if not cluster_name:
+                    continue
+                if str(arch_type).lower() == "hyperconv":
+                    vmware_nonkm.append(str(cluster_name))
 
-        nutanix_names: list[str] = []
-        for r in nutanix_rows or []:
-            if r and r[0]:
-                nutanix_names.append(str(r[0]))
+            nutanix_names: list[str] = []
+            for r in nutanix_rows or []:
+                if r and r[0]:
+                    nutanix_names.append(str(r[0]))
 
-        arch = build_cluster_arch_map(vmware_nonkm, nutanix_names)
-        result = {
-            "managed_nutanix": arch["managed_nutanix"],
-            "pure_nutanix": arch["pure_nutanix"],
-        }
-        cache.set(cache_key, result, ttl=CLUSTER_ARCH_MAP_TTL_SECONDS)
-        return result
+            arch = build_cluster_arch_map(vmware_nonkm, nutanix_names)
+            return {
+                "managed_nutanix": arch["managed_nutanix"],
+                "pure_nutanix": arch["pure_nutanix"],
+            }
 
-    def get_customer_resources(self, customer_name: str, time_range: dict | None = None) -> dict:
-        tr = time_range or default_time_range()
-        cache_key = f"customer_assets:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
-        if self._pool is None:
-            return self._customer._empty_result()
+        return cache.run_singleflight(cache_key, _compute, ttl=CLUSTER_ARCH_MAP_TTL_SECONDS)
+
+    def _load_customer_resources(self, customer_name: str, tr: dict) -> dict:
         arch = self._get_cluster_arch_map(tr)
-        result = self._customer.fetch(
+        return self._customer.fetch(
             customer_name,
             tr,
             managed_nutanix_clusters=arch.get("managed_nutanix") or [],
             pure_nutanix_clusters=arch.get("pure_nutanix") or [],
         )
-        cache.set(cache_key, result)
-        return result
+
+    def get_customer_resources(self, customer_name: str, time_range: dict | None = None) -> dict:
+        tr = time_range or default_time_range()
+        cache_key = f"customer_assets:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
+        if self._pool is None:
+            return self._customer._empty_result()
+        return cache.run_singleflight(
+            cache_key,
+            lambda: self._load_customer_resources(customer_name, tr),
+            ttl=CUSTOMER_DATA_CACHE_TTL_SECONDS,
+        )
 
     def get_customer_list(self) -> list[str]:
         return ["Boyner"]
@@ -243,15 +265,13 @@ class CustomerService:
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
         cache_key = f"customer_s3:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
 
         try:
-            result = self._fetch_customer_s3_vaults(customer_name, start_ts, end_ts)
+            return cache.run_singleflight(
+                cache_key,
+                lambda: self._fetch_customer_s3_vaults(customer_name, start_ts, end_ts),
+                ttl=CUSTOMER_DATA_CACHE_TTL_SECONDS,
+            )
         except (OperationalError, PoolError) as exc:
             logger.warning("get_customer_s3_vaults failed for %s: %s", customer_name, exc)
             return {"vaults": [], "latest": {}, "growth": {}, "trend": []}
-
-        cache.set(cache_key, result)
-        return result

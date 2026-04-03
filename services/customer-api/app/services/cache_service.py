@@ -5,7 +5,9 @@ from app.core.cache_backend import (
     cache_get,
     cache_set,
     cache_delete,
+    cache_delete_prefix,
     cache_flush_pattern,
+    cache_run_singleflight,
     cache_stats as _backend_stats,
 )
 
@@ -26,12 +28,22 @@ def delete(key: str) -> None:
     logger.debug("Cache DELETE: %s", key)
 
 
+def delete_prefix(prefix: str) -> None:
+    cache_delete_prefix(prefix)
+    logger.debug("Cache DELETE_PREFIX: %s", prefix)
+
+
 def clear() -> None:
     cache_flush_pattern("*")
     logger.info("Cache cleared.")
 
 
-def cached(key_fn: Callable[..., str]):
+def run_singleflight(key: str, factory: Callable[[], Any], ttl: Optional[int] = None) -> Any:
+    """Run factory only once for concurrent cache misses on the same key."""
+    return cache_run_singleflight(key, factory, ttl=ttl)
+
+
+def cached(key_fn: Callable[..., str], ttl: Optional[int] = None):
     def decorator(fn: Callable) -> Callable:
         def wrapper(*args, **kwargs):
             cache_key = key_fn(*args, **kwargs)
@@ -42,10 +54,12 @@ def cached(key_fn: Callable[..., str]):
             logger.debug("Cache MISS: %s", cache_key)
             result = fn(*args, **kwargs)
             if result is not None:
-                set(cache_key, result)
+                set(cache_key, result, ttl=ttl)
             return result
+
         wrapper.__wrapped__ = fn
         return wrapper
+
     return decorator
 
 

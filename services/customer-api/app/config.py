@@ -9,10 +9,10 @@ class Settings(BaseSettings):
     db_pass: str = ""
     redis_host: str = "localhost"
     redis_port: int = 6379
-    redis_db: int = 0
+    redis_db: int = 1
     redis_password: str = ""
     redis_socket_timeout: int = 5
-    cache_ttl_seconds: int = 1200
+    cache_ttl_seconds: int = 900
     cache_max_memory_items: int = 200
 
     class Config:
