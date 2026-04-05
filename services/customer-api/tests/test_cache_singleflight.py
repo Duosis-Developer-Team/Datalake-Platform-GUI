@@ -4,6 +4,8 @@ import threading
 import uuid
 from unittest.mock import patch
 
+import pytest
+
 from app.core.cache_backend import cache_delete, cache_run_singleflight
 
 
@@ -61,3 +63,19 @@ def test_singleflight_uses_ttl_on_set():
          patch("app.core.cache_backend.cache_set") as m:
         cache_run_singleflight(key, lambda: {"v": 1}, ttl=42)
     m.assert_called_once_with(key, {"v": 1}, ttl=42)
+
+
+def test_singleflight_does_not_cache_when_factory_raises():
+    from psycopg2 import OperationalError
+
+    key = f"sf:test:key:{uuid.uuid4().hex}"
+    cache_delete(key)
+
+    def _boom():
+        raise OperationalError("eof")
+
+    with patch("app.core.cache_backend.cache_get", return_value=None), \
+         patch("app.core.cache_backend.cache_set") as m:
+        with pytest.raises(OperationalError):
+            cache_run_singleflight(key, _boom, ttl=60)
+    m.assert_not_called()

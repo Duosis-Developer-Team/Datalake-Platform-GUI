@@ -1,9 +1,11 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import pytest
+from fastapi import HTTPException
 from psycopg2 import OperationalError
 
 from app.db.queries import customer as cq
-from app.services.customer_service import CLUSTER_ARCH_MAP_TTL_SECONDS, CustomerService
+from app.services.customer_service import CustomerService
 
 
 def test_get_customer_list_returns_boyner():
@@ -56,21 +58,16 @@ def test_pool_is_none_when_db_unavailable():
     assert svc._pool is None
 
 
-def test_get_cluster_arch_map_sets_cache_with_ttl_when_pool_none():
+def test_get_cluster_arch_map_does_not_cache_when_pool_none():
     with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
         svc = CustomerService()
 
     with patch("app.services.customer_service.time_range_to_bounds", return_value=("start-ts", "end-ts")), \
-         patch("app.core.cache_backend.cache_get", return_value=None), \
-         patch("app.core.cache_backend.cache_set") as cache_set_mock:
+         patch("app.services.customer_service.cache.run_singleflight") as sf_mock:
         result = svc._get_cluster_arch_map({"preset": "7d"})
 
     assert result == {"managed_nutanix": [], "pure_nutanix": []}
-    cache_set_mock.assert_called_once_with(
-        "cluster_arch_map:start-ts:end-ts",
-        {"managed_nutanix": [], "pure_nutanix": []},
-        ttl=CLUSTER_ARCH_MAP_TTL_SECONDS,
-    )
+    sf_mock.assert_not_called()
 
 
 def test_get_cluster_arch_map_uses_latest_fallback_when_range_clusters_missing():
@@ -116,3 +113,42 @@ def test_get_cluster_arch_map_uses_latest_fallback_when_range_clusters_missing()
     queried_sql = [call.args[1] for call in run_rows_mock.call_args_list]
     assert cq.ALL_NUTANIX_CLUSTER_NAMES in queried_sql
     assert cq.ALL_NUTANIX_CLUSTER_NAMES_LATEST in queried_sql
+
+
+def test_get_customer_resources_raises_503_when_db_error_not_cached():
+    mock_pool = MagicMock()
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", return_value=mock_pool):
+        svc = CustomerService()
+    with patch("app.services.customer_service.cache.run_singleflight", side_effect=OperationalError("ssl eof")):
+        with pytest.raises(HTTPException) as exc_info:
+            svc.get_customer_resources("Boyner")
+    assert exc_info.value.status_code == 503
+
+
+def test_get_connection_discards_pool_conn_on_fatal_operational_error():
+    mock_pool = MagicMock()
+    conn = MagicMock()
+    mock_pool.getconn.return_value = conn
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", return_value=mock_pool):
+        svc = CustomerService()
+
+    with pytest.raises(OperationalError):
+        with svc._get_connection():
+            raise OperationalError("SSL SYSCALL error: EOF detected")
+
+    mock_pool.putconn.assert_called_once_with(conn, close=True)
+
+
+def test_get_connection_returns_conn_to_pool_on_statement_timeout():
+    mock_pool = MagicMock()
+    conn = MagicMock()
+    mock_pool.getconn.return_value = conn
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", return_value=mock_pool):
+        svc = CustomerService()
+
+    err = OperationalError("canceling statement due to statement timeout")
+    with pytest.raises(OperationalError):
+        with svc._get_connection():
+            raise err
+
+    mock_pool.putconn.assert_called_once_with(conn, close=False)
