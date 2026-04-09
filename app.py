@@ -540,7 +540,7 @@ def handle_globe_pin_click(clicked_point, last_dc_id, time_range):
         return [], None, dash.no_update, dash.no_update
 
     if dc_id == last_dc_id:
-        return dash.no_update, dc_id, "building", {"dc_id": dc_id, "dc_name": site_name or dc_id}
+        return dash.no_update, dc_id, "building", {"dc_id": dc_id, "dc_name": dc_id}
 
     from src.utils.time_range import default_time_range
     tr = time_range or default_time_range()
@@ -918,7 +918,7 @@ def show_rack_detail(click_data, dc_store):
 def reset_global_detail(n_clicks):
     if not n_clicks:
         return dash.no_update, dash.no_update
-    return [], {"lat": 41.01, "lng": 28.96, "altitude": 1.8}
+    return [], {"lat": 38.0, "lng": 30.0, "zoom": 3}
 
 
 
@@ -965,14 +965,17 @@ def update_globe_camera(region):
     lat = region.get("lat")
     lng = region.get("lon")
     scale = region.get("scale", 6.0)
-    if scale >= 30:
-        alt = 0.16
+    # Istanbul (scale=40): tight zoom to show all Istanbul DCs
+    # Ankara/Izmir (scale=15): moderate zoom to show the city
+    # International (scale<10): continent-level zoom
+    if scale >= 35:
+        zoom = 10
     elif scale >= 10:
-        alt = 0.22
+        zoom = 8
     else:
-        alt = 0.9
+        zoom = 5
     if lat is not None and lng is not None:
-        return {"lat": float(lat), "lng": float(lng), "altitude": alt}
+        return {"lat": float(lat), "lng": float(lng), "zoom": zoom}
     return dash.no_update
 
 

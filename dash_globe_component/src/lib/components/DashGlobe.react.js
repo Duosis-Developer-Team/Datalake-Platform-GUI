@@ -1,202 +1,178 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
-import Globe from 'react-globe.gl';
-import * as THREE from 'three';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 
-// We removed the 3D buldDCMesh entirely because native DOM elements give us perfect "icons".
+const STATUS_COLOR = {
+    active:   '#17B26A',
+    planned:  '#2E90FA',
+    inactive: '#F04438',
+    unknown:  '#98A2B3',
+};
 
-const DashGlobe = (props) => {
-    const { id, setProps, pointsData, focusRegion, globeImageUrl, height } = props;
-    const globeRef = useRef();
-    const containerRef = useRef();
-    const [dims, setDims] = useState({ width: 800, height: height || 600 });
-    const [tooltip, setTooltip] = useState(null);
-
-    // Map dc_id → THREE.Group so we can scale on zoom
-    const objectsMap = useRef(new Map());
-    // Track current scale so newly created objects get the right size immediately
-    const currentScaleRef = useRef(1.0);
-
-    useEffect(() => {
-        const update = () => {
-            if (containerRef.current) {
-                setDims({ width: containerRef.current.offsetWidth, height: height || 600 });
-            }
-        };
-        update();
-        const ro = new ResizeObserver(update);
-        if (containerRef.current) ro.observe(containerRef.current);
-        return () => ro.disconnect();
-    }, [height]);
+const DashGlobe = ({ id, setProps, pointsData, focusRegion, height }) => {
+    const containerRef  = useRef();
+    const mapRef        = useRef();
+    const markersRef    = useRef([]);
+    const popupRef      = useRef(null);
+    const hideTimerRef  = useRef(null);
 
     useEffect(() => {
-        if (globeRef.current) {
-            const ctrl = globeRef.current.controls();
-            ctrl.autoRotate = true;
-            ctrl.autoRotateSpeed = 0.4;
-            ctrl.enableZoom = true;
-            ctrl.minDistance = 115;
-            ctrl.maxDistance = 600;
-            globeRef.current.pointOfView({ lat: 41.01, lng: 28.96, altitude: 1.8 }, 0);
-        }
+        const map = new maplibregl.Map({
+            container: containerRef.current,
+            style: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
+            center: [30.0, 38.0],
+            zoom: 3,
+            minZoom: 1.5,
+            maxZoom: 18,
+            attributionControl: false,
+            pitchWithRotate: false,
+            dragRotate: false,
+        });
+
+        map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+        map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
+
+        mapRef.current = map;
+
+        return () => map.remove();
     }, []);
 
-    useEffect(() => {
-        if (focusRegion && globeRef.current) {
-            const ctrl = globeRef.current.controls();
-            ctrl.autoRotate = false;
-            ctrl.minDistance = 115;
-            globeRef.current.pointOfView({
-                lat: focusRegion.lat,
-                lng: focusRegion.lng,
-                altitude: focusRegion.altitude || 0.8,
-            }, 1200);
-        }
-    }, [focusRegion]);
-
-    const htmlElementBuilder = useCallback((d) => {
-        const outer = document.createElement('div');
-        outer.style.pointerEvents = 'auto'; // allow clicking
+    const buildMarker = useCallback((d) => {
+        const status = (d.status || 'unknown').toLowerCase();
+        // Use health-based color from Python if available, fall back to status color
+        const color  = d.color || STATUS_COLOR[status] || STATUS_COLOR.unknown;
 
         const el = document.createElement('div');
-        el.className = 'dc-globe-visual-icon';
-        
-        // Shrunk max size to 32px to allow dense geographically accurate packing without ugly collision
-        const sizePx = Math.max(8, Math.min(32, (d.size || 0.04) * 450)); 
-        const color = d.color || '#ff4d4f';
-        
-        // Build the icon styling
-        el.style.width = `${sizePx}px`;
-        el.style.height = `${sizePx}px`;
-        el.style.background = color;
-        el.style.borderRadius = '50%';
-        el.style.cursor = 'pointer';
-        el.style.opacity = '0.9'; // Allows overlapping nodes to form denser visual clusters
-        el.style.boxShadow = `0 0 ${sizePx/1.5}px ${sizePx/4}px ${color}88, inset 0 0 ${sizePx/3}px rgba(255,255,255,0.7)`;
-        el.style.border = '1.5px solid rgba(255,255,255,0.95)';
-        el.style.transition = 'transform 0.1s ease-out';
-        
-        outer.appendChild(el);
+        el.className  = 'dc-map-pin';
+        el.title      = d.site_name || d.dc_id || '';
 
-        // Event listeners
-        outer.onclick = () => handleObjectClick(d);
-        outer.onmouseenter = () => handleObjectHover(d);
-        outer.onmouseleave = () => handleObjectHover(null);
-        
-        return outer;
-    }, []);
+        el.innerHTML = `
+            <div class="dc-pin-pulse" style="--pin-color:${color}"></div>
+            <div class="dc-pin-dot" style="background:${color};box-shadow:0 0 0 2.5px #fff,0 2px 8px ${color}88"></div>
+        `;
 
-    const handleZoom = useCallback(({ altitude }) => {
-        // Scale isolated icons up dynamically when zoomed far in so they don't look tiny
-        let s = 1.0;
-        if (altitude < 0.8) {
-            s = 1.0 + ((0.8 - altitude) * 2.2); 
-        }
+        // Hover popup
+        el.addEventListener('mouseenter', () => {
+            const map = mapRef.current;
+            if (!map) return;
+            if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
+            if (popupRef.current) { popupRef.current.remove(); popupRef.current = null; }
 
-        const visualIcons = document.getElementsByClassName('dc-globe-visual-icon');
-        for (let i = 0; i < visualIcons.length; i++) {
-            visualIcons[i].style.transform = `scale(${s})`;
-        }
+            const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+            const vmCount   = d.vm_count   != null ? d.vm_count   : '—';
+            const hostCount = d.host_count != null ? d.host_count : '—';
+            const health    = d.health     != null ? `${Math.round(d.health)}%` : '—';
 
-        // Keeping this for tooltip refresh if needed
-        setTooltip(prev => prev ? { ...prev, _tick: Date.now() } : null);
-    }, []);
+            popupRef.current = new maplibregl.Popup({
+                closeButton: false,
+                closeOnClick: false,
+                offset: [0, -14],
+                className: 'dc-premium-popup',
+                maxWidth: '240px',
+            })
+            .setLngLat([d.lng, d.lat])
+            .setHTML(`
+                <div class="dc-popup-inner">
+                    <div class="dc-popup-header">
+                        <span class="dc-popup-id">${d.dc_id || ''}</span>
+                        <span class="dc-popup-status-dot" style="background:${color}"></span>
+                        <span class="dc-popup-status-label">${statusLabel}</span>
+                    </div>
+                    <div class="dc-popup-name">${d.site_name || ''}</div>
+                    <div class="dc-popup-stats">
+                        <div class="dc-popup-stat-item">
+                            <span class="dc-stat-label">VMs</span>
+                            <span class="dc-stat-value">${vmCount}</span>
+                        </div>
+                        <div class="dc-popup-stat-item">
+                            <span class="dc-stat-label">Hosts</span>
+                            <span class="dc-stat-value">${hostCount}</span>
+                        </div>
+                        <div class="dc-popup-stat-item">
+                            <span class="dc-stat-label">Avg Load</span>
+                            <span class="dc-stat-value">${health}</span>
+                        </div>
+                    </div>
+                </div>
+            `)
+            .addTo(map);
+        });
 
-    const handleObjectClick = useCallback((d) => {
-        if (setProps) setProps({ clickedPoint: { ...d, _ts: Date.now() } });
-        if (globeRef.current) {
-            const ctrl = globeRef.current.controls();
-            ctrl.autoRotate = false;
-            const isTurkey = d.lat >= 35.8 && d.lat <= 42.2 && d.lng >= 25.7 && d.lng <= 44.8;
-            ctrl.minDistance = isTurkey ? 20 : 115;
-            const alt = isTurkey ? 0.08 : 0.6;
-            globeRef.current.pointOfView({ lat: d.lat, lng: d.lng, altitude: alt }, 900);
-        }
-        setTooltip(null);
+        el.addEventListener('mouseleave', () => {
+            hideTimerRef.current = setTimeout(() => {
+                if (popupRef.current) { popupRef.current.remove(); popupRef.current = null; }
+                hideTimerRef.current = null;
+            }, 120);
+        });
+
+        // Click: report to Dash + fly in close
+        el.addEventListener('click', () => {
+            if (popupRef.current) { popupRef.current.remove(); popupRef.current = null; }
+            if (setProps) setProps({ clickedPoint: { ...d, _ts: Date.now() } });
+
+            const map = mapRef.current;
+            if (!map) return;
+            map.flyTo({ center: [d.lng, d.lat], zoom: 13, speed: 1.4, curve: 1.2 });
+        });
+
+        return el;
     }, [setProps]);
 
-    const handleObjectHover = useCallback((d) => {
-        if (d && globeRef.current) {
-            const { x, y } = globeRef.current.getScreenCoords(d.lat, d.lng, 0);
-            setTooltip({ dc_id: d.dc_id, site_name: d.site_name, color: d.color, x, y });
-        } else {
-            setTooltip(null);
-        }
-    }, []);
+    useEffect(() => {
+        const map = mapRef.current;
+        if (!map || !pointsData) return;
 
-    // Tooltip position clamped to container bounds
-    const tooltipStyle = tooltip ? (() => {
-        const W = dims.width;
-        const tipW = 180;
-        const tipH = 80;
-        let left = (tooltip.x || 0) + 14;
-        let top  = (tooltip.y || 0) - tipH - 14;
-        if (left + tipW > W - 8) left = (tooltip.x || 0) - tipW - 14;
-        if (top < 8) top = (tooltip.y || 0) + 14;
-        return { left, top };
-    })() : null;
+        markersRef.current.forEach(m => m.remove());
+        markersRef.current = [];
+
+        pointsData.forEach(d => {
+            if (d.lat == null || d.lng == null) return;
+            const el     = buildMarker(d);
+            const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+                .setLngLat([d.lng, d.lat])
+                .addTo(map);
+            markersRef.current.push(marker);
+        });
+    }, [pointsData, buildMarker]);
+
+    useEffect(() => {
+        const map = mapRef.current;
+        if (!map || !focusRegion) return;
+
+        // Prefer explicit zoom prop; fall back to altitude conversion for backwards compat
+        const zoom = focusRegion.zoom != null
+            ? focusRegion.zoom
+            : focusRegion.altitude != null
+            ? Math.max(1.5, Math.round(14 - focusRegion.altitude * 6))
+            : 8;
+
+        map.flyTo({ center: [focusRegion.lng, focusRegion.lat], zoom, speed: 1.6, curve: 1.2 });
+    }, [focusRegion]);
 
     return (
-        <div ref={containerRef} id={id} style={{ width: '100%', height: dims.height, overflow: 'hidden', position: 'relative' }}>
-            {tooltip && tooltipStyle && (
-                <div style={{
-                    position: 'absolute',
-                    left: tooltipStyle.left,
-                    top: tooltipStyle.top,
-                    background: '#ffffff',
-                    color: '#1a2340',
-                    padding: '9px 14px',
-                    borderRadius: 8,
-                    border: `1.5px solid ${tooltip.color}`,
-                    fontSize: 13,
-                    zIndex: 1000,
-                    pointerEvents: 'none',
-                    boxShadow: `0 2px 12px rgba(0,0,0,0.18), 0 0 0 3px ${tooltip.color}22`,
-                    lineHeight: 1.5,
-                    whiteSpace: 'nowrap',
-                }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: tooltip.color, marginBottom: 2 }}>
-                        {tooltip.site_name || tooltip.dc_id}
-                    </div>
-                    <div style={{ color: '#555e7a', fontSize: 12 }}>ID: {tooltip.dc_id}</div>
-                    <div style={{ color: '#aab0c2', fontSize: 11, marginTop: 3 }}>Tıkla → Detay</div>
-                </div>
-            )}
-            <Globe
-                ref={globeRef}
-                globeImageUrl={globeImageUrl || '//unpkg.com/three-globe/example/img/earth-blue-marble.jpg'}
-                backgroundColor="rgba(255,255,255,0)"
-                atmosphereColor="#c8d8f0"
-                atmosphereAltitude={0.18}
-                htmlElementsData={pointsData}
-                htmlElement={htmlElementBuilder}
-                htmlAltitude={0}
-                htmlLat="lat"
-                htmlLng="lng"
-                onZoom={handleZoom}
-                width={dims.width}
-                height={dims.height}
-            />
-        </div>
+        <div
+            id={id}
+            ref={containerRef}
+            style={{ width: '100%', height: height || 600, borderRadius: 'inherit' }}
+        />
     );
 };
 
 DashGlobe.defaultProps = {
-    pointsData: [],
+    pointsData:  [],
     focusRegion: null,
     clickedPoint: null,
-    globeImageUrl: '//unpkg.com/three-globe/example/img/earth-blue-marble.jpg',
     height: 600,
 };
 
 DashGlobe.propTypes = {
-    id: PropTypes.string,
-    setProps: PropTypes.func,
-    pointsData: PropTypes.array,
-    focusRegion: PropTypes.object,
+    id:           PropTypes.string,
+    setProps:     PropTypes.func,
+    pointsData:   PropTypes.array,
+    focusRegion:  PropTypes.object,
     clickedPoint: PropTypes.object,
-    globeImageUrl: PropTypes.string,
-    height: PropTypes.number,
+    height:       PropTypes.number,
 };
 
 export default DashGlobe;

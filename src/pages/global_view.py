@@ -180,7 +180,7 @@ REGION_HIERARCHY = {
 }
 
 REGION_ZOOM_TARGETS = {
-    "ISTANBUL":   {"lon": 28.96,  "lat": 41.01, "scale": 40.0},
+    "ISTANBUL":   {"lon": 28.96,  "lat": 41.01, "scale": 33.0},
     "ANKARA":     {"lon": 32.85,  "lat": 39.93, "scale": 15.0},
     "IZMIR":      {"lon": 27.13,  "lat": 38.42, "scale": 15.0},
     "AZERBAYCAN": {"lon": 49.87,  "lat": 40.41, "scale": 6.0},
@@ -240,7 +240,7 @@ def _build_globe_data(summaries):
         cpu_pct = stats.get("used_cpu_pct", 0.0)
         ram_pct = stats.get("used_ram_pct", 0.0)
         health = (cpu_pct + ram_pct) / 2.0
-        color = "#ff4d4f" if health >= 70 else ("#ffba00" if health >= 40 else "#00e676")
+        color = "#F04438" if health >= 70 else ("#F79009" if health >= 40 else "#17B26A")
         capacity = max(dc.get("vm_count", 0) or 0, (dc.get("host_count", 0) or 0) * 5)
         # Using a square root for more pronounced but controlled scaling, smaller base size
         size = round(min(0.07, max(0.015, 0.015 + math.sqrt(capacity) * 0.0012)), 4)
@@ -251,6 +251,10 @@ def _build_globe_data(summaries):
             "size": size,
             "color": color,
             "site_name": dc.get("site_name", ""),
+            "status": (dc.get("status") or "active").lower(),
+            "vm_count": dc.get("vm_count", 0) or 0,
+            "host_count": dc.get("host_count", 0) or 0,
+            "health": round(health, 1),
         })
     return data
 
@@ -547,6 +551,7 @@ def _build_region_menu(summaries):
         multiple=True,
         value=[],
         className="region-accordion",
+        style={"width": "100%"},
         children=items,
     )
 
@@ -962,6 +967,7 @@ def build_global_view(time_range=None):
                                 dmc.Divider(mb="sm", color="rgba(67,24,255,0.08)"),
                                 dmc.ScrollArea(
                                     h=510,
+                                    w="100%",
                                     type="auto",
                                     children=[_build_region_menu(summaries)],
                                 ),
