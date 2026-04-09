@@ -1,0 +1,2 @@
+include dash_globe_component/*.js
+include dash_globe_component/*.json

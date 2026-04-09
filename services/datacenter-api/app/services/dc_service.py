@@ -15,6 +15,7 @@ from app.db.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
 from app.db.queries import loki as lq, customer as cq, s3 as s3q, backup as bq
 from app.db.queries import brocade as brq, ibm_storage as isq
 from app.db.queries import zabbix_network as znq, zabbix_storage as zsq
+from app.db.queries import discovery_rack as drq
 from app.services import cache_service as cache
 from app.services import query_overrides as qo
 from app.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
@@ -4064,6 +4065,86 @@ JOIN latest l
         except Exception as exc:
             logger.warning("Physical inventory cache warm-up failed: %s", exc)
 
+    def get_dc_racks(self, dc_code: str) -> dict:
+        empty = {"racks": [], "summary": {"total_racks": 0, "active_racks": 0, "total_u_height": 0, "racks_with_energy": 0, "racks_with_pdu": 0}}
+        if not dc_code or not dc_code.strip():
+            return empty
+        cache_key = f"dc_racks:{dc_code.strip()}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, drq.RACKS_BY_DC, (dc_code, dc_code))
+                    summary_row = self._run_row(cur, drq.RACK_SUMMARY_BY_DC, (dc_code, dc_code))
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_dc_racks(%s): %s", dc_code, exc)
+            return empty
+
+        columns = [
+            "id", "name", "display_name", "status", "status_description",
+            "u_height", "kabin_enerji", "pdu_a_ip", "pdu_b_ip", "rack_type",
+            "serial", "asset_tag", "tenant_name", "facility_id",
+            "weight", "max_weight", "weight_unit",
+            "description", "comments",
+            "first_observed", "last_observed", "location_id", "site_id",
+            "hall_name",
+        ]
+        racks = []
+        for r in (rows or []):
+            rack = {}
+            for i, col in enumerate(columns):
+                rack[col] = r[i] if i < len(r) else None
+            if rack.get("first_observed"):
+                rack["first_observed"] = str(rack["first_observed"])
+            if rack.get("last_observed"):
+                rack["last_observed"] = str(rack["last_observed"])
+            racks.append(rack)
+
+        s = summary_row or (0, 0, 0, 0, 0)
+        summary = {
+            "total_racks": int(s[0] or 0),
+            "active_racks": int(s[1] or 0),
+            "total_u_height": int(s[2] or 0),
+            "racks_with_energy": int(s[3] or 0),
+            "racks_with_pdu": int(s[4] or 0),
+        }
+
+        result = {"racks": racks, "summary": summary}
+        cache.set(cache_key, result, ttl=21600)  # 6h — rack positions rarely change
+        return result
+
+    def get_rack_devices(self, rack_name: str) -> dict:
+        """Return all devices installed in a specific rack (by name), with U position."""
+        if not rack_name or not rack_name.strip():
+            return {"devices": []}
+        cache_key = f"rack_devices:{rack_name.strip()}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, drq.DEVICES_BY_RACK_NAME, (rack_name.strip(),))
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_rack_devices(%s): %s", rack_name, exc)
+            return {"devices": []}
+
+        columns = ["name", "position", "face", "role", "device_type",
+                   "status_value", "status_label", "manufacturer", "description"]
+        devices = []
+        for r in (rows or []):
+            d = {}
+            for i, col in enumerate(columns):
+                val = r[i] if i < len(r) else None
+                d[col] = float(val) if hasattr(val, '__float__') and col == "position" else val
+            devices.append(d)
+
+        result = {"devices": devices}
+        cache.set(cache_key, result, ttl=21600)
+        return result
+
     def warm_cache(self) -> None:
         """
         Pre-load last 7 days into cache at app startup.
@@ -4083,6 +4164,13 @@ JOIN latest l
                     self.get_customer_resources(cust, tr)
                 except Exception as exc:
                     logger.warning("Customer cache warm-up for %s failed: %s", cust, exc)
+
+            # Rack floor map data (time-range independent)
+            try:
+                for dc_code in self._dc_list:
+                    self.get_dc_racks(dc_code)
+            except Exception as exc:
+                logger.warning("Rack cache warm-up failed: %s", exc)
 
             # Physical inventory (time-range independent)
             try:

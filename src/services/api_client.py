@@ -594,6 +594,25 @@ def get_dc_zabbix_disk_health(dc_code: str, tr: Optional[dict]) -> dict:
         return {}
 
 
+def get_dc_racks(dc_code: str) -> dict:
+    try:
+        enc = quote(dc_code, safe="")
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/racks")
+        return data if isinstance(data, dict) else {"racks": [], "summary": {}}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {"racks": [], "summary": {}}
+
+
+def get_rack_devices(dc_code: str, rack_name: str) -> dict:
+    try:
+        enc_dc = quote(dc_code, safe="")
+        enc_rack = quote(rack_name, safe="")
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc_dc}/racks/{enc_rack}/devices")
+        return data if isinstance(data, dict) else {"devices": []}
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+        return {"devices": []}
+
+
 def _auranotify_start_date(tr: Optional[dict]) -> str:
     from src.utils.time_range import time_range_to_bounds
 
