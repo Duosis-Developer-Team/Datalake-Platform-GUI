@@ -97,6 +97,16 @@ def hyperconv_compute_filtered(
     return db.get_hyperconv_metrics_filtered(dc_code, selected, tf.to_dict())
 
 
+@router.get("/datacenters/{dc_code}/racks", response_model=dict[str, Any])
+def dc_racks(dc_code: str, db: DatabaseService = Depends(get_db)):
+    return db.get_dc_racks(dc_code)
+
+
+@router.get("/datacenters/{dc_code}/racks/{rack_name}/devices", response_model=dict[str, Any])
+def rack_devices(dc_code: str, rack_name: str, db: DatabaseService = Depends(get_db)):
+    return db.get_rack_devices(rack_name)
+
+
 @router.get("/datacenters/{dc_code}/physical-inventory", response_model=dict[str, Any])
 def physical_inventory_dc(dc_code: str, db: DatabaseService = Depends(get_db)):
     return db.get_physical_inventory_dc(dc_code)

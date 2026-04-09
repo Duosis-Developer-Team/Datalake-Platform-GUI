@@ -21,6 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+RUN pip install --no-cache-dir -e dash_globe_component/
+
 EXPOSE 8050
 
 # gthread: threads actually handle concurrent requests (sync worker ignores --threads).
