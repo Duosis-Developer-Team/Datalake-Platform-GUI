@@ -45,3 +45,7 @@ Thumbs.db
 # Tooling caches
 .mypy_cache/
 .ruff_cache/
+
+# Node
+node_modules/
+dash_globe_component/node_modules/
