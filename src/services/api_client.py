@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 from copy import deepcopy
 from typing import Any, Optional
 from urllib.parse import quote
@@ -58,7 +60,7 @@ _EMPTY_DASHBOARD = {
 }
 
 _EMPTY_DC_DETAIL = {
-    "meta": {"name": "", "location": ""},
+    "meta": {"name": "", "location": "", "description": ""},
     "intel": {
         "clusters": 0,
         "hosts": 0,
@@ -119,7 +121,7 @@ def _build_time_params(tr: Optional[dict]) -> dict[str, str]:
     if not tr:
         return {}
     preset = tr.get("preset")
-    if preset in {"1d", "7d", "30d"}:
+    if preset in {"1h", "1d", "7d", "30d"}:
         return {"preset": preset}
     start = tr.get("start")
     end = tr.get("end")
@@ -609,3 +611,83 @@ def get_rack_devices(dc_code: str, rack_name: str) -> dict:
         return data if isinstance(data, dict) else {"devices": []}
     except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
         return {"devices": []}
+
+
+def _auranotify_start_date(tr: Optional[dict]) -> str:
+    from src.utils.time_range import time_range_to_bounds
+
+    start_ts, _ = time_range_to_bounds(tr)
+    return start_ts.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+# In-memory TTL cache for customer availability (AuraNotify). Scheduler force-refreshes on interval.
+_CUSTOMER_AVAIL_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_CUSTOMER_AVAIL_LOCK = threading.Lock()
+CUSTOMER_AVAIL_TTL_SECONDS = 900
+
+
+def _customer_availability_cache_key(customer_name: str, tr: Optional[dict]) -> str:
+    from src.utils.time_range import default_time_range
+
+    t = tr if tr is not None else default_time_range()
+    return f"{customer_name or ''}:{t.get('start', '')}:{t.get('end', '')}"
+
+
+def _fetch_customer_availability_bundle_uncached(customer_name: str, tr: Optional[dict]) -> dict[str, Any]:
+    try:
+        from src.services import auranotify_client as aura
+
+        return aura.get_customer_availability_bundle(customer_name or "", _auranotify_start_date(tr))
+    except Exception:
+        return {
+            "service_downtimes": [],
+            "vm_downtimes": [],
+            "vm_outage_counts": {},
+            "customer_id": None,
+            "customer_ids": [],
+        }
+
+
+def clear_customer_availability_bundle_cache() -> None:
+    """Clear in-memory customer availability cache (tests / admin)."""
+    with _CUSTOMER_AVAIL_LOCK:
+        _CUSTOMER_AVAIL_CACHE.clear()
+
+
+def get_customer_availability_bundle(
+    customer_name: str,
+    tr: Optional[dict],
+    *,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """
+    AuraNotify: service + VM downtimes and per-VM outage counts for the selected customer.
+
+    Results are cached in memory for CUSTOMER_AVAIL_TTL_SECONDS (default 15 minutes) so repeated
+    page renders do not hit AuraNotify on every request. Pass force_refresh=True for scheduler jobs.
+    """
+    key = _customer_availability_cache_key(customer_name, tr)
+    now = time.time()
+    with _CUSTOMER_AVAIL_LOCK:
+        if not force_refresh:
+            hit = _CUSTOMER_AVAIL_CACHE.get(key)
+            if hit is not None and (now - hit[0]) < CUSTOMER_AVAIL_TTL_SECONDS:
+                return deepcopy(hit[1])
+        data = _fetch_customer_availability_bundle_uncached(customer_name, tr)
+        _CUSTOMER_AVAIL_CACHE[key] = (now, data)
+        return deepcopy(data)
+
+
+def get_dc_availability_sla_item(dc_code: str, dc_display_name: str, tr: Optional[dict]) -> Optional[dict[str, Any]]:
+    """AuraNotify: one datacenter-services item matched to this DC (by name or code)."""
+    try:
+        from src.services import auranotify_client as aura
+
+        items = aura.get_dc_services_availability(_auranotify_start_date(tr))
+        for hint in (dc_display_name or "", dc_code or ""):
+            it = aura.match_dc_group_item(items, hint)
+            if it:
+                return it
+        return None
+    except Exception:
+        return None

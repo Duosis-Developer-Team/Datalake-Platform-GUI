@@ -5,6 +5,8 @@
 **Hedef Dosyalar:** `src/pages/home.py` + `src/components/charts.py`
 **Durum:** ⏳ Executor uygulaması bekleniyor
 
+**DC Summary güncellemesi (2 Nis 2026):** Overview tablosunda Data Center metni Data Centers sayfasıyla aynı şekilde `format_dc_display_name` (name - description). Classic/Hyperconverged CPU ve RAM için `cpu_pct_max` / `ram_pct_max` (yoksa ortalama) tek rozet; Disk ve IBM snapshot aynı rozet stili; rozet içinde silik `max` etiketi. Yardımcı: `effective_max_pct` — test: `tests/test_home_arch_usage_display.py`.
+
 ---
 
 ## Genel Mimari Kuralı

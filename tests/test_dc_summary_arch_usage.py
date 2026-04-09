@@ -32,9 +32,13 @@ class TestDcSummaryArchUsage(unittest.TestCase):
                     "cpu_cap": 10.0,
                     "cpu_used": 5.0,
                     "cpu_pct": 50.0,
+                    "cpu_pct_max": 80.0,
+                    "cpu_pct_min": 20.0,
                     "mem_cap": 20.0,
                     "mem_used": 10.0,
                     "mem_pct": 50.0,
+                    "mem_pct_max": 70.0,
+                    "mem_pct_min": 30.0,
                     "stor_cap": 4.0,
                     "stor_used": 2.0,
                 },
@@ -44,9 +48,13 @@ class TestDcSummaryArchUsage(unittest.TestCase):
                     "cpu_cap": 8.0,
                     "cpu_used": 4.0,
                     "cpu_pct": 50.0,
+                    "cpu_pct_max": 75.0,
+                    "cpu_pct_min": 25.0,
                     "mem_cap": 16.0,
                     "mem_used": 8.0,
                     "mem_pct": 50.0,
+                    "mem_pct_max": 65.0,
+                    "mem_pct_min": 35.0,
                     "stor_cap": 2.0,
                     "stor_used": 1.0,
                 },
@@ -104,6 +112,10 @@ class TestDcSummaryArchUsage(unittest.TestCase):
         self.assertAlmostEqual(arch_usage["classic"]["cpu_pct"], 50.0, places=1)
         self.assertAlmostEqual(arch_usage["classic"]["ram_pct"], 50.0, places=1)
         self.assertAlmostEqual(arch_usage["classic"]["disk_pct"], 50.0, places=1)
+        self.assertAlmostEqual(arch_usage["classic"]["cpu_pct_min"], 20.0, places=1)
+        self.assertAlmostEqual(arch_usage["classic"]["cpu_pct_max"], 80.0, places=1)
+        self.assertAlmostEqual(arch_usage["classic"]["ram_pct_min"], 30.0, places=1)
+        self.assertAlmostEqual(arch_usage["classic"]["ram_pct_max"], 70.0, places=1)
 
 if __name__ == "__main__":
     unittest.main()

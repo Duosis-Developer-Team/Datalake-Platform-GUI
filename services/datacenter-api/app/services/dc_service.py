@@ -55,8 +55,10 @@ def _empty_compute_section() -> dict:
         "hosts": 0, "vms": 0,
         "cpu_cap": 0.0, "cpu_used": 0.0, "cpu_pct": 0.0,
         "cpu_pct_max": 0.0,
+        "cpu_pct_min": 0.0,
         "mem_cap": 0.0, "mem_used": 0.0, "mem_pct": 0.0,
         "mem_pct_max": 0.0,
+        "mem_pct_min": 0.0,
         "stor_cap": 0.0, "stor_used": 0.0,
     }
 
@@ -64,7 +66,11 @@ def _empty_compute_section() -> dict:
 def _EMPTY_DC(dc_code: str) -> dict:
     """Return a zeroed-out DC details dict for when the DB is unreachable."""
     return {
-        "meta": {"name": dc_code, "location": DC_LOCATIONS.get(dc_code, "Unknown Data Center")},
+        "meta": {
+            "name": dc_code,
+            "location": DC_LOCATIONS.get(dc_code, "Unknown Data Center"),
+            "description": "",
+        },
         # New compute-type split sections (used by dc_view)
         "classic": _empty_compute_section(),
         "hyperconv": _empty_compute_section(),
@@ -111,6 +117,7 @@ class DatabaseService:
         self._pool: pg_pool.ThreadedConnectionPool | None = None
         self._dc_list: list[str] = _FALLBACK_DC_LIST.copy()
         self._dc_site_map: dict[str, str] = {}
+        self._dc_description_map: dict[str, str] = {}
         # Cache for brocade switch_host -> resolved DC code.
         # Value can be None when no resolution is possible.
         self._brocade_switch_dc_cache: dict[str, str | None] = {}
@@ -280,11 +287,14 @@ SELECT
     primary_ip_address
 FROM public.discovery_netbox_inventory_device
 WHERE
+    status_value = 'active'
+    AND (
     primary_ip_address = %s
  OR primary_ip_address ILIKE %s
  OR "name" ILIKE %s
  OR location_name ILIKE %s
  OR site_name ILIKE %s
+    )
 ORDER BY collection_time DESC NULLS LAST
 LIMIT 20
 """,
@@ -491,6 +501,7 @@ LIMIT 20
     # ------------------------------------------------------------------
 
     def _load_dc_list(self) -> list[str]:
+        self._dc_description_map = {}
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
@@ -500,6 +511,12 @@ LIMIT 20
                         rows = self._run_rows(cur, lq.DC_LIST_WITH_SITE_NO_STATUS)
                         dc_names = [row[0] for row in rows if row[0]]
                     self._dc_site_map = {row[0]: row[1] for row in rows if row[0] and row[1]}
+                    desc_rows = self._run_rows(cur, lq.DC_NAME_DESCRIPTION_MAP)
+                    if not desc_rows:
+                        desc_rows = self._run_rows(cur, lq.DC_NAME_DESCRIPTION_MAP_NO_STATUS)
+                    for row in desc_rows:
+                        if row and row[0] and len(row) > 1 and row[1]:
+                            self._dc_description_map[str(row[0]).strip()] = str(row[1]).strip()
         except OperationalError as exc:
             logger.warning("Could not load DC list from DB: %s — using fallback.", exc)
             return _FALLBACK_DC_LIST.copy()
@@ -510,6 +527,20 @@ LIMIT 20
 
         logger.warning("loki_locations returned empty DC list — using fallback.")
         return _FALLBACK_DC_LIST.copy()
+
+    def _ensure_dc_description_map(self, cur) -> None:
+        """Lazy-load NetBox location descriptions (name → facility description) once per process."""
+        if self._dc_description_map:
+            return
+        try:
+            rows = self._run_rows(cur, lq.DC_NAME_DESCRIPTION_MAP)
+            if not rows:
+                rows = self._run_rows(cur, lq.DC_NAME_DESCRIPTION_MAP_NO_STATUS)
+            for row in rows:
+                if row and row[0] and len(row) > 1 and row[1]:
+                    self._dc_description_map[str(row[0]).strip()] = str(row[1]).strip()
+        except Exception as exc:
+            logger.warning("Could not load DC description map: %s", exc)
 
     # ------------------------------------------------------------------
     # Individual query methods (single DC) — kept for dc_view.py
@@ -670,6 +701,8 @@ LIMIT 20
         cl_mem_pct = round(float(avg30[1] or 0), 1)
         cl_cpu_pct_max = round(float(avg30[2] or 0), 1)
         cl_mem_pct_max = round(float(avg30[3] or 0), 1)
+        cl_cpu_pct_min = round(float(avg30[4] or 0), 1)
+        cl_mem_pct_min = round(float(avg30[5] or 0), 1)
         return {
             "hosts": cl_hosts,
             "vms": cl_vms,
@@ -677,10 +710,12 @@ LIMIT 20
             "cpu_used": cl_cpu_used,
             "cpu_pct": cl_cpu_pct,
             "cpu_pct_max": cl_cpu_pct_max,
+            "cpu_pct_min": cl_cpu_pct_min,
             "mem_cap": cl_mem_cap,
             "mem_used": cl_mem_used,
             "mem_pct": cl_mem_pct,
             "mem_pct_max": cl_mem_pct_max,
+            "mem_pct_min": cl_mem_pct_min,
             "stor_cap": cl_stor_cap,
             "stor_used": cl_stor_used,
         }
@@ -742,6 +777,8 @@ LIMIT 20
         hc_mem_pct = round(float(avg30[1] or 0), 1) if (avg30[1] or avg30[3]) else hc_mem_pct_cap
         hc_cpu_pct_max = round(float(avg30[2] or 0), 1)
         hc_mem_pct_max = round(float(avg30[3] or 0), 1)
+        hc_cpu_pct_min = round(float(avg30[4] or 0), 1)
+        hc_mem_pct_min = round(float(avg30[5] or 0), 1)
         if hc_cpu_pct_max <= 0 and hc_cpu_pct_cap > 0:
             hc_cpu_pct = hc_cpu_pct_cap
         if hc_mem_pct_max <= 0 and hc_mem_pct_cap > 0:
@@ -753,10 +790,12 @@ LIMIT 20
             "cpu_used": hc_cpu_used,
             "cpu_pct": hc_cpu_pct,
             "cpu_pct_max": hc_cpu_pct_max,
+            "cpu_pct_min": hc_cpu_pct_min,
             "mem_cap": hc_mem_cap,
             "mem_used": hc_mem_used,
             "mem_pct": hc_mem_pct,
             "mem_pct_max": hc_mem_pct_max,
+            "mem_pct_min": hc_mem_pct_min,
             "stor_cap": hc_stor_cap,
             "stor_used": hc_stor_used,
         }
@@ -767,13 +806,18 @@ LIMIT 20
 
     @staticmethod
     def _normalize_avg30_row(row) -> tuple:
+        """Return (cpu_avg, mem_avg, cpu_max, mem_max, cpu_min, mem_min) for cluster_metrics utilization."""
         if not row:
-            return (0, 0, 0, 0)
+            return (0, 0, 0, 0, 0, 0)
+        if len(row) >= 6:
+            return (row[0], row[1], row[2], row[3], row[4], row[5])
         if len(row) >= 4:
-            return (row[0], row[1], row[2], row[3])
+            # Legacy 4-column rows: approximate min with avg
+            return (row[0], row[1], row[2], row[3], row[0], row[1])
         if len(row) >= 2:
-            return (row[0], row[1], row[0], row[1])
-        return (0, 0, 0, 0)
+            a, b = row[0], row[1]
+            return (a, b, a, b, a, b)
+        return (0, 0, 0, 0, 0, 0)
 
     @staticmethod
     def _aggregate_dc(
@@ -801,13 +845,14 @@ LIMIT 20
         classic_avg30=None,
         hyperconv_row=None,
         hyperconv_avg30=None,
+        dc_description: str = "",
     ) -> dict:
         """Apply unit normalization and build the standard DC detail dictionary.
 
         classic_row / hyperconv_row — rows from CLASSIC_METRICS / HYPERCONV_METRICS:
             (hosts, vms, cpu_cap_ghz, cpu_used_ghz, mem_cap_gb, mem_used_gb, stor_cap_gb, stor_used_gb)
         classic_avg30 / hyperconv_avg30 — rows from CLASSIC_AVG30 / HYPERCONV_AVG30:
-            (cpu_avg_pct, mem_avg_pct, cpu_max_pct, mem_max_pct)
+            (cpu_avg_pct, mem_avg_pct, cpu_max_pct, mem_max_pct, cpu_min_pct, mem_min_pct)
         """
         nutanix_mem     = nutanix_mem     or (0, 0)
         nutanix_storage = nutanix_storage or (0, 0)
@@ -863,6 +908,8 @@ LIMIT 20
             cl_mem_pct = round(100.0 * cl_mem_used / cl_mem_cap, 1)
         cl_cpu_pct_max = round(float(classic_avg30[2] or 0), 1)
         cl_mem_pct_max = round(float(classic_avg30[3] or 0), 1)
+        cl_cpu_pct_min = round(float(classic_avg30[4] or 0), 1)
+        cl_mem_pct_min = round(float(classic_avg30[5] or 0), 1)
         # cluster_metrics.total_capacity_gb is in GB → convert to TB
         cl_stor_cap  = round(float(classic_row[6] or 0) / 1024.0, 3)
         cl_stor_used = round(float(classic_row[7] or 0) / 1024.0, 3)
@@ -884,30 +931,38 @@ LIMIT 20
             hc_mem_pct = round(100.0 * hc_mem_used / hc_mem_cap, 1)
         hc_cpu_pct_max = round(float(hyperconv_avg30[2] or 0), 1)
         hc_mem_pct_max = round(float(hyperconv_avg30[3] or 0), 1)
+        hc_cpu_pct_min = round(float(hyperconv_avg30[4] or 0), 1)
+        hc_mem_pct_min = round(float(hyperconv_avg30[5] or 0), 1)
         # Storage from Nutanix (already in TB from the nutanix query)
         hc_stor_cap  = round(n_stor_cap_tb, 3)
         hc_stor_used = round(n_stor_used_tb, 3)
 
+        desc = (dc_description or "").strip()
         return {
             "meta": {
                 "name": dc_code,
                 "location": DC_LOCATIONS.get(dc_code, "Unknown Data Center"),
+                "description": desc,
             },
             # Compute-type split (new) — used by dc_view tabs
             "classic": {
                 "hosts": cl_hosts, "vms": cl_vms,
                 "cpu_cap": cl_cpu_cap, "cpu_used": cl_cpu_used, "cpu_pct": cl_cpu_pct,
                 "cpu_pct_max": cl_cpu_pct_max,
+                "cpu_pct_min": cl_cpu_pct_min,
                 "mem_cap": cl_mem_cap, "mem_used": cl_mem_used, "mem_pct": cl_mem_pct,
                 "mem_pct_max": cl_mem_pct_max,
+                "mem_pct_min": cl_mem_pct_min,
                 "stor_cap": cl_stor_cap, "stor_used": cl_stor_used,
             },
             "hyperconv": {
                 "hosts": hc_hosts, "vms": hc_vms,
                 "cpu_cap": hc_cpu_cap, "cpu_used": hc_cpu_used, "cpu_pct": hc_cpu_pct,
                 "cpu_pct_max": hc_cpu_pct_max,
+                "cpu_pct_min": hc_cpu_pct_min,
                 "mem_cap": hc_mem_cap, "mem_used": hc_mem_used, "mem_pct": hc_mem_pct,
                 "mem_pct_max": hc_mem_pct_max,
+                "mem_pct_min": hc_mem_pct_min,
                 "stor_cap": hc_stor_cap, "stor_used": hc_stor_used,
             },
             # Legacy combined Intel section — kept for home.py / datacenters.py
@@ -1004,9 +1059,11 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
+                    self._ensure_dc_description_map(cur)
                     dc_wc = f"%{dc_code}%"
                     result = self._aggregate_dc(
                         dc_code,
+                        dc_description=self._dc_description_map.get(dc_code, ""),
                         nutanix_host_count=self.get_nutanix_host_count(cur, dc_code, start_ts, end_ts),
                         nutanix_vms=self.get_nutanix_vm_count(cur, dc_code, start_ts, end_ts),
                         nutanix_mem=self.get_nutanix_memory(cur, dc_code, start_ts, end_ts),
@@ -1349,18 +1406,66 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
             # Batch CLASSIC_METRICS: (dc_code, hosts, vms, cpu_cap, cpu_used, mem_cap, mem_used, stor_cap, stor_used)
             cl_data = (vcl_row[1], vcl_row[2], vcl_row[3], vcl_row[4], vcl_row[5], vcl_row[6], vcl_row[7], vcl_row[8]) if (vcl_row and len(vcl_row) > 8) else None
-            # Batch CLASSIC_AVG30: (dc_code, cpu_avg_pct, mem_avg_pct)
-            cl_avg = (
-                (vcla_row[1], vcla_row[2], vcla_row[3], vcla_row[4])
-                if (vcla_row and len(vcla_row) > 4)
-                else ((vcla_row[1], vcla_row[2]) if (vcla_row and len(vcla_row) > 2) else None)
-            )
+            # Batch CLASSIC_AVG30: (dc_code, cpu_avg, mem_avg, cpu_max, mem_max, cpu_min, mem_min)
+            if vcla_row and len(vcla_row) >= 7:
+                cl_avg = (
+                    vcla_row[1],
+                    vcla_row[2],
+                    vcla_row[3],
+                    vcla_row[4],
+                    vcla_row[5],
+                    vcla_row[6],
+                )
+            elif vcla_row and len(vcla_row) >= 5:
+                cl_avg = (
+                    vcla_row[1],
+                    vcla_row[2],
+                    vcla_row[3],
+                    vcla_row[4],
+                    vcla_row[1],
+                    vcla_row[2],
+                )
+            elif vcla_row and len(vcla_row) > 2:
+                cl_avg = (
+                    vcla_row[1],
+                    vcla_row[2],
+                    vcla_row[1],
+                    vcla_row[2],
+                    vcla_row[1],
+                    vcla_row[2],
+                )
+            else:
+                cl_avg = None
             hc_data = (vhc_row[1], vhc_row[2], vhc_row[3], vhc_row[4], vhc_row[5], vhc_row[6], vhc_row[7], vhc_row[8]) if (vhc_row and len(vhc_row) > 8) else None
-            hc_avg = (
-                (vhca_row[1], vhca_row[2], vhca_row[3], vhca_row[4])
-                if (vhca_row and len(vhca_row) > 4)
-                else ((vhca_row[1], vhca_row[2]) if (vhca_row and len(vhca_row) > 2) else None)
-            )
+            if vhca_row and len(vhca_row) >= 7:
+                hc_avg = (
+                    vhca_row[1],
+                    vhca_row[2],
+                    vhca_row[3],
+                    vhca_row[4],
+                    vhca_row[5],
+                    vhca_row[6],
+                )
+            elif vhca_row and len(vhca_row) >= 5:
+                hc_avg = (
+                    vhca_row[1],
+                    vhca_row[2],
+                    vhca_row[3],
+                    vhca_row[4],
+                    vhca_row[1],
+                    vhca_row[2],
+                )
+            elif vhca_row and len(vhca_row) > 2:
+                hc_avg = (
+                    vhca_row[1],
+                    vhca_row[2],
+                    vhca_row[1],
+                    vhca_row[2],
+                    vhca_row[1],
+                    vhca_row[2],
+                )
+            else:
+                hc_avg = None
 
             results[dc] = self._aggregate_dc(
                 dc_code=dc,
@@ -1387,6 +1492,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 classic_avg30=cl_avg,
                 hyperconv_row=hc_data,
                 hyperconv_avg30=hc_avg,
+                dc_description=self._dc_description_map.get(dc, ""),
             )
 
         return results, platform_counts
@@ -1494,6 +1600,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 "id": dc,
                 "name": dc,
                 "location": d["meta"]["location"],
+                "description": (d.get("meta") or {}).get("description") or "",
                 "site_name": self._dc_site_map.get(dc),
                 "status": "Healthy",
                 "platform_count": platform_count,
@@ -1514,12 +1621,24 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                     "arch_usage": {
                         "classic": {
                             "cpu_pct": round(classic_cpu_pct, 1),
+                            "cpu_pct_avg": round(classic_cpu_pct, 1),
+                            "cpu_pct_max": round(float(classic.get("cpu_pct_max", 0) or 0), 1),
+                            "cpu_pct_min": round(float(classic.get("cpu_pct_min", 0) or 0), 1),
                             "ram_pct": round(classic_ram_pct, 1),
+                            "ram_pct_avg": round(classic_ram_pct, 1),
+                            "ram_pct_max": round(float(classic.get("mem_pct_max", 0) or 0), 1),
+                            "ram_pct_min": round(float(classic.get("mem_pct_min", 0) or 0), 1),
                             "disk_pct": round(classic_stor_pct, 1),
                         },
                         "hyperconv": {
                             "cpu_pct": round(hyperconv_cpu_pct, 1),
+                            "cpu_pct_avg": round(hyperconv_cpu_pct, 1),
+                            "cpu_pct_max": round(float(hyperconv.get("cpu_pct_max", 0) or 0), 1),
+                            "cpu_pct_min": round(float(hyperconv.get("cpu_pct_min", 0) or 0), 1),
                             "ram_pct": round(hyperconv_ram_pct, 1),
+                            "ram_pct_avg": round(hyperconv_ram_pct, 1),
+                            "ram_pct_max": round(float(hyperconv.get("mem_pct_max", 0) or 0), 1),
+                            "ram_pct_min": round(float(hyperconv.get("mem_pct_min", 0) or 0), 1),
                             "disk_pct": round(hyperconv_stor_pct, 1),
                         },
                         "ibm": {
@@ -2547,8 +2666,11 @@ SELECT
     primary_ip_address
 FROM public.discovery_netbox_inventory_device
 WHERE
+    status_value = 'active'
+    AND (
     primary_ip_address = %s
  OR primary_ip_address ILIKE %s
+    )
 ORDER BY collection_time DESC NULLS LAST
 LIMIT 20
 """,
@@ -3710,9 +3832,9 @@ JOIN latest l
 
     def _get_physical_inventory_raw(self, *, force: bool = False) -> list[dict]:
         """
-        Fetch all physical devices (latest snapshot per device key) as a plain list of dicts.
+        Fetch active physical devices (status_value = 'active', latest snapshot per device key).
         Result is cached; all derived methods use this single dataset.
-        No JOINs, no aggregations — just a fast DISTINCT ON fetch.
+        No JOINs, no aggregations — DISTINCT ON with SQL-side status filter.
         """
         cache_key = "phys_inv:raw_devices"
         if not force:

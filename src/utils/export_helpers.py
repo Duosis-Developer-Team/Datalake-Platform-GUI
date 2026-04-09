@@ -12,6 +12,99 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+def _serialize_filter_value(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (dict, list)):
+        try:
+            import json
+
+            return json.dumps(v, ensure_ascii=False, default=str)[:8000]
+        except Exception:
+            return str(v)[:8000]
+    return str(v)
+
+
+def build_report_info_df(
+    time_range: dict[str, Any] | None,
+    page_name: str,
+    extra_filters: dict[str, Any] | None = None,
+    *,
+    exported_at_utc: datetime | None = None,
+) -> pd.DataFrame:
+    """
+    Build a two-column DataFrame (key, value) for Report_Info sheet / CSV header block.
+    """
+    rows: list[dict[str, Any]] = []
+    at = exported_at_utc or datetime.now(timezone.utc)
+    rows.append({"key": "exported_at_utc", "value": at.strftime("%Y-%m-%d %H:%M:%S UTC")})
+    rows.append({"key": "page", "value": page_name})
+    if time_range:
+        rows.append({"key": "time_preset", "value": str(time_range.get("preset", ""))})
+        rows.append({"key": "range_start", "value": str(time_range.get("start", ""))})
+        rows.append({"key": "range_end", "value": str(time_range.get("end", ""))})
+    if extra_filters:
+        for k, v in sorted(extra_filters.items(), key=lambda x: str(x[0])):
+            rows.append({"key": str(k), "value": _serialize_filter_value(v)})
+    return pd.DataFrame(rows)
+
+
+def dataframes_to_excel_with_meta(
+    sheets: dict[str, pd.DataFrame],
+    time_range: dict[str, Any] | None,
+    page_name: str,
+    extra_filters: dict[str, Any] | None = None,
+) -> bytes:
+    """Prepend Report_Info sheet, then write all other sheets (Excel 31-char sheet names)."""
+    meta = build_report_info_df(time_range, page_name, extra_filters)
+    ordered: dict[str, pd.DataFrame] = {"Report_Info": meta}
+    for name, df in sheets.items():
+        ordered[name] = df
+    return dataframes_to_excel_bytes(ordered)
+
+
+def csv_bytes_with_report_header(
+    report_info: pd.DataFrame,
+    sections: list[tuple[str, pd.DataFrame]],
+) -> bytes:
+    """UTF-8 BOM CSV: Report_Info block, then named sections separated by blank lines."""
+    lines: list[str] = []
+    lines.append("# Report_Info")
+    lines.append(report_info.to_csv(index=False).strip("\r\n"))
+    for section_title, df in sections:
+        lines.append("")
+        lines.append(f"# {section_title}")
+        if df is None or df.empty:
+            lines.append("(no data)")
+            continue
+        lines.append(df.to_csv(index=False).strip("\r\n"))
+    text = "\n".join(lines) + "\n"
+    return text.encode("utf-8-sig")
+
+
+def dash_send_excel_workbook(
+    content: bytes,
+    base_filename: str,
+) -> dict[str, Any]:
+    """Send multi-sheet Excel bytes via dcc.Download."""
+    from dash import dcc
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in base_filename)[:80]
+    return dcc.send_bytes(content, filename=f"{safe}_{ts}.xlsx")
+
+
+def dash_send_csv_bytes(
+    content: bytes,
+    base_filename: str,
+) -> dict[str, Any]:
+    from dash import dcc
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in base_filename)[:80]
+    return dcc.send_bytes(content, filename=f"{safe}_{ts}.csv")
+
+
 def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     buf = io.StringIO()
     df.to_csv(buf, index=False)

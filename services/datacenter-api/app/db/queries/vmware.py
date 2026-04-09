@@ -235,7 +235,9 @@ SELECT
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
     COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
     COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
+    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
+    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster ILIKE '%%KM%%'
@@ -274,7 +276,9 @@ SELECT
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
     COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
     COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
+    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
+    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster NOT ILIKE '%%KM%%'
@@ -375,7 +379,9 @@ SELECT
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
     COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
     COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
+    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
+    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
 FROM matched
 GROUP BY dc_code
 """
@@ -397,7 +403,9 @@ SELECT
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
     COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
     COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
+    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
+    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
 FROM matched
 GROUP BY dc_code
 """
@@ -456,7 +464,9 @@ SELECT
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
     COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
     COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
+    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
+    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster = ANY(%s::text[])
@@ -493,7 +503,9 @@ SELECT
     COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
     COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
     COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct
+    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
+    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
+    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster = ANY(%s::text[])

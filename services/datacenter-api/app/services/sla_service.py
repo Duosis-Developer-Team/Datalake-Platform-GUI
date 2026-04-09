@@ -16,6 +16,8 @@ SLA_API_KEY = os.getenv("SLA_API_KEY", "aura_yq3bFR0MxfOQR3GabuwS-EEzY8NdWKjra-g
 
 _DC_CODE_RE = re.compile(r"(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)", re.IGNORECASE)
 _STALE_AFTER_SECONDS = 60 * 60  # 1 hour
+# Redis TTL must align with stale threshold so in-memory staleness checks remain meaningful.
+SLA_CACHE_TTL_SECONDS = _STALE_AFTER_SECONDS
 
 
 @dataclass(frozen=True)
@@ -113,7 +115,7 @@ def refresh_sla_cache(time_range: dict) -> dict[str, Any]:
         "by_group_id": {str(k): vars(v) for k, v in by_group_id.items()},
     }
 
-    cache.set(key, cached_payload)
+    cache.set(key, cached_payload, ttl=SLA_CACHE_TTL_SECONDS)
     return cached_payload
 
 

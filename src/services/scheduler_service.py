@@ -13,9 +13,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.date import DateTrigger
 
-from src.utils.time_range import preset_to_range, PRESET_30_DAYS
-from src.utils.time_range import default_time_range
+from src.utils.time_range import cache_time_ranges, default_time_range
 from src.services import sla_service
+from src.services import api_client as api
 from src.services.db_service import WARMED_CUSTOMERS
 
 if TYPE_CHECKING:
@@ -25,6 +25,26 @@ logger = logging.getLogger(__name__)
 
 REFRESH_INTERVAL_MINUTES = 15
 SLA_REFRESH_INTERVAL_MINUTES = 60
+
+
+def warm_warmed_customer_caches(db_service: "DatabaseService") -> None:
+    """
+    Populate customer_assets cache for every standard reporting range (7d, 30d, previous month)
+    and every entry in WARMED_CUSTOMERS. Matches datacenter refresh_all_data range coverage.
+    """
+    for tr in cache_time_ranges():
+        for name in WARMED_CUSTOMERS:
+            db_service.get_customer_resources(name, tr)
+
+
+def refresh_warmed_customer_availability_bundles() -> None:
+    """
+    Force-refresh AuraNotify customer availability cache for WARMED_CUSTOMERS × cache_time_ranges.
+    Used by scheduler so page loads hit TTL cache instead of live HTTP every time.
+    """
+    for tr in cache_time_ranges():
+        for name in WARMED_CUSTOMERS:
+            api.get_customer_availability_bundle(name, tr, force_refresh=True)
 
 
 def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
@@ -106,47 +126,66 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
     except Exception as exc:
         logger.warning("Failed to schedule initial DC long-range warm-up: %s", exc)
 
-    # Step 3: immediately warm customer cache (last 30 days) in background
+    # Step 3: warm customer cache for 30d + previous month in background (7d already in warm_cache).
     try:
-        customer_range = preset_to_range(PRESET_30_DAYS)
-
-        def _warm_all_customers():
-            for name in WARMED_CUSTOMERS:
-                db_service.get_customer_resources(name, customer_range)
-
         scheduler.add_job(
-            func=_warm_all_customers,
+            func=lambda: warm_warmed_customer_caches(db_service),
             trigger=DateTrigger(run_date=datetime.now()),
             id="customer_initial_warm",
-            name="Initial warmed-customers cache warm-up (30d)",
+            name="Initial warmed-customers cache warm-up (all standard ranges)",
             replace_existing=True,
             misfire_grace_time=60,
         )
-        logger.info("Scheduled initial customer cache warm-up (last 30 days).")
+        logger.info("Scheduled initial customer cache warm-up (7d + 30d + previous month).")
     except Exception as exc:
         logger.warning("Failed to schedule initial customer cache warm-up: %s", exc)
 
     # Step 4: periodic customer cache refresh (write-through: get_customer_resources overwrites cache).
     try:
-        def _refresh_warmed_customer_caches():
-            current_range = preset_to_range(PRESET_30_DAYS)
-            for name in WARMED_CUSTOMERS:
-                db_service.get_customer_resources(name, current_range)
-
         scheduler.add_job(
-            func=_refresh_warmed_customer_caches,
+            func=lambda: warm_warmed_customer_caches(db_service),
             trigger=IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
             id="customer_warmed_refresh",
-            name="Warmed customers cache refresh (30d)",
+            name="Warmed customers cache refresh (7d + 30d + previous month)",
             replace_existing=True,
             misfire_grace_time=60,
         )
         logger.info(
-            "Scheduled customer cache refresh every %d minutes (30-day range).",
+            "Scheduled customer cache refresh every %d minutes (all standard ranges).",
             REFRESH_INTERVAL_MINUTES,
         )
     except Exception as exc:
         logger.warning("Failed to schedule customer cache refresh: %s", exc)
+
+    # Step 4a: customer availability (AuraNotify) — initial warm + same interval as DC cache refresh.
+    try:
+        scheduler.add_job(
+            func=refresh_warmed_customer_availability_bundles,
+            trigger=DateTrigger(run_date=datetime.now()),
+            id="customer_avail_initial_warm",
+            name="Initial customer availability bundle warm-up (AuraNotify)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled initial customer availability bundle warm-up.")
+    except Exception as exc:
+        logger.warning("Failed to schedule initial customer availability warm-up: %s", exc)
+
+    try:
+        scheduler.add_job(
+            func=refresh_warmed_customer_availability_bundles,
+            trigger=IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
+            id="customer_avail_refresh",
+            name="Customer availability bundle refresh (AuraNotify)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info(
+            "Scheduled customer availability bundle refresh every %d minutes.",
+            REFRESH_INTERVAL_MINUTES,
+        )
+    except Exception as exc:
+        logger.warning("Failed to schedule customer availability refresh: %s", exc)
 
     # Step 6: warm S3 cache once in the background (default range) so first S3 visits are fast.
     try:

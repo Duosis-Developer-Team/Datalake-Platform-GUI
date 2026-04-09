@@ -10,6 +10,7 @@ FAKE_DC_SUMMARY = [
         "id": "DC11",
         "name": "DC11",
         "location": "Istanbul",
+        "description": "Premier DC",
         "status": "Healthy",
         "platform_count": 2,
         "cluster_count": 3,
@@ -31,7 +32,7 @@ FAKE_DC_SUMMARY = [
 ]
 
 FAKE_DC_DETAIL = {
-    "meta": {"name": "DC11", "location": "Istanbul"},
+    "meta": {"name": "DC11", "location": "Istanbul", "description": "Premier DC"},
     "intel": {
         "clusters": 3,
         "hosts": 10,

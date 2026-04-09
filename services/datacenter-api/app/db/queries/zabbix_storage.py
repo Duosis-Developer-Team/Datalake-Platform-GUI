@@ -69,6 +69,7 @@ SELECT
 FROM latest
 JOIN public.discovery_netbox_inventory_device dev
     ON dev.id = latest.loki_id::bigint
+    AND dev.status_value = 'active'
 JOIN dc_map m
     ON m.location_name IN (dev.location_name, dev.site_name, dev.name)
 WHERE m.dc_name = %s

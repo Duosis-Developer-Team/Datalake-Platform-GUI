@@ -12,7 +12,13 @@ from dash_iconify import DashIconify
 from src.services import api_client as api
 from src.services import query_overrides as qo
 from src.queries.registry import QUERY_USAGE
-from src.utils.export_helpers import dash_send_dataframe
+from src.utils.export_helpers import (
+    build_report_info_df,
+    csv_bytes_with_report_header,
+    dash_send_csv_bytes,
+    dash_send_excel_workbook,
+    dataframes_to_excel_with_meta,
+)
 
 _EM_DASH = "\u2014"
 
@@ -410,12 +416,12 @@ def on_run(n_clicks, query_key, params_input):
     Output("qe-export-download", "data"),
     Input("qe-export-csv", "n_clicks"),
     Input("qe-export-xlsx", "n_clicks"),
-    Input("qe-export-pdf", "n_clicks"),
     State("qe-result-store", "data"),
     State("query-select", "value"),
+    State("app-time-range", "data"),
     prevent_initial_call=True,
 )
-def export_query_result(nc, nx, np, result, query_key):
+def export_query_result(nc, nx, result, query_key, time_range):
     ctx = callback_context
     if not ctx.triggered:
         return dash.no_update
@@ -423,14 +429,22 @@ def export_query_result(nc, nx, np, result, query_key):
     fmt_map = {
         "qe-export-csv": "csv",
         "qe-export-xlsx": "xlsx",
-        "qe-export-pdf": "pdf",
     }
     fmt = fmt_map.get(tid)
     if not fmt:
         return dash.no_update
     df = _result_to_dataframe(result)
     base = (query_key or "query_result").replace(" ", "_")
-    return dash_send_dataframe(df, base, fmt)
+    extra = {"selected_query": query_key or ""}
+    sheets = {"Query_Result": df}
+    if fmt == "xlsx":
+        content = dataframes_to_excel_with_meta(sheets, time_range, "Query_Explorer", extra)
+        return dash_send_excel_workbook(content, base)
+    report_info = build_report_info_df(time_range, "Query_Explorer", extra)
+    return dash_send_csv_bytes(
+        csv_bytes_with_report_header(report_info, [("Query_Result", df)]),
+        base,
+    )
 
 
 @callback(

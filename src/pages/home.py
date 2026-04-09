@@ -6,12 +6,15 @@ import plotly.graph_objects as go
 from src.services import api_client as api
 from src.utils.export_helpers import (
     records_to_dataframe,
-    dash_send_dataframe,
-    dataframes_to_excel_bytes,
-    dataframe_to_csv_bytes,
+    dataframes_to_excel_with_meta,
+    csv_bytes_with_report_header,
+    dash_send_excel_workbook,
+    dash_send_csv_bytes,
+    build_report_info_df,
 )
 from src.utils.time_range import default_time_range
 from src.utils.format_units import title_case
+from src.utils.dc_display import format_dc_display_name
 from src.components.charts import (
     create_energy_breakdown_chart,
     create_grouped_bar_chart,
@@ -204,12 +207,30 @@ def _ring_stat(value, label, color):
     )
 
 
-def _pct_badge(value):
-    """Return a color-coded dmc.Badge for CPU/RAM percentage."""
+def effective_max_pct(max_v, fallback_v) -> float:
+    """Use max when > 0, else fallback (avg/snapshot). For DC Summary arch_usage CPU/RAM."""
+    try:
+        mx = float(max_v)
+    except (TypeError, ValueError):
+        mx = 0.0
+    if mx > 0:
+        return round(mx, 1)
+    try:
+        fb = float(fallback_v)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(fb, 1)
+
+
+def _pct_badge_with_max_label(value):
+    """Color-coded usage badge with a faint \"max\" label (DC Summary table)."""
     try:
         v = float(value)
     except (TypeError, ValueError):
         v = 0.0
+
+    if v == 0.0:
+        return dmc.Text("\u2014", size="sm", c="dimmed", style={"textAlign": "right"})
 
     if v >= 80:
         color, variant = "red", "light"
@@ -218,11 +239,7 @@ def _pct_badge(value):
     else:
         color, variant = "teal", "light"
 
-    if v == 0.0:
-        return dmc.Text("\u2014", size="sm", c="dimmed", style={"textAlign": "right"})
-
     return dmc.Badge(
-        f"{v:.1f}%",
         color=color,
         variant=variant,
         radius="sm",
@@ -231,47 +248,49 @@ def _pct_badge(value):
             "fontWeight": 600,
             "letterSpacing": 0,
             "fontVariantNumeric": "tabular-nums",
-            "minWidth": "52px",
+            "minWidth": "64px",
             "textAlign": "center",
+            "textTransform": "none",
         },
-    )
-
-
-def _arch_usage_min_avg_max_row(label: str, mn, avg, mx):
-    """One resource line: label + min / avg / max badges (VMware time-series metrics)."""
-    return dmc.Group(
-        gap=6,
-        align="center",
-        wrap="wrap",
-        justify="flex-end",
-        children=[
-            dmc.Text(label, size="xs", c="dimmed", style={"minWidth": "28px"}),
-            dmc.Text("min", size="xs", c="dimmed"),
-            _pct_badge(mn),
-            dmc.Text("avg", size="xs", c="dimmed"),
-            _pct_badge(avg),
-            dmc.Text("max", size="xs", c="dimmed"),
-            _pct_badge(mx),
-        ],
+        children=dmc.Group(
+            gap=4,
+            align="center",
+            wrap="nowrap",
+            children=[
+                dmc.Text(
+                    f"{v:.1f}%",
+                    size="sm",
+                    fw=600,
+                    style={"fontVariantNumeric": "tabular-nums"},
+                ),
+                dmc.Text(
+                    "max",
+                    size="xs",
+                    c="dimmed",
+                    style={"opacity": 0.6, "fontWeight": 500, "lineHeight": 1},
+                ),
+            ],
+        ),
     )
 
 
 def _arch_usage_cell(usage: dict | None):
-    """Render architecture usage cell with CPU/RAM/Disk percentages."""
+    """Render architecture usage: peak (max) for CPU/RAM when available; faint max on each badge."""
     usage = usage or {}
     cpu = usage.get("cpu_pct", 0.0)
     ram = usage.get("ram_pct", 0.0)
     disk = usage.get("disk_pct", None)
 
-    # IBM Power snapshot: no min/max time series — single badge per metric.
-    if "cpu_pct_max" not in usage:
+    if "cpu_pct_max" in usage:
+        cpu_show = effective_max_pct(usage.get("cpu_pct_max"), cpu)
+        ram_show = effective_max_pct(usage.get("ram_pct_max"), ram)
         rows = [
             dmc.Group(
                 gap=6,
                 align="center",
                 children=[
                     dmc.Text("CPU", size="xs", c="dimmed"),
-                    _pct_badge(cpu),
+                    _pct_badge_with_max_label(cpu_show),
                 ],
             ),
             dmc.Group(
@@ -279,7 +298,7 @@ def _arch_usage_cell(usage: dict | None):
                 align="center",
                 children=[
                     dmc.Text("RAM", size="xs", c="dimmed"),
-                    _pct_badge(ram),
+                    _pct_badge_with_max_label(ram_show),
                 ],
             ),
         ]
@@ -290,24 +309,28 @@ def _arch_usage_cell(usage: dict | None):
                     align="center",
                     children=[
                         dmc.Text("Disk", size="xs", c="dimmed"),
-                        _pct_badge(disk),
+                        _pct_badge_with_max_label(disk),
                     ],
                 )
             )
         return dmc.Stack(gap=4, align="flex-end", children=rows)
 
     rows = [
-        _arch_usage_min_avg_max_row(
-            "CPU",
-            usage.get("cpu_pct_min", 0.0),
-            cpu,
-            usage.get("cpu_pct_max", 0.0),
+        dmc.Group(
+            gap=6,
+            align="center",
+            children=[
+                dmc.Text("CPU", size="xs", c="dimmed"),
+                _pct_badge_with_max_label(cpu),
+            ],
         ),
-        _arch_usage_min_avg_max_row(
-            "RAM",
-            usage.get("ram_pct_min", 0.0),
-            ram,
-            usage.get("ram_pct_max", 0.0),
+        dmc.Group(
+            gap=6,
+            align="center",
+            children=[
+                dmc.Text("RAM", size="xs", c="dimmed"),
+                _pct_badge_with_max_label(ram),
+            ],
         ),
     ]
     if disk is not None:
@@ -317,7 +340,7 @@ def _arch_usage_cell(usage: dict | None):
                 align="center",
                 children=[
                     dmc.Text("Disk", size="xs", c="dimmed"),
-                    _pct_badge(disk),
+                    _pct_badge_with_max_label(disk),
                 ],
             )
         )
@@ -421,7 +444,7 @@ def build_overview(time_range=None):
 
     export_summary_rows = [
         {
-            "DC": s.get("name", ""),
+            "DC": format_dc_display_name(s.get("name"), s.get("description")) or s.get("name", ""),
             "Location": s.get("location", ""),
             "Hosts": s.get("host_count", 0),
             "VMs": s.get("vm_count", 0),
@@ -697,8 +720,8 @@ def build_overview(time_range=None):
                         style={"marginBottom": "4px"},
                     ),
                     dmc.Text(
-                        "CPU & RAM: min / avg / max from cluster_metrics over the report period. "
-                        "Disk: allocated vs capacity (single value). IBM Power: current snapshot.",
+                        "CPU & RAM: peak (max) from cluster_metrics over the report period. "
+                        "Disk: allocated vs capacity. IBM Power: current snapshot.",
                         size="xs",
                         c="dimmed",
                         style={"marginBottom": "18px"},
@@ -821,7 +844,13 @@ def build_overview(time_range=None):
                             ),
                             html.Tbody([
                                 html.Tr([
-                                    html.Td(_dc_link(s["name"], s["id"])),
+                                    html.Td(
+                                        _dc_link(
+                                            format_dc_display_name(s.get("name"), s.get("description"))
+                                            or s.get("name", s["id"]),
+                                            s["id"],
+                                        )
+                                    ),
                                     html.Td(
                                         dmc.Text(s["location"], size="sm", c="dimmed")
                                     ),
@@ -870,42 +899,28 @@ def build_overview(time_range=None):
     Output("home-export-download", "data"),
     Input("home-export-csv", "n_clicks"),
     Input("home-export-xlsx", "n_clicks"),
-    Input("home-export-pdf", "n_clicks"),
     State("home-export-store", "data"),
+    State("app-time-range", "data"),
     prevent_initial_call=True,
 )
-def export_home_overview(nc_csv, nc_xlsx, nc_pdf, store):
+def export_home_overview(nc_csv, nc_xlsx, store, time_range):
     if not store or not isinstance(store, dict):
         raise dash.exceptions.PreventUpdate
     tid = callback_context.triggered_id
     fmt_map = {
         "home-export-csv": "csv",
         "home-export-xlsx": "xlsx",
-        "home-export-pdf": "pdf",
     }
     fmt = fmt_map.get(str(tid), "csv")
     summaries = store.get("summaries") or []
     phys = store.get("phys_inv") or []
     df_sum = records_to_dataframe(summaries if isinstance(summaries, list) else [])
     df_phys = records_to_dataframe(phys if isinstance(phys, list) else [])
-    period = store.get("period", "report")
-    from dash import dcc
+    sheets = {"DC_Summary": df_sum, "Physical_Inventory": df_phys}
 
     if fmt == "xlsx":
-        content = dataframes_to_excel_bytes({"DC_Summary": df_sum, "Physical_Inventory": df_phys})
-        return dcc.send_bytes(content, filename=f"home_overview_{period}.xlsx")
-    if fmt == "pdf":
-        df = df_sum if not df_sum.empty else df_phys
-        return dash_send_dataframe(df, "home_overview", "pdf")
-    # CSV: DC summary then physical inventory blocks
-    import pandas as pd
-
-    parts = []
-    if not df_sum.empty:
-        parts.append(df_sum)
-    if not df_phys.empty:
-        if parts:
-            parts.append(pd.DataFrame([{"": ""}]))
-        parts.append(df_phys)
-    df_csv = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame({"Message": ["No data"]})
-    return dcc.send_bytes(dataframe_to_csv_bytes(df_csv), filename=f"home_overview_{period}.csv")
+        content = dataframes_to_excel_with_meta(sheets, time_range, "Executive_Overview", None)
+        return dash_send_excel_workbook(content, "home_overview")
+    report_info = build_report_info_df(time_range, "Executive_Overview", None)
+    sections = [("DC_Summary", df_sum), ("Physical_Inventory", df_phys)]
+    return dash_send_csv_bytes(csv_bytes_with_report_header(report_info, sections), "home_overview")

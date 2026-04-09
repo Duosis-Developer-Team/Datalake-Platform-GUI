@@ -1,5 +1,6 @@
 # DC Detail view - Capacity Planning
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup | Physical Inventory
+import json
 import dash
 from dash import html, dcc, dash_table, callback, Input, Output, State
 import dash_mantine_components as dmc
@@ -33,7 +34,16 @@ from src.components.backup_panel import (
     build_veeam_panel,
 )
 from src.services import sla_service
-from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe
+from src.services import product_catalog as product_catalog_service
+from src.utils.dc_display import format_dc_display_name
+from src.utils.export_helpers import (
+    records_to_dataframe,
+    build_report_info_df,
+    dataframes_to_excel_with_meta,
+    csv_bytes_with_report_header,
+    dash_send_excel_workbook,
+    dash_send_csv_bytes,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -41,29 +51,430 @@ from src.utils.export_helpers import records_to_dataframe, dash_send_dataframe
 # ---------------------------------------------------------------------------
 
 
-def _build_dc_export_rows(dc_code: str, data: dict, phys_inv: dict) -> list[dict]:
-    """Flatten DC detail payload for CSV/Excel/PDF export."""
-    rows: list[dict] = []
-    meta = data.get("meta") or {}
-    rows.append({"section": "meta", "key": "dc_code", "value": dc_code})
-    for k, v in meta.items():
-        rows.append({"section": "meta", "key": str(k), "value": v})
-    for block_name in ("classic", "hyperconv", "power", "energy"):
-        block = data.get(block_name)
-        if not isinstance(block, dict):
-            continue
-        for k, v in block.items():
-            rows.append({"section": block_name, "key": str(k), "value": v})
+def _export_cell_value(v):
+    if isinstance(v, (dict, list)):
+        try:
+            return json.dumps(v, ensure_ascii=False, default=str)[:8000]
+        except Exception:
+            return str(v)[:8000]
+    return v
+
+
+def _scalar_block_to_wide_row(block: dict | None) -> list[dict]:
+    if not isinstance(block, dict) or not block:
+        return []
+    row = {str(k): _export_cell_value(block[k]) for k in sorted(block.keys(), key=str)}
+    return [row]
+
+
+def _meta_export_rows(meta: dict | None, dc_code: str) -> list[dict]:
+    rows = [{"field": "dc_code", "value": dc_code}]
+    if not isinstance(meta, dict):
+        return rows
+    for k in sorted(meta.keys(), key=str):
+        rows.append({"field": str(k), "value": _export_cell_value(meta[k])})
+    return rows
+
+
+def _phys_by_role_export_rows(phys_inv: dict) -> list[dict]:
     br = phys_inv.get("by_role") or []
+    out: list[dict] = []
     if isinstance(br, list):
         for item in br:
             if isinstance(item, dict):
-                rows.append({
-                    "section": "phys_inv_by_role",
-                    "key": str(item.get("role", "")),
-                    "value": item.get("count", ""),
-                })
-    return rows
+                out.append({"role": str(item.get("role", "")), "count": item.get("count", "")})
+    return out
+
+
+def _network_interface_export_rows(interface_table: dict | None) -> list[dict]:
+    if not isinstance(interface_table, dict):
+        return []
+    items = interface_table.get("items") or []
+    out: list[dict] = []
+    for r in items:
+        if isinstance(r, dict):
+            out.append({str(k): _export_cell_value(v) for k, v in r.items()})
+    return out
+
+
+def _backup_rows_for_export(product: str, payload: dict | None) -> list[dict]:
+    if not isinstance(payload, dict):
+        return []
+    raw_rows = payload.get("rows")
+    if isinstance(raw_rows, list) and raw_rows:
+        out: list[dict] = []
+        for r in raw_rows:
+            if isinstance(r, dict):
+                row = {"product": product}
+                for k, v in r.items():
+                    row[str(k)] = _export_cell_value(v)
+                out.append(row)
+        return out
+    if product == "NetBackup":
+        pools = payload.get("pools") or []
+        return [
+            {"product": product, **{str(k): _export_cell_value(v) for k, v in p.items()}}
+            for p in pools
+            if isinstance(p, dict)
+        ]
+    if product == "Zerto":
+        sites = payload.get("sites") or []
+        return [
+            {"product": product, **{str(k): _export_cell_value(v) for k, v in s.items()}}
+            for s in sites
+            if isinstance(s, dict)
+        ]
+    if product == "Veeam":
+        repos = payload.get("repos") or []
+        return [
+            {"product": product, **{str(k): _export_cell_value(v) for k, v in x.items()}}
+            for x in repos
+            if isinstance(x, dict)
+        ]
+    return []
+
+
+def _build_dc_export_sheets(
+    dc_code: str,
+    data: dict,
+    phys_inv: dict,
+    net_interface_table: dict | None,
+    nb_data: dict | None,
+    zerto_data: dict | None,
+    veeam_data: dict | None,
+) -> dict[str, list[dict]]:
+    """Tabular sections for CSV/Excel export (JSON-serializable)."""
+    sheets: dict[str, list[dict]] = {}
+    meta = data.get("meta") or {}
+    sheets["Meta"] = _meta_export_rows(meta, dc_code)
+
+    classic = data.get("classic")
+    if isinstance(classic, dict) and classic:
+        sheets["Classic_Metrics"] = _scalar_block_to_wide_row(classic)
+
+    hyperconv = data.get("hyperconv")
+    if isinstance(hyperconv, dict) and hyperconv:
+        sheets["HyperConv_Metrics"] = _scalar_block_to_wide_row(hyperconv)
+
+    power = data.get("power")
+    if isinstance(power, dict) and power:
+        sheets["Power_Metrics"] = _scalar_block_to_wide_row(power)
+
+    energy = data.get("energy")
+    if isinstance(energy, dict) and energy:
+        sheets["Energy_Metrics"] = _scalar_block_to_wide_row(energy)
+
+    intel = data.get("intel")
+    if isinstance(intel, dict) and intel:
+        sheets["Intel_Legacy"] = _scalar_block_to_wide_row(intel)
+
+    phys = _phys_by_role_export_rows(phys_inv)
+    if phys:
+        sheets["Physical_Inventory"] = phys
+
+    net_rows = _network_interface_export_rows(net_interface_table)
+    if net_rows:
+        sheets["Network_Interfaces"] = net_rows
+
+    backup_combined: list[dict] = []
+    backup_combined.extend(_backup_rows_for_export("NetBackup", nb_data))
+    backup_combined.extend(_backup_rows_for_export("Zerto", zerto_data))
+    backup_combined.extend(_backup_rows_for_export("Veeam", veeam_data))
+    if backup_combined:
+        sheets["Backup"] = backup_combined
+
+    return sheets
+
+
+def _availability_downtime_table(downtimes: list):
+    """Table for AuraNotify downtime dict rows."""
+    rows_dt = []
+    for d in downtimes or []:
+        if not isinstance(d, dict):
+            continue
+        rows_dt.append(
+            html.Tr(
+                [
+                    html.Td(str(d.get("start_time") or "-")),
+                    html.Td(str(d.get("end_time") or "-")),
+                    html.Td(str(d.get("duration_minutes") or "-")),
+                    html.Td(str(d.get("reason") or "-")),
+                    html.Td(str(d.get("senaryo") or "-")),
+                    html.Td(str(d.get("outage_status") or "-")),
+                    html.Td(str(d.get("service_impact") or "-")),
+                    html.Td(str(d.get("dc_impact") or "-")),
+                ]
+            )
+        )
+    if not rows_dt:
+        return dmc.Text("No rows", size="xs", c="dimmed")
+    return dmc.Table(
+        striped=True,
+        highlightOnHover=True,
+        withTableBorder=True,
+        withColumnBorders=True,
+        children=[
+            html.Thead(
+                html.Tr(
+                    [
+                        html.Th("Start"),
+                        html.Th("End"),
+                        html.Th("Duration (min)"),
+                        html.Th("Reason"),
+                        html.Th("Senaryo"),
+                        html.Th("Outage"),
+                        html.Th("Service impact"),
+                        html.Th("DC impact"),
+                    ]
+                )
+            ),
+            html.Tbody(rows_dt),
+        ],
+    )
+
+
+def _build_dc_availability_tab(item: dict | None, dc_display_name: str):
+    """
+    AuraNotify datacenter-services SLA plus full product-catalog service tree.
+
+    Every Excel service is listed under its hierarchy; availability comes from the
+    best-matching AuraNotify category, or 100%% when there is no match/outage data.
+    """
+    hierarchy = product_catalog_service.load_service_hierarchy()
+    tree = product_catalog_service.nest_service_catalog(hierarchy)
+    categories = (item.get("categories") or []) if item else []
+
+    alerts = []
+    if not item:
+        alerts.append(
+            dmc.Alert(
+                "No matching AuraNotify datacenter group for this DC. "
+                "Set AURANOTIFY_API_KEY or ANOTIFY_API_KEY and ensure `group_name` matches the DC name or code. "
+                "Services below show 100% until a match exists.",
+                color="yellow",
+            )
+        )
+    if not hierarchy:
+        alerts.append(
+            dmc.Alert(
+                "Product catalog not loaded (expected data/product_catalog.xlsx, sheet Ana Servis Kategorileri).",
+                color="orange",
+            )
+        )
+
+    pct = float(item.get("availability_pct") or 0.0) if item else 0.0
+    period_min = item.get("period_min") if item else None
+    total_dm = item.get("total_downtime_min") if item else None
+    group_name = (item.get("group_name") or "—") if item else "—"
+
+    main_items = []
+    for mi, (main_title, subs) in enumerate(tree.items()):
+        sub_acc_items = []
+        for sj, (sub_title, services) in enumerate(subs.items()):
+            service_blocks = []
+            for svc_name in services:
+                av_pct, matched = product_catalog_service.service_availability_pct(svc_name, categories)
+                dts = (matched or {}).get("downtimes") or [] if matched else []
+                matched_cat = (matched or {}).get("category") if matched else None
+                downtime_min = (matched or {}).get("total_downtime_min") if matched else None
+                badge_color = "teal" if av_pct >= 99.999 else "yellow" if av_pct >= 99.9 else "red"
+                detail = []
+                if matched_cat:
+                    detail.append(
+                        dmc.Text(f"AuraNotify category: {matched_cat}", size="xs", c="dimmed"),
+                    )
+                if dts:
+                    detail.append(
+                        dmc.Stack(
+                            gap="xs",
+                            mt="xs",
+                            children=[
+                                dmc.Text("Downtime records", size="xs", fw=600, c="#2B3674"),
+                                _availability_downtime_table(dts),
+                            ],
+                        )
+                    )
+                paper_children = [
+                    dmc.Group(
+                        justify="space-between",
+                        align="flex-start",
+                        wrap="wrap",
+                        children=[
+                            dmc.Text(svc_name, size="sm", fw=600, style={"flex": "1 1 200px"}),
+                            dmc.Group(
+                                gap="xs",
+                                align="center",
+                                children=[
+                                    dmc.Badge(f"{av_pct:.4f} %", color=badge_color, variant="light"),
+                                    dmc.Text(
+                                        f"{downtime_min} min" if downtime_min is not None else "—",
+                                        size="xs",
+                                        c="dimmed",
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                ]
+                if detail:
+                    paper_children.append(dmc.Stack(gap=4, mt="xs", children=detail))
+                service_blocks.append(
+                    dmc.Paper(
+                        withBorder=True,
+                        p="sm",
+                        radius="md",
+                        mb="xs",
+                        children=paper_children,
+                    )
+                )
+            sub_acc_items.append(
+                dmc.AccordionItem(
+                    value=f"avail-m{mi}-s{sj}",
+                    children=[
+                        dmc.AccordionControl(
+                            dmc.Text(sub_title, fw=600, size="sm", c="#2B3674"),
+                        ),
+                        dmc.AccordionPanel(
+                            p="sm",
+                            children=[dmc.Stack(gap="xs", children=service_blocks)],
+                        ),
+                    ],
+                )
+            )
+        inner = (
+            dmc.Accordion(
+                multiple=True,
+                variant="separated",
+                radius="md",
+                chevronPosition="right",
+                children=sub_acc_items,
+            )
+            if sub_acc_items
+            else dmc.Text("No sub-categories", size="sm", c="dimmed")
+        )
+        main_items.append(
+            dmc.AccordionItem(
+                value=f"avail-main-{mi}",
+                children=[
+                    dmc.AccordionControl(
+                        dmc.Text(main_title, fw=700, size="sm", c="#2B3674"),
+                    ),
+                    dmc.AccordionPanel(p="sm", children=[inner]),
+                ],
+            )
+        )
+
+    hierarchy_section = html.Div(
+        className="nexus-card",
+        style={"padding": "24px", "overflowX": "auto"},
+        children=[
+            dmc.Text("Service availability (product catalog)", fw=700, size="lg", c="#2B3674", mb="xs"),
+            dmc.Text(
+                "All services from the product list hierarchy; values merge from AuraNotify when a category matches.",
+                size="xs",
+                c="dimmed",
+                mb="md",
+            ),
+            dmc.Accordion(
+                multiple=True,
+                variant="separated",
+                radius="md",
+                chevronPosition="right",
+                children=main_items,
+            )
+            if main_items
+            else dmc.Text("No catalog entries.", c="dimmed"),
+        ],
+    )
+
+    cat_rows = []
+    for cat in categories:
+        if not isinstance(cat, dict):
+            continue
+        cat_rows.append(
+            html.Tr(
+                [
+                    html.Td(str(cat.get("category") or "-")),
+                    html.Td(f"{float(cat.get('availability_pct') or 0):.4f}"),
+                    html.Td(str(cat.get("total_downtime_min") or "-")),
+                    html.Td(str(cat.get("record_count") or "-")),
+                ]
+            )
+        )
+
+    stack_children: list = [
+        dmc.Text(f"DC: {dc_display_name}", size="sm", c="dimmed"),
+    ]
+    stack_children.extend(alerts)
+    stack_children.append(
+        dmc.SimpleGrid(
+            cols=3,
+            spacing="lg",
+            children=[
+                dmc.Card(
+                    withBorder=True,
+                    padding="lg",
+                    radius="md",
+                    children=[
+                        dmc.Text("Overall availability", size="xs", c="dimmed", tt="uppercase"),
+                        dmc.Text(f"{pct:.4f} %" if item else "—", fw=800, size="xl", c="#2B3674"),
+                        dmc.Text(str(group_name), size="sm", c="dimmed"),
+                    ],
+                ),
+                dmc.Card(
+                    withBorder=True,
+                    padding="lg",
+                    radius="md",
+                    children=[
+                        dmc.Text("Period (minutes)", size="xs", c="dimmed"),
+                        dmc.Text(str(period_min if period_min is not None else "—"), fw=700, size="lg"),
+                    ],
+                ),
+                dmc.Card(
+                    withBorder=True,
+                    padding="lg",
+                    radius="md",
+                    children=[
+                        dmc.Text("Total downtime (min)", size="xs", c="dimmed"),
+                        dmc.Text(str(total_dm if total_dm is not None else "—"), fw=700, size="lg"),
+                    ],
+                ),
+            ],
+        )
+    )
+    stack_children.append(hierarchy_section)
+    stack_children.append(
+        html.Div(
+            className="nexus-card nexus-table",
+            style={"padding": "24px", "overflowX": "auto"},
+            children=[
+                dmc.Text("AuraNotify categories (raw)", fw=700, size="lg", c="#2B3674", mb="xs"),
+                dmc.Table(
+                    striped=True,
+                    highlightOnHover=True,
+                    children=[
+                        html.Thead(
+                            html.Tr(
+                                [
+                                    html.Th("Category"),
+                                    html.Th("Availability %"),
+                                    html.Th("Total downtime (min)"),
+                                    html.Th("Records"),
+                                ]
+                            )
+                        ),
+                        html.Tbody(
+                            cat_rows
+                            if cat_rows
+                            else [html.Tr([html.Td("No categories", colSpan=4)])],
+                        ),
+                    ],
+                ),
+            ],
+        )
+    )
+
+    return dmc.Stack(gap="lg", children=stack_children)
 
 
 def _has_compute_data(d: dict | None) -> bool:
@@ -1143,7 +1554,6 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
     return dmc.Stack(
         gap="lg",
         children=[
-            dcc.Store(id="net-filters-store", data=net_filters),
             dmc.SimpleGrid(
                 cols=3,
                 spacing="lg",
@@ -1626,19 +2036,22 @@ def build_dc_view(dc_id, time_range=None):
     has_s3 = bool(s3_data.get("pools"))
 
     dc_name = data["meta"]["name"]
-    dc_loc  = data["meta"]["location"]
+    dc_loc = data["meta"]["location"]
+    dc_desc = (data.get("meta") or {}).get("description") or ""
+    dc_display = format_dc_display_name(dc_name, dc_desc)
 
     batch2 = parallel_execute(
         {
             "phys_inv": lambda: api.get_physical_inventory_dc(dc_name),
             "san_switches": lambda: api.get_dc_san_switches(dc_id, tr),
             "net_filters": lambda: api.get_dc_network_filters(dc_id, tr),
+            "aura_dc": lambda: api.get_dc_availability_sla_item(str(dc_id), dc_name, tr),
         }
     )
+    aura_dc_item = batch2.get("aura_dc")
     phys_inv = batch2["phys_inv"]
     has_phys_inv = phys_inv.get("total", 0) > 0
 
-    export_rows = _build_dc_export_rows(str(dc_id), data, phys_inv)
     export_group = dmc.Group(
         gap=6,
         align="center",
@@ -1672,6 +2085,16 @@ def build_dc_view(dc_id, time_range=None):
     nb_data = api.get_dc_netbackup_pools(dc_id, tr)
     zerto_data = api.get_dc_zerto_sites(dc_id, tr)
     veeam_data = api.get_dc_veeam_repos(dc_id, tr)
+
+    export_sheets = _build_dc_export_sheets(
+        str(dc_id),
+        data,
+        phys_inv,
+        net_interface_table,
+        nb_data,
+        zerto_data,
+        veeam_data,
+    )
 
     # Determine which sections actually have data
     has_classic = _has_compute_data(classic)
@@ -1708,6 +2131,8 @@ def build_dc_view(dc_id, time_range=None):
     # has_s3 = bool(s3_data.get("pools"))
 
     # Determine default active outer tab: first tab that actually has data
+    has_avail = True
+
     tabs_order = [
         ("summary", has_summary),
         ("virt", has_virt),
@@ -1715,6 +2140,7 @@ def build_dc_view(dc_id, time_range=None):
         ("backup", has_backup),
         ("phys-inv", has_phys_inv),
         ("network", has_network or has_san),
+        ("avail", has_avail),
     ]
     default_outer_tab = next((t for t, ok in tabs_order if ok), "summary")
 
@@ -1743,9 +2169,14 @@ def build_dc_view(dc_id, time_range=None):
         )
 
     return html.Div([
+        dcc.Store(id="net-filters-store", data=net_filters or {}),
         dcc.Store(
             id="dc-export-store",
-            data={"dc_name": dc_name, "rows": export_rows},
+            data={
+                "dc_name": dc_name,
+                "dc_code": str(dc_id),
+                "sheets": export_sheets,
+            },
         ),
         dcc.Download(id="dc-export-download"),
         dmc.Tabs(
@@ -1755,7 +2186,7 @@ def build_dc_view(dc_id, time_range=None):
             value=default_outer_tab,
             children=[
                 create_detail_header(
-                    title=dc_name,
+                    title=dc_display,
                     back_href="/datacenters",
                     back_label="Data Centers",
                     subtitle_badge=f"­şôı {dc_loc}" if dc_loc else None,
@@ -1772,6 +2203,7 @@ def build_dc_view(dc_id, time_range=None):
                             dmc.TabsTab("Backup & Replication", value="backup") if has_backup else None,
                             dmc.TabsTab("Physical Inventory", value="phys-inv") if has_phys_inv else None,
                             dmc.TabsTab("Network", value="network") if (has_network or has_san) else None,
+                            dmc.TabsTab("Availability", value="avail"),
                         ],
                     ),
                 ),
@@ -2016,6 +2448,17 @@ def build_dc_view(dc_id, time_range=None):
                         ],
                     ),
                 ) if (has_network or has_san) else None,
+
+                dmc.TabsPanel(
+                    value="avail",
+                    children=dmc.Stack(
+                        gap="lg",
+                        style={"padding": "0 30px"},
+                        children=[_build_dc_availability_tab(aura_dc_item, dc_display)],
+                    ),
+                )
+                if has_avail
+                else None,
             ],
         )
     ])
@@ -2029,21 +2472,59 @@ def layout(dc_id=None):
     Output("dc-export-download", "data"),
     Input("dc-export-csv", "n_clicks"),
     Input("dc-export-xlsx", "n_clicks"),
-    Input("dc-export-pdf", "n_clicks"),
     State("dc-export-store", "data"),
+    State("app-time-range", "data"),
+    State("net-filters-store", "data"),
     prevent_initial_call=True,
 )
-def export_dc_detail(nc, nx, np, store):
+def export_dc_detail(nc, nx, store, time_range, net_filters):
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update
     tid = ctx.triggered[0]["prop_id"].split(".")[0]
-    fmt_map = {"dc-export-csv": "csv", "dc-export-xlsx": "xlsx", "dc-export-pdf": "pdf"}
+    fmt_map = {"dc-export-csv": "csv", "dc-export-xlsx": "xlsx"}
     fmt = fmt_map.get(tid)
     if not fmt:
         return dash.no_update
     store = store or {}
-    rows = store.get("rows") or []
     base = str(store.get("dc_name") or "dc_detail")
-    df = records_to_dataframe(rows)
-    return dash_send_dataframe(df, base, fmt)
+    extra = {
+        "dc_code": store.get("dc_code", ""),
+        "network_filters": net_filters,
+    }
+    sheets_raw = store.get("sheets")
+    if not isinstance(sheets_raw, dict):
+        sheets_raw = {}
+    if not sheets_raw and store.get("rows"):
+        sheets_raw = {"Legacy": store.get("rows") or []}
+
+    sheet_order = [
+        "Meta",
+        "Classic_Metrics",
+        "HyperConv_Metrics",
+        "Power_Metrics",
+        "Energy_Metrics",
+        "Intel_Legacy",
+        "Physical_Inventory",
+        "Network_Interfaces",
+        "Backup",
+        "Legacy",
+    ]
+    dfs = {}
+    for name in sheet_order:
+        recs = sheets_raw.get(name)
+        if recs:
+            dfs[name] = records_to_dataframe(recs if isinstance(recs, list) else [])
+    for name, recs in sheets_raw.items():
+        if name not in dfs and isinstance(recs, list):
+            dfs[name] = records_to_dataframe(recs)
+
+    if fmt == "xlsx":
+        content = dataframes_to_excel_with_meta(dfs, time_range, "DC_Detail", extra)
+        return dash_send_excel_workbook(content, base)
+    report_info = build_report_info_df(time_range, "DC_Detail", extra)
+    sections = [(k, v) for k, v in dfs.items()]
+    if not sections:
+        sections = [("Data", records_to_dataframe([]))]
+    csv_body = csv_bytes_with_report_header(report_info, sections)
+    return dash_send_csv_bytes(csv_body, base)

@@ -777,3 +777,11 @@ DEĞİŞMEYEN:
 - `db_service.py` (2 satır ekleme)
 - `style.css` (4 CSS kuralı + 1 keyframe)
 - `datacenters.py` (1 yeni fonksiyon + grid bloğu değişimi)
+
+---
+
+## Güncelleme — 2026-04-02 (DC görünen ad + availability katalog)
+
+- **Kart başlığı:** `format_dc_display_name(name, description)` — NetBox `loki_locations` `name` + `description` (örn. `DC13 - Equinix IL2 DC`). Dosya: `src/utils/dc_display.py`, `src/pages/datacenters.py`.
+- **API:** `GET /api/v1/datacenters/summary` ve DC detail `meta` alanına `description` eklendi (`datacenter-api` + `schemas.py`).
+- **DC Availability sekmesi:** `data/product_catalog.xlsx` (sheet `Ana Servis Kategorileri`) ile tüm servis ağacı; AuraNotify kategori eşlemesi `src/services/product_catalog.py`.

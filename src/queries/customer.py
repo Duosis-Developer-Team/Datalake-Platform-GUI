@@ -779,7 +779,8 @@ ORDER BY "Source", "VM Name"
 """
 
 # --- Physical Inventory (discovery_netbox_inventory_device) ---
-# All aggregation and filtering is done in Python (db_service) after loading this raw snapshot.
+# Only active devices (same convention as loki_locations DC list: status_value = 'active').
+# Further aggregation/filtering is done in Python (db_service) after loading this snapshot.
 # Location resolution uses the in-memory loki LOCATION_DC_MAP (loki.py), not a SQL JOIN.
 #
 # The table is append-only (one row per device per collection run); DISTINCT ON keeps only
@@ -798,5 +799,6 @@ SELECT DISTINCT ON (name, site_id, location_id)
     location_id,
     location_name
 FROM public.discovery_netbox_inventory_device
+WHERE status_value = 'active'
 ORDER BY name, site_id, location_id, collection_time DESC NULLS LAST
 """
