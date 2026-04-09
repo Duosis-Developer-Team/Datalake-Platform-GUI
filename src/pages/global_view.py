@@ -760,7 +760,7 @@ def build_global_view(time_range=None):
     tr = time_range or default_time_range()
     summaries = api.get_all_datacenters_summary(tr)
     globe_data_array = _build_globe_data(summaries)
-    export_rows = _global_export_rows(summaries)
+    export_rows = _global_export_table(summaries)
 
     return html.Div([
         dcc.Store(id="selected-region-store", data=None),
