@@ -3,10 +3,9 @@ import re
 import logging
 import time
 from contextlib import contextmanager
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-import psycopg2
 from psycopg2 import pool as pg_pool
 from psycopg2 import OperationalError
 from psycopg2.pool import PoolError
@@ -1030,19 +1029,26 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
 """
         rows = self._run_rows(cursor, sql, (pattern, pattern))
         cap_tb, used_tb = 0.0, 0.0
+        def parse_capacity(val: str) -> float:
+            if not val:
+                return 0.0
+            val = str(val).upper().strip()
+            try:
+                num = float(''.join(c for c in val if c.isdigit() or c == '.'))
+                if 'GB' in val:
+                    return num / 1024.0
+                if 'MB' in val:
+                    return num / (1024.0**2)
+                if 'PB' in val:
+                    return num * 1024.0
+                return num
+            except Exception:
+                return 0.0
+
         for row in rows:
-            if not row or len(row) < 2: continue
+            if not row or len(row) < 2:
+                continue
             cap_str, used_str = row
-            def parse_capacity(val: str) -> float:
-                if not val: return 0.0
-                val = str(val).upper().strip()
-                try:
-                    num = float(''.join(c for c in val if c.isdigit() or c == '.'))
-                    if 'GB' in val: return num / 1024.0
-                    if 'MB' in val: return num / (1024.0**2)
-                    if 'PB' in val: return num * 1024.0
-                    return num
-                except Exception: return 0.0
             cap_tb += parse_capacity(cap_str)
             used_tb += parse_capacity(used_str)
         return (cap_tb, used_tb)
@@ -1273,15 +1279,20 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             )
 
         def _parse_capacity(val: str) -> float:
-            if not val: return 0.0
+            if not val:
+                return 0.0
             val = str(val).upper().strip()
             try:
                 num = float(''.join(c for c in val if c.isdigit() or c == '.'))
-                if 'GB' in val: return num / 1024.0
-                if 'MB' in val: return num / (1024.0**2)
-                if 'PB' in val: return num * 1024.0
+                if 'GB' in val:
+                    return num / 1024.0
+                if 'MB' in val:
+                    return num / (1024.0**2)
+                if 'PB' in val:
+                    return num * 1024.0
                 return num
-            except Exception: return 0.0
+            except Exception:
+                return 0.0
 
 
         # ---- Map batch rows back to DC codes ----
@@ -1303,14 +1314,14 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
         ibm_storage_tb: dict[str, tuple[float, float]] = {}
         for row in ibm_raw.get("ibm_storage_raw", []):
-            if not row or len(row) < 4: continue
+            if not row or len(row) < 4:
+                continue
             name_val, loc_val, cap_str, used_str = row
             dc = _extract_dc(f"{name_val or ''} {loc_val or ''}")
             if not dc:
                 dc = _canonical_dc(name_val)
             if not dc:
                 dc = _canonical_dc(loc_val)
-                
             if dc:
                 cap_tb = _parse_capacity(cap_str)
                 used_tb = _parse_capacity(used_str)
