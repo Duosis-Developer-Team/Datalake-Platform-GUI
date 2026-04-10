@@ -274,30 +274,21 @@ def build_default_permission_roots() -> list[PermissionNode]:
         ],
     )
 
-    admin_grp = _n(
-        "grp:admin",
-        "Administration",
-        "page_group",
-        icon="solar:shield-user-bold-duotone",
-        sort_order=50,
-        children=[
-            _n("page:admin_users", "User Management", "config", route_pattern="/admin/users", sort_order=10),
-            _n("page:admin_roles", "Role Management", "config", route_pattern="/admin/roles", sort_order=20),
-            _n("page:admin_permissions", "Permission Management", "config", route_pattern="/admin/permissions", sort_order=30),
-            _n("page:admin_ldap", "LDAP Configuration", "config", route_pattern="/admin/ldap", sort_order=40),
-            _n("page:admin_teams", "Team Management", "config", route_pattern="/admin/teams", sort_order=50),
-        ],
-    )
-
     settings_grp = _n(
         "grp:settings",
         "Settings",
         "page_group",
         icon="solar:settings-bold-duotone",
-        sort_order=60,
+        sort_order=50,
         children=[
-            _n("page:settings_auth", "Auth Settings", "config", route_pattern="/settings/auth", sort_order=10),
+            _n("page:settings_users", "User Management", "config", route_pattern="/settings/users", sort_order=10),
+            _n("page:settings_roles", "Role Management", "config", route_pattern="/settings/roles", sort_order=20),
+            _n("page:settings_permissions", "Permission Management", "config", route_pattern="/settings/permissions", sort_order=30),
+            _n("page:settings_ldap", "LDAP Configuration", "config", route_pattern="/settings/ldap", sort_order=40),
+            _n("page:settings_teams", "Team Management", "config", route_pattern="/settings/teams", sort_order=50),
+            _n("page:settings_auth", "Auth Settings", "config", route_pattern="/settings/auth", sort_order=60),
+            _n("page:settings_audit", "Audit Log", "config", route_pattern="/settings/audit", sort_order=70),
         ],
     )
 
-    return [dashboard, global_grp, customer_grp, query_grp, admin_grp, settings_grp]
+    return [dashboard, global_grp, customer_grp, query_grp, settings_grp]

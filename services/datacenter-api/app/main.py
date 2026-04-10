@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.api_auth import verify_api_user
 from app.services.dc_service import DatabaseService
 from app.services.scheduler_service import start_scheduler
 from app.routers import datacenters, dashboard
@@ -45,8 +46,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(datacenters.router, prefix="/api/v1", tags=["datacenters"])
-app.include_router(dashboard.router, prefix="/api/v1", tags=["dashboard"])
+app.include_router(
+    datacenters.router,
+    prefix="/api/v1",
+    tags=["datacenters"],
+    dependencies=[Depends(verify_api_user)],
+)
+app.include_router(
+    dashboard.router,
+    prefix="/api/v1",
+    tags=["dashboard"],
+    dependencies=[Depends(verify_api_user)],
+)
 
 
 @app.get("/health", response_model=dict)

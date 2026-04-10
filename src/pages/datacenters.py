@@ -226,9 +226,14 @@ def _dc_vault_card(dc, sla_entry=None):
     )
 
 
-def build_datacenters(time_range=None):
+def build_datacenters(time_range=None, visible_sections=None):
     """Build Data Centers page content for the given time range."""
     tr = time_range or default_time_range()
+    vs = visible_sections
+
+    def ds(code: str) -> bool:
+        return vs is None or code in vs
+
     datacenters = api.get_all_datacenters_summary(tr)
     sla_by_dc = api.get_sla_by_dc(tr)
     export_rows = []
@@ -330,20 +335,24 @@ def build_datacenters(time_range=None):
                             gap="md",
                             align="center",
                             children=[
-                                dmc.Stack(
-                                    gap=6,
-                                    align="flex-end",
-                                    children=[
-                                        dmc.Text("Export", size="xs", c="dimmed", fw=600),
-                                        dmc.Group(
-                                            gap="xs",
-                                            children=[
-                                                dmc.Button("CSV", id="datacenters-export-csv", size="xs", variant="light", color="indigo"),
-                                                dmc.Button("Excel", id="datacenters-export-xlsx", size="xs", variant="light", color="indigo"),
-                                                dmc.Button("PDF", id="datacenters-export-pdf", size="xs", variant="light", color="indigo"),
-                                            ],
-                                        ),
-                                    ],
+                                (
+                                    dmc.Stack(
+                                        gap=6,
+                                        align="flex-end",
+                                        children=[
+                                            dmc.Text("Export", size="xs", c="dimmed", fw=600),
+                                            dmc.Group(
+                                                gap="xs",
+                                                children=[
+                                                    dmc.Button("CSV", id="datacenters-export-csv", size="xs", variant="light", color="indigo"),
+                                                    dmc.Button("Excel", id="datacenters-export-xlsx", size="xs", variant="light", color="indigo"),
+                                                    dmc.Button("PDF", id="datacenters-export-pdf", size="xs", variant="light", color="indigo"),
+                                                ],
+                                            ),
+                                        ],
+                                    )
+                                    if ds("action:datacenters:export")
+                                    else html.Div()
                                 ),
                                 dmc.Badge(
                                     children=[
@@ -379,13 +388,21 @@ def build_datacenters(time_range=None):
         ),
 
         # Elite DC Vault Grid
-        dmc.SimpleGrid(
-            cols=3,
-            spacing="lg",
-            style={"padding": "0 32px"},
-            children=[
-                _dc_vault_card(dc, sla_by_dc.get(dc.get("id"))) for dc in datacenters
-            ],
+        (
+            dmc.SimpleGrid(
+                cols=3,
+                spacing="lg",
+                style={"padding": "0 32px"},
+                children=[
+                    _dc_vault_card(dc, sla_by_dc.get(dc.get("id"))) for dc in datacenters
+                ],
+            )
+            if ds("sec:datacenters:grid")
+            else dmc.Alert(
+                "You do not have access to the data center grid for this page.",
+                title="Restricted",
+                color="gray",
+            )
         ),
     ])
 

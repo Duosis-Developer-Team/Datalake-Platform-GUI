@@ -118,7 +118,7 @@ def _seed_role_permissions(name_to_id: dict[str, int], cmap: dict[str, int]) -> 
     # Operation Lead: Dashboard + Global full-ish; teams admin
     grant("Operation Lead", ["grp:dashboard"], True, True, True)
     grant("Operation Lead", ["grp:global"], True, True, True)
-    grant("Operation Lead", ["page:admin_teams"], True, True, False)
+    grant("Operation Lead", ["page:settings_teams"], True, True, False)
 
     # Operation Team: Dashboard + Global view only
     grant("Operation Team", ["grp:dashboard"], True, False, False)

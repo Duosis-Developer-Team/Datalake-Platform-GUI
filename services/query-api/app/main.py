@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.api_auth import verify_api_user
 from app.services.query_service import QueryService
 from app.routers import queries
 
@@ -37,7 +38,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(queries.router, prefix="/api/v1", tags=["queries"])
+app.include_router(
+    queries.router,
+    prefix="/api/v1",
+    tags=["queries"],
+    dependencies=[Depends(verify_api_user)],
+)
 
 
 @app.get("/health", response_model=dict)

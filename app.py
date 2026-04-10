@@ -97,12 +97,7 @@ _log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
 
 from src.pages import home, datacenters, dc_view, customer_view, query_explorer, global_view, region_drilldown, dc_detail
 from src.pages import login as login_page_mod
-from src.pages import settings_auth
-from src.pages.admin import users as admin_users
-from src.pages.admin import roles as admin_roles
-from src.pages.admin import permissions as admin_permissions
-from src.pages.admin import ldap as admin_ldap
-from src.pages.admin import teams as admin_teams
+from src.pages.settings import shell as settings_shell
 from src.components.access_denied import build_access_denied
 from src.pages.dc_view import _bps_to_gbps, _build_compute_tab
 
@@ -511,45 +506,44 @@ def render_main_content(pathname, time_range, selected_customer, search):
         return html.Div()
 
     page_code = resolve_pathname_to_page_code(pathname)
-    vis = get_visible_sections(int(uid), page_code) if uid and page_code else None
+    vis = (
+        get_visible_sections(int(uid), page_code)
+        if uid and page_code and not str(pathname).startswith("/settings")
+        else None
+    )
 
-    if page_code and uid and not can_view(int(uid), page_code):
+    if (
+        page_code
+        and uid
+        and not str(pathname).startswith("/settings")
+        and not can_view(int(uid), page_code)
+    ):
         return build_access_denied()
 
     if pathname in ("/", ""):
         return home.build_overview(tr, visible_sections=vis)
     if pathname == "/datacenters":
-        return datacenters.build_datacenters(tr)
+        return datacenters.build_datacenters(tr, visible_sections=vis)
     if pathname and pathname.startswith("/datacenter/"):
         dc_id = pathname.replace("/datacenter/", "").strip("/")
         return dc_view.build_dc_view(dc_id, tr, visible_sections=vis)
     if pathname == "/global-view":
-        return global_view.build_global_view(tr)
+        return global_view.build_global_view(tr, visible_sections=vis)
     if pathname == "/customer-view":
-        return customer_view.build_customer_layout(tr, selected_customer)
+        return customer_view.build_customer_layout(tr, selected_customer, visible_sections=vis)
     if pathname == "/query-explorer":
-        return query_explorer.layout()
+        return query_explorer.layout(visible_sections=vis)
     if pathname and pathname.startswith("/dc-detail/"):
         dc_id = pathname.replace("/dc-detail/", "").strip("/")
-        return dc_detail.build_dc_detail(dc_id, tr)
+        return dc_detail.build_dc_detail(dc_id, tr, visible_sections=vis)
     if pathname == "/region-drilldown":
         from urllib.parse import parse_qs
 
         params = parse_qs((search or "").lstrip("?"))
         region = params.get("region", [""])[0]
         return region_drilldown.build_region_drilldown(region, tr)
-    if pathname.startswith("/admin/users"):
-        return admin_users.build_layout()
-    if pathname.startswith("/admin/roles"):
-        return admin_roles.build_layout()
-    if pathname.startswith("/admin/permissions"):
-        return admin_permissions.build_layout()
-    if pathname.startswith("/admin/ldap"):
-        return admin_ldap.build_layout()
-    if pathname.startswith("/admin/teams"):
-        return admin_teams.build_layout()
-    if pathname.startswith("/settings/auth"):
-        return settings_auth.build_layout()
+    if pathname.startswith("/settings"):
+        return settings_shell.build_settings_page(pathname, int(uid))
     return home.build_overview(tr, visible_sections=vis)
 
 

@@ -12,8 +12,9 @@ def test_resolve_dc_view():
     assert resolve_pathname_to_page_code("/datacenter/DC11") == "page:dc_view"
 
 
-def test_resolve_admin():
-    assert resolve_pathname_to_page_code("/admin/users") == "page:admin_users"
+def test_resolve_settings():
+    assert resolve_pathname_to_page_code("/settings/users") == "page:settings_users"
+    assert resolve_pathname_to_page_code("/settings") == "grp:settings"
 
 
 def test_resolve_login_none():

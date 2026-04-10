@@ -756,8 +756,13 @@ def build_region_detail_panel(region, tr):
     )
 
 
-def build_global_view(time_range=None):
+def build_global_view(time_range=None, visible_sections=None):
     tr = time_range or default_time_range()
+    vs = visible_sections
+
+    def gvs(code: str) -> bool:
+        return vs is None or code in vs
+
     summaries = api.get_all_datacenters_summary(tr)
     globe_data_array = _build_globe_data(summaries)
     export_rows = _global_export_table(summaries)
@@ -841,33 +846,37 @@ def build_global_view(time_range=None):
                             gap="sm",
                             align="center",
                             children=[
-                                dmc.Group(
-                                    gap=6,
-                                    align="center",
-                                    children=[
-                                        dmc.Text("Export", size="xs", c="dimmed"),
-                                        dmc.Button(
-                                            "CSV",
-                                            id="global-export-csv",
-                                            size="xs",
-                                            variant="light",
-                                            color="gray",
-                                        ),
-                                        dmc.Button(
-                                            "Excel",
-                                            id="global-export-xlsx",
-                                            size="xs",
-                                            variant="light",
-                                            color="gray",
-                                        ),
-                                        dmc.Button(
-                                            "PDF",
-                                            id="global-export-pdf",
-                                            size="xs",
-                                            variant="light",
-                                            color="gray",
-                                        ),
-                                    ],
+                                (
+                                    dmc.Group(
+                                        gap=6,
+                                        align="center",
+                                        children=[
+                                            dmc.Text("Export", size="xs", c="dimmed"),
+                                            dmc.Button(
+                                                "CSV",
+                                                id="global-export-csv",
+                                                size="xs",
+                                                variant="light",
+                                                color="gray",
+                                            ),
+                                            dmc.Button(
+                                                "Excel",
+                                                id="global-export-xlsx",
+                                                size="xs",
+                                                variant="light",
+                                                color="gray",
+                                            ),
+                                            dmc.Button(
+                                                "PDF",
+                                                id="global-export-pdf",
+                                                size="xs",
+                                                variant="light",
+                                                color="gray",
+                                            ),
+                                        ],
+                                    )
+                                    if gvs("action:global:export")
+                                    else html.Div()
                                 ),
                                 dmc.Badge(
                                     children=[
@@ -909,122 +918,138 @@ def build_global_view(time_range=None):
                 dmc.GridCol(
                     span=8,
                     children=[
-                        dmc.Paper(
-                            radius="lg",
-                            style={
-                                "overflow": "hidden",
-                                "boxShadow": "0 2px 16px rgba(67,24,255,0.06), 0 1px 4px rgba(0,0,0,0.04)",
-                                "border": "1px solid rgba(255,255,255,0.7)",
-                            },
-                            children=[
-                                dmc.Group(
-                                    justify="flex-end",
-                                    px="md",
-                                    pt="md",
-                                    children=[
-                                        dmc.Button(
-                                            "Reset",
-                                            id="global-map-reset-btn",
-                                            variant="subtle",
-                                            color="gray",
-                                            radius="md",
-                                            size="xs",
-                                            leftSection=DashIconify(icon="solar:refresh-circle-bold-duotone", width=16),
-                                        ),
-                                    ],
-                                ),
-                                html.Div(
-                                    style={
-                                        "position": "relative", "width": "100%", "height": "600px",
-                                        "overflow": "hidden", "borderRadius": "12px", "background": "transparent",
-                                    },
-                                    children=[
-                                        dash_globe_component.DashGlobe(
-                                            id="global-map-graph",
-                                            pointsData=globe_data_array,
-                                            focusRegion=None,
-                                            globeImageUrl="//unpkg.com/three-globe/example/img/earth-day.jpg",
-                                            width="100%",
-                                            height=600,
-                                        ),
-                                    ],
-                                ),
-                            ],
+                        (
+                            dmc.Paper(
+                                radius="lg",
+                                style={
+                                    "overflow": "hidden",
+                                    "boxShadow": "0 2px 16px rgba(67,24,255,0.06), 0 1px 4px rgba(0,0,0,0.04)",
+                                    "border": "1px solid rgba(255,255,255,0.7)",
+                                },
+                                children=[
+                                    dmc.Group(
+                                        justify="flex-end",
+                                        px="md",
+                                        pt="md",
+                                        children=[
+                                            dmc.Button(
+                                                "Reset",
+                                                id="global-map-reset-btn",
+                                                variant="subtle",
+                                                color="gray",
+                                                radius="md",
+                                                size="xs",
+                                                leftSection=DashIconify(icon="solar:refresh-circle-bold-duotone", width=16),
+                                            ),
+                                        ],
+                                    ),
+                                    html.Div(
+                                        style={
+                                            "position": "relative", "width": "100%", "height": "600px",
+                                            "overflow": "hidden", "borderRadius": "12px", "background": "transparent",
+                                        },
+                                        children=[
+                                            dash_globe_component.DashGlobe(
+                                                id="global-map-graph",
+                                                pointsData=globe_data_array,
+                                                focusRegion=None,
+                                                globeImageUrl="//unpkg.com/three-globe/example/img/earth-day.jpg",
+                                                width="100%",
+                                                height=600,
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                            )
+                            if gvs("sec:global:globe")
+                            else html.Div()
                         ),
                     ],
                 ),
                 dmc.GridCol(
                     span=4,
                     children=[
-                        dmc.Paper(
-                            id="region-menu-panel",
-                            radius="lg",
-                            h=600,
-                            p="lg",
-                            style={
-                                "boxShadow": "0 2px 16px rgba(67,24,255,0.06), 0 1px 4px rgba(0,0,0,0.04)",
-                                "border": "1px solid rgba(255,255,255,0.7)",
-                                "background": "rgba(255,255,255,0.90)",
-                            },
-                            children=[
-                                dmc.Group(
-                                    justify="space-between",
-                                    align="center",
-                                    mb="sm",
-                                    children=[
-                                        dmc.Group(gap="sm", children=[
-                                            DashIconify(icon="solar:map-bold-duotone", width=20, color="#4318FF"),
-                                            dmc.Text("Regions", fw=700, size="md", c="#2B3674"),
-                                        ]),
-                                        dmc.Badge(f"{len(summaries)} DCs", variant="light", color="indigo", size="sm"),
-                                    ],
-                                ),
-                                dmc.Divider(mb="sm", color="rgba(67,24,255,0.08)"),
-                                dmc.ScrollArea(
-                                    h=510,
-                                    w="100%",
-                                    type="auto",
-                                    children=[_build_region_menu(summaries)],
-                                ),
-                            ],
+                        (
+                            dmc.Paper(
+                                id="region-menu-panel",
+                                radius="lg",
+                                h=600,
+                                p="lg",
+                                style={
+                                    "boxShadow": "0 2px 16px rgba(67,24,255,0.06), 0 1px 4px rgba(0,0,0,0.04)",
+                                    "border": "1px solid rgba(255,255,255,0.7)",
+                                    "background": "rgba(255,255,255,0.90)",
+                                },
+                                children=[
+                                    dmc.Group(
+                                        justify="space-between",
+                                        align="center",
+                                        mb="sm",
+                                        children=[
+                                            dmc.Group(gap="sm", children=[
+                                                DashIconify(icon="solar:map-bold-duotone", width=20, color="#4318FF"),
+                                                dmc.Text("Regions", fw=700, size="md", c="#2B3674"),
+                                            ]),
+                                            dmc.Badge(f"{len(summaries)} DCs", variant="light", color="indigo", size="sm"),
+                                        ],
+                                    ),
+                                    dmc.Divider(mb="sm", color="rgba(67,24,255,0.08)"),
+                                    dmc.ScrollArea(
+                                        h=510,
+                                        w="100%",
+                                        type="auto",
+                                        children=[_build_region_menu(summaries)],
+                                    ),
+                                ],
+                            )
+                            if gvs("sec:global:regions")
+                            else html.Div()
                         ),
                     ],
                 ),
             ],
         ),
 
-        dcc.Loading(
-            id="detail-loading",
-            type="circle",
-            color="#4318FF",
-            children=html.Div(
-                id="global-detail-panel",
-                style={"padding": "0 32px", "marginTop": "24px"},
-                children=[
-                    html.Div(
-                        style={"textAlign": "center", "padding": "48px 0"},
-                        children=[
-                            DashIconify(icon="solar:map-point-search-bold-duotone", width=48, color="#A3AED0"),
-                            dmc.Text(
-                                "Select a region from the menu or click a pin on the map",
-                                c="#A3AED0",
-                                size="sm",
-                                mt="md",
-                            ),
-                        ],
-                    )
-                ],
-            ),
+        (
+            dcc.Loading(
+                id="detail-loading",
+                type="circle",
+                color="#4318FF",
+                children=html.Div(
+                    id="global-detail-panel",
+                    style={"padding": "0 32px", "marginTop": "24px"},
+                    children=[
+                        html.Div(
+                            style={"textAlign": "center", "padding": "48px 0"},
+                            children=[
+                                DashIconify(icon="solar:map-point-search-bold-duotone", width=48, color="#A3AED0"),
+                                dmc.Text(
+                                    "Select a region from the menu or click a pin on the map",
+                                    c="#A3AED0",
+                                    size="sm",
+                                    mt="md",
+                                ),
+                            ],
+                        )
+                    ],
+                ),
+            )
+            if gvs("sec:global:detail")
+            else html.Div()
         ),
-        html.Div(
-            id="global-3d-modal-container",
-            style={
-                "position": "fixed", "top": 0, "left": 0, "width": "100%", "height": "100%",
-                "backgroundColor": "rgba(30, 40, 80, 0.45)", "backdropFilter": "blur(8px)",
-                "WebkitBackdropFilter": "blur(12px)",
-                "zIndex": 9999, "display": "none", "alignItems": "center", "justifyContent": "center"
-            },
-            children=[]
+        (
+            html.Div(
+                id="global-3d-modal-container",
+                style={
+                    "position": "fixed", "top": 0, "left": 0, "width": "100%", "height": "100%",
+                    "backgroundColor": "rgba(30, 40, 80, 0.45)", "backdropFilter": "blur(8px)",
+                    "WebkitBackdropFilter": "blur(12px)",
+                    "zIndex": 9999, "display": "none", "alignItems": "center", "justifyContent": "center"
+                },
+                children=[],
+            )
+            if gvs("sec:global:3d")
+            else html.Div()
         ),
         ]),
         html.Div(
@@ -1053,10 +1078,14 @@ def build_global_view(time_range=None):
                 ),
             ],
         ),
-        html.Div(
-            id="floor-map-layer",
-            style={"display": "none"},
-            children=[],
+        (
+            html.Div(
+                id="floor-map-layer",
+                style={"display": "none"},
+                children=[],
+            )
+            if gvs("sec:global:floor")
+            else html.Div()
         ),
     ])
 

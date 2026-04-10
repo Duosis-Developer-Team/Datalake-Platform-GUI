@@ -12,13 +12,22 @@ NAV_ITEM_SPECS: list[tuple[str, str, str, str]] = [
     ("/query-explorer", "Query Explorer", "solar:code-square-bold-duotone", "page:query_explorer"),
 ]
 
-ADMIN_NAV_SPECS: list[tuple[str, str, str, str]] = [
-    ("/admin/users", "Users", "solar:user-bold-duotone", "page:admin_users"),
-    ("/admin/roles", "Roles", "solar:shield-user-bold-duotone", "page:admin_roles"),
-    ("/admin/permissions", "Permissions", "solar:list-check-bold-duotone", "page:admin_permissions"),
-    ("/admin/ldap", "LDAP", "solar:server-path-bold-duotone", "page:admin_ldap"),
-    ("/admin/teams", "Teams", "solar:users-group-two-rounded-bold-duotone", "page:admin_teams"),
-]
+SETTINGS_ENTRY_CODES: tuple[str, ...] = (
+    "grp:settings",
+    "page:settings_users",
+    "page:settings_roles",
+    "page:settings_permissions",
+    "page:settings_ldap",
+    "page:settings_teams",
+    "page:settings_auth",
+    "page:settings_audit",
+)
+
+
+def _settings_visible(perm_map: dict | None) -> bool:
+    if not perm_map:
+        return True
+    return any(_perm_allows(perm_map, c) for c in SETTINGS_ENTRY_CODES)
 
 
 def _perm_allows(perm_map: dict | None, code: str) -> bool:
@@ -83,26 +92,20 @@ def create_sidebar_nav(active_path, perm_map: dict | None = None, username: str 
             )
         )
 
-    any_admin = any(_perm_allows(perm_map, c) for _, _, _, c in ADMIN_NAV_SPECS)
-    if any_admin:
+    if _settings_visible(perm_map):
+        settings_active = active_path.startswith("/settings")
         links.append(
-            dmc.Text("Administration", size="xs", fw=700, c="dimmed", mt="md", mb="xs", style={"paddingLeft": "8px"}),
-        )
-        for href, label, icon, pcode in ADMIN_NAV_SPECS:
-            if not _perm_allows(perm_map, pcode):
-                continue
-            links.append(
-                dmc.NavLink(
-                    label=label,
-                    leftSection=DashIconify(icon=icon, width=20),
-                    href=href,
-                    className="sidebar-link",
-                    active=active_path.startswith(href),
-                    variant="subtle",
-                    color="indigo",
-                    style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"},
-                )
+            dmc.NavLink(
+                label="Settings",
+                leftSection=DashIconify(icon="solar:settings-bold-duotone", width=20),
+                href="/settings",
+                className="sidebar-link",
+                active=settings_active,
+                variant="subtle",
+                color="indigo",
+                style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"},
             )
+        )
 
     links.append(
         dmc.NavLink(
@@ -113,20 +116,6 @@ def create_sidebar_nav(active_path, perm_map: dict | None = None, username: str 
             disabled=True,
         ),
     )
-    settings_on = _perm_allows(perm_map, "page:settings_auth")
-    links.append(
-        dmc.NavLink(
-            label="Auth settings",
-            leftSection=DashIconify(icon="solar:settings-bold-duotone", width=20),
-            href="/settings/auth" if settings_on else "#",
-            className="sidebar-link",
-            disabled=not settings_on,
-            variant="subtle",
-            color="indigo",
-            style={"borderRadius": "8px", "fontWeight": "500", "marginBottom": "5px"},
-        ),
-    )
-
     footer = html.Div(
         style={"marginTop": "auto", "paddingTop": "16px", "borderTop": "1px solid #E9ECEF"},
         children=[

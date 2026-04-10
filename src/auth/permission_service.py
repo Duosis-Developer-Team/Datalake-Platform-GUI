@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
+import os
+import time
 from typing import Any
 
 from src.auth import db
@@ -11,14 +12,57 @@ from src.auth.config import AUTH_DISABLED
 
 logger = logging.getLogger(__name__)
 
-_CACHE: dict[int, dict[str, Any]] = {}
+# In-process cache: user_id -> (computed_at_epoch, effective_map)
+_CACHE: dict[int, tuple[float, dict[str, dict[str, bool]]]] = {}
+_CACHE_TTL_SEC = float(os.environ.get("PERMISSION_MAP_CACHE_TTL_SEC", "300"))
+
+_REDIS = None
+
+
+def _redis_client():
+    global _REDIS
+    if _REDIS is False:
+        return None
+    if _REDIS is not None:
+        return _REDIS
+    url = (os.environ.get("REDIS_URL") or "").strip()
+    if not url:
+        _REDIS = False
+        return None
+    try:
+        import redis
+
+        _REDIS = redis.Redis.from_url(url, decode_responses=True)
+        _REDIS.ping()
+        return _REDIS
+    except Exception as e:
+        logger.warning("Redis unavailable for permission cache: %s", e)
+        _REDIS = False
+        return None
+
+
+def _redis_key(uid: int) -> str:
+    return f"dl:perm_map:{uid}"
 
 
 def clear_user_cache(user_id: int | None = None) -> None:
     if user_id is None:
         _CACHE.clear()
+        r = _redis_client()
+        if r:
+            try:
+                for k in r.scan_iter(match="dl:perm_map:*"):
+                    r.delete(k)
+            except Exception:
+                logger.exception("Redis clear permission keys failed")
     else:
         _CACHE.pop(user_id, None)
+        r = _redis_client()
+        if r:
+            try:
+                r.delete(_redis_key(user_id))
+            except Exception:
+                pass
 
 
 def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
@@ -42,18 +86,24 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
         return "page:query_explorer"
     if p == "/login":
         return None
-    if p.startswith("/admin/users"):
-        return "page:admin_users"
-    if p.startswith("/admin/roles"):
-        return "page:admin_roles"
-    if p.startswith("/admin/permissions"):
-        return "page:admin_permissions"
-    if p.startswith("/admin/ldap"):
-        return "page:admin_ldap"
-    if p.startswith("/admin/teams"):
-        return "page:admin_teams"
+    if p == "/settings" or p == "/settings/":
+        return "grp:settings"
     if p.startswith("/settings/"):
-        return "page:settings_auth"
+        if p.startswith("/settings/users"):
+            return "page:settings_users"
+        if p.startswith("/settings/roles"):
+            return "page:settings_roles"
+        if p.startswith("/settings/permissions"):
+            return "page:settings_permissions"
+        if p.startswith("/settings/ldap"):
+            return "page:settings_ldap"
+        if p.startswith("/settings/teams"):
+            return "page:settings_teams"
+        if p.startswith("/settings/auth"):
+            return "page:settings_auth"
+        if p.startswith("/settings/audit"):
+            return "page:settings_audit"
+        return "grp:settings"
     return "page:overview"
 
 
@@ -138,15 +188,48 @@ def user_effective_map(user_id: int | None) -> dict[str, dict[str, bool]] | None
         return None
     if user_id is None:
         return {}
+    uid = int(user_id)
+    now = time.monotonic()
+    hit = _CACHE.get(uid)
+    if hit is not None:
+        ts, cached = hit
+        if now - ts < _CACHE_TTL_SEC:
+            return cached
+
+    r = _redis_client()
+    if r:
+        try:
+            raw = r.get(_redis_key(uid))
+            if raw:
+                import json
+
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    _CACHE[uid] = (now, data)
+                    return data
+        except Exception:
+            logger.debug("Redis permission map read failed", exc_info=True)
+
     try:
         rows = db.fetch_all("SELECT code, id FROM permissions")
     except Exception:
         return None
     out: dict[str, dict[str, bool]] = {}
-    for r in rows:
-        code = str(r["code"])
-        t = effective_triplet(user_id, code)
+    for row in rows:
+        code = str(row["code"])
+        t = effective_triplet(uid, code)
         out[code] = {"view": t[0], "edit": t[1], "export": t[2]}
+    _CACHE[uid] = (now, out)
+    if r:
+        try:
+            import json
+
+            from src.auth.config import SESSION_TTL_HOURS
+
+            ttl = int(SESSION_TTL_HOURS) * 3600
+            r.setex(_redis_key(uid), ttl, json.dumps(out))
+        except Exception:
+            pass
     return out
 
 

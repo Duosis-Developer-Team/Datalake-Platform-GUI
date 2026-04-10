@@ -10,10 +10,13 @@ This document describes the reusable authentication stack used by the Datalake P
 - **Runtime**: `src/auth/migration.py` applies DDL on startup; `src/auth/seed.py` seeds roles and default grants; `src/auth/registry.py` syncs the static catalog from `src/auth/permission_catalog.py`.
 - **HTTP**: Flask blueprint `src/auth/routes.py` (`/auth/login`, `/auth/logout`), cookie-backed sessions stored in `sessions` table.
 - **UI**: Dash `render_main_content` enforces `page:*` access; section-level visibility uses `get_visible_sections()` for nested `sec:` / `sub:` / `action:` codes.
+- **Settings UI**: Single sidebar entry **Settings** → `/settings` with tab bar (`src/pages/settings/shell.py`). Sub-routes `/settings/users`, `/settings/roles`, etc. Permission codes use `page:settings_*` (see `permission_catalog.py`).
+- **Microservices**: Optional JWT on FastAPI `/api/v1` when `API_AUTH_REQUIRED=true`. Dash `api_client` sends `Authorization: Bearer` from `src/auth/api_jwt.py`. Configure `API_JWT_SECRET` (defaults to `SECRET_KEY`) on both app and services.
+- **Permission cache**: In-process TTL cache plus optional `REDIS_URL` for serialized `user_effective_map` (see `permission_service.py`).
 
 ## Environment variables
 
-See [`.env.example`](../.env.example) for `AUTH_*`, `SECRET_KEY`, `FERNET_KEY`, `AUTH_DISABLED`, etc.
+See [`.env.example`](../.env.example) for `AUTH_*`, `SECRET_KEY`, `FERNET_KEY`, `AUTH_DISABLED`, `API_JWT_SECRET`, `API_AUTH_REQUIRED`, `REDIS_URL`, etc.
 
 ## Key modules
 
@@ -30,7 +33,9 @@ See [`.env.example`](../.env.example) for `AUTH_*`, `SECRET_KEY`, `FERNET_KEY`, 
 | `src/auth/service.py` | Sessions, users |
 | `src/auth/ldap_service.py` | LDAP bind, group listing, group→role mapping |
 | `src/auth/middleware.py` | `before_request` gate |
-| `src/auth/routes.py` | Login/logout routes |
+| `src/auth/routes.py` | Login/logout + Settings POST actions (user create, role matrix, LDAP, teams) |
+| `src/auth/api_jwt.py` | JWT for microservice calls |
+| `src/auth/settings_crud.py` | DB helpers for Settings UI |
 
 ## Docker
 

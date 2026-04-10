@@ -1417,9 +1417,13 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
 # Page builders
 # ---------------------------------------------------------------------------
 
-def build_customer_layout(time_range=None, selected_customer=None):
+def build_customer_layout(time_range=None, selected_customer=None, visible_sections=None):
     tr = time_range or default_time_range()
     chosen = selected_customer or "Boyner"
+    vs = visible_sections
+
+    def cv(code: str) -> bool:
+        return vs is None or code in vs
 
     content = _customer_content(chosen, tr)
     has_s3 = bool(content.get("has_s3"))
@@ -1439,15 +1443,19 @@ def build_customer_layout(time_range=None, selected_customer=None):
     )
 
     export_sheets = content.get("export_sheets") or {}
-    export_group = dmc.Group(
-        gap=6,
-        align="center",
-        children=[
-            dmc.Text("Export", size="xs", c="dimmed"),
-            dmc.Button("CSV", id="customer-export-csv", size="xs", variant="light", color="gray"),
-            dmc.Button("Excel", id="customer-export-xlsx", size="xs", variant="light", color="gray"),
-            dmc.Button("PDF", id="customer-export-pdf", size="xs", variant="light", color="gray"),
-        ],
+    export_group = (
+        dmc.Group(
+            gap=6,
+            align="center",
+            children=[
+                dmc.Text("Export", size="xs", c="dimmed"),
+                dmc.Button("CSV", id="customer-export-csv", size="xs", variant="light", color="gray"),
+                dmc.Button("Excel", id="customer-export-xlsx", size="xs", variant="light", color="gray"),
+                dmc.Button("PDF", id="customer-export-pdf", size="xs", variant="light", color="gray"),
+            ],
+        )
+        if cv("action:customer:export")
+        else None
     )
 
     header = create_detail_header(
@@ -1459,7 +1467,7 @@ def build_customer_layout(time_range=None, selected_customer=None):
         time_range=tr,
         icon="solar:users-group-two-rounded-bold-duotone",
         tabs=tabs_list,
-        right_extra=[export_group],
+        right_extra=[export_group] if export_group else [],
     )
 
     intro_card = dmc.SimpleGrid(

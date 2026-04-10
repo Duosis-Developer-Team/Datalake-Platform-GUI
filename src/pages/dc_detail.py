@@ -126,8 +126,12 @@ def _rack_card(rack):
     )
 
 
-def build_dc_detail(dc_id, time_range=None):
+def build_dc_detail(dc_id, time_range=None, visible_sections=None):
     tr = time_range or default_time_range()
+    vs = visible_sections
+
+    def dshow(code: str) -> bool:
+        return vs is None or code in vs
 
     racks_data = api.get_dc_racks(dc_id)
     racks = racks_data.get("racks", [])
@@ -253,8 +257,21 @@ def build_dc_detail(dc_id, time_range=None):
             ],
         )
 
+    body = [header]
+    if dshow("sec:dc_detail:racks"):
+        body.append(kpi_row)
+        body.append(rack_grid)
+    else:
+        body.append(
+            dmc.Alert(
+                "You do not have access to rack content on this page.",
+                title="Restricted",
+                color="gray",
+            )
+        )
+
     return html.Div(
         className="dc-detail-animate",
         style={"padding": "24px"},
-        children=[header, kpi_row, rack_grid],
+        children=body,
     )

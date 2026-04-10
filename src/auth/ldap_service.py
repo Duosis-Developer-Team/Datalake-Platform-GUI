@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from ldap3 import ALL, Connection, Server
+from ldap3.core.exceptions import LDAPException
 
 from src.auth import db
 from src.auth.crypto import fernet_decrypt, fernet_encrypt

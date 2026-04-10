@@ -53,6 +53,8 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change_me_secret_key}
       ADMIN_DEFAULT_PASSWORD: ${ADMIN_DEFAULT_PASSWORD:-Admin123!}
       FERNET_KEY: ${FERNET_KEY:-}
+      REDIS_URL: ${REDIS_URL:-}
+      API_JWT_SECRET: ${API_JWT_SECRET:-}
     volumes:
       - ./data:/app/data
     networks:

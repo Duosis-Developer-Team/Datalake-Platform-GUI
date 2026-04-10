@@ -96,7 +96,159 @@ def _render_run_output(result: dict):
     )
 
 
-def layout():
+def layout(visible_sections=None):
+    vs = visible_sections
+
+    def qv(code: str) -> bool:
+        return vs is None or code in vs
+
+    run_panel = dmc.TabsPanel(
+        value="run",
+        children=[
+            dmc.Text(
+                "Parameters (for array_* use comma-separated values)",
+                size="sm",
+                c="#A3AED0",
+                mb="xs",
+            ),
+            dmc.Group(
+                [
+                    dmc.TextInput(
+                        id="params-input",
+                        placeholder="e.g. DC11 or DC11,DC12",
+                        style={"flex": 1},
+                    ),
+                    dmc.Button(
+                        "Run",
+                        id="run-button",
+                        leftSection=DashIconify(icon="solar:play-circle-bold"),
+                    ),
+                ]
+            ),
+            dmc.Space(h=12),
+            (
+                dmc.Group(
+                    gap="xs",
+                    mb="sm",
+                    children=[
+                        dmc.Text("Export result", size="xs", c="dimmed", fw=600),
+                        dmc.Button("CSV", id="qe-export-csv", size="xs", variant="light", color="indigo"),
+                        dmc.Button("Excel", id="qe-export-xlsx", size="xs", variant="light", color="indigo"),
+                        dmc.Button("PDF", id="qe-export-pdf", size="xs", variant="light", color="indigo"),
+                    ],
+                )
+                if qv("action:qe:export")
+                else html.Div()
+            ),
+            html.Div(
+                id="run-output",
+                children=dmc.Text("Select a query and click Run.", c="#A3AED0", size="sm"),
+            ),
+        ],
+    )
+
+    edit_panel = dmc.TabsPanel(
+        value="edit",
+        children=[
+            dmc.Textarea(
+                id="sql-editor",
+                placeholder="SQL will appear when you select a query",
+                minRows=12,
+                mb="md",
+            ),
+            dmc.Group(
+                [
+                    dmc.Button(
+                        "Save override",
+                        id="save-button",
+                        color="green",
+                        leftSection=DashIconify(icon="solar:diskette-bold"),
+                    ),
+                    dmc.Button(
+                        "Reset to default",
+                        id="reset-button",
+                        variant="light",
+                        color="red",
+                        leftSection=DashIconify(icon="solar:restart-bold"),
+                    ),
+                ]
+            ),
+            html.Div(id="save-status", children=[], style={"marginTop": "8px"}),
+        ],
+    )
+
+    add_panel = dmc.TabsPanel(
+        value="add",
+        children=[
+            dmc.Stack(
+                [
+                    dmc.TextInput(
+                        id="new-query-key",
+                        placeholder="Query key (e.g. custom_my_query)",
+                        label="Key",
+                    ),
+                    dmc.Textarea(id="new-query-sql", placeholder="SELECT ...", minRows=8, label="SQL"),
+                    dmc.Select(
+                        id="new-result-type",
+                        data=[
+                            {"label": "value", "value": "value"},
+                            {"label": "row", "value": "row"},
+                            {"label": "rows", "value": "rows"},
+                        ],
+                        value="value",
+                        label="Result type",
+                    ),
+                    dmc.Select(
+                        id="new-params-style",
+                        data=[
+                            {"label": "wildcard", "value": "wildcard"},
+                            {"label": "exact", "value": "exact"},
+                            {"label": "array_wildcard", "value": "array_wildcard"},
+                            {"label": "array_exact", "value": "array_exact"},
+                        ],
+                        value="wildcard",
+                        label="Params style",
+                    ),
+                    dmc.Button(
+                        "Add query",
+                        id="add-button",
+                        color="indigo",
+                        leftSection=DashIconify(icon="solar:add-circle-bold"),
+                    ),
+                    html.Div(id="add-status", children=[], style={"marginTop": "8px"}),
+                ],
+                gap="md",
+            ),
+        ],
+    )
+
+    tabs_labels = [dmc.TabsTab("Run", value="run")]
+    tab_panels: list = [run_panel]
+    if qv("sec:qe:edit_sql"):
+        tabs_labels.append(dmc.TabsTab("Edit SQL", value="edit"))
+        tab_panels.append(edit_panel)
+    if qv("sec:qe:add_query"):
+        tabs_labels.append(dmc.TabsTab("Add new query", value="add"))
+        tab_panels.append(add_panel)
+
+    catalog_paper = dmc.Paper(
+        p="md",
+        radius="md",
+        withBorder=True,
+        shadow="sm",
+        style={"width": "300px", "flexShrink": 0},
+        children=[
+            dmc.Text("Query catalog", size="sm", fw=700, c="#2B3674", mb="xs"),
+            dmc.TextInput(
+                id="query-catalog-search",
+                placeholder="Search keys…",
+                size="sm",
+                mb="sm",
+            ),
+            html.Div(id="query-catalog-list", children=dmc.Text("Loading…", size="sm", c="dimmed")),
+        ],
+    )
+
     return html.Div([
         html.Div(
             className="nexus-glass",
@@ -131,24 +283,7 @@ def layout():
                 "flexWrap": "wrap",
             },
             children=[
-                # Left: catalog
-                dmc.Paper(
-                    p="md",
-                    radius="md",
-                    withBorder=True,
-                    shadow="sm",
-                    style={"width": "300px", "flexShrink": 0},
-                    children=[
-                        dmc.Text("Query catalog", size="sm", fw=700, c="#2B3674", mb="xs"),
-                        dmc.TextInput(
-                            id="query-catalog-search",
-                            placeholder="Search keys…",
-                            size="sm",
-                            mb="sm",
-                        ),
-                        html.Div(id="query-catalog-list", children=dmc.Text("Loading…", size="sm", c="dimmed")),
-                    ],
-                ),
+                catalog_paper,
                 # Right: detail + tabs
                 html.Div(style={"flex": "1", "minWidth": "280px"}, children=[
                     dmc.Paper(
@@ -173,126 +308,8 @@ def layout():
 
                     dmc.Tabs(
                         [
-                            dmc.TabsList(
-                                [
-                                    dmc.TabsTab("Run", value="run"),
-                                    dmc.TabsTab("Edit SQL", value="edit"),
-                                    dmc.TabsTab("Add new query", value="add"),
-                                ]
-                            ),
-                            dmc.TabsPanel(
-                                value="run",
-                                children=[
-                                    dmc.Text(
-                                        "Parameters (for array_* use comma-separated values)",
-                                        size="sm",
-                                        c="#A3AED0",
-                                        mb="xs",
-                                    ),
-                                    dmc.Group(
-                                        [
-                                            dmc.TextInput(
-                                                id="params-input",
-                                                placeholder="e.g. DC11 or DC11,DC12",
-                                                style={"flex": 1},
-                                            ),
-                                            dmc.Button(
-                                                "Run",
-                                                id="run-button",
-                                                leftSection=DashIconify(icon="solar:play-circle-bold"),
-                                            ),
-                                        ]
-                                    ),
-                                    dmc.Space(h=12),
-                                    dmc.Group(
-                                        gap="xs",
-                                        mb="sm",
-                                        children=[
-                                            dmc.Text("Export result", size="xs", c="dimmed", fw=600),
-                                            dmc.Button("CSV", id="qe-export-csv", size="xs", variant="light", color="indigo"),
-                                            dmc.Button("Excel", id="qe-export-xlsx", size="xs", variant="light", color="indigo"),
-                                            dmc.Button("PDF", id="qe-export-pdf", size="xs", variant="light", color="indigo"),
-                                        ],
-                                    ),
-                                    html.Div(
-                                        id="run-output",
-                                        children=dmc.Text("Select a query and click Run.", c="#A3AED0", size="sm"),
-                                    ),
-                                ],
-                            ),
-                            dmc.TabsPanel(
-                                value="edit",
-                                children=[
-                                    dmc.Textarea(
-                                        id="sql-editor",
-                                        placeholder="SQL will appear when you select a query",
-                                        minRows=12,
-                                        mb="md",
-                                    ),
-                                    dmc.Group(
-                                        [
-                                            dmc.Button(
-                                                "Save override",
-                                                id="save-button",
-                                                color="green",
-                                                leftSection=DashIconify(icon="solar:diskette-bold"),
-                                            ),
-                                            dmc.Button(
-                                                "Reset to default",
-                                                id="reset-button",
-                                                variant="light",
-                                                color="red",
-                                                leftSection=DashIconify(icon="solar:restart-bold"),
-                                            ),
-                                        ]
-                                    ),
-                                    html.Div(id="save-status", children=[], style={"marginTop": "8px"}),
-                                ],
-                            ),
-                            dmc.TabsPanel(
-                                value="add",
-                                children=[
-                                    dmc.Stack(
-                                        [
-                                            dmc.TextInput(
-                                                id="new-query-key",
-                                                placeholder="Query key (e.g. custom_my_query)",
-                                                label="Key",
-                                            ),
-                                            dmc.Textarea(id="new-query-sql", placeholder="SELECT ...", minRows=8, label="SQL"),
-                                            dmc.Select(
-                                                id="new-result-type",
-                                                data=[
-                                                    {"label": "value", "value": "value"},
-                                                    {"label": "row", "value": "row"},
-                                                    {"label": "rows", "value": "rows"},
-                                                ],
-                                                value="value",
-                                                label="Result type",
-                                            ),
-                                            dmc.Select(
-                                                id="new-params-style",
-                                                data=[
-                                                    {"label": "wildcard", "value": "wildcard"},
-                                                    {"label": "exact", "value": "exact"},
-                                                    {"label": "array_wildcard", "value": "array_wildcard"},
-                                                    {"label": "array_exact", "value": "array_exact"},
-                                                ],
-                                                value="wildcard",
-                                                label="Params style",
-                                            ),
-                                            dmc.Button(
-                                                "Add query",
-                                                id="add-button",
-                                                color="indigo",
-                                                leftSection=DashIconify(icon="solar:add-circle-bold"),
-                                            ),
-                                            html.Div(id="add-status", children=[], style={"marginTop": "8px"}),
-                                        ],
-                                        gap="md",
-                                    ),
-                                ],
-                            ),
+                            dmc.TabsList(tabs_labels),
+                            *tab_panels,
                         ],
                         value="run",
                         id="query-explorer-tabs",
