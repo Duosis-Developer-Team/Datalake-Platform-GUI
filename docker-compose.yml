@@ -9,6 +9,25 @@
 # (e.g. host.docker.internal:8000 if APIs run on the host).
 
 services:
+  auth-db:
+    image: postgres:15
+    container_name: bulutistan-auth-db
+    environment:
+      POSTGRES_DB: ${AUTH_DB_NAME:-bulutauth}
+      POSTGRES_USER: ${AUTH_DB_USER:-authadmin}
+      POSTGRES_PASSWORD: ${AUTH_DB_PASS:-change_me_auth}
+    ports:
+      - "5433:5432"
+    volumes:
+      - auth_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authadmin -d bulutauth"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - datalake
+
   app:
     build:
       context: .
@@ -26,10 +45,21 @@ services:
       DATACENTER_API_URL: ${DATACENTER_API_URL:-http://datacenter-api:8000}
       CUSTOMER_API_URL: ${CUSTOMER_API_URL:-http://customer-api:8000}
       QUERY_API_URL: ${QUERY_API_URL:-http://query-api:8000}
+      AUTH_DB_HOST: ${AUTH_DB_HOST:-auth-db}
+      AUTH_DB_PORT: ${AUTH_DB_PORT:-5432}
+      AUTH_DB_NAME: ${AUTH_DB_NAME:-bulutauth}
+      AUTH_DB_USER: ${AUTH_DB_USER:-authadmin}
+      AUTH_DB_PASS: ${AUTH_DB_PASS:-change_me_auth}
+      SECRET_KEY: ${SECRET_KEY:-change_me_secret_key}
+      ADMIN_DEFAULT_PASSWORD: ${ADMIN_DEFAULT_PASSWORD:-Admin123!}
+      FERNET_KEY: ${FERNET_KEY:-}
     volumes:
       - ./data:/app/data
     networks:
       - datalake
+    depends_on:
+      auth-db:
+        condition: service_healthy
 
   db:
     image: postgres:15
@@ -162,3 +192,4 @@ networks:
 volumes:
   pgdata:
   redis_data:
+  auth_pgdata:

@@ -382,8 +382,14 @@ def _dc_link(name, dc_id):
     )
 
 
-def build_overview(time_range=None):
+def build_overview(time_range=None, visible_sections=None):
     """Build Overview page content for the given time range (used by app callback)."""
+
+    def _v(code: str) -> bool:
+        if visible_sections is None:
+            return True
+        return code in visible_sections
+
     tr = time_range or default_time_range()
     data = api.get_global_dashboard(tr)
     overview = data.get("overview", {})
@@ -546,7 +552,9 @@ def build_overview(time_range=None):
                                         ],
                                     ),
                                 ],
-                            ),
+                            )
+                            if _v("action:overview:export")
+                            else html.Div(),
                         ],
                     ),
                 ],

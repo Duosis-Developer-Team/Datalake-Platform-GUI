@@ -1970,10 +1970,19 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict,
 # Main page builder
 # ---------------------------------------------------------------------------
 
-def build_dc_view(dc_id, time_range=None):
-    """Build DC detail page for the given time range."""
+def build_dc_view(dc_id, time_range=None, visible_sections=None):
+    """Build DC detail page for the given time range.
+
+    visible_sections: optional set of permission codes (sec:/sub:/action:) the user may see.
+    If None, all sections are shown (backward compatible).
+    """
     if not dc_id:
         return html.Div("No Data Center ID provided", style={"padding": "20px"})
+
+    def _sec(code: str) -> bool:
+        if visible_sections is None:
+            return True
+        return code in visible_sections
 
     tr = time_range or default_time_range()
     batch1 = parallel_execute(
@@ -2062,7 +2071,9 @@ def build_dc_view(dc_id, time_range=None):
             dmc.Button("PDF", id="dc-export-pdf", size="xs", variant="light", color="gray"),
         ],
     )
-    header_right_extra = list(sla_badges or []) + [export_group]
+    header_right_extra = list(sla_badges or [])
+    if _sec("action:dc_view:export"):
+        header_right_extra.append(export_group)
 
     san_switches = batch2["san_switches"]
     has_san = _has_san_data(san_switches)
@@ -2133,22 +2144,32 @@ def build_dc_view(dc_id, time_range=None):
     # Determine default active outer tab: first tab that actually has data
     has_avail = True
 
+    show_summary = has_summary and _sec("sec:dc_view:summary")
+    show_virt = has_virt and _sec("sec:dc_view:virtualization")
+    show_storage = has_storage and _sec("sec:dc_view:storage")
+    show_backup = has_backup and _sec("sec:dc_view:backup")
+    show_phys = has_phys_inv and _sec("sec:dc_view:phys_inv")
+    show_network = (has_network or has_san) and _sec("sec:dc_view:network")
+    show_avail = has_avail and _sec("sec:dc_view:availability")
+
     tabs_order = [
-        ("summary", has_summary),
-        ("virt", has_virt),
-        ("storage", has_storage),
-        ("backup", has_backup),
-        ("phys-inv", has_phys_inv),
-        ("network", has_network or has_san),
-        ("avail", has_avail),
+        ("summary", show_summary),
+        ("virt", show_virt),
+        ("storage", show_storage),
+        ("backup", show_backup),
+        ("phys-inv", show_phys),
+        ("network", show_network),
+        ("avail", show_avail),
     ]
     default_outer_tab = next((t for t, ok in tabs_order if ok), "summary")
 
-    # Determine default virtualization inner tab
+    show_classic = has_classic and _sec("sub:dc_view:virt:classic")
+    show_hyperconv = has_hyperconv and _sec("sub:dc_view:virt:hyperconv")
+    show_power_inner = has_power and _sec("sub:dc_view:virt:power")
     virt_order = [
-        ("classic", has_classic),
-        ("hyperconv", has_hyperconv),
-        ("power", has_power),
+        ("classic", show_classic),
+        ("hyperconv", show_hyperconv),
+        ("power", show_power_inner),
     ]
     default_virt_tab = next((t for t, ok in virt_order if ok), "classic")
 
@@ -2197,13 +2218,13 @@ def build_dc_view(dc_id, time_range=None):
                     tabs=dmc.TabsList(
                         style={"paddingTop": "8px"},
                         children=[
-                            dmc.TabsTab("Summary", value="summary") if has_summary else None,
-                            dmc.TabsTab("Virtualization", value="virt") if has_virt else None,
-                            dmc.TabsTab("Storage", value="storage") if has_storage else None,
-                            dmc.TabsTab("Backup & Replication", value="backup") if has_backup else None,
-                            dmc.TabsTab("Physical Inventory", value="phys-inv") if has_phys_inv else None,
-                            dmc.TabsTab("Network", value="network") if (has_network or has_san) else None,
-                            dmc.TabsTab("Availability", value="avail"),
+                            dmc.TabsTab("Summary", value="summary") if show_summary else None,
+                            dmc.TabsTab("Virtualization", value="virt") if show_virt else None,
+                            dmc.TabsTab("Storage", value="storage") if show_storage else None,
+                            dmc.TabsTab("Backup & Replication", value="backup") if show_backup else None,
+                            dmc.TabsTab("Physical Inventory", value="phys-inv") if show_phys else None,
+                            dmc.TabsTab("Network", value="network") if show_network else None,
+                            dmc.TabsTab("Availability", value="avail") if show_avail else None,
                         ],
                     ),
                 ),
@@ -2216,7 +2237,7 @@ def build_dc_view(dc_id, time_range=None):
                         style={"padding": "0 30px"},
                         children=[_build_summary_tab(data, tr)],
                     ),
-                ) if has_summary else None,
+                ) if show_summary else None,
 
                 # Virtualization (nested tabs)
                 dmc.TabsPanel(
@@ -2232,9 +2253,9 @@ def build_dc_view(dc_id, time_range=None):
                                 children=[
                                     dmc.TabsList(
                                         children=[
-                                            dmc.TabsTab("Klasik Mimari", value="classic") if has_classic else None,
-                                            dmc.TabsTab("Hyperconverged Mimari", value="hyperconv") if has_hyperconv else None,
-                                            dmc.TabsTab("Power Mimari", value="power") if has_power else None,
+                                            dmc.TabsTab("Klasik Mimari", value="classic") if show_classic else None,
+                                            dmc.TabsTab("Hyperconverged Mimari", value="hyperconv") if show_hyperconv else None,
+                                            dmc.TabsTab("Power Mimari", value="power") if show_power_inner else None,
                                         ]
                                     ),
                                     dmc.TabsPanel(
@@ -2254,7 +2275,7 @@ def build_dc_view(dc_id, time_range=None):
                                                 ),
                                             ],
                                         ),
-                                    ) if has_classic else None,
+                                    ) if show_classic else None,
                                     dmc.TabsPanel(
                                         value="hyperconv",
                                         pt="lg",
@@ -2272,7 +2293,7 @@ def build_dc_view(dc_id, time_range=None):
                                                 ),
                                             ],
                                         ),
-                                    ) if has_hyperconv else None,
+                                    ) if show_hyperconv else None,
                                     dmc.TabsPanel(
                                         value="power",
                                         pt="lg",
@@ -2283,12 +2304,12 @@ def build_dc_view(dc_id, time_range=None):
                                             storage_performance,
                                             san_bottleneck,
                                         ),
-                                    ) if has_power else None,
+                                    ) if show_power_inner else None,
                                 ],
                             ),
                         ],
                     ),
-                ),
+                ) if show_virt else None,
 
                 # Backup (nested tabs)
                 dmc.TabsPanel(
@@ -2343,7 +2364,7 @@ def build_dc_view(dc_id, time_range=None):
                             ),
                         ],
                     ),
-                ) if has_backup else None,
+                ) if show_backup else None,
 
                 # Physical Inventory
                 dmc.TabsPanel(
@@ -2353,7 +2374,7 @@ def build_dc_view(dc_id, time_range=None):
                         style={"padding": "0 30px"},
                         children=[_build_physical_inventory_dc_tab(phys_inv)],
                     ),
-                ) if has_phys_inv else None,
+                ) if show_phys else None,
                 # Storage (Intel / IBM)
                 dmc.TabsPanel(
                     value="storage",
@@ -2404,7 +2425,7 @@ def build_dc_view(dc_id, time_range=None):
                             )
                         ],
                     ),
-                ) if has_storage else None,
+                ) if show_storage else None,
 
                 # Network (Dashboard / SAN)
                 dmc.TabsPanel(
@@ -2447,7 +2468,7 @@ def build_dc_view(dc_id, time_range=None):
                             )
                         ],
                     ),
-                ) if (has_network or has_san) else None,
+                ) if show_network else None,
 
                 dmc.TabsPanel(
                     value="avail",
@@ -2457,7 +2478,7 @@ def build_dc_view(dc_id, time_range=None):
                         children=[_build_dc_availability_tab(aura_dc_item, dc_display)],
                     ),
                 )
-                if has_avail
+                if show_avail
                 else None,
             ],
         )

@@ -56,6 +56,25 @@ app = Dash(
 )
 server = app.server
 
+from src.auth.config import SECRET_KEY
+
+server.secret_key = SECRET_KEY
+
+try:
+    from src.auth.migration import run_migrations
+    from src.auth.seed import seed_all
+
+    run_migrations()
+    seed_all()
+except Exception as _auth_exc:
+    logging.getLogger(__name__).warning("Auth DB bootstrap failed: %s", _auth_exc)
+
+from src.auth.routes import auth_bp
+from src.auth.middleware import register_middleware
+
+server.register_blueprint(auth_bp)
+register_middleware(server)
+
 APP_BUILD_ID = (os.environ.get("APP_BUILD_ID") or "dev").strip()
 
 
@@ -77,6 +96,14 @@ _log = logging.getLogger(__name__)
 _log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
 
 from src.pages import home, datacenters, dc_view, customer_view, query_explorer, global_view, region_drilldown, dc_detail
+from src.pages import login as login_page_mod
+from src.pages import settings_auth
+from src.pages.admin import users as admin_users
+from src.pages.admin import roles as admin_roles
+from src.pages.admin import permissions as admin_permissions
+from src.pages.admin import ldap as admin_ldap
+from src.pages.admin import teams as admin_teams
+from src.components.access_denied import build_access_denied
 from src.pages.dc_view import _bps_to_gbps, _build_compute_tab
 
 _default_tr = default_time_range()
@@ -94,6 +121,7 @@ _default_customer = _customers[0] if _customers else DEFAULT_CUSTOMER_NAME
 _customer_options = [{"value": c, "label": c} for c in _customers]
 
 _sidebar = html.Div(
+    id="sidebar-shell",
     style={
         "width": "260px",
         "position": "fixed",
@@ -223,19 +251,24 @@ app.layout = dmc.MantineProvider(
             },
         ),
         dcc.Store(id="app-time-range", data=_default_tr),
+        dcc.Store(id="auth-user-store", data=None),
+        dcc.Store(id="auth-permissions-store", data=None),
         html.Div(id="export-pdf-clientside-dummy", style={"display": "none"}),
         html.Div(
             [
                 _sidebar,
                 html.Div(
-                    dcc.Loading(
-                        id="main-content-loading",
-                        type="circle",
-                        color="#4318FF",
-                        target_components={"main-content": "children"},
-                        children=html.Div(id="main-content", children=[]),
-                        style={"minHeight": "240px"},
-                    ),
+                    id="main-shell",
+                    children=[
+                        dcc.Loading(
+                            id="main-content-loading",
+                            type="circle",
+                            color="#4318FF",
+                            target_components={"main-content": "children"},
+                            children=html.Div(id="main-content", children=[]),
+                            style={"minHeight": "240px"},
+                        ),
+                    ],
                     style={
                         "marginLeft": "292px",
                         "padding": "30px",
@@ -295,7 +328,78 @@ app.clientside_callback(
     dash.Input("url", "pathname"),
 )
 def update_sidebar_nav(pathname):
-    return create_sidebar_nav(pathname or "/")
+    from flask import g, has_request_context
+
+    from src.auth.permission_service import user_effective_map
+
+    pmap = None
+    uname = ""
+    if has_request_context():
+        uid = getattr(g, "auth_user_id", None)
+        u = getattr(g, "auth_user", None) or {}
+        uname = str(u.get("username") or "")
+        if uid:
+            pmap = user_effective_map(int(uid))
+    return create_sidebar_nav(pathname or "/", pmap, uname)
+
+
+@app.callback(
+    dash.Output("sidebar-shell", "style"),
+    dash.Output("main-shell", "style"),
+    dash.Input("url", "pathname"),
+)
+def layout_shell(pathname):
+    pathname = pathname or "/"
+    base_sidebar = {
+        "width": "260px",
+        "position": "fixed",
+        "top": "16px",
+        "left": "16px",
+        "height": "calc(100vh - 32px)",
+        "zIndex": 999,
+        "padding": "24px",
+        "backgroundColor": "#FFFFFF",
+        "overflowY": "auto",
+        "overflowX": "hidden",
+        "borderRadius": "16px",
+        "boxShadow": "0 10px 30px rgba(0, 0, 0, 0.08), 0 4px 12px rgba(0, 0, 0, 0.04)",
+        "display": "flex",
+        "flexDirection": "column",
+    }
+    base_main = {
+        "marginLeft": "292px",
+        "padding": "30px",
+        "minHeight": "100vh",
+        "width": "calc(100% - 292px)",
+        "backgroundColor": "#F4F7FE",
+    }
+    if pathname == "/login":
+        return {**base_sidebar, "display": "none"}, {
+            **base_main,
+            "marginLeft": "0",
+            "width": "100%",
+        }
+    return base_sidebar, base_main
+
+
+@app.callback(
+    dash.Output("auth-user-store", "data"),
+    dash.Output("auth-permissions-store", "data"),
+    dash.Input("url", "pathname"),
+)
+def sync_auth_stores(pathname):
+    from flask import g, has_request_context
+
+    from src.auth.permission_service import user_effective_map
+
+    if not has_request_context():
+        return dash.no_update, dash.no_update
+    uid = getattr(g, "auth_user_id", None)
+    if not uid:
+        return None, None
+    pmap = user_effective_map(int(uid))
+    u = getattr(g, "auth_user", None) or {}
+    return {"id": int(uid), "username": u.get("username")}, pmap
 
 
 @app.callback(
@@ -390,15 +494,35 @@ def update_time_range_store(preset, start_dt, end_dt, current):
     dash.State("url", "search"),
 )
 def render_main_content(pathname, time_range, selected_customer, search):
+    from flask import g, has_request_context
+
+    from src.auth.config import AUTH_DISABLED
+    from src.auth.permission_service import can_view, get_visible_sections, resolve_pathname_to_page_code
+
     pathname = pathname or "/"
     tr = time_range or default_time_range()
+
+    if pathname == "/login":
+        nxt, err = login_page_mod.parse_login_search(search)
+        return login_page_mod.build_login_layout(nxt, error=err)
+
+    uid = getattr(g, "auth_user_id", None) if has_request_context() else None
+    if not AUTH_DISABLED and uid is None:
+        return html.Div()
+
+    page_code = resolve_pathname_to_page_code(pathname)
+    vis = get_visible_sections(int(uid), page_code) if uid and page_code else None
+
+    if page_code and uid and not can_view(int(uid), page_code):
+        return build_access_denied()
+
     if pathname in ("/", ""):
-        return home.build_overview(tr)
+        return home.build_overview(tr, visible_sections=vis)
     if pathname == "/datacenters":
         return datacenters.build_datacenters(tr)
     if pathname and pathname.startswith("/datacenter/"):
         dc_id = pathname.replace("/datacenter/", "").strip("/")
-        return dc_view.build_dc_view(dc_id, tr)
+        return dc_view.build_dc_view(dc_id, tr, visible_sections=vis)
     if pathname == "/global-view":
         return global_view.build_global_view(tr)
     if pathname == "/customer-view":
@@ -410,10 +534,23 @@ def render_main_content(pathname, time_range, selected_customer, search):
         return dc_detail.build_dc_detail(dc_id, tr)
     if pathname == "/region-drilldown":
         from urllib.parse import parse_qs
+
         params = parse_qs((search or "").lstrip("?"))
         region = params.get("region", [""])[0]
         return region_drilldown.build_region_drilldown(region, tr)
-    return home.build_overview(tr)
+    if pathname.startswith("/admin/users"):
+        return admin_users.build_layout()
+    if pathname.startswith("/admin/roles"):
+        return admin_roles.build_layout()
+    if pathname.startswith("/admin/permissions"):
+        return admin_permissions.build_layout()
+    if pathname.startswith("/admin/ldap"):
+        return admin_ldap.build_layout()
+    if pathname.startswith("/admin/teams"):
+        return admin_teams.build_layout()
+    if pathname.startswith("/settings/auth"):
+        return settings_auth.build_layout()
+    return home.build_overview(tr, visible_sections=vis)
 
 
 @app.callback(
