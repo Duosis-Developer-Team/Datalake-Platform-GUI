@@ -13,6 +13,15 @@ from src.auth.config import AUTH_DISABLED, SESSION_COOKIE_NAME
 logger = logging.getLogger(__name__)
 
 
+def _hydrate_g_from_session() -> None:
+    """Set g.auth_user / g.auth_user_id when a valid session token exists."""
+    tok = session.get(SESSION_COOKIE_NAME)
+    urow = service.get_session_user(tok)
+    if urow:
+        g.auth_user = urow
+        g.auth_user_id = int(urow["id"])
+
+
 def _is_public_path(path: str) -> bool:
     if path in ("/login", "/favicon.ico"):
         return True
@@ -45,17 +54,28 @@ def register_middleware(app) -> None:
                 return redirect(nxt)
             return None
 
+        # Dash internal routes (e.g. POST /_dash-update-component) are "public" for
+        # redirect purposes but must still populate g from the session cookie so
+        # callbacks (render_main_content, sidebar, etc.) see auth_user_id.
+        if path.startswith("/_dash"):
+            _hydrate_g_from_session()
+            if getattr(g, "auth_user_id", None) is not None:
+                logger.debug(
+                    "dash path session hydrated user_id=%s request_path=%s",
+                    g.auth_user_id,
+                    path,
+                )
+            return None
+
         if _is_public_path(path):
             return None
 
-        tok = session.get(SESSION_COOKIE_NAME)
-        urow = service.get_session_user(tok)
+        _hydrate_g_from_session()
+        urow = getattr(g, "auth_user", None)
         if not urow:
             from urllib.parse import quote
 
             nxt = request.full_path if request.query_string else request.path
             return redirect(f"/login?next={quote(nxt, safe='/?&=')}")
 
-        g.auth_user = urow
-        g.auth_user_id = int(urow["id"])
         return None

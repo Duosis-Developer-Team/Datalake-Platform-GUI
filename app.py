@@ -489,7 +489,7 @@ def update_time_range_store(preset, start_dt, end_dt, current):
     dash.State("url", "search"),
 )
 def render_main_content(pathname, time_range, selected_customer, search):
-    from flask import g, has_request_context
+    from flask import g, has_request_context, request as flask_request
 
     from src.auth.config import AUTH_DISABLED
     from src.auth.permission_service import can_view, get_visible_sections, resolve_pathname_to_page_code
@@ -503,6 +503,13 @@ def render_main_content(pathname, time_range, selected_customer, search):
 
     uid = getattr(g, "auth_user_id", None) if has_request_context() else None
     if not AUTH_DISABLED and uid is None:
+        _log.warning(
+            "main-content: missing auth user; rendering empty layout pathname=%s "
+            "flask_path=%s has_request_context=%s",
+            pathname,
+            getattr(flask_request, "path", None),
+            has_request_context(),
+        )
         return html.Div()
 
     page_code = resolve_pathname_to_page_code(pathname)
