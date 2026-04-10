@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dash_mantine_components as dmc
-from dash import html
+from dash import dcc, html
 
 from src.auth import settings_crud
 
@@ -48,7 +48,7 @@ def build_layout() -> html.Div:
                             html.Div(
                                 [
                                     dmc.Text("Username", size="xs", c="dimmed", mb=4),
-                                    html.Input(
+                                    dcc.Input(
                                         name="username",
                                         required=True,
                                         style=_input_style(),
@@ -58,7 +58,7 @@ def build_layout() -> html.Div:
                             html.Div(
                                 [
                                     dmc.Text("Password", size="xs", c="dimmed", mb=4),
-                                    html.Input(
+                                    dcc.Input(
                                         name="password",
                                         type="password",
                                         required=True,
@@ -69,13 +69,13 @@ def build_layout() -> html.Div:
                             html.Div(
                                 [
                                     dmc.Text("Display name", size="xs", c="dimmed", mb=4),
-                                    html.Input(name="display_name", style=_input_style()),
+                                    dcc.Input(name="display_name", style=_input_style()),
                                 ]
                             ),
                             html.Div(
                                 [
                                     dmc.Text("Roles (IDs, comma-separated)", size="xs", c="dimmed", mb=4),
-                                    html.Input(
+                                    dcc.Input(
                                         name="role_ids",
                                         placeholder="e.g. 1,2",
                                         style=_input_style(),

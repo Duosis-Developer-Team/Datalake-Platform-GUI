@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dash_mantine_components as dmc
-from dash import html
+from dash import dcc, html
 
 from src.auth import settings_crud
 
@@ -25,24 +25,27 @@ def build_layout() -> html.Div:
                     [
                         html.Td(str(p["code"]), style={"fontSize": "11px", "padding": "4px"}),
                         html.Td(
-                            html.Input(
+                            dcc.Input(
                                 type="checkbox",
                                 name=f"v_{pid}",
-                                **({"checked": "checked"} if row.get("can_view") else {}),
+                                id=f"role-matrix-{rid}-v-{pid}",
+                                value=bool(row.get("can_view")),
                             )
                         ),
                         html.Td(
-                            html.Input(
+                            dcc.Input(
                                 type="checkbox",
                                 name=f"e_{pid}",
-                                **({"checked": "checked"} if row.get("can_edit") else {}),
+                                id=f"role-matrix-{rid}-e-{pid}",
+                                value=bool(row.get("can_edit")),
                             )
                         ),
                         html.Td(
-                            html.Input(
+                            dcc.Input(
                                 type="checkbox",
                                 name=f"x_{pid}",
-                                **({"checked": "checked"} if row.get("can_export") else {}),
+                                id=f"role-matrix-{rid}-x-{pid}",
+                                value=bool(row.get("can_export")),
                             )
                         ),
                     ]
@@ -53,7 +56,7 @@ def build_layout() -> html.Div:
                 method="POST",
                 action="/auth/settings/role-matrix",
                 children=[
-                    html.Input(type="hidden", name="role_id", value=str(rid)),
+                    dcc.Input(type="hidden", name="role_id", value=str(rid)),
                     dmc.Text(f"Role: {r['name']}", fw=700, mb="xs", size="sm"),
                     html.Table(
                         [

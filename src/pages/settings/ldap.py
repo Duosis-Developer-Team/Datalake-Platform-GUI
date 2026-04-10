@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dash_mantine_components as dmc
-from dash import html
+from dash import dcc, html
 
 from src.auth import settings_crud
 
@@ -27,7 +27,7 @@ def build_layout() -> html.Div:
                                 action="/auth/settings/ldap-mapping-delete",
                                 style={"display": "inline"},
                                 children=[
-                                    html.Input(type="hidden", name="mapping_id", value=str(m["id"])),
+                                    dcc.Input(type="hidden", name="mapping_id", value=str(m["id"])),
                                     html.Button("Remove", type="submit", style={"fontSize": "11px"}),
                                 ],
                             )
@@ -44,7 +44,7 @@ def build_layout() -> html.Div:
                 action="/auth/settings/ldap-save",
                 style={"padding": "16px", "border": "1px solid #E9ECEF", "borderRadius": "12px", "marginBottom": "16px"},
                 children=[
-                    html.Input(type="hidden", name="ldap_id", value=str(cid)),
+                    dcc.Input(type="hidden", name="ldap_id", value=str(cid)),
                     dmc.SimpleGrid(
                         cols=2,
                         children=[
@@ -80,9 +80,9 @@ def build_layout() -> html.Div:
                 action="/auth/settings/ldap-mapping-add",
                 style={"marginBottom": "16px"},
                 children=[
-                    html.Input(type="hidden", name="ldap_config_id", value=str(cid)),
-                    html.Input(name="ldap_group_dn", placeholder="CN=Group,OU=...", style={"width": "60%", "marginRight": "8px"}),
-                    html.Input(name="role_id", placeholder="role id", style={"width": "80px", "marginRight": "8px"}),
+                    dcc.Input(type="hidden", name="ldap_config_id", value=str(cid)),
+                    dcc.Input(name="ldap_group_dn", placeholder="CN=Group,OU=...", style={"width": "60%", "marginRight": "8px"}),
+                    dcc.Input(name="role_id", placeholder="role id", style={"width": "80px", "marginRight": "8px"}),
                     html.Button("Add mapping", type="submit"),
                 ],
             ),
@@ -98,6 +98,6 @@ def _field(name: str, label: str, value: str, inp_type: str = "text"):
     return html.Div(
         [
             dmc.Text(label, size="xs", c="dimmed", mb=4),
-            html.Input(name=name, type=inp_type, value=value, style={"width": "100%", "padding": "8px"}),
+            dcc.Input(name=name, type=inp_type, value=value, style={"width": "100%", "padding": "8px"}),
         ]
     )

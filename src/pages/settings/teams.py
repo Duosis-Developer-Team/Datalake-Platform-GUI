@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dash_mantine_components as dmc
-from dash import html
+from dash import dcc, html
 
 from src.auth import settings_crud
 
@@ -30,7 +30,7 @@ def build_layout() -> html.Div:
                 style={"padding": "16px", "border": "1px solid #E9ECEF", "borderRadius": "12px", "marginBottom": "16px"},
                 children=[
                     dmc.Text("Create team", fw=600, mb="sm", size="sm"),
-                    html.Input(
+                    dcc.Input(
                         name="name",
                         placeholder="Team name",
                         required=True,

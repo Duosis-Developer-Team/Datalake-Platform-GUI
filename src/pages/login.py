@@ -53,7 +53,8 @@ def build_login_layout(next_path: str = "/", error: bool = False) -> html.Div:
                                             html.Div(
                                                 children=[
                                                     dmc.Text("Username", size="xs", fw=600, mb=6, c="dimmed"),
-                                                    html.Input(
+                                                    dcc.Input(
+                                                        id="login-username",
                                                         name="username",
                                                         type="text",
                                                         required=True,
@@ -71,7 +72,8 @@ def build_login_layout(next_path: str = "/", error: bool = False) -> html.Div:
                                             html.Div(
                                                 children=[
                                                     dmc.Text("Password", size="xs", fw=600, mb=6, c="dimmed"),
-                                                    html.Input(
+                                                    dcc.Input(
+                                                        id="login-password",
                                                         name="password",
                                                         type="password",
                                                         required=True,

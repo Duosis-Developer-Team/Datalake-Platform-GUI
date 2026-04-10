@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dash_mantine_components as dmc
-from dash import html
+from dash import dcc, html
 
 from src.auth import settings_crud
 
@@ -45,31 +45,31 @@ def build_layout() -> html.Div:
                             html.Div(
                                 [
                                     dmc.Text("Code (unique)", size="xs", c="dimmed", mb=4),
-                                    html.Input(name="code", required=True, style=_inp()),
+                                    dcc.Input(name="code", required=True, style=_inp()),
                                 ]
                             ),
                             html.Div(
                                 [
                                     dmc.Text("Name", size="xs", c="dimmed", mb=4),
-                                    html.Input(name="name", required=True, style=_inp()),
+                                    dcc.Input(name="name", required=True, style=_inp()),
                                 ]
                             ),
                             html.Div(
                                 [
                                     dmc.Text("Parent code (optional)", size="xs", c="dimmed", mb=4),
-                                    html.Input(name="parent_code", placeholder="grp:dashboard", style=_inp()),
+                                    dcc.Input(name="parent_code", placeholder="grp:dashboard", style=_inp()),
                                 ]
                             ),
                             html.Div(
                                 [
                                     dmc.Text("Resource type", size="xs", c="dimmed", mb=4),
-                                    html.Input(name="resource_type", value="section", style=_inp()),
+                                    dcc.Input(name="resource_type", value="section", style=_inp()),
                                 ]
                             ),
                             html.Div(
                                 [
                                     dmc.Text("Route pattern (optional)", size="xs", c="dimmed", mb=4),
-                                    html.Input(name="route_pattern", style=_inp()),
+                                    dcc.Input(name="route_pattern", style=_inp()),
                                 ]
                             ),
                         ],
