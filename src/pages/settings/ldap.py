@@ -50,7 +50,11 @@ def build_layout() -> html.Div:
                         children=[
                             _field("name", "Config name", cfg.get("name") if cfg else "default"),
                             _field("server_primary", "Primary server", cfg.get("server_primary") if cfg else ""),
-                            _field("server_secondary", "Secondary server", cfg.get("server_secondary") or ""),
+                            _field(
+                                "server_secondary",
+                                "Secondary server",
+                                (cfg.get("server_secondary") or "") if cfg else "",
+                            ),
                             _field("port", "Port", str(cfg.get("port") if cfg else 389)),
                             _field("bind_dn", "Bind DN", cfg.get("bind_dn") if cfg else ""),
                             _field("bind_password", "Bind password (leave blank to keep)", "", "password"),
