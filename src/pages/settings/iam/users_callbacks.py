@@ -1,8 +1,9 @@
-"""Dash callbacks for IAM users page (AD search, import, edit)."""
+"""Dash callbacks for IAM users page (AD search, import, slide-in panel)."""
 
 from __future__ import annotations
 
 import logging
+import time
 
 import dash_mantine_components as dmc
 from dash import ALL, Input, Output, State, callback, ctx, no_update
@@ -32,7 +33,97 @@ def _dn_label(u: dict) -> str:
 
 
 @callback(
-    Output("ad-search-modal", "opened"),
+    Output("user-slide-panel", "className"),
+    Input("iam-user-panel-store", "data"),
+)
+def sync_user_panel_class(store):
+    if store and store.get("open"):
+        return "user-slide-panel open"
+    return "user-slide-panel closed"
+
+
+@callback(
+    Output("iam-user-panel-store", "data"),
+    Output("iam-user-panel-title", "children"),
+    Output("iam-user-form-username", "value"),
+    Output("iam-user-form-username", "disabled"),
+    Output("iam-user-form-password", "value"),
+    Output("iam-user-form-display-name", "value"),
+    Output("iam-user-form-email", "value"),
+    Output("iam-user-form-role-ids", "value"),
+    Output("iam-user-form-team-ids", "value"),
+    Output("iam-user-form-feedback", "children"),
+    Output("iam-user-form-tabs", "value"),
+    Output("iam-user-form-password-wrap", "style"),
+    Input("iam-user-open-create", "n_clicks"),
+    Input({"type": "iam-user-edit", "uid": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def open_user_panel(_create_clicks, _edit_clicks):
+    trig = ctx.triggered_id
+    if trig == "iam-user-open-create":
+        return (
+            {"open": True, "mode": "create", "uid": None},
+            "Create user",
+            "",
+            False,
+            "",
+            "",
+            "",
+            [],
+            [],
+            None,
+            "local",
+            {"display": "block"},
+        )
+    if isinstance(trig, dict) and trig.get("type") == "iam-user-edit":
+        uid = int(trig["uid"])
+        detail = settings_crud.get_user_detail(uid)
+        if not detail:
+            return (
+                {"open": True, "mode": "edit", "uid": uid},
+                "Edit user",
+                "",
+                True,
+                "",
+                "",
+                "",
+                [],
+                [],
+                dmc.Alert("User not found.", color="red", variant="light"),
+                "local",
+                {"display": "none"},
+            )
+        rids = [str(x) for x in detail.get("role_ids") or []]
+        tids = [str(x) for x in detail.get("team_ids") or []]
+        title = f"Edit user — {detail.get('username', '')}"
+        return (
+            {"open": True, "mode": "edit", "uid": uid},
+            title,
+            detail.get("username") or "",
+            True,
+            "",
+            detail.get("display_name") or "",
+            detail.get("email") or "",
+            rids,
+            tids,
+            None,
+            "local",
+            {"display": "none"},
+        )
+    raise PreventUpdate
+
+
+@callback(
+    Output("iam-user-panel-store", "data", allow_duplicate=True),
+    Input("iam-user-panel-close", "n_clicks"),
+    prevent_initial_call=True,
+)
+def close_user_panel(_n):
+    return {"open": False, "mode": "create", "uid": None}
+
+
+@callback(
     Output("ad-search-results-store", "data"),
     Output("ad-import-checklist", "options"),
     Output("ad-import-checklist", "value"),
@@ -42,21 +133,20 @@ def _dn_label(u: dict) -> str:
     prevent_initial_call=True,
 )
 def run_ad_search(_n_clicks, query):
-    if not query or len(str(query).strip()) < 2:
+    q_raw = str(query or "").strip()
+    if len(q_raw) < 2:
         return (
-            False,
             no_update,
             no_update,
             no_update,
             dmc.Alert("Enter at least 2 characters to search.", color="yellow", variant="light"),
         )
-    q = str(query).strip()
+    q = q_raw
     try:
         rows = settings_crud.search_ldap_users(q)
     except Exception as exc:
         logger.exception("AD search failed")
         return (
-            False,
             [],
             [],
             [],
@@ -65,7 +155,6 @@ def run_ad_search(_n_clicks, query):
 
     if not rows:
         return (
-            True,
             [],
             [],
             [],
@@ -74,11 +163,14 @@ def run_ad_search(_n_clicks, query):
 
     options = [{"label": _dn_label(r), "value": r["distinguished_name"]} for r in rows]
     return (
-        True,
         rows,
         options,
         [],
-        dmc.Alert(f"Found {len(rows)} user(s). Select below, then close and click Import selected.", color="blue", variant="light"),
+        dmc.Alert(
+            f"Found {len(rows)} user(s). Select below, then click Import selected.",
+            color="blue",
+            variant="light",
+        ),
     )
 
 
@@ -125,76 +217,50 @@ def submit_ad_import(_n, selected_dns, store_rows, role_vals, team_vals):
 
 
 @callback(
-    Output("iam-user-edit-modal", "opened"),
-    Output("iam-edit-user-store", "data"),
-    Output("iam-user-edit-display-name", "value"),
-    Output("iam-user-edit-email", "value"),
-    Output("iam-user-edit-role-ids", "value"),
-    Output("iam-user-edit-team-ids", "value"),
-    Output("iam-user-edit-feedback", "children"),
-    Input({"type": "iam-user-edit", "uid": ALL}, "n_clicks"),
+    Output("url", "search", allow_duplicate=True),
+    Output("iam-user-form-feedback", "children", allow_duplicate=True),
+    Output("iam-user-panel-store", "data", allow_duplicate=True),
+    Input("iam-user-form-save", "n_clicks"),
+    State("iam-user-panel-store", "data"),
+    State("iam-user-form-username", "value"),
+    State("iam-user-form-password", "value"),
+    State("iam-user-form-display-name", "value"),
+    State("iam-user-form-email", "value"),
+    State("iam-user-form-role-ids", "value"),
+    State("iam-user-form-team-ids", "value"),
     prevent_initial_call=True,
 )
-def open_user_edit(_clicks):
-    trig = ctx.triggered_id
-    if not isinstance(trig, dict) or trig.get("type") != "iam-user-edit":
+def save_user_panel(_n, store, username, password, display_name, email, role_vals, team_vals):
+    if not store or not store.get("open"):
         raise PreventUpdate
-    uid = int(trig["uid"])
-    detail = settings_crud.get_user_detail(uid)
-    if not detail:
-        return (
-            True,
-            uid,
-            "",
-            "",
-            [],
-            [],
-            dmc.Alert("User not found.", color="red", variant="light"),
-        )
-    rids = [str(x) for x in detail.get("role_ids") or []]
-    tids = [str(x) for x in detail.get("team_ids") or []]
-    return (
-        True,
-        uid,
-        detail.get("display_name") or "",
-        detail.get("email") or "",
-        rids,
-        tids,
-        None,
-    )
+    mode = store.get("mode") or "create"
+    uid = store.get("uid")
 
+    role_ids = _int_list(role_vals)
+    team_ids = _int_list(team_vals)
 
-@callback(
-    Output("iam-user-edit-modal", "opened", allow_duplicate=True),
-    Output("iam-user-edit-feedback", "children", allow_duplicate=True),
-    Input("iam-user-edit-cancel", "n_clicks"),
-    prevent_initial_call=True,
-)
-def cancel_user_edit(_n):
-    return False, None
-
-
-@callback(
-    Output("iam-user-edit-modal", "opened", allow_duplicate=True),
-    Output("iam-user-edit-feedback", "children", allow_duplicate=True),
-    Input("iam-user-edit-save", "n_clicks"),
-    State("iam-edit-user-store", "data"),
-    State("iam-user-edit-display-name", "value"),
-    State("iam-user-edit-email", "value"),
-    State("iam-user-edit-role-ids", "value"),
-    State("iam-user-edit-team-ids", "value"),
-    prevent_initial_call=True,
-)
-def save_user_edit(_n, uid, display_name, email, role_vals, team_vals):
-    if uid is None:
-        raise PreventUpdate
     try:
-        settings_crud.update_user_profile(int(uid), display_name or None, email or None)
-        role_ids = _int_list(role_vals)
-        team_ids = _int_list(team_vals)
-        settings_crud.set_user_roles(int(uid), role_ids)
-        settings_crud.set_user_teams(int(uid), team_ids)
-        return False, dmc.Alert("User saved.", color="green", variant="light")
+        if mode == "create":
+            uname = str(username or "").strip()
+            pw = str(password or "")
+            if not uname:
+                return no_update, dmc.Alert("Username is required.", color="yellow", variant="light"), no_update
+            if not pw:
+                return no_update, dmc.Alert("Password is required for new users.", color="yellow", variant="light"), no_update
+            new_id = settings_crud.create_local_user(uname, pw, display_name or None)
+            em = str(email).strip() if email else None
+            settings_crud.update_user_profile(int(new_id), display_name or None, em)
+            settings_crud.set_user_roles(int(new_id), role_ids)
+            settings_crud.set_user_teams(int(new_id), team_ids)
+        else:
+            if uid is None:
+                raise PreventUpdate
+            settings_crud.update_user_profile(int(uid), display_name or None, str(email).strip() if email else None)
+            settings_crud.set_user_roles(int(uid), role_ids)
+            settings_crud.set_user_teams(int(uid), team_ids)
     except Exception as exc:
-        logger.exception("save_user_edit failed")
-        return True, dmc.Alert(f"Save failed: {exc}", color="red", variant="light")
+        logger.exception("save_user_panel failed")
+        return no_update, dmc.Alert(f"Save failed: {exc}", color="red", variant="light"), no_update
+
+    refresh = f"?_refresh={int(time.time() * 1000)}"
+    return refresh, None, {"open": False, "mode": "create", "uid": None}

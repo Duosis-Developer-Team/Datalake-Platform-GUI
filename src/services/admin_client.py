@@ -31,12 +31,12 @@ def _get(path: str, params: dict | None = None, timeout: float = 10) -> Any:
         raise
 
 
-def _post(path: str, json: dict | None = None) -> Any:
+def _post(path: str, json: dict | None = None, timeout: float = 10) -> Any:
     import httpx
 
     url = f"{_ADMIN_API_URL}{path}"
     try:
-        r = httpx.post(url, json=json, timeout=10)
+        r = httpx.post(url, json=json, timeout=timeout)
         r.raise_for_status()
         return r.json()
     except Exception as exc:
@@ -181,6 +181,51 @@ def upsert_ldap_config(
     })
 
 
+def test_ldap_connection(
+    server_primary: str,
+    server_secondary: str | None,
+    port: int,
+    use_ssl: bool,
+    bind_dn: str,
+    bind_password_plain: str | None,
+    search_base_dn: str,
+    user_search_filter: str,
+    ldap_id: int | None,
+    test_query: str | None = None,
+) -> dict[str, Any]:
+    if not _USE_API:
+        from src.auth import settings_crud
+        return settings_crud.test_ldap_connection(
+            server_primary,
+            server_secondary,
+            port,
+            use_ssl,
+            bind_dn,
+            bind_password_plain,
+            search_base_dn,
+            user_search_filter,
+            ldap_id,
+            test_query,
+        )
+    lid = ldap_id if ldap_id is not None else None
+    return _post(
+        "/api/v1/ldap/test",
+        {
+            "server_primary": server_primary,
+            "server_secondary": server_secondary,
+            "port": port,
+            "use_ssl": use_ssl,
+            "bind_dn": bind_dn,
+            "bind_password": bind_password_plain,
+            "search_base_dn": search_base_dn,
+            "user_search_filter": user_search_filter,
+            "ldap_id": lid,
+            "test_query": test_query or "test",
+        },
+        timeout=30,
+    )
+
+
 def list_ldap_group_mappings(ldap_config_id: int) -> list[dict[str, Any]]:
     if not _USE_API:
         from src.auth import settings_crud
@@ -212,11 +257,27 @@ def list_teams() -> list[dict[str, Any]]:
     return _get("/api/v1/teams")
 
 
-def create_team(name: str, parent_id: int | None, created_by: int | None) -> None:
+def create_team(
+    name: str,
+    parent_id: int | None,
+    created_by: int | None,
+    description: str | None = None,
+    role_ids: list[int] | None = None,
+) -> int:
     if not _USE_API:
         from src.auth import settings_crud
-        return settings_crud.create_team(name, parent_id, created_by)
-    _post("/api/v1/teams", {"name": name, "parent_id": parent_id})
+
+        return settings_crud.create_team(name, parent_id, created_by, description, role_ids)
+    data = _post(
+        "/api/v1/teams",
+        {
+            "name": name,
+            "parent_id": parent_id,
+            "description": description,
+            "role_ids": role_ids or [],
+        },
+    )
+    return int(data.get("id", 0))
 
 
 def list_audit_log(limit: int = 200) -> list[dict[str, Any]]:
@@ -288,11 +349,24 @@ def set_user_teams(user_id: int, team_ids: list[int]) -> None:
     _put(f"/api/v1/users/{user_id}/teams", {"team_ids": team_ids})
 
 
-def update_team(team_id: int, name: str) -> None:
+def update_team(
+    team_id: int,
+    name: str,
+    description: str | None = None,
+    role_ids: list[int] | None = None,
+) -> None:
     if not _USE_API:
         from src.auth import settings_crud
-        return settings_crud.update_team_name(team_id, name)
-    _put(f"/api/v1/teams/{team_id}", {"name": name})
+
+        if description is None and role_ids is None:
+            return settings_crud.update_team_name(team_id, name)
+        return settings_crud.update_team_meta(team_id, name, description, role_ids)
+    payload: dict[str, Any] = {"name": name}
+    if description is not None:
+        payload["description"] = description
+    if role_ids is not None:
+        payload["role_ids"] = role_ids
+    _put(f"/api/v1/teams/{team_id}", payload)
 
 
 def list_team_members(team_id: int) -> list[dict[str, Any]]:

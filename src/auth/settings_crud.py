@@ -30,7 +30,10 @@ def list_roles() -> list[dict[str, Any]]:
 
 def list_permissions_flat() -> list[dict[str, Any]]:
     return db.fetch_all(
-        "SELECT id, code, name, parent_id, resource_type, sort_order, is_dynamic FROM permissions ORDER BY code"
+        """
+        SELECT id, code, name, description, parent_id, resource_type, sort_order, is_dynamic
+        FROM permissions ORDER BY code
+        """
     )
 
 
@@ -198,6 +201,35 @@ def upsert_ldap_config(
     )
 
 
+def test_ldap_connection(
+    server_primary: str,
+    server_secondary: str | None,
+    port: int,
+    use_ssl: bool,
+    bind_dn: str,
+    bind_password_plain: str | None,
+    search_base_dn: str,
+    user_search_filter: str,
+    ldap_id: int | None,
+    test_query: str | None = None,
+) -> dict[str, Any]:
+    """Bind + sample LDAP user search (direct DB + ldap3 when ADMIN_API_URL is unset)."""
+    from src.auth import ldap_service
+
+    return ldap_service.test_ldap_connection(
+        server_primary,
+        server_secondary,
+        port,
+        use_ssl,
+        bind_dn,
+        bind_password_plain,
+        search_base_dn,
+        user_search_filter,
+        ldap_id,
+        test_query or "test",
+    )
+
+
 def list_ldap_group_mappings(ldap_config_id: int) -> list[dict[str, Any]]:
     return db.fetch_all(
         """
@@ -227,9 +259,11 @@ def delete_ldap_group_mapping(mapping_id: int) -> None:
 
 
 def list_teams() -> list[dict[str, Any]]:
-    return db.fetch_all(
+    from collections import defaultdict
+
+    teams = db.fetch_all(
         """
-        SELECT t.id, t.name, t.parent_id, t.created_by,
+        SELECT t.id, t.name, t.description, t.parent_id, t.created_by,
                u.username AS created_by_name,
                (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id = t.id) AS member_count
         FROM teams t
@@ -237,13 +271,71 @@ def list_teams() -> list[dict[str, Any]]:
         ORDER BY t.name
         """
     )
+    tr_rows = db.fetch_all("SELECT team_id, role_id FROM team_roles")
+    by_team: dict[int, list[int]] = defaultdict(list)
+    for r in tr_rows:
+        by_team[int(r["team_id"])].append(int(r["role_id"]))
+    role_names = {int(r["id"]): str(r["name"]) for r in db.fetch_all("SELECT id, name FROM roles")}
+    for t in teams:
+        tid = int(t["id"])
+        rids = sorted(by_team.get(tid, []))
+        t["role_ids"] = rids
+        t["roles"] = ", ".join(role_names.get(rid, str(rid)) for rid in rids)
+    return teams
 
 
-def create_team(name: str, parent_id: int | None, created_by: int | None) -> None:
-    db.execute(
-        "INSERT INTO teams (name, parent_id, created_by) VALUES (%s, %s, %s)",
-        (name.strip(), parent_id, created_by),
+def _set_team_roles(team_id: int, role_ids: list[int]) -> None:
+    db.execute("DELETE FROM team_roles WHERE team_id = %s", (team_id,))
+    for rid in role_ids:
+        db.execute(
+            "INSERT INTO team_roles (team_id, role_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (team_id, rid),
+        )
+
+
+def create_team(
+    name: str,
+    parent_id: int | None,
+    created_by: int | None,
+    description: str | None = None,
+    role_ids: list[int] | None = None,
+) -> int:
+    desc = (description or "").strip() or None
+    row = db.fetch_one(
+        """
+        INSERT INTO teams (name, parent_id, created_by, description)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """,
+        (name.strip(), parent_id, created_by, desc),
     )
+    tid = int(row["id"]) if row else 0
+    if tid and role_ids:
+        _set_team_roles(tid, role_ids)
+    return tid
+
+
+def update_team_meta(
+    team_id: int,
+    name: str,
+    description: str | None,
+    role_ids: list[int] | None,
+) -> None:
+    if description is not None:
+        db.execute(
+            "UPDATE teams SET name = %s, description = %s WHERE id = %s",
+            (name.strip(), (description or "").strip() or None, team_id),
+        )
+    else:
+        db.execute("UPDATE teams SET name = %s WHERE id = %s", (name.strip(), team_id))
+    if role_ids is not None:
+        _set_team_roles(team_id, role_ids)
+        urows = db.fetch_all(
+            "SELECT user_id FROM team_members WHERE team_id = %s",
+            (team_id,),
+        )
+        for r in urows:
+            clear_user_cache(int(r["user_id"]))
 
 
 def list_audit_log(limit: int = 200) -> list[dict[str, Any]]:

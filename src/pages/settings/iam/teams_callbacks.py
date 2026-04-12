@@ -1,8 +1,9 @@
-"""Dash callbacks for IAM teams page (rename, members)."""
+"""Dash callbacks for IAM teams page (slide-in panel, members)."""
 
 from __future__ import annotations
 
 import logging
+import time
 
 import dash_mantine_components as dmc
 from dash import ALL, Input, Output, State, callback, ctx, html, no_update
@@ -77,54 +78,107 @@ def _members_table_rows(team_id: int):
 
 
 @callback(
-    Output("iam-team-rename-modal", "opened"),
-    Output("iam-team-edit-id-store", "data"),
-    Output("iam-team-rename-input", "value"),
-    Output("iam-team-rename-feedback", "children"),
+    Output("team-slide-panel", "className"),
+    Input("iam-team-panel-store", "data"),
+)
+def sync_team_panel_class(store):
+    if store and store.get("open"):
+        return "team-slide-panel open"
+    return "team-slide-panel closed"
+
+
+@callback(
+    Output("iam-team-panel-store", "data"),
+    Output("iam-team-panel-title", "children"),
+    Output("iam-team-form-name", "value"),
+    Output("iam-team-form-description", "value"),
+    Output("iam-team-form-role-ids", "value"),
+    Output("iam-team-form-feedback", "children"),
+    Input("iam-team-open-create", "n_clicks"),
     Input({"type": "iam-team-edit", "tid": ALL}, "n_clicks"),
     prevent_initial_call=True,
 )
-def open_team_rename(_n_clicks):
+def open_team_panel(_n_create, _n_edit):
     trig = ctx.triggered_id
-    if not isinstance(trig, dict) or trig.get("type") != "iam-team-edit":
+    if trig == "iam-team-open-create":
+        return (
+            {"open": True, "mode": "create", "tid": None},
+            "Create team",
+            "",
+            "",
+            [],
+            None,
+        )
+    if isinstance(trig, dict) and trig.get("type") == "iam-team-edit":
+        tid = int(trig["tid"])
+        teams = settings_crud.list_teams()
+        match = next((x for x in teams if int(x["id"]) == tid), None)
+        if not match:
+            return (
+                {"open": True, "mode": "edit", "tid": tid},
+                "Edit team",
+                "",
+                "",
+                [],
+                dmc.Alert("Team not found.", color="red", variant="light"),
+            )
+        rids = [str(x) for x in match.get("role_ids") or []]
+        return (
+            {"open": True, "mode": "edit", "tid": tid},
+            f"Edit team — {match.get('name', '')}",
+            str(match.get("name") or ""),
+            str(match.get("description") or ""),
+            rids,
+            None,
+        )
+    raise PreventUpdate
+
+
+@callback(
+    Output("iam-team-panel-store", "data", allow_duplicate=True),
+    Input("iam-team-panel-close", "n_clicks"),
+    prevent_initial_call=True,
+)
+def close_team_panel(_n):
+    return {"open": False, "mode": "create", "tid": None}
+
+
+@callback(
+    Output("url", "search", allow_duplicate=True),
+    Output("iam-team-form-feedback", "children", allow_duplicate=True),
+    Output("iam-team-panel-store", "data", allow_duplicate=True),
+    Input("iam-team-form-save", "n_clicks"),
+    State("iam-team-panel-store", "data"),
+    State("iam-team-form-name", "value"),
+    State("iam-team-form-description", "value"),
+    State("iam-team-form-role-ids", "value"),
+    prevent_initial_call=True,
+)
+def save_team_panel(_n, store, name, description, role_vals):
+    if not store or not store.get("open"):
         raise PreventUpdate
-    tid = int(trig["tid"])
-    teams = settings_crud.list_teams()
-    name = ""
-    for t in teams:
-        if int(t["id"]) == tid:
-            name = str(t.get("name") or "")
-            break
-    return True, tid, name, None
-
-
-@callback(
-    Output("iam-team-rename-modal", "opened", allow_duplicate=True),
-    Output("iam-team-rename-feedback", "children", allow_duplicate=True),
-    Input("iam-team-rename-cancel", "n_clicks"),
-    prevent_initial_call=True,
-)
-def cancel_team_rename(_n):
-    return False, None
-
-
-@callback(
-    Output("iam-team-rename-modal", "opened", allow_duplicate=True),
-    Output("iam-team-rename-feedback", "children", allow_duplicate=True),
-    Input("iam-team-rename-save", "n_clicks"),
-    State("iam-team-edit-id-store", "data"),
-    State("iam-team-rename-input", "value"),
-    prevent_initial_call=True,
-)
-def save_team_rename(_n, tid, name):
-    if tid is None or not (name or "").strip():
-        return True, dmc.Alert("Name is required.", color="yellow", variant="light")
+    mode = store.get("mode") or "create"
+    tid = store.get("tid")
+    role_ids = _int_list(role_vals)
+    nm = str(name or "").strip()
+    if not nm:
+        return no_update, dmc.Alert("Team name is required.", color="yellow", variant="light"), no_update
+    desc = str(description or "").strip() or None
     try:
-        settings_crud.update_team(int(tid), str(name).strip())
-        return False, None
+        if mode == "create":
+            from flask import g, has_request_context
+
+            uid = getattr(g, "auth_user_id", None) if has_request_context() else None
+            settings_crud.create_team(nm, None, int(uid) if uid else None, description=desc, role_ids=role_ids)
+        else:
+            if tid is None:
+                raise PreventUpdate
+            settings_crud.update_team(int(tid), nm, description=desc, role_ids=role_ids)
     except Exception as exc:
-        logger.exception("update_team")
-        return True, dmc.Alert(f"Save failed: {exc}", color="red", variant="light")
+        logger.exception("save_team_panel failed")
+        return no_update, dmc.Alert(f"Save failed: {exc}", color="red", variant="light"), no_update
+    refresh = f"?_refresh={int(time.time() * 1000)}"
+    return refresh, None, {"open": False, "mode": "create", "tid": None}
 
 
 @callback(

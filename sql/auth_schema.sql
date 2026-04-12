@@ -83,11 +83,18 @@ CREATE TABLE IF NOT EXISTS ldap_group_role_mapping (
 );
 
 CREATE TABLE IF NOT EXISTS teams (
-    id         SERIAL PRIMARY KEY,
-    name       VARCHAR(150) NOT NULL,
-    parent_id  INT REFERENCES teams(id) ON DELETE SET NULL,
-    created_by INT REFERENCES users(id),
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR(150) NOT NULL,
+    description TEXT,
+    parent_id   INT REFERENCES teams(id) ON DELETE SET NULL,
+    created_by  INT REFERENCES users(id),
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS team_roles (
+    team_id INT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    role_id INT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (team_id, role_id)
 );
 
 CREATE TABLE IF NOT EXISTS team_members (

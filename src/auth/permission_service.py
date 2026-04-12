@@ -132,11 +132,27 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
 
 
 def _user_role_ids(user_id: int) -> list[int]:
+    """Direct user roles plus roles inherited from all teams the user belongs to."""
     rows = db.fetch_all(
-        "SELECT role_id FROM user_roles WHERE user_id = %s",
-        (user_id,),
+        """
+        SELECT role_id FROM user_roles WHERE user_id = %s
+        UNION
+        SELECT tr.role_id
+        FROM team_members tm
+        JOIN team_roles tr ON tr.team_id = tm.team_id
+        WHERE tm.user_id = %s
+        """,
+        (user_id, user_id),
     )
-    return [int(r["role_id"]) for r in rows]
+    # Preserve stable order for caching/debug (unique)
+    seen: set[int] = set()
+    out: list[int] = []
+    for r in rows:
+        rid = int(r["role_id"])
+        if rid not in seen:
+            seen.add(rid)
+            out.append(rid)
+    return out
 
 
 def _permission_row(code: str) -> dict[str, Any] | None:

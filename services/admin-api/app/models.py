@@ -69,15 +69,20 @@ class CreatePermissionRequest(BaseModel):
 class TeamOut(BaseModel):
     id: int
     name: str
+    description: str | None = None
     parent_id: int | None = None
     created_by: int | None = None
     created_by_name: str | None = None
     member_count: int = 0
+    role_ids: list[int] = Field(default_factory=list)
+    roles: str | None = None
 
 
 class CreateTeamRequest(BaseModel):
     name: str
     parent_id: int | None = None
+    description: str | None = None
+    role_ids: list[int] = Field(default_factory=list)
 
 
 class LdapConfigOut(BaseModel):
@@ -105,6 +110,21 @@ class UpsertLdapRequest(BaseModel):
     search_base_dn: str
     user_search_filter: str = "(sAMAccountName={username})"
     is_active: bool = True
+
+
+class LdapTestRequest(BaseModel):
+    """Bind + sample user search (same connection fields as upsert; password optional if ldap_id set)."""
+
+    server_primary: str
+    server_secondary: str | None = None
+    port: int = 389
+    use_ssl: bool = False
+    bind_dn: str
+    bind_password: str | None = None
+    search_base_dn: str
+    user_search_filter: str = "(sAMAccountName={username})"
+    ldap_id: int | None = None
+    test_query: str | None = "test"
 
 
 class LdapGroupMappingOut(BaseModel):
@@ -178,6 +198,8 @@ class AddTeamMembersRequest(BaseModel):
 
 class UpdateTeamRequest(BaseModel):
     name: str
+    description: str | None = None
+    role_ids: list[int] | None = None
 
 
 class UpdateRoleRequest(BaseModel):

@@ -39,6 +39,34 @@
     animation: fadeInUp 0.35s ease-out;
 }
 
+/* Settings IAM: slide-in panels (Users / Teams) */
+.user-slide-panel,
+.team-slide-panel {
+    flex-shrink: 0;
+    overflow: hidden;
+    transition:
+        width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 0.3s ease,
+        padding 0.3s ease;
+}
+
+.user-slide-panel.closed,
+.team-slide-panel.closed {
+    width: 0 !important;
+    min-width: 0 !important;
+    opacity: 0;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    pointer-events: none;
+}
+
+.user-slide-panel.open,
+.team-slide-panel.open {
+    width: 440px;
+    opacity: 1;
+    pointer-events: auto;
+}
+
 .region-accordion {
     width: 100% !important;
 }
