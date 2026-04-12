@@ -7,7 +7,14 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from app import database as db
-from app.models import AddLdapMappingRequest, LdapConfigOut, LdapGroupMappingOut, UpsertLdapRequest
+from app.ldap_ops import search_directory_users
+from app.models import (
+    AddLdapMappingRequest,
+    LdapConfigOut,
+    LdapGroupMappingOut,
+    LdapSearchResultUser,
+    UpsertLdapRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +35,31 @@ def _fernet_encrypt(plain: str) -> str:
     except Exception as exc:
         logger.warning("Fernet encrypt failed: %s", exc)
         return plain
+
+
+@router.get("/ldap/search", response_model=list[LdapSearchResultUser])
+def ldap_search_users(q: str | None = None):
+    """Search Active Directory / LDAP for users using the active ldap_config."""
+    query = (q or "").strip()
+    if len(query) < 2:
+        raise HTTPException(status_code=422, detail="Query must be at least 2 characters")
+
+    row = db.fetch_one(
+        "SELECT * FROM ldap_config WHERE is_active IS TRUE ORDER BY id ASC LIMIT 1"
+    )
+    if not row:
+        raise HTTPException(status_code=400, detail="No active LDAP configuration")
+
+    try:
+        rows = search_directory_users(dict(row), query)
+        return [LdapSearchResultUser(**r) for r in rows]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("ldap_search_users failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/ldap", response_model=list[LdapConfigOut])

@@ -127,3 +127,71 @@ class AuditRow(BaseModel):
     detail: str | None = None
     ip_address: str | None = None
     created_at: str | None = None
+
+
+# --- LDAP search & import ---
+
+
+class LdapSearchResultUser(BaseModel):
+    """One directory user returned by GET /ldap/search."""
+
+    username: str
+    display_name: str | None = None
+    email: str | None = None
+    distinguished_name: str
+
+
+class LdapUserImportEntry(BaseModel):
+    """Single AD user to import or upsert."""
+
+    username: str
+    distinguished_name: str
+    display_name: str | None = None
+    email: str | None = None
+
+
+class ImportLdapUsersRequest(BaseModel):
+    users: list[LdapUserImportEntry]
+    role_ids: list[int] = Field(default_factory=list)
+    team_ids: list[int] = Field(default_factory=list)
+
+
+class UpdateUserRequest(BaseModel):
+    display_name: str | None = None
+    email: str | None = None
+
+
+class SetUserTeamsRequest(BaseModel):
+    team_ids: list[int]
+
+
+class TeamMemberOut(BaseModel):
+    user_id: int
+    username: str
+    display_name: str | None = None
+    email: str | None = None
+
+
+class AddTeamMembersRequest(BaseModel):
+    user_ids: list[int]
+
+
+class UpdateTeamRequest(BaseModel):
+    name: str
+
+
+class UpdateRoleRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class UserDetailOut(BaseModel):
+    id: int
+    username: str
+    display_name: str | None = None
+    email: str | None = None
+    source: str
+    is_active: bool
+    roles: str = ""
+    role_ids: list[int] = Field(default_factory=list)
+    team_ids: list[int] = Field(default_factory=list)

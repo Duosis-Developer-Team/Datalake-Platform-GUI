@@ -18,12 +18,12 @@ _ADMIN_API_URL = (os.environ.get("ADMIN_API_URL") or "").rstrip("/")
 _USE_API = bool(_ADMIN_API_URL)
 
 
-def _get(path: str, params: dict | None = None) -> Any:
+def _get(path: str, params: dict | None = None, timeout: float = 10) -> Any:
     import httpx
 
     url = f"{_ADMIN_API_URL}{path}"
     try:
-        r = httpx.get(url, params=params, timeout=10)
+        r = httpx.get(url, params=params, timeout=timeout)
         r.raise_for_status()
         return r.json()
     except Exception as exc:
@@ -243,3 +243,88 @@ def insert_dynamic_permission(
         "resource_type": resource_type,
         "route_pattern": route_pattern,
     })
+
+
+def search_ldap_users(query: str) -> list[dict[str, Any]]:
+    if not _USE_API:
+        from src.auth import settings_crud
+        return settings_crud.search_ldap_users(query)
+    return _get("/api/v1/ldap/search", {"q": query}, timeout=30)
+
+
+def import_ldap_users(
+    users: list[dict[str, Any]],
+    role_ids: list[int],
+    team_ids: list[int],
+) -> dict[str, Any]:
+    if not _USE_API:
+        from src.auth import settings_crud
+        ids = settings_crud.import_ldap_users(users, role_ids, team_ids)
+        return {"ok": True, "user_ids": ids, "count": len(ids)}
+    return _post(
+        "/api/v1/users/import-ldap",
+        {"users": users, "role_ids": role_ids, "team_ids": team_ids},
+    )
+
+
+def get_user_detail(user_id: int) -> dict[str, Any] | None:
+    if not _USE_API:
+        from src.auth import settings_crud
+        return settings_crud.get_user_detail(user_id)
+    return _get(f"/api/v1/users/{user_id}")
+
+
+def update_user_profile(user_id: int, display_name: str | None, email: str | None) -> None:
+    if not _USE_API:
+        from src.auth import settings_crud
+        return settings_crud.update_user_profile(user_id, display_name, email)
+    _put(f"/api/v1/users/{user_id}", {"display_name": display_name, "email": email})
+
+
+def set_user_teams(user_id: int, team_ids: list[int]) -> None:
+    if not _USE_API:
+        from src.auth import settings_crud
+        return settings_crud.set_user_teams_local(user_id, team_ids)
+    _put(f"/api/v1/users/{user_id}/teams", {"team_ids": team_ids})
+
+
+def update_team(team_id: int, name: str) -> None:
+    if not _USE_API:
+        from src.auth import settings_crud
+        return settings_crud.update_team_name(team_id, name)
+    _put(f"/api/v1/teams/{team_id}", {"name": name})
+
+
+def list_team_members(team_id: int) -> list[dict[str, Any]]:
+    if not _USE_API:
+        from src.auth import settings_crud
+        return settings_crud.list_team_members(team_id)
+    return _get(f"/api/v1/teams/{team_id}/members")
+
+
+def add_team_members(team_id: int, user_ids: list[int]) -> None:
+    if not _USE_API:
+        from src.auth import settings_crud
+        return settings_crud.add_team_members(team_id, user_ids)
+    _post(f"/api/v1/teams/{team_id}/members", {"user_ids": user_ids})
+
+
+def remove_team_member(team_id: int, user_id: int) -> None:
+    if not _USE_API:
+        from src.auth import settings_crud
+        return settings_crud.remove_team_member(team_id, user_id)
+    _delete(f"/api/v1/teams/{team_id}/members/{user_id}")
+
+
+def update_role(role_id: int, name: str | None, description: str | None) -> None:
+    if not _USE_API:
+        from src.auth import settings_crud
+        return settings_crud.update_role_meta(role_id, name, description)
+    _put(f"/api/v1/roles/{role_id}", {"name": name, "description": description})
+
+
+def delete_role(role_id: int) -> None:
+    if not _USE_API:
+        from src.auth import settings_crud
+        return settings_crud.delete_role_non_system(role_id)
+    _delete(f"/api/v1/roles/{role_id}")

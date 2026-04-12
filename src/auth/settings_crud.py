@@ -282,3 +282,197 @@ def insert_dynamic_permission(
         (code, name, None, pid, resource_type, route_pattern),
     )
     clear_user_cache(None)
+
+
+def search_ldap_users(query: str) -> list[dict[str, Any]]:
+    from src.auth import ldap_service
+
+    rows = ldap_service.search_directory_users(query)
+    return [
+        {
+            "username": r["username"],
+            "display_name": r.get("display_name"),
+            "email": r.get("email"),
+            "distinguished_name": r["distinguished_name"],
+        }
+        for r in rows
+    ]
+
+
+def import_ldap_users(
+    users: list[dict[str, Any]],
+    role_ids: list[int],
+    team_ids: list[int],
+) -> list[int]:
+    """Upsert LDAP users and assign roles / team memberships (same as admin-api)."""
+    imported: list[int] = []
+    for entry in users:
+        uname = str(entry.get("username") or "").strip()
+        if not uname:
+            continue
+        dn = str(entry.get("distinguished_name") or "").strip()
+        if not dn:
+            continue
+        display_name = entry.get("display_name")
+        email = entry.get("email")
+        row = db.fetch_one("SELECT id FROM users WHERE lower(username) = lower(%s)", (uname,))
+        if row:
+            uid = int(row["id"])
+            db.execute(
+                """
+                UPDATE users SET
+                    display_name = COALESCE(%s, display_name),
+                    email = COALESCE(%s, email),
+                    ldap_dn = %s,
+                    source = 'ldap',
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (display_name, email, dn, uid),
+            )
+        else:
+            db.execute(
+                """
+                INSERT INTO users (username, display_name, email, password_hash, source, ldap_dn, is_active)
+                VALUES (%s, %s, %s, NULL, 'ldap', %s, TRUE)
+                """,
+                (uname, display_name or uname, email, dn),
+            )
+            row2 = db.fetch_one("SELECT id FROM users WHERE lower(username) = lower(%s)", (uname,))
+            uid = int(row2["id"]) if row2 else 0
+        if not uid:
+            continue
+        imported.append(uid)
+
+        db.execute("DELETE FROM user_roles WHERE user_id = %s", (uid,))
+        for rid in role_ids:
+            db.execute(
+                "INSERT INTO user_roles (user_id, role_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (uid, rid),
+            )
+
+        db.execute("DELETE FROM team_members WHERE user_id = %s", (uid,))
+        for tid in team_ids:
+            db.execute(
+                "INSERT INTO team_members (team_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (tid, uid),
+            )
+        clear_user_cache(uid)
+    return imported
+
+
+def get_user_detail(user_id: int) -> dict[str, Any] | None:
+    u = db.fetch_one(
+        """
+        SELECT u.id, u.username, u.display_name, u.email, u.source, u.is_active,
+               COALESCE(string_agg(r.name, ', ' ORDER BY r.name), '') AS roles
+        FROM users u
+        LEFT JOIN user_roles ur ON ur.user_id = u.id
+        LEFT JOIN roles r ON r.id = ur.role_id
+        WHERE u.id = %s
+        GROUP BY u.id, u.username, u.display_name, u.email, u.source, u.is_active
+        """,
+        (user_id,),
+    )
+    if not u:
+        return None
+    role_rows = db.fetch_all(
+        "SELECT role_id FROM user_roles WHERE user_id = %s ORDER BY role_id",
+        (user_id,),
+    )
+    team_rows = db.fetch_all(
+        "SELECT team_id FROM team_members WHERE user_id = %s ORDER BY team_id",
+        (user_id,),
+    )
+    return {
+        "id": int(u["id"]),
+        "username": str(u["username"]),
+        "display_name": u.get("display_name"),
+        "email": u.get("email"),
+        "source": str(u.get("source") or "local"),
+        "is_active": bool(u.get("is_active")),
+        "roles": str(u.get("roles") or ""),
+        "role_ids": [int(r["role_id"]) for r in role_rows],
+        "team_ids": [int(t["team_id"]) for t in team_rows],
+    }
+
+
+def update_user_profile(user_id: int, display_name: str | None, email: str | None) -> None:
+    db.execute(
+        """
+        UPDATE users SET
+            display_name = COALESCE(%s, display_name),
+            email = COALESCE(%s, email),
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (display_name, email, user_id),
+    )
+    clear_user_cache(user_id)
+
+
+def set_user_teams_local(user_id: int, team_ids: list[int]) -> None:
+    db.execute("DELETE FROM team_members WHERE user_id = %s", (user_id,))
+    for tid in team_ids:
+        db.execute(
+            "INSERT INTO team_members (team_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (tid, user_id),
+        )
+    clear_user_cache(user_id)
+
+
+def update_team_name(team_id: int, name: str) -> None:
+    db.execute("UPDATE teams SET name = %s WHERE id = %s", (name.strip(), team_id))
+
+
+def list_team_members(team_id: int) -> list[dict[str, Any]]:
+    return db.fetch_all(
+        """
+        SELECT u.id AS user_id, u.username, u.display_name, u.email
+        FROM team_members tm
+        JOIN users u ON u.id = tm.user_id
+        WHERE tm.team_id = %s
+        ORDER BY u.username
+        """,
+        (team_id,),
+    )
+
+
+def add_team_members(team_id: int, user_ids: list[int]) -> None:
+    for uid in user_ids:
+        db.execute(
+            "INSERT INTO team_members (team_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (team_id, uid),
+        )
+        clear_user_cache(uid)
+
+
+def remove_team_member(team_id: int, user_id: int) -> None:
+    db.execute(
+        "DELETE FROM team_members WHERE team_id = %s AND user_id = %s",
+        (team_id, user_id),
+    )
+    clear_user_cache(user_id)
+
+
+def update_role_meta(role_id: int, name: str | None, description: str | None) -> None:
+    row = db.fetch_one("SELECT id, name, description, is_system FROM roles WHERE id = %s", (role_id,))
+    if not row or row.get("is_system"):
+        raise ValueError("Cannot update system role")
+    new_name = name.strip() if name is not None else str(row["name"])
+    new_desc = description if description is not None else row.get("description")
+    db.execute(
+        "UPDATE roles SET name = %s, description = %s WHERE id = %s AND is_system IS FALSE",
+        (new_name, new_desc, role_id),
+    )
+    clear_user_cache(None)
+
+
+def delete_role_non_system(role_id: int) -> None:
+    row = db.fetch_one("SELECT id, is_system FROM roles WHERE id = %s", (role_id,))
+    if not row:
+        raise ValueError("Role not found")
+    if row.get("is_system"):
+        raise ValueError("Cannot delete system role")
+    db.execute("DELETE FROM roles WHERE id = %s AND is_system IS FALSE", (role_id,))
+    clear_user_cache(None)

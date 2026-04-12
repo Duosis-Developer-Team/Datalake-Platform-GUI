@@ -33,20 +33,25 @@ def build_layout(search: str | None = None) -> html.Div:
         rid = int(r["id"])
         active = rid == selected_rid
         left_cards.append(
-            dmc.Anchor(
-                dmc.Paper(
-                    p="md",
-                    radius="md",
-                    withBorder=True,
-                    style={
-                        "border": f"2px solid {PRIMARY}" if active else "1px solid rgba(171,173,176,0.25)",
-                        "background": "rgba(85, 44, 248, 0.04)" if active else "#fff",
-                    },
-                    children=[
-                        dmc.Group(
-                            justify="space-between",
-                            children=[
-                                dmc.Group(
+            dmc.Paper(
+                p="md",
+                radius="md",
+                withBorder=True,
+                style={
+                    "border": f"2px solid {PRIMARY}" if active else "1px solid rgba(171,173,176,0.25)",
+                    "background": "rgba(85, 44, 248, 0.04)" if active else "#fff",
+                },
+                children=[
+                    dmc.Group(
+                        justify="space-between",
+                        align="flex-start",
+                        wrap="nowrap",
+                        children=[
+                            dmc.Anchor(
+                                href=f"/settings/iam/roles?role_id={rid}",
+                                underline=False,
+                                style={"flex": 1, "minWidth": 0},
+                                children=dmc.Group(
                                     gap="sm",
                                     children=[
                                         dmc.ThemeIcon(
@@ -64,18 +69,29 @@ def build_layout(search: str | None = None) -> html.Div:
                                         ),
                                     ],
                                 ),
-                                dmc.Badge(
-                                    "system" if r.get("is_system") else "custom",
-                                    size="xs",
-                                    variant="light",
-                                    color="gray",
-                                ),
-                            ],
-                        )
-                    ],
-                ),
-                href=f"/settings/iam/roles?role_id={rid}",
-                underline=False,
+                            ),
+                            dmc.Stack(
+                                gap="xs",
+                                align="flex-end",
+                                children=[
+                                    dmc.Badge(
+                                        "system" if r.get("is_system") else "custom",
+                                        size="xs",
+                                        variant="light",
+                                        color="gray",
+                                    ),
+                                    dmc.Button(
+                                        "Edit",
+                                        id={"type": "iam-role-edit", "rid": rid},
+                                        size="xs",
+                                        variant="light",
+                                        color="indigo",
+                                    ),
+                                ],
+                            ),
+                        ],
+                    )
+                ],
             )
         )
 
@@ -224,17 +240,67 @@ def build_layout(search: str | None = None) -> html.Div:
     )
 
     return html.Div(
-        settings_page_shell(
-            [
-                section_header(
-                    "Role configuration",
-                    "Assign view, edit, and export rights per permission node.",
-                    icon="solar:shield-check-bold-duotone",
-                ),
-                layout_grid,
-            ]
-        )
+        [
+            dcc.Store(id="iam-role-edit-id-store", data=None),
+            dcc.Store(id="iam-role-edit-is-system-store", data=False),
+            dmc.Modal(
+                title="Edit role",
+                id="iam-role-edit-modal",
+                opened=False,
+                children=[
+                    dmc.Text("Name", size="xs", fw=600, c="dimmed", mb=4),
+                    dcc.Input(id="iam-role-edit-name", type="text", style=_role_input_style()),
+                    dmc.Text("Description", size="xs", fw=600, c="dimmed", mb=4, mt="sm"),
+                    dcc.Textarea(
+                        id="iam-role-edit-description",
+                        style={**_role_input_style(), "minHeight": "80px", "resize": "vertical"},
+                    ),
+                    html.Div(id="iam-role-edit-feedback", style={"marginTop": "8px"}),
+                    dmc.Group(
+                        gap="sm",
+                        mt="md",
+                        justify="space-between",
+                        children=[
+                            dmc.Button(
+                                "Delete role",
+                                id="iam-role-delete-btn",
+                                variant="outline",
+                                color="red",
+                                size="sm",
+                            ),
+                            dmc.Group(
+                                gap="sm",
+                                children=[
+                                    dmc.Button("Cancel", id="iam-role-edit-cancel", variant="default", color="gray"),
+                                    dmc.Button("Save", id="iam-role-edit-save", variant="filled", color="indigo"),
+                                ],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            settings_page_shell(
+                [
+                    section_header(
+                        "Role configuration",
+                        "Assign view, edit, and export rights per permission node.",
+                        icon="solar:shield-check-bold-duotone",
+                    ),
+                    layout_grid,
+                ]
+            ),
+        ]
     )
+
+
+def _role_input_style():
+    return {
+        "width": "100%",
+        "padding": "10px 12px",
+        "borderRadius": "8px",
+        "border": "1px solid #e9ecef",
+        "fontSize": "14px",
+    }
 
 
 def _cb(pid: int, col: str, checked: bool) -> dcc.Checklist:

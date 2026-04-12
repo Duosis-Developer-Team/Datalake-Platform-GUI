@@ -1,4 +1,4 @@
-"""Team management — create teams and view membership."""
+"""Team management — create teams, rename, membership."""
 
 from __future__ import annotations
 
@@ -18,6 +18,16 @@ from src.utils.ui_tokens import (
 )
 
 
+def _input_style():
+    return {
+        "width": "100%",
+        "padding": "10px 12px",
+        "borderRadius": "8px",
+        "border": "1px solid #e9ecef",
+        "fontSize": "14px",
+    }
+
+
 def build_layout(search: str | None = None) -> html.Div:
     q = ""
     if search:
@@ -25,6 +35,12 @@ def build_layout(search: str | None = None) -> html.Div:
         q = (qs.get("q") or [""])[0].strip().lower()
 
     teams = settings_crud.list_teams()
+    users = settings_crud.list_users_with_roles()
+    user_options = [
+        {"value": str(u["id"]), "label": f"{u.get('username', '')} ({u.get('display_name') or '—'})"}
+        for u in users
+    ]
+
     filtered = [t for t in teams if not q or q in str(t.get("name", "")).lower()]
     total_members = sum(int(t.get("member_count") or 0) for t in teams)
     largest = max(teams, key=lambda t: int(t.get("member_count") or 0), default=None)
@@ -55,6 +71,27 @@ def build_layout(search: str | None = None) -> html.Div:
                     html.Td("—", style={"color": "#6c757d", "fontSize": "13px"}),
                     html.Td(str(t.get("created_by_name") or t.get("created_by") or "—")),
                     html.Td(dmc.Badge(str(t.get("member_count", 0)), color="indigo", variant="light")),
+                    html.Td(
+                        dmc.Group(
+                            gap="xs",
+                            children=[
+                                dmc.Button(
+                                    "Edit",
+                                    id={"type": "iam-team-edit", "tid": tid},
+                                    size="xs",
+                                    variant="light",
+                                    color="indigo",
+                                ),
+                                dmc.Button(
+                                    "Members",
+                                    id={"type": "iam-team-members", "tid": tid},
+                                    size="xs",
+                                    variant="light",
+                                    color="grape",
+                                ),
+                            ],
+                        )
+                    ),
                 ],
             )
         )
@@ -144,10 +181,11 @@ def build_layout(search: str | None = None) -> html.Div:
                                         html.Th("Description", style=_th()),
                                         html.Th("Created by", style=_th()),
                                         html.Th("Members", style=_th()),
+                                        html.Th("Actions", style=_th()),
                                     ]
                                 )
                             ),
-                            html.Tbody(rows or [html.Tr([html.Td("No teams match.", colSpan=4)])]),
+                            html.Tbody(rows or [html.Tr([html.Td("No teams match.", colSpan=5)])]),
                         ],
                     )
                 ],
@@ -156,19 +194,66 @@ def build_layout(search: str | None = None) -> html.Div:
     )
 
     return html.Div(
-        settings_page_shell(
-            [
-                section_header(
-                    "Teams management",
-                    "Organize collaboration groups and monitor membership counts.",
-                    icon="solar:users-group-two-rounded-bold-duotone",
-                ),
-                stats,
-                dmc.Space(h="md"),
-                toolbar,
-                table,
-            ]
-        )
+        [
+            dcc.Store(id="iam-team-edit-id-store", data=None),
+            dcc.Store(id="iam-team-members-tid-store", data=None),
+            dmc.Modal(
+                title="Rename team",
+                id="iam-team-rename-modal",
+                opened=False,
+                children=[
+                    dcc.Input(id="iam-team-rename-input", type="text", style=_input_style()),
+                    html.Div(id="iam-team-rename-feedback", style={"marginTop": "8px"}),
+                    dmc.Group(
+                        gap="sm",
+                        mt="md",
+                        justify="flex-end",
+                        children=[
+                            dmc.Button("Cancel", id="iam-team-rename-cancel", variant="default", color="gray"),
+                            dmc.Button("Save", id="iam-team-rename-save", variant="filled", color="indigo"),
+                        ],
+                    ),
+                ],
+            ),
+            dmc.Modal(
+                title="Team members",
+                id="iam-team-members-modal",
+                size="lg",
+                opened=False,
+                children=[
+                    html.Div(id="iam-team-members-list"),
+                    dmc.Text("Add users", size="xs", fw=600, c="dimmed", mb=4, mt="md"),
+                    dmc.MultiSelect(
+                        id="iam-team-add-user-ids",
+                        data=user_options,
+                        placeholder="Select users to add",
+                        searchable=True,
+                        clearable=True,
+                    ),
+                    dmc.Button(
+                        "Add selected",
+                        id="iam-team-add-members-btn",
+                        mt="sm",
+                        variant="light",
+                        color="grape",
+                    ),
+                    html.Div(id="iam-team-members-feedback", style={"marginTop": "8px"}),
+                ],
+            ),
+            settings_page_shell(
+                [
+                    section_header(
+                        "Teams management",
+                        "Organize collaboration groups, rename teams, and manage membership.",
+                        icon="solar:users-group-two-rounded-bold-duotone",
+                    ),
+                    stats,
+                    dmc.Space(h="md"),
+                    toolbar,
+                    table,
+                ]
+            ),
+        ]
     )
 
 
