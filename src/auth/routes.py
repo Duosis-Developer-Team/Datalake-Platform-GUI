@@ -79,14 +79,14 @@ def settings_create_user():
     if uid is None:
         return redirect("/login")
     if not _perm_edit(uid, "page:settings_users"):
-        return redirect("/settings/users?denied=1")
+        return redirect("/settings/iam/users?denied=1")
     username = (request.form.get("username") or "").strip()
     password = request.form.get("password") or ""
     display_name = (request.form.get("display_name") or "").strip()
     role_ids_raw = request.form.get("role_ids") or ""
     if not username or not password:
-        return redirect("/settings/users?err=1")
-    from src.auth import settings_crud
+        return redirect("/settings/iam/users?err=1")
+    from src.services import admin_client as settings_crud
 
     try:
         new_id = settings_crud.create_local_user(username, password, display_name or None)
@@ -99,8 +99,8 @@ def settings_create_user():
         service.audit(uid, "settings_create_user", username, request.remote_addr)
     except Exception as e:
         logger.warning("create user failed: %s", e)
-        return redirect("/settings/users?err=1")
-    return redirect("/settings/users")
+        return redirect("/settings/iam/users?err=1")
+    return redirect("/settings/iam/users")
 
 
 @auth_bp.route("/settings/role-matrix", methods=["POST"])
@@ -109,12 +109,12 @@ def settings_role_matrix():
     if uid is None:
         return redirect("/login")
     if not _perm_edit(uid, "page:settings_roles"):
-        return redirect("/settings/roles?denied=1")
+        return redirect("/settings/iam/roles?denied=1")
     rid_s = request.form.get("role_id") or ""
     if not rid_s.isdigit():
-        return redirect("/settings/roles")
+        return redirect("/settings/iam/roles")
     role_id = int(rid_s)
-    from src.auth import settings_crud
+    from src.services import admin_client as settings_crud
 
     perms = settings_crud.list_permissions_flat()[:100]
     triplets = []
@@ -126,7 +126,7 @@ def settings_role_matrix():
         triplets.append((pid, v, e, x))
     settings_crud.bulk_set_role_matrix(role_id, triplets)
     service.audit(uid, "settings_role_matrix", f"role_id={role_id}", request.remote_addr)
-    return redirect("/settings/roles")
+    return redirect(f"/settings/iam/roles?role_id={role_id}")
 
 
 @auth_bp.route("/settings/permission-add", methods=["POST"])
@@ -135,23 +135,23 @@ def settings_permission_add():
     if uid is None:
         return redirect("/login")
     if not _perm_edit(uid, "page:settings_permissions"):
-        return redirect("/settings/permissions?denied=1")
+        return redirect("/settings/iam/permissions?denied=1")
     code = (request.form.get("code") or "").strip()
     name = (request.form.get("name") or "").strip()
     parent_code = (request.form.get("parent_code") or "").strip() or None
     resource_type = (request.form.get("resource_type") or "section").strip()
     route_pattern = (request.form.get("route_pattern") or "").strip() or None
     if not code or not name:
-        return redirect("/settings/permissions?err=1")
-    from src.auth import settings_crud
+        return redirect("/settings/iam/permissions?err=1")
+    from src.services import admin_client as settings_crud
 
     try:
         settings_crud.insert_dynamic_permission(code, name, parent_code, resource_type, route_pattern)
         service.audit(uid, "settings_permission_add", code, request.remote_addr)
     except Exception as e:
         logger.warning("permission add: %s", e)
-        return redirect("/settings/permissions?err=1")
-    return redirect("/settings/permissions")
+        return redirect("/settings/iam/permissions?err=1")
+    return redirect("/settings/iam/permissions")
 
 
 @auth_bp.route("/settings/ldap-save", methods=["POST"])
@@ -160,7 +160,7 @@ def settings_ldap_save():
     if uid is None:
         return redirect("/login")
     if not _perm_edit(uid, "page:settings_ldap"):
-        return redirect("/settings/ldap?denied=1")
+        return redirect("/settings/integrations/ldap?denied=1")
     ldap_id = request.form.get("ldap_id") or None
     name = request.form.get("name") or "default"
     server_primary = request.form.get("server_primary") or ""
@@ -171,7 +171,7 @@ def settings_ldap_save():
     bind_pw = request.form.get("bind_password") or ""
     search_base = request.form.get("search_base_dn") or ""
     user_filter = request.form.get("user_search_filter") or "(sAMAccountName={username})"
-    from src.auth import settings_crud
+    from src.services import admin_client as settings_crud
 
     lid = None
     if ldap_id and str(ldap_id).strip().isdigit():
@@ -193,8 +193,8 @@ def settings_ldap_save():
         service.audit(uid, "settings_ldap_save", name, request.remote_addr)
     except Exception as e:
         logger.warning("ldap save: %s", e)
-        return redirect("/settings/ldap?err=1")
-    return redirect("/settings/ldap")
+        return redirect("/settings/integrations/ldap?err=1")
+    return redirect("/settings/integrations/ldap")
 
 
 @auth_bp.route("/settings/ldap-mapping-add", methods=["POST"])
@@ -203,17 +203,17 @@ def settings_ldap_mapping_add():
     if uid is None:
         return redirect("/login")
     if not _perm_edit(uid, "page:settings_ldap"):
-        return redirect("/settings/ldap?denied=1")
+        return redirect("/settings/integrations/ldap?denied=1")
     cid_s = request.form.get("ldap_config_id") or ""
     dn = request.form.get("ldap_group_dn") or ""
     rid_s = request.form.get("role_id") or ""
     if not cid_s.isdigit() or not rid_s.isdigit() or not dn.strip():
-        return redirect("/settings/ldap?err=1")
-    from src.auth import settings_crud
+        return redirect("/settings/integrations/ldap?err=1")
+    from src.services import admin_client as settings_crud
 
     settings_crud.add_ldap_group_mapping(int(cid_s), dn, int(rid_s))
     service.audit(uid, "settings_ldap_mapping_add", dn[:120], request.remote_addr)
-    return redirect("/settings/ldap")
+    return redirect("/settings/integrations/ldap")
 
 
 @auth_bp.route("/settings/ldap-mapping-delete", methods=["POST"])
@@ -222,14 +222,14 @@ def settings_ldap_mapping_delete():
     if uid is None:
         return redirect("/login")
     if not _perm_edit(uid, "page:settings_ldap"):
-        return redirect("/settings/ldap?denied=1")
+        return redirect("/settings/integrations/ldap?denied=1")
     mid = request.form.get("mapping_id") or ""
     if not mid.isdigit():
-        return redirect("/settings/ldap")
-    from src.auth import settings_crud
+        return redirect("/settings/integrations/ldap")
+    from src.services import admin_client as settings_crud
 
     settings_crud.delete_ldap_group_mapping(int(mid))
-    return redirect("/settings/ldap")
+    return redirect("/settings/integrations/ldap")
 
 
 @auth_bp.route("/settings/team-create", methods=["POST"])
@@ -238,13 +238,13 @@ def settings_team_create():
     if uid is None:
         return redirect("/login")
     if not _perm_edit(uid, "page:settings_teams"):
-        return redirect("/settings/teams?denied=1")
+        return redirect("/settings/iam/teams?denied=1")
     name = (request.form.get("name") or "").strip()
     if not name:
-        return redirect("/settings/teams?err=1")
-    from src.auth import settings_crud
+        return redirect("/settings/iam/teams?err=1")
+    from src.services import admin_client as settings_crud
 
     settings_crud.create_team(name, None, uid)
     service.audit(uid, "settings_team_create", name, request.remote_addr)
-    return redirect("/settings/teams")
+    return redirect("/settings/iam/teams")
 

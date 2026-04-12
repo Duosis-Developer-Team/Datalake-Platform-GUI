@@ -281,13 +281,15 @@ def build_default_permission_roots() -> list[PermissionNode]:
         icon="solar:settings-bold-duotone",
         sort_order=50,
         children=[
-            _n("page:settings_users", "User Management", "config", route_pattern="/settings/users", sort_order=10),
-            _n("page:settings_roles", "Role Management", "config", route_pattern="/settings/roles", sort_order=20),
-            _n("page:settings_permissions", "Permission Management", "config", route_pattern="/settings/permissions", sort_order=30),
-            _n("page:settings_ldap", "LDAP Configuration", "config", route_pattern="/settings/ldap", sort_order=40),
-            _n("page:settings_teams", "Team Management", "config", route_pattern="/settings/teams", sort_order=50),
-            _n("page:settings_auth", "Auth Settings", "config", route_pattern="/settings/auth", sort_order=60),
-            _n("page:settings_audit", "Audit Log", "config", route_pattern="/settings/audit", sort_order=70),
+            _n("page:settings_users", "User Management", "config", route_pattern="/settings/iam/users", sort_order=10),
+            _n("page:settings_roles", "Role Management", "config", route_pattern="/settings/iam/roles", sort_order=20),
+            _n("page:settings_permissions", "Permission Management", "config", route_pattern="/settings/iam/permissions", sort_order=30),
+            _n("page:settings_teams", "Team Management", "config", route_pattern="/settings/iam/teams", sort_order=40),
+            _n("page:settings_ldap", "LDAP Configuration", "config", route_pattern="/settings/integrations/ldap", sort_order=50),
+            _n("page:settings_integrations", "Integrations Overview", "config", route_pattern="/settings/integrations", sort_order=55),
+            _n("page:settings_auranotify", "AuraNotify Integration", "config", route_pattern="/settings/integrations/auranotify", sort_order=58),
+            _n("page:settings_auth", "Auth Settings", "config", route_pattern="/settings/iam/auth", sort_order=60),
+            _n("page:settings_audit", "Audit Log", "config", route_pattern="/settings/iam/audit", sort_order=70),
         ],
     )
 

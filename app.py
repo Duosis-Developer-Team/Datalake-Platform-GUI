@@ -100,6 +100,7 @@ from src.pages import login as login_page_mod
 from src.pages.settings import shell as settings_shell
 from src.components.access_denied import build_access_denied
 from src.pages.dc_view import _bps_to_gbps, _build_compute_tab
+from src.pages.settings.iam import roles_callbacks  # noqa: F401 — registers role matrix callback
 
 _default_tr = default_time_range()
 _custom_st, _custom_en = time_range_to_bounds(_default_tr)
@@ -550,7 +551,7 @@ def render_main_content(pathname, time_range, selected_customer, search):
         region = params.get("region", [""])[0]
         return region_drilldown.build_region_drilldown(region, tr)
     if pathname.startswith("/settings"):
-        return settings_shell.build_settings_page(pathname, int(uid))
+        return settings_shell.build_settings_page(pathname, int(uid), search)
     return home.build_overview(tr, visible_sections=vis)
 
 

@@ -21,6 +21,8 @@ SETTINGS_ENTRY_CODES: tuple[str, ...] = (
     "page:settings_teams",
     "page:settings_auth",
     "page:settings_audit",
+    "page:settings_integrations",
+    "page:settings_auranotify",
 )
 
 

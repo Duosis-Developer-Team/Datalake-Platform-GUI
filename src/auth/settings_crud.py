@@ -229,9 +229,12 @@ def delete_ldap_group_mapping(mapping_id: int) -> None:
 def list_teams() -> list[dict[str, Any]]:
     return db.fetch_all(
         """
-        SELECT t.id, t.name, t.parent_id,
+        SELECT t.id, t.name, t.parent_id, t.created_by,
+               u.username AS created_by_name,
                (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id = t.id) AS member_count
-        FROM teams t ORDER BY t.name
+        FROM teams t
+        LEFT JOIN users u ON u.id = t.created_by
+        ORDER BY t.name
         """
     )
 

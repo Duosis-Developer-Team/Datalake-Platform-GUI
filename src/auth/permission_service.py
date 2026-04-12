@@ -89,6 +89,7 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
     if p == "/settings" or p == "/settings/":
         return "grp:settings"
     if p.startswith("/settings/"):
+        # Legacy paths (also normalized in settings shell)
         if p.startswith("/settings/users"):
             return "page:settings_users"
         if p.startswith("/settings/roles"):
@@ -103,6 +104,29 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
             return "page:settings_auth"
         if p.startswith("/settings/audit"):
             return "page:settings_audit"
+        # New structured settings paths
+        if p.startswith("/settings/iam/users"):
+            return "page:settings_users"
+        if p.startswith("/settings/iam/roles"):
+            return "page:settings_roles"
+        if p.startswith("/settings/iam/permissions"):
+            return "page:settings_permissions"
+        if p.startswith("/settings/iam/teams"):
+            return "page:settings_teams"
+        if p.startswith("/settings/iam/auth"):
+            return "page:settings_auth"
+        if p.startswith("/settings/iam/audit"):
+            return "page:settings_audit"
+        if p.startswith("/settings/integrations/ldap"):
+            return "page:settings_ldap"
+        if p.startswith("/settings/integrations/auranotify"):
+            return "page:settings_auranotify"
+        if p.rstrip("/") == "/settings/integrations":
+            return "page:settings_integrations"
+        if p.startswith("/settings/iam"):
+            return "grp:settings"
+        if p.startswith("/settings/integrations"):
+            return "page:settings_integrations"
         return "grp:settings"
     return "page:overview"
 

@@ -28,6 +28,41 @@ services:
     networks:
       - datalake
 
+  admin-api:
+    build:
+      context: ./services/admin-api
+      dockerfile: Dockerfile
+    container_name: datalake-platform-admin-api
+    ports:
+      - "8060:8000"
+    env_file:
+      - .env
+    environment:
+      AUTH_DB_HOST: ${AUTH_DB_HOST:-auth-db}
+      AUTH_DB_PORT: ${AUTH_DB_PORT:-5432}
+      AUTH_DB_NAME: ${AUTH_DB_NAME:-bulutauth}
+      AUTH_DB_USER: ${AUTH_DB_USER:-authadmin}
+      AUTH_DB_PASS: ${AUTH_DB_PASS:-change_me_auth}
+      SECRET_KEY: ${SECRET_KEY:-change_me_secret_key}
+      FERNET_KEY: ${FERNET_KEY:-}
+      API_JWT_SECRET: ${API_JWT_SECRET:-}
+      API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-false}
+    networks:
+      - datalake
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   app:
     build:
       context: .
@@ -45,6 +80,9 @@ services:
       DATACENTER_API_URL: ${DATACENTER_API_URL:-http://datacenter-api:8000}
       CUSTOMER_API_URL: ${CUSTOMER_API_URL:-http://customer-api:8000}
       QUERY_API_URL: ${QUERY_API_URL:-http://query-api:8000}
+      # Admin API — when set, settings CRUD is routed through the admin-api service
+      ADMIN_API_URL: ${ADMIN_API_URL:-http://admin-api:8000}
+      # Auth DB still required for session/login handling (Flask auth middleware)
       AUTH_DB_HOST: ${AUTH_DB_HOST:-auth-db}
       AUTH_DB_PORT: ${AUTH_DB_PORT:-5432}
       AUTH_DB_NAME: ${AUTH_DB_NAME:-bulutauth}
@@ -61,6 +99,8 @@ services:
       - datalake
     depends_on:
       auth-db:
+        condition: service_healthy
+      admin-api:
         condition: service_healthy
 
   db:
