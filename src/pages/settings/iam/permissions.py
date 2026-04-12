@@ -107,7 +107,7 @@ def build_layout(search: str | None = None) -> html.Div:
             variant="separated",
             radius="md",
             chevronPosition="right",
-            value=list(by_rt.keys()),
+            value=[],
             style={"width": "100%"},
         )
         if acc_items

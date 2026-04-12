@@ -13,9 +13,45 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# None = not yet probed; avoids 500 when migration 002 is not applied on auth DB.
+_teams_extended_schema: bool | None = None
 
-@router.get("/teams", response_model=list[TeamOut])
-def list_teams():
+
+def _reset_teams_schema_cache_for_tests() -> None:
+    """Clear cached information_schema result (tests only)."""
+
+    global _teams_extended_schema
+    _teams_extended_schema = None
+
+
+def _teams_extended_schema_ready() -> bool:
+    """True when teams.description and team_roles exist (migration 002 applied)."""
+
+    global _teams_extended_schema
+    if _teams_extended_schema is not None:
+        return _teams_extended_schema
+    try:
+        row = db.fetch_one(
+            """
+            SELECT
+              EXISTS (
+                SELECT 1 FROM information_schema.columns c
+                WHERE c.table_schema = 'public' AND c.table_name = 'teams' AND c.column_name = 'description'
+              )
+              AND EXISTS (
+                SELECT 1 FROM information_schema.tables t
+                WHERE t.table_schema = 'public' AND t.table_name = 'team_roles'
+              ) AS ok
+            """
+        )
+        _teams_extended_schema = bool(row and row.get("ok"))
+    except Exception as exc:
+        logger.warning("teams extended schema probe failed: %s", exc)
+        _teams_extended_schema = False
+    return _teams_extended_schema
+
+
+def _list_teams_extended() -> list[TeamOut]:
     rows = db.fetch_all(
         """
         SELECT t.id, t.name, t.description, t.parent_id, t.created_by,
@@ -43,29 +79,72 @@ def list_teams():
     return out
 
 
+def _list_teams_legacy() -> list[TeamOut]:
+    rows = db.fetch_all(
+        """
+        SELECT t.id, t.name, t.parent_id, t.created_by,
+               u.username AS created_by_name,
+               (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id = t.id) AS member_count
+        FROM teams t
+        LEFT JOIN users u ON u.id = t.created_by
+        ORDER BY t.name
+        """
+    )
+    out: list[TeamOut] = []
+    for raw in rows:
+        row = dict(raw)
+        row["description"] = None
+        row["role_ids"] = []
+        row["roles"] = ""
+        out.append(TeamOut(**row))
+    return out
+
+
+@router.get("/teams", response_model=list[TeamOut])
+def list_teams():
+    if _teams_extended_schema_ready():
+        return _list_teams_extended()
+    return _list_teams_legacy()
+
+
 @router.post("/teams", response_model=dict)
 def create_team(body: CreateTeamRequest, created_by: int | None = None):
     if not body.name.strip():
         raise HTTPException(status_code=422, detail="Team name is required")
+    if _teams_extended_schema_ready():
+        try:
+            desc = (body.description or "").strip() or None
+            row = db.fetch_one(
+                """
+                INSERT INTO teams (name, parent_id, created_by, description)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (body.name.strip(), body.parent_id, created_by, desc),
+            )
+            tid = int(row["id"]) if row else 0
+            for rid in body.role_ids or []:
+                db.execute(
+                    "INSERT INTO team_roles (team_id, role_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (tid, rid),
+                )
+            return {"ok": True, "name": body.name.strip(), "id": tid}
+        except Exception as exc:
+            logger.warning("create_team failed: %s", exc)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
-        desc = (body.description or "").strip() or None
         row = db.fetch_one(
             """
-            INSERT INTO teams (name, parent_id, created_by, description)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO teams (name, parent_id, created_by)
+            VALUES (%s, %s, %s)
             RETURNING id
             """,
-            (body.name.strip(), body.parent_id, created_by, desc),
+            (body.name.strip(), body.parent_id, created_by),
         )
         tid = int(row["id"]) if row else 0
-        for rid in body.role_ids or []:
-            db.execute(
-                "INSERT INTO team_roles (team_id, role_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (tid, rid),
-            )
         return {"ok": True, "name": body.name.strip(), "id": tid}
     except Exception as exc:
-        logger.warning("create_team failed: %s", exc)
+        logger.warning("create_team (legacy schema) failed: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -76,27 +155,37 @@ def update_team(team_id: int, body: UpdateTeamRequest):
     row = db.fetch_one("SELECT id FROM teams WHERE id = %s", (team_id,))
     if not row:
         raise HTTPException(status_code=404, detail="Team not found")
-    try:
-        if body.description is not None:
-            db.execute(
-                "UPDATE teams SET name = %s, description = %s WHERE id = %s",
-                (body.name.strip(), (body.description or "").strip() or None, team_id),
-            )
-        else:
-            db.execute(
-                "UPDATE teams SET name = %s WHERE id = %s",
-                (body.name.strip(), team_id),
-            )
-        if body.role_ids is not None:
-            db.execute("DELETE FROM team_roles WHERE team_id = %s", (team_id,))
-            for rid in body.role_ids:
+    if _teams_extended_schema_ready():
+        try:
+            if body.description is not None:
                 db.execute(
-                    "INSERT INTO team_roles (team_id, role_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                    (team_id, rid),
+                    "UPDATE teams SET name = %s, description = %s WHERE id = %s",
+                    (body.name.strip(), (body.description or "").strip() or None, team_id),
                 )
+            else:
+                db.execute(
+                    "UPDATE teams SET name = %s WHERE id = %s",
+                    (body.name.strip(), team_id),
+                )
+            if body.role_ids is not None:
+                db.execute("DELETE FROM team_roles WHERE team_id = %s", (team_id,))
+                for rid in body.role_ids:
+                    db.execute(
+                        "INSERT INTO team_roles (team_id, role_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        (team_id, rid),
+                    )
+            return {"ok": True}
+        except Exception as exc:
+            logger.warning("update_team failed: %s", exc)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        db.execute(
+            "UPDATE teams SET name = %s WHERE id = %s",
+            (body.name.strip(), team_id),
+        )
         return {"ok": True}
     except Exception as exc:
-        logger.warning("update_team failed: %s", exc)
+        logger.warning("update_team (legacy schema) failed: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

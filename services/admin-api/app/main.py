@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.api_auth import verify_api_user
 from app import database
+from app.auth_db_migrations import run_auth_db_migrations
 from app.routers import audit, ldap, permissions, roles, teams, users
 
 logging.basicConfig(
@@ -21,6 +22,11 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_pool()
+    try:
+        with database.connection() as conn:
+            run_auth_db_migrations(conn)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Auth DB migrations failed: %s", exc)
     yield
     database.close_pool()
 

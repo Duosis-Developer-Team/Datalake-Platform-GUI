@@ -13,6 +13,7 @@ from app.models import (
     LdapConfigOut,
     LdapGroupMappingOut,
     LdapSearchResultUser,
+    LdapTestRequest,
     UpsertLdapRequest,
 )
 
@@ -69,6 +70,42 @@ def list_ldap_configs():
         "bind_dn, search_base_dn, user_search_filter, is_active FROM ldap_config ORDER BY id"
     )
     return [LdapConfigOut(**r) for r in rows]
+
+
+@router.post("/ldap/test", response_model=dict)
+def ldap_test_connection(body: LdapTestRequest):
+    """Bind with given (or stored) credentials and run a short user search (max 3 hits)."""
+    enc_pw: str | None = None
+    if body.bind_password and str(body.bind_password).strip():
+        enc_pw = _fernet_encrypt(body.bind_password.strip())
+    if enc_pw is None and body.ldap_id:
+        row = db.fetch_one("SELECT bind_password FROM ldap_config WHERE id = %s", (body.ldap_id,))
+        if row:
+            enc_pw = str(row.get("bind_password") or "")
+    enc_pw = enc_pw or ""
+
+    cfg = {
+        "server_primary": body.server_primary,
+        "server_secondary": body.server_secondary,
+        "port": body.port,
+        "use_ssl": body.use_ssl,
+        "bind_dn": body.bind_dn,
+        "bind_password": enc_pw,
+        "search_base_dn": body.search_base_dn,
+        "user_search_filter": body.user_search_filter,
+    }
+    q = (body.test_query or "test").strip() or "test"
+    try:
+        rows = search_directory_users(cfg, q, size_limit=3)
+        msg = f"Bind OK, {len(rows)} user(s) found for query {q!r}."
+        return {"ok": True, "bind": True, "search_count": len(rows), "message": msg}
+    except ValueError as exc:
+        return {"ok": False, "bind": False, "search_count": 0, "error": str(exc)}
+    except RuntimeError as exc:
+        return {"ok": False, "bind": False, "search_count": 0, "error": str(exc)}
+    except Exception as exc:
+        logger.exception("ldap_test_connection failed")
+        return {"ok": False, "bind": False, "search_count": 0, "error": str(exc)}
 
 
 @router.post("/ldap", response_model=dict)

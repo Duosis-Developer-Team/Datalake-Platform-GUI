@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from ldap3 import NONE, Connection, Server
+from ldap3 import ALL_ATTRIBUTES, NONE, Connection, Server
 from ldap3.core.exceptions import LDAPException
 
 from app.fernet_util import fernet_decrypt
@@ -58,8 +58,40 @@ def _sanitize_query(q: str) -> str:
     return q[:200]
 
 
-def search_directory_users(cfg: dict[str, Any], query: str) -> list[dict[str, Any]]:
+def _user_dict_from_entry(e: Any) -> dict[str, Any] | None:
+    """Build API user row from ldap3 Entry; DN from entry_dn only (never request distinguishedName)."""
+    dn = str(e.entry_dn)
+    sam = getattr(e, "sAMAccountName", None)
+    uid = getattr(e, "uid", None)
+    cn = getattr(e, "cn", None)
+    username = ""
+    if sam is not None and sam.value is not None:
+        username = str(sam.value).strip()
+    elif uid is not None and uid.value is not None:
+        username = str(uid.value).strip()
+    elif cn is not None and cn.value is not None:
+        username = str(cn.value).strip()
+    if not username:
+        return None
+    disp = getattr(e, "displayName", None)
+    display_name = str(disp.value) if disp is not None and disp.value is not None else None
+    mail_attr = getattr(e, "mail", None)
+    email = str(mail_attr.value) if mail_attr is not None and mail_attr.value is not None else None
+    return {
+        "username": username,
+        "display_name": display_name,
+        "email": email,
+        "distinguished_name": dn,
+    }
+
+
+def search_directory_users(
+    cfg: dict[str, Any], query: str, *, size_limit: int | None = None
+) -> list[dict[str, Any]]:
     """Search AD/LDAP for user objects matching query. Returns dicts with keys for LdapSearchResultUser."""
+    lim = int(size_limit) if size_limit is not None else _MAX_RESULTS
+    if lim < 1:
+        lim = 1
     q = _sanitize_query(query)
     if len(q) < 2:
         raise ValueError("Query must be at least 2 characters")
@@ -75,8 +107,8 @@ def search_directory_users(cfg: dict[str, Any], query: str) -> list[dict[str, An
         raise ValueError("search_base_dn is not configured")
 
     bind_pw = _bind_password(cfg)
-    attrs = ["sAMAccountName", "displayName", "mail", "distinguishedName"]
-
+    # With get_info=NONE the Server has no schema; requesting named attributes can trigger
+    # "attribute type not present" on some directories. Return all attributes and map in code.
     for srv in _servers(cfg):
         try:
             conn = Connection(
@@ -88,29 +120,15 @@ def search_directory_users(cfg: dict[str, Any], query: str) -> list[dict[str, An
             conn.search(
                 search_base,
                 search_filter,
-                attributes=attrs,
-                size_limit=_MAX_RESULTS,
+                attributes=ALL_ATTRIBUTES,
+                size_limit=lim,
             )
             out: list[dict[str, Any]] = []
             for e in conn.entries:
                 try:
-                    sam = getattr(e, "sAMAccountName", None)
-                    username = str(sam.value) if sam is not None and sam.value is not None else ""
-                    if not username:
-                        continue
-                    dn = str(e.entry_dn)
-                    disp = getattr(e, "displayName", None)
-                    display_name = str(disp.value) if disp is not None and disp.value is not None else None
-                    mail_attr = getattr(e, "mail", None)
-                    email = str(mail_attr.value) if mail_attr is not None and mail_attr.value is not None else None
-                    out.append(
-                        {
-                            "username": username,
-                            "display_name": display_name,
-                            "email": email,
-                            "distinguished_name": dn,
-                        }
-                    )
+                    row = _user_dict_from_entry(e)
+                    if row:
+                        out.append(row)
                 except Exception as ex:
                     logger.debug("Skip malformed LDAP entry: %s", ex)
                     continue
