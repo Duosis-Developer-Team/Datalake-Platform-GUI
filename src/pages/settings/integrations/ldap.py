@@ -6,6 +6,7 @@ import os
 
 import dash_mantine_components as dmc
 from dash import dcc, html
+from dash_iconify import DashIconify
 
 from src.services import admin_client as settings_crud
 from src.utils.ui_tokens import (
@@ -20,6 +21,10 @@ def build_layout(search: str | None = None) -> html.Div:
     cfgs = settings_crud.list_ldap_configs()
     cfg = cfgs[0] if cfgs else None
     cid = int(cfg["id"]) if cfg else ""
+
+    roles = settings_crud.list_roles()
+    role_opts = [{"value": str(r["id"]), "label": r.get("name") or str(r["id"])} for r in roles]
+    default_role_val = role_opts[0]["value"] if role_opts else ""
 
     mapping_rows = []
     if cfg:
@@ -71,31 +76,76 @@ def build_layout(search: str | None = None) -> html.Div:
         method="POST",
         action="/auth/settings/ldap-save",
         children=[
-            dcc.Input(type="hidden", name="ldap_id", value=str(cid)),
+            dcc.Input(id="ldap-config-id", type="hidden", name="ldap_id", value=str(cid)),
             dmc.SimpleGrid(
                 cols=2,
                 spacing="md",
                 children=[
-                    _field("name", "Config name", cfg.get("name") if cfg else "default"),
-                    _field("server_primary", "Primary server", cfg.get("server_primary") if cfg else ""),
-                    _field(
+                    _labeled_input(
+                        "name",
+                        "Config name",
+                        cfg.get("name") if cfg else "default",
+                        help_text="Friendly label for this LDAP profile in the UI.",
+                        input_id="ldap-field-name",
+                    ),
+                    _labeled_input(
+                        "server_primary",
+                        "Primary server",
+                        cfg.get("server_primary") if cfg else "",
+                        help_text="Hostname or IP of the first directory server (failover uses secondary if set).",
+                        input_id="ldap-field-server_primary",
+                    ),
+                    _labeled_input(
                         "server_secondary",
                         "Secondary server",
                         (cfg.get("server_secondary") or "") if cfg else "",
+                        help_text="Optional backup host when the primary is unreachable.",
+                        input_id="ldap-field-server_secondary",
                     ),
-                    _field("port", "Port", str(cfg.get("port") if cfg else 389)),
-                    _field("bind_dn", "Bind DN", cfg.get("bind_dn") if cfg else ""),
-                    _field("bind_password", "Bind password (leave blank to keep)", "", "password"),
-                    _field("search_base_dn", "Search base", cfg.get("search_base_dn") if cfg else ""),
-                    _field(
+                    _labeled_input(
+                        "port",
+                        "Port",
+                        str(cfg.get("port") if cfg else 389),
+                        help_text="389 for plain LDAP, 636 for LDAPS (SSL).",
+                        input_id="ldap-field-port",
+                    ),
+                    _labeled_input(
+                        "bind_dn",
+                        "Bind DN",
+                        cfg.get("bind_dn") if cfg else "",
+                        help_text="Service account DN used to read the directory, e.g. CN=svc-ldap,OU=ServiceAccounts,DC=corp,DC=com.",
+                        input_id="ldap-field-bind_dn",
+                    ),
+                    _labeled_input(
+                        "bind_password",
+                        "Bind password (leave blank to keep)",
+                        "",
+                        inp_type="password",
+                        help_text="Password for Bind DN; stored encrypted. Leave empty when saving to keep the existing password.",
+                        input_id="ldap-field-bind_password",
+                    ),
+                    _labeled_input(
+                        "search_base_dn",
+                        "Search base DN",
+                        cfg.get("search_base_dn") if cfg else "",
+                        help_text="Root DN for searches, e.g. DC=corp,DC=com or a narrower OU for faster queries.",
+                        input_id="ldap-field-search_base_dn",
+                    ),
+                    _labeled_input(
                         "user_search_filter",
-                        "User filter",
+                        "User search filter",
                         cfg.get("user_search_filter") if cfg else "(sAMAccountName={username})",
+                        help_text="Filter to resolve the user DN at login; {username} is replaced with the typed login name.",
+                        input_id="ldap-field-user_search_filter",
                     ),
                     html.Div(
                         [
-                            dmc.Text("Use SSL (0 or 1)", size="xs", fw=600, c="dimmed", mb=4),
+                            _label_row(
+                                "Use SSL (0 or 1)",
+                                "1 = LDAPS (port 636 recommended), 0 = cleartext LDAP on the configured port.",
+                            ),
                             dcc.Input(
+                                id="ldap-field-use_ssl",
                                 name="use_ssl",
                                 value="1" if (cfg and cfg.get("use_ssl")) else "0",
                                 style=_inp(),
@@ -105,6 +155,7 @@ def build_layout(search: str | None = None) -> html.Div:
                     ),
                 ],
             ),
+            html.Div(id="ldap-test-feedback"),
             dmc.Group(
                 gap="sm",
                 mt="md",
@@ -114,6 +165,13 @@ def build_layout(search: str | None = None) -> html.Div:
                     html_submit_button_gradient(
                         "Save LDAP configuration",
                         icon="solar:diskette-bold-duotone",
+                    ),
+                    dmc.Button(
+                        "Test connection",
+                        id="ldap-test-btn",
+                        variant="light",
+                        color="indigo",
+                        leftSection=DashIconify(icon="solar:plug-circle-bold-duotone", width=18),
                     ),
                 ],
             ),
@@ -136,7 +194,10 @@ def build_layout(search: str | None = None) -> html.Div:
                         html.Div(
                             style={"flex": "2", "minWidth": "200px"},
                             children=[
-                                dmc.Text("LDAP group DN", size="xs", fw=600, c="dimmed", mb=4),
+                                _label_row(
+                                    "LDAP group DN",
+                                    "Distinguished name of the group whose members receive the mapped role.",
+                                ),
                                 dcc.Input(
                                     name="ldap_group_dn",
                                     placeholder="CN=Group,OU=...",
@@ -145,10 +206,26 @@ def build_layout(search: str | None = None) -> html.Div:
                             ],
                         ),
                         html.Div(
-                            style={"width": "120px"},
+                            style={"minWidth": "240px"},
                             children=[
-                                dmc.Text("Role id", size="xs", fw=600, c="dimmed", mb=4),
-                                dcc.Input(name="role_id", placeholder="id", style=_inp()),
+                                _label_row(
+                                    "Role",
+                                    "Platform role granted to users who are members of this LDAP group.",
+                                ),
+                                dmc.Select(
+                                    id="ldap-mapping-role-select",
+                                    data=role_opts,
+                                    value=default_role_val or None,
+                                    searchable=True,
+                                    clearable=False,
+                                    style={"width": "100%"},
+                                ),
+                                dcc.Input(
+                                    id="ldap-mapping-role-id",
+                                    type="hidden",
+                                    name="role_id",
+                                    value=default_role_val,
+                                ),
                             ],
                         ),
                         html_submit_button_light(
@@ -160,6 +237,15 @@ def build_layout(search: str | None = None) -> html.Div:
                 ),
             ],
         )
+
+    # Placeholders so Dash callbacks always find these component ids (hidden when no LDAP config yet).
+    mapping_callback_stub = html.Div(
+        style={"display": "none"},
+        children=[
+            dmc.Select(id="ldap-mapping-role-select", data=[], value=None),
+            dcc.Input(id="ldap-mapping-role-id", type="hidden", value=""),
+        ],
+    )
 
     mappings = (
         dmc.Paper(
@@ -197,28 +283,63 @@ def build_layout(search: str | None = None) -> html.Div:
         else dmc.Alert("Save a primary LDAP configuration to manage mappings.", color="blue", variant="light", mt="lg")
     )
 
-    return html.Div(
-        settings_page_shell(
-            [
-                section_header(
-                    "LDAP integration",
-                    "Directory servers and group mappings for role assignment.",
-                    icon="solar:key-minimalistic-bold-duotone",
+    shell_children: list = [
+        section_header(
+            "LDAP integration",
+            "Directory servers and group mappings for role assignment.",
+            icon="solar:key-minimalistic-bold-duotone",
+        ),
+        banner,
+        env_hint,
+        dmc.Paper(p="lg", radius="md", withBorder=True, children=[form]),
+    ]
+    if not cfg:
+        shell_children.append(mapping_callback_stub)
+    shell_children.append(mappings)
+
+    return html.Div(settings_page_shell(shell_children))
+
+
+def _label_row(label: str, help_text: str) -> dmc.Group:
+    return dmc.Group(
+        gap="xs",
+        align="center",
+        mb=4,
+        children=[
+            dmc.Text(label, size="xs", fw=600, c="dimmed"),
+            dmc.Tooltip(
+                label=help_text,
+                children=dmc.ActionIcon(
+                    DashIconify(icon="solar:question-circle-bold-duotone", width=16),
+                    variant="transparent",
+                    size="sm",
                 ),
-                banner,
-                env_hint,
-                dmc.Paper(p="lg", radius="md", withBorder=True, children=[form]),
-                mappings,
-            ]
-        )
+                multiline=True,
+                w=320,
+            ),
+        ],
     )
 
 
-def _field(name: str, label: str, value: str, inp_type: str = "text"):
+def _labeled_input(
+    name: str,
+    label: str,
+    value: str,
+    *,
+    help_text: str,
+    inp_type: str = "text",
+    input_id: str,
+) -> html.Div:
     return html.Div(
         [
-            dmc.Text(label, size="xs", fw=600, c="dimmed", mb=4),
-            dcc.Input(name=name, type=inp_type, value=value, style=_inp()),
+            _label_row(label, help_text),
+            dcc.Input(
+                id=input_id,
+                name=name,
+                type=inp_type,
+                value=value,
+                style=_inp(),
+            ),
         ]
     )
 

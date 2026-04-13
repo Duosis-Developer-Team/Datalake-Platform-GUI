@@ -33,20 +33,25 @@ def build_layout(search: str | None = None) -> html.Div:
         rid = int(r["id"])
         active = rid == selected_rid
         left_cards.append(
-            dmc.Anchor(
-                dmc.Paper(
-                    p="md",
-                    radius="md",
-                    withBorder=True,
-                    style={
-                        "border": f"2px solid {PRIMARY}" if active else "1px solid rgba(171,173,176,0.25)",
-                        "background": "rgba(85, 44, 248, 0.04)" if active else "#fff",
-                    },
-                    children=[
-                        dmc.Group(
-                            justify="space-between",
-                            children=[
-                                dmc.Group(
+            dmc.Paper(
+                p="md",
+                radius="md",
+                withBorder=True,
+                style={
+                    "border": f"2px solid {PRIMARY}" if active else "1px solid rgba(171,173,176,0.25)",
+                    "background": "rgba(85, 44, 248, 0.04)" if active else "#fff",
+                },
+                children=[
+                    dmc.Group(
+                        justify="space-between",
+                        align="flex-start",
+                        wrap="nowrap",
+                        children=[
+                            dmc.Anchor(
+                                href=f"/settings/iam/roles?role_id={rid}",
+                                underline=False,
+                                style={"flex": 1, "minWidth": 0},
+                                children=dmc.Group(
                                     gap="sm",
                                     children=[
                                         dmc.ThemeIcon(
@@ -57,25 +62,43 @@ def build_layout(search: str | None = None) -> html.Div:
                                         ),
                                         dmc.Stack(
                                             gap=2,
+                                            style={"minWidth": 0, "flex": 1},
                                             children=[
                                                 dmc.Text(str(r["name"]), fw=800, size="sm", c=ON_SURFACE),
-                                                dmc.Text(str(r.get("description") or "")[:80], size="xs", c="dimmed"),
+                                                dmc.Text(
+                                                    str(r.get("description") or ""),
+                                                    size="xs",
+                                                    c="dimmed",
+                                                    lineClamp=1,
+                                                ),
                                             ],
                                         ),
                                     ],
                                 ),
-                                dmc.Badge(
-                                    "system" if r.get("is_system") else "custom",
-                                    size="xs",
-                                    variant="light",
-                                    color="gray",
-                                ),
-                            ],
-                        )
-                    ],
-                ),
-                href=f"/settings/iam/roles?role_id={rid}",
-                underline=False,
+                            ),
+                            dmc.Group(
+                                gap="xs",
+                                wrap="nowrap",
+                                align="center",
+                                children=[
+                                    dmc.Badge(
+                                        "system" if r.get("is_system") else "custom",
+                                        size="xs",
+                                        variant="light",
+                                        color="gray",
+                                    ),
+                                    dmc.Button(
+                                        "Edit",
+                                        id={"type": "iam-role-edit", "rid": rid},
+                                        size="xs",
+                                        variant="light",
+                                        color="indigo",
+                                    ),
+                                ],
+                            ),
+                        ],
+                    )
+                ],
             )
         )
 
@@ -87,6 +110,7 @@ def build_layout(search: str | None = None) -> html.Div:
             rt = str(p.get("resource_type") or "other")
             by_rt[rt].append(p)
 
+        acc_items = []
         for rt, plist in sorted(by_rt.items(), key=lambda x: x[0]):
             label = {
                 "page": "Page access",
@@ -100,19 +124,21 @@ def build_layout(search: str | None = None) -> html.Div:
             for p in plist:
                 pid = int(p["id"])
                 row = rp.get(pid) or {}
+                help_txt = _permission_help_text(p)
                 rows.append(
                     html.Tr(
                         style={"borderTop": "1px solid #eef1f4"},
                         children=[
                             html.Td(
                                 dmc.Stack(
-                                    gap=0,
+                                    gap=2,
                                     children=[
                                         dmc.Text(str(p.get("name") or p["code"]), size="sm", fw=500),
                                         dmc.Text(str(p["code"]), size="xs", c="dimmed"),
+                                        dmc.Text(help_txt, size="xs", c="dimmed"),
                                     ],
                                 ),
-                                style={"padding": "10px 12px"},
+                                style={"padding": "10px 12px", "maxWidth": "420px"},
                             ),
                             html.Td(
                                 _cb(pid, "v", bool(row.get("can_view"))),
@@ -130,35 +156,43 @@ def build_layout(search: str | None = None) -> html.Div:
                     )
                 )
 
-            matrix_body.append(
-                dmc.Stack(
-                    gap="sm",
-                    mb="lg",
+            acc_items.append(
+                dmc.AccordionItem(
+                    value=rt,
                     children=[
-                        dmc.Group(
-                            gap="xs",
-                            children=[
-                                DashIconify(icon="solar:widget-5-bold-duotone", width=18, color=PRIMARY),
-                                dmc.Text(label.upper(), fw=800, size="xs", c=PRIMARY, style={"letterSpacing": "0.08em"}),
-                            ],
+                        dmc.AccordionControl(
+                            dmc.Group(
+                                gap="sm",
+                                wrap="nowrap",
+                                children=[
+                                    DashIconify(icon="solar:widget-5-bold-duotone", width=18, color=PRIMARY),
+                                    dmc.Text(label, fw=700, size="sm", c=ON_SURFACE),
+                                    dmc.Badge(f"{len(plist)}", size="xs", variant="light", color="gray"),
+                                ],
+                            )
                         ),
-                        dmc.Paper(
+                        dmc.AccordionPanel(
                             p="xs",
-                            radius="md",
-                            withBorder=True,
                             children=[
-                                html.Table(
-                                    style={"width": "100%", "borderCollapse": "collapse"},
+                                dmc.Paper(
+                                    p="xs",
+                                    radius="md",
+                                    withBorder=True,
                                     children=[
-                                        html.Tr(
-                                            [
-                                                html.Th("Permission", style=_th_left()),
-                                                html.Th("View", style=_th_center()),
-                                                html.Th("Edit", style=_th_center()),
-                                                html.Th("Export", style=_th_center()),
-                                            ]
-                                        ),
-                                        *rows,
+                                        html.Table(
+                                            style={"width": "100%", "borderCollapse": "collapse"},
+                                            children=[
+                                                html.Tr(
+                                                    [
+                                                        html.Th("Permission", style=_th_left()),
+                                                        html.Th("View", style=_th_center()),
+                                                        html.Th("Edit", style=_th_center()),
+                                                        html.Th("Export", style=_th_center()),
+                                                    ]
+                                                ),
+                                                *rows,
+                                            ],
+                                        )
                                     ],
                                 )
                             ],
@@ -166,6 +200,18 @@ def build_layout(search: str | None = None) -> html.Div:
                     ],
                 )
             )
+
+        matrix_body = [
+            dmc.Accordion(
+                children=acc_items,
+                multiple=True,
+                variant="separated",
+                radius="md",
+                chevronPosition="right",
+                value=list(by_rt.keys()),
+                style={"width": "100%"},
+            )
+        ]
 
         sel = role_by_id.get(selected_rid, {})
         form = html.Div(
@@ -224,17 +270,74 @@ def build_layout(search: str | None = None) -> html.Div:
     )
 
     return html.Div(
-        settings_page_shell(
-            [
-                section_header(
-                    "Role configuration",
-                    "Assign view, edit, and export rights per permission node.",
-                    icon="solar:shield-check-bold-duotone",
-                ),
-                layout_grid,
-            ]
-        )
+        [
+            dcc.Store(id="iam-role-edit-id-store", data=None),
+            dcc.Store(id="iam-role-edit-is-system-store", data=False),
+            dmc.Modal(
+                title="Edit role",
+                id="iam-role-edit-modal",
+                opened=False,
+                children=[
+                    dmc.Text("Name", size="xs", fw=600, c="dimmed", mb=4),
+                    dcc.Input(id="iam-role-edit-name", type="text", style=_role_input_style()),
+                    dmc.Text("Description", size="xs", fw=600, c="dimmed", mb=4, mt="sm"),
+                    dcc.Textarea(
+                        id="iam-role-edit-description",
+                        style={**_role_input_style(), "minHeight": "80px", "resize": "vertical"},
+                    ),
+                    html.Div(id="iam-role-edit-feedback", style={"marginTop": "8px"}),
+                    dmc.Group(
+                        gap="sm",
+                        mt="md",
+                        justify="space-between",
+                        children=[
+                            dmc.Button(
+                                "Delete role",
+                                id="iam-role-delete-btn",
+                                variant="outline",
+                                color="red",
+                                size="sm",
+                            ),
+                            dmc.Group(
+                                gap="sm",
+                                children=[
+                                    dmc.Button("Cancel", id="iam-role-edit-cancel", variant="default", color="gray"),
+                                    dmc.Button("Save", id="iam-role-edit-save", variant="filled", color="indigo"),
+                                ],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            settings_page_shell(
+                [
+                    section_header(
+                        "Role configuration",
+                        "Assign view, edit, and export rights per permission node.",
+                        icon="solar:shield-check-bold-duotone",
+                    ),
+                    layout_grid,
+                ]
+            ),
+        ]
     )
+
+
+def _permission_help_text(p: dict) -> str:
+    d = (p.get("description") or "").strip()
+    if d:
+        return d
+    return f"Controls access to {p.get('name') or p.get('code', 'this resource')}."
+
+
+def _role_input_style():
+    return {
+        "width": "100%",
+        "padding": "10px 12px",
+        "borderRadius": "8px",
+        "border": "1px solid #e9ecef",
+        "fontSize": "14px",
+    }
 
 
 def _cb(pid: int, col: str, checked: bool) -> dcc.Checklist:

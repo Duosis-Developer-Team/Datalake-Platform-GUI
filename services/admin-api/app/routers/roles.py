@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from app import database as db
-from app.models import RoleMatrixRequest, RoleOut, RolePermissionRow
+from app.models import RoleMatrixRequest, RoleOut, RolePermissionRow, UpdateRoleRequest
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,46 @@ router = APIRouter()
 def list_roles():
     rows = db.fetch_all("SELECT id, name, description, is_system FROM roles ORDER BY name")
     return [RoleOut(**r) for r in rows]
+
+
+@router.put("/roles/{role_id}", response_model=dict)
+def update_role(role_id: int, body: UpdateRoleRequest):
+    row = db.fetch_one("SELECT id, name, description, is_system FROM roles WHERE id = %s", (role_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if row.get("is_system"):
+        raise HTTPException(status_code=403, detail="System roles cannot be renamed")
+
+    name = body.name.strip() if body.name is not None else str(row["name"])
+    description = body.description if body.description is not None else row.get("description")
+    if not name:
+        raise HTTPException(status_code=422, detail="Name is required")
+
+    try:
+        db.execute(
+            "UPDATE roles SET name = %s, description = %s WHERE id = %s AND is_system IS FALSE",
+            (name, description, role_id),
+        )
+        return {"ok": True}
+    except Exception as exc:
+        logger.warning("update_role failed: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/roles/{role_id}", response_model=dict)
+def delete_role(role_id: int):
+    """Remove a non-system role (hard delete). Fails if still referenced."""
+    row = db.fetch_one("SELECT id, is_system FROM roles WHERE id = %s", (role_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if row.get("is_system"):
+        raise HTTPException(status_code=403, detail="System roles cannot be deleted")
+    try:
+        db.execute("DELETE FROM roles WHERE id = %s AND is_system IS FALSE", (role_id,))
+        return {"ok": True}
+    except Exception as exc:
+        logger.warning("delete_role failed: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/roles/{role_id}/permissions", response_model=list[RolePermissionRow])

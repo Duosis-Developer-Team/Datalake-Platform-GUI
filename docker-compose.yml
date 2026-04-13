@@ -30,8 +30,8 @@ services:
 
   admin-api:
     build:
-      context: ./services/admin-api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/admin-api/Dockerfile
     container_name: datalake-platform-admin-api
     ports:
       - "8060:8000"

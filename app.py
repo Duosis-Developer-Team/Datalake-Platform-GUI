@@ -101,6 +101,9 @@ from src.pages.settings import shell as settings_shell
 from src.components.access_denied import build_access_denied
 from src.pages.dc_view import _bps_to_gbps, _build_compute_tab
 from src.pages.settings.iam import roles_callbacks  # noqa: F401 — registers role matrix callback
+from src.pages.settings.iam import teams_callbacks  # noqa: F401 — IAM teams panel / members
+from src.pages.settings.iam import users_callbacks  # noqa: F401 — IAM users AD import / edit
+from src.pages.settings.integrations import ldap_callbacks  # noqa: F401 — LDAP test connection / mapping role sync
 
 _default_tr = default_time_range()
 _custom_st, _custom_en = time_range_to_bounds(_default_tr)
@@ -487,7 +490,7 @@ def update_time_range_store(preset, start_dt, end_dt, current):
     dash.Input("url", "pathname"),
     dash.Input("app-time-range", "data"),
     dash.Input("customer-select", "value"),
-    dash.State("url", "search"),
+    dash.Input("url", "search"),
 )
 def render_main_content(pathname, time_range, selected_customer, search):
     from flask import g, has_request_context, request as flask_request

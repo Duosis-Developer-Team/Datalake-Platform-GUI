@@ -69,15 +69,20 @@ class CreatePermissionRequest(BaseModel):
 class TeamOut(BaseModel):
     id: int
     name: str
+    description: str | None = None
     parent_id: int | None = None
     created_by: int | None = None
     created_by_name: str | None = None
     member_count: int = 0
+    role_ids: list[int] = Field(default_factory=list)
+    roles: str | None = None
 
 
 class CreateTeamRequest(BaseModel):
     name: str
     parent_id: int | None = None
+    description: str | None = None
+    role_ids: list[int] = Field(default_factory=list)
 
 
 class LdapConfigOut(BaseModel):
@@ -107,6 +112,21 @@ class UpsertLdapRequest(BaseModel):
     is_active: bool = True
 
 
+class LdapTestRequest(BaseModel):
+    """Bind + sample user search (same connection fields as upsert; password optional if ldap_id set)."""
+
+    server_primary: str
+    server_secondary: str | None = None
+    port: int = 389
+    use_ssl: bool = False
+    bind_dn: str
+    bind_password: str | None = None
+    search_base_dn: str
+    user_search_filter: str = "(sAMAccountName={username})"
+    ldap_id: int | None = None
+    test_query: str | None = "test"
+
+
 class LdapGroupMappingOut(BaseModel):
     id: int
     ldap_group_dn: str
@@ -127,3 +147,73 @@ class AuditRow(BaseModel):
     detail: str | None = None
     ip_address: str | None = None
     created_at: str | None = None
+
+
+# --- LDAP search & import ---
+
+
+class LdapSearchResultUser(BaseModel):
+    """One directory user returned by GET /ldap/search."""
+
+    username: str
+    display_name: str | None = None
+    email: str | None = None
+    distinguished_name: str
+
+
+class LdapUserImportEntry(BaseModel):
+    """Single AD user to import or upsert."""
+
+    username: str
+    distinguished_name: str
+    display_name: str | None = None
+    email: str | None = None
+
+
+class ImportLdapUsersRequest(BaseModel):
+    users: list[LdapUserImportEntry]
+    role_ids: list[int] = Field(default_factory=list)
+    team_ids: list[int] = Field(default_factory=list)
+
+
+class UpdateUserRequest(BaseModel):
+    display_name: str | None = None
+    email: str | None = None
+
+
+class SetUserTeamsRequest(BaseModel):
+    team_ids: list[int]
+
+
+class TeamMemberOut(BaseModel):
+    user_id: int
+    username: str
+    display_name: str | None = None
+    email: str | None = None
+
+
+class AddTeamMembersRequest(BaseModel):
+    user_ids: list[int]
+
+
+class UpdateTeamRequest(BaseModel):
+    name: str
+    description: str | None = None
+    role_ids: list[int] | None = None
+
+
+class UpdateRoleRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class UserDetailOut(BaseModel):
+    id: int
+    username: str
+    display_name: str | None = None
+    email: str | None = None
+    source: str
+    is_active: bool
+    roles: str = ""
+    role_ids: list[int] = Field(default_factory=list)
+    team_ids: list[int] = Field(default_factory=list)
