@@ -368,6 +368,85 @@ def create_horizontal_bar_chart(labels, values, title, color="#4318FF", height=3
     return fig
 
 
+def create_premium_horizontal_bar_chart(
+    labels, values, title, unit_suffix="Gbps", height=340, show_legend=True
+):
+    """
+    Premium horizontal bar chart.
+    - Color gradient by value (low=lavender, high=indigo)
+    - Value labels on the right of each bar
+    - Rounded corners, hover with interface + value
+    """
+    labels = labels or []
+    values = values or []
+    x_data = [float(v or 0) for v in values]
+
+    max_val = max(x_data) or 1.0
+
+    norm = [v / max_val for v in x_data]
+
+    def lerp_hex(t):
+        r = int(0xC4 + (0x43 - 0xC4) * t)
+        g = int(0xB5 + (0x18 - 0xB5) * t)
+        b = int(0xFD + (0xFF - 0xFD) * t)
+        return f"#{r:02X}{g:02X}{b:02X}"
+
+    bar_colors = [lerp_hex(n) for n in norm]
+    text_labels = [f"{v:.2f} {unit_suffix}" if v > 0 else "" for v in x_data]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            y=labels,
+            x=x_data,
+            orientation="h",
+            marker=dict(
+                color=bar_colors,
+                opacity=1.0,
+                line=dict(color="rgba(0,0,0,0)", width=0),
+            ),
+            text=text_labels,
+            textposition="outside",
+            textfont=dict(size=11, color="#2B3674", family="DM Sans", weight=600),
+            hovertemplate="<b>%{y}</b><br>P95: <b>%{x:.3f} " + unit_suffix + "</b><extra></extra>",
+            name="",
+        )
+    )
+
+    try:
+        fig.update_traces(marker_cornerradius=8)
+    except Exception:
+        pass
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+        margin=dict(l=10, r=90, t=10, b=10),
+        height=height,
+        bargap=0.30,
+        xaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+            range=[0, max_val * 1.30],
+        ),
+        yaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            tickfont=dict(family="DM Sans", size=12, color="#2B3674", weight=600),
+            categoryorder="total ascending",
+        ),
+        font=dict(family="DM Sans", color="#A3AED0"),
+        hoverlabel=dict(
+            bgcolor="rgba(255,255,255,0.97)",
+            bordercolor="rgba(67, 24, 255, 0.15)",
+            font=dict(family="DM Sans", size=12, color="#2B3674"),
+        ),
+    )
+    return fig
+
+
 def create_capacity_area_chart(timestamps, used, total, title, height=260, show_legend=True):
     """
     Capacity planning trend chart.
@@ -383,6 +462,13 @@ def create_capacity_area_chart(timestamps, used, total, title, height=260, show_
             y_pct.append(min(u / t * 100.0, 100.0))
         else:
             y_pct.append(0.0)
+
+    # A1. Dynamic Y-axis zoom around data
+    if y_pct:
+        y_min = max(0.0, min(y_pct) - 8.0)
+        y_max = min(105.0, max(y_pct) + 5.0)
+    else:
+        y_min, y_max = 0.0, 105.0
 
     fig = go.Figure()
     fig.add_trace(
@@ -410,6 +496,24 @@ def create_capacity_area_chart(timestamps, used, total, title, height=260, show_
         )
     )
 
+    # A2. Last point marker — "current value" highlight
+    if x and y_pct:
+        fig.add_trace(
+            go.Scatter(
+                x=[x[-1]],
+                y=[y_pct[-1]],
+                mode="markers",
+                marker=dict(
+                    size=10,
+                    color="#4318FF",
+                    line=dict(color="white", width=2),
+                    symbol="circle",
+                ),
+                hovertemplate=f"<b>Current:</b> {y_pct[-1]:.1f}%<extra></extra>",
+                showlegend=False,
+            )
+        )
+
     # M2. 80% threshold reference line
     fig.add_hline(
         y=80,
@@ -427,6 +531,40 @@ def create_capacity_area_chart(timestamps, used, total, title, height=260, show_
             borderpad=4,
         ),
     )
+
+    # A3. Daily vertical separator lines
+    if x:
+        seen_days: set = set()
+        for ts in x:
+            try:
+                day = ts[:10] if isinstance(ts, str) else ts.strftime("%Y-%m-%d")
+                if day not in seen_days:
+                    seen_days.add(day)
+                    fig.add_vline(
+                        x=ts,
+                        line_dash="dot",
+                        line_color="rgba(163, 174, 208, 0.25)",
+                        line_width=1,
+                    )
+            except Exception:
+                pass
+
+    # A5. Annotation — current usage value (top-left)
+    if y_pct:
+        current_val = y_pct[-1]
+        color_val = "#05CD99" if current_val < 60 else "#FFB547" if current_val < 80 else "#EE5D50"
+        fig.add_annotation(
+            text=f"<b>{current_val:.1f}%</b> current",
+            x=0.01, y=0.97,
+            xref="paper", yref="paper",
+            showarrow=False,
+            font=dict(size=13, color=color_val, family="DM Sans"),
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor=color_val,
+            borderwidth=1,
+            borderpad=6,
+            align="left",
+        )
 
     show, leg = _resolve_legend(show_legend)
     layout_updates = dict(
@@ -458,14 +596,15 @@ def create_capacity_area_chart(timestamps, used, total, title, height=260, show_
         ),
         yaxis=dict(
             showgrid=True,
-            gridcolor="rgba(227, 234, 252, 0.5)",
+            gridcolor="rgba(227, 234, 252, 0.4)",
             gridwidth=1,
             zeroline=False,
             showticklabels=True,
             ticksuffix="%",
             tickfont=dict(size=11, color="#A3AED0", family="DM Sans"),
-            range=[0, 105],
+            range=[y_min, y_max],
             side="right",
+            nticks=5,
         ),
         font=dict(family="DM Sans", color="#A3AED0"),
     )

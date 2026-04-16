@@ -28,7 +28,7 @@ from src.components.charts import (
     create_dual_line_chart,
     create_sparkline_chart,
 )
-from src.components.charts import create_horizontal_bar_chart, create_capacity_area_chart, create_grouped_bar_chart
+from src.components.charts import create_horizontal_bar_chart, create_premium_horizontal_bar_chart, create_capacity_area_chart, create_grouped_bar_chart
 from src.components.header import create_detail_header
 from src.components.s3_panel import build_dc_s3_panel
 from src.components.backup_panel import (
@@ -1408,6 +1408,25 @@ def _build_physical_inventory_dc_tab(phys_inv: dict):
     # Horizontal bar: device_role_name (title-case display)
     role_labels = [title_case(r["role"]) for r in by_role]
     role_counts = [r["count"] for r in by_role]
+
+    # B1. Dynamic chart height
+    dynamic_height = max(340, len(role_labels) * 36)
+
+    # B2. Dynamic left margin based on longest label
+    max_label_len = max((len(l) for l in role_labels), default=10)
+    left_margin = min(max_label_len * 7 + 10, 220)
+
+    # B3. Conditional text position
+    max_count = max(role_counts) if role_counts else 1
+    text_positions = [
+        "inside" if c > max_count * 0.35 else "outside"
+        for c in role_counts
+    ]
+    text_colors = [
+        "white" if c > max_count * 0.35 else "#2B3674"
+        for c in role_counts
+    ]
+
     fig_role = go.Figure(
         data=[go.Bar(
             x=role_counts or [0],
@@ -1416,34 +1435,46 @@ def _build_physical_inventory_dc_tab(phys_inv: dict):
             marker=dict(
                 color=role_counts,
                 colorscale=[
-                    [0.0, "#7551FF"],
-                    [0.5, "#4318FF"],
+                    [0.0, "#C4B5FD"],
+                    [0.4, "#7551FF"],
+                    [0.7, "#4318FF"],
                     [1.0, "#05CD99"],
                 ],
                 showscale=False,
                 line=dict(color="rgba(0,0,0,0)", width=0),
             ),
             text=role_counts,
-            textposition="outside",
-            textfont=dict(size=12, color="#2B3674", family="DM Sans", weight=700),
-            hovertemplate="<b>%{y}</b><br>Count: %{x:,}<extra></extra>",
+            textposition=text_positions,
+            textfont=dict(size=11, family="DM Sans", weight=700, color=text_colors),
+            hovertemplate="<b>%{y}</b><br>%{x:,} devices<extra></extra>",
+            width=0.65,
         )]
     )
-    fig_role.update_traces(marker_cornerradius=6)
+    fig_role.update_traces(marker_cornerradius=8)
     fig_role.update_layout(
-        margin=dict(l=20, r=50, t=10, b=20),
-        height=320,
+        margin=dict(l=left_margin, r=70, t=10, b=10),
+        height=dynamic_height,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
-        xaxis=dict(showgrid=False, zeroline=False),
-        yaxis=dict(showgrid=False, zeroline=False, categoryorder="total ascending"),
+        bargap=0.28,
+        xaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+            range=[0, max(role_counts or [1]) * 1.22],
+        ),
+        yaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            categoryorder="total ascending",
+            tickfont=dict(family="DM Sans", size=12, color="#2B3674"),
+        ),
         font=dict(family="DM Sans, sans-serif", color="#2B3674", size=12),
     )
 
-    # Grouped bar: per role, manufacturers (subset by role for readability; show top roles)
-    roles_for_rm = list(dict.fromkeys(r["role"] for r in by_rm))[:8]
-    rm_filtered = [r for r in by_rm if r["role"] in roles_for_rm]
+    # Horizontal stacked bar: Y=role, X=count, color=manufacturer
+    rm_filtered = list(by_rm)
     if not rm_filtered:
         fig_rm = go.Figure()
         fig_rm.update_layout(
@@ -1454,35 +1485,90 @@ def _build_physical_inventory_dc_tab(phys_inv: dict):
             annotations=[dict(text="No role/manufacturer data", x=0.5, y=0.5, showarrow=False, font=dict(size=14))],
         )
     else:
-        # Pivot: x = manufacturer (per role), y = count; group by role
-        role_to_manu = {}
+        # Top 8 manufacturers by total count
+        manu_totals: dict = {}
         for r in rm_filtered:
-            ro = r["role"]
-            if ro not in role_to_manu:
-                role_to_manu[ro] = []
-            role_to_manu[ro].append((r["manufacturer"], r["count"]))
-        colors = ["#4318FF", "#05CD99", "#FFB547", "#7551FF", "#00DBE3", "#FF6B6B", "#A78BFA", "#0FBA81"]
+            m = title_case(r.get("manufacturer") or "Unknown")
+            manu_totals[m] = manu_totals.get(m, 0) + r["count"]
+        top_manufacturers = [m for m, _ in sorted(manu_totals.items(), key=lambda x: -x[1])[:8]]
+
+        # Top 12 roles by total device count
+        role_totals: dict = {}
+        for r in rm_filtered:
+            role = title_case(r["role"])
+            role_totals[role] = role_totals.get(role, 0) + r["count"]
+        all_roles_rm = [role for role, _ in sorted(role_totals.items(), key=lambda x: -x[1])[:12]]
+
+        colors = ["#4318FF", "#05CD99", "#FFB547", "#7551FF", "#00DBE3",
+                  "#FF6B6B", "#A78BFA", "#0FBA81"]
+
+        # Dynamic left margin based on longest label
+        rm_left = min(max((len(r) for r in all_roles_rm), default=10) * 7 + 10, 240)
+
         fig_rm = go.Figure()
-        for i, (role, pairs) in enumerate(role_to_manu.items()):
-            manu = [title_case(p[0]) for p in pairs]
-            cnts = [p[1] for p in pairs]
+        for i, manu in enumerate(top_manufacturers):
+            x_vals = []
+            for role in all_roles_rm:
+                count = next(
+                    (r["count"] for r in rm_filtered
+                     if title_case(r["role"]) == role and title_case(r.get("manufacturer") or "") == manu),
+                    0
+                )
+                x_vals.append(count)
             fig_rm.add_trace(go.Bar(
-                name=title_case(role),
-                x=manu,
-                y=cnts,
-                marker_color=colors[i % len(colors)],
+                name=manu,
+                y=all_roles_rm,
+                x=x_vals,
+                orientation="h",
+                marker=dict(color=colors[i % len(colors)], opacity=0.92),
+                hovertemplate="<b>%{y}</b><br>" + manu + ": <b>%{x:,} devices</b><extra></extra>",
             ))
-        fig_rm.update_traces(marker_cornerradius=5)
+
+        try:
+            fig_rm.update_traces(marker_cornerradius=4)
+        except Exception:
+            pass
+
+        rm_height = max(360, len(all_roles_rm) * 38)
         fig_rm.update_layout(
-            barmode="group",
-            margin=dict(l=20, r=20, t=30, b=80),
-            height=360,
+            barmode="stack",
+            bargap=0.25,
+            margin=dict(l=rm_left, r=20, t=10, b=60),
+            height=rm_height,
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             showlegend=True,
-            legend=dict(orientation="h", yanchor="top", y=1.08),
-            xaxis=dict(showgrid=False, zeroline=False, tickangle=-35),
-            yaxis=dict(showgrid=False, zeroline=False),
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.12,
+                xanchor="center",
+                x=0.5,
+                font=dict(size=11, family="DM Sans", color="#2B3674"),
+                bgcolor="rgba(255,255,255,0.9)",
+                bordercolor="rgba(227,234,252,0.8)",
+                borderwidth=1,
+                itemsizing="constant",
+            ),
+            xaxis=dict(
+                showgrid=True,
+                gridcolor="rgba(227, 234, 252, 0.5)",
+                gridwidth=1,
+                zeroline=False,
+                tickfont=dict(family="DM Sans", size=11, color="#A3AED0"),
+            ),
+            yaxis=dict(
+                showgrid=False,
+                zeroline=False,
+                categoryorder="total ascending",
+                tickfont=dict(family="DM Sans", size=12, color="#2B3674", weight=600),
+                automargin=True,
+            ),
+            hoverlabel=dict(
+                bgcolor="rgba(255,255,255,0.97)",
+                bordercolor="rgba(67,24,255,0.15)",
+                font=dict(family="DM Sans", size=12, color="#2B3674"),
+            ),
             font=dict(family="DM Sans, sans-serif", color="#A3AED0", size=11),
         )
 
@@ -1507,15 +1593,22 @@ def _build_physical_inventory_dc_tab(phys_inv: dict):
                 style={"padding": "20px"},
                 children=[
                     _section_title("Devices by Role", "Device role distribution"),
-                    dcc.Graph(figure=fig_role, config={"displayModeBar": False}, style={"height": "320px"}),
+                    html.Div(
+                        style={"overflowY": "auto", "maxHeight": "480px"},
+                        children=dcc.Graph(
+                            figure=fig_role,
+                            config={"displayModeBar": False},
+                            style={"height": f"{dynamic_height}px"},
+                        ),
+                    ),
                 ],
             ),
             html.Div(
                 className="nexus-card",
                 style={"padding": "20px"},
                 children=[
-                    _section_title("Manufacturer by Role", "Per device role, manufacturer breakdown"),
-                    dcc.Graph(figure=fig_rm, config={"displayModeBar": False}, style={"height": "360px"}),
+                    _section_title("Manufacturer by Role", "Stacked by manufacturer, sorted by total devices"),
+                    dcc.Graph(figure=fig_rm, config={"displayModeBar": False}, style={"height": f"{rm_height}px"}),
                 ],
             ),
         ],
@@ -1605,12 +1698,12 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
     top_interfaces = percentile_data.get("top_interfaces") or []
     bar_labels = [(t.get("interface_name") or "").strip() or "Unknown" for t in top_interfaces]
     bar_values = [_bps_to_gbps(t.get("p95_total_bps")) for t in top_interfaces]
-    bar_fig = create_horizontal_bar_chart(
+    bar_fig = create_premium_horizontal_bar_chart(
         labels=bar_labels,
         values=bar_values,
         title="Top 95th Percentile Interfaces (Gbps)",
-        color="#4318FF",
-        height=320,
+        unit_suffix="Gbps",
+        height=360,
     )
 
     # Interface table (initial page=1)
@@ -1838,7 +1931,7 @@ def _build_intel_storage_subtab(device_list: list[dict], zabbix_storage_capacity
         used=used_series,
         total=total_series,
         title="Capacity Utilization Trend",
-        height=260,
+        height=300,
     )
 
     disk_container = html.Div(
@@ -1875,7 +1968,7 @@ def _build_intel_storage_subtab(device_list: list[dict], zabbix_storage_capacity
                 style={"padding": "20px"},
                 children=[
                     _section_title("Capacity Planning", "Capacity utilization over time (downsampled daily)"),
-                    _chart_card(dcc.Graph(id="intel-capacity-trend-chart", figure=trend_fig, config={"displayModeBar": False}, style={"height": "260px"})),
+                    _chart_card(dcc.Graph(id="intel-capacity-trend-chart", figure=trend_fig, config={"displayModeBar": False}, style={"height": "300px"})),
                 ],
             ),
             html.Div(
