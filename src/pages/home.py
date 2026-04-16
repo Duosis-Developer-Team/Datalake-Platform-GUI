@@ -439,8 +439,39 @@ def build_overview(time_range=None, visible_sections=None):
         energy_breakdown.get("ibm_kw", 0) or 0,
         energy_breakdown.get("vcenter_kw", 0) or 0,
     ]
-    if sum(eb_values) == 0:
-        eb_values = [1, 1]
+    _eb_sum = sum(eb_values)
+    _energy_chart_block = (
+        html.Div(
+            dcc.Graph(
+                id="energy-elite-graph",
+                figure=create_energy_elite_v2(eb_labels, eb_values, height=300),
+                config={"displayModeBar": False},
+                style={"height": "300px"},
+            ),
+            style={
+                "filter": "drop-shadow(0 0 10px rgba(67, 24, 255, 0.35))",
+                "WebkitFilter": "drop-shadow(0 0 10px rgba(67, 24, 255, 0.35))",
+                "borderRadius": "50%",
+                "overflow": "hidden",
+            },
+        )
+        if _eb_sum > 0
+        else dmc.Stack(
+            gap="xs",
+            align="center",
+            justify="center",
+            style={"minHeight": "240px"},
+            children=[
+                DashIconify(icon="material-symbols:bolt-outline", width=48, color="#A3AED0"),
+                dmc.Text(
+                    "No energy breakdown data for this period.",
+                    size="sm",
+                    c="dimmed",
+                    ta="center",
+                ),
+            ],
+        )
+    )
 
     # DC comparison table
     dc_names = [s["name"] for s in summaries]
@@ -560,7 +591,15 @@ def build_overview(time_range=None, visible_sections=None):
                     ),
                 ],
             ),
-            dmc.SimpleGrid(cols=5, spacing="lg", children=kpis, style={"marginBottom": "24px", "padding": "0 30px"}),
+            dcc.Loading(
+                id="home-kpi-strip-loading",
+                type="circle",
+                color="#4318FF",
+                delay_show=200,
+                children=dmc.SimpleGrid(
+                    cols=5, spacing="lg", children=kpis, style={"marginBottom": "24px", "padding": "0 30px"}
+                ),
+            ),
             dmc.SimpleGrid(
                 cols=2,
                 spacing="lg",
@@ -671,47 +710,40 @@ def build_overview(time_range=None, visible_sections=None):
                     ),
                 ],
             ),
-            dmc.SimpleGrid(
-                cols=2,
-                spacing="lg",
-                style={"padding": "0 30px", "marginBottom": "24px"},
-                children=[
-                    html.Div(
-                        [
-                            dmc.Text("Energy by Source", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("Daily average (kW) \u2014 IBM Power & vCenter", size="xs", c="dimmed", style={"marginBottom": "12px"}),
-                            html.Div(
+            dcc.Loading(
+                id="home-energy-dc-loading",
+                type="circle",
+                color="#4318FF",
+                delay_show=200,
+                children=dmc.SimpleGrid(
+                    cols=2,
+                    spacing="lg",
+                    style={"padding": "0 30px", "marginBottom": "24px"},
+                    children=[
+                        html.Div(
+                            [
+                                dmc.Text("Energy by Source", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
+                                dmc.Text("Daily average (kW) \u2014 IBM Power & vCenter", size="xs", c="dimmed", style={"marginBottom": "12px"}),
+                                _energy_chart_block,
+                            ],
+                            className="nexus-card",
+                            style={"padding": "24px"},
+                        ),
+                        html.Div(
+                            [
+                                dmc.Text("DC Landscape", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
+                                dmc.Text("VM distribution across Data Centers \u2014 area = VM count", size="xs", c="dimmed", style={"marginBottom": "12px"}),
                                 dcc.Graph(
-                                    id="energy-elite-graph",
-                                    figure=create_energy_elite_v2(eb_labels, eb_values, height=300),
+                                    figure=create_dc_treemap(dc_names, dc_vms, height=320),
                                     config={"displayModeBar": False},
-                                    style={"height": "300px"},
+                                    style={"height": "320px", "borderRadius": "12px", "overflow": "hidden"},
                                 ),
-                                style={
-                                    "filter": "drop-shadow(0 0 10px rgba(67, 24, 255, 0.35))",
-                                    "WebkitFilter": "drop-shadow(0 0 10px rgba(67, 24, 255, 0.35))",
-                                    "borderRadius": "50%",
-                                    "overflow": "hidden",
-                                },
-                            ),
-                        ],
-                        className="nexus-card",
-                        style={"padding": "24px"},
-                    ),
-                    html.Div(
-                        [
-                            dmc.Text("DC Landscape", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("VM distribution across Data Centers \u2014 area = VM count", size="xs", c="dimmed", style={"marginBottom": "12px"}),
-                            dcc.Graph(
-                                figure=create_dc_treemap(dc_names, dc_vms, height=320),
-                                config={"displayModeBar": False},
-                                style={"height": "320px", "borderRadius": "12px", "overflow": "hidden"},
-                            ),
-                        ],
-                        className="nexus-card",
-                        style={"padding": "24px"},
-                    ),
-                ],
+                            ],
+                            className="nexus-card",
+                            style={"padding": "24px"},
+                        ),
+                    ],
+                ),
             ),
             html.Div(
                 className="nexus-card nexus-table",

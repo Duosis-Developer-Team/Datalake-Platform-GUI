@@ -30,7 +30,6 @@ from src.components.charts import (
     create_premium_gauge_chart,
 )
 from src.services import api_client as api
-from src.services.db_service import DEFAULT_CUSTOMER_NAME, WARMED_CUSTOMERS
 from src.utils.time_range import (
     PRESET_CUSTOM,
     cache_time_ranges,
@@ -83,13 +82,15 @@ APP_BUILD_ID = (os.environ.get("APP_BUILD_ID") or "dev").strip()
 
 @server.after_request
 def _prevent_stale_dash_cache(response):
-    """Avoid browsers/CDNs serving an old Dash shell after a new image is deployed."""
+    """Cache policy: no-store for Dash shell/HTML; long-lived cache for fingerprinted static assets."""
     try:
         path = request.path
         ct = (response.content_type or "").lower()
         if path.startswith("/_dash") or "text/html" in ct:
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
+        elif path.startswith("/assets/") and ("text/css" in ct or "javascript" in ct or "application/javascript" in ct):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     except Exception:
         pass
     return response
@@ -129,7 +130,7 @@ def _warm_worker_local_customer_availability_cache() -> None:
     does not depend on a cold external HTTP call.
     """
     for tr in cache_time_ranges():
-        for customer_name in WARMED_CUSTOMERS:
+        for customer_name in _customers:
             try:
                 api.get_customer_availability_bundle(customer_name, tr, force_refresh=True)
             except Exception as exc:
@@ -234,6 +235,8 @@ _sidebar = html.Div(
                     id="customer-select",
                     data=_customer_options,
                     value=_default_customer,
+                    placeholder="Select customer",
+                    clearable=True,
                     radius="md",
                     variant="default",
                     size="sm",
@@ -287,6 +290,11 @@ app.layout = dmc.MantineProvider(
                             id="main-content-loading",
                             type="circle",
                             color="#4318FF",
+                            delay_show=250,
+                            overlay_style={
+                                "visibility": "visible",
+                                "backgroundColor": "rgba(244, 247, 254, 0.72)",
+                            },
                             target_components={"main-content": "children"},
                             children=html.Div(id="main-content", children=[]),
                             style={"minHeight": "240px"},
@@ -611,7 +619,9 @@ def update_s3_dc_panel(selected_pools, time_range, pathname):
     dash.State("customer-select", "value"),
 )
 def update_s3_customer_panel(selected_vaults, time_range, customer_name):
-    name = customer_name or DEFAULT_CUSTOMER_NAME
+    name = (customer_name or "").strip()
+    if not name:
+        return html.Div()
     tr = time_range or default_time_range()
     s3_data = api.get_customer_s3_vaults(name, tr)
     if not s3_data.get("vaults"):

@@ -1,11 +1,14 @@
+import json
 import os
 import threading
 import time
 from copy import deepcopy
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import quote
 
 import httpx
+
+from src.services import cache_service as _api_response_cache
 
 # Microservices: set per-service URLs, or use API_BASE_URL for a single gateway.
 _API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
@@ -153,136 +156,196 @@ def _get_json(client: httpx.Client, path: str, params: Optional[dict[str, str]] 
     return response.json()
 
 
-def get_global_dashboard(tr: Optional[dict]) -> dict:
+_HTTP_ERRORS = (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError)
+
+
+def _serialize_tr_params(tr: Optional[dict]) -> str:
+    p = _build_time_params(tr)
+    if not p:
+        return "noparams"
+    return json.dumps(sorted(p.items()), separators=(",", ":"), ensure_ascii=False)
+
+
+def _api_cache_get_with_stale(
+    cache_key: str,
+    fetch_normalized: Callable[[], Any],
+    empty_fallback: Any,
+) -> Any:
+    """On success, persist normalized payload. On HTTP/transport errors, return last good payload if any."""
     try:
+        out = fetch_normalized()
+        _api_response_cache.set(cache_key, out)
+        return out
+    except _HTTP_ERRORS:
+        hit = _api_response_cache.get(cache_key)
+        if hit is not None:
+            return _clone(hit)
+        return _clone(empty_fallback)
+
+
+def get_global_dashboard(tr: Optional[dict]) -> dict:
+    ck = f"api:global_dashboard:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, "/api/v1/dashboard/overview", params=_build_time_params(tr))
         return data if isinstance(data, dict) else _clone(_EMPTY_DASHBOARD)
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return _clone(_EMPTY_DASHBOARD)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_DASHBOARD)
 
 
 def get_all_datacenters_summary(tr: Optional[dict]) -> list[dict]:
-    try:
+    ck = f"api:datacenters_summary:{_serialize_tr_params(tr)}"
+
+    def fetch() -> list[dict]:
         data = _get_json(_client_dc, "/api/v1/datacenters/summary", params=_build_time_params(tr))
         return data if isinstance(data, list) else _clone(_EMPTY_DATACENTERS)
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return _clone(_EMPTY_DATACENTERS)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_DATACENTERS)
 
 
 def get_dc_details(dc_id: str, tr: Optional[dict]) -> dict:
-    try:
-        encoded_dc_id = quote(dc_id, safe="")
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{encoded_dc_id}", params=_build_time_params(tr))
+    enc = quote(dc_id, safe="")
+    ck = f"api:dc_details:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}", params=_build_time_params(tr))
         return data if isinstance(data, dict) else _clone(_EMPTY_DC_DETAIL)
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return _clone(_EMPTY_DC_DETAIL)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_DC_DETAIL)
 
 
 def get_customer_list() -> list[str]:
-    try:
+    ck = "api:customer_list"
+
+    def fetch() -> list[str]:
         data = _get_json(_client_cust, "/api/v1/customers")
         return data if isinstance(data, list) else _clone(_EMPTY_CUSTOMERS)
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return _clone(_EMPTY_CUSTOMERS)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_CUSTOMERS)
 
 
 def get_customer_resources(name: str, tr: Optional[dict]) -> dict:
-    try:
-        encoded_name = quote(name, safe="")
+    enc = quote(name, safe="")
+    ck = f"api:customer_resources:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(
             _client_cust,
-            f"/api/v1/customers/{encoded_name}/resources",
+            f"/api/v1/customers/{enc}/resources",
             params=_build_time_params(tr),
         )
         return data if isinstance(data, dict) else _clone(_EMPTY_CUSTOMER)
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return _clone(_EMPTY_CUSTOMER)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_CUSTOMER)
 
 
 def execute_registered_query(key: str, params: str) -> dict:
-    try:
-        encoded_key = quote(key, safe="")
-        data = _get_json(_client_query, f"/api/v1/queries/{encoded_key}", params={"params": params or ""})
+    enc_key = quote(key, safe="")
+    ck = f"api:query:{enc_key}:{json.dumps(params or '', ensure_ascii=False)}"
+
+    def fetch() -> dict:
+        data = _get_json(_client_query, f"/api/v1/queries/{enc_key}", params={"params": params or ""})
         return data if isinstance(data, dict) else _clone(_EMPTY_QUERY)
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return _clone(_EMPTY_QUERY)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_QUERY)
 
 
 def get_sla_by_dc(tr: Optional[dict]) -> dict[str, dict]:
     """Return SLA entries keyed by DC code (uppercase)."""
-    try:
+    ck = f"api:sla_by_dc:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict[str, dict]:
         data = _get_json(_client_dc, "/api/v1/sla", params=_build_time_params(tr))
         by_dc = (data or {}).get("by_dc") if isinstance(data, dict) else None
         return by_dc if isinstance(by_dc, dict) else _clone(_EMPTY_SLA_BY_DC)
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return _clone(_EMPTY_SLA_BY_DC)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_SLA_BY_DC)
 
 
 def get_dc_s3_pools(dc_code: str, tr: Optional[dict]) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
+    enc = quote(dc_code, safe="")
+    empty = {"pools": [], "latest": {}, "growth": {}}
+    ck = f"api:dc_s3_pools:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/s3/pools", params=_build_time_params(tr))
-        return data if isinstance(data, dict) else {"pools": [], "latest": {}, "growth": {}}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {"pools": [], "latest": {}, "growth": {}}
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
 
 
 def get_customer_s3_vaults(customer_name: str, tr: Optional[dict]) -> dict:
-    try:
-        enc = quote(customer_name, safe="")
+    enc = quote(customer_name, safe="")
+    empty = {"vaults": [], "latest": {}, "growth": {}}
+    ck = f"api:customer_s3_vaults:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_cust, f"/api/v1/customers/{enc}/s3/vaults", params=_build_time_params(tr))
-        return data if isinstance(data, dict) else {"vaults": [], "latest": {}, "growth": {}}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {"vaults": [], "latest": {}, "growth": {}}
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
 
 
 def get_dc_netbackup_pools(dc_code: str, tr: Optional[dict]) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
+    enc = quote(dc_code, safe="")
+    empty = {"pools": [], "rows": []}
+    ck = f"api:dc_netbackup:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/backup/netbackup", params=_build_time_params(tr))
-        return data if isinstance(data, dict) else {"pools": [], "rows": []}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {"pools": [], "rows": []}
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
 
 
 def get_dc_zerto_sites(dc_code: str, tr: Optional[dict]) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
+    enc = quote(dc_code, safe="")
+    empty = {"sites": [], "rows": []}
+    ck = f"api:dc_zerto:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/backup/zerto", params=_build_time_params(tr))
-        return data if isinstance(data, dict) else {"sites": [], "rows": []}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {"sites": [], "rows": []}
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
 
 
 def get_dc_veeam_repos(dc_code: str, tr: Optional[dict]) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
+    enc = quote(dc_code, safe="")
+    empty = {"repos": [], "rows": []}
+    ck = f"api:dc_veeam:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/backup/veeam", params=_build_time_params(tr))
-        return data if isinstance(data, dict) else {"repos": [], "rows": []}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {"repos": [], "rows": []}
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
 
 
 def get_classic_cluster_list(dc_code: str, tr: Optional[dict]) -> list[str]:
-    try:
-        enc = quote(dc_code, safe="")
+    enc = quote(dc_code, safe="")
+    ck = f"api:classic_clusters:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> list[str]:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/clusters/classic", params=_build_time_params(tr))
         return data if isinstance(data, list) else []
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return []
+
+    return _api_cache_get_with_stale(ck, fetch, [])
 
 
 def get_hyperconv_cluster_list(dc_code: str, tr: Optional[dict]) -> list[str]:
-    try:
-        enc = quote(dc_code, safe="")
+    enc = quote(dc_code, safe="")
+    ck = f"api:hyperconv_clusters:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> list[str]:
         data = _get_json(
             _client_dc,
             f"/api/v1/datacenters/{enc}/clusters/hyperconverged",
             params=_build_time_params(tr),
         )
         return data if isinstance(data, list) else []
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return []
+
+    return _api_cache_get_with_stale(ck, fetch, [])
 
 
 def _clusters_param(selected: Optional[list[str]]) -> dict[str, str]:
@@ -294,71 +357,86 @@ def _clusters_param(selected: Optional[list[str]]) -> dict[str, str]:
 def get_classic_metrics_filtered(
     dc_code: str, selected_clusters: Optional[list[str]], tr: Optional[dict]
 ) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = {**_build_time_params(tr), **_clusters_param(selected_clusters)}
+    enc = quote(dc_code, safe="")
+    params = {**_build_time_params(tr), **_clusters_param(selected_clusters)}
+    ck = f"api:classic_metrics:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/compute/classic", params=params)
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_hyperconv_metrics_filtered(
     dc_code: str, selected_clusters: Optional[list[str]], tr: Optional[dict]
 ) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = {**_build_time_params(tr), **_clusters_param(selected_clusters)}
+    enc = quote(dc_code, safe="")
+    params = {**_build_time_params(tr), **_clusters_param(selected_clusters)}
+    ck = f"api:hyperconv_metrics:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/compute/hyperconverged", params=params)
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_physical_inventory_dc(dc_name: str) -> dict:
-    try:
-        enc = quote(dc_name, safe="")
+    enc = quote(dc_name, safe="")
+    empty = {"total": 0, "by_role": [], "by_role_manufacturer": []}
+    ck = f"api:phys_inv_dc:{enc}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/physical-inventory")
-        return data if isinstance(data, dict) else {"total": 0, "by_role": [], "by_role_manufacturer": []}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {"total": 0, "by_role": [], "by_role_manufacturer": []}
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
 
 
 def get_physical_inventory_overview_by_role() -> list[dict]:
-    try:
+    ck = "api:phys_inv_overview_by_role"
+
+    def fetch() -> list[dict]:
         data = _get_json(_client_dc, "/api/v1/physical-inventory/overview/by-role")
         return data if isinstance(data, list) else []
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return []
+
+    return _api_cache_get_with_stale(ck, fetch, [])
 
 
 def get_physical_inventory_overview_manufacturer(role: str) -> list[dict]:
-    try:
-        enc = quote(role, safe="")
+    enc = quote(role, safe="")
+    ck = f"api:phys_inv_mfr:{enc}"
+
+    def fetch() -> list[dict]:
         data = _get_json(_client_dc, "/api/v1/physical-inventory/overview/manufacturer", params={"role": enc})
         return data if isinstance(data, list) else []
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return []
+
+    return _api_cache_get_with_stale(ck, fetch, [])
 
 
 def get_physical_inventory_overview_location(role: str, manufacturer: str) -> list[dict]:
-    try:
+    ck = f"api:phys_inv_loc:{quote(role, safe='')}:{quote(manufacturer, safe='')}"
+
+    def fetch() -> list[dict]:
         data = _get_json(
             _client_dc,
             "/api/v1/physical-inventory/overview/location",
             params={"role": role, "manufacturer": manufacturer},
         )
         return data if isinstance(data, list) else []
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return []
+
+    return _api_cache_get_with_stale(ck, fetch, [])
 
 
 def get_physical_inventory_customer() -> list[dict]:
-    try:
+    ck = "api:phys_inv_customer"
+
+    def fetch() -> list[dict]:
         data = _get_json(_client_dc, "/api/v1/physical-inventory/customer")
         return data if isinstance(data, list) else []
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return []
+
+    return _api_cache_get_with_stale(ck, fetch, [])
 
 
 # ---------------------------------------------------------------------------
@@ -367,73 +445,87 @@ def get_physical_inventory_customer() -> list[dict]:
 
 
 def get_dc_san_switches(dc_code: str, tr: Optional[dict]) -> list[str]:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_san_switches:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> list[str]:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/switches", params=params)
         return data if isinstance(data, list) else []
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return []
+
+    return _api_cache_get_with_stale(ck, fetch, [])
 
 
 def get_dc_san_port_usage(dc_code: str, tr: Optional[dict]) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_san_port_usage:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/port-usage", params=params)
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_dc_san_health(dc_code: str, tr: Optional[dict]) -> list[dict]:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_san_health:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> list[dict]:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/health", params=params)
         return data if isinstance(data, list) else []
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return []
+
+    return _api_cache_get_with_stale(ck, fetch, [])
 
 
 def get_dc_san_traffic_trend(dc_code: str, tr: Optional[dict]) -> list[dict]:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_san_traffic_trend:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> list[dict]:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/traffic-trend", params=params)
         return data if isinstance(data, list) else []
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return []
+
+    return _api_cache_get_with_stale(ck, fetch, [])
 
 
 def get_dc_san_bottleneck(dc_code: str, tr: Optional[dict]) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_san_bottleneck:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/bottleneck", params=params)
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_dc_storage_capacity(dc_code: str, tr: Optional[dict]) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_storage_cap:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/storage/capacity", params=params)
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_dc_storage_performance(dc_code: str, tr: Optional[dict]) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_storage_perf:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/storage/performance", params=params)
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 # ---------------------------------------------------------------------------
@@ -450,13 +542,15 @@ def _build_optional_params(base: dict[str, str], **kwargs: Optional[Any]) -> dic
 
 
 def get_dc_network_filters(dc_code: str, tr: Optional[dict]) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_net_filters:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/network/filters", params=params)
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_dc_network_port_summary(
@@ -466,22 +560,24 @@ def get_dc_network_port_summary(
     device_role: Optional[str] = None,
     device_name: Optional[str] = None,
 ) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_optional_params(
-            _build_time_params(tr),
-            manufacturer=manufacturer,
-            device_role=device_role,
-            device_name=device_name,
-        )
+    enc = quote(dc_code, safe="")
+    params = _build_optional_params(
+        _build_time_params(tr),
+        manufacturer=manufacturer,
+        device_role=device_role,
+        device_name=device_name,
+    )
+    ck = f"api:dc_net_port_sum:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
+
+    def fetch() -> dict:
         data = _get_json(
             _client_dc,
             f"/api/v1/datacenters/{enc}/network/port-summary",
             params=params,
         )
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_dc_network_95th_percentile(
@@ -492,23 +588,25 @@ def get_dc_network_95th_percentile(
     device_role: Optional[str] = None,
     device_name: Optional[str] = None,
 ) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_optional_params(
-            _build_time_params(tr),
-            top_n=top_n,
-            manufacturer=manufacturer,
-            device_role=device_role,
-            device_name=device_name,
-        )
+    enc = quote(dc_code, safe="")
+    params = _build_optional_params(
+        _build_time_params(tr),
+        top_n=top_n,
+        manufacturer=manufacturer,
+        device_role=device_role,
+        device_name=device_name,
+    )
+    ck = f"api:dc_net_95:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
+
+    def fetch() -> dict:
         data = _get_json(
             _client_dc,
             f"/api/v1/datacenters/{enc}/network/95th-percentile",
             params=params,
         )
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_dc_network_interface_table(
@@ -521,67 +619,78 @@ def get_dc_network_interface_table(
     device_role: Optional[str] = None,
     device_name: Optional[str] = None,
 ) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_optional_params(
-            _build_time_params(tr),
-            page=page,
-            page_size=page_size,
-            search=search or "",
-            manufacturer=manufacturer,
-            device_role=device_role,
-            device_name=device_name,
-        )
+    enc = quote(dc_code, safe="")
+    params = _build_optional_params(
+        _build_time_params(tr),
+        page=page,
+        page_size=page_size,
+        search=search or "",
+        manufacturer=manufacturer,
+        device_role=device_role,
+        device_name=device_name,
+    )
+    ck = f"api:dc_net_iface:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
+
+    def fetch() -> dict:
         data = _get_json(
             _client_dc,
             f"/api/v1/datacenters/{enc}/network/interface-table",
             params=params,
         )
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_dc_zabbix_storage_capacity(dc_code: str, tr: Optional[dict], host: Optional[str] = None) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_optional_params(_build_time_params(tr), host=host)
+    enc = quote(dc_code, safe="")
+    params = _build_optional_params(_build_time_params(tr), host=host)
+    ck = f"api:dc_zbx_cap:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/capacity", params=params)
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_dc_zabbix_storage_trend(dc_code: str, tr: Optional[dict], host: Optional[str] = None) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_optional_params(_build_time_params(tr), host=host)
+    enc = quote(dc_code, safe="")
+    params = _build_optional_params(_build_time_params(tr), host=host)
+    ck = f"api:dc_zbx_trend:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/trend", params=params)
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_dc_zabbix_storage_devices(dc_code: str, tr: Optional[dict]) -> list[dict]:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_zbx_devices:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> list[dict]:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/devices", params=params)
         return data if isinstance(data, list) else []
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return []
+
+    return _api_cache_get_with_stale(ck, fetch, [])
 
 
 def get_dc_zabbix_disk_list(dc_code: str, tr: Optional[dict], host: Optional[str] = None) -> dict:
     if host is None:
         return {"items": []}
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_optional_params(_build_time_params(tr), host=host)
+    enc = quote(dc_code, safe="")
+    params = _build_optional_params(_build_time_params(tr), host=host)
+    ck = f"api:dc_zbx_disk_list:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
+    empty = {"items": []}
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/disk-list", params=params)
-        return data if isinstance(data, dict) else {"items": []}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {"items": []}
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
 
 
 def get_dc_zabbix_disk_trend(
@@ -592,42 +701,53 @@ def get_dc_zabbix_disk_trend(
 ) -> dict:
     if host is None or disk_name is None:
         return {"series": []}
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_optional_params(_build_time_params(tr), host=host, disk=disk_name)
+    enc = quote(dc_code, safe="")
+    params = _build_optional_params(_build_time_params(tr), host=host, disk=disk_name)
+    ck = f"api:dc_zbx_disk_trend:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
+    empty = {"series": []}
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/disk-trend", params=params)
-        return data if isinstance(data, dict) else {"series": []}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {"series": []}
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
 
 
 def get_dc_zabbix_disk_health(dc_code: str, tr: Optional[dict]) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
-        params = _build_time_params(tr)
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_zbx_disk_health:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/disk-health", params=params)
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
 
 
 def get_dc_racks(dc_code: str) -> dict:
-    try:
-        enc = quote(dc_code, safe="")
+    enc = quote(dc_code, safe="")
+    empty = {"racks": [], "summary": {}}
+    ck = f"api:dc_racks:{enc}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/racks")
-        return data if isinstance(data, dict) else {"racks": [], "summary": {}}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {"racks": [], "summary": {}}
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
 
 
 def get_rack_devices(dc_code: str, rack_name: str) -> dict:
-    try:
-        enc_dc = quote(dc_code, safe="")
-        enc_rack = quote(rack_name, safe="")
+    enc_dc = quote(dc_code, safe="")
+    enc_rack = quote(rack_name, safe="")
+    empty = {"devices": []}
+    ck = f"api:rack_devices:{enc_dc}:{enc_rack}"
+
+    def fetch() -> dict:
         data = _get_json(_client_dc, f"/api/v1/datacenters/{enc_dc}/racks/{enc_rack}/devices")
-        return data if isinstance(data, dict) else {"devices": []}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
-        return {"devices": []}
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
 
 
 def _auranotify_start_date(tr: Optional[dict]) -> str:
@@ -651,18 +771,9 @@ def _customer_availability_cache_key(customer_name: str, tr: Optional[dict]) -> 
 
 
 def _fetch_customer_availability_bundle_uncached(customer_name: str, tr: Optional[dict]) -> dict[str, Any]:
-    try:
-        from src.services import auranotify_client as aura
+    from src.services import auranotify_client as aura
 
-        return aura.get_customer_availability_bundle(customer_name or "", _auranotify_start_date(tr))
-    except Exception:
-        return {
-            "service_downtimes": [],
-            "vm_downtimes": [],
-            "vm_outage_counts": {},
-            "customer_id": None,
-            "customer_ids": [],
-        }
+    return aura.get_customer_availability_bundle(customer_name or "", _auranotify_start_date(tr))
 
 
 def clear_customer_availability_bundle_cache() -> None:
@@ -682,29 +793,47 @@ def get_customer_availability_bundle(
 
     Results are cached in memory for CUSTOMER_AVAIL_TTL_SECONDS (default 15 minutes) so repeated
     page renders do not hit AuraNotify on every request. Pass force_refresh=True for scheduler jobs.
+    On fetch failure, the last successful payload is retained (never replaced by an empty error body).
     """
     key = _customer_availability_cache_key(customer_name, tr)
     now = time.time()
+    _empty_bundle = {
+        "service_downtimes": [],
+        "vm_downtimes": [],
+        "vm_outage_counts": {},
+        "customer_id": None,
+        "customer_ids": [],
+    }
     with _CUSTOMER_AVAIL_LOCK:
-        if not force_refresh:
-            hit = _CUSTOMER_AVAIL_CACHE.get(key)
-            if hit is not None and (now - hit[0]) < CUSTOMER_AVAIL_TTL_SECONDS:
-                return deepcopy(hit[1])
-        data = _fetch_customer_availability_bundle_uncached(customer_name, tr)
+        prev = _CUSTOMER_AVAIL_CACHE.get(key)
+        if not force_refresh and prev is not None and (now - prev[0]) < CUSTOMER_AVAIL_TTL_SECONDS:
+            return deepcopy(prev[1])
+        try:
+            data = _fetch_customer_availability_bundle_uncached(customer_name, tr)
+        except Exception:
+            if prev is not None:
+                return deepcopy(prev[1])
+            data = _empty_bundle
         _CUSTOMER_AVAIL_CACHE[key] = (now, data)
         return deepcopy(data)
 
 
 def get_dc_availability_sla_item(dc_code: str, dc_display_name: str, tr: Optional[dict]) -> Optional[dict[str, Any]]:
     """AuraNotify: one datacenter-services item matched to this DC (by name or code)."""
+    ck = f"api:dc_avail_sla_item:{quote(dc_code or '', safe='')}:{quote(dc_display_name or '', safe='')}:{_serialize_tr_params(tr)}"
     try:
         from src.services import auranotify_client as aura
 
         items = aura.get_dc_services_availability(_auranotify_start_date(tr))
+        out: Optional[dict[str, Any]] = None
         for hint in (dc_display_name or "", dc_code or ""):
             it = aura.match_dc_group_item(items, hint)
             if it:
-                return it
-        return None
+                out = it
+                break
+        if out is not None:
+            _api_response_cache.set(ck, out)
+        return deepcopy(out) if out is not None else None
     except Exception:
-        return None
+        hit = _api_response_cache.get(ck)
+        return deepcopy(hit) if isinstance(hit, dict) else None

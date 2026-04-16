@@ -2406,7 +2406,13 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
             ),
         )
 
-    return html.Div([
+    return dcc.Loading(
+        id="dc-view-page-loading",
+        type="circle",
+        color="#4318FF",
+        delay_show=200,
+        overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.75)"},
+        children=html.Div([
         dcc.Store(id="net-filters-store", data=net_filters or {}),
         dcc.Store(
             id="dc-export-store",
@@ -2699,7 +2705,8 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                 else None,
             ],
         )
-    ])
+    ]),
+    )
 
 
 def layout(dc_id=None):

@@ -8,12 +8,18 @@ from app.db.queries import customer as cq
 from app.services.customer_service import CustomerService
 
 
-def test_get_customer_list_returns_boyner():
+def test_get_customer_list_empty_without_db_and_no_env(monkeypatch):
+    monkeypatch.delenv("WARMED_CUSTOMERS", raising=False)
     with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
         svc = CustomerService()
-    result = svc.get_customer_list()
-    assert isinstance(result, list)
-    assert "Boyner" in result
+    assert svc.get_customer_list() == []
+
+
+def test_get_customer_list_respects_warmed_customers_env(monkeypatch):
+    monkeypatch.setenv("WARMED_CUSTOMERS", "Acme, Beta")
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    assert svc.get_customer_list() == ["Acme", "Beta"]
 
 
 def test_get_customer_resources_returns_empty_when_pool_none():

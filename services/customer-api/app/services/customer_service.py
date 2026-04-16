@@ -17,7 +17,7 @@ from app.db.queries import customer as cq
 from app.db.queries import s3 as s3q
 from app.services import cache_service as cache
 from app.utils.cluster_match import build_cluster_arch_map
-from app.utils.time_range import default_time_range, time_range_to_bounds
+from app.utils.time_range import cache_time_ranges, default_time_range, time_range_to_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -277,8 +277,36 @@ class CustomerService:
             )
             raise HTTPException(status_code=503, detail="Database temporarily unavailable") from exc
 
+    def _load_customer_names_from_db(self) -> list[str]:
+        """Distinct tenant names from NetBox inventory (active devices)."""
+        if self._pool is None:
+            return []
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, cq.CUSTOMER_NAME_LIST)
+            return sorted({str(r[0]).strip() for r in (rows or []) if r and r[0]})
+        except Exception as exc:
+            logger.warning("Failed to load customer names from DB: %s", exc)
+            return []
+
     def get_customer_list(self) -> list[str]:
-        return ["Boyner"]
+        """
+        Customer names for the GUI selector.
+        If WARMED_CUSTOMERS is set, returns that explicit list; otherwise loads from the database.
+        """
+        raw = (os.getenv("WARMED_CUSTOMERS") or "").strip()
+        if raw:
+            return sorted({n.strip() for n in raw.split(",") if n.strip()})
+        return self._load_customer_names_from_db()
+
+    def _customers_for_cache_rebuild(self) -> tuple[str, ...]:
+        """Customers used by warm_cache / scheduler (env override, else DB-derived names)."""
+        raw = (os.getenv("WARMED_CUSTOMERS") or "").strip()
+        if raw:
+            names = tuple(n.strip() for n in raw.split(",") if n.strip())
+            return names
+        return tuple(self._load_customer_names_from_db())
 
     def _fetch_customer_s3_vaults(self, customer_name: str, start_ts, end_ts) -> dict:
         """Fetch S3 vault metrics for a customer (same logic as datacenter-api DatabaseService)."""
@@ -361,3 +389,46 @@ class CustomerService:
                 exc,
             )
             return {"vaults": [], "latest": {}, "growth": {}, "trend": []}
+
+    def _rebuild_customer_caches_for_warmed_customers(self) -> None:
+        """Populate Redis/memory cache for configured customers and standard time ranges."""
+        customers = self._customers_for_cache_rebuild()
+        for tr in cache_time_ranges():
+            for customer_name in customers:
+                try:
+                    self.get_customer_resources(customer_name, tr)
+                except Exception as exc:
+                    logger.warning(
+                        "Customer cache rebuild failed for customer=%s preset=%s: %s",
+                        customer_name,
+                        tr.get("preset", ""),
+                        exc,
+                    )
+                try:
+                    self.get_customer_s3_vaults(customer_name, tr)
+                except Exception as exc:
+                    logger.warning(
+                        "Customer S3 cache rebuild failed for customer=%s preset=%s: %s",
+                        customer_name,
+                        tr.get("preset", ""),
+                        exc,
+                    )
+
+    def warm_cache(self) -> None:
+        """Synchronous warm-up before serving traffic (same ranges as datacenter-api)."""
+        if self._pool is None:
+            logger.warning("warm_cache skipped: database pool is not available.")
+            return
+        self._rebuild_customer_caches_for_warmed_customers()
+
+    def refresh_all_data(self) -> None:
+        """
+        Called by the background scheduler every 15 minutes.
+        Rebuilds cache for fixed ranges without clearing keys first (stale until overwrite).
+        """
+        logger.info("Customer API background cache refresh started.")
+        try:
+            self._rebuild_customer_caches_for_warmed_customers()
+            logger.info("Customer API background cache refresh complete.")
+        except Exception as exc:
+            logger.error("Customer API background cache refresh failed: %s", exc)

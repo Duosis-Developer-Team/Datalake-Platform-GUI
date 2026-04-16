@@ -1079,3 +1079,13 @@ JOIN agg a ON a.vm_name = l.vm_name
 JOIN cluster_uuids cu ON l.cluster_uuid::text = cu.cluster_uuid
 ORDER BY "VM Name"
 """
+
+# Distinct tenant names from NetBox inventory snapshot (active devices only).
+CUSTOMER_NAME_LIST = """
+SELECT DISTINCT TRIM(tenant_name) AS name
+FROM public.discovery_netbox_inventory_device
+WHERE status_value = 'active'
+  AND tenant_name IS NOT NULL
+  AND BTRIM(tenant_name) <> ''
+ORDER BY name
+"""

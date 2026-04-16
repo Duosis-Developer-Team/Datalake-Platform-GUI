@@ -8,6 +8,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.date import DateTrigger
 
+S3_BACKUP_REFRESH_INTERVAL_MINUTES = 30
+
 if TYPE_CHECKING:
     from app.services.dc_service import DatabaseService
 
@@ -35,10 +37,27 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
         replace_existing=True,
         misfire_grace_time=60,
     )
+    scheduler.add_job(
+        func=db_service.refresh_s3_cache,
+        trigger=IntervalTrigger(minutes=S3_BACKUP_REFRESH_INTERVAL_MINUTES),
+        id="s3_cache_refresh",
+        name="S3 pool/vault cache refresh",
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
+    scheduler.add_job(
+        func=db_service.refresh_backup_cache,
+        trigger=IntervalTrigger(minutes=S3_BACKUP_REFRESH_INTERVAL_MINUTES),
+        id="backup_cache_refresh",
+        name="Backup (NetBackup/Zerto/Veeam) cache refresh",
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
     scheduler.start()
     logger.info(
-        "Background scheduler started. Cache refresh every %d minutes.",
+        "Background scheduler started: DB/overview every %d min; S3/backup every %d min.",
         REFRESH_INTERVAL_MINUTES,
+        S3_BACKUP_REFRESH_INTERVAL_MINUTES,
     )
 
     initial_run_time = datetime.now() + timedelta(seconds=INITIAL_WARM_DELAY_SECONDS)

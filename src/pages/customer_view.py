@@ -301,18 +301,6 @@ def _deleted_vms_panel(deleted_names: list[str] | None):
     )
 
 
-def _backup_placeholder(name: str):
-    return html.Div(
-        style={"padding": "60px", "textAlign": "center"},
-        children=[
-            DashIconify(icon="solar:shield-check-bold-duotone", width=48,
-                        style={"color": "#A3AED0", "marginBottom": "12px"}),
-            html.P(f"{name} backup data", style={"color": "#2B3674", "fontWeight": 600}),
-            html.P("Detailed data will be shown here.", style={"color": "#A3AED0", "fontSize": "0.85rem"}),
-        ],
-    )
-
-
 # ---------------------------------------------------------------------------
 # Tab content builders
 # ---------------------------------------------------------------------------
@@ -1051,7 +1039,7 @@ def _tab_netbackup(backup_assets: dict, backup_totals: dict):
 
 
 def _tab_physical_inventory(devices: list[dict]):
-    """Physical Inventory tab: Boyner devices table (name, device_role, manufacturer, location). Title-case display."""
+    """Physical Inventory tab: device table (name, device_role, manufacturer, location). Title-case display."""
     total = len(devices or [])
 
     def row_fn(r):
@@ -1068,7 +1056,7 @@ def _tab_physical_inventory(devices: list[dict]):
         ]),
         _section_card(
             "Device List",
-            "NetBox physical inventory (tenant Boyner)",
+            "NetBox physical inventory (customer tenant scope)",
             _vm_table(
                 devices or [],
                 ["Name", "Device Role", "Manufacturer", "Location"],
@@ -1174,9 +1162,29 @@ def _tab_customer_availability(avail: dict):
 # ---------------------------------------------------------------------------
 
 def _customer_content(customer_name: str, time_range: dict | None = None):
-    tr   = time_range or default_time_range()
-    data = api.get_customer_resources(customer_name or "Boyner", tr)
-    avail_bundle = api.get_customer_availability_bundle(customer_name or "Boyner", tr)
+    tr = time_range or default_time_range()
+    name = (customer_name or "").strip()
+    if not name:
+        empty = dmc.Alert(
+            color="yellow",
+            title="No customer selected",
+            children="Choose a customer from the sidebar to load metrics.",
+        )
+        return {
+            "summary": empty,
+            "virt": empty,
+            "avail": empty,
+            "backup": empty,
+            "billing": empty,
+            "s3": html.Div(),
+            "has_s3": False,
+            "phys_inv": empty,
+            "has_phys_inv": False,
+            "export_sheets": {},
+        }
+
+    data = api.get_customer_resources(name, tr)
+    avail_bundle = api.get_customer_availability_bundle(name, tr)
     vm_outage_counts = avail_bundle.get("vm_outage_counts") or {}
 
     totals = data.get("totals", {})
@@ -1185,38 +1193,12 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     backup_totals = totals.get("backup", {}) or {}
 
     # S3 vault metrics (may be empty if customer has no S3 vaults)
-    s3_data = api.get_customer_s3_vaults(customer_name or "Boyner", tr)
+    s3_data = api.get_customer_s3_vaults(name, tr)
     has_s3 = bool(s3_data.get("vaults"))
 
-    # Physical inventory (Boyner tenant_id=5): tab always shown for customer
+    # Physical inventory for the customer tenant scope (API-side filter)
     phys_inv_devices = api.get_physical_inventory_customer()
     has_phys_inv = True
-
-    # --- agent debug logs (NDJSON) ---
-    def _agent_log(hypothesis_id: str, message: str, data_obj: dict):
-        try:
-            import json, time
-            with open("/Users/duosis-can/Datalake-Platform-GUI/.cursor/debug.log", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "id": f"customer_view_{int(time.time()*1000)}",
-                    "timestamp": int(time.time() * 1000),
-                    "location": "src/pages/customer_view.py:_customer_content",
-                    "message": message,
-                    "data": data_obj,
-                    "runId": "pre-fix",
-                    "hypothesisId": hypothesis_id,
-                }) + "\n")
-        except Exception:
-            pass
-
-    _agent_log("H1", "enter _customer_content", {
-        "customer_name": customer_name,
-        "has_data": bool(data),
-        "data_keys": sorted(list(data.keys())) if isinstance(data, dict) else str(type(data)),
-        "totals_keys": sorted(list(totals.keys())) if isinstance(totals, dict) else str(type(totals)),
-        "assets_keys": sorted(list(assets.keys())) if isinstance(assets, dict) else str(type(assets)),
-        "backup_totals_keys": sorted(list(backup_totals.keys())) if isinstance(backup_totals, dict) else str(type(backup_totals)),
-    })
 
     # Values used by Summary "Backup summary" cards (kept here to avoid NameError).
     veeam_defined = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
@@ -1225,15 +1207,6 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     netbackup_post_gib = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
     zerto_provisioned_gib = float(backup_totals.get("zerto_provisioned_gib", 0) or 0)
     storage_gb = float(backup_totals.get("ibm_storage_volume_gb", 0) or 0)
-
-    _agent_log("H2", "computed backup metrics", {
-        "veeam_defined": veeam_defined,
-        "zerto_protected": zerto_protected,
-        "netbackup_pre_gib": netbackup_pre_gib,
-        "netbackup_post_gib": netbackup_post_gib,
-        "zerto_provisioned_gib": zerto_provisioned_gib,
-        "storage_gb": storage_gb,
-    })
 
     # Intel (Virtualization tab) aggregates
     intel_asset = assets.get("intel", {}) or {}
@@ -1252,13 +1225,6 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
 
     intel_mem_raw = intel_asset.get("memory_gb", 0)
     intel_disk_raw = intel_asset.get("disk_gb", 0)
-
-    _agent_log("H4", "intel mem/disk raw", {
-        "intel_mem_raw_type": type(intel_mem_raw).__name__,
-        "intel_mem_raw_keys": sorted(list(intel_mem_raw.keys())) if isinstance(intel_mem_raw, dict) else None,
-        "intel_disk_raw_type": type(intel_disk_raw).__name__,
-        "intel_disk_raw_keys": sorted(list(intel_disk_raw.keys())) if isinstance(intel_disk_raw, dict) else None,
-    })
 
     def _coerce_float(x):
         if x is None:
@@ -1294,23 +1260,6 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     power_mem = _coerce_float(
         power_asset.get("memory_total_gb", power_asset.get("memory_gb", 0))
     )
-
-    _agent_log("H5", "computed power aggregates", {
-        "power_keys": sorted(list(power_asset.keys())) if isinstance(power_asset, dict) else str(type(power_asset)),
-        "power_lpars": power_lpars,
-        "power_cpu": power_cpu,
-        "power_mem": power_mem,
-        "power_vm_list_len": len(power_vm_list) if isinstance(power_vm_list, list) else str(type(power_vm_list)),
-    })
-
-    _agent_log("H3", "computed intel aggregates", {
-        "intel_keys": sorted(list(intel_asset.keys())) if isinstance(intel_asset, dict) else str(type(intel_asset)),
-        "intel_vms": intel_vms,
-        "intel_cpu": intel_cpu,
-        "intel_mem_total": intel_mem.get("total"),
-        "intel_disk_total": intel_disk.get("total"),
-        "intel_vm_list_len": len(intel_vm_list) if isinstance(intel_vm_list, list) else str(type(intel_vm_list)),
-    })
 
     classic   = assets.get("classic", {}) or {}
     hyperconv = assets.get("hyperconv", {}) or {}
@@ -1370,7 +1319,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     )
 
     export_sheets = _build_customer_export_sheets(
-        customer_name or "",
+        name,
         totals or {},
         backup_totals or {},
         assets or {},
@@ -1405,7 +1354,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         "s3": html.Div(
             id="s3-customer-metrics-panel",
             style={"padding": "0 30px"},
-            children=build_customer_s3_panel(customer_name or "Boyner", s3_data, tr, None) if has_s3 else html.Div(),
+            children=build_customer_s3_panel(name, s3_data, tr, None) if has_s3 else html.Div(),
         ),
         "has_s3": has_s3,
         "phys_inv": _tab_physical_inventory(phys_inv_devices),
@@ -1420,11 +1369,26 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
 
 def build_customer_layout(time_range=None, selected_customer=None, visible_sections=None):
     tr = time_range or default_time_range()
-    chosen = selected_customer or "Boyner"
+    chosen = (selected_customer or "").strip()
     vs = visible_sections
 
     def cv(code: str) -> bool:
         return vs is None or code in vs
+
+    if not chosen:
+        return html.Div(
+            style={"padding": "40px 30px"},
+            children=[
+                dmc.Alert(
+                    color="yellow",
+                    title="No customer selected",
+                    children=(
+                        "Select a customer from the sidebar. If the list is empty, "
+                        "configure WARMED_CUSTOMERS or ensure NetBox inventory includes tenant names."
+                    ),
+                )
+            ],
+        )
 
     content = _customer_content(chosen, tr)
     has_s3 = bool(content.get("has_s3"))
@@ -1463,7 +1427,7 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
         title="Customer View",
         back_href="/",
         back_label="Overview",
-        subtitle_badge=f"­şæñ {chosen}",
+        subtitle_badge=f"Customer: {chosen}",
         subtitle_color="teal",
         time_range=tr,
         icon="solar:users-group-two-rounded-bold-duotone",
@@ -1508,8 +1472,14 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
         ],
     )
 
-    return html.Div(
-        children=[
+    return dcc.Loading(
+        id="customer-view-page-loading",
+        type="circle",
+        color="#4318FF",
+        delay_show=200,
+        overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.75)"},
+        children=html.Div(
+            [
             dcc.Store(
                 id="customer-export-store",
                 data={"customer": chosen, "sheets": export_sheets},
@@ -1559,7 +1529,8 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
                     else None,
                 ],
             )
-        ]
+            ],
+        ),
     )
 
 

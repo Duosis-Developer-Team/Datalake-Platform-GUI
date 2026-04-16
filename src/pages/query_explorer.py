@@ -256,7 +256,13 @@ def layout(visible_sections=None):
                 mb="sm",
                 radius="md",
             ),
-            html.Div(id="query-catalog-list", children=dmc.Text("Loading…", size="sm", c="dimmed")),
+            html.Div(
+                id="query-catalog-list",
+                children=dmc.Stack(
+                    gap="xs",
+                    children=[dmc.Skeleton(height=14, radius="md") for _ in range(6)],
+                ),
+            ),
         ],
     )
 
