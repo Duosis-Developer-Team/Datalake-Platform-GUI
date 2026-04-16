@@ -1,3 +1,4 @@
+from __future__ import annotations
 import json
 import logging
 import os
@@ -25,7 +26,7 @@ from src.components.backup_panel import build_netbackup_panel, build_zerto_panel
 from src.components.charts import (
     create_capacity_area_chart,
     create_horizontal_bar_chart,
-    create_usage_donut_chart,
+    create_premium_gauge_chart,
 )
 from src.services import api_client as api
 from src.services.db_service import DEFAULT_CUSTOMER_NAME, WARMED_CUSTOMERS
@@ -1349,9 +1350,9 @@ def update_net_kpis_and_charts(manufacturer, device_role, device_name, time_rang
         ],
     )
 
-    donut_active = create_usage_donut_chart(port_availability_pct, "Port Availability", color="#FFB547")
-    donut_util = create_usage_donut_chart(overall_util_pct, "Port Utilization", color="#05CD99")
-    donut_icmp = create_usage_donut_chart(icmp_availability_pct, "ICMP Availability", color="#4318FF")
+    donut_active = create_premium_gauge_chart(port_availability_pct, "Port Availability", color="#FFB547")
+    donut_util = create_premium_gauge_chart(overall_util_pct, "Port Utilization", color="#05CD99")
+    donut_icmp = create_premium_gauge_chart(icmp_availability_pct, "ICMP Availability", color="#4318FF")
 
     top_interfaces = percentile_data.get("top_interfaces") or []
     bar_labels = [(t.get("interface_name") or "").strip() or "Unknown" for t in top_interfaces]
@@ -1450,9 +1451,9 @@ def update_intel_storage_charts(host, time_range, pathname):
     used_pct = pct_float(used_gb, total_gb)
     free_pct = max(0.0, 100.0 - used_pct)
 
-    donut_total = create_usage_donut_chart(100.0, f"Total {smart_storage(total_gb)}", color="#FFB547")
-    donut_used = create_usage_donut_chart(used_pct, "Used Capacity", color="#4318FF")
-    donut_free = create_usage_donut_chart(free_pct, "Free Capacity", color="#05CD99")
+    donut_total = create_premium_gauge_chart(100.0, f"Total {smart_storage(total_gb)}", color="#FFB547")
+    donut_used = create_premium_gauge_chart(used_pct, "Used Capacity", color="#4318FF")
+    donut_free = create_premium_gauge_chart(free_pct, "Free Capacity", color="#05CD99")
 
     series = trend.get("series") or []
     timestamps = [p.get("ts") for p in series if p.get("ts") is not None]

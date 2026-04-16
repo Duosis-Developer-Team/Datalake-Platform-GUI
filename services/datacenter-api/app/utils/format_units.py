@@ -1,3 +1,4 @@
+from __future__ import annotations
 # Unit formatting utilities for dynamic scaling.
 # All display values should pass through these helpers so the UI
 # automatically picks the most human-readable unit (MB / GB / TB, MHz / GHz).

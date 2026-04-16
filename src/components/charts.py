@@ -1,5 +1,23 @@
 import plotly.graph_objects as go
 
+# J1. Global Premium Theme
+_PREMIUM_FONT = dict(
+    family="DM Sans, sans-serif",
+    color="#2B3674",
+    size=12,
+)
+
+_PREMIUM_LAYOUT = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=_PREMIUM_FONT,
+    hoverlabel=dict(
+        bgcolor="rgba(255,255,255,0.97)",
+        bordercolor="rgba(67, 24, 255, 0.12)",
+        font=dict(family="DM Sans", size=12, color="#2B3674"),
+    ),
+)
+
 _LEGEND_STYLE = dict(
     orientation="h",
     yanchor="bottom",
@@ -106,14 +124,15 @@ def create_usage_donut_chart(value, label, color="#4318FF"):
         direction="clockwise",
     )])
 
+    text_val = f"{val:.1f}%" if val < 10 else f"<b>{int(val)}%</b>"
     fig.update_layout(
         annotations=[dict(
-            text=f"<b>{int(val)}%</b>",
+            text=text_val,
             x=0.5,
             y=0.5,
             xanchor="center",
             yanchor="middle",
-            font=dict(size=28, color="#2B3674", family="DM Sans"),
+            font=dict(size=32, color="#1a1b41", family="DM Sans"),
             showarrow=False,
         )],
         title=dict(
@@ -372,24 +391,82 @@ def create_capacity_area_chart(timestamps, used, total, title, height=260, show_
             y=y_pct,
             mode="lines",
             fill="tozeroy",
-            line=dict(width=3, color="#4318FF"),
-            fillcolor="rgba(67, 24, 255, 0.12)",
-            hovertemplate="<b>%{x}</b><br>%{y:.1f}% utilized<extra></extra>",
+            line=dict(
+                width=2.5,
+                color="#4318FF",
+                shape="spline",
+                smoothing=1.3,
+            ),
+            fillgradient=dict(
+                type="vertical",
+                colorscale=[
+                    [0.0, "rgba(67, 24, 255, 0.18)"],
+                    [1.0, "rgba(67, 24, 255, 0.01)"],
+                ],
+            ),
+            fillcolor="rgba(67, 24, 255, 0.10)",
+            hovertemplate="<b>%{x|%b %d, %Y}</b><br>Utilization: <b>%{y:.1f}%</b><extra></extra>",
             name="Utilization %",
         )
     )
 
+    # M2. 80% threshold reference line
+    fig.add_hline(
+        y=80,
+        line_dash="dot",
+        line_color="#FFB547",
+        line_width=1.5,
+        opacity=0.7,
+        annotation_text="80% threshold",
+        annotation_position="right",
+        annotation=dict(
+            font=dict(size=10, color="#FFB547", family="DM Sans"),
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="rgba(255,181,71,0.3)",
+            borderwidth=1,
+            borderpad=4,
+        ),
+    )
+
     show, leg = _resolve_legend(show_legend)
     layout_updates = dict(
-        title=dict(text=title, font=dict(size=14, color="#2B3674", family="DM Sans", weight=700)),
+        title=dict(
+            text=f"<b>{title}</b>",
+            font=dict(size=13, color="#2B3674", family="DM Sans", weight=700),
+            x=0,
+            xanchor="left",
+            pad=dict(b=8),
+        ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         showlegend=show,
-        margin=dict(l=20, r=20, t=40, b=28 if show else 10),
+        margin=dict(l=40, r=60, t=44, b=36),
         height=height,
         hovermode="x unified",
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=True),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        hoverlabel=dict(
+            bgcolor="rgba(255,255,255,0.97)",
+            bordercolor="rgba(67, 24, 255, 0.15)",
+            font=dict(family="DM Sans", size=12, color="#2B3674"),
+        ),
+        xaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=True,
+            tickfont=dict(size=11, color="#A3AED0", family="DM Sans"),
+            tickformat="%b %d",
+            tickangle=0,
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(227, 234, 252, 0.5)",
+            gridwidth=1,
+            zeroline=False,
+            showticklabels=True,
+            ticksuffix="%",
+            tickfont=dict(size=11, color="#A3AED0", family="DM Sans"),
+            range=[0, 105],
+            side="right",
+        ),
         font=dict(family="DM Sans", color="#A3AED0"),
     )
     if show and leg:
@@ -409,18 +486,98 @@ def create_gauge_chart(value, max_value, title, color="#4318FF", height=200):
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=pct,
-        number={"suffix": "%"},
+        number={"suffix": "%", "font": dict(size=36, color="#2B3674", family="DM Sans")},
         gauge={
             "axis": {"range": [0, 100]},
             "bar": {"color": color},
-            "steps": [{"range": [0, 50], "color": "#E9EDF7"}, {"range": [50, 80], "color": "rgba(67, 24, 255, 0.3)"}, {"range": [80, 100], "color": "rgba(238, 93, 80, 0.3)"}],
+            "steps": [
+                {"range": [0, 50], "color": "#F4F7FE"},
+                {"range": [50, 80], "color": "rgba(67, 24, 255, 0.15)"},
+                {"range": [80, 100], "color": "rgba(238, 93, 80, 0.15)"},
+            ],
             "threshold": {"line": {"color": "#2B3674", "width": 4}, "value": 90},
         },
-        title={"text": title},
+        title={"text": title.upper(), "font": dict(size=13, color="#A3AED0", family="DM Sans")},
     ))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=20, r=20, t=40, b=20),
+        height=height,
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+    return fig
+
+
+def create_premium_gauge_chart(pct_value, title, color="#4318FF", height=220, show_threshold=True):
+    """Premium semi-circle gauge chart using percentage value directly."""
+    try:
+        pct = float(pct_value)
+    except (TypeError, ValueError):
+        pct = 0.0
+    step_mid = f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.3)" if color.startswith("#") and len(color) == 7 else "rgba(67,24,255,0.3)"
+    gauge_cfg = {
+        "axis": {"range": [0, 100]},
+        "bar": {"color": color},
+        "steps": [
+            {"range": [0, 50], "color": "#E9EDF7"},
+            {"range": [50, 80], "color": step_mid},
+            {"range": [80, 100], "color": "rgba(238, 93, 80, 0.3)"},
+        ],
+    }
+    if show_threshold:
+        gauge_cfg["threshold"] = {"line": {"color": "#2B3674", "width": 4}, "value": 90}
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=pct,
+        number={"suffix": "%", "font": {"size": 36, "color": "#2B3674", "family": "DM Sans", "weight": 900}},
+        gauge=gauge_cfg,
+        title={"text": title, "font": {"size": 13, "color": "#A3AED0", "family": "DM Sans"}},
+    ))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=20, r=20, t=44, b=20),
+        height=height,
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+    return fig
+
+
+def create_premium_gauge_with_avg(avg_pct, max_pct, title, color="#4318FF", height=220):
+    """Premium semi-circle gauge showing peak value with avg annotation below."""
+    try:
+        avg = float(avg_pct)
+        mx = float(max_pct)
+    except (TypeError, ValueError):
+        avg, mx = 0.0, 0.0
+    step_mid = f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.3)" if color.startswith("#") and len(color) == 7 else "rgba(67,24,255,0.3)"
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=mx,
+        number={"suffix": "%", "font": {"size": 32, "color": "#2B3674", "family": "DM Sans", "weight": 900}},
+        gauge={
+            "axis": {"range": [0, 100]},
+            "bar": {"color": color},
+            "steps": [
+                {"range": [0, 50], "color": "#E9EDF7"},
+                {"range": [50, 80], "color": step_mid},
+                {"range": [80, 100], "color": "rgba(238, 93, 80, 0.3)"},
+            ],
+            "threshold": {"line": {"color": "#2B3674", "width": 4}, "value": 90},
+        },
+        title={"text": title, "font": {"size": 13, "color": "#A3AED0", "family": "DM Sans"}},
+    ))
+    fig.add_annotation(
+        text=f"avg {int(avg)}%",
+        x=0.5,
+        y=0.15,
+        showarrow=False,
+        font={"size": 12, "color": "#A3AED0", "family": "DM Sans"},
+        xref="paper",
+        yref="paper",
+    )
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=20, r=20, t=44, b=20),
         height=height,
         font=dict(family="DM Sans", color="#A3AED0"),
     )

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from dash import html
 from src.pages import dc_view
 

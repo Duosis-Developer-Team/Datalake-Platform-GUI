@@ -1,3 +1,4 @@
+from __future__ import annotations
 # Customer View - Billing-focused resource breakdown per customer.
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup
 import json

@@ -77,6 +77,10 @@ class CustomerService:
                 dbname=self._db_name,
                 user=self._db_user,
                 password=self._db_pass,
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=5,
             )
             timeout_ms = settings.db_statement_timeout_ms
             if timeout_ms > 0:
