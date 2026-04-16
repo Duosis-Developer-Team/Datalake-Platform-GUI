@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import threading
 import time as time_module
 from urllib.parse import parse_qs
 
@@ -31,6 +32,7 @@ from src.services import api_client as api
 from src.services.db_service import DEFAULT_CUSTOMER_NAME, WARMED_CUSTOMERS
 from src.utils.time_range import (
     PRESET_CUSTOM,
+    cache_time_ranges,
     default_time_range,
     preset_to_range,
     time_range_to_bounds,
@@ -118,6 +120,27 @@ if not _customers:
     _customers = list(WARMED_CUSTOMERS)
 _default_customer = _customers[0] if _customers else DEFAULT_CUSTOMER_NAME
 _customer_options = [{"value": c, "label": c} for c in _customers]
+
+
+def _warm_worker_local_customer_availability_cache() -> None:
+    """
+    Warm per-worker in-memory AuraNotify cache so the first customer page render
+    does not depend on a cold external HTTP call.
+    """
+    for tr in cache_time_ranges():
+        for customer_name in WARMED_CUSTOMERS:
+            try:
+                api.get_customer_availability_bundle(customer_name, tr, force_refresh=True)
+            except Exception as exc:
+                _log.warning(
+                    "Availability startup warm failed for customer=%s preset=%s: %s",
+                    customer_name,
+                    tr.get("preset", ""),
+                    exc,
+                )
+
+
+threading.Thread(target=_warm_worker_local_customer_availability_cache, daemon=True).start()
 
 _sidebar = html.Div(
     id="sidebar-shell",
