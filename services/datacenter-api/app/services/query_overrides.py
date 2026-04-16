@@ -1,3 +1,4 @@
+from __future__ import annotations
 # Query overrides: load/save JSON and merge with QUERY_REGISTRY for Query Explorer.
 # Overrides allow editing SQL (and optional metadata) from the UI without changing .py files.
 

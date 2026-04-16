@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import Iterable
 
 from dash import html, dcc
@@ -6,18 +7,20 @@ from dash_iconify import DashIconify
 import plotly.graph_objects as go
 
 from src.utils.format_units import smart_bytes, pct_float
+from src.components.charts import create_premium_gauge_chart
 
 
 def _kpi_card(title: str, value: str, icon: str, color: str = "indigo"):
-    """Compact KPI card with no extra vertical space (for stacked layout)."""
+    """Compact KPI card — fills its grid cell."""
     return dmc.Paper(
-        className="nexus-card",
+        className="nexus-card dc-kpi-card",
         shadow="sm",
         radius="md",
         withBorder=False,
         style={
-            "padding": "8px 12px",
-            "minHeight": 0,
+            "padding": "14px 16px",
+            "height": "100%",
+            "boxSizing": "border-box",
             "display": "flex",
             "alignItems": "center",
         },
@@ -27,8 +30,8 @@ def _kpi_card(title: str, value: str, icon: str, color: str = "indigo"):
                 align="center",
                 children=[
                     dmc.ThemeIcon(
-                        size="md",
-                        radius="md",
+                        size="lg",
+                        radius="xl",
                         variant="light",
                         color=color,
                         children=DashIconify(icon=icon, width=20),
@@ -38,19 +41,23 @@ def _kpi_card(title: str, value: str, icon: str, color: str = "indigo"):
                             html.Div(
                                 title,
                                 style={
-                                    "fontSize": "0.75rem",
+                                    "fontSize": "0.72rem",
                                     "color": "#A3AED0",
-                                    "marginBottom": "1px",
+                                    "marginBottom": "2px",
                                     "lineHeight": 1.2,
+                                    "textTransform": "uppercase",
+                                    "letterSpacing": "0.03em",
+                                    "fontWeight": 600,
                                 },
                             ),
                             html.Div(
                                 value,
                                 style={
-                                    "fontSize": "1rem",
+                                    "fontSize": "1.1rem",
                                     "color": "#2B3674",
-                                    "fontWeight": 700,
+                                    "fontWeight": 800,
                                     "lineHeight": 1.2,
+                                    "letterSpacing": "-0.01em",
                                 },
                             ),
                         ]
@@ -110,49 +117,71 @@ def _usage_pie(used: float, total: float, title: str) -> go.Figure:
 
     utilisation_pct = pct_float(used_val, total_val) if total_val > 0 else 0.0
     if utilisation_pct < 60:
-        used_color = "#4318FF"  # indigo
+        used_color = "#4318FF"
     elif utilisation_pct < 80:
-        used_color = "#F59F00"  # amber
+        used_color = "#FFB547"
     else:
-        used_color = "#FF4D4F"  # red
-    free_color = "#E9EDF7"
+        used_color = "#EE5D50"
+    free_color = "#EEF2FF"
 
     fig = go.Figure(
         data=[
             go.Pie(
                 labels=["Used", "Free"],
                 values=values,
-                hole=0.7,
+                hole=0.78,
                 marker=dict(
                     colors=[used_color, free_color],
-                    line=dict(color="#FFFFFF", width=1),
+                    line=dict(color="rgba(0,0,0,0)", width=0),
                 ),
                 textinfo="none",
-                hovertemplate="%{label}: %{percent:.1%}<extra></extra>",
+                hovertemplate="<b>%{label}</b><br>%{percent:.1%}<extra></extra>",
                 sort=False,
                 direction="clockwise",
             )
         ]
     )
     fig.update_layout(
-        margin=dict(l=8, r=8, t=24, b=8),
+        annotations=[dict(
+            text=f"<b>{int(utilisation_pct)}%</b>",
+            x=0.5,
+            y=0.5,
+            xanchor="center",
+            yanchor="middle",
+            font=dict(size=28, color="#2B3674", family="DM Sans"),
+            showarrow=False,
+        )],
+        title=dict(
+            text=f"<b>{title}</b>",
+            x=0.5,
+            xanchor="center",
+            font=dict(size=11, color="#A3AED0", family="DM Sans"),
+        ),
+        margin=dict(l=8, r=8, t=28, b=8),
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.08, xanchor="center", x=0.5),
-        title=dict(text=title, x=0.5, xanchor="center", font=dict(size=11)),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.06,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=11, family="DM Sans", color="#A3AED0"),
+            bgcolor="rgba(0,0,0,0)",
+        ),
         paper_bgcolor="rgba(0,0,0,0)",
+        height=260,
     )
     return fig
 
 
 def _pie_card(fig: go.Figure) -> html.Div:
     """Square panel so the donut chart shape fits without clipping or excess space."""
-    size_px = 280
     return html.Div(
-        className="nexus-card",
+        className="nexus-card dc-chart-card",
         style={
-            "padding": "12px",
-            "width": f"{size_px}px",
-            "height": f"{size_px}px",
+            "padding": "16px",
+            "width": "320px",
+            "height": "300px",
             "display": "flex",
             "flexDirection": "column",
             "alignItems": "center",
@@ -163,6 +192,36 @@ def _pie_card(fig: go.Figure) -> html.Div:
             figure=fig,
             config={"displayModeBar": False},
             style={"height": "100%", "width": "100%"},
+        ),
+    )
+
+
+def _usage_gauge_fig(used: float, total: float, title: str) -> go.Figure:
+    """Half-moon premium gauge — replaces full donut."""
+    used_val = max(float(used or 0), 0.0)
+    total_val = max(float(total or 0), 0.0)
+    pct = pct_float(used_val, total_val) if total_val > 0 else 0.0
+    color = "#4318FF" if pct < 60 else "#FFB547" if pct < 80 else "#EE5D50"
+    return create_premium_gauge_chart(pct, title, color=color, height=220)
+
+
+def _gauge_card(fig: go.Figure) -> html.Div:
+    """Gauge chart container — fills its grid cell."""
+    return html.Div(
+        className="nexus-card dc-chart-card",
+        style={
+            "padding": "12px 16px",
+            "minHeight": "200px",
+            "display": "flex",
+            "flexDirection": "column",
+            "alignItems": "center",
+            "justifyContent": "center",
+            "boxSizing": "border-box",
+        },
+        children=dcc.Graph(
+            figure=fig,
+            config={"displayModeBar": False},
+            style={"height": "220px", "width": "100%"},
         ),
     )
 
@@ -208,10 +267,10 @@ def build_netbackup_panel(data: dict, selected_pools: Iterable[str] | None):
     agg = _aggregate_netbackup(data, selected_pools)
     selector_value = list(selected_pools) if selected_pools else agg["pools"]
 
-    fig = _usage_pie(
+    fig = _usage_gauge_fig(
         used=agg["total_used"],
         total=max(agg["total_usable"], agg["total_used"] + agg["total_avail"]),
-        title="NetBackup Capacity Utilisation",
+        title="NetBackup Capacity",
     )
 
     header = html.Div(
@@ -266,9 +325,15 @@ def build_netbackup_panel(data: dict, selected_pools: Iterable[str] | None):
         ],
     )
 
-    kpis = dmc.SimpleGrid(
-        cols=1,
-        spacing="xs",
+    kpis = html.Div(
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "1fr 1fr",
+            "gridTemplateRows": "1fr 1fr",
+            "gap": "8px",
+            "width": "100%",
+            "height": "100%",
+        },
         children=[
             _kpi_card(
                 "Total usable",
@@ -335,19 +400,93 @@ def build_netbackup_panel(data: dict, selected_pools: Iterable[str] | None):
         highlightOnHover=True,
         withTableBorder=False,
         withColumnBorders=False,
-        className="nexus-table",
+        className="nexus-table dc-premium-table",
         children=[table_head, html.Tbody(body_rows)],
+    )
+
+    util_pct_nb = agg["utilisation_pct"]
+    total_pools = len(agg["rows"])
+    active_pools = len([r for r in agg["rows"] if (r.get("usablesizebytes") or 0) > 0])
+    inactive_pools = total_pools - active_pools
+
+    nb_status_panel = html.Div(
+        className="nexus-card dc-kpi-card",
+        style={
+            "padding": "20px 24px",
+            "flex": "1",
+            "minWidth": "200px",
+            "display": "flex",
+            "flexDirection": "column",
+            "gap": "16px",
+            "justifyContent": "center",
+        },
+        children=[
+            html.Div(
+                style={"borderBottom": "1px solid #F4F7FE", "paddingBottom": "12px"},
+                children=[html.Span("POOL STATUS", style={
+                    "fontSize": "0.7rem", "fontWeight": 700,
+                    "color": "#A3AED0", "letterSpacing": "0.08em", "textTransform": "uppercase",
+                })],
+            ),
+            dmc.Group(gap="xs", align="center", children=[
+                DashIconify(icon="solar:check-circle-bold-duotone", width=20, style={"color": "#05CD99"}),
+                html.Span(f"{active_pools}", style={
+                    "fontSize": "1.8rem", "fontWeight": 900, "color": "#2B3674", "letterSpacing": "-0.02em"
+                }),
+                html.Span("active", style={
+                    "fontSize": "0.8rem", "color": "#A3AED0", "fontWeight": 500, "marginLeft": "4px"
+                }),
+            ]),
+            dmc.Group(gap="xs", align="center", children=[
+                DashIconify(icon="solar:close-circle-bold-duotone", width=20, style={"color": "#EE5D50"}),
+                html.Span(f"{inactive_pools}", style={
+                    "fontSize": "1.8rem", "fontWeight": 900, "color": "#2B3674", "letterSpacing": "-0.02em"
+                }),
+                html.Span("inactive", style={
+                    "fontSize": "0.8rem", "color": "#A3AED0", "fontWeight": 500, "marginLeft": "4px"
+                }),
+            ]),
+            html.Div(
+                style={"borderTop": "1px solid #F4F7FE", "paddingTop": "12px"},
+                children=[
+                    html.Div(
+                        style={"display": "flex", "justifyContent": "space-between", "marginBottom": "6px"},
+                        children=[
+                            html.Span("Utilization", style={"fontSize": "0.78rem", "color": "#A3AED0"}),
+                            html.Span(f"{util_pct_nb:.1f}%", style={
+                                "fontSize": "0.78rem", "fontWeight": 700,
+                                "color": "#05CD99" if util_pct_nb < 60 else "#FFB547" if util_pct_nb < 80 else "#EE5D50",
+                            }),
+                        ],
+                    ),
+                    html.Div(
+                        style={"width": "100%", "height": "6px", "borderRadius": "3px",
+                               "background": "#EEF2FF", "overflow": "hidden"},
+                        children=html.Div(style={
+                            "width": f"{min(util_pct_nb, 100):.1f}%", "height": "100%",
+                            "borderRadius": "3px",
+                            "background": (
+                                "linear-gradient(90deg, #4318FF 0%, #05CD99 100%)" if util_pct_nb < 60
+                                else "linear-gradient(90deg, #4318FF 0%, #FFB547 100%)" if util_pct_nb < 80
+                                else "linear-gradient(90deg, #4318FF 0%, #EE5D50 100%)"
+                            ),
+                            "transition": "width 0.6s cubic-bezier(0.25, 0.8, 0.25, 1)",
+                        }),
+                    ),
+                ],
+            ),
+        ],
     )
 
     return html.Div(
         children=[
             header,
-            dmc.Group(
-                align="flex-start",
-                gap="lg",
+            html.Div(
+                style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "16px", "alignItems": "stretch"},
                 children=[
-                    html.Div(style={"minWidth": "200px"}, children=kpis),
-                    _pie_card(fig),
+                    html.Div(style={"minWidth": 0, "height": "100%"}, children=kpis),
+                    _gauge_card(fig),
+                    nb_status_panel,
                 ],
             ),
             html.Div(style={"height": "16px"}),
@@ -404,10 +543,10 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
     agg = _aggregate_zerto(data, selected_sites)
     selector_value = list(selected_sites) if selected_sites else agg["sites"]
 
-    fig = _usage_pie(
+    fig = _usage_gauge_fig(
         used=agg["total_used_mb"],
         total=agg["total_provisioned_mb"],
-        title="Zerto Storage Utilisation (MB)",
+        title="Zerto Storage",
     )
 
     header = html.Div(
@@ -462,9 +601,15 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
         ],
     )
 
-    kpis = dmc.SimpleGrid(
-        cols=1,
-        spacing="xs",
+    kpis = html.Div(
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "1fr 1fr",
+            "gridTemplateRows": "1fr 1fr",
+            "gap": "8px",
+            "width": "100%",
+            "height": "100%",
+        },
         children=[
             _kpi_card(
                 "Total provisioned",
@@ -515,20 +660,21 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
     body_rows = []
     for r in agg["rows"]:
         is_conn = r.get("is_connected")
-        if is_conn is True:
-            bg = "#E6F9E6"  # pastel green
-        elif is_conn is False:
-            bg = "#FFE6E6"  # pastel red
-        else:
-            bg = "transparent"
-
+        connected_cell = html.Td(
+            dmc.Badge(
+                "Connected" if is_conn else "Disconnected",
+                color="teal" if is_conn else "red",
+                variant="light",
+                size="sm",
+                className="dc-status-connected" if is_conn else "dc-status-disconnected",
+            )
+        )
         body_rows.append(
             html.Tr(
-                style={"backgroundColor": bg},
                 children=[
                     html.Td(r.get("name")),
                     html.Td(r.get("site_type")),
-                    html.Td("True" if is_conn else "False"),
+                    connected_cell,
                     html.Td(
                         _format_scaled(r.get("provisioned_storage_mb", 0) or 0, "MB")
                     ),
@@ -554,19 +700,122 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
         highlightOnHover=True,
         withTableBorder=False,
         withColumnBorders=False,
-        className="nexus-table",
+        className="nexus-table dc-premium-table",
         children=[table_head, html.Tbody(body_rows)],
+    )
+
+    # N1. Zerto Status Summary Panel
+    connected_count = sum(1 for r in agg["rows"] if r.get("is_connected") is True)
+    disconnected_count = sum(1 for r in agg["rows"] if r.get("is_connected") is False)
+    util_pct = pct_float(agg["total_used_mb"], agg["total_provisioned_mb"])
+
+    status_panel = html.Div(
+        className="nexus-card dc-kpi-card",
+        style={
+            "padding": "20px 24px",
+            "minWidth": "220px",
+            "flex": "1",
+            "display": "flex",
+            "flexDirection": "column",
+            "gap": "16px",
+            "justifyContent": "center",
+        },
+        children=[
+            html.Div(
+                style={"borderBottom": "1px solid #F4F7FE", "paddingBottom": "12px"},
+                children=[
+                    html.Span(
+                        "SITE STATUS",
+                        style={
+                            "fontSize": "0.7rem",
+                            "fontWeight": 700,
+                            "color": "#A3AED0",
+                            "letterSpacing": "0.08em",
+                            "textTransform": "uppercase",
+                        },
+                    ),
+                ],
+            ),
+            dmc.Group(
+                gap="xs",
+                align="center",
+                children=[
+                    DashIconify(icon="solar:check-circle-bold-duotone", width=20, style={"color": "#05CD99"}),
+                    html.Span(
+                        f"{connected_count}",
+                        style={"fontSize": "1.8rem", "fontWeight": 900, "color": "#2B3674", "letterSpacing": "-0.02em"},
+                    ),
+                    html.Span(
+                        "connected",
+                        style={"fontSize": "0.8rem", "color": "#A3AED0", "fontWeight": 500, "marginLeft": "4px"},
+                    ),
+                ],
+            ),
+            dmc.Group(
+                gap="xs",
+                align="center",
+                children=[
+                    DashIconify(icon="solar:close-circle-bold-duotone", width=20, style={"color": "#EE5D50"}),
+                    html.Span(
+                        f"{disconnected_count}",
+                        style={"fontSize": "1.8rem", "fontWeight": 900, "color": "#2B3674", "letterSpacing": "-0.02em"},
+                    ),
+                    html.Span(
+                        "disconnected",
+                        style={"fontSize": "0.8rem", "color": "#A3AED0", "fontWeight": 500, "marginLeft": "4px"},
+                    ),
+                ],
+            ),
+            html.Div(
+                style={"borderTop": "1px solid #F4F7FE", "paddingTop": "12px"},
+                children=[
+                    html.Div(
+                        style={"display": "flex", "justifyContent": "space-between", "marginBottom": "6px"},
+                        children=[
+                            html.Span("Utilization", style={"fontSize": "0.78rem", "color": "#A3AED0"}),
+                            html.Span(
+                                f"{util_pct:.1f}%",
+                                style={
+                                    "fontSize": "0.78rem",
+                                    "fontWeight": 700,
+                                    "color": "#05CD99" if util_pct < 60 else "#FFB547" if util_pct < 80 else "#EE5D50",
+                                },
+                            ),
+                        ],
+                    ),
+                    html.Div(
+                        style={
+                            "width": "100%", "height": "6px",
+                            "borderRadius": "3px", "background": "#EEF2FF", "overflow": "hidden",
+                        },
+                        children=html.Div(
+                            style={
+                                "width": f"{min(util_pct, 100):.1f}%",
+                                "height": "100%",
+                                "borderRadius": "3px",
+                                "background": (
+                                    "linear-gradient(90deg, #4318FF 0%, #05CD99 100%)" if util_pct < 60
+                                    else "linear-gradient(90deg, #4318FF 0%, #FFB547 100%)" if util_pct < 80
+                                    else "linear-gradient(90deg, #4318FF 0%, #EE5D50 100%)"
+                                ),
+                                "transition": "width 0.6s cubic-bezier(0.25, 0.8, 0.25, 1)",
+                            },
+                        ),
+                    ),
+                ],
+            ),
+        ],
     )
 
     return html.Div(
         children=[
             header,
-            dmc.Group(
-                align="flex-start",
-                gap="lg",
+            html.Div(
+                style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "16px", "alignItems": "stretch"},
                 children=[
-                    html.Div(style={"minWidth": "200px"}, children=kpis),
-                    _pie_card(fig),
+                    html.Div(style={"minWidth": 0, "height": "100%"}, children=kpis),
+                    _gauge_card(fig),
+                    status_panel,
                 ],
             ),
             html.Div(style={"height": "16px"}),
@@ -620,10 +869,10 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
     agg = _aggregate_veeam(data, selected_repos)
     selector_value = list(selected_repos) if selected_repos else agg["repos"]
 
-    fig = _usage_pie(
+    fig = _usage_gauge_fig(
         used=agg["total_used_gb"],
         total=agg["total_capacity_gb"],
-        title="Veeam Repository Utilisation (GB)",
+        title="Veeam Repos",
     )
 
     header = html.Div(
@@ -678,9 +927,15 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
         ],
     )
 
-    kpis = dmc.SimpleGrid(
-        cols=1,
-        spacing="xs",
+    kpis = html.Div(
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "1fr 1fr",
+            "gridTemplateRows": "1fr 1fr",
+            "gap": "8px",
+            "width": "100%",
+            "height": "100%",
+        },
         children=[
             _kpi_card(
                 "Total capacity",
@@ -754,19 +1009,92 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
         highlightOnHover=True,
         withTableBorder=False,
         withColumnBorders=False,
-        className="nexus-table",
+        className="nexus-table dc-premium-table",
         children=[table_head, html.Tbody(body_rows)],
+    )
+
+    online_count = sum(1 for r in agg["rows"] if r.get("is_online") is True)
+    offline_count = sum(1 for r in agg["rows"] if r.get("is_online") is False)
+    util_pct_v = agg["utilisation_pct"]
+
+    veeam_status_panel = html.Div(
+        className="nexus-card dc-kpi-card",
+        style={
+            "padding": "20px 24px",
+            "flex": "1",
+            "minWidth": "200px",
+            "display": "flex",
+            "flexDirection": "column",
+            "gap": "16px",
+            "justifyContent": "center",
+        },
+        children=[
+            html.Div(
+                style={"borderBottom": "1px solid #F4F7FE", "paddingBottom": "12px"},
+                children=[html.Span("REPO STATUS", style={
+                    "fontSize": "0.7rem", "fontWeight": 700,
+                    "color": "#A3AED0", "letterSpacing": "0.08em", "textTransform": "uppercase",
+                })],
+            ),
+            dmc.Group(gap="xs", align="center", children=[
+                DashIconify(icon="solar:check-circle-bold-duotone", width=20, style={"color": "#05CD99"}),
+                html.Span(f"{online_count}", style={
+                    "fontSize": "1.8rem", "fontWeight": 900, "color": "#2B3674", "letterSpacing": "-0.02em"
+                }),
+                html.Span("online", style={
+                    "fontSize": "0.8rem", "color": "#A3AED0", "fontWeight": 500, "marginLeft": "4px"
+                }),
+            ]),
+            dmc.Group(gap="xs", align="center", children=[
+                DashIconify(icon="solar:close-circle-bold-duotone", width=20, style={"color": "#EE5D50"}),
+                html.Span(f"{offline_count}", style={
+                    "fontSize": "1.8rem", "fontWeight": 900, "color": "#2B3674", "letterSpacing": "-0.02em"
+                }),
+                html.Span("offline", style={
+                    "fontSize": "0.8rem", "color": "#A3AED0", "fontWeight": 500, "marginLeft": "4px"
+                }),
+            ]),
+            html.Div(
+                style={"borderTop": "1px solid #F4F7FE", "paddingTop": "12px"},
+                children=[
+                    html.Div(
+                        style={"display": "flex", "justifyContent": "space-between", "marginBottom": "6px"},
+                        children=[
+                            html.Span("Utilization", style={"fontSize": "0.78rem", "color": "#A3AED0"}),
+                            html.Span(f"{util_pct_v:.1f}%", style={
+                                "fontSize": "0.78rem", "fontWeight": 700,
+                                "color": "#05CD99" if util_pct_v < 60 else "#FFB547" if util_pct_v < 80 else "#EE5D50",
+                            }),
+                        ],
+                    ),
+                    html.Div(
+                        style={"width": "100%", "height": "6px", "borderRadius": "3px",
+                               "background": "#EEF2FF", "overflow": "hidden"},
+                        children=html.Div(style={
+                            "width": f"{min(util_pct_v, 100):.1f}%", "height": "100%",
+                            "borderRadius": "3px",
+                            "background": (
+                                "linear-gradient(90deg, #4318FF 0%, #05CD99 100%)" if util_pct_v < 60
+                                else "linear-gradient(90deg, #4318FF 0%, #FFB547 100%)" if util_pct_v < 80
+                                else "linear-gradient(90deg, #4318FF 0%, #EE5D50 100%)"
+                            ),
+                            "transition": "width 0.6s cubic-bezier(0.25, 0.8, 0.25, 1)",
+                        }),
+                    ),
+                ],
+            ),
+        ],
     )
 
     return html.Div(
         children=[
             header,
-            dmc.Group(
-                align="flex-start",
-                gap="lg",
+            html.Div(
+                style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "16px", "alignItems": "stretch"},
                 children=[
-                    html.Div(style={"minWidth": "200px"}, children=kpis),
-                    _pie_card(fig),
+                    html.Div(style={"minWidth": 0, "height": "100%"}, children=kpis),
+                    _gauge_card(fig),
+                    veeam_status_panel,
                 ],
             ),
             html.Div(style={"height": "16px"}),

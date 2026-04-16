@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import re
 import logging
@@ -140,6 +141,10 @@ class DatabaseService:
                 dbname=self._db_name,
                 user=self._db_user,
                 password=self._db_pass,
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=5,
             )
             logger.info("DB connection pool initialized (min=2, max=16).")
         except OperationalError as exc:

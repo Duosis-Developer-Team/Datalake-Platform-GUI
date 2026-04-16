@@ -1,3 +1,4 @@
+from __future__ import annotations
 # Zabbix Network query definitions
 #
 # Network dashboard is DC-scoped using NetBox inventory mapped via:

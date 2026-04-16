@@ -1,3 +1,4 @@
+from __future__ import annotations
 # Time range utilities for reporting.
 # All screens use a single time range (presets or custom) passed to queries.
 
