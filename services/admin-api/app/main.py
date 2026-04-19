@@ -8,6 +8,10 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.telemetry import instrument_fastapi_app, setup_sdk
+
+setup_sdk()
+
 from app.core.api_auth import verify_api_user
 from app import database
 from app.auth_db_migrations import run_auth_db_migrations
@@ -71,3 +75,6 @@ def health():
 @app.get("/ready", tags=["health"])
 def ready():
     return {"status": "ready"}
+
+
+instrument_fastapi_app(app)

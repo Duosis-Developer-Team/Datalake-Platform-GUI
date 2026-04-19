@@ -6,6 +6,10 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.telemetry import instrument_fastapi_app, setup_sdk
+
+setup_sdk()
+
 from app.core.api_auth import verify_api_user
 from app.services.customer_service import CustomerService
 from app.services.scheduler_service import start_scheduler
@@ -78,3 +82,6 @@ def ready(response: Response):
             "redis": "ok" if redis_ok else "unavailable",
         }
     return {"status": "ready"}
+
+
+instrument_fastapi_app(app)
