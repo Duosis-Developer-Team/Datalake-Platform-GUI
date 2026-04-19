@@ -22,6 +22,11 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+from src.telemetry.dash_instrumentation import trace_dash_callback
+from src.telemetry.setup import instrument_flask_server, setup_telemetry_sdk
+
+setup_telemetry_sdk()
+
 from src.components.sidebar import create_sidebar_nav
 from src.components.backup_panel import build_netbackup_panel, build_zerto_panel, build_veeam_panel
 from src.components.charts import (
@@ -77,6 +82,7 @@ from src.auth.middleware import register_middleware
 
 server.register_blueprint(auth_bp)
 register_middleware(server)
+instrument_flask_server(server)
 
 APP_BUILD_ID = (os.environ.get("APP_BUILD_ID") or "dev").strip()
 
@@ -525,6 +531,7 @@ def update_time_range_store(preset, start_dt, end_dt, current):
     dash.Input("customer-select", "value"),
     dash.Input("url", "search"),
 )
+@trace_dash_callback("render_main_content")
 def render_main_content(pathname, time_range, selected_customer, search):
     from flask import g, has_request_context, request as flask_request
 

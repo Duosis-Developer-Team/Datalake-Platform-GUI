@@ -47,6 +47,12 @@ services:
       FERNET_KEY: ${FERNET_KEY:-}
       API_JWT_SECRET: ${API_JWT_SECRET:-}
       API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-false}
+      # OpenTelemetry → external collector (OTLP gRPC). Set OTEL_ENABLED=true and OTEL_EXPORTER_OTLP_ENDPOINT in .env
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: admin-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
     networks:
       - datalake
     depends_on:
@@ -93,6 +99,11 @@ services:
       FERNET_KEY: ${FERNET_KEY:-}
       REDIS_URL: ${REDIS_URL:-}
       API_JWT_SECRET: ${API_JWT_SECRET:-}
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: datalake-webui
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
     volumes:
       - ./data:/app/data
     networks:
@@ -154,6 +165,11 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: datacenter-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
     networks:
       - datalake
     depends_on:
@@ -185,6 +201,11 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_DB: "1"
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: customer-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
     networks:
       - datalake
     depends_on:
@@ -212,6 +233,12 @@ services:
       - "8002:8000"
     env_file:
       - .env
+    environment:
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: query-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
     networks:
       - datalake
     healthcheck:

@@ -17,6 +17,7 @@ from src.auth.ldap_service import (
     try_bind_user,
     upsert_ldap_user,
 )
+from src.telemetry.auth_instrumentation import record_login_attempt, record_logout
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,11 @@ def login_post():
     password = request.form.get("password") or ""
     nxt = request.form.get("next") or "/"
     user = service.authenticate_local(username, password)
+    tried_ldap = False
     if not user:
         cfg = get_active_ldap_config()
         if cfg:
+            tried_ldap = True
             ok, user_dn = try_bind_user(username, password, cfg)
             if ok and user_dn:
                 uid = upsert_ldap_user(username, None, user_dn)
@@ -40,7 +43,17 @@ def login_post():
                 apply_ldap_role_mappings(uid, role_ids)
                 user = service.get_user_by_id(uid)
     if not user:
+        record_login_attempt(
+            outcome="failure",
+            method="ldap" if tried_ldap else "local",
+            username=username or None,
+        )
         return redirect(f"/login?error=1&next={quote(nxt)}")
+    record_login_attempt(
+        outcome="success",
+        method="ldap" if tried_ldap else "local",
+        username=username or None,
+    )
     token = service.create_session(
         int(user["id"]),
         request.remote_addr,
@@ -53,6 +66,7 @@ def login_post():
 
 @auth_bp.route("/logout", methods=["GET", "POST"])
 def logout():
+    record_logout()
     tok = session.get(SESSION_COOKIE_NAME)
     service.delete_session(tok)
     session.pop(SESSION_COOKIE_NAME, None)

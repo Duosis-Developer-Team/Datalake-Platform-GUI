@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from flask import g, redirect, request, session
+from opentelemetry import trace
 
 from src.auth import service
 from src.auth.config import AUTH_DISABLED, SESSION_COOKIE_NAME
@@ -79,3 +81,22 @@ def register_middleware(app) -> None:
             return redirect(f"/login?next={quote(nxt, safe='/?&=')}")
 
         return None
+
+    @app.after_request
+    def _otel_enduser_attributes(response):  # type: ignore[no-untyped-def]
+        """Attach enduser.* attributes to the active HTTP server span for trace correlation."""
+        if os.environ.get("OTEL_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+            return response
+        try:
+            span = trace.get_current_span()
+            if span is None or not span.is_recording():
+                return response
+            uid = getattr(g, "auth_user_id", None)
+            if uid is not None:
+                span.set_attribute("enduser.id", str(uid))
+            urow = getattr(g, "auth_user", None)
+            if isinstance(urow, dict) and urow.get("username"):
+                span.set_attribute("enduser.name", str(urow["username"])[:256])
+        except Exception:
+            pass
+        return response

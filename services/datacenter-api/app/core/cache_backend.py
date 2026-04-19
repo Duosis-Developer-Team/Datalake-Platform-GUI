@@ -6,11 +6,13 @@ from decimal import Decimal
 from typing import Any, Callable, Optional, cast
 
 from cachetools import TTLCache
+from opentelemetry import trace
 
 from app.config import settings
 from app.core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 _memory_lock = threading.RLock()
 
@@ -42,28 +44,36 @@ def _serialize(value: Any) -> Optional[str]:
 
 
 def cache_get(key: str) -> Any:
-    redis_client = get_redis_client()
-    if redis_client:
-        try:
-            raw = redis_client.get(key)
-            if isinstance(raw, (str, bytes, bytearray)):
-                return json.loads(raw)
-        except Exception as exc:
-            logger.warning("Redis GET error: %s", exc)
-
-    with _memory_lock:
-        value = _memory_cache.get(key)
-    if value is not None:
+    with _tracer.start_as_current_span("cache.get") as span:
+        span.set_attribute("cache.key", (key or "")[:200])
+        redis_client = get_redis_client()
         if redis_client:
             try:
-                serialized = _serialize(value)
-                if serialized:
-                    redis_client.setex(key, settings.cache_ttl_seconds, serialized)
+                raw = redis_client.get(key)
+                if isinstance(raw, (str, bytes, bytearray)):
+                    span.set_attribute("cache.hit", True)
+                    span.set_attribute("cache.backend", "redis")
+                    return json.loads(raw)
             except Exception as exc:
-                logger.warning("Redis backfill error: %s", exc)
-        return value
+                logger.warning("Redis GET error: %s", exc)
 
-    return None
+        with _memory_lock:
+            value = _memory_cache.get(key)
+        if value is not None:
+            if redis_client:
+                try:
+                    serialized = _serialize(value)
+                    if serialized:
+                        redis_client.setex(key, settings.cache_ttl_seconds, serialized)
+                except Exception as exc:
+                    logger.warning("Redis backfill error: %s", exc)
+            span.set_attribute("cache.hit", True)
+            span.set_attribute("cache.backend", "memory")
+            return value
+
+        span.set_attribute("cache.hit", False)
+        span.set_attribute("cache.backend", "miss")
+        return None
 
 
 def cache_set(key: str, value: Any, ttl: Optional[int] = None) -> None:
@@ -138,37 +148,47 @@ def cache_run_singleflight(key: str, factory: Callable[[], Any], ttl: Optional[i
     Return cached value for key, or run factory() once per concurrent key miss.
     Follower threads wait for the leader to finish, then read the cache again.
     """
-    max_rounds = 8
-    for _ in range(max_rounds):
-        val = cache_get(key)
-        if val is not None:
-            return val
-        with _inflight_master_lock:
-            if key in _inflight_events:
-                ev = _inflight_events[key]
-                is_leader = False
-            else:
-                ev = threading.Event()
-                _inflight_events[key] = ev
-                is_leader = True
-        if not is_leader:
-            ev.wait(timeout=120)
-            continue
-        try:
+    singleflight_waited = False
+    with _tracer.start_as_current_span("cache.singleflight") as span:
+        span.set_attribute("cache.key", (key or "")[:200])
+        max_rounds = 8
+        for _ in range(max_rounds):
             val = cache_get(key)
             if val is not None:
+                span.set_attribute("cache.singleflight.waited", singleflight_waited)
                 return val
-            val = factory()
-            cache_set(key, val, ttl=ttl)
-            return val
-        finally:
             with _inflight_master_lock:
-                _inflight_events.pop(key, None)
-            ev.set()
-    val = cache_get(key)
-    if val is not None:
-        return val
-    return factory()
+                if key in _inflight_events:
+                    ev = _inflight_events[key]
+                    is_leader = False
+                else:
+                    ev = threading.Event()
+                    _inflight_events[key] = ev
+                    is_leader = True
+            if not is_leader:
+                singleflight_waited = True
+                ev.wait(timeout=120)
+                continue
+            try:
+                val = cache_get(key)
+                if val is not None:
+                    span.set_attribute("cache.singleflight.waited", singleflight_waited)
+                    return val
+                val = factory()
+                cache_set(key, val, ttl=ttl)
+                span.set_attribute("cache.singleflight.waited", singleflight_waited)
+                return val
+            finally:
+                with _inflight_master_lock:
+                    _inflight_events.pop(key, None)
+                ev.set()
+        val = cache_get(key)
+        if val is not None:
+            span.set_attribute("cache.singleflight.waited", singleflight_waited)
+            return val
+        out = factory()
+        span.set_attribute("cache.singleflight.waited", singleflight_waited)
+        return out
 
 
 def cache_stats() -> dict:

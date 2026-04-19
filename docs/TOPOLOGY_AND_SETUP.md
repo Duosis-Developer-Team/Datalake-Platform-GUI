@@ -118,6 +118,18 @@ If Redis is unavailable, the service logs a warning and continues with memory-on
 
 Override these in production; do not commit real secrets.
 
+### 3.5 OpenTelemetry (optional)
+
+When `OTEL_ENABLED=true`, the Dash app and each FastAPI service export **traces** (and optional **logs** from the web UI) to an **external OTLP gRPC endpoint** (`OTEL_EXPORTER_OTLP_ENDPOINT`). Per-process service names default to `datalake-webui`, `datacenter-api`, `customer-api`, `query-api`, and `admin-api` (override with `OTEL_SERVICE_NAME`). See repository `docker-compose.yml` and ADR-0005 in the platform knowledge base (`datalake-platform-knowledge-base/adrs/ADR-0005-opentelemetry-instrumentation.md`).
+
+| Variable | Description |
+|----------|-------------|
+| `OTEL_ENABLED` | `true` / `1` to enable SDK |
+| `OTEL_SERVICE_NAME` | Logical service name in traces |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector `host:port` or `http(s)://host:port` |
+| `OTEL_EXPORTER_OTLP_INSECURE` | `true` for plaintext gRPC (default) |
+| `OTEL_RESOURCE_ATTRIBUTES` | e.g. `deployment.environment=production` |
+
 ---
 
 ## 4. Prerequisites
