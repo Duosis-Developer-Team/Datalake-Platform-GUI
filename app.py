@@ -30,6 +30,7 @@ from src.components.charts import (
     create_premium_gauge_chart,
 )
 from src.services import api_client as api
+from src.services.db_service import DEFAULT_CUSTOMER_NAME, WARMED_CUSTOMERS
 from src.utils.time_range import (
     PRESET_CUSTOM,
     cache_time_ranges,
