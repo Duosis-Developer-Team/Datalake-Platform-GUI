@@ -124,7 +124,7 @@ body {
 .nexus-card {
     background-color: #FFFFFF !important;
     border: none !important;
-    border-radius: 20px !important;
+    border-radius: 28px !important;
     /* DOUBLE SHADOW for Depth */
     box-shadow:
         0px 18px 40px rgba(112, 144, 176, 0.12),
@@ -394,8 +394,8 @@ body {
 }
 
 .dc-pulse-dot {
-    width: 7px;
-    height: 7px;
+    width: 8px;
+    height: 8px;
     background-color: #05CD99;
     border-radius: 50%;
     display: inline-block;
@@ -403,18 +403,181 @@ body {
     flex-shrink: 0;
 }
 
-/* ── DC Vault Card Hover Efekti ── */
+/* SLA renk varyantları */
+.dc-pulse-dot-ok       { background-color: #05CD99; box-shadow: 0 0 6px rgba(5, 205, 153, 0.5); }
+.dc-pulse-dot-warn     { background-color: #FFB547; box-shadow: 0 0 6px rgba(255, 181, 71, 0.5); }
+.dc-pulse-dot-critical { background-color: #EE5D50; box-shadow: 0 0 6px rgba(238, 93, 80, 0.5); }
+
+/* ── Aurora Arka Plan (A1) ── */
+@keyframes aurora-shift {
+    0%   { transform: translate(0%, 0%)   scale(1); }
+    33%  { transform: translate(3%, -4%)  scale(1.05); }
+    66%  { transform: translate(-2%, 3%)  scale(0.97); }
+    100% { transform: translate(0%, 0%)   scale(1); }
+}
+
+.dc-aurora-bg {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.dc-aurora-bg::before {
+    content: '';
+    position: absolute;
+    width: 120%;
+    height: 120%;
+    top: -10%;
+    left: -10%;
+    background:
+        radial-gradient(ellipse 55% 45% at 15% 5%,  rgba(67, 24, 255, 0.07) 0%, transparent 55%),
+        radial-gradient(ellipse 50% 40% at 85% 90%, rgba(5, 205, 153, 0.06)  0%, transparent 50%),
+        radial-gradient(ellipse 40% 35% at 70% 10%, rgba(117, 81, 255, 0.05) 0%, transparent 45%),
+        radial-gradient(ellipse 60% 50% at 30% 80%, rgba(0, 219, 227, 0.04)  0%, transparent 55%),
+        #F4F7FE;
+    animation: aurora-shift 18s ease-in-out infinite alternate;
+}
+
+/* ── Kart Giriş Animasyonu + Stagger (A2) ── */
+@keyframes dc-card-enter {
+    from {
+        opacity: 0;
+        transform: translateY(32px) scale(0.96);
+        filter: blur(2px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        filter: blur(0);
+    }
+}
+
+.dc-card-enter {
+    animation: dc-card-enter 0.60s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.dc-card-n1  { animation-delay: 0.04s; }
+.dc-card-n2  { animation-delay: 0.10s; }
+.dc-card-n3  { animation-delay: 0.16s; }
+.dc-card-n4  { animation-delay: 0.22s; }
+.dc-card-n5  { animation-delay: 0.28s; }
+.dc-card-n6  { animation-delay: 0.34s; }
+.dc-card-n7  { animation-delay: 0.40s; }
+.dc-card-n8  { animation-delay: 0.46s; }
+.dc-card-n9  { animation-delay: 0.52s; }
+.dc-card-n10 { animation-delay: 0.58s; }
+.dc-card-n11 { animation-delay: 0.64s; }
+.dc-card-n12 { animation-delay: 0.70s; }
+
+/* ── Kart Shimmer Efekti (A4) ── */
+@keyframes dc-shimmer {
+    0%   { left: -120%; }
+    100% { left: 120%;  }
+}
+
+.dc-shimmer {
+    position: absolute;
+    top: 0;
+    left: -120%;
+    width: 80%;
+    height: 100%;
+    background: linear-gradient(
+        105deg,
+        transparent 40%,
+        rgba(255, 255, 255, 0.20) 50%,
+        transparent 60%
+    );
+    pointer-events: none;
+    z-index: 1;
+}
+
+.dc-vault-card:hover .dc-shimmer {
+    animation: dc-shimmer 0.65s ease-in-out;
+}
+
+/* ── Metric Row Hover (A5) ── */
+.dc-metric-row {
+    border-radius: 8px;
+    padding: 4px 6px;
+    margin: 0 -6px;
+    transition: background-color 0.18s ease, transform 0.18s ease;
+}
+
+.dc-metric-row:hover {
+    background-color: rgba(67, 24, 255, 0.04);
+    transform: translateX(3px);
+}
+
+/* ── Details Badge Hover (A6) ── */
+.dc-details-badge {
+    transition: all 0.22s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+    display: inline-block;
+}
+
+.dc-details-badge:hover {
+    transform: translateX(3px) !important;
+    box-shadow: 0 0 0 1px rgba(67, 24, 255, 0.2) !important;
+}
+
+/* ── Summary KPI Strip Animasyonu (A8) ── */
+@keyframes kpi-slide-down {
+    from { opacity: 0; transform: translateY(-16px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.dc-summary-kpi {
+    animation: kpi-slide-down 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.dc-summary-kpi:nth-child(1) { animation-delay: 0.00s; }
+.dc-summary-kpi:nth-child(2) { animation-delay: 0.06s; }
+.dc-summary-kpi:nth-child(3) { animation-delay: 0.12s; }
+.dc-summary-kpi:nth-child(4) { animation-delay: 0.18s; }
+.dc-summary-kpi:nth-child(5) { animation-delay: 0.24s; }
+
+/* ── DC Card Title Marquee (uzun isimler için sağdan sola kayan animasyon) ── */
+.dc-title-wrap {
+    overflow: hidden;
+    max-width: 175px;
+}
+
+.dc-title-long {
+    display: inline-block;
+    white-space: nowrap;
+    animation: dc-title-scroll 5s cubic-bezier(0.37, 0, 0.63, 1) 1.2s infinite alternate;
+}
+
+@keyframes dc-title-scroll {
+    0%,  22%  { transform: translateX(0); }
+    78%, 100% { transform: translateX(calc(175px - 100%)); }
+}
+
+/* ── Accent Top Border Sınıfları (A9) — tümü birleşik marka yeşili ── */
+.dc-accent-healthy  { border-top: 3px solid #05CD99 !important; }
+.dc-accent-moderate { border-top: 3px solid #05CD99 !important; }
+.dc-accent-high     { border-top: 3px solid #05CD99 !important; }
+.dc-accent-idle     { border-top: 3px solid #05CD99 !important; }
+
+/* ── DC Vault Card Hover Efekti (A3) ── */
 .dc-vault-card {
-    transition: transform 0.28s cubic-bezier(0.25, 0.8, 0.25, 1),
-                box-shadow 0.28s cubic-bezier(0.25, 0.8, 0.25, 1);
+    position: relative;
+    overflow: hidden;
+    transition:
+        transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+        box-shadow 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+        border-color 0.32s ease;
     cursor: pointer;
 }
 
 .dc-vault-card:hover {
-    transform: translateY(-5px);
+    transform: translateY(-8px) scale(1.005);
     box-shadow:
-        0px 24px 52px rgba(67, 24, 255, 0.13),
-        0px 8px 18px rgba(67, 24, 255, 0.07) !important;
+        0px 32px 64px rgba(67, 24, 255, 0.16),
+        0px 12px 24px rgba(67, 24, 255, 0.08),
+        0px 4px 8px  rgba(0, 0, 0, 0.04) !important;
+    border-color: rgba(67, 24, 255, 0.15) !important;
 }
 
 .detail-dc-card {

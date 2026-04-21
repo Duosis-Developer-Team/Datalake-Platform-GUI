@@ -538,7 +538,8 @@ def get_dc_network_interface_table(
             params=params,
         )
         return data if isinstance(data, dict) else {}
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError):
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError,
+            httpx.RemoteProtocolError, ValueError):
         return {}
 
 

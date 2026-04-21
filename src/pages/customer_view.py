@@ -407,7 +407,7 @@ def _tab_summary(totals: dict, assets: dict):
         _section_card("Backup Capacity (Billing)", "Storage capacity billed per backup service",
             dmc.SimpleGrid(cols=3, spacing="lg", children=[
                 _metric("NetBackup Stored (GiB)",   f"{nb_post_gib:.2f}",   "mdi:database-arrow-down-outline"),
-                _metric("Zerto Max Provisioned",    f"{zerto_prov_gib:.2f} GiB", "solar:hdd-bold-duotone",  color="teal"),
+                _metric("Zerto Max Provisioned",    f"{zerto_prov_gib:.2f} GiB", "solar:database-bold-duotone",  color="teal"),
                 _metric("Pre-Dedup (GiB)",          f"{nb_pre_gib:.2f}",    "mdi:database-lock-outline",     color="orange"),
             ]),
         ),
@@ -454,7 +454,7 @@ def _tab_billing(totals: dict, assets: dict, backup_totals: dict, s3_data: dict 
                     _metric("Total Instances", f"{total_vms:,}", "solar:laptop-bold-duotone", color="teal"),
                     _metric("Total CPU (vCPU)", f"{total_cpu:.1f}", "solar:cpu-bold-duotone"),
                     _metric("Intel Memory (GB)", smart_memory(total_intel_mem), "solar:ram-bold-duotone"),
-                    _metric("Intel Disk (GB)", smart_storage(total_intel_disk), "solar:hdd-bold-duotone", color="orange"),
+                    _metric("Intel Disk (GB)", smart_storage(total_intel_disk), "solar:database-bold-duotone", color="orange"),
                 ],
             ),
             _section_card(
@@ -625,7 +625,7 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None):
                     _metric("Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", color="blue"),
                     _metric("CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", color="blue"),
                     _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="blue"),
-                    _metric("Disk", smart_storage(disk_gb), "solar:hdd-bold-duotone", color="blue"),
+                    _metric("Disk", smart_storage(disk_gb), "solar:database-bold-duotone", color="blue"),
                 ],
             ),
             _section_card(
@@ -730,7 +730,7 @@ def _tab_hyperconv(
                     _metric("Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", color="indigo"),
                     _metric("CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", color="indigo"),
                     _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="indigo"),
-                    _metric("Disk", smart_storage(disk_gb), "solar:hdd-bold-duotone", color="indigo"),
+                    _metric("Disk", smart_storage(disk_gb), "solar:database-bold-duotone", color="indigo"),
                 ],
             ),
             _section_card(
@@ -859,7 +859,7 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
                     _metric("Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", color="cyan"),
                     _metric("CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", color="cyan"),
                     _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="cyan"),
-                    _metric("Disk", smart_storage(disk_gb), "solar:hdd-bold-duotone", color="cyan"),
+                    _metric("Disk", smart_storage(disk_gb), "solar:database-bold-duotone", color="cyan"),
                 ],
             ),
             _section_card(
@@ -1000,7 +1000,7 @@ def _tab_zerto(backup_assets: dict, backup_totals: dict):
     return dmc.Stack(gap="lg", children=[
         dmc.SimpleGrid(cols=2, spacing="lg", children=[
             _metric("Protected VMs",      f"{protected:,}",        "material-symbols:shield-outline", color="teal"),
-            _metric("Total Provisioned",  f"{prov_total:.2f} GiB", "solar:hdd-bold-duotone",          color="teal"),
+            _metric("Total Provisioned",  f"{prov_total:.2f} GiB", "solar:database-bold-duotone",          color="teal"),
         ]),
         _section_card("VPG Provisioned Storage (last 30 days)", "Max provisioned storage per VPG",
             html.Div(style={"maxHeight": "360px", "overflowY": "auto"}, children=[

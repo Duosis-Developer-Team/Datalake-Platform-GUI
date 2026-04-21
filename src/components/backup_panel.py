@@ -614,7 +614,7 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
             _kpi_card(
                 "Total provisioned",
                 _format_scaled(agg["total_provisioned_mb"], "MB"),
-                "solar:hdd-bold-duotone",
+                "solar:cloud-storage-bold-duotone",
                 color="teal",
             ),
             _kpi_card(

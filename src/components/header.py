@@ -169,7 +169,7 @@ def create_detail_header(
     return dmc.Paper(
         px="xl",
         py="md",
-        radius=0,
+        radius=28,
         style={
             "background": "rgba(255, 255, 255, 0.88)",
             "backdropFilter": "blur(14px)",

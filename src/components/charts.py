@@ -313,6 +313,115 @@ def create_grouped_bar_chart(labels, series_dict, title, height=380):
     return fig
 
 
+def create_storage_breakdown_chart(labels, used_series, free_series, height=None):
+    """
+    Premium stacked horizontal bar chart for storage capacity breakdown.
+    Each row = one storage system; bar split into Used (indigo) + Free (light).
+    Values displayed as TB/PB labels inside bars when space permits.
+    """
+    from src.utils.format_units import smart_storage as _smart
+
+    n = len(labels)
+    computed_height = max(120, n * 64 + 80) if height is None else height
+
+    used_text = [_smart(v) if v >= 10 else "" for v in used_series]
+    free_text = [_smart(v) if v >= 10 else "" for v in free_series]
+
+    fig = go.Figure()
+
+    # Used — indigo solid
+    fig.add_trace(go.Bar(
+        y=labels,
+        x=used_series,
+        name="Used",
+        orientation="h",
+        marker=dict(color="#4318FF", opacity=0.90),
+        text=used_text,
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont=dict(family="DM Sans", size=11, color="rgba(255,255,255,0.9)"),
+        hovertemplate="<b>%{y}</b><br>Used: %{customdata}<extra></extra>",
+        customdata=[_smart(v) for v in used_series],
+    ))
+
+    # Free — soft indigo/grey
+    fig.add_trace(go.Bar(
+        y=labels,
+        x=free_series,
+        name="Free",
+        orientation="h",
+        marker=dict(color="#E9EDF7", opacity=1.0),
+        text=free_text,
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont=dict(family="DM Sans", size=11, color="#A3AED0"),
+        hovertemplate="<b>%{y}</b><br>Free: %{customdata}<extra></extra>",
+        customdata=[_smart(v) for v in free_series],
+    ))
+
+    # Usage % annotation on the right of each bar
+    totals = [u + f for u, f in zip(used_series, free_series)]
+    for i, (lbl, u, t) in enumerate(zip(labels, used_series, totals)):
+        pct = (u / t * 100) if t > 0 else 0
+        color = "#EE5D50" if pct >= 80 else "#FFB547" if pct >= 60 else "#05CD99"
+        fig.add_annotation(
+            x=t,
+            y=lbl,
+            text=f"<b>{pct:.1f}%</b>",
+            showarrow=False,
+            xanchor="left",
+            xshift=8,
+            font=dict(family="DM Sans", size=12, color=color),
+            xref="x",
+            yref="y",
+        )
+
+    fig.update_layout(
+        barmode="stack",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+            font=dict(family="DM Sans", size=12, color="#2B3674"),
+            bgcolor="rgba(0,0,0,0)",
+            traceorder="normal",
+        ),
+        margin=dict(l=10, r=60, t=30, b=10),
+        height=computed_height,
+        bargap=0.3,
+        xaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+            range=[0, max(totals) * 1.12] if totals else [0, 1],
+        ),
+        yaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            tickfont=dict(family="DM Sans", size=13, color="#2B3674", weight=600),
+            autorange="reversed",
+        ),
+        hoverlabel=dict(
+            bgcolor="rgba(255,255,255,0.95)",
+            bordercolor="rgba(67,24,255,0.2)",
+            font=dict(family="DM Sans", size=12, color="#2B3674"),
+        ),
+        font=dict(family="DM Sans", color="#A3AED0"),
+    )
+
+    try:
+        fig.update_traces(marker_cornerradius=6)
+    except Exception:
+        pass
+
+    return fig
+
+
 def create_horizontal_bar_chart(labels, values, title, color="#4318FF", height=340, show_legend=True):
     """Executive horizontal bar chart (single series)."""
     labels = labels or []
@@ -625,9 +734,9 @@ def create_gauge_chart(value, max_value, title, color="#4318FF", height=200):
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=pct,
-        number={"suffix": "%", "font": dict(size=36, color="#2B3674", family="DM Sans")},
+        number={"suffix": "%", "font": dict(size=40, color="#2B3674", family="DM Sans", weight=990)},
         gauge={
-            "axis": {"range": [0, 100]},
+            "axis": {"range": [0, 100], "nticks": 5, "tickfont": {"size": 8, "color": "#A3AED0", "family": "DM Sans"}, "ticklen": 3, "tickwidth": 1},
             "bar": {"color": color},
             "steps": [
                 {"range": [0, 50], "color": "#F4F7FE"},
@@ -655,7 +764,7 @@ def create_premium_gauge_chart(pct_value, title, color="#4318FF", height=220, sh
         pct = 0.0
     step_mid = f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.3)" if color.startswith("#") and len(color) == 7 else "rgba(67,24,255,0.3)"
     gauge_cfg = {
-        "axis": {"range": [0, 100]},
+        "axis": {"range": [0, 100], "nticks": 5, "tickfont": {"size": 8, "color": "#A3AED0", "family": "DM Sans"}, "ticklen": 3, "tickwidth": 1},
         "bar": {"color": color},
         "steps": [
             {"range": [0, 50], "color": "#E9EDF7"},
@@ -694,7 +803,7 @@ def create_premium_gauge_with_avg(avg_pct, max_pct, title, color="#4318FF", heig
         value=mx,
         number={"suffix": "%", "font": {"size": 32, "color": "#2B3674", "family": "DM Sans", "weight": 900}},
         gauge={
-            "axis": {"range": [0, 100]},
+            "axis": {"range": [0, 100], "nticks": 5, "tickfont": {"size": 8, "color": "#A3AED0", "family": "DM Sans"}, "ticklen": 3, "tickwidth": 1},
             "bar": {"color": color},
             "steps": [
                 {"range": [0, 50], "color": "#E9EDF7"},
@@ -703,17 +812,8 @@ def create_premium_gauge_with_avg(avg_pct, max_pct, title, color="#4318FF", heig
             ],
             "threshold": {"line": {"color": "#2B3674", "width": 4}, "value": 90},
         },
-        title={"text": title, "font": {"size": 13, "color": "#A3AED0", "family": "DM Sans"}},
+        title={"text": f"{title}<br><span style='font-size:11px;color:#A3AED0'>avg {int(avg)}%</span>", "font": {"size": 13, "color": "#A3AED0", "family": "DM Sans"}},
     ))
-    fig.add_annotation(
-        text=f"avg {int(avg)}%",
-        x=0.5,
-        y=0.15,
-        showarrow=False,
-        font={"size": 12, "color": "#A3AED0", "family": "DM Sans"},
-        xref="paper",
-        yref="paper",
-    )
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=20, r=20, t=44, b=20),
