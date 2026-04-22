@@ -471,6 +471,21 @@ body {
 .dc-card-n11 { animation-delay: 0.64s; }
 .dc-card-n12 { animation-delay: 0.70s; }
 
+@keyframes customer-page-enter {
+    from {
+        opacity: 0;
+        transform: translateY(14px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.customer-page-enter {
+    animation: customer-page-enter 0.35s ease-out both;
+}
+
 /* ── Kart Shimmer Efekti (A4) ── */
 @keyframes dc-shimmer {
     0%   { left: -120%; }

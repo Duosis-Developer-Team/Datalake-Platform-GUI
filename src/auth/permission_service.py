@@ -80,7 +80,7 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
         return "page:global_view"
     if p == "/region-drilldown":
         return "page:region_drilldown"
-    if p == "/customer-view":
+    if p in ("/customers", "/customer-view"):
         return "page:customer_view"
     if p == "/query-explorer":
         return "page:query_explorer"

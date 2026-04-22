@@ -106,7 +106,7 @@ def _prevent_stale_dash_cache(response):
 _log = logging.getLogger(__name__)
 _log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
 
-from src.pages import home, datacenters, dc_view, customer_view, query_explorer, global_view, region_drilldown, dc_detail
+from src.pages import home, datacenters, dc_view, customer_view, customers_list, query_explorer, global_view, region_drilldown, dc_detail
 from src.pages import login as login_page_mod
 from src.pages.settings import shell as settings_shell
 from src.components.access_denied import build_access_denied
@@ -121,10 +121,12 @@ _custom_st, _custom_en = time_range_to_bounds(_default_tr)
 _custom_picker_start = _custom_st.strftime("%Y-%m-%dT%H:%M:%S")
 _custom_picker_end = _custom_en.strftime("%Y-%m-%dT%H:%M:%S")
 try:
-    _customers = api.get_customer_list()
+    _fetched_customers = api.get_customer_list()
 except Exception as exc:
     logging.getLogger(__name__).warning("get_customer_list failed at startup (using defaults): %s", exc)
-    _customers = []
+    _fetched_customers = []
+_warmed_customers = set(WARMED_CUSTOMERS)
+_customers = [c for c in _fetched_customers if c in _warmed_customers]
 if not _customers:
     _customers = list(WARMED_CUSTOMERS)
 _default_customer = _customers[0] if _customers else DEFAULT_CUSTOMER_NAME
@@ -580,16 +582,19 @@ def render_main_content(pathname, time_range, selected_customer, search):
         return dc_view.build_dc_view(dc_id, tr, visible_sections=vis)
     if pathname == "/global-view":
         return global_view.build_global_view(tr, visible_sections=vis)
+    if pathname == "/customers":
+        return customers_list.build_customers_list(tr, visible_sections=vis)
     if pathname == "/customer-view":
-        return customer_view.build_customer_layout(tr, selected_customer, visible_sections=vis)
+        params = parse_qs((search or "").lstrip("?"))
+        url_customer = (params.get("customer", [""])[0] or "").strip()
+        chosen_customer = url_customer or (selected_customer or "").strip()
+        return customer_view.build_customer_layout(tr, chosen_customer, visible_sections=vis)
     if pathname == "/query-explorer":
         return query_explorer.layout(visible_sections=vis)
     if pathname and pathname.startswith("/dc-detail/"):
         dc_id = pathname.replace("/dc-detail/", "").strip("/")
         return dc_detail.build_dc_detail(dc_id, tr, visible_sections=vis)
     if pathname == "/region-drilldown":
-        from urllib.parse import parse_qs
-
         params = parse_qs((search or "").lstrip("?"))
         region = params.get("region", [""])[0]
         return region_drilldown.build_region_drilldown(region, tr)

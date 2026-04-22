@@ -142,15 +142,12 @@ class CustomerAdapter:
                     if r and r[0]
                 ]
 
-                # --- Hyperconverged (non-KM VMware + Nutanix on VMware-managed clusters only) ---
+                # --- Hyperconverged (non-KM VMware + all Nutanix, filtered by vm_name only) ---
                 hc_params = (
                     vm_pattern,
                     start_ts,
                     end_ts,
                     vm_pattern,
-                    start_ts,
-                    end_ts,
-                    managed,
                     start_ts,
                     end_ts,
                 )
@@ -177,13 +174,7 @@ class CustomerAdapter:
                     vm_pattern,
                     start_ts,
                     end_ts,
-                    managed,
-                    start_ts,
-                    end_ts,
                     vm_pattern,
-                    start_ts,
-                    end_ts,
-                    managed,
                     start_ts,
                     end_ts,
                 )
@@ -209,8 +200,8 @@ class CustomerAdapter:
                     if r and r[0]
                 ]
 
-                # --- Pure Nutanix (AHV-only clusters) ---
-                pure_params = (pure, start_ts, end_ts, vm_pattern, start_ts, end_ts)
+                # --- Pure Nutanix (AHV-only clusters, cluster lookup uses latest — no time filter) ---
+                pure_params = (pure, vm_pattern, start_ts, end_ts)
                 pure_vm_count = int(
                     self._run_value(cur, cq.CUSTOMER_PURE_NUTANIX_VM_COUNT, pure_params) or 0
                 )
@@ -226,8 +217,6 @@ class CustomerAdapter:
 
                 pure_list_params = (
                     pure,
-                    start_ts,
-                    end_ts,
                     vm_pattern,
                     start_ts,
                     end_ts,

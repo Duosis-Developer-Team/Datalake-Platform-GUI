@@ -720,18 +720,11 @@ WITH vmware_vms AS (
       AND timestamp BETWEEN %s AND %s
 ),
 nutanix_vms AS (
-    SELECT DISTINCT nvm.vm_name
-    FROM public.nutanix_vm_metrics nvm
-    WHERE nvm.vm_name ILIKE %s
-      AND LEFT(nvm.vm_name, 1) <> '_'
-      AND nvm.collection_time BETWEEN %s AND %s
-      AND nvm.cluster_uuid::text IN (
-        SELECT DISTINCT ON (cluster_name) cluster_uuid
-        FROM public.nutanix_cluster_metrics
-        WHERE cluster_name = ANY(%s::text[])
-          AND collection_time BETWEEN %s AND %s
-        ORDER BY cluster_name, collection_time DESC
-      )
+    SELECT DISTINCT vm_name
+    FROM public.nutanix_vm_metrics
+    WHERE vm_name ILIKE %s
+      AND LEFT(vm_name, 1) <> '_'
+      AND collection_time BETWEEN %s AND %s
 )
 SELECT
     (SELECT COUNT(*) FROM vmware_vms v
@@ -759,23 +752,16 @@ WITH vmware_latest AS (
     ORDER BY vmname, timestamp DESC
 ),
 nutanix_latest AS (
-    SELECT DISTINCT ON (nvm.vm_name)
-        nvm.vm_name,
-        nvm.cpu_count,
-        (nvm.memory_capacity / 1024.0 / 1024.0 / 1024.0) AS memory_gb,
-        (nvm.disk_capacity  / 1024.0 / 1024.0 / 1024.0) AS disk_gb
-    FROM public.nutanix_vm_metrics nvm
-    WHERE nvm.vm_name ILIKE %s
-      AND LEFT(nvm.vm_name, 1) <> '_'
-      AND nvm.collection_time BETWEEN %s AND %s
-      AND nvm.cluster_uuid::text IN (
-        SELECT DISTINCT ON (cluster_name) cluster_uuid
-        FROM public.nutanix_cluster_metrics
-        WHERE cluster_name = ANY(%s::text[])
-          AND collection_time BETWEEN %s AND %s
-        ORDER BY cluster_name, collection_time DESC
-      )
-    ORDER BY nvm.vm_name, nvm.collection_time DESC
+    SELECT DISTINCT ON (vm_name)
+        vm_name,
+        cpu_count,
+        (memory_capacity / 1024.0 / 1024.0 / 1024.0) AS memory_gb,
+        (disk_capacity  / 1024.0 / 1024.0 / 1024.0) AS disk_gb
+    FROM public.nutanix_vm_metrics
+    WHERE vm_name ILIKE %s
+      AND LEFT(vm_name, 1) <> '_'
+      AND collection_time BETWEEN %s AND %s
+    ORDER BY vm_name, collection_time DESC
 )
 SELECT
     (
@@ -804,18 +790,11 @@ SELECT DISTINCT vm_name FROM (
       AND LEFT(vmname, 1) = '_'
       AND timestamp BETWEEN %s AND %s
     UNION
-    SELECT nvm.vm_name
-    FROM public.nutanix_vm_metrics nvm
-    WHERE nvm.vm_name ILIKE %s
-      AND LEFT(nvm.vm_name, 1) = '_'
-      AND nvm.collection_time BETWEEN %s AND %s
-      AND nvm.cluster_uuid::text IN (
-        SELECT DISTINCT ON (cluster_name) cluster_uuid
-        FROM public.nutanix_cluster_metrics
-        WHERE cluster_name = ANY(%s::text[])
-          AND collection_time BETWEEN %s AND %s
-        ORDER BY cluster_name, collection_time DESC
-      )
+    SELECT vm_name
+    FROM public.nutanix_vm_metrics
+    WHERE vm_name ILIKE %s
+      AND LEFT(vm_name, 1) = '_'
+      AND collection_time BETWEEN %s AND %s
 ) d
 ORDER BY vm_name
 """
@@ -853,46 +832,32 @@ vmware_latest AS (
     ORDER BY vmname, timestamp DESC
 ),
 nutanix_agg AS (
-    SELECT nvm.vm_name,
-        COALESCE(MIN(nvm.cpu_usage_min), 0) AS cpu_mhz_min,
-        COALESCE(AVG(nvm.cpu_usage_avg), 0) AS cpu_mhz_avg,
-        COALESCE(MAX(nvm.cpu_usage_max), 0) AS cpu_mhz_max,
-        MIN(nvm.memory_usage_min / 10000.0) AS mem_pct_min,
-        AVG(nvm.memory_usage_avg / 10000.0) AS mem_pct_avg,
-        MAX(nvm.memory_usage_max / 10000.0) AS mem_pct_max,
-        MIN(nvm.used_storage / 1073741824.0) AS disk_used_min_gb,
-        MAX(nvm.used_storage / 1073741824.0) AS disk_used_max_gb
-    FROM public.nutanix_vm_metrics nvm
-    WHERE nvm.vm_name ILIKE %s
-      AND LEFT(nvm.vm_name, 1) <> '_'
-      AND nvm.collection_time BETWEEN %s AND %s
-      AND nvm.cluster_uuid::text IN (
-        SELECT DISTINCT ON (cluster_name) cluster_uuid
-        FROM public.nutanix_cluster_metrics
-        WHERE cluster_name = ANY(%s::text[])
-          AND collection_time BETWEEN %s AND %s
-        ORDER BY cluster_name, collection_time DESC
-      )
-    GROUP BY nvm.vm_name
+    SELECT vm_name,
+        COALESCE(MIN(cpu_usage_min), 0) AS cpu_mhz_min,
+        COALESCE(AVG(cpu_usage_avg), 0) AS cpu_mhz_avg,
+        COALESCE(MAX(cpu_usage_max), 0) AS cpu_mhz_max,
+        MIN(memory_usage_min / 10000.0) AS mem_pct_min,
+        AVG(memory_usage_avg / 10000.0) AS mem_pct_avg,
+        MAX(memory_usage_max / 10000.0) AS mem_pct_max,
+        MIN(used_storage / 1073741824.0) AS disk_used_min_gb,
+        MAX(used_storage / 1073741824.0) AS disk_used_max_gb
+    FROM public.nutanix_vm_metrics
+    WHERE vm_name ILIKE %s
+      AND LEFT(vm_name, 1) <> '_'
+      AND collection_time BETWEEN %s AND %s
+    GROUP BY vm_name
 ),
 nutanix_latest AS (
-    SELECT DISTINCT ON (nvm.vm_name)
-        nvm.vm_name,
-        nvm.cpu_count,
-        (nvm.memory_capacity / 1024.0 / 1024.0 / 1024.0) AS memory_gb,
-        (nvm.disk_capacity  / 1024.0 / 1024.0 / 1024.0) AS disk_gb
-    FROM public.nutanix_vm_metrics nvm
-    WHERE nvm.vm_name ILIKE %s
-      AND LEFT(nvm.vm_name, 1) <> '_'
-      AND nvm.collection_time BETWEEN %s AND %s
-      AND nvm.cluster_uuid::text IN (
-        SELECT DISTINCT ON (cluster_name) cluster_uuid
-        FROM public.nutanix_cluster_metrics
-        WHERE cluster_name = ANY(%s::text[])
-          AND collection_time BETWEEN %s AND %s
-        ORDER BY cluster_name, collection_time DESC
-      )
-    ORDER BY nvm.vm_name, nvm.collection_time DESC
+    SELECT DISTINCT ON (vm_name)
+        vm_name,
+        cpu_count,
+        (memory_capacity / 1024.0 / 1024.0 / 1024.0) AS memory_gb,
+        (disk_capacity  / 1024.0 / 1024.0 / 1024.0) AS disk_gb
+    FROM public.nutanix_vm_metrics
+    WHERE vm_name ILIKE %s
+      AND LEFT(vm_name, 1) <> '_'
+      AND collection_time BETWEEN %s AND %s
+    ORDER BY vm_name, collection_time DESC
 ),
 all_unique AS (
     SELECT vmname AS vm_name FROM vmware_latest
@@ -960,7 +925,6 @@ WITH cluster_uuids AS (
     SELECT DISTINCT ON (cluster_name) cluster_uuid
     FROM public.nutanix_cluster_metrics
     WHERE cluster_name = ANY(%s::text[])
-      AND collection_time BETWEEN %s AND %s
     ORDER BY cluster_name, collection_time DESC
 ),
 latest AS (
@@ -981,7 +945,6 @@ WITH cluster_uuids AS (
     SELECT DISTINCT ON (cluster_name) cluster_uuid
     FROM public.nutanix_cluster_metrics
     WHERE cluster_name = ANY(%s::text[])
-      AND collection_time BETWEEN %s AND %s
     ORDER BY cluster_name, collection_time DESC
 ),
 latest AS (
@@ -1008,7 +971,6 @@ WITH cluster_uuids AS (
     SELECT DISTINCT ON (cluster_name) cluster_uuid
     FROM public.nutanix_cluster_metrics
     WHERE cluster_name = ANY(%s::text[])
-      AND collection_time BETWEEN %s AND %s
     ORDER BY cluster_name, collection_time DESC
 )
 SELECT DISTINCT nvm.vm_name
@@ -1025,7 +987,6 @@ WITH cluster_uuids AS (
     SELECT DISTINCT ON (cluster_name) cluster_uuid, cluster_name
     FROM public.nutanix_cluster_metrics
     WHERE cluster_name = ANY(%s::text[])
-      AND collection_time BETWEEN %s AND %s
     ORDER BY cluster_name, collection_time DESC
 ),
 agg AS (

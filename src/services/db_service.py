@@ -24,6 +24,8 @@ _DC_CODE_RE = re.compile(r"(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)", re.IGNORECASE)
 
 # Customers pre-warmed by scheduler / warm_cache (extend when adding tenants).
 WARMED_CUSTOMERS: tuple[str, ...] = ("Boyner",)
+# Shown as grayed-out cards on the Customer View page (no API/cache warm-up yet).
+DISABLED_CUSTOMERS: tuple[str, ...] = ("A101", "Arabam", "Danone", "Turkonay")
 DEFAULT_CUSTOMER_NAME: str = WARMED_CUSTOMERS[0] if WARMED_CUSTOMERS else "Boyner"
 
 # Fallback DC list used when loki_locations is unreachable.

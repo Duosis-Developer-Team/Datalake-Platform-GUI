@@ -26,6 +26,18 @@ CLUSTER_ARCH_MAP_TTL_SECONDS = 900
 CUSTOMER_DATA_CACHE_TTL_SECONDS = 900
 
 
+class QueryTimeoutError(Exception):
+    """PostgreSQL statement timeout; result must not be cached."""
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    code = getattr(exc, "pgcode", None)
+    if code == "57014":  # query_canceled (includes statement_timeout)
+        return True
+    msg = (str(exc) or "").lower()
+    return "canceling statement" in msg or "statement timeout" in msg
+
+
 def _is_fatal_db_error(exc: BaseException) -> bool:
     """
     True if the connection is likely unusable and should be discarded from the pool.
@@ -142,6 +154,13 @@ class CustomerService:
             if row and row[0] is not None:
                 return row[0]
         except Exception as exc:
+            if _is_timeout_error(exc):
+                logger.warning("Query timeout (value): %s | SQL: %s", exc, CustomerService._sql_label(sql))
+                try:
+                    cursor.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise QueryTimeoutError(str(exc)) from exc
             if _is_fatal_db_error(exc):
                 logger.warning(
                     "Fatal DB error (value), re-raising: %s | SQL: %s",
@@ -166,6 +185,13 @@ class CustomerService:
             logger.info("SQL row (%.0fms): %s", elapsed, CustomerService._sql_label(sql))
             return row
         except Exception as exc:
+            if _is_timeout_error(exc):
+                logger.warning("Query timeout (row): %s | SQL: %s", exc, CustomerService._sql_label(sql))
+                try:
+                    cursor.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise QueryTimeoutError(str(exc)) from exc
             if _is_fatal_db_error(exc):
                 logger.warning(
                     "Fatal DB error (row), re-raising: %s | SQL: %s",
@@ -190,6 +216,13 @@ class CustomerService:
             logger.info("SQL rows (%.0fms, %d rows): %s", elapsed, len(rows), CustomerService._sql_label(sql))
             return rows
         except Exception as exc:
+            if _is_timeout_error(exc):
+                logger.warning("Query timeout (rows): %s | SQL: %s", exc, CustomerService._sql_label(sql))
+                try:
+                    cursor.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise QueryTimeoutError(str(exc)) from exc
             if _is_fatal_db_error(exc):
                 logger.warning(
                     "Fatal DB error (rows), re-raising: %s | SQL: %s",
@@ -222,9 +255,7 @@ class CustomerService:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     vmware_rows = self._run_rows(cur, cq.ALL_VMWARE_CLUSTER_NAMES, (start_ts, end_ts))
-                    nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES, (start_ts, end_ts))
-                    if not nutanix_rows:
-                        nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES_LATEST)
+                    nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES_LATEST)
 
             vmware_nonkm: list[str] = []
             for r in vmware_rows or []:
@@ -269,6 +300,17 @@ class CustomerService:
                 lambda: self._load_customer_resources(customer_name, tr),
                 ttl=CUSTOMER_DATA_CACHE_TTL_SECONDS,
             )
+        except QueryTimeoutError as exc:
+            logger.warning(
+                "get_customer_resources timed out for %s; trying stale cache key=%s: %s",
+                customer_name,
+                cache_key,
+                exc,
+            )
+            stale = cache.get(cache_key)
+            if stale is not None:
+                return stale
+            raise HTTPException(status_code=503, detail="Data temporarily unavailable") from exc
         except (OperationalError, PoolError, InterfaceError) as exc:
             logger.warning(
                 "get_customer_resources failed (response not cached); correlation Redis key=%s: %s",
@@ -381,6 +423,17 @@ class CustomerService:
                 lambda: self._fetch_customer_s3_vaults(customer_name, start_ts, end_ts),
                 ttl=CUSTOMER_DATA_CACHE_TTL_SECONDS,
             )
+        except QueryTimeoutError as exc:
+            logger.warning(
+                "get_customer_s3_vaults timed out for %s; trying stale cache key=%s: %s",
+                customer_name,
+                cache_key,
+                exc,
+            )
+            stale = cache.get(cache_key)
+            if stale is not None:
+                return stale
+            return {"vaults": [], "latest": {}, "growth": {}, "trend": []}
         except (OperationalError, PoolError, InterfaceError) as exc:
             logger.warning(
                 "get_customer_s3_vaults failed for %s (not cached); correlation key=%s: %s",

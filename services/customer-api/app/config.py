@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     db_user: str = "customer_svc"
     db_pass: str = ""
     # 0 = omit client-side statement_timeout (align with datacenter-api pool; server default applies).
-    db_statement_timeout_ms: int = Field(default=25000)
+    db_statement_timeout_ms: int = Field(default=60000)
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 1
