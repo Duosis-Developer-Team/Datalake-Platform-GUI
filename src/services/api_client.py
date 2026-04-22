@@ -156,7 +156,13 @@ def _get_json(client: httpx.Client, path: str, params: Optional[dict[str, str]] 
     return response.json()
 
 
-_HTTP_ERRORS = (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError, ValueError)
+_HTTP_ERRORS = (
+    httpx.ConnectError,
+    httpx.TimeoutException,
+    httpx.HTTPStatusError,
+    httpx.RemoteProtocolError,
+    ValueError,
+)
 
 
 def _serialize_tr_params(tr: Optional[dict]) -> str:
@@ -638,7 +644,6 @@ def get_dc_network_interface_table(
             params=params,
         )
         return data if isinstance(data, dict) else {}
-
     return _api_cache_get_with_stale(ck, fetch, {})
 
 

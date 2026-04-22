@@ -3378,6 +3378,9 @@ JOIN latest l
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
+                    # Prevent a slow DISTINCT ON / p95 CTE from hanging the worker
+                    # and OOM-killing the container. 90 s covers the current ~52 s runtime.
+                    cur.execute("SET statement_timeout = '90000'")
                     rows = self._run_rows(
                         cur,
                         znq.INTERFACE_BANDWIDTH_TABLE_P95,
@@ -3409,7 +3412,7 @@ JOIN latest l
                 )
 
             result = {"items": items, "page": page_safe, "page_size": page_size_safe, "search": search_val}
-        except (OperationalError, PoolError) as exc:
+        except Exception as exc:
             logger.warning("get_network_interface_table failed for %s: %s", dc_target, exc)
             result = {"items": [], "page": page_safe, "page_size": page_size_safe, "search": search_val}
 

@@ -110,7 +110,7 @@ from src.pages import home, datacenters, dc_view, customer_view, query_explorer,
 from src.pages import login as login_page_mod
 from src.pages.settings import shell as settings_shell
 from src.components.access_denied import build_access_denied
-from src.pages.dc_view import _bps_to_gbps, _build_compute_tab
+from src.pages.dc_view import _bps_to_gbps, _build_compute_tab, _DC_ICONS
 from src.pages.settings.iam import roles_callbacks  # noqa: F401 — registers role matrix callback
 from src.pages.settings.iam import teams_callbacks  # noqa: F401 — IAM teams panel / members
 from src.pages.settings.iam import users_callbacks  # noqa: F401 — IAM users AD import / edit
@@ -1384,10 +1384,10 @@ def update_net_kpis_and_charts(manufacturer, device_role, device_name, time_rang
         cols=4,
         spacing="lg",
         children=[
-            dc_view._kpi("Total Devices", f"{device_count:,}", "solar:server-bold-duotone", color="indigo"),
-            dc_view._kpi("Active Ports", f"{active_ports:,}", "solar:signal-bold-duotone", color="indigo"),
-            dc_view._kpi("Total Ports", f"{total_ports:,}", "solar:port-bold-duotone", color="indigo"),
-            dc_view._kpi("Port Availability", f"{port_availability_pct:.1f}%", "solar:graph-bold-duotone", color="indigo"),
+            dc_view._kpi("Total Devices", f"{device_count:,}", _DC_ICONS["total_devices"], color="indigo"),
+            dc_view._kpi("Active Ports", f"{active_ports:,}", _DC_ICONS["active_ports"], color="indigo"),
+            dc_view._kpi("Total Ports", f"{total_ports:,}", _DC_ICONS["total_ports"], color="indigo"),
+            dc_view._kpi("Port Availability", f"{port_availability_pct:.1f}%", _DC_ICONS["port_availability"], color="indigo"),
         ],
     )
 

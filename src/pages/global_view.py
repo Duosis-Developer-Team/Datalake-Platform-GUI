@@ -778,7 +778,7 @@ def build_global_view(time_range=None, visible_sections=None):
         html.Div(id="globe-layer", children=[
         dmc.Paper(
             p="xl",
-            radius="md",
+            radius=28,
             style={
                 "background": "rgba(255, 255, 255, 0.80)",
                 "backdropFilter": "blur(12px)",
