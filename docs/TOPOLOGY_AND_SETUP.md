@@ -1,9 +1,13 @@
 # Topology and Application Setup
 
-This document describes the runtime topology of the Datalake Platform GUI, how components connect, and how to configure and start the application locally or in Kubernetes-oriented deployments.
+This document describes the **development and local** runtime topology of the Datalake Platform GUI. For the **production** high-availability topology (Kubernetes Sentinel, HA, HW/SW sizing, SLOs), see:
+
+> **[PROD_ARCHITECTURE.md](PROD_ARCHITECTURE.md)** — Production HA architecture, zero-downtime deployment, Redis Sentinel, PDB, HPA, hardware sizing, caching policy, and rollout roadmap.
 
 For stopping/restarting the Dash UI and port **8050** issues, see [APP_RESTART.md](APP_RESTART.md).  
 For coding and repository standards, see [PROJECT_STANDARDS.md](PROJECT_STANDARDS.md).
+
+> **Production note:** The single-replica Redis (`redis:7-alpine`) and single-worker gunicorn configuration described in this document are **not suitable for production**. They are development/staging defaults. Before deploying to production, follow [PROD_ARCHITECTURE.md](PROD_ARCHITECTURE.md) which specifies Redis Sentinel, 3-replica API deployments, PodDisruptionBudgets, and the correct cache TTL values.
 
 ---
 
@@ -255,7 +259,9 @@ Adjust hostnames and service names to match your cluster. Do not store secrets i
 |----------|---------|
 | [APP_RESTART.md](APP_RESTART.md) | Stopping Dash, port 8050, `stop_app.ps1` |
 | [PROJECT_STANDARDS.md](PROJECT_STANDARDS.md) | Project standards |
-| [CACHE_STRATEGY_COMPARISON.md](CACHE_STRATEGY_COMPARISON.md) | Legacy vs Redis cache, warm/refresh pillars |
+| [CACHE_STRATEGY_COMPARISON.md](CACHE_STRATEGY_COMPARISON.md) | Legacy vs Redis cache, warm/refresh pillars, production TTL policy |
+| [PROD_ARCHITECTURE.md](PROD_ARCHITECTURE.md) | **Production** HA topology, Redis Sentinel, HW/SW sizing, SLO, rollout |
+| [FRONTEND_PERFORMANCE.md](FRONTEND_PERFORMANCE.md) | Browser cache, Dash callback optimisation, progressive render |
 | [`.env.example`](../.env.example) | Example `.env` (database, auth, APIs, optional OTEL) |
 
 ---
