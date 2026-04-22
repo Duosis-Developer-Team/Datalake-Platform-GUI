@@ -28,6 +28,34 @@ from src.components.s3_panel import build_customer_s3_panel
 # Shared UI helpers
 # ---------------------------------------------------------------------------
 
+
+def _intel_vm_cpu_breakdown(totals: dict, intel_asset: dict) -> tuple[dict, dict]:
+    """
+    Map customer-api nested assets.intel (vms/cpu) to UI breakdown dicts.
+    Legacy flat keys (vmware_vm_count, etc.) are not populated by the API.
+    """
+    intel_vms_sub = intel_asset.get("vms", {}) or {}
+    intel_cpu_sub = intel_asset.get("cpu", {}) or {}
+    intel_vms = {
+        "total": int(totals.get("intel_vms_total", 0) or 0),
+        "vmware": int(intel_vms_sub.get("vmware", 0) or 0),
+        "nutanix": int(intel_vms_sub.get("nutanix", 0) or 0),
+    }
+    intel_cpu = {
+        "total": float(totals.get("intel_cpu_total", 0) or 0),
+        "vmware": float(intel_cpu_sub.get("vmware", 0) or 0),
+        "nutanix": float(intel_cpu_sub.get("nutanix", 0) or 0),
+    }
+    return intel_vms, intel_cpu
+
+
+def _backup_storage_volume_gb(backup_totals: dict) -> float:
+    """Backup IBM storage volume from totals.backup (primary key: storage_volume_gb)."""
+    return float(
+        backup_totals.get("storage_volume_gb", backup_totals.get("ibm_storage_volume_gb", 0)) or 0
+    )
+
+
 def _metric(title: str, value, icon: str, color: str = "indigo"):
     """Standard billing metric card."""
     return html.Div(
@@ -1206,22 +1234,13 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     netbackup_pre_gib = float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0)
     netbackup_post_gib = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
     zerto_provisioned_gib = float(backup_totals.get("zerto_provisioned_gib", 0) or 0)
-    storage_gb = float(backup_totals.get("ibm_storage_volume_gb", 0) or 0)
+    storage_gb = _backup_storage_volume_gb(backup_totals)
 
     # Intel (Virtualization tab) aggregates
     intel_asset = assets.get("intel", {}) or {}
     intel_vm_list = intel_asset.get("vm_list", []) or []
 
-    intel_vms = {
-        "total": int(totals.get("intel_vms_total", 0) or 0),
-        "vmware": int(intel_asset.get("vmware_vm_count", 0) or 0),
-        "nutanix": int(intel_asset.get("nutanix_vm_count", 0) or 0),
-    }
-    intel_cpu = {
-        "total": float(totals.get("intel_cpu_total", 0) or 0),
-        "vmware": float(intel_asset.get("vmware_cpu_total", 0) or 0),
-        "nutanix": float(intel_asset.get("nutanix_cpu_total", 0) or 0),
-    }
+    intel_vms, intel_cpu = _intel_vm_cpu_breakdown(totals, intel_asset)
 
     intel_mem_raw = intel_asset.get("memory_gb", 0)
     intel_disk_raw = intel_asset.get("disk_gb", 0)
@@ -1479,7 +1498,8 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
         delay_show=200,
         overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.75)"},
         children=html.Div(
-            [
+            className="customer-page-enter",
+            children=[
             dcc.Store(
                 id="customer-export-store",
                 data={"customer": chosen, "sheets": export_sheets},

@@ -1,3 +1,4 @@
+import pytest
 from dash import html
 
 from src.pages import dc_view
@@ -78,11 +79,10 @@ def test_network_dashboard_builds_and_maps_values():
     assert _extract_select_values(role_select) == {"R1", "R2"}
     assert _extract_select_values(device_select) == {"D1", "D2", "D3"}
 
-    # KPI donut active ports: port availability = 30/100 => 30%
+    # KPI gauge: port availability = 30/100 => 30%
     donut_active = _find_by_id(node, "net-donut-active-ports")
     assert donut_active is not None
-    ann = donut_active.figure.layout.annotations[0].text
-    assert "30" in ann
+    assert donut_active.figure.data[0].value == pytest.approx(30.0)
 
     # Top bar chart: x values in Gbps (20 and 5)
     bar = _find_by_id(node, "net-top-interfaces-bar")
@@ -94,4 +94,26 @@ def test_network_dashboard_builds_and_maps_values():
     table = _find_by_id(node, "net-interface-table")
     assert table is not None
     assert len(table.data) == 1
+
+
+def test_network_dashboard_empty_top_interfaces_no_crash():
+    """95th percentile API may return no interfaces; bar chart must not raise."""
+    net_filters = {
+        "manufacturers": ["M1"],
+        "roles_by_manufacturer": {"M1": ["R1"]},
+        "devices_by_manufacturer_role": {"M1": {"R1": ["D1"]}},
+    }
+    port_summary = {"device_count": 1, "total_ports": 10, "active_ports": 5, "avg_icmp_loss_pct": 0.0}
+    percentile_data = {
+        "overall_port_utilization_pct": 0.0,
+        "top_interfaces": [],
+    }
+    interface_table = {"items": []}
+
+    node = dc_view._build_network_dashboard_subtab(net_filters, port_summary, percentile_data, interface_table)
+    assert node is not None
+    bar = _find_by_id(node, "net-top-interfaces-bar")
+    assert bar is not None
+    # Empty premium bar: no traces with x/y data
+    assert bar.figure.data == () or len(bar.figure.data[0].x or []) == 0
 
