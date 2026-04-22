@@ -16,7 +16,7 @@ This document describes the reusable authentication stack used by the Datalake P
 
 ## Environment variables
 
-See [`.env.example`](../.env.example) for `AUTH_*`, `SECRET_KEY`, `FERNET_KEY`, `AUTH_DISABLED`, `API_JWT_SECRET`, `API_AUTH_REQUIRED`, `REDIS_URL`, etc.
+See [`.env.example`](../.env.example) for `AUTH_*`, `DB_*` (metrics DB for APIs), `SECRET_KEY`, `FERNET_KEY`, `AUTH_DISABLED`, `API_JWT_SECRET`, `API_AUTH_REQUIRED`, `REDIS_URL`, `ADMIN_API_URL`, etc.
 
 ## Key modules
 

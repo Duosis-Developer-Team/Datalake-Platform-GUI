@@ -7,18 +7,22 @@ __pycache__/
 dist/
 build/
 .eggs/
+
+# Environment variables (never commit secrets)
 .env
+.env.local
+.env.*.local
+
 # Virtual environments
 .venv/
 venv/
 env/
 
-# Environment variables
-.env
-
 # pytest
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
 # Editors
@@ -38,6 +42,9 @@ redis_data/
 # OS / logs
 Thumbs.db
 *.log
+
+# Local SQLite (if used for dev)
+*.sqlite3
 
 # Notebooks
 .ipynb_checkpoints/

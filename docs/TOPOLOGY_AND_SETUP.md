@@ -71,7 +71,7 @@ Health: datacenter-api exposes **`GET /health`** and **`GET /ready`** (used by K
 
 ### 3.1 Database (PostgreSQL)
 
-Used by services and typically loaded from `.env` (see [`env.example`](../env.example)).
+Used by services and typically loaded from `.env` (see [`.env.example`](../.env.example)).
 
 | Variable | Description |
 |----------|-------------|
@@ -120,12 +120,14 @@ Override these in production; do not commit real secrets.
 
 ### 3.5 OpenTelemetry (optional)
 
-When `OTEL_ENABLED=true`, the Dash app and each FastAPI service export **traces** (and optional **logs** from the web UI) to an **external OTLP gRPC endpoint** (`OTEL_EXPORTER_OTLP_ENDPOINT`). Per-process service names default to `datalake-webui`, `datacenter-api`, `customer-api`, `query-api`, and `admin-api` (override with `OTEL_SERVICE_NAME`). See repository `docker-compose.yml` and ADR-0005 in the platform knowledge base (`datalake-platform-knowledge-base/adrs/ADR-0005-opentelemetry-instrumentation.md`).
+When `OTEL_ENABLED=true`, the Dash app and each FastAPI service export **traces** (and optional **logs** from the web UI) to an **external OTLP gRPC endpoint** (`OTEL_EXPORTER_OTLP_ENDPOINT`). Per-process service names are set in **`docker-compose.yml`** (`datalake-webui`, `datacenter-api`, `customer-api`, `query-api`, `admin-api`); the code also reads `OTEL_SERVICE_NAME` when you run processes outside Compose.
+
+**Full guide** (Java agent mapping, `.env` examples, Compose behavior, limitations): [OTEL_COLLECTOR.md](OTEL_COLLECTOR.md). ADR: `datalake-platform-knowledge-base/adrs/ADR-0005-opentelemetry-instrumentation.md`.
 
 | Variable | Description |
 |----------|-------------|
 | `OTEL_ENABLED` | `true` / `1` to enable SDK |
-| `OTEL_SERVICE_NAME` | Logical service name in traces |
+| `OTEL_SERVICE_NAME` | Logical service name in traces (Compose sets this per service) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector `host:port` or `http(s)://host:port` |
 | `OTEL_EXPORTER_OTLP_INSECURE` | `true` for plaintext gRPC (default) |
 | `OTEL_RESOURCE_ATTRIBUTES` | e.g. `deployment.environment=production` |
@@ -220,7 +222,7 @@ gunicorn app:server --bind 0.0.0.0:8050 --workers 4 --timeout 120
 docker compose --profile microservice up -d --build
 ```
 
-Or set **`COMPOSE_PROFILES=microservice`** in `.env` (see [`env.example`](../env.example)) so `docker compose up -d` starts the full stack.
+Or set **`COMPOSE_PROFILES=microservice`** in `.env` (see [`.env.example`](../.env.example)) so `docker compose up -d` starts the full stack.
 
 The **`app`** service sets **`DATACENTER_API_URL`**, **`CUSTOMER_API_URL`**, and **`QUERY_API_URL`** to the Compose service names (`http://datacenter-api:8000`, etc.). Override via `.env` if needed.
 
@@ -254,11 +256,11 @@ Adjust hostnames and service names to match your cluster. Do not store secrets i
 | [APP_RESTART.md](APP_RESTART.md) | Stopping Dash, port 8050, `stop_app.ps1` |
 | [PROJECT_STANDARDS.md](PROJECT_STANDARDS.md) | Project standards |
 | [CACHE_STRATEGY_COMPARISON.md](CACHE_STRATEGY_COMPARISON.md) | Legacy vs Redis cache, warm/refresh pillars |
-| [env.example](../env.example) | Example `.env` for database |
+| [`.env.example`](../.env.example) | Example `.env` (database, auth, APIs, optional OTEL) |
 
 ---
 
 ## 8. Legacy and tests
 
-- **`legacy/`**: Archived monolith-style backend and tests; active APIs are under **`services/`**.
+- **Legacy specs**: Older monolith-style notes were moved to the platform knowledge base: [`datalake-platform-knowledge-base/raw/archive/Datalake-Platform-GUI-2026-04-19/legacy`](../../datalake-platform-knowledge-base/raw/archive/Datalake-Platform-GUI-2026-04-19/legacy). Active APIs live under **`services/`**.
 - **Tests**: Root [`tests/`](../tests/) targets the Dash app and shared helpers; each service has its own `tests/` under `services/<name>/`.

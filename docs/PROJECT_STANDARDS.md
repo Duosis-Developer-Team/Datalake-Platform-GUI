@@ -143,3 +143,8 @@ All new code consuming S3 metrics should rely on these structures instead of re-
   - Comments should explain **intent, constraints, and trade‑offs**, not restate obvious code.
   - Keep comments in **English** and focused on non-trivial logic (e.g. caching rules, aggregation semantics).
 
+---
+
+## See also
+
+- [TOPOLOGY_AND_SETUP.md](TOPOLOGY_AND_SETUP.md) — microservice Redis cache, service boundaries, and how Dash `cache_service` relates to API-side caching.
