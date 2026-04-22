@@ -490,6 +490,28 @@ def create_premium_horizontal_bar_chart(
     values = values or []
     x_data = [float(v or 0) for v in values]
 
+    if not x_data:
+        fig = go.Figure()
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            showlegend=False,
+            margin=dict(l=10, r=90, t=10, b=10),
+            height=height,
+            annotations=[
+                dict(
+                    text="No data",
+                    xref="paper",
+                    yref="paper",
+                    x=0.5,
+                    y=0.5,
+                    showarrow=False,
+                    font=dict(family="DM Sans", size=14, color="#A3AED0"),
+                )
+            ],
+        )
+        return fig
+
     max_val = max(x_data) or 1.0
 
     norm = [v / max_val for v in x_data]
