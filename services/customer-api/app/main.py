@@ -12,8 +12,9 @@ setup_sdk()
 
 from app.core.api_auth import verify_api_user
 from app.services.customer_service import CustomerService
+from app.services.sales_service import SalesService
 from app.services.scheduler_service import start_scheduler
-from app.routers import customers
+from app.routers import customers, sales
 from app.core.redis_client import init_redis_pool, close_redis_pool, redis_is_healthy
 
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +25,11 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     svc = CustomerService()
     app.state.db = svc
+    app.state.sales = SalesService(
+        get_connection=svc._get_connection,
+        run_row=svc._run_row,
+        run_rows=svc._run_rows,
+    )
     init_redis_pool()
     scheduler = start_scheduler(svc)
     app.state.scheduler = scheduler
@@ -55,6 +61,13 @@ app.include_router(
     customers.router,
     prefix="/api/v1",
     tags=["customers"],
+    dependencies=[Depends(verify_api_user)],
+)
+
+app.include_router(
+    sales.router,
+    prefix="/api/v1",
+    tags=["crm-sales"],
     dependencies=[Depends(verify_api_user)],
 )
 

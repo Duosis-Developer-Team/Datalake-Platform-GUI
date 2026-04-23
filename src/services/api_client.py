@@ -842,3 +842,70 @@ def get_dc_availability_sla_item(dc_code: str, dc_display_name: str, tr: Optiona
     except Exception:
         hit = _api_response_cache.get(ck)
         return deepcopy(hit) if isinstance(hit, dict) else None
+
+
+# ---------------------------------------------------------------------------
+# CRM Sales API functions
+# ---------------------------------------------------------------------------
+
+def get_customer_sales_summary(name: str) -> dict:
+    enc = quote(name, safe="")
+    ck = f"api:crm_sales_summary:{enc}"
+
+    def fetch() -> dict:
+        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/sales/summary")
+        return data if isinstance(data, dict) else {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
+
+
+def get_customer_sales_items(name: str) -> list:
+    enc = quote(name, safe="")
+
+    def fetch() -> list:
+        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/sales/items")
+        return data if isinstance(data, list) else []
+
+    ck = f"api:crm_sales_items:{enc}"
+    return _api_cache_get_with_stale(ck, fetch, [])
+
+
+def get_customer_sales_efficiency(name: str) -> list:
+    enc = quote(name, safe="")
+
+    def fetch() -> list:
+        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/sales/efficiency")
+        return data if isinstance(data, list) else []
+
+    ck = f"api:crm_sales_efficiency:{enc}"
+    return _api_cache_get_with_stale(ck, fetch, [])
+
+
+def get_customer_catalog_valuation(name: str) -> list:
+    enc = quote(name, safe="")
+
+    def fetch() -> list:
+        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/sales/catalog-valuation")
+        return data if isinstance(data, list) else []
+
+    ck = f"api:crm_catalog_valuation:{enc}"
+    return _api_cache_get_with_stale(ck, fetch, [])
+
+
+def get_dc_sales_potential(dc_code: str) -> dict:
+    enc = quote(dc_code, safe="")
+
+    def fetch() -> dict:
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/sales-potential")
+        return data if isinstance(data, dict) else {}
+
+    ck = f"api:dc_sales_potential:{enc}"
+    return _api_cache_get_with_stale(ck, fetch, {})
+
+
+def get_crm_aliases() -> list:
+    def fetch() -> list:
+        data = _get_json(_client_cust, "/api/v1/crm/aliases")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_aliases", fetch, [])

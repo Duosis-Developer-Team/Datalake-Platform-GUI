@@ -8,6 +8,7 @@ from app.core.time_filter import TimeFilter
 from app.models.schemas import DataCenterSummary
 from app.services.dc_service import DatabaseService
 from app.services import sla_service
+from app.db.queries import crm_potential as crm_q
 
 router = APIRouter()
 
@@ -297,3 +298,40 @@ def zabbix_storage_disk_trend(
 @router.get("/datacenters/{dc_code}/zabbix-storage/disk-health", response_model=dict[str, Any])
 def zabbix_storage_disk_health(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
     return db.get_zabbix_disk_health(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/sales-potential", response_model=dict[str, Any])
+def dc_sales_potential(
+    dc_code: str,
+    db: DatabaseService = Depends(get_db),
+):
+    """
+    Sales potential for a datacenter: idle capacity × standard catalog unit prices.
+    Also returns YTD billing and open pipeline for customers present in this DC.
+    """
+    dc_pattern = f"%{dc_code}%"
+    try:
+        with db._get_connection() as conn:
+            with conn.cursor() as cur:
+                # Catalog + capacity detail rows
+                cur.execute(
+                    crm_q.DC_SALES_POTENTIAL,
+                    (dc_pattern, dc_pattern, dc_pattern, dc_pattern, dc_code, dc_pattern, dc_pattern),
+                )
+                cols = [d[0] for d in cur.description]
+                detail_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+                # Summary (billing + pipeline for DC customers)
+                cur.execute(crm_q.DC_POTENTIAL_SUMMARY, (dc_pattern, dc_code))
+                scols = [d[0] for d in cur.description]
+                summary_row = cur.fetchone()
+                summary = dict(zip(scols, summary_row)) if summary_row else {}
+    except Exception:
+        detail_rows = []
+        summary = {}
+
+    return {
+        "dc_code": dc_code,
+        "summary": summary,
+        "catalog_detail": detail_rows,
+    }
