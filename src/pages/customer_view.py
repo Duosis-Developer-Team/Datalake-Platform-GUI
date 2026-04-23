@@ -1066,6 +1066,101 @@ def _tab_netbackup(backup_assets: dict, backup_totals: dict):
     ])
 
 
+def _tab_sales(customer_name: str):
+    """Sales tab: CRM sales summary KPI cards, line items table, and efficiency overview."""
+    summary = api.get_customer_sales_summary(customer_name)
+    items = api.get_customer_sales_items(customer_name)
+    efficiency = api.get_customer_sales_efficiency(customer_name)
+
+    currency = summary.get("currency") or "TL"
+
+    def _fmt_money(v, cur=currency):
+        if v is None:
+            return "-"
+        return f"{float(v):,.2f} {cur}"
+
+    def _fmt_num(v):
+        if v is None:
+            return "-"
+        return str(int(v))
+
+    kpi_cards = dmc.SimpleGrid(
+        cols=5,
+        spacing="lg",
+        children=[
+            _metric("YTD Revenue",         _fmt_money(summary.get("ytd_revenue_total")), "solar:money-bag-bold-duotone", color="green"),
+            _metric("Open Pipeline",       _fmt_money(summary.get("pipeline_value")),    "solar:target-bold-duotone",    color="indigo"),
+            _metric("Active Orders",       _fmt_num(summary.get("active_order_count")),  "solar:cart-bold-duotone",      color="cyan"),
+            _metric("Active Contracts",    _fmt_num(summary.get("active_contract_count")),"solar:document-text-bold-duotone", color="orange"),
+            _metric("Estimated MRR",       _fmt_money(summary.get("estimated_mrr")),     "solar:calendar-bold-duotone",  color="violet"),
+        ],
+    )
+
+    def _items_row(r):
+        return html.Tr([
+            html.Td(r.get("source_type") or "-"),
+            html.Td(r.get("reference_number") or "-"),
+            html.Td((r.get("date") or "-")[:10]),
+            html.Td(r.get("status") or "-"),
+            html.Td(r.get("product_name") or r.get("productdescription") or "-"),
+            html.Td(r.get("unit") or "-"),
+            html.Td(f"{float(r['quantity']):,.0f}" if r.get("quantity") is not None else "-"),
+            html.Td(_fmt_money(r.get("line_total"), r.get("currency") or currency)),
+        ])
+
+    items_table = dmc.Table(
+        striped=True,
+        highlightOnHover=True,
+        withTableBorder=True,
+        children=[
+            html.Thead(html.Tr([
+                html.Th("Type"), html.Th("Reference"), html.Th("Date"),
+                html.Th("Status"), html.Th("Product"), html.Th("Unit"),
+                html.Th("Qty"), html.Th("Total"),
+            ])),
+            html.Tbody([_items_row(r) for r in (items or [])] or [html.Tr([html.Td("No data", colSpan=8)])]),
+        ],
+    )
+
+    def _eff_row(r):
+        pct = r.get("catalog_coverage_pct")
+        return html.Tr([
+            html.Td(r.get("product_name") or "-"),
+            html.Td(r.get("unit") or "-"),
+            html.Td(f"{float(r['total_billed_qty']):,.2f}" if r.get("total_billed_qty") is not None else "-"),
+            html.Td(_fmt_money(r.get("total_billed_amount"), r.get("currency") or currency)),
+            html.Td(_fmt_money(r.get("catalog_unit_price"), currency) if r.get("catalog_unit_price") is not None else "-"),
+            html.Td(f"{pct:.1f}%" if pct is not None else "-"),
+        ])
+
+    eff_table = dmc.Table(
+        striped=True,
+        highlightOnHover=True,
+        withTableBorder=True,
+        children=[
+            html.Thead(html.Tr([
+                html.Th("Product"), html.Th("Unit"), html.Th("Billed Qty"),
+                html.Th("Billed Amount"), html.Th("Catalog Price"), html.Th("Coverage %"),
+            ])),
+            html.Tbody([_eff_row(r) for r in (efficiency or [])] or [html.Tr([html.Td("No data", colSpan=6)])]),
+        ],
+    )
+
+    return dmc.Stack(gap="lg", children=[
+        kpi_cards,
+        _section_card(
+            "Sales & Invoice Line Items",
+            "Billed products across invoices and active sales orders",
+            [items_table],
+        ),
+        _section_card(
+            "Product Efficiency",
+            "Billed quantity vs catalog unit price — coverage percentage per product",
+            [eff_table],
+        ),
+    ])
+
+
 def _tab_physical_inventory(devices: list[dict]):
     """Physical Inventory tab: device table (name, device_role, manufacturer, location). Title-case display."""
     total = len(devices or [])
@@ -1204,6 +1299,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             "avail": empty,
             "backup": empty,
             "billing": empty,
+            "sales": empty,
             "s3": html.Div(),
             "has_s3": False,
             "phys_inv": empty,
@@ -1354,6 +1450,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         "summary": _tab_summary(totals, assets),
         "virt": virt_content,
         "avail": _tab_customer_availability(avail_bundle),
+        "sales": _tab_sales(name),
         "backup": dmc.Stack(
             gap="lg",
             children=[
@@ -1421,6 +1518,7 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
             dmc.TabsTab("Availability", value="avail"),
             dmc.TabsTab("Backup", value="backup"),
             dmc.TabsTab("Billing", value="billing"),
+            dmc.TabsTab("Sales", value="sales"),
             dmc.TabsTab("Physical Inventory", value="phys-inv") if has_phys_inv else None,
             dmc.TabsTab("S3", value="s3") if has_s3 else None,
         ],
@@ -1534,6 +1632,10 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
                     dmc.TabsPanel(
                         value="billing",
                         children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("billing")]),
+                    ),
+                    dmc.TabsPanel(
+                        value="sales",
+                        children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("sales")]),
                     ),
                     dmc.TabsPanel(
                         value="phys-inv",
