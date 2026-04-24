@@ -190,8 +190,9 @@ services:
 
   customer-api:
     build:
-      context: ./services/customer-api
-      dockerfile: Dockerfile
+      # Repo root so Dockerfile can COPY ../shared (gui shared package + config tooling).
+      context: .
+      dockerfile: services/customer-api/Dockerfile
     container_name: bulutistan-customer-api
     ports:
       - "8001:8000"
