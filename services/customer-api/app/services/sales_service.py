@@ -9,6 +9,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from app.db.queries import crm_sales as sq
+from app.db.queries import service_mapping as smq
 from app.utils.efficiency_usage import efficiency_status, resolve_used_quantity
 
 logger = logging.getLogger(__name__)
@@ -187,27 +188,38 @@ class SalesService:
                 conn.commit()
 
     # ------------------------------------------------------------------
-    # Product category alias (discovery_crm_product_category_alias)
+    # CRM service mapping (YAML seed in DB + gui_crm_service_mapping_override)
     # ------------------------------------------------------------------
 
-    def list_product_category_aliases(self) -> List[Dict[str, Any]]:
-        return self._run_query(sq.LIST_PRODUCT_CATEGORY_ALIASES, ())
+    def list_service_pages(self) -> List[Dict[str, Any]]:
+        return self._run_query(smq.LIST_SERVICE_PAGES, ())
 
-    def update_product_category_alias(
+    def list_service_mappings(self) -> List[Dict[str, Any]]:
+        return self._run_query(smq.LIST_SERVICE_MAPPINGS, ())
+
+    def upsert_service_mapping_override(
         self,
         productid: str,
         *,
-        category_code: str,
-        category_label: str,
-        gui_tab_binding: str,
-        resource_unit: str,
+        page_key: str,
         notes: Optional[str],
+        updated_by: Optional[str],
     ) -> int:
+        chk = self._run_one(smq.VALIDATE_PAGE_KEY, (page_key,))
+        if not chk:
+            raise ValueError(f"Unknown page_key: {page_key}")
         with self._get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    sq.UPDATE_PRODUCT_CATEGORY_ALIAS,
-                    (category_code, category_label, gui_tab_binding, resource_unit, notes, productid),
+                    smq.UPSERT_SERVICE_MAPPING_OVERRIDE,
+                    (productid, page_key, notes, updated_by or "api"),
                 )
+                conn.commit()
+                return int(cur.rowcount or 0)
+
+    def delete_service_mapping_override(self, productid: str) -> int:
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(smq.DELETE_SERVICE_MAPPING_OVERRIDE, (productid,))
                 conn.commit()
                 return int(cur.rowcount or 0)

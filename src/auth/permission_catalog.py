@@ -288,6 +288,13 @@ def build_default_permission_roots() -> list[PermissionNode]:
             _n("page:settings_ldap", "LDAP Configuration", "config", route_pattern="/settings/integrations/ldap", sort_order=50),
             _n("page:settings_integrations", "Integrations Overview", "config", route_pattern="/settings/integrations", sort_order=55),
             _n("page:settings_auranotify", "AuraNotify Integration", "config", route_pattern="/settings/integrations/auranotify", sort_order=58),
+            _n(
+                "page:settings_service_mapping",
+                "CRM service mapping",
+                "config",
+                route_pattern="/settings/crm/service-mapping",
+                sort_order=59,
+            ),
             _n("page:settings_auth", "Auth Settings", "config", route_pattern="/settings/iam/auth", sort_order=60),
             _n("page:settings_audit", "Audit Log", "config", route_pattern="/settings/iam/audit", sort_order=70),
         ],

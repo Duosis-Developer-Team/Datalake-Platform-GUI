@@ -162,6 +162,14 @@ def _put_json(client: httpx.Client, path: str, body: dict[str, Any]) -> Any:
     return response.json()
 
 
+def _delete_json(client: httpx.Client, path: str) -> Any:
+    response = client.delete(path, headers=_auth_headers())
+    response.raise_for_status()
+    if not response.content:
+        return {}
+    return response.json()
+
+
 _HTTP_ERRORS = (
     httpx.ConnectError,
     httpx.TimeoutException,
@@ -980,34 +988,41 @@ def get_customer_efficiency_by_category(name: str) -> list:
     return _api_cache_get_with_stale(ck, fetch, [])
 
 
-def get_crm_product_categories() -> list:
+def get_crm_service_mapping_pages() -> list:
     def fetch() -> list:
-        data = _get_json(_client_cust, "/api/v1/crm/product-categories")
+        data = _get_json(_client_cust, "/api/v1/crm/service-mapping/pages")
         return data if isinstance(data, list) else []
 
-    return _api_cache_get_with_stale("api:crm_product_categories", fetch, [])
+    return _api_cache_get_with_stale("api:crm_service_mapping_pages", fetch, [])
 
 
-def put_crm_product_category(
+def get_crm_service_mappings() -> list:
+    def fetch() -> list:
+        data = _get_json(_client_cust, "/api/v1/crm/service-mapping")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_service_mappings", fetch, [])
+
+
+def put_crm_service_mapping(
     productid: str,
     *,
-    category_code: str,
-    category_label: str,
-    gui_tab_binding: str,
-    resource_unit: str,
+    page_key: str,
     notes: Optional[str] = None,
 ) -> dict[str, Any]:
     enc = quote(productid, safe="")
-    body: dict[str, Any] = {
-        "category_code": category_code,
-        "category_label": category_label,
-        "gui_tab_binding": gui_tab_binding,
-        "resource_unit": resource_unit,
-    }
+    body: dict[str, Any] = {"page_key": page_key}
     if notes is not None:
         body["notes"] = notes
-    out = _put_json(_client_cust, f"/api/v1/crm/product-categories/{enc}", body)
-    _api_response_cache.delete("api:crm_product_categories")
+    out = _put_json(_client_cust, f"/api/v1/crm/service-mapping/{enc}", body)
+    _api_response_cache.delete("api:crm_service_mappings")
+    return out if isinstance(out, dict) else {}
+
+
+def delete_crm_service_mapping_override(productid: str) -> dict[str, Any]:
+    enc = quote(productid, safe="")
+    out = _delete_json(_client_cust, f"/api/v1/crm/service-mapping/{enc}/override")
+    _api_response_cache.delete("api:crm_service_mappings")
     return out if isinstance(out, dict) else {}
 
 

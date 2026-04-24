@@ -1,0 +1,121 @@
+{
+  "categories": {
+    "virt_classic": {
+      "label": "Classic virtualization",
+      "resource_unit": "vCPU",
+      "gui_tab_binding": "virtualization.classic"
+    },
+    "virt_hyperconverged": {
+      "label": "Hyperconverged virtualization",
+      "resource_unit": "vCPU",
+      "gui_tab_binding": "virtualization.hyperconverged"
+    },
+    "virt_nutanix": {
+      "label": "Pure Nutanix (AHV)",
+      "resource_unit": "vCPU",
+      "gui_tab_binding": "virtualization.nutanix"
+    },
+    "virt_power": {
+      "label": "IBM Power LPAR",
+      "resource_unit": "core",
+      "gui_tab_binding": "virtualization.power"
+    },
+    "backup_veeam": {
+      "label": "Veeam backup",
+      "resource_unit": "per VM",
+      "gui_tab_binding": "backup.veeam"
+    },
+    "backup_zerto": {
+      "label": "Zerto replication",
+      "resource_unit": "vCPU",
+      "gui_tab_binding": "backup.zerto"
+    },
+    "backup_netbackup": {
+      "label": "NetBackup",
+      "resource_unit": "GB",
+      "gui_tab_binding": "backup.netbackup"
+    },
+    "storage_s3": {
+      "label": "Object storage (S3)",
+      "resource_unit": "GB",
+      "gui_tab_binding": "storage.s3"
+    },
+    "firewall_fortigate": {
+      "label": "FortiGate",
+      "resource_unit": "Adet",
+      "gui_tab_binding": "security.firewall"
+    },
+    "firewall_paloalto": {
+      "label": "Palo Alto",
+      "resource_unit": "Adet",
+      "gui_tab_binding": "security.firewall"
+    },
+    "firewall_sophos": {
+      "label": "Sophos",
+      "resource_unit": "Adet",
+      "gui_tab_binding": "security.firewall"
+    },
+    "firewall_citrix": {
+      "label": "Citrix ADC",
+      "resource_unit": "Adet",
+      "gui_tab_binding": "security.firewall"
+    },
+    "licensing_microsoft": {
+      "label": "Microsoft CSP / M365",
+      "resource_unit": "per User",
+      "gui_tab_binding": "licensing.microsoft"
+    },
+    "licensing_redhat": {
+      "label": "Red Hat",
+      "resource_unit": "Adet",
+      "gui_tab_binding": "licensing.redhat"
+    },
+    "dc_hosting": {
+      "label": "Colocation / hosting",
+      "resource_unit": "Adet",
+      "gui_tab_binding": "datacenter.hosting"
+    },
+    "dc_energy": {
+      "label": "Datacenter energy",
+      "resource_unit": "kW",
+      "gui_tab_binding": "datacenter.energy"
+    },
+    "monitoring": {
+      "label": "Monitoring",
+      "resource_unit": "per VM",
+      "gui_tab_binding": "operations.monitoring"
+    },
+    "database_managed": {
+      "label": "Managed database",
+      "resource_unit": "Adet",
+      "gui_tab_binding": "data.database"
+    },
+    "other": {
+      "label": "Other / uncategorized",
+      "resource_unit": "Adet",
+      "gui_tab_binding": "other"
+    }
+  },
+  "rules": [
+    {"priority": 5, "category_code": "virt_classic", "name_regex": "(?i)Klasik Mimari Intel (CPU|RAM|Disk)"},
+    {"priority": 6, "category_code": "virt_classic", "name_regex": "(?i)Klasik Mimari (Veeam|Zerto) Replication"},
+    {"priority": 10, "category_code": "virt_hyperconverged", "name_regex": "(?i)Hyperconverged Mimari Intel"},
+    {"priority": 11, "category_code": "virt_hyperconverged", "name_regex": "(?i)Hyperconverged (İmaj|Imaj) Yedekleme"},
+    {"priority": 20, "category_code": "virt_nutanix", "name_regex": "(?i)Remote Backup Hizmeti \\(Nutanix\\)"},
+    {"priority": 30, "category_code": "virt_power", "name_regex": "(?i)SAP Power HANA"},
+    {"priority": 40, "category_code": "backup_veeam", "name_regex": "(?i)Veeam"},
+    {"priority": 41, "category_code": "backup_zerto", "name_regex": "(?i)Zerto"},
+    {"priority": 42, "category_code": "backup_netbackup", "name_regex": "(?i)Net[Bb]ackup|Veritas Net[Bb]ackup"},
+    {"priority": 50, "category_code": "storage_s3", "name_regex": "(?i)IBM ICOS S3|Offsite Backup Disk Alanı \\(S3\\)|Bulut Depolama"},
+    {"priority": 60, "category_code": "firewall_fortigate", "name_regex": "(?i)FortiGate"},
+    {"priority": 61, "category_code": "firewall_paloalto", "name_regex": "(?i)Palo Alto"},
+    {"priority": 62, "category_code": "firewall_sophos", "name_regex": "(?i)Sophos"},
+    {"priority": 63, "category_code": "firewall_citrix", "name_regex": "(?i)Citrix Sanal Appliance"},
+    {"priority": 70, "category_code": "licensing_microsoft", "name_regex": "(?i)CSP|Office 365|Microsoft 365"},
+    {"priority": 71, "category_code": "licensing_redhat", "name_regex": "(?i)Red\\s*Hat|CCSP-RH"},
+    {"priority": 80, "category_code": "dc_hosting", "name_regex": "(?i)Veri Merkezi Barındırma|Kabinet"},
+    {"priority": 81, "category_code": "dc_energy", "name_regex": "(?i)Veri Merkezi Enerji"},
+    {"priority": 90, "category_code": "monitoring", "name_regex": "(?i)Monitoring Hizmeti"},
+    {"priority": 91, "category_code": "database_managed", "name_regex": "(?i)PostgreSQL Veritabanı"}
+  ]
+}

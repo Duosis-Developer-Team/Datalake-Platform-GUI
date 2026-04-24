@@ -121,6 +121,8 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
             return "page:settings_ldap"
         if p.startswith("/settings/integrations/auranotify"):
             return "page:settings_auranotify"
+        if p.startswith("/settings/crm/service-mapping"):
+            return "page:settings_service_mapping"
         if p.rstrip("/") == "/settings/integrations":
             return "page:settings_integrations"
         if p.startswith("/settings/iam"):

@@ -9,8 +9,6 @@ Routes:
   GET /customers/{customer_name}/sales/catalog-valuation
   GET /crm/aliases
   PUT /crm/aliases/{crm_accountid}
-  GET /crm/product-categories
-  PUT /crm/product-categories/{productid}
 """
 from __future__ import annotations
 
@@ -22,8 +20,6 @@ from app.models.schemas import (
     CatalogValuationRow,
     CustomerAlias,
     CustomerAliasUpdate,
-    ProductCategoryAliasRow,
-    ProductCategoryAliasUpdate,
     SalesEfficiencyByCategoryRow,
     SalesEfficiencyRow,
     SalesLineItem,
@@ -113,32 +109,3 @@ def update_alias(
     return {"status": "ok", "crm_accountid": crm_accountid}
 
 
-# ---------------------------------------------------------------------------
-# Product category alias (GUI + collectors)
-# ---------------------------------------------------------------------------
-
-
-@router.get("/crm/product-categories", response_model=List[ProductCategoryAliasRow])
-def list_product_categories(svc: SalesService = Depends(get_sales_service)):
-    """All CRM product → category GUI bindings (manual rows preserved on re-seed)."""
-    return svc.list_product_category_aliases()
-
-
-@router.put("/crm/product-categories/{productid}", response_model=dict)
-def update_product_category(
-    productid: str,
-    body: ProductCategoryAliasUpdate,
-    svc: SalesService = Depends(get_sales_service),
-):
-    """Update category mapping for one product (sets source = manual)."""
-    n = svc.update_product_category_alias(
-        productid,
-        category_code=body.category_code,
-        category_label=body.category_label,
-        gui_tab_binding=body.gui_tab_binding,
-        resource_unit=body.resource_unit,
-        notes=body.notes,
-    )
-    if n <= 0:
-        raise HTTPException(status_code=404, detail="productid not found")
-    return {"status": "ok", "productid": productid, "rows_updated": n}

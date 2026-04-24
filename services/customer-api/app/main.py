@@ -15,7 +15,7 @@ from app.services.customer_service import CustomerService
 from app.services.itsm_service import ITSMService
 from app.services.sales_service import SalesService
 from app.services.scheduler_service import start_scheduler
-from app.routers import customers, itsm, sales
+from app.routers import customers, itsm, sales, service_mapping
 from app.core.redis_client import init_redis_pool, close_redis_pool, redis_is_healthy
 
 logging.basicConfig(level=logging.INFO)
@@ -75,6 +75,13 @@ app.include_router(
     sales.router,
     prefix="/api/v1",
     tags=["crm-sales"],
+    dependencies=[Depends(verify_api_user)],
+)
+
+app.include_router(
+    service_mapping.router,
+    prefix="/api/v1",
+    tags=["crm-service-mapping"],
     dependencies=[Depends(verify_api_user)],
 )
 

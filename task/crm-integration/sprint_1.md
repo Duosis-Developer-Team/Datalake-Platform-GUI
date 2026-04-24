@@ -3,7 +3,7 @@
 ## Scope (ADR-0010)
 
 - Collectors / DB: **realized sales only** (sales orders fulfilled/invoiced), customer + product category aliases.
-- **customer-api**: sales summary, items, efficiency, **efficiency-by-category**, product category CRUD on `discovery_crm_product_category_alias`.
+- **customer-api**: sales summary, items, efficiency, **efficiency-by-category**, CRM service mapping CRUD on `gui_crm_service_mapping_override` + view `v_gui_crm_product_mapping`.
 - **datacenter-api**: **GET `/datacenters/{dc}/sales-potential/v2`** (80% sellable rule, Nutanix capacity proxy).
 - **GUI**: remove standalone Sales tab; Billing + category tabs show **Sold vs Used**; DC list/detail show CRM potential; settings links for CRM aliases + product categories.
 

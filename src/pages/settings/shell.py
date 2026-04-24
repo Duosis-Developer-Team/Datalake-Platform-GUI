@@ -19,6 +19,7 @@ from src.pages.settings.iam import users as users_page
 from src.pages.settings.integrations import auranotify as auranotify_page
 from src.pages.settings.integrations import ldap as ldap_page
 from src.pages.settings.integrations import overview as integrations_overview_page
+from src.pages.settings import crm_service_mapping as crm_service_mapping_page
 
 # (href, label, permission code)
 IAM_TABS: list[tuple[str, str, str]] = [
@@ -36,6 +37,10 @@ INT_TABS: list[tuple[str, str, str]] = [
     ("/settings/integrations/auranotify", "AuraNotify", "page:settings_auranotify"),
 ]
 
+CRM_TABS: list[tuple[str, str, str]] = [
+    ("/settings/crm/service-mapping", "Service mapping", "page:settings_service_mapping"),
+]
+
 LEGACY_REDIRECTS: dict[str, str] = {
     "/settings/users": "/settings/iam/users",
     "/settings/roles": "/settings/iam/roles",
@@ -44,6 +49,7 @@ LEGACY_REDIRECTS: dict[str, str] = {
     "/settings/auth": "/settings/iam/auth",
     "/settings/audit": "/settings/iam/audit",
     "/settings/ldap": "/settings/integrations/ldap",
+    "/settings/crm/product-categories": "/settings/crm/service-mapping",
 }
 
 def _call_page_builder(builder: Callable[..., html.Div], search: str | None) -> html.Div:
@@ -61,6 +67,7 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
     "/settings/integrations": ("page:settings_integrations", integrations_overview_page.build_layout),
     "/settings/integrations/ldap": ("page:settings_ldap", ldap_page.build_layout),
     "/settings/integrations/auranotify": ("page:settings_auranotify", auranotify_page.build_layout),
+    "/settings/crm/service-mapping": ("page:settings_service_mapping", crm_service_mapping_page.build_layout),
 }
 
 
@@ -72,7 +79,7 @@ def _normalize_path(pathname: str) -> str:
 def has_any_settings_access(user_id: int) -> bool:
     from src.auth.permission_service import can_view
 
-    codes = [c for _, _, c in IAM_TABS] + [c for _, _, c in INT_TABS]
+    codes = [c for _, _, c in IAM_TABS] + [c for _, _, c in INT_TABS] + [c for _, _, c in CRM_TABS]
     if any(can_view(user_id, c) for c in codes):
         return True
     return can_view(user_id, "grp:settings")
@@ -96,6 +103,15 @@ def first_allowed_integrations_path(user_id: int) -> str | None:
     return None
 
 
+def first_allowed_crm_path(user_id: int) -> str | None:
+    from src.auth.permission_service import can_view
+
+    for href, _label, code in CRM_TABS:
+        if can_view(user_id, code):
+            return href
+    return None
+
+
 def first_allowed_settings_path(user_id: int) -> str | None:
     """First page user may open (prefers overview dashboard)."""
     from src.auth.permission_service import can_view
@@ -112,6 +128,8 @@ def _section_for_path(p: str) -> str:
         return "iam"
     if p.startswith("/settings/integrations"):
         return "integrations"
+    if p.startswith("/settings/crm"):
+        return "crm"
     return "overview"
 
 
@@ -184,6 +202,22 @@ def _top_nav(user_id: int, current_path: str) -> dmc.Group:
                 underline=False,
             )
         )
+    # CRM
+    crm_href = first_allowed_crm_path(user_id)
+    if crm_href:
+        active_c = _section_for_path(current_path) == "crm"
+        items.append(
+            dmc.Anchor(
+                dmc.Button(
+                    "CRM",
+                    leftSection=DashIconify(icon="solar:case-round-bold-duotone", width=16),
+                    radius="md",
+                    **_nav_btn_props(active=active_c),
+                ),
+                href=crm_href,
+                underline=False,
+            )
+        )
 
     return dmc.Group(gap="sm", children=items)
 
@@ -248,6 +282,34 @@ def _sub_nav(user_id: int, current_path: str) -> html.Div | None:
             style={"borderBottom": "1px solid #eef1f4", "paddingBottom": "8px", "marginBottom": "16px"},
             children=[dmc.Group(gap="xs", children=links)],
         )
+    if sec == "crm":
+        links = []
+        for href, label, code in CRM_TABS:
+            if not can_view(user_id, code):
+                continue
+            active = current_path.rstrip("/") == href.rstrip("/")
+            links.append(
+                dmc.Anchor(
+                    dmc.Button(
+                        label,
+                        variant="subtle" if not active else "light",
+                        color="indigo",
+                        size="xs",
+                        style={
+                            "borderBottom": "2px solid #552cf8" if active else "2px solid transparent",
+                            "borderRadius": 0,
+                        },
+                    ),
+                    href=href,
+                    underline=False,
+                )
+            )
+        if not links:
+            return None
+        return html.Div(
+            style={"borderBottom": "1px solid #eef1f4", "paddingBottom": "8px", "marginBottom": "16px"},
+            children=[dmc.Group(gap="xs", children=links)],
+        )
     return None
 
 
@@ -259,6 +321,8 @@ def _breadcrumb(current_path: str) -> str:
         return "Settings › Identity & Access Management"
     if sec == "integrations":
         return "Settings › Integrations"
+    if sec == "crm":
+        return "Settings › CRM"
     return "Settings"
 
 
@@ -268,6 +332,8 @@ def build_settings_page(pathname: str, user_id: int, search: str | None = None) 
     p = _normalize_path(pathname or "/settings")
     if p == "/settings/iam":
         p = first_allowed_iam_path(user_id) or "/settings"
+    if p == "/settings/crm" or (p.startswith("/settings/crm") and p not in _PAGE_BUILDERS):
+        p = first_allowed_crm_path(user_id) or "/settings"
 
     if not has_any_settings_access(user_id):
         return build_access_denied("You have no access to Settings.")

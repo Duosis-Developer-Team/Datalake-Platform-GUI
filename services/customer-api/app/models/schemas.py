@@ -106,26 +106,36 @@ class SalesEfficiencyByCategoryRow(BaseModel):
     usage_note: Optional[str] = None
 
 
-class ProductCategoryAliasRow(BaseModel):
+class ServiceMappingPageRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    page_key: str
+    category_label: str
+    gui_tab_binding: str
+    resource_unit: str
+    icon: Optional[str] = None
+    route_hint: Optional[str] = None
+    tab_hint: Optional[str] = None
+    sub_tab_hint: Optional[str] = None
+
+
+class ServiceMappingRow(BaseModel):
+    """One CRM catalog product with effective mapping (YAML seed + optional DB override)."""
+
     model_config = {"extra": "allow"}
 
     productid: str
     product_name: Optional[str] = None
-    category_code: Optional[str] = None
-    category_label: Optional[str] = None
-    gui_tab_binding: Optional[str] = None
-    resource_unit: Optional[str] = None
-    source: Optional[str] = None
-    last_seeded_at: Optional[str] = None
-    last_modified_at: Optional[str] = None
-    notes: Optional[str] = None
-
-
-class ProductCategoryAliasUpdate(BaseModel):
+    product_number: Optional[str] = None
     category_code: str
     category_label: str
     gui_tab_binding: str
     resource_unit: str
+    source: str
+
+
+class ServiceMappingUpsert(BaseModel):
+    page_key: str
     notes: Optional[str] = None
 
 

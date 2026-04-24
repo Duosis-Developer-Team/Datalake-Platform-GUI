@@ -18,6 +18,7 @@ bcrypt>=4.0.0
 PyJWT>=2.8.0
 cryptography>=41.0.0
 pydantic>=2.7.0
+PyYAML>=6.0.1
 # OpenTelemetry (distributed traces + correlated logs to external OTLP collector via gRPC)
 opentelemetry-api>=1.27.0
 opentelemetry-sdk>=1.27.0

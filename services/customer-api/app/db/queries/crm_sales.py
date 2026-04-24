@@ -139,21 +139,21 @@ WITH customer_ids AS (
     WHERE canonical_customer_key = %s OR crm_account_name ILIKE %s
 )
 SELECT
-    COALESCE(pca.category_code, 'other')     AS category_code,
-    COALESCE(pca.category_label, 'Other')    AS category_label,
-    COALESCE(pca.gui_tab_binding, 'other')   AS gui_tab_binding,
-    COALESCE(NULLIF(TRIM(pca.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
+    COALESCE(m.category_code, 'other')     AS category_code,
+    COALESCE(m.category_label, 'Other')    AS category_label,
+    COALESCE(m.gui_tab_binding, 'other')   AS gui_tab_binding,
+    COALESCE(NULLIF(TRIM(m.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
     SUM(d.quantity)::double precision        AS sold_qty,
     SUM(d.extendedamount)::double precision    AS sold_amount_tl
 FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
 JOIN   customer_ids c ON so.customerid = c.crm_accountid
-LEFT JOIN discovery_crm_product_category_alias pca ON pca.productid = d.productid
+LEFT JOIN v_gui_crm_product_mapping m ON m.productid = d.productid
 WHERE  so.statecode IN (3, 4)
-GROUP BY COALESCE(pca.category_code, 'other'),
-         COALESCE(pca.category_label, 'Other'),
-         COALESCE(pca.gui_tab_binding, 'other'),
-         COALESCE(NULLIF(TRIM(pca.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet')
+GROUP BY COALESCE(m.category_code, 'other'),
+         COALESCE(m.category_label, 'Other'),
+         COALESCE(m.gui_tab_binding, 'other'),
+         COALESCE(NULLIF(TRIM(m.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet')
 ORDER BY sold_amount_tl DESC NULLS LAST;
 """
 
@@ -218,34 +218,3 @@ ON CONFLICT (crm_accountid) DO UPDATE
         updated_at             = now();
 """
 
-# ---------------------------------------------------------------------------
-# Product category alias (GUI)
-# ---------------------------------------------------------------------------
-
-LIST_PRODUCT_CATEGORY_ALIASES = """
-SELECT
-    productid,
-    product_name,
-    category_code,
-    category_label,
-    gui_tab_binding,
-    resource_unit,
-    source,
-    last_seeded_at,
-    last_modified_at,
-    notes
-FROM discovery_crm_product_category_alias
-ORDER BY product_name NULLS LAST, productid;
-"""
-
-UPDATE_PRODUCT_CATEGORY_ALIAS = """
-UPDATE discovery_crm_product_category_alias
-SET category_code = %s,
-    category_label = %s,
-    gui_tab_binding = %s,
-    resource_unit = %s,
-    notes = COALESCE(%s, notes),
-    source = 'manual',
-    last_modified_at = now()
-WHERE productid = %s;
-"""

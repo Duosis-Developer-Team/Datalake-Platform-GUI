@@ -24,6 +24,7 @@ SETTINGS_ENTRY_CODES: tuple[str, ...] = (
     "page:settings_audit",
     "page:settings_integrations",
     "page:settings_auranotify",
+    "page:settings_service_mapping",
 )
 
 

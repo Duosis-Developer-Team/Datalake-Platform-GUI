@@ -1,0 +1,87 @@
+# CRM service mapping — human-readable registry (mirrors gui_crm_service_pages after DB migration).
+# Authoritative defaults for product rows are generated into SQL via:
+#   PYTHONPATH=Datalake-Platform-GUI python Datalake-Platform-GUI/shared/service_mapping/generate_seed_sql.py
+# Operator overrides live in PostgreSQL: gui_crm_service_mapping_override.
+
+version: 1
+description: >
+  page_key values align with customer-api efficiency_usage category_code prefixes
+  (e.g. virt_classic, backup_veeam). gui_tab_binding is used for Customer View tab hints.
+
+pages:
+  virt_classic:
+    label: "Classic virtualization"
+    resource_unit: "vCPU"
+    gui_tab_binding: "virtualization.classic"
+  virt_hyperconverged:
+    label: "Hyperconverged virtualization"
+    resource_unit: "vCPU"
+    gui_tab_binding: "virtualization.hyperconverged"
+  virt_nutanix:
+    label: "Pure Nutanix (AHV)"
+    resource_unit: "vCPU"
+    gui_tab_binding: "virtualization.nutanix"
+  virt_power:
+    label: "IBM Power LPAR"
+    resource_unit: "core"
+    gui_tab_binding: "virtualization.power"
+  backup_veeam:
+    label: "Veeam backup"
+    resource_unit: "per VM"
+    gui_tab_binding: "backup.veeam"
+  backup_zerto:
+    label: "Zerto replication"
+    resource_unit: "vCPU"
+    gui_tab_binding: "backup.zerto"
+  backup_netbackup:
+    label: "NetBackup"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.netbackup"
+  storage_s3:
+    label: "Object storage (S3)"
+    resource_unit: "GB"
+    gui_tab_binding: "storage.s3"
+  firewall_fortigate:
+    label: "FortiGate"
+    resource_unit: "Adet"
+    gui_tab_binding: "security.firewall"
+  firewall_paloalto:
+    label: "Palo Alto"
+    resource_unit: "Adet"
+    gui_tab_binding: "security.firewall"
+  firewall_sophos:
+    label: "Sophos"
+    resource_unit: "Adet"
+    gui_tab_binding: "security.firewall"
+  firewall_citrix:
+    label: "Citrix ADC"
+    resource_unit: "Adet"
+    gui_tab_binding: "security.firewall"
+  licensing_microsoft:
+    label: "Microsoft CSP / M365"
+    resource_unit: "per User"
+    gui_tab_binding: "licensing.microsoft"
+  licensing_redhat:
+    label: "Red Hat"
+    resource_unit: "Adet"
+    gui_tab_binding: "licensing.redhat"
+  dc_hosting:
+    label: "Colocation / hosting"
+    resource_unit: "Adet"
+    gui_tab_binding: "datacenter.hosting"
+  dc_energy:
+    label: "Datacenter energy"
+    resource_unit: "kW"
+    gui_tab_binding: "datacenter.energy"
+  monitoring:
+    label: "Monitoring"
+    resource_unit: "per VM"
+    gui_tab_binding: "operations.monitoring"
+  database_managed:
+    label: "Managed database"
+    resource_unit: "Adet"
+    gui_tab_binding: "data.database"
+  other:
+    label: "Other / uncategorized"
+    resource_unit: "Adet"
+    gui_tab_binding: "other"

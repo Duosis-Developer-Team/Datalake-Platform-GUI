@@ -85,11 +85,11 @@ def build_layout(search: str | None = None) -> html.Div:
                 badges=["Bulutlake / customer-api"],
             ),
             section_nav_card(
-                "CRM product categories",
-                "Product → billing category, GUI tab binding, and resource unit.",
-                "/settings/crm/product-categories",
+                "CRM service mapping",
+                "Product → service page_key (efficiency) and GUI tab binding; YAML seed + DB overrides.",
+                "/settings/crm/service-mapping",
                 icon="solar:tag-price-bold-duotone",
-                badges=["discovery_crm_product_category_alias"],
+                badges=["gui_crm_service_mapping_seed", "gui_crm_service_mapping_override"],
             ),
         ],
     )
