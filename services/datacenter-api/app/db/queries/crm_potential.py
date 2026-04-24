@@ -135,10 +135,10 @@ WITH cust AS (
     WHERE  vm.site_name ILIKE %s
 )
 SELECT
-    COALESCE(SUM(CASE WHEN lower(coalesce(m.resource_unit, d.uomid_name, '')) LIKE '%%vcpu%%'
-                      OR lower(coalesce(m.resource_unit, d.uomid_name, '')) = 'vcpu'
+    COALESCE(SUM(CASE WHEN lower(coalesce(NULLIF(TRIM(d.uomid_name), ''), m.resource_unit, '')) LIKE '%%vcpu%%'
+                      OR lower(coalesce(NULLIF(TRIM(d.uomid_name), ''), m.resource_unit, '')) = 'vcpu'
                  THEN d.quantity ELSE 0 END), 0)::double precision AS sold_vcpu,
-    COALESCE(SUM(CASE WHEN lower(coalesce(m.resource_unit, d.uomid_name, '')) LIKE '%%gb%%'
+    COALESCE(SUM(CASE WHEN lower(coalesce(NULLIF(TRIM(d.uomid_name), ''), m.resource_unit, '')) LIKE '%%gb%%'
                       AND COALESCE(m.category_code, '') LIKE 'virt%%'
                  THEN d.quantity ELSE 0 END), 0)::double precision AS sold_ram_gb
 FROM   discovery_crm_salesorderdetails d
@@ -162,7 +162,7 @@ SELECT
     COALESCE(m.category_code, 'other')     AS category_code,
     COALESCE(m.category_label, 'Other')   AS category_label,
     COALESCE(m.gui_tab_binding, 'other')   AS gui_tab_binding,
-    COALESCE(NULLIF(TRIM(m.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
+    COALESCE(NULLIF(TRIM(d.uomid_name), ''), NULLIF(TRIM(m.resource_unit), ''), 'Adet') AS resource_unit,
     SUM(d.quantity)::double precision        AS sold_qty,
     SUM(d.extendedamount)::double precision  AS sold_amount_tl
 FROM   discovery_crm_salesorderdetails d
@@ -175,7 +175,7 @@ WHERE  so.statecode IN (3, 4)
 GROUP BY COALESCE(m.category_code, 'other'),
          COALESCE(m.category_label, 'Other'),
          COALESCE(m.gui_tab_binding, 'other'),
-         COALESCE(NULLIF(TRIM(m.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet')
+         COALESCE(NULLIF(TRIM(d.uomid_name), ''), NULLIF(TRIM(m.resource_unit), ''), 'Adet')
 ORDER BY sold_amount_tl DESC NULLS LAST;
 """
 

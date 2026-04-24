@@ -129,7 +129,10 @@ def main() -> int:
     lines.append("    COALESCE(o.page_key, s.page_key, 'other') AS category_code,")
     lines.append("    pg.category_label,")
     lines.append("    pg.gui_tab_binding,")
-    lines.append("    COALESCE(NULLIF(TRIM(pg.resource_unit), ''), 'Adet') AS resource_unit,")
+    lines.append("    NULL::text AS resource_unit,")
+    lines.append(
+        "    COALESCE(NULLIF(TRIM(pg.resource_unit), ''), 'Adet') AS page_resource_unit,"
+    )
     lines.append(
         "    CASE WHEN o.productid IS NOT NULL THEN 'override' "
         "WHEN s.productid IS NOT NULL THEN 'yaml' ELSE 'default' END AS mapping_source"

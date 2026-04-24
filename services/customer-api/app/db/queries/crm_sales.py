@@ -142,7 +142,7 @@ SELECT
     COALESCE(m.category_code, 'other')     AS category_code,
     COALESCE(m.category_label, 'Other')    AS category_label,
     COALESCE(m.gui_tab_binding, 'other')   AS gui_tab_binding,
-    COALESCE(NULLIF(TRIM(m.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
+    COALESCE(NULLIF(TRIM(d.uomid_name), ''), NULLIF(TRIM(m.resource_unit), ''), 'Adet') AS resource_unit,
     SUM(d.quantity)::double precision        AS sold_qty,
     SUM(d.extendedamount)::double precision    AS sold_amount_tl
 FROM   discovery_crm_salesorderdetails d
@@ -153,7 +153,7 @@ WHERE  so.statecode IN (3, 4)
 GROUP BY COALESCE(m.category_code, 'other'),
          COALESCE(m.category_label, 'Other'),
          COALESCE(m.gui_tab_binding, 'other'),
-         COALESCE(NULLIF(TRIM(m.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet')
+         COALESCE(NULLIF(TRIM(d.uomid_name), ''), NULLIF(TRIM(m.resource_unit), ''), 'Adet')
 ORDER BY sold_amount_tl DESC NULLS LAST;
 """
 

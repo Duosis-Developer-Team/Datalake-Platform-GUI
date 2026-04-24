@@ -120,7 +120,11 @@ class ServiceMappingPageRow(BaseModel):
 
 
 class ServiceMappingRow(BaseModel):
-    """One CRM catalog product with effective mapping (YAML seed + optional DB override)."""
+    """One CRM catalog product with effective mapping (YAML seed + optional DB override).
+
+    ``resource_unit`` is the page registry default (``gui_crm_service_pages``), for Settings UI.
+    Sold-side analytics use ``salesorderdetails.uomid_name`` first (see ADR-0011 / CRM_SERVICE_MAPPING.md).
+    """
 
     model_config = {"extra": "allow"}
 

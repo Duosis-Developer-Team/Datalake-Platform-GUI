@@ -20,7 +20,7 @@ SELECT productid,
        category_code,
        category_label,
        gui_tab_binding,
-       resource_unit,
+       COALESCE(NULLIF(TRIM(page_resource_unit), ''), 'Adet') AS resource_unit,
        mapping_source AS source
 FROM   v_gui_crm_product_mapping
 ORDER BY product_name NULLS LAST, productid;

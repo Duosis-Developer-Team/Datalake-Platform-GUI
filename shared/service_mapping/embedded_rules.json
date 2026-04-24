@@ -97,8 +97,9 @@
     }
   },
   "rules": [
-    {"priority": 5, "category_code": "virt_classic", "name_regex": "(?i)Klasik Mimari Intel (CPU|RAM|Disk)"},
-    {"priority": 6, "category_code": "virt_classic", "name_regex": "(?i)Klasik Mimari (Veeam|Zerto) Replication"},
+    {"priority": 4, "category_code": "backup_zerto", "name_regex": "(?i)Klasik Mimari Zerto Replication"},
+    {"priority": 5, "category_code": "backup_veeam", "name_regex": "(?i)Klasik Mimari Veeam Replication"},
+    {"priority": 6, "category_code": "virt_classic", "name_regex": "(?i)Klasik Mimari Intel (CPU|RAM|Disk)"},
     {"priority": 10, "category_code": "virt_hyperconverged", "name_regex": "(?i)Hyperconverged Mimari Intel"},
     {"priority": 11, "category_code": "virt_hyperconverged", "name_regex": "(?i)Hyperconverged (İmaj|Imaj) Yedekleme"},
     {"priority": 20, "category_code": "virt_nutanix", "name_regex": "(?i)Remote Backup Hizmeti \\(Nutanix\\)"},

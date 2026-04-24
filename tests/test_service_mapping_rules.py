@@ -34,6 +34,9 @@ def test_load_rule_pack():
     [
         ("Remote Backup Hizmeti (Nutanix)", "virt_nutanix"),
         ("Veeam something backup", "backup_veeam"),
+        ("Klasik Mimari Veeam Replication RAM", "backup_veeam"),
+        ("Klasik Mimari Zerto Replication vCpu", "backup_zerto"),
+        ("Klasik Mimari Intel RAM - DR", "virt_classic"),
         ("FortiGate VM02", "firewall_fortigate"),
         ("Red Hat Enterprise Linux 9 subscription", "licensing_redhat"),
         ("Totally unknown SKU xyz", "other"),
