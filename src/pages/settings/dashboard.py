@@ -73,6 +73,27 @@ def build_layout(search: str | None = None) -> html.Div:
         ],
     )
 
+    crm_row = dmc.SimpleGrid(
+        cols=2,
+        spacing="lg",
+        children=[
+            section_nav_card(
+                "CRM customer aliases",
+                "Map CRM accounts to canonical customer keys and NetBox tenant fields.",
+                "/settings/customer-alias",
+                icon="solar:link-circle-bold-duotone",
+                badges=["Bulutlake / customer-api"],
+            ),
+            section_nav_card(
+                "CRM product categories",
+                "Product → billing category, GUI tab binding, and resource unit.",
+                "/settings/crm/product-categories",
+                icon="solar:tag-price-bold-duotone",
+                badges=["discovery_crm_product_category_alias"],
+            ),
+        ],
+    )
+
     audit_rows = []
     for x in audit:
         audit_rows.append(
@@ -215,6 +236,8 @@ def build_layout(search: str | None = None) -> html.Div:
                 kpi_row,
                 dmc.Space(h="lg"),
                 section_row,
+                dmc.Space(h="lg"),
+                crm_row,
                 dmc.Space(h="lg"),
                 audit_table,
                 dmc.Space(h="lg"),

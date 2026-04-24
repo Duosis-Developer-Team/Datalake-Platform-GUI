@@ -1,5 +1,6 @@
 # SQL queries for CRM sales data endpoints.
 # All queries join via discovery_crm_customer_alias to resolve canonical_customer_key → CRM accountid.
+# Scope: realized sales orders only (statecode 3 Fulfilled, 4 Invoiced) — see ADR-0010.
 
 CUSTOMER_ALIAS_SUBQUERY = """
     SELECT a.crm_accountid
@@ -17,57 +18,35 @@ WITH customer_ids AS (
     SELECT crm_accountid FROM discovery_crm_customer_alias
     WHERE canonical_customer_key = %s OR crm_account_name ILIKE %s
 ),
-ytd_revenue AS (
-    SELECT COALESCE(SUM(i.totalamount), 0) AS ytd_revenue_total,
-           COALESCE(COUNT(DISTINCT i.invoiceid), 0) AS invoice_count,
-           MIN(i.transactioncurrency_text) AS currency
-    FROM   discovery_crm_invoices i
-    WHERE  i.customerid IN (SELECT crm_accountid FROM customer_ids)
-      AND  i.statecode IN (0, 3)  -- Active or Paid
-      AND  EXTRACT(YEAR FROM i.invoicedate) = EXTRACT(YEAR FROM CURRENT_DATE)
+ytd_realized AS (
+    SELECT COALESCE(SUM(so.totalamount), 0) AS ytd_revenue_total,
+           COALESCE(COUNT(DISTINCT so.salesorderid), 0) AS ytd_order_count,
+           MIN(so.transactioncurrency_text) AS currency
+    FROM   discovery_crm_salesorders so
+    WHERE  so.customerid IN (SELECT crm_accountid FROM customer_ids)
+      AND  so.statecode IN (3, 4)
+      AND  EXTRACT(YEAR FROM COALESCE(so.fulfilldate, so.submitdate, so.modifiedon::date))
+           = EXTRACT(YEAR FROM CURRENT_DATE)
 ),
-open_pipeline AS (
-    SELECT COALESCE(SUM(o.estimatedvalue), 0) AS pipeline_value,
-           COALESCE(COUNT(*), 0) AS opportunity_count
-    FROM   discovery_crm_opportunities o
-    WHERE  o.customerid IN (SELECT crm_accountid FROM customer_ids)
-      AND  o.statecode = 0  -- Open
-),
-active_orders AS (
+in_progress_orders AS (
     SELECT COALESCE(COUNT(*), 0) AS active_order_count,
            COALESCE(SUM(so.totalamount), 0) AS active_order_value
     FROM   discovery_crm_salesorders so
     WHERE  so.customerid IN (SELECT crm_accountid FROM customer_ids)
-      AND  so.statecode IN (0, 1)  -- Active, Submitted
-),
-active_contracts AS (
-    SELECT COALESCE(COUNT(*), 0) AS active_contract_count,
-           COALESCE(SUM(c.totalprice), 0) AS total_contract_value,
-           COALESCE(
-               SUM(CASE
-                   WHEN c.billingfrequencycode = 1 THEN c.totalprice          -- Annual
-                   WHEN c.billingfrequencycode = 3 THEN c.totalprice / 12.0   -- Monthly already
-                   WHEN c.billingfrequencycode = 2 THEN c.totalprice / 4.0    -- Quarterly
-                   ELSE 0
-               END), 0
-           ) AS estimated_mrr
-    FROM   discovery_crm_contracts c
-    WHERE  c.customerid IN (SELECT crm_accountid FROM customer_ids)
-      AND  c.statecode = 0  -- Active
-      AND  (c.expireson IS NULL OR c.expireson >= CURRENT_DATE)
+      AND  so.statecode IN (0, 1)
 )
 SELECT
-    ytd_revenue.ytd_revenue_total,
-    ytd_revenue.invoice_count,
-    ytd_revenue.currency,
-    open_pipeline.pipeline_value,
-    open_pipeline.opportunity_count,
-    active_orders.active_order_count,
-    active_orders.active_order_value,
-    active_contracts.active_contract_count,
-    active_contracts.total_contract_value,
-    active_contracts.estimated_mrr
-FROM ytd_revenue, open_pipeline, active_orders, active_contracts;
+    ytd_realized.ytd_revenue_total,
+    ytd_realized.ytd_order_count,
+    ytd_realized.currency,
+    0.0::double precision AS pipeline_value,
+    0::bigint AS opportunity_count,
+    in_progress_orders.active_order_count,
+    in_progress_orders.active_order_value,
+    0::bigint AS active_contract_count,
+    0.0::double precision AS total_contract_value,
+    0.0::double precision AS estimated_mrr
+FROM ytd_realized, in_progress_orders;
 """
 
 # ---------------------------------------------------------------------------
@@ -76,31 +55,9 @@ FROM ytd_revenue, open_pipeline, active_orders, active_contracts;
 
 SALES_ITEMS = """
 SELECT
-    'invoice'                          AS source_type,
-    i.invoicenumber                    AS reference_number,
-    i.invoicedate::TEXT                AS date,
-    i.statecode_text                   AS status,
-    d.product_name,
-    d.productdescription,
-    d.uomid_name                       AS unit,
-    d.quantity,
-    d.priceperunit                     AS unit_price,
-    d.extendedamount                   AS line_total,
-    i.transactioncurrency_text         AS currency
-FROM   discovery_crm_invoicedetails d
-JOIN   discovery_crm_invoices i ON i.invoiceid = d.invoiceid
-WHERE  i.customerid IN (
-           SELECT crm_accountid FROM discovery_crm_customer_alias
-           WHERE canonical_customer_key = %s OR crm_account_name ILIKE %s
-       )
-  AND  i.statecode IN (0, 3)
-
-UNION ALL
-
-SELECT
     'salesorder'                       AS source_type,
     so.ordernumber                     AS reference_number,
-    so.submitdate::TEXT                AS date,
+    COALESCE(so.fulfilldate::text, so.submitdate::text, so.modifiedon::text) AS date,
     so.statecode_text                  AS status,
     d.product_name,
     d.productdescription,
@@ -115,16 +72,13 @@ WHERE  so.customerid IN (
            SELECT crm_accountid FROM discovery_crm_customer_alias
            WHERE canonical_customer_key = %s OR crm_account_name ILIKE %s
        )
-  AND  so.statecode IN (0, 1, 3)  -- Active, Submitted, Fulfilled
-
-ORDER BY date DESC NULLS LAST;
+  AND  so.statecode IN (3, 4)
+ORDER BY so.modifiedon DESC NULLS LAST, d.extendedamount DESC NULLS LAST;
 """
 
 # ---------------------------------------------------------------------------
 # /customers/{name}/sales/efficiency
 # ---------------------------------------------------------------------------
-# Compares billed capacity (from invoicedetails/salesorderdetails quantity × unit)
-# with actual utilization (from VM/compute tables joined via alias).
 
 SALES_EFFICIENCY = """
 WITH customer_ids AS (
@@ -137,12 +91,12 @@ billed_by_product AS (
         d.uomid_name                         AS unit,
         SUM(d.quantity)                      AS total_billed_qty,
         SUM(d.extendedamount)                AS total_billed_amount,
-        i.transactioncurrency_text           AS currency
-    FROM   discovery_crm_invoicedetails d
-    JOIN   discovery_crm_invoices i ON i.invoiceid = d.invoiceid
-    WHERE  i.customerid IN (SELECT crm_accountid FROM customer_ids)
-      AND  i.statecode IN (0, 3)
-    GROUP BY d.product_name, d.uomid_name, i.transactioncurrency_text
+        so.transactioncurrency_text          AS currency
+    FROM   discovery_crm_salesorderdetails d
+    JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+    WHERE  so.customerid IN (SELECT crm_accountid FROM customer_ids)
+      AND  so.statecode IN (3, 4)
+    GROUP BY d.product_name, d.uomid_name, so.transactioncurrency_text
 ),
 catalog_prices AS (
     SELECT
@@ -164,21 +118,48 @@ SELECT
     cp.catalog_unit_price,
     cp.price_list,
     CASE
-        WHEN cp.catalog_unit_price > 0
+        WHEN cp.catalog_unit_price > 0 AND b.total_billed_qty > 0
         THEN ROUND((b.total_billed_amount / (b.total_billed_qty * cp.catalog_unit_price) * 100)::numeric, 2)
         ELSE NULL
     END                                      AS catalog_coverage_pct
 FROM billed_by_product b
 LEFT JOIN catalog_prices cp
     ON  lower(trim(cp.product_name)) = lower(trim(b.product_name))
-    AND lower(trim(cp.unit))         = lower(trim(b.unit))
+    AND lower(trim(coalesce(cp.unit, ''))) = lower(trim(coalesce(b.unit, '')))
 ORDER BY b.total_billed_amount DESC NULLS LAST;
+"""
+
+# ---------------------------------------------------------------------------
+# /customers/{name}/sales/efficiency-by-category (sold side; usage merged in Python)
+# ---------------------------------------------------------------------------
+
+SALES_SOLD_BY_CATEGORY = """
+WITH customer_ids AS (
+    SELECT crm_accountid FROM discovery_crm_customer_alias
+    WHERE canonical_customer_key = %s OR crm_account_name ILIKE %s
+)
+SELECT
+    COALESCE(pca.category_code, 'other')     AS category_code,
+    COALESCE(pca.category_label, 'Other')    AS category_label,
+    COALESCE(pca.gui_tab_binding, 'other')   AS gui_tab_binding,
+    COALESCE(NULLIF(TRIM(pca.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
+    SUM(d.quantity)::double precision        AS sold_qty,
+    SUM(d.extendedamount)::double precision    AS sold_amount_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+JOIN   customer_ids c ON so.customerid = c.crm_accountid
+LEFT JOIN discovery_crm_product_category_alias pca ON pca.productid = d.productid
+WHERE  so.statecode IN (3, 4)
+GROUP BY COALESCE(pca.category_code, 'other'),
+         COALESCE(pca.category_label, 'Other'),
+         COALESCE(pca.gui_tab_binding, 'other'),
+         COALESCE(NULLIF(TRIM(pca.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet')
+ORDER BY sold_amount_tl DESC NULLS LAST;
 """
 
 # ---------------------------------------------------------------------------
 # /customers/{name}/sales/catalog-valuation
 # ---------------------------------------------------------------------------
-# Estimates current resource value against the standard price catalog.
 
 CATALOG_VALUATION = """
 WITH customer_alias AS (
@@ -187,7 +168,6 @@ WITH customer_alias AS (
     WHERE  canonical_customer_key = %s OR crm_account_name ILIKE %s
     LIMIT  1
 ),
--- Standard TL price list as reference
 tl_catalog AS (
     SELECT
         p.name         AS product_name,
@@ -236,4 +216,36 @@ ON CONFLICT (crm_accountid) DO UPDATE
         notes                  = EXCLUDED.notes,
         source                 = 'manual',
         updated_at             = now();
+"""
+
+# ---------------------------------------------------------------------------
+# Product category alias (GUI)
+# ---------------------------------------------------------------------------
+
+LIST_PRODUCT_CATEGORY_ALIASES = """
+SELECT
+    productid,
+    product_name,
+    category_code,
+    category_label,
+    gui_tab_binding,
+    resource_unit,
+    source,
+    last_seeded_at,
+    last_modified_at,
+    notes
+FROM discovery_crm_product_category_alias
+ORDER BY product_name NULLS LAST, productid;
+"""
+
+UPDATE_PRODUCT_CATEGORY_ALIAS = """
+UPDATE discovery_crm_product_category_alias
+SET category_code = %s,
+    category_label = %s,
+    gui_tab_binding = %s,
+    resource_unit = %s,
+    notes = COALESCE(%s, notes),
+    source = 'manual',
+    last_modified_at = now()
+WHERE productid = %s;
 """

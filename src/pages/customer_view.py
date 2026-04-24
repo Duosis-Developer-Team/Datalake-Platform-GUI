@@ -24,6 +24,7 @@ from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_f
 from src.components.header import create_detail_header
 from src.pages.home import metric_card
 from src.components.s3_panel import build_customer_s3_panel
+from src.components.sold_vs_used_panel import build_sold_vs_used_stack, filter_efficiency_rows
 
 
 # ---------------------------------------------------------------------------
@@ -483,8 +484,16 @@ def _tab_summary(totals: dict, assets: dict):
     ])
 
 
-def _tab_billing(totals: dict, assets: dict, backup_totals: dict, s3_data: dict | None = None):
-    """Billing tab: invoice-style view combining compute, backup and S3."""
+def _tab_billing(
+    totals: dict,
+    assets: dict,
+    backup_totals: dict,
+    s3_data: dict | None = None,
+    sales_summary: dict | None = None,
+    crm_eff_panel: html.Div | None = None,
+):
+    """Billing tab: realized CRM KPIs, invoice-style compute/backup/S3, and cross-cutting sold vs used."""
+    sales_summary = sales_summary or {}
     classic   = assets.get("classic", {}) or {}
     hyperconv = assets.get("hyperconv", {}) or {}
     pure_nx   = assets.get("pure_nutanix", {}) or {}
@@ -513,9 +522,33 @@ def _tab_billing(totals: dict, assets: dict, backup_totals: dict, s3_data: dict 
     vaults = (s3_data or {}).get("vaults", []) or []
     vault_count = len(vaults)
 
+    cur = str(sales_summary.get("currency") or "TL")
+
+    def _money(v):
+        if v is None:
+            return "-"
+        return f"{float(v):,.2f} {cur}"
+
+    kpi_crm = dmc.SimpleGrid(
+        cols=4,
+        spacing="lg",
+        children=[
+            _metric("YTD realized revenue", _money(sales_summary.get("ytd_revenue_total")), "solar:money-bag-bold-duotone", color="green"),
+            _metric("YTD orders (fulfilled/invoiced)", f"{int(sales_summary.get('invoice_count') or 0):,}", "solar:bill-list-bold-duotone", color="teal"),
+            _metric("Active orders (open)", f"{int(sales_summary.get('active_order_count') or 0):,}", "solar:cart-bold-duotone", color="cyan"),
+            _metric("Estimated MRR", _money(sales_summary.get("estimated_mrr")), "solar:calendar-bold-duotone", color="violet"),
+        ],
+    )
+
     return dmc.Stack(
         gap="lg",
         children=[
+            _section_card(
+                "CRM — realized sales (YTD)",
+                "Fulfilled / invoiced sales orders only (no pipeline) — see ADR-0010",
+                kpi_crm,
+            ),
+            crm_eff_panel if crm_eff_panel is not None else html.Div(),
             dmc.SimpleGrid(
                 cols=4,
                 spacing="lg",
@@ -624,7 +657,7 @@ def _tab_billing(totals: dict, assets: dict, backup_totals: dict, s3_data: dict 
     )
 
 
-def _tab_classic(classic: dict, vm_outage_counts: dict | None = None):
+def _tab_classic(classic: dict, vm_outage_counts: dict | None = None, crm_eff_panel: html.Div | None = None):
     """Classic Compute (KM cluster) billing tab."""
     vm_count = int(classic.get("vm_count", 0) or 0)
     cpu = float(classic.get("cpu_total", 0) or 0)
@@ -684,9 +717,11 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None):
         "Availability",
     ]
     _classic_numeric_cols = frozenset(range(2, 13))
+    head = [crm_eff_panel] if crm_eff_panel is not None else []
     return dmc.Stack(
         gap="lg",
-        children=[
+        children=head
+        + [
             dmc.SimpleGrid(
                 cols=4,
                 spacing="lg",
@@ -723,6 +758,7 @@ def _tab_hyperconv(
     hyperconv: dict,
     pure_nutanix: dict | None = None,
     vm_outage_counts: dict | None = None,
+    crm_eff_panel: html.Div | None = None,
 ):
     """Hyperconverged (non-KM VMware + Nutanix) billing tab."""
     pure_nutanix = pure_nutanix or {}
@@ -789,9 +825,11 @@ def _tab_hyperconv(
         "Availability",
     ]
     _hyperconv_numeric_cols = frozenset(range(3, 14))
+    head_h = [crm_eff_panel] if crm_eff_panel is not None else []
     return dmc.Stack(
         gap="lg",
-        children=[
+        children=head_h
+        + [
             dmc.SimpleGrid(
                 cols=4,
                 spacing="lg",
@@ -854,7 +892,7 @@ def _tab_hyperconv(
     )
 
 
-def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
+def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None, crm_eff_panel: html.Div | None = None):
     """Pure Nutanix (AHV-only) clusters — no matching VMware non-KM cluster name."""
     vm_count = int(pure.get("vm_count", 0) or 0)
     clusters = int(pure.get("cluster_count", 0) or 0)
@@ -917,9 +955,11 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
         "Availability",
     ]
     _pure_nx_numeric_cols = frozenset(range(3, 14))
+    head_p = [crm_eff_panel] if crm_eff_panel is not None else []
     return dmc.Stack(
         gap="lg",
-        children=[
+        children=head_p
+        + [
             dmc.SimpleGrid(
                 cols=5,
                 spacing="lg",
@@ -953,7 +993,7 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None):
     )
 
 
-def _tab_power(power: dict, vm_outage_counts: dict | None = None):
+def _tab_power(power: dict, vm_outage_counts: dict | None = None, crm_eff_panel: html.Div | None = None):
     """Power Mimari (IBM LPAR) billing tab."""
     lpars = int(power.get("lpar_count", 0) or 0)
     cpu = float(power.get("cpu_total", 0) or 0)
@@ -1000,9 +1040,11 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None):
         "Availability",
     ]
     _power_numeric_cols = frozenset(range(2, 10))
+    head_pw = [crm_eff_panel] if crm_eff_panel is not None else []
     return dmc.Stack(
         gap="lg",
-        children=[
+        children=head_pw
+        + [
             dmc.SimpleGrid(
                 cols=3,
                 spacing="lg",
@@ -1034,12 +1076,13 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None):
     )
 
 
-def _tab_veeam(backup_assets: dict, backup_totals: dict):
+def _tab_veeam(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div | None = None):
     veeam       = backup_assets.get("veeam", {}) or {}
     veeam_types = veeam.get("session_types", []) or []
     defined     = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
 
-    return dmc.Stack(gap="lg", children=[
+    head_v = [crm_eff_panel] if crm_eff_panel is not None else []
+    return dmc.Stack(gap="lg", children=head_v + [
         dmc.SimpleGrid(cols=2, spacing="lg", children=[
             _metric("Defined Sessions", f"{defined:,}", "material-symbols:backup-outline"),
             _metric("Session Types",    f"{len(veeam_types):,}", "material-symbols:list-alt-outline", color="teal"),
@@ -1060,13 +1103,14 @@ def _tab_veeam(backup_assets: dict, backup_totals: dict):
     ])
 
 
-def _tab_zerto(backup_assets: dict, backup_totals: dict):
+def _tab_zerto(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div | None = None):
     zerto      = backup_assets.get("zerto", {}) or {}
     vpgs       = zerto.get("vpgs", []) or []
     protected  = int(backup_totals.get("zerto_protected_vms", 0) or 0)
     prov_total = float(backup_totals.get("zerto_provisioned_gib", 0) or 0)
 
-    return dmc.Stack(gap="lg", children=[
+    head_z = [crm_eff_panel] if crm_eff_panel is not None else []
+    return dmc.Stack(gap="lg", children=head_z + [
         dmc.SimpleGrid(cols=2, spacing="lg", children=[
             _metric("Protected VMs",      f"{protected:,}",        "material-symbols:shield-outline", color="teal"),
             _metric("Total Provisioned",  f"{prov_total:.2f} GiB", "solar:database-bold-duotone",          color="teal"),
@@ -1090,13 +1134,14 @@ def _tab_zerto(backup_assets: dict, backup_totals: dict):
     ])
 
 
-def _tab_netbackup(backup_assets: dict, backup_totals: dict):
+def _tab_netbackup(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div | None = None):
     nb = backup_assets.get("netbackup", {}) or {}
     pre_gib    = float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0)
     post_gib   = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
     dedup_fact = nb.get("deduplication_factor", "1x")
 
-    return dmc.Stack(gap="lg", children=[
+    head_nb = [crm_eff_panel] if crm_eff_panel is not None else []
+    return dmc.Stack(gap="lg", children=head_nb + [
         dmc.SimpleGrid(cols=3, spacing="lg", children=[
             _metric("Pre-Dedup (GiB)",  f"{pre_gib:.2f}",  "mdi:database-lock-outline"),
             _metric("Stored (GiB)",     f"{post_gib:.2f}", "mdi:database-arrow-down-outline", color="teal"),
@@ -1115,101 +1160,6 @@ def _tab_netbackup(backup_assets: dict, backup_totals: dict):
                     ]),
                 ],
             ),
-        ),
-    ])
-
-
-def _tab_sales(customer_name: str):
-    """Sales tab: CRM sales summary KPI cards, line items table, and efficiency overview."""
-    summary = api.get_customer_sales_summary(customer_name)
-    items = api.get_customer_sales_items(customer_name)
-    efficiency = api.get_customer_sales_efficiency(customer_name)
-
-    currency = summary.get("currency") or "TL"
-
-    def _fmt_money(v, cur=currency):
-        if v is None:
-            return "-"
-        return f"{float(v):,.2f} {cur}"
-
-    def _fmt_num(v):
-        if v is None:
-            return "-"
-        return str(int(v))
-
-    kpi_cards = dmc.SimpleGrid(
-        cols=5,
-        spacing="lg",
-        children=[
-            _metric("YTD Revenue",         _fmt_money(summary.get("ytd_revenue_total")), "solar:money-bag-bold-duotone", color="green"),
-            _metric("Open Pipeline",       _fmt_money(summary.get("pipeline_value")),    "solar:target-bold-duotone",    color="indigo"),
-            _metric("Active Orders",       _fmt_num(summary.get("active_order_count")),  "solar:cart-bold-duotone",      color="cyan"),
-            _metric("Active Contracts",    _fmt_num(summary.get("active_contract_count")),"solar:document-text-bold-duotone", color="orange"),
-            _metric("Estimated MRR",       _fmt_money(summary.get("estimated_mrr")),     "solar:calendar-bold-duotone",  color="violet"),
-        ],
-    )
-
-    def _items_row(r):
-        return html.Tr([
-            html.Td(r.get("source_type") or "-"),
-            html.Td(r.get("reference_number") or "-"),
-            html.Td((r.get("date") or "-")[:10]),
-            html.Td(r.get("status") or "-"),
-            html.Td(r.get("product_name") or r.get("productdescription") or "-"),
-            html.Td(r.get("unit") or "-"),
-            html.Td(f"{float(r['quantity']):,.0f}" if r.get("quantity") is not None else "-"),
-            html.Td(_fmt_money(r.get("line_total"), r.get("currency") or currency)),
-        ])
-
-    items_table = dmc.Table(
-        striped=True,
-        highlightOnHover=True,
-        withTableBorder=True,
-        children=[
-            html.Thead(html.Tr([
-                html.Th("Type"), html.Th("Reference"), html.Th("Date"),
-                html.Th("Status"), html.Th("Product"), html.Th("Unit"),
-                html.Th("Qty"), html.Th("Total"),
-            ])),
-            html.Tbody([_items_row(r) for r in (items or [])] or [html.Tr([html.Td("No data", colSpan=8)])]),
-        ],
-    )
-
-    def _eff_row(r):
-        pct = r.get("catalog_coverage_pct")
-        return html.Tr([
-            html.Td(r.get("product_name") or "-"),
-            html.Td(r.get("unit") or "-"),
-            html.Td(f"{float(r['total_billed_qty']):,.2f}" if r.get("total_billed_qty") is not None else "-"),
-            html.Td(_fmt_money(r.get("total_billed_amount"), r.get("currency") or currency)),
-            html.Td(_fmt_money(r.get("catalog_unit_price"), currency) if r.get("catalog_unit_price") is not None else "-"),
-            html.Td(f"{pct:.1f}%" if pct is not None else "-"),
-        ])
-
-    eff_table = dmc.Table(
-        striped=True,
-        highlightOnHover=True,
-        withTableBorder=True,
-        children=[
-            html.Thead(html.Tr([
-                html.Th("Product"), html.Th("Unit"), html.Th("Billed Qty"),
-                html.Th("Billed Amount"), html.Th("Catalog Price"), html.Th("Coverage %"),
-            ])),
-            html.Tbody([_eff_row(r) for r in (efficiency or [])] or [html.Tr([html.Td("No data", colSpan=6)])]),
-        ],
-    )
-
-    return dmc.Stack(gap="lg", children=[
-        kpi_cards,
-        _section_card(
-            "Sales & Invoice Line Items",
-            "Billed products across invoices and active sales orders",
-            [items_table],
-        ),
-        _section_card(
-            "Product Efficiency",
-            "Billed quantity vs catalog unit price — coverage percentage per product",
-            [eff_table],
         ),
     ])
 
@@ -1675,6 +1625,16 @@ def _tab_itsm(
 # Main content block
 # ---------------------------------------------------------------------------
 
+def _crm_rows_outside_virt_backup(eff_rows: list | None) -> list:
+    """Categories for Billing tab (firewall, licensing, colocation, S3, etc.)."""
+    out: list = []
+    for r in eff_rows or []:
+        g = str(r.get("gui_tab_binding") or "").lower()
+        if not g.startswith("virtualization") and not g.startswith("backup"):
+            out.append(r)
+    return out
+
+
 def _customer_content(customer_name: str, time_range: dict | None = None):
     tr = time_range or default_time_range()
     name = (customer_name or "").strip()
@@ -1690,7 +1650,6 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             "avail": empty,
             "backup": empty,
             "billing": empty,
-            "sales": empty,
             "itsm": empty,
             "s3": html.Div(),
             "has_s3": False,
@@ -1720,6 +1679,9 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     itsm_summary  = api.get_customer_itsm_summary(name, tr)
     itsm_extremes = api.get_customer_itsm_extremes(name, tr)
     itsm_tickets  = api.get_customer_itsm_tickets(name, tr)
+
+    sales_summary = api.get_customer_sales_summary(name)
+    eff_by_cat = api.get_customer_efficiency_by_category(name)
 
     # Values used by Summary "Backup summary" cards (kept here to avoid NameError).
     veeam_defined = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
@@ -1787,17 +1749,56 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     virt_tabs_list.append(dmc.TabsTab("Power Mimari", value="power"))
 
     virt_panels_list = [
-        dmc.TabsPanel(value="classic", pt="lg", children=_tab_classic(classic, vm_outage_counts)),
         dmc.TabsPanel(
-            value="hyperconv", pt="lg", children=_tab_hyperconv(hyperconv, pure_nx, vm_outage_counts)
+            value="classic",
+            pt="lg",
+            children=_tab_classic(
+                classic,
+                vm_outage_counts,
+                crm_eff_panel=build_sold_vs_used_stack(
+                    filter_efficiency_rows(eff_by_cat, "virtualization.classic")
+                ),
+            ),
+        ),
+        dmc.TabsPanel(
+            value="hyperconv",
+            pt="lg",
+            children=_tab_hyperconv(
+                hyperconv,
+                pure_nx,
+                vm_outage_counts,
+                crm_eff_panel=build_sold_vs_used_stack(
+                    filter_efficiency_rows(eff_by_cat, "virtualization.hyperconverged")
+                ),
+            ),
         ),
     ]
     if show_pure_tab:
         virt_panels_list.append(
-            dmc.TabsPanel(value="pure_nx", pt="lg", children=_tab_pure_nutanix(pure_nx, vm_outage_counts))
+            dmc.TabsPanel(
+                value="pure_nx",
+                pt="lg",
+                children=_tab_pure_nutanix(
+                    pure_nx,
+                    vm_outage_counts,
+                    crm_eff_panel=build_sold_vs_used_stack(
+                        filter_efficiency_rows(eff_by_cat, "virtualization.nutanix")
+                    ),
+                ),
+            )
         )
     virt_panels_list.append(
-        dmc.TabsPanel(value="power", pt="lg", children=_tab_power(power_asset, vm_outage_counts))
+        dmc.TabsPanel(
+            value="power",
+            pt="lg",
+            children=_tab_power(
+                power_asset,
+                vm_outage_counts,
+                crm_eff_panel=build_sold_vs_used_stack(
+                    filter_efficiency_rows(eff_by_cat, "virtualization.power")
+                ),
+            ),
+        )
     )
 
     virt_content = dmc.Tabs(
@@ -1824,9 +1825,33 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
                     dmc.TabsTab("Netbackup", value="netbackup"),
                 ]
             ),
-            dmc.TabsPanel(value="veeam", pt="lg", children=_tab_veeam(backup_assets, backup_totals)),
-            dmc.TabsPanel(value="zerto", pt="lg", children=_tab_zerto(backup_assets, backup_totals)),
-            dmc.TabsPanel(value="netbackup", pt="lg", children=_tab_netbackup(backup_assets, backup_totals)),
+            dmc.TabsPanel(
+                value="veeam",
+                pt="lg",
+                children=_tab_veeam(
+                    backup_assets,
+                    backup_totals,
+                    crm_eff_panel=build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, "backup.veeam")),
+                ),
+            ),
+            dmc.TabsPanel(
+                value="zerto",
+                pt="lg",
+                children=_tab_zerto(
+                    backup_assets,
+                    backup_totals,
+                    crm_eff_panel=build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, "backup.zerto")),
+                ),
+            ),
+            dmc.TabsPanel(
+                value="netbackup",
+                pt="lg",
+                children=_tab_netbackup(
+                    backup_assets,
+                    backup_totals,
+                    crm_eff_panel=build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, "backup.netbackup")),
+                ),
+            ),
         ],
     )
 
@@ -1850,7 +1875,6 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         "summary": _tab_summary(totals, assets),
         "virt": virt_content,
         "avail": _tab_customer_availability(avail_bundle),
-        "sales": _tab_sales(name),
         "itsm": _tab_itsm(name, tr, itsm_summary, itsm_extremes, itsm_tickets),
         "backup": dmc.Stack(
             gap="lg",
@@ -1867,7 +1891,14 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
                 backup_tabs,
             ],
         ),
-        "billing": _tab_billing(totals, assets, backup_totals, s3_data),
+        "billing": _tab_billing(
+            totals,
+            assets,
+            backup_totals,
+            s3_data,
+            sales_summary=sales_summary,
+            crm_eff_panel=build_sold_vs_used_stack(_crm_rows_outside_virt_backup(eff_by_cat)),
+        ),
         "s3": html.Div(
             id="s3-customer-metrics-panel",
             style={"padding": "0 30px"},
@@ -1919,7 +1950,6 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
             dmc.TabsTab("Availability", value="avail"),
             dmc.TabsTab("Backup", value="backup"),
             dmc.TabsTab("Billing", value="billing"),
-            dmc.TabsTab("Sales", value="sales"),
             dmc.TabsTab("ITSM", value="itsm"),
             dmc.TabsTab("Physical Inventory", value="phys-inv") if has_phys_inv else None,
             dmc.TabsTab("S3", value="s3") if has_s3 else None,
@@ -2034,10 +2064,6 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
                     dmc.TabsPanel(
                         value="billing",
                         children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("billing")]),
-                    ),
-                    dmc.TabsPanel(
-                        value="sales",
-                        children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("sales")]),
                     ),
                     dmc.TabsPanel(
                         value="itsm",

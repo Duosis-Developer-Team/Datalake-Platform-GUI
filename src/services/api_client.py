@@ -156,6 +156,12 @@ def _get_json(client: httpx.Client, path: str, params: Optional[dict[str, str]] 
     return response.json()
 
 
+def _put_json(client: httpx.Client, path: str, body: dict[str, Any]) -> Any:
+    response = client.put(path, json=body, headers=_auth_headers())
+    response.raise_for_status()
+    return response.json()
+
+
 _HTTP_ERRORS = (
     httpx.ConnectError,
     httpx.TimeoutException,
@@ -950,6 +956,59 @@ def get_dc_sales_potential(dc_code: str) -> dict:
 
     ck = f"api:dc_sales_potential:{enc}"
     return _api_cache_get_with_stale(ck, fetch, {})
+
+
+def get_dc_sales_potential_v2(dc_code: str) -> dict:
+    enc = quote(dc_code, safe="")
+
+    def fetch() -> dict:
+        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/sales-potential/v2")
+        return data if isinstance(data, dict) else {}
+
+    ck = f"api:dc_sales_potential_v2:{enc}"
+    return _api_cache_get_with_stale(ck, fetch, {})
+
+
+def get_customer_efficiency_by_category(name: str) -> list:
+    enc = quote(name, safe="")
+
+    def fetch() -> list:
+        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/sales/efficiency-by-category")
+        return data if isinstance(data, list) else []
+
+    ck = f"api:crm_efficiency_by_cat:{enc}"
+    return _api_cache_get_with_stale(ck, fetch, [])
+
+
+def get_crm_product_categories() -> list:
+    def fetch() -> list:
+        data = _get_json(_client_cust, "/api/v1/crm/product-categories")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_product_categories", fetch, [])
+
+
+def put_crm_product_category(
+    productid: str,
+    *,
+    category_code: str,
+    category_label: str,
+    gui_tab_binding: str,
+    resource_unit: str,
+    notes: Optional[str] = None,
+) -> dict[str, Any]:
+    enc = quote(productid, safe="")
+    body: dict[str, Any] = {
+        "category_code": category_code,
+        "category_label": category_label,
+        "gui_tab_binding": gui_tab_binding,
+        "resource_unit": resource_unit,
+    }
+    if notes is not None:
+        body["notes"] = notes
+    out = _put_json(_client_cust, f"/api/v1/crm/product-categories/{enc}", body)
+    _api_response_cache.delete("api:crm_product_categories")
+    return out if isinstance(out, dict) else {}
 
 
 def get_crm_aliases() -> list:

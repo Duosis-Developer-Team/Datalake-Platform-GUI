@@ -127,7 +127,44 @@ def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo") -> ht
     )
 
 
-def _dc_vault_card(dc, sla_entry=None):
+def _dc_sellable_ribbon(sales_v2: dict | None) -> html.Div:
+    """Compact CRM sellable-remaining strip (80%% policy, v2 API)."""
+    if not isinstance(sales_v2, dict):
+        return html.Div()
+    pct = float(sales_v2.get("general_remaining_pct") or 0.0)
+    pr = sales_v2.get("per_resource") or {}
+    cpu = pr.get("cpu") or {}
+    ram = pr.get("ram") or {}
+    tip = (
+        f"CPU headroom %: {cpu.get('remaining_sellable_pct')} | "
+        f"RAM headroom %: {ram.get('remaining_sellable_pct')} | "
+        f"Approx. potential TL: {sales_v2.get('potential_revenue_tl')}"
+    )
+    return dmc.Tooltip(
+        label=tip,
+        position="bottom",
+        withArrow=True,
+        multiline=True,
+        w=320,
+        children=html.Div(
+            style={"marginTop": "6px"},
+            children=[
+                dmc.Group(
+                    justify="space-between",
+                    gap="xs",
+                    mb=4,
+                    children=[
+                        dmc.Text("Satılabilir kalan (CRM)", size="xs", fw=600, c="#A3AED0"),
+                        dmc.Text(f"{pct:.1f}%", size="xs", fw=800, c="#4318FF"),
+                    ],
+                ),
+                dmc.Progress(value=min(100.0, max(0.0, pct)), color="indigo", size="sm", radius="xl"),
+            ],
+        ),
+    )
+
+
+def _dc_vault_card(dc, sla_entry=None, sales_v2: dict | None = None):
     """Elite DC Vault card: shimmer, dual ring, CPU/RAM footer, SLA accent."""
     dc_title = format_dc_display_name(dc.get("name"), dc.get("description"))
     stats    = dc.get("stats") or {}
@@ -440,6 +477,7 @@ def _dc_vault_card(dc, sla_entry=None):
 
             # CPU / RAM footer
             resource_footer,
+            _dc_sellable_ribbon(sales_v2),
         ],
     )
 
@@ -454,6 +492,16 @@ def build_datacenters(time_range=None, visible_sections=None):
 
     datacenters = api.get_all_datacenters_summary(tr)
     sla_by_dc   = api.get_sla_by_dc(tr)
+
+    v2_by_dc: dict[str, dict] = {}
+    total_potential_tl = 0.0
+    for dc in datacenters:
+        cid = dc.get("id")
+        if cid is None:
+            continue
+        v2 = api.get_dc_sales_potential_v2(str(cid))
+        v2_by_dc[str(cid)] = v2 if isinstance(v2, dict) else {}
+        total_potential_tl += float((v2 or {}).get("potential_revenue_tl") or 0.0)
 
     # ── Export rows ──
     export_rows = []
@@ -501,6 +549,12 @@ def build_datacenters(time_range=None, visible_sections=None):
             _summary_kpi("solar:laptop-bold-duotone",               "Total VMs",   f"{total_vms:,}",       "teal"),
             _summary_kpi("solar:box-bold-duotone",                  "Clusters",    f"{total_clusters:,}",  "grape"),
             _summary_kpi("solar:bolt-bold-duotone",                 "Total Power", f"{total_power:.1f} kW","yellow"),
+            _summary_kpi(
+                "solar:money-bag-bold-duotone",
+                "Potansiyel gelir (TL, CRM v2)",
+                f"{total_potential_tl:,.0f}",
+                "indigo",
+            ),
         ],
     )
 
@@ -658,6 +712,7 @@ def build_datacenters(time_range=None, visible_sections=None):
                             dc,
                             sla_by_dc.get(dc.get("id"))
                             or sla_by_dc.get(str(dc.get("id", "")).upper()),
+                            sales_v2=v2_by_dc.get(str(dc.get("id", ""))),
                         ),
                     )
                     for i, dc in enumerate(datacenters)

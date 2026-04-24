@@ -1346,7 +1346,65 @@ def _build_backup_subtab(name: str):
     )
 
 
-def _build_summary_tab(data: dict, tr: dict):
+def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
+    """CRM realized sales + 80%% sellable headroom (datacenter-api v2)."""
+    v2 = api.get_dc_sales_potential_v2(dc_id)
+    if not isinstance(v2, dict):
+        return html.Div()
+    summ = v2.get("dc_customer_summary") or {}
+    ytd = float(summ.get("total_billed_ytd") or 0)
+    cust = int(summ.get("customer_count") or 0)
+    rem = float(v2.get("general_remaining_pct") or 0)
+    pot = float(v2.get("potential_revenue_tl") or 0)
+    pr = v2.get("per_resource") or {}
+    cpu = pr.get("cpu") or {}
+    ram = pr.get("ram") or {}
+    stor = pr.get("storage") or {}
+    cpu_sold = float(cpu.get("sold_pct_of_ceiling") or 0)
+    ram_sold = float(ram.get("sold_pct_of_ceiling") or 0)
+    stor_sold = float(stor.get("sold_pct_of_ceiling") or 0)
+
+    def _g(pct: float, title: str, color: str):
+        return dcc.Graph(
+            figure=create_premium_gauge_chart(min(100.0, pct), title, color=color, height=200, show_threshold=False),
+            config={"displayModeBar": False},
+            style={"height": "210px"},
+        )
+
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "20px"},
+        children=[
+            _section_title(
+                "Sales potential (CRM)",
+                "Realized sales vs Nutanix CPU/RAM proxy — 80% sellable ceiling (ADR-0010)",
+            ),
+            dmc.SimpleGrid(
+                cols=4,
+                spacing="lg",
+                style={"marginTop": "12px"},
+                children=[
+                    _kpi("YTD realized (TL)", f"{ytd:,.0f}", "solar:money-bag-bold-duotone"),
+                    _kpi("Sellable remaining %", f"{rem:.1f}", "solar:chart-square-bold-duotone"),
+                    _kpi("Potential revenue (TL)", f"{pot:,.0f}", "solar:wallet-money-bold-duotone"),
+                    _kpi("Customers (VM-mapped)", f"{cust:,}", "solar:users-group-rounded-bold-duotone"),
+                ],
+            ),
+            dmc.SimpleGrid(
+                cols=3,
+                spacing="md",
+                style={"marginTop": "12px"},
+                children=[
+                    _g(cpu_sold, "CPU sold % of physical", "#4318FF"),
+                    _g(ram_sold, "RAM sold % of physical", "#05CD99"),
+                    _g(stor_sold, "Storage sold % (n/a)", "#FFB547"),
+                ],
+            ),
+        ],
+    )
+
+
+def _build_summary_tab(data: dict, tr: dict, dc_id: str | None = None):
     """Summary tab: combined capacity planning view."""
     classic    = data.get("classic", {})
     hyperconv  = data.get("hyperconv", {})
@@ -1373,6 +1431,8 @@ def _build_summary_tab(data: dict, tr: dict):
     mem_pct  = pct_float(total_mem_used, total_mem_cap)
     stor_pct = pct_float(total_stor_used * 1024, total_stor_cap * 1024)
 
+    crm_sales = _build_crm_sales_potential_panel(dc_id) if dc_id else html.Div()
+
     return dmc.Stack(
         gap="lg",
         children=[
@@ -1390,6 +1450,7 @@ def _build_summary_tab(data: dict, tr: dict):
                     ]),
                 ],
             ),
+            crm_sales,
             # Capacity overview charts
             *(
                 [html.Div(
@@ -2751,7 +2812,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                     children=dmc.Stack(
                         gap="lg",
                         style={"padding": "0 30px"},
-                        children=[_build_summary_tab(data, tr)],
+                        children=[_build_summary_tab(data, tr, dc_id=str(dc_id))],
                     ),
                 ) if show_summary else None,
 

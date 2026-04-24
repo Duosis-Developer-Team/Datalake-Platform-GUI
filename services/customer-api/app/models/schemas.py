@@ -89,6 +89,46 @@ class CustomerAliasUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+class SalesEfficiencyByCategoryRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    category_code: Optional[str] = None
+    category_label: Optional[str] = None
+    gui_tab_binding: Optional[str] = None
+    resource_unit: Optional[str] = None
+    sold_qty: float = 0.0
+    sold_amount_tl: float = 0.0
+    used_qty: float = 0.0
+    efficiency_pct: Optional[float] = None
+    allocated_vs_sold_pct: Optional[float] = None
+    delta_qty: float = 0.0
+    status: str = "unknown"
+    usage_note: Optional[str] = None
+
+
+class ProductCategoryAliasRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    productid: str
+    product_name: Optional[str] = None
+    category_code: Optional[str] = None
+    category_label: Optional[str] = None
+    gui_tab_binding: Optional[str] = None
+    resource_unit: Optional[str] = None
+    source: Optional[str] = None
+    last_seeded_at: Optional[str] = None
+    last_modified_at: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ProductCategoryAliasUpdate(BaseModel):
+    category_code: str
+    category_label: str
+    gui_tab_binding: str
+    resource_unit: str
+    notes: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # ITSM (ServiceCore) schemas
 # ---------------------------------------------------------------------------

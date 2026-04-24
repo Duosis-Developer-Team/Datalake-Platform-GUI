@@ -5,9 +5,12 @@ Routes:
   GET /customers/{customer_name}/sales/summary
   GET /customers/{customer_name}/sales/items
   GET /customers/{customer_name}/sales/efficiency
+  GET /customers/{customer_name}/sales/efficiency-by-category
   GET /customers/{customer_name}/sales/catalog-valuation
   GET /crm/aliases
   PUT /crm/aliases/{crm_accountid}
+  GET /crm/product-categories
+  PUT /crm/product-categories/{productid}
 """
 from __future__ import annotations
 
@@ -19,6 +22,9 @@ from app.models.schemas import (
     CatalogValuationRow,
     CustomerAlias,
     CustomerAliasUpdate,
+    ProductCategoryAliasRow,
+    ProductCategoryAliasUpdate,
+    SalesEfficiencyByCategoryRow,
     SalesEfficiencyRow,
     SalesLineItem,
     SalesSummary,
@@ -37,7 +43,7 @@ def sales_summary(
     customer_name: str,
     svc: SalesService = Depends(get_sales_service),
 ):
-    """YTD revenue, open pipeline, active orders and contracts MRR for a customer."""
+    """YTD realized revenue, order counts, and in-progress orders (pipeline/contracts not in CRM scope)."""
     return svc.get_sales_summary(customer_name)
 
 
@@ -46,7 +52,7 @@ def sales_items(
     customer_name: str,
     svc: SalesService = Depends(get_sales_service),
 ):
-    """Invoice and sales-order line items (product, qty, unit price, total) for a customer."""
+    """Realized sales-order line items (fulfilled/invoiced) for a customer."""
     return svc.get_sales_items(customer_name)
 
 
@@ -57,6 +63,18 @@ def sales_efficiency(
 ):
     """Billed capacity vs catalog unit price — coverage percentage per product."""
     return svc.get_sales_efficiency(customer_name)
+
+
+@router.get(
+    "/customers/{customer_name}/sales/efficiency-by-category",
+    response_model=List[SalesEfficiencyByCategoryRow],
+)
+def sales_efficiency_by_category(
+    customer_name: str,
+    svc: SalesService = Depends(get_sales_service),
+):
+    """Realized CRM sales quantities vs observed usage, grouped by product category alias."""
+    return svc.get_efficiency_by_category(customer_name)
 
 
 @router.get("/customers/{customer_name}/sales/catalog-valuation", response_model=List[CatalogValuationRow])
@@ -93,3 +111,34 @@ def update_alias(
         notes=body.notes,
     )
     return {"status": "ok", "crm_accountid": crm_accountid}
+
+
+# ---------------------------------------------------------------------------
+# Product category alias (GUI + collectors)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/crm/product-categories", response_model=List[ProductCategoryAliasRow])
+def list_product_categories(svc: SalesService = Depends(get_sales_service)):
+    """All CRM product → category GUI bindings (manual rows preserved on re-seed)."""
+    return svc.list_product_category_aliases()
+
+
+@router.put("/crm/product-categories/{productid}", response_model=dict)
+def update_product_category(
+    productid: str,
+    body: ProductCategoryAliasUpdate,
+    svc: SalesService = Depends(get_sales_service),
+):
+    """Update category mapping for one product (sets source = manual)."""
+    n = svc.update_product_category_alias(
+        productid,
+        category_code=body.category_code,
+        category_label=body.category_label,
+        gui_tab_binding=body.gui_tab_binding,
+        resource_unit=body.resource_unit,
+        notes=body.notes,
+    )
+    if n <= 0:
+        raise HTTPException(status_code=404, detail="productid not found")
+    return {"status": "ok", "productid": productid, "rows_updated": n}

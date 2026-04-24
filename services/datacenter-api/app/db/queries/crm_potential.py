@@ -1,9 +1,9 @@
-# SQL queries for datacenter sales-potential endpoint.
-# Computes idle/unallocated capacity per DC and multiplies by standard catalog unit prices.
+# SQL queries for datacenter sales-potential endpoints.
+# v1: catalog × coarse capacity rows (legacy).
+# v2: realized CRM sales + 80%% sellable ceiling (ADR-0010).
 
 DC_SALES_POTENTIAL = """
 WITH
--- 1. Catalog standard unit prices (TL price list as reference)
 tl_catalog AS (
     SELECT
         p.name           AS product_name,
@@ -17,7 +17,6 @@ tl_catalog AS (
       AND  pl.statecode = 0
       AND  p.statecode  = 0
 ),
--- 2. Per-DC compute capacity (from NetBox device inventory)
 dc_capacity AS (
     SELECT
         d.site_name                        AS dc_name,
@@ -29,7 +28,6 @@ dc_capacity AS (
     WHERE  d.site_name ILIKE %s
     GROUP BY d.site_name
 ),
--- 3. Rack capacity per DC (from rack inventory)
 dc_rack_capacity AS (
     SELECT
         r.site_name                        AS dc_name,
@@ -39,7 +37,6 @@ dc_rack_capacity AS (
     WHERE  r.site_name ILIKE %s
     GROUP BY r.site_name
 ),
--- 4. Allocated vCPU/RAM from VMware (customers using this DC)
 dc_allocated_vmware AS (
     SELECT
         vm.datacenter_name                 AS dc_name,
@@ -50,7 +47,6 @@ dc_allocated_vmware AS (
       AND  vm.timestamp >= NOW() - INTERVAL '2 hours'
     GROUP BY vm.datacenter_name
 ),
--- 5. Allocated from Nutanix
 dc_allocated_nutanix AS (
     SELECT
         n.cluster_name                         AS dc_name,
@@ -80,41 +76,114 @@ LEFT JOIN dc_allocated_nutanix na ON na.dc_name ILIKE %s
 ORDER BY tc.product_name NULLS LAST;
 """
 
-# Simpler aggregated summary for the DC potential page hero stats
 DC_POTENTIAL_SUMMARY = """
-WITH customer_invoiced_by_dc AS (
-    -- Customers with VMs in this DC (via NetBox site → customer alias)
+WITH customer_in_dc AS (
     SELECT DISTINCT
         a.canonical_customer_key,
         a.crm_accountid
     FROM   discovery_netbox_virtualization_vm vm
     JOIN   discovery_crm_customer_alias a
-           ON lower(trim(a.netbox_musteri_value)) = lower(trim(vm.custom_fields_musteri))
+           ON lower(trim(coalesce(a.netbox_musteri_value, ''))) = lower(trim(coalesce(vm.custom_fields_musteri, '')))
     WHERE  vm.site_name ILIKE %s
 ),
-ytd_billed AS (
+ytd_realized AS (
     SELECT
-        COALESCE(SUM(i.totalamount), 0) AS total_billed_ytd,
-        COUNT(DISTINCT i.invoiceid)     AS invoice_count
-    FROM   discovery_crm_invoices i
-    WHERE  i.customerid IN (SELECT crm_accountid FROM customer_invoiced_by_dc)
-      AND  i.statecode IN (0, 3)
-      AND  EXTRACT(YEAR FROM i.invoicedate) = EXTRACT(YEAR FROM CURRENT_DATE)
-),
-pipeline_by_dc AS (
-    SELECT
-        COALESCE(SUM(o.estimatedvalue), 0) AS total_pipeline_value,
-        COUNT(*)                           AS open_opportunity_count
-    FROM   discovery_crm_opportunities o
-    WHERE  o.customerid IN (SELECT crm_accountid FROM customer_invoiced_by_dc)
-      AND  o.statecode = 0
+        COALESCE(SUM(so.totalamount), 0) AS total_billed_ytd,
+        COUNT(DISTINCT so.salesorderid)  AS invoice_count
+    FROM   discovery_crm_salesorders so
+    WHERE  so.customerid IN (SELECT crm_accountid FROM customer_in_dc)
+      AND  so.statecode IN (3, 4)
+      AND  EXTRACT(YEAR FROM COALESCE(so.fulfilldate, so.submitdate, so.modifiedon::date))
+           = EXTRACT(YEAR FROM CURRENT_DATE)
 )
 SELECT
     %s::TEXT                               AS dc_code,
-    yb.total_billed_ytd,
-    yb.invoice_count,
-    pb.total_pipeline_value,
-    pb.open_opportunity_count,
-    (SELECT COUNT(DISTINCT crm_accountid) FROM customer_invoiced_by_dc) AS customer_count
-FROM ytd_billed yb, pipeline_by_dc pb;
+    ytd.total_billed_ytd,
+    ytd.invoice_count,
+    0.0::double precision                  AS total_pipeline_value,
+    0::bigint                              AS open_opportunity_count,
+    (SELECT COUNT(DISTINCT crm_accountid) FROM customer_in_dc) AS customer_count
+FROM ytd_realized ytd;
+"""
+
+# --- v2: physical-ish totals from latest Nutanix cluster metrics (per DC name) ---
+
+DC_NUTANIX_CLUSTER_CAPACITY = """
+WITH latest AS (
+    SELECT DISTINCT ON (cluster_name)
+        cluster_name,
+        datacenter_name,
+        total_cpu_capacity,
+        total_memory_capacity
+    FROM   nutanix_cluster_metrics
+    WHERE  datacenter_name ILIKE %s
+      AND  collection_time >= NOW() - INTERVAL '7 days'
+    ORDER BY cluster_name, collection_time DESC
+)
+SELECT
+    COALESCE(SUM(total_cpu_capacity), 0)::double precision   AS total_cpu_capacity,
+    COALESCE(SUM(total_memory_capacity), 0)::double precision / 1073741824.0 AS total_memory_gb
+FROM latest;
+"""
+
+DC_SOLD_VIRTUALIZATION_FOR_DC = """
+WITH cust AS (
+    SELECT DISTINCT a.crm_accountid
+    FROM   discovery_netbox_virtualization_vm vm
+    JOIN   discovery_crm_customer_alias a
+           ON lower(trim(coalesce(a.netbox_musteri_value, ''))) = lower(trim(coalesce(vm.custom_fields_musteri, '')))
+    WHERE  vm.site_name ILIKE %s
+)
+SELECT
+    COALESCE(SUM(CASE WHEN lower(coalesce(pca.resource_unit, d.uomid_name, '')) LIKE '%%vcpu%%'
+                      OR lower(coalesce(pca.resource_unit, d.uomid_name, '')) = 'vcpu'
+                 THEN d.quantity ELSE 0 END), 0)::double precision AS sold_vcpu,
+    COALESCE(SUM(CASE WHEN lower(coalesce(pca.resource_unit, d.uomid_name, '')) LIKE '%%gb%%'
+                      AND COALESCE(pca.category_code, '') LIKE 'virt%%'
+                 THEN d.quantity ELSE 0 END), 0)::double precision AS sold_ram_gb
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+JOIN   cust c ON so.customerid = c.crm_accountid
+LEFT JOIN discovery_crm_product_category_alias pca ON pca.productid = d.productid
+WHERE  so.statecode IN (3, 4)
+  AND COALESCE(so.fulfilldate::date, so.submitdate::date, so.modifiedon::date)
+      >= CURRENT_DATE - INTERVAL '12 months';
+"""
+
+DC_SOLD_BY_CATEGORY_FOR_DC = """
+WITH cust AS (
+    SELECT DISTINCT a.crm_accountid
+    FROM   discovery_netbox_virtualization_vm vm
+    JOIN   discovery_crm_customer_alias a
+           ON lower(trim(coalesce(a.netbox_musteri_value, ''))) = lower(trim(coalesce(vm.custom_fields_musteri, '')))
+    WHERE  vm.site_name ILIKE %s
+)
+SELECT
+    COALESCE(pca.category_code, 'other')     AS category_code,
+    COALESCE(pca.category_label, 'Other')   AS category_label,
+    COALESCE(pca.gui_tab_binding, 'other')   AS gui_tab_binding,
+    COALESCE(NULLIF(TRIM(pca.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
+    SUM(d.quantity)::double precision        AS sold_qty,
+    SUM(d.extendedamount)::double precision  AS sold_amount_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+JOIN   cust c ON so.customerid = c.crm_accountid
+LEFT JOIN discovery_crm_product_category_alias pca ON pca.productid = d.productid
+WHERE  so.statecode IN (3, 4)
+  AND COALESCE(so.fulfilldate::date, so.submitdate::date, so.modifiedon::date)
+      >= CURRENT_DATE - INTERVAL '12 months'
+GROUP BY COALESCE(pca.category_code, 'other'),
+         COALESCE(pca.category_label, 'Other'),
+         COALESCE(pca.gui_tab_binding, 'other'),
+         COALESCE(NULLIF(TRIM(pca.resource_unit), ''), NULLIF(TRIM(d.uomid_name), ''), 'Adet')
+ORDER BY sold_amount_tl DESC NULLS LAST;
+"""
+
+DC_CATALOG_AVG_UNIT_PRICE = """
+SELECT COALESCE(AVG(ppl.amount), 0)::double precision
+FROM   discovery_crm_productpricelevels ppl
+JOIN   discovery_crm_pricelevels pl ON pl.pricelevelid = ppl.pricelevelid
+WHERE  pl.name ILIKE '%%TL%%'
+  AND  pl.statecode = 0
+  AND  lower(coalesce(ppl.uomid_name, '')) LIKE %s;
 """

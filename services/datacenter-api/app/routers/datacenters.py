@@ -9,6 +9,7 @@ from app.models.schemas import DataCenterSummary
 from app.services.dc_service import DatabaseService
 from app.services import sla_service
 from app.db.queries import crm_potential as crm_q
+from app.services.dc_sales_potential_v2 import compute_sales_potential_v2
 
 router = APIRouter()
 
@@ -335,3 +336,30 @@ def dc_sales_potential(
         "summary": summary,
         "catalog_detail": detail_rows,
     }
+
+
+@router.get("/datacenters/{dc_code}/sales-potential/v2", response_model=dict[str, Any])
+def dc_sales_potential_v2(
+    dc_code: str,
+    db: DatabaseService = Depends(get_db),
+):
+    """
+    Realized-sales-based sellable headroom (80%% policy) with Nutanix capacity proxy.
+    See ADR-0010 — replaces invoice/pipeline-based potential.
+    """
+    dc_pattern = f"%{dc_code}%"
+    payload: dict[str, Any] = {"dc_code": dc_code}
+    try:
+        with db._get_connection() as conn:
+            with conn.cursor() as cur:
+                payload.update(compute_sales_potential_v2(cur, dc_code))
+                cur.execute(crm_q.DC_POTENTIAL_SUMMARY, (dc_pattern, dc_code))
+                scols = [d[0] for d in cur.description]
+                srow = cur.fetchone()
+                payload["dc_customer_summary"] = dict(zip(scols, srow)) if srow else {}
+    except Exception:
+        payload.setdefault("general_remaining_pct", 0.0)
+        payload.setdefault("per_resource", {})
+        payload.setdefault("per_category", [])
+        payload["dc_customer_summary"] = {}
+    return payload
