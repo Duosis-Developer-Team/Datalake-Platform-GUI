@@ -8,6 +8,8 @@ import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objs as go
 
+import math
+
 from src.services import api_client as api
 from src.utils.time_range import default_time_range
 from src.utils.export_helpers import (
@@ -213,6 +215,31 @@ def _s3_vault_rows(s3_data: dict | None) -> list[dict]:
     return out
 
 
+def _itsm_tickets_for_export(tickets: list) -> list[dict]:
+    """Flatten ITSM ticket dicts for export (timestamp strings, no nested objects)."""
+    out = []
+    for t in (tickets or []):
+        if isinstance(t, dict):
+            out.append({
+                "source":                 t.get("source") or "",
+                "id":                     t.get("id"),
+                "subject":                t.get("subject") or "",
+                "stage":                  t.get("stage") or "",
+                "state_text":             t.get("state_text") or "",
+                "status_name":            t.get("status_name") or "",
+                "priority_name":          t.get("priority_name") or "",
+                "category_name":          t.get("category_name") or "",
+                "customer_user":          t.get("customer_user") or "",
+                "agent_group_name":       t.get("agent_group_name") or "",
+                "opened_at":              (t.get("opened_at") or "")[:19],
+                "target_resolution_date": (t.get("target_resolution_date") or "")[:19],
+                "closed_and_done_date":   (t.get("closed_and_done_date") or "")[:19],
+                "resolution_hours":       t.get("resolution_hours"),
+                "open_age_days":          t.get("open_age_days"),
+            })
+    return out
+
+
 def _build_customer_export_sheets(
     customer_name: str,
     totals: dict,
@@ -224,6 +251,10 @@ def _build_customer_export_sheets(
     power_asset: dict,
     s3_data: dict,
     phys_inv_devices: list,
+    *,
+    itsm_summary: dict | None = None,
+    itsm_extremes: dict | None = None,
+    itsm_tickets: list | None = None,
 ) -> dict[str, list[dict]]:
     sheets: dict[str, list[dict]] = {}
     sheets["Customer_Meta"] = [{"customer": customer_name}]
@@ -291,6 +322,28 @@ def _build_customer_export_sheets(
     phys = _device_records_for_export(phys_inv_devices)
     if phys:
         sheets["Physical_Inventory"] = phys
+
+    # ITSM sheets
+    if itsm_summary:
+        summary_flat = {
+            k: v for k, v in itsm_summary.items()
+            if not isinstance(v, (list, dict))
+        }
+        if summary_flat:
+            sheets["ITSM_Summary"] = [summary_flat]
+
+    ex = itsm_extremes or {}
+    long_tail_rows = _itsm_tickets_for_export(ex.get("long_tail") or [])
+    if long_tail_rows:
+        sheets["ITSM_Extremes_Closed"] = long_tail_rows
+
+    sla_rows = _itsm_tickets_for_export(ex.get("sla_breach") or [])
+    if sla_rows:
+        sheets["ITSM_Extremes_OpenSlaBreach"] = sla_rows
+
+    all_ticket_rows = _itsm_tickets_for_export(itsm_tickets or [])
+    if all_ticket_rows:
+        sheets["ITSM_All_Tickets"] = all_ticket_rows
 
     return sheets
 
@@ -1280,6 +1333,344 @@ def _tab_customer_availability(avail: dict):
     )
 
 
+def _fmt_hours(h) -> str:
+    """Format float hours to human-readable string."""
+    if h is None:
+        return "-"
+    try:
+        h = float(h)
+        if math.isnan(h):
+            return "-"
+    except (TypeError, ValueError):
+        return "-"
+    if h < 1:
+        return f"{int(h * 60)} min"
+    if h < 24:
+        return f"{h:.1f} hr"
+    return f"{h / 24:.1f} days"
+
+
+def _priority_color(priority: str | None) -> str:
+    p = (priority or "").lower()
+    if "critical" in p or "urgent" in p or "p1" in p:
+        return "red"
+    if "high" in p or "p2" in p:
+        return "orange"
+    if "medium" in p or "p3" in p:
+        return "yellow"
+    return "blue"
+
+
+def _itsm_ticket_table(tickets: list, source: str, cols: list) -> html.Div:
+    """Scrollable ticket table for ITSM accordion."""
+    filtered = [t for t in tickets if t.get("source") == source]
+
+    def _row(t):
+        stage = t.get("stage") or t.get("state_text") or t.get("status_name") or "-"
+        priority = t.get("priority_name") or "-"
+        target = (t.get("target_resolution_date") or "-")[:10] if t.get("target_resolution_date") else "-"
+        return html.Tr([
+            html.Td(dmc.Badge(stage, size="sm", variant="light",
+                             color="green" if any(k in stage.lower() for k in ("closed", "done", "resolved"))
+                             else "blue")),
+            html.Td(t.get("customer_user") or "-"),
+            html.Td(dmc.Badge(priority, size="xs", variant="dot",
+                             color=_priority_color(priority))),
+            html.Td(t.get("agent_group_name") or "-"),
+            html.Td(t.get("subject") or "-",
+                    style={"maxWidth": "280px", "overflow": "hidden",
+                           "textOverflow": "ellipsis", "whiteSpace": "nowrap"}),
+            html.Td(t.get("category_name") or "-"),
+            html.Td(target),
+        ])
+
+    return html.Div(
+        style={"maxHeight": "360px", "overflowY": "auto", "overflowX": "auto"},
+        children=[
+            dmc.Table(
+                striped=True,
+                highlightOnHover=True,
+                withColumnBorders=True,
+                className="customer-vm-table",
+                children=[
+                    html.Thead(html.Tr([html.Th(c) for c in cols])),
+                    html.Tbody(
+                        [_row(t) for t in filtered]
+                        if filtered
+                        else [html.Tr([html.Td("No data", colSpan=len(cols))])]
+                    ),
+                ],
+            )
+        ],
+    )
+
+
+def _tab_itsm(
+    customer_name: str,
+    tr: dict | None,
+    itsm_summary: dict,
+    itsm_extremes: dict,
+    itsm_tickets: list,
+):
+    """ITSM tab: KPI grid + extreme cases accordion + all records accordion."""
+    sm = itsm_summary or {}
+    ex = itsm_extremes or {}
+    all_tickets = itsm_tickets or []
+
+    total       = int(sm.get("total_count", 0) or 0)
+    inc_count   = int(sm.get("incident_count", 0) or 0)  # noqa: F841
+    sr_count    = int(sm.get("sr_count", 0) or 0)        # noqa: F841
+    inc_open    = int(sm.get("incident_open", 0) or 0)
+    inc_closed  = int(sm.get("incident_closed", 0) or 0)
+    sr_open     = int(sm.get("sr_open", 0) or 0)
+    sr_closed   = int(sm.get("sr_closed", 0) or 0)
+    sla_breach  = int(sm.get("sla_breach_count", 0) or 0)
+    top_cat     = sm.get("top_category") or "-"
+    avg_rh      = _fmt_hours(sm.get("avg_resolution_hours"))
+    median_rh   = _fmt_hours(sm.get("median_resolution_hours"))
+    p95_rh      = _fmt_hours(sm.get("p95_resolution_hours"))
+
+    prio_dist   = sm.get("priority_distribution") or []
+    state_dist  = sm.get("state_distribution") or []
+
+    long_tail   = ex.get("long_tail") or []
+    sla_list    = ex.get("sla_breach") or []
+
+    inc_tickets = [t for t in all_tickets if t.get("source") == "incident"]
+    sr_tickets  = [t for t in all_tickets if t.get("source") == "servicerequest"]
+
+    # ---- KPI cards ----
+    kpi_grid = dmc.SimpleGrid(cols=4, spacing="lg", children=[
+        _metric("Total Records",
+                f"{total:,}",
+                "solar:ticket-bold-duotone", color="indigo"),
+        _metric("Incidents (Open / Closed)",
+                f"{inc_open:,} / {inc_closed:,}",
+                "solar:bug-minimalistic-bold-duotone", color="blue"),
+        _metric("Service Requests (Open / Closed)",
+                f"{sr_open:,} / {sr_closed:,}",
+                "solar:document-add-bold-duotone", color="teal"),
+        _metric("SLA Breach",
+                f"{sla_breach:,}",
+                "solar:danger-triangle-bold-duotone", color="red"),
+        _metric("Avg Resolution (Incidents)",
+                avg_rh,
+                "solar:clock-circle-bold-duotone", color="violet"),
+        _metric("Median Resolution",
+                median_rh,
+                "solar:clock-square-bold-duotone", color="grape"),
+        _metric("P95 Resolution",
+                p95_rh,
+                "solar:alarm-bold-duotone", color="orange"),
+        _metric("Top Category",
+                top_cat,
+                "solar:tag-bold-duotone", color="cyan"),
+    ])
+
+    # ---- Distribution charts ----
+    charts_row = dmc.SimpleGrid(cols=2, spacing="lg", children=[
+        _section_card("Priority Distribution", "Record counts by priority",
+            dcc.Graph(
+                config={"displayModeBar": False},
+                style={"height": "200px"},
+                figure={
+                    "data": [{
+                        "type": "bar", "orientation": "h",
+                        "x": [d.get("count", 0) for d in prio_dist],
+                        "y": [d.get("priority", "Unknown") for d in prio_dist],
+                        "marker": {"color": "#4318FF"},
+                    }],
+                    "layout": {
+                        "margin": {"l": 120, "r": 10, "t": 10, "b": 30},
+                        "paper_bgcolor": "rgba(0,0,0,0)",
+                        "plot_bgcolor": "rgba(0,0,0,0)",
+                        "font": {"color": "#2B3674", "size": 11},
+                        "xaxis": {"gridcolor": "#F4F7FE"},
+                        "yaxis": {"automargin": True},
+                    },
+                },
+            ) if prio_dist else dmc.Text("No priority data", c="dimmed", size="sm"),
+        ),
+        _section_card("State Distribution", "Record counts by state",
+            dcc.Graph(
+                config={"displayModeBar": False},
+                style={"height": "200px"},
+                figure={
+                    "data": [{
+                        "type": "bar", "orientation": "h",
+                        "x": [d.get("count", 0) for d in state_dist],
+                        "y": [d.get("stage", "Unknown") for d in state_dist],
+                        "marker": {"color": "#63B3ED"},
+                    }],
+                    "layout": {
+                        "margin": {"l": 140, "r": 10, "t": 10, "b": 30},
+                        "paper_bgcolor": "rgba(0,0,0,0)",
+                        "plot_bgcolor": "rgba(0,0,0,0)",
+                        "font": {"color": "#2B3674", "size": 11},
+                        "xaxis": {"gridcolor": "#F4F7FE"},
+                        "yaxis": {"automargin": True},
+                    },
+                },
+            ) if state_dist else dmc.Text("No state data", c="dimmed", size="sm"),
+        ),
+    ])
+
+    # ---- Extreme cases accordion ----
+    def _long_tail_row(t):
+        rh = t.get("resolution_hours")
+        closed = (t.get("closed_and_done_date") or "-")[:10] if t.get("closed_and_done_date") else "-"
+        return html.Tr([
+            html.Td(str(t.get("id") or "-")),
+            html.Td(t.get("customer_user") or "-"),
+            html.Td(t.get("subject") or "-",
+                    style={"maxWidth": "240px", "overflow": "hidden",
+                           "textOverflow": "ellipsis", "whiteSpace": "nowrap"}),
+            html.Td(dmc.Badge(t.get("priority_name") or "-", size="xs",
+                             color=_priority_color(t.get("priority_name")), variant="dot")),
+            html.Td(f"{float(rh):.1f} hr" if rh is not None else "-"),
+            html.Td(closed),
+        ])
+
+    def _sla_row(t):
+        age = t.get("open_age_days")
+        target = (t.get("target_resolution_date") or "-")[:10] if t.get("target_resolution_date") else "-"
+        return html.Tr([
+            html.Td(dmc.Badge(t.get("source") or "-", size="xs", variant="light", color="gray")),
+            html.Td(str(t.get("id") or "-")),
+            html.Td(t.get("subject") or "-",
+                    style={"maxWidth": "220px", "overflow": "hidden",
+                           "textOverflow": "ellipsis", "whiteSpace": "nowrap"}),
+            html.Td(dmc.Badge(t.get("priority_name") or "-", size="xs",
+                             color=_priority_color(t.get("priority_name")), variant="dot")),
+            html.Td(t.get("agent_group_name") or "-"),
+            html.Td(f"{float(age):.0f} days" if age is not None else "-"),
+            html.Td(target),
+        ])
+
+    long_tail_table = html.Div(
+        style={"maxHeight": "300px", "overflowY": "auto"},
+        children=[dmc.Table(
+            striped=True, highlightOnHover=True, withColumnBorders=True,
+            children=[
+                html.Thead(html.Tr([
+                    html.Th("ID"), html.Th("User"), html.Th("Subject"),
+                    html.Th("Priority"), html.Th("Resolution"), html.Th("Closed Date"),
+                ])),
+                html.Tbody(
+                    [_long_tail_row(t) for t in long_tail]
+                    if long_tail
+                    else [html.Tr([html.Td("No outliers in this period", colSpan=6)])]
+                ),
+            ],
+        )],
+    )
+
+    sla_table = html.Div(
+        style={"maxHeight": "300px", "overflowY": "auto"},
+        children=[dmc.Table(
+            striped=True, highlightOnHover=True, withColumnBorders=True,
+            children=[
+                html.Thead(html.Tr([
+                    html.Th("Type"), html.Th("ID"), html.Th("Subject"),
+                    html.Th("Priority"), html.Th("Group"), html.Th("Open Age"), html.Th("Target Date"),
+                ])),
+                html.Tbody(
+                    [_sla_row(t) for t in sla_list]
+                    if sla_list
+                    else [html.Tr([html.Td("No SLA breaches in this period", colSpan=7)])]
+                ),
+            ],
+        )],
+    )
+
+    extremes_accordion = dmc.Accordion(
+        chevronPosition="right",
+        variant="separated",
+        children=[
+            dmc.AccordionItem(value="long_tail", children=[
+                dmc.AccordionControl(
+                    dmc.Group(gap="sm", children=[
+                        dmc.ThemeIcon(size="sm", variant="light", color="orange",
+                                     children=DashIconify(icon="solar:clock-circle-bold-duotone", width=16)),
+                        dmc.Text(
+                            f"Long-tail closed incidents (mean+1\u03c3) \u2014 {len(long_tail)} record(s)",
+                            size="sm", fw=600,
+                        ),
+                    ])
+                ),
+                dmc.AccordionPanel(long_tail_table),
+            ]),
+            dmc.AccordionItem(value="sla_breach", children=[
+                dmc.AccordionControl(
+                    dmc.Group(gap="sm", children=[
+                        dmc.ThemeIcon(size="sm", variant="light", color="red",
+                                     children=DashIconify(icon="solar:danger-triangle-bold-duotone", width=16)),
+                        dmc.Text(
+                            f"SLA breach \u2014 still open \u2014 {len(sla_list)} record(s)",
+                            size="sm", fw=600,
+                        ),
+                    ])
+                ),
+                dmc.AccordionPanel(sla_table),
+            ]),
+        ],
+    )
+
+    # ---- All records accordion ----
+    _ticket_cols = [
+        "Stage", "Customer User", "Priority", "Group", "Subject", "Category", "Target Date",
+    ]
+    all_tickets_accordion = dmc.Accordion(
+        chevronPosition="right",
+        variant="separated",
+        children=[
+            dmc.AccordionItem(value="incidents", children=[
+                dmc.AccordionControl(
+                    dmc.Group(gap="sm", children=[
+                        dmc.ThemeIcon(size="sm", variant="light", color="blue",
+                                     children=DashIconify(icon="solar:bug-minimalistic-bold-duotone", width=16)),
+                        dmc.Text(f"Incidents \u2014 {len(inc_tickets)} record(s)", size="sm", fw=600),
+                    ])
+                ),
+                dmc.AccordionPanel(
+                    _itsm_ticket_table(all_tickets, "incident", _ticket_cols)
+                ),
+            ]),
+            dmc.AccordionItem(value="servicerequests", children=[
+                dmc.AccordionControl(
+                    dmc.Group(gap="sm", children=[
+                        dmc.ThemeIcon(size="sm", variant="light", color="teal",
+                                     children=DashIconify(icon="solar:document-add-bold-duotone", width=16)),
+                        dmc.Text(f"Service Requests \u2014 {len(sr_tickets)} record(s)", size="sm", fw=600),
+                    ])
+                ),
+                dmc.AccordionPanel(
+                    _itsm_ticket_table(all_tickets, "servicerequest", _ticket_cols)
+                ),
+            ]),
+        ],
+    )
+
+    return dmc.Stack(gap="lg", children=[
+        _section_card(
+            "ITSM Overview",
+            f"Incidents & Service Requests for {customer_name} in the report period",
+            kpi_grid,
+        ),
+        charts_row,
+        _section_card(
+            "Extreme Cases",
+            "Long-tail closed incidents (resolution > mean+1\u03c3) and open SLA breaches",
+            extremes_accordion,
+        ),
+        _section_card(
+            "All Records",
+            "All tickets in the report period \u2014 expand to view incidents or service requests",
+            all_tickets_accordion,
+        ),
+    ])
+
+
 # ---------------------------------------------------------------------------
 # Main content block
 # ---------------------------------------------------------------------------
@@ -1300,6 +1691,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             "backup": empty,
             "billing": empty,
             "sales": empty,
+            "itsm": empty,
             "s3": html.Div(),
             "has_s3": False,
             "phys_inv": empty,
@@ -1323,6 +1715,11 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     # Physical inventory for the customer tenant scope (API-side filter)
     phys_inv_devices = api.get_physical_inventory_customer()
     has_phys_inv = True
+
+    # ITSM (ServiceCore) data
+    itsm_summary  = api.get_customer_itsm_summary(name, tr)
+    itsm_extremes = api.get_customer_itsm_extremes(name, tr)
+    itsm_tickets  = api.get_customer_itsm_tickets(name, tr)
 
     # Values used by Summary "Backup summary" cards (kept here to avoid NameError).
     veeam_defined = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
@@ -1444,6 +1841,9 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         power_asset,
         s3_data,
         phys_inv_devices or [],
+        itsm_summary=itsm_summary or {},
+        itsm_extremes=itsm_extremes or {},
+        itsm_tickets=itsm_tickets or [],
     )
 
     return {
@@ -1451,6 +1851,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         "virt": virt_content,
         "avail": _tab_customer_availability(avail_bundle),
         "sales": _tab_sales(name),
+        "itsm": _tab_itsm(name, tr, itsm_summary, itsm_extremes, itsm_tickets),
         "backup": dmc.Stack(
             gap="lg",
             children=[
@@ -1519,6 +1920,7 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
             dmc.TabsTab("Backup", value="backup"),
             dmc.TabsTab("Billing", value="billing"),
             dmc.TabsTab("Sales", value="sales"),
+            dmc.TabsTab("ITSM", value="itsm"),
             dmc.TabsTab("Physical Inventory", value="phys-inv") if has_phys_inv else None,
             dmc.TabsTab("S3", value="s3") if has_s3 else None,
         ],
@@ -1638,6 +2040,10 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
                         children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("sales")]),
                     ),
                     dmc.TabsPanel(
+                        value="itsm",
+                        children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("itsm")]),
+                    ),
+                    dmc.TabsPanel(
                         value="phys-inv",
                         children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("phys_inv")]),
                     )
@@ -1705,6 +2111,10 @@ def export_customer_view(nc, nx, store, time_range):
         "Billing_Key_Metrics",
         "S3_Vaults",
         "Physical_Inventory",
+        "ITSM_Summary",
+        "ITSM_Extremes_Closed",
+        "ITSM_Extremes_OpenSlaBreach",
+        "ITSM_All_Tickets",
         "Legacy",
     ]
     dfs = {}

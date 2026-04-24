@@ -292,6 +292,55 @@ def get_customer_s3_vaults(customer_name: str, tr: Optional[dict]) -> dict:
     return _api_cache_get_with_stale(ck, fetch, empty)
 
 
+# ---------------------------------------------------------------------------
+# ITSM (ServiceCore) — customer incident + service request metrics
+# ---------------------------------------------------------------------------
+
+_EMPTY_ITSM_SUMMARY: dict = {
+    "total_count": 0, "incident_count": 0, "sr_count": 0,
+    "incident_open": 0, "incident_closed": 0, "sr_open": 0, "sr_closed": 0,
+    "avg_resolution_hours": None, "median_resolution_hours": None,
+    "p95_resolution_hours": None, "stddev_resolution_hours": None,
+    "sla_breach_count": 0, "top_category": None,
+    "priority_distribution": [], "state_distribution": [],
+}
+
+_EMPTY_ITSM_EXTREMES: dict = {"long_tail": [], "sla_breach": []}
+
+
+def get_customer_itsm_summary(customer_name: str, tr: Optional[dict]) -> dict:
+    enc = quote(customer_name, safe="")
+    ck = f"api:customer_itsm_summary:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/itsm/summary", params=_build_time_params(tr))
+        return data if isinstance(data, dict) else _EMPTY_ITSM_SUMMARY
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_ITSM_SUMMARY)
+
+
+def get_customer_itsm_extremes(customer_name: str, tr: Optional[dict]) -> dict:
+    enc = quote(customer_name, safe="")
+    ck = f"api:customer_itsm_extremes:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/itsm/extremes", params=_build_time_params(tr))
+        return data if isinstance(data, dict) else _EMPTY_ITSM_EXTREMES
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_ITSM_EXTREMES)
+
+
+def get_customer_itsm_tickets(customer_name: str, tr: Optional[dict]) -> list:
+    enc = quote(customer_name, safe="")
+    ck = f"api:customer_itsm_tickets:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> list:
+        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/itsm/tickets", params=_build_time_params(tr))
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale(ck, fetch, [])
+
+
 def get_dc_netbackup_pools(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     empty = {"pools": [], "rows": []}
