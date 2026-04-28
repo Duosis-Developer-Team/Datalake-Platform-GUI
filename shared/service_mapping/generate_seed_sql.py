@@ -131,11 +131,11 @@ def main() -> int:
     lines.append("    pg.gui_tab_binding,")
     lines.append("    NULL::text AS resource_unit,")
     lines.append(
-        "    COALESCE(NULLIF(TRIM(pg.resource_unit), ''), 'Adet') AS page_resource_unit,"
+        "    CASE WHEN o.productid IS NOT NULL THEN 'override' "
+        "WHEN s.productid IS NOT NULL THEN 'yaml' ELSE 'default' END AS mapping_source,"
     )
     lines.append(
-        "    CASE WHEN o.productid IS NOT NULL THEN 'override' "
-        "WHEN s.productid IS NOT NULL THEN 'yaml' ELSE 'default' END AS mapping_source"
+        "    COALESCE(NULLIF(TRIM(pg.resource_unit), ''), 'Adet') AS page_resource_unit"
     )
     lines.append("FROM   discovery_crm_products pr")
     lines.append("LEFT JOIN gui_crm_service_mapping_seed s ON s.productid = pr.productid")
