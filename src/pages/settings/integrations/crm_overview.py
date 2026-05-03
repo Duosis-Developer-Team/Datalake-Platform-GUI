@@ -25,7 +25,7 @@ def build_layout(search: str | None = None) -> html.Div:
         )
 
     cards = dmc.SimpleGrid(
-        cols={"base": 1, "sm": 2},
+        cols={"base": 1, "sm": 2, "lg": 3},
         spacing="md",
         children=[
             _nav_card(
@@ -33,6 +33,30 @@ def build_layout(search: str | None = None) -> html.Div:
                 "CRM service mapping",
                 "Map CRM catalog SKUs to GUI billing panels.",
                 "solar:bookmark-bold-duotone",
+            ),
+            _nav_card(
+                "/settings/integrations/crm/panels",
+                "Panel registry",
+                "Sellable potential panel definitions (granular per resource).",
+                "solar:layers-minimalistic-bold-duotone",
+            ),
+            _nav_card(
+                "/settings/integrations/crm/infra-sources",
+                "Infra source bindings",
+                "Bind each panel to its datalake total / allocated columns.",
+                "solar:database-bold-duotone",
+            ),
+            _nav_card(
+                "/settings/integrations/crm/resource-ratios",
+                "Resource ratios",
+                "Per-environment CPU : RAM : Storage proportionality (1:8:100 etc.).",
+                "solar:chart-2-bold-duotone",
+            ),
+            _nav_card(
+                "/settings/integrations/crm/unit-conversions",
+                "Unit conversions",
+                "Operator-managed factors (GHz→vCPU /8 ceil, bytes→GB, ...).",
+                "solar:transfer-horizontal-bold-duotone",
             ),
             _nav_card(
                 "/settings/integrations/crm/aliases",

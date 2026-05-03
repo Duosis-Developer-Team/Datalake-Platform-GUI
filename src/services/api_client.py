@@ -1081,12 +1081,14 @@ def put_crm_config_threshold(
     dc_code: str,
     sellable_limit_pct: float,
     notes: Optional[str] = None,
+    panel_key: Optional[str] = None,
 ) -> dict[str, Any]:
     body = {
         "resource_type": resource_type,
         "dc_code": dc_code,
         "sellable_limit_pct": sellable_limit_pct,
         "notes": notes,
+        "panel_key": panel_key or None,
     }
     out = _put_json(_client_cust, "/api/v1/crm/config/thresholds", body)
     _api_response_cache.delete("api:crm_config_thresholds")
@@ -1142,6 +1144,220 @@ def get_crm_calc_config() -> list:
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_calc_config", fetch, [])
+
+
+# ---------------------------------------------------------------------------
+# Sellable Potential dashboard endpoints (customer-api FAZ 5)
+# ---------------------------------------------------------------------------
+
+
+def get_sellable_summary(dc_code: str = "*") -> dict:
+    """Top-level dashboard payload (KPIs + family roll-up)."""
+    def fetch() -> dict:
+        data = _get_json(_client_cust, f"/api/v1/crm/sellable-potential/summary?dc_code={quote(dc_code, safe='*')}")
+        return data if isinstance(data, dict) else {}
+
+    cache_key = f"api:sellable_summary:{dc_code}"
+    return _api_cache_get_with_stale(cache_key, fetch, {})
+
+
+def get_sellable_by_panel(dc_code: str = "*", family: Optional[str] = None) -> list:
+    """Panel-level computation list. Optional family filter."""
+    qs = f"dc_code={quote(dc_code, safe='*')}"
+    if family:
+        qs += f"&family={quote(family, safe='')}"
+
+    def fetch() -> list:
+        data = _get_json(_client_cust, f"/api/v1/crm/sellable-potential/by-panel?{qs}")
+        return data if isinstance(data, list) else []
+
+    cache_key = f"api:sellable_by_panel:{dc_code}:{family or '*'}"
+    return _api_cache_get_with_stale(cache_key, fetch, [])
+
+
+def get_sellable_by_family(dc_code: str = "*") -> list:
+    def fetch() -> list:
+        data = _get_json(_client_cust, f"/api/v1/crm/sellable-potential/by-family?dc_code={quote(dc_code, safe='*')}")
+        return data if isinstance(data, list) else []
+
+    cache_key = f"api:sellable_by_family:{dc_code}"
+    return _api_cache_get_with_stale(cache_key, fetch, [])
+
+
+def get_metric_tags(prefix: Optional[str] = None, scope_type: str = "global", scope_id: str = "*") -> list:
+    qs_parts = [f"scope_type={quote(scope_type, safe='')}", f"scope_id={quote(scope_id, safe='*')}"]
+    if prefix:
+        qs_parts.append(f"prefix={quote(prefix, safe='')}")
+
+    def fetch() -> list:
+        data = _get_json(_client_cust, "/api/v1/crm/metric-tags?" + "&".join(qs_parts))
+        return data if isinstance(data, list) else []
+
+    cache_key = "api:metric_tags:" + ":".join(qs_parts)
+    return _api_cache_get_with_stale(cache_key, fetch, [])
+
+
+def get_metric_snapshots(metric_key: str, hours: int = 720, scope_id: str = "*") -> list:
+    def fetch() -> list:
+        url = (
+            "/api/v1/crm/metric-tags/snapshots?"
+            f"metric_key={quote(metric_key, safe='')}"
+            f"&scope_id={quote(scope_id, safe='*')}"
+            f"&hours={int(hours)}"
+        )
+        data = _get_json(_client_cust, url)
+        return data if isinstance(data, list) else []
+
+    cache_key = f"api:metric_snapshots:{metric_key}:{scope_id}:{hours}"
+    return _api_cache_get_with_stale(cache_key, fetch, [])
+
+
+# ---------------------------------------------------------------------------
+# Panel registry / infra source / ratios / unit conversions (Settings UI)
+# ---------------------------------------------------------------------------
+
+
+def get_panel_definitions() -> list:
+    def fetch() -> list:
+        data = _get_json(_client_cust, "/api/v1/crm/panels")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_panels", fetch, [])
+
+
+def put_panel_definition(
+    panel_key: str,
+    *,
+    label: str,
+    family: str,
+    resource_kind: str,
+    display_unit: str = "GB",
+    sort_order: int = 100,
+    enabled: bool = True,
+    notes: Optional[str] = None,
+) -> dict[str, Any]:
+    enc = quote(panel_key, safe="")
+    body = {
+        "label": label,
+        "family": family,
+        "resource_kind": resource_kind,
+        "display_unit": display_unit,
+        "sort_order": sort_order,
+        "enabled": enabled,
+        "notes": notes,
+    }
+    out = _put_json(_client_cust, f"/api/v1/crm/panels/{enc}", body)
+    _api_response_cache.delete("api:crm_panels")
+    return out if isinstance(out, dict) else {}
+
+
+def get_panel_infra_source(panel_key: str, dc_code: str = "*") -> dict[str, Any]:
+    enc = quote(panel_key, safe="")
+    data = _get_json(_client_cust, f"/api/v1/crm/panels/{enc}/infra-source?dc_code={quote(dc_code, safe='*')}")
+    return data if isinstance(data, dict) else {}
+
+
+def put_panel_infra_source(
+    panel_key: str,
+    dc_code: str = "*",
+    *,
+    source_table: Optional[str] = None,
+    total_column: Optional[str] = None,
+    total_unit: Optional[str] = None,
+    allocated_table: Optional[str] = None,
+    allocated_column: Optional[str] = None,
+    allocated_unit: Optional[str] = None,
+    filter_clause: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> dict[str, Any]:
+    enc = quote(panel_key, safe="")
+    body = {
+        "dc_code": dc_code,
+        "source_table": source_table,
+        "total_column": total_column,
+        "total_unit": total_unit,
+        "allocated_table": allocated_table,
+        "allocated_column": allocated_column,
+        "allocated_unit": allocated_unit,
+        "filter_clause": filter_clause,
+        "notes": notes,
+    }
+    out = _put_json(_client_cust, f"/api/v1/crm/panels/{enc}/infra-source", body)
+    _api_response_cache.delete(f"api:sellable_by_panel:{dc_code}:*")
+    _api_response_cache.delete(f"api:sellable_by_panel:*:*")
+    _api_response_cache.delete(f"api:sellable_summary:{dc_code}")
+    return out if isinstance(out, dict) else {}
+
+
+def get_resource_ratios() -> list:
+    def fetch() -> list:
+        data = _get_json(_client_cust, "/api/v1/crm/resource-ratios")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_resource_ratios", fetch, [])
+
+
+def put_resource_ratio(
+    family: str,
+    *,
+    dc_code: str = "*",
+    cpu_per_unit: float = 1.0,
+    ram_gb_per_unit: float = 8.0,
+    storage_gb_per_unit: float = 100.0,
+    notes: Optional[str] = None,
+) -> dict[str, Any]:
+    enc = quote(family, safe="")
+    body = {
+        "dc_code": dc_code,
+        "cpu_per_unit": cpu_per_unit,
+        "ram_gb_per_unit": ram_gb_per_unit,
+        "storage_gb_per_unit": storage_gb_per_unit,
+        "notes": notes,
+    }
+    out = _put_json(_client_cust, f"/api/v1/crm/resource-ratios/{enc}", body)
+    _api_response_cache.delete("api:crm_resource_ratios")
+    return out if isinstance(out, dict) else {}
+
+
+def get_unit_conversions() -> list:
+    def fetch() -> list:
+        data = _get_json(_client_cust, "/api/v1/crm/unit-conversions")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_unit_conversions", fetch, [])
+
+
+def put_unit_conversion(
+    from_unit: str,
+    to_unit: str,
+    *,
+    factor: float,
+    operation: str = "divide",
+    ceil_result: bool = False,
+    notes: Optional[str] = None,
+) -> dict[str, Any]:
+    body = {
+        "factor": factor,
+        "operation": operation,
+        "ceil_result": ceil_result,
+        "notes": notes,
+    }
+    out = _put_json(
+        _client_cust,
+        f"/api/v1/crm/unit-conversions/{quote(from_unit, safe='')}/{quote(to_unit, safe='')}",
+        body,
+    )
+    _api_response_cache.delete("api:crm_unit_conversions")
+    return out if isinstance(out, dict) else {}
+
+
+def delete_unit_conversion(from_unit: str, to_unit: str) -> dict[str, Any]:
+    out = _delete_json(
+        _client_cust,
+        f"/api/v1/crm/unit-conversions/{quote(from_unit, safe='')}/{quote(to_unit, safe='')}",
+    )
+    _api_response_cache.delete("api:crm_unit_conversions")
+    return out if isinstance(out, dict) else {}
 
 
 def put_crm_calc_config(

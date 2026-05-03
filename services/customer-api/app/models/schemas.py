@@ -154,6 +154,7 @@ class ThresholdConfigRow(BaseModel):
     model_config = {"extra": "allow"}
 
     id: int
+    panel_key: Optional[str] = None
     resource_type: str
     dc_code: str
     sellable_limit_pct: float
@@ -166,6 +167,7 @@ class ThresholdUpsert(BaseModel):
     dc_code: str = "*"
     sellable_limit_pct: float
     notes: Optional[str] = None
+    panel_key: Optional[str] = None
 
 
 class PriceOverrideRow(BaseModel):

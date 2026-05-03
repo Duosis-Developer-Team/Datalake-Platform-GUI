@@ -62,10 +62,18 @@ class CrmConfigService:
         sellable_limit_pct: float,
         notes: Optional[str],
         updated_by: Optional[str],
+        panel_key: Optional[str] = None,
     ) -> int:
         return self._webui.execute(
             cq.UPSERT_THRESHOLD,
-            (resource_type, dc_code or "*", sellable_limit_pct, notes, updated_by or "api"),
+            (
+                panel_key or None,
+                resource_type,
+                dc_code or "*",
+                sellable_limit_pct,
+                notes,
+                updated_by or "api",
+            ),
         )
 
     def delete_threshold(self, threshold_id: int) -> int:

@@ -67,8 +67,14 @@ def upsert_threshold(body: ThresholdUpsert, cfg: CrmConfigService = Depends(_con
         sellable_limit_pct=body.sellable_limit_pct,
         notes=body.notes,
         updated_by="settings-ui",
+        panel_key=body.panel_key,
     )
-    return {"status": "ok", "resource_type": body.resource_type, "dc_code": body.dc_code or "*"}
+    return {
+        "status": "ok",
+        "resource_type": body.resource_type,
+        "dc_code": body.dc_code or "*",
+        "panel_key": body.panel_key,
+    }
 
 
 @router.delete("/crm/config/thresholds/{threshold_id}", response_model=dict)

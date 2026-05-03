@@ -6,6 +6,7 @@
 
 LIST_THRESHOLDS = """
 SELECT id,
+       panel_key,
        resource_type,
        dc_code,
        sellable_limit_pct,
@@ -13,7 +14,7 @@ SELECT id,
        updated_by,
        updated_at
 FROM   gui_crm_threshold_config
-ORDER BY resource_type, dc_code;
+ORDER BY (panel_key IS NULL), panel_key, resource_type, dc_code;
 """
 
 GET_THRESHOLD_FOR = """
@@ -26,9 +27,11 @@ LIMIT 1;
 """
 
 UPSERT_THRESHOLD = """
-INSERT INTO gui_crm_threshold_config (resource_type, dc_code, sellable_limit_pct, notes, updated_by, updated_at)
-VALUES (%s, %s, %s, %s, %s, NOW())
+INSERT INTO gui_crm_threshold_config
+    (panel_key, resource_type, dc_code, sellable_limit_pct, notes, updated_by, updated_at)
+VALUES (%s, %s, %s, %s, %s, %s, NOW())
 ON CONFLICT (resource_type, dc_code) DO UPDATE SET
+    panel_key          = EXCLUDED.panel_key,
     sellable_limit_pct = EXCLUDED.sellable_limit_pct,
     notes              = COALESCE(EXCLUDED.notes, gui_crm_threshold_config.notes),
     updated_by         = EXCLUDED.updated_by,

@@ -11,12 +11,17 @@ from src.services import api_client as api
 
 def build_layout(search: str | None = None) -> html.Div:
     rows = api.get_crm_config_thresholds()
+    panels = api.get_panel_definitions()
+    panel_options = [{"value": "", "label": "(none — match by resource_type)"}] + [
+        {"value": p["panel_key"], "label": p.get("label") or p["panel_key"]} for p in panels if p.get("panel_key")
+    ]
     table_rows = []
     for r in rows:
         rid = int(r.get("id") or 0)
         table_rows.append(
             html.Tr(
                 [
+                    html.Td(str(r.get("panel_key") or "")),
                     html.Td(str(r.get("resource_type") or "")),
                     html.Td(str(r.get("dc_code") or "")),
                     html.Td(str(r.get("sellable_limit_pct") or "")),
@@ -43,7 +48,8 @@ def build_layout(search: str | None = None) -> html.Div:
                     dmc.Title("CRM capacity thresholds", order=3),
                     dmc.Text(
                         "Defines how much capacity may still be sold before hitting the configured ceiling "
-                        "(default 80%% for CPU/RAM). Use dc_code='*' for global defaults or override per DC.",
+                        "(default 80%% for CPU/RAM). Use dc_code='*' for global defaults or override per DC. "
+                        "panel_key takes precedence over resource_type when both are populated.",
                         size="sm",
                         c="dimmed",
                     ),
@@ -59,10 +65,11 @@ def build_layout(search: str | None = None) -> html.Div:
                     dmc.Grid(
                         gutter="sm",
                         children=[
-                            dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.TextInput(id="thr-res", label="resource_type", size="xs")),
-                            dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.TextInput(id="thr-dc", label="dc_code", size="xs", value="*")),
+                            dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.Select(id="thr-panel", label="panel_key (optional)", data=panel_options, value="", searchable=True, size="xs")),
+                            dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.TextInput(id="thr-res", label="resource_type", size="xs", placeholder="cpu / ram / storage")),
+                            dmc.GridCol(span={"base": 12, "md": 2}, children=dmc.TextInput(id="thr-dc", label="dc_code", size="xs", value="*")),
                             dmc.GridCol(span={"base": 12, "md": 2}, children=dmc.NumberInput(id="thr-pct", label="sellable_limit_pct", size="xs", min=0, max=100, value=80)),
-                            dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.TextInput(id="thr-notes", label="notes", size="xs")),
+                            dmc.GridCol(span={"base": 12, "md": 12}, children=dmc.TextInput(id="thr-notes", label="notes", size="xs")),
                             dmc.GridCol(span={"base": 12, "md": 1}, children=dmc.Button("Save", id="thr-save", size="xs")),
                         ],
                     ),
@@ -83,6 +90,7 @@ def build_layout(search: str | None = None) -> html.Div:
                             html.Thead(
                                 html.Tr(
                                     [
+                                        html.Th("panel_key"),
                                         html.Th("resource_type"),
                                         html.Th("dc_code"),
                                         html.Th("sellable_limit_pct"),
@@ -91,7 +99,7 @@ def build_layout(search: str | None = None) -> html.Div:
                                     ]
                                 )
                             ),
-                            html.Tbody(table_rows or [html.Tr([html.Td(colSpan=5, children="No rows yet")])]),
+                            html.Tbody(table_rows or [html.Tr([html.Td(colSpan=6, children="No rows yet")])]),
                         ],
                     ),
                 ],
@@ -103,13 +111,14 @@ def build_layout(search: str | None = None) -> html.Div:
 @callback(
     Output("thr-msg", "children"),
     Input("thr-save", "n_clicks"),
+    State("thr-panel", "value"),
     State("thr-res", "value"),
     State("thr-dc", "value"),
     State("thr-pct", "value"),
     State("thr-notes", "value"),
     prevent_initial_call=True,
 )
-def _save_thr(_n, res, dc, pct, notes):
+def _save_thr(_n, panel, res, dc, pct, notes):
     if not res:
         return dmc.Alert(color="yellow", title="resource_type required")
     try:
@@ -118,6 +127,7 @@ def _save_thr(_n, res, dc, pct, notes):
             dc_code=str(dc or "*"),
             sellable_limit_pct=float(pct or 0),
             notes=str(notes) if notes else None,
+            panel_key=str(panel) if panel else None,
         )
         return dmc.Alert(color="green", title="Saved — refresh page to see table updates.")
     except Exception as exc:  # noqa: BLE001

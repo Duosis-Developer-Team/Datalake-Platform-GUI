@@ -24,6 +24,10 @@ from src.pages.settings.integrations import crm_aliases as crm_aliases_page
 from src.pages.settings.integrations import crm_thresholds as crm_thresholds_page
 from src.pages.settings.integrations import crm_price_overrides as crm_price_overrides_page
 from src.pages.settings.integrations import crm_calc_config as crm_calc_config_page
+from src.pages.settings.integrations import crm_panels as crm_panels_page
+from src.pages.settings.integrations import crm_infra_sources as crm_infra_sources_page
+from src.pages.settings.integrations import crm_resource_ratios as crm_resource_ratios_page
+from src.pages.settings.integrations import crm_unit_conversions as crm_unit_conversions_page
 from src.pages.settings import crm_service_mapping as crm_service_mapping_page
 
 # (href, label, permission code)
@@ -46,6 +50,10 @@ INT_TABS: list[tuple[str, str, str]] = [
 CRM_INT_TABS: list[tuple[str, str, str]] = [
     ("/settings/integrations/crm", "Overview", "page:settings_crm_overview"),
     ("/settings/integrations/crm/service-mapping", "Service mapping", "page:settings_service_mapping"),
+    ("/settings/integrations/crm/panels", "Panels", "page:settings_crm_panels"),
+    ("/settings/integrations/crm/infra-sources", "Infra sources", "page:settings_crm_infra_sources"),
+    ("/settings/integrations/crm/resource-ratios", "Resource ratios", "page:settings_crm_resource_ratios"),
+    ("/settings/integrations/crm/unit-conversions", "Unit conversions", "page:settings_crm_unit_conversions"),
     ("/settings/integrations/crm/aliases", "Customer aliases", "page:settings_crm_aliases"),
     ("/settings/integrations/crm/thresholds", "Thresholds", "page:settings_crm_thresholds"),
     ("/settings/integrations/crm/price-overrides", "Price overrides", "page:settings_crm_price_overrides"),
@@ -92,6 +100,10 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
     "/settings/integrations/crm/thresholds": ("page:settings_crm_thresholds", crm_thresholds_page.build_layout),
     "/settings/integrations/crm/price-overrides": ("page:settings_crm_price_overrides", crm_price_overrides_page.build_layout),
     "/settings/integrations/crm/calc-config": ("page:settings_crm_calc_config", crm_calc_config_page.build_layout),
+    "/settings/integrations/crm/panels": ("page:settings_crm_panels", crm_panels_page.build_layout),
+    "/settings/integrations/crm/infra-sources": ("page:settings_crm_infra_sources", crm_infra_sources_page.build_layout),
+    "/settings/integrations/crm/resource-ratios": ("page:settings_crm_resource_ratios", crm_resource_ratios_page.build_layout),
+    "/settings/integrations/crm/unit-conversions": ("page:settings_crm_unit_conversions", crm_unit_conversions_page.build_layout),
     "/settings/integrations/ldap": ("page:settings_ldap", ldap_page.build_layout),
     "/settings/integrations/auranotify": ("page:settings_auranotify", auranotify_page.build_layout),
 }
