@@ -1092,12 +1092,14 @@ def put_crm_config_threshold(
     }
     out = _put_json(_client_cust, "/api/v1/crm/config/thresholds", body)
     _api_response_cache.delete("api:crm_config_thresholds")
+    _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
 
 
 def delete_crm_config_threshold(threshold_id: int) -> dict[str, Any]:
     out = _delete_json(_client_cust, f"/api/v1/crm/config/thresholds/{threshold_id}")
     _api_response_cache.delete("api:crm_config_thresholds")
+    _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
 
 
@@ -1128,6 +1130,7 @@ def put_crm_price_override(
     }
     out = _put_json(_client_cust, f"/api/v1/crm/config/price-overrides/{enc}", body)
     _api_response_cache.delete("api:crm_price_overrides")
+    _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
 
 
@@ -1135,6 +1138,7 @@ def delete_crm_price_override(productid: str) -> dict[str, Any]:
     enc = quote(productid, safe="")
     out = _delete_json(_client_cust, f"/api/v1/crm/config/price-overrides/{enc}")
     _api_response_cache.delete("api:crm_price_overrides")
+    _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
 
 
@@ -1248,13 +1252,19 @@ def put_panel_definition(
     }
     out = _put_json(_client_cust, f"/api/v1/crm/panels/{enc}", body)
     _api_response_cache.delete("api:crm_panels")
+    _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
 
 
 def get_panel_infra_source(panel_key: str, dc_code: str = "*") -> dict[str, Any]:
     enc = quote(panel_key, safe="")
-    data = _get_json(_client_cust, f"/api/v1/crm/panels/{enc}/infra-source?dc_code={quote(dc_code, safe='*')}")
-    return data if isinstance(data, dict) else {}
+
+    def fetch() -> dict[str, Any]:
+        data = _get_json(_client_cust, f"/api/v1/crm/panels/{enc}/infra-source?dc_code={quote(dc_code, safe='*')}")
+        return data if isinstance(data, dict) else {}
+
+    cache_key = f"api:crm_panel_infra_source:{panel_key}:{dc_code}"
+    return _api_cache_get_with_stale(cache_key, fetch, {})
 
 
 def put_panel_infra_source(
@@ -1283,9 +1293,8 @@ def put_panel_infra_source(
         "notes": notes,
     }
     out = _put_json(_client_cust, f"/api/v1/crm/panels/{enc}/infra-source", body)
-    _api_response_cache.delete(f"api:sellable_by_panel:{dc_code}:*")
-    _api_response_cache.delete(f"api:sellable_by_panel:*:*")
-    _api_response_cache.delete(f"api:sellable_summary:{dc_code}")
+    _api_response_cache.delete_prefix(f"api:crm_panel_infra_source:{panel_key}:")
+    _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
 
 
@@ -1316,6 +1325,7 @@ def put_resource_ratio(
     }
     out = _put_json(_client_cust, f"/api/v1/crm/resource-ratios/{enc}", body)
     _api_response_cache.delete("api:crm_resource_ratios")
+    _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
 
 
@@ -1348,6 +1358,7 @@ def put_unit_conversion(
         body,
     )
     _api_response_cache.delete("api:crm_unit_conversions")
+    _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
 
 
@@ -1357,7 +1368,21 @@ def delete_unit_conversion(from_unit: str, to_unit: str) -> dict[str, Any]:
         f"/api/v1/crm/unit-conversions/{quote(from_unit, safe='')}/{quote(to_unit, safe='')}",
     )
     _api_response_cache.delete("api:crm_unit_conversions")
+    _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
+
+
+def _invalidate_sellable_caches() -> None:
+    """Drop all cached sellable computations after a config write.
+
+    Called from PUT/DELETE endpoints that change panel definitions,
+    infra source bindings, resource ratios or unit conversions.
+    """
+    _api_response_cache.delete_prefix("api:sellable_summary:")
+    _api_response_cache.delete_prefix("api:sellable_by_panel:")
+    _api_response_cache.delete_prefix("api:sellable_by_family:")
+    _api_response_cache.delete_prefix("api:metric_tags:")
+    _api_response_cache.delete_prefix("api:metric_snapshots:")
 
 
 def put_crm_calc_config(
