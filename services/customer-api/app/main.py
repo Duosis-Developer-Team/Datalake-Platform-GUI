@@ -13,10 +13,14 @@ setup_sdk()
 
 from app.config import settings
 from app.core.api_auth import verify_api_user
+from app.services.crm_config_service import CrmConfigService
+from app.services.currency_service import CurrencyService
 from app.services.customer_service import CustomerService
 from app.services.itsm_service import ITSMService
 from app.services.sales_service import SalesService
 from app.services.scheduler_service import start_scheduler
+from app.services.sellable_service import SellableService
+from app.services.tagging_service import TaggingService
 from app.services.webui_db import WebuiPool
 from app.routers import crm_config, customers, itsm, sales, service_mapping
 from app.core.redis_client import init_redis_pool, close_redis_pool, redis_is_healthy
@@ -54,7 +58,23 @@ async def lifespan(app: FastAPI):
         run_rows=svc._run_rows,
     )
     init_redis_pool()
-    scheduler = start_scheduler(svc)
+
+    config_svc = CrmConfigService(webui)
+    currency_svc = CurrencyService(svc)
+    tagging_svc = TaggingService(webui)
+    sellable_svc = SellableService(
+        customer_service=svc,
+        webui=webui,
+        config_service=config_svc,
+        currency_service=currency_svc,
+        tagging_service=tagging_svc,
+    )
+    app.state.crm_config = config_svc
+    app.state.currency = currency_svc
+    app.state.tagging = tagging_svc
+    app.state.sellable = sellable_svc
+
+    scheduler = start_scheduler(svc, sellable=sellable_svc)
     app.state.scheduler = scheduler
     yield
     if getattr(app.state, "scheduler", None) and app.state.scheduler.running:

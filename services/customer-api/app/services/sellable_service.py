@@ -1,0 +1,478 @@
+"""SellableService — orchestrates the C-level CRM Sellable Potential pipeline.
+
+Per panel:
+    1. Fetch InfraSource (panel_key, dc_code) from webui-db.
+    2. Build a parameterised total / allocated SQL against the datalake DB
+       using the descriptor's table/column/filter_clause.
+    3. Convert raw values into the panel's display_unit via gui_unit_conversion.
+    4. Apply the per-panel / per-resource_type threshold (sellable_raw).
+    5. Apply the per-environment ratio (constrained sellable).
+    6. Resolve the unit price (override > catalog TL > 0) via webui-db /
+       discovery_crm_productpricelevels.
+    7. Emit MetricValues into TaggingService cache + (optionally) snapshot.
+
+Design notes:
+    * Each datalake query is small (one SUM per call) so the per-panel cost
+      is dominated by network RTT. ``CustomerService`` already pools 8
+      connections; the dashboard fetches at most ~70 panels per call.
+    * Per-DC results respect the same filter clause; ``dc_code='*'`` returns
+      a global aggregate (no filter).
+    * Snapshots are written by ``snapshot_all`` which is wired to the
+      APScheduler refresh interval.
+"""
+from __future__ import annotations
+
+import logging
+from collections import defaultdict
+from typing import Any, Iterable
+
+from app.db.queries import sellable as sq
+from app.services.crm_config_service import CrmConfigService
+from app.services.currency_service import CurrencyService
+from app.services.customer_service import CustomerService
+from app.services.tagging_service import TaggingService, build_metric_key
+from app.services.webui_db import WebuiPool
+from shared.sellable.computation import (
+    apply_threshold,
+    compute_potential_tl,
+    constrain_by_ratio,
+    convert_unit,
+)
+from shared.sellable.models import (
+    DashboardSummary,
+    FamilyAggregate,
+    InfraSource,
+    MetricValue,
+    PanelDefinition,
+    PanelResult,
+    ResourceRatio,
+    UnitConversion,
+)
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_THRESHOLD_PCT = 80.0
+KNOWN_RESOURCE_KINDS = {"cpu", "ram", "storage", "other"}
+
+
+class SellableService:
+    def __init__(
+        self,
+        *,
+        customer_service: CustomerService,
+        webui: WebuiPool,
+        config_service: CrmConfigService,
+        currency_service: CurrencyService,
+        tagging_service: TaggingService,
+    ) -> None:
+        self._svc = customer_service
+        self._webui = webui
+        self._config = config_service
+        self._currency = currency_service
+        self._tags = tagging_service
+
+    # ----------------------------------------------------------------- helpers
+
+    @property
+    def is_available(self) -> bool:
+        return self._webui is not None and self._webui.is_available and self._svc._pool is not None
+
+    # -- registry loaders (webui-db)
+
+    def list_panel_defs(self) -> list[PanelDefinition]:
+        if not self._webui.is_available:
+            return []
+        rows = self._webui.run_rows(sq.LIST_PANEL_DEFS)
+        return [
+            PanelDefinition(
+                panel_key=r["panel_key"],
+                label=r["label"],
+                family=r["family"],
+                resource_kind=r["resource_kind"],
+                display_unit=r["display_unit"],
+                sort_order=int(r.get("sort_order") or 100),
+                enabled=bool(r.get("enabled", True)),
+                notes=r.get("notes"),
+            )
+            for r in rows
+            if r.get("enabled", True)
+        ]
+
+    def get_infra_source(self, panel_key: str, dc_code: str = "*") -> InfraSource | None:
+        if not self._webui.is_available:
+            return None
+        row = self._webui.run_one(sq.GET_INFRA_SOURCE, (panel_key, dc_code))
+        if not row:
+            return InfraSource(panel_key=panel_key, dc_code=dc_code)
+        return InfraSource(
+            panel_key=row["panel_key"],
+            dc_code=row["dc_code"],
+            source_table=row.get("source_table"),
+            total_column=row.get("total_column"),
+            total_unit=row.get("total_unit"),
+            allocated_table=row.get("allocated_table"),
+            allocated_column=row.get("allocated_column"),
+            allocated_unit=row.get("allocated_unit"),
+            filter_clause=row.get("filter_clause"),
+            notes=row.get("notes"),
+        )
+
+    def list_ratios(self) -> list[ResourceRatio]:
+        if not self._webui.is_available:
+            return []
+        rows = self._webui.run_rows(sq.LIST_RATIOS)
+        return [
+            ResourceRatio(
+                family=r["family"],
+                dc_code=r["dc_code"],
+                cpu_per_unit=float(r["cpu_per_unit"]),
+                ram_gb_per_unit=float(r["ram_gb_per_unit"]),
+                storage_gb_per_unit=float(r["storage_gb_per_unit"]),
+                notes=r.get("notes"),
+            )
+            for r in rows
+        ]
+
+    def get_ratio(self, family: str, dc_code: str = "*") -> ResourceRatio:
+        if not self._webui.is_available:
+            return ResourceRatio(family=family, dc_code=dc_code)
+        row = self._webui.run_one(sq.GET_RATIO_FOR, (family, dc_code))
+        if not row:
+            return ResourceRatio(family=family, dc_code=dc_code)
+        return ResourceRatio(
+            family=row["family"],
+            dc_code=row["dc_code"],
+            cpu_per_unit=float(row["cpu_per_unit"]),
+            ram_gb_per_unit=float(row["ram_gb_per_unit"]),
+            storage_gb_per_unit=float(row["storage_gb_per_unit"]),
+            notes=row.get("notes"),
+        )
+
+    def list_unit_conversions(self) -> list[UnitConversion]:
+        if not self._webui.is_available:
+            return []
+        rows = self._webui.run_rows(sq.LIST_UNIT_CONVERSIONS)
+        return [
+            UnitConversion(
+                from_unit=r["from_unit"],
+                to_unit=r["to_unit"],
+                factor=float(r["factor"]),
+                operation=r.get("operation") or "divide",
+                ceil_result=bool(r.get("ceil_result")),
+                notes=r.get("notes"),
+            )
+            for r in rows
+        ]
+
+    def _build_unit_lookup(self) -> dict[tuple[str, str], UnitConversion]:
+        return {(c.from_unit, c.to_unit): c for c in self.list_unit_conversions()}
+
+    def get_threshold(self, panel_key: str, resource_kind: str, dc_code: str = "*") -> float:
+        if not self._webui.is_available:
+            return DEFAULT_THRESHOLD_PCT
+        row = self._webui.run_one(
+            sq.GET_THRESHOLD_FOR_PANEL,
+            (panel_key, resource_kind, dc_code, panel_key),
+        )
+        if not row:
+            return DEFAULT_THRESHOLD_PCT
+        try:
+            return float(row["sellable_limit_pct"])
+        except (TypeError, ValueError):
+            return DEFAULT_THRESHOLD_PCT
+
+    def get_unit_price_tl(self, panel_key: str) -> tuple[float, bool]:
+        """Return (unit_price_tl, has_price). Override first, otherwise the
+        catalog TL price for the first mapped product in the panel.
+        """
+        if not self._webui.is_available:
+            return 0.0, False
+        try:
+            row = self._webui.run_one(sq.GET_PRICE_OVERRIDE_FOR_PANEL, (panel_key,))
+        except Exception:  # noqa: BLE001
+            logger.exception("get_unit_price_tl override lookup failed (panel=%s)", panel_key)
+            row = None
+        if row and row.get("unit_price_tl") is not None:
+            try:
+                return float(row["unit_price_tl"]), True
+            except (TypeError, ValueError):
+                pass
+        # Catalog fallback — pick any mapped productid for this panel.
+        productid = self._first_productid_for_panel(panel_key)
+        if not productid:
+            return 0.0, False
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    catalog = self._svc._run_row(cur, sq.CATALOG_TL_PRICE_FOR_PRODUCT, (productid,))
+        except Exception:  # noqa: BLE001
+            logger.exception("Catalog price lookup failed for product %s", productid)
+            return 0.0, False
+        if not catalog:
+            return 0.0, False
+        amount = float(catalog[0] or 0.0)
+        currency = catalog[1] or "TL"
+        tl = self._currency.to_tl(amount, currency)
+        if tl is None:
+            return 0.0, False
+        return tl, True
+
+    def _first_productid_for_panel(self, panel_key: str) -> str | None:
+        if not self._webui.is_available:
+            return None
+        sql = (
+            "SELECT COALESCE(o.productid, sm.productid) AS productid "
+            "FROM gui_crm_service_pages sp "
+            "JOIN gui_crm_service_mapping_seed sm ON sm.page_key = sp.page_key "
+            "LEFT JOIN gui_crm_service_mapping_override o ON o.productid = sm.productid "
+            "WHERE sp.panel_key = %s LIMIT 1;"
+        )
+        row = self._webui.run_one(sql, (panel_key,))
+        return (row or {}).get("productid")
+
+    # -- datalake queries
+
+    def _query_total_allocated(self, src: InfraSource, dc_code: str) -> tuple[float, float]:
+        """Return (total_raw, allocated_raw) in the InfraSource declared units.
+
+        Builds a parameterised SQL on the fly. ``filter_clause`` may reference
+        ``:dc_pattern`` which is substituted with ``%s`` and bound to the DC
+        glob pattern (``ankara%`` for an Ankara DC, ``%`` for ``*``).
+        """
+        if not src.source_table or not src.total_column:
+            return 0.0, 0.0
+        params: list[Any] = []
+        where_total = ""
+        where_alloc = ""
+        if src.filter_clause:
+            cleaned = src.filter_clause.replace(":dc_pattern", "%s")
+            where_total = f" WHERE {cleaned}"
+            params.append(self._dc_pattern(dc_code))
+        total_sql = f"SELECT COALESCE(SUM({src.total_column}), 0)::double precision FROM {src.source_table}{where_total};"
+
+        alloc_sql: str | None = None
+        alloc_params: list[Any] = []
+        if src.allocated_table and src.allocated_column:
+            if src.filter_clause:
+                cleaned = src.filter_clause.replace(":dc_pattern", "%s")
+                where_alloc = f" WHERE {cleaned}"
+                alloc_params.append(self._dc_pattern(dc_code))
+            alloc_sql = (
+                f"SELECT COALESCE(SUM({src.allocated_column}), 0)::double precision "
+                f"FROM {src.allocated_table}{where_alloc};"
+            )
+
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    total_val = float(self._svc._run_value(cur, total_sql, tuple(params)) or 0.0)
+                    if alloc_sql is not None:
+                        alloc_val = float(self._svc._run_value(cur, alloc_sql, tuple(alloc_params)) or 0.0)
+                    else:
+                        alloc_val = 0.0
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "SellableService: datalake lookup failed (panel=%s, dc=%s, table=%s)",
+                src.panel_key, dc_code, src.source_table,
+            )
+            return 0.0, 0.0
+        return total_val, alloc_val
+
+    @staticmethod
+    def _dc_pattern(dc_code: str) -> str:
+        if not dc_code or dc_code == "*":
+            return "%"
+        return f"%{dc_code.lower()}%"
+
+    # ------------------------------------------------------------------ compute
+
+    def compute_panel(
+        self,
+        panel: PanelDefinition,
+        dc_code: str = "*",
+        unit_lookup: dict[tuple[str, str], UnitConversion] | None = None,
+    ) -> PanelResult:
+        unit_lookup = unit_lookup if unit_lookup is not None else self._build_unit_lookup()
+        src = self.get_infra_source(panel.panel_key, dc_code) or InfraSource(
+            panel_key=panel.panel_key, dc_code=dc_code,
+        )
+        threshold_pct = self.get_threshold(panel.panel_key, panel.resource_kind, dc_code)
+        unit_price_tl, has_price = self.get_unit_price_tl(panel.panel_key)
+
+        notes: list[str] = []
+        has_infra = bool(src.source_table and src.total_column)
+        if not has_infra:
+            notes.append("infra-source missing — configure in Settings")
+            total_disp = 0.0
+            alloc_disp = 0.0
+        else:
+            total_raw, alloc_raw = self._query_total_allocated(src, dc_code)
+            total_conv = unit_lookup.get((src.total_unit or panel.display_unit, panel.display_unit))
+            alloc_conv = unit_lookup.get((src.allocated_unit or src.total_unit or panel.display_unit, panel.display_unit))
+            total_disp = convert_unit(total_raw, total_conv)
+            alloc_disp = convert_unit(alloc_raw, alloc_conv)
+
+        sellable_raw = apply_threshold(total_disp, alloc_disp, threshold_pct)
+
+        # constrained will be filled in by the family-pass below; default = raw.
+        return PanelResult(
+            panel_key=panel.panel_key,
+            label=panel.label,
+            family=panel.family,
+            resource_kind=panel.resource_kind,
+            display_unit=panel.display_unit,
+            dc_code=dc_code,
+            total=total_disp,
+            allocated=alloc_disp,
+            threshold_pct=threshold_pct,
+            sellable_raw=sellable_raw,
+            sellable_constrained=sellable_raw,
+            unit_price_tl=unit_price_tl,
+            potential_tl=compute_potential_tl(sellable_raw, unit_price_tl),
+            ratio_bound=False,
+            has_infra_source=has_infra,
+            has_price=has_price,
+            notes=notes,
+        )
+
+    def compute_all_panels(self, dc_code: str = "*") -> list[PanelResult]:
+        defs = self.list_panel_defs()
+        unit_lookup = self._build_unit_lookup()
+        results = [self.compute_panel(d, dc_code=dc_code, unit_lookup=unit_lookup) for d in defs]
+
+        # Apply ratio per family.
+        by_family: dict[str, list[PanelResult]] = defaultdict(list)
+        for r in results:
+            by_family[r.family].append(r)
+        ratio_lookup = {(r.family, r.dc_code): r for r in self.list_ratios()}
+
+        constrained: list[PanelResult] = []
+        for family, group in by_family.items():
+            ratio = ratio_lookup.get((family, dc_code)) or ratio_lookup.get((family, "*")) or ResourceRatio(family=family)
+            new_group = constrain_by_ratio(group, ratio)
+            for new in new_group:
+                new.potential_tl = compute_potential_tl(new.sellable_constrained, new.unit_price_tl)
+                constrained.append(new)
+        constrained.sort(key=lambda p: (p.family, p.resource_kind, p.panel_key))
+        return constrained
+
+    def compute_summary(self, dc_code: str = "*") -> DashboardSummary:
+        panels = self.compute_all_panels(dc_code=dc_code)
+
+        by_family: dict[str, list[PanelResult]] = defaultdict(list)
+        for p in panels:
+            by_family[p.family].append(p)
+
+        family_aggs: list[FamilyAggregate] = []
+        total_potential = 0.0
+        constrained_loss = 0.0
+        for family, group in by_family.items():
+            label_lookup = group[0].label.split(" — ")[0] if group else family
+            agg = FamilyAggregate(family=family, label=label_lookup, dc_code=dc_code, panels=group)
+            family_potential = sum(p.potential_tl for p in group)
+            family_raw_potential = sum(compute_potential_tl(p.sellable_raw, p.unit_price_tl) for p in group)
+            agg.total_potential_tl = family_potential
+            agg.constrained_loss_tl = max(family_raw_potential - family_potential, 0.0)
+            agg.total_sellable_constrained_units = {
+                p.resource_kind: agg.total_sellable_constrained_units.get(p.resource_kind, 0.0) + p.sellable_constrained
+                for p in group
+            }
+            family_aggs.append(agg)
+            total_potential += family_potential
+            constrained_loss += agg.constrained_loss_tl
+
+        family_aggs.sort(key=lambda a: -a.total_potential_tl)
+        ytd_sales_tl = self._compute_ytd_sales_tl()
+        unmapped_count = self._count_unmapped_products()
+        return DashboardSummary(
+            dc_code=dc_code,
+            total_potential_tl=total_potential,
+            constrained_loss_tl=constrained_loss,
+            ytd_sales_tl=ytd_sales_tl,
+            unmapped_product_count=unmapped_count,
+            families=family_aggs,
+        )
+
+    def _compute_ytd_sales_tl(self) -> float:
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._svc._run_rows(cur, sq.YTD_REALIZED_SALES)
+        except Exception:  # noqa: BLE001
+            logger.exception("YTD realized sales lookup failed")
+            return 0.0
+        total_tl = 0.0
+        for r in rows or []:
+            ccy, amount = r[0], r[1]
+            tl = self._currency.to_tl(amount, ccy)
+            if tl is not None:
+                total_tl += tl
+        return total_tl
+
+    def _count_unmapped_products(self) -> int:
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    val = self._svc._run_value(cur, sq.UNMAPPED_PRODUCT_COUNT)
+        except Exception:  # noqa: BLE001
+            logger.exception("Unmapped product count failed")
+            return 0
+        return int(val or 0)
+
+    # ------------------------------------------------------------------ snapshot
+
+    def snapshot_all(self) -> int:
+        """Compute the global dashboard, push every metric into TaggingService
+        cache + persist a snapshot row. Returns the number of metrics emitted.
+        """
+        try:
+            summary = self.compute_summary("*")
+        except Exception:  # noqa: BLE001
+            logger.exception("snapshot_all: compute_summary failed")
+            return 0
+        metrics: list[MetricValue] = []
+        for fam in summary.families:
+            for panel in fam.panels:
+                for measure, value, unit in TaggingService.measures_from_panel(panel):
+                    metric_key = build_metric_key(panel.family, panel.resource_kind, measure)
+                    mv = MetricValue(
+                        metric_key=metric_key,
+                        value=float(value),
+                        unit=unit,
+                        scope_type="global",
+                        scope_id="*",
+                    )
+                    metrics.append(mv)
+                    self._tags.set(mv)
+        # Top-level dashboard metrics
+        top = [
+            MetricValue("crm.sellable_potential.total_tl",       summary.total_potential_tl,    "TL"),
+            MetricValue("crm.sellable_potential.constrained_loss_tl", summary.constrained_loss_tl, "TL"),
+            MetricValue("crm.sellable_potential.ytd_sales_tl",   summary.ytd_sales_tl,          "TL"),
+            MetricValue("crm.sellable_potential.unmapped_count", float(summary.unmapped_product_count), "Adet"),
+        ]
+        for mv in top:
+            metrics.append(mv)
+            self._tags.set(mv)
+        written = self._tags.snapshot(metrics)
+        logger.info(
+            "SellableService.snapshot_all: emitted=%d, written=%d, total_tl=%.2f",
+            len(metrics), written, summary.total_potential_tl,
+        )
+        return len(metrics)
+
+    # ------------------------------------------------------------------ tags API
+
+    def get_metric_dict(
+        self,
+        prefix: str | None = None,
+        scope_type: str = "global",
+        scope_id: str = "*",
+    ) -> dict[str, MetricValue]:
+        return self._tags.all_with_prefix(prefix=prefix, scope_type=scope_type, scope_id=scope_id)
+
+    def list_metric_snapshots(self, metric_key: str, scope_id: str = "*", hours: int = 720) -> list[dict[str, Any]]:
+        if not self._webui.is_available:
+            return []
+        rows = self._webui.run_rows(sq.LIST_METRIC_SNAPSHOTS, (metric_key, scope_id, str(int(hours))))
+        return rows

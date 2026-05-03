@@ -12,13 +12,17 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 if TYPE_CHECKING:
     from app.services.customer_service import CustomerService
+    from app.services.sellable_service import SellableService
 
 logger = logging.getLogger(__name__)
 
 REFRESH_INTERVAL_MINUTES = 15
 
 
-def start_scheduler(svc: "CustomerService") -> BackgroundScheduler:
+def start_scheduler(
+    svc: "CustomerService",
+    sellable: "SellableService | None" = None,
+) -> BackgroundScheduler:
     logger.info("Customer API: initial cache warm-up before scheduler launch.")
     t0 = time.perf_counter()
     svc.warm_cache()
@@ -36,6 +40,20 @@ def start_scheduler(svc: "CustomerService") -> BackgroundScheduler:
         replace_existing=True,
         misfire_grace_time=60,
     )
+    if sellable is not None:
+        scheduler.add_job(
+            func=sellable.snapshot_all,
+            trigger=IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
+            id="sellable_snapshot",
+            name="Sellable Potential snapshot",
+            replace_existing=True,
+            misfire_grace_time=60,
+            next_run_time=None,  # initial pass triggered explicitly below
+        )
+        try:
+            sellable.snapshot_all()
+        except Exception:  # noqa: BLE001 - never abort startup
+            logger.exception("Initial sellable snapshot failed")
     scheduler.start()
     logger.info(
         "Customer API background scheduler started (refresh every %d minutes).",
