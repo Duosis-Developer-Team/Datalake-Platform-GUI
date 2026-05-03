@@ -255,7 +255,9 @@ class CustomerService:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     vmware_rows = self._run_rows(cur, cq.ALL_VMWARE_CLUSTER_NAMES, (start_ts, end_ts))
-                    nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES_LATEST)
+                    nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES, (start_ts, end_ts))
+                    if not nutanix_rows:
+                        nutanix_rows = self._run_rows(cur, cq.ALL_NUTANIX_CLUSTER_NAMES_LATEST)
 
             vmware_nonkm: list[str] = []
             for r in vmware_rows or []:

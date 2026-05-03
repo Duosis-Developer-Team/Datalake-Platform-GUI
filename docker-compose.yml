@@ -28,6 +28,26 @@ services:
     networks:
       - datalake
 
+  webui-db:
+    image: postgres:15
+    container_name: bulutistan-webui-db
+    environment:
+      POSTGRES_DB: ${WEBUI_DB_NAME:-bulutwebui}
+      POSTGRES_USER: ${WEBUI_DB_USER:-webuiadmin}
+      POSTGRES_PASSWORD: ${WEBUI_DB_PASS:-change_me_webui}
+    ports:
+      - "5434:5432"
+    volumes:
+      - webui_pgdata:/var/lib/postgresql/data
+      - ./services/customer-api/migrations/webui:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${WEBUI_DB_USER:-webuiadmin} -d ${WEBUI_DB_NAME:-bulutwebui}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - datalake
+
   admin-api:
     build:
       context: .
@@ -165,6 +185,12 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      WEBUI_DB_HOST: ${WEBUI_DB_HOST:-webui-db}
+      WEBUI_DB_PORT: ${WEBUI_DB_PORT:-5432}
+      WEBUI_DB_NAME: ${WEBUI_DB_NAME:-bulutwebui}
+      WEBUI_DB_USER: ${WEBUI_DB_USER:-webuiadmin}
+      WEBUI_DB_PASS: ${WEBUI_DB_PASS:-change_me_webui}
+      WEBUI_DB_REQUIRED: "true"
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       OTEL_SERVICE_NAME: datacenter-api
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
@@ -174,6 +200,8 @@ services:
       - datalake
     depends_on:
       redis:
+        condition: service_healthy
+      webui-db:
         condition: service_healthy
     healthcheck:
       test:
@@ -202,6 +230,12 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_DB: "1"
+      WEBUI_DB_HOST: ${WEBUI_DB_HOST:-webui-db}
+      WEBUI_DB_PORT: ${WEBUI_DB_PORT:-5432}
+      WEBUI_DB_NAME: ${WEBUI_DB_NAME:-bulutwebui}
+      WEBUI_DB_USER: ${WEBUI_DB_USER:-webuiadmin}
+      WEBUI_DB_PASS: ${WEBUI_DB_PASS:-change_me_webui}
+      WEBUI_DB_REQUIRED: "true"
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       OTEL_SERVICE_NAME: customer-api
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
@@ -211,6 +245,8 @@ services:
       - datalake
     depends_on:
       redis:
+        condition: service_healthy
+      webui-db:
         condition: service_healthy
     healthcheck:
       test:
@@ -263,3 +299,4 @@ volumes:
   pgdata:
   redis_data:
   auth_pgdata:
+  webui_pgdata:

@@ -144,6 +144,71 @@ class ServiceMappingUpsert(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# CRM configuration schemas (gui_crm_threshold_config / price_override / calc_config)
+# ---------------------------------------------------------------------------
+
+
+class ThresholdConfigRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    id: int
+    resource_type: str
+    dc_code: str
+    sellable_limit_pct: float
+    notes: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class ThresholdUpsert(BaseModel):
+    resource_type: str
+    dc_code: str = "*"
+    sellable_limit_pct: float
+    notes: Optional[str] = None
+
+
+class PriceOverrideRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    productid: str
+    product_name: Optional[str] = None
+    unit_price_tl: float
+    resource_unit: Optional[str] = None
+    currency: str = "TL"
+    notes: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class PriceOverrideUpsert(BaseModel):
+    product_name: Optional[str] = None
+    unit_price_tl: float
+    resource_unit: Optional[str] = None
+    currency: Optional[str] = "TL"
+    notes: Optional[str] = None
+
+
+class CalcConfigRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    config_key: str
+    config_value: str
+    value_type: str = "float"
+    description: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class CalcConfigUpsert(BaseModel):
+    config_value: str
+    value_type: Optional[str] = None
+    description: Optional[str] = None
+
+
+class CrmDiscoveryCount(BaseModel):
+    table_name: str
+    row_count: int
+    last_collected: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
 # ITSM (ServiceCore) schemas
 # ---------------------------------------------------------------------------
 

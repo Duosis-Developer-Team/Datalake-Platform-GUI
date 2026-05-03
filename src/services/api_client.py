@@ -1032,3 +1032,131 @@ def get_crm_aliases() -> list:
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_aliases", fetch, [])
+
+
+def put_crm_alias(
+    crm_accountid: str,
+    *,
+    canonical_customer_key: Optional[str] = None,
+    netbox_musteri_value: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> dict[str, Any]:
+    enc = quote(crm_accountid, safe="")
+    body = {
+        "canonical_customer_key": canonical_customer_key,
+        "netbox_musteri_value": netbox_musteri_value,
+        "notes": notes,
+    }
+    out = _put_json(_client_cust, f"/api/v1/crm/aliases/{enc}", body)
+    _api_response_cache.delete("api:crm_aliases")
+    return out if isinstance(out, dict) else {}
+
+
+def delete_crm_alias(crm_accountid: str) -> dict[str, Any]:
+    enc = quote(crm_accountid, safe="")
+    out = _delete_json(_client_cust, f"/api/v1/crm/aliases/{enc}")
+    _api_response_cache.delete("api:crm_aliases")
+    return out if isinstance(out, dict) else {}
+
+
+def get_crm_discovery_counts() -> list:
+    def fetch() -> list:
+        data = _get_json(_client_cust, "/api/v1/crm/config/discovery-counts")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_discovery_counts", fetch, [])
+
+
+def get_crm_config_thresholds() -> list:
+    def fetch() -> list:
+        data = _get_json(_client_cust, "/api/v1/crm/config/thresholds")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_config_thresholds", fetch, [])
+
+
+def put_crm_config_threshold(
+    *,
+    resource_type: str,
+    dc_code: str,
+    sellable_limit_pct: float,
+    notes: Optional[str] = None,
+) -> dict[str, Any]:
+    body = {
+        "resource_type": resource_type,
+        "dc_code": dc_code,
+        "sellable_limit_pct": sellable_limit_pct,
+        "notes": notes,
+    }
+    out = _put_json(_client_cust, "/api/v1/crm/config/thresholds", body)
+    _api_response_cache.delete("api:crm_config_thresholds")
+    return out if isinstance(out, dict) else {}
+
+
+def delete_crm_config_threshold(threshold_id: int) -> dict[str, Any]:
+    out = _delete_json(_client_cust, f"/api/v1/crm/config/thresholds/{threshold_id}")
+    _api_response_cache.delete("api:crm_config_thresholds")
+    return out if isinstance(out, dict) else {}
+
+
+def get_crm_price_overrides() -> list:
+    def fetch() -> list:
+        data = _get_json(_client_cust, "/api/v1/crm/config/price-overrides")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_price_overrides", fetch, [])
+
+
+def put_crm_price_override(
+    productid: str,
+    *,
+    product_name: Optional[str],
+    unit_price_tl: float,
+    resource_unit: Optional[str] = None,
+    currency: Optional[str] = "TL",
+    notes: Optional[str] = None,
+) -> dict[str, Any]:
+    enc = quote(productid, safe="")
+    body: dict[str, Any] = {
+        "product_name": product_name,
+        "unit_price_tl": unit_price_tl,
+        "resource_unit": resource_unit,
+        "currency": currency,
+        "notes": notes,
+    }
+    out = _put_json(_client_cust, f"/api/v1/crm/config/price-overrides/{enc}", body)
+    _api_response_cache.delete("api:crm_price_overrides")
+    return out if isinstance(out, dict) else {}
+
+
+def delete_crm_price_override(productid: str) -> dict[str, Any]:
+    enc = quote(productid, safe="")
+    out = _delete_json(_client_cust, f"/api/v1/crm/config/price-overrides/{enc}")
+    _api_response_cache.delete("api:crm_price_overrides")
+    return out if isinstance(out, dict) else {}
+
+
+def get_crm_calc_config() -> list:
+    def fetch() -> list:
+        data = _get_json(_client_cust, "/api/v1/crm/config/variables")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_calc_config", fetch, [])
+
+
+def put_crm_calc_config(
+    config_key: str,
+    *,
+    config_value: str,
+    value_type: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict[str, Any]:
+    enc = quote(config_key, safe="")
+    body: dict[str, Any] = {"config_value": config_value}
+    if value_type is not None:
+        body["value_type"] = value_type
+    if description is not None:
+        body["description"] = description
+    out = _put_json(_client_cust, f"/api/v1/crm/config/variables/{enc}", body)
+    _api_response_cache.delete("api:crm_calc_config")
+    return out if isinstance(out, dict) else {}

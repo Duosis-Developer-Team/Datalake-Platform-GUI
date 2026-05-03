@@ -9,13 +9,18 @@ from app.models.schemas import DataCenterSummary
 from app.services.dc_service import DatabaseService
 from app.services import sla_service
 from app.db.queries import crm_potential as crm_q
-from app.services.dc_sales_potential_v2 import compute_sales_potential_v2
+from app.services.dc_sales_potential_v2 import compute_dc_summary, compute_sales_potential_v2
+from app.services.webui_db import WebuiPool
 
 router = APIRouter()
 
 
 def get_db(request: Request) -> DatabaseService:
     return request.app.state.db
+
+
+def get_webui(request: Request) -> WebuiPool:
+    return request.app.state.webui
 
 
 @router.get("/datacenters/summary", response_model=List[DataCenterSummary])
@@ -305,16 +310,17 @@ def zabbix_storage_disk_health(dc_code: str, tf: TimeFilter = Depends(), db: Dat
 def dc_sales_potential(
     dc_code: str,
     db: DatabaseService = Depends(get_db),
+    webui: WebuiPool = Depends(get_webui),
 ):
     """
-    Sales potential for a datacenter: idle capacity × standard catalog unit prices.
-    Also returns YTD billing and open pipeline for customers present in this DC.
+    Sales potential for a datacenter (legacy v1): idle capacity × standard catalog unit prices.
+    Also returns YTD billing for customers present in this DC. Customer alias resolution
+    runs against the webui DB (gui_crm_customer_alias).
     """
     dc_pattern = f"%{dc_code}%"
     try:
         with db._get_connection() as conn:
             with conn.cursor() as cur:
-                # Catalog + capacity detail rows
                 cur.execute(
                     crm_q.DC_SALES_POTENTIAL,
                     (dc_pattern, dc_pattern, dc_pattern, dc_pattern, dc_code, dc_pattern, dc_pattern),
@@ -322,11 +328,10 @@ def dc_sales_potential(
                 cols = [d[0] for d in cur.description]
                 detail_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
 
-                # Summary (billing + pipeline for DC customers)
-                cur.execute(crm_q.DC_POTENTIAL_SUMMARY, (dc_pattern, dc_code))
-                scols = [d[0] for d in cur.description]
-                summary_row = cur.fetchone()
-                summary = dict(zip(scols, summary_row)) if summary_row else {}
+                # Resolve account ids for the DC via webui alias and run summary query
+                from app.services.dc_sales_potential_v2 import _resolve_account_ids_for_dc
+                account_ids = _resolve_account_ids_for_dc(cur, webui, dc_pattern)
+                summary = compute_dc_summary(cur, dc_code, account_ids)
     except Exception:
         detail_rows = []
         summary = {}
@@ -342,21 +347,21 @@ def dc_sales_potential(
 def dc_sales_potential_v2(
     dc_code: str,
     db: DatabaseService = Depends(get_db),
+    webui: WebuiPool = Depends(get_webui),
 ):
     """
-    Realized-sales-based sellable headroom (80%% policy) with Nutanix capacity proxy.
-    See ADR-0010 — replaces invoice/pipeline-based potential.
+    Realized-sales-based sellable headroom with Nutanix capacity proxy.
+    Sellable ceiling per resource type comes from gui_crm_threshold_config (webui-db).
+    See ADR-0010 / ADR-0012.
     """
-    dc_pattern = f"%{dc_code}%"
     payload: dict[str, Any] = {"dc_code": dc_code}
     try:
         with db._get_connection() as conn:
             with conn.cursor() as cur:
-                payload.update(compute_sales_potential_v2(cur, dc_code))
-                cur.execute(crm_q.DC_POTENTIAL_SUMMARY, (dc_pattern, dc_code))
-                scols = [d[0] for d in cur.description]
-                srow = cur.fetchone()
-                payload["dc_customer_summary"] = dict(zip(scols, srow)) if srow else {}
+                payload.update(compute_sales_potential_v2(cur, dc_code, webui=webui))
+                payload["dc_customer_summary"] = compute_dc_summary(
+                    cur, dc_code, payload.get("resolved_account_ids") or []
+                )
     except Exception:
         payload.setdefault("general_remaining_pct", 0.0)
         payload.setdefault("per_resource", {})

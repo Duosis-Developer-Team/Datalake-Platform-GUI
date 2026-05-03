@@ -4,8 +4,29 @@ from __future__ import annotations
 from app.services.sales_service import SalesService
 
 
+class _FakeWebuiPool:
+    """Stand-in for WebuiPool.
+
+    Returns a single CRM accountid for any customer name so the alias resolver
+    behaves as if webui-db is reachable, without touching a real DB.
+    """
+
+    is_available = True
+
+    def run_rows(self, sql: str, params=None):
+        if "gui_crm_customer_alias" in sql:
+            return [{"crm_accountid": "fake-1"}]
+        return []
+
+    def run_one(self, sql: str, params=None):  # pragma: no cover - unused here
+        return None
+
+    def execute(self, sql: str, params=None):  # pragma: no cover - unused here
+        return 0
+
+
 def test_get_sales_summary_maps_ytd_order_count_to_invoice_count():
-    svc = SalesService(None, None, None, get_customer_assets=None)
+    svc = SalesService(None, None, None, get_customer_assets=None, webui=_FakeWebuiPool())
 
     def _fake_run_one(sql: str, params: tuple):
         return {

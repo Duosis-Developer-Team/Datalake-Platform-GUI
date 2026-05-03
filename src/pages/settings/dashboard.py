@@ -74,22 +74,15 @@ def build_layout(search: str | None = None) -> html.Div:
     )
 
     crm_row = dmc.SimpleGrid(
-        cols=2,
+        cols=1,
         spacing="lg",
         children=[
             section_nav_card(
-                "CRM customer aliases",
-                "Map CRM accounts to canonical customer keys and NetBox tenant fields.",
-                "/settings/customer-alias",
-                icon="solar:link-circle-bold-duotone",
-                badges=["Bulutlake / customer-api"],
-            ),
-            section_nav_card(
-                "CRM service mapping",
-                "Product → service page_key (efficiency) and GUI tab binding; YAML seed + DB overrides.",
-                "/settings/crm/service-mapping",
-                icon="solar:tag-price-bold-duotone",
-                badges=["gui_crm_service_mapping_seed", "gui_crm_service_mapping_override"],
+                "CRM Dynamics 365",
+                "Operator-managed mappings, aliases, thresholds and pricing knobs (WebUI App DB).",
+                "/settings/integrations/crm",
+                icon="solar:case-round-bold-duotone",
+                badges=["customer-api", "datacenter-api", "bulutwebui"],
             ),
         ],
     )

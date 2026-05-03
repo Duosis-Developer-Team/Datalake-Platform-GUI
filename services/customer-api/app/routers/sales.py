@@ -109,3 +109,13 @@ def update_alias(
     return {"status": "ok", "crm_accountid": crm_accountid}
 
 
+@router.delete("/crm/aliases/{crm_accountid}", response_model=dict)
+def delete_alias(
+    crm_accountid: str,
+    svc: SalesService = Depends(get_sales_service),
+):
+    """Remove a customer alias entry."""
+    n = svc.delete_alias(crm_accountid)
+    return {"status": "ok", "crm_accountid": crm_accountid, "rows_deleted": n}
+
+

@@ -1,7 +1,7 @@
 """
 Settings — CRM product → service page mapping (YAML seed in DB + operator overrides).
 
-Route: /settings/crm/service-mapping
+Route: /settings/integrations/crm/service-mapping
 """
 from __future__ import annotations
 

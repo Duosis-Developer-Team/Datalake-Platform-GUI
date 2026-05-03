@@ -1,29 +1,20 @@
-# SQL queries for CRM sales data endpoints.
-# All queries join via discovery_crm_customer_alias to resolve canonical_customer_key → CRM accountid.
+# SQL queries for CRM sales endpoints — datalake DB only (raw discovery_crm_*).
+# Customer alias resolution and product->category mapping live in webui-db and are
+# resolved in the service layer; queries here accept already-resolved CRM
+# accountid lists (parameterised as text[]).
 # Scope: realized sales orders only (statecode 3 Fulfilled, 4 Invoiced) — see ADR-0010.
-
-CUSTOMER_ALIAS_SUBQUERY = """
-    SELECT a.crm_accountid
-    FROM   discovery_crm_customer_alias a
-    WHERE  a.canonical_customer_key = %s
-       OR  a.crm_account_name ILIKE %s
-"""
 
 # ---------------------------------------------------------------------------
 # /customers/{name}/sales/summary
 # ---------------------------------------------------------------------------
 
 SALES_SUMMARY = """
-WITH customer_ids AS (
-    SELECT crm_accountid FROM discovery_crm_customer_alias
-    WHERE canonical_customer_key = %s OR crm_account_name ILIKE %s
-),
-ytd_realized AS (
+WITH ytd_realized AS (
     SELECT COALESCE(SUM(so.totalamount), 0) AS ytd_revenue_total,
            COALESCE(COUNT(DISTINCT so.salesorderid), 0) AS ytd_order_count,
            MIN(so.transactioncurrency_text) AS currency
     FROM   discovery_crm_salesorders so
-    WHERE  so.customerid IN (SELECT crm_accountid FROM customer_ids)
+    WHERE  so.customerid = ANY(%s)
       AND  so.statecode IN (3, 4)
       AND  EXTRACT(YEAR FROM COALESCE(so.fulfilldate, so.submitdate, so.modifiedon::date))
            = EXTRACT(YEAR FROM CURRENT_DATE)
@@ -32,7 +23,7 @@ in_progress_orders AS (
     SELECT COALESCE(COUNT(*), 0) AS active_order_count,
            COALESCE(SUM(so.totalamount), 0) AS active_order_value
     FROM   discovery_crm_salesorders so
-    WHERE  so.customerid IN (SELECT crm_accountid FROM customer_ids)
+    WHERE  so.customerid = ANY(%s)
       AND  so.statecode IN (0, 1)
 )
 SELECT
@@ -65,156 +56,112 @@ SELECT
     d.quantity,
     d.priceperunit                     AS unit_price,
     d.extendedamount                   AS line_total,
-    so.transactioncurrency_text        AS currency
+    so.transactioncurrency_text        AS currency,
+    d.productid                        AS productid
 FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
-WHERE  so.customerid IN (
-           SELECT crm_accountid FROM discovery_crm_customer_alias
-           WHERE canonical_customer_key = %s OR crm_account_name ILIKE %s
-       )
+WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (3, 4)
 ORDER BY so.modifiedon DESC NULLS LAST, d.extendedamount DESC NULLS LAST;
 """
 
 # ---------------------------------------------------------------------------
-# /customers/{name}/sales/efficiency
+# /customers/{name}/sales/efficiency — billed quantities by product, no catalog join
+# (catalog price comes from gui_crm_price_override + discovery_crm_productpricelevels
+#  resolved in the service layer; productpricelevels is currently empty in production).
 # ---------------------------------------------------------------------------
 
-SALES_EFFICIENCY = """
-WITH customer_ids AS (
-    SELECT crm_accountid FROM discovery_crm_customer_alias
-    WHERE canonical_customer_key = %s OR crm_account_name ILIKE %s
-),
-billed_by_product AS (
-    SELECT
-        d.product_name,
-        d.uomid_name                         AS unit,
-        SUM(d.quantity)                      AS total_billed_qty,
-        SUM(d.extendedamount)                AS total_billed_amount,
-        so.transactioncurrency_text          AS currency
-    FROM   discovery_crm_salesorderdetails d
-    JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
-    WHERE  so.customerid IN (SELECT crm_accountid FROM customer_ids)
-      AND  so.statecode IN (3, 4)
-    GROUP BY d.product_name, d.uomid_name, so.transactioncurrency_text
-),
-catalog_prices AS (
-    SELECT
-        p.name                               AS product_name,
-        ppl.uomid_name                       AS unit,
-        ppl.amount                           AS catalog_unit_price,
-        pl.name                              AS price_list
-    FROM   discovery_crm_productpricelevels ppl
-    JOIN   discovery_crm_products p         ON p.productid = ppl.productid
-    JOIN   discovery_crm_pricelevels pl     ON pl.pricelevelid = ppl.pricelevelid
-    WHERE  pl.statecode = 0
-)
+SALES_EFFICIENCY_BILLED = """
 SELECT
-    b.product_name,
-    b.unit,
-    b.total_billed_qty,
-    b.total_billed_amount,
-    b.currency,
-    cp.catalog_unit_price,
-    cp.price_list,
-    CASE
-        WHEN cp.catalog_unit_price > 0 AND b.total_billed_qty > 0
-        THEN ROUND((b.total_billed_amount / (b.total_billed_qty * cp.catalog_unit_price) * 100)::numeric, 2)
-        ELSE NULL
-    END                                      AS catalog_coverage_pct
-FROM billed_by_product b
-LEFT JOIN catalog_prices cp
-    ON  lower(trim(cp.product_name)) = lower(trim(b.product_name))
-    AND lower(trim(coalesce(cp.unit, ''))) = lower(trim(coalesce(b.unit, '')))
-ORDER BY b.total_billed_amount DESC NULLS LAST;
+    d.productid,
+    d.product_name,
+    d.uomid_name                         AS unit,
+    SUM(d.quantity)                      AS total_billed_qty,
+    SUM(d.extendedamount)                AS total_billed_amount,
+    MIN(so.transactioncurrency_text)     AS currency
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (3, 4)
+GROUP BY d.productid, d.product_name, d.uomid_name
+ORDER BY total_billed_amount DESC NULLS LAST;
+"""
+
+# Optional fallback: catalog rows if the price-level table is populated. Service layer
+# uses gui_crm_price_override first; this query is the secondary source for completeness.
+SALES_CATALOG_PRICES = """
+SELECT
+    p.productid,
+    p.name                 AS product_name,
+    ppl.uomid_name         AS unit,
+    ppl.amount             AS catalog_unit_price,
+    pl.name                AS price_list
+FROM   discovery_crm_productpricelevels ppl
+JOIN   discovery_crm_products p     ON p.productid = ppl.productid
+JOIN   discovery_crm_pricelevels pl ON pl.pricelevelid = ppl.pricelevelid
+WHERE  pl.statecode = 0;
 """
 
 # ---------------------------------------------------------------------------
-# /customers/{name}/sales/efficiency-by-category (sold side; usage merged in Python)
+# /customers/{name}/sales/efficiency-by-category (sold side, raw by productid)
+# Mapping productid -> category lives in webui-db and is applied in Python.
 # ---------------------------------------------------------------------------
 
-SALES_SOLD_BY_CATEGORY = """
-WITH customer_ids AS (
-    SELECT crm_accountid FROM discovery_crm_customer_alias
-    WHERE canonical_customer_key = %s OR crm_account_name ILIKE %s
-)
+SALES_SOLD_RAW_BY_PRODUCT = """
 SELECT
-    COALESCE(m.category_code, 'other')     AS category_code,
-    COALESCE(m.category_label, 'Other')    AS category_label,
-    COALESCE(m.gui_tab_binding, 'other')   AS gui_tab_binding,
-    COALESCE(NULLIF(TRIM(d.uomid_name), ''), NULLIF(TRIM(m.resource_unit), ''), 'Adet') AS resource_unit,
-    SUM(d.quantity)::double precision        AS sold_qty,
-    SUM(d.extendedamount)::double precision    AS sold_amount_tl
+    d.productid,
+    d.product_name,
+    COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
+    SUM(d.quantity)::double precision     AS sold_qty,
+    SUM(d.extendedamount)::double precision AS sold_amount_tl
 FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
-JOIN   customer_ids c ON so.customerid = c.crm_accountid
-LEFT JOIN v_gui_crm_product_mapping m ON m.productid = d.productid
-WHERE  so.statecode IN (3, 4)
-GROUP BY COALESCE(m.category_code, 'other'),
-         COALESCE(m.category_label, 'Other'),
-         COALESCE(m.gui_tab_binding, 'other'),
-         COALESCE(NULLIF(TRIM(d.uomid_name), ''), NULLIF(TRIM(m.resource_unit), ''), 'Adet')
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (3, 4)
+GROUP BY d.productid, d.product_name, COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet')
 ORDER BY sold_amount_tl DESC NULLS LAST;
 """
 
 # ---------------------------------------------------------------------------
-# /customers/{name}/sales/catalog-valuation
+# Full CRM product list (for service mapping page and price override dropdowns).
 # ---------------------------------------------------------------------------
 
-CATALOG_VALUATION = """
-WITH customer_alias AS (
-    SELECT netbox_musteri_value, canonical_customer_key
-    FROM   discovery_crm_customer_alias
-    WHERE  canonical_customer_key = %s OR crm_account_name ILIKE %s
-    LIMIT  1
-),
-tl_catalog AS (
-    SELECT
-        p.name         AS product_name,
-        ppl.uomid_name AS unit,
-        ppl.amount     AS unit_price_tl
-    FROM   discovery_crm_productpricelevels ppl
-    JOIN   discovery_crm_products p   ON p.productid = ppl.productid
-    JOIN   discovery_crm_pricelevels pl ON pl.pricelevelid = ppl.pricelevelid
-    WHERE  pl.name ILIKE '%%TL%%'
-      AND  pl.statecode = 0
-)
+ALL_PRODUCTS = """
 SELECT
-    tc.product_name,
-    tc.unit,
-    tc.unit_price_tl,
-    'catalog'          AS valuation_type
-FROM tl_catalog tc
-ORDER BY tc.product_name;
+    productid,
+    name                AS product_name,
+    productnumber       AS product_number,
+    defaultuomid_name   AS default_unit
+FROM   discovery_crm_products
+ORDER BY name NULLS LAST, productid;
 """
 
 # ---------------------------------------------------------------------------
-# Customer alias management
+# Discovery counts for the CRM Overview page (raw datalake tables).
 # ---------------------------------------------------------------------------
 
-GET_ALL_ALIASES = """
-SELECT
-    crm_accountid,
-    crm_account_name,
-    canonical_customer_key,
-    netbox_musteri_value,
-    notes,
-    source,
-    created_at,
-    updated_at
-FROM discovery_crm_customer_alias
-ORDER BY crm_account_name;
+DISCOVERY_TABLE_COUNTS = """
+SELECT 'discovery_crm_accounts' AS table_name,
+       (SELECT COUNT(*) FROM discovery_crm_accounts) AS row_count,
+       (SELECT MAX(collection_time) FROM discovery_crm_accounts) AS last_collected
+UNION ALL
+SELECT 'discovery_crm_products',
+       (SELECT COUNT(*) FROM discovery_crm_products),
+       (SELECT MAX(collection_time) FROM discovery_crm_products)
+UNION ALL
+SELECT 'discovery_crm_pricelevels',
+       (SELECT COUNT(*) FROM discovery_crm_pricelevels),
+       (SELECT MAX(collection_time) FROM discovery_crm_pricelevels)
+UNION ALL
+SELECT 'discovery_crm_productpricelevels',
+       (SELECT COUNT(*) FROM discovery_crm_productpricelevels),
+       (SELECT MAX(collection_time) FROM discovery_crm_productpricelevels)
+UNION ALL
+SELECT 'discovery_crm_salesorders',
+       (SELECT COUNT(*) FROM discovery_crm_salesorders),
+       (SELECT MAX(collection_time) FROM discovery_crm_salesorders)
+UNION ALL
+SELECT 'discovery_crm_salesorderdetails',
+       (SELECT COUNT(*) FROM discovery_crm_salesorderdetails),
+       (SELECT MAX(collection_time) FROM discovery_crm_salesorderdetails);
 """
-
-UPSERT_ALIAS = """
-INSERT INTO discovery_crm_customer_alias
-    (crm_accountid, crm_account_name, canonical_customer_key, netbox_musteri_value, notes, source, created_at, updated_at)
-VALUES (%s, %s, %s, %s, %s, 'manual', now(), now())
-ON CONFLICT (crm_accountid) DO UPDATE
-    SET canonical_customer_key = EXCLUDED.canonical_customer_key,
-        netbox_musteri_value   = EXCLUDED.netbox_musteri_value,
-        notes                  = EXCLUDED.notes,
-        source                 = 'manual',
-        updated_at             = now();
-"""
-

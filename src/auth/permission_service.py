@@ -121,6 +121,19 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
             return "page:settings_ldap"
         if p.startswith("/settings/integrations/auranotify"):
             return "page:settings_auranotify"
+        if p.rstrip("/") == "/settings/integrations/crm":
+            return "page:settings_crm_overview"
+        if p.startswith("/settings/integrations/crm/service-mapping"):
+            return "page:settings_service_mapping"
+        if p.startswith("/settings/integrations/crm/aliases"):
+            return "page:settings_crm_aliases"
+        if p.startswith("/settings/integrations/crm/thresholds"):
+            return "page:settings_crm_thresholds"
+        if p.startswith("/settings/integrations/crm/price-overrides"):
+            return "page:settings_crm_price_overrides"
+        if p.startswith("/settings/integrations/crm/calc-config"):
+            return "page:settings_crm_calc_config"
+        # Legacy CRM paths (removed top-nav CRM section)
         if p.startswith("/settings/crm/service-mapping"):
             return "page:settings_service_mapping"
         if p.rstrip("/") == "/settings/integrations":

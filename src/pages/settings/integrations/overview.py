@@ -73,9 +73,11 @@ def build_layout(search: str | None = None) -> html.Div:
     else:
         aura_status = "disconnected"
 
-    connected = sum([ldap_status == "connected", aura_status == "connected"])
-    degraded = 1 if aura_status == "degraded" else 0
-    disconnected = 2 - connected - degraded
+    crm_status = "connected"
+
+    connected = sum([crm_status == "connected", ldap_status == "connected", aura_status == "connected"])
+    degraded = (1 if aura_status == "degraded" else 0)
+    disconnected = 3 - connected - degraded
 
     kpis = dmc.SimpleGrid(
         cols=3,
@@ -88,9 +90,18 @@ def build_layout(search: str | None = None) -> html.Div:
     )
 
     grid = dmc.SimpleGrid(
-        cols=2,
+        cols={"base": 1, "sm": 2, "lg": 3},
         spacing="lg",
         children=[
+            _connector_card(
+                "CRM Dynamics 365",
+                "Mappings, aliases, thresholds and manual catalog pricing (WebUI App DB).",
+                "connected",
+                "/settings/integrations/crm",
+                "Open",
+                border_color="#552cf8",
+                icon="solar:case-round-bold-duotone",
+            ),
             _connector_card(
                 "LDAP Directory",
                 "Centralized authentication and group → role mapping.",
@@ -163,7 +174,7 @@ def build_layout(search: str | None = None) -> html.Div:
             [
                 section_header(
                     "Integrations",
-                    "Connect identity sources and external SLA services.",
+                    "Connect CRM mappings, identity sources and external SLA services.",
                     icon="solar:link-round-angle-bold-duotone",
                 ),
                 kpis,

@@ -61,6 +61,7 @@ def mock_customer_service():
     with patch("app.main.CustomerService", return_value=mock_svc), \
          patch("app.main.init_redis_pool"), \
          patch("app.main.close_redis_pool"), \
+         patch("app.main.redis_is_healthy", return_value=True), \
          patch("app.main.start_scheduler", return_value=MagicMock()):
         with TestClient(app) as client:
             yield client, mock_svc

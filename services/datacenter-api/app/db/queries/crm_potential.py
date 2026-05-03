@@ -1,6 +1,111 @@
 # SQL queries for datacenter sales-potential endpoints.
-# v1: catalog × coarse capacity rows (legacy).
-# v2: realized CRM sales + 80%% sellable ceiling (ADR-0010).
+#
+# After the WebUI App DB split:
+#   - Customer alias resolution and product->category mapping live in webui-db.
+#   - Sales-potential computations join those mappings in the application layer.
+#   - These queries return raw datalake-side rows keyed by productid / accountid.
+#
+# v1: catalog × coarse capacity rows (legacy, kept for backwards compatibility).
+# v2: realized CRM sales + sellable ceilings from gui_crm_threshold_config (ADR-0010).
+
+# ---------------------------------------------------------------------------
+# Distinct NetBox tenant values for VMs in a DC (input for alias resolution).
+# ---------------------------------------------------------------------------
+
+DC_TENANT_VALUES = """
+SELECT DISTINCT lower(trim(coalesce(vm.custom_fields_musteri, ''))) AS tenant_value
+FROM   discovery_netbox_virtualization_vm vm
+WHERE  vm.site_name ILIKE %s
+  AND  vm.custom_fields_musteri IS NOT NULL
+  AND  trim(vm.custom_fields_musteri) <> '';
+"""
+
+# ---------------------------------------------------------------------------
+# Per-DC YTD billing summary (alias resolution done in Python).
+# Pass an array of CRM accountids that map to this DC's tenants.
+# ---------------------------------------------------------------------------
+
+DC_POTENTIAL_SUMMARY = """
+WITH ytd_realized AS (
+    SELECT COALESCE(SUM(so.totalamount), 0) AS total_billed_ytd,
+           COUNT(DISTINCT so.salesorderid)  AS invoice_count
+    FROM   discovery_crm_salesorders so
+    WHERE  so.customerid = ANY(%s)
+      AND  so.statecode IN (3, 4)
+      AND  EXTRACT(YEAR FROM COALESCE(so.fulfilldate, so.submitdate, so.modifiedon::date))
+           = EXTRACT(YEAR FROM CURRENT_DATE)
+)
+SELECT
+    %s::TEXT                            AS dc_code,
+    ytd.total_billed_ytd,
+    ytd.invoice_count,
+    0.0::double precision               AS total_pipeline_value,
+    0::bigint                           AS open_opportunity_count,
+    cardinality(%s::text[])             AS customer_count
+FROM ytd_realized ytd;
+"""
+
+# ---------------------------------------------------------------------------
+# Sold totals by raw productid for a DC's resolved customers.
+# Mapping productid -> category is applied in Python from webui-db.
+# ---------------------------------------------------------------------------
+
+DC_SOLD_RAW_BY_PRODUCT_FOR_DC = """
+SELECT
+    d.productid,
+    d.product_name,
+    COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
+    SUM(d.quantity)::double precision      AS sold_qty,
+    SUM(d.extendedamount)::double precision AS sold_amount_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (3, 4)
+  AND  COALESCE(so.fulfilldate::date, so.submitdate::date, so.modifiedon::date)
+       >= CURRENT_DATE - INTERVAL '12 months'
+GROUP BY d.productid, d.product_name, COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet')
+ORDER BY sold_amount_tl DESC NULLS LAST;
+"""
+
+# ---------------------------------------------------------------------------
+# Nutanix capacity proxy per DC name (unchanged).
+# ---------------------------------------------------------------------------
+
+DC_NUTANIX_CLUSTER_CAPACITY = """
+WITH latest AS (
+    SELECT DISTINCT ON (cluster_name)
+        cluster_name,
+        datacenter_name,
+        total_cpu_capacity,
+        total_memory_capacity
+    FROM   nutanix_cluster_metrics
+    WHERE  datacenter_name ILIKE %s
+      AND  collection_time >= NOW() - INTERVAL '7 days'
+    ORDER BY cluster_name, collection_time DESC
+)
+SELECT
+    COALESCE(SUM(total_cpu_capacity), 0)::double precision   AS total_cpu_capacity,
+    COALESCE(SUM(total_memory_capacity), 0)::double precision / 1073741824.0 AS total_memory_gb
+FROM latest;
+"""
+
+# ---------------------------------------------------------------------------
+# Catalog price fallback (kept; production may stay empty).
+# Average price for unit pattern; gui_crm_price_override is the primary source.
+# ---------------------------------------------------------------------------
+
+DC_CATALOG_AVG_UNIT_PRICE = """
+SELECT COALESCE(AVG(ppl.amount), 0)::double precision
+FROM   discovery_crm_productpricelevels ppl
+JOIN   discovery_crm_pricelevels pl ON pl.pricelevelid = ppl.pricelevelid
+WHERE  pl.name ILIKE '%%TL%%'
+  AND  pl.statecode = 0
+  AND  lower(coalesce(ppl.uomid_name, '')) LIKE %s;
+"""
+
+# ---------------------------------------------------------------------------
+# Legacy v1 catalog × capacity (kept for /sales-potential v1 endpoint).
+# ---------------------------------------------------------------------------
 
 DC_SALES_POTENTIAL = """
 WITH
@@ -76,114 +181,12 @@ LEFT JOIN dc_allocated_nutanix na ON na.dc_name ILIKE %s
 ORDER BY tc.product_name NULLS LAST;
 """
 
-DC_POTENTIAL_SUMMARY = """
-WITH customer_in_dc AS (
-    SELECT DISTINCT
-        a.canonical_customer_key,
-        a.crm_accountid
-    FROM   discovery_netbox_virtualization_vm vm
-    JOIN   discovery_crm_customer_alias a
-           ON lower(trim(coalesce(a.netbox_musteri_value, ''))) = lower(trim(coalesce(vm.custom_fields_musteri, '')))
-    WHERE  vm.site_name ILIKE %s
-),
-ytd_realized AS (
-    SELECT
-        COALESCE(SUM(so.totalamount), 0) AS total_billed_ytd,
-        COUNT(DISTINCT so.salesorderid)  AS invoice_count
-    FROM   discovery_crm_salesorders so
-    WHERE  so.customerid IN (SELECT crm_accountid FROM customer_in_dc)
-      AND  so.statecode IN (3, 4)
-      AND  EXTRACT(YEAR FROM COALESCE(so.fulfilldate, so.submitdate, so.modifiedon::date))
-           = EXTRACT(YEAR FROM CURRENT_DATE)
-)
-SELECT
-    %s::TEXT                               AS dc_code,
-    ytd.total_billed_ytd,
-    ytd.invoice_count,
-    0.0::double precision                  AS total_pipeline_value,
-    0::bigint                              AS open_opportunity_count,
-    (SELECT COUNT(DISTINCT crm_accountid) FROM customer_in_dc) AS customer_count
-FROM ytd_realized ytd;
-"""
+# ---------------------------------------------------------------------------
+# Webui-side: alias rows that map to a tenant value list (executed against webui-db).
+# ---------------------------------------------------------------------------
 
-# --- v2: physical-ish totals from latest Nutanix cluster metrics (per DC name) ---
-
-DC_NUTANIX_CLUSTER_CAPACITY = """
-WITH latest AS (
-    SELECT DISTINCT ON (cluster_name)
-        cluster_name,
-        datacenter_name,
-        total_cpu_capacity,
-        total_memory_capacity
-    FROM   nutanix_cluster_metrics
-    WHERE  datacenter_name ILIKE %s
-      AND  collection_time >= NOW() - INTERVAL '7 days'
-    ORDER BY cluster_name, collection_time DESC
-)
-SELECT
-    COALESCE(SUM(total_cpu_capacity), 0)::double precision   AS total_cpu_capacity,
-    COALESCE(SUM(total_memory_capacity), 0)::double precision / 1073741824.0 AS total_memory_gb
-FROM latest;
-"""
-
-DC_SOLD_VIRTUALIZATION_FOR_DC = """
-WITH cust AS (
-    SELECT DISTINCT a.crm_accountid
-    FROM   discovery_netbox_virtualization_vm vm
-    JOIN   discovery_crm_customer_alias a
-           ON lower(trim(coalesce(a.netbox_musteri_value, ''))) = lower(trim(coalesce(vm.custom_fields_musteri, '')))
-    WHERE  vm.site_name ILIKE %s
-)
-SELECT
-    COALESCE(SUM(CASE WHEN lower(coalesce(NULLIF(TRIM(d.uomid_name), ''), m.resource_unit, '')) LIKE '%%vcpu%%'
-                      OR lower(coalesce(NULLIF(TRIM(d.uomid_name), ''), m.resource_unit, '')) = 'vcpu'
-                 THEN d.quantity ELSE 0 END), 0)::double precision AS sold_vcpu,
-    COALESCE(SUM(CASE WHEN lower(coalesce(NULLIF(TRIM(d.uomid_name), ''), m.resource_unit, '')) LIKE '%%gb%%'
-                      AND COALESCE(m.category_code, '') LIKE 'virt%%'
-                 THEN d.quantity ELSE 0 END), 0)::double precision AS sold_ram_gb
-FROM   discovery_crm_salesorderdetails d
-JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
-JOIN   cust c ON so.customerid = c.crm_accountid
-LEFT JOIN v_gui_crm_product_mapping m ON m.productid = d.productid
-WHERE  so.statecode IN (3, 4)
-  AND COALESCE(so.fulfilldate::date, so.submitdate::date, so.modifiedon::date)
-      >= CURRENT_DATE - INTERVAL '12 months';
-"""
-
-DC_SOLD_BY_CATEGORY_FOR_DC = """
-WITH cust AS (
-    SELECT DISTINCT a.crm_accountid
-    FROM   discovery_netbox_virtualization_vm vm
-    JOIN   discovery_crm_customer_alias a
-           ON lower(trim(coalesce(a.netbox_musteri_value, ''))) = lower(trim(coalesce(vm.custom_fields_musteri, '')))
-    WHERE  vm.site_name ILIKE %s
-)
-SELECT
-    COALESCE(m.category_code, 'other')     AS category_code,
-    COALESCE(m.category_label, 'Other')   AS category_label,
-    COALESCE(m.gui_tab_binding, 'other')   AS gui_tab_binding,
-    COALESCE(NULLIF(TRIM(d.uomid_name), ''), NULLIF(TRIM(m.resource_unit), ''), 'Adet') AS resource_unit,
-    SUM(d.quantity)::double precision        AS sold_qty,
-    SUM(d.extendedamount)::double precision  AS sold_amount_tl
-FROM   discovery_crm_salesorderdetails d
-JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
-JOIN   cust c ON so.customerid = c.crm_accountid
-LEFT JOIN v_gui_crm_product_mapping m ON m.productid = d.productid
-WHERE  so.statecode IN (3, 4)
-  AND COALESCE(so.fulfilldate::date, so.submitdate::date, so.modifiedon::date)
-      >= CURRENT_DATE - INTERVAL '12 months'
-GROUP BY COALESCE(m.category_code, 'other'),
-         COALESCE(m.category_label, 'Other'),
-         COALESCE(m.gui_tab_binding, 'other'),
-         COALESCE(NULLIF(TRIM(d.uomid_name), ''), NULLIF(TRIM(m.resource_unit), ''), 'Adet')
-ORDER BY sold_amount_tl DESC NULLS LAST;
-"""
-
-DC_CATALOG_AVG_UNIT_PRICE = """
-SELECT COALESCE(AVG(ppl.amount), 0)::double precision
-FROM   discovery_crm_productpricelevels ppl
-JOIN   discovery_crm_pricelevels pl ON pl.pricelevelid = ppl.pricelevelid
-WHERE  pl.name ILIKE '%%TL%%'
-  AND  pl.statecode = 0
-  AND  lower(coalesce(ppl.uomid_name, '')) LIKE %s;
+WEBUI_ALIAS_ACCOUNTIDS_FOR_TENANTS = """
+SELECT crm_accountid
+FROM   gui_crm_customer_alias
+WHERE  lower(trim(coalesce(netbox_musteri_value, ''))) = ANY(%s);
 """

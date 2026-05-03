@@ -13,6 +13,7 @@ setup_sdk()
 from app.core.api_auth import verify_api_user
 from app.services.dc_service import DatabaseService
 from app.services.scheduler_service import start_scheduler
+from app.services.webui_db import WebuiPool
 from app.routers import datacenters, dashboard
 from app.core.redis_client import init_redis_pool, close_redis_pool, redis_is_healthy
 
@@ -22,7 +23,9 @@ logging.basicConfig(level=logging.INFO)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db = DatabaseService()
+    webui = WebuiPool()
     app.state.db = db
+    app.state.webui = webui
     init_redis_pool()
     scheduler = start_scheduler(db)
     app.state.scheduler = scheduler
@@ -32,6 +35,7 @@ async def lifespan(app: FastAPI):
     close_redis_pool()
     if db._pool:
         db._pool.closeall()
+    webui.close()
 
 
 app = FastAPI(
@@ -67,9 +71,11 @@ app.include_router(
 @app.get("/health", response_model=dict)
 def health():
     db: DatabaseService = app.state.db
+    webui: WebuiPool = app.state.webui
     return {
         "status": "ok",
         "db_pool": "ok" if db._pool else "unavailable",
+        "webui_pool": "ok" if webui.is_available else "unavailable",
         "redis": "ok" if redis_is_healthy() else "unavailable",
     }
 

@@ -99,13 +99,20 @@ def resolve_used_quantity(
     return 0.0, None
 
 
-def efficiency_status(efficiency_pct: float | None, sold_qty: float) -> str:
+def efficiency_status(
+    efficiency_pct: float | None,
+    sold_qty: float,
+    *,
+    under_pct: float = 80.0,
+    over_pct: float = 110.0,
+) -> str:
+    """Classify a sold/used ratio. Bands come from gui_crm_calc_config when caller supplies them."""
     if sold_qty <= 0:
         return "no_sales"
     if efficiency_pct is None:
         return "unknown"
-    if efficiency_pct < 80.0:
+    if efficiency_pct < under_pct:
         return "under"
-    if efficiency_pct <= 110.0:
+    if efficiency_pct <= over_pct:
         return "optimal"
     return "over"
