@@ -350,6 +350,14 @@ def dc_sales_potential_v2(
     webui: WebuiPool = Depends(get_webui),
 ):
     """
+    DEPRECATED in favour of customer-api ``/api/v1/crm/sellable-potential/by-panel?dc_code=...``
+    (see ADR-0014). The new pipeline uses gui_panel_definition + per-environment
+    resource ratios + unit conversions to deliver constrained sellable + TL
+    potential without coupling Nutanix-only capacity to every resource family.
+
+    The legacy v2 response shape is preserved for backward compatibility while
+    the GUI migrates to the inline Sellable Potential KPI blocks (Faz 6).
+
     Realized-sales-based sellable headroom with Nutanix capacity proxy.
     Sellable ceiling per resource type comes from gui_crm_threshold_config (webui-db).
     See ADR-0010 / ADR-0012.

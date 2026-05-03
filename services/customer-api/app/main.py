@@ -22,7 +22,7 @@ from app.services.scheduler_service import start_scheduler
 from app.services.sellable_service import SellableService
 from app.services.tagging_service import TaggingService
 from app.services.webui_db import WebuiPool
-from app.routers import crm_config, customers, itsm, sales, service_mapping
+from app.routers import crm_config, customers, itsm, sales, sellable, service_mapping
 from app.core.redis_client import init_redis_pool, close_redis_pool, redis_is_healthy
 
 logging.basicConfig(level=logging.INFO)
@@ -126,6 +126,13 @@ app.include_router(
     crm_config.router,
     prefix="/api/v1",
     tags=["crm-config"],
+    dependencies=[Depends(verify_api_user)],
+)
+
+app.include_router(
+    sellable.router,
+    prefix="/api/v1",
+    tags=["crm-sellable"],
     dependencies=[Depends(verify_api_user)],
 )
 

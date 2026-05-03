@@ -211,6 +211,124 @@ class CrmDiscoveryCount(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Sellable Potential schemas (gui_panel_definition / infra_source / ratio /
+#                             unit_conversion / metric_snapshot)
+# ---------------------------------------------------------------------------
+
+
+class PanelDefinitionRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    panel_key: str
+    label: str
+    family: str
+    resource_kind: str  # cpu | ram | storage | other
+    display_unit: str
+    sort_order: int = 100
+    enabled: bool = True
+    notes: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class PanelDefinitionUpsert(BaseModel):
+    label: str
+    family: str
+    resource_kind: str
+    display_unit: str = "GB"
+    sort_order: int = 100
+    enabled: bool = True
+    notes: Optional[str] = None
+
+
+class PanelInfraSourceRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    panel_key: str
+    dc_code: str = "*"
+    source_table: Optional[str] = None
+    total_column: Optional[str] = None
+    total_unit: Optional[str] = None
+    allocated_table: Optional[str] = None
+    allocated_column: Optional[str] = None
+    allocated_unit: Optional[str] = None
+    filter_clause: Optional[str] = None
+    notes: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class PanelInfraSourceUpsert(BaseModel):
+    dc_code: str = "*"
+    source_table: Optional[str] = None
+    total_column: Optional[str] = None
+    total_unit: Optional[str] = None
+    allocated_table: Optional[str] = None
+    allocated_column: Optional[str] = None
+    allocated_unit: Optional[str] = None
+    filter_clause: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ResourceRatioRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    family: str
+    dc_code: str = "*"
+    cpu_per_unit: float = 1.0
+    ram_gb_per_unit: float = 8.0
+    storage_gb_per_unit: float = 100.0
+    notes: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class ResourceRatioUpsert(BaseModel):
+    dc_code: str = "*"
+    cpu_per_unit: float = 1.0
+    ram_gb_per_unit: float = 8.0
+    storage_gb_per_unit: float = 100.0
+    notes: Optional[str] = None
+
+
+class UnitConversionRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    from_unit: str
+    to_unit: str
+    factor: float
+    operation: str = "divide"  # multiply | divide
+    ceil_result: bool = False
+    notes: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class UnitConversionUpsert(BaseModel):
+    factor: float
+    operation: str = "divide"
+    ceil_result: bool = False
+    notes: Optional[str] = None
+
+
+class MetricValueRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    metric_key: str
+    value: float
+    unit: str
+    scope_type: str = "global"
+    scope_id: str = "*"
+
+
+class MetricSnapshotRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    metric_key: str
+    scope_type: str
+    scope_id: str
+    value: float
+    unit: str
+    captured_at: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
 # ITSM (ServiceCore) schemas
 # ---------------------------------------------------------------------------
 
