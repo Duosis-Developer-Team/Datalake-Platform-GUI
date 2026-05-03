@@ -124,6 +124,8 @@ class ServiceMappingRow(BaseModel):
 
     ``resource_unit`` is the page registry default (``gui_crm_service_pages``), for Settings UI.
     Sold-side analytics use ``salesorderdetails.uomid_name`` first (see ADR-0011 / CRM_SERVICE_MAPPING.md).
+    Mapping fields are Optional because products without seed/override are surfaced as
+    ``source='unmatched'`` with ``category_code = None`` so the operator UI can flag pending rows.
     """
 
     model_config = {"extra": "allow"}
@@ -131,10 +133,10 @@ class ServiceMappingRow(BaseModel):
     productid: str
     product_name: Optional[str] = None
     product_number: Optional[str] = None
-    category_code: str
-    category_label: str
-    gui_tab_binding: str
-    resource_unit: str
+    category_code: Optional[str] = None
+    category_label: Optional[str] = None
+    gui_tab_binding: Optional[str] = None
+    resource_unit: Optional[str] = None
     source: str
 
 

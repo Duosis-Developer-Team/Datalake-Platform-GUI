@@ -13,6 +13,13 @@ from dash_iconify import DashIconify
 from src.services import api_client as api
 
 
+_BADGE_COLORS = {
+    "override": "teal",
+    "yaml": "gray",
+    "unmatched": "orange",
+}
+
+
 def build_layout(search: str | None = None) -> html.Div:
     rows = api.get_crm_service_mappings()
     pages = api.get_crm_service_mapping_pages()
@@ -22,25 +29,32 @@ def build_layout(search: str | None = None) -> html.Div:
         body = dmc.Alert(
             color="yellow",
             title="No data",
-            children="Run datalake migration 2026-04-24-gui-crm-service-mapping.sql and ensure discovery_crm_products is populated.",
+            children="Run the webui-db migrations (001-004) and ensure discovery_crm_products is populated.",
         )
     else:
+        unmatched_count = sum(1 for r in rows if str(r.get("source") or "") == "unmatched")
         table_rows = []
         for r in rows:
             pid = str(r.get("productid", ""))
-            eff = str(r.get("category_code", "") or "")
+            eff = str(r.get("category_code") or "")
             src = str(r.get("source", "") or "")
+            badge_color = _BADGE_COLORS.get(src, "gray")
+            badge_label = src.upper() if src else "-"
             table_rows.append(
                 html.Tr(
                     [
                         html.Td(pid, style={"fontSize": "11px", "maxWidth": "120px", "wordBreak": "break-all"}),
                         html.Td((r.get("product_name") or "-")[:60]),
                         html.Td((r.get("product_number") or "-")[:24]),
-                        html.Td(eff, style={"fontSize": "12px"}),
+                        html.Td(
+                            eff or html.Span("—", style={"color": "#A3AED0"}),
+                            style={"fontSize": "12px"},
+                        ),
                         html.Td(
                             dmc.Badge(
-                                src,
-                                color="teal" if src == "override" else "gray",
+                                badge_label,
+                                color=badge_color,
+                                variant="light" if src == "unmatched" else "filled",
                                 size="sm",
                             )
                         ),
@@ -48,11 +62,12 @@ def build_layout(search: str | None = None) -> html.Div:
                             dmc.Select(
                                 id={"type": "svcmap-page", "index": pid},
                                 data=page_options,
-                                value=eff,
+                                value=eff or None,
                                 size="xs",
                                 searchable=True,
-                                clearable=False,
-                                style={"minWidth": "220px"},
+                                clearable=True,
+                                placeholder="Select page_key…",
+                                style={"minWidth": "260px"},
                             )
                         ),
                         html.Td(
@@ -113,6 +128,20 @@ def build_layout(search: str | None = None) -> html.Div:
         )
         body = html.Div(style={"overflowX": "auto"}, children=[table])
 
+    summary_alert = None
+    if rows:
+        if unmatched_count:
+            summary_alert = dmc.Alert(
+                color="orange",
+                variant="light",
+                title=f"{unmatched_count} unmatched CRM products",
+                children=(
+                    "Pick a page_key to map them to a WebUI panel (e.g. virt_hyperconverged_ram, "
+                    "backup_zerto_storage). Leave them as UNMATCHED if they should not feed any panel yet."
+                ),
+                style={"marginBottom": "12px"},
+            )
+
     return html.Div(
         style={"padding": "30px"},
         children=[
@@ -132,8 +161,10 @@ def build_layout(search: str | None = None) -> html.Div:
                         children=[
                             dmc.Text("CRM service mapping", fw=700, size="xl", c="#2B3674"),
                             dmc.Text(
-                                "Defaults come from DB seed (generated from YAML rules). "
-                                "Save writes gui_crm_service_mapping_override; Reset removes override.",
+                                "Each CRM product maps to exactly one WebUI panel via page_key. "
+                                "YAML seed produces the default mapping; Save writes a manual "
+                                "override, Reset removes it. Products without a mapping are flagged "
+                                "as UNMATCHED so operators can resolve them.",
                                 size="sm",
                                 c="#A3AED0",
                             ),
@@ -141,6 +172,7 @@ def build_layout(search: str | None = None) -> html.Div:
                     ),
                 ],
             ),
+            summary_alert,
             dcc.Store(id="svcmap-dummy"),
             html.Div(id="svcmap-feedback", style={"marginBottom": "12px"}),
             body,
@@ -172,6 +204,15 @@ def _on_svcmap_save(_n, page_vals, notes_vals, save_ids):
         return dmc.Alert(color="red", title="Error", children="Row not found.")
     page_key = (page_vals or [""])[pos] or ""
     notes = (notes_vals or [""])[pos] or None
+    if not page_key:
+        # Empty selection — treat as "leave unmatched": clear any existing override.
+        api.delete_crm_service_mapping_override(str(idx))
+        return dmc.Alert(
+            color="orange",
+            variant="light",
+            title="Marked unmatched",
+            children=f"Cleared mapping for {idx}.",
+        )
     api.put_crm_service_mapping(str(idx), page_key=page_key, notes=notes)
     return dmc.Alert(color="green", variant="light", title="Saved", children=f"Updated {idx} → {page_key}")
 
