@@ -20,22 +20,27 @@ ORDER BY page_key;
 
 # Webui-side: full mapping rows keyed by productid. Product display names come
 # from the datalake side (ALL_PRODUCTS in crm_sales.py) and are merged in Python.
+#
+# A LEFT JOIN onto gui_crm_service_pages preserves rows whose effective page_key
+# becomes NULL (when neither seed nor override exists). Those rows are surfaced
+# by the API as source='unmatched' so operators can decide whether to map or
+# leave them pending.
 LIST_SERVICE_MAPPINGS_WEBUI = """
 SELECT
     COALESCE(o.productid, s.productid)                     AS productid,
-    COALESCE(o.page_key, s.page_key, 'other')              AS category_code,
+    COALESCE(o.page_key, s.page_key)                       AS category_code,
     pg.category_label,
     pg.gui_tab_binding,
-    COALESCE(NULLIF(TRIM(pg.resource_unit), ''), 'Adet')   AS resource_unit,
+    NULLIF(TRIM(pg.resource_unit), '')                     AS resource_unit,
     CASE
         WHEN o.productid IS NOT NULL THEN 'override'
         WHEN s.productid IS NOT NULL THEN 'yaml'
-        ELSE 'default'
+        ELSE 'unmatched'
     END                                                     AS source
 FROM       gui_crm_service_mapping_seed s
 FULL JOIN  gui_crm_service_mapping_override o ON o.productid = s.productid
-JOIN       gui_crm_service_pages pg
-       ON  pg.page_key = COALESCE(o.page_key, s.page_key, 'other');
+LEFT JOIN  gui_crm_service_pages pg
+       ON  pg.page_key = COALESCE(o.page_key, s.page_key);
 """
 
 UPSERT_SERVICE_MAPPING_OVERRIDE = """

@@ -3,38 +3,116 @@
 #   PYTHONPATH=Datalake-Platform-GUI python Datalake-Platform-GUI/shared/service_mapping/generate_seed_sql.py
 # Operator overrides live in PostgreSQL: gui_crm_service_mapping_override.
 
-version: 1
+version: 2
 description: >
   page_key values align with customer-api efficiency_usage category_code prefixes
-  (e.g. virt_classic, backup_veeam). gui_tab_binding is used for Customer View tab hints.
+  (e.g. virt_classic, backup_veeam). Granular suffixes (_cpu, _ram, _storage) target
+  specific WebUI panels (e.g. Hyperconverged RAM panel). gui_tab_binding picks the
+  Customer View tab; the suffix picks the metric within that tab.
 
 pages:
   virt_classic:
     label: "Classic virtualization"
     resource_unit: "vCPU"
     gui_tab_binding: "virtualization.classic"
+  virt_classic_cpu:
+    label: "Classic virtualization — CPU"
+    resource_unit: "vCPU"
+    gui_tab_binding: "virtualization.classic"
+  virt_classic_ram:
+    label: "Classic virtualization — RAM"
+    resource_unit: "GB"
+    gui_tab_binding: "virtualization.classic"
+  virt_classic_storage:
+    label: "Classic virtualization — Storage"
+    resource_unit: "GB"
+    gui_tab_binding: "virtualization.classic"
   virt_hyperconverged:
     label: "Hyperconverged virtualization"
     resource_unit: "vCPU"
+    gui_tab_binding: "virtualization.hyperconverged"
+  virt_hyperconverged_cpu:
+    label: "Hyperconverged virtualization — CPU"
+    resource_unit: "vCPU"
+    gui_tab_binding: "virtualization.hyperconverged"
+  virt_hyperconverged_ram:
+    label: "Hyperconverged virtualization — RAM"
+    resource_unit: "GB"
+    gui_tab_binding: "virtualization.hyperconverged"
+  virt_hyperconverged_storage:
+    label: "Hyperconverged virtualization — Storage"
+    resource_unit: "GB"
     gui_tab_binding: "virtualization.hyperconverged"
   virt_nutanix:
     label: "Pure Nutanix (AHV)"
     resource_unit: "vCPU"
     gui_tab_binding: "virtualization.nutanix"
+  virt_nutanix_cpu:
+    label: "Pure Nutanix — CPU"
+    resource_unit: "vCPU"
+    gui_tab_binding: "virtualization.nutanix"
+  virt_nutanix_ram:
+    label: "Pure Nutanix — RAM"
+    resource_unit: "GB"
+    gui_tab_binding: "virtualization.nutanix"
+  virt_nutanix_storage:
+    label: "Pure Nutanix — Storage"
+    resource_unit: "GB"
+    gui_tab_binding: "virtualization.nutanix"
   virt_power:
     label: "IBM Power LPAR"
     resource_unit: "core"
+    gui_tab_binding: "virtualization.power"
+  virt_power_cpu:
+    label: "IBM Power — CPU"
+    resource_unit: "core"
+    gui_tab_binding: "virtualization.power"
+  virt_power_ram:
+    label: "IBM Power — RAM"
+    resource_unit: "GB"
+    gui_tab_binding: "virtualization.power"
+  virt_power_storage:
+    label: "IBM Power — Storage"
+    resource_unit: "GB"
     gui_tab_binding: "virtualization.power"
   backup_veeam:
     label: "Veeam backup"
     resource_unit: "per VM"
     gui_tab_binding: "backup.veeam"
+  backup_veeam_cpu:
+    label: "Veeam replication — CPU"
+    resource_unit: "vCPU"
+    gui_tab_binding: "backup.veeam"
+  backup_veeam_ram:
+    label: "Veeam replication — RAM"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.veeam"
+  backup_veeam_storage:
+    label: "Veeam backup — Storage"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.veeam"
   backup_zerto:
     label: "Zerto replication"
     resource_unit: "vCPU"
     gui_tab_binding: "backup.zerto"
+  backup_zerto_cpu:
+    label: "Zerto replication — CPU"
+    resource_unit: "vCPU"
+    gui_tab_binding: "backup.zerto"
+  backup_zerto_ram:
+    label: "Zerto replication — RAM"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.zerto"
+  backup_zerto_storage:
+    label: "Zerto replication — Storage"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.zerto"
   backup_netbackup:
     label: "NetBackup"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.netbackup"
+  backup_netbackup_storage:
+    label: "NetBackup — Storage"
     resource_unit: "GB"
     gui_tab_binding: "backup.netbackup"
   storage_s3:
@@ -58,7 +136,7 @@ pages:
     resource_unit: "Adet"
     gui_tab_binding: "security.firewall"
   licensing_microsoft:
-    label: "Microsoft CSP / M365"
+    label: "Microsoft CSP / M365 / SPLA"
     resource_unit: "per User"
     gui_tab_binding: "licensing.microsoft"
   licensing_redhat:

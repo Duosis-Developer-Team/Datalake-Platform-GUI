@@ -208,15 +208,18 @@ class SalesService:
         over_pct = float(calc.get("efficiency.over_pct", 110.0))
         alloc_cap = float(calc.get("efficiency.alloc_cap_pct", 150.0))
 
-        # Aggregate datalake rows by mapped category_code/resource_unit
+        # Aggregate datalake rows by mapped category_code/resource_unit.
+        # Products without a seed/override row (or with NULL page_key after the LEFT JOIN
+        # in LIST_SERVICE_MAPPINGS_WEBUI) are bucketed under 'unmatched' so the operator
+        # UI can highlight pending mappings without losing revenue figures.
         agg: Dict[tuple, Dict[str, Any]] = {}
         for row in sold_raw:
             pid = str(row.get("productid") or "")
             m = mapping.get(pid)
-            cat_code = m["category_code"] if m else "other"
-            cat_label = m["category_label"] if m else "Other"
-            tab = m["gui_tab_binding"] if m else "other"
-            ru = (row.get("resource_unit") or (m["resource_unit"] if m else "Adet"))
+            cat_code = (m.get("category_code") if m else None) or "unmatched"
+            cat_label = (m.get("category_label") if m else None) or "Unmatched"
+            tab = (m.get("gui_tab_binding") if m else None) or "unmatched"
+            ru = row.get("resource_unit") or (m.get("resource_unit") if m else None) or "Adet"
             key = (cat_code, ru)
             bucket = agg.setdefault(key, {
                 "category_code": cat_code,
@@ -382,6 +385,8 @@ class SalesService:
                 "source": row.get("source"),
             })
         # Surface products that exist in datalake but have neither seed nor override yet.
+        # They are explicitly marked as 'unmatched' (not silently bucketed into 'other')
+        # so the operator UI can highlight them and let admins assign a granular page_key.
         for pid, prod in product_index.items():
             if pid in webui_rows:
                 continue
@@ -389,11 +394,11 @@ class SalesService:
                 "productid": pid,
                 "product_name": prod.get("product_name"),
                 "product_number": prod.get("product_number"),
-                "category_code": "other",
-                "category_label": "Other",
-                "gui_tab_binding": "other",
-                "resource_unit": prod.get("default_unit") or "Adet",
-                "source": "default",
+                "category_code": None,
+                "category_label": None,
+                "gui_tab_binding": None,
+                "resource_unit": prod.get("default_unit"),
+                "source": "unmatched",
             })
         out.sort(key=lambda r: ((r.get("product_name") or "").lower(), r.get("productid") or ""))
         return out
