@@ -2,13 +2,26 @@
 
 Ceiling now comes from gui_crm_threshold_config (webui-db) instead of a
 hard-coded constant. The pure helper `_resource_view` accepts the ceiling.
+
+Cross-check: customer-api ``SellableService`` uses the same raw headroom
+formula ``apply_threshold`` from ``shared/sellable/computation.py`` for
+``sellable_raw`` before ratio-constraining — keep the two pipelines aligned.
 """
 from __future__ import annotations
+
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_GUI_ROOT = os.path.abspath(os.path.join(_HERE, "..", "..", ".."))
+if _GUI_ROOT not in sys.path:
+    sys.path.append(_GUI_ROOT)
 
 from app.services.dc_sales_potential_v2 import (
     DEFAULT_SELLABLE_LIMIT_PCT,
     _resource_view,
 )
+from shared.sellable.computation import apply_threshold
 
 
 def test_resource_view_remaining_hits_zero_when_sold_exceeds_ceiling():
@@ -36,3 +49,15 @@ def test_resource_view_uses_provided_ceiling():
     assert b["remaining_sellable_pct"] == 20.0
     assert b["remaining_sellable_qty"] == 20.0
     assert b["potential_revenue_tl"] == 40.0
+
+
+def test_resource_view_remaining_qty_matches_apply_threshold():
+    """Parity guard between legacy v2 math and SellableService raw headroom."""
+    for total, sold, ceiling in (
+        (100.0, 50.0, 80.0),
+        (0.0, 5.0, 80.0),
+        (256.0, 200.0, 75.0),
+    ):
+        view = _resource_view(total, sold, unit_price=1.0, ceiling_pct=ceiling)
+        want = apply_threshold(total, sold, ceiling)
+        assert abs(view["remaining_sellable_qty"] - want) < 1e-3

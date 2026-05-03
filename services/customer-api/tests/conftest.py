@@ -1,3 +1,16 @@
+import os
+import sys
+
+# Make shared/ (one level up + one) importable regardless of where pytest
+# was invoked from. customer-api Dockerfile copies shared/ next to app/, but
+# in source tree it lives at Datalake-Platform-GUI/shared.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_GUI_ROOT = os.path.abspath(os.path.join(_HERE, "..", "..", ".."))
+# IMPORTANT: append (not insert) so the customer-api `app/` package keeps
+# precedence over the Dash app at <repo>/app.py.
+if _GUI_ROOT not in sys.path:
+    sys.path.append(_GUI_ROOT)
+
 import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
