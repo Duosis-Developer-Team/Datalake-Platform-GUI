@@ -1404,6 +1404,150 @@ def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
     )
 
 
+def _build_sellable_inline_kpi(
+    dc_id: str | None,
+    families: list[str] | str,
+    title: str,
+    *,
+    color: str = "violet",
+) -> html.Div | None:
+    """Inline 'Sellable Potential' card for a sub-tab (Faz 6).
+
+    Aggregates `customer-api` /by-panel results for one or more `family`
+    keys (e.g. ``virt_hyperconverged`` or ``backup_zerto_replication``)
+    and renders a 4-card KPI grid: CPU sellable / RAM sellable / Storage
+    sellable / Total potential TL — all in the constrained (ratio-bound)
+    space because that's what's actually monetisable.
+    """
+    if not dc_id:
+        return None
+    if isinstance(families, str):
+        families = [families]
+    families = [f for f in families if f]
+    if not families:
+        return None
+
+    panels: list[dict] = []
+    for fam in families:
+        try:
+            chunk = api.get_sellable_by_panel(dc_code=str(dc_id), family=fam) or []
+            if isinstance(chunk, list):
+                panels.extend(chunk)
+        except Exception:
+            continue
+
+    if not panels:
+        return None
+
+    by_kind: dict[str, dict[str, float]] = {
+        "cpu":     {"constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "vCPU"},
+        "ram":     {"constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB"},
+        "storage": {"constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB"},
+    }
+    total_tl = 0.0
+    has_data = False
+    for p in panels:
+        if not isinstance(p, dict):
+            continue
+        kind = (p.get("resource_kind") or "other").lower()
+        if kind not in by_kind:
+            total_tl += float(p.get("potential_tl") or 0.0)
+            continue
+        by_kind[kind]["constrained"] += float(p.get("sellable_constrained") or 0.0)
+        by_kind[kind]["raw"]         += float(p.get("sellable_raw") or 0.0)
+        by_kind[kind]["tl"]          += float(p.get("potential_tl") or 0.0)
+        unit = p.get("display_unit")
+        if unit:
+            by_kind[kind]["unit"] = unit
+        total_tl += float(p.get("potential_tl") or 0.0)
+        has_data = True
+
+    if not has_data and total_tl <= 0:
+        return None
+
+    def _fmt_unit(value: float, unit: str) -> str:
+        if unit.lower() in ("vcpu", "cpu", "core", "adet"):
+            return f"{value:,.0f} {unit}"
+        return f"{value:,.0f} {unit}"
+
+    cpu = by_kind["cpu"]
+    ram = by_kind["ram"]
+    stor = by_kind["storage"]
+
+    def _kpi_with_sub(label: str, value: str, sub: str, ic: str, c: str = color) -> html.Div:
+        return html.Div(
+            className="nexus-card dc-kpi-card dc-stagger-1",
+            style={"padding": "18px", "display": "flex", "alignItems": "center", "justifyContent": "space-between"},
+            children=[
+                html.Div([
+                    html.Span(label, style={
+                        "color": "#A3AED0", "fontSize": "0.78rem", "fontWeight": 500,
+                        "letterSpacing": "0.02em", "textTransform": "uppercase",
+                    }),
+                    html.H3(value, style={
+                        "color": "#2B3674", "fontSize": "1.15rem", "fontWeight": 900,
+                        "margin": "6px 0 2px 0", "letterSpacing": "-0.02em",
+                    }),
+                    html.Span(sub, style={"color": "#4318FF", "fontSize": "0.78rem", "fontWeight": 700}),
+                ]),
+                dmc.ThemeIcon(
+                    size=42, radius="xl", variant="light", color=c,
+                    children=DashIconify(icon=ic, width=22),
+                ),
+            ],
+        )
+
+    cards = [
+        _kpi_with_sub(
+            "CPU Sellable",
+            _fmt_unit(cpu["constrained"], cpu["unit"]),
+            f"{cpu['tl']:,.0f} TL",
+            _DC_ICONS["cpu"],
+        ),
+        _kpi_with_sub(
+            "RAM Sellable",
+            _fmt_unit(ram["constrained"], ram["unit"]),
+            f"{ram['tl']:,.0f} TL",
+            _DC_ICONS["ram"],
+        ),
+        _kpi_with_sub(
+            "Storage Sellable",
+            _fmt_unit(stor["constrained"], stor["unit"]),
+            f"{stor['tl']:,.0f} TL",
+            _DC_ICONS["storage"],
+        ),
+        _kpi_with_sub(
+            "Total Potential",
+            f"{total_tl:,.0f} TL",
+            "constrained × catalog price",
+            "solar:wallet-money-bold-duotone",
+            c="grape",
+        ),
+    ]
+
+    sub_lines: list = []
+    for kind_label, k in (("CPU", cpu), ("RAM", ram), ("Storage", stor)):
+        if k["raw"] > 0 and k["constrained"] < k["raw"] - 1e-6:
+            sub_lines.append(
+                dmc.Badge(
+                    f"{kind_label} ratio-bound: {_fmt_unit(k['raw'] - k['constrained'], k['unit'])} lost",
+                    color="orange",
+                    variant="light",
+                    size="sm",
+                )
+            )
+
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "20px"},
+        children=[
+            _section_title(title, "Constrained sellable headroom (ratio-aware) and TL potential"),
+            dmc.SimpleGrid(cols=4, spacing="lg", style={"marginTop": "12px"}, children=cards),
+            dmc.Group(gap="xs", style={"marginTop": "10px"}, children=sub_lines) if sub_lines else None,
+        ],
+    )
+
+
 def _build_summary_tab(data: dict, tr: dict, dc_id: str | None = None):
     """Summary tab: combined capacity planning view."""
     classic    = data.get("classic", {})
@@ -2850,6 +2994,12 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     id="classic-virt-panel",
                                                     children=_build_compute_tab(classic, "Classic Compute", color="blue"),
                                                 ),
+                                                _build_sellable_inline_kpi(
+                                                    dc_id,
+                                                    "virt_classic",
+                                                    "Klasik Mimari — Sellable Potential",
+                                                    color="blue",
+                                                ),
                                             ],
                                         ),
                                     ) if show_classic else None,
@@ -2868,18 +3018,35 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     id="hyperconv-virt-panel",
                                                     children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal"),
                                                 ),
+                                                _build_sellable_inline_kpi(
+                                                    dc_id,
+                                                    "virt_hyperconverged",
+                                                    "Hyperconverged Mimari — Sellable Potential",
+                                                    color="teal",
+                                                ),
                                             ],
                                         ),
                                     ) if show_hyperconv else None,
                                     dmc.TabsPanel(
                                         value="power",
                                         pt="lg",
-                                        children=_build_power_tab(
-                                            power,
-                                            energy,
-                                            storage_capacity,
-                                            storage_performance,
-                                            san_bottleneck,
+                                        children=dmc.Stack(
+                                            gap="lg",
+                                            children=[
+                                                _build_power_tab(
+                                                    power,
+                                                    energy,
+                                                    storage_capacity,
+                                                    storage_performance,
+                                                    san_bottleneck,
+                                                ),
+                                                _build_sellable_inline_kpi(
+                                                    dc_id,
+                                                    ["virt_power", "virt_power_hana"],
+                                                    "Power Mimari — Sellable Potential",
+                                                    color="grape",
+                                                ),
+                                            ],
                                         ),
                                     ) if show_power_inner else None,
                                 ],
@@ -2911,25 +3078,58 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                     dmc.TabsPanel(
                                         value="zerto",
                                         pt="lg",
-                                        children=html.Div(
-                                            id="backup-zerto-panel",
-                                            children=build_zerto_panel(zerto_data, None) if has_zerto else html.Div(),
+                                        children=dmc.Stack(
+                                            gap="lg",
+                                            children=[
+                                                html.Div(
+                                                    id="backup-zerto-panel",
+                                                    children=build_zerto_panel(zerto_data, None) if has_zerto else html.Div(),
+                                                ),
+                                                _build_sellable_inline_kpi(
+                                                    dc_id,
+                                                    "backup_zerto_replication",
+                                                    "Zerto — Sellable Potential",
+                                                    color="green",
+                                                ),
+                                            ],
                                         ),
                                     ) if has_zerto else None,
                                     dmc.TabsPanel(
                                         value="veeam",
                                         pt="lg",
-                                        children=html.Div(
-                                            id="backup-veeam-panel",
-                                            children=build_veeam_panel(veeam_data, None) if has_veeam else html.Div(),
+                                        children=dmc.Stack(
+                                            gap="lg",
+                                            children=[
+                                                html.Div(
+                                                    id="backup-veeam-panel",
+                                                    children=build_veeam_panel(veeam_data, None) if has_veeam else html.Div(),
+                                                ),
+                                                _build_sellable_inline_kpi(
+                                                    dc_id,
+                                                    ["backup_veeam_replication", "backup_veeam"],
+                                                    "Veeam — Sellable Potential",
+                                                    color="green",
+                                                ),
+                                            ],
                                         ),
                                     ) if has_veeam else None,
                                     dmc.TabsPanel(
                                         value="netbackup",
                                         pt="lg",
-                                        children=html.Div(
-                                            id="backup-netbackup-panel",
-                                            children=build_netbackup_panel(nb_data, None) if has_netbackup else html.Div(),
+                                        children=dmc.Stack(
+                                            gap="lg",
+                                            children=[
+                                                html.Div(
+                                                    id="backup-netbackup-panel",
+                                                    children=build_netbackup_panel(nb_data, None) if has_netbackup else html.Div(),
+                                                ),
+                                                _build_sellable_inline_kpi(
+                                                    dc_id,
+                                                    "backup_netbackup",
+                                                    "NetBackup — Sellable Potential",
+                                                    color="green",
+                                                ),
+                                            ],
                                         ),
                                     ) if has_netbackup else None,
                                     dmc.TabsPanel(
@@ -2992,10 +3192,21 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                     dmc.TabsPanel(
                                         value="obj-storage",
                                         pt="lg",
-                                        children=html.Div(
-                                            id="s3-dc-metrics-panel",
-                                            style={"marginTop": "0"},
-                                            children=build_dc_s3_panel(dc_name, s3_data, tr, None) if has_s3 else html.Div(),
+                                        children=dmc.Stack(
+                                            gap="lg",
+                                            children=[
+                                                html.Div(
+                                                    id="s3-dc-metrics-panel",
+                                                    style={"marginTop": "0"},
+                                                    children=build_dc_s3_panel(dc_name, s3_data, tr, None) if has_s3 else html.Div(),
+                                                ),
+                                                _build_sellable_inline_kpi(
+                                                    dc_id,
+                                                    "storage_s3",
+                                                    "Object Storage S3 — Sellable Potential",
+                                                    color="indigo",
+                                                ),
+                                            ],
                                         ),
                                     ) if has_s3 else None,
                                 ],
