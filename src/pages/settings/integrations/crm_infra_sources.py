@@ -55,11 +55,11 @@ def build_layout(search: str | None = None) -> html.Div:
             dmc.Title("Panel infra-source bindings", order=3),
             dmc.Text(
                 "Each panel pulls its 'total' capacity and 'allocated' provisioned amount from a "
-                "datalake table/column. VMware classic/KM totals should use v_crm_datacenter_metrics_latest "
-                "or v_crm_cluster_metrics_latest (same lineage as datacenter-api vmware.py), not "
-                "mv_vmware_datacenter_latest. vm_metrics uses column datacenter — filter_clause example: "
-                "datacenter ILIKE :dc_pattern (and cluster ILIKE '%KM%' for KM-only panels). Selecting "
-                "a panel below loads its current binding so you can edit it.",
+                "datalake table/column. For VMware, set source_table to datacenter_metrics or "
+                "cluster_metrics (same tables as the WebUI); customer-api automatically applies the "
+                "latest-per-(dc,datacenter) / latest-per-(cluster,datacenter) snapshot before SUM. "
+                "vm_metrics filters use column datacenter, e.g. datacenter ILIKE :dc_pattern "
+                "(and cluster ILIKE '%KM%' for KM-only panels). Selecting a panel loads its binding.",
                 size="sm", c="dimmed",
             ),
         ]),

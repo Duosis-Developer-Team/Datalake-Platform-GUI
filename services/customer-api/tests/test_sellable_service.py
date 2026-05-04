@@ -150,3 +150,31 @@ def test_lookup_conversion_case_insensitive():
     c = SellableService._lookup_conversion(lu, "hz", "vcpu")
     assert c is not None
     assert c.factor == 8e9
+
+
+def test_sum_sql_datacenter_metrics_wraps_latest_per_dc():
+    """Infra uses table datacenter_metrics — SQL must DISTINCT ON before SUM (WebUI lineage)."""
+    svc = SellableService.__new__(SellableService)
+    sql, params = SellableService._sum_sql(
+        svc,
+        column="total_cpu_ghz_capacity",
+        physical_table="public.datacenter_metrics",
+        where_sql=" WHERE datacenter ILIKE %s",
+        params=["%x%"],
+    )
+    assert "DISTINCT ON (dc, datacenter)" in sql
+    assert "_infra_dm.total_cpu_ghz_capacity" in sql
+    assert params == ["%x%"]
+
+
+def test_sum_sql_cluster_metrics_wraps_latest_per_cluster():
+    svc = SellableService.__new__(SellableService)
+    sql, _params = SellableService._sum_sql(
+        svc,
+        column="cpu_ghz_capacity",
+        physical_table="cluster_metrics",
+        where_sql="",
+        params=[],
+    )
+    assert "DISTINCT ON (cluster, datacenter)" in sql
+    assert "_infra_cm.cpu_ghz_capacity" in sql

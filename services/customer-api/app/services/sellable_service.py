@@ -12,6 +12,9 @@ Per panel:
     7. Emit MetricValues into TaggingService cache + (optionally) snapshot.
 
 Design notes:
+    * ``datacenter_metrics`` / ``cluster_metrics``: totals use the latest snapshot per
+      (dc, datacenter) / (cluster, datacenter) before SUM — same grain as WebUI
+      ``datacenter-api`` ``vmware.py`` queries — see ``_sum_sql``.
     * Each datalake query is small (one SUM per call) so the per-panel cost
       is dominated by network RTT. ``CustomerService`` already pools 8
       connections; the dashboard fetches at most ~70 panels per call.
@@ -23,8 +26,25 @@ Design notes:
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from typing import Any, Iterable
+
+# VMware TS tables: WebUI uses latest row per (dc, datacenter) / (cluster, datacenter)
+# before SUM — see datacenter-api app/db/queries/vmware.py (BATCH_*, CLASSIC_METRICS).
+_SUBQUERY_DATACENTER_METRICS_LATEST = """(
+    SELECT DISTINCT ON (dc, datacenter)
+        *
+    FROM datacenter_metrics
+    ORDER BY dc, datacenter, "timestamp" DESC
+) AS _infra_dm"""
+
+_SUBQUERY_CLUSTER_METRICS_LATEST = """(
+    SELECT DISTINCT ON (cluster, datacenter)
+        *
+    FROM cluster_metrics
+    ORDER BY cluster, datacenter, "timestamp" DESC
+) AS _infra_cm"""
 
 from app.db.queries import sellable as sq
 from app.services.crm_config_service import CrmConfigService
@@ -50,6 +70,8 @@ from shared.sellable.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 DEFAULT_THRESHOLD_PCT = 80.0
 KNOWN_RESOURCE_KINDS = {"cpu", "ram", "storage", "other"}
@@ -255,12 +277,60 @@ class SellableService:
 
     # -- datalake queries
 
+    @staticmethod
+    def _bare_table_name(table: str | None) -> str:
+        if not table:
+            return ""
+        t = table.strip()
+        if "." in t:
+            t = t.split(".")[-1]
+        return t.lower()
+
+    @classmethod
+    def _sql_ident(cls, name: str | None) -> str:
+        if not name or not _IDENTIFIER_RE.match(name):
+            raise ValueError(f"invalid SQL identifier: {name!r}")
+        return name
+
+    def _sum_sql(
+        self,
+        *,
+        column: str,
+        physical_table: str,
+        where_sql: str,
+        params: list[Any],
+    ) -> tuple[str, list[Any]]:
+        """Build SELECT SUM(column) ... ; optional WebUI-latest subquery for VMware TS tables."""
+        col = self._sql_ident(column)
+        base = self._bare_table_name(physical_table)
+        if base == "datacenter_metrics":
+            sql = (
+                f"SELECT COALESCE(SUM(_infra_dm.{col}), 0)::double precision "
+                f"FROM {_SUBQUERY_DATACENTER_METRICS_LATEST} {where_sql};"
+            )
+            return sql, list(params)
+        if base == "cluster_metrics":
+            sql = (
+                f"SELECT COALESCE(SUM(_infra_cm.{col}), 0)::double precision "
+                f"FROM {_SUBQUERY_CLUSTER_METRICS_LATEST} {where_sql};"
+            )
+            return sql, list(params)
+        sql = (
+            f"SELECT COALESCE(SUM({col}), 0)::double precision "
+            f"FROM {physical_table}{where_sql};"
+        )
+        return sql, list(params)
+
     def _query_total_allocated(self, src: InfraSource, dc_code: str) -> tuple[float, float]:
         """Return (total_raw, allocated_raw) in the InfraSource declared units.
 
         Builds a parameterised SQL on the fly. ``filter_clause`` may reference
         ``:dc_pattern`` which is substituted with ``%s`` and bound to the DC
         glob pattern (``ankara%`` for an Ankara DC, ``%`` for ``*``).
+
+        For ``datacenter_metrics`` and ``cluster_metrics``, SUM applies to the
+        WebUI-aligned latest snapshot per (dc, datacenter) / (cluster, datacenter)
+        — not a blind SUM over all history rows.
         """
         if not src.source_table or not src.total_column:
             return 0.0, 0.0
@@ -271,7 +341,19 @@ class SellableService:
             cleaned = src.filter_clause.replace(":dc_pattern", "%s")
             where_total = f" WHERE {cleaned}"
             params.append(self._dc_pattern(dc_code))
-        total_sql = f"SELECT COALESCE(SUM({src.total_column}), 0)::double precision FROM {src.source_table}{where_total};"
+        try:
+            total_sql, total_params = self._sum_sql(
+                column=src.total_column,
+                physical_table=src.source_table,
+                where_sql=where_total,
+                params=params,
+            )
+        except ValueError:
+            logger.exception(
+                "SellableService: bad total_column for panel=%s",
+                src.panel_key,
+            )
+            return 0.0, 0.0
 
         alloc_sql: str | None = None
         alloc_params: list[Any] = []
@@ -280,15 +362,24 @@ class SellableService:
                 cleaned = src.filter_clause.replace(":dc_pattern", "%s")
                 where_alloc = f" WHERE {cleaned}"
                 alloc_params.append(self._dc_pattern(dc_code))
-            alloc_sql = (
-                f"SELECT COALESCE(SUM({src.allocated_column}), 0)::double precision "
-                f"FROM {src.allocated_table}{where_alloc};"
-            )
+            try:
+                alloc_sql, alloc_params = self._sum_sql(
+                    column=src.allocated_column,
+                    physical_table=src.allocated_table,
+                    where_sql=where_alloc,
+                    params=alloc_params,
+                )
+            except ValueError:
+                logger.exception(
+                    "SellableService: bad allocated_column for panel=%s",
+                    src.panel_key,
+                )
+                return 0.0, 0.0
 
         try:
             with self._svc._get_connection() as conn:
                 with conn.cursor() as cur:
-                    total_val = float(self._svc._run_value(cur, total_sql, tuple(params)) or 0.0)
+                    total_val = float(self._svc._run_value(cur, total_sql, tuple(total_params)) or 0.0)
                     if alloc_sql is not None:
                         alloc_val = float(self._svc._run_value(cur, alloc_sql, tuple(alloc_params)) or 0.0)
                     else:
