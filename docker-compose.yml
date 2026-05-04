@@ -105,6 +105,7 @@ services:
       # Override .env when APIs run as Compose services (same Docker network)
       DATACENTER_API_URL: ${DATACENTER_API_URL:-http://datacenter-api:8000}
       CUSTOMER_API_URL: ${CUSTOMER_API_URL:-http://customer-api:8000}
+      CRM_ENGINE_URL: ${CRM_ENGINE_URL:-http://crm-engine:8000}
       QUERY_API_URL: ${QUERY_API_URL:-http://query-api:8000}
       # Admin API — when set, settings CRUD is routed through the admin-api service
       ADMIN_API_URL: ${ADMIN_API_URL:-http://admin-api:8000}
@@ -238,6 +239,51 @@ services:
       WEBUI_DB_REQUIRED: "true"
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       OTEL_SERVICE_NAME: customer-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
+    networks:
+      - datalake
+    depends_on:
+      redis:
+        condition: service_healthy
+      webui-db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    profiles:
+      - microservice
+
+  crm-engine:
+    build:
+      # Repo root so Dockerfile can COPY shared/ + customer-api/app/ shared modules.
+      context: .
+      dockerfile: services/crm-engine/Dockerfile
+    container_name: bulutistan-crm-engine
+    ports:
+      - "8070:8000"
+    env_file:
+      - .env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "2"
+      WEBUI_DB_HOST: ${WEBUI_DB_HOST:-webui-db}
+      WEBUI_DB_PORT: ${WEBUI_DB_PORT:-5432}
+      WEBUI_DB_NAME: ${WEBUI_DB_NAME:-bulutwebui}
+      WEBUI_DB_USER: ${WEBUI_DB_USER:-webuiadmin}
+      WEBUI_DB_PASS: ${WEBUI_DB_PASS:-change_me_webui}
+      WEBUI_DB_REQUIRED: "true"
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: crm-engine
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
       OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}

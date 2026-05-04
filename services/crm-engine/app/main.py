@@ -1,9 +1,28 @@
+"""crm-engine entrypoint.
+
+Hosts CRM/sellable computation endpoints decoupled from customer-api so that
+heavy WebUI-config + datalake aggregation traffic does not contend with the
+real-time customer/asset/sales/itsm dashboards.
+
+Routes mounted under /api/v1:
+  - /crm/sellable-potential/*    (sellable router)
+  - /crm/panels, /crm/resource-ratios, /crm/unit-conversions   (sellable router)
+  - /crm/metric-tags*            (sellable router)
+  - /crm/config/*                (crm_config router)
+  - /crm/service-mapping*        (service_mapping router)
+
+Background scheduler runs SellableService.snapshot_all every
+REFRESH_INTERVAL_MINUTES; customer cache warm-up stays in customer-api.
+"""
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 from contextlib import asynccontextmanager
 
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg2 import Error as Psycopg2Error
@@ -15,16 +34,20 @@ setup_sdk()
 
 from app.config import settings
 from app.core.api_auth import verify_api_user
+from app.core.redis_client import close_redis_pool, init_redis_pool, redis_is_healthy
+from app.routers import crm_config, sellable, service_mapping
+from app.services.crm_config_service import CrmConfigService
+from app.services.currency_service import CurrencyService
 from app.services.customer_service import CustomerService
-from app.services.itsm_service import ITSMService
 from app.services.sales_service import SalesService
-from app.services.scheduler_service import start_scheduler
+from app.services.sellable_service import SellableService
+from app.services.tagging_service import TaggingService
 from app.services.webui_db import WebuiPool
-from app.routers import customers, itsm, sales
-from app.core.redis_client import init_redis_pool, close_redis_pool, redis_is_healthy
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+REFRESH_INTERVAL_MINUTES = 15
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -35,6 +58,35 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 _WEBUI_REQUIRED = _env_bool("WEBUI_DB_REQUIRED", settings.webui_db_required)
+
+
+def _start_scheduler(sellable_svc: SellableService) -> BackgroundScheduler:
+    scheduler = BackgroundScheduler(daemon=True)
+    scheduler.add_job(
+        func=sellable_svc.snapshot_all,
+        trigger=IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
+        id="sellable_snapshot",
+        name="Sellable Potential snapshot",
+        replace_existing=True,
+        misfire_grace_time=60,
+    )
+    try:
+        sellable_svc.snapshot_all()
+    except Exception:  # noqa: BLE001 - never abort startup
+        logger.exception("Initial sellable snapshot failed")
+    scheduler.start()
+    logger.info(
+        "crm-engine scheduler started (sellable snapshot every %d minutes).",
+        REFRESH_INTERVAL_MINUTES,
+    )
+    atexit.register(lambda: _stop(scheduler))
+    return scheduler
+
+
+def _stop(scheduler: BackgroundScheduler) -> None:
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+        logger.info("crm-engine scheduler stopped.")
 
 
 @asynccontextmanager
@@ -50,16 +102,24 @@ async def lifespan(app: FastAPI):
         get_customer_assets=lambda name: svc.get_customer_resources(name, None),
         webui=webui,
     )
-    app.state.itsm = ITSMService(
-        get_connection=svc._get_connection,
-        run_row=svc._run_row,
-        run_rows=svc._run_rows,
-    )
     init_redis_pool()
 
-    # CRM/sellable computation moved to dedicated crm-engine container.
-    scheduler = start_scheduler(svc)
-    app.state.scheduler = scheduler
+    config_svc = CrmConfigService(webui)
+    currency_svc = CurrencyService(svc)
+    tagging_svc = TaggingService(webui)
+    sellable_svc = SellableService(
+        customer_service=svc,
+        webui=webui,
+        config_service=config_svc,
+        currency_service=currency_svc,
+        tagging_service=tagging_svc,
+    )
+    app.state.crm_config = config_svc
+    app.state.currency = currency_svc
+    app.state.tagging = tagging_svc
+    app.state.sellable = sellable_svc
+
+    app.state.scheduler = _start_scheduler(sellable_svc)
     yield
     if getattr(app.state, "scheduler", None) and app.state.scheduler.running:
         app.state.scheduler.shutdown(wait=False)
@@ -70,7 +130,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Bulutistan Customer API",
+    title="Bulutistan CRM Engine",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -86,23 +146,23 @@ app.add_middleware(
 )
 
 app.include_router(
-    customers.router,
+    crm_config.router,
     prefix="/api/v1",
-    tags=["customers"],
+    tags=["crm-config"],
     dependencies=[Depends(verify_api_user)],
 )
 
 app.include_router(
-    sales.router,
+    sellable.router,
     prefix="/api/v1",
-    tags=["crm-sales"],
+    tags=["crm-sellable"],
     dependencies=[Depends(verify_api_user)],
 )
 
 app.include_router(
-    itsm.router,
+    service_mapping.router,
     prefix="/api/v1",
-    tags=["itsm"],
+    tags=["crm-service-mapping"],
     dependencies=[Depends(verify_api_user)],
 )
 

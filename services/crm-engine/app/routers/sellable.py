@@ -1,4 +1,4 @@
-"""Sellable Potential REST endpoints (customer-api).
+"""Sellable Potential REST endpoints (crm-engine).
 
 Routes:
     GET  /crm/sellable-potential/summary?dc_code=*           -> DashboardSummary

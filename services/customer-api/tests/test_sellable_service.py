@@ -178,3 +178,34 @@ def test_sum_sql_cluster_metrics_wraps_latest_per_cluster():
     )
     assert "DISTINCT ON (cluster, datacenter)" in sql
     assert "_infra_cm.cpu_ghz_capacity" in sql
+
+
+def test_sum_sql_nutanix_vm_metrics_joins_cluster_for_datacenter_name():
+    """nutanix_vm_metrics has no datacenter_name; SQL must JOIN nutanix_cluster_metrics."""
+    svc = SellableService.__new__(SellableService)
+    sql, params = SellableService._sum_sql(
+        svc,
+        column="cpu_count",
+        physical_table="nutanix_vm_metrics",
+        where_sql=" WHERE _infra_nvm.datacenter_name ILIKE %s",
+        params=["%dc11%"],
+    )
+    assert "FROM nutanix_vm_metrics nvm" in sql
+    assert "nutanix_cluster_metrics" in sql
+    assert "JOIN" in sql
+    assert "_infra_nvm.cpu_count" in sql
+    assert "_infra_nvm.datacenter_name" in sql
+    assert params == ["%dc11%"]
+
+
+def test_sum_sql_nutanix_cluster_metrics_wraps_latest_per_cluster_uuid():
+    svc = SellableService.__new__(SellableService)
+    sql, _params = SellableService._sum_sql(
+        svc,
+        column="total_cpu_capacity",
+        physical_table="nutanix_cluster_metrics",
+        where_sql="",
+        params=[],
+    )
+    assert "DISTINCT ON (cluster_uuid)" in sql
+    assert "_infra_ncm.total_cpu_capacity" in sql

@@ -46,6 +46,30 @@ _SUBQUERY_CLUSTER_METRICS_LATEST = """(
     ORDER BY cluster, datacenter, "timestamp" DESC
 ) AS _infra_cm"""
 
+# nutanix_vm_metrics has no datacenter_name column; join with the latest
+# nutanix_cluster_metrics row per cluster_uuid to expose datacenter_name for
+# filter_clause (matches datacenter-api/db/queries/nutanix.py grain).
+_SUBQUERY_NUTANIX_VM_LATEST = """(
+    SELECT nvm.*, ncm.datacenter_name
+    FROM nutanix_vm_metrics nvm
+    JOIN (
+        SELECT DISTINCT ON (cluster_uuid)
+            cluster_uuid,
+            datacenter_name
+        FROM nutanix_cluster_metrics
+        ORDER BY cluster_uuid, collection_time DESC
+    ) ncm ON nvm.cluster_uuid = ncm.cluster_uuid
+) AS _infra_nvm"""
+
+# nutanix_cluster_metrics: take the latest row per cluster_uuid before SUM so
+# repeated time-series snapshots are not double-counted.
+_SUBQUERY_NUTANIX_CLUSTER_LATEST = """(
+    SELECT DISTINCT ON (cluster_uuid)
+        *
+    FROM nutanix_cluster_metrics
+    ORDER BY cluster_uuid, collection_time DESC
+) AS _infra_ncm"""
+
 from app.db.queries import sellable as sq
 from app.services.crm_config_service import CrmConfigService
 from app.services.currency_service import CurrencyService
@@ -313,6 +337,18 @@ class SellableService:
             sql = (
                 f"SELECT COALESCE(SUM(_infra_cm.{col}), 0)::double precision "
                 f"FROM {_SUBQUERY_CLUSTER_METRICS_LATEST} {where_sql};"
+            )
+            return sql, list(params)
+        if base == "nutanix_vm_metrics":
+            sql = (
+                f"SELECT COALESCE(SUM(_infra_nvm.{col}), 0)::double precision "
+                f"FROM {_SUBQUERY_NUTANIX_VM_LATEST} {where_sql};"
+            )
+            return sql, list(params)
+        if base == "nutanix_cluster_metrics":
+            sql = (
+                f"SELECT COALESCE(SUM(_infra_ncm.{col}), 0)::double precision "
+                f"FROM {_SUBQUERY_NUTANIX_CLUSTER_LATEST} {where_sql};"
             )
             return sql, list(params)
         sql = (
