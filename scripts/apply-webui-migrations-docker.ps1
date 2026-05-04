@@ -7,6 +7,8 @@
 # Usage (from Datalake-Platform-GUI repo root):
 #   .\scripts\apply-webui-migrations-docker.ps1
 #
+# Linux/macOS: scripts/apply-webui-migrations-docker.sh
+#
 # Requires: bulutistan-webui-db container running.
 
 $ErrorActionPreference = "Stop"
