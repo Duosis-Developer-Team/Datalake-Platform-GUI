@@ -38,7 +38,8 @@ CREATE INDEX IF NOT EXISTS idx_gui_panel_definition_family
 CREATE TABLE IF NOT EXISTS gui_panel_infra_source (
     panel_key        TEXT NOT NULL REFERENCES gui_panel_definition(panel_key) ON DELETE CASCADE,
     dc_code          TEXT NOT NULL DEFAULT '*',
-    source_table     TEXT NOT NULL,
+    -- NULL = panel not yet bound to datalake (configure via Settings UI); see seed 007 placeholders.
+    source_table     TEXT,
     total_column     TEXT,
     total_unit       TEXT,
     allocated_table  TEXT,
