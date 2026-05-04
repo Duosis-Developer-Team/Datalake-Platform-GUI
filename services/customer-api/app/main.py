@@ -4,8 +4,10 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Response, status
+from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from psycopg2 import Error as Psycopg2Error
+from starlette.responses import JSONResponse
 
 from app.telemetry import instrument_fastapi_app, setup_sdk
 
@@ -174,6 +176,34 @@ def ready(response: Response):
             "redis": "ok" if redis_ok else "unavailable",
         }
     return {"status": "ready", "webui_required": _WEBUI_REQUIRED}
+
+
+@app.exception_handler(Psycopg2Error)
+async def _postgres_error_handler(request: Request, exc: Psycopg2Error):
+    """Surface PostgreSQL errors in JSON instead of an opaque 500.
+
+    Typical operator-facing causes:
+    - Missing relation: WebUI volume/schema predates migrations 005+ (sellable tables).
+    - permission denied for role: GRANT INSERT/UPDATE on gui_* tables.
+    """
+    logger.exception("PostgreSQL error %s %s", request.method, request.url.path)
+    detail = str(exc).strip()
+    low = detail.lower()
+    hint = ""
+    if "does not exist" in low and "relation" in low:
+        hint = (
+            " WebUI schema may be missing sellable tables — apply SQL files under "
+            "services/customer-api/migrations/webui/ (start with 005_panel_sellable_schema.sql) "
+            "to the WEBUI database, or recreate the webui-db volume on fresh installs."
+        )
+    elif "permission denied" in low or "insufficient_privilege" in low:
+        hint = " Grant INSERT/UPDATE/USAGE on gui_* objects to WEBUI_DB_USER."
+    elif "there is no unique or exclusion constraint matching the on conflict specification" in low:
+        hint = (
+            " gui_panel_resource_ratio / gui_unit_conversion must have PRIMARY KEY "
+            "(family, dc_code) and (from_unit, to_unit). Re-run 005_panel_sellable_schema.sql."
+        )
+    return JSONResponse(status_code=500, content={"detail": detail + hint})
 
 
 instrument_fastapi_app(app)
