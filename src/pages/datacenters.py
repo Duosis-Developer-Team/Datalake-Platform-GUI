@@ -79,9 +79,28 @@ def _usage_ring(label: str, icon: str, pct: float, ok_color: str) -> html.Div:
     )
 
 
-def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo") -> html.Div:
+def _fmt_tl_short(value: float | int | None) -> tuple[str, str]:
+    """Compress a TL amount: returns (short_label, full_label_with_thousands)."""
+    try:
+        v = float(value or 0)
+    except (TypeError, ValueError):
+        v = 0.0
+    full = f"{v:,.0f} TL"
+    abs_v = abs(v)
+    if abs_v >= 1e12:
+        return f"{v/1e12:.2f} Trilyon TL", full
+    if abs_v >= 1e9:
+        return f"{v/1e9:.2f} Milyar TL", full
+    if abs_v >= 1e6:
+        return f"{v/1e6:.2f} Milyon TL", full
+    if abs_v >= 1e3:
+        return f"{v/1e3:.1f} Bin TL", full
+    return full, full
+
+
+def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo", tooltip: str | None = None) -> html.Div:
     """Single KPI card for the summary strip."""
-    return html.Div(
+    card = html.Div(
         className="dc-summary-kpi nexus-card",
         style={
             "padding": "16px 20px",
@@ -125,6 +144,16 @@ def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo") -> ht
             ]),
         ],
     )
+    if tooltip:
+        return dmc.Tooltip(
+            label=tooltip,
+            position="bottom",
+            withArrow=True,
+            multiline=True,
+            w=300,
+            children=card,
+        )
+    return card
 
 
 def _dc_sellable_ribbon(sales_v2: dict | None) -> html.Div:
@@ -135,10 +164,11 @@ def _dc_sellable_ribbon(sales_v2: dict | None) -> html.Div:
     pr = sales_v2.get("per_resource") or {}
     cpu = pr.get("cpu") or {}
     ram = pr.get("ram") or {}
+    pot_short, pot_full = _fmt_tl_short(sales_v2.get("potential_revenue_tl"))
     tip = (
         f"CPU headroom %: {cpu.get('remaining_sellable_pct')} | "
         f"RAM headroom %: {ram.get('remaining_sellable_pct')} | "
-        f"Approx. potential TL: {sales_v2.get('potential_revenue_tl')}"
+        f"Approx. potential: {pot_short} ({pot_full})"
     )
     return dmc.Tooltip(
         label=tip,
@@ -549,12 +579,17 @@ def build_datacenters(time_range=None, visible_sections=None):
             _summary_kpi("solar:laptop-bold-duotone",               "Total VMs",   f"{total_vms:,}",       "teal"),
             _summary_kpi("solar:box-bold-duotone",                  "Clusters",    f"{total_clusters:,}",  "grape"),
             _summary_kpi("solar:bolt-bold-duotone",                 "Total Power", f"{total_power:.1f} kW","yellow"),
-            _summary_kpi(
+            (lambda short, full: _summary_kpi(
                 "solar:money-bag-bold-duotone",
-                "Potansiyel gelir (TL, CRM v2)",
-                f"{total_potential_tl:,.0f}",
+                "Potansiyel gelir (TL, CRM)",
+                short,
                 "indigo",
-            ),
+                tooltip=(
+                    f"Toplam potansiyel: {full}\n"
+                    "Hesap: her DC için (Sellable_constrained × catalog_unit_price). "
+                    "Veri eksik panellerde 0 olarak görünür."
+                ),
+            ))(*_fmt_tl_short(total_potential_tl)),
         ],
     )
 
