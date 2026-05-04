@@ -97,6 +97,27 @@ _VM_COLUMN_TO_REDIS_FIELD: dict[str, str] = {
     "disk_capacity":           "stor_used",
 }
 
+# -- Cluster-aware sellable -----------------------------------------------------
+#
+# When the caller passes a non-empty cluster list, we bypass datalake DB + Redis
+# completely and read both total ("cap") and allocated ("used") from
+# datacenter-api's /compute/{kind} endpoint, which is the same source the DC
+# view's "Capacity Planning" card uses. This guarantees parity between the
+# Sellable card and Capacity Planning numbers.
+
+# Maps panel family → datacenter-api compute endpoint kind.
+_FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
+    "virt_classic":         "classic",
+    "virt_hyperconverged":  "hyperconverged",
+}
+
+# Maps resource_kind → (capacity_field, used_field, source_unit) in the compute response.
+_RESOURCE_KIND_TO_COMPUTE_FIELDS: dict[str, tuple[str, str, str]] = {
+    "cpu":     ("cpu_cap",  "cpu_used",  "GHz"),
+    "ram":     ("mem_cap",  "mem_used",  "GB"),
+    "storage": ("stor_cap", "stor_used", "TB"),
+}
+
 from app.db.queries import sellable as sq
 from app.services.crm_config_service import CrmConfigService
 from app.services.currency_service import CurrencyService
@@ -567,6 +588,62 @@ class SellableService:
         except (TypeError, ValueError):
             return 0.0
 
+    def _fetch_compute_metrics_for_clusters(
+        self,
+        *,
+        dc_code: str,
+        family: str,
+        resource_kind: str,
+        clusters: list[str],
+    ) -> tuple[float, float, str] | None:
+        """Read total_capacity + allocated for a virt panel from datacenter-api
+        ``/compute/{kind}?clusters=…`` (the same source the DC view's
+        Capacity Planning card uses).
+
+        Returns ``(capacity, allocated, source_unit)`` or ``None`` if the
+        family/resource_kind/dc combination cannot be served from the compute
+        endpoint (caller should fall back to the legacy datalake + Redis path).
+        """
+        kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
+        fields = _RESOURCE_KIND_TO_COMPUTE_FIELDS.get(resource_kind)
+        if not kind or not fields or not clusters:
+            return None
+        if not dc_code or dc_code == "*":
+            # /compute is per-DC; cluster-aware path requires a concrete dc.
+            return None
+        if not self._dc_api_url:
+            logger.warning(
+                "_fetch_compute_metrics_for_clusters: datacenter_api_url not configured — "
+                "skipping cluster-aware path for panel family=%s dc=%s",
+                family, dc_code,
+            )
+            return None
+
+        cap_field, used_field, source_unit = fields
+        csv = ",".join(c for c in clusters if c)
+        url = (
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
+            f"?clusters={csv}"
+        )
+        try:
+            resp = httpx.get(url, timeout=15.0)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "datacenter-api compute fetch failed (dc=%s family=%s url=%s)",
+                dc_code, family, url,
+            )
+            return None
+        if not isinstance(data, dict):
+            return None
+        try:
+            cap = float(data.get(cap_field) or 0.0)
+            used = float(data.get(used_field) or 0.0)
+        except (TypeError, ValueError):
+            return None
+        return cap, used, source_unit
+
     # ------------------------------------------------------------------ compute
 
     def compute_panel(
@@ -574,6 +651,8 @@ class SellableService:
         panel: PanelDefinition,
         dc_code: str = "*",
         unit_lookup: dict[tuple[str, str], UnitConversion] | None = None,
+        *,
+        selected_clusters: list[str] | None = None,
     ) -> PanelResult:
         unit_lookup = unit_lookup if unit_lookup is not None else self._build_unit_lookup()
         src = self.get_infra_source(panel.panel_key, dc_code) or InfraSource(
@@ -584,7 +663,38 @@ class SellableService:
 
         notes: list[str] = []
         has_infra = bool(src.source_table and src.total_column)
-        if not has_infra:
+
+        # Cluster-aware path: when caller passed concrete clusters and the panel
+        # family maps to a /compute endpoint, both cap and allocated come from
+        # datacenter-api so the sellable card matches the DC view Capacity Planning
+        # card exactly.
+        compute_metrics = None
+        if selected_clusters and panel.family in _FAMILY_COMPUTE_ENDPOINT:
+            compute_metrics = self._fetch_compute_metrics_for_clusters(
+                dc_code=dc_code,
+                family=panel.family,
+                resource_kind=panel.resource_kind,
+                clusters=selected_clusters,
+            )
+
+        if compute_metrics is not None:
+            cap, used, source_unit = compute_metrics
+            conv = self._lookup_conversion(unit_lookup, source_unit, panel.display_unit)
+            du = (panel.display_unit or "").strip().lower()
+            if conv is None and source_unit.strip().lower() != du:
+                logger.warning(
+                    "SellableService: no gui_unit_conversion %r -> %r for panel=%s "
+                    "(cluster-aware path)",
+                    source_unit, panel.display_unit, panel.panel_key,
+                )
+            total_disp = convert_unit(cap, conv)
+            alloc_disp = convert_unit(used, conv)
+            has_infra = True
+            notes.append(
+                f"cluster-scoped via datacenter-api/compute/{_FAMILY_COMPUTE_ENDPOINT[panel.family]} "
+                f"({len(selected_clusters)} cluster)"
+            )
+        elif not has_infra:
             notes.append("infra-source missing — configure in Settings")
             total_disp = 0.0
             alloc_disp = 0.0
@@ -636,10 +746,23 @@ class SellableService:
             notes=notes,
         )
 
-    def compute_all_panels(self, dc_code: str = "*") -> list[PanelResult]:
+    def compute_all_panels(
+        self,
+        dc_code: str = "*",
+        *,
+        selected_clusters: list[str] | None = None,
+    ) -> list[PanelResult]:
         defs = self.list_panel_defs()
         unit_lookup = self._build_unit_lookup()
-        results = [self.compute_panel(d, dc_code=dc_code, unit_lookup=unit_lookup) for d in defs]
+        results = [
+            self.compute_panel(
+                d,
+                dc_code=dc_code,
+                unit_lookup=unit_lookup,
+                selected_clusters=selected_clusters,
+            )
+            for d in defs
+        ]
 
         # Apply ratio per family.
         by_family: dict[str, list[PanelResult]] = defaultdict(list)
@@ -657,8 +780,13 @@ class SellableService:
         constrained.sort(key=lambda p: (p.family, p.resource_kind, p.panel_key))
         return constrained
 
-    def compute_summary(self, dc_code: str = "*") -> DashboardSummary:
-        panels = self.compute_all_panels(dc_code=dc_code)
+    def compute_summary(
+        self,
+        dc_code: str = "*",
+        *,
+        selected_clusters: list[str] | None = None,
+    ) -> DashboardSummary:
+        panels = self.compute_all_panels(dc_code=dc_code, selected_clusters=selected_clusters)
 
         by_family: dict[str, list[PanelResult]] = defaultdict(list)
         for p in panels:

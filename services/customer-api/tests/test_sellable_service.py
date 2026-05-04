@@ -331,3 +331,182 @@ def test_fetch_allocated_from_redis_unknown_column_returns_zero():
     svc = _make_svc_with_redis(dc_redis=redis_mock)
     src = InfraSource("x", "DC1", allocated_table="vm_metrics", allocated_column="unknown_col")
     assert svc._fetch_allocated_from_redis(src, "DC1") == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Cluster-aware path: total + allocated read from datacenter-api /compute
+# ---------------------------------------------------------------------------
+
+from app.services.sellable_service import (  # noqa: E402  (grouping for clarity)
+    _FAMILY_COMPUTE_ENDPOINT,
+    _RESOURCE_KIND_TO_COMPUTE_FIELDS,
+)
+
+
+def test_family_compute_endpoint_covers_virt_classic_and_hyperconverged():
+    assert _FAMILY_COMPUTE_ENDPOINT["virt_classic"] == "classic"
+    assert _FAMILY_COMPUTE_ENDPOINT["virt_hyperconverged"] == "hyperconverged"
+
+
+def test_resource_kind_to_compute_fields_maps_cpu_ram_storage():
+    assert _RESOURCE_KIND_TO_COMPUTE_FIELDS["cpu"]     == ("cpu_cap",  "cpu_used",  "GHz")
+    assert _RESOURCE_KIND_TO_COMPUTE_FIELDS["ram"]     == ("mem_cap",  "mem_used",  "GB")
+    assert _RESOURCE_KIND_TO_COMPUTE_FIELDS["storage"] == ("stor_cap", "stor_used", "TB")
+
+
+def test_fetch_compute_metrics_returns_cap_used_from_compute_endpoint():
+    """clusters provided + valid family → HTTP fetch from /compute/{kind}."""
+    svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "cpu_cap": 5317.39, "cpu_used": 3869.44,
+        "mem_cap": 1024.0,  "mem_used": 512.0,
+        "stor_cap": 200.0,  "stor_used": 80.0,
+    }
+    with patch("app.services.sellable_service.httpx.get", return_value=mock_resp) as mock_get:
+        result = svc._fetch_compute_metrics_for_clusters(
+            dc_code="IST1",
+            family="virt_classic",
+            resource_kind="cpu",
+            clusters=["KM-1", "KM-2"],
+        )
+
+    assert result is not None
+    cap, used, source_unit = result
+    assert cap == 5317.39
+    assert used == 3869.44
+    assert source_unit == "GHz"
+
+    url = mock_get.call_args[0][0]
+    assert "/datacenters/IST1/compute/classic" in url
+    assert "clusters=KM-1,KM-2" in url
+
+
+def test_fetch_compute_metrics_returns_none_for_unknown_family():
+    svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
+    assert svc._fetch_compute_metrics_for_clusters(
+        dc_code="IST1",
+        family="backup_zerto_replication",
+        resource_kind="cpu",
+        clusters=["A"],
+    ) is None
+
+
+def test_fetch_compute_metrics_returns_none_when_no_clusters():
+    svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
+    assert svc._fetch_compute_metrics_for_clusters(
+        dc_code="IST1",
+        family="virt_classic",
+        resource_kind="cpu",
+        clusters=[],
+    ) is None
+
+
+def test_fetch_compute_metrics_returns_none_for_global_dc():
+    svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
+    assert svc._fetch_compute_metrics_for_clusters(
+        dc_code="*",
+        family="virt_classic",
+        resource_kind="cpu",
+        clusters=["A"],
+    ) is None
+
+
+def test_fetch_compute_metrics_returns_none_when_api_url_missing():
+    svc = _make_svc_with_redis(dc_redis=None, dc_api_url="")
+    assert svc._fetch_compute_metrics_for_clusters(
+        dc_code="IST1",
+        family="virt_classic",
+        resource_kind="cpu",
+        clusters=["A"],
+    ) is None
+
+
+def test_fetch_compute_metrics_swallows_http_error():
+    svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
+    with patch(
+        "app.services.sellable_service.httpx.get",
+        side_effect=Exception("boom"),
+    ):
+        result = svc._fetch_compute_metrics_for_clusters(
+            dc_code="IST1",
+            family="virt_classic",
+            resource_kind="cpu",
+            clusters=["A"],
+        )
+    assert result is None
+
+
+def test_compute_panel_uses_dc_api_when_clusters_passed():
+    """compute_panel with selected_clusters → uses /compute/{kind} for both
+    total and allocated, bypassing datalake DB and Redis entirely."""
+    svc = _build_service()
+    panel = HC_PANELS[0]  # virt_hyperconverged_cpu
+
+    captured: dict = {}
+
+    def fake_compute(*, dc_code, family, resource_kind, clusters):
+        captured["dc_code"] = dc_code
+        captured["family"] = family
+        captured["resource_kind"] = resource_kind
+        captured["clusters"] = list(clusters)
+        return (200.0, 50.0, "vCPU")
+
+    svc._fetch_compute_metrics_for_clusters = fake_compute  # type: ignore[assignment]
+
+    result = svc.compute_panel(
+        panel,
+        dc_code="IST1",
+        selected_clusters=["HC-1", "HC-2"],
+    )
+
+    assert captured == {
+        "dc_code": "IST1",
+        "family": "virt_hyperconverged",
+        "resource_kind": "cpu",
+        "clusters": ["HC-1", "HC-2"],
+    }
+    # cap=200, used=50, threshold=80% → raw = 200*0.8 - 50 = 110
+    assert result.total == 200.0
+    assert result.allocated == 50.0
+    assert result.sellable_raw == 160.0 - 50.0
+    assert any("cluster-scoped" in n for n in result.notes)
+
+
+def test_compute_panel_falls_back_to_db_when_no_clusters():
+    """selected_clusters=None → uses the existing _query_total_allocated path."""
+    svc = _build_service()
+    panel = HC_PANELS[0]
+
+    called = {"hit": False}
+
+    def boom(**_):
+        called["hit"] = True
+        raise AssertionError("compute path should not be called when clusters is None")
+
+    svc._fetch_compute_metrics_for_clusters = boom  # type: ignore[assignment]
+
+    result = svc.compute_panel(panel, dc_code="*")
+    assert called["hit"] is False
+    assert result.total == 10.0
+    assert result.allocated == 4.0
+
+
+def test_compute_summary_passes_clusters_per_family():
+    svc = _build_service()
+    seen: list[dict] = []
+
+    def fake_compute(*, dc_code, family, resource_kind, clusters):
+        seen.append({"family": family, "kind": resource_kind, "clusters": list(clusters)})
+        return (100.0, 20.0, "GB" if resource_kind == "ram" else "vCPU" if resource_kind == "cpu" else "GB")
+
+    svc._fetch_compute_metrics_for_clusters = fake_compute  # type: ignore[assignment]
+
+    summary = svc.compute_summary(dc_code="IST1", selected_clusters=["A", "B"])
+
+    # Every panel in the (mocked) HC_PANELS family should have hit the compute path
+    families_seen = {entry["family"] for entry in seen}
+    assert families_seen == {"virt_hyperconverged"}
+    assert all(entry["clusters"] == ["A", "B"] for entry in seen)
+    assert summary.dc_code == "IST1"

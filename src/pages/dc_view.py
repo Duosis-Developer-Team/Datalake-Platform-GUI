@@ -1436,33 +1436,48 @@ def _build_sellable_inline_kpi(
     title: str,
     *,
     color: str = "violet",
+    selected_clusters: list[str] | None = None,
+    container_id: str | None = None,
 ) -> html.Div | None:
     """Inline 'Sellable Potential' card for a sub-tab (Faz 6).
 
-    Aggregates `customer-api` /by-panel results for one or more `family`
-    keys (e.g. ``virt_hyperconverged`` or ``backup_zerto_replication``)
-    and renders a 4-card KPI grid: CPU sellable / RAM sellable / Storage
-    sellable / Total potential TL — all in the constrained (ratio-bound)
-    space because that's what's actually monetisable.
+    Aggregates ``crm-engine`` /sellable-potential/by-panel results for one or
+    more ``family`` keys (e.g. ``virt_hyperconverged`` or
+    ``backup_zerto_replication``) and renders a 4-card KPI grid: CPU sellable /
+    RAM sellable / Storage sellable / Total potential TL — all in the
+    constrained (ratio-bound) space because that's what's actually monetisable.
+
+    When ``selected_clusters`` is provided for a virt family, the crm-engine
+    reads total + allocated for that scope from datacenter-api
+    ``/compute/{kind}?clusters=...`` so this card matches the DC view
+    Capacity Planning card for the same selection. ``container_id`` lets
+    Dash callbacks target the outer wrapper Div as an Output.
     """
-    if not dc_id:
-        return None
     if isinstance(families, str):
         families = [families]
     families = [f for f in families if f]
-    if not families:
+
+    if not dc_id or not families:
+        if container_id:
+            return html.Div(id=container_id)
         return None
 
     panels: list[dict] = []
     for fam in families:
         try:
-            chunk = api.get_sellable_by_panel(dc_code=str(dc_id), family=fam) or []
+            chunk = api.get_sellable_by_panel(
+                dc_code=str(dc_id),
+                family=fam,
+                clusters=selected_clusters if fam in ("virt_classic", "virt_hyperconverged") else None,
+            ) or []
             if isinstance(chunk, list):
                 panels.extend(chunk)
         except Exception:
             continue
 
     if not panels:
+        if container_id:
+            return html.Div(id=container_id)
         return None
 
     by_kind: dict[str, dict[str, float]] = {
@@ -1489,6 +1504,8 @@ def _build_sellable_inline_kpi(
         has_data = True
 
     if not has_data and total_tl <= 0:
+        if container_id:
+            return html.Div(id=container_id)
         return None
 
     def _fmt_unit(value: float, unit: str) -> str:
@@ -1582,15 +1599,18 @@ def _build_sellable_inline_kpi(
                 )
             )
 
-    return html.Div(
-        className="nexus-card",
-        style={"padding": "20px"},
-        children=[
+    div_kwargs: dict = {
+        "className": "nexus-card",
+        "style": {"padding": "20px"},
+        "children": [
             _section_title(title, "Constrained sellable headroom (ratio-aware) and TL potential"),
             dmc.SimpleGrid(cols=4, spacing="lg", style={"marginTop": "12px"}, children=cards),
             dmc.Group(gap="xs", style={"marginTop": "10px"}, children=sub_lines) if sub_lines else None,
         ],
-    )
+    }
+    if container_id:
+        div_kwargs["id"] = container_id
+    return html.Div(**div_kwargs)
 
 
 def _build_summary_tab(data: dict, tr: dict, dc_id: str | None = None):
@@ -3016,6 +3036,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                 ["virt_classic", "virt_hyperconverged", "virt_power", "virt_power_hana"],
                                 "Virtualization — Total Sellable Potential",
                                 color="violet",
+                                container_id="sellable-virt-total-card",
                             ),
                             dmc.Tabs(
                                 color="violet",
@@ -3050,6 +3071,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     "virt_classic",
                                                     "Klasik Mimari — Sellable Potential",
                                                     color="blue",
+                                                    container_id="sellable-classic-card",
                                                 ),
                                             ],
                                         ),
@@ -3074,6 +3096,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     "virt_hyperconverged",
                                                     "Hyperconverged Mimari — Sellable Potential",
                                                     color="teal",
+                                                    container_id="sellable-hyperconv-card",
                                                 ),
                                             ],
                                         ),
@@ -3096,6 +3119,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     ["virt_power", "virt_power_hana"],
                                                     "Power Mimari — Sellable Potential",
                                                     color="grape",
+                                                    container_id="sellable-power-card",
                                                 ),
                                             ],
                                         ),

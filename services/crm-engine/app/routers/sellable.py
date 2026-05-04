@@ -64,26 +64,62 @@ def _webui(request: Request) -> WebuiPool:
 # ---------------------------------------------------------------------------
 
 
+def _parse_clusters(raw: Optional[str]) -> Optional[list[str]]:
+    """Parse a CSV ``clusters`` query param into a clean list. Empty/None → None."""
+    if not raw:
+        return None
+    items = [c.strip() for c in raw.split(",")]
+    items = [c for c in items if c]
+    return items or None
+
+
 @router.get("/crm/sellable-potential/summary", response_model=dict)
-def get_summary(dc_code: str = "*", svc: SellableService = Depends(_sellable)):
-    return svc.compute_summary(dc_code=dc_code).to_dict()
+def get_summary(
+    dc_code: str = "*",
+    clusters: Optional[str] = Query(
+        None,
+        description="Optional CSV of cluster names. Restricts virt_classic / virt_hyperconverged "
+                    "panel scope to those clusters by reading datacenter-api compute endpoint.",
+    ),
+    svc: SellableService = Depends(_sellable),
+):
+    return svc.compute_summary(
+        dc_code=dc_code,
+        selected_clusters=_parse_clusters(clusters),
+    ).to_dict()
 
 
 @router.get("/crm/sellable-potential/by-panel", response_model=List[dict])
 def get_by_panel(
     dc_code: str = "*",
     family: Optional[str] = None,
+    clusters: Optional[str] = Query(
+        None,
+        description="Optional CSV of cluster names. When provided, virt_classic / virt_hyperconverged "
+                    "panels read total + allocated from datacenter-api /compute/{kind}?clusters=... "
+                    "instead of the dc-wide datalake + Redis path.",
+    ),
     svc: SellableService = Depends(_sellable),
 ):
-    panels = svc.compute_all_panels(dc_code=dc_code)
+    panels = svc.compute_all_panels(
+        dc_code=dc_code,
+        selected_clusters=_parse_clusters(clusters),
+    )
     if family:
         panels = [p for p in panels if p.family == family]
     return [p.to_dict() for p in panels]
 
 
 @router.get("/crm/sellable-potential/by-family", response_model=List[dict])
-def get_by_family(dc_code: str = "*", svc: SellableService = Depends(_sellable)):
-    summary = svc.compute_summary(dc_code=dc_code)
+def get_by_family(
+    dc_code: str = "*",
+    clusters: Optional[str] = Query(None),
+    svc: SellableService = Depends(_sellable),
+):
+    summary = svc.compute_summary(
+        dc_code=dc_code,
+        selected_clusters=_parse_clusters(clusters),
+    )
     return [f.to_dict() for f in summary.families]
 
 

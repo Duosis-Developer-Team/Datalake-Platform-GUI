@@ -1170,26 +1170,67 @@ def get_sellable_summary(dc_code: str = "*") -> dict:
     return _api_cache_get_with_stale(cache_key, fetch, {})
 
 
-def get_sellable_by_panel(dc_code: str = "*", family: Optional[str] = None) -> list:
-    """Panel-level computation list. Optional family filter."""
+def _normalize_clusters_arg(clusters: Optional[list]) -> Optional[list[str]]:
+    """Coerce a clusters argument into a clean list[str] or None.
+
+    Accepts None / empty list / list with empties. Strips whitespace and drops
+    empty strings; returns None when no usable cluster names remain.
+    """
+    if not clusters:
+        return None
+    cleaned: list[str] = []
+    for c in clusters:
+        if c is None:
+            continue
+        s = str(c).strip()
+        if s:
+            cleaned.append(s)
+    return cleaned or None
+
+
+def get_sellable_by_panel(
+    dc_code: str = "*",
+    family: Optional[str] = None,
+    clusters: Optional[list[str]] = None,
+) -> list:
+    """Panel-level computation list. Optional family + cluster filter.
+
+    When ``clusters`` is non-empty, crm-engine reads total + allocated for
+    virt_classic / virt_hyperconverged panels from the datacenter-api
+    /compute/{kind} endpoint so the values match the DC view Capacity Planning
+    card for the same cluster selection.
+    """
     qs = f"dc_code={quote(dc_code, safe='*')}"
     if family:
         qs += f"&family={quote(family, safe='')}"
+    cl = _normalize_clusters_arg(clusters)
+    if cl:
+        qs += f"&clusters={quote(','.join(cl), safe=',')}"
 
     def fetch() -> list:
         data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/by-panel?{qs}")
         return data if isinstance(data, list) else []
 
-    cache_key = f"api:sellable_by_panel:{dc_code}:{family or '*'}"
+    cluster_key = ",".join(cl) if cl else "*"
+    cache_key = f"api:sellable_by_panel:{dc_code}:{family or '*'}:{cluster_key}"
     return _api_cache_get_with_stale(cache_key, fetch, [])
 
 
-def get_sellable_by_family(dc_code: str = "*") -> list:
+def get_sellable_by_family(
+    dc_code: str = "*",
+    clusters: Optional[list[str]] = None,
+) -> list:
+    qs = f"dc_code={quote(dc_code, safe='*')}"
+    cl = _normalize_clusters_arg(clusters)
+    if cl:
+        qs += f"&clusters={quote(','.join(cl), safe=',')}"
+
     def fetch() -> list:
-        data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/by-family?dc_code={quote(dc_code, safe='*')}")
+        data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/by-family?{qs}")
         return data if isinstance(data, list) else []
 
-    cache_key = f"api:sellable_by_family:{dc_code}"
+    cluster_key = ",".join(cl) if cl else "*"
+    cache_key = f"api:sellable_by_family:{dc_code}:{cluster_key}"
     return _api_cache_get_with_stale(cache_key, fetch, [])
 
 
