@@ -15,6 +15,11 @@ Design notes:
     * ``datacenter_metrics`` / ``cluster_metrics``: totals use the latest snapshot per
       (dc, datacenter) / (cluster, datacenter) before SUM — same grain as WebUI
       ``datacenter-api`` ``vmware.py`` queries — see ``_sum_sql``.
+    * ``vm_metrics`` / ``nutanix_vm_metrics``: **allocated** values are read from the
+      datacenter-api Redis cache (``dc_details:{dc_code}:{start}:{end}`` or
+      ``global_dashboard:{start}:{end}``), not queried from the datalake DB.
+      This avoids expensive full-table VM scans, stale-VM inclusion, and the
+      ``uuid = character varying`` type mismatch in the Nutanix JOIN.
     * Each datalake query is small (one SUM per call) so the per-panel cost
       is dominated by network RTT. ``CustomerService`` already pools 8
       connections; the dashboard fetches at most ~70 panels per call.
@@ -25,10 +30,17 @@ Design notes:
 """
 from __future__ import annotations
 
+import datetime
+import json
 import logging
 import re
 from collections import defaultdict
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
+
+import httpx
+
+if TYPE_CHECKING:
+    import redis as _redis_t
 
 # VMware TS tables: WebUI uses latest row per (dc, datacenter) / (cluster, datacenter)
 # before SUM — see datacenter-api app/db/queries/vmware.py (BATCH_*, CLASSIC_METRICS).
@@ -46,21 +58,6 @@ _SUBQUERY_CLUSTER_METRICS_LATEST = """(
     ORDER BY cluster, datacenter, "timestamp" DESC
 ) AS _infra_cm"""
 
-# nutanix_vm_metrics has no datacenter_name column; join with the latest
-# nutanix_cluster_metrics row per cluster_uuid to expose datacenter_name for
-# filter_clause (matches datacenter-api/db/queries/nutanix.py grain).
-_SUBQUERY_NUTANIX_VM_LATEST = """(
-    SELECT nvm.*, ncm.datacenter_name
-    FROM nutanix_vm_metrics nvm
-    JOIN (
-        SELECT DISTINCT ON (cluster_uuid)
-            cluster_uuid,
-            datacenter_name
-        FROM nutanix_cluster_metrics
-        ORDER BY cluster_uuid, collection_time DESC
-    ) ncm ON nvm.cluster_uuid = ncm.cluster_uuid
-) AS _infra_nvm"""
-
 # nutanix_cluster_metrics: take the latest row per cluster_uuid before SUM so
 # repeated time-series snapshots are not double-counted.
 _SUBQUERY_NUTANIX_CLUSTER_LATEST = """(
@@ -69,6 +66,36 @@ _SUBQUERY_NUTANIX_CLUSTER_LATEST = """(
     FROM nutanix_cluster_metrics
     ORDER BY cluster_uuid, collection_time DESC
 ) AS _infra_ncm"""
+
+# -- Redis-backed allocated lookup (vm_metrics / nutanix_vm_metrics) -----------
+
+# How many days back to use when constructing the dc_details Redis key.
+_DC_DETAILS_WINDOW_DAYS = 30
+
+# Maps allocated_table → Redis section key for per-DC (dc_details) response.
+_VM_TABLE_DC_SECTION: dict[str, str] = {
+    "vm_metrics":         "classic",
+    "nutanix_vm_metrics": "hyperconv",
+}
+
+# Maps allocated_table → Redis section key for global (global_dashboard) response.
+_VM_TABLE_GLOBAL_SECTION: dict[str, str] = {
+    "vm_metrics":         "classic_totals",
+    "nutanix_vm_metrics": "hyperconv_totals",
+}
+
+# Maps allocated_column (as configured in gui_panel_infra_source) → Redis field.
+# Values are the exact field names present in the dc_details and global_dashboard JSON.
+_VM_COLUMN_TO_REDIS_FIELD: dict[str, str] = {
+    # vm_metrics — classic KM VMware
+    "number_of_cpus":          "cpu_used",
+    "total_memory_capacity_gb": "mem_used",
+    "provisioned_space_gb":    "stor_used",
+    # nutanix_vm_metrics — hyperconverged Nutanix
+    "cpu_count":               "cpu_used",
+    "memory_capacity":         "mem_used",
+    "disk_capacity":           "stor_used",
+}
 
 from app.db.queries import sellable as sq
 from app.services.crm_config_service import CrmConfigService
@@ -110,12 +137,16 @@ class SellableService:
         config_service: CrmConfigService,
         currency_service: CurrencyService,
         tagging_service: TaggingService,
+        datacenter_redis: "_redis_t.Redis | None" = None,
+        datacenter_api_url: str = "",
     ) -> None:
         self._svc = customer_service
         self._webui = webui
         self._config = config_service
         self._currency = currency_service
         self._tags = tagging_service
+        self._dc_redis = datacenter_redis
+        self._dc_api_url = (datacenter_api_url or "").rstrip("/")
 
     # ----------------------------------------------------------------- helpers
 
@@ -339,12 +370,6 @@ class SellableService:
                 f"FROM {_SUBQUERY_CLUSTER_METRICS_LATEST} {where_sql};"
             )
             return sql, list(params)
-        if base == "nutanix_vm_metrics":
-            sql = (
-                f"SELECT COALESCE(SUM(_infra_nvm.{col}), 0)::double precision "
-                f"FROM {_SUBQUERY_NUTANIX_VM_LATEST} {where_sql};"
-            )
-            return sql, list(params)
         if base == "nutanix_cluster_metrics":
             sql = (
                 f"SELECT COALESCE(SUM(_infra_ncm.{col}), 0)::double precision "
@@ -393,7 +418,10 @@ class SellableService:
 
         alloc_sql: str | None = None
         alloc_params: list[Any] = []
-        if src.allocated_table and src.allocated_column:
+        alloc_table_bare = self._bare_table_name(src.allocated_table)
+        alloc_from_redis = alloc_table_bare in _VM_TABLE_DC_SECTION
+
+        if src.allocated_table and src.allocated_column and not alloc_from_redis:
             if src.filter_clause:
                 cleaned = src.filter_clause.replace(":dc_pattern", "%s")
                 where_alloc = f" WHERE {cleaned}"
@@ -416,16 +444,29 @@ class SellableService:
             with self._svc._get_connection() as conn:
                 with conn.cursor() as cur:
                     total_val = float(self._svc._run_value(cur, total_sql, tuple(total_params)) or 0.0)
-                    if alloc_sql is not None:
-                        alloc_val = float(self._svc._run_value(cur, alloc_sql, tuple(alloc_params)) or 0.0)
-                    else:
-                        alloc_val = 0.0
         except Exception:  # noqa: BLE001
             logger.exception(
-                "SellableService: datalake lookup failed (panel=%s, dc=%s, table=%s)",
+                "SellableService: datalake total lookup failed (panel=%s, dc=%s, table=%s)",
                 src.panel_key, dc_code, src.source_table,
             )
             return 0.0, 0.0
+
+        if alloc_from_redis and src.allocated_column:
+            alloc_val = self._fetch_allocated_from_redis(src, dc_code)
+        elif alloc_sql is not None:
+            try:
+                with self._svc._get_connection() as conn:
+                    with conn.cursor() as cur:
+                        alloc_val = float(self._svc._run_value(cur, alloc_sql, tuple(alloc_params)) or 0.0)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "SellableService: datalake allocated lookup failed (panel=%s, dc=%s, table=%s)",
+                    src.panel_key, dc_code, src.allocated_table,
+                )
+                return total_val, 0.0
+        else:
+            alloc_val = 0.0
+
         return total_val, alloc_val
 
     @staticmethod
@@ -433,6 +474,98 @@ class SellableService:
         if not dc_code or dc_code == "*":
             return "%"
         return f"%{dc_code.lower()}%"
+
+    def _fetch_allocated_from_redis(self, src: InfraSource, dc_code: str) -> float:
+        """Return the allocated value for vm_metrics / nutanix_vm_metrics panels
+        by reading the datacenter-api Redis cache instead of querying the datalake DB.
+
+        For global requests (dc_code='*') the ``global_dashboard:{start}:{end}`` key
+        is used; for per-DC requests ``dc_details:{dc_code}:{start}:{end}`` is used.
+        If the key is absent (cache cold) an HTTP call to datacenter-api populates the
+        cache and returns the value in the same pass.
+
+        Units returned match the ``allocated_unit`` declared in
+        ``gui_panel_infra_source``:
+            CPU    → GHz   (classic.cpu_used / hyperconv.cpu_used)
+            RAM    → GB    (classic.mem_used / hyperconv.mem_used)
+            Storage → TB   (classic.stor_used / hyperconv.stor_used)
+        """
+        alloc_table = self._bare_table_name(src.allocated_table)
+        is_global = not dc_code or dc_code == "*"
+
+        section_map = _VM_TABLE_GLOBAL_SECTION if is_global else _VM_TABLE_DC_SECTION
+        section = section_map.get(alloc_table)
+        redis_field = _VM_COLUMN_TO_REDIS_FIELD.get(src.allocated_column or "")
+
+        if not section or not redis_field:
+            logger.warning(
+                "_fetch_allocated_from_redis: no mapping for table=%r column=%r — returning 0",
+                alloc_table,
+                src.allocated_column,
+            )
+            return 0.0
+
+        today = datetime.date.today()
+        start = (today - datetime.timedelta(days=_DC_DETAILS_WINDOW_DAYS)).isoformat()
+        end = today.isoformat()
+
+        if is_global:
+            redis_key = f"global_dashboard:{start}:{end}"
+            fallback_url = f"{self._dc_api_url}/api/v1/dashboard/overview?preset=30d" if self._dc_api_url else ""
+        else:
+            redis_key = f"dc_details:{dc_code}:{start}:{end}"
+            fallback_url = (
+                f"{self._dc_api_url}/api/v1/datacenters/{dc_code}?preset=30d"
+                if self._dc_api_url else ""
+            )
+
+        raw: str | None = None
+        if self._dc_redis is not None:
+            try:
+                raw = self._dc_redis.get(redis_key)
+            except Exception:
+                logger.exception("Redis GET failed for key=%s", redis_key)
+
+        data: dict = {}
+        if raw:
+            try:
+                data = json.loads(raw)
+            except Exception:
+                logger.warning("Redis key %s: JSON decode failed — falling back to HTTP", redis_key)
+                raw = None
+
+        if not raw:
+            if not fallback_url:
+                logger.warning(
+                    "_fetch_allocated_from_redis: Redis miss and no datacenter_api_url configured "
+                    "(dc=%s, key=%s) — returning 0",
+                    dc_code,
+                    redis_key,
+                )
+                return 0.0
+            try:
+                resp = httpx.get(fallback_url, timeout=15.0)
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception:
+                logger.exception(
+                    "datacenter-api fallback failed for dc=%s url=%s", dc_code, fallback_url
+                )
+                return 0.0
+
+        section_data = data.get(section, {}) if isinstance(data, dict) else {}
+        val = section_data.get(redis_field)
+        if val is None:
+            logger.warning(
+                "_fetch_allocated_from_redis: section=%r field=%r is None "
+                "(dc=%s key=%s) — returning 0",
+                section, redis_field, dc_code, redis_key,
+            )
+            return 0.0
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return 0.0
 
     # ------------------------------------------------------------------ compute
 

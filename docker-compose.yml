@@ -276,6 +276,12 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_DB: "2"
+      # Datacenter-api Redis DB (db=0) for reading dc_details / global_dashboard keys.
+      DATACENTER_REDIS_DB: "0"
+      # HTTP fallback when datacenter-api Redis cache is cold.
+      DATACENTER_API_URL: ${DATACENTER_API_URL:-http://datacenter-api:8000}
+      # Disable client-side statement timeout so long DC-level aggregate queries complete.
+      DB_STATEMENT_TIMEOUT_MS: "0"
       WEBUI_DB_HOST: ${WEBUI_DB_HOST:-webui-db}
       WEBUI_DB_PORT: ${WEBUI_DB_PORT:-5432}
       WEBUI_DB_NAME: ${WEBUI_DB_NAME:-bulutwebui}
@@ -293,6 +299,8 @@ services:
       redis:
         condition: service_healthy
       webui-db:
+        condition: service_healthy
+      datacenter-api:
         condition: service_healthy
     healthcheck:
       test:

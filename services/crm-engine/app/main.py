@@ -21,6 +21,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+import redis as _redis
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import Depends, FastAPI, Request, Response, status
@@ -43,6 +44,46 @@ from app.services.sales_service import SalesService
 from app.services.sellable_service import SellableService
 from app.services.tagging_service import TaggingService
 from app.services.webui_db import WebuiPool
+
+# Redis DB used by datacenter-api (default 0); crm-engine reads dc_details keys from it.
+_DATACENTER_REDIS_DB = int(os.getenv("DATACENTER_REDIS_DB", "0"))
+_DATACENTER_API_URL = os.getenv("DATACENTER_API_URL", "http://datacenter-api:8000")
+
+_dc_redis_client: _redis.Redis | None = None
+
+
+def _init_datacenter_redis() -> _redis.Redis | None:
+    global _dc_redis_client
+    try:
+        client = _redis.Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            db=_DATACENTER_REDIS_DB,
+            password=settings.redis_password or None,
+            socket_timeout=settings.redis_socket_timeout,
+            decode_responses=True,
+        )
+        client.ping()
+        _dc_redis_client = client
+        logger.info(
+            "Datacenter Redis connected: %s:%s db=%d",
+            settings.redis_host, settings.redis_port, _DATACENTER_REDIS_DB,
+        )
+        return client
+    except Exception as exc:
+        logger.warning("Datacenter Redis unavailable (dc_details fallback via HTTP): %s", exc)
+        _dc_redis_client = None
+        return None
+
+
+def _close_datacenter_redis() -> None:
+    global _dc_redis_client
+    if _dc_redis_client:
+        try:
+            _dc_redis_client.close()
+        except Exception:
+            pass
+        _dc_redis_client = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -103,6 +144,7 @@ async def lifespan(app: FastAPI):
         webui=webui,
     )
     init_redis_pool()
+    dc_redis = _init_datacenter_redis()
 
     config_svc = CrmConfigService(webui)
     currency_svc = CurrencyService(svc)
@@ -113,6 +155,8 @@ async def lifespan(app: FastAPI):
         config_service=config_svc,
         currency_service=currency_svc,
         tagging_service=tagging_svc,
+        datacenter_redis=dc_redis,
+        datacenter_api_url=_DATACENTER_API_URL,
     )
     app.state.crm_config = config_svc
     app.state.currency = currency_svc
@@ -124,6 +168,7 @@ async def lifespan(app: FastAPI):
     if getattr(app.state, "scheduler", None) and app.state.scheduler.running:
         app.state.scheduler.shutdown(wait=False)
     close_redis_pool()
+    _close_datacenter_redis()
     if svc._pool:
         svc._pool.closeall()
     webui.close()
