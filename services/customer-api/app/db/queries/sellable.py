@@ -256,3 +256,43 @@ WHERE  metric_key = %s
   AND  captured_at >= NOW() - (%s || ' hours')::interval
 ORDER BY captured_at;
 """
+
+# ---------------------------------------------------------------------------
+# Bulk-load queries — replace N per-panel round-trips with 3 single queries.
+# Used by compute_all_panels to pre-fetch all metadata before the panel loop.
+# ---------------------------------------------------------------------------
+
+# Best-matching infra source per panel_key for a given dc_code.
+# dc_code-specific rows win over wildcard ('*') rows (ORDER BY ... (dc_code='*') ASC → False < True).
+BULK_INFRA_SOURCES_FOR_DC = """
+SELECT DISTINCT ON (panel_key)
+    panel_key, dc_code, source_table, total_column, total_unit,
+    allocated_table, allocated_column, allocated_unit,
+    filter_clause, notes
+FROM   gui_panel_infra_source
+WHERE  dc_code = %s OR dc_code = '*'
+ORDER  BY panel_key, (dc_code = '*') ASC;
+"""
+
+# All threshold rows for a dc_code (Python replicates panel_key > resource_type precedence).
+BULK_THRESHOLDS_FOR_DC = """
+SELECT panel_key, resource_type, dc_code, sellable_limit_pct
+FROM   gui_crm_threshold_config
+WHERE  dc_code = %s OR dc_code = '*'
+ORDER  BY (dc_code = '*') ASC;
+"""
+
+# Best price override per panel_key (catalog fallback is handled per-panel only when missing).
+BULK_PRICE_OVERRIDES = """
+SELECT DISTINCT ON (sp.panel_key)
+    sp.panel_key,
+    po.unit_price_tl
+FROM   gui_crm_service_pages       sp
+JOIN   gui_crm_service_mapping_seed sm  ON sm.page_key  = sp.page_key
+LEFT   JOIN gui_crm_service_mapping_override ov
+                                        ON ov.productid = sm.productid
+JOIN   gui_crm_price_override       po
+       ON po.productid = COALESCE(ov.productid, sm.productid)
+WHERE  po.unit_price_tl IS NOT NULL
+ORDER  BY sp.panel_key, po.updated_at DESC;
+"""

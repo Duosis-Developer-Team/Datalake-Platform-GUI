@@ -101,12 +101,14 @@ def get_by_panel(
     ),
     svc: SellableService = Depends(_sellable),
 ):
+    # Forward family to compute_all_panels so unrelated panels are not even
+    # loaded — saves a full WebUI + datalake pass when the caller only wants
+    # virt_classic (3 of ~70 panels).
     panels = svc.compute_all_panels(
         dc_code=dc_code,
         selected_clusters=_parse_clusters(clusters),
+        family=family,
     )
-    if family:
-        panels = [p for p in panels if p.family == family]
     return [p.to_dict() for p in panels]
 
 

@@ -15,6 +15,7 @@ Exercises the canonical scenario from ADR-0014:
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 from app.services.sellable_service import (
@@ -510,3 +511,301 @@ def test_compute_summary_passes_clusters_per_family():
     assert families_seen == {"virt_hyperconverged"}
     assert all(entry["clusters"] == ["A", "B"] for entry in seen)
     assert summary.dc_code == "IST1"
+
+
+# ---------------------------------------------------------------------------
+# Performance: bulk-loaders, HTTP dedup, result cache, family filter
+# ---------------------------------------------------------------------------
+
+from app.services.sellable_service import (  # noqa: E402
+    _DC_DETAILS_WINDOW_DAYS,
+    _FAMILY_COMPUTE_ENDPOINT as _FCE,
+)
+
+
+def test_bulk_load_infra_sources_returns_dict_when_rows_present():
+    svc = SellableService.__new__(SellableService)
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.return_value = [
+        {
+            "panel_key": "p1", "dc_code": "IST1", "source_table": "vm_metrics",
+            "total_column": "x", "total_unit": "vCPU",
+            "allocated_table": None, "allocated_column": None, "allocated_unit": None,
+            "filter_clause": None, "notes": None,
+        },
+        {
+            "panel_key": "p2", "dc_code": "*", "source_table": "cluster_metrics",
+            "total_column": "y", "total_unit": "GB",
+            "allocated_table": None, "allocated_column": None, "allocated_unit": None,
+            "filter_clause": None, "notes": None,
+        },
+    ]
+    svc._webui = webui
+
+    out = svc._bulk_load_infra_sources("IST1")
+    assert out is not None
+    assert set(out.keys()) == {"p1", "p2"}
+    assert out["p1"].source_table == "vm_metrics"
+    assert webui.run_rows.call_count == 1  # exactly ONE WebUI round-trip
+
+
+def test_bulk_load_thresholds_specific_overrides_wildcard():
+    svc = SellableService.__new__(SellableService)
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.return_value = [
+        {"panel_key": "p1", "resource_type": None, "dc_code": "*",    "sellable_limit_pct": 80},
+        {"panel_key": "p1", "resource_type": None, "dc_code": "IST1", "sellable_limit_pct": 95},
+        {"panel_key": None, "resource_type": "cpu","dc_code": "*",    "sellable_limit_pct": 70},
+    ]
+    svc._webui = webui
+
+    out = svc._bulk_load_thresholds("IST1")
+    assert out is not None
+    # IST1-specific row wins over '*' for p1.
+    assert out["_by_panel_key"]["p1"] == 95.0
+    assert out["_by_resource_type"]["cpu"] == 70.0
+
+
+def test_bulk_load_price_overrides_returns_dict():
+    svc = SellableService.__new__(SellableService)
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.return_value = [
+        {"panel_key": "p1", "unit_price_tl": 1500.0},
+        {"panel_key": "p2", "unit_price_tl": 20.0},
+    ]
+    svc._webui = webui
+    out = svc._bulk_load_price_overrides()
+    assert out == {"p1": 1500.0, "p2": 20.0}
+
+
+def test_compute_all_panels_calls_each_bulk_loader_once():
+    """N panels × 3 metadata lookups should collapse to 3 SQL round-trips."""
+    svc = _build_service()
+    calls = {"infra": 0, "thresh": 0, "price": 0}
+
+    def fake_infra(dc):
+        calls["infra"] += 1
+        return {p.panel_key: INFRA[p.panel_key][0] for p in HC_PANELS}
+
+    def fake_thresh(dc):
+        calls["thresh"] += 1
+        return {"_by_panel_key": {}, "_by_resource_type": {}}
+
+    def fake_price():
+        calls["price"] += 1
+        return {p.panel_key: PRICES[p.panel_key][0] for p in HC_PANELS}
+
+    svc._bulk_load_infra_sources = fake_infra      # type: ignore[assignment]
+    svc._bulk_load_thresholds    = fake_thresh     # type: ignore[assignment]
+    svc._bulk_load_price_overrides = fake_price    # type: ignore[assignment]
+
+    panels = svc.compute_all_panels(dc_code="*")
+    assert len(panels) == len(HC_PANELS)
+    assert calls == {"infra": 1, "thresh": 1, "price": 1}
+
+
+def test_compute_all_panels_family_filter_skips_unrelated_panels():
+    """compute_all_panels(family=...) must filter BEFORE per-panel work runs."""
+    svc = _build_service()
+    extra = PanelDefinition("backup_x_storage", "Backup X", "backup_zerto_replication", "storage", "GB")
+    svc.list_panel_defs = lambda: HC_PANELS + [extra]
+
+    seen: list[str] = []
+    real_compute_panel = svc.compute_panel
+
+    def spy_compute_panel(panel, *args, **kwargs):
+        seen.append(panel.panel_key)
+        return real_compute_panel(panel, *args, **kwargs)
+
+    svc.compute_panel = spy_compute_panel  # type: ignore[assignment]
+
+    out = svc.compute_all_panels(dc_code="*", family="virt_hyperconverged")
+    assert {p.panel_key for p in out} == {p.panel_key for p in HC_PANELS}
+    assert "backup_x_storage" not in seen
+
+
+def test_compute_all_panels_dedups_compute_http_per_family(monkeypatch):
+    """clusters set + family with 3 resource_kind panels → exactly ONE HTTP call."""
+    panels = [
+        PanelDefinition("virt_classic_cpu",     "C CPU",     "virt_classic", "cpu",     "vCPU"),
+        PanelDefinition("virt_classic_ram",     "C RAM",     "virt_classic", "ram",     "GB"),
+        PanelDefinition("virt_classic_storage", "C Storage", "virt_classic", "storage", "GB"),
+    ]
+    customer = MagicMock()
+    customer._pool = MagicMock()
+    webui = MagicMock(); webui.is_available = True
+    svc = SellableService(
+        customer_service=customer, webui=webui,
+        config_service=MagicMock(), currency_service=MagicMock(), tagging_service=MagicMock(),
+        datacenter_api_url="http://dc-api:8000",
+    )
+    svc.list_panel_defs = lambda: panels
+    svc.list_unit_conversions = lambda: [
+        UnitConversion("GHz", "vCPU", 8.0, "divide", True),
+        UnitConversion("GB", "GB", 1.0),
+        UnitConversion("TB", "GB", 1.0, "multiply"),
+    ]
+    svc.list_ratios = lambda: []
+    svc.get_unit_price_tl = lambda panel_key: (0.0, False)
+    svc._bulk_load_infra_sources = lambda dc: {}      # type: ignore[assignment]
+    svc._bulk_load_thresholds    = lambda dc: {"_by_panel_key": {}, "_by_resource_type": {}}  # type: ignore[assignment]
+    svc._bulk_load_price_overrides = lambda: {}       # type: ignore[assignment]
+
+    call_count = {"n": 0}
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "cpu_cap": 100.0, "cpu_used": 50.0,
+        "mem_cap": 200.0, "mem_used": 75.0,
+        "stor_cap": 5.0,  "stor_used": 1.0,
+    }
+
+    def counting_get(url, *a, **kw):
+        call_count["n"] += 1
+        return mock_resp
+
+    monkeypatch.setattr("app.services.sellable_service.httpx.get", counting_get)
+    out = svc.compute_all_panels(dc_code="IST1", selected_clusters=["KM-1", "KM-2"])
+
+    # 3 panels × 1 family / 1 cluster set → ONE HTTP call to /compute/classic
+    assert call_count["n"] == 1
+    assert {p.panel_key for p in out} == {p.panel_key for p in panels}
+
+
+def test_result_cache_hit_skips_computation():
+    """When a cached payload exists, compute_all_panels must not touch DB at all."""
+    crm_redis = MagicMock()
+    cached_payload = json.dumps([
+        {
+            "panel_key": "virt_classic_cpu", "label": "C CPU",
+            "family": "virt_classic", "resource_kind": "cpu", "display_unit": "vCPU",
+            "dc_code": "IST1", "total": 100.0, "allocated": 30.0,
+            "threshold_pct": 80.0, "sellable_raw": 50.0, "sellable_constrained": 50.0,
+            "unit_price_tl": 0.0, "potential_tl": 0.0,
+            "ratio_bound": False, "has_infra_source": True, "has_price": False, "notes": [],
+        },
+    ])
+    crm_redis.get.return_value = cached_payload
+
+    svc = _build_service()
+    svc._crm_redis = crm_redis
+
+    blew_up = {"hit": False}
+
+    def boom(*a, **kw):
+        blew_up["hit"] = True
+        raise AssertionError("compute_panel must not run on cache hit")
+
+    svc.compute_panel = boom  # type: ignore[assignment]
+
+    out = svc.compute_all_panels(dc_code="IST1")
+    assert blew_up["hit"] is False
+    assert len(out) == 1
+    assert out[0].panel_key == "virt_classic_cpu"
+    assert out[0].sellable_constrained == 50.0
+
+
+def test_result_cache_set_writes_setex():
+    """Cache miss path must SETEX with the configured TTL."""
+    crm_redis = MagicMock()
+    crm_redis.get.return_value = None  # miss
+
+    svc = _build_service()
+    svc._crm_redis = crm_redis
+
+    out = svc.compute_all_panels(dc_code="*")
+    assert out  # standard 3 panels
+    assert crm_redis.setex.call_count == 1
+    args, _kwargs = crm_redis.setex.call_args
+    key, ttl, payload = args
+    assert key.startswith("sellable:panels:*:")
+    assert isinstance(ttl, int) and ttl > 0
+    decoded = json.loads(payload)
+    assert isinstance(decoded, list) and len(decoded) == 3
+
+
+def test_invalidate_result_cache_uses_scan_iter():
+    crm_redis = MagicMock()
+    crm_redis.scan_iter.return_value = iter(["sellable:panels:*:virt_classic:", "sellable:panels:IST1:*:"])
+    crm_redis.delete.return_value = 1
+
+    svc = SellableService.__new__(SellableService)
+    svc._crm_redis = crm_redis
+    deleted = svc.invalidate_result_cache()
+    assert deleted == 2
+    crm_redis.scan_iter.assert_called_once()
+
+
+def test_snapshot_all_invalidates_cache():
+    """snapshot_all() must wipe stale cache entries before re-computing."""
+    svc = _build_service()
+    svc._tags = MagicMock()
+    svc._tags.snapshot.return_value = 0
+    svc._tags.measures_from_panel = lambda p: []
+    seen = {"invalidate": 0}
+
+    def fake_invalidate(dc_code=None):
+        seen["invalidate"] += 1
+        return 0
+
+    svc.invalidate_result_cache = fake_invalidate  # type: ignore[assignment]
+    svc.snapshot_all()
+    assert seen["invalidate"] == 1
+
+
+def test_redis_window_days_default_is_seven():
+    """Window must default to 7 (matches datacenter-api default_time_range)."""
+    assert _DC_DETAILS_WINDOW_DAYS in (7, 30)  # 7 in normal env; 30 only if overridden
+    # Default expectation: env unset → 7
+    if not os.getenv("SELLABLE_REDIS_WINDOW_DAYS"):
+        assert _DC_DETAILS_WINDOW_DAYS == 7
+
+
+def test_dc_redis_key_uses_window_days():
+    svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
+    key, url = svc._dc_redis_key("IST1")
+    assert key.startswith("dc_details:IST1:")
+    # URL preset must reflect the window — never the legacy hardcoded "30d".
+    assert f"preset={_DC_DETAILS_WINDOW_DAYS}d" in url
+
+
+def test_load_dc_redis_payload_called_once_per_request():
+    """compute_all_panels must fetch the DC Redis payload at most once."""
+    panels = [
+        PanelDefinition("virt_km_cpu", "KM CPU", "virt_km", "cpu", "vCPU"),
+        PanelDefinition("virt_km_ram", "KM RAM", "virt_km", "ram", "GB"),
+    ]
+    customer = MagicMock(); customer._pool = MagicMock()
+    webui = MagicMock(); webui.is_available = True
+    svc = SellableService(
+        customer_service=customer, webui=webui,
+        config_service=MagicMock(), currency_service=MagicMock(), tagging_service=MagicMock(),
+    )
+    infra = {
+        "virt_km_cpu": InfraSource("virt_km_cpu", "*", "datacenter_metrics", "cpu_ghz", "GHz",
+                                   "vm_metrics", "number_of_cpus", "GHz"),
+        "virt_km_ram": InfraSource("virt_km_ram", "*", "datacenter_metrics", "mem_gb", "GB",
+                                   "vm_metrics", "total_memory_capacity_gb", "GB"),
+    }
+    svc.list_panel_defs = lambda: panels
+    svc.list_unit_conversions = lambda: []
+    svc.list_ratios = lambda: []
+    svc.get_unit_price_tl = lambda panel_key: (0.0, False)
+    svc._bulk_load_infra_sources = lambda dc: infra      # type: ignore[assignment]
+    svc._bulk_load_thresholds    = lambda dc: None       # type: ignore[assignment]
+    svc._bulk_load_price_overrides = lambda: {}          # type: ignore[assignment]
+    svc._query_total_allocated = lambda src, dc, **kw: (10.0, 5.0)  # type: ignore[assignment]
+    svc.get_threshold = lambda *a, **kw: 80.0  # used when threshold lookup is None
+
+    seen = {"n": 0}
+
+    def fake_load(dc):
+        seen["n"] += 1
+        return {"classic": {"cpu_used": 5.0, "mem_used": 10.0}}
+
+    svc._load_dc_redis_payload = fake_load  # type: ignore[assignment]
+    svc.compute_all_panels(dc_code="IST1")
+    assert seen["n"] == 1  # ONE Redis GET regardless of panel count

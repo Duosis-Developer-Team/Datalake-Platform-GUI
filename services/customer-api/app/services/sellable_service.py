@@ -33,6 +33,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
 import re
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Iterable
@@ -70,7 +71,13 @@ _SUBQUERY_NUTANIX_CLUSTER_LATEST = """(
 # -- Redis-backed allocated lookup (vm_metrics / nutanix_vm_metrics) -----------
 
 # How many days back to use when constructing the dc_details Redis key.
-_DC_DETAILS_WINDOW_DAYS = 30
+# MUST match the window used by datacenter-api's default_time_range (7 d).
+# Override with SELLABLE_REDIS_WINDOW_DAYS env var.
+_DC_DETAILS_WINDOW_DAYS: int = int(os.getenv("SELLABLE_REDIS_WINDOW_DAYS", "7"))
+
+# TTL (seconds) for compute_all_panels result in crm-engine Redis (DB 2).
+# 0 disables caching. Override with SELLABLE_CACHE_TTL_SECONDS.
+_SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "120"))
 
 # Maps allocated_table → Redis section key for per-DC (dc_details) response.
 _VM_TABLE_DC_SECTION: dict[str, str] = {
@@ -160,6 +167,7 @@ class SellableService:
         tagging_service: TaggingService,
         datacenter_redis: "_redis_t.Redis | None" = None,
         datacenter_api_url: str = "",
+        crm_redis: "_redis_t.Redis | None" = None,
     ) -> None:
         self._svc = customer_service
         self._webui = webui
@@ -168,6 +176,7 @@ class SellableService:
         self._tags = tagging_service
         self._dc_redis = datacenter_redis
         self._dc_api_url = (datacenter_api_url or "").rstrip("/")
+        self._crm_redis = crm_redis  # crm-engine's own Redis (DB 2) for result caching
 
     # ----------------------------------------------------------------- helpers
 
@@ -264,6 +273,92 @@ class SellableService:
 
     def _build_unit_lookup(self) -> dict[tuple[str, str], UnitConversion]:
         return {(c.from_unit, c.to_unit): c for c in self.list_unit_conversions()}
+
+    # -- bulk loaders (replace N per-panel WebUI round-trips with 3 queries) --
+
+    def _bulk_load_infra_sources(self, dc_code: str) -> "dict[str, InfraSource] | None":
+        """Load best infra source for every panel_key in a single SQL.
+        Returns None if unavailable so callers fall back to per-panel get_infra_source().
+        """
+        if not self._webui.is_available:
+            return None
+        try:
+            rows = self._webui.run_rows(sq.BULK_INFRA_SOURCES_FOR_DC, (dc_code,))
+            if not isinstance(rows, list):
+                return None
+            return {
+                row["panel_key"]: InfraSource(
+                    panel_key=row["panel_key"],
+                    dc_code=row.get("dc_code", "*"),
+                    source_table=row.get("source_table"),
+                    total_column=row.get("total_column"),
+                    total_unit=row.get("total_unit"),
+                    allocated_table=row.get("allocated_table"),
+                    allocated_column=row.get("allocated_column"),
+                    allocated_unit=row.get("allocated_unit"),
+                    filter_clause=row.get("filter_clause"),
+                    notes=row.get("notes"),
+                )
+                for row in rows
+            }
+        except Exception:
+            logger.debug("_bulk_load_infra_sources failed; will fall back to per-panel")
+            return None
+
+    def _bulk_load_thresholds(self, dc_code: str) -> "dict | None":
+        """Load all threshold rows for dc_code.
+
+        Returns a dict:
+            ``{"_by_panel_key": {panel_key: pct}, "_by_resource_type": {resource_type: pct}}``
+        Specific dc_code rows override wildcard ('*') rows.  Returns None on failure.
+        """
+        if not self._webui.is_available:
+            return None
+        try:
+            rows = self._webui.run_rows(sq.BULK_THRESHOLDS_FOR_DC, (dc_code,))
+            if not isinstance(rows, list):
+                return None
+        except Exception:
+            logger.debug("_bulk_load_thresholds failed; will fall back to per-panel")
+            return None
+
+        by_panel: dict[str, tuple[float, bool]] = {}
+        by_rtype: dict[str, tuple[float, bool]] = {}
+        for row in rows:
+            pct = float(row.get("sellable_limit_pct") or DEFAULT_THRESHOLD_PCT)
+            pk = row.get("panel_key")
+            rt = row.get("resource_type")
+            is_specific = (row.get("dc_code", "*") or "*") != "*"
+            for target, key in ((by_panel, pk), (by_rtype, rt)):
+                if not key:
+                    continue
+                existing = target.get(key)
+                if existing is None or (not existing[1] and is_specific):
+                    target[key] = (pct, is_specific)  # type: ignore[index]
+
+        return {
+            "_by_panel_key":    {k: v[0] for k, v in by_panel.items()},
+            "_by_resource_type": {k: v[0] for k, v in by_rtype.items()},
+        }
+
+    def _bulk_load_price_overrides(self) -> "dict[str, float] | None":
+        """Load best price override per panel_key.  Returns None on failure.
+        Panels with no override still go through get_unit_price_tl (catalog fallback).
+        """
+        if not self._webui.is_available:
+            return None
+        try:
+            rows = self._webui.run_rows(sq.BULK_PRICE_OVERRIDES)
+            if not isinstance(rows, list):
+                return None
+            return {
+                row["panel_key"]: float(row["unit_price_tl"])
+                for row in rows
+                if row.get("panel_key") and row.get("unit_price_tl") is not None
+            }
+        except Exception:
+            logger.debug("_bulk_load_price_overrides failed; will fall back to per-panel")
+            return None
 
     @staticmethod
     def _lookup_conversion(
@@ -403,7 +498,13 @@ class SellableService:
         )
         return sql, list(params)
 
-    def _query_total_allocated(self, src: InfraSource, dc_code: str) -> tuple[float, float]:
+    def _query_total_allocated(
+        self,
+        src: InfraSource,
+        dc_code: str,
+        *,
+        preloaded_dc_payload: "dict | None" = None,
+    ) -> tuple[float, float]:
         """Return (total_raw, allocated_raw) in the InfraSource declared units.
 
         Builds a parameterised SQL on the fly. ``filter_clause`` may reference
@@ -473,7 +574,10 @@ class SellableService:
             return 0.0, 0.0
 
         if alloc_from_redis and src.allocated_column:
-            alloc_val = self._fetch_allocated_from_redis(src, dc_code)
+            if preloaded_dc_payload is not None:
+                alloc_val = self._extract_allocated_from_payload(preloaded_dc_payload, src, dc_code)
+            else:
+                alloc_val = self._fetch_allocated_from_redis(src, dc_code)
         elif alloc_sql is not None:
             try:
                 with self._svc._get_connection() as conn:
@@ -496,49 +600,37 @@ class SellableService:
             return "%"
         return f"%{dc_code.lower()}%"
 
-    def _fetch_allocated_from_redis(self, src: InfraSource, dc_code: str) -> float:
-        """Return the allocated value for vm_metrics / nutanix_vm_metrics panels
-        by reading the datacenter-api Redis cache instead of querying the datalake DB.
+    def _dc_redis_key(self, dc_code: str) -> tuple[str, str]:
+        """Return (redis_key, fallback_url) for the datacenter payload.
 
-        For global requests (dc_code='*') the ``global_dashboard:{start}:{end}`` key
-        is used; for per-DC requests ``dc_details:{dc_code}:{start}:{end}`` is used.
-        If the key is absent (cache cold) an HTTP call to datacenter-api populates the
-        cache and returns the value in the same pass.
-
-        Units returned match the ``allocated_unit`` declared in
-        ``gui_panel_infra_source``:
-            CPU    → GHz   (classic.cpu_used / hyperconv.cpu_used)
-            RAM    → GB    (classic.mem_used / hyperconv.mem_used)
-            Storage → TB   (classic.stor_used / hyperconv.stor_used)
+        Uses ``SELLABLE_REDIS_WINDOW_DAYS`` (default 7) so the keys match the
+        ones populated by datacenter-api's default time range — without that
+        alignment Redis returns miss on every sellable lookup.
         """
-        alloc_table = self._bare_table_name(src.allocated_table)
-        is_global = not dc_code or dc_code == "*"
-
-        section_map = _VM_TABLE_GLOBAL_SECTION if is_global else _VM_TABLE_DC_SECTION
-        section = section_map.get(alloc_table)
-        redis_field = _VM_COLUMN_TO_REDIS_FIELD.get(src.allocated_column or "")
-
-        if not section or not redis_field:
-            logger.warning(
-                "_fetch_allocated_from_redis: no mapping for table=%r column=%r — returning 0",
-                alloc_table,
-                src.allocated_column,
-            )
-            return 0.0
-
         today = datetime.date.today()
-        start = (today - datetime.timedelta(days=_DC_DETAILS_WINDOW_DAYS)).isoformat()
+        days = max(_DC_DETAILS_WINDOW_DAYS, 1)
+        start = (today - datetime.timedelta(days=days)).isoformat()
         end = today.isoformat()
-
+        is_global = not dc_code or dc_code == "*"
+        preset = f"{days}d"
         if is_global:
-            redis_key = f"global_dashboard:{start}:{end}"
-            fallback_url = f"{self._dc_api_url}/api/v1/dashboard/overview?preset=30d" if self._dc_api_url else ""
-        else:
-            redis_key = f"dc_details:{dc_code}:{start}:{end}"
-            fallback_url = (
-                f"{self._dc_api_url}/api/v1/datacenters/{dc_code}?preset=30d"
-                if self._dc_api_url else ""
+            return (
+                f"global_dashboard:{start}:{end}",
+                f"{self._dc_api_url}/api/v1/dashboard/overview?preset={preset}" if self._dc_api_url else "",
             )
+        return (
+            f"dc_details:{dc_code}:{start}:{end}",
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}?preset={preset}" if self._dc_api_url else "",
+        )
+
+    def _load_dc_redis_payload(self, dc_code: str) -> dict:
+        """Fetch the full datacenter payload from Redis once (or via HTTP fallback).
+
+        Called once per ``compute_all_panels`` invocation so that all panels
+        sharing the same dc_code reuse the single JSON blob rather than issuing
+        one Redis GET (or HTTP call) per panel.
+        """
+        redis_key, fallback_url = self._dc_redis_key(dc_code)
 
         raw: str | None = None
         if self._dc_redis is not None:
@@ -547,46 +639,105 @@ class SellableService:
             except Exception:
                 logger.exception("Redis GET failed for key=%s", redis_key)
 
-        data: dict = {}
         if raw:
             try:
-                data = json.loads(raw)
+                return json.loads(raw)
             except Exception:
                 logger.warning("Redis key %s: JSON decode failed — falling back to HTTP", redis_key)
-                raw = None
 
-        if not raw:
-            if not fallback_url:
-                logger.warning(
-                    "_fetch_allocated_from_redis: Redis miss and no datacenter_api_url configured "
-                    "(dc=%s, key=%s) — returning 0",
-                    dc_code,
-                    redis_key,
-                )
-                return 0.0
-            try:
-                resp = httpx.get(fallback_url, timeout=15.0)
-                resp.raise_for_status()
-                data = resp.json()
-            except Exception:
-                logger.exception(
-                    "datacenter-api fallback failed for dc=%s url=%s", dc_code, fallback_url
-                )
-                return 0.0
+        if not fallback_url:
+            logger.warning(
+                "_load_dc_redis_payload: Redis miss and no datacenter_api_url (dc=%s key=%s)",
+                dc_code, redis_key,
+            )
+            return {}
+        try:
+            resp = httpx.get(fallback_url, timeout=15.0)
+            resp.raise_for_status()
+            return resp.json() or {}
+        except Exception:
+            logger.exception("datacenter-api fallback failed dc=%s url=%s", dc_code, fallback_url)
+            return {}
 
-        section_data = data.get(section, {}) if isinstance(data, dict) else {}
+    @staticmethod
+    def _extract_allocated_from_payload(payload: dict, src: "InfraSource", dc_code: str) -> float:
+        """Pull the allocated value from a pre-loaded DC payload dict."""
+        alloc_table = SellableService._bare_table_name(src.allocated_table)
+        is_global = not dc_code or dc_code == "*"
+        section_map = _VM_TABLE_GLOBAL_SECTION if is_global else _VM_TABLE_DC_SECTION
+        section = section_map.get(alloc_table)
+        redis_field = _VM_COLUMN_TO_REDIS_FIELD.get(src.allocated_column or "")
+        if not section or not redis_field:
+            return 0.0
+        section_data = payload.get(section, {}) if isinstance(payload, dict) else {}
         val = section_data.get(redis_field)
         if val is None:
-            logger.warning(
-                "_fetch_allocated_from_redis: section=%r field=%r is None "
-                "(dc=%s key=%s) — returning 0",
-                section, redis_field, dc_code, redis_key,
-            )
             return 0.0
         try:
             return float(val)
         except (TypeError, ValueError):
             return 0.0
+
+    def _fetch_allocated_from_redis(self, src: InfraSource, dc_code: str) -> float:
+        """Return the allocated value for vm_metrics / nutanix_vm_metrics panels
+        by reading the datacenter-api Redis cache instead of querying the datalake DB.
+
+        Calls ``_load_dc_redis_payload`` on every invocation (use the
+        ``preloaded_dc_payload`` arg of ``_query_total_allocated`` inside
+        ``compute_all_panels`` to avoid repeated fetches).
+        """
+        alloc_table = self._bare_table_name(src.allocated_table)
+        section_map = (
+            _VM_TABLE_GLOBAL_SECTION if (not dc_code or dc_code == "*")
+            else _VM_TABLE_DC_SECTION
+        )
+        if not section_map.get(alloc_table) or not _VM_COLUMN_TO_REDIS_FIELD.get(src.allocated_column or ""):
+            logger.warning(
+                "_fetch_allocated_from_redis: no mapping for table=%r column=%r — returning 0",
+                alloc_table, src.allocated_column,
+            )
+            return 0.0
+        payload = self._load_dc_redis_payload(dc_code)
+        return self._extract_allocated_from_payload(payload, src, dc_code)
+
+    def _fetch_raw_compute_response(
+        self, dc_code: str, family: str, clusters: list[str]
+    ) -> "dict | None":
+        """Fetch the raw /compute/{kind}?clusters=... JSON once per family.
+
+        Called from ``compute_all_panels`` so the same response is shared by all
+        resource_kind panels (cpu/ram/storage) of the same family — 3 HTTP calls
+        → 1 HTTP call per family when clusters are provided.
+        """
+        kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
+        if not kind or not clusters or not dc_code or dc_code == "*" or not self._dc_api_url:
+            return None
+        csv = ",".join(c for c in clusters if c)
+        url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}?clusters={csv}"
+        try:
+            resp = httpx.get(url, timeout=15.0)
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, dict) else None
+        except Exception:
+            logger.exception("compute raw fetch failed dc=%s family=%s url=%s", dc_code, family, url)
+            return None
+
+    @staticmethod
+    def _extract_compute_metrics(
+        raw: dict, resource_kind: str
+    ) -> "tuple[float, float, str] | None":
+        """Extract (cap, used, source_unit) from a pre-fetched compute response."""
+        fields = _RESOURCE_KIND_TO_COMPUTE_FIELDS.get(resource_kind)
+        if not fields or not isinstance(raw, dict):
+            return None
+        cap_field, used_field, source_unit = fields
+        try:
+            cap = float(raw.get(cap_field) or 0.0)
+            used = float(raw.get(used_field) or 0.0)
+        except (TypeError, ValueError):
+            return None
+        return cap, used, source_unit
 
     def _fetch_compute_metrics_for_clusters(
         self,
@@ -646,6 +797,36 @@ class SellableService:
 
     # ------------------------------------------------------------------ compute
 
+    def _resolve_threshold(
+        self,
+        panel: PanelDefinition,
+        dc_code: str,
+        threshold_lookup: "dict | None",
+    ) -> float:
+        if threshold_lookup:
+            by_pk = threshold_lookup.get("_by_panel_key", {})
+            if panel.panel_key in by_pk:
+                return float(by_pk[panel.panel_key])
+            by_rt = threshold_lookup.get("_by_resource_type", {})
+            if panel.resource_kind in by_rt:
+                return float(by_rt[panel.resource_kind])
+            return DEFAULT_THRESHOLD_PCT
+        return self.get_threshold(panel.panel_key, panel.resource_kind, dc_code)
+
+    def _resolve_unit_price_tl(
+        self,
+        panel_key: str,
+        price_overrides: "dict[str, float] | None",
+    ) -> tuple[float, bool]:
+        """Resolve unit price using the bulk override map; falls back to
+        the per-panel catalog lookup only when no override exists."""
+        if price_overrides is not None:
+            if panel_key in price_overrides:
+                return float(price_overrides[panel_key]), True
+            # No override → catalog fallback (one extra DB hit per panel without override)
+            return self.get_unit_price_tl(panel_key)
+        return self.get_unit_price_tl(panel_key)
+
     def compute_panel(
         self,
         panel: PanelDefinition,
@@ -653,13 +834,23 @@ class SellableService:
         unit_lookup: dict[tuple[str, str], UnitConversion] | None = None,
         *,
         selected_clusters: list[str] | None = None,
+        infra_lookup: "dict[str, InfraSource] | None" = None,
+        threshold_lookup: "dict | None" = None,
+        price_overrides: "dict[str, float] | None" = None,
+        compute_response_cache: "dict[tuple, dict | None] | None" = None,
+        dc_payload: "dict | None" = None,
     ) -> PanelResult:
         unit_lookup = unit_lookup if unit_lookup is not None else self._build_unit_lookup()
-        src = self.get_infra_source(panel.panel_key, dc_code) or InfraSource(
-            panel_key=panel.panel_key, dc_code=dc_code,
-        )
-        threshold_pct = self.get_threshold(panel.panel_key, panel.resource_kind, dc_code)
-        unit_price_tl, has_price = self.get_unit_price_tl(panel.panel_key)
+        if infra_lookup is not None:
+            src = infra_lookup.get(panel.panel_key) or InfraSource(
+                panel_key=panel.panel_key, dc_code=dc_code,
+            )
+        else:
+            src = self.get_infra_source(panel.panel_key, dc_code) or InfraSource(
+                panel_key=panel.panel_key, dc_code=dc_code,
+            )
+        threshold_pct = self._resolve_threshold(panel, dc_code, threshold_lookup)
+        unit_price_tl, has_price = self._resolve_unit_price_tl(panel.panel_key, price_overrides)
 
         notes: list[str] = []
         has_infra = bool(src.source_table and src.total_column)
@@ -670,12 +861,24 @@ class SellableService:
         # card exactly.
         compute_metrics = None
         if selected_clusters and panel.family in _FAMILY_COMPUTE_ENDPOINT:
-            compute_metrics = self._fetch_compute_metrics_for_clusters(
-                dc_code=dc_code,
-                family=panel.family,
-                resource_kind=panel.resource_kind,
-                clusters=selected_clusters,
-            )
+            # Reuse a per-family raw response when compute_all_panels pre-fetched it.
+            raw: dict | None = None
+            if compute_response_cache is not None:
+                key = (dc_code, panel.family, tuple(c for c in selected_clusters if c))
+                if key in compute_response_cache:
+                    raw = compute_response_cache[key]
+                else:
+                    raw = self._fetch_raw_compute_response(dc_code, panel.family, list(selected_clusters))
+                    compute_response_cache[key] = raw
+                if raw is not None:
+                    compute_metrics = self._extract_compute_metrics(raw, panel.resource_kind)
+            if compute_metrics is None and raw is None:
+                compute_metrics = self._fetch_compute_metrics_for_clusters(
+                    dc_code=dc_code,
+                    family=panel.family,
+                    resource_kind=panel.resource_kind,
+                    clusters=selected_clusters,
+                )
 
         if compute_metrics is not None:
             cap, used, source_unit = compute_metrics
@@ -699,7 +902,16 @@ class SellableService:
             total_disp = 0.0
             alloc_disp = 0.0
         else:
-            total_raw, alloc_raw = self._query_total_allocated(src, dc_code)
+            # Forward the pre-loaded DC payload only when it actually contains
+            # data so the legacy 2-arg signature stays backward-compatible
+            # (an empty dict means "Redis cold AND HTTP fallback failed" — at
+            # that point the per-panel path returns 0 anyway).
+            if dc_payload:
+                total_raw, alloc_raw = self._query_total_allocated(
+                    src, dc_code, preloaded_dc_payload=dc_payload,
+                )
+            else:
+                total_raw, alloc_raw = self._query_total_allocated(src, dc_code)
             total_from = src.total_unit or panel.display_unit
             alloc_from = src.allocated_unit or src.total_unit or panel.display_unit
             total_conv = self._lookup_conversion(unit_lookup, total_from, panel.display_unit)
@@ -746,38 +958,165 @@ class SellableService:
             notes=notes,
         )
 
+    # -- result cache (crm-engine Redis DB 2) -----------------------------------
+
+    @staticmethod
+    def _result_cache_key(
+        dc_code: str,
+        selected_clusters: list[str] | None,
+        family: str | None,
+    ) -> str:
+        clusters_part = ""
+        if selected_clusters:
+            clusters_part = ",".join(sorted(c for c in selected_clusters if c))
+        return f"sellable:panels:{dc_code or '*'}:{family or '*'}:{clusters_part}"
+
+    def _result_cache_get(self, key: str) -> "list[PanelResult] | None":
+        if self._crm_redis is None or _SELLABLE_CACHE_TTL <= 0:
+            return None
+        try:
+            raw = self._crm_redis.get(key)
+        except Exception:
+            logger.exception("crm Redis GET failed key=%s", key)
+            return None
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+            return [self._panel_result_from_dict(d) for d in payload]
+        except Exception:
+            logger.warning("Sellable cache key=%s decode failed — ignoring", key)
+            return None
+
+    def _result_cache_set(self, key: str, results: "list[PanelResult]") -> None:
+        if self._crm_redis is None or _SELLABLE_CACHE_TTL <= 0:
+            return
+        try:
+            payload = json.dumps([r.to_dict() for r in results])
+            self._crm_redis.setex(key, _SELLABLE_CACHE_TTL, payload)
+        except Exception:
+            logger.exception("crm Redis SETEX failed key=%s", key)
+
+    def invalidate_result_cache(self, dc_code: str | None = None) -> int:
+        """Drop cached compute_all_panels payloads.
+
+        Called by ``snapshot_all`` so the next request after a scheduler tick
+        re-reads fresh metrics.  Returns the number of keys deleted.
+        """
+        if self._crm_redis is None:
+            return 0
+        pattern = (
+            f"sellable:panels:{dc_code}:*" if dc_code and dc_code != "*"
+            else "sellable:panels:*"
+        )
+        deleted = 0
+        try:
+            for k in self._crm_redis.scan_iter(match=pattern, count=200):
+                try:
+                    deleted += int(self._crm_redis.delete(k) or 0)
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception("invalidate_result_cache scan failed pattern=%s", pattern)
+        if deleted:
+            logger.info("Sellable cache: deleted %d key(s) matching %s", deleted, pattern)
+        return deleted
+
+    @staticmethod
+    def _panel_result_from_dict(d: dict) -> PanelResult:
+        """Rebuild a PanelResult from its to_dict() output."""
+        return PanelResult(
+            panel_key=d.get("panel_key", ""),
+            label=d.get("label", ""),
+            family=d.get("family", ""),
+            resource_kind=d.get("resource_kind", "other"),
+            display_unit=d.get("display_unit", ""),
+            dc_code=d.get("dc_code", "*"),
+            total=float(d.get("total", 0.0) or 0.0),
+            allocated=float(d.get("allocated", 0.0) or 0.0),
+            threshold_pct=float(d.get("threshold_pct", DEFAULT_THRESHOLD_PCT) or DEFAULT_THRESHOLD_PCT),
+            sellable_raw=float(d.get("sellable_raw", 0.0) or 0.0),
+            sellable_constrained=float(d.get("sellable_constrained", 0.0) or 0.0),
+            unit_price_tl=float(d.get("unit_price_tl", 0.0) or 0.0),
+            potential_tl=float(d.get("potential_tl", 0.0) or 0.0),
+            ratio_bound=bool(d.get("ratio_bound", False)),
+            has_infra_source=bool(d.get("has_infra_source", False)),
+            has_price=bool(d.get("has_price", False)),
+            notes=list(d.get("notes") or []),
+        )
+
     def compute_all_panels(
         self,
         dc_code: str = "*",
         *,
         selected_clusters: list[str] | None = None,
+        family: str | None = None,
     ) -> list[PanelResult]:
+        # 1. Result cache lookup — short-circuits the entire compute pipeline.
+        cache_key = self._result_cache_key(dc_code, selected_clusters, family)
+        cached = self._result_cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        # 2. Pull panel definitions; filter by family BEFORE any heavy lookup.
         defs = self.list_panel_defs()
+        if family:
+            defs = [d for d in defs if d.family == family]
+        if not defs:
+            self._result_cache_set(cache_key, [])
+            return []
+
+        # 3. Bulk-load WebUI metadata in 3 queries instead of N×3 round-trips.
         unit_lookup = self._build_unit_lookup()
+        infra_lookup = self._bulk_load_infra_sources(dc_code)
+        threshold_lookup = self._bulk_load_thresholds(dc_code)
+        price_overrides = self._bulk_load_price_overrides()
+
+        # 4. Pre-fetch the DC Redis payload once; every Redis-backed allocated
+        #    panel reuses the same JSON instead of issuing one GET per panel.
+        needs_dc_payload = any(
+            self._bare_table_name(
+                (infra_lookup or {}).get(d.panel_key, InfraSource(panel_key=d.panel_key)).allocated_table
+            ) in _VM_TABLE_DC_SECTION
+            for d in defs
+        )
+        dc_payload = self._load_dc_redis_payload(dc_code) if needs_dc_payload else None
+
+        # 5. Per-family /compute response cache — 3 cpu/ram/storage panels of
+        #    the same family share a single HTTP call when clusters are set.
+        compute_response_cache: dict[tuple, dict | None] = {}
+
         results = [
             self.compute_panel(
                 d,
                 dc_code=dc_code,
                 unit_lookup=unit_lookup,
                 selected_clusters=selected_clusters,
+                infra_lookup=infra_lookup,
+                threshold_lookup=threshold_lookup,
+                price_overrides=price_overrides,
+                compute_response_cache=compute_response_cache,
+                dc_payload=dc_payload,
             )
             for d in defs
         ]
 
-        # Apply ratio per family.
+        # 6. Apply ratio per family.
         by_family: dict[str, list[PanelResult]] = defaultdict(list)
         for r in results:
             by_family[r.family].append(r)
         ratio_lookup = {(r.family, r.dc_code): r for r in self.list_ratios()}
 
         constrained: list[PanelResult] = []
-        for family, group in by_family.items():
-            ratio = ratio_lookup.get((family, dc_code)) or ratio_lookup.get((family, "*")) or ResourceRatio(family=family)
+        for fam, group in by_family.items():
+            ratio = ratio_lookup.get((fam, dc_code)) or ratio_lookup.get((fam, "*")) or ResourceRatio(family=fam)
             new_group = constrain_by_ratio(group, ratio)
             for new in new_group:
                 new.potential_tl = compute_potential_tl(new.sellable_constrained, new.unit_price_tl)
                 constrained.append(new)
         constrained.sort(key=lambda p: (p.family, p.resource_kind, p.panel_key))
+
+        self._result_cache_set(cache_key, constrained)
         return constrained
 
     def compute_summary(
@@ -785,8 +1124,13 @@ class SellableService:
         dc_code: str = "*",
         *,
         selected_clusters: list[str] | None = None,
+        family: str | None = None,
     ) -> DashboardSummary:
-        panels = self.compute_all_panels(dc_code=dc_code, selected_clusters=selected_clusters)
+        panels = self.compute_all_panels(
+            dc_code=dc_code,
+            selected_clusters=selected_clusters,
+            family=family,
+        )
 
         by_family: dict[str, list[PanelResult]] = defaultdict(list)
         for p in panels:
@@ -853,7 +1197,13 @@ class SellableService:
     def snapshot_all(self) -> int:
         """Compute the global dashboard, push every metric into TaggingService
         cache + persist a snapshot row. Returns the number of metrics emitted.
+
+        Also invalidates the compute_all_panels result cache so the next user
+        request after the scheduler tick picks up fresh values.
         """
+        # Drop stale cache before re-computing so the scheduler-driven write
+        # repopulates fresh keys (and any concurrent user request also misses).
+        self.invalidate_result_cache()
         try:
             summary = self.compute_summary("*")
         except Exception:  # noqa: BLE001

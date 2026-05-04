@@ -35,7 +35,12 @@ setup_sdk()
 
 from app.config import settings
 from app.core.api_auth import verify_api_user
-from app.core.redis_client import close_redis_pool, init_redis_pool, redis_is_healthy
+from app.core.redis_client import (
+    close_redis_pool,
+    get_redis_client,
+    init_redis_pool,
+    redis_is_healthy,
+)
 from app.routers import crm_config, sellable, service_mapping
 from app.services.crm_config_service import CrmConfigService
 from app.services.currency_service import CurrencyService
@@ -144,6 +149,7 @@ async def lifespan(app: FastAPI):
         webui=webui,
     )
     init_redis_pool()
+    crm_redis = get_redis_client()  # crm-engine's own Redis (DB 2) — used for sellable result cache.
     dc_redis = _init_datacenter_redis()
 
     config_svc = CrmConfigService(webui)
@@ -157,6 +163,7 @@ async def lifespan(app: FastAPI):
         tagging_service=tagging_svc,
         datacenter_redis=dc_redis,
         datacenter_api_url=_DATACENTER_API_URL,
+        crm_redis=crm_redis,
     )
     app.state.crm_config = config_svc
     app.state.currency = currency_svc
