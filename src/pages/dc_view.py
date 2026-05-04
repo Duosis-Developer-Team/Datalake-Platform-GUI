@@ -560,6 +560,48 @@ def _has_power_data(d: dict | None) -> bool:
     return any(d.get(k) not in (None, 0, 0.0, "") for k in keys)
 
 
+def _fmt_tl_short(value: float | int | None) -> tuple[str, str]:
+    """Compress a TL amount into a human label and return (short, full) tuple.
+
+    The short variant is suitable for KPI cards (e.g. "1.55 Trilyon TL") while
+    the full variant carries the exact comma-grouped number for the tooltip.
+    """
+    try:
+        v = float(value or 0)
+    except (TypeError, ValueError):
+        v = 0.0
+    full = f"{v:,.0f} TL"
+    abs_v = abs(v)
+    if abs_v >= 1e12:
+        return f"{v/1e12:.2f} Trilyon TL", full
+    if abs_v >= 1e9:
+        return f"{v/1e9:.2f} Milyar TL", full
+    if abs_v >= 1e6:
+        return f"{v/1e6:.2f} Milyon TL", full
+    if abs_v >= 1e3:
+        return f"{v/1e3:.1f} Bin TL", full
+    return full, full
+
+
+def _kpi_with_tooltip(
+    title: str,
+    short_value: str,
+    tooltip_full: str,
+    icon: str,
+    color: str = "indigo",
+    stagger: int = 1,
+):
+    """KPI card whose value carries a hover tooltip with the full numeric breakdown."""
+    return dmc.Tooltip(
+        label=tooltip_full,
+        position="top",
+        withArrow=True,
+        multiline=True,
+        w=260,
+        children=_kpi(title, short_value, icon, color=color, is_text=True, stagger=stagger),
+    )
+
+
 def _kpi(title: str, value, icon: str, color: str = "indigo", is_text: bool = False, stagger: int = 1):
     """Standard KPI card used across all tabs."""
     return html.Div(
@@ -1347,7 +1389,7 @@ def _build_backup_subtab(name: str):
 
 
 def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
-    """CRM realized sales + 80%% sellable headroom (datacenter-api v2)."""
+    """CRM realized sales + sellable headroom KPIs (no sold-% gauges)."""
     v2 = api.get_dc_sales_potential_v2(dc_id)
     if not isinstance(v2, dict):
         return html.Div()
@@ -1356,48 +1398,32 @@ def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
     cust = int(summ.get("customer_count") or 0)
     rem = float(v2.get("general_remaining_pct") or 0)
     pot = float(v2.get("potential_revenue_tl") or 0)
-    pr = v2.get("per_resource") or {}
-    cpu = pr.get("cpu") or {}
-    ram = pr.get("ram") or {}
-    stor = pr.get("storage") or {}
-    cpu_sold = float(cpu.get("sold_pct_of_ceiling") or 0)
-    ram_sold = float(ram.get("sold_pct_of_ceiling") or 0)
-    stor_sold = float(stor.get("sold_pct_of_ceiling") or 0)
 
-    def _g(pct: float, title: str, color: str):
-        return dcc.Graph(
-            figure=create_premium_gauge_chart(min(100.0, pct), title, color=color, height=200, show_threshold=False),
-            config={"displayModeBar": False},
-            style={"height": "210px"},
-        )
+    ytd_short, ytd_full = _fmt_tl_short(ytd)
+    pot_short, pot_full = _fmt_tl_short(pot)
 
     return html.Div(
         className="nexus-card",
         style={"padding": "20px"},
         children=[
             _section_title(
-                "Sales potential (CRM)",
-                "Realized sales vs Nutanix CPU/RAM proxy — 80% sellable ceiling (ADR-0010)",
+                "Sellable potential (CRM)",
+                "Sellable headroom on Nutanix CPU/RAM proxy — threshold-bound ceiling (ADR-0014)",
             ),
             dmc.SimpleGrid(
                 cols=4,
                 spacing="lg",
                 style={"marginTop": "12px"},
                 children=[
-                    _kpi("YTD realized (TL)", f"{ytd:,.0f}", "solar:money-bag-bold-duotone"),
+                    _kpi_with_tooltip("YTD realized", ytd_short, ytd_full, "solar:money-bag-bold-duotone"),
                     _kpi("Sellable remaining %", f"{rem:.1f}", "solar:chart-square-bold-duotone"),
-                    _kpi("Potential revenue (TL)", f"{pot:,.0f}", "solar:wallet-money-bold-duotone"),
+                    _kpi_with_tooltip(
+                        "Potential revenue",
+                        pot_short,
+                        pot_full,
+                        "solar:wallet-money-bold-duotone",
+                    ),
                     _kpi("Customers (VM-mapped)", f"{cust:,}", "solar:users-group-rounded-bold-duotone"),
-                ],
-            ),
-            dmc.SimpleGrid(
-                cols=3,
-                spacing="md",
-                style={"marginTop": "12px"},
-                children=[
-                    _g(cpu_sold, "CPU sold % of physical", "#4318FF"),
-                    _g(ram_sold, "RAM sold % of physical", "#05CD99"),
-                    _g(stor_sold, "Storage sold % (n/a)", "#FFB547"),
                 ],
             ),
         ],
@@ -1474,8 +1500,15 @@ def _build_sellable_inline_kpi(
     ram = by_kind["ram"]
     stor = by_kind["storage"]
 
-    def _kpi_with_sub(label: str, value: str, sub: str, ic: str, c: str = color) -> html.Div:
-        return html.Div(
+    def _kpi_with_sub(
+        label: str,
+        value: str,
+        sub_short: str,
+        sub_full: str,
+        ic: str,
+        c: str = color,
+    ) -> html.Div:
+        card = html.Div(
             className="nexus-card dc-kpi-card dc-stagger-1",
             style={"padding": "18px", "display": "flex", "alignItems": "center", "justifyContent": "space-between"},
             children=[
@@ -1488,7 +1521,7 @@ def _build_sellable_inline_kpi(
                         "color": "#2B3674", "fontSize": "1.15rem", "fontWeight": 900,
                         "margin": "6px 0 2px 0", "letterSpacing": "-0.02em",
                     }),
-                    html.Span(sub, style={"color": "#4318FF", "fontSize": "0.78rem", "fontWeight": 700}),
+                    html.Span(sub_short, style={"color": "#4318FF", "fontSize": "0.78rem", "fontWeight": 700}),
                 ]),
                 dmc.ThemeIcon(
                     size=42, radius="xl", variant="light", color=c,
@@ -1496,30 +1529,42 @@ def _build_sellable_inline_kpi(
                 ),
             ],
         )
+        if sub_full and sub_full != sub_short:
+            return dmc.Tooltip(label=sub_full, position="top", withArrow=True, w=240, children=card)
+        return card
+
+    cpu_short, cpu_full = _fmt_tl_short(cpu["tl"])
+    ram_short, ram_full = _fmt_tl_short(ram["tl"])
+    stor_short, stor_full = _fmt_tl_short(stor["tl"])
+    total_short, total_full = _fmt_tl_short(total_tl)
 
     cards = [
         _kpi_with_sub(
             "CPU Sellable",
             _fmt_unit(cpu["constrained"], cpu["unit"]),
-            f"{cpu['tl']:,.0f} TL",
+            cpu_short,
+            cpu_full,
             _DC_ICONS["cpu"],
         ),
         _kpi_with_sub(
             "RAM Sellable",
             _fmt_unit(ram["constrained"], ram["unit"]),
-            f"{ram['tl']:,.0f} TL",
+            ram_short,
+            ram_full,
             _DC_ICONS["ram"],
         ),
         _kpi_with_sub(
             "Storage Sellable",
             _fmt_unit(stor["constrained"], stor["unit"]),
-            f"{stor['tl']:,.0f} TL",
+            stor_short,
+            stor_full,
             _DC_ICONS["storage"],
         ),
         _kpi_with_sub(
             "Total Potential",
-            f"{total_tl:,.0f} TL",
+            total_short,
             "constrained × catalog price",
+            total_full,
             "solar:wallet-money-bold-duotone",
             c="grape",
         ),
@@ -2966,6 +3011,12 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                     children=html.Div(
                         style={"padding": "0 30px"},
                         children=[
+                            _build_sellable_inline_kpi(
+                                dc_id,
+                                ["virt_classic", "virt_hyperconverged", "virt_power", "virt_power_hana"],
+                                "Virtualization — Total Sellable Potential",
+                                color="violet",
+                            ),
                             dmc.Tabs(
                                 color="violet",
                                 variant="outline",
@@ -3061,6 +3112,17 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                     children=html.Div(
                         style={"padding": "0 30px"},
                         children=[
+                            _build_sellable_inline_kpi(
+                                dc_id,
+                                [
+                                    "backup_zerto_replication",
+                                    "backup_veeam_replication",
+                                    "backup_veeam",
+                                    "backup_netbackup",
+                                ],
+                                "Backup & Replication — Total Sellable Potential",
+                                color="green",
+                            ),
                             dmc.Tabs(
                                 color="green",
                                 variant="outline",

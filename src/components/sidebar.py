@@ -10,7 +10,6 @@ NAV_ITEM_SPECS: list[tuple[str, str, str, str]] = [
     ("/datacenters", "Data Centers", "solar:server-square-bold-duotone", "page:datacenters"),
     ("/global-view", "Global View", "solar:global-bold-duotone", "page:global_view"),
     ("/customers", "Customer View", "solar:users-group-rounded-bold-duotone", "page:customer_view"),
-    ("/crm/sellable-potential", "CRM Sellable Potential", "solar:wallet-money-bold-duotone", "page:dashboard_crm_sellable"),
     ("/query-explorer", "Query Explorer", "solar:code-square-bold-duotone", "page:query_explorer"),
 ]
 
