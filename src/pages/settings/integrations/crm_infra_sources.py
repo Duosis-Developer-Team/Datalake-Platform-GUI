@@ -68,10 +68,30 @@ def build_layout(search: str | None = None) -> html.Div:
                 dmc.Button("Reset form", id="ifs-reset", size="xs", variant="subtle", color="gray"),
             ]),
             dmc.Grid(gutter="sm", children=[
-                dmc.GridCol(span={"base": 12, "md": 4}, children=dmc.Select(id="ifs-panel", label="panel_key (select to auto-fill existing binding)", data=panel_options, searchable=True, size="xs")),
+                dmc.GridCol(
+                    span={"base": 12, "md": 6},
+                    children=dmc.TextInput(
+                        id="ifs-panel",
+                        label="panel_key",
+                        placeholder="Type any registry panel_key (saved on Save — no blur reset)",
+                        size="xs",
+                    ),
+                ),
+                dmc.GridCol(
+                    span={"base": 12, "md": 6},
+                    children=dmc.Select(
+                        id="ifs-panel-quick",
+                        label="Quick pick from registry (loads binding below)",
+                        data=panel_options,
+                        searchable=True,
+                        clearable=True,
+                        size="xs",
+                        placeholder="Pick to fill panel_key + columns…",
+                    ),
+                ),
                 dmc.GridCol(span={"base": 12, "md": 2}, children=dmc.TextInput(id="ifs-dc", label="dc_code", size="xs", value="*")),
-                dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.TextInput(id="ifs-stable", label="source_table", size="xs", placeholder="nutanix_cluster_metrics")),
-                dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.TextInput(id="ifs-tcol", label="total_column", size="xs", placeholder="total_memory_capacity")),
+                dmc.GridCol(span={"base": 12, "md": 5}, children=dmc.TextInput(id="ifs-stable", label="source_table", size="xs", placeholder="nutanix_cluster_metrics")),
+                dmc.GridCol(span={"base": 12, "md": 5}, children=dmc.TextInput(id="ifs-tcol", label="total_column", size="xs", placeholder="total_memory_capacity")),
                 dmc.GridCol(span={"base": 12, "md": 2}, children=dmc.TextInput(id="ifs-tunit", label="total_unit", size="xs", placeholder="bytes")),
                 dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.TextInput(id="ifs-atable", label="allocated_table", size="xs", placeholder="nutanix_vm_metrics")),
                 dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.TextInput(id="ifs-acol", label="allocated_column", size="xs")),
@@ -140,23 +160,6 @@ def _form_fields_for(panel_key: str | None) -> tuple:
 
 
 @callback(
-    Output("ifs-dc",     "value", allow_duplicate=True),
-    Output("ifs-stable", "value", allow_duplicate=True),
-    Output("ifs-tcol",   "value", allow_duplicate=True),
-    Output("ifs-tunit",  "value", allow_duplicate=True),
-    Output("ifs-atable", "value", allow_duplicate=True),
-    Output("ifs-acol",   "value", allow_duplicate=True),
-    Output("ifs-aunit",  "value", allow_duplicate=True),
-    Output("ifs-filter", "value", allow_duplicate=True),
-    Output("ifs-notes",  "value", allow_duplicate=True),
-    Input("ifs-panel", "value"),
-    prevent_initial_call=True,
-)
-def _autofill_from_panel(panel_key):
-    return _form_fields_for(panel_key)
-
-
-@callback(
     Output("ifs-panel",  "value", allow_duplicate=True),
     Output("ifs-dc",     "value", allow_duplicate=True),
     Output("ifs-stable", "value", allow_duplicate=True),
@@ -167,19 +170,48 @@ def _autofill_from_panel(panel_key):
     Output("ifs-aunit",  "value", allow_duplicate=True),
     Output("ifs-filter", "value", allow_duplicate=True),
     Output("ifs-notes",  "value", allow_duplicate=True),
+    Input("ifs-panel-quick", "value"),
+    prevent_initial_call=True,
+)
+def _autofill_from_quick_pick(panel_key):
+    """Registry dropdown: committed selection only — avoids Mantine Select blur-clear.
+
+    Free-text ``panel_key`` is typed in ``ifs-panel``; this callback runs only when
+    the operator picks from ``ifs-panel-quick``, filling both the text field and DB binding.
+    """
+    if not panel_key:
+        return (no_update,) * 10
+    fields = _form_fields_for(panel_key)
+    return (str(panel_key),) + fields
+
+
+@callback(
+    Output("ifs-panel",       "value", allow_duplicate=True),
+    Output("ifs-panel-quick", "value", allow_duplicate=True),
+    Output("ifs-dc",          "value", allow_duplicate=True),
+    Output("ifs-stable",      "value", allow_duplicate=True),
+    Output("ifs-tcol",        "value", allow_duplicate=True),
+    Output("ifs-tunit",       "value", allow_duplicate=True),
+    Output("ifs-atable",      "value", allow_duplicate=True),
+    Output("ifs-acol",        "value", allow_duplicate=True),
+    Output("ifs-aunit",       "value", allow_duplicate=True),
+    Output("ifs-filter",      "value", allow_duplicate=True),
+    Output("ifs-notes",       "value", allow_duplicate=True),
     Input(_INFRA_TABLE_ID, "selected_rows"),
     State(_INFRA_TABLE_ID, "data"),
     prevent_initial_call=True,
 )
 def _load_selected_row(selected, data):
     if not selected or not data:
-        return [no_update] * 10
+        return [no_update] * 11
     idx = selected[0]
     if idx is None or idx >= len(data):
-        return [no_update] * 10
+        return [no_update] * 11
     r = data[idx] or {}
+    pk = r.get("panel_key") or ""
     return (
-        r.get("panel_key") or "",
+        pk,
+        pk or None,
         r.get("dc_code") or "*",
         r.get("source_table") or "",
         r.get("total_column") or "",
@@ -188,27 +220,28 @@ def _load_selected_row(selected, data):
         r.get("allocated_column") or "",
         r.get("allocated_unit") or "",
         r.get("filter_clause") or "",
-        "",  # notes column not exposed in table; clear for safety
+        "",
     )
 
 
 @callback(
-    Output("ifs-panel",  "value", allow_duplicate=True),
-    Output("ifs-dc",     "value", allow_duplicate=True),
-    Output("ifs-stable", "value", allow_duplicate=True),
-    Output("ifs-tcol",   "value", allow_duplicate=True),
-    Output("ifs-tunit",  "value", allow_duplicate=True),
-    Output("ifs-atable", "value", allow_duplicate=True),
-    Output("ifs-acol",   "value", allow_duplicate=True),
-    Output("ifs-aunit",  "value", allow_duplicate=True),
-    Output("ifs-filter", "value", allow_duplicate=True),
-    Output("ifs-notes",  "value", allow_duplicate=True),
+    Output("ifs-panel",       "value", allow_duplicate=True),
+    Output("ifs-panel-quick", "value", allow_duplicate=True),
+    Output("ifs-dc",          "value", allow_duplicate=True),
+    Output("ifs-stable",      "value", allow_duplicate=True),
+    Output("ifs-tcol",        "value", allow_duplicate=True),
+    Output("ifs-tunit",       "value", allow_duplicate=True),
+    Output("ifs-atable",      "value", allow_duplicate=True),
+    Output("ifs-acol",        "value", allow_duplicate=True),
+    Output("ifs-aunit",       "value", allow_duplicate=True),
+    Output("ifs-filter",      "value", allow_duplicate=True),
+    Output("ifs-notes",       "value", allow_duplicate=True),
     Output(_INFRA_TABLE_ID, "selected_rows", allow_duplicate=True),
     Input("ifs-reset", "n_clicks"),
     prevent_initial_call=True,
 )
 def _reset_form(_n):
-    return (None, "*", "", "", "", "", "", "", "", "", [])
+    return ("", None, "*", "", "", "", "", "", "", "", "", [])
 
 
 @callback(
