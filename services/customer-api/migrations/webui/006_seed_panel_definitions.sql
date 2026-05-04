@@ -31,6 +31,11 @@ INSERT INTO gui_panel_definition (panel_key, label, family, resource_kind, displ
     ('virt_classic_ram',                'Klasik Mimari — RAM',                  'virt_classic',        'ram',     'GB',   121, 'VMware datacenter memory capacity'),
     ('virt_classic_storage',            'Klasik Mimari — Storage',              'virt_classic',        'storage', 'GB',   122, 'VMware datacenter datastore capacity'),
 
+    -- Classic KM clusters (VMware cluster name contains KM; see cluster_metrics / vm_metrics KM split)
+    ('virt_km_cpu',                     'Klasik Mimari (KM kümesi) — CPU',       'virt_km',             'cpu',     'vCPU', 123, 'KM-named VMware clusters — sellable CPU binding'),
+    ('virt_km_ram',                     'Klasik Mimari (KM kümesi) — RAM',       'virt_km',             'ram',     'GB',   124, ''),
+    ('virt_km_storage',                 'Klasik Mimari (KM kümesi) — Storage', 'virt_km',             'storage', 'GB',   125, ''),
+
     -- Power LPAR
     ('virt_power_cpu',                  'IBM Power Mimari — CPU',               'virt_power',          'cpu',     'Core', 130, 'IBM Power processor units'),
     ('virt_power_ram',                  'IBM Power Mimari — RAM',               'virt_power',          'ram',     'GB',   131, 'IBM Power memory'),

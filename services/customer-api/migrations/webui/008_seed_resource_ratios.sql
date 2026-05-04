@@ -18,6 +18,7 @@ INSERT INTO gui_panel_resource_ratio
 VALUES
     ('virt_hyperconverged',       '*', 1.0,  8.0, 100.0, 'Hyperconverged: 1 vCPU paired with 8 GB RAM, 100 GB SSD.', 'seed'),
     ('virt_classic',              '*', 1.0,  4.0, 100.0, 'Klasik Mimari: lower memory ratio for general workloads.', 'seed'),
+    ('virt_km',                   '*', 1.0,  4.0, 100.0, 'Classic KM VMware clusters — align with virt_classic.',   'seed'),
     ('virt_power',                '*', 1.0, 16.0, 200.0, 'IBM Power LPAR: higher memory per core.',                  'seed'),
     ('virt_intel_hana',           '*', 1.0, 16.0, 150.0, 'SAP Intel HANA in-memory profile.',                        'seed'),
     ('virt_power_hana',           '*', 1.0, 32.0, 200.0, 'SAP Power HANA in-memory profile.',                        'seed'),
