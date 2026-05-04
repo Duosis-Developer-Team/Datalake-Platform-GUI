@@ -167,6 +167,29 @@ class SellableService:
     def _build_unit_lookup(self) -> dict[tuple[str, str], UnitConversion]:
         return {(c.from_unit, c.to_unit): c for c in self.list_unit_conversions()}
 
+    @staticmethod
+    def _lookup_conversion(
+        unit_lookup: dict[tuple[str, str], UnitConversion],
+        from_unit: str | None,
+        to_unit: str | None,
+    ) -> UnitConversion | None:
+        """Resolve gui_unit_conversion row; match is exact first, then case-insensitive."""
+        tu = (to_unit or "").strip()
+        if not tu:
+            return None
+        fu = (from_unit or "").strip()
+        if not fu:
+            fu = tu
+        key = (fu, tu)
+        c = unit_lookup.get(key)
+        if c is not None:
+            return c
+        flu, tlu = fu.lower(), tu.lower()
+        for (a, b), conv in unit_lookup.items():
+            if (a or "").strip().lower() == flu and (b or "").strip().lower() == tlu:
+                return conv
+        return None
+
     def get_threshold(self, panel_key: str, resource_kind: str, dc_code: str = "*") -> float:
         if not self._webui.is_available:
             return DEFAULT_THRESHOLD_PCT
@@ -307,8 +330,26 @@ class SellableService:
             alloc_disp = 0.0
         else:
             total_raw, alloc_raw = self._query_total_allocated(src, dc_code)
-            total_conv = unit_lookup.get((src.total_unit or panel.display_unit, panel.display_unit))
-            alloc_conv = unit_lookup.get((src.allocated_unit or src.total_unit or panel.display_unit, panel.display_unit))
+            total_from = src.total_unit or panel.display_unit
+            alloc_from = src.allocated_unit or src.total_unit or panel.display_unit
+            total_conv = self._lookup_conversion(unit_lookup, total_from, panel.display_unit)
+            alloc_conv = self._lookup_conversion(unit_lookup, alloc_from, panel.display_unit)
+            du = (panel.display_unit or "").strip().lower()
+            if total_conv is None and (total_from or "").strip().lower() != du:
+                logger.warning(
+                    "SellableService: no gui_unit_conversion %r -> %r for panel=%s — "
+                    "total stays in raw datalake units (sellable can be absurdly large vs UI capacity)",
+                    total_from,
+                    panel.display_unit,
+                    panel.panel_key,
+                )
+            if alloc_conv is None and (alloc_from or "").strip().lower() != du:
+                logger.warning(
+                    "SellableService: no gui_unit_conversion %r -> %r for panel=%s (allocated side)",
+                    alloc_from,
+                    panel.display_unit,
+                    panel.panel_key,
+                )
             total_disp = convert_unit(total_raw, total_conv)
             alloc_disp = convert_unit(alloc_raw, alloc_conv)
 

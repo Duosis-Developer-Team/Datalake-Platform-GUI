@@ -139,3 +139,14 @@ def test_compute_summary_drops_to_zero_when_one_resource_unsold():
             INFRA["virt_hyperconverged_ram"][0],
             (80.0, 40.0),
         )
+
+
+def test_lookup_conversion_case_insensitive():
+    from shared.sellable.models import UnitConversion
+
+    lu = {
+        ("Hz", "vCPU"): UnitConversion("Hz", "vCPU", 8e9, "divide", True),
+    }
+    c = SellableService._lookup_conversion(lu, "hz", "vcpu")
+    assert c is not None
+    assert c.factor == 8e9
