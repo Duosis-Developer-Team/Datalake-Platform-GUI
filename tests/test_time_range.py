@@ -37,6 +37,30 @@ def test_time_range_to_bounds_iso_respects_time():
     assert end_ts.minute == 30
 
 
+def test_calendar_year_range_full_past_year_and_partial_current(monkeypatch):
+    """Past years end Dec 31; current year ends on today's date (UTC)."""
+    from datetime import date
+
+    monkeypatch.setattr(tr, "_today_utc", lambda: date(2026, 5, 5))
+    past = tr.calendar_year_range(2024)
+    assert past["start"] == "2024-01-01"
+    assert past["end"] == "2024-12-31"
+    assert past["preset"] == "year_2024"
+    cur = tr.calendar_year_range(2026)
+    assert cur["start"] == "2026-01-01"
+    assert cur["end"] == "2026-05-05"
+
+
+def test_calendar_year_range_clamps_year_to_min_and_max(monkeypatch):
+    from datetime import date
+
+    monkeypatch.setattr(tr, "_today_utc", lambda: date(2026, 5, 5))
+    low = tr.calendar_year_range(1999)
+    assert low["start"] == "2022-01-01"
+    high = tr.calendar_year_range(2099)
+    assert high["preset"] == "year_2026"
+
+
 def test_time_range_to_bounds_1h_span_under_one_day():
     now = datetime(2025, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
     start = now - timedelta(hours=1)

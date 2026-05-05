@@ -830,6 +830,13 @@ def _auranotify_start_date(tr: Optional[dict]) -> str:
     return start_ts.strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _auranotify_end_date_iso(tr: Optional[dict]) -> str:
+    from src.utils.time_range import time_range_to_bounds
+
+    _, end_ts = time_range_to_bounds(tr)
+    return end_ts.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 # In-memory TTL cache for customer availability (AuraNotify). Scheduler force-refreshes on interval.
 _CUSTOMER_AVAIL_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CUSTOMER_AVAIL_LOCK = threading.Lock()
@@ -897,7 +904,10 @@ def get_dc_availability_sla_item(dc_code: str, dc_display_name: str, tr: Optiona
     try:
         from src.services import auranotify_client as aura
 
-        items = aura.get_dc_services_availability(_auranotify_start_date(tr))
+        items = aura.get_dc_services_availability(
+            _auranotify_start_date(tr),
+            _auranotify_end_date_iso(tr),
+        )
         out: Optional[dict[str, Any]] = None
         for hint in (dc_display_name or "", dc_code or ""):
             it = aura.match_dc_group_item(items, hint)
@@ -910,6 +920,50 @@ def get_dc_availability_sla_item(dc_code: str, dc_display_name: str, tr: Optiona
     except Exception:
         hit = _api_response_cache.get(ck)
         return deepcopy(hit) if isinstance(hit, dict) else None
+
+
+def get_dc_availability_sla_items_for_dcs(
+    dc_rows: list[dict[str, Any]],
+    tr: Optional[dict],
+) -> dict[str, Optional[dict[str, Any]]]:
+    """
+    Single AuraNotify datacenter-services fetch; match each datacenter summary row by id.
+
+    Returns map ``dc_id`` (str) -> matched SLA item or None (same matching order as
+    :func:`get_dc_availability_sla_item`: display name, then id).
+    """
+    from src.services import auranotify_client as aura
+    from src.utils.dc_display import format_dc_display_name
+
+    out: dict[str, Optional[dict[str, Any]]] = {}
+    if not dc_rows:
+        return out
+    try:
+        items = aura.get_dc_services_availability(
+            _auranotify_start_date(tr),
+            _auranotify_end_date_iso(tr),
+        )
+    except Exception:
+        for row in dc_rows:
+            rid = row.get("id")
+            if rid is not None:
+                out[str(rid)] = None
+        return out
+
+    for row in dc_rows:
+        rid = row.get("id")
+        if rid is None:
+            continue
+        sid = str(rid)
+        dc_name = format_dc_display_name(row.get("name"), row.get("description")) or str(row.get("name") or sid)
+        matched: Optional[dict[str, Any]] = None
+        for hint in (dc_name, sid):
+            it = aura.match_dc_group_item(items, hint)
+            if it:
+                matched = it
+                break
+        out[sid] = deepcopy(matched) if matched is not None else None
+    return out
 
 
 # ---------------------------------------------------------------------------

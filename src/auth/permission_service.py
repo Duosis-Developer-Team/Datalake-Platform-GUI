@@ -78,6 +78,8 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
         return "page:dc_detail"
     if p == "/global-view":
         return "page:global_view"
+    if p == "/availability-annual":
+        return "page:availability_annual"
     if p == "/region-drilldown":
         return "page:region_drilldown"
     if p in ("/customers", "/customer-view"):

@@ -33,16 +33,25 @@ def _headers() -> dict[str, str]:
     return {"X-API-Key": AURANOTIFY_KEY}
 
 
-def get_dc_services_availability(start_date: str) -> list[dict[str, Any]]:
-    """GET /api/sla/datacenter-services — all DC groups with category SLA breakdown."""
+def get_dc_services_availability(
+    start_date: str, end_date: str | None = None
+) -> list[dict[str, Any]]:
+    """GET /api/sla/datacenter-services — all DC groups with category SLA breakdown.
+
+    If the upstream service supports it, pass ``end_date`` to bound the reporting period
+    (e.g. end of selected calendar year or today for the current year).
+    """
     if not AURANOTIFY_KEY:
         logger.debug("AURANOTIFY_API_KEY / ANOTIFY_API_KEY not set; skipping datacenter-services")
         return []
     try:
+        params: dict[str, str] = {"start_date": start_date}
+        if end_date:
+            params["end_date"] = end_date
         with _client() as c:
             r = c.get(
                 "/api/sla/datacenter-services",
-                params={"start_date": start_date},
+                params=params,
                 headers=_headers(),
             )
             r.raise_for_status()

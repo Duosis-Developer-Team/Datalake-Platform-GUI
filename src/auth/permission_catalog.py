@@ -193,6 +193,16 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 route_pattern="/region-drilldown",
                 sort_order=20,
             ),
+            _n(
+                "page:availability_annual",
+                "Annual Availability",
+                "page",
+                route_pattern="/availability-annual",
+                sort_order=15,
+                children=[
+                    _n("sec:availability_annual:report", "Report", "section", sort_order=10),
+                ],
+            ),
         ],
     )
 
