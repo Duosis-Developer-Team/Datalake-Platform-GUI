@@ -8,6 +8,88 @@ import dash_mantine_components as dmc
 from src.services import product_catalog as product_catalog_service
 
 
+def _aura_notify_raw_categories_table(categories: list) -> html.Table:
+    """Fixed column layout so header cells align with body (avoids dmc.Table / thead tbody drift)."""
+    border = "1px solid #e9ecef"
+    th_style = {
+        "padding": "10px 12px",
+        "fontWeight": "600",
+        "fontSize": "12px",
+        "color": "#5c6b7a",
+        "borderBottom": border,
+        "backgroundColor": "#f8f9fb",
+        "textTransform": "uppercase",
+        "letterSpacing": "0.04em",
+    }
+    td_style = {
+        "padding": "10px 12px",
+        "fontSize": "13px",
+        "color": "#2B3674",
+        "borderBottom": border,
+        "verticalAlign": "middle",
+        "wordBreak": "break-word",
+    }
+    num_td = {**td_style, "fontVariantNumeric": "tabular-nums"}
+
+    body_rows: list = []
+    for cat in categories:
+        if not isinstance(cat, dict):
+            continue
+        body_rows.append(
+            html.Tr(
+                [
+                    html.Td(str(cat.get("category") or "-"), style={**td_style, "textAlign": "left"}),
+                    html.Td(
+                        f"{float(cat.get('availability_pct') or 0):.4f}",
+                        style={**num_td, "textAlign": "right"},
+                    ),
+                    html.Td(str(cat.get("total_downtime_min") or "-"), style={**num_td, "textAlign": "right"}),
+                    html.Td(str(cat.get("record_count") or "-"), style={**num_td, "textAlign": "right"}),
+                ]
+            )
+        )
+
+    if not body_rows:
+        body_rows = [
+            html.Tr(
+                html.Td(
+                    "No categories",
+                    colSpan=4,
+                    style={**td_style, "textAlign": "center", "color": "#A3AED0"},
+                )
+            )
+        ]
+
+    return html.Table(
+        style={
+            "width": "100%",
+            "borderCollapse": "collapse",
+            "tableLayout": "fixed",
+        },
+        children=[
+            html.Colgroup(
+                [
+                    html.Col(style={"width": "42%"}),
+                    html.Col(style={"width": "18%"}),
+                    html.Col(style={"width": "22%"}),
+                    html.Col(style={"width": "18%"}),
+                ]
+            ),
+            html.Thead(
+                html.Tr(
+                    [
+                        html.Th("Category", style={**th_style, "textAlign": "left"}),
+                        html.Th("Availability %", style={**th_style, "textAlign": "right"}),
+                        html.Th("Total downtime (min)", style={**th_style, "textAlign": "right"}),
+                        html.Th("Records", style={**th_style, "textAlign": "right"}),
+                    ]
+                )
+            ),
+            html.Tbody(body_rows),
+        ],
+    )
+
+
 def availability_downtime_table(downtimes: list):
     """Table for AuraNotify downtime dict rows."""
     rows_dt = []
@@ -214,21 +296,6 @@ def build_dc_availability_panel(
         ],
     )
 
-    cat_rows = []
-    for cat in categories:
-        if not isinstance(cat, dict):
-            continue
-        cat_rows.append(
-            html.Tr(
-                [
-                    html.Td(str(cat.get("category") or "-")),
-                    html.Td(f"{float(cat.get('availability_pct') or 0):.4f}"),
-                    html.Td(str(cat.get("total_downtime_min") or "-")),
-                    html.Td(str(cat.get("record_count") or "-")),
-                ]
-            )
-        )
-
     stack_children: list = [
         dmc.Text(f"DC: {dc_display_name}", size="sm", c="dimmed"),
     ]
@@ -278,27 +345,7 @@ def build_dc_availability_panel(
             style={"padding": "24px", "overflowX": "auto"},
             children=[
                 dmc.Text("AuraNotify categories (raw)", fw=700, size="lg", c="#2B3674", mb="xs"),
-                dmc.Table(
-                    striped=True,
-                    highlightOnHover=True,
-                    children=[
-                        html.Thead(
-                            html.Tr(
-                                [
-                                    html.Th("Category"),
-                                    html.Th("Availability %"),
-                                    html.Th("Total downtime (min)"),
-                                    html.Th("Records"),
-                                ]
-                            )
-                        ),
-                        html.Tbody(
-                            cat_rows
-                            if cat_rows
-                            else [html.Tr([html.Td("No categories", colSpan=4)])],
-                        ),
-                    ],
-                ),
+                _aura_notify_raw_categories_table(categories),
             ],
         )
     )

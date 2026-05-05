@@ -34,7 +34,8 @@ def build_availability_annual_layout(visible_sections: set[str] | None = None) -
     tr_list = default_time_range()
     datacenters = api.get_all_datacenters_summary(tr_list)
     current_year = datetime.now(timezone.utc).year
-    year_options = [{"value": y, "label": str(y)} for y in range(MIN_REPORT_YEAR, current_year + 1)]
+    # Mantine Select: use string values for reliable binding across browsers
+    year_options = [{"value": str(y), "label": str(y)} for y in range(MIN_REPORT_YEAR, current_year + 1)]
     dc_options: list[dict] = []
     default_dc_id: str | None = None
     for dc in datacenters:
@@ -57,20 +58,20 @@ def build_availability_annual_layout(visible_sections: set[str] | None = None) -
         style={"padding": "0 32px 16px"},
         children=[
             dmc.Stack(
-                gap="sm",
+                gap="md",
                 children=[
                     dmc.Text("Annual Availability", fw=700, size="xl", c="#2B3674"),
-                    dmc.Group(
-                        gap="md",
-                        align="flex-end",
-                        wrap="wrap",
+                    # Stacked filters so Year is always visible (not squeezed beside DC on narrow layouts)
+                    dmc.Stack(
+                        gap="sm",
                         children=[
                             dmc.Select(
                                 label="Year",
                                 id="availability-annual-year",
                                 data=year_options,
-                                value=current_year,
-                                w=160,
+                                value=str(current_year),
+                                w="100%",
+                                maw=320,
                                 searchable=False,
                                 clearable=False,
                             ),
@@ -82,7 +83,7 @@ def build_availability_annual_layout(visible_sections: set[str] | None = None) -
                                 searchable=True,
                                 clearable=False,
                                 nothingFoundMessage="No DCs",
-                                style={"flex": "1 1 320px", "minWidth": "280px"},
+                                w="100%",
                             ),
                         ],
                     ),
@@ -103,7 +104,7 @@ def build_availability_annual_layout(visible_sections: set[str] | None = None) -
 def _render_availability_annual_body(year, dc_id):
     current_year = datetime.now(timezone.utc).year
     try:
-        y = int(year) if year is not None else current_year
+        y = int(year) if year is not None and str(year).strip() != "" else current_year
     except (TypeError, ValueError):
         y = current_year
 
@@ -134,7 +135,7 @@ def _render_availability_annual_body(year, dc_id):
     items_map = api.get_dc_availability_sla_items_for_dcs([row], tr)
 
     intro = dmc.Text(
-        f"Year {y} — Report period (UTC): {tr['start']} — {tr['end']}",
+        f"Report period (UTC): {tr['start']} — {tr['end']}",
         size="sm",
         c="dimmed",
         mb="md",
