@@ -41,6 +41,13 @@ def smart_cpu(ghz: float) -> str:
     return f"{ghz * 1000:.2f} MHz"
 
 
+def format_power_capacity_count(value: float | None) -> str:
+    """Format IBM Power proc-unit / core counts as plain decimal numbers (not GHz)."""
+    if value is None:
+        return "0.00"
+    return f"{float(value):,.2f}"
+
+
 def smart_bytes(value_bytes: float) -> str:
     """Alias for base-1024 byte formatting."""
     return smart_bytes_1024(value_bytes)

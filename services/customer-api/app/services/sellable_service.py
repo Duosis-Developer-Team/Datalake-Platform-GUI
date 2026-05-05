@@ -1157,9 +1157,13 @@ SELECT _tot, _used FROM latest
         ratio_lookup = {(r.family, r.dc_code): r for r in self.list_ratios()}
 
         constrained: list[PanelResult] = []
+        # IBM Power: SAN-backed storage is often absent from sellable infra — do not let
+        # storage raw=0 collapse CPU/RAM constrained sellable (shared sellable math).
+        virt_power_storage_decouple = frozenset({"storage"})
         for fam, group in by_family.items():
             ratio = ratio_lookup.get((fam, dc_code)) or ratio_lookup.get((fam, "*")) or ResourceRatio(family=fam)
-            new_group = constrain_by_ratio(group, ratio)
+            decouple = virt_power_storage_decouple if fam == "virt_power" else None
+            new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=decouple)
             for new in new_group:
                 new.potential_tl = compute_potential_tl(new.sellable_constrained, new.unit_price_tl)
                 constrained.append(new)

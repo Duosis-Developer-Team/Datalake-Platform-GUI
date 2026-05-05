@@ -64,6 +64,8 @@ def _split_by_kind(panels: Iterable[PanelResult]) -> dict[str, PanelResult]:
 def constrain_by_ratio(
     panels: Iterable[PanelResult],
     ratio: ResourceRatio,
+    *,
+    decouple_resource_kinds: frozenset[str] | None = None,
 ) -> list[PanelResult]:
     """Apply the family's CPU:RAM:Storage ratio across same-family panels.
 
@@ -71,6 +73,11 @@ def constrain_by_ratio(
     and ``ratio_bound`` populated. Panels whose resource_kind is not part of
     the cpu/ram/storage triplet are returned with ``sellable_constrained ==
     sellable_raw`` and ``ratio_bound = False``.
+
+    When ``decouple_resource_kinds`` contains e.g. ``\"storage\"``, that kind is
+    omitted from the ``min()`` over effective units; storage panels are emitted
+    with ``sellable_raw`` and ``sellable_constrained`` set to 0 (no disk
+    sellable until infra is bound).
 
     Algorithm:
       effective_cpu     = sellable_raw_cpu / ratio.cpu_per_unit
@@ -82,6 +89,8 @@ def constrain_by_ratio(
       sellable_constrained_storage = n * ratio.storage_gb_per_unit
       ratio_bound = constrained < raw - 1e-6
     """
+    decouple = frozenset() if decouple_resource_kinds is None else decouple_resource_kinds
+
     panel_list = list(panels)
     by_kind = _split_by_kind(panel_list)
 
@@ -94,7 +103,7 @@ def constrain_by_ratio(
         effective_units.append(cpu_p.sellable_raw / ratio.cpu_per_unit)
     if ram_p is not None and ratio.ram_gb_per_unit > 0:
         effective_units.append(ram_p.sellable_raw / ratio.ram_gb_per_unit)
-    if sto_p is not None and ratio.storage_gb_per_unit > 0:
+    if sto_p is not None and ratio.storage_gb_per_unit > 0 and "storage" not in decouple:
         effective_units.append(sto_p.sellable_raw / ratio.storage_gb_per_unit)
 
     n = min(effective_units) if effective_units else 0.0
@@ -106,6 +115,16 @@ def constrain_by_ratio(
         elif p.resource_kind == "ram" and ram_p is not None:
             constrained = n * ratio.ram_gb_per_unit
         elif p.resource_kind == "storage" and sto_p is not None:
+            if "storage" in decouple:
+                out.append(
+                    replace(
+                        p,
+                        sellable_raw=0.0,
+                        sellable_constrained=0.0,
+                        ratio_bound=False,
+                    )
+                )
+                continue
             constrained = n * ratio.storage_gb_per_unit
         else:
             # 'other' resource_kind (firewall, license, ...) is not bound

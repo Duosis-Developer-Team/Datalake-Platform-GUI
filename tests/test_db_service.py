@@ -1072,6 +1072,12 @@ class TestFormatUnits(unittest.TestCase):
         result = smart_cpu(None)
         self.assertIn("0", result)
 
+    def test_format_power_capacity_count_plain_number(self):
+        from src.utils.format_units import format_power_capacity_count
+        self.assertEqual(format_power_capacity_count(676.0), "676.00")
+        self.assertIn(",", format_power_capacity_count(5408.0))
+        self.assertEqual(format_power_capacity_count(None), "0.00")
+
     def test_pct_float_returns_correct_percentage(self):
         from src.utils.format_units import pct_float
         self.assertAlmostEqual(pct_float(50, 200), 25.0)

@@ -15,6 +15,7 @@ from src.utils.format_units import (
     smart_storage,
     smart_memory,
     smart_cpu,
+    format_power_capacity_count,
     pct_float,
     title_case,
     parse_storage_string,
@@ -879,6 +880,8 @@ def _build_power_tab(
     cpu_total_cores = power.get("cpu_total_cores", 0.0) or 0.0
     cpu_avail_pu = power.get("cpu_available_procunits", 0.0) or 0.0
     cpu_avail_cores = power.get("cpu_available_cores", 0.0) or 0.0
+    cpu_allocated_pu = max(cpu_total_pu - cpu_avail_pu, 0.0)
+    cpu_allocated_cores = max(cpu_total_cores - cpu_avail_cores, 0.0)
 
     storage_capacity = storage_capacity or {}
     storage_performance = storage_performance or {}
@@ -923,7 +926,7 @@ def _build_power_tab(
                     style={"height": "100%", "width": "100%"},
                 )),
                 (_has_value(cpu_total_pu), dcc.Graph(
-                    figure=create_gauge_chart(cpu_assigned, cpu_total_pu or 1, "CPU Assigned", color="#FF6B6B"),
+                    figure=create_gauge_chart(cpu_allocated_pu, cpu_total_pu or 1, "CPU Assigned", color="#FF6B6B"),
                     config={"displayModeBar": False},
                     style={"height": "100%", "width": "100%"},
                 )),
@@ -937,16 +940,16 @@ def _build_power_tab(
                         _capacity_metric_row(
                             "CPU (Proc Units)",
                             cpu_total_pu,
-                            max(cpu_total_pu - cpu_avail_pu, 0.0),
-                            pct_float(max(cpu_total_pu - cpu_avail_pu, 0.0), cpu_total_pu),
-                            smart_cpu,
+                            cpu_allocated_pu,
+                            pct_float(cpu_allocated_pu, cpu_total_pu),
+                            format_power_capacity_count,
                         ),
                         _capacity_metric_row(
                             "CPU Cores",
                             cpu_total_cores,
-                            max(cpu_total_cores - cpu_avail_cores, 0.0),
-                            pct_float(max(cpu_total_cores - cpu_avail_cores, 0.0), cpu_total_cores),
-                            smart_cpu,
+                            cpu_allocated_cores,
+                            pct_float(cpu_allocated_cores, cpu_total_cores),
+                            format_power_capacity_count,
                         ),
                         _capacity_metric_row(
                             "Memory",

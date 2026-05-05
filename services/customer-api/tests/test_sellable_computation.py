@@ -113,6 +113,38 @@ def test_constrain_by_ratio_zero_when_any_resource_is_zero():
     assert out["storage"].ratio_bound is True
 
 
+def test_constrain_by_ratio_decouple_storage_skips_disk_in_min():
+    """virt_power: storage sellable_raw=0 must not zero CPU/RAM constrained."""
+    panels = [
+        _panel("cpu", 4.0, family="virt_power"),
+        _panel("ram", 24.0, family="virt_power"),
+        _panel("storage", 0.0, family="virt_power"),
+    ]
+    ratio = ResourceRatio(family="virt_power", cpu_per_unit=1.0, ram_gb_per_unit=8.0, storage_gb_per_unit=100.0)
+    out = {p.resource_kind: p for p in constrain_by_ratio(panels, ratio, decouple_resource_kinds=frozenset({"storage"}))}
+
+    assert out["cpu"].sellable_constrained == 3.0
+    assert out["ram"].sellable_constrained == 24.0
+    assert out["storage"].sellable_raw == 0.0
+    assert out["storage"].sellable_constrained == 0.0
+    assert out["storage"].ratio_bound is False
+
+
+def test_constrain_by_ratio_decouple_storage_preserves_cpu_when_ram_zero():
+    """Decoupled storage still respects ram=0 when ram participates in min."""
+    panels = [
+        _panel("cpu", 4.0, family="virt_power"),
+        _panel("ram", 0.0, family="virt_power"),
+        _panel("storage", 500.0, family="virt_power"),
+    ]
+    ratio = ResourceRatio(family="virt_power", cpu_per_unit=1.0, ram_gb_per_unit=8.0, storage_gb_per_unit=100.0)
+    out = {p.resource_kind: p for p in constrain_by_ratio(panels, ratio, decouple_resource_kinds=frozenset({"storage"}))}
+    assert out["cpu"].sellable_constrained == 0.0
+    assert out["ram"].sellable_constrained == 0.0
+    assert out["storage"].sellable_raw == 0.0
+    assert out["storage"].sellable_constrained == 0.0
+
+
 def test_constrain_by_ratio_other_kind_is_passthrough():
     panels = [_panel("other", 7.0, family="firewall")]
     ratio = ResourceRatio(family="firewall")
