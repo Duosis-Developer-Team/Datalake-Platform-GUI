@@ -45,10 +45,15 @@ def empty_dc(dc_code: str) -> dict:
             "vios": 0,
             "lpar_count": 0,
             "cpu": 0,
+            "cpu_total_procunits": 0.0,
+            "cpu_total_cores": 0.0,
+            "cpu_available_procunits": 0.0,
+            "cpu_available_cores": 0.0,
             "cpu_used": 0.0,
             "cpu_assigned": 0.0,
             "ram": 0,
             "memory_total": 0.0,
+            "memory_available": 0.0,
             "memory_assigned": 0.0,
         },
         "energy": {"total_kw": 0.0, "ibm_kw": 0.0, "vcenter_kw": 0.0, "total_kwh": 0.0, "ibm_kwh": 0.0, "vcenter_kwh": 0.0},
@@ -88,8 +93,8 @@ def aggregate_dc(
     vmware_mem = vmware_mem or (0, 0)
     vmware_storage = vmware_storage or (0, 0)
     vmware_cpu = vmware_cpu or (0, 0)
-    power_mem = power_mem or (0, 0)
-    power_cpu = power_cpu or (0, 0, 0)
+    power_mem = power_mem or (0, 0, 0)
+    power_cpu = power_cpu or (0, 0, 0, 0)
     n_mem_cap_gb = float(nutanix_mem[0] or 0) * 1024
     n_mem_used_gb = float(nutanix_mem[1] or 0) * 1024
     v_mem_cap_gb = float(vmware_mem[0] or 0) / (1024 ** 3)
@@ -122,10 +127,15 @@ def aggregate_dc(
             "vms": int(power_lpar_count or 0),
             "vios": int(power_vios or 0),
             "lpar_count": int(power_lpar_count or 0),
-            "cpu_used": round(float(power_cpu[0] or 0), 2),
-            "cpu_assigned": round(float(power_cpu[2] or 0), 2),
-            "memory_total": round(float(power_mem[0] or 0), 2),
-            "memory_assigned": round(float(power_mem[1] or 0), 2),
+            "cpu_total_procunits": round(float(power_cpu[0] or 0), 2),
+            "cpu_total_cores": round(float(power_cpu[0] or 0) * 8.0, 2),
+            "cpu_available_procunits": round(float(power_cpu[1] or 0), 2),
+            "cpu_available_cores": round(float(power_cpu[1] or 0) * 8.0, 2),
+            "cpu_used": round(float(power_cpu[2] or 0), 2),
+            "cpu_assigned": round(float(power_cpu[3] or 0), 2),
+            "memory_total": round(float(power_mem[0] or 0) / 1024.0, 2),
+            "memory_available": round(float(power_mem[1] or 0) / 1024.0, 2),
+            "memory_assigned": round(float(power_mem[2] or 0) / 1024.0, 2),
         },
         "energy": {
             "total_kw": round(total_energy_kw, 2),

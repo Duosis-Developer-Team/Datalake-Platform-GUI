@@ -48,6 +48,11 @@ _RULES: tuple[_Rule, ...] = (
     _Rule("virt_classic_ram",            contains_all=("Klasik Mimari", "Intel RAM")),
     _Rule("virt_classic_storage",        contains_all=("Klasik Mimari", "Intel Disk")),
 
+    # ----- IBM Power Mimari (standard; SAP Power HANA rules below are more specific)
+    _Rule("virt_power_cpu",     contains_all=("IBM Power", "CPU")),
+    _Rule("virt_power_ram",     contains_all=("IBM Power", "RAM")),
+    _Rule("virt_power_storage", contains_all=("NVMi",)),
+
     # ----- SAP HANA (Intel + Power) -----
     _Rule("virt_intel_hana_cpu",         contains_all=("SAP Intel HANA", "CPU")),
     _Rule("virt_intel_hana_ram",         contains_all=("SAP Intel HANA", "RAM")),

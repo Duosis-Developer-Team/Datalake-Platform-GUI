@@ -59,37 +59,76 @@ class IBMPowerAdapter(PlatformAdapter):
                 ibm_lpar.setdefault(dc, set()).add(row[1])
         ibm_lpar = {dc: len(names) for dc, names in ibm_lpar.items()}
 
-        ibm_mem_acc: dict[str, list] = {}
+        # Latest sample per (dc, server) in MB, then sum for DC.
+        mem_hosts: dict[str, dict[str, list]] = {}
         for row in raw_data.get("ibm_mem_raw", []):
-            if not row or len(row) < 3:
+            if not row or len(row) < 5:
                 continue
-            dc = _extract_dc(row[0], dc_set_upper)
-            if dc:
-                ibm_mem_acc.setdefault(dc, []).append((float(row[1] or 0), float(row[2] or 0)))
-        ibm_mem: dict[str, tuple] = {}
-        for dc, vals in ibm_mem_acc.items():
-            n_vals = len(vals)
-            ibm_mem[dc] = (
-                sum(v[0] for v in vals) / n_vals,
-                sum(v[1] for v in vals) / n_vals,
+            server_name = row[0]
+            dc = _extract_dc(server_name, dc_set_upper)
+            if not dc:
+                continue
+            try:
+                t_mem = float(row[1] or 0)
+                a_mem = float(row[2] or 0)
+                as_mem = float(row[3] or 0)
+            except (TypeError, ValueError):
+                continue
+            ts = row[4]
+            mem_hosts.setdefault(dc, {}).setdefault(server_name, []).append(
+                (t_mem, a_mem, as_mem, ts)
             )
+        ibm_mem: dict[str, tuple] = {}
+        for dc, hosts in mem_hosts.items():
+            t_mb = a_mb = as_mb = 0.0
+            for _svr, samples in hosts.items():
+                if not samples:
+                    continue
+                lt, la, las, _ts = max(samples, key=lambda v: v[3])
+                t_mb += lt
+                a_mb += la
+                as_mb += las
+            ibm_mem[dc] = (t_mb, a_mb, as_mb)
 
-        ibm_cpu_acc: dict[str, list] = {}
+        cpu_hosts: dict[str, dict[str, list]] = {}
         for row in raw_data.get("ibm_cpu_raw", []):
-            if not row or len(row) < 4:
+            if not row or len(row) < 6:
                 continue
-            dc = _extract_dc(row[0], dc_set_upper)
-            if dc:
-                ibm_cpu_acc.setdefault(dc, []).append(
-                    (float(row[1] or 0), float(row[2] or 0), float(row[3] or 0))
-                )
+            server_name = row[0]
+            dc = _extract_dc(server_name, dc_set_upper)
+            if not dc:
+                continue
+            try:
+                tpu = float(row[1] or 0)
+                apu = float(row[2] or 0)
+                used = float(row[3] or 0)
+                asg = float(row[4] or 0)
+            except (TypeError, ValueError):
+                continue
+            ts = row[5]
+            cpu_hosts.setdefault(dc, {}).setdefault(server_name, []).append(
+                (tpu, apu, used, asg, ts)
+            )
         ibm_cpu: dict[str, tuple] = {}
-        for dc, vals in ibm_cpu_acc.items():
-            n_vals = len(vals)
+        for dc, hosts in cpu_hosts.items():
+            st = sa = 0.0
+            used_vals: list[float] = []
+            asg_vals: list[float] = []
+            for _svr, samples in hosts.items():
+                if not samples:
+                    continue
+                tpu, apu, u, a, _ts = max(samples, key=lambda v: v[4])
+                st += tpu
+                sa += apu
+                used_vals.append(u)
+                asg_vals.append(a)
+            nu = len(used_vals) or 1
+            na = len(asg_vals) or 1
             ibm_cpu[dc] = (
-                sum(v[0] for v in vals) / n_vals,
-                sum(v[1] for v in vals) / n_vals,
-                sum(v[2] for v in vals) / n_vals,
+                st,
+                sa,
+                sum(used_vals) / nu,
+                sum(asg_vals) / na,
             )
 
         return {"hosts": ibm_h, "vios": ibm_vios, "lpar": ibm_lpar, "mem": ibm_mem, "cpu": ibm_cpu}

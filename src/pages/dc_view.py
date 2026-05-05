@@ -875,6 +875,10 @@ def _build_power_tab(
     mem_assigned = power.get("memory_assigned", 0.0)
     cpu_used     = power.get("cpu_used", 0.0)
     cpu_assigned = power.get("cpu_assigned", 1.0) or 1.0
+    cpu_total_pu = power.get("cpu_total_procunits", 0.0) or 0.0
+    cpu_total_cores = power.get("cpu_total_cores", 0.0) or 0.0
+    cpu_avail_pu = power.get("cpu_available_procunits", 0.0) or 0.0
+    cpu_avail_cores = power.get("cpu_available_cores", 0.0) or 0.0
 
     storage_capacity = storage_capacity or {}
     storage_performance = storage_performance or {}
@@ -918,6 +922,11 @@ def _build_power_tab(
                     config={"displayModeBar": False},
                     style={"height": "100%", "width": "100%"},
                 )),
+                (_has_value(cpu_total_pu), dcc.Graph(
+                    figure=create_gauge_chart(cpu_assigned, cpu_total_pu or 1, "CPU Assigned", color="#FF6B6B"),
+                    config={"displayModeBar": False},
+                    style={"height": "100%", "width": "100%"},
+                )),
             ]),
             html.Div(
                 className="nexus-card",
@@ -925,6 +934,20 @@ def _build_power_tab(
                 children=[
                     _section_title("Capacity Planning", "IBM Power resource allocation"),
                     html.Div(style={"marginTop": "12px"}, children=[
+                        _capacity_metric_row(
+                            "CPU (Proc Units)",
+                            cpu_total_pu,
+                            max(cpu_total_pu - cpu_avail_pu, 0.0),
+                            pct_float(max(cpu_total_pu - cpu_avail_pu, 0.0), cpu_total_pu),
+                            smart_cpu,
+                        ),
+                        _capacity_metric_row(
+                            "CPU Cores",
+                            cpu_total_cores,
+                            max(cpu_total_cores - cpu_avail_cores, 0.0),
+                            pct_float(max(cpu_total_cores - cpu_avail_cores, 0.0), cpu_total_cores),
+                            smart_cpu,
+                        ),
                         _capacity_metric_row(
                             "Memory",
                             mem_total, mem_assigned,

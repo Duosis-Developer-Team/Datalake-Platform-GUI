@@ -40,6 +40,8 @@ from typing import TYPE_CHECKING, Any, Iterable
 
 import httpx
 
+from app.utils.storage_capacity_parse import parse_storage_string_to_gb
+
 if TYPE_CHECKING:
     import redis as _redis_t
 
@@ -498,6 +500,51 @@ class SellableService:
         )
         return sql, list(params)
 
+    def _query_ibm_storage_string_totals(self, src: InfraSource, dc_code: str) -> tuple[float, float]:
+        """Latest row per storage_ip on raw_ibm_storage_system; sum varchar capacities as GB."""
+        if not src.source_table or not src.total_column or not src.allocated_column:
+            return 0.0, 0.0
+        try:
+            tc = self._sql_ident(src.total_column)
+            ac = self._sql_ident(src.allocated_column)
+        except ValueError:
+            return 0.0, 0.0
+        tbl = src.source_table.strip()
+        params: list[Any] = []
+        if src.filter_clause:
+            cleaned = src.filter_clause.replace(":dc_pattern", "%s")
+            where_sql = f"WHERE ({cleaned})"
+            params.append(self._dc_pattern(dc_code))
+        else:
+            where_sql = ""
+        sql = f"""
+WITH latest AS (
+    SELECT DISTINCT ON (storage_ip)
+        storage_ip,
+        {tc} AS _tot,
+        {ac} AS _used,
+        "timestamp"
+    FROM {tbl}
+    {where_sql}
+    ORDER BY storage_ip, "timestamp" DESC
+)
+SELECT _tot, _used FROM latest
+"""
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._svc._run_rows(cur, sql, tuple(params)) or []
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "SellableService: IBM storage aggregate failed (panel=%s, dc=%s)",
+                src.panel_key,
+                dc_code,
+            )
+            return 0.0, 0.0
+        total_gb = sum(parse_storage_string_to_gb(r[0]) for r in rows if r)
+        used_gb = sum(parse_storage_string_to_gb(r[1]) for r in rows if r)
+        return total_gb, used_gb
+
     def _query_total_allocated(
         self,
         src: InfraSource,
@@ -517,6 +564,8 @@ class SellableService:
         """
         if not src.source_table or not src.total_column:
             return 0.0, 0.0
+        if self._bare_table_name(src.source_table) == "raw_ibm_storage_system":
+            return self._query_ibm_storage_string_totals(src, dc_code)
         params: list[Any] = []
         where_total = ""
         where_alloc = ""

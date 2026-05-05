@@ -194,8 +194,9 @@ class TestAggregatedc(unittest.TestCase):
             power_hosts=2,
             power_vios=1,
             power_lpar_count=5,
-            power_mem=(64.0, 32.0),
-            power_cpu=(4.0, 2.0, 8.0),
+            # Power memory tuple is MB (matches ibm_server_general); CPU is proc units.
+            power_mem=(64.0 * 1024, 32.0 * 1024, 16.0 * 1024),
+            power_cpu=(10.0, 2.0, 4.0, 8.0),
             ibm_w=500.0,      # W
             vcenter_w=500.0,  # W
         )
@@ -213,6 +214,12 @@ class TestAggregatedc(unittest.TestCase):
         self.assertEqual(result["power"]["vios"], 1)
         self.assertEqual(result["power"]["lpar_count"], 5)
         self.assertAlmostEqual(result["power"]["memory_total"], 64.0, places=1)
+        self.assertAlmostEqual(result["power"]["memory_available"], 32.0, places=1)
+        self.assertAlmostEqual(result["power"]["memory_assigned"], 16.0, places=1)
+        self.assertAlmostEqual(result["power"]["cpu_total_procunits"], 10.0, places=1)
+        self.assertAlmostEqual(result["power"]["cpu_total_cores"], 80.0, places=1)
+        self.assertAlmostEqual(result["power"]["cpu_available_procunits"], 2.0, places=1)
+        self.assertAlmostEqual(result["power"]["cpu_used"], 4.0, places=1)
         self.assertAlmostEqual(result["power"]["cpu_assigned"], 8.0, places=1)
         # Platforms
         self.assertIn("platforms", result)
@@ -1106,8 +1113,9 @@ class TestAggregateClassicHyperconv(unittest.TestCase):
             power_hosts=2,
             power_vios=1,
             power_lpar_count=5,
-            power_mem=(64.0, 32.0),
-            power_cpu=(4.0, 2.0, 8.0),
+            # Power memory tuple is MB (matches ibm_server_general); CPU is proc units.
+            power_mem=(64.0 * 1024, 32.0 * 1024, 16.0 * 1024),
+            power_cpu=(10.0, 2.0, 4.0, 8.0),
             ibm_w=500.0,
             vcenter_w=500.0,
             classic_row=classic_row,

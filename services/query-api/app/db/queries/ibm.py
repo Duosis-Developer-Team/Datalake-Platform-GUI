@@ -1,3 +1,5 @@
+# Synced with datacenter-api app/db/queries/ibm.py — IBM Power HMC queries.
+
 HOST_COUNT = """
 SELECT COUNT(DISTINCT server_details_servername)
 FROM public.ibm_server_general
@@ -17,20 +19,41 @@ WHERE lpar_details_servername LIKE %s AND time BETWEEN %s AND %s
 """
 
 MEMORY = """
+WITH latest_per_server AS (
+    SELECT DISTINCT ON (server_details_servername)
+        server_details_servername,
+        server_memory_totalmem,
+        server_memory_availablemem,
+        server_memory_assignedmemtolpars
+    FROM public.ibm_server_general
+    WHERE server_details_servername LIKE %s AND time BETWEEN %s AND %s
+    ORDER BY server_details_servername, time DESC
+)
 SELECT
-    COALESCE(AVG(server_memory_configurablemem), 0) AS total_memory,
-    COALESCE(AVG(server_memory_assignedmemtolpars), 0) AS assigned_memory
-FROM public.ibm_server_general
-WHERE server_details_servername LIKE %s AND time BETWEEN %s AND %s
+    COALESCE(SUM(server_memory_totalmem), 0) AS total_memory,
+    COALESCE(SUM(server_memory_availablemem), 0) AS available_memory,
+    COALESCE(SUM(server_memory_assignedmemtolpars), 0) AS assigned_memory
+FROM latest_per_server
 """
 
 CPU = """
+WITH latest_per_server AS (
+    SELECT DISTINCT ON (server_details_servername)
+        server_details_servername,
+        server_processor_totalprocunits,
+        server_processor_availableprocunits,
+        server_processor_utilizedprocunits,
+        server_physicalprocessorpool_assignedprocunits
+    FROM public.ibm_server_general
+    WHERE server_details_servername LIKE %s AND time BETWEEN %s AND %s
+    ORDER BY server_details_servername, time DESC
+)
 SELECT
+    COALESCE(SUM(server_processor_totalprocunits), 0) AS total_proc,
+    COALESCE(SUM(server_processor_availableprocunits), 0) AS available_proc,
     COALESCE(AVG(server_processor_utilizedprocunits), 0) AS used_proc,
-    COALESCE(AVG(server_processor_utilizedprocunitsdeductidle), 0) AS deducted_proc,
     COALESCE(AVG(server_physicalprocessorpool_assignedprocunits), 0) AS assigned_proc
-FROM public.ibm_server_general
-WHERE server_details_servername LIKE %s AND time BETWEEN %s AND %s
+FROM latest_per_server
 """
 
 BATCH_RAW_HOST = """
@@ -52,16 +75,22 @@ WHERE time BETWEEN %s AND %s
 """
 
 BATCH_RAW_MEMORY = """
-SELECT server_details_servername, server_memory_configurablemem, server_memory_assignedmemtolpars
+SELECT server_details_servername,
+       server_memory_totalmem,
+       server_memory_availablemem,
+       server_memory_assignedmemtolpars,
+       time
 FROM public.ibm_server_general
 WHERE time BETWEEN %s AND %s
 """
 
 BATCH_RAW_CPU = """
 SELECT server_details_servername,
+       server_processor_totalprocunits,
+       server_processor_availableprocunits,
        server_processor_utilizedprocunits,
-       server_processor_utilizedprocunitsdeductidle,
-       server_physicalprocessorpool_assignedprocunits
+       server_physicalprocessorpool_assignedprocunits,
+       time
 FROM public.ibm_server_general
 WHERE time BETWEEN %s AND %s
 """
@@ -114,16 +143,29 @@ BATCH_MEMORY = """
 WITH extracted AS (
     SELECT
         (regexp_matches(UPPER(server_details_servername), 'DC[0-9]+|AZ[0-9]+|ICT[0-9]+'))[1] AS dc_code,
-        server_memory_configurablemem,
-        server_memory_assignedmemtolpars
+        server_details_servername,
+        server_memory_totalmem,
+        server_memory_availablemem,
+        server_memory_assignedmemtolpars,
+        time
     FROM public.ibm_server_general
     WHERE time BETWEEN %s AND %s
+),
+latest AS (
+    SELECT DISTINCT ON (dc_code, server_details_servername)
+        dc_code,
+        server_memory_totalmem,
+        server_memory_availablemem,
+        server_memory_assignedmemtolpars
+    FROM extracted
+    ORDER BY dc_code, server_details_servername, time DESC
 )
 SELECT
     dc_code,
-    AVG(server_memory_configurablemem) AS total_memory,
-    AVG(server_memory_assignedmemtolpars) AS assigned_memory
-FROM extracted
+    COALESCE(SUM(server_memory_totalmem), 0) AS total_memory,
+    COALESCE(SUM(server_memory_availablemem), 0) AS available_memory,
+    COALESCE(SUM(server_memory_assignedmemtolpars), 0) AS assigned_memory
+FROM latest
 WHERE dc_code = ANY(%s)
 GROUP BY dc_code
 """
@@ -132,18 +174,32 @@ BATCH_CPU = """
 WITH extracted AS (
     SELECT
         (regexp_matches(UPPER(server_details_servername), 'DC[0-9]+|AZ[0-9]+|ICT[0-9]+'))[1] AS dc_code,
+        server_details_servername,
+        server_processor_totalprocunits,
+        server_processor_availableprocunits,
         server_processor_utilizedprocunits,
-        server_processor_utilizedprocunitsdeductidle,
-        server_physicalprocessorpool_assignedprocunits
+        server_physicalprocessorpool_assignedprocunits,
+        time
     FROM public.ibm_server_general
     WHERE time BETWEEN %s AND %s
+),
+latest AS (
+    SELECT DISTINCT ON (dc_code, server_details_servername)
+        dc_code,
+        server_processor_totalprocunits,
+        server_processor_availableprocunits,
+        server_processor_utilizedprocunits,
+        server_physicalprocessorpool_assignedprocunits
+    FROM extracted
+    ORDER BY dc_code, server_details_servername, time DESC
 )
 SELECT
     dc_code,
-    AVG(server_processor_utilizedprocunits) AS used_proc,
-    AVG(server_processor_utilizedprocunitsdeductidle) AS deducted_proc,
-    AVG(server_physicalprocessorpool_assignedprocunits) AS assigned_proc
-FROM extracted
+    COALESCE(SUM(server_processor_totalprocunits), 0) AS total_proc,
+    COALESCE(SUM(server_processor_availableprocunits), 0) AS available_proc,
+    COALESCE(AVG(server_processor_utilizedprocunits), 0) AS used_proc,
+    COALESCE(AVG(server_physicalprocessorpool_assignedprocunits), 0) AS assigned_proc
+FROM latest
 WHERE dc_code = ANY(%s)
 GROUP BY dc_code
 """

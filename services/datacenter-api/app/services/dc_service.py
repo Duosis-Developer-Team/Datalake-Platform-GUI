@@ -83,8 +83,16 @@ def _EMPTY_DC(dc_code: str) -> dict:
         },
         "power": {
             "hosts": 0, "vms": 0, "vios": 0, "lpar_count": 0,
-            "cpu": 0, "cpu_used": 0.0, "cpu_assigned": 0.0,
-            "ram": 0, "memory_total": 0.0, "memory_assigned": 0.0,
+            "cpu": 0,
+            "cpu_total_procunits": 0.0,
+            "cpu_total_cores": 0.0,
+            "cpu_available_procunits": 0.0,
+            "cpu_available_cores": 0.0,
+            "cpu_used": 0.0, "cpu_assigned": 0.0,
+            "ram": 0,
+            "memory_total": 0.0,
+            "memory_available": 0.0,
+            "memory_assigned": 0.0,
         },
         "energy": {"total_kw": 0.0, "ibm_kw": 0.0, "vcenter_kw": 0.0, "total_kwh": 0.0, "ibm_kwh": 0.0, "vcenter_kwh": 0.0},
         "platforms": {
@@ -865,8 +873,8 @@ LIMIT 20
         vmware_mem      = vmware_mem      or (0, 0)
         vmware_storage  = vmware_storage  or (0, 0)
         vmware_cpu      = vmware_cpu      or (0, 0)
-        power_mem       = power_mem       or (0, 0)
-        power_cpu       = power_cpu       or (0, 0, 0)
+        power_mem       = power_mem       or (0, 0, 0)
+        power_cpu       = power_cpu       or (0, 0, 0, 0)
         classic_row     = classic_row     or (0,) * 8
         classic_avg30   = DatabaseService._normalize_avg30_row(classic_avg30)
         hyperconv_row   = hyperconv_row   or (0,) * 8
@@ -990,10 +998,15 @@ LIMIT 20
                 "vms": int(power_lpar_count or 0),
                 "vios": int(power_vios or 0),
                 "lpar_count": int(power_lpar_count or 0),
-                "cpu_used": round(float(power_cpu[0] or 0), 2),
-                "cpu_assigned": round(float(power_cpu[2] or 0), 2),
-                "memory_total": round(float(power_mem[0] or 0), 2),
-                "memory_assigned": round(float(power_mem[1] or 0), 2),
+                "cpu_total_procunits": round(float(power_cpu[0] or 0), 2),
+                "cpu_total_cores": round(float(power_cpu[0] or 0) * 8.0, 2),
+                "cpu_available_procunits": round(float(power_cpu[1] or 0), 2),
+                "cpu_available_cores": round(float(power_cpu[1] or 0) * 8.0, 2),
+                "cpu_used": round(float(power_cpu[2] or 0), 2),
+                "cpu_assigned": round(float(power_cpu[3] or 0), 2),
+                "memory_total": round(float(power_mem[0] or 0) / 1024.0, 2),
+                "memory_available": round(float(power_mem[1] or 0) / 1024.0, 2),
+                "memory_assigned": round(float(power_mem[2] or 0) / 1024.0, 2),
                 "storage_cap_tb": round(float((power_storage or (0.0, 0.0))[0]), 3),
                 "storage_used_tb": round(float((power_storage or (0.0, 0.0))[1]), 3),
             },
@@ -1232,9 +1245,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 ibm_lpar.setdefault(dc, set()).add(row[1])  # type: ignore[arg-type]
         ibm_lpar = {dc: len(names) for dc, names in ibm_lpar.items()}  # type: ignore[assignment]
 
-        ibm_mem_hosts: dict[str, dict[str, list[tuple[float, float, object]]]] = {}
+        ibm_mem_hosts: dict[str, dict[str, list[tuple[float, float, float, object]]]] = {}
         for row in ibm_raw["ibm_mem_raw"]:
-            if not row or len(row) < 4:
+            if not row or len(row) < 5:
                 continue
             server_name = row[0]
             dc = _extract_dc(server_name)
@@ -1242,45 +1255,68 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 continue
             try:
                 total_mem = float(row[1] or 0)
-                assigned_mem = float(row[2] or 0)
+                avail_mem = float(row[2] or 0)
+                assigned_mem = float(row[3] or 0)
             except (TypeError, ValueError):
                 continue
-            ts = row[3]
+            ts = row[4]
             dc_hosts = ibm_mem_hosts.setdefault(dc, {})
-            dc_hosts.setdefault(server_name, []).append((total_mem, assigned_mem, ts))
+            dc_hosts.setdefault(server_name, []).append((total_mem, avail_mem, assigned_mem, ts))
 
         ibm_mem: dict[str, tuple] = {}
         for dc, hosts in ibm_mem_hosts.items():
-            total_cfg = 0.0
-            total_assigned = 0.0
+            total_mb = 0.0
+            avail_mb = 0.0
+            assigned_mb = 0.0
             for server_name, samples in hosts.items():
                 if not samples:
                     continue
-                latest_total, latest_assigned, _ = max(samples, key=lambda v: v[2])
-                total_cfg += latest_total
-                total_assigned += latest_assigned
-            # HMC bellek metrikleri MB cinsinden geldiği için burada GB'e çeviriyoruz.
-            ibm_mem[dc] = (
-                total_cfg / 1024.0,
-                total_assigned / 1024.0,
-            )
+                latest_total, latest_avail, latest_assigned, _ = max(samples, key=lambda v: v[3])
+                total_mb += latest_total
+                avail_mb += latest_avail
+                assigned_mb += latest_assigned
+            # Raw MB per DC; _aggregate_dc converts to GB for API consumers.
+            ibm_mem[dc] = (total_mb, avail_mb, assigned_mb)
 
-        ibm_cpu_acc: dict[str, list] = {}
+        ibm_cpu_hosts: dict[str, dict[str, list[tuple[float, float, float, float, object]]]] = {}
         for row in ibm_raw["ibm_cpu_raw"]:
-            if not row or len(row) < 4:
+            if not row or len(row) < 6:
                 continue
-            dc = _extract_dc(row[0])
-            if dc:
-                ibm_cpu_acc.setdefault(dc, []).append(
-                    (float(row[1] or 0), float(row[2] or 0), float(row[3] or 0))
-                )
+            server_name = row[0]
+            dc = _extract_dc(server_name)
+            if not dc:
+                continue
+            try:
+                tot_p = float(row[1] or 0)
+                avail_p = float(row[2] or 0)
+                used_p = float(row[3] or 0)
+                assigned_p = float(row[4] or 0)
+            except (TypeError, ValueError):
+                continue
+            ts = row[5]
+            dc_hosts = ibm_cpu_hosts.setdefault(dc, {})
+            dc_hosts.setdefault(server_name, []).append((tot_p, avail_p, used_p, assigned_p, ts))
+
         ibm_cpu_map: dict[str, tuple] = {}
-        for dc, vals in ibm_cpu_acc.items():
-            n_vals = len(vals)
+        for dc, hosts in ibm_cpu_hosts.items():
+            sum_tot = sum_avail = 0.0
+            used_vals: list[float] = []
+            assigned_vals: list[float] = []
+            for _sn, samples in hosts.items():
+                if not samples:
+                    continue
+                tpu, apu, u, a, _ts = max(samples, key=lambda v: v[4])
+                sum_tot += tpu
+                sum_avail += apu
+                used_vals.append(u)
+                assigned_vals.append(a)
+            nu = len(used_vals) or 1
+            na = len(assigned_vals) or 1
             ibm_cpu_map[dc] = (
-                sum(v[0] for v in vals) / n_vals,
-                sum(v[1] for v in vals) / n_vals,
-                sum(v[2] for v in vals) / n_vals,
+                sum_tot,
+                sum_avail,
+                sum(used_vals) / nu,
+                sum(assigned_vals) / na,
             )
 
         def _parse_capacity(val: str) -> float:
@@ -1411,8 +1447,8 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             vm_row   = v_mem_m.get(dc)
             vs_row   = v_stor.get(dc)
             vcpu_row = v_cpu.get(dc)
-            power_mem_tup = ibm_mem.get(dc, (0.0, 0.0))
-            power_cpu_tup = ibm_cpu_map.get(dc, (0.0, 0.0, 0.0))
+            power_mem_tup = ibm_mem.get(dc, (0.0, 0.0, 0.0))
+            power_cpu_tup = ibm_cpu_map.get(dc, (0.0, 0.0, 0.0, 0.0))
 
             # Classic / Hyperconverged rows from cluster_metrics
             vcl_row  = v_classic.get(dc)
@@ -1711,7 +1747,17 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         # Architecture-specific totals for home Resource Usage tabs
         classic_totals = {"cpu_cap": 0.0, "cpu_used": 0.0, "mem_cap": 0.0, "mem_used": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
         hyperconv_totals = {"cpu_cap": 0.0, "cpu_used": 0.0, "mem_cap": 0.0, "mem_used": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
-        ibm_totals = {"mem_total": 0.0, "mem_assigned": 0.0, "cpu_used": 0.0, "cpu_assigned": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
+        ibm_totals = {
+            "mem_total": 0.0,
+            "mem_available": 0.0,
+            "mem_assigned": 0.0,
+            "cpu_total_procunits": 0.0,
+            "cpu_available_procunits": 0.0,
+            "cpu_used": 0.0,
+            "cpu_assigned": 0.0,
+            "stor_cap": 0.0,
+            "stor_used": 0.0,
+        }
         for d in all_dc_data.values():
             c = d.get("classic", {})
             classic_totals["cpu_cap"] += float(c.get("cpu_cap", 0) or 0)
@@ -1729,7 +1775,10 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             hyperconv_totals["stor_used"] += float(h.get("stor_used", 0) or 0)
             pw = d.get("power", {})
             ibm_totals["mem_total"] += float(pw.get("memory_total", 0) or 0)
+            ibm_totals["mem_available"] += float(pw.get("memory_available", 0) or 0)
             ibm_totals["mem_assigned"] += float(pw.get("memory_assigned", 0) or 0)
+            ibm_totals["cpu_total_procunits"] += float(pw.get("cpu_total_procunits", 0) or 0)
+            ibm_totals["cpu_available_procunits"] += float(pw.get("cpu_available_procunits", 0) or 0)
             ibm_totals["cpu_used"] += float(pw.get("cpu_used", 0) or 0)
             ibm_totals["cpu_assigned"] += float(pw.get("cpu_assigned", 0) or 0)
             ibm_totals["stor_cap"] += float(pw.get("storage_cap_tb", 0) or 0)
@@ -1742,7 +1791,10 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             tot["stor_cap"] = round(tot["stor_cap"], 2)
             tot["stor_used"] = round(tot["stor_used"], 2)
         ibm_totals["mem_total"] = round(ibm_totals["mem_total"], 2)
+        ibm_totals["mem_available"] = round(ibm_totals["mem_available"], 2)
         ibm_totals["mem_assigned"] = round(ibm_totals["mem_assigned"], 2)
+        ibm_totals["cpu_total_procunits"] = round(ibm_totals["cpu_total_procunits"], 2)
+        ibm_totals["cpu_available_procunits"] = round(ibm_totals["cpu_available_procunits"], 2)
         ibm_totals["cpu_used"] = round(ibm_totals["cpu_used"], 2)
         ibm_totals["cpu_assigned"] = round(ibm_totals["cpu_assigned"], 2)
         ibm_totals["stor_cap"] = round(ibm_totals["stor_cap"], 2)
@@ -1801,7 +1853,17 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             return cached
         self.get_all_datacenters_summary(tr)
         empty_totals = {"cpu_cap": 0.0, "cpu_used": 0.0, "mem_cap": 0.0, "mem_used": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
-        empty_ibm = {"mem_total": 0.0, "mem_assigned": 0.0, "cpu_used": 0.0, "cpu_assigned": 0.0, "stor_cap": 0.0, "stor_used": 0.0}
+        empty_ibm = {
+            "mem_total": 0.0,
+            "mem_available": 0.0,
+            "mem_assigned": 0.0,
+            "cpu_total_procunits": 0.0,
+            "cpu_available_procunits": 0.0,
+            "cpu_used": 0.0,
+            "cpu_assigned": 0.0,
+            "stor_cap": 0.0,
+            "stor_used": 0.0,
+        }
         return cache.get(f"global_dashboard:{range_suffix}") or {
             "overview": self.get_global_overview(tr),
             "platforms": {"nutanix": {"hosts": 0, "vms": 0}, "vmware": {"clusters": 0, "hosts": 0, "vms": 0}, "ibm": {"hosts": 0, "vios": 0, "lpars": 0}},
