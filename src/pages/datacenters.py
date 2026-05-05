@@ -157,7 +157,7 @@ def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo", toolt
 
 
 def _dc_sellable_ribbon(sales_v2: dict | None) -> html.Div:
-    """Compact CRM sellable-remaining strip (80%% policy, v2 API)."""
+    """Compact CRM sellable strip (80%% policy, v2 API): TL headline + % progress."""
     if not isinstance(sales_v2, dict):
         return html.Div()
     pct = float(sales_v2.get("general_remaining_pct") or 0.0)
@@ -166,9 +166,10 @@ def _dc_sellable_ribbon(sales_v2: dict | None) -> html.Div:
     ram = pr.get("ram") or {}
     pot_short, pot_full = _fmt_tl_short(sales_v2.get("potential_revenue_tl"))
     tip = (
+        f"Satılabilir potansiyel (TL): {pot_short} ({pot_full})\n"
+        f"Genel kalan % (min CPU/RAM tavanı): {pct:.1f}%\n"
         f"CPU headroom %: {cpu.get('remaining_sellable_pct')} | "
-        f"RAM headroom %: {ram.get('remaining_sellable_pct')} | "
-        f"Approx. potential: {pot_short} ({pot_full})"
+        f"RAM headroom %: {ram.get('remaining_sellable_pct')}"
     )
     return dmc.Tooltip(
         label=tip,
@@ -184,8 +185,8 @@ def _dc_sellable_ribbon(sales_v2: dict | None) -> html.Div:
                     gap="xs",
                     mb=4,
                     children=[
-                        dmc.Text("Satılabilir kalan (CRM)", size="xs", fw=600, c="#A3AED0"),
-                        dmc.Text(f"{pct:.1f}%", size="xs", fw=800, c="#4318FF"),
+                        dmc.Text("Satılabilir Potansiyel (TL, CRM)", size="xs", fw=600, c="#A3AED0"),
+                        dmc.Text(pot_short, size="xs", fw=800, c="#4318FF"),
                     ],
                 ),
                 dmc.Progress(value=min(100.0, max(0.0, pct)), color="indigo", size="sm", radius="xl"),
@@ -586,8 +587,8 @@ def build_datacenters(time_range=None, visible_sections=None):
                 "indigo",
                 tooltip=(
                     f"Toplam potansiyel: {full}\n"
-                    "Hesap: her DC için (Sellable_constrained × catalog_unit_price). "
-                    "Veri eksik panellerde 0 olarak görünür."
+                    "Hesap: her DC için CPU+RAM kalan miktarı × birim fiyat "
+                    "(önce gui_crm_price_override, yoksa CRM virt satışlarından implied fiyat)."
                 ),
             ))(*_fmt_tl_short(total_potential_tl)),
         ],

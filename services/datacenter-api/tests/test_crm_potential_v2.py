@@ -19,6 +19,7 @@ if _GUI_ROOT not in sys.path:
 
 from app.services.dc_sales_potential_v2 import (
     DEFAULT_SELLABLE_LIMIT_PCT,
+    _implied_price_from_sales,
     _resource_view,
 )
 from shared.sellable.computation import apply_threshold
@@ -61,3 +62,35 @@ def test_resource_view_remaining_qty_matches_apply_threshold():
         view = _resource_view(total, sold, unit_price=1.0, ceiling_pct=ceiling)
         want = apply_threshold(total, sold, ceiling)
         assert abs(view["remaining_sellable_qty"] - want) < 1e-3
+
+
+def test_implied_price_from_sales_virt_cpu_and_ram():
+    by_cat = {
+        ("virt_classic", "vCPU"): {
+            "category_code": "virt_classic",
+            "sold_qty": 10.0,
+            "sold_amount_tl": 5000.0,
+        },
+        ("virt_classic", "GB"): {
+            "category_code": "virt_classic",
+            "sold_qty": 100.0,
+            "sold_amount_tl": 2000.0,
+        },
+    }
+    assert _implied_price_from_sales(by_cat, "cpu") == 500.0
+    assert _implied_price_from_sales(by_cat, "ram") == 20.0
+
+
+def test_implied_price_from_sales_ignores_non_virt():
+    by_cat = {
+        ("other_cat", "vCPU"): {
+            "category_code": "other_cat",
+            "sold_qty": 100.0,
+            "sold_amount_tl": 99999.0,
+        },
+    }
+    assert _implied_price_from_sales(by_cat, "cpu") == 0.0
+
+
+def test_implied_price_from_sales_empty():
+    assert _implied_price_from_sales({}, "cpu") == 0.0

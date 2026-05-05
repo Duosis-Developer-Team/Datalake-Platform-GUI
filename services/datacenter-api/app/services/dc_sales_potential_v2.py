@@ -3,13 +3,15 @@ Datacenter sales potential v2 — sellable-ceiling vs realized CRM sales (ADR-00
 
 Sources:
   - Datalake DB: nutanix_cluster_metrics (capacity), discovery_crm_salesorder*
-                  (sold quantities by raw productid), legacy
-                  discovery_crm_productpricelevels (catalog fallback).
+                  (sold quantities by raw productid).
   - WebUI DB:    gui_crm_threshold_config (per-resource sellable ceiling),
                   gui_crm_customer_alias (NetBox tenant -> CRM accountid),
                   gui_crm_service_mapping_seed/override + service_pages
                   (productid -> category mapping),
                   gui_crm_price_override (operator-managed unit prices).
+
+Unit price priority: operator override > implied price from realized virt sales
+(sold_amount_tl / sold_qty). Catalog average pricing is not used (avoids inflation).
 
 Application-layer joins replace the legacy v_gui_crm_product_mapping view.
 """
@@ -132,6 +134,21 @@ def _resource_kind_from_unit(unit: Optional[str]) -> str:
     return "other"
 
 
+def _implied_price_from_sales(by_cat: Dict[tuple, Dict[str, Any]], kind: str) -> float:
+    """Weighted average unit price from realized CRM virt sales (last 12 months window in SQL)."""
+    total_qty = 0.0
+    total_amt = 0.0
+    for (_, ru), rec in by_cat.items():
+        cat_code = str(rec.get("category_code") or "")
+        if not cat_code.startswith("virt"):
+            continue
+        if _resource_kind_from_unit(ru) != kind:
+            continue
+        total_qty += float(rec.get("sold_qty") or 0.0)
+        total_amt += float(rec.get("sold_amount_tl") or 0.0)
+    return total_amt / total_qty if total_qty > 0 else 0.0
+
+
 def compute_sales_potential_v2(cur, dc_code: str, *, webui=None) -> Dict[str, Any]:
     """Compute v2 sales potential combining datalake + webui sources.
 
@@ -147,7 +164,6 @@ def compute_sales_potential_v2(cur, dc_code: str, *, webui=None) -> Dict[str, An
     cpu_ceil = _get_threshold_for(thresholds, "cpu")
     ram_ceil = _get_threshold_for(thresholds, "ram")
     storage_ceil = _get_threshold_for(thresholds, "storage")
-    backup_ceil = _get_threshold_for(thresholds, "backup")
     rack_ceil = _get_threshold_for(thresholds, "rack_u")
     power_ceil = _get_threshold_for(thresholds, "power_kw")
 
@@ -202,15 +218,6 @@ def compute_sales_potential_v2(cur, dc_code: str, *, webui=None) -> Dict[str, An
         bucket["sold_qty"] += qty
         bucket["sold_amount_tl"] += amt
 
-    # Catalog unit prices: webui price_override > datalake catalog avg
-    def _avg_for(unit_pattern: str) -> float:
-        try:
-            cur.execute(crm_q.DC_CATALOG_AVG_UNIT_PRICE, (unit_pattern,))
-            row = cur.fetchone()
-            return float((row or (0.0,))[0] or 0.0)
-        except Exception:
-            return 0.0
-
     # Pick a representative override: average of overrides whose product maps to virt + cpu/ram
     def _override_avg(kind: str) -> float:
         vals: list[float] = []
@@ -225,8 +232,8 @@ def compute_sales_potential_v2(cur, dc_code: str, *, webui=None) -> Dict[str, An
                 vals.append(float(price))
         return sum(vals) / len(vals) if vals else 0.0
 
-    pr_cpu = _override_avg("cpu") or _avg_for("%vcpu%")
-    pr_ram = _override_avg("ram") or _avg_for("%gb%")
+    pr_cpu = _override_avg("cpu") or _implied_price_from_sales(by_cat, "cpu")
+    pr_ram = _override_avg("ram") or _implied_price_from_sales(by_cat, "ram")
 
     cpu_block = _resource_view(total_cpu, sold_vcpu, pr_cpu, cpu_ceil)
     ram_block = _resource_view(total_ram_gb, sold_ram_gb, pr_ram, ram_ceil)
@@ -259,7 +266,6 @@ def compute_sales_potential_v2(cur, dc_code: str, *, webui=None) -> Dict[str, An
             "cpu": cpu_ceil,
             "ram": ram_ceil,
             "storage": storage_ceil,
-            "backup": backup_ceil,
             "rack_u": rack_ceil,
             "power_kw": power_ceil,
         },
@@ -273,14 +279,6 @@ def compute_sales_potential_v2(cur, dc_code: str, *, webui=None) -> Dict[str, An
                 "catalog_unit_price_tl": 0.0,
                 "potential_revenue_tl": 0.0,
                 "ceiling_pct": storage_ceil,
-            },
-            "backup_gb": {
-                "total_capacity": 0.0,
-                "sold_qty": 0.0,
-                "remaining_sellable_pct": None,
-                "catalog_unit_price_tl": 0.0,
-                "potential_revenue_tl": 0.0,
-                "ceiling_pct": backup_ceil,
             },
             "rack_u": {
                 "total_capacity": 0.0,
