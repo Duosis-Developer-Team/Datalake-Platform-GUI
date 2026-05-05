@@ -1,35 +1,45 @@
 # Module-level cache service with stale-while-revalidate semantics.
 # Cache entries never disappear until explicitly overwritten by fresh data.
 # TTL is only used as a staleness hint (not for eviction).
+#
+# Eviction is LRU (OrderedDict + move_to_end on get/set) so interactive paths
+# (e.g. rack clicks) are not displaced by long global prefetch key streams.
 
-import threading
 import logging
+import threading
+from collections import OrderedDict
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Max number of distinct cache keys.  Physical inventory adds ~30 keys on top
-# of existing DC/overview/customer/S3/backup keys.
-MAX_SIZE = 512
+# Room for global-view prefetch (many rack_device keys) without evicting MRU API keys.
+MAX_SIZE = 2048
 
-_cache: dict[str, Any] = {}
+_cache: OrderedDict[str, Any] = OrderedDict()
 _lock = threading.RLock()
 
 
 def get(key: str) -> Optional[Any]:
     """Return cached value or None if not present. Never expires."""
     with _lock:
-        return _cache.get(key)
+        if key not in _cache:
+            return None
+        val = _cache[key]
+        _cache.move_to_end(key, last=True)
+        return val
 
 
 def set(key: str, value: Any) -> None:
     """Store / overwrite a value in the cache."""
     with _lock:
-        if len(_cache) >= MAX_SIZE and key not in _cache:
-            oldest = next(iter(_cache))
-            _cache.pop(oldest, None)
-            logger.debug("Cache evicted oldest key: %s", oldest)
-        _cache[key] = value
+        if key in _cache:
+            _cache[key] = value
+            _cache.move_to_end(key, last=True)
+        else:
+            while len(_cache) >= MAX_SIZE:
+                evicted, _ = _cache.popitem(last=False)
+                logger.debug("Cache evicted LRU key: %s", evicted)
+            _cache[key] = value
     logger.debug("Cache SET: %s", key)
 
 
@@ -84,6 +94,12 @@ def cached(key_fn):
         wrapper.__wrapped__ = fn
         return wrapper
     return decorator
+
+
+def size() -> int:
+    """Current entry count (cheap; avoids copying key list)."""
+    with _lock:
+        return len(_cache)
 
 
 def stats() -> dict:

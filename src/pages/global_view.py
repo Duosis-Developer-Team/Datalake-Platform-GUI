@@ -1,7 +1,7 @@
+import logging
 import math
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import pandas as pd
 import plotly.graph_objects as go
 import dash
 from dash import html, dcc, callback, Input, Output, State
@@ -18,6 +18,8 @@ from src.utils.export_helpers import (
     dash_send_csv_bytes,
     build_report_info_df,
 )
+
+logger = logging.getLogger(__name__)
 
 def build_3d_rack_overlay(dc_id, dc_name, racks):
     if not racks:
@@ -756,6 +758,9 @@ def build_region_detail_panel(region, tr):
     )
 
 
+BUILDING_REVEAL_INTERVAL_MS = 600  # aligns with buildingEnter 0.6s CSS animation
+
+
 def build_global_view(time_range=None, visible_sections=None):
     tr = time_range or default_time_range()
     vs = visible_sections
@@ -767,14 +772,19 @@ def build_global_view(time_range=None, visible_sections=None):
     globe_data_array = _build_globe_data(summaries)
     export_rows = _global_export_table(summaries)
 
+    from src.services.global_view_prefetch import trigger_background
+    trigger_background(tr)
+
     return html.Div([
         dcc.Store(id="selected-region-store", data=None),
         dcc.Store(id="global-export-store", data={"rows": export_rows}),
+        dcc.Store(id="global-prefetch-trigger-store", data=None),
         dcc.Download(id="global-export-download"),
+        dcc.Interval(id="global-prefetch-interval", interval=900_000, n_intervals=0),
         dcc.Store(id="current-view-mode", data="globe"),
         dcc.Store(id="selected-building-dc-store", data=None),
         dcc.Store(id="last-clicked-dc-id", data=None),
-        dcc.Interval(id="building-reveal-timer", interval=1800, n_intervals=0, disabled=True, max_intervals=1),
+        dcc.Interval(id="building-reveal-timer", interval=BUILDING_REVEAL_INTERVAL_MS, n_intervals=0, disabled=True, max_intervals=1),
         html.Div(id="globe-layer", children=[
         dmc.Paper(
             p="xl",
@@ -868,7 +878,7 @@ def build_global_view(time_range=None, visible_sections=None):
                                             ),
                                             dmc.Button(
                                                 "PDF",
-                                                id="global-export-pdf",
+                                                id={"type": "pdf-export-btn", "index": "global"},
                                                 size="xs",
                                                 variant="light",
                                                 color="gray",

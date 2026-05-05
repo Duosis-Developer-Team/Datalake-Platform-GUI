@@ -1965,7 +1965,7 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
                 dmc.Text("Export", size="xs", c="dimmed"),
                 dmc.Button("CSV", id="customer-export-csv", size="xs", variant="light", color="gray"),
                 dmc.Button("Excel", id="customer-export-xlsx", size="xs", variant="light", color="gray"),
-                dmc.Button("PDF", id="customer-export-pdf", size="xs", variant="light", color="gray"),
+                dmc.Button("PDF", id={"type": "pdf-export-btn", "index": "customer"}, size="xs", variant="light", color="gray"),
             ],
         )
         if cv("action:customer:export")

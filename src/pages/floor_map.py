@@ -8,12 +8,20 @@ Layout model:
   - Aisle drawn between front/back rack rows within each hall.
 """
 
+import hashlib
+import logging
 import math
 import re
+import threading
+import time as _time
+from collections import OrderedDict
+
 import plotly.graph_objects as go
 from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
+
+_logger = logging.getLogger(__name__)
 
 # ── Rack unit dimensions ────────────────────────────────────────────────────
 RACK_W = 22
@@ -39,6 +47,51 @@ HALLS_PER_ROW = 2
 # ── Status palette ─────────────────────────────────────────────────────────
 STATUS_FILL   = {"active": "#17B26A", "planned": "#2E90FA", "inactive": "#F04438", "unknown": "#98A2B3"}
 STATUS_DARK   = {"active": "#027A48", "planned": "#175CD3", "inactive": "#B42318", "unknown": "#667085"}
+
+
+# ── Minimal TTL/LRU cache (no external dependency) ──────────────────────────
+class _FigureCache:
+    """Thread-safe LRU+TTL cache for Plotly figures. maxsize=20, ttl=300s."""
+
+    def __init__(self, maxsize: int = 20, ttl: float = 300.0):
+        self._maxsize = maxsize
+        self._ttl = ttl
+        self._store: OrderedDict = OrderedDict()  # key -> (figure, expiry)
+        self._lock = threading.Lock()
+
+    def get(self, key: str):
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            fig, expiry = entry
+            if _time.monotonic() > expiry:
+                del self._store[key]
+                return None
+            self._store.move_to_end(key)
+            return fig
+
+    def __setitem__(self, key: str, fig) -> None:
+        with self._lock:
+            expiry = _time.monotonic() + self._ttl
+            if key in self._store:
+                self._store.move_to_end(key)
+            self._store[key] = (fig, expiry)
+            while len(self._store) > self._maxsize:
+                self._store.popitem(last=False)
+
+
+_FIG_CACHE = _FigureCache(maxsize=20, ttl=300)
+
+# Fingerprint fields that affect layout or visuals
+_FP_FIELDS = ("id", "name", "status", "u_height", "hall_name", "facility_id", "last_observed")
+
+
+def _rack_fingerprint(dc_id: str, racks: list) -> str:
+    parts = [dc_id or ""]
+    for r in racks:
+        parts.append("|".join(str(r.get(f) or "") for f in _FP_FIELDS))
+    return hashlib.md5("\n".join(parts).encode()).hexdigest()
 
 
 def _color(status):
@@ -113,80 +166,74 @@ def _hall_dimensions(hall_racks):
     )
 
 
-def _draw_rack(fig, rx, ry, status, name, rack_data, dc_id=""):
+# ── Accumulator-based rack collector (avoids O(N²) add_shape calls) ─────────
+
+def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
+                  rx, ry, status, name, rack_data, dc_id=""):
+    """Append shape dicts and hover point data to accumulator lists."""
     fill, dark = _color(status)
-    rid        = rack_data.get("id") or ""
-    u          = rack_data.get("u_height") or 0
-    pwr        = rack_data.get("kabin_enerji") or "—"
-    rh         = rack_data.get("hall_name") or "—"
-    rack_type  = rack_data.get("rack_type") or "—"
-    serial     = rack_data.get("serial") or "—"
+    rid       = rack_data.get("id") or ""
+    u         = rack_data.get("u_height") or 0
+    pwr       = rack_data.get("kabin_enerji") or "—"
+    rh        = rack_data.get("hall_name") or "—"
+    rack_type = rack_data.get("rack_type") or "—"
+    serial    = rack_data.get("serial") or "—"
+    led_fill  = "#ECFDF3" if status == "active" else "rgba(255,255,255,0.65)"
 
-    # Shadow
-    fig.add_shape(type="rect",
-        x0=rx+2, y0=ry-2.5, x1=rx+RACK_W+2, y1=ry+RACK_H-2.5,
+    # 5 shapes per rack — appended to list (set once in bulk later)
+    shapes.append(dict(
+        type="rect", x0=rx+2, y0=ry-2.5, x1=rx+RACK_W+2, y1=ry+RACK_H-2.5,
         fillcolor="rgba(0,0,0,0.10)", line=dict(color="rgba(0,0,0,0)", width=0),
-        layer="below")
-    # Body
-    fig.add_shape(type="rect",
-        x0=rx, y0=ry, x1=rx+RACK_W, y1=ry+RACK_H,
-        fillcolor=fill, line=dict(color=dark, width=1.3))
-    # Gloss highlight
-    fig.add_shape(type="rect",
-        x0=rx+1.5, y0=ry+RACK_H*0.52, x1=rx+RACK_W-1.5, y1=ry+RACK_H-1.5,
-        fillcolor="rgba(255,255,255,0.15)", line=dict(color="rgba(0,0,0,0)", width=0))
-    # Front panel bar
-    fig.add_shape(type="rect",
-        x0=rx, y0=ry, x1=rx+RACK_W, y1=ry+5.5,
-        fillcolor=dark, line=dict(color="rgba(0,0,0,0)", width=0))
-    # LED
-    led_fill = "#ECFDF3" if status == "active" else "rgba(255,255,255,0.65)"
-    fig.add_shape(type="circle",
-        x0=rx+3, y0=ry+1.4, x1=rx+5, y1=ry+3.4,
-        fillcolor=led_fill, line=dict(color="rgba(0,0,0,0)", width=0))
-    # Hover trace
-    fig.add_trace(go.Scatter(
-        x=[rx + RACK_W / 2], y=[ry + RACK_H / 2 + 2],
-        mode="markers+text",
-        marker=dict(size=1, color="rgba(0,0,0,0)"),
-        text=[name[:6]],
-        textposition="middle center",
-        textfont=dict(size=6.5, color="white", family="DM Sans, sans-serif"),
-        hovertemplate=(
-            f"<b>{name}</b><br>Hall: {rh}<br>Status: {status.title()}<br>"
-            f"U: {u}U<br>Power: {pwr}<br>Type: {rack_type}<extra></extra>"
-        ),
-        customdata=[[rid, name, status, u, pwr, rh, rack_type, serial, dc_id]],
-        showlegend=False, name=name,
-    ))
+        layer="below"))
+    shapes.append(dict(
+        type="rect", x0=rx, y0=ry, x1=rx+RACK_W, y1=ry+RACK_H,
+        fillcolor=fill, line=dict(color=dark, width=1.3)))
+    shapes.append(dict(
+        type="rect", x0=rx+1.5, y0=ry+RACK_H*0.52, x1=rx+RACK_W-1.5, y1=ry+RACK_H-1.5,
+        fillcolor="rgba(255,255,255,0.15)", line=dict(color="rgba(0,0,0,0)", width=0)))
+    shapes.append(dict(
+        type="rect", x0=rx, y0=ry, x1=rx+RACK_W, y1=ry+5.5,
+        fillcolor=dark, line=dict(color="rgba(0,0,0,0)", width=0)))
+    shapes.append(dict(
+        type="circle", x0=rx+3, y0=ry+1.4, x1=rx+5, y1=ry+3.4,
+        fillcolor=led_fill, line=dict(color="rgba(0,0,0,0)", width=0)))
+
+    # Hover point — all racks merged into a single trace later
+    hover_x.append(rx + RACK_W / 2)
+    hover_y.append(ry + RACK_H / 2 + 2)
+    hover_text.append(name[:6])
+    hover_cd.append([rid, name, status, u, pwr, rh, rack_type, serial, dc_id])
 
 
-def _draw_hall_zone(fig, hx, hy, hall_name, dims, dc_id=""):
-    """Draw one hall zone starting at canvas coords (hx, hy)."""
+def _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_cd,
+                       hx, hy, hall_name, dims, dc_id=""):
+    """Collect hall background, label, aisle, and all rack shapes into accumulator lists."""
     zw = dims["zone_w"]
     zh = dims["zone_h"]
 
-    # ── Zone background (light grey floor)
-    fig.add_shape(type="rect",
-        x0=hx, y0=hy, x1=hx+zw, y1=hy+zh,
+    # Zone background
+    shapes.append(dict(
+        type="rect", x0=hx, y0=hy, x1=hx+zw, y1=hy+zh,
         fillcolor="rgba(248,249,252,1)",
         line=dict(color="rgba(208,213,221,1)", width=1.5),
-        layer="below")
-
-    # ── Hall label strip at top
-    fig.add_shape(type="rect",
-        x0=hx, y0=hy+zh-ZONE_LABEL_H, x1=hx+zw, y1=hy+zh,
+        layer="below"))
+    # Hall label strip
+    shapes.append(dict(
+        type="rect", x0=hx, y0=hy+zh-ZONE_LABEL_H, x1=hx+zw, y1=hy+zh,
         fillcolor="rgba(242,244,247,1)",
         line=dict(color="rgba(0,0,0,0)", width=0),
-        layer="below")
-    fig.add_shape(type="line",
+        layer="below"))
+    # Label separator line
+    shapes.append(dict(
+        type="line",
         x0=hx, y0=hy+zh-ZONE_LABEL_H, x1=hx+zw, y1=hy+zh-ZONE_LABEL_H,
-        line=dict(color="rgba(208,213,221,0.9)", width=1))
-    fig.add_annotation(
+        line=dict(color="rgba(208,213,221,0.9)", width=1)))
+
+    annotations.append(dict(
         text=f"<b>{hall_name}</b>",
         x=hx + zw / 2, y=hy + zh - ZONE_LABEL_H / 2,
         xanchor="center", yanchor="middle", showarrow=False,
-        font=dict(size=10, color="#344054", family="DM Sans, sans-serif"))
+        font=dict(size=10, color="#344054", family="DM Sans, sans-serif")))
 
     grid         = dims["grid"]
     rows_set     = dims["rows_set"]
@@ -204,22 +251,21 @@ def _draw_hall_zone(fig, hx, hy, hall_name, dims, dc_id=""):
             base += AISLE_H
         return base
 
-    # ── Aisle stripe
     if has_aisle:
         ay = hy + ZONE_PAD_BOT + aisle_after * (RACK_H + GAP_Y)
-        fig.add_shape(type="rect",
+        shapes.append(dict(
+            type="rect",
             x0=hx + ZONE_PAD_X - 4, y0=ay,
             x1=hx + zw - ZONE_PAD_X + 4, y1=ay + AISLE_H - 2,
             fillcolor="rgba(240,242,247,0.9)",
             line=dict(color="rgba(200,206,215,0.55)", width=1, dash="dot"),
-            layer="below")
-        fig.add_annotation(
+            layer="below"))
+        annotations.append(dict(
             text="A I S L E",
             x=hx + zw / 2, y=ay + AISLE_H / 2 - 1,
             xanchor="center", yanchor="middle", showarrow=False,
-            font=dict(size=6, color="#B0B7C3", family="DM Sans, sans-serif"))
+            font=dict(size=6, color="#B0B7C3", family="DM Sans, sans-serif")))
 
-    # ── Grid racks
     for row_i, row_val in enumerate(rows_set):
         ry_base = row_y(row_i)
         for col_val in cols_set:
@@ -229,21 +275,32 @@ def _draw_hall_zone(fig, hx, hy, hall_name, dims, dc_id=""):
             ci = col_idx_map[col_val]
             rx = hx + ZONE_PAD_X + ci * (RACK_W + GAP_X)
             status = (rack.get("status") or "unknown").lower()
-            _draw_rack(fig, rx, ry_base, status, str(rack.get("name") or "?"), rack, dc_id=dc_id)
+            _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
+                          rx, ry_base, status, str(rack.get("name") or "?"), rack, dc_id=dc_id)
 
-    # ── Ungridded racks
     for i, rack in enumerate(ungridded):
         ci = i % n_ung_per_row
         ri = n_rows_grid + i // n_ung_per_row
         ry_base = row_y(ri)
         rx = hx + ZONE_PAD_X + ci * (RACK_W + GAP_X)
         status = (rack.get("status") or "unknown").lower()
-        _draw_rack(fig, rx, ry_base, status, str(rack.get("name") or "?"), rack)
+        _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
+                      rx, ry_base, status, str(rack.get("name") or "?"), rack, dc_id=dc_id)
 
 
 # ── Main figure builder ─────────────────────────────────────────────────────
 
 def build_floor_map_figure(racks, dc_id=""):
+    # ── Cache lookup ─────────────────────────────────────────────────────────
+    fp = _rack_fingerprint(dc_id, racks)
+    cached = _FIG_CACHE.get(fp)
+    if cached is not None:
+        _logger.debug("floor_map figure cache HIT dc=%s racks=%d", dc_id, len(racks))
+        return cached
+
+    t0 = _time.perf_counter()
+
+    # ── Layout computation (unchanged) ───────────────────────────────────────
     halls_raw = {}
     for rack in racks:
         hall = rack.get("hall_name") or "Main Hall"
@@ -251,18 +308,29 @@ def build_floor_map_figure(racks, dc_id=""):
     for h in halls_raw:
         halls_raw[h].sort(key=_sort_key)
 
-    hall_list = sorted(halls_raw.items())   # [(name, racks), ...]
+    hall_list = sorted(halls_raw.items())
     n_halls   = len(hall_list)
 
-    # Pre-compute each hall's zone dimensions
+    if not n_halls:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No rack data available", xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="#98A2B3", family="DM Sans"))
+        fig.update_layout(
+            xaxis=dict(visible=False), yaxis=dict(visible=False),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=20, r=20, t=20, b=20), height=560,
+        )
+        _FIG_CACHE[fp] = fig
+        return fig
+
     hall_dims = [(name, rack_list, _hall_dimensions(rack_list))
                  for name, rack_list in hall_list]
 
-    # Arrange halls in rows of HALLS_PER_ROW
     n_cols_layout = min(n_halls, HALLS_PER_ROW)
     n_rows_layout = math.ceil(n_halls / n_cols_layout)
 
-    # Normalise column widths and row heights per grid cell
     col_widths = []
     row_heights = []
     for gr in range(n_rows_layout):
@@ -286,39 +354,58 @@ def build_floor_map_figure(racks, dc_id=""):
     floor_w = total_inner_w + FLOOR_PAD * 2
     floor_h = total_inner_h + FLOOR_PAD * 2
 
-    fig = go.Figure()
+    # ── Accumulators (avoids O(N²) add_shape/add_trace calls) ───────────────
+    shapes: list = [
+        # Outer floor shadow
+        dict(type="rect", x0=4, y0=-4, x1=floor_w+4, y1=floor_h-4,
+             fillcolor="rgba(16,24,40,0.06)",
+             line=dict(color="rgba(0,0,0,0)", width=0), layer="below"),
+        # Outer floor boundary
+        dict(type="rect", x0=0, y0=0, x1=floor_w, y1=floor_h,
+             fillcolor="rgba(255,255,255,1)",
+             line=dict(color="rgba(152,162,179,1)", width=2), layer="below"),
+    ]
+    annotations: list = []
+    hover_x: list = []
+    hover_y: list = []
+    hover_text: list = []
+    hover_cd: list = []
 
-    # ── Outer floor shadow
-    fig.add_shape(type="rect",
-        x0=4, y0=-4, x1=floor_w+4, y1=floor_h-4,
-        fillcolor="rgba(16,24,40,0.06)",
-        line=dict(color="rgba(0,0,0,0)", width=0), layer="below")
-
-    # ── Outer floor boundary (the building)
-    fig.add_shape(type="rect",
-        x0=0, y0=0, x1=floor_w, y1=floor_h,
-        fillcolor="rgba(255,255,255,1)",
-        line=dict(color="rgba(152,162,179,1)", width=2),
-        layer="below")
-
-    # ── Place each hall zone
+    # ── Collect all hall zones ────────────────────────────────────────────────
     for idx, (hall_name, _, dims) in enumerate(hall_dims):
         gr = idx // n_cols_layout
         gc = idx %  n_cols_layout
-
         hx = FLOOR_PAD + sum(col_widths[:gc]) + HALL_COL_GAP * gc
-        # Zones stack from top → bottom; y=0 is bottom in plotly, so invert
         hy_from_top = FLOOR_PAD + sum(row_heights[:gr]) + HALL_ROW_GAP * gr
         hy = floor_h - hy_from_top - dims["zone_h"]
+        _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_cd,
+                           hx, hy, hall_name, dims, dc_id=dc_id)
 
-        _draw_hall_zone(fig, hx, hy, hall_name, dims, dc_id=dc_id)
+    # ── Build figure — set shapes/annotations in bulk (O(N) not O(N²)) ──────
+    fig = go.Figure()
+    fig.update_layout(shapes=shapes, annotations=annotations)
 
-    # ── Empty state
-    if not racks:
-        fig.add_annotation(
-            text="No rack data available", xref="paper", yref="paper",
-            x=0.5, y=0.5, showarrow=False,
-            font=dict(size=16, color="#98A2B3", family="DM Sans"))
+    if hover_x:
+        fig.add_trace(go.Scatter(
+            x=hover_x, y=hover_y,
+            mode="markers+text",
+            marker=dict(size=22, color="rgba(0,0,0,0.01)", symbol="square"),
+            text=hover_text,
+            textposition="middle center",
+            textfont=dict(size=6.5, color="white", family="DM Sans, sans-serif"),
+            hovertemplate=(
+                "<b>%{customdata[1]}</b><br>"
+                "Hall: %{customdata[5]}<br>"
+                "Status: %{customdata[2]}<br>"
+                "U: %{customdata[3]}U<br>"
+                "Power: %{customdata[4]}<br>"
+                "Type: %{customdata[6]}"
+                "<extra></extra>"
+            ),
+            customdata=hover_cd,
+            showlegend=False,
+            name="racks",
+        ))
 
     fig.update_layout(
         xaxis=dict(visible=False, showgrid=False, zeroline=False,
@@ -336,6 +423,14 @@ def build_floor_map_figure(racks, dc_id=""):
             font=dict(family="DM Sans, sans-serif", size=12, color="#101828"),
             align="left"),
     )
+
+    elapsed_ms = (_time.perf_counter() - t0) * 1000
+    _logger.info(
+        "floor_map figure BUILT dc=%s racks=%d shapes=%d traces=%d in %.0fms",
+        dc_id, len(racks), len(fig.layout.shapes), len(fig.data), elapsed_ms,
+    )
+
+    _FIG_CACHE[fp] = fig
     return fig
 
 

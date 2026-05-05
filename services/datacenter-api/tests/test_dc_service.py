@@ -101,3 +101,85 @@ def test_fetch_all_batch_returns_empty_list_when_pool_unavailable():
         svc = DatabaseService()
     result = svc.get_all_datacenters_summary()
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Singleflight integration tests
+# ---------------------------------------------------------------------------
+
+def test_get_all_datacenters_summary_cache_miss_uses_singleflight():
+    """Cache miss must route through cache.run_singleflight, not call _rebuild_summary directly."""
+    with patch("app.services.dc_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = DatabaseService()
+
+    fake_summary = [{"id": "DC11", "name": "DC11"}]
+    with patch("app.services.dc_service.cache.get", return_value=None), \
+         patch("app.services.dc_service.cache.run_singleflight", return_value=fake_summary) as sf:
+        result = svc.get_all_datacenters_summary({"start": "2026-04-01", "end": "2026-04-30"})
+
+    assert result == fake_summary
+    assert sf.call_count == 1
+    key_arg = sf.call_args[0][0]
+    assert key_arg == "all_dc_summary:2026-04-01:2026-04-30"
+
+
+def test_get_dc_details_cache_miss_uses_singleflight():
+    """Cache miss must route through cache.run_singleflight; OperationalError fallback must not be cached."""
+    with patch("app.services.dc_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = DatabaseService()
+
+    fake_details = _EMPTY_DC("DC11")
+    fake_details["meta"]["name"] = "DC11-patched"
+    with patch("app.services.dc_service.cache.get", return_value=None), \
+         patch("app.services.dc_service.cache.run_singleflight", return_value=fake_details) as sf:
+        result = svc.get_dc_details("DC11", {"start": "2026-04-01", "end": "2026-04-30"})
+
+    assert result["meta"]["name"] == "DC11-patched"
+    assert sf.call_count == 1
+    key_arg = sf.call_args[0][0]
+    assert key_arg == "dc_details:DC11:2026-04-01:2026-04-30"
+
+
+def test_get_dc_details_singleflight_raises_returns_empty_dc():
+    """When singleflight raises OperationalError the method must return _EMPTY_DC without re-raising."""
+    with patch("app.services.dc_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = DatabaseService()
+
+    with patch("app.services.dc_service.cache.get", return_value=None), \
+         patch("app.services.dc_service.cache.run_singleflight", side_effect=OperationalError("db down")):
+        result = svc.get_dc_details("DC11")
+
+    assert result["meta"]["name"] == "DC11"
+    assert result["intel"]["hosts"] == 0
+
+
+def test_get_dc_racks_cache_miss_uses_singleflight_with_6h_ttl():
+    """get_dc_racks cache miss must call run_singleflight with ttl=21600."""
+    with patch("app.services.dc_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = DatabaseService()
+
+    fake_racks = {"racks": [], "summary": {"total_racks": 0, "active_racks": 0, "total_u_height": 0, "racks_with_energy": 0, "racks_with_pdu": 0}}
+    with patch("app.services.dc_service.cache.get", return_value=None), \
+         patch("app.services.dc_service.cache.run_singleflight", return_value=fake_racks) as sf:
+        result = svc.get_dc_racks("DC11")
+
+    assert result == fake_racks
+    assert sf.call_count == 1
+    _, _, kwargs = sf.call_args[0][0], sf.call_args[0][1], sf.call_args[1]
+    assert kwargs.get("ttl") == 21600
+
+
+def test_get_rack_devices_cache_miss_uses_singleflight_with_6h_ttl():
+    """get_rack_devices cache miss must call run_singleflight with ttl=21600."""
+    with patch("app.services.dc_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = DatabaseService()
+
+    fake_devices = {"devices": []}
+    with patch("app.services.dc_service.cache.get", return_value=None), \
+         patch("app.services.dc_service.cache.run_singleflight", return_value=fake_devices) as sf:
+        result = svc.get_rack_devices("rack-01")
+
+    assert result == fake_devices
+    assert sf.call_count == 1
+    _, _, kwargs = sf.call_args[0][0], sf.call_args[0][1], sf.call_args[1]
+    assert kwargs.get("ttl") == 21600
