@@ -122,6 +122,7 @@ from src.pages.settings.iam import teams_callbacks  # noqa: F401 — IAM teams p
 from src.pages.settings.iam import users_callbacks  # noqa: F401 — IAM users AD import / edit
 from src.pages.settings.integrations import ldap_callbacks  # noqa: F401 — LDAP test connection / mapping role sync
 from src.pages.settings import crm_service_mapping  # noqa: F401 — CRM service mapping callbacks
+from src.pages.settings import dashboard_callbacks  # noqa: F401 — Settings overview (cache refresh)
 
 _default_tr = default_time_range()
 _custom_st, _custom_en = time_range_to_bounds(_default_tr)

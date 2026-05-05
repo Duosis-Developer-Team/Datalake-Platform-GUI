@@ -154,6 +154,42 @@ def build_layout(search: str | None = None) -> html.Div:
         ],
     )
 
+    cache_ops_row = dmc.Paper(
+        p="md",
+        radius="md",
+        withBorder=True,
+        children=[
+            dmc.Group(
+                justify="space-between",
+                align="flex-start",
+                wrap="wrap",
+                gap="md",
+                children=[
+                    html.Div(
+                        [
+                            dmc.Text("Platform cache", fw=700, mb="xs", c=ON_SURFACE),
+                            dmc.Text(
+                                "Flush Redis-backed API caches and rebuild warm data (datacenter, customer, CRM). "
+                                "Also clears this dashboard worker's in-memory HTTP cache.",
+                                size="sm",
+                                c=ON_DIM,
+                            ),
+                        ],
+                        style={"flex": "1 1 280px"},
+                    ),
+                    dmc.Button(
+                        "Refresh all caches",
+                        id="settings-cache-refresh-btn",
+                        variant="filled",
+                        color="indigo",
+                        leftSection=DashIconify(icon="solar:refresh-circle-bold-duotone", width=18),
+                    ),
+                ],
+            ),
+            html.Div(id="settings-cache-refresh-feedback", style={"marginTop": "12px"}),
+        ],
+    )
+
     status_row = dmc.SimpleGrid(
         cols=2,
         spacing="md",
@@ -227,6 +263,8 @@ def build_layout(search: str | None = None) -> html.Div:
             [
                 hero,
                 kpi_row,
+                dmc.Space(h="lg"),
+                cache_ops_row,
                 dmc.Space(h="lg"),
                 section_row,
                 dmc.Space(h="lg"),

@@ -41,7 +41,7 @@ from app.core.redis_client import (
     init_redis_pool,
     redis_is_healthy,
 )
-from app.routers import crm_config, sellable, service_mapping
+from app.routers import admin_cache, crm_config, sellable, service_mapping
 from app.services.crm_config_service import CrmConfigService
 from app.services.currency_service import CurrencyService
 from app.services.customer_service import CustomerService
@@ -215,6 +215,12 @@ app.include_router(
     service_mapping.router,
     prefix="/api/v1",
     tags=["crm-service-mapping"],
+    dependencies=[Depends(verify_api_user)],
+)
+app.include_router(
+    admin_cache.router,
+    prefix="/api/v1",
+    tags=["admin"],
     dependencies=[Depends(verify_api_user)],
 )
 

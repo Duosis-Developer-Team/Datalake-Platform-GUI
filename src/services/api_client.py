@@ -1447,3 +1447,51 @@ def put_crm_calc_config(
     out = _put_json(_client_crm, f"/api/v1/crm/config/variables/{enc}", body)
     _api_response_cache.delete("api:crm_calc_config")
     return out if isinstance(out, dict) else {}
+
+
+_ADMIN_CACHE_REFRESH_PATH = "/api/v1/admin/cache/refresh"
+
+
+def _response_error_detail(resp: httpx.Response) -> Any:
+    try:
+        return resp.json()
+    except Exception:
+        return (resp.text or "")[:800]
+
+
+def refresh_platform_redis_caches() -> dict[str, Any]:
+    """Flush Redis-backed caches on backend services and clear the GUI HTTP response cache.
+
+    Calls datacenter-api, customer-api, and crm-engine ``POST /api/v1/admin/cache/refresh``.
+    Uses an extended timeout because warming can take several minutes.
+    """
+    timeout = httpx.Timeout(600.0, connect=30.0)
+    headers = _auth_headers()
+    out: dict[str, Any] = {"services": {}, "gui_cache_cleared": False}
+    targets: list[tuple[str, httpx.Client]] = [
+        ("datacenter_api", _client_dc),
+        ("customer_api", _client_cust),
+        ("crm_engine", _client_crm),
+    ]
+    for name, client in targets:
+        try:
+            r = client.post(_ADMIN_CACHE_REFRESH_PATH, headers=headers, timeout=timeout)
+            r.raise_for_status()
+            body = r.json() if r.content else {}
+            out["services"][name] = {"ok": True, "data": body}
+        except httpx.HTTPStatusError as exc:
+            out["services"][name] = {
+                "ok": False,
+                "error": f"HTTP {exc.response.status_code}",
+                "detail": _response_error_detail(exc.response),
+            }
+        except _HTTP_ERRORS as exc:
+            out["services"][name] = {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            out["services"][name] = {"ok": False, "error": str(exc)}
+    try:
+        _api_response_cache.clear()
+        out["gui_cache_cleared"] = True
+    except Exception as exc:
+        out["gui_cache_error"] = str(exc)
+    return out
