@@ -106,6 +106,7 @@ def _prevent_stale_dash_cache(response):
 _log = logging.getLogger(__name__)
 _log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
 
+
 from src.pages import home, datacenters, dc_view, customer_view, customers_list, query_explorer, global_view, region_drilldown, dc_detail
 from src.pages import availability_annual  # noqa: F401 — annual availability layout + callbacks
 from src.pages import crm_sellable_potential
@@ -335,25 +336,32 @@ app.layout = dmc.MantineProvider(
 
 app.clientside_callback(
     """
-    function(homePdf, dcListPdf, dcPdf, globalPdf, customerPdf, qePdf) {
+    function(btn_clicks) {
         const triggered = dash_clientside.callback_context.triggered;
-        if (!triggered || !triggered.length || !triggered[0]) {
+        if (!triggered || !triggered.length) return window.dash_clientside.no_update;
+        const trigger = triggered[0];
+        if (!trigger || !trigger.value) return window.dash_clientside.no_update;
+
+        const propId = trigger.prop_id || "";
+        let index = "";
+        try {
+            const parsed = JSON.parse(propId.split(".")[0]);
+            index = parsed.index || "";
+        } catch(e) {
             return window.dash_clientside.no_update;
         }
-        const propId = triggered[0].prop_id || "";
-        const id = propId.split(".")[0];
+
         const map = {
-            "home-export-pdf": "home_overview",
-            "datacenters-export-pdf": "datacenters",
-            "dc-export-pdf": "dc_detail",
-            "global-export-pdf": "global_view",
-            "customer-export-pdf": "customer_view",
-            "qe-export-pdf": "query_explorer"
+            "home": "home_overview",
+            "datacenters": "datacenters",
+            "dc": "dc_detail",
+            "global": "global_view",
+            "customer": "customer_view",
+            "qe": "query_explorer"
         };
-        const prefix = map[id];
-        if (!prefix) {
-            return window.dash_clientside.no_update;
-        }
+        const prefix = map[index];
+        if (!prefix) return window.dash_clientside.no_update;
+
         const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
         if (typeof window.triggerPagePDF === "function") {
             window.triggerPagePDF("main-content", prefix + "_" + ts + ".pdf");
@@ -362,12 +370,7 @@ app.clientside_callback(
     }
     """,
     dash.Output("export-pdf-clientside-dummy", "children"),
-    dash.Input("home-export-pdf", "n_clicks"),
-    dash.Input("datacenters-export-pdf", "n_clicks"),
-    dash.Input("dc-export-pdf", "n_clicks"),
-    dash.Input("global-export-pdf", "n_clicks"),
-    dash.Input("customer-export-pdf", "n_clicks"),
-    dash.Input("qe-export-pdf", "n_clicks"),
+    dash.Input({"type": "pdf-export-btn", "index": ALL}, "n_clicks"),
     prevent_initial_call=True,
 )
 
@@ -1030,13 +1033,21 @@ def handle_globe_pin_click(clicked_point, last_dc_id, time_range):
     if not dc_id:
         return [], None, dash.no_update, dash.no_update
 
+    t0 = time_module.perf_counter()
+    from src.services.global_view_prefetch import warm_dc_priority
+    warm_dc_priority(dc_id)
+
     if dc_id == last_dc_id:
+        elapsed_ms = round((time_module.perf_counter() - t0) * 1000, 1)
+        _log.info("handle_globe_pin_click dc=%s same_dc=True elapsed_ms=%.1f", dc_id, elapsed_ms)
         return dash.no_update, dc_id, "building", {"dc_id": dc_id, "dc_name": dc_id}
 
     from src.utils.time_range import default_time_range
     tr = time_range or default_time_range()
     from src.pages.global_view import build_dc_info_card
     panel = build_dc_info_card(dc_id, tr, site_name=site_name)
+    elapsed_ms = round((time_module.perf_counter() - t0) * 1000, 1)
+    _log.info("handle_globe_pin_click dc=%s same_dc=False elapsed_ms=%.1f", dc_id, elapsed_ms)
     return panel, dc_id, dash.no_update, dash.no_update
 
 
@@ -1045,9 +1056,10 @@ def handle_globe_pin_click(clicked_point, last_dc_id, time_range):
     dash.Output("global-3d-modal-container", "style"),
     dash.Input({"type": "open-3d-hologram-btn", "index": ALL}, "n_clicks"),
     dash.State("global-3d-modal-container", "style"),
+    dash.State("app-time-range", "data"),
     prevent_initial_call=True,
 )
-def open_3d_hologram_modal(btn_clicks, current_style):
+def open_3d_hologram_modal(btn_clicks, current_style, time_range):
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update, dash.no_update
@@ -1067,7 +1079,8 @@ def open_3d_hologram_modal(btn_clicks, current_style):
     from src.services import api_client as api
     from src.pages.global_view import build_3d_rack_overlay
 
-    info = api.get_dc_details(dc_id, default_time_range())
+    tr = time_range or default_time_range()
+    info = api.get_dc_details(dc_id, tr)
     dc_name = info.get("meta", {}).get("name", dc_id)
 
     racks_resp = api.get_dc_racks(dc_id)
@@ -1098,6 +1111,18 @@ def close_3d_hologram_modal(n_clicks, current_style):
     return new_style
 
 
+@app.callback(
+    dash.Output("global-prefetch-trigger-store", "data"),
+    dash.Input("global-prefetch-interval", "n_intervals"),
+    dash.State("app-time-range", "data"),
+    prevent_initial_call=True,
+)
+def refresh_global_view_prefetch(n_intervals, time_range):
+    from src.services.global_view_prefetch import trigger_background
+    from src.utils.time_range import default_time_range as _dtr
+    trigger_background(time_range or _dtr())
+    return n_intervals
+
 
 @app.callback(
     dash.Output("globe-layer", "style"),
@@ -1110,6 +1135,11 @@ def close_3d_hologram_modal(n_clicks, current_style):
     dash.State("selected-building-dc-store", "data"),
 )
 def view_controller(mode, dc_store):
+    from src.services.global_view_prefetch import set_phase2_pause
+    # Pause Phase-2 device fetches while user navigates floor_map/building
+    # to avoid competing with rack-detail API calls.
+    set_phase2_pause(mode in {"building", "floor_map"})
+
     shown = {"display": "block"}
     hidden = {"display": "none"}
     reveal_shown = {"display": "flex"}
@@ -1128,17 +1158,29 @@ def view_controller(mode, dc_store):
     dash.Input("building-reveal-timer", "n_intervals"),
     dash.State("selected-building-dc-store", "data"),
     dash.State("current-view-mode", "data"),
+    dash.State("app-time-range", "data"),
     prevent_initial_call=True,
 )
-def advance_to_floor_map(n_intervals, dc_store, current_mode):
+def advance_to_floor_map(n_intervals, dc_store, current_mode, time_range):
     if not n_intervals or current_mode != "building" or not dc_store:
         return dash.no_update, dash.no_update
+    t0 = time_module.perf_counter()
     dc_id = dc_store.get("dc_id", "")
     dc_name = dc_store.get("dc_name", dc_id)
+    from src.services.global_view_prefetch import is_warm
+    from src.utils.time_range import default_time_range as _dtr
+    tr = time_range or _dtr()
+    warm = is_warm(tr)
     racks_resp = api.get_dc_racks(dc_id)
     racks = racks_resp.get("racks", [])
     from src.pages.floor_map import build_floor_map_layout
-    return "floor_map", build_floor_map_layout(dc_id, dc_name, racks)
+    layout = build_floor_map_layout(dc_id, dc_name, racks)
+    elapsed_ms = round((time_module.perf_counter() - t0) * 1000, 1)
+    _log.info(
+        "advance_to_floor_map dc=%s racks=%d is_warm=%s elapsed_ms=%.1f",
+        dc_id, len(racks), warm, elapsed_ms,
+    )
+    return "floor_map", layout
 
 
 @app.callback(
@@ -1394,8 +1436,24 @@ def show_rack_detail(click_data, dc_store):
                 ),
             ]),
 
-            # ── Rack unit diagram
-            _build_rack_unit_diagram(name, u_height or 47, devices, fill, dark),
+            # ── Rack unit diagram (or empty state)
+            _build_rack_unit_diagram(name, u_height or 47, devices, fill, dark)
+            if devices else
+            html.Div(
+                style={
+                    "display": "flex", "flexDirection": "column",
+                    "alignItems": "center", "justifyContent": "center",
+                    "padding": "24px 16px", "gap": "8px",
+                    "background": "#F9FAFB", "borderRadius": "10px",
+                    "border": "1px solid #EAECF0",
+                },
+                children=[
+                    DashIconify(icon="solar:server-square-linear",
+                                width=28, color="#D0D5DD"),
+                    dmc.Text("No devices found for this rack",
+                             size="sm", c="#98A2B3", fw=500, ta="center"),
+                ],
+            ),
         ],
     )
 
@@ -1847,4 +1905,4 @@ def update_intel_disk_trend(disk_name, host, time_range, pathname):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8050, use_reloader=False)
+    app.run(debug=True, dev_tools_ui=False, port=8050, use_reloader=False)

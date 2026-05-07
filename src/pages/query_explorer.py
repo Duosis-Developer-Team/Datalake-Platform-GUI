@@ -139,7 +139,7 @@ def layout(visible_sections=None):
                         dmc.Text("Export result", size="xs", c="dimmed", fw=600),
                         dmc.Button("CSV", id="qe-export-csv", size="xs", variant="light", color="indigo"),
                         dmc.Button("Excel", id="qe-export-xlsx", size="xs", variant="light", color="indigo"),
-                        dmc.Button("PDF", id="qe-export-pdf", size="xs", variant="light", color="indigo"),
+                        dmc.Button("PDF", id={"type": "pdf-export-btn", "index": "qe"}, size="xs", variant="light", color="indigo"),
                     ],
                 )
                 if qv("action:qe:export")

@@ -8,7 +8,10 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clear_cache():
-    """No-op placeholder — cache is mocked via httpx patches."""
+    """api_client now reads memory cache before HTTP; flush between tests."""
+    from src.services import cache_service as cs
+
+    cs.clear()
     yield
 
 
@@ -18,8 +21,9 @@ class TestITSMApiClientFunctions:
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"total_count": 5, "incident_count": 3}
 
-        with patch("src.services.api_client._client_cust") as mock_client:
-            mock_client.get.return_value = mock_resp
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_resp
+        with patch("src.services.api_client._get_client_cust", return_value=mock_client):
             from src.services.api_client import get_customer_itsm_summary
             result = get_customer_itsm_summary("Boyner", {"start": "2026-01-01", "end": "2026-04-01"})
 
@@ -31,8 +35,9 @@ class TestITSMApiClientFunctions:
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"long_tail": [], "sla_breach": []}
 
-        with patch("src.services.api_client._client_cust") as mock_client:
-            mock_client.get.return_value = mock_resp
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_resp
+        with patch("src.services.api_client._get_client_cust", return_value=mock_client):
             from src.services.api_client import get_customer_itsm_extremes
             result = get_customer_itsm_extremes("Boyner", None)
 
@@ -45,8 +50,9 @@ class TestITSMApiClientFunctions:
         mock_resp.status_code = 200
         mock_resp.json.return_value = [{"source": "incident", "id": 1}]
 
-        with patch("src.services.api_client._client_cust") as mock_client:
-            mock_client.get.return_value = mock_resp
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_resp
+        with patch("src.services.api_client._get_client_cust", return_value=mock_client):
             from src.services.api_client import get_customer_itsm_tickets
             result = get_customer_itsm_tickets("Boyner", None)
 
@@ -67,8 +73,9 @@ class TestITSMApiClientFunctions:
     def test_fallback_on_http_error(self):
         """On HTTP connection error, empty fallback is returned (not an exception)."""
         import httpx
-        with patch("src.services.api_client._client_cust") as mock_client:
-            mock_client.get.side_effect = httpx.ConnectError("connection refused")
+        mock_client = MagicMock()
+        mock_client.get.side_effect = httpx.ConnectError("connection refused")
+        with patch("src.services.api_client._get_client_cust", return_value=mock_client):
             from src.services.api_client import get_customer_itsm_summary
             result = get_customer_itsm_summary("NoOne", None)
 

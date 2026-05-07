@@ -580,7 +580,7 @@ def build_overview(time_range=None, visible_sections=None):
                                         children=[
                                             dmc.Button("CSV", id="home-export-csv", size="xs", variant="light", color="indigo"),
                                             dmc.Button("Excel", id="home-export-xlsx", size="xs", variant="light", color="indigo"),
-                                            dmc.Button("PDF", id="home-export-pdf", size="xs", variant="light", color="indigo"),
+                                            dmc.Button("PDF", id={"type": "pdf-export-btn", "index": "home"}, size="xs", variant="light", color="indigo"),
                                         ],
                                     ),
                                 ],

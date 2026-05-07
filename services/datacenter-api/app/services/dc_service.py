@@ -1080,12 +1080,12 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
         if cached_val is not None:
             return cached_val
 
-        try:
+        def _fetch():
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     self._ensure_dc_description_map(cur)
                     dc_wc = f"%{dc_code}%"
-                    result = self._aggregate_dc(
+                    return self._aggregate_dc(
                         dc_code,
                         dc_description=self._dc_description_map.get(dc_code, ""),
                         nutanix_host_count=self.get_nutanix_host_count(cur, dc_code, start_ts, end_ts),
@@ -1113,12 +1113,13 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                         hyperconv_row=self.get_hyperconv_metrics(cur, dc_wc, start_ts, end_ts),
                         hyperconv_avg30=self.get_hyperconv_avg30(cur, dc_wc, start_ts, end_ts),
                     )
+
+        try:
+            result = cache.run_singleflight(cache_key, _fetch)
+            return result
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_details(%s): %s", dc_code, exc)
             return _EMPTY_DC(dc_code)
-
-        cache.set(cache_key, result)
-        return result
 
     # ------------------------------------------------------------------
     # Batch fetch (internal) — used by get_all_datacenters_summary
@@ -1565,7 +1566,8 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         if cached_val is not None:
             return cached_val
 
-        return self._rebuild_summary(tr)
+        result = cache.run_singleflight(cache_key, lambda: self._rebuild_summary(tr))
+        return result
 
     def _rebuild_summary(self, time_range: dict | None = None) -> list[dict]:
         """Fetch fresh data and rebuild the summary list. Also populates per-DC cache for the given time range."""
@@ -4154,47 +4156,47 @@ JOIN latest l
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
-        try:
+
+        def _fetch():
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     rows = self._run_rows(cur, drq.RACKS_BY_DC, (dc_code, dc_code))
                     summary_row = self._run_row(cur, drq.RACK_SUMMARY_BY_DC, (dc_code, dc_code))
+            columns = [
+                "id", "name", "display_name", "status", "status_description",
+                "u_height", "kabin_enerji", "pdu_a_ip", "pdu_b_ip", "rack_type",
+                "serial", "asset_tag", "tenant_name", "facility_id",
+                "weight", "max_weight", "weight_unit",
+                "description", "comments",
+                "first_observed", "last_observed", "location_id", "site_id",
+                "hall_name",
+            ]
+            racks = []
+            for r in (rows or []):
+                rack = {}
+                for i, col in enumerate(columns):
+                    rack[col] = r[i] if i < len(r) else None
+                if rack.get("first_observed"):
+                    rack["first_observed"] = str(rack["first_observed"])
+                if rack.get("last_observed"):
+                    rack["last_observed"] = str(rack["last_observed"])
+                racks.append(rack)
+            s = summary_row or (0, 0, 0, 0, 0)
+            summary = {
+                "total_racks": int(s[0] or 0),
+                "active_racks": int(s[1] or 0),
+                "total_u_height": int(s[2] or 0),
+                "racks_with_energy": int(s[3] or 0),
+                "racks_with_pdu": int(s[4] or 0),
+            }
+            return {"racks": racks, "summary": summary}
+
+        try:
+            result = cache.run_singleflight(cache_key, _fetch, ttl=21600)
+            return result
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_racks(%s): %s", dc_code, exc)
             return empty
-
-        columns = [
-            "id", "name", "display_name", "status", "status_description",
-            "u_height", "kabin_enerji", "pdu_a_ip", "pdu_b_ip", "rack_type",
-            "serial", "asset_tag", "tenant_name", "facility_id",
-            "weight", "max_weight", "weight_unit",
-            "description", "comments",
-            "first_observed", "last_observed", "location_id", "site_id",
-            "hall_name",
-        ]
-        racks = []
-        for r in (rows or []):
-            rack = {}
-            for i, col in enumerate(columns):
-                rack[col] = r[i] if i < len(r) else None
-            if rack.get("first_observed"):
-                rack["first_observed"] = str(rack["first_observed"])
-            if rack.get("last_observed"):
-                rack["last_observed"] = str(rack["last_observed"])
-            racks.append(rack)
-
-        s = summary_row or (0, 0, 0, 0, 0)
-        summary = {
-            "total_racks": int(s[0] or 0),
-            "active_racks": int(s[1] or 0),
-            "total_u_height": int(s[2] or 0),
-            "racks_with_energy": int(s[3] or 0),
-            "racks_with_pdu": int(s[4] or 0),
-        }
-
-        result = {"racks": racks, "summary": summary}
-        cache.set(cache_key, result, ttl=21600)  # 6h — rack positions rarely change
-        return result
 
     def get_rack_devices(self, rack_name: str) -> dict:
         """Return all devices installed in a specific rack (by name), with U position."""
@@ -4204,27 +4206,27 @@ JOIN latest l
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
-        try:
+
+        def _fetch():
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     rows = self._run_rows(cur, drq.DEVICES_BY_RACK_NAME, (rack_name.strip(),))
+            columns = ["name", "position", "face", "role", "device_type",
+                       "status_value", "status_label", "manufacturer", "description"]
+            devices = []
+            for r in (rows or []):
+                d = {}
+                for i, col in enumerate(columns):
+                    val = r[i] if i < len(r) else None
+                    d[col] = float(val) if hasattr(val, '__float__') and col == "position" else val
+                devices.append(d)
+            return {"devices": devices}
+
+        try:
+            return cache.run_singleflight(cache_key, _fetch, ttl=21600)
         except OperationalError as exc:
             logger.error("DB unavailable for get_rack_devices(%s): %s", rack_name, exc)
             return {"devices": []}
-
-        columns = ["name", "position", "face", "role", "device_type",
-                   "status_value", "status_label", "manufacturer", "description"]
-        devices = []
-        for r in (rows or []):
-            d = {}
-            for i, col in enumerate(columns):
-                val = r[i] if i < len(r) else None
-                d[col] = float(val) if hasattr(val, '__float__') and col == "position" else val
-            devices.append(d)
-
-        result = {"devices": devices}
-        cache.set(cache_key, result, ttl=21600)
-        return result
 
     def warm_cache(self) -> None:
         """

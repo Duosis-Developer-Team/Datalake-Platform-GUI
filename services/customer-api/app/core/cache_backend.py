@@ -64,7 +64,13 @@ def cache_get(key: str) -> Any:
                 try:
                     serialized = _serialize(value)
                     if serialized:
-                        redis_client.setex(key, settings.cache_ttl_seconds, serialized)
+                        # Match datacenter-api: do not rewrite Redis on every in-process hit (large payloads).
+                        redis_client.set(
+                            key,
+                            serialized,
+                            ex=settings.cache_ttl_seconds,
+                            nx=True,
+                        )
                 except Exception as exc:
                     logger.warning("Redis backfill error: %s", exc)
             span.set_attribute("cache.hit", True)

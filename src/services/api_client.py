@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import threading
 import time
@@ -9,6 +10,8 @@ from urllib.parse import quote
 import httpx
 
 from src.services import cache_service as _api_response_cache
+
+logger = logging.getLogger(__name__)
 
 # Microservices: set per-service URLs, or use API_BASE_URL for a single gateway.
 _API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
@@ -114,11 +117,50 @@ _EMPTY_DATACENTERS: list[dict[str, Any]] = []
 _EMPTY_CUSTOMERS: list[str] = []
 _EMPTY_SLA_BY_DC: dict[str, dict] = {}
 
-_transport = httpx.HTTPTransport(retries=3)
-_client_dc = httpx.Client(base_url=DATACENTER_API_URL, timeout=30.0, transport=_transport)
-_client_cust = httpx.Client(base_url=CUSTOMER_API_URL, timeout=30.0, transport=_transport)
-_client_query = httpx.Client(base_url=QUERY_API_URL, timeout=30.0, transport=_transport)
-_client_crm = httpx.Client(base_url=CRM_ENGINE_URL, timeout=30.0, transport=_transport)
+_HTTP_TLS = threading.local()
+
+# httpx.Client is not safe to share across threads; background prefetch uses thread pools.
+# One client (+ transport pool) per thread avoids cross-thread contention and 30s read timeouts.
+
+
+def _new_http_transport() -> httpx.HTTPTransport:
+    return httpx.HTTPTransport(retries=3)
+
+
+def _get_client_dc() -> httpx.Client:
+    c = getattr(_HTTP_TLS, "dc", None)
+    if c is None:
+        _HTTP_TLS.dc = httpx.Client(
+            base_url=DATACENTER_API_URL, timeout=30.0, transport=_new_http_transport()
+        )
+        c = _HTTP_TLS.dc
+    return c
+
+
+def _get_client_cust() -> httpx.Client:
+    c = getattr(_HTTP_TLS, "cust", None)
+    if c is None:
+        _HTTP_TLS.cust = httpx.Client(
+            base_url=CUSTOMER_API_URL, timeout=30.0, transport=_new_http_transport()
+        )
+        c = _HTTP_TLS.cust
+    return c
+
+
+def _get_client_query() -> httpx.Client:
+    c = getattr(_HTTP_TLS, "query", None)
+    if c is None:
+        _HTTP_TLS.query = httpx.Client(
+            base_url=QUERY_API_URL, timeout=30.0, transport=_new_http_transport()
+        )
+        c = _HTTP_TLS.query
+    return c
+
+
+# CRM routes are not in the global-view prefetch path; keep single client.
+_client_crm = httpx.Client(
+    base_url=CRM_ENGINE_URL, timeout=30.0, transport=_new_http_transport()
+)
 
 
 def _clone(value: Any) -> Any:
@@ -196,7 +238,10 @@ def _api_cache_get_with_stale(
     fetch_normalized: Callable[[], Any],
     empty_fallback: Any,
 ) -> Any:
-    """On success, persist normalized payload. On HTTP/transport errors, return last good payload if any."""
+    """Return cached payload when present. Otherwise fetch and store; on HTTP/transport errors return last good payload."""
+    stale = _api_response_cache.get(cache_key)
+    if stale is not None:
+        return _clone(stale)
     try:
         out = fetch_normalized()
         _api_response_cache.set(cache_key, out)
@@ -212,7 +257,7 @@ def get_global_dashboard(tr: Optional[dict]) -> dict:
     ck = f"api:global_dashboard:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, "/api/v1/dashboard/overview", params=_build_time_params(tr))
+        data = _get_json(_get_client_dc(), "/api/v1/dashboard/overview", params=_build_time_params(tr))
         return data if isinstance(data, dict) else _clone(_EMPTY_DASHBOARD)
 
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_DASHBOARD)
@@ -222,7 +267,8 @@ def get_all_datacenters_summary(tr: Optional[dict]) -> list[dict]:
     ck = f"api:datacenters_summary:{_serialize_tr_params(tr)}"
 
     def fetch() -> list[dict]:
-        data = _get_json(_client_dc, "/api/v1/datacenters/summary", params=_build_time_params(tr))
+        params = _build_time_params(tr)
+        data = _get_json(_get_client_dc(), "/api/v1/datacenters/summary", params=params)
         return data if isinstance(data, list) else _clone(_EMPTY_DATACENTERS)
 
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_DATACENTERS)
@@ -233,7 +279,7 @@ def get_dc_details(dc_id: str, tr: Optional[dict]) -> dict:
     ck = f"api:dc_details:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}", params=_build_time_params(tr))
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}", params=_build_time_params(tr))
         return data if isinstance(data, dict) else _clone(_EMPTY_DC_DETAIL)
 
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_DC_DETAIL)
@@ -243,7 +289,7 @@ def get_customer_list() -> list[str]:
     ck = "api:customer_list"
 
     def fetch() -> list[str]:
-        data = _get_json(_client_cust, "/api/v1/customers")
+        data = _get_json(_get_client_cust(), "/api/v1/customers")
         return data if isinstance(data, list) else _clone(_EMPTY_CUSTOMERS)
 
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_CUSTOMERS)
@@ -255,7 +301,7 @@ def get_customer_resources(name: str, tr: Optional[dict]) -> dict:
 
     def fetch() -> dict:
         data = _get_json(
-            _client_cust,
+            _get_client_cust(),
             f"/api/v1/customers/{enc}/resources",
             params=_build_time_params(tr),
         )
@@ -269,7 +315,7 @@ def execute_registered_query(key: str, params: str) -> dict:
     ck = f"api:query:{enc_key}:{json.dumps(params or '', ensure_ascii=False)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_query, f"/api/v1/queries/{enc_key}", params={"params": params or ""})
+        data = _get_json(_get_client_query(), f"/api/v1/queries/{enc_key}", params={"params": params or ""})
         return data if isinstance(data, dict) else _clone(_EMPTY_QUERY)
 
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_QUERY)
@@ -280,7 +326,7 @@ def get_sla_by_dc(tr: Optional[dict]) -> dict[str, dict]:
     ck = f"api:sla_by_dc:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict[str, dict]:
-        data = _get_json(_client_dc, "/api/v1/sla", params=_build_time_params(tr))
+        data = _get_json(_get_client_dc(), "/api/v1/sla", params=_build_time_params(tr))
         by_dc = (data or {}).get("by_dc") if isinstance(data, dict) else None
         return by_dc if isinstance(by_dc, dict) else _clone(_EMPTY_SLA_BY_DC)
 
@@ -293,7 +339,7 @@ def get_dc_s3_pools(dc_code: str, tr: Optional[dict]) -> dict:
     ck = f"api:dc_s3_pools:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/s3/pools", params=_build_time_params(tr))
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/s3/pools", params=_build_time_params(tr))
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
@@ -305,7 +351,7 @@ def get_customer_s3_vaults(customer_name: str, tr: Optional[dict]) -> dict:
     ck = f"api:customer_s3_vaults:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/s3/vaults", params=_build_time_params(tr))
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/s3/vaults", params=_build_time_params(tr))
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
@@ -332,7 +378,7 @@ def get_customer_itsm_summary(customer_name: str, tr: Optional[dict]) -> dict:
     ck = f"api:customer_itsm_summary:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/itsm/summary", params=_build_time_params(tr))
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/itsm/summary", params=_build_time_params(tr))
         return data if isinstance(data, dict) else _EMPTY_ITSM_SUMMARY
 
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_ITSM_SUMMARY)
@@ -343,7 +389,7 @@ def get_customer_itsm_extremes(customer_name: str, tr: Optional[dict]) -> dict:
     ck = f"api:customer_itsm_extremes:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/itsm/extremes", params=_build_time_params(tr))
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/itsm/extremes", params=_build_time_params(tr))
         return data if isinstance(data, dict) else _EMPTY_ITSM_EXTREMES
 
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_ITSM_EXTREMES)
@@ -354,7 +400,7 @@ def get_customer_itsm_tickets(customer_name: str, tr: Optional[dict]) -> list:
     ck = f"api:customer_itsm_tickets:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> list:
-        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/itsm/tickets", params=_build_time_params(tr))
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/itsm/tickets", params=_build_time_params(tr))
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale(ck, fetch, [])
@@ -366,7 +412,7 @@ def get_dc_netbackup_pools(dc_code: str, tr: Optional[dict]) -> dict:
     ck = f"api:dc_netbackup:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/backup/netbackup", params=_build_time_params(tr))
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/netbackup", params=_build_time_params(tr))
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
@@ -378,7 +424,7 @@ def get_dc_zerto_sites(dc_code: str, tr: Optional[dict]) -> dict:
     ck = f"api:dc_zerto:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/backup/zerto", params=_build_time_params(tr))
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/zerto", params=_build_time_params(tr))
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
@@ -390,7 +436,7 @@ def get_dc_veeam_repos(dc_code: str, tr: Optional[dict]) -> dict:
     ck = f"api:dc_veeam:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/backup/veeam", params=_build_time_params(tr))
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/veeam", params=_build_time_params(tr))
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
@@ -401,7 +447,7 @@ def get_classic_cluster_list(dc_code: str, tr: Optional[dict]) -> list[str]:
     ck = f"api:classic_clusters:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> list[str]:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/clusters/classic", params=_build_time_params(tr))
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/clusters/classic", params=_build_time_params(tr))
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale(ck, fetch, [])
@@ -413,7 +459,7 @@ def get_hyperconv_cluster_list(dc_code: str, tr: Optional[dict]) -> list[str]:
 
     def fetch() -> list[str]:
         data = _get_json(
-            _client_dc,
+            _get_client_dc(),
             f"/api/v1/datacenters/{enc}/clusters/hyperconverged",
             params=_build_time_params(tr),
         )
@@ -436,7 +482,7 @@ def get_classic_metrics_filtered(
     ck = f"api:classic_metrics:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/compute/classic", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/compute/classic", params=params)
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
@@ -450,7 +496,7 @@ def get_hyperconv_metrics_filtered(
     ck = f"api:hyperconv_metrics:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/compute/hyperconverged", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/compute/hyperconverged", params=params)
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
@@ -462,7 +508,7 @@ def get_physical_inventory_dc(dc_name: str) -> dict:
     ck = f"api:phys_inv_dc:{enc}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/physical-inventory")
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/physical-inventory")
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
@@ -472,7 +518,7 @@ def get_physical_inventory_overview_by_role() -> list[dict]:
     ck = "api:phys_inv_overview_by_role"
 
     def fetch() -> list[dict]:
-        data = _get_json(_client_dc, "/api/v1/physical-inventory/overview/by-role")
+        data = _get_json(_get_client_dc(), "/api/v1/physical-inventory/overview/by-role")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale(ck, fetch, [])
@@ -483,7 +529,7 @@ def get_physical_inventory_overview_manufacturer(role: str) -> list[dict]:
     ck = f"api:phys_inv_mfr:{enc}"
 
     def fetch() -> list[dict]:
-        data = _get_json(_client_dc, "/api/v1/physical-inventory/overview/manufacturer", params={"role": enc})
+        data = _get_json(_get_client_dc(), "/api/v1/physical-inventory/overview/manufacturer", params={"role": enc})
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale(ck, fetch, [])
@@ -494,7 +540,7 @@ def get_physical_inventory_overview_location(role: str, manufacturer: str) -> li
 
     def fetch() -> list[dict]:
         data = _get_json(
-            _client_dc,
+            _get_client_dc(),
             "/api/v1/physical-inventory/overview/location",
             params={"role": role, "manufacturer": manufacturer},
         )
@@ -507,7 +553,7 @@ def get_physical_inventory_customer() -> list[dict]:
     ck = "api:phys_inv_customer"
 
     def fetch() -> list[dict]:
-        data = _get_json(_client_dc, "/api/v1/physical-inventory/customer")
+        data = _get_json(_get_client_dc(), "/api/v1/physical-inventory/customer")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale(ck, fetch, [])
@@ -524,7 +570,7 @@ def get_dc_san_switches(dc_code: str, tr: Optional[dict]) -> list[str]:
     ck = f"api:dc_san_switches:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> list[str]:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/switches", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/san/switches", params=params)
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale(ck, fetch, [])
@@ -536,7 +582,7 @@ def get_dc_san_port_usage(dc_code: str, tr: Optional[dict]) -> dict:
     ck = f"api:dc_san_port_usage:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/port-usage", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/san/port-usage", params=params)
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
@@ -548,7 +594,7 @@ def get_dc_san_health(dc_code: str, tr: Optional[dict]) -> list[dict]:
     ck = f"api:dc_san_health:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> list[dict]:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/health", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/san/health", params=params)
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale(ck, fetch, [])
@@ -560,7 +606,7 @@ def get_dc_san_traffic_trend(dc_code: str, tr: Optional[dict]) -> list[dict]:
     ck = f"api:dc_san_traffic_trend:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> list[dict]:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/traffic-trend", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/san/traffic-trend", params=params)
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale(ck, fetch, [])
@@ -572,7 +618,7 @@ def get_dc_san_bottleneck(dc_code: str, tr: Optional[dict]) -> dict:
     ck = f"api:dc_san_bottleneck:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/san/bottleneck", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/san/bottleneck", params=params)
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
@@ -584,7 +630,7 @@ def get_dc_storage_capacity(dc_code: str, tr: Optional[dict]) -> dict:
     ck = f"api:dc_storage_cap:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/storage/capacity", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/storage/capacity", params=params)
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
@@ -596,7 +642,7 @@ def get_dc_storage_performance(dc_code: str, tr: Optional[dict]) -> dict:
     ck = f"api:dc_storage_perf:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/storage/performance", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/storage/performance", params=params)
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
@@ -621,7 +667,7 @@ def get_dc_network_filters(dc_code: str, tr: Optional[dict]) -> dict:
     ck = f"api:dc_net_filters:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/network/filters", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/network/filters", params=params)
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
@@ -645,7 +691,7 @@ def get_dc_network_port_summary(
 
     def fetch() -> dict:
         data = _get_json(
-            _client_dc,
+            _get_client_dc(),
             f"/api/v1/datacenters/{enc}/network/port-summary",
             params=params,
         )
@@ -674,7 +720,7 @@ def get_dc_network_95th_percentile(
 
     def fetch() -> dict:
         data = _get_json(
-            _client_dc,
+            _get_client_dc(),
             f"/api/v1/datacenters/{enc}/network/95th-percentile",
             params=params,
         )
@@ -707,7 +753,7 @@ def get_dc_network_interface_table(
 
     def fetch() -> dict:
         data = _get_json(
-            _client_dc,
+            _get_client_dc(),
             f"/api/v1/datacenters/{enc}/network/interface-table",
             params=params,
         )
@@ -721,7 +767,7 @@ def get_dc_zabbix_storage_capacity(dc_code: str, tr: Optional[dict], host: Optio
     ck = f"api:dc_zbx_cap:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/capacity", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/zabbix-storage/capacity", params=params)
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
@@ -733,7 +779,7 @@ def get_dc_zabbix_storage_trend(dc_code: str, tr: Optional[dict], host: Optional
     ck = f"api:dc_zbx_trend:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/trend", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/zabbix-storage/trend", params=params)
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
@@ -745,7 +791,7 @@ def get_dc_zabbix_storage_devices(dc_code: str, tr: Optional[dict]) -> list[dict
     ck = f"api:dc_zbx_devices:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> list[dict]:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/devices", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/zabbix-storage/devices", params=params)
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale(ck, fetch, [])
@@ -760,7 +806,7 @@ def get_dc_zabbix_disk_list(dc_code: str, tr: Optional[dict], host: Optional[str
     empty = {"items": []}
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/disk-list", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/zabbix-storage/disk-list", params=params)
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
@@ -780,7 +826,7 @@ def get_dc_zabbix_disk_trend(
     empty = {"series": []}
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/disk-trend", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/zabbix-storage/disk-trend", params=params)
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
@@ -792,7 +838,7 @@ def get_dc_zabbix_disk_health(dc_code: str, tr: Optional[dict]) -> dict:
     ck = f"api:dc_zbx_disk_health:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/zabbix-storage/disk-health", params=params)
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/zabbix-storage/disk-health", params=params)
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
@@ -804,7 +850,7 @@ def get_dc_racks(dc_code: str) -> dict:
     ck = f"api:dc_racks:{enc}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/racks")
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/racks")
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
@@ -817,7 +863,7 @@ def get_rack_devices(dc_code: str, rack_name: str) -> dict:
     ck = f"api:rack_devices:{enc_dc}:{enc_rack}"
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc_dc}/racks/{enc_rack}/devices")
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc_dc}/racks/{enc_rack}/devices")
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
@@ -975,7 +1021,7 @@ def get_customer_sales_summary(name: str) -> dict:
     ck = f"api:crm_sales_summary:{enc}"
 
     def fetch() -> dict:
-        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/sales/summary")
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/summary")
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
@@ -985,7 +1031,7 @@ def get_customer_sales_items(name: str) -> list:
     enc = quote(name, safe="")
 
     def fetch() -> list:
-        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/sales/items")
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/items")
         return data if isinstance(data, list) else []
 
     ck = f"api:crm_sales_items:{enc}"
@@ -996,7 +1042,7 @@ def get_customer_sales_efficiency(name: str) -> list:
     enc = quote(name, safe="")
 
     def fetch() -> list:
-        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/sales/efficiency")
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/efficiency")
         return data if isinstance(data, list) else []
 
     ck = f"api:crm_sales_efficiency:{enc}"
@@ -1007,7 +1053,7 @@ def get_customer_catalog_valuation(name: str) -> list:
     enc = quote(name, safe="")
 
     def fetch() -> list:
-        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/sales/catalog-valuation")
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/catalog-valuation")
         return data if isinstance(data, list) else []
 
     ck = f"api:crm_catalog_valuation:{enc}"
@@ -1018,7 +1064,7 @@ def get_dc_sales_potential(dc_code: str) -> dict:
     enc = quote(dc_code, safe="")
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/sales-potential")
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/sales-potential")
         return data if isinstance(data, dict) else {}
 
     ck = f"api:dc_sales_potential:{enc}"
@@ -1029,7 +1075,7 @@ def get_dc_sales_potential_v2(dc_code: str) -> dict:
     enc = quote(dc_code, safe="")
 
     def fetch() -> dict:
-        data = _get_json(_client_dc, f"/api/v1/datacenters/{enc}/sales-potential/v2")
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/sales-potential/v2")
         return data if isinstance(data, dict) else {}
 
     ck = f"api:dc_sales_potential_v2:{enc}"
@@ -1040,7 +1086,7 @@ def get_customer_efficiency_by_category(name: str) -> list:
     enc = quote(name, safe="")
 
     def fetch() -> list:
-        data = _get_json(_client_cust, f"/api/v1/customers/{enc}/sales/efficiency-by-category")
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/efficiency-by-category")
         return data if isinstance(data, list) else []
 
     ck = f"api:crm_efficiency_by_cat:{enc}"
@@ -1049,7 +1095,7 @@ def get_customer_efficiency_by_category(name: str) -> list:
 
 def get_crm_service_mapping_pages() -> list:
     def fetch() -> list:
-        data = _get_json(_client_crm, "/api/v1/crm/service-mapping/pages")
+        data = _get_json(_get_client_cust(), "/api/v1/crm/service-mapping/pages")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_service_mapping_pages", fetch, [])
@@ -1057,7 +1103,7 @@ def get_crm_service_mapping_pages() -> list:
 
 def get_crm_service_mappings() -> list:
     def fetch() -> list:
-        data = _get_json(_client_crm, "/api/v1/crm/service-mapping")
+        data = _get_json(_get_client_cust(), "/api/v1/crm/service-mapping")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_service_mappings", fetch, [])
@@ -1073,21 +1119,21 @@ def put_crm_service_mapping(
     body: dict[str, Any] = {"page_key": page_key}
     if notes is not None:
         body["notes"] = notes
-    out = _put_json(_client_crm, f"/api/v1/crm/service-mapping/{enc}", body)
+    out = _put_json(_get_client_cust(), f"/api/v1/crm/service-mapping/{enc}", body)
     _api_response_cache.delete("api:crm_service_mappings")
     return out if isinstance(out, dict) else {}
 
 
 def delete_crm_service_mapping_override(productid: str) -> dict[str, Any]:
     enc = quote(productid, safe="")
-    out = _delete_json(_client_crm, f"/api/v1/crm/service-mapping/{enc}/override")
+    out = _delete_json(_get_client_cust(), f"/api/v1/crm/service-mapping/{enc}/override")
     _api_response_cache.delete("api:crm_service_mappings")
     return out if isinstance(out, dict) else {}
 
 
 def get_crm_aliases() -> list:
     def fetch() -> list:
-        data = _get_json(_client_cust, "/api/v1/crm/aliases")
+        data = _get_json(_get_client_cust(), "/api/v1/crm/aliases")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_aliases", fetch, [])
@@ -1106,14 +1152,14 @@ def put_crm_alias(
         "netbox_musteri_value": netbox_musteri_value,
         "notes": notes,
     }
-    out = _put_json(_client_cust, f"/api/v1/crm/aliases/{enc}", body)
+    out = _put_json(_get_client_cust(), f"/api/v1/crm/aliases/{enc}", body)
     _api_response_cache.delete("api:crm_aliases")
     return out if isinstance(out, dict) else {}
 
 
 def delete_crm_alias(crm_accountid: str) -> dict[str, Any]:
     enc = quote(crm_accountid, safe="")
-    out = _delete_json(_client_cust, f"/api/v1/crm/aliases/{enc}")
+    out = _delete_json(_get_client_cust(), f"/api/v1/crm/aliases/{enc}")
     _api_response_cache.delete("api:crm_aliases")
     return out if isinstance(out, dict) else {}
 
@@ -1522,12 +1568,13 @@ def refresh_platform_redis_caches() -> dict[str, Any]:
     timeout = httpx.Timeout(600.0, connect=30.0)
     headers = _auth_headers()
     out: dict[str, Any] = {"services": {}, "gui_cache_cleared": False}
-    targets: list[tuple[str, httpx.Client]] = [
-        ("datacenter_api", _client_dc),
-        ("customer_api", _client_cust),
-        ("crm_engine", _client_crm),
+    targets: list[tuple[str, Callable[[], httpx.Client]]] = [
+        ("datacenter_api", _get_client_dc),
+        ("customer_api", _get_client_cust),
+        ("crm_engine", lambda: _client_crm),
     ]
-    for name, client in targets:
+    for name, client_getter in targets:
+        client = client_getter()
         try:
             r = client.post(_ADMIN_CACHE_REFRESH_PATH, headers=headers, timeout=timeout)
             r.raise_for_status()
