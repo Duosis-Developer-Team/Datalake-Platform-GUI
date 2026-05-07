@@ -12,9 +12,9 @@ Routes:
 """
 from __future__ import annotations
 
-from typing import Any, List
+from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 
 from app.models.schemas import (
     CatalogValuationRow,

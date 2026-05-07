@@ -29,6 +29,7 @@ Design notes:
       APScheduler refresh interval.
 """
 from __future__ import annotations
+# ruff: noqa: E402
 
 import datetime
 import json
@@ -36,7 +37,7 @@ import logging
 import os
 import re
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
