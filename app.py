@@ -122,7 +122,6 @@ from src.pages.dc_view import (
 from src.utils.virt_sellable_aggregate import (
     aggregate_virt_sellable_panels,
     collect_virt_sellable_panels,
-    normalize_clusters_if_full_universe,
 )
 from src.pages.settings.iam import roles_callbacks  # noqa: F401 — registers role matrix callback
 from src.pages.settings.iam import teams_callbacks  # noqa: F401 — IAM teams panel / members
@@ -716,19 +715,17 @@ def _dc_id_from_pathname(pathname: str | None) -> str | None:
     dash.Output("sellable-classic-card", "children"),
     dash.Input("virt-classic-cluster-selector", "value"),
     dash.State("url", "pathname"),
-    dash.State("virt-classic-cluster-selector", "data"),
 )
-def update_classic_sellable_card(selected_clusters, pathname, option_data):
+def update_classic_sellable_card(selected_clusters, pathname):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
         return dash.no_update
-    clusters = normalize_clusters_if_full_universe(selected_clusters, option_data)
     card = _build_sellable_inline_kpi(
         dc_id,
         "virt_classic",
         "Klasik Mimari — Sellable Potential",
         color="blue",
-        selected_clusters=clusters,
+        selected_clusters=selected_clusters or None,
         container_id="sellable-classic-card",
     )
     if card is None:
@@ -740,19 +737,17 @@ def update_classic_sellable_card(selected_clusters, pathname, option_data):
     dash.Output("sellable-hyperconv-card", "children"),
     dash.Input("virt-hyperconv-cluster-selector", "value"),
     dash.State("url", "pathname"),
-    dash.State("virt-hyperconv-cluster-selector", "data"),
 )
-def update_hyperconv_sellable_card(selected_clusters, pathname, option_data):
+def update_hyperconv_sellable_card(selected_clusters, pathname):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
         return dash.no_update
-    clusters = normalize_clusters_if_full_universe(selected_clusters, option_data)
     card = _build_sellable_inline_kpi(
         dc_id,
         "virt_hyperconverged",
         "Hyperconverged Mimari — Sellable Potential",
         color="teal",
-        selected_clusters=clusters,
+        selected_clusters=selected_clusters or None,
         container_id="sellable-hyperconv-card",
     )
     if card is None:
@@ -765,16 +760,8 @@ def update_hyperconv_sellable_card(selected_clusters, pathname, option_data):
     dash.Input("virt-classic-cluster-selector", "value"),
     dash.Input("virt-hyperconv-cluster-selector", "value"),
     dash.State("url", "pathname"),
-    dash.State("virt-classic-cluster-selector", "data"),
-    dash.State("virt-hyperconv-cluster-selector", "data"),
 )
-def update_virt_total_sellable_card(
-    classic_clusters,
-    hyperconv_clusters,
-    pathname,
-    classic_option_data,
-    hyper_option_data,
-):
+def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathname):
     """Top-level "Virtualization — Total Sellable Potential" card.
 
     Aggregates the cluster-scoped Klasik + Hyperconverged sub-cards plus the
@@ -785,9 +772,11 @@ def update_virt_total_sellable_card(
     if not dc_id:
         return dash.no_update
 
-    cc = normalize_clusters_if_full_universe(classic_clusters, classic_option_data)
-    hc = normalize_clusters_if_full_universe(hyperconv_clusters, hyper_option_data)
-    panels = collect_virt_sellable_panels(dc_id, cc, hc)
+    panels = collect_virt_sellable_panels(
+        dc_id,
+        classic_clusters or None,
+        hyperconv_clusters or None,
+    )
     total_tl, by_kind, has_known = aggregate_virt_sellable_panels(panels)
 
     if not has_known and total_tl <= 0:

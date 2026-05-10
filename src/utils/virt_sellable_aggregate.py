@@ -1,8 +1,8 @@
 """Shared virtualization sellable panel fetch + aggregation for DC list and DC detail.
 
 Matches crm-engine ``get_sellable_by_panel`` usage in ``app.py`` callbacks so Potential
-Sales on ``/datacenters`` aligns with Virtualization tab totals when cluster scope is
-equivalent (see normalize_clusters_if_full_universe).
+Sales on ``/datacenters`` can align with Virtualization tab totals when the same cluster
+scope is passed (including explicit full cluster lists for compute-backed panels).
 """
 from __future__ import annotations
 
@@ -17,33 +17,6 @@ VIRT_SELLABLE_FAMILY_LABELS: tuple[str, ...] = (
     "virt_hyperconverged",
     *VIRT_POWER_FAMILIES,
 )
-
-
-def normalize_clusters_if_full_universe(
-    selected: list[str] | None,
-    option_data: list[dict[str, Any]] | None,
-) -> list[str] | None:
-    """When MultiSelect includes every option, return None for API (datacenter-api full-DC path).
-
-    Passing an explicit CSV of all cluster names otherwise selects the filtered SQL path in
-    ``get_*_metrics_filtered``, which can diverge from omitting ``clusters`` entirely.
-    """
-    if not option_data:
-        return list(selected) if selected else None
-    universe: list[str] = []
-    for opt in option_data:
-        if not isinstance(opt, dict):
-            continue
-        v = opt.get("value")
-        if v is not None and str(v).strip():
-            universe.append(str(v).strip())
-    universe_sorted = sorted(set(universe))
-    if not universe_sorted:
-        return list(selected) if selected else None
-    sel_sorted = sorted({str(x).strip() for x in (selected or []) if x is not None and str(x).strip()})
-    if sel_sorted == universe_sorted:
-        return None
-    return list(selected) if selected else None
 
 
 def collect_virt_sellable_panels(

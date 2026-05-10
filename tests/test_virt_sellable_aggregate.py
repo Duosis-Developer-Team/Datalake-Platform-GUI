@@ -1,26 +1,10 @@
-"""Tests for virt sellable panel normalization and aggregation helpers."""
+"""Tests for virt sellable panel aggregation helpers."""
 from __future__ import annotations
 
 from src.utils.virt_sellable_aggregate import (
     aggregate_virt_sellable_panels,
-    normalize_clusters_if_full_universe,
     total_potential_tl,
 )
-
-
-def test_normalize_full_universe_returns_none():
-    opts = [{"label": "A", "value": "A"}, {"label": "B", "value": "B"}]
-    assert normalize_clusters_if_full_universe(["B", "A"], opts) is None
-
-
-def test_normalize_partial_keeps_list():
-    opts = [{"label": "A", "value": "A"}, {"label": "B", "value": "B"}]
-    assert normalize_clusters_if_full_universe(["A"], opts) == ["A"]
-
-
-def test_normalize_no_option_data_passes_through():
-    assert normalize_clusters_if_full_universe(["x"], None) == ["x"]
-    assert normalize_clusters_if_full_universe(None, None) is None
 
 
 def test_total_potential_tl_sums():

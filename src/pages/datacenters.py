@@ -23,9 +23,15 @@ from src.utils.virt_sellable_aggregate import (
 )
 
 
-def _virt_sellable_tl_for_dc(dc_id: str) -> float:
-    """Sum potential_tl from all virtualization sellable panels for one DC (same fetch as DC detail total)."""
-    return total_potential_tl(collect_virt_sellable_panels(dc_id, None, None))
+def _virt_sellable_tl_for_dc(dc_id: str, tr: dict) -> float:
+    """Sum virt sellable TL using datacenter-api compute path (same as all clusters selected on DC detail).
+
+    Uses full classic + hyperconv cluster lists so crm-engine matches filtered SQL totals,
+    not the clusters=None datalake-only path.
+    """
+    classic_cl = api.get_classic_cluster_list(str(dc_id), tr) or None
+    hyperconv_cl = api.get_hyperconv_cluster_list(str(dc_id), tr) or None
+    return total_potential_tl(collect_virt_sellable_panels(str(dc_id), classic_cl, hyperconv_cl))
 
 
 def _hex_to_rgb(hex_color: str) -> str:
@@ -549,7 +555,7 @@ def build_datacenters(time_range=None, visible_sections=None):
         cid = dc.get("id")
         if cid is None:
             continue
-        dc_virt = _virt_sellable_tl_for_dc(str(cid))
+        dc_virt = _virt_sellable_tl_for_dc(str(cid), tr)
         virt_tl_by_dc[str(cid)] = dc_virt
         total_potential_tl += dc_virt
 
