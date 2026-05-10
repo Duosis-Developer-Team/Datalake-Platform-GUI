@@ -1123,48 +1123,6 @@ def _build_backup_subtab(name: str):
     )
 
 
-def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
-    """CRM realized sales + sellable headroom KPIs (no sold-% gauges)."""
-    v2 = api.get_dc_sales_potential_v2(dc_id)
-    if not isinstance(v2, dict):
-        return html.Div()
-    summ = v2.get("dc_customer_summary") or {}
-    ytd = float(summ.get("total_billed_ytd") or 0)
-    cust = int(summ.get("customer_count") or 0)
-    rem = float(v2.get("general_remaining_pct") or 0)
-    pot = float(v2.get("potential_revenue_tl") or 0)
-
-    ytd_short, ytd_full = _fmt_tl_short(ytd)
-    pot_short, pot_full = _fmt_tl_short(pot)
-
-    return html.Div(
-        className="nexus-card",
-        style={"padding": "20px"},
-        children=[
-            _section_title(
-                "Sellable potential (CRM)",
-                "Sellable headroom on Nutanix CPU/RAM proxy — threshold-bound ceiling (ADR-0014)",
-            ),
-            dmc.SimpleGrid(
-                cols=4,
-                spacing="lg",
-                style={"marginTop": "12px"},
-                children=[
-                    _kpi_with_tooltip("YTD realized", ytd_short, ytd_full, "solar:money-bag-bold-duotone"),
-                    _kpi("Sellable remaining %", f"{rem:.1f}", "solar:chart-square-bold-duotone"),
-                    _kpi_with_tooltip(
-                        "Potential revenue",
-                        pot_short,
-                        pot_full,
-                        "solar:wallet-money-bold-duotone",
-                    ),
-                    _kpi("Customers (VM-mapped)", f"{cust:,}", "solar:users-group-rounded-bold-duotone"),
-                ],
-            ),
-        ],
-    )
-
-
 def _build_sellable_inline_kpi(
     dc_id: str | None,
     families: list[str] | str,
@@ -1375,8 +1333,6 @@ def _build_summary_tab(data: dict, tr: dict, dc_id: str | None = None):
     mem_pct  = pct_float(total_mem_used, total_mem_cap)
     stor_pct = pct_float(total_stor_used * 1024, total_stor_cap * 1024)
 
-    crm_sales = _build_crm_sales_potential_panel(dc_id) if dc_id else html.Div()
-
     return dmc.Stack(
         gap="lg",
         children=[
@@ -1394,7 +1350,6 @@ def _build_summary_tab(data: dict, tr: dict, dc_id: str | None = None):
                     ]),
                 ],
             ),
-            crm_sales,
             # Capacity overview charts
             *(
                 [html.Div(
@@ -2871,17 +2826,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                     children=html.Div(
                         style={"padding": "0 30px"},
                         children=[
-                            _build_sellable_inline_kpi(
-                                dc_id,
-                                [
-                                    "backup_zerto_replication",
-                                    "backup_veeam_replication",
-                                    "backup_veeam",
-                                    "backup_netbackup",
-                                ],
-                                "Backup & Replication — Total Sellable Potential",
-                                color="green",
-                            ),
                             dmc.Tabs(
                                 color="green",
                                 variant="outline",
@@ -2906,12 +2850,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     id="backup-zerto-panel",
                                                     children=build_zerto_panel(zerto_data, None) if has_zerto else html.Div(),
                                                 ),
-                                                _build_sellable_inline_kpi(
-                                                    dc_id,
-                                                    "backup_zerto_replication",
-                                                    "Zerto — Sellable Potential",
-                                                    color="green",
-                                                ),
                                             ],
                                         ),
                                     ) if has_zerto else None,
@@ -2925,12 +2863,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     id="backup-veeam-panel",
                                                     children=build_veeam_panel(veeam_data, None) if has_veeam else html.Div(),
                                                 ),
-                                                _build_sellable_inline_kpi(
-                                                    dc_id,
-                                                    ["backup_veeam_replication", "backup_veeam"],
-                                                    "Veeam — Sellable Potential",
-                                                    color="green",
-                                                ),
                                             ],
                                         ),
                                     ) if has_veeam else None,
@@ -2943,12 +2875,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                 html.Div(
                                                     id="backup-netbackup-panel",
                                                     children=build_netbackup_panel(nb_data, None) if has_netbackup else html.Div(),
-                                                ),
-                                                _build_sellable_inline_kpi(
-                                                    dc_id,
-                                                    "backup_netbackup",
-                                                    "NetBackup — Sellable Potential",
-                                                    color="green",
                                                 ),
                                             ],
                                         ),

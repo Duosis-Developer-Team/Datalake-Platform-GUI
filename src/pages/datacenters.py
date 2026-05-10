@@ -17,6 +17,30 @@ from src.utils.export_helpers import (
 )
 from src.utils.dc_display import format_dc_display_name
 
+# Virtualization panel families aggregated for CRM sellable TL (crm-engine by-panel).
+_VIRT_SELLABLE_FAMILIES = (
+    "virt_classic",
+    "virt_hyperconverged",
+    "virt_power",
+    "virt_power_hana",
+)
+
+
+def _virt_sellable_tl_for_dc(dc_id: str) -> float:
+    """Sum potential_tl from all virtualization sellable panels for one DC."""
+    total = 0.0
+    for fam in _VIRT_SELLABLE_FAMILIES:
+        try:
+            panels = api.get_sellable_by_panel(dc_code=str(dc_id), family=fam) or []
+        except Exception:
+            continue
+        if not isinstance(panels, list):
+            continue
+        for p in panels:
+            if isinstance(p, dict):
+                total += float(p.get("potential_tl") or 0.0)
+    return total
+
 
 def _hex_to_rgb(hex_color: str) -> str:
     """Convert #RRGGBB to 'R, G, B' string for rgba() use."""
@@ -156,20 +180,23 @@ def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo", toolt
     return card
 
 
-def _dc_sellable_ribbon(sales_v2: dict | None) -> html.Div:
-    """Compact CRM sellable strip (80%% policy, v2 API): TL headline + % progress."""
-    if not isinstance(sales_v2, dict):
-        return html.Div()
-    pct = float(sales_v2.get("general_remaining_pct") or 0.0)
-    pr = sales_v2.get("per_resource") or {}
-    cpu = pr.get("cpu") or {}
-    ram = pr.get("ram") or {}
-    pot_short, pot_full = _fmt_tl_short(sales_v2.get("potential_revenue_tl"))
+def _dc_sellable_ribbon(
+    virt_tl: float,
+    *,
+    total_portfolio_tl: float,
+) -> html.Div:
+    """Compact virtualization-derived sellable TL strip + share of portfolio progress."""
+    pot_short, pot_full = _fmt_tl_short(virt_tl)
+    tot = float(total_portfolio_tl or 0.0)
+    pct = (
+        min(100.0, max(0.0, (virt_tl / tot) * 100.0))
+        if tot > 1e-9
+        else 0.0
+    )
     tip = (
-        f"Satılabilir potansiyel (TL): {pot_short} ({pot_full})\n"
-        f"Genel kalan % (min CPU/RAM tavanı): {pct:.1f}%\n"
-        f"CPU headroom %: {cpu.get('remaining_sellable_pct')} | "
-        f"RAM headroom %: {ram.get('remaining_sellable_pct')}"
+        f"Potential Sales (Virtualization): {pot_short} ({pot_full})\n"
+        f"Share of all DCs (by virt sellable TL): {pct:.1f}%\n"
+        f"Sources: {', '.join(_VIRT_SELLABLE_FAMILIES)}"
     )
     return dmc.Tooltip(
         label=tip,
@@ -185,17 +212,23 @@ def _dc_sellable_ribbon(sales_v2: dict | None) -> html.Div:
                     gap="xs",
                     mb=4,
                     children=[
-                        dmc.Text("Satılabilir Potansiyel (TL, CRM)", size="xs", fw=600, c="#A3AED0"),
+                        dmc.Text("Potential Sales (Virtualization)", size="xs", fw=600, c="#A3AED0"),
                         dmc.Text(pot_short, size="xs", fw=800, c="#4318FF"),
                     ],
                 ),
-                dmc.Progress(value=min(100.0, max(0.0, pct)), color="indigo", size="sm", radius="xl"),
+                dmc.Progress(value=pct, color="indigo", size="sm", radius="xl"),
             ],
         ),
     )
 
 
-def _dc_vault_card(dc, sla_entry=None, sales_v2: dict | None = None):
+def _dc_vault_card(
+    dc,
+    sla_entry=None,
+    *,
+    virt_tl: float = 0.0,
+    total_virt_tl: float = 0.0,
+):
     """Elite DC Vault card: shimmer, dual ring, CPU/RAM footer, SLA accent."""
     dc_title = format_dc_display_name(dc.get("name"), dc.get("description"))
     stats    = dc.get("stats") or {}
@@ -508,7 +541,7 @@ def _dc_vault_card(dc, sla_entry=None, sales_v2: dict | None = None):
 
             # CPU / RAM footer
             resource_footer,
-            _dc_sellable_ribbon(sales_v2),
+            _dc_sellable_ribbon(virt_tl, total_portfolio_tl=total_virt_tl),
         ],
     )
 
@@ -524,15 +557,15 @@ def build_datacenters(time_range=None, visible_sections=None):
     datacenters = api.get_all_datacenters_summary(tr)
     sla_by_dc   = api.get_sla_by_dc(tr)
 
-    v2_by_dc: dict[str, dict] = {}
+    virt_tl_by_dc: dict[str, float] = {}
     total_potential_tl = 0.0
     for dc in datacenters:
         cid = dc.get("id")
         if cid is None:
             continue
-        v2 = api.get_dc_sales_potential_v2(str(cid))
-        v2_by_dc[str(cid)] = v2 if isinstance(v2, dict) else {}
-        total_potential_tl += float((v2 or {}).get("potential_revenue_tl") or 0.0)
+        dc_virt = _virt_sellable_tl_for_dc(str(cid))
+        virt_tl_by_dc[str(cid)] = dc_virt
+        total_potential_tl += dc_virt
 
     # ── Export rows ──
     export_rows = []
@@ -582,13 +615,13 @@ def build_datacenters(time_range=None, visible_sections=None):
             _summary_kpi("solar:bolt-bold-duotone",                 "Total Power", f"{total_power:.1f} kW","yellow"),
             (lambda short, full: _summary_kpi(
                 "solar:money-bag-bold-duotone",
-                "Potansiyel gelir (TL, CRM)",
+                "Potential Sales (Virtualization)",
                 short,
                 "indigo",
                 tooltip=(
-                    f"Toplam potansiyel: {full}\n"
-                    "Hesap: her DC için CPU+RAM kalan miktarı × birim fiyat "
-                    "(önce gui_crm_price_override, yoksa CRM virt satışlarından implied fiyat)."
+                    f"Total potential (all DCs): {full}\n"
+                    "Sum of crm-engine sellable potential_tl for virtualization families: "
+                    f"{', '.join(_VIRT_SELLABLE_FAMILIES)}."
                 ),
             ))(*_fmt_tl_short(total_potential_tl)),
         ],
@@ -748,7 +781,8 @@ def build_datacenters(time_range=None, visible_sections=None):
                             dc,
                             sla_by_dc.get(dc.get("id"))
                             or sla_by_dc.get(str(dc.get("id", "")).upper()),
-                            sales_v2=v2_by_dc.get(str(dc.get("id", ""))),
+                            virt_tl=virt_tl_by_dc.get(str(dc.get("id", "")), 0.0),
+                            total_virt_tl=total_potential_tl,
                         ),
                     )
                     for i, dc in enumerate(datacenters)
