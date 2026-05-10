@@ -2939,21 +2939,10 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                     dmc.TabsPanel(
                                         value="obj-storage",
                                         pt="lg",
-                                        children=dmc.Stack(
-                                            gap="lg",
-                                            children=[
-                                                html.Div(
-                                                    id="s3-dc-metrics-panel",
-                                                    style={"marginTop": "0"},
-                                                    children=build_dc_s3_panel(dc_name, s3_data, tr, None) if has_s3 else html.Div(),
-                                                ),
-                                                _build_sellable_inline_kpi(
-                                                    dc_id,
-                                                    "storage_s3",
-                                                    "Object Storage S3 — Sellable Potential",
-                                                    color="indigo",
-                                                ),
-                                            ],
+                                        children=html.Div(
+                                            id="s3-dc-metrics-panel",
+                                            style={"marginTop": "0"},
+                                            children=build_dc_s3_panel(dc_name, s3_data, tr, None) if has_s3 else html.Div(),
                                         ),
                                     ) if has_s3 else None,
                                 ],

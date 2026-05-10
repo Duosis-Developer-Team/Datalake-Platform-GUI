@@ -679,11 +679,17 @@ LIMIT 20
     ) -> dict:
         """Return Classic compute section dict, optionally filtered by selected clusters.
         If selected_clusters is None or empty, returns unfiltered classic metrics from get_dc_details."""
+        tr = time_range or default_time_range()
+        if selected_clusters:
+            universe = {str(x).strip() for x in self.get_classic_cluster_list(dc_code, tr) if x}
+            selected_set = {str(c).strip() for c in selected_clusters if c}
+            if universe and selected_set == universe:
+                selected_clusters = None
+
         if not selected_clusters:
             full = self.get_dc_details(dc_code, time_range)
             return full.get("classic", _empty_compute_section())
 
-        tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
         dc_wc = f"%{dc_code}%"
         try:
@@ -737,11 +743,17 @@ LIMIT 20
     ) -> dict:
         """Return Hyperconverged compute section dict, filtered by selected Nutanix clusters.
         If selected_clusters is None or empty, returns unfiltered hyperconv metrics from get_dc_details."""
+        tr = time_range or default_time_range()
+        if selected_clusters:
+            universe = {str(x).strip() for x in self.get_hyperconv_cluster_list(dc_code, tr) if x}
+            selected_set = {str(c).strip() for c in selected_clusters if c}
+            if universe and selected_set == universe:
+                selected_clusters = None
+
         if not selected_clusters:
             full = self.get_dc_details(dc_code, time_range)
             return full.get("hyperconv", _empty_compute_section())
 
-        tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
         dc_wc = f"%{dc_code}%"
         try:

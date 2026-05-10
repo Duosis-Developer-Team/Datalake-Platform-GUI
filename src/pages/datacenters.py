@@ -16,30 +16,16 @@ from src.utils.export_helpers import (
     build_report_info_df,
 )
 from src.utils.dc_display import format_dc_display_name
-
-# Virtualization panel families aggregated for CRM sellable TL (crm-engine by-panel).
-_VIRT_SELLABLE_FAMILIES = (
-    "virt_classic",
-    "virt_hyperconverged",
-    "virt_power",
-    "virt_power_hana",
+from src.utils.virt_sellable_aggregate import (
+    VIRT_SELLABLE_FAMILY_LABELS,
+    collect_virt_sellable_panels,
+    total_potential_tl,
 )
 
 
 def _virt_sellable_tl_for_dc(dc_id: str) -> float:
-    """Sum potential_tl from all virtualization sellable panels for one DC."""
-    total = 0.0
-    for fam in _VIRT_SELLABLE_FAMILIES:
-        try:
-            panels = api.get_sellable_by_panel(dc_code=str(dc_id), family=fam) or []
-        except Exception:
-            continue
-        if not isinstance(panels, list):
-            continue
-        for p in panels:
-            if isinstance(p, dict):
-                total += float(p.get("potential_tl") or 0.0)
-    return total
+    """Sum potential_tl from all virtualization sellable panels for one DC (same fetch as DC detail total)."""
+    return total_potential_tl(collect_virt_sellable_panels(dc_id, None, None))
 
 
 def _hex_to_rgb(hex_color: str) -> str:
@@ -196,7 +182,7 @@ def _dc_sellable_ribbon(
     tip = (
         f"Potential Sales (Virtualization): {pot_short} ({pot_full})\n"
         f"Share of all DCs (by virt sellable TL): {pct:.1f}%\n"
-        f"Sources: {', '.join(_VIRT_SELLABLE_FAMILIES)}"
+        f"Sources: {', '.join(VIRT_SELLABLE_FAMILY_LABELS)}"
     )
     return dmc.Tooltip(
         label=tip,
@@ -621,7 +607,7 @@ def build_datacenters(time_range=None, visible_sections=None):
                 tooltip=(
                     f"Total potential (all DCs): {full}\n"
                     "Sum of crm-engine sellable potential_tl for virtualization families: "
-                    f"{', '.join(_VIRT_SELLABLE_FAMILIES)}."
+                    f"{', '.join(VIRT_SELLABLE_FAMILY_LABELS)}."
                 ),
             ))(*_fmt_tl_short(total_potential_tl)),
         ],

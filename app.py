@@ -119,6 +119,11 @@ from src.pages.dc_view import (
     _build_sellable_inline_kpi,
     _DC_ICONS,
 )
+from src.utils.virt_sellable_aggregate import (
+    aggregate_virt_sellable_panels,
+    collect_virt_sellable_panels,
+    normalize_clusters_if_full_universe,
+)
 from src.pages.settings.iam import roles_callbacks  # noqa: F401 — registers role matrix callback
 from src.pages.settings.iam import teams_callbacks  # noqa: F401 — IAM teams panel / members
 from src.pages.settings.iam import users_callbacks  # noqa: F401 — IAM users AD import / edit
@@ -711,17 +716,19 @@ def _dc_id_from_pathname(pathname: str | None) -> str | None:
     dash.Output("sellable-classic-card", "children"),
     dash.Input("virt-classic-cluster-selector", "value"),
     dash.State("url", "pathname"),
+    dash.State("virt-classic-cluster-selector", "data"),
 )
-def update_classic_sellable_card(selected_clusters, pathname):
+def update_classic_sellable_card(selected_clusters, pathname, option_data):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
         return dash.no_update
+    clusters = normalize_clusters_if_full_universe(selected_clusters, option_data)
     card = _build_sellable_inline_kpi(
         dc_id,
         "virt_classic",
         "Klasik Mimari — Sellable Potential",
         color="blue",
-        selected_clusters=selected_clusters or None,
+        selected_clusters=clusters,
         container_id="sellable-classic-card",
     )
     if card is None:
@@ -733,17 +740,19 @@ def update_classic_sellable_card(selected_clusters, pathname):
     dash.Output("sellable-hyperconv-card", "children"),
     dash.Input("virt-hyperconv-cluster-selector", "value"),
     dash.State("url", "pathname"),
+    dash.State("virt-hyperconv-cluster-selector", "data"),
 )
-def update_hyperconv_sellable_card(selected_clusters, pathname):
+def update_hyperconv_sellable_card(selected_clusters, pathname, option_data):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
         return dash.no_update
+    clusters = normalize_clusters_if_full_universe(selected_clusters, option_data)
     card = _build_sellable_inline_kpi(
         dc_id,
         "virt_hyperconverged",
         "Hyperconverged Mimari — Sellable Potential",
         color="teal",
-        selected_clusters=selected_clusters or None,
+        selected_clusters=clusters,
         container_id="sellable-hyperconv-card",
     )
     if card is None:
@@ -756,8 +765,16 @@ def update_hyperconv_sellable_card(selected_clusters, pathname):
     dash.Input("virt-classic-cluster-selector", "value"),
     dash.Input("virt-hyperconv-cluster-selector", "value"),
     dash.State("url", "pathname"),
+    dash.State("virt-classic-cluster-selector", "data"),
+    dash.State("virt-hyperconv-cluster-selector", "data"),
 )
-def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathname):
+def update_virt_total_sellable_card(
+    classic_clusters,
+    hyperconv_clusters,
+    pathname,
+    classic_option_data,
+    hyper_option_data,
+):
     """Top-level "Virtualization — Total Sellable Potential" card.
 
     Aggregates the cluster-scoped Klasik + Hyperconverged sub-cards plus the
@@ -768,58 +785,12 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
     if not dc_id:
         return dash.no_update
 
-    panels: list[dict] = []
-    try:
-        classic = api.get_sellable_by_panel(
-            dc_code=str(dc_id),
-            family="virt_classic",
-            clusters=classic_clusters or None,
-        ) or []
-        if isinstance(classic, list):
-            panels.extend(classic)
-    except Exception:
-        pass
-    try:
-        hyperconv = api.get_sellable_by_panel(
-            dc_code=str(dc_id),
-            family="virt_hyperconverged",
-            clusters=hyperconv_clusters or None,
-        ) or []
-        if isinstance(hyperconv, list):
-            panels.extend(hyperconv)
-    except Exception:
-        pass
-    for fam in ("virt_power", "virt_power_hana"):
-        try:
-            chunk = api.get_sellable_by_panel(dc_code=str(dc_id), family=fam) or []
-            if isinstance(chunk, list):
-                panels.extend(chunk)
-        except Exception:
-            continue
+    cc = normalize_clusters_if_full_universe(classic_clusters, classic_option_data)
+    hc = normalize_clusters_if_full_universe(hyperconv_clusters, hyper_option_data)
+    panels = collect_virt_sellable_panels(dc_id, cc, hc)
+    total_tl, by_kind, has_known = aggregate_virt_sellable_panels(panels)
 
-    by_kind = {
-        "cpu":     {"constrained": 0.0, "tl": 0.0, "unit": "vCPU"},
-        "ram":     {"constrained": 0.0, "tl": 0.0, "unit": "GB"},
-        "storage": {"constrained": 0.0, "tl": 0.0, "unit": "GB"},
-    }
-    total_tl = 0.0
-    has_data = False
-    for p in panels:
-        if not isinstance(p, dict):
-            continue
-        kind = (p.get("resource_kind") or "other").lower()
-        tl = float(p.get("potential_tl") or 0.0)
-        total_tl += tl
-        if kind not in by_kind:
-            continue
-        by_kind[kind]["constrained"] += float(p.get("sellable_constrained") or 0.0)
-        by_kind[kind]["tl"] += tl
-        unit = p.get("display_unit")
-        if unit:
-            by_kind[kind]["unit"] = unit
-        has_data = True
-
-    if not has_data and total_tl <= 0:
+    if not has_known and total_tl <= 0:
         return []
 
     def _fmt_tl_short_local(value: float) -> tuple[str, str]:
@@ -864,15 +835,15 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
             return dmc.Tooltip(label=sub_full, position="top", withArrow=True, w=240, children=card)
         return card
 
-    cpu_short, cpu_full = _fmt_tl_short_local(cpu["tl"])
-    ram_short, ram_full = _fmt_tl_short_local(ram["tl"])
-    stor_short, stor_full = _fmt_tl_short_local(stor["tl"])
+    cpu_short, cpu_full = _fmt_tl_short_local(float(cpu["tl"]))
+    ram_short, ram_full = _fmt_tl_short_local(float(ram["tl"]))
+    stor_short, stor_full = _fmt_tl_short_local(float(stor["tl"]))
     total_short, total_full = _fmt_tl_short_local(total_tl)
 
     cards = [
-        _kpi("CPU Sellable",     f"{cpu['constrained']:,.0f} {cpu['unit']}",   cpu_short, cpu_full,   _DC_ICONS["cpu"]),
-        _kpi("RAM Sellable",     f"{ram['constrained']:,.0f} {ram['unit']}",   ram_short, ram_full,   _DC_ICONS["ram"]),
-        _kpi("Storage Sellable", f"{stor['constrained']:,.0f} {stor['unit']}", stor_short, stor_full, _DC_ICONS["storage"]),
+        _kpi("CPU Sellable",     f"{float(cpu['constrained']):,.0f} {cpu['unit']}",   cpu_short, cpu_full,   _DC_ICONS["cpu"]),
+        _kpi("RAM Sellable",     f"{float(ram['constrained']):,.0f} {ram['unit']}",   ram_short, ram_full,   _DC_ICONS["ram"]),
+        _kpi("Storage Sellable", f"{float(stor['constrained']):,.0f} {stor['unit']}", stor_short, stor_full, _DC_ICONS["storage"]),
         _kpi("Total Potential",  total_short, "constrained × catalog price",   total_full, "solar:wallet-money-bold-duotone", c="grape"),
     ]
 
