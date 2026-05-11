@@ -746,13 +746,15 @@ def create_capacity_area_chart(timestamps, used, total, title, height=260, show_
 
 
 def create_gauge_chart(value, max_value, title, color="#4318FF", height=200):
-    """Gauge (indicator) for usage: value / max_value as percentage."""
+    """Gauge (indicator) for usage: value / max_value as percentage.
+    Pass title='' to suppress the built-in label (use _gauge_wrap in dc_view instead)."""
     try:
         val = float(value)
         mx = float(max_value) if max_value else 100
     except (TypeError, ValueError):
         val, mx = 0, 100
     pct = (val / mx * 100) if mx > 0 else 0
+    has_title = bool(title)
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=pct,
@@ -767,23 +769,25 @@ def create_gauge_chart(value, max_value, title, color="#4318FF", height=200):
             ],
             "threshold": {"line": {"color": "#2B3674", "width": 4}, "value": 90},
         },
-        title={"text": title.upper(), "font": dict(size=13, color="#A3AED0", family="DM Sans")},
+        title={"text": title.upper() if has_title else "", "font": dict(size=13, color="#A3AED0", family="DM Sans")},
     ))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=40, b=20),
+        margin=dict(l=20, r=20, t=8 if not has_title else 40, b=40),
         height=height,
         font=dict(family="DM Sans", color="#A3AED0"),
     )
     return fig
 
 
-def create_premium_gauge_chart(pct_value, title, color="#4318FF", height=220, show_threshold=True):
-    """Premium semi-circle gauge chart using percentage value directly."""
+def create_premium_gauge_chart(pct_value, title, color="#4318FF", height=200, show_threshold=True):
+    """Premium semi-circle gauge chart using percentage value directly.
+    Pass title='' to suppress the built-in label (use _gauge_wrap in dc_view instead)."""
     try:
         pct = float(pct_value)
     except (TypeError, ValueError):
         pct = 0.0
+    has_title = bool(title)
     step_mid = f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.3)" if color.startswith("#") and len(color) == 7 else "rgba(67,24,255,0.3)"
     gauge_cfg = {
         "axis": {"range": [0, 100], "nticks": 5, "tickfont": {"size": 8, "color": "#A3AED0", "family": "DM Sans"}, "ticklen": 3, "tickwidth": 1},
@@ -801,25 +805,28 @@ def create_premium_gauge_chart(pct_value, title, color="#4318FF", height=220, sh
         value=pct,
         number={"suffix": "%", "font": {"size": 36, "color": "#2B3674", "family": "DM Sans", "weight": 900}},
         gauge=gauge_cfg,
-        title={"text": title, "font": {"size": 13, "color": "#A3AED0", "family": "DM Sans"}},
+        title={"text": title if has_title else "", "font": {"size": 13, "color": "#A3AED0", "family": "DM Sans"}},
     ))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=44, b=20),
+        margin=dict(l=20, r=20, t=8 if not has_title else 44, b=40),
         height=height,
         font=dict(family="DM Sans", color="#A3AED0"),
     )
     return fig
 
 
-def create_premium_gauge_with_avg(avg_pct, max_pct, title, color="#4318FF", height=220):
-    """Premium semi-circle gauge showing peak value with avg annotation below."""
+def create_premium_gauge_with_avg(avg_pct, max_pct, title, color="#4318FF", height=200):
+    """Premium semi-circle gauge showing peak value with avg annotation below.
+    Pass title='' to suppress the built-in label (use _gauge_wrap in dc_view instead)."""
     try:
         avg = float(avg_pct)
         mx = float(max_pct)
     except (TypeError, ValueError):
         avg, mx = 0.0, 0.0
+    has_title = bool(title)
     step_mid = f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.3)" if color.startswith("#") and len(color) == 7 else "rgba(67,24,255,0.3)"
+    title_text = f"{title}<br><span style='font-size:11px;color:#A3AED0'>avg {int(avg)}%</span>" if has_title else ""
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=mx,
@@ -834,11 +841,11 @@ def create_premium_gauge_with_avg(avg_pct, max_pct, title, color="#4318FF", heig
             ],
             "threshold": {"line": {"color": "#2B3674", "width": 4}, "value": 90},
         },
-        title={"text": f"{title}<br><span style='font-size:11px;color:#A3AED0'>avg {int(avg)}%</span>", "font": {"size": 13, "color": "#A3AED0", "family": "DM Sans"}},
+        title={"text": title_text, "font": {"size": 13, "color": "#A3AED0", "family": "DM Sans"}},
     ))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=44, b=20),
+        margin=dict(l=20, r=20, t=8 if not has_title else 44, b=40),
         height=height,
         font=dict(family="DM Sans", color="#A3AED0"),
     )

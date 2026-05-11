@@ -301,19 +301,44 @@ def _kpi_with_tooltip(
     color: str = "indigo",
     stagger: int = 1,
 ):
-    """KPI card whose value carries a hover tooltip with the full numeric breakdown."""
-    return dmc.Tooltip(
-        label=tooltip_full,
-        position="top",
-        withArrow=True,
-        multiline=True,
-        w=260,
-        children=_kpi(title, short_value, icon, color=color, is_text=True, stagger=stagger),
-    )
+    """KPI card with a small info icon tooltip — does NOT wrap the card in Tooltip."""
+    return _kpi(title, short_value, icon, color=color, is_text=True, stagger=stagger, tooltip=tooltip_full)
 
 
-def _kpi(title: str, value, icon: str, color: str = "indigo", is_text: bool = False, stagger: int = 1):
+def _kpi(title: str, value, icon: str, color: str = "indigo", is_text: bool = False, stagger: int = 1, tooltip: str | None = None):
     """Standard KPI card used across all tabs."""
+    label_children: list = [
+        html.Span(
+            title,
+            style={
+                "color": "#A3AED0",
+                "fontSize": "0.75rem",
+                "fontWeight": 500,
+                "letterSpacing": "0.02em",
+                "textTransform": "uppercase",
+                "display": "-webkit-box",
+                "WebkitLineClamp": 2,
+                "WebkitBoxOrient": "vertical",
+                "overflow": "hidden",
+                "lineHeight": "1.3",
+            },
+        ),
+    ]
+    if tooltip:
+        label_children.append(
+            dmc.Tooltip(
+                label=tooltip,
+                position="top",
+                withArrow=True,
+                multiline=True,
+                w=260,
+                children=DashIconify(
+                    icon="solar:info-circle-bold-duotone",
+                    width=12,
+                    style={"color": "#A3AED0", "marginLeft": "3px", "cursor": "pointer", "flexShrink": 0},
+                ),
+            )
+        )
     return html.Div(
         className=f"nexus-card dc-kpi-card dc-stagger-{stagger}",
         style={
@@ -323,28 +348,22 @@ def _kpi(title: str, value, icon: str, color: str = "indigo", is_text: bool = Fa
             "justifyContent": "space-between",
         },
         children=[
-            html.Div([
-                html.Span(
-                    title,
-                    style={
-                        "color": "#A3AED0",
-                        "fontSize": "0.82rem",
-                        "fontWeight": 500,
-                        "letterSpacing": "0.02em",
-                        "textTransform": "uppercase",
-                    },
-                ),
-                html.H3(
-                    str(value),
-                    style={
-                        "color": "#2B3674",
-                        "fontSize": "1.1rem" if is_text else "1.6rem",
-                        "fontWeight": 900,
-                        "margin": "6px 0 0 0",
-                        "letterSpacing": "-0.02em",
-                    },
-                ),
-            ]),
+            html.Div(
+                style={"minWidth": 0, "flex": 1},
+                children=[
+                    html.Div(style={"display": "flex", "alignItems": "center"}, children=label_children),
+                    html.H3(
+                        str(value),
+                        style={
+                            "color": "#2B3674",
+                            "fontSize": "1.1rem" if is_text else "1.5rem",
+                            "fontWeight": 900,
+                            "margin": "6px 0 0 0",
+                            "letterSpacing": "-0.02em",
+                        },
+                    ),
+                ],
+            ),
             dmc.ThemeIcon(
                 size=48,
                 radius="xl",
@@ -359,17 +378,48 @@ def _kpi(title: str, value, icon: str, color: str = "indigo", is_text: bool = Fa
     )
 
 
+def _gauge_wrap(fig, label: str, avg_label: str = ""):
+    """Renders gauge with an HTML label above — label never clips into the gauge arc."""
+    subtitle = [html.Span(f"avg {avg_label}", style={"fontSize": "0.68rem", "color": "#A3AED0", "display": "block"})] if avg_label else []
+    return html.Div(
+        style={"textAlign": "center", "display": "flex", "flexDirection": "column", "width": "100%"},
+        children=[
+            html.Div(
+                style={"padding": "8px 4px 0", "minHeight": "32px"},
+                children=[
+                    html.Span(label, style={
+                        "fontSize": "0.72rem",
+                        "fontWeight": 600,
+                        "color": "#A3AED0",
+                        "textTransform": "uppercase",
+                        "letterSpacing": "0.04em",
+                        "lineHeight": "1.3",
+                        "whiteSpace": "normal",
+                        "wordBreak": "break-word",
+                    }),
+                    *subtitle,
+                ],
+            ),
+            dcc.Graph(
+                figure=fig,
+                config={"displayModeBar": False},
+                style={"height": "220px", "width": "100%"},
+            ),
+        ],
+    )
+
+
 def _chart_card(graph_component):
     return html.Div(
         className="nexus-card dc-chart-card",
         style={
             "padding": "16px",
-            "height": "250px",
+            "height": "300px",
             "display": "flex",
             "flexDirection": "column",
             "alignItems": "center",
             "justifyContent": "center",
-            "overflow": "hidden",
+            "overflow": "visible",
         },
         children=graph_component,
     )
@@ -521,7 +571,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
         gap="lg",
         children=[
             # KPI row
-            dmc.SimpleGrid(cols=4, spacing="lg", children=[
+            dmc.SimpleGrid(cols={"base": 2, "md": 4}, spacing="md", children=[
                 _kpi("Total Hosts", f"{hosts:,}", _DC_ICONS["hosts"], color=color),
                 _kpi("Total VMs / LPARs", f"{vms:,}", _DC_ICONS["vms"], color=color),
                 _kpi("CPU Capacity",  smart_cpu(cpu_cap),  _DC_ICONS["cpu"],   color=color, is_text=True),
@@ -529,28 +579,23 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
             ]),
             # Donut charts — only shown when capacity data exists (None → DMC ignores)
             _dynamic_chart_grid([
-                (_has_value(cpu_cap), dcc.Graph(
-                    figure=(
-                        create_premium_gauge_with_avg(cpu_pct, cpu_pct_max, "CPU Usage (peak)", color="#4318FF")
-                        if cpu_pct_max > 0
-                        else create_premium_gauge_chart(cpu_pct, "CPU Usage", color="#4318FF")
-                    ),
-                    config={"displayModeBar": False},
-                    style={"height": "100%", "width": "100%"},
+                (_has_value(cpu_cap), _gauge_wrap(
+                    create_premium_gauge_with_avg(cpu_pct, cpu_pct_max, "", color="#4318FF")
+                    if cpu_pct_max > 0
+                    else create_premium_gauge_chart(cpu_pct, "", color="#4318FF"),
+                    "CPU Usage (peak)" if cpu_pct_max > 0 else "CPU Usage",
+                    avg_label=f"{int(cpu_pct)}%" if cpu_pct_max > 0 else "",
                 )),
-                (_has_value(mem_cap), dcc.Graph(
-                    figure=(
-                        create_premium_gauge_with_avg(mem_pct, mem_pct_max, "RAM Usage (peak)", color="#05CD99")
-                        if mem_pct_max > 0
-                        else create_premium_gauge_chart(mem_pct, "RAM Usage", color="#05CD99")
-                    ),
-                    config={"displayModeBar": False},
-                    style={"height": "100%", "width": "100%"},
+                (_has_value(mem_cap), _gauge_wrap(
+                    create_premium_gauge_with_avg(mem_pct, mem_pct_max, "", color="#05CD99")
+                    if mem_pct_max > 0
+                    else create_premium_gauge_chart(mem_pct, "", color="#05CD99"),
+                    "RAM Usage (peak)" if mem_pct_max > 0 else "RAM Usage",
+                    avg_label=f"{int(mem_pct)}%" if mem_pct_max > 0 else "",
                 )),
-                (_has_value(stor_cap), dcc.Graph(
-                    figure=create_premium_gauge_chart(stor_pct, "Storage Usage", color="#FFB547"),
-                    config={"displayModeBar": False},
-                    style={"height": "100%", "width": "100%"},
+                (_has_value(stor_cap), _gauge_wrap(
+                    create_premium_gauge_chart(stor_pct, "", color="#FFB547"),
+                    "Storage Usage",
                 )),
             ]),
             # Capacity details card
@@ -617,27 +662,24 @@ def _build_power_tab(
     return dmc.Stack(
         gap="lg",
         children=[
-            dmc.SimpleGrid(cols=4, spacing="lg", children=[
+            dmc.SimpleGrid(cols={"base": 2, "md": 4}, spacing="md", children=[
                 _kpi("IBM Hosts",   f"{hosts:,}", _DC_ICONS["ibm_hosts"],   color="grape"),
                 _kpi("VIOS",        f"{vios:,}",  _DC_ICONS["vios"],        color="grape"),
                 _kpi("LPARs",       f"{lpars:,}", _DC_ICONS["lpars"],       color="grape"),
                 _kpi("Last Updated", "Live",       _DC_ICONS["last_updated"], color="grape", is_text=True),
             ]),
             _dynamic_chart_grid([
-                (_has_value(mem_total), dcc.Graph(
-                    figure=create_gauge_chart(mem_assigned, mem_total or 1, "Memory Assigned", color="#05CD99"),
-                    config={"displayModeBar": False},
-                    style={"height": "100%", "width": "100%"},
+                (_has_value(mem_total), _gauge_wrap(
+                    create_gauge_chart(mem_assigned, mem_total or 1, "", color="#05CD99", height=220),
+                    "Memory Assigned",
                 )),
-                (_has_value(cpu_assigned), dcc.Graph(
-                    figure=create_gauge_chart(cpu_used, cpu_assigned, "CPU Used", color="#4318FF"),
-                    config={"displayModeBar": False},
-                    style={"height": "100%", "width": "100%"},
+                (_has_value(cpu_assigned), _gauge_wrap(
+                    create_gauge_chart(cpu_used, cpu_assigned, "", color="#4318FF", height=220),
+                    "CPU Used",
                 )),
-                (_has_value(cpu_total_pu), dcc.Graph(
-                    figure=create_gauge_chart(cpu_allocated_pu, cpu_total_pu or 1, "CPU Assigned", color="#FF6B6B"),
-                    config={"displayModeBar": False},
-                    style={"height": "100%", "width": "100%"},
+                (_has_value(cpu_total_pu), _gauge_wrap(
+                    create_gauge_chart(cpu_allocated_pu, cpu_total_pu or 1, "", color="#FF6B6B", height=220),
+                    "CPU Assigned",
                 )),
             ]),
             html.Div(
@@ -678,10 +720,9 @@ def _build_power_tab(
                         style={"marginTop": "12px"},
                         children=(
                             _chart_card(
-                                dcc.Graph(
-                                    figure=create_gauge_chart(used_gb, total_gb or 1, "Storage Capacity", color="#FFB547"),
-                                    config={"displayModeBar": False},
-                                    style={"height": "100%", "width": "100%"},
+                                _gauge_wrap(
+                                    create_gauge_chart(used_gb, total_gb or 1, "", color="#FFB547", height=220),
+                                    "Storage Capacity",
                                 )
                             )
                             if storage_systems
@@ -1022,11 +1063,7 @@ def _build_san_subtab(port_usage: dict, health_alerts: list[dict], traffic_trend
                                 style={"width": "100%"},
                                 children=[
                                     _chart_card(
-                                        dcc.Graph(
-                                            figure=create_premium_gauge_chart(licensed_pct, "Pod License ROI", color="#4318FF"),
-                                            config={"displayModeBar": False},
-                                            style={"height": "100%", "width": "100%"},
-                                        )
+                                        _gauge_wrap(create_premium_gauge_chart(licensed_pct, "", color="#4318FF"), "Pod License ROI")
                                     ),
                                     html.P(
                                         "Coverage: Licensed ports divided by total ports.",
@@ -1038,11 +1075,7 @@ def _build_san_subtab(port_usage: dict, health_alerts: list[dict], traffic_trend
                                 style={"width": "100%"},
                                 children=[
                                     _chart_card(
-                                        dcc.Graph(
-                                            figure=create_premium_gauge_chart(active_pct, "Active vs Licensed", color="#05CD99"),
-                                            config={"displayModeBar": False},
-                                            style={"height": "100%", "width": "100%"},
-                                        )
+                                        _gauge_wrap(create_premium_gauge_chart(active_pct, "", color="#05CD99"), "Active vs Licensed")
                                     ),
                                     html.P(
                                         "Utilization: Active ports divided by licensed ports (admin-enabled + operational).",
@@ -1054,11 +1087,7 @@ def _build_san_subtab(port_usage: dict, health_alerts: list[dict], traffic_trend
                                 style={"width": "100%"},
                                 children=[
                                     _chart_card(
-                                        dcc.Graph(
-                                            figure=create_premium_gauge_chart(available_pct, "Port Availability", color="#FFB547"),
-                                            config={"displayModeBar": False},
-                                            style={"height": "100%", "width": "100%"},
-                                        )
+                                        _gauge_wrap(create_premium_gauge_chart(available_pct, "", color="#FFB547"), "Port Availability")
                                     ),
                                     html.P(
                                         "Availability: Active ports divided by total ports. Remaining ports are No Link/Offline or Admin Disabled.",
@@ -1146,19 +1175,19 @@ def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
                 "Sellable headroom on Nutanix CPU/RAM proxy — threshold-bound ceiling (ADR-0014)",
             ),
             dmc.SimpleGrid(
-                cols=4,
-                spacing="lg",
+                cols={"base": 2, "md": 4},
+                spacing="md",
                 style={"marginTop": "12px"},
                 children=[
-                    _kpi_with_tooltip("YTD realized", ytd_short, ytd_full, "solar:money-bag-bold-duotone"),
-                    _kpi("Sellable remaining %", f"{rem:.1f}", "solar:chart-square-bold-duotone"),
+                    _kpi_with_tooltip("YTD Realized", ytd_short, ytd_full, "solar:money-bag-bold-duotone"),
+                    _kpi("Sellable Remaining %", f"{rem:.1f}", "solar:chart-square-bold-duotone"),
                     _kpi_with_tooltip(
-                        "Potential revenue",
+                        "Potential Revenue",
                         pot_short,
                         pot_full,
                         "solar:wallet-money-bold-duotone",
                     ),
-                    _kpi("Customers (VM-mapped)", f"{cust:,}", "solar:users-group-rounded-bold-duotone"),
+                    _kpi("VM-Mapped Customers", f"{cust:,}", "solar:users-group-rounded-bold-duotone"),
                 ],
             ),
         ],
@@ -1406,20 +1435,14 @@ def _build_summary_tab(data: dict, tr: dict, dc_id: str | None = None):
                     ],
                 )]
                 if (_summary_util_grid := _dynamic_chart_grid([
-                    (_has_value(total_cpu_cap), dcc.Graph(
-                        figure=create_premium_gauge_chart(cpu_pct, "CPU Usage", color="#4318FF"),
-                        config={"displayModeBar": False},
-                        style={"height": "100%", "width": "100%"},
+                    (_has_value(total_cpu_cap), _gauge_wrap(
+                        create_premium_gauge_chart(cpu_pct, "", color="#4318FF"), "CPU Usage"
                     )),
-                    (_has_value(total_mem_cap), dcc.Graph(
-                        figure=create_premium_gauge_chart(mem_pct, "RAM Usage", color="#05CD99"),
-                        config={"displayModeBar": False},
-                        style={"height": "100%", "width": "100%"},
+                    (_has_value(total_mem_cap), _gauge_wrap(
+                        create_premium_gauge_chart(mem_pct, "", color="#05CD99"), "RAM Usage"
                     )),
-                    (_has_value(total_stor_cap), dcc.Graph(
-                        figure=create_premium_gauge_chart(stor_pct, "Storage Usage", color="#FFB547"),
-                        config={"displayModeBar": False},
-                        style={"height": "100%", "width": "100%"},
+                    (_has_value(total_stor_cap), _gauge_wrap(
+                        create_premium_gauge_chart(stor_pct, "", color="#FFB547"), "Storage Usage",
                     )),
                 ])) is not None
                 else []
@@ -2028,7 +2051,7 @@ def _build_intel_storage_subtab(device_list: list[dict], zabbix_storage_capacity
         className="nexus-card dc-chart-card",
         style={
             "padding": "24px 28px",
-            "height": "250px",
+            "height": "300px",
             "display": "flex",
             "flexDirection": "column",
             "justifyContent": "center",
@@ -2383,10 +2406,9 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict,
                             _section_title("Storage Capacity", "Overall utilization"),
                             html.Div(
                                 style={"display": "flex", "justifyContent": "center"},
-                                children=[dcc.Graph(
-                                    figure=create_gauge_chart(used_gb, total_gb or 1, "Storage Capacity", color="#FFB547"),
-                                    config={"displayModeBar": False},
-                                    style={"height": "220px", "width": "100%"},
+                                children=[_gauge_wrap(
+                                    create_gauge_chart(used_gb, total_gb or 1, "", color="#FFB547", height=220),
+                                    "Storage Capacity",
                                 )] if _has_value(total_gb) else [
                                     html.P("No data available.", style={"color": "#A3AED0", "fontSize": "0.85rem", "textAlign": "center", "paddingTop": "60px"}),
                                 ],

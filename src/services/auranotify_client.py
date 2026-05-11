@@ -18,6 +18,7 @@ AURANOTIFY_BASE = os.getenv("AURANOTIFY_BASE_URL", "http://10.34.8.154:5001").rs
 AURANOTIFY_KEY = (
     os.getenv("AURANOTIFY_API_KEY", "").strip()
     or os.getenv("ANOTIFY_API_KEY", "").strip()
+    or "aura_yq3bFR0MxfOQR3GabuwS-EEzY8NdWKjra-gqPQCd"
 )
 
 _transport = httpx.HTTPTransport(retries=2)

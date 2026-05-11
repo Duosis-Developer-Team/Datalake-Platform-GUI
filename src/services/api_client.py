@@ -973,28 +973,56 @@ def get_dc_availability_sla_items_for_dcs(
     tr: Optional[dict],
 ) -> dict[str, Optional[dict[str, Any]]]:
     """
-    Single AuraNotify datacenter-services fetch; match each datacenter summary row by id.
+    Fetch datacenter-services SLA items via datacenter-api and match each DC row by id.
 
-    Returns map ``dc_id`` (str) -> matched SLA item or None (same matching order as
-    :func:`get_dc_availability_sla_item`: display name, then id).
+    Returns map ``dc_id`` (str) -> matched SLA item or None.
     """
-    from src.services import auranotify_client as aura
+    import re
     from src.utils.dc_display import format_dc_display_name
 
     out: dict[str, Optional[dict[str, Any]]] = {}
     if not dc_rows:
         return out
+
+    ck = f"api:dc_svc_sla_items:{_serialize_tr_params(tr)}"
+
+    def fetch() -> list:
+        data = _get_json(_get_client_dc(), "/api/v1/sla/datacenter-services", params=_build_time_params(tr))
+        if isinstance(data, dict):
+            return data.get("items") or []
+        return []
+
     try:
-        items = aura.get_dc_services_availability(
-            _auranotify_start_date(tr),
-            _auranotify_end_date_iso(tr),
-        )
+        cached = _api_response_cache.get(ck)
+        if cached is not None and isinstance(cached, list):
+            items = cached
+        else:
+            items = fetch()
+            if items:
+                _api_response_cache.set(ck, items)
     except Exception:
-        for row in dc_rows:
-            rid = row.get("id")
-            if rid is not None:
-                out[str(rid)] = None
-        return out
+        items = []
+
+    _dc_code_re = re.compile(r"\b(dc\d+|ict\d+|az\d+|uz\d+)\b", re.IGNORECASE)
+
+    def _match(hint: str) -> Optional[dict[str, Any]]:
+        hint_l = (hint or "").strip().lower()
+        if not hint_l:
+            return None
+        for it in items:
+            gn = str(it.get("group_name") or "").strip().lower()
+            if gn == hint_l:
+                return it
+        for it in items:
+            gn = str(it.get("group_name") or "").strip().lower()
+            if hint_l in gn or gn in hint_l:
+                return it
+        for tok in _dc_code_re.findall(hint_l):
+            pat = re.compile(r"\b" + re.escape(tok) + r"\b", re.IGNORECASE)
+            for it in items:
+                if pat.search(str(it.get("group_name") or "")):
+                    return it
+        return None
 
     for row in dc_rows:
         rid = row.get("id")
@@ -1004,9 +1032,9 @@ def get_dc_availability_sla_items_for_dcs(
         dc_name = format_dc_display_name(row.get("name"), row.get("description")) or str(row.get("name") or sid)
         matched: Optional[dict[str, Any]] = None
         for hint in (dc_name, sid):
-            it = aura.match_dc_group_item(items, hint)
-            if it:
-                matched = it
+            m = _match(hint)
+            if m:
+                matched = m
                 break
         out[sid] = deepcopy(matched) if matched is not None else None
     return out

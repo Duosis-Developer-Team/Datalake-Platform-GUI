@@ -97,7 +97,7 @@ def _prevent_stale_dash_cache(response):
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
         elif path.startswith("/assets/") and ("text/css" in ct or "javascript" in ct or "application/javascript" in ct):
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            response.headers["Cache-Control"] = "public, max-age=3600, must-revalidate"
     except Exception:
         pass
     return response
@@ -1040,7 +1040,7 @@ def handle_globe_pin_click(clicked_point, last_dc_id, time_range):
     if dc_id == last_dc_id:
         elapsed_ms = round((time_module.perf_counter() - t0) * 1000, 1)
         _log.info("handle_globe_pin_click dc=%s same_dc=True elapsed_ms=%.1f", dc_id, elapsed_ms)
-        return dash.no_update, dc_id, "building", {"dc_id": dc_id, "dc_name": dc_id}
+        return dash.no_update, dc_id, "building", {"dc_id": dc_id, "dc_name": site_name or dc_id}
 
     from src.utils.time_range import default_time_range
     tr = time_range or default_time_range()
@@ -1078,10 +1078,12 @@ def open_3d_hologram_modal(btn_clicks, current_style, time_range):
 
     from src.services import api_client as api
     from src.pages.global_view import build_3d_rack_overlay
+    from src.utils.dc_display import format_dc_display_name
 
     tr = time_range or default_time_range()
     info = api.get_dc_details(dc_id, tr)
-    dc_name = info.get("meta", {}).get("name", dc_id)
+    _meta = info.get("meta", {})
+    dc_name = format_dc_display_name(_meta.get("name"), _meta.get("description")) or dc_id
 
     racks_resp = api.get_dc_racks(dc_id)
     racks = racks_resp.get("racks", [])
@@ -1166,12 +1168,15 @@ def advance_to_floor_map(n_intervals, dc_store, current_mode, time_range):
         return dash.no_update, dash.no_update
     t0 = time_module.perf_counter()
     dc_id = dc_store.get("dc_id", "")
-    dc_name = dc_store.get("dc_name", dc_id)
     from src.services.global_view_prefetch import is_warm
     from src.utils.time_range import default_time_range as _dtr
+    from src.utils.dc_display import format_dc_display_name as _fmt_name
     tr = time_range or _dtr()
     warm = is_warm(tr)
     racks_resp = api.get_dc_racks(dc_id)
+    _info = api.get_dc_details(dc_id, tr)
+    _meta = _info.get("meta", {})
+    dc_name = _fmt_name(_meta.get("name"), _meta.get("description")) or dc_store.get("dc_name", dc_id)
     racks = racks_resp.get("racks", [])
     from src.pages.floor_map import build_floor_map_layout
     layout = build_floor_map_layout(dc_id, dc_name, racks)

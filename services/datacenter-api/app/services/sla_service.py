@@ -12,6 +12,7 @@ from app.services import cache_service as cache
 logger = logging.getLogger(__name__)
 
 SLA_API_URL = os.getenv("SLA_API_URL", "http://10.34.8.154:5001/api/sla/datacenters")
+SLA_DC_SERVICES_URL = os.getenv("SLA_DC_SERVICES_URL", "http://10.34.8.154:5001/api/sla/datacenter-services")
 SLA_API_KEY = os.getenv("SLA_API_KEY", "aura_yq3bFR0MxfOQR3GabuwS-EEzY8NdWKjra-gqPQCd")
 
 _DC_CODE_RE = re.compile(r"(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)", re.IGNORECASE)
@@ -150,6 +151,41 @@ def get_sla_data(time_range: dict, allow_refresh_if_stale: bool = True) -> dict[
             logger.debug("SLA staleness check failed: %s", exc)
 
     return (hit or {}).get("by_dc", {}) or {}
+
+
+def get_dc_services_availability(tr: dict) -> list[dict[str, Any]]:
+    """
+    Fetch datacenter-services SLA items from AuraNotify for the given time range.
+    Returns a list of raw items (group_name, availability_pct, period_min, etc.).
+    """
+    tr = tr or {}
+    start = tr.get("start", "")
+    end = tr.get("end", "")
+    if not start:
+        return []
+
+    ck = f"sla_dc_services:{start}:{end}"
+    hit = cache.get(ck)
+    if hit is not None and isinstance(hit, list):
+        return hit
+
+    try:
+        params: dict[str, str] = {"start_date": f"{start}T00:00:00"}
+        if end:
+            params["end_date"] = f"{end}T00:00:00"
+        headers = {"X-API-Key": SLA_API_KEY}
+        resp = requests.get(SLA_DC_SERVICES_URL, headers=headers, params=params, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list):
+            items = data
+        else:
+            items = data.get("items") or data.get("data") or data.get("results") or []
+        cache.set(ck, items, ttl=SLA_CACHE_TTL_SECONDS)
+        return items
+    except Exception as exc:
+        logger.warning("get_dc_services_availability failed: %s", exc)
+        return []
 
 
 def format_availability_tooltip(entry: Optional[dict]) -> str:

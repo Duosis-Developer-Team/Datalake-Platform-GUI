@@ -60,18 +60,38 @@ def _backup_storage_volume_gb(backup_totals: dict) -> float:
 
 
 def _metric(title: str, value, icon: str, color: str = "indigo"):
-    """Standard billing metric card."""
+    """Standard billing metric card — vertical layout: icon → label → value."""
     return html.Div(
         className="nexus-card",
-        style={"padding": "20px"},
+        style={
+            "padding": "20px 16px",
+            "minHeight": "120px",
+            "display": "flex",
+            "flexDirection": "column",
+            "alignItems": "center",
+            "justifyContent": "center",
+            "textAlign": "center",
+            "gap": "6px",
+        },
         children=[
-            dmc.Group(align="center", gap="sm", style={"marginBottom": "8px"}, children=[
-                dmc.ThemeIcon(size="lg", radius="md", variant="light", color=color,
-                              children=DashIconify(icon=icon, width=22)),
-                html.H3(title, style={"margin": 0, "color": "#A3AED0", "fontSize": "0.9rem"}),
-            ]),
-            html.H2(str(value), style={"margin": "0", "color": "#2B3674",
-                                        "fontSize": "1.5rem", "fontWeight": "700"}),
+            dmc.ThemeIcon(size="xl", radius="md", variant="light", color=color,
+                          children=DashIconify(icon=icon, width=24)),
+            html.Span(title, style={
+                "color": "#A3AED0",
+                "fontSize": "0.72rem",
+                "fontWeight": 600,
+                "lineHeight": "1.3",
+                "fontFamily": "DM Sans",
+                "maxWidth": "140px",
+            }),
+            html.Div(str(value), style={
+                "color": "#2B3674",
+                "fontSize": "1.5rem",
+                "fontWeight": "800",
+                "fontFamily": "DM Sans",
+                "letterSpacing": "-0.02em",
+                "lineHeight": 1,
+            }),
         ],
     )
 
@@ -158,10 +178,14 @@ def _section_card(title: str, subtitle: str | None = None, children=None):
         className="nexus-card",
         style={"padding": "20px"},
         children=[
-            html.H3(title, style={"margin": "0 0 4px 0", "color": "#2B3674",
-                                   "fontSize": "1rem", "fontWeight": 700}),
-            html.P(subtitle, style={"margin": "0 0 12px 0", "color": "#A3AED0",
-                                     "fontSize": "0.8rem"}) if subtitle else None,
+            html.Div(title, style={
+                "margin": "0 0 2px 0", "color": "#2B3674",
+                "fontSize": "1rem", "fontWeight": 700, "fontFamily": "DM Sans",
+            }),
+            html.Div(subtitle, style={
+                "margin": "0 0 4px 0", "color": "#A3AED0", "fontSize": "0.78rem", "fontFamily": "DM Sans",
+            }) if subtitle else None,
+            html.Div(style={"height": "2px", "background": "linear-gradient(90deg,#4318FF,#05CD99)", "borderRadius": "2px", "width": "32px", "marginBottom": "14px"}),
             children or html.Div(),
         ],
     )
@@ -534,7 +558,7 @@ def _tab_billing(
         spacing="lg",
         children=[
             _metric("YTD realized revenue", _money(sales_summary.get("ytd_revenue_total")), "solar:money-bag-bold-duotone", color="green"),
-            _metric("YTD orders (fulfilled/invoiced)", f"{int(sales_summary.get('invoice_count') or 0):,}", "solar:bill-list-bold-duotone", color="teal"),
+            _metric("YTD Orders (Fulfilled)", f"{int(sales_summary.get('invoice_count') or 0):,}", "solar:bill-list-bold-duotone", color="teal"),
             _metric("Active orders (open)", f"{int(sales_summary.get('active_order_count') or 0):,}", "solar:cart-bold-duotone", color="cyan"),
             _metric("Estimated MRR", _money(sales_summary.get("estimated_mrr")), "solar:calendar-bold-duotone", color="violet"),
         ],
@@ -1403,7 +1427,7 @@ def _tab_itsm(
         _metric("SLA Breach",
                 f"{sla_breach:,}",
                 "solar:danger-triangle-bold-duotone", color="red"),
-        _metric("Avg Resolution (Incidents)",
+        _metric("Avg Incident Resolution",
                 avg_rh,
                 "solar:clock-circle-bold-duotone", color="violet"),
         _metric("Median Resolution",
