@@ -32,6 +32,11 @@ echo "Applying /docker-entrypoint-initdb.d/*.sql inside webui-db (tracked in gui
 docker compose exec -T webui-db sh -s <<'REMOTE_SCRIPT'
 set -eu
 
+# Build a single-quoted SQL literal (do not use psql :'var' — some clients pass it verbatim to the server).
+sql_literal() {
+  printf "%s" "$1" | sed "s/'/''/g"
+}
+
 psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -c "
   CREATE TABLE IF NOT EXISTS gui_schema_migrations (
     filename   TEXT PRIMARY KEY,
@@ -40,13 +45,14 @@ psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -c "
 
 for f in $(ls /docker-entrypoint-initdb.d/*.sql 2>/dev/null | sort -V); do
   fname=$(basename "$f")
-  already=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v "fname=$fname" -tAc "SELECT 1 FROM gui_schema_migrations WHERE filename = :'fname'")
+  fnlit=$(sql_literal "$fname")
+  already=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT 1 FROM gui_schema_migrations WHERE filename = '$fnlit'")
   if [ "$already" = "1" ]; then
     echo "=== Skipping $fname (already applied) ==="
   else
     echo "=== Applying $fname ==="
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -f "$f"
-    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v "fname=$fname" -c "INSERT INTO gui_schema_migrations (filename) VALUES (:'fname') ON CONFLICT DO NOTHING;"
+    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "INSERT INTO gui_schema_migrations (filename) VALUES ('$fnlit') ON CONFLICT DO NOTHING;"
     echo "    -> Recorded $fname"
   fi
 done
