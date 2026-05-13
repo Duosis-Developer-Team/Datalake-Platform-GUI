@@ -16,6 +16,7 @@ from app.db.queries import loki as lq, customer as cq, s3 as s3q, backup as bq
 from app.db.queries import brocade as brq, ibm_storage as isq
 from app.db.queries import zabbix_network as znq, zabbix_storage as zsq
 from app.db.queries import discovery_rack as drq
+from app.config import settings
 from app.services import cache_service as cache
 from app.services import query_overrides as qo
 from app.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
@@ -142,8 +143,8 @@ class DatabaseService:
         """Create the connection pool. Logs a warning if DB is unreachable at startup."""
         try:
             self._pool = pg_pool.ThreadedConnectionPool(
-                minconn=2,
-                maxconn=16,
+                minconn=max(1, int(settings.db_pool_minconn)),
+                maxconn=max(int(settings.db_pool_minconn), int(settings.db_pool_maxconn)),
                 host=self._db_host,
                 port=self._db_port,
                 dbname=self._db_name,
@@ -154,7 +155,11 @@ class DatabaseService:
                 keepalives_interval=10,
                 keepalives_count=5,
             )
-            logger.info("DB connection pool initialized (min=2, max=16).")
+            logger.info(
+                "DB connection pool initialized (min=%s, max=%s).",
+                max(1, int(settings.db_pool_minconn)),
+                max(int(settings.db_pool_minconn), int(settings.db_pool_maxconn)),
+            )
         except OperationalError as exc:
             logger.error("Failed to initialize DB pool: %s", exc)
             self._pool = None

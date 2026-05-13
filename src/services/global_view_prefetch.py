@@ -31,9 +31,11 @@ logger = logging.getLogger(__name__)
 GLOBAL_VIEW_PREFETCH_INTERVAL_SECONDS = 900  # 15 minutes
 
 _CRITICAL_WORKERS = 8   # details + rack-list fetches
-_DEVICE_WORKERS = 12    # rack-device fetches (hot backend → fast at high concurrency)
+_DEVICE_WORKERS = 6     # keep backend load moderate during background warm
 _FIGURE_WORKERS = 4     # parallel floor-map figure builds
-_DEVICE_BATCH = 24      # pairs per Phase-2 batch (checked against pause flag between batches)
+_DEVICE_BATCH = 8       # smaller batches let pause/reactivity kick in faster
+_PRIORITY_DEVICE_MAX_RACKS = 6
+_PRIORITY_DEVICE_WORKERS = 3
 
 _lock = threading.Lock()
 _in_flight: set[str] = set()
@@ -329,6 +331,8 @@ def _warm_dc_devices(dc_id: str) -> None:
     ]
     if not pairs:
         return
+    total_pairs = len(pairs)
+    pairs = pairs[:_PRIORITY_DEVICE_MAX_RACKS]
 
     def _fetch(pair: tuple[str, str]) -> None:
         d, r = pair
@@ -338,11 +342,11 @@ def _warm_dc_devices(dc_id: str) -> None:
             logger.debug("warm_dc_priority devices failed dc=%s rack=%s: %s", d, r, exc)
 
     t0 = _time.monotonic()
-    with ThreadPoolExecutor(max_workers=_DEVICE_WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=min(_PRIORITY_DEVICE_WORKERS, len(pairs))) as pool:
         list(pool.map(_fetch, pairs))
 
     elapsed_ms = int((_time.monotonic() - t0) * 1000)
     logger.info(
-        "prefetch dc_priority done dc=%s rack_count=%d elapsed_ms=%d",
-        dc_id, len(pairs), elapsed_ms,
+        "prefetch dc_priority done dc=%s rack_count=%d total_racks=%d elapsed_ms=%d",
+        dc_id, len(pairs), total_pairs, elapsed_ms,
     )

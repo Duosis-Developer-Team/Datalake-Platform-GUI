@@ -1,5 +1,10 @@
 from __future__ import annotations
 import dash
+import logging
+import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dash import html, dcc, callback, Input, Output, State, callback_context
 import dash_mantine_components as dmc
 import plotly.graph_objects as go
@@ -22,16 +27,82 @@ from src.utils.virt_sellable_aggregate import (
     total_potential_tl,
 )
 
+_LOG = logging.getLogger(__name__)
+_VIRT_TL_CACHE: dict[str, float] = {}
+_VIRT_CACHE_WARMING = False
+_VIRT_CACHE_TR_KEY = ""
+_VIRT_CACHE_LOCK = threading.Lock()
 
-def _virt_sellable_tl_for_dc(dc_id: str, tr: dict) -> float:
-    """Sum virt sellable TL using datacenter-api compute path (same as all clusters selected on DC detail).
 
-    Uses full classic + hyperconv cluster lists so crm-engine matches filtered SQL totals,
-    not the clusters=None datalake-only path.
+def _virt_cache_tr_key(tr: dict | None) -> str:
+    tr = tr or {}
+    return f"{tr.get('preset', '')}|{tr.get('start', '')}|{tr.get('end', '')}"
+
+
+def _start_virt_cache_warm(
+    dc_ids: list[str],
+    tr: dict,
+    *,
+    max_workers: int,
+    family_workers: int,
+) -> bool:
+    global _VIRT_CACHE_WARMING
+    tr_key = _virt_cache_tr_key(tr)
+    with _VIRT_CACHE_LOCK:
+        if _VIRT_CACHE_WARMING:
+            return False
+        _VIRT_CACHE_WARMING = True
+
+    def _run() -> None:
+        global _VIRT_CACHE_WARMING, _VIRT_TL_CACHE, _VIRT_CACHE_TR_KEY
+        t0 = time.perf_counter()
+        local_vals: dict[str, float] = {}
+        try:
+            def _compute(dc_id: str) -> tuple[str, float]:
+                return dc_id, _virt_sellable_tl_for_dc(dc_id, tr, family_workers)
+
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = [pool.submit(_compute, dc_id) for dc_id in dc_ids]
+                for fut in as_completed(futures):
+                    try:
+                        dc_id, val = fut.result()
+                        local_vals[dc_id] = val
+                    except Exception:
+                        continue
+            with _VIRT_CACHE_LOCK:
+                _VIRT_TL_CACHE = local_vals
+                _VIRT_CACHE_TR_KEY = tr_key
+            # region agent log
+            _LOG.info(
+                "DBG364e8d H7 datacenters virt_warm_complete_ms=%.1f cached=%d tr_key=%s",
+                (time.perf_counter() - t0) * 1000,
+                len(local_vals),
+                tr_key,
+            )
+            # endregion
+        finally:
+            with _VIRT_CACHE_LOCK:
+                _VIRT_CACHE_WARMING = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
+def _virt_sellable_tl_for_dc(dc_id: str, tr: dict, family_workers: int) -> float:
+    """Return virt sellable TL quickly for grid cards.
+
+    Data Centers cards prioritize first-load responsiveness; we avoid per-DC cluster
+    list fan-out here and let crm-engine use its default scope (clusters=None).
+    DC Detail still uses explicit cluster-scoped calculations where precision matters.
     """
-    classic_cl = api.get_classic_cluster_list(str(dc_id), tr) or None
-    hyperconv_cl = api.get_hyperconv_cluster_list(str(dc_id), tr) or None
-    return total_potential_tl(collect_virt_sellable_panels(str(dc_id), classic_cl, hyperconv_cl))
+    return total_potential_tl(
+        collect_virt_sellable_panels(
+            str(dc_id),
+            None,
+            None,
+            max_family_workers=family_workers,
+        )
+    )
 
 
 def _hex_to_rgb(hex_color: str) -> str:
@@ -554,24 +625,84 @@ def _dc_vault_card(
 
 def build_datacenters(time_range=None, visible_sections=None):
     """Build Data Centers page content for the given time range."""
+    t_total = time.perf_counter()
     tr = time_range or default_time_range()
     vs = visible_sections
 
     def ds(code: str) -> bool:
         return vs is None or code in vs
 
+    t_init = time.perf_counter()
     datacenters = api.get_all_datacenters_summary(tr)
-    sla_by_dc   = api.get_sla_by_dc(tr)
+    sla_by_dc = api.get_sla_by_dc(tr)
+    # region agent log
+    _LOG.info(
+        "DBG364e8d H1 datacenters init_fetch_ms=%.1f dc_count=%d preset=%s",
+        (time.perf_counter() - t_init) * 1000,
+        len(datacenters or []),
+        (tr or {}).get("preset"),
+    )
+    # endregion
 
     virt_tl_by_dc: dict[str, float] = {}
     total_potential_tl = 0.0
-    for dc in datacenters:
-        cid = dc.get("id")
-        if cid is None:
-            continue
-        dc_virt = _virt_sellable_tl_for_dc(str(cid), tr)
-        virt_tl_by_dc[str(cid)] = dc_virt
+    t_virt = time.perf_counter()
+    slow_dc: list[tuple[str, float]] = []
+    dc_ids: list[str] = [str(dc.get("id")) for dc in datacenters if dc.get("id") is not None]
+
+    configured_family_workers = int(os.getenv("DC_OVERVIEW_VIRT_FAMILY_WORKERS", "1") or "1")
+    family_workers = max(1, configured_family_workers)
+
+    # Parallelize cold-cache sellable computations so first /datacenters load
+    # doesn't block on N sequential DC calls.
+    configured_workers = int(os.getenv("DC_OVERVIEW_VIRT_WORKERS", "4") or "4")
+    max_workers = min(max(1, configured_workers), max(1, len(dc_ids)))
+    # region agent log
+    _LOG.info(
+        (
+            "DBG364e8d H6 datacenters virt_workers=%d family_workers=%d "
+            "dc_count=%d expected_family_calls=%d theoretical_max_inflight=%d"
+        ),
+        max_workers,
+        family_workers,
+        len(dc_ids),
+        len(dc_ids) * 4,
+        max_workers * family_workers,
+    )
+    # endregion
+    tr_key = _virt_cache_tr_key(tr)
+    with _VIRT_CACHE_LOCK:
+        cache_snapshot = dict(_VIRT_TL_CACHE)
+        cache_key = _VIRT_CACHE_TR_KEY
+        warming = _VIRT_CACHE_WARMING
+    cache_hit_count = sum(1 for dc_id in dc_ids if dc_id in cache_snapshot and cache_key == tr_key)
+    triggered_warm = False
+    if cache_hit_count < len(dc_ids) and not warming:
+        triggered_warm = _start_virt_cache_warm(
+            dc_ids,
+            tr,
+            max_workers=max_workers,
+            family_workers=family_workers,
+        )
+    for dc_id in dc_ids:
+        dc_virt = cache_snapshot.get(dc_id, 0.0) if cache_key == tr_key else 0.0
+        virt_tl_by_dc[dc_id] = dc_virt
         total_potential_tl += dc_virt
+    # region agent log
+    _LOG.info(
+        (
+            "DBG364e8d H2 datacenters virt_loop_ms=%.1f slow_dc=%s cache_hits=%d/%d "
+            "cache_key_match=%s warm_in_progress=%s warm_triggered=%s"
+        ),
+        (time.perf_counter() - t_virt) * 1000,
+        slow_dc[:8],
+        cache_hit_count,
+        len(dc_ids),
+        cache_key == tr_key,
+        warming,
+        triggered_warm,
+    )
+    # endregion
 
     # ── Export rows ──
     export_rows = []
@@ -632,6 +763,13 @@ def build_datacenters(time_range=None, visible_sections=None):
         )]
     )
 
+    # region agent log
+    _LOG.info(
+        "DBG364e8d H3 datacenters total_build_ms=%.1f cards=%d",
+        (time.perf_counter() - t_total) * 1000,
+        len(datacenters or []),
+    )
+    # endregion
     return html.Div([
         dcc.Store(
             id="datacenters-export-store",

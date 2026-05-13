@@ -6,6 +6,8 @@ scope is passed (including explicit full cluster lists for compute-backed panels
 """
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from src.services import api_client as api
@@ -23,36 +25,42 @@ def collect_virt_sellable_panels(
     dc_id: str,
     classic_clusters: list[str] | None = None,
     hyperconv_clusters: list[str] | None = None,
+    max_family_workers: int | None = None,
 ) -> list[dict]:
-    """Fetch virt classic + hyperconv + power panel rows (same order as DC detail callback)."""
+    """Fetch virt classic + hyperconv + power panel rows.
+
+    Run family fetches in parallel so cold-cache page loads don't serialize
+    multiple CRM calls per DC.
+    """
     panels: list[dict] = []
-    try:
-        classic = api.get_sellable_by_panel(
-            dc_code=str(dc_id),
-            family="virt_classic",
-            clusters=classic_clusters,
-        ) or []
-        if isinstance(classic, list):
-            panels.extend(classic)
-    except Exception:
-        pass
-    try:
-        hyperconv = api.get_sellable_by_panel(
-            dc_code=str(dc_id),
-            family="virt_hyperconverged",
-            clusters=hyperconv_clusters,
-        ) or []
-        if isinstance(hyperconv, list):
-            panels.extend(hyperconv)
-    except Exception:
-        pass
-    for fam in VIRT_POWER_FAMILIES:
-        try:
-            chunk = api.get_sellable_by_panel(dc_code=str(dc_id), family=fam) or []
-            if isinstance(chunk, list):
-                panels.extend(chunk)
-        except Exception:
-            continue
+
+    def _fetch_family(family: str) -> list[dict]:
+        kwargs: dict[str, Any] = {"dc_code": str(dc_id), "family": family}
+        if family == "virt_classic":
+            kwargs["clusters"] = classic_clusters
+        elif family == "virt_hyperconverged":
+            kwargs["clusters"] = hyperconv_clusters
+        chunk = api.get_sellable_by_panel(**kwargs) or []
+        return chunk if isinstance(chunk, list) else []
+
+    families: tuple[str, ...] = ("virt_classic", "virt_hyperconverged", *VIRT_POWER_FAMILIES)
+    configured_family_workers = int(os.getenv("VIRT_SELLABLE_FAMILY_WORKERS", "1") or "1")
+    workers = max_family_workers if max_family_workers is not None else configured_family_workers
+    workers = min(max(1, workers), len(families))
+    if workers == 1:
+        for fam in families:
+            try:
+                panels.extend(_fetch_family(fam))
+            except Exception:
+                continue
+        return panels
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_fetch_family, fam) for fam in families]
+        for fut in as_completed(futures):
+            try:
+                panels.extend(fut.result())
+            except Exception:
+                continue
     return panels
 
 

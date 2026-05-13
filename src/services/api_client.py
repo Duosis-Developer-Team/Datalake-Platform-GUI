@@ -13,6 +13,10 @@ from src.services import cache_service as _api_response_cache
 
 logger = logging.getLogger(__name__)
 
+_DEBUG_LOG_PATH = "/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.cursor/debug-364e8d.log"
+_DEBUG_SESSION_ID = "364e8d"
+_DEBUG_RUN_ID = "dc-detail-slow-run1"
+
 # Microservices: set per-service URLs, or use API_BASE_URL for a single gateway.
 _API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
 DATACENTER_API_URL = os.getenv("DATACENTER_API_URL", _API_BASE).rstrip("/")
@@ -233,21 +237,91 @@ def _serialize_tr_params(tr: Optional[dict]) -> str:
     return json.dumps(sorted(p.items()), separators=(",", ":"), ensure_ascii=False)
 
 
+def _should_trace_cache_key(cache_key: str) -> bool:
+    return (
+        cache_key.startswith("api:dc_racks:")
+        or cache_key.startswith("api:dc_details:")
+        or cache_key.startswith("api:rack_devices:")
+        or cache_key.startswith("api:sellable_by_panel:")
+        or cache_key.startswith("api:dc_")
+        or cache_key.startswith("api:classic_cluster_list:")
+        or cache_key.startswith("api:hyperconv_cluster_list:")
+        or cache_key.startswith("api:sla_by_dc:")
+        or cache_key.startswith("api:physical_inventory_dc:")
+    )
+
+
+def _emit_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    payload = {
+        "sessionId": _DEBUG_SESSION_ID,
+        "runId": _DEBUG_RUN_ID,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        # region agent log
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        # endregion
+    except Exception:
+        pass
+
+
 def _api_cache_get_with_stale(
     cache_key: str,
     fetch_normalized: Callable[[], Any],
     empty_fallback: Any,
 ) -> Any:
     """Return cached payload when present. Otherwise fetch and store; on HTTP/transport errors return last good payload."""
+    trace = _should_trace_cache_key(cache_key)
     stale = _api_response_cache.get(cache_key)
     if stale is not None:
+        if trace:
+            # region agent log
+            _emit_debug_log(
+                "H3",
+                "src/services/api_client.py:_api_cache_get_with_stale",
+                "api cache hit",
+                {"cacheKey": cache_key, "source": "memory-cache"},
+            )
+            # endregion
         return _clone(stale)
     try:
+        t0 = time.perf_counter()
         out = fetch_normalized()
         _api_response_cache.set(cache_key, out)
+        if trace:
+            # region agent log
+            _emit_debug_log(
+                "H1",
+                "src/services/api_client.py:_api_cache_get_with_stale",
+                "api fetch miss completed",
+                {
+                    "cacheKey": cache_key,
+                    "fetchMs": round((time.perf_counter() - t0) * 1000, 1),
+                    "source": "upstream",
+                },
+            )
+            # endregion
         return out
-    except _HTTP_ERRORS:
+    except _HTTP_ERRORS as exc:
         hit = _api_response_cache.get(cache_key)
+        if trace:
+            # region agent log
+            _emit_debug_log(
+                "H4",
+                "src/services/api_client.py:_api_cache_get_with_stale",
+                "api fetch failed",
+                {
+                    "cacheKey": cache_key,
+                    "errorType": type(exc).__name__,
+                    "fallback": "stale-hit" if hit is not None else "empty",
+                },
+            )
+            # endregion
         if hit is not None:
             return _clone(hit)
         return _clone(empty_fallback)

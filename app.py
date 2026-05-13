@@ -105,6 +105,28 @@ def _prevent_stale_dash_cache(response):
 
 _log = logging.getLogger(__name__)
 _log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
+_DEBUG_LOG_PATH = "/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.cursor/debug-364e8d.log"
+_DEBUG_SESSION_ID = "364e8d"
+_DEBUG_RUN_ID = "dc-detail-slow-run1"
+
+
+def _emit_debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    payload = {
+        "sessionId": _DEBUG_SESSION_ID,
+        "runId": _DEBUG_RUN_ID,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time_module.time() * 1000),
+    }
+    try:
+        # region agent log
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        # endregion
+    except Exception:
+        pass
 
 
 from src.pages import home, datacenters, dc_view, customer_view, customers_list, query_explorer, global_view, region_drilldown, dc_detail
@@ -558,6 +580,14 @@ def render_main_content(pathname, time_range, selected_customer, search):
 
     pathname = pathname or "/"
     tr = time_range or default_time_range()
+    # Keep global prefetch phase-2 (rack device fan-out) paused unless user is
+    # explicitly on /global-view. Otherwise it competes with datacenter routes.
+    try:
+        from src.services.global_view_prefetch import set_phase2_pause as _set_phase2_pause_for_route
+
+        _set_phase2_pause(pathname != "/global-view")
+    except Exception:
+        pass
 
     if pathname == "/login":
         nxt, err = login_page_mod.parse_login_search(search)
@@ -592,10 +622,39 @@ def render_main_content(pathname, time_range, selected_customer, search):
     if pathname in ("/", ""):
         return home.build_overview(tr, visible_sections=vis)
     if pathname == "/datacenters":
-        return datacenters.build_datacenters(tr, visible_sections=vis)
+        t_dcs = time_module.perf_counter()
+        out = datacenters.build_datacenters(tr, visible_sections=vis)
+        # region agent log
+        _log.info(
+            "DBG364e8d H4 route=/datacenters render_ms=%.1f preset=%s",
+            (time_module.perf_counter() - t_dcs) * 1000,
+            (tr or {}).get("preset"),
+        )
+        # endregion
+        return out
     if pathname and pathname.startswith("/datacenter/"):
         dc_id = pathname.replace("/datacenter/", "").strip("/")
-        return dc_view.build_dc_view(dc_id, tr, visible_sections=vis)
+        t_dc = time_module.perf_counter()
+        out = dc_view.build_dc_view(dc_id, tr, visible_sections=vis)
+        _log.info(
+            "DBG364e8d D0 route=/datacenter dc=%s render_ms=%.1f preset=%s",
+            dc_id,
+            (time_module.perf_counter() - t_dc) * 1000,
+            (tr or {}).get("preset"),
+        )
+        # region agent log
+        _emit_debug_log(
+            "H1",
+            "app.py:render_main_content",
+            "datacenter route render completed",
+            {
+                "pathname": pathname,
+                "dcId": dc_id,
+                "renderMs": round((time_module.perf_counter() - t_dc) * 1000, 1),
+            },
+        )
+        # endregion
+        return out
     if pathname == "/global-view":
         return global_view.build_global_view(tr, visible_sections=vis)
     if pathname == "/availability-annual":
@@ -996,6 +1055,14 @@ def handle_globe_pin_click(clicked_point, last_dc_id, time_range):
     t0 = time_module.perf_counter()
     from src.services.global_view_prefetch import warm_dc_priority
     warm_dc_priority(dc_id)
+    # region agent log
+    _emit_debug_log(
+        "H2",
+        "app.py:handle_globe_pin_click",
+        "dc selected and priority warm triggered",
+        {"dcId": dc_id, "sameDc": dc_id == last_dc_id},
+    )
+    # endregion
 
     if dc_id == last_dc_id:
         elapsed_ms = round((time_module.perf_counter() - t0) * 1000, 1)
@@ -1077,11 +1144,23 @@ def close_3d_hologram_modal(n_clicks, current_style):
     dash.Output("global-prefetch-trigger-store", "data"),
     dash.Input("global-prefetch-interval", "n_intervals"),
     dash.State("app-time-range", "data"),
+    dash.State("url", "pathname"),
     prevent_initial_call=True,
 )
-def refresh_global_view_prefetch(n_intervals, time_range):
-    from src.services.global_view_prefetch import trigger_background
+def refresh_global_view_prefetch(n_intervals, time_range, pathname):
+    from src.services.global_view_prefetch import trigger_background, set_phase2_pause
     from src.utils.time_range import default_time_range as _dtr
+    # Run expensive global prefetch only while user is on Global View.
+    # It was competing with datacenter-detail queries and causing long waits.
+    if (pathname or "") != "/global-view":
+        # Keep device prefetch paused off global-view routes.
+        set_phase2_pause(True)
+        _log.info(
+            "refresh_global_view_prefetch skipped pathname=%s n_intervals=%s",
+            pathname,
+            n_intervals,
+        )
+        return dash.no_update
     trigger_background(time_range or _dtr())
     return n_intervals
 
@@ -1095,12 +1174,14 @@ def refresh_global_view_prefetch(n_intervals, time_range):
     dash.Output("building-reveal-dc-name", "children"),
     dash.Input("current-view-mode", "data"),
     dash.State("selected-building-dc-store", "data"),
+    dash.State("url", "pathname"),
 )
-def view_controller(mode, dc_store):
+def view_controller(mode, dc_store, pathname):
     from src.services.global_view_prefetch import set_phase2_pause
-    # Pause Phase-2 device fetches while user navigates floor_map/building
-    # to avoid competing with rack-detail API calls.
-    set_phase2_pause(mode in {"building", "floor_map"})
+    on_global_view = (pathname == "/global-view")
+    # Pause Phase-2 device fetches outside /global-view and while navigating
+    # building/floor_map to avoid competing with detail-route rack calls.
+    set_phase2_pause((not on_global_view) or (mode in {"building", "floor_map"}))
 
     shown = {"display": "block"}
     hidden = {"display": "none"}
@@ -1133,8 +1214,12 @@ def advance_to_floor_map(n_intervals, dc_store, current_mode, time_range):
     from src.utils.dc_display import format_dc_display_name as _fmt_name
     tr = time_range or _dtr()
     warm = is_warm(tr)
+    t_racks = time_module.perf_counter()
     racks_resp = api.get_dc_racks(dc_id)
+    racks_ms = round((time_module.perf_counter() - t_racks) * 1000, 1)
+    t_details = time_module.perf_counter()
     _info = api.get_dc_details(dc_id, tr)
+    details_ms = round((time_module.perf_counter() - t_details) * 1000, 1)
     _meta = _info.get("meta", {})
     dc_name = _fmt_name(_meta.get("name"), _meta.get("description")) or dc_store.get("dc_name", dc_id)
     racks = racks_resp.get("racks", [])
@@ -1145,6 +1230,21 @@ def advance_to_floor_map(n_intervals, dc_store, current_mode, time_range):
         "advance_to_floor_map dc=%s racks=%d is_warm=%s elapsed_ms=%.1f",
         dc_id, len(racks), warm, elapsed_ms,
     )
+    # region agent log
+    _emit_debug_log(
+        "H1",
+        "app.py:advance_to_floor_map",
+        "floor map data fetch timings",
+        {
+            "dcId": dc_id,
+            "isWarm": bool(warm),
+            "racksCount": len(racks),
+            "racksFetchMs": racks_ms,
+            "dcDetailsFetchMs": details_ms,
+            "totalMs": elapsed_ms,
+        },
+    )
+    # endregion
     return "floor_map", layout
 
 
@@ -1326,8 +1426,23 @@ def show_rack_detail(click_data, dc_store):
     )
 
     # Fetch devices for rack unit diagram
+    t_devices = time_module.perf_counter()
     devices_resp = api.get_rack_devices(dc_id or "", name or "")
+    devices_ms = round((time_module.perf_counter() - t_devices) * 1000, 1)
     devices = devices_resp.get("devices", [])
+    # region agent log
+    _emit_debug_log(
+        "H5",
+        "app.py:show_rack_detail",
+        "rack detail devices fetched",
+        {
+            "dcId": dc_id,
+            "rackName": name or "",
+            "devicesCount": len(devices),
+            "devicesFetchMs": devices_ms,
+        },
+    )
+    # endregion
 
     return html.Div(
         children=[

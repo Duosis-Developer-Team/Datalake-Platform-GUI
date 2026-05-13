@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     redis_socket_timeout: int = 5
     cache_ttl_seconds: int = 1200
     cache_max_memory_items: int = 200
+    db_pool_minconn: int = 2
+    db_pool_maxconn: int = 48
 
     # WebUI App DB — read-only access for threshold/calc config used by sales potential.
     webui_db_host: str = "webui-db"
