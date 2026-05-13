@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time as time_module
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from urllib.parse import parse_qs
 
 import dash
@@ -108,6 +109,8 @@ _log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
 _DEBUG_LOG_PATH = "/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.cursor/debug-364e8d.log"
 _DEBUG_SESSION_ID = "364e8d"
 _DEBUG_RUN_ID = "dc-detail-slow-run1"
+_NET_STALE_LOCK = threading.Lock()
+_NET_STALE_CACHE: dict[str, dict] = {}
 
 
 def _emit_debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
@@ -1628,6 +1631,77 @@ def update_global_detail_from_menu(store_data, time_range):
 # ---------------------------------------------------------------------------
 
 
+def _network_stale_key(
+    kind: str,
+    dc_id: str,
+    tr: dict | None,
+    manufacturer: str | None = None,
+    device_role: str | None = None,
+    device_name: str | None = None,
+    *,
+    page: int | None = None,
+    page_size: int | None = None,
+    search: str | None = None,
+) -> str:
+    tr = tr or {}
+    payload = {
+        "kind": kind,
+        "dc": str(dc_id),
+        "preset": tr.get("preset"),
+        "start": tr.get("start"),
+        "end": tr.get("end"),
+        "manufacturer": manufacturer or "",
+        "role": device_role or "",
+        "device": device_name or "",
+        "page": page,
+        "page_size": page_size,
+        "search": search or "",
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _call_with_timeout_and_stale(
+    fetch_fn,
+    *,
+    timeout_s: float,
+    stale_key: str,
+    empty_fallback: dict,
+    op_name: str,
+) -> tuple[dict, str]:
+    """Return (payload, source) where source in {'fresh','stale','empty'}."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(fetch_fn)
+        try:
+            out = fut.result(timeout=timeout_s)
+            if isinstance(out, dict):
+                with _NET_STALE_LOCK:
+                    _NET_STALE_CACHE[stale_key] = out
+                return out, "fresh"
+            return empty_fallback, "empty"
+        except FuturesTimeoutError:
+            with _NET_STALE_LOCK:
+                stale = _NET_STALE_CACHE.get(stale_key)
+            _log.warning(
+                "DBG364e8d N1 timeout op=%s timeout_s=%.1f stale_hit=%s key=%s",
+                op_name,
+                timeout_s,
+                stale is not None,
+                stale_key,
+            )
+            return (stale if isinstance(stale, dict) else empty_fallback), ("stale" if stale else "empty")
+        except Exception as exc:
+            with _NET_STALE_LOCK:
+                stale = _NET_STALE_CACHE.get(stale_key)
+            _log.warning(
+                "DBG364e8d N2 error op=%s err=%s stale_hit=%s key=%s",
+                op_name,
+                type(exc).__name__,
+                stale is not None,
+                stale_key,
+            )
+            return (stale if isinstance(stale, dict) else empty_fallback), ("stale" if stale else "empty")
+
+
 @app.callback(
     dash.Output("net-role-selector", "data"),
     dash.Output("net-role-selector", "value"),
@@ -1697,11 +1771,15 @@ def update_net_selectors(manufacturer, role, net_filters):
     dash.Input("net-manufacturer-selector", "value"),
     dash.Input("net-role-selector", "value"),
     dash.Input("net-device-selector", "value"),
+    dash.Input("dc-main-tabs", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
-def update_net_kpis_and_charts(manufacturer, device_role, device_name, time_range, pathname):
+def update_net_kpis_and_charts(manufacturer, device_role, device_name, main_tab, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    # Lazy-load: don't fetch heavy network payloads until the Network tab is opened.
+    if main_tab != "network":
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
@@ -1714,13 +1792,33 @@ def update_net_kpis_and_charts(manufacturer, device_role, device_name, time_rang
         device_role=device_role,
         device_name=device_name,
     )
-    percentile_data = api.get_dc_network_95th_percentile(
+    p95_key = _network_stale_key(
+        "p95",
         dc_id,
         tr,
-        top_n=20,
-        manufacturer=manufacturer,
-        device_role=device_role,
-        device_name=device_name,
+        manufacturer,
+        device_role,
+        device_name,
+    )
+    percentile_data, p95_source = _call_with_timeout_and_stale(
+        lambda: api.get_dc_network_95th_percentile(
+            dc_id,
+            tr,
+            top_n=20,
+            manufacturer=manufacturer,
+            device_role=device_role,
+            device_name=device_name,
+        ),
+        timeout_s=6.0,
+        stale_key=p95_key,
+        empty_fallback={},
+        op_name="network_95th",
+    )
+    _log.info(
+        "DBG364e8d N3 net_kpi dc=%s p95_source=%s tab=%s",
+        dc_id,
+        p95_source,
+        main_tab,
     )
 
     device_count = int(port_summary.get("device_count", 0) or 0)
@@ -1769,12 +1867,26 @@ def update_net_kpis_and_charts(manufacturer, device_role, device_name, time_rang
     dash.Input("net-interface-search", "value"),
     dash.Input("net-interface-table", "page_current"),
     dash.Input("net-interface-table", "page_size"),
+    dash.Input("dc-main-tabs", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
-def update_net_interface_table(manufacturer, device_role, device_name, search_value, page_current, page_size, time_range, pathname):
+def update_net_interface_table(
+    manufacturer,
+    device_role,
+    device_name,
+    search_value,
+    page_current,
+    page_size,
+    main_tab,
+    time_range,
+    pathname,
+):
     if not pathname or not pathname.startswith("/datacenter/"):
         return []
+    # Lazy-load: table should only fetch when Network tab is active.
+    if main_tab != "network":
+        return dash.no_update
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
@@ -1783,15 +1895,40 @@ def update_net_interface_table(manufacturer, device_role, device_name, search_va
     page_size_safe = int(page_size or 50)
     page_backend = page_current_safe + 1  # backend is 1-based
 
-    interface_data = api.get_dc_network_interface_table(
+    table_key = _network_stale_key(
+        "interface_table",
         dc_id,
         tr,
+        manufacturer,
+        device_role,
+        device_name,
         page=page_backend,
         page_size=page_size_safe,
         search=search_value or "",
-        manufacturer=manufacturer,
-        device_role=device_role,
-        device_name=device_name,
+    )
+    interface_data, table_source = _call_with_timeout_and_stale(
+        lambda: api.get_dc_network_interface_table(
+            dc_id,
+            tr,
+            page=page_backend,
+            page_size=page_size_safe,
+            search=search_value or "",
+            manufacturer=manufacturer,
+            device_role=device_role,
+            device_name=device_name,
+        ),
+        timeout_s=8.0,
+        stale_key=table_key,
+        empty_fallback={},
+        op_name="network_interface_table",
+    )
+    _log.info(
+        "DBG364e8d N4 net_table dc=%s source=%s tab=%s page=%d size=%d",
+        dc_id,
+        table_source,
+        main_tab,
+        page_backend,
+        page_size_safe,
     )
 
     items = interface_data.get("items") or []

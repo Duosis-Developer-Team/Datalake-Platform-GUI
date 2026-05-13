@@ -2692,17 +2692,14 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
 
     net_filters = batch2["net_filters"]
     has_network = bool((net_filters or {}).get("manufacturers"))
-    t_net = time.perf_counter()
-    t_net_port = time.perf_counter()
-    net_port_summary = api.get_dc_network_port_summary(dc_id, tr) if has_network else {}
-    net_port_ms = round((time.perf_counter() - t_net_port) * 1000, 1)
-    t_net_p95 = time.perf_counter()
-    net_percentile = api.get_dc_network_95th_percentile(dc_id, tr, top_n=20) if has_network else {}
-    net_p95_ms = round((time.perf_counter() - t_net_p95) * 1000, 1)
-    t_net_table = time.perf_counter()
-    net_interface_table = api.get_dc_network_interface_table(dc_id, tr, page=1, page_size=50, search="") if has_network else {}
-    net_table_ms = round((time.perf_counter() - t_net_table) * 1000, 1)
-    net_ms = round((time.perf_counter() - t_net) * 1000, 1)
+    # Network payload is lazy-loaded when user opens the Network tab.
+    net_port_summary: dict = {}
+    net_percentile: dict = {}
+    net_interface_table: dict = {}
+    net_port_ms = 0.0
+    net_p95_ms = 0.0
+    net_table_ms = 0.0
+    net_ms = 0.0
 
     energy    = data.get("energy", {})
     classic   = data.get("classic", {})
@@ -2877,6 +2874,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
         overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.75)"},
         children=html.Div([
         dcc.Store(id="net-filters-store", data=net_filters or {}),
+        dcc.Store(id="dc-network-ready-store", data=False),
         dcc.Store(
             id="dc-export-store",
             data={
@@ -2887,6 +2885,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
         ),
         dcc.Download(id="dc-export-download"),
         dmc.Tabs(
+            id="dc-main-tabs",
             color="indigo",
             variant="pills",
             radius="md",
@@ -3167,6 +3166,14 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                     children=html.Div(
                         style={"padding": "0 30px"},
                         children=[
+                            dmc.Alert(
+                                "Network verisi bu sekme açıldığında yüklenir.",
+                                title="Network lazy-load",
+                                color="indigo",
+                                variant="light",
+                                radius="md",
+                                mb="md",
+                            ),
                             dmc.Tabs(
                                 color="indigo",
                                 variant="outline",
