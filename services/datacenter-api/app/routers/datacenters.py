@@ -48,6 +48,13 @@ def sla_availability(tf: TimeFilter = Depends()):
     return {"by_dc": by_dc}
 
 
+@router.get("/sla/datacenter-services", response_model=dict[str, Any])
+def sla_dc_services(tf: TimeFilter = Depends()):
+    """Datacenter-services SLA items from AuraNotify for the given time range."""
+    items = sla_service.get_dc_services_availability(tf.to_dict())
+    return {"items": items}
+
+
 @router.get("/datacenters/{dc_code}/s3/pools", response_model=dict[str, Any])
 def dc_s3_pools(
     dc_code: str,

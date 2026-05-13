@@ -10,6 +10,7 @@ from dash_iconify import DashIconify
 import dash_globe_component
 from src.services import api_client as api
 from src.utils.time_range import default_time_range
+from src.utils.dc_display import format_dc_display_name
 from src.utils.export_helpers import (
     records_to_dataframe,
     dataframes_to_excel_with_meta,
@@ -261,14 +262,16 @@ def _build_globe_data(summaries):
         capacity = max(dc.get("vm_count", 0) or 0, (dc.get("host_count", 0) or 0) * 5)
         # Using a square root for more pronounced but controlled scaling, smaller base size
         size = round(min(0.07, max(0.015, 0.015 + math.sqrt(capacity) * 0.0012)), 4)
+        full_name = format_dc_display_name(dc.get("name"), dc.get("description")) or dc_id
         data.append({
             "lat": float(lat),
             "lng": float(lng),
             "dc_id": dc_id,
+            "name": full_name,
+            "site_name": full_name,
+            "status": (dc.get("status") or "active").lower(),
             "size": size,
             "color": color,
-            "site_name": dc.get("site_name", ""),
-            "status": (dc.get("status") or "active").lower(),
             "vm_count": dc.get("vm_count", 0) or 0,
             "host_count": dc.get("host_count", 0) or 0,
             "health": round(health, 1),
@@ -388,7 +391,7 @@ def _create_map_figure(df):
     customdata_vals = []
     for i, (_, row) in enumerate(df.iterrows()):
         customdata_vals.append([
-            row["id"], row["name"], row["location"],
+            row["id"], format_dc_display_name(row.get("name"), row.get("description")) or row["id"], row["location"],
             row["vm_count"], row["host_count"], row["health"],
             ping_values[i], row.get("site_name", ""),
         ])
@@ -608,7 +611,7 @@ def build_region_detail_panel(region, tr):
         energy = data.get("energy", {})
         platforms = data.get("platforms", {})
 
-        dc_name = meta.get("name", dc_id)
+        dc_name = format_dc_display_name(meta.get("name"), meta.get("description")) or dc_id
 
         cpu_cap = intel.get("cpu_cap", 0.0)
         cpu_used = intel.get("cpu_used", 0.0)
@@ -1108,7 +1111,7 @@ def build_dc_info_card(dc_id, tr, site_name=""):
     energy = data.get("energy", {})
     platforms = data.get("platforms", {})
 
-    dc_name = meta.get("name", dc_id)
+    dc_name = format_dc_display_name(meta.get("name"), meta.get("description")) or dc_id
     dc_location = meta.get("location", "\u2014")
 
     cpu_cap = intel.get("cpu_cap", 0.0)

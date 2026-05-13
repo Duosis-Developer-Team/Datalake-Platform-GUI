@@ -116,7 +116,35 @@ def _fmt_tl_short(value: float | int | None) -> tuple[str, str]:
 
 def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo", tooltip: str | None = None) -> html.Div:
     """Single KPI card for the summary strip."""
-    card = html.Div(
+    label_row = [
+        html.Div(label, style={
+            "fontSize": "0.65rem",
+            "fontWeight": 700,
+            "color": "#A3AED0",
+            "textTransform": "uppercase",
+            "letterSpacing": "0.05em",
+            "marginBottom": "4px",
+            "whiteSpace": "nowrap",
+            "overflow": "hidden",
+            "textOverflow": "ellipsis",
+        }),
+    ]
+    if tooltip:
+        label_row.append(
+            dmc.Tooltip(
+                label=tooltip,
+                position="bottom",
+                withArrow=True,
+                multiline=True,
+                w=300,
+                children=DashIconify(
+                    icon="solar:info-circle-bold-duotone",
+                    width=13,
+                    style={"color": "#A3AED0", "marginLeft": "4px", "cursor": "pointer", "flexShrink": 0},
+                ),
+            )
+        )
+    return html.Div(
         className="dc-summary-kpi nexus-card",
         style={
             "padding": "16px 20px",
@@ -129,7 +157,6 @@ def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo", toolt
             "WebkitBackdropFilter": "blur(12px)",
             "boxShadow": "0 2px 12px rgba(67,24,255,0.06)",
             "border": "1px solid rgba(255,255,255,0.7)",
-            "flex": 1,
             "minWidth": "140px",
         },
         children=[
@@ -140,36 +167,23 @@ def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo", toolt
                 color=color,
                 children=DashIconify(icon=icon, width=22),
             ),
-            html.Div([
-                html.Div(label, style={
-                    "fontSize": "0.68rem",
-                    "fontWeight": 700,
-                    "color": "#A3AED0",
-                    "textTransform": "uppercase",
-                    "letterSpacing": "0.07em",
-                    "marginBottom": "2px",
-                }),
-                html.Div(str(value), style={
-                    "fontSize": "1.45rem",
-                    "fontWeight": 900,
-                    "color": "#2B3674",
-                    "letterSpacing": "-0.02em",
-                    "lineHeight": 1.1,
-                    "fontVariantNumeric": "tabular-nums",
-                }),
-            ]),
+            html.Div(
+                style={"minWidth": 0, "flex": 1},
+                children=[
+                    html.Div(style={"display": "flex", "alignItems": "center"}, children=label_row),
+                    html.Div(str(value), style={
+                        "fontSize": "1.45rem",
+                        "fontWeight": 900,
+                        "color": "#2B3674",
+                        "letterSpacing": "-0.02em",
+                        "lineHeight": 1.1,
+                        "fontVariantNumeric": "tabular-nums",
+                        "whiteSpace": "nowrap",
+                    }),
+                ],
+            ),
         ],
     )
-    if tooltip:
-        return dmc.Tooltip(
-            label=tooltip,
-            position="bottom",
-            withArrow=True,
-            multiline=True,
-            w=300,
-            children=card,
-        )
-    return card
 
 
 def _dc_sellable_ribbon(
@@ -592,14 +606,12 @@ def build_datacenters(time_range=None, visible_sections=None):
 
     # ── Summary KPI Strip (C2) ──
     summary_strip = html.Div(
-        style={
-            "display": "flex",
-            "gap": "12px",
-            "padding": "0 32px",
-            "marginBottom": "24px",
-            "flexWrap": "wrap",
-        },
-        children=[
+        style={"padding": "0 32px", "marginBottom": "24px"},
+        children=[dmc.SimpleGrid(
+            cols={"base": 2, "sm": 3},
+            spacing="md",
+            style={"alignItems": "stretch"},
+            children=[
             _summary_kpi("solar:server-bold-duotone",               "Active DCs",  str(len(datacenters)),  "indigo"),
             _summary_kpi("solar:server-minimalistic-bold-duotone",  "Total Hosts", f"{total_hosts:,}",     "orange"),
             _summary_kpi("solar:laptop-bold-duotone",               "Total VMs",   f"{total_vms:,}",       "teal"),
@@ -617,6 +629,7 @@ def build_datacenters(time_range=None, visible_sections=None):
                 ),
             ))(*_fmt_tl_short(total_potential_tl)),
         ],
+        )]
     )
 
     return html.Div([

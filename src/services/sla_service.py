@@ -12,7 +12,10 @@ from src.services import cache_service as cache
 logger = logging.getLogger(__name__)
 
 SLA_API_URL = os.getenv("SLA_API_URL", "http://10.34.8.154:5001/api/sla/datacenters")
-SLA_API_KEY = (os.getenv("SLA_API_KEY") or "").strip()
+SLA_API_KEY = (
+    os.getenv("SLA_API_KEY", "").strip()
+    or "aura_yq3bFR0MxfOQR3GabuwS-EEzY8NdWKjra-gqPQCd"
+)
 
 _DC_CODE_RE = re.compile(r"(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)", re.IGNORECASE)
 _STALE_AFTER_SECONDS = 60 * 60  # 1 hour
