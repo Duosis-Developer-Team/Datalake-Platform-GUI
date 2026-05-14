@@ -5,7 +5,7 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, Query, Request
 
 from app.core.time_filter import TimeFilter
-from app.models.schemas import DataCenterSummary
+from app.models.schemas import DataCenterSummary, JobStatsResponse
 from app.services.dc_service import DatabaseService
 from app.services import sla_service
 from app.db.queries import crm_potential as crm_q
@@ -77,6 +77,36 @@ def dc_zerto(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Dep
 @router.get("/datacenters/{dc_code}/backup/veeam", response_model=dict[str, Any])
 def dc_veeam(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
     return db.get_dc_veeam_repos(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/backup/veeam/jobs", response_model=JobStatsResponse)
+def dc_veeam_jobs(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    granularity: str = Query("day", description="day | week | month"),
+):
+    return db.get_dc_veeam_jobs(dc_code, tf.to_dict(), granularity)
+
+
+@router.get("/datacenters/{dc_code}/backup/zerto/jobs", response_model=JobStatsResponse)
+def dc_zerto_jobs(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    granularity: str = Query("day", description="day | week | month"),
+):
+    return db.get_dc_zerto_jobs(dc_code, tf.to_dict(), granularity)
+
+
+@router.get("/datacenters/{dc_code}/backup/netbackup/jobs", response_model=JobStatsResponse)
+def dc_netbackup_jobs(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    granularity: str = Query("day", description="day | week | month"),
+):
+    return db.get_dc_netbackup_jobs(dc_code, tf.to_dict(), granularity)
 
 
 @router.get("/datacenters/{dc_code}/clusters/classic", response_model=list[str])

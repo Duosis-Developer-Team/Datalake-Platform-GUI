@@ -2597,6 +2597,290 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
         cache.set(cache_key, result)
         return result
+
+    # ------------------------------------------------------------------
+    # Backup job statistics (Phase 1) — Veeam / Zerto / NetBackup
+    # ------------------------------------------------------------------
+
+    # Postgres date_trunc accepts these granularities.
+    _ALLOWED_GRANULARITIES = ("day", "week", "month")
+
+    @staticmethod
+    def _normalize_granularity(value: str | None) -> str:
+        v = (value or "day").lower().strip()
+        if v in ("daily", "day"):
+            return "day"
+        if v in ("weekly", "week"):
+            return "week"
+        if v in ("monthly", "month"):
+            return "month"
+        return "day"
+
+    @staticmethod
+    def _normalize_veeam_result(raw: str | None) -> str:
+        if not raw:
+            return "other"
+        v = str(raw).strip().lower()
+        if v == "success":
+            return "success"
+        if v == "failed":
+            return "failed"
+        if v == "warning":
+            return "warning"
+        if v == "none":
+            return "running"
+        return "other"
+
+    @staticmethod
+    def _normalize_zerto_status(raw) -> str:
+        """Zerto VPG status enum: 1=MeetingSLA (success), 2/3=problematic, 0/5=in-progress, 4=removing."""
+        try:
+            code = int(raw)
+        except (TypeError, ValueError):
+            return "other"
+        if code == 1:
+            return "success"
+        if code in (2, 3):
+            return "failed"
+        if code in (0, 5):
+            return "running"
+        if code == 4:
+            return "warning"
+        return "other"
+
+    @staticmethod
+    def _normalize_netbackup_status(raw) -> str:
+        """NetBackup exit code: 0=success, 1=partial(warning), other=failed."""
+        try:
+            code = int(raw)
+        except (TypeError, ValueError):
+            return "other"
+        if code == 0:
+            return "success"
+        if code == 1:
+            return "warning"
+        return "failed"
+
+    def _build_ip_to_dc_map(self, rows: list[tuple], ip_index: int, label_index: int) -> dict[str, str]:
+        """Extract DC code from a free-text label column; map source_ip → DC code (UPPER)."""
+        dc_set = {dc.upper() for dc in self.dc_list}
+        ip_to_dc: dict[str, str] = {}
+        for row in rows or []:
+            if row is None or len(row) <= max(ip_index, label_index):
+                continue
+            ip = row[ip_index]
+            label = row[label_index]
+            if not ip or not label:
+                continue
+            dc = self._extract_dc_from_text(label, dc_set)
+            if dc:
+                ip_to_dc[str(ip)] = dc.upper()
+        return ip_to_dc
+
+    @staticmethod
+    def _empty_job_stats(vendor: str, granularity: str, time_range: dict) -> dict:
+        return {
+            "vendor": vendor,
+            "granularity": granularity,
+            "range": {"start": str(time_range.get("start", "")), "end": str(time_range.get("end", ""))},
+            "series": [],
+            "totals": {
+                "total": 0,
+                "success": 0,
+                "failed": 0,
+                "warning": 0,
+                "other": 0,
+                "success_rate": 0.0,
+                "avg_per_period": 0.0,
+                "period_count": 0,
+            },
+        }
+
+    @staticmethod
+    def _finalize_job_stats(
+        series: list[dict],
+        vendor: str,
+        granularity: str,
+        time_range: dict,
+    ) -> dict:
+        """Compute totals + success rate + avg per period over an already-collapsed series."""
+        total = sum(int(p.get("count", 0)) for p in series)
+        success = sum(int(p["count"]) for p in series if p.get("status") == "success")
+        failed = sum(int(p["count"]) for p in series if p.get("status") == "failed")
+        warning = sum(int(p["count"]) for p in series if p.get("status") == "warning")
+        other = max(total - success - failed - warning, 0)
+        success_rate = (success / total * 100.0) if total else 0.0
+        period_count = len({p.get("period") for p in series if p.get("period")})
+        avg_per_period = (total / period_count) if period_count else 0.0
+        return {
+            "vendor": vendor,
+            "granularity": granularity,
+            "range": {"start": str(time_range.get("start", "")), "end": str(time_range.get("end", ""))},
+            "series": series,
+            "totals": {
+                "total": total,
+                "success": success,
+                "failed": failed,
+                "warning": warning,
+                "other": other,
+                "success_rate": round(success_rate, 2),
+                "avg_per_period": round(avg_per_period, 2),
+                "period_count": period_count,
+            },
+        }
+
+    # ---- Veeam jobs --------------------------------------------------------
+
+    def _fetch_dc_veeam_jobs(self, dc_code: str, granularity: str, start_ts, end_ts) -> dict:
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                agg_rows = self._run_rows(cur, bq.VEEAM_SESSION_JOB_STATS, (granularity, start_ts, end_ts))
+                seed_rows = self._run_rows(cur, bq.VEEAM_IP_TO_DC_SEED, (start_ts, end_ts))
+
+        ip_to_dc = self._build_ip_to_dc_map(seed_rows or [], ip_index=0, label_index=1)
+        target = (dc_code or "").upper()
+
+        collapsed: dict[tuple, int] = {}
+        for row in agg_rows or []:
+            period, source_ip, result, session_type, cnt = row
+            if ip_to_dc.get(str(source_ip)) != target:
+                continue
+            status = self._normalize_veeam_result(result)
+            period_key = period.date().isoformat() if hasattr(period, "date") else str(period)
+            key = (period_key, status, session_type or "Unknown")
+            collapsed[key] = collapsed.get(key, 0) + int(cnt or 0)
+
+        series = [
+            {"period": p, "status": s, "job_type": t, "policy_type": None, "count": c}
+            for (p, s, t), c in sorted(collapsed.items())
+        ]
+        return self._finalize_job_stats(
+            series, "veeam", granularity, {"start": start_ts, "end": end_ts}
+        )
+
+    def get_dc_veeam_jobs(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        granularity: str = "day",
+    ) -> dict:
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        gran = self._normalize_granularity(granularity)
+        cache_key = f"dc_veeam_jobs:{dc_code}:{tr.get('start','')}:{tr.get('end','')}:{gran}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            result = self._fetch_dc_veeam_jobs(dc_code, gran, start_ts, end_ts)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_dc_veeam_jobs failed for %s: %s", dc_code, exc)
+            return self._empty_job_stats("veeam", gran, tr)
+        cache.set(cache_key, result)
+        return result
+
+    # ---- Zerto jobs --------------------------------------------------------
+
+    def _fetch_dc_zerto_jobs(self, dc_code: str, granularity: str, start_ts, end_ts) -> dict:
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                agg_rows = self._run_rows(cur, bq.ZERTO_VPG_JOB_STATS, (granularity, start_ts, end_ts))
+
+        # source_site label already carries DC info ('DC14-Site02-V10', 'TurksatDC_ZVM' etc).
+        dc_set = {dc.upper() for dc in self.dc_list}
+        target = (dc_code or "").upper()
+
+        collapsed: dict[tuple, int] = {}
+        for row in agg_rows or []:
+            period, source_site, status_int, cnt = row
+            dc = self._extract_dc_from_text(source_site, dc_set)
+            if not dc or dc.upper() != target:
+                continue
+            status = self._normalize_zerto_status(status_int)
+            period_key = period.date().isoformat() if hasattr(period, "date") else str(period)
+            key = (period_key, status, f"status_{status_int}")
+            collapsed[key] = collapsed.get(key, 0) + int(cnt or 0)
+
+        series = [
+            {"period": p, "status": s, "job_type": t, "policy_type": None, "count": c}
+            for (p, s, t), c in sorted(collapsed.items())
+        ]
+        return self._finalize_job_stats(
+            series, "zerto", granularity, {"start": start_ts, "end": end_ts}
+        )
+
+    def get_dc_zerto_jobs(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        granularity: str = "day",
+    ) -> dict:
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        gran = self._normalize_granularity(granularity)
+        cache_key = f"dc_zerto_jobs:{dc_code}:{tr.get('start','')}:{tr.get('end','')}:{gran}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            result = self._fetch_dc_zerto_jobs(dc_code, gran, start_ts, end_ts)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_dc_zerto_jobs failed for %s: %s", dc_code, exc)
+            return self._empty_job_stats("zerto", gran, tr)
+        cache.set(cache_key, result)
+        return result
+
+    # ---- NetBackup jobs ----------------------------------------------------
+
+    def _fetch_dc_netbackup_jobs(self, dc_code: str, granularity: str, start_ts, end_ts) -> dict:
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                agg_rows = self._run_rows(cur, bq.NETBACKUP_JOB_STATS, (granularity, start_ts, end_ts))
+
+        # destinationmediaservername carries DC code ('nbmediadc14.blt.vc' -> DC14).
+        dc_set = {dc.upper() for dc in self.dc_list}
+        target = (dc_code or "").upper()
+
+        collapsed: dict[tuple, int] = {}
+        for row in agg_rows or []:
+            period, dc_label, status_int, jobtype, policytype, cnt = row
+            dc = self._extract_dc_from_text(dc_label, dc_set)
+            if not dc or dc.upper() != target:
+                continue
+            status = self._normalize_netbackup_status(status_int)
+            period_key = period.date().isoformat() if hasattr(period, "date") else str(period)
+            key = (period_key, status, jobtype or "Unknown", policytype or "Unknown")
+            collapsed[key] = collapsed.get(key, 0) + int(cnt or 0)
+
+        series = [
+            {"period": p, "status": s, "job_type": jt, "policy_type": pt, "count": c}
+            for (p, s, jt, pt), c in sorted(collapsed.items())
+        ]
+        return self._finalize_job_stats(
+            series, "netbackup", granularity, {"start": start_ts, "end": end_ts}
+        )
+
+    def get_dc_netbackup_jobs(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        granularity: str = "day",
+    ) -> dict:
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        gran = self._normalize_granularity(granularity)
+        cache_key = f"dc_netbackup_jobs:{dc_code}:{tr.get('start','')}:{tr.get('end','')}:{gran}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            result = self._fetch_dc_netbackup_jobs(dc_code, gran, start_ts, end_ts)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_dc_netbackup_jobs failed for %s: %s", dc_code, exc)
+            return self._empty_job_stats("netbackup", gran, tr)
+        cache.set(cache_key, result)
+        return result
+
     def _fetch_customer_s3_vaults(self, customer_name: str, start_ts, end_ts) -> dict:
         """
         Fetch raw S3 vault metrics for a customer directly from the database.

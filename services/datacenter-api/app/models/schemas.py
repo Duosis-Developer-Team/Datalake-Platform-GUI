@@ -167,3 +167,34 @@ class GlobalOverview(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     db_pool: str
+
+
+# Backup job statistics ------------------------------------------------------
+
+class JobStatPoint(BaseModel):
+    """One aggregated bucket: period × status × type."""
+
+    period: str  # ISO date for the bucket start (e.g. '2026-04-01')
+    status: str  # normalized: 'success' | 'failed' | 'warning' | 'running' | 'other'
+    job_type: str | None = None
+    policy_type: str | None = None
+    count: int
+
+
+class JobStatTotals(BaseModel):
+    total: int = 0
+    success: int = 0
+    failed: int = 0
+    warning: int = 0
+    other: int = 0
+    success_rate: float = 0.0
+    avg_per_period: float = 0.0
+    period_count: int = 0
+
+
+class JobStatsResponse(BaseModel):
+    vendor: str  # 'veeam' | 'zerto' | 'netbackup'
+    granularity: str  # 'day' | 'week' | 'month'
+    range: dict[str, str]  # {'start': ..., 'end': ...}
+    series: list[JobStatPoint]
+    totals: JobStatTotals
