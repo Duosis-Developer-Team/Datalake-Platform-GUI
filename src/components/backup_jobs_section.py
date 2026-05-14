@@ -349,6 +349,20 @@ def format_as_of(as_of: str | None) -> str:
     return f"· Son güncelleme: {dt.strftime('%H:%M')}"
 
 
+def should_skip_fetch(active_main_tab: str | None, dc_id: str | None) -> bool:
+    """
+    Lazy-fetch koşulu: Backup & Replication main tab aktif değilse callback'i
+    no-op yap. dc_id None ise (DC sayfasında değiliz) da skip et.
+
+    Saf fonksiyon — test edilebilir.
+    """
+    if not dc_id:
+        return True
+    if (active_main_tab or "") != "backup":
+        return True
+    return False
+
+
 def _make_callback(vendor: str) -> None:
     wrapper = _api_wrapper(vendor)
 
@@ -360,6 +374,7 @@ def _make_callback(vendor: str) -> None:
         Input(f"backup-jobs-{vendor}-granularity", "value"),
         Input(f"backup-jobs-{vendor}-groupby", "value"),
         Input(f"backup-jobs-{vendor}-refresh", "n_clicks"),
+        Input("dc-main-tabs", "value"),
         State("url", "pathname"),
         prevent_initial_call=False,
     )
@@ -368,11 +383,16 @@ def _make_callback(vendor: str) -> None:
         granularity: str | None,
         group_by: str | None,
         refresh_n: int | None,
+        active_main_tab: str | None,
         pathname: str | None,
     ):
         dc_id = _extract_dc_id(pathname)
-        if not dc_id:
-            return _empty_figure("DC seçili değil"), _empty_kpis(), ""
+
+        # Lazy fetch: Backup tab aktif değilse hiçbir şey yapma (no_update).
+        # Bu sayede DC sayfası açıldığında veya başka tab'da dolaşırken
+        # arka planda Veeam/Zerto/NetBackup endpoint'leri çağrılmaz.
+        if should_skip_fetch(active_main_tab, dc_id):
+            return dash.no_update, dash.no_update, dash.no_update
 
         # If the refresh button triggered this callback, drop cache first so
         # the wrapper goes through HTTP and the backend recomputes via live SQL.

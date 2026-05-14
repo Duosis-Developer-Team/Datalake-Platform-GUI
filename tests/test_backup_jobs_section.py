@@ -182,6 +182,28 @@ def test_api_wrapper_unknown_raises():
 # ---- format_as_of -----------------------------------------------------------
 
 
+# ---- should_skip_fetch (lazy fetch gate) ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "active_tab,dc_id,expected_skip",
+    [
+        ("backup", "DC13", False),       # En sıcak yol: tab aktif + DC seçili
+        ("backup", "", True),            # DC bilinmiyor → skip
+        ("backup", None, True),          # DC None → skip
+        ("summary", "DC13", True),       # Backup tab kapalı → skip (ana lazy)
+        ("virtualization", "DC13", True),
+        ("storage", "DC13", True),
+        ("availability", "DC13", True),
+        ("phys-inv", "DC13", True),
+        (None, "DC13", True),            # Tab değeri yok → skip
+        ("", "DC13", True),              # Boş string → skip
+    ],
+)
+def test_should_skip_fetch(active_tab, dc_id, expected_skip):
+    assert bjs.should_skip_fetch(active_tab, dc_id) is expected_skip
+
+
 @pytest.mark.parametrize(
     "value,expected_substring",
     [
