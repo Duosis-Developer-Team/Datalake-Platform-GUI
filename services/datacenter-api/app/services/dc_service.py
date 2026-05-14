@@ -4,6 +4,7 @@ import re
 import logging
 import time
 from contextlib import contextmanager
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
@@ -2618,6 +2619,43 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
     # Sadece backup-jobs key'lerine uygulanır; diğer endpoint'lerin TTL'i değişmez.
     _BACKUP_JOBS_CACHE_TTL_SECONDS = 2100
 
+    def _trigger_async_jobs_compute(
+        self,
+        vendor: str,
+        gran: str,
+        start_ts,
+        end_ts,
+        tr_start: str,
+        tr_end: str,
+    ) -> None:
+        """
+        Stale-while-revalidate için arka planda yeni hesaplama tetikler.
+        Singleflight altında çalışır, eş zamanlı tetiklerde tek SQL pass garantili.
+        """
+        compute_map = {
+            "veeam": self._compute_all_dc_veeam_jobs,
+            "zerto": self._compute_all_dc_zerto_jobs,
+            "netbackup": self._compute_all_dc_netbackup_jobs,
+        }
+        compute_fn = compute_map.get(vendor)
+        if compute_fn is None:
+            return
+        sf_key = f"_sf:{vendor}_jobs:{tr_start}:{tr_end}:{gran}"
+
+        def _bg() -> None:
+            try:
+                cache.run_singleflight(
+                    sf_key,
+                    lambda: compute_fn(gran, start_ts, end_ts, tr_start, tr_end),
+                    ttl=60,
+                )
+            except Exception as exc:  # noqa: BLE001 — background log only
+                logger.warning("Stale-revalidate %s failed: %s", vendor, exc)
+
+        threading.Thread(
+            target=_bg, daemon=True, name=f"bkp-stale-refresh-{vendor}"
+        ).start()
+
     @staticmethod
     def _normalize_granularity(value: str | None) -> str:
         v = (value or "day").lower().strip()
@@ -2802,10 +2840,10 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             else:
                 payload = self._empty_job_stats("veeam", gran, tr)
             out[dc_upper] = payload
-            cache.set(
+            cache.set_with_stale(
                 f"dc_veeam_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}",
                 payload,
-                ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS,
+                fresh_ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS,
             )
         return out
 
@@ -2822,12 +2860,18 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         tr_end = str(tr.get("end", ""))
         cache_key = f"dc_veeam_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}"
 
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
+        # Stale-while-revalidate: fresh varsa direkt dön; stale varsa direkt
+        # dön + arka planda yeniden hesap tetikle; ikisi de yoksa senkronize hesap.
+        value, is_stale = cache.get_with_stale(cache_key)
+        if value is not None:
+            if is_stale:
+                # Fresh key'i stale snapshot'tan re-write et — cache_backend
+                # memory→Redis backfill'i default TTL kullanıyor; bu TTL'imizi
+                # 35dk'da tutar. Background refresh sonucunu hala overwrite eder.
+                cache.set(cache_key, value, ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS)
+                self._trigger_async_jobs_compute("veeam", gran, start_ts, end_ts, tr_start, tr_end)
+            return value
 
-        # Cache miss → tek SQL pass'iyle TÜM DC'leri hesapla. Singleflight,
-        # eş zamanlı miss'lerde leader hariç hepsini bekletir.
         sf_key = f"_sf:veeam_jobs:{tr_start}:{tr_end}:{gran}"
         try:
             all_payloads = cache.run_singleflight(
@@ -2891,10 +2935,10 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             else:
                 payload = self._empty_job_stats("zerto", gran, tr)
             out[dc_upper] = payload
-            cache.set(
+            cache.set_with_stale(
                 f"dc_zerto_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}",
                 payload,
-                ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS,
+                fresh_ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS,
             )
         return out
 
@@ -2911,9 +2955,12 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         tr_end = str(tr.get("end", ""))
         cache_key = f"dc_zerto_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}"
 
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
+        value, is_stale = cache.get_with_stale(cache_key)
+        if value is not None:
+            if is_stale:
+                cache.set(cache_key, value, ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS)
+                self._trigger_async_jobs_compute("zerto", gran, start_ts, end_ts, tr_start, tr_end)
+            return value
 
         sf_key = f"_sf:zerto_jobs:{tr_start}:{tr_end}:{gran}"
         try:
@@ -2978,10 +3025,10 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             else:
                 payload = self._empty_job_stats("netbackup", gran, tr)
             out[dc_upper] = payload
-            cache.set(
+            cache.set_with_stale(
                 f"dc_netbackup_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}",
                 payload,
-                ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS,
+                fresh_ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS,
             )
         return out
 
@@ -2998,9 +3045,12 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         tr_end = str(tr.get("end", ""))
         cache_key = f"dc_netbackup_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}"
 
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
+        value, is_stale = cache.get_with_stale(cache_key)
+        if value is not None:
+            if is_stale:
+                cache.set(cache_key, value, ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS)
+                self._trigger_async_jobs_compute("netbackup", gran, start_ts, end_ts, tr_start, tr_end)
+            return value
 
         sf_key = f"_sf:netbackup_jobs:{tr_start}:{tr_end}:{gran}"
         try:

@@ -130,6 +130,9 @@ def dc_backup_jobs_refresh(
             continue
         prefix = f"dc_{v}_jobs:{dc_code}:"
         cache_delete_prefix(prefix)
+        # Stale-while-revalidate snapshot'larını da temizle — kullanıcı 'Yenile'
+        # dediğinde gerçekten canlı SQL beklesin, eski snapshot dönmesin.
+        cache_delete_prefix(f"stale:{prefix}")
         deleted[v] = "invalidated"
     return {"status": "ok", "dc_code": dc_code, "deleted": deleted}
 
