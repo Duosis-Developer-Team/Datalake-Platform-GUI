@@ -41,19 +41,20 @@ def _make_service(dc_list=("DC11", "DC13")):
 
 
 def test_warm_invokes_each_vendor_for_every_combination():
+    """Warm matrix DC döngüsü içermez — 4 window × 3 gran × 3 vendor = 36 task."""
     svc = _make_service(dc_list=("DC11", "DC13"))
 
-    with patch.object(svc, "get_dc_veeam_jobs") as p_v, \
-         patch.object(svc, "get_dc_zerto_jobs") as p_z, \
-         patch.object(svc, "get_dc_netbackup_jobs") as p_nb:
-        p_v.return_value = {"vendor": "veeam"}
-        p_z.return_value = {"vendor": "zerto"}
-        p_nb.return_value = {"vendor": "netbackup"}
+    with patch.object(svc, "_compute_all_dc_veeam_jobs") as p_v, \
+         patch.object(svc, "_compute_all_dc_zerto_jobs") as p_z, \
+         patch.object(svc, "_compute_all_dc_netbackup_jobs") as p_nb:
+        p_v.return_value = {}
+        p_z.return_value = {}
+        p_nb.return_value = {}
 
         svc._warm_backup_jobs_cache()
 
-    # expected = 4 windows × 3 grans × 2 DCs = 24 per vendor
-    expected = 4 * 3 * 2
+    # 4 windows × 3 grans = 12 per vendor (DC döngüsü yok — her çağrı tüm DC'leri besler)
+    expected = 4 * 3
     assert p_v.call_count == expected
     assert p_z.call_count == expected
     assert p_nb.call_count == expected
@@ -62,9 +63,9 @@ def test_warm_invokes_each_vendor_for_every_combination():
 def test_warm_skips_when_dc_list_empty():
     svc = _make_service(dc_list=())
 
-    with patch.object(svc, "get_dc_veeam_jobs") as p_v, \
-         patch.object(svc, "get_dc_zerto_jobs") as p_z, \
-         patch.object(svc, "get_dc_netbackup_jobs") as p_nb:
+    with patch.object(svc, "_compute_all_dc_veeam_jobs") as p_v, \
+         patch.object(svc, "_compute_all_dc_zerto_jobs") as p_z, \
+         patch.object(svc, "_compute_all_dc_netbackup_jobs") as p_nb:
 
         svc._warm_backup_jobs_cache()
 
@@ -79,40 +80,39 @@ def test_warm_tolerates_per_task_failure_and_continues():
     def _raises(*args, **kwargs):
         raise RuntimeError("boom")
 
-    with patch.object(svc, "get_dc_veeam_jobs", side_effect=_raises) as p_v, \
-         patch.object(svc, "get_dc_zerto_jobs") as p_z, \
-         patch.object(svc, "get_dc_netbackup_jobs") as p_nb:
-        p_z.return_value = {"vendor": "zerto"}
-        p_nb.return_value = {"vendor": "netbackup"}
+    with patch.object(svc, "_compute_all_dc_veeam_jobs", side_effect=_raises) as p_v, \
+         patch.object(svc, "_compute_all_dc_zerto_jobs") as p_z, \
+         patch.object(svc, "_compute_all_dc_netbackup_jobs") as p_nb:
+        p_z.return_value = {}
+        p_nb.return_value = {}
 
         svc._warm_backup_jobs_cache()  # must NOT raise
 
-    # 4 windows × 3 grans × 1 DC = 12 attempts per vendor
-    assert p_v.call_count == 12  # all attempted (each one fails, but logged)
-    assert p_z.call_count == 12  # zerto unaffected
+    # 4 windows × 3 grans = 12 attempts per vendor
+    assert p_v.call_count == 12
+    assert p_z.call_count == 12
     assert p_nb.call_count == 12
 
 
-def test_warm_passes_granularity_and_window_to_wrapper():
+def test_warm_passes_granularity_and_window_to_compute():
     svc = _make_service(dc_list=("DC11",))
 
     captured: list[tuple] = []
 
-    def _capture(dc_code, tr, granularity):
-        captured.append((dc_code, tr.get("preset"), granularity))
+    def _capture(gran, start_ts, end_ts, tr_start, tr_end):
+        captured.append((gran, tr_start, tr_end))
         return {}
 
-    with patch.object(svc, "get_dc_veeam_jobs", side_effect=_capture), \
-         patch.object(svc, "get_dc_zerto_jobs", return_value={}), \
-         patch.object(svc, "get_dc_netbackup_jobs", return_value={}):
+    with patch.object(svc, "_compute_all_dc_veeam_jobs", side_effect=_capture), \
+         patch.object(svc, "_compute_all_dc_zerto_jobs", return_value={}), \
+         patch.object(svc, "_compute_all_dc_netbackup_jobs", return_value={}):
         svc._warm_backup_jobs_cache()
 
-    # captured contains 4 windows × 3 grans × 1 DC = 12 veeam calls
-    presets = {c[1] for c in captured}
-    grans = {c[2] for c in captured}
-    assert presets == {"1m", "2m", "3m", "6m"}
+    # captured contains 4 windows × 3 grans = 12 veeam calls
+    grans = {c[0] for c in captured}
+    starts = {c[1] for c in captured}
     assert grans == {"day", "week", "month"}
-    assert {c[0] for c in captured} == {"DC11"}
+    assert len(starts) == 4  # 4 distinct window starts
 
 
 # ---- refresh_backup_cache integration --------------------------------------

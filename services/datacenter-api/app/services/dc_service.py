@@ -4825,37 +4825,48 @@ JOIN latest l
 
     def _warm_backup_jobs_cache(self) -> None:
         """
-        Warm Phase 1 backup-jobs endpoints for every DC × vendor × window × granularity.
+        Warm Phase 1 backup-jobs endpoints for every vendor × window × granularity.
 
-        Triggers get_dc_*_jobs which already wraps the live fetch with cache.set,
-        so this just pre-populates the same keys that user-facing requests use.
-        Runs in parallel; per-call failures are logged but do not abort the batch.
+        Sadece (vendor × window × granularity) — toplam 36 task. Her task
+        _compute_all_dc_<vendor>_jobs çağırır ve tek SQL pass'iyle TÜM DC'lere
+        cache yazar. Eski sürümde 504 task vardı (DC döngüsü) — refactor sonrası
+        14x azaldı.
         """
         windows = backup_jobs_warm_windows()
         grans = BACKUP_JOBS_WARM_GRANULARITIES
-        # Tasks: (label, callable)
+        if not self.dc_list:
+            return
+
         tasks: list[tuple[str, Callable[[], Any]]] = []
         for tr in windows:
+            start_ts, end_ts = time_range_to_bounds(tr)
+            tr_start = str(tr.get("start", ""))
+            tr_end = str(tr.get("end", ""))
             for gran in grans:
-                for dc_code in self.dc_list:
-                    tasks.append((
-                        f"veeam:{dc_code}:{tr['preset']}:{gran}",
-                        lambda dc=dc_code, t=tr, g=gran: self.get_dc_veeam_jobs(dc, t, g),
-                    ))
-                    tasks.append((
-                        f"zerto:{dc_code}:{tr['preset']}:{gran}",
-                        lambda dc=dc_code, t=tr, g=gran: self.get_dc_zerto_jobs(dc, t, g),
-                    ))
-                    tasks.append((
-                        f"netbackup:{dc_code}:{tr['preset']}:{gran}",
-                        lambda dc=dc_code, t=tr, g=gran: self.get_dc_netbackup_jobs(dc, t, g),
-                    ))
+                tasks.append((
+                    f"veeam:{tr['preset']}:{gran}",
+                    lambda g=gran, s=start_ts, e=end_ts, ts=tr_start, te=tr_end:
+                        self._compute_all_dc_veeam_jobs(g, s, e, ts, te),
+                ))
+                tasks.append((
+                    f"zerto:{tr['preset']}:{gran}",
+                    lambda g=gran, s=start_ts, e=end_ts, ts=tr_start, te=tr_end:
+                        self._compute_all_dc_zerto_jobs(g, s, e, ts, te),
+                ))
+                tasks.append((
+                    f"netbackup:{tr['preset']}:{gran}",
+                    lambda g=gran, s=start_ts, e=end_ts, ts=tr_start, te=tr_end:
+                        self._compute_all_dc_netbackup_jobs(g, s, e, ts, te),
+                ))
 
         if not tasks:
             return
 
-        logger.info("Backup-jobs warm: %d tasks (windows=%d, grans=%d, dcs=%d).",
-                    len(tasks), len(windows), len(grans), len(self.dc_list))
+        logger.info(
+            "Backup-jobs warm: %d tasks (windows=%d, grans=%d, vendors=3) — "
+            "each pass caches ALL %d DCs.",
+            len(tasks), len(windows), len(grans), len(self.dc_list),
+        )
         t0 = time.perf_counter()
         ok = 0
         with ThreadPoolExecutor(max_workers=6, thread_name_prefix="bkpjobs-warm") as pool:
