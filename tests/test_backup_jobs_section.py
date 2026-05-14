@@ -143,6 +143,9 @@ def test_section_layout_has_expected_ids(vendor):
         f"backup-jobs-{vendor}-groupby",
         f"backup-jobs-{vendor}-kpis",
         f"backup-jobs-{vendor}-chart",
+        f"backup-jobs-{vendor}-refresh",
+        f"backup-jobs-{vendor}-asof",
+        f"backup-jobs-{vendor}-loading",
     }
     assert expected.issubset(found_ids), f"missing ids: {expected - found_ids}"
 

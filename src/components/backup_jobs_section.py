@@ -198,24 +198,37 @@ def build_job_stats_section(vendor: str) -> html.Div:
                     ),
                 ],
             ),
-            html.Div(
-                id=f"backup-jobs-{vendor}-kpis",
-                style={
-                    "display": "grid",
-                    "gridTemplateColumns": "repeat(4, 1fr)",
-                    "gap": "12px",
-                    "marginBottom": "12px",
+            dcc.Loading(
+                id=f"backup-jobs-{vendor}-loading",
+                type="circle",
+                color="#4318FF",
+                delay_show=200,
+                overlay_style={
+                    "visibility": "visible",
+                    "backgroundColor": "rgba(244, 247, 254, 0.65)",
+                    "borderRadius": "12px",
                 },
-                children=_empty_kpis(),
-            ),
-            html.Div(
-                className="nexus-card",
-                style={"padding": "12px"},
-                children=dcc.Graph(
-                    id=f"backup-jobs-{vendor}-chart",
-                    figure=_empty_figure(),
-                    config={"displayModeBar": False},
-                ),
+                children=[
+                    html.Div(
+                        id=f"backup-jobs-{vendor}-kpis",
+                        style={
+                            "display": "grid",
+                            "gridTemplateColumns": "repeat(4, 1fr)",
+                            "gap": "12px",
+                            "marginBottom": "12px",
+                        },
+                        children=_empty_kpis(),
+                    ),
+                    html.Div(
+                        className="nexus-card",
+                        style={"padding": "12px"},
+                        children=dcc.Graph(
+                            id=f"backup-jobs-{vendor}-chart",
+                            figure=_empty_figure(),
+                            config={"displayModeBar": False},
+                        ),
+                    ),
+                ],
             ),
         ],
     )
