@@ -516,6 +516,58 @@ def get_dc_veeam_repos(dc_code: str, tr: Optional[dict]) -> dict:
     return _api_cache_get_with_stale(ck, fetch, empty)
 
 
+def _empty_job_stats(vendor: str, granularity: str) -> dict:
+    return {
+        "vendor": vendor,
+        "granularity": granularity,
+        "range": {"start": "", "end": ""},
+        "series": [],
+        "totals": {
+            "total": 0, "success": 0, "failed": 0, "warning": 0, "other": 0,
+            "success_rate": 0.0, "avg_per_period": 0.0, "period_count": 0,
+        },
+    }
+
+
+def get_dc_veeam_jobs(dc_code: str, tr: Optional[dict], granularity: str = "day") -> dict:
+    enc = quote(dc_code, safe="")
+    empty = _empty_job_stats("veeam", granularity)
+    ck = f"api:dc_veeam_jobs:{enc}:{_serialize_tr_params(tr)}:{granularity}"
+
+    def fetch() -> dict:
+        params = {**_build_time_params(tr), "granularity": granularity}
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/veeam/jobs", params=params)
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
+def get_dc_zerto_jobs(dc_code: str, tr: Optional[dict], granularity: str = "day") -> dict:
+    enc = quote(dc_code, safe="")
+    empty = _empty_job_stats("zerto", granularity)
+    ck = f"api:dc_zerto_jobs:{enc}:{_serialize_tr_params(tr)}:{granularity}"
+
+    def fetch() -> dict:
+        params = {**_build_time_params(tr), "granularity": granularity}
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/zerto/jobs", params=params)
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
+def get_dc_netbackup_jobs(dc_code: str, tr: Optional[dict], granularity: str = "day") -> dict:
+    enc = quote(dc_code, safe="")
+    empty = _empty_job_stats("netbackup", granularity)
+    ck = f"api:dc_netbackup_jobs:{enc}:{_serialize_tr_params(tr)}:{granularity}"
+
+    def fetch() -> dict:
+        params = {**_build_time_params(tr), "granularity": granularity}
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/netbackup/jobs", params=params)
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
 def get_classic_cluster_list(dc_code: str, tr: Optional[dict]) -> list[str]:
     enc = quote(dc_code, safe="")
     ck = f"api:classic_clusters:{enc}:{_serialize_tr_params(tr)}"
