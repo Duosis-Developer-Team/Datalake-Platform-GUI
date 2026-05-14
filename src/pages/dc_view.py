@@ -39,6 +39,8 @@ from src.components.backup_panel import (
     build_zerto_panel,
     build_veeam_panel,
 )
+# noqa: F401 — import for side effect (registers backup-jobs callbacks)
+from src.components import backup_jobs_section  # noqa: F401
 from src.services import sla_service
 from src.utils.dc_display import format_dc_display_name
 from src.components.dc_availability_panel import build_dc_availability_panel

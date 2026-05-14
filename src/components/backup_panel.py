@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 
 from src.utils.format_units import smart_bytes, pct_float
 from src.components.charts import create_premium_gauge_chart
+from src.components.backup_jobs_section import build_job_stats_section
 
 
 def _kpi_card(title: str, value: str, icon: str, color: str = "indigo"):
@@ -495,6 +496,7 @@ def build_netbackup_panel(data: dict, selected_pools: Iterable[str] | None):
                 style={"padding": "16px", "marginTop": "8px"},
                 children=table,
             ),
+            build_job_stats_section("netbackup"),
         ]
     )
 
@@ -824,6 +826,7 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
                 style={"padding": "16px", "marginTop": "8px"},
                 children=table,
             ),
+            build_job_stats_section("zerto"),
         ]
     )
 
@@ -1103,6 +1106,7 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
                 style={"padding": "16px", "marginTop": "8px"},
                 children=table,
             ),
+            build_job_stats_section("veeam"),
         ]
     )
 
