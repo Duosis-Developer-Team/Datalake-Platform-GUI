@@ -2526,6 +2526,25 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict,
 # Main page builder
 # ---------------------------------------------------------------------------
 
+def compute_has_backup(dc_id: str, time_range: dict | None = None) -> bool:
+    """DC için Veeam/Zerto/NetBackup'tan herhangi birinde veri var mı?
+
+    Sidebar'daki 'Backup için ekstra' kontrolünün görünürlüğünü belirlemek için
+    build_dc_view'dan bağımsız hızlı bir probe. Aynı cache'lenmiş api_client
+    wrapper'larını kullanır — DC sayfası açılmışsa hepsi cache hit.
+    """
+    if not dc_id:
+        return False
+    tr = time_range or default_time_range()
+    try:
+        nb = api.get_dc_netbackup_pools(dc_id, tr)
+        zerto = api.get_dc_zerto_sites(dc_id, tr)
+        veeam = api.get_dc_veeam_repos(dc_id, tr)
+    except Exception:
+        return False
+    return bool((nb or {}).get("pools") or (zerto or {}).get("sites") or (veeam or {}).get("repos"))
+
+
 def build_dc_view(dc_id, time_range=None, visible_sections=None):
     """Build DC detail page for the given time range.
 

@@ -159,6 +159,28 @@ _default_tr = default_time_range()
 _custom_st, _custom_en = time_range_to_bounds(_default_tr)
 _custom_picker_start = _custom_st.strftime("%Y-%m-%dT%H:%M:%S")
 _custom_picker_end = _custom_en.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _compute_backup_tr(preset: str) -> dict:
+    """Backup-only time range; isolated from app-time-range. Preset in {'1m','2m','3m','6m','custom'}."""
+    from datetime import datetime, timedelta, timezone
+
+    if preset == "custom":
+        return {"start": "", "end": "", "preset": "custom"}
+    days_map = {"1m": 30, "2m": 60, "3m": 90, "6m": 180}
+    days = days_map.get(preset, 30)
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=days)
+    return {"start": start.isoformat(), "end": end.isoformat(), "preset": preset}
+
+
+_default_backup_tr = _compute_backup_tr("1m")
+
+
+def _should_show_backup_section(pathname: str | None) -> bool:
+    """True yalnızca DC detay route'larında. Sidebar visibility için saf yardımcı."""
+    p = (pathname or "").rstrip("/")
+    return p.startswith("/datacenter/") or p.startswith("/dc-detail/")
 try:
     _fetched_customers = api.get_customer_list()
 except Exception as exc:
@@ -269,6 +291,31 @@ _sidebar = html.Div(
                     ],
                     style={"position": "relative", "display": "none"},
                 ),
+                html.Div(
+                    id="backup-time-range-section",
+                    children=[
+                        dmc.Text(
+                            "Backup için ekstra",
+                            size="xs",
+                            c="dimmed",
+                            fw=500,
+                            style={"marginTop": "6px"},
+                        ),
+                        dmc.SegmentedControl(
+                            id="backup-time-range-preset",
+                            value=_default_backup_tr.get("preset", "1m"),
+                            data=[
+                                {"label": "1M", "value": "1m"},
+                                {"label": "2M", "value": "2m"},
+                                {"label": "3M", "value": "3m"},
+                                {"label": "6M", "value": "6m"},
+                            ],
+                            size="sm",
+                            fullWidth=True,
+                        ),
+                    ],
+                    style={"display": "none"},
+                ),
             ],
             gap="xs",
             px="md",
@@ -325,6 +372,8 @@ app.layout = dmc.MantineProvider(
             },
         ),
         dcc.Store(id="app-time-range", data=_default_tr),
+        dcc.Store(id="backup-time-range", data=_default_backup_tr),
+        dcc.Store(id="dc-has-backup", data=False),
         dcc.Store(id="auth-user-store", data=None),
         dcc.Store(id="auth-permissions-store", data=None),
         html.Div(id="export-pdf-clientside-dummy", style={"display": "none"}),
@@ -516,6 +565,69 @@ def toggle_custom_time_container(preset):
     if preset == PRESET_CUSTOM:
         return {**base, "display": "block"}
     return {**base, "display": "none"}
+
+
+def _extract_dc_id(pathname: str | None) -> str | None:
+    """`/datacenter/DC13` veya `/dc-detail/DC13` → 'DC13'. Eşleşmiyorsa None."""
+    if not pathname:
+        return None
+    p = pathname.rstrip("/")
+    for prefix in ("/datacenter/", "/dc-detail/"):
+        if p.startswith(prefix):
+            tail = p[len(prefix):].strip("/")
+            return tail or None
+    return None
+
+
+@app.callback(
+    dash.Output("dc-has-backup", "data"),
+    dash.Input("url", "pathname"),
+    dash.State("app-time-range", "data"),
+)
+def update_dc_has_backup(pathname, tr):
+    """DC pathname'inden has_backup probe et; aksi halde False.
+
+    İzolasyon: yalnızca dc-has-backup'a yazar. app-time-range'i State olarak okur,
+    yazmaz; backup-time-range'e dokunmaz.
+    """
+    dc_id = _extract_dc_id(pathname)
+    if not dc_id:
+        return False
+    try:
+        return bool(dc_view.compute_has_backup(dc_id, tr or default_time_range()))
+    except Exception:
+        return False
+
+
+@app.callback(
+    dash.Output("backup-time-range-section", "style"),
+    dash.Input("url", "pathname"),
+    dash.Input("dc-has-backup", "data"),
+)
+def toggle_backup_time_range_section(pathname, has_backup):
+    """Sidebar'a 'Backup için ekstra' grubunu yalnızca DC detay sayfasında ve
+    o DC'de gerçekten backup verisi varsa göster.
+
+    İzolasyon: yalnızca container style'ı değiştirir. backup-time-range store'una
+    veya app-time-range'e dokunmaz.
+    """
+    if _should_show_backup_section(pathname) and bool(has_backup):
+        return {"display": "block"}
+    return {"display": "none"}
+
+
+@app.callback(
+    dash.Output("backup-time-range", "data"),
+    dash.Input("backup-time-range-preset", "value"),
+)
+def update_backup_time_range_store(preset):
+    """1M/2M/3M/6M preset'lerini backup-time-range store'una yazar.
+
+    Hiçbir koşulda app-time-range'e dokunmaz — backup endpoint izolasyonu için.
+    """
+    if not preset:
+        return dash.no_update
+    return _compute_backup_tr(preset)
 
 
 @app.callback(
