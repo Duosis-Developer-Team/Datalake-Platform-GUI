@@ -106,30 +106,8 @@ def _prevent_stale_dash_cache(response):
 
 _log = logging.getLogger(__name__)
 _log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
-_DEBUG_LOG_PATH = "/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.cursor/debug-364e8d.log"
-_DEBUG_SESSION_ID = "364e8d"
-_DEBUG_RUN_ID = "dc-detail-slow-run1"
 _NET_STALE_LOCK = threading.Lock()
 _NET_STALE_CACHE: dict[str, dict] = {}
-
-
-def _emit_debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    payload = {
-        "sessionId": _DEBUG_SESSION_ID,
-        "runId": _DEBUG_RUN_ID,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time_module.time() * 1000),
-    }
-    try:
-        # region agent log
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        # endregion
-    except Exception:
-        pass
 
 
 from src.pages import home, datacenters, dc_view, customer_view, customers_list, query_explorer, global_view, region_drilldown, dc_detail
@@ -737,39 +715,10 @@ def render_main_content(pathname, time_range, selected_customer, search):
     if pathname in ("/", ""):
         return home.build_overview(tr, visible_sections=vis)
     if pathname == "/datacenters":
-        t_dcs = time_module.perf_counter()
-        out = datacenters.build_datacenters(tr, visible_sections=vis)
-        # region agent log
-        _log.info(
-            "DBG364e8d H4 route=/datacenters render_ms=%.1f preset=%s",
-            (time_module.perf_counter() - t_dcs) * 1000,
-            (tr or {}).get("preset"),
-        )
-        # endregion
-        return out
+        return datacenters.build_datacenters(tr, visible_sections=vis)
     if pathname and pathname.startswith("/datacenter/"):
         dc_id = pathname.replace("/datacenter/", "").strip("/")
-        t_dc = time_module.perf_counter()
-        out = dc_view.build_dc_view(dc_id, tr, visible_sections=vis)
-        _log.info(
-            "DBG364e8d D0 route=/datacenter dc=%s render_ms=%.1f preset=%s",
-            dc_id,
-            (time_module.perf_counter() - t_dc) * 1000,
-            (tr or {}).get("preset"),
-        )
-        # region agent log
-        _emit_debug_log(
-            "H1",
-            "app.py:render_main_content",
-            "datacenter route render completed",
-            {
-                "pathname": pathname,
-                "dcId": dc_id,
-                "renderMs": round((time_module.perf_counter() - t_dc) * 1000, 1),
-            },
-        )
-        # endregion
-        return out
+        return dc_view.build_dc_view(dc_id, tr, visible_sections=vis)
     if pathname == "/global-view":
         return global_view.build_global_view(tr, visible_sections=vis)
     if pathname == "/availability-annual":
@@ -1170,14 +1119,6 @@ def handle_globe_pin_click(clicked_point, last_dc_id, time_range):
     t0 = time_module.perf_counter()
     from src.services.global_view_prefetch import warm_dc_priority
     warm_dc_priority(dc_id)
-    # region agent log
-    _emit_debug_log(
-        "H2",
-        "app.py:handle_globe_pin_click",
-        "dc selected and priority warm triggered",
-        {"dcId": dc_id, "sameDc": dc_id == last_dc_id},
-    )
-    # endregion
 
     if dc_id == last_dc_id:
         elapsed_ms = round((time_module.perf_counter() - t0) * 1000, 1)
@@ -1345,21 +1286,6 @@ def advance_to_floor_map(n_intervals, dc_store, current_mode, time_range):
         "advance_to_floor_map dc=%s racks=%d is_warm=%s elapsed_ms=%.1f",
         dc_id, len(racks), warm, elapsed_ms,
     )
-    # region agent log
-    _emit_debug_log(
-        "H1",
-        "app.py:advance_to_floor_map",
-        "floor map data fetch timings",
-        {
-            "dcId": dc_id,
-            "isWarm": bool(warm),
-            "racksCount": len(racks),
-            "racksFetchMs": racks_ms,
-            "dcDetailsFetchMs": details_ms,
-            "totalMs": elapsed_ms,
-        },
-    )
-    # endregion
     return "floor_map", layout
 
 
@@ -1545,19 +1471,6 @@ def show_rack_detail(click_data, dc_store):
     devices_resp = api.get_rack_devices(dc_id or "", name or "")
     devices_ms = round((time_module.perf_counter() - t_devices) * 1000, 1)
     devices = devices_resp.get("devices", [])
-    # region agent log
-    _emit_debug_log(
-        "H5",
-        "app.py:show_rack_detail",
-        "rack detail devices fetched",
-        {
-            "dcId": dc_id,
-            "rackName": name or "",
-            "devicesCount": len(devices),
-            "devicesFetchMs": devices_ms,
-        },
-    )
-    # endregion
 
     return html.Div(
         children=[
@@ -1794,7 +1707,7 @@ def _call_with_timeout_and_stale(
             with _NET_STALE_LOCK:
                 stale = _NET_STALE_CACHE.get(stale_key)
             _log.warning(
-                "DBG364e8d N1 timeout op=%s timeout_s=%.1f stale_hit=%s key=%s",
+                "Network fetch timeout op=%s timeout_s=%.1f stale_hit=%s key=%s",
                 op_name,
                 timeout_s,
                 stale is not None,
@@ -1805,7 +1718,7 @@ def _call_with_timeout_and_stale(
             with _NET_STALE_LOCK:
                 stale = _NET_STALE_CACHE.get(stale_key)
             _log.warning(
-                "DBG364e8d N2 error op=%s err=%s stale_hit=%s key=%s",
+                "Network fetch error op=%s err=%s stale_hit=%s key=%s",
                 op_name,
                 type(exc).__name__,
                 stale is not None,
@@ -1912,7 +1825,7 @@ def update_net_kpis_and_charts(manufacturer, device_role, device_name, main_tab,
         device_role,
         device_name,
     )
-    percentile_data, p95_source = _call_with_timeout_and_stale(
+    percentile_data, _ = _call_with_timeout_and_stale(
         lambda: api.get_dc_network_95th_percentile(
             dc_id,
             tr,
@@ -1926,13 +1839,6 @@ def update_net_kpis_and_charts(manufacturer, device_role, device_name, main_tab,
         empty_fallback={},
         op_name="network_95th",
     )
-    _log.info(
-        "DBG364e8d N3 net_kpi dc=%s p95_source=%s tab=%s",
-        dc_id,
-        p95_source,
-        main_tab,
-    )
-
     device_count = int(port_summary.get("device_count", 0) or 0)
     total_ports = int(port_summary.get("total_ports", 0) or 0)
     active_ports = int(port_summary.get("active_ports", 0) or 0)
@@ -2018,7 +1924,7 @@ def update_net_interface_table(
         page_size=page_size_safe,
         search=search_value or "",
     )
-    interface_data, table_source = _call_with_timeout_and_stale(
+    interface_data, _ = _call_with_timeout_and_stale(
         lambda: api.get_dc_network_interface_table(
             dc_id,
             tr,
@@ -2034,15 +1940,6 @@ def update_net_interface_table(
         empty_fallback={},
         op_name="network_interface_table",
     )
-    _log.info(
-        "DBG364e8d N4 net_table dc=%s source=%s tab=%s page=%d size=%d",
-        dc_id,
-        table_source,
-        main_tab,
-        page_backend,
-        page_size_safe,
-    )
-
     items = interface_data.get("items") or []
     rows = []
     for it in items:

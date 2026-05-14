@@ -72,14 +72,6 @@ def _start_virt_cache_warm(
             with _VIRT_CACHE_LOCK:
                 _VIRT_TL_CACHE = local_vals
                 _VIRT_CACHE_TR_KEY = tr_key
-            # region agent log
-            _LOG.info(
-                "DBG364e8d H7 datacenters virt_warm_complete_ms=%.1f cached=%d tr_key=%s",
-                (time.perf_counter() - t0) * 1000,
-                len(local_vals),
-                tr_key,
-            )
-            # endregion
         finally:
             with _VIRT_CACHE_LOCK:
                 _VIRT_CACHE_WARMING = False
@@ -625,29 +617,17 @@ def _dc_vault_card(
 
 def build_datacenters(time_range=None, visible_sections=None):
     """Build Data Centers page content for the given time range."""
-    t_total = time.perf_counter()
     tr = time_range or default_time_range()
     vs = visible_sections
 
     def ds(code: str) -> bool:
         return vs is None or code in vs
 
-    t_init = time.perf_counter()
     datacenters = api.get_all_datacenters_summary(tr)
     sla_by_dc = api.get_sla_by_dc(tr)
-    # region agent log
-    _LOG.info(
-        "DBG364e8d H1 datacenters init_fetch_ms=%.1f dc_count=%d preset=%s",
-        (time.perf_counter() - t_init) * 1000,
-        len(datacenters or []),
-        (tr or {}).get("preset"),
-    )
-    # endregion
 
     virt_tl_by_dc: dict[str, float] = {}
     total_potential_tl = 0.0
-    t_virt = time.perf_counter()
-    slow_dc: list[tuple[str, float]] = []
     dc_ids: list[str] = [str(dc.get("id")) for dc in datacenters if dc.get("id") is not None]
 
     configured_family_workers = int(os.getenv("DC_OVERVIEW_VIRT_FAMILY_WORKERS", "1") or "1")
@@ -657,19 +637,6 @@ def build_datacenters(time_range=None, visible_sections=None):
     # doesn't block on N sequential DC calls.
     configured_workers = int(os.getenv("DC_OVERVIEW_VIRT_WORKERS", "4") or "4")
     max_workers = min(max(1, configured_workers), max(1, len(dc_ids)))
-    # region agent log
-    _LOG.info(
-        (
-            "DBG364e8d H6 datacenters virt_workers=%d family_workers=%d "
-            "dc_count=%d expected_family_calls=%d theoretical_max_inflight=%d"
-        ),
-        max_workers,
-        family_workers,
-        len(dc_ids),
-        len(dc_ids) * 4,
-        max_workers * family_workers,
-    )
-    # endregion
     tr_key = _virt_cache_tr_key(tr)
     with _VIRT_CACHE_LOCK:
         cache_snapshot = dict(_VIRT_TL_CACHE)
@@ -688,21 +655,6 @@ def build_datacenters(time_range=None, visible_sections=None):
         dc_virt = cache_snapshot.get(dc_id, 0.0) if cache_key == tr_key else 0.0
         virt_tl_by_dc[dc_id] = dc_virt
         total_potential_tl += dc_virt
-    # region agent log
-    _LOG.info(
-        (
-            "DBG364e8d H2 datacenters virt_loop_ms=%.1f slow_dc=%s cache_hits=%d/%d "
-            "cache_key_match=%s warm_in_progress=%s warm_triggered=%s"
-        ),
-        (time.perf_counter() - t_virt) * 1000,
-        slow_dc[:8],
-        cache_hit_count,
-        len(dc_ids),
-        cache_key == tr_key,
-        warming,
-        triggered_warm,
-    )
-    # endregion
 
     # ── Export rows ──
     export_rows = []
@@ -763,13 +715,6 @@ def build_datacenters(time_range=None, visible_sections=None):
         )]
     )
 
-    # region agent log
-    _LOG.info(
-        "DBG364e8d H3 datacenters total_build_ms=%.1f cards=%d",
-        (time.perf_counter() - t_total) * 1000,
-        len(datacenters or []),
-    )
-    # endregion
     return html.Div([
         dcc.Store(
             id="datacenters-export-store",

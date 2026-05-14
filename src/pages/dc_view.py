@@ -2,7 +2,6 @@ from __future__ import annotations
 # DC Detail view - Capacity Planning
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup | Physical Inventory
 import json
-import logging
 import time
 import dash
 from dash import html, dcc, dash_table, callback, Input, Output, State
@@ -52,31 +51,6 @@ from src.utils.export_helpers import (
     dash_send_excel_workbook,
     dash_send_csv_bytes,
 )
-
-_DEBUG_LOG_PATH = "/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.cursor/debug-364e8d.log"
-_DEBUG_SESSION_ID = "364e8d"
-_DEBUG_RUN_ID = "dc-detail-slow-run1"
-_LOG = logging.getLogger(__name__)
-
-
-def _emit_debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    payload = {
-        "sessionId": _DEBUG_SESSION_ID,
-        "runId": _DEBUG_RUN_ID,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        # region agent log
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        # endregion
-    except Exception:
-        pass
-
 
 # ---------------------------------------------------------------------------
 # KPI Icon Standard — one icon per concept
@@ -2563,19 +2537,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
 
     tr = time_range or default_time_range()
     t_total = time.perf_counter()
-    # region agent log
-    _emit_debug_log(
-        "H1",
-        "src/pages/dc_view.py:build_dc_view",
-        "dc view render start",
-        {"dcId": str(dc_id), "preset": tr.get("preset"), "hasCustom": bool(tr.get("start") and tr.get("end"))},
-    )
-    _LOG.info(
-        "DBG364e8d D1 dc_view start dc=%s preset=%s",
-        str(dc_id),
-        tr.get("preset"),
-    )
-    # endregion
     t_batch1 = time.perf_counter()
     batch1 = parallel_execute(
         {
@@ -2586,23 +2547,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
             "hyperconv_clusters": lambda: api.get_hyperconv_cluster_list(dc_id, tr),
         }
     )
-    # region agent log
-    _emit_debug_log(
-        "H1",
-        "src/pages/dc_view.py:build_dc_view",
-        "batch1 completed",
-        {
-            "dcId": str(dc_id),
-            "batch1Ms": round((time.perf_counter() - t_batch1) * 1000, 1),
-            "keys": list(batch1.keys()),
-        },
-    )
-    _LOG.info(
-        "DBG364e8d D2 dc_view batch1_ms=%.1f dc=%s",
-        (time.perf_counter() - t_batch1) * 1000,
-        str(dc_id),
-    )
-    # endregion
     data = batch1["data"]
     sla_by_dc = batch1["sla_by_dc"]
     s3_data = batch1["s3_data"]
@@ -2667,24 +2611,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
             "aura_dc": lambda: api.get_dc_availability_sla_item(str(dc_id), dc_name, tr),
         }
     )
-    # region agent log
-    _emit_debug_log(
-        "H2",
-        "src/pages/dc_view.py:build_dc_view",
-        "batch2 completed",
-        {
-            "dcId": str(dc_id),
-            "dcName": dc_name,
-            "batch2Ms": round((time.perf_counter() - t_batch2) * 1000, 1),
-            "keys": list(batch2.keys()),
-        },
-    )
-    _LOG.info(
-        "DBG364e8d D3 dc_view batch2_ms=%.1f dc=%s",
-        (time.perf_counter() - t_batch2) * 1000,
-        str(dc_id),
-    )
-    # endregion
     aura_dc_item = batch2.get("aura_dc")
     phys_inv = batch2["phys_inv"]
     has_phys_inv = phys_inv.get("total", 0) > 0
@@ -2768,45 +2694,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     zabbix_storage_devices = api.get_dc_zabbix_storage_devices(dc_id, tr) if has_intel_storage else []
     zabbix_storage_trend = api.get_dc_zabbix_storage_trend(dc_id, tr) if has_intel_storage else {}
     intel_storage_ms = round((time.perf_counter() - t_intel_storage) * 1000, 1)
-    # region agent log
-    _emit_debug_log(
-        "H3",
-        "src/pages/dc_view.py:build_dc_view",
-        "sequential data fetch timings",
-        {
-            "dcId": str(dc_id),
-            "hasSan": bool(has_san),
-            "hasNetwork": bool(has_network),
-            "hasPower": bool(has_power),
-            "hasIntelStorage": bool(has_intel_storage),
-            "sanMs": san_ms,
-            "networkMs": net_ms,
-            "networkPortMs": net_port_ms,
-            "networkP95Ms": net_p95_ms,
-            "networkTableMs": net_table_ms,
-            "backupMs": backup_ms,
-            "powerStorageMs": power_storage_ms,
-            "intelStorageMs": intel_storage_ms,
-        },
-    )
-    _LOG.info(
-        (
-            "DBG364e8d D4 dc_view seq_ms dc=%s san=%.1f net=%.1f "
-            "net_port=%.1f net_p95=%.1f net_table=%.1f backup=%.1f "
-            "power_storage=%.1f intel_storage=%.1f"
-        ),
-        str(dc_id),
-        san_ms,
-        net_ms,
-        net_port_ms,
-        net_p95_ms,
-        net_table_ms,
-        backup_ms,
-        power_storage_ms,
-        intel_storage_ms,
-    )
-    # endregion
-
     has_storage = bool(has_intel_storage or has_power or has_s3)
 
     has_virt = has_classic or has_hyperconv or has_power
@@ -2874,19 +2761,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
             ),
         )
 
-    # region agent log
-    _emit_debug_log(
-        "H5",
-        "src/pages/dc_view.py:build_dc_view",
-        "dc view render pre-layout done",
-        {"dcId": str(dc_id), "totalBeforeLayoutMs": round((time.perf_counter() - t_total) * 1000, 1)},
-    )
-    _LOG.info(
-        "DBG364e8d D5 dc_view total_before_layout_ms=%.1f dc=%s",
-        (time.perf_counter() - t_total) * 1000,
-        str(dc_id),
-    )
-    # endregion
     return dcc.Loading(
         id="dc-view-page-loading",
         type="circle",
