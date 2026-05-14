@@ -2611,6 +2611,13 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
     # Postgres date_trunc accepts these granularities.
     _ALLOWED_GRANULARITIES = ("day", "week", "month")
 
+    # Backup-jobs cache için override TTL. Global cache_ttl_seconds (1200s/20dk)
+    # warm pass interval'ından kısa olduğu için backup-jobs key'leri TTL geçtikten
+    # sonra cache miss yaşıyordu. Bu TTL 35dk = 30dk warm interval + 5dk emniyet
+    # marjı, böylece her warm pass key'leri expire OLMADAN overwrite eder.
+    # Sadece backup-jobs key'lerine uygulanır; diğer endpoint'lerin TTL'i değişmez.
+    _BACKUP_JOBS_CACHE_TTL_SECONDS = 2100
+
     @staticmethod
     def _normalize_granularity(value: str | None) -> str:
         v = (value or "day").lower().strip()
@@ -2798,6 +2805,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             cache.set(
                 f"dc_veeam_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}",
                 payload,
+                ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS,
             )
         return out
 
@@ -2886,6 +2894,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             cache.set(
                 f"dc_zerto_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}",
                 payload,
+                ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS,
             )
         return out
 
@@ -2972,6 +2981,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             cache.set(
                 f"dc_netbackup_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}",
                 payload,
+                ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS,
             )
         return out
 

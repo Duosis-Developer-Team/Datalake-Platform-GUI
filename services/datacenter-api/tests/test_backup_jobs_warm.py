@@ -118,6 +118,29 @@ def test_warm_passes_granularity_and_window_to_compute():
 # ---- refresh_backup_cache integration --------------------------------------
 
 
+def test_backup_jobs_cache_ttl_constant():
+    """TTL 2100s (35dk) — global TTL'den (1200s) uzun ki warm interval seamless."""
+    assert DatabaseService._BACKUP_JOBS_CACHE_TTL_SECONDS == 2100
+
+
+def test_compute_writes_cache_with_override_ttl():
+    """_compute_all_dc_<vendor>_jobs cache.set'i TTL parametresiyle çağırmalı."""
+    from unittest.mock import patch as _patch, ANY
+
+    svc = _make_service(dc_list=("DC11",))
+
+    with _patch("app.services.dc_service.cache.set") as p_set, \
+         _patch.object(svc, "_get_connection"), \
+         _patch.object(svc, "_run_rows", return_value=[]):
+        svc._compute_all_dc_veeam_jobs("day", "s", "e", "2026-04-01", "2026-05-01")
+
+    # cache.set en az bir kez çağrılmalı, TTL parametresi 2100 olmalı
+    assert p_set.called
+    for call in p_set.call_args_list:
+        kwargs = call.kwargs
+        assert kwargs.get("ttl") == 2100, f"Expected ttl=2100, got {kwargs}"
+
+
 def test_refresh_backup_cache_invokes_warm_jobs():
     svc = _make_service(dc_list=("DC11",))
 
