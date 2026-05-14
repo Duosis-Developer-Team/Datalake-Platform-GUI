@@ -67,6 +67,23 @@ def cache_time_ranges():
     ]
 
 
+# Backup-jobs sidebar (1M/2M/3M/6M) preset'leri için warm window'ları.
+# Bunlar global cache_time_ranges()'e EKLENMEZ — sadece backup-jobs scheduler
+# warm pass'inde kullanılır. Diğer endpoint'ler etkilenmesin.
+def backup_jobs_warm_windows():
+    end = _today_utc()
+    return [
+        {"start": (end - timedelta(days=30)).isoformat(), "end": end.isoformat(), "preset": "1m"},
+        {"start": (end - timedelta(days=60)).isoformat(), "end": end.isoformat(), "preset": "2m"},
+        {"start": (end - timedelta(days=90)).isoformat(), "end": end.isoformat(), "preset": "3m"},
+        {"start": (end - timedelta(days=180)).isoformat(), "end": end.isoformat(), "preset": "6m"},
+    ]
+
+
+# Backup-jobs warm matrix için granularity listesi.
+BACKUP_JOBS_WARM_GRANULARITIES = ("day", "week", "month")
+
+
 def _has_time_component(s: str) -> bool:
     s = s.strip()
     if "T" in s or " " in s[:13]:

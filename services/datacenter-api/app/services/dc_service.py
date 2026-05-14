@@ -5,7 +5,7 @@ import logging
 import time
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Callable
 
 from psycopg2 import pool as pg_pool
 from psycopg2 import OperationalError
@@ -19,7 +19,13 @@ from app.db.queries import discovery_rack as drq
 from app.config import settings
 from app.services import cache_service as cache
 from app.services import query_overrides as qo
-from app.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
+from app.utils.time_range import (
+    default_time_range,
+    time_range_to_bounds,
+    cache_time_ranges,
+    backup_jobs_warm_windows,
+    BACKUP_JOBS_WARM_GRANULARITIES,
+)
 from app.utils.format_units import smart_cpu, smart_memory, smart_storage
 
 _DC_CODE_RE = re.compile(r'(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)', re.IGNORECASE)
@@ -4657,10 +4663,13 @@ JOIN latest l
 
         This is called by the background scheduler every 30 minutes. Cache entries
         are updated in place so UI panels continue to use the previous values until
-        new data has been written.
+        new data has been written. Capacity warm runs first (lighter, fast UX win),
+        then jobs warm (heavier aggregations across 4 windows × 3 granularities)
+        runs in a thread pool for parallelism.
         """
         logger.info("Background backup cache refresh started.")
         try:
+            # ---- Capacity warm (existing) -----------------------------------
             for tr in cache_time_ranges():
                 start_ts, end_ts = time_range_to_bounds(tr)
                 for dc_code in self.dc_list:
@@ -4685,9 +4694,59 @@ JOIN latest l
                     except Exception as exc:
                         logger.warning("refresh_backup_cache (Veeam) failed for DC %s: %s", dc_code, exc)
 
+            # ---- Jobs warm (new in Phase 3 A1) ------------------------------
+            self._warm_backup_jobs_cache()
+
             logger.info("Background backup cache refresh complete.")
         except Exception as exc:
             logger.error("Background backup cache refresh failed: %s", exc)
+
+    def _warm_backup_jobs_cache(self) -> None:
+        """
+        Warm Phase 1 backup-jobs endpoints for every DC × vendor × window × granularity.
+
+        Triggers get_dc_*_jobs which already wraps the live fetch with cache.set,
+        so this just pre-populates the same keys that user-facing requests use.
+        Runs in parallel; per-call failures are logged but do not abort the batch.
+        """
+        windows = backup_jobs_warm_windows()
+        grans = BACKUP_JOBS_WARM_GRANULARITIES
+        # Tasks: (label, callable)
+        tasks: list[tuple[str, Callable[[], Any]]] = []
+        for tr in windows:
+            for gran in grans:
+                for dc_code in self.dc_list:
+                    tasks.append((
+                        f"veeam:{dc_code}:{tr['preset']}:{gran}",
+                        lambda dc=dc_code, t=tr, g=gran: self.get_dc_veeam_jobs(dc, t, g),
+                    ))
+                    tasks.append((
+                        f"zerto:{dc_code}:{tr['preset']}:{gran}",
+                        lambda dc=dc_code, t=tr, g=gran: self.get_dc_zerto_jobs(dc, t, g),
+                    ))
+                    tasks.append((
+                        f"netbackup:{dc_code}:{tr['preset']}:{gran}",
+                        lambda dc=dc_code, t=tr, g=gran: self.get_dc_netbackup_jobs(dc, t, g),
+                    ))
+
+        if not tasks:
+            return
+
+        logger.info("Backup-jobs warm: %d tasks (windows=%d, grans=%d, dcs=%d).",
+                    len(tasks), len(windows), len(grans), len(self.dc_list))
+        t0 = time.perf_counter()
+        ok = 0
+        with ThreadPoolExecutor(max_workers=6, thread_name_prefix="bkpjobs-warm") as pool:
+            futures = {pool.submit(fn): label for label, fn in tasks}
+            for fut in futures:
+                label = futures[fut]
+                try:
+                    fut.result()
+                    ok += 1
+                except Exception as exc:
+                    logger.warning("Backup-jobs warm task %s failed: %s", label, exc)
+        logger.info("Backup-jobs warm finished: %d/%d ok in %.2fs.",
+                    ok, len(tasks), time.perf_counter() - t0)
 
     @property
     def dc_list(self) -> list[str]:
