@@ -106,6 +106,51 @@ class TestBackupJobWrappers:
 
         assert client.get.call_count == 2  # cache miss for both
 
+    def test_refresh_dc_backup_jobs_cache_calls_backend_and_drops_local(self):
+        from src.services import cache_service as cs
+        from src.services.api_client import (
+            get_dc_veeam_jobs,
+            refresh_dc_backup_jobs_cache,
+        )
+
+        # 1) Prime local cache via a normal GET
+        get_client = self._mock_client(FAKE_RESPONSE)
+        with patch("src.services.api_client._get_client_dc", return_value=get_client):
+            get_dc_veeam_jobs("DC13", {"preset": "30d"}, granularity="day")
+
+        # 2) Call refresh — mock a POST returning ok
+        post_resp = MagicMock()
+        post_resp.status_code = 200
+        post_resp.content = b'{"status":"ok"}'
+        post_resp.json.return_value = {"status": "ok", "deleted": {"veeam": "invalidated"}}
+        post_client = MagicMock()
+        post_client.post.return_value = post_resp
+        with patch("src.services.api_client._get_client_dc", return_value=post_client):
+            result = refresh_dc_backup_jobs_cache("DC13", vendor="veeam")
+
+        assert result.get("status") == "ok"
+        # Backend was called with vendor query
+        call = post_client.post.call_args
+        assert "/api/v1/datacenters/DC13/backup/jobs/refresh" in call[0][0]
+        assert call[1]["params"]["vendor"] == "veeam"
+
+        # 3) Next get_dc_veeam_jobs must hit HTTP again (local cache was dropped)
+        get_client.get.reset_mock()
+        with patch("src.services.api_client._get_client_dc", return_value=get_client):
+            get_dc_veeam_jobs("DC13", {"preset": "30d"}, granularity="day")
+        assert get_client.get.call_count == 1
+
+    def test_refresh_dc_backup_jobs_cache_handles_backend_error(self):
+        from src.services.api_client import refresh_dc_backup_jobs_cache
+
+        client = MagicMock()
+        client.post.side_effect = RuntimeError("boom")
+        with patch("src.services.api_client._get_client_dc", return_value=client):
+            result = refresh_dc_backup_jobs_cache("DC13", vendor="veeam")
+
+        assert result.get("status") == "error"
+        assert "boom" in str(result.get("error", ""))
+
     def test_cache_namespace_isolation_from_repos(self):
         """dc_veeam_jobs cache key, dc_veeam (repos) cache key ile çakışmamalı."""
         from src.services import cache_service as cs

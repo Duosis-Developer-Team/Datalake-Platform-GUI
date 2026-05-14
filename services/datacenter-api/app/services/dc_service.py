@@ -2684,6 +2684,12 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         return ip_to_dc
 
     @staticmethod
+    def _utc_now_iso() -> str:
+        from datetime import datetime, timezone
+
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    @staticmethod
     def _empty_job_stats(vendor: str, granularity: str, time_range: dict) -> dict:
         return {
             "vendor": vendor,
@@ -2700,6 +2706,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 "avg_per_period": 0.0,
                 "period_count": 0,
             },
+            "as_of": DatabaseService._utc_now_iso(),
         }
 
     @staticmethod
@@ -2708,6 +2715,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         vendor: str,
         granularity: str,
         time_range: dict,
+        as_of: str | None = None,
     ) -> dict:
         """Compute totals + success rate + avg per period over an already-collapsed series."""
         total = sum(int(p.get("count", 0)) for p in series)
@@ -2733,6 +2741,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 "avg_per_period": round(avg_per_period, 2),
                 "period_count": period_count,
             },
+            "as_of": as_of or DatabaseService._utc_now_iso(),
         }
 
     # ---- Veeam jobs --------------------------------------------------------

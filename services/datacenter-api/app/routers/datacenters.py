@@ -109,6 +109,31 @@ def dc_netbackup_jobs(
     return db.get_dc_netbackup_jobs(dc_code, tf.to_dict(), granularity)
 
 
+@router.post("/datacenters/{dc_code}/backup/jobs/refresh")
+def dc_backup_jobs_refresh(
+    dc_code: str,
+    vendor: str = Query("all", description="veeam | zerto | netbackup | all"),
+):
+    """
+    Invalidate cached job statistics for one DC (single vendor or all three).
+
+    Used by the 'Yenile' button on the Backup & Replication panels so users can
+    force a live SQL re-run when they suspect data is stale. Returns the number
+    of cache keys deleted per vendor.
+    """
+    from app.core.cache_backend import cache_delete_prefix
+
+    vendors = ("veeam", "zerto", "netbackup") if vendor == "all" else (vendor,)
+    deleted: dict[str, str] = {}
+    for v in vendors:
+        if v not in ("veeam", "zerto", "netbackup"):
+            continue
+        prefix = f"dc_{v}_jobs:{dc_code}:"
+        cache_delete_prefix(prefix)
+        deleted[v] = "invalidated"
+    return {"status": "ok", "dc_code": dc_code, "deleted": deleted}
+
+
 @router.get("/datacenters/{dc_code}/clusters/classic", response_model=list[str])
 def classic_clusters(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
     return db.get_classic_cluster_list(dc_code, tf.to_dict())

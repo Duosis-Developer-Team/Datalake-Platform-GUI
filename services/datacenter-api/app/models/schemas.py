@@ -198,3 +198,4 @@ class JobStatsResponse(BaseModel):
     range: dict[str, str]  # {'start': ..., 'end': ...}
     series: list[JobStatPoint]
     totals: JobStatTotals
+    as_of: str = ""  # ISO timestamp — when this payload was computed/cached.

@@ -141,9 +141,19 @@ def build_job_stats_section(vendor: str) -> html.Div:
                                 f"{label} Job Statistics",
                                 style={"margin": 0, "fontSize": "0.95rem", "color": "#2B3674"},
                             ),
-                            html.P(
-                                "Backup için ekstra zaman aralığı kullanılır.",
-                                style={"margin": "2px 0 0 0", "fontSize": "0.75rem", "color": "#A3AED0"},
+                            html.Div(
+                                style={"display": "flex", "alignItems": "center", "gap": "8px", "marginTop": "2px"},
+                                children=[
+                                    html.P(
+                                        "Backup için ekstra zaman aralığı kullanılır.",
+                                        style={"margin": 0, "fontSize": "0.75rem", "color": "#A3AED0"},
+                                    ),
+                                    html.Span(
+                                        id=f"backup-jobs-{vendor}-asof",
+                                        style={"fontSize": "0.72rem", "color": "#A3AED0", "fontStyle": "italic"},
+                                        children="",
+                                    ),
+                                ],
                             ),
                         ]
                     ),
@@ -171,6 +181,18 @@ def build_job_stats_section(vendor: str) -> html.Div:
                                 size="xs",
                                 allowDeselect=False,
                                 style={"width": "150px"},
+                            ),
+                            dmc.Tooltip(
+                                label="Cache'i yenile (canlı SQL)",
+                                position="top",
+                                withArrow=True,
+                                children=dmc.ActionIcon(
+                                    id=f"backup-jobs-{vendor}-refresh",
+                                    variant="light",
+                                    color="indigo",
+                                    size="lg",
+                                    children=DashIconify(icon="solar:refresh-bold-duotone", width=18),
+                                ),
                             ),
                         ],
                     ),
@@ -309,31 +331,70 @@ def _register_callbacks() -> None:
         _make_callback(vendor)
 
 
+def format_as_of(as_of: str | None) -> str:
+    """ISO timestamp → 'Son güncelleme: HH:MM' (yerel saat formatı). Boşsa '' döner."""
+    if not as_of:
+        return ""
+    s = str(as_of).strip()
+    if not s:
+        return ""
+    # Normalize Zulu suffix for fromisoformat compatibility.
+    s_norm = s.replace("Z", "+00:00")
+    try:
+        from datetime import datetime
+
+        dt = datetime.fromisoformat(s_norm)
+    except (TypeError, ValueError):
+        return ""
+    return f"· Son güncelleme: {dt.strftime('%H:%M')}"
+
+
 def _make_callback(vendor: str) -> None:
     wrapper = _api_wrapper(vendor)
 
     @callback(
         Output(f"backup-jobs-{vendor}-chart", "figure"),
         Output(f"backup-jobs-{vendor}-kpis", "children"),
+        Output(f"backup-jobs-{vendor}-asof", "children"),
         Input("backup-time-range", "data"),
         Input(f"backup-jobs-{vendor}-granularity", "value"),
         Input(f"backup-jobs-{vendor}-groupby", "value"),
+        Input(f"backup-jobs-{vendor}-refresh", "n_clicks"),
         State("url", "pathname"),
         prevent_initial_call=False,
     )
-    def _update(tr: dict | None, granularity: str | None, group_by: str | None, pathname: str | None):
+    def _update(
+        tr: dict | None,
+        granularity: str | None,
+        group_by: str | None,
+        refresh_n: int | None,
+        pathname: str | None,
+    ):
         dc_id = _extract_dc_id(pathname)
         if not dc_id:
-            return _empty_figure("DC seçili değil"), _empty_kpis()
+            return _empty_figure("DC seçili değil"), _empty_kpis(), ""
+
+        # If the refresh button triggered this callback, drop cache first so
+        # the wrapper goes through HTTP and the backend recomputes via live SQL.
+        ctx = dash.callback_context
+        if ctx.triggered:
+            trig_id = ctx.triggered[0]["prop_id"].split(".")[0]
+            if trig_id == f"backup-jobs-{vendor}-refresh" and refresh_n:
+                try:
+                    api.refresh_dc_backup_jobs_cache(dc_id, vendor=vendor)
+                except Exception:
+                    pass  # refresh fails → continue with current cache
+
         gran = granularity or "day"
         gb = group_by or "status"
         try:
             payload = wrapper(dc_id, tr or None, granularity=gran)
         except Exception:
-            return _empty_figure("Veri alınamadı"), _empty_kpis()
+            return _empty_figure("Veri alınamadı"), _empty_kpis(), ""
         if not isinstance(payload, dict):
-            return _empty_figure("Beklenmeyen yanıt"), _empty_kpis()
-        return build_figure(payload, gb), build_kpis(payload)
+            return _empty_figure("Beklenmeyen yanıt"), _empty_kpis(), ""
+        as_of_label = format_as_of(payload.get("as_of"))
+        return build_figure(payload, gb), build_kpis(payload), as_of_label
 
 
 _register_callbacks()

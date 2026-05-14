@@ -120,6 +120,19 @@ def test_empty_job_stats_shape():
     assert out["series"] == []
     assert out["totals"]["total"] == 0
     assert out["totals"]["success_rate"] == 0.0
+    assert out["as_of"] and out["as_of"].endswith("Z")
+
+
+def test_finalize_job_stats_uses_provided_as_of():
+    out = DatabaseService._finalize_job_stats(
+        [], "veeam", "day", {"start": "x", "end": "y"}, as_of="2026-05-14T12:00:00Z"
+    )
+    assert out["as_of"] == "2026-05-14T12:00:00Z"
+
+
+def test_finalize_job_stats_defaults_as_of_to_now():
+    out = DatabaseService._finalize_job_stats([], "veeam", "day", {"start": "x", "end": "y"})
+    assert out["as_of"].endswith("Z") and len(out["as_of"]) >= 16
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +153,7 @@ def _assert_jobstats_shape(payload: dict, vendor: str, granularity: str) -> None
     assert payload["granularity"] == granularity
     assert "range" in payload
     assert isinstance(payload["series"], list)
+    assert isinstance(payload.get("as_of"), str) and payload["as_of"], "as_of must be a non-empty ISO timestamp"
     totals = payload["totals"]
     series_total = sum(int(p["count"]) for p in payload["series"])
     assert totals["total"] == series_total, "totals.total must equal sum of series counts"

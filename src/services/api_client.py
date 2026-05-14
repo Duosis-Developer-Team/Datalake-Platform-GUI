@@ -568,6 +568,48 @@ def get_dc_netbackup_jobs(dc_code: str, tr: Optional[dict], granularity: str = "
     return _api_cache_get_with_stale(ck, fetch, empty)
 
 
+def refresh_dc_backup_jobs_cache(dc_code: str, vendor: str = "all") -> dict:
+    """
+    Force backend cache invalidation for a DC's job stats (single vendor or all).
+
+    Also flushes the GUI-side wrapper memory cache for the affected wrappers so
+    the next read goes through the HTTP layer (and hits a now-empty backend
+    cache, which then performs a live SQL run).
+    """
+    enc = quote(dc_code, safe="")
+    try:
+        client = _get_client_dc()
+        resp = client.post(
+            f"/api/v1/datacenters/{enc}/backup/jobs/refresh",
+            params={"vendor": vendor},
+            headers=_auth_headers(),
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        payload = resp.json() if resp.content else {"status": "ok"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+    # Also drop GUI-side wrapper cache so re-fetch is forced.
+    vendors = ("veeam", "zerto", "netbackup") if vendor == "all" else (vendor,)
+    from src.services import cache_service as cs
+
+    for v in vendors:
+        if v not in ("veeam", "zerto", "netbackup"):
+            continue
+        try:
+            cs.delete_prefix(f"api:dc_{v}_jobs:{enc}:")
+        except AttributeError:
+            # Older cache_service may lack delete_prefix; clear() is a coarser
+            # fallback but acceptable for a manual refresh action.
+            try:
+                cs.clear()
+            except Exception:
+                pass
+
+    return payload if isinstance(payload, dict) else {"status": "ok"}
+
+
 def get_classic_cluster_list(dc_code: str, tr: Optional[dict]) -> list[str]:
     enc = quote(dc_code, safe="")
     ck = f"api:classic_clusters:{enc}:{_serialize_tr_params(tr)}"

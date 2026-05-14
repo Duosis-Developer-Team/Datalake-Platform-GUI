@@ -177,3 +177,25 @@ def test_api_wrapper_dispatch():
 def test_api_wrapper_unknown_raises():
     with pytest.raises(ValueError):
         bjs._api_wrapper("foo")
+
+
+# ---- format_as_of -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value,expected_substring",
+    [
+        ("2026-05-14T14:35:00Z", "14:35"),
+        ("2026-05-14T14:35:00+00:00", "14:35"),
+        ("", ""),
+        (None, ""),
+        ("not-a-date", ""),
+    ],
+)
+def test_format_as_of(value, expected_substring):
+    out = bjs.format_as_of(value)
+    if expected_substring == "":
+        assert out == ""
+    else:
+        assert expected_substring in out
+        assert out.startswith("· Son güncelleme:")
