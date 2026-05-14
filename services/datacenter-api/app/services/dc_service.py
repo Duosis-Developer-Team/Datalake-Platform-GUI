@@ -2746,32 +2746,60 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
     # ---- Veeam jobs --------------------------------------------------------
 
-    def _fetch_dc_veeam_jobs(self, dc_code: str, granularity: str, start_ts, end_ts) -> dict:
+    def _compute_all_dc_veeam_jobs(
+        self,
+        gran: str,
+        start_ts,
+        end_ts,
+        tr_start: str,
+        tr_end: str,
+    ) -> dict[str, dict]:
+        """
+        Tek SQL geçişiyle TÜM DC'lerin Veeam job stat'lerini hesapla; her DC'nin
+        payload'unu kendi cache key'ine yaz. Singleflight altında çağrıldığı için
+        eş zamanlı miss'lerde tek SQL run.
+
+        Phase 1'deki "her DC için ayrı SQL" hatasını giderir — warm pass'te
+        14 SQL × 504 task yerine 1 SQL × 36 task çalışır.
+        """
         with self._get_connection() as conn:
             with conn.cursor() as cur:
-                agg_rows = self._run_rows(cur, bq.VEEAM_SESSION_JOB_STATS, (granularity, start_ts, end_ts))
+                agg_rows = self._run_rows(cur, bq.VEEAM_SESSION_JOB_STATS, (gran, start_ts, end_ts))
                 seed_rows = self._run_rows(cur, bq.VEEAM_IP_TO_DC_SEED, (start_ts, end_ts))
 
         ip_to_dc = self._build_ip_to_dc_map(seed_rows or [], ip_index=0, label_index=1)
-        target = (dc_code or "").upper()
 
-        collapsed: dict[tuple, int] = {}
+        per_dc_collapsed: dict[str, dict[tuple, int]] = {}
         for row in agg_rows or []:
             period, source_ip, result, session_type, cnt = row
-            if ip_to_dc.get(str(source_ip)) != target:
+            dc = ip_to_dc.get(str(source_ip))
+            if not dc:
                 continue
             status = self._normalize_veeam_result(result)
             period_key = period.date().isoformat() if hasattr(period, "date") else str(period)
             key = (period_key, status, session_type or "Unknown")
-            collapsed[key] = collapsed.get(key, 0) + int(cnt or 0)
+            bucket = per_dc_collapsed.setdefault(dc.upper(), {})
+            bucket[key] = bucket.get(key, 0) + int(cnt or 0)
 
-        series = [
-            {"period": p, "status": s, "job_type": t, "policy_type": None, "count": c}
-            for (p, s, t), c in sorted(collapsed.items())
-        ]
-        return self._finalize_job_stats(
-            series, "veeam", granularity, {"start": start_ts, "end": end_ts}
-        )
+        tr = {"start": tr_start, "end": tr_end}
+        out: dict[str, dict] = {}
+        for dc_code in self.dc_list:
+            dc_upper = dc_code.upper()
+            collapsed = per_dc_collapsed.get(dc_upper, {})
+            if collapsed:
+                series = [
+                    {"period": p, "status": s, "job_type": t, "policy_type": None, "count": c}
+                    for (p, s, t), c in sorted(collapsed.items())
+                ]
+                payload = self._finalize_job_stats(series, "veeam", gran, tr)
+            else:
+                payload = self._empty_job_stats("veeam", gran, tr)
+            out[dc_upper] = payload
+            cache.set(
+                f"dc_veeam_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}",
+                payload,
+            )
+        return out
 
     def get_dc_veeam_jobs(
         self,
@@ -2782,47 +2810,84 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
         gran = self._normalize_granularity(granularity)
-        cache_key = f"dc_veeam_jobs:{dc_code}:{tr.get('start','')}:{tr.get('end','')}:{gran}"
+        tr_start = str(tr.get("start", ""))
+        tr_end = str(tr.get("end", ""))
+        cache_key = f"dc_veeam_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}"
+
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
+
+        # Cache miss → tek SQL pass'iyle TÜM DC'leri hesapla. Singleflight,
+        # eş zamanlı miss'lerde leader hariç hepsini bekletir.
+        sf_key = f"_sf:veeam_jobs:{tr_start}:{tr_end}:{gran}"
         try:
-            result = self._fetch_dc_veeam_jobs(dc_code, gran, start_ts, end_ts)
+            all_payloads = cache.run_singleflight(
+                sf_key,
+                lambda: self._compute_all_dc_veeam_jobs(gran, start_ts, end_ts, tr_start, tr_end),
+                ttl=60,
+            )
         except (OperationalError, PoolError) as exc:
             logger.warning("get_dc_veeam_jobs failed for %s: %s", dc_code, exc)
             return self._empty_job_stats("veeam", gran, tr)
-        cache.set(cache_key, result)
-        return result
+
+        return (
+            all_payloads.get(dc_code.upper())
+            if isinstance(all_payloads, dict)
+            else None
+        ) or self._empty_job_stats("veeam", gran, tr)
 
     # ---- Zerto jobs --------------------------------------------------------
 
-    def _fetch_dc_zerto_jobs(self, dc_code: str, granularity: str, start_ts, end_ts) -> dict:
+    def _compute_all_dc_zerto_jobs(
+        self,
+        gran: str,
+        start_ts,
+        end_ts,
+        tr_start: str,
+        tr_end: str,
+    ) -> dict[str, dict]:
+        """
+        Tek SQL geçişiyle TÜM DC'lerin Zerto VPG job stat'lerini hesapla;
+        her DC'nin payload'unu kendi cache key'ine yaz. source_site DC label'ı
+        zaten satırda olduğu için aux query gerekmiyor.
+        """
         with self._get_connection() as conn:
             with conn.cursor() as cur:
-                agg_rows = self._run_rows(cur, bq.ZERTO_VPG_JOB_STATS, (granularity, start_ts, end_ts))
+                agg_rows = self._run_rows(cur, bq.ZERTO_VPG_JOB_STATS, (gran, start_ts, end_ts))
 
-        # source_site label already carries DC info ('DC14-Site02-V10', 'TurksatDC_ZVM' etc).
         dc_set = {dc.upper() for dc in self.dc_list}
-        target = (dc_code or "").upper()
-
-        collapsed: dict[tuple, int] = {}
+        per_dc_collapsed: dict[str, dict[tuple, int]] = {}
         for row in agg_rows or []:
             period, source_site, status_int, cnt = row
             dc = self._extract_dc_from_text(source_site, dc_set)
-            if not dc or dc.upper() != target:
+            if not dc:
                 continue
             status = self._normalize_zerto_status(status_int)
             period_key = period.date().isoformat() if hasattr(period, "date") else str(period)
             key = (period_key, status, f"status_{status_int}")
-            collapsed[key] = collapsed.get(key, 0) + int(cnt or 0)
+            bucket = per_dc_collapsed.setdefault(dc.upper(), {})
+            bucket[key] = bucket.get(key, 0) + int(cnt or 0)
 
-        series = [
-            {"period": p, "status": s, "job_type": t, "policy_type": None, "count": c}
-            for (p, s, t), c in sorted(collapsed.items())
-        ]
-        return self._finalize_job_stats(
-            series, "zerto", granularity, {"start": start_ts, "end": end_ts}
-        )
+        tr = {"start": tr_start, "end": tr_end}
+        out: dict[str, dict] = {}
+        for dc_code in self.dc_list:
+            dc_upper = dc_code.upper()
+            collapsed = per_dc_collapsed.get(dc_upper, {})
+            if collapsed:
+                series = [
+                    {"period": p, "status": s, "job_type": t, "policy_type": None, "count": c}
+                    for (p, s, t), c in sorted(collapsed.items())
+                ]
+                payload = self._finalize_job_stats(series, "zerto", gran, tr)
+            else:
+                payload = self._empty_job_stats("zerto", gran, tr)
+            out[dc_upper] = payload
+            cache.set(
+                f"dc_zerto_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}",
+                payload,
+            )
+        return out
 
     def get_dc_zerto_jobs(
         self,
@@ -2833,47 +2898,82 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
         gran = self._normalize_granularity(granularity)
-        cache_key = f"dc_zerto_jobs:{dc_code}:{tr.get('start','')}:{tr.get('end','')}:{gran}"
+        tr_start = str(tr.get("start", ""))
+        tr_end = str(tr.get("end", ""))
+        cache_key = f"dc_zerto_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}"
+
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
+
+        sf_key = f"_sf:zerto_jobs:{tr_start}:{tr_end}:{gran}"
         try:
-            result = self._fetch_dc_zerto_jobs(dc_code, gran, start_ts, end_ts)
+            all_payloads = cache.run_singleflight(
+                sf_key,
+                lambda: self._compute_all_dc_zerto_jobs(gran, start_ts, end_ts, tr_start, tr_end),
+                ttl=60,
+            )
         except (OperationalError, PoolError) as exc:
             logger.warning("get_dc_zerto_jobs failed for %s: %s", dc_code, exc)
             return self._empty_job_stats("zerto", gran, tr)
-        cache.set(cache_key, result)
-        return result
+
+        return (
+            all_payloads.get(dc_code.upper())
+            if isinstance(all_payloads, dict)
+            else None
+        ) or self._empty_job_stats("zerto", gran, tr)
 
     # ---- NetBackup jobs ----------------------------------------------------
 
-    def _fetch_dc_netbackup_jobs(self, dc_code: str, granularity: str, start_ts, end_ts) -> dict:
+    def _compute_all_dc_netbackup_jobs(
+        self,
+        gran: str,
+        start_ts,
+        end_ts,
+        tr_start: str,
+        tr_end: str,
+    ) -> dict[str, dict]:
+        """
+        Tek SQL geçişiyle TÜM DC'lerin NetBackup job stat'lerini hesapla;
+        her DC'nin payload'unu kendi cache key'ine yaz. destinationmediaservername
+        kolonu DC code'unu (örn. 'nbmediadc14.blt.vc') zaten satırda taşıyor.
+        """
         with self._get_connection() as conn:
             with conn.cursor() as cur:
-                agg_rows = self._run_rows(cur, bq.NETBACKUP_JOB_STATS, (granularity, start_ts, end_ts))
+                agg_rows = self._run_rows(cur, bq.NETBACKUP_JOB_STATS, (gran, start_ts, end_ts))
 
-        # destinationmediaservername carries DC code ('nbmediadc14.blt.vc' -> DC14).
         dc_set = {dc.upper() for dc in self.dc_list}
-        target = (dc_code or "").upper()
-
-        collapsed: dict[tuple, int] = {}
+        per_dc_collapsed: dict[str, dict[tuple, int]] = {}
         for row in agg_rows or []:
             period, dc_label, status_int, jobtype, policytype, cnt = row
             dc = self._extract_dc_from_text(dc_label, dc_set)
-            if not dc or dc.upper() != target:
+            if not dc:
                 continue
             status = self._normalize_netbackup_status(status_int)
             period_key = period.date().isoformat() if hasattr(period, "date") else str(period)
             key = (period_key, status, jobtype or "Unknown", policytype or "Unknown")
-            collapsed[key] = collapsed.get(key, 0) + int(cnt or 0)
+            bucket = per_dc_collapsed.setdefault(dc.upper(), {})
+            bucket[key] = bucket.get(key, 0) + int(cnt or 0)
 
-        series = [
-            {"period": p, "status": s, "job_type": jt, "policy_type": pt, "count": c}
-            for (p, s, jt, pt), c in sorted(collapsed.items())
-        ]
-        return self._finalize_job_stats(
-            series, "netbackup", granularity, {"start": start_ts, "end": end_ts}
-        )
+        tr = {"start": tr_start, "end": tr_end}
+        out: dict[str, dict] = {}
+        for dc_code in self.dc_list:
+            dc_upper = dc_code.upper()
+            collapsed = per_dc_collapsed.get(dc_upper, {})
+            if collapsed:
+                series = [
+                    {"period": p, "status": s, "job_type": jt, "policy_type": pt, "count": c}
+                    for (p, s, jt, pt), c in sorted(collapsed.items())
+                ]
+                payload = self._finalize_job_stats(series, "netbackup", gran, tr)
+            else:
+                payload = self._empty_job_stats("netbackup", gran, tr)
+            out[dc_upper] = payload
+            cache.set(
+                f"dc_netbackup_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}",
+                payload,
+            )
+        return out
 
     def get_dc_netbackup_jobs(
         self,
@@ -2884,17 +2984,30 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
         gran = self._normalize_granularity(granularity)
-        cache_key = f"dc_netbackup_jobs:{dc_code}:{tr.get('start','')}:{tr.get('end','')}:{gran}"
+        tr_start = str(tr.get("start", ""))
+        tr_end = str(tr.get("end", ""))
+        cache_key = f"dc_netbackup_jobs:{dc_code}:{tr_start}:{tr_end}:{gran}"
+
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
+
+        sf_key = f"_sf:netbackup_jobs:{tr_start}:{tr_end}:{gran}"
         try:
-            result = self._fetch_dc_netbackup_jobs(dc_code, gran, start_ts, end_ts)
+            all_payloads = cache.run_singleflight(
+                sf_key,
+                lambda: self._compute_all_dc_netbackup_jobs(gran, start_ts, end_ts, tr_start, tr_end),
+                ttl=60,
+            )
         except (OperationalError, PoolError) as exc:
             logger.warning("get_dc_netbackup_jobs failed for %s: %s", dc_code, exc)
             return self._empty_job_stats("netbackup", gran, tr)
-        cache.set(cache_key, result)
-        return result
+
+        return (
+            all_payloads.get(dc_code.upper())
+            if isinstance(all_payloads, dict)
+            else None
+        ) or self._empty_job_stats("netbackup", gran, tr)
 
     def _fetch_customer_s3_vaults(self, customer_name: str, start_ts, end_ts) -> dict:
         """
