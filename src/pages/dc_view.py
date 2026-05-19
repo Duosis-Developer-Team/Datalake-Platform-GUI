@@ -21,6 +21,10 @@ from src.utils.format_units import (
     title_case,
     parse_storage_string,
 )
+from src.utils.ibm_storage_capacity import (
+    aggregate_ibm_storage_capacities,
+    compute_system_capacities_gb,
+)
 from src.components.charts import (
     create_usage_donut_chart,
     create_avg_max_donut_chart,
@@ -307,7 +311,17 @@ def _kpi_with_tooltip(
     return _kpi(title, short_value, icon, color=color, is_text=True, stagger=stagger, tooltip=tooltip_full)
 
 
-def _kpi(title: str, value, icon: str, color: str = "indigo", is_text: bool = False, stagger: int = 1, tooltip: str | None = None):
+def _kpi(
+    title: str,
+    value,
+    icon: str,
+    color: str = "indigo",
+    is_text: bool = False,
+    stagger: int = 1,
+    tooltip: str | None = None,
+    opacity: float | None = None,
+    background: str | None = None,
+):
     """Standard KPI card used across all tabs."""
     label_children: list = [
         html.Span(
@@ -341,14 +355,20 @@ def _kpi(title: str, value, icon: str, color: str = "indigo", is_text: bool = Fa
                 ),
             )
         )
+    card_style: dict = {
+        "padding": "20px",
+        "display": "flex",
+        "alignItems": "center",
+        "justifyContent": "space-between",
+    }
+    if opacity is not None:
+        card_style["opacity"] = opacity
+    if background:
+        card_style["background"] = background
+
     return html.Div(
         className=f"nexus-card dc-kpi-card dc-stagger-{stagger}",
-        style={
-            "padding": "20px",
-            "display": "flex",
-            "alignItems": "center",
-            "justifyContent": "space-between",
-        },
+        style=card_style,
         children=[
             html.Div(
                 style={"minWidth": 0, "flex": 1},
@@ -2237,42 +2257,57 @@ def _build_intel_storage_subtab(device_list: list[dict], zabbix_storage_capacity
     )
 
 
-def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict, san_bottleneck: dict):
-    """IBM Storage subtab (reuses Power panel data, but focuses on storage)."""
+def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict):
+    """IBM Storage subtab — physical vs efficient capacity with topology/layer labels."""
     storage_capacity = storage_capacity or {}
     storage_performance = storage_performance or {}
-    san_bottleneck = san_bottleneck or {}
 
     systems = storage_capacity.get("systems") or []
     storage_system_count = len(systems)
 
-    total_gb = sum(parse_storage_string(s.get("total_mdisk_capacity")) for s in systems)
-    used_gb = sum(parse_storage_string(s.get("total_used_capacity")) for s in systems)
-    free_gb = sum(parse_storage_string(s.get("total_free_space")) for s in systems)
-    storage_pct = pct_float(used_gb, total_gb)
+    caps = aggregate_ibm_storage_capacities(systems, parse_storage_string)
+    phys_total_gb = caps["phys_total_gb"]
+    phys_used_gb = caps["phys_used_gb"]
+    phys_free_gb = caps["phys_free_gb"]
+    eff_total_gb = caps["eff_total_gb"]
+    eff_used_gb = caps["eff_used_gb"]
+    eff_free_gb = caps["eff_free_gb"]
+    storage_pct = caps["utilization_pct"]
 
-    # Storage systems breakdown — premium system cards with used/free split bar
+    def _topology_badge(topology: str | None):
+        topo = (topology or "standard").strip().lower()
+        if topo == "hyperswap":
+            return dmc.Badge("Hyperswap", color="violet", variant="light", size="sm")
+        return dmc.Badge("Standard", color="blue", variant="light", size="sm")
+
+    def _layer_badge(layer: str | None):
+        lay = (layer or "storage").strip().lower()
+        if lay == "replication":
+            return dmc.Badge("Replication", color="orange", variant="outline", size="sm")
+        return dmc.Badge("Storage", color="gray", variant="outline", size="sm")
+
+    # Storage systems breakdown — physical used/free with topology and layer badges
     def _storage_system_rows():
         rows = []
         for s in systems:
             name = s.get("name") or s.get("storage_ip") or "System"
-            used = parse_storage_string(s.get("total_used_capacity"))
-            free = parse_storage_string(s.get("total_free_space"))
-            total = used + free
+            sys_caps = compute_system_capacities_gb(s, parse_storage_string)
+            used = sys_caps["phys_used_gb"]
+            free = sys_caps["phys_free_gb"]
+            total = sys_caps["phys_total_gb"]
+            eff_total = sys_caps["eff_total_gb"]
+            eff_free = sys_caps["eff_free_gb"]
             used_pct = (used / total * 100) if total > 0 else 0
             free_pct = 100 - used_pct
             if used_pct >= 80:
                 used_grad = "linear-gradient(90deg, #FF6B6B, #EE5D50)"
                 used_color = "#EE5D50"
-                badge_bg  = "rgba(238,93,80,0.12)"
             elif used_pct >= 60:
                 used_grad = "linear-gradient(90deg, #FFD080, #FFB547)"
                 used_color = "#FFB547"
-                badge_bg  = "rgba(255,181,71,0.12)"
             else:
                 used_grad = "linear-gradient(90deg, #868CFF, #4318FF)"
                 used_color = "#4318FF"
-                badge_bg  = "rgba(67,24,255,0.08)"
 
             rows.append(html.Div(
                 style={
@@ -2282,19 +2317,35 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict,
                     "padding": "16px 20px",
                 },
                 children=[
-                    # Top: name
                     html.Div(
-                        style={"display": "flex", "alignItems": "center", "gap": "8px", "marginBottom": "14px"},
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "justifyContent": "space-between",
+                            "flexWrap": "wrap",
+                            "gap": "8px",
+                            "marginBottom": "14px",
+                        },
                         children=[
-                            html.Div(style={"width": "8px", "height": "8px", "borderRadius": "50%", "background": used_color, "flexShrink": 0}),
-                            html.Span(name, style={"fontWeight": 700, "fontSize": "0.9rem", "color": "#2B3674", "fontFamily": "DM Sans"}),
+                            html.Div(
+                                style={"display": "flex", "alignItems": "center", "gap": "8px", "minWidth": 0},
+                                children=[
+                                    html.Div(style={"width": "8px", "height": "8px", "borderRadius": "50%", "background": used_color, "flexShrink": 0}),
+                                    html.Span(name, style={"fontWeight": 700, "fontSize": "0.9rem", "color": "#2B3674", "fontFamily": "DM Sans"}),
+                                ],
+                            ),
+                            html.Div(
+                                style={"display": "flex", "alignItems": "center", "gap": "6px", "flexWrap": "wrap"},
+                                children=[
+                                    _layer_badge(s.get("layer")),
+                                    _topology_badge(s.get("topology")),
+                                ],
+                            ),
                         ],
                     ),
-                    # Split bar: used + free side by side
                     html.Div(
                         style={"display": "flex", "borderRadius": "10px", "overflow": "hidden", "height": "36px", "marginBottom": "12px"},
                         children=[
-                            # Used segment
                             html.Div(
                                 style={
                                     "flex": f"{used_pct}",
@@ -2307,7 +2358,6 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict,
                                     style={"color": "white", "fontSize": "0.78rem", "fontWeight": 700, "fontFamily": "DM Sans"},
                                 ) if used_pct > 10 else None,
                             ),
-                            # Free segment
                             html.Div(
                                 style={
                                     "flex": f"{free_pct}",
@@ -2322,11 +2372,9 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict,
                             ),
                         ],
                     ),
-                    # Legend + stats row
                     html.Div(
                         style={"display": "flex", "justifyContent": "space-between", "alignItems": "center"},
                         children=[
-                            # Left legend
                             html.Div(
                                 style={"display": "flex", "gap": "16px"},
                                 children=[
@@ -2346,12 +2394,22 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict,
                                     ),
                                 ],
                             ),
-                            # Right total
                             html.Span(
                                 f"Total: {smart_storage(total)}",
                                 style={"fontSize": "0.78rem", "color": "#A3AED0", "fontFamily": "DM Sans"},
                             ),
                         ],
+                    ),
+                    html.Div(
+                        f"Efficient: {smart_storage(eff_total)} total / {smart_storage(eff_free)} free",
+                        style={
+                            "fontSize": "0.72rem",
+                            "color": "#15AABF",
+                            "fontFamily": "DM Sans",
+                            "fontStyle": "italic",
+                            "marginTop": "10px",
+                            "opacity": 0.85,
+                        },
                     ),
                 ],
             ))
@@ -2366,78 +2424,57 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict,
     avg_throughput = (sum(throughput_vals) / len(throughput_vals)) if throughput_vals else 0.0
     avg_latency = (sum(latency_vals) / len(latency_vals)) if latency_vals else 0.0
 
-    issues = san_bottleneck.get("issues") or []
-    has_san_bottleneck = bool(san_bottleneck.get("has_issue", False)) and bool(issues)
-
-    san_bottleneck_panel = (
-        dmc.Alert("No SAN bottleneck detected.", color="teal", radius="md", title="SAN Bottleneck")
-        if not has_san_bottleneck
-        else dmc.Stack(
-            gap="sm",
-            children=[
-                dmc.Alert("Storage/SAN bottleneck risk detected.", color="orange", radius="md", title="SAN Bottleneck"),
-                dmc.Table(
-                    striped=True,
-                    highlightOnHover=True,
-                    withTableBorder=False,
-                    withColumnBorders=False,
-                    style={"tableLayout": "fixed", "width": "100%"},
-                    verticalSpacing="sm",
-                    horizontalSpacing="md",
-                    children=[
-                        html.Thead(
-                            html.Tr(
-                                [
-                                    html.Th(
-                                        "Port",
-                                        style={"color": "#A3AED0", "fontWeight": 600, "fontSize": "0.72rem", "textTransform": "uppercase", "letterSpacing": "0.07em", "width": "50%"},
-                                    ),
-                                    html.Th(
-                                        "Not XCredits",
-                                        style={"color": "#A3AED0", "fontWeight": 600, "fontSize": "0.72rem", "textTransform": "uppercase", "letterSpacing": "0.07em", "textAlign": "right", "width": "25%"},
-                                    ),
-                                    html.Th(
-                                        "Too Many RDys",
-                                        style={"color": "#A3AED0", "fontWeight": 600, "fontSize": "0.72rem", "textTransform": "uppercase", "letterSpacing": "0.07em", "textAlign": "right", "width": "25%"},
-                                    ),
-                                ]
-                            )
-                        ),
-                        html.Tbody(
-                            [
-                                html.Tr(
-                                    [
-                                        html.Td(i.get("portname") or ""),
-                                        html.Td(
-                                            dmc.Badge(str(i.get("swfcportnotxcredits") or 0), color="orange", variant="light", size="sm"),
-                                            style={"textAlign": "right"},
-                                        ),
-                                        html.Td(
-                                            dmc.Badge(str(i.get("swfcporttoomanyrdys") or 0), color="orange", variant="light", size="sm"),
-                                            style={"textAlign": "right"},
-                                        ),
-                                    ]
-                                )
-                                for i in (issues or [])[:8]
-                            ]
-                        ),
-                    ],
-                ),
-            ],
-        )
-    )
-
     return dmc.Stack(
         gap="lg",
         children=[
+            dmc.Text("Physical Storage", size="xs", c="#A3AED0", fw=600, tt="uppercase", style={"letterSpacing": "0.06em"}),
             dmc.SimpleGrid(
-                cols=4,
+                cols={"base": 1, "sm": 2, "md": 5},
                 spacing="lg",
                 children=[
                     _kpi("Storage Systems", f"{storage_system_count:,}", _DC_ICONS["storage_systems"], color="grape"),
-                    _kpi("Total Capacity", smart_storage(total_gb), _DC_ICONS["total_capacity"], color="grape", is_text=True),
-                    _kpi("Used Capacity", smart_storage(used_gb), _DC_ICONS["used_capacity"], color="grape", is_text=True),
+                    _kpi("Physical Total", smart_storage(phys_total_gb), _DC_ICONS["total_capacity"], color="grape", is_text=True),
+                    _kpi("Physical Used", smart_storage(phys_used_gb), _DC_ICONS["used_capacity"], color="grape", is_text=True),
+                    _kpi("Physical Free", smart_storage(phys_free_gb), _DC_ICONS["total_capacity"], color="grape", is_text=True, opacity=0.55),
                     _kpi("Utilization", f"{storage_pct:.1f}%", _DC_ICONS["utilization"], color="grape"),
+                ],
+            ),
+            dmc.Stack(
+                gap="xs",
+                children=[
+                    dmc.Text("Efficient Storage", size="xs", c="#15AABF", fw=600, tt="uppercase", style={"letterSpacing": "0.06em", "opacity": 0.9}),
+                    dmc.SimpleGrid(
+                        cols=4,
+                        spacing="lg",
+                        children=[
+                            _kpi(
+                                "Efficient Total",
+                                smart_storage(eff_total_gb),
+                                _DC_ICONS["total_capacity"],
+                                color="cyan",
+                                is_text=True,
+                                opacity=0.85,
+                                background="#F8FBFF",
+                            ),
+                            _kpi(
+                                "Efficient Used",
+                                smart_storage(eff_used_gb),
+                                _DC_ICONS["used_capacity"],
+                                color="cyan",
+                                is_text=True,
+                                background="#F8FBFF",
+                            ),
+                            _kpi(
+                                "Efficient Free",
+                                smart_storage(eff_free_gb),
+                                _DC_ICONS["total_capacity"],
+                                color="cyan",
+                                is_text=True,
+                                opacity=0.5,
+                                background="#F8FBFF",
+                            ),
+                        ],
+                    ),
                 ],
             ),
             dmc.SimpleGrid(
@@ -2449,13 +2486,13 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict,
                         className="nexus-card",
                         style={"padding": "24px", "display": "flex", "flexDirection": "column", "gap": "16px"},
                         children=[
-                            _section_title("Storage Capacity", "Overall utilization"),
+                            _section_title("Storage Capacity", "Physical utilization"),
                             html.Div(
                                 style={"display": "flex", "justifyContent": "center"},
                                 children=[_gauge_wrap(
-                                    create_gauge_chart(used_gb, total_gb or 1, "", color="#FFB547", height=220),
+                                    create_gauge_chart(phys_used_gb, phys_total_gb or 1, "", color="#FFB547", height=220),
                                     "Storage Capacity",
-                                )] if _has_value(total_gb) else [
+                                )] if _has_value(phys_total_gb) else [
                                     html.P("No data available.", style={"color": "#A3AED0", "fontSize": "0.85rem", "textAlign": "center", "paddingTop": "60px"}),
                                 ],
                             ),
@@ -2464,18 +2501,18 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict,
                                 style={"display": "flex", "justifyContent": "space-around", "borderTop": "1px solid #F4F7FE", "paddingTop": "16px"},
                                 children=[
                                     html.Div(style={"textAlign": "center"}, children=[
-                                        html.Div(smart_storage(total_gb), style={"fontWeight": 800, "fontSize": "1.1rem", "color": "#2B3674", "fontFamily": "DM Sans"}),
-                                        html.Div("Total", style={"fontSize": "0.75rem", "color": "#A3AED0", "fontFamily": "DM Sans", "marginTop": "2px"}),
+                                        html.Div(smart_storage(phys_total_gb), style={"fontWeight": 800, "fontSize": "1.1rem", "color": "#2B3674", "fontFamily": "DM Sans"}),
+                                        html.Div("Physical Total", style={"fontSize": "0.75rem", "color": "#A3AED0", "fontFamily": "DM Sans", "marginTop": "2px"}),
                                     ]),
                                     html.Div(style={"width": "1px", "background": "#F4F7FE"}),
                                     html.Div(style={"textAlign": "center"}, children=[
-                                        html.Div(smart_storage(used_gb), style={"fontWeight": 800, "fontSize": "1.1rem", "color": "#FFB547", "fontFamily": "DM Sans"}),
-                                        html.Div("Used", style={"fontSize": "0.75rem", "color": "#A3AED0", "fontFamily": "DM Sans", "marginTop": "2px"}),
+                                        html.Div(smart_storage(phys_used_gb), style={"fontWeight": 800, "fontSize": "1.1rem", "color": "#FFB547", "fontFamily": "DM Sans"}),
+                                        html.Div("Physical Used", style={"fontSize": "0.75rem", "color": "#A3AED0", "fontFamily": "DM Sans", "marginTop": "2px"}),
                                     ]),
                                     html.Div(style={"width": "1px", "background": "#F4F7FE"}),
                                     html.Div(style={"textAlign": "center"}, children=[
-                                        html.Div(smart_storage(free_gb), style={"fontWeight": 800, "fontSize": "1.1rem", "color": "#05CD99", "fontFamily": "DM Sans"}),
-                                        html.Div("Free", style={"fontSize": "0.75rem", "color": "#A3AED0", "fontFamily": "DM Sans", "marginTop": "2px"}),
+                                        html.Div(smart_storage(phys_free_gb), style={"fontWeight": 800, "fontSize": "1.1rem", "color": "#05CD99", "fontFamily": "DM Sans", "opacity": "0.75"}),
+                                        html.Div("Physical Free", style={"fontSize": "0.75rem", "color": "#A3AED0", "fontFamily": "DM Sans", "marginTop": "2px"}),
                                     ]),
                                 ],
                             ),
@@ -2532,14 +2569,6 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict,
                             ),
                         ],
                     ),
-                ],
-            ),
-            html.Div(
-                className="nexus-card",
-                style={"padding": "20px"},
-                children=[
-                    _section_title("SAN Bottleneck", "Storage/SAN risk summary"),
-                    san_bottleneck_panel,
                 ],
             ),
         ],
@@ -3084,7 +3113,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                         children=_build_ibm_storage_subtab(
                                             storage_capacity,
                                             storage_performance,
-                                            san_bottleneck,
                                         ),
                                     ) if has_power else None,
                                     dmc.TabsPanel(
