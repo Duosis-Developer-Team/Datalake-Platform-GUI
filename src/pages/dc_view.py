@@ -1301,28 +1301,43 @@ def _build_sellable_inline_kpi(
     ) -> html.Div:
         card = html.Div(
             className="nexus-card dc-kpi-card dc-stagger-1",
-            style={"padding": "18px", "display": "flex", "alignItems": "center", "justifyContent": "space-between"},
+            style={
+                "padding": "18px",
+                "display": "flex",
+                "alignItems": "center",
+                "justifyContent": "space-between",
+                "gap": "12px",
+                "minHeight": "140px",
+                "height": "100%",
+                "width": "100%",
+                "boxSizing": "border-box",
+            },
             children=[
-                html.Div([
-                    html.Span(label, style={
-                        "color": "#A3AED0", "fontSize": "0.78rem", "fontWeight": 500,
-                        "letterSpacing": "0.02em", "textTransform": "uppercase",
-                    }),
-                    html.H3(value, style={
-                        "color": "#2B3674", "fontSize": "1.15rem", "fontWeight": 900,
-                        "margin": "6px 0 2px 0", "letterSpacing": "-0.02em",
-                    }),
-                    html.Span(sub_short, style={"color": "#4318FF", "fontSize": "0.78rem", "fontWeight": 700}),
-                ]),
+                html.Div(
+                    style={"display": "flex", "flexDirection": "column", "minWidth": 0, "flex": "1 1 auto"},
+                    children=[
+                        html.Span(label, style={
+                            "color": "#A3AED0", "fontSize": "0.78rem", "fontWeight": 500,
+                            "letterSpacing": "0.02em", "textTransform": "uppercase",
+                        }),
+                        html.H3(value, style={
+                            "color": "#2B3674", "fontSize": "1.15rem", "fontWeight": 900,
+                            "margin": "6px 0 2px 0", "letterSpacing": "-0.02em",
+                        }),
+                        html.Span(sub_short, style={"color": "#4318FF", "fontSize": "0.78rem", "fontWeight": 700}),
+                    ],
+                ),
                 dmc.ThemeIcon(
                     size=42, radius="xl", variant="light", color=c,
                     children=DashIconify(icon=ic, width=22),
                 ),
             ],
         )
-        if sub_full and sub_full != sub_short:
-            return dmc.Tooltip(label=sub_full, position="top", withArrow=True, w=240, children=card)
-        return card
+        return html.Div(
+            style={"width": "100%", "height": "100%", "display": "flex", "flexDirection": "column"},
+            title=sub_full if sub_full and sub_full != sub_short else None,
+            children=card,
+        )
 
     cpu_short, cpu_full = _fmt_tl_short(cpu["tl"])
     ram_short, ram_full = _fmt_tl_short(ram["tl"])
@@ -1354,8 +1369,8 @@ def _build_sellable_inline_kpi(
         _kpi_with_sub(
             "Total Potential",
             total_short,
-            "constrained × catalog price",
-            total_full,
+            "× catalog price",
+            total_full or "constrained × catalog price",
             "solar:wallet-money-bold-duotone",
             c="grape",
         ),
@@ -1378,7 +1393,16 @@ def _build_sellable_inline_kpi(
         "style": {"padding": "20px"},
         "children": [
             _section_title(title, "Constrained sellable headroom (ratio-aware) and TL potential"),
-            dmc.SimpleGrid(cols=4, spacing="lg", style={"marginTop": "12px"}, children=cards),
+            html.Div(
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "repeat(4, minmax(0, 1fr))",
+                    "gap": "16px",
+                    "alignItems": "stretch",
+                    "marginTop": "12px",
+                },
+                children=cards,
+            ),
             dmc.Group(gap="xs", style={"marginTop": "10px"}, children=sub_lines) if sub_lines else None,
         ],
     }
