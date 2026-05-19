@@ -747,7 +747,8 @@ def create_capacity_area_chart(timestamps, used, total, title, height=260, show_
 
 def create_gauge_chart(value, max_value, title, color="#4318FF", height=200):
     """Gauge (indicator) for usage: value / max_value as percentage.
-    Pass title='' to suppress the built-in label (use _gauge_wrap in dc_view instead)."""
+    Pass title='' to suppress the built-in label (use _gauge_wrap in dc_view instead).
+    height kept for backward-compat but the container drives final size."""
     try:
         val = float(value)
         mx = float(max_value) if max_value else 100
@@ -773,8 +774,8 @@ def create_gauge_chart(value, max_value, title, color="#4318FF", height=200):
     ))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=8 if not has_title else 40, b=40),
-        height=height,
+        margin=dict(l=10, r=10, t=8 if not has_title else 40, b=10),
+        autosize=True,
         font=dict(family="DM Sans", color="#A3AED0"),
     )
     return fig
@@ -809,8 +810,8 @@ def create_premium_gauge_chart(pct_value, title, color="#4318FF", height=200, sh
     ))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=8 if not has_title else 44, b=40),
-        height=height,
+        margin=dict(l=10, r=10, t=8 if not has_title else 44, b=10),
+        autosize=True,
         font=dict(family="DM Sans", color="#A3AED0"),
     )
     return fig
@@ -845,8 +846,8 @@ def create_premium_gauge_with_avg(avg_pct, max_pct, title, color="#4318FF", heig
     ))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=8 if not has_title else 44, b=40),
-        height=height,
+        margin=dict(l=10, r=10, t=8 if not has_title else 44, b=10),
+        autosize=True,
         font=dict(family="DM Sans", color="#A3AED0"),
     )
     return fig
