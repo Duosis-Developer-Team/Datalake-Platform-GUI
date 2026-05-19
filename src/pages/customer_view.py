@@ -99,6 +99,8 @@ def _metric(title: str, value, icon: str, color: str = "indigo"):
 def format_vm_metric_value(value, decimals: int = 1, suffix: str = "") -> str:
     """Plain-text metric for VM table cells (unit-testable)."""
     v = float(value or 0)
+    if suffix == "%":
+        v = max(0.0, v)
     body = f"{v:.{decimals}f}"
     if suffix == "%":
         return f"{body}%"
