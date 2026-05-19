@@ -139,26 +139,6 @@ _custom_picker_start = _custom_st.strftime("%Y-%m-%dT%H:%M:%S")
 _custom_picker_end = _custom_en.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def _compute_backup_tr(preset: str) -> dict:
-    """Backup-only time range; isolated from app-time-range. Preset in {'1m','2m','3m','6m','custom'}."""
-    from datetime import datetime, timedelta, timezone
-
-    if preset == "custom":
-        return {"start": "", "end": "", "preset": "custom"}
-    days_map = {"1m": 30, "2m": 60, "3m": 90, "6m": 180}
-    days = days_map.get(preset, 30)
-    end = datetime.now(timezone.utc).date()
-    start = end - timedelta(days=days)
-    return {"start": start.isoformat(), "end": end.isoformat(), "preset": preset}
-
-
-_default_backup_tr = _compute_backup_tr("1m")
-
-
-def _should_show_backup_section(pathname: str | None) -> bool:
-    """True yalnızca DC detay route'larında. Sidebar visibility için saf yardımcı."""
-    p = (pathname or "").rstrip("/")
-    return p.startswith("/datacenter/") or p.startswith("/dc-detail/")
 try:
     _fetched_customers = api.get_customer_list()
 except Exception as exc:
@@ -223,18 +203,27 @@ _sidebar = html.Div(
                     c="dimmed",
                     style={"letterSpacing": "0.06em"},
                 ),
-                dmc.SegmentedControl(
-                    id="time-range-preset",
-                    value=_default_tr.get("preset", "7d"),
-                    data=[
-                        {"label": "1H", "value": "1h"},
-                        {"label": "1D", "value": "1d"},
-                        {"label": "7D", "value": "7d"},
-                        {"label": "30D", "value": "30d"},
-                        {"label": "Cstm", "value": "custom"},
-                    ],
-                    size="sm",
-                    fullWidth=True,
+                html.Div(
+                    style={
+                        "overflowX": "auto",
+                        "overflowY": "hidden",
+                        "WebkitOverflowScrolling": "touch",
+                        "scrollbarWidth": "thin",
+                        "paddingBottom": "4px",
+                    },
+                    children=dmc.SegmentedControl(
+                        id="time-range-preset",
+                        value=_default_tr.get("preset", "7d"),
+                        data=[
+                            {"label": "1H", "value": "1h"},
+                            {"label": "1D", "value": "1d"},
+                            {"label": "7D", "value": "7d"},
+                            {"label": "30D", "value": "30d"},
+                            {"label": "Cstm", "value": "custom"},
+                        ],
+                        size="sm",
+                        style={"width": "max-content", "minWidth": "100%"},
+                    ),
                 ),
                 html.Div(
                     id="time-range-custom-container",
@@ -268,31 +257,6 @@ _sidebar = html.Div(
                         ),
                     ],
                     style={"position": "relative", "display": "none"},
-                ),
-                html.Div(
-                    id="backup-time-range-section",
-                    children=[
-                        dmc.Text(
-                            "Backup için ekstra",
-                            size="xs",
-                            c="dimmed",
-                            fw=500,
-                            style={"marginTop": "6px"},
-                        ),
-                        dmc.SegmentedControl(
-                            id="backup-time-range-preset",
-                            value=_default_backup_tr.get("preset", "1m"),
-                            data=[
-                                {"label": "1M", "value": "1m"},
-                                {"label": "2M", "value": "2m"},
-                                {"label": "3M", "value": "3m"},
-                                {"label": "6M", "value": "6m"},
-                            ],
-                            size="sm",
-                            fullWidth=True,
-                        ),
-                    ],
-                    style={"display": "none"},
                 ),
             ],
             gap="xs",
@@ -350,8 +314,8 @@ app.layout = dmc.MantineProvider(
             },
         ),
         dcc.Store(id="app-time-range", data=_default_tr),
-        dcc.Store(id="backup-time-range", data=_default_backup_tr),
-        dcc.Store(id="dc-has-backup", data=False),
+        dcc.Store(id="backup-time-range", data=_default_tr),
+        dcc.Store(id="plot-resize-tick", data=0),
         dcc.Store(id="auth-user-store", data=None),
         dcc.Store(id="auth-permissions-store", data=None),
         html.Div(id="export-pdf-clientside-dummy", style={"display": "none"}),
@@ -427,6 +391,27 @@ app.clientside_callback(
     """,
     dash.Output("export-pdf-clientside-dummy", "children"),
     dash.Input({"type": "pdf-export-btn", "index": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+
+
+app.clientside_callback(
+    """
+    function(tabValue) {
+        // Plotly gauges inside inactive tabs render at 0x0 because the tab panel
+        // is display:none on initial mount. When the user activates the tab,
+        // Plotly does not detect the dimension change on its own — it only listens
+        // for window.resize. We dispatch that event (twice, with a small delay)
+        // to give the DOM a chance to settle before Plotly recalculates layout.
+        if (!tabValue) return window.dash_clientside.no_update;
+        const fire = () => window.dispatchEvent(new Event("resize"));
+        requestAnimationFrame(fire);
+        setTimeout(fire, 120);
+        return window.dash_clientside.no_update;
+    }
+    """,
+    dash.Output("plot-resize-tick", "data"),
+    dash.Input("dc-main-tabs", "value"),
     prevent_initial_call=True,
 )
 
@@ -558,54 +543,46 @@ def _extract_dc_id(pathname: str | None) -> str | None:
 
 
 @app.callback(
-    dash.Output("dc-has-backup", "data"),
-    dash.Input("url", "pathname"),
-    dash.State("app-time-range", "data"),
-)
-def update_dc_has_backup(pathname, tr):
-    """DC pathname'inden has_backup probe et; aksi halde False.
-
-    İzolasyon: yalnızca dc-has-backup'a yazar. app-time-range'i State olarak okur,
-    yazmaz; backup-time-range'e dokunmaz.
-    """
-    dc_id = _extract_dc_id(pathname)
-    if not dc_id:
-        return False
-    try:
-        return bool(dc_view.compute_has_backup(dc_id, tr or default_time_range()))
-    except Exception:
-        return False
-
-
-@app.callback(
-    dash.Output("backup-time-range-section", "style"),
-    dash.Input("url", "pathname"),
-    dash.Input("dc-has-backup", "data"),
-)
-def toggle_backup_time_range_section(pathname, has_backup):
-    """Sidebar'a 'Backup için ekstra' grubunu yalnızca DC detay sayfasında ve
-    o DC'de gerçekten backup verisi varsa göster.
-
-    İzolasyon: yalnızca container style'ı değiştirir. backup-time-range store'una
-    veya app-time-range'e dokunmaz.
-    """
-    if _should_show_backup_section(pathname) and bool(has_backup):
-        return {"display": "block"}
-    return {"display": "none"}
-
-
-@app.callback(
     dash.Output("backup-time-range", "data"),
-    dash.Input("backup-time-range-preset", "value"),
+    dash.Input("app-time-range", "data"),
 )
-def update_backup_time_range_store(preset):
-    """1M/2M/3M/6M preset'lerini backup-time-range store'una yazar.
+def mirror_app_time_range_to_backup(app_tr):
+    """Backup job metrics share the main time-range now — no separate selector."""
+    return app_tr or dash.no_update
 
-    Hiçbir koşulda app-time-range'e dokunmaz — backup endpoint izolasyonu için.
+
+_BASE_PRESETS = [
+    {"label": "1H", "value": "1h"},
+    {"label": "1D", "value": "1d"},
+    {"label": "7D", "value": "7d"},
+    {"label": "30D", "value": "30d"},
+    {"label": "Cstm", "value": "custom"},
+]
+_BACKUP_EXTRA_PRESETS = [
+    {"label": "1M", "value": "1m"},
+    {"label": "2M", "value": "2m"},
+    {"label": "3M", "value": "3m"},
+    {"label": "6M", "value": "6m"},
+]
+
+
+@app.callback(
+    dash.Output("time-range-preset", "data"),
+    dash.Output("time-range-preset", "value"),
+    dash.Input("dc-main-tabs", "value"),
+    dash.State("time-range-preset", "value"),
+    prevent_initial_call=True,
+)
+def expand_periods_on_backup_tab(active_tab, current_preset):
+    """On the DC Backup & Replication tab, append monthly presets (1M-6M).
+    Off-tab, hide them and revert to the default 7D if a monthly preset was selected.
     """
-    if not preset:
-        return dash.no_update
-    return _compute_backup_tr(preset)
+    monthly_values = {p["value"] for p in _BACKUP_EXTRA_PRESETS}
+    if active_tab == "backup":
+        data = _BASE_PRESETS[:-1] + _BACKUP_EXTRA_PRESETS + _BASE_PRESETS[-1:]
+        return data, dash.no_update
+    fallback = "7d" if current_preset in monthly_values else dash.no_update
+    return _BASE_PRESETS, fallback
 
 
 @app.callback(
@@ -635,6 +612,8 @@ def update_time_range_store(preset, start_dt, end_dt, current):
         return dash.no_update
     tid = ctx.triggered[0]["prop_id"].split(".")[0]
     if tid == "time-range-preset":
+        if not preset:
+            return dash.no_update
         if preset == PRESET_CUSTOM:
             cur = current or default_time_range()
             st, en = time_range_to_bounds(cur)

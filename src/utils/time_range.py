@@ -9,6 +9,10 @@ PRESET_1_HOUR = "1h"
 PRESET_1_DAY = "1d"
 PRESET_7_DAYS = "7d"
 PRESET_30_DAYS = "30d"
+PRESET_1_MONTH = "1m"
+PRESET_2_MONTHS = "2m"
+PRESET_3_MONTHS = "3m"
+PRESET_6_MONTHS = "6m"
 PRESET_CUSTOM = "custom"
 
 DEFAULT_PRESET = PRESET_7_DAYS
@@ -49,6 +53,14 @@ def preset_to_range(preset: str):
         start = end - timedelta(days=6)
     elif preset == PRESET_30_DAYS:
         start = end - timedelta(days=29)
+    elif preset == PRESET_1_MONTH:
+        start = end - timedelta(days=30)
+    elif preset == PRESET_2_MONTHS:
+        start = end - timedelta(days=60)
+    elif preset == PRESET_3_MONTHS:
+        start = end - timedelta(days=90)
+    elif preset == PRESET_6_MONTHS:
+        start = end - timedelta(days=180)
     else:
         start = end - timedelta(days=6)
     return {"start": start.isoformat(), "end": end.isoformat(), "preset": preset}
