@@ -402,10 +402,18 @@ def _gauge_wrap(fig, label: str, avg_label: str = ""):
                     *subtitle,
                 ],
             ),
-            dcc.Graph(
-                figure=fig,
-                config={"displayModeBar": False},
-                style={"height": "220px", "width": "100%"},
+            html.Div(
+                style={
+                    "width": "100%",
+                    "aspectRatio": "16 / 11",
+                    "maxWidth": "360px",
+                    "margin": "0 auto",
+                },
+                children=dcc.Graph(
+                    figure=fig,
+                    config={"displayModeBar": False, "responsive": True},
+                    style={"height": "100%", "width": "100%"},
+                ),
             ),
         ],
     )
@@ -1939,27 +1947,36 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
                 spacing="lg",
                 children=[
                     _chart_card(
-                        dcc.Graph(
-                            id="net-donut-active-ports",
-                            figure=donut_active,
-                            config={"displayModeBar": False},
-                            style={"height": "100%", "width": "100%"},
+                        html.Div(
+                            style={"width": "100%", "aspectRatio": "16 / 11", "maxWidth": "360px", "margin": "0 auto"},
+                            children=dcc.Graph(
+                                id="net-donut-active-ports",
+                                figure=donut_active,
+                                config={"displayModeBar": False, "responsive": True},
+                                style={"height": "100%", "width": "100%"},
+                            ),
                         )
                     ),
                     _chart_card(
-                        dcc.Graph(
-                            id="net-donut-utilization",
-                            figure=donut_util,
-                            config={"displayModeBar": False},
-                            style={"height": "100%", "width": "100%"},
+                        html.Div(
+                            style={"width": "100%", "aspectRatio": "16 / 11", "maxWidth": "360px", "margin": "0 auto"},
+                            children=dcc.Graph(
+                                id="net-donut-utilization",
+                                figure=donut_util,
+                                config={"displayModeBar": False, "responsive": True},
+                                style={"height": "100%", "width": "100%"},
+                            ),
                         )
                     ),
                     _chart_card(
-                        dcc.Graph(
-                            id="net-donut-icmp",
-                            figure=donut_icmp,
-                            config={"displayModeBar": False},
-                            style={"height": "100%", "width": "100%"},
+                        html.Div(
+                            style={"width": "100%", "aspectRatio": "16 / 11", "maxWidth": "360px", "margin": "0 auto"},
+                            children=dcc.Graph(
+                                id="net-donut-icmp",
+                                figure=donut_icmp,
+                                config={"displayModeBar": False, "responsive": True},
+                                style={"height": "100%", "width": "100%"},
+                            ),
                         )
                     ),
                 ],
@@ -2165,8 +2182,14 @@ def _build_intel_storage_subtab(device_list: list[dict], zabbix_storage_capacity
                 )]
                 if (_intel_cards := list(filter(None, [
                     total_capacity_card if total_bytes > 0 else None,
-                    _chart_card(dcc.Graph(id="intel-donut-used", figure=donut_used, config={"displayModeBar": False})) if used_bytes > 0 else None,
-                    _chart_card(dcc.Graph(id="intel-donut-free", figure=donut_free, config={"displayModeBar": False})) if (total_bytes - used_bytes) > 0 else None,
+                    _chart_card(html.Div(
+                        style={"width": "100%", "aspectRatio": "16 / 11", "maxWidth": "360px", "margin": "0 auto"},
+                        children=dcc.Graph(id="intel-donut-used", figure=donut_used, config={"displayModeBar": False, "responsive": True}, style={"height": "100%", "width": "100%"}),
+                    )) if used_bytes > 0 else None,
+                    _chart_card(html.Div(
+                        style={"width": "100%", "aspectRatio": "16 / 11", "maxWidth": "360px", "margin": "0 auto"},
+                        children=dcc.Graph(id="intel-donut-free", figure=donut_free, config={"displayModeBar": False, "responsive": True}, style={"height": "100%", "width": "100%"}),
+                    )) if (total_bytes - used_bytes) > 0 else None,
                 ]))) and (_intel_cols := min(len(_intel_cards), 3)) is not None
                 else []
             ),

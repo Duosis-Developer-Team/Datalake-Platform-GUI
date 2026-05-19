@@ -219,10 +219,18 @@ def _gauge_card(fig: go.Figure) -> html.Div:
             "justifyContent": "center",
             "boxSizing": "border-box",
         },
-        children=dcc.Graph(
-            figure=fig,
-            config={"displayModeBar": False},
-            style={"height": "220px", "width": "100%"},
+        children=html.Div(
+            style={
+                "width": "100%",
+                "aspectRatio": "16 / 11",
+                "maxWidth": "360px",
+                "margin": "0 auto",
+            },
+            children=dcc.Graph(
+                figure=fig,
+                config={"displayModeBar": False, "responsive": True},
+                style={"height": "100%", "width": "100%"},
+            ),
         ),
     )
 

@@ -49,16 +49,24 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
     note = r.get("usage_note")
     gauge_pct = min(float(eff or 0), 100.0) if eff is not None else 0.0
 
-    gauge = dcc.Graph(
-        figure=create_premium_gauge_chart(
-            gauge_pct,
-            f"Used / sold ({eff:.0f}%)" if eff is not None else "Used / sold",
-            color="#4318FF",
-            height=200,
-            show_threshold=False,
+    gauge = html.Div(
+        style={
+            "width": "100%",
+            "aspectRatio": "16 / 11",
+            "maxWidth": "360px",
+            "margin": "0 auto",
+        },
+        children=dcc.Graph(
+            figure=create_premium_gauge_chart(
+                gauge_pct,
+                f"Used / sold ({eff:.0f}%)" if eff is not None else "Used / sold",
+                color="#4318FF",
+                height=200,
+                show_threshold=False,
+            ),
+            config={"displayModeBar": False, "responsive": True},
+            style={"height": "100%", "width": "100%"},
         ),
-        config={"displayModeBar": False},
-        style={"height": "220px"},
     )
 
     bar = dcc.Graph(
