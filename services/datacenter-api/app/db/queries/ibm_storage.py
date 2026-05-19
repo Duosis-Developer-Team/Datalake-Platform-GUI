@@ -27,6 +27,10 @@ WITH latest AS (
 SELECT
     s.storage_ip,
     s.name,
+    s.topology,
+    s.physical_capacity,
+    s.physical_free_capacity,
+    s.layer,
     s.total_mdisk_capacity,
     s.total_used_capacity,
     s.total_free_space,
