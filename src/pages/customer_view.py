@@ -1747,19 +1747,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     intel_mem = {"total": _coerce_float(intel_mem_raw)}
     intel_disk = {"total": _coerce_float(intel_disk_raw)}
 
-    # Power / HANA (Backup tab uses these)
     power_asset = assets.get("power", {}) or {}
-    power_vm_list = (
-        power_asset.get("vm_list")
-        or power_asset.get("lpar_list")
-        or power_asset.get("lpars")
-        or []
-    )
-    power_lpars = int(totals.get("power_lpar_total", power_asset.get("lpar_count", 0)) or 0)
-    power_cpu = float(totals.get("power_cpu_total", power_asset.get("cpu_total", 0)) or 0)
-    power_mem = _coerce_float(
-        power_asset.get("memory_total_gb", power_asset.get("memory_gb", 0))
-    )
 
     classic   = assets.get("classic", {}) or {}
     hyperconv = assets.get("hyperconv", {}) or {}
@@ -1902,21 +1890,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         "virt": virt_content,
         "avail": _tab_customer_availability(avail_bundle),
         "itsm": _tab_itsm(name, tr, itsm_summary, itsm_extremes, itsm_tickets),
-        "backup": dmc.Stack(
-            gap="lg",
-            children=[
-                dmc.SimpleGrid(
-                    cols=3,
-                    spacing="lg",
-                    children=[
-                        metric_card("HANA VMs (LPARs)", power_lpars, "solar:laptop-bold-duotone", color="teal"),
-                        metric_card("Total CPU (Power HMC)", f"{power_cpu:.1f}", "solar:cpu-bold-duotone"),
-                        metric_card("Total Memory (Power HMC, GB)", f"{power_mem:.1f}", "solar:ram-bold-duotone", color="orange"),
-                    ],
-                ),
-                backup_tabs,
-            ],
-        ),
+        "backup": backup_tabs,
         "billing": _tab_billing(
             totals,
             assets,
