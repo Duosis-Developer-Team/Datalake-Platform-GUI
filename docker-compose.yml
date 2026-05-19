@@ -242,6 +242,9 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
       OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
+      # Monthly intel queries (ILIKE full-table scan) can exceed 60 s on large datasets.
+      # Hardcoded override: ${VAR:-default} reads from .env first, so a default would not apply.
+      DB_STATEMENT_TIMEOUT_MS: "120000"
     networks:
       - datalake
     depends_on:

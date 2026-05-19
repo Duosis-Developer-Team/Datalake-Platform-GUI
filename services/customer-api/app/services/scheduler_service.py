@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -23,13 +24,17 @@ def start_scheduler(
     svc: "CustomerService",
     sellable: "SellableService | None" = None,
 ) -> BackgroundScheduler:
-    logger.info("Customer API: initial cache warm-up before scheduler launch.")
-    t0 = time.perf_counter()
-    svc.warm_cache()
-    logger.info(
-        "Customer API: initial cache warm-up finished in %.2fs.",
-        time.perf_counter() - t0,
-    )
+    def _warm_cache_bg() -> None:
+        logger.info("Customer API: initial cache warm-up started (background).")
+        t0 = time.perf_counter()
+        try:
+            svc.warm_cache()
+            logger.info(
+                "Customer API: initial cache warm-up finished in %.2fs.",
+                time.perf_counter() - t0,
+            )
+        except Exception:  # noqa: BLE001 - never abort startup
+            logger.exception("Customer API: initial cache warm-up failed")
 
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
@@ -55,6 +60,11 @@ def start_scheduler(
         except Exception:  # noqa: BLE001 - never abort startup
             logger.exception("Initial sellable snapshot failed")
     scheduler.start()
+    threading.Thread(
+        target=_warm_cache_bg,
+        daemon=True,
+        name="customer-initial-warm",
+    ).start()
     logger.info(
         "Customer API background scheduler started (refresh every %d minutes).",
         REFRESH_INTERVAL_MINUTES,
