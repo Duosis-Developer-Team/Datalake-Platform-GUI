@@ -203,10 +203,11 @@ def build_layout(search: str | None = None) -> html.Div:
                 children=[
                     html.Div(
                         [
-                            dmc.Text("Son veriye göre hizala", fw=700, mb="xs", c=ON_SURFACE),
+                            dmc.Text("Anchor to latest data", fw=700, mb="xs", c=ON_SURFACE),
                             dmc.Text(
-                                "Time-range pencerelerini gerçek zamana değil son ingest edilen veriye göre kapatır. "
-                                "Veri akışı geciktiğinde panellerin boş kalmasını engeller. Normal koşullarda KAPALI tutun.",
+                                "Ends every time-range window at the most recent ingested data point instead of "
+                                "wall-clock now. Prevents panels from going blank when ingestion lags behind. "
+                                "Keep this OFF under normal conditions.",
                                 size="sm",
                                 c=ON_DIM,
                             ),
