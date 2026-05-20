@@ -11,6 +11,7 @@ class TimeFilter:
         start: Optional[str] = Query(None, description="Başlangıç tarihi (YYYY-MM-DD)"),
         end: Optional[str] = Query(None, description="Bitiş tarihi (YYYY-MM-DD)"),
         preset: Optional[str] = Query(None, description="Preset: 1h, 1d, 7d, 30d"),
+        anchor_latest: bool = Query(False, description="Pin the window's end to the latest ingested timestamp"),
     ):
         if start and end:
             self.time_range = {"start": start, "end": end, "preset": "custom"}
@@ -18,6 +19,8 @@ class TimeFilter:
             self.time_range = preset_to_range(preset)
         else:
             self.time_range = default_time_range()
+        if anchor_latest:
+            self.time_range = {**self.time_range, "anchor_latest": True}
 
     def to_dict(self) -> dict:
         return self.time_range

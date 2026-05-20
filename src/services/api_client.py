@@ -170,14 +170,19 @@ def _clone(value: Any) -> Any:
 def _build_time_params(tr: Optional[dict]) -> dict[str, str]:
     if not tr:
         return {}
+    params: dict[str, str] = {}
     preset = tr.get("preset")
     if preset in {"1h", "1d", "7d", "30d"}:
-        return {"preset": preset}
-    start = tr.get("start")
-    end = tr.get("end")
-    if start and end:
-        return {"start": str(start), "end": str(end)}
-    return {}
+        params["preset"] = preset
+    else:
+        start = tr.get("start")
+        end = tr.get("end")
+        if start and end:
+            params["start"] = str(start)
+            params["end"] = str(end)
+    if tr.get("anchor_latest"):
+        params["anchor_latest"] = "true"
+    return params
 
 
 def _auth_headers() -> dict[str, str]:

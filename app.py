@@ -316,6 +316,7 @@ app.layout = dmc.MantineProvider(
         dcc.Store(id="app-time-range", data=_default_tr),
         dcc.Store(id="backup-time-range", data=_default_tr),
         dcc.Store(id="plot-resize-tick", data=0),
+        dcc.Store(id="anchor-latest-store", data=False, storage_type="local"),
         dcc.Store(id="auth-user-store", data=None),
         dcc.Store(id="auth-permissions-store", data=None),
         html.Div(id="export-pdf-clientside-dummy", style={"display": "none"}),
@@ -604,25 +605,35 @@ def sync_custom_datetime_pickers(preset, store):
     dash.Input("time-range-preset", "value"),
     dash.Input("time-range-start-datetime", "value"),
     dash.Input("time-range-end-datetime", "value"),
+    dash.Input("anchor-latest-store", "data"),
     dash.State("app-time-range", "data"),
 )
-def update_time_range_store(preset, start_dt, end_dt, current):
+def update_time_range_store(preset, start_dt, end_dt, anchor_latest, current):
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update
     tid = ctx.triggered[0]["prop_id"].split(".")[0]
+
+    def _with_anchor(tr: dict) -> dict:
+        if anchor_latest:
+            return {**tr, "anchor_latest": True}
+        return {k: v for k, v in tr.items() if k != "anchor_latest"}
+
+    if tid == "anchor-latest-store":
+        # Toggle only — keep the existing dates/preset, just flip the flag.
+        return _with_anchor(current or default_time_range())
     if tid == "time-range-preset":
         if not preset:
             return dash.no_update
         if preset == PRESET_CUSTOM:
             cur = current or default_time_range()
             st, en = time_range_to_bounds(cur)
-            return {
+            return _with_anchor({
                 "start": st.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
                 "end": en.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
                 "preset": PRESET_CUSTOM,
-            }
-        return preset_to_range(preset)
+            })
+        return _with_anchor(preset_to_range(preset))
     if tid in ("time-range-start-datetime", "time-range-end-datetime"):
         if (current or {}).get("preset") != PRESET_CUSTOM:
             return dash.no_update
@@ -631,7 +642,7 @@ def update_time_range_store(preset, start_dt, end_dt, current):
         s = _normalize_custom_iso(s) if isinstance(s, str) else s
         e = _normalize_custom_iso(e) if isinstance(e, str) else e
         if s and e:
-            return {"start": s, "end": e, "preset": PRESET_CUSTOM}
+            return _with_anchor({"start": s, "end": e, "preset": PRESET_CUSTOM})
         return dash.no_update
     return dash.no_update
 

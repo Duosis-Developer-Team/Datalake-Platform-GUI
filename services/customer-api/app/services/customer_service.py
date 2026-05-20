@@ -356,7 +356,9 @@ class CustomerService:
         )
 
     def get_customer_resources(self, customer_name: str, time_range: dict | None = None) -> dict:
-        tr = self._smart_1h_tr(time_range or default_time_range())
+        tr = time_range or default_time_range()
+        if tr.get("anchor_latest"):
+            tr = self._smart_1h_tr(tr)
         cache_key = f"customer_assets:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
         if self._pool is None:
             return self._customer._empty_result()

@@ -1086,7 +1086,9 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
 
     def get_dc_details(self, dc_code: str, time_range: dict | None = None) -> dict:
         """Return full metrics dict for a single data center. Result is TTL-cached per time range."""
-        tr = self._smart_1h_tr(time_range or default_time_range())
+        tr = time_range or default_time_range()
+        if tr.get("anchor_latest"):
+            tr = self._smart_1h_tr(tr)
         start_ts, end_ts = time_range_to_bounds(tr)
         cache_key = f"dc_details:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
         cached_val = cache.get(cache_key)
@@ -1573,7 +1575,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         time_range: {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} or None for default (last 7 days).
         Result is TTL-cached per time range.
         """
-        tr = self._smart_1h_tr(time_range or default_time_range())
+        tr = time_range or default_time_range()
+        if tr.get("anchor_latest"):
+            tr = self._smart_1h_tr(tr)
         cache_key = f"all_dc_summary:{tr.get('start','')}:{tr.get('end','')}"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
@@ -1842,7 +1846,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
     def get_global_overview(self, time_range: dict | None = None) -> dict:
         """Return global totals for the given time range. Derived from get_all_datacenters_summary (cached)."""
-        tr = self._smart_1h_tr(time_range or default_time_range())
+        tr = time_range or default_time_range()
+        if tr.get("anchor_latest"):
+            tr = self._smart_1h_tr(tr)
         cache_key = f"global_overview:{tr.get('start','')}:{tr.get('end','')}"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
@@ -1931,7 +1937,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
     def get_global_dashboard(self, time_range: dict | None = None) -> dict:
         """Return global overview + platform breakdown for the given time range."""
-        tr = self._smart_1h_tr(time_range or default_time_range())
+        tr = time_range or default_time_range()
+        if tr.get("anchor_latest"):
+            tr = self._smart_1h_tr(tr)
         range_suffix = f"{tr.get('start','')}:{tr.get('end','')}"
         cached = cache.get(f"global_dashboard:{range_suffix}")
         if cached is not None:
@@ -4799,8 +4807,9 @@ JOIN latest l
         t0 = time.perf_counter()
         try:
             tr = default_time_range()
-            # Datacenter-level caches
-            self._rebuild_summary(tr)
+            # Route through the public methods so smart_1h_tr normalisation
+            # writes to the same cache keys the request handlers will read.
+            self.get_all_datacenters_summary(tr)
             self.get_global_overview(tr)
             for cust in WARMED_CUSTOMERS:
                 try:
@@ -4838,7 +4847,7 @@ JOIN latest l
         try:
             ranges = cache_time_ranges()[1:]  # skip 7d, warm 30d + previous month
             for tr in ranges:
-                self._rebuild_summary(tr)
+                self.get_all_datacenters_summary(tr)
                 self.get_global_overview(tr)
             logger.info("Additional cache warm-up complete.")
         except Exception as exc:
@@ -4884,7 +4893,7 @@ JOIN latest l
         logger.info("Background cache refresh started (last 7d, last 30d, previous month).")
         try:
             for tr in cache_time_ranges():
-                self._rebuild_summary(tr)
+                self.get_all_datacenters_summary(tr)
                 self.get_global_overview(tr)
             logger.info("Background cache refresh complete.")
         except Exception as exc:

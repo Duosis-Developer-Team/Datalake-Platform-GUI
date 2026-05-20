@@ -90,3 +90,24 @@ def run_platform_cache_refresh(n_clicks: int | None, user_store: dict | None):
     title = "Caches refreshed" if all_ok else "Caches refreshed with warnings"
 
     return dmc.Alert(title=title, color=color, variant="light", children=dmc.Text(body, size="sm", style={"whiteSpace": "pre-wrap"}))
+
+
+@callback(
+    Output("anchor-latest-store", "data"),
+    Input("anchor-latest-switch", "checked"),
+    prevent_initial_call=True,
+)
+def persist_anchor_latest(checked: bool | None) -> bool:
+    """Mirror the Settings → Son veriye göre Switch into the shared store
+    so every page sees the same toggle state (the store is storage_type='local'
+    so it survives page reloads)."""
+    return bool(checked)
+
+
+@callback(
+    Output("anchor-latest-switch", "checked"),
+    Input("anchor-latest-store", "data"),
+)
+def hydrate_anchor_latest_switch(stored: bool | None) -> bool:
+    """Reflect the persisted toggle state when the Settings page is opened."""
+    return bool(stored)

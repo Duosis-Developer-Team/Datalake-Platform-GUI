@@ -190,6 +190,41 @@ def build_layout(search: str | None = None) -> html.Div:
         ],
     )
 
+    anchor_latest_row = dmc.Paper(
+        p="md",
+        radius="md",
+        withBorder=True,
+        children=[
+            dmc.Group(
+                justify="space-between",
+                align="flex-start",
+                wrap="wrap",
+                gap="md",
+                children=[
+                    html.Div(
+                        [
+                            dmc.Text("Son veriye göre hizala", fw=700, mb="xs", c=ON_SURFACE),
+                            dmc.Text(
+                                "Time-range pencerelerini gerçek zamana değil son ingest edilen veriye göre kapatır. "
+                                "Veri akışı geciktiğinde panellerin boş kalmasını engeller. Normal koşullarda KAPALI tutun.",
+                                size="sm",
+                                c=ON_DIM,
+                            ),
+                        ],
+                        style={"flex": "1 1 280px"},
+                    ),
+                    dmc.Switch(
+                        id="anchor-latest-switch",
+                        size="md",
+                        color="violet",
+                        onLabel="ON",
+                        offLabel="OFF",
+                    ),
+                ],
+            ),
+        ],
+    )
+
     status_row = dmc.SimpleGrid(
         cols=2,
         spacing="md",
@@ -265,6 +300,8 @@ def build_layout(search: str | None = None) -> html.Div:
                 kpi_row,
                 dmc.Space(h="lg"),
                 cache_ops_row,
+                dmc.Space(h="lg"),
+                anchor_latest_row,
                 dmc.Space(h="lg"),
                 section_row,
                 dmc.Space(h="lg"),
