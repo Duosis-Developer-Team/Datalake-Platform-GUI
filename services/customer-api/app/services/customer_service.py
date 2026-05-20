@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
@@ -282,6 +283,48 @@ class CustomerService:
 
         return cache.run_singleflight(cache_key, _compute, ttl=CLUSTER_ARCH_MAP_TTL_SECONDS)
 
+    def _get_latest_data_ts(self) -> datetime | None:
+        """Most-recent timestamp in vm_metrics (cached 60 s). See _smart_1h_tr."""
+        cached = cache.get("latest_vm_ts")
+        if cached:
+            try:
+                return datetime.fromisoformat(str(cached).replace("Z", "+00:00"))
+            except Exception:
+                pass
+        if self._pool is None:
+            return None
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute('SELECT MAX("timestamp") FROM public.vm_metrics')
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        ts = row[0]
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        cache.set("latest_vm_ts", ts.isoformat(), ttl=60)
+                        return ts
+        except Exception as exc:
+            logger.warning("latest vm_metrics timestamp lookup failed: %s", exc)
+        return None
+
+    def _smart_1h_tr(self, tr: dict | None) -> dict:
+        """For preset='1h', anchor the window to the latest available data
+        instead of `now` so a strict last-60-minutes window does not render
+        empty when it falls between ingestion cycles."""
+        if not tr or tr.get("preset") != "1h":
+            return tr or default_time_range()
+        latest = self._get_latest_data_ts()
+        if not latest:
+            return tr
+        end = latest
+        start = end - timedelta(hours=1)
+        return {
+            "start": start.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+            "end": end.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+            "preset": "1h",
+        }
+
     def _load_customer_resources(self, customer_name: str, tr: dict) -> dict:
         arch = self._get_cluster_arch_map(tr)
         return self._customer.fetch(
@@ -292,7 +335,7 @@ class CustomerService:
         )
 
     def get_customer_resources(self, customer_name: str, time_range: dict | None = None) -> dict:
-        tr = time_range or default_time_range()
+        tr = self._smart_1h_tr(time_range or default_time_range())
         cache_key = f"customer_assets:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
         if self._pool is None:
             return self._customer._empty_result()

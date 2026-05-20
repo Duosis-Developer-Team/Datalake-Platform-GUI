@@ -4,6 +4,7 @@ import re
 import logging
 import time
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
@@ -1085,7 +1086,7 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
 
     def get_dc_details(self, dc_code: str, time_range: dict | None = None) -> dict:
         """Return full metrics dict for a single data center. Result is TTL-cached per time range."""
-        tr = time_range or default_time_range()
+        tr = self._smart_1h_tr(time_range or default_time_range())
         start_ts, end_ts = time_range_to_bounds(tr)
         cache_key = f"dc_details:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
         cached_val = cache.get(cache_key)
@@ -1572,7 +1573,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         time_range: {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} or None for default (last 7 days).
         Result is TTL-cached per time range.
         """
-        tr = time_range or default_time_range()
+        tr = self._smart_1h_tr(time_range or default_time_range())
         cache_key = f"all_dc_summary:{tr.get('start','')}:{tr.get('end','')}"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
@@ -1841,7 +1842,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
     def get_global_overview(self, time_range: dict | None = None) -> dict:
         """Return global totals for the given time range. Derived from get_all_datacenters_summary (cached)."""
-        tr = time_range or default_time_range()
+        tr = self._smart_1h_tr(time_range or default_time_range())
         cache_key = f"global_overview:{tr.get('start','')}:{tr.get('end','')}"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
@@ -1858,9 +1859,53 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         cache.set(cache_key, result)
         return result
 
+    def _get_latest_data_ts(self) -> datetime | None:
+        """Most-recent timestamp in vm_metrics. Cached 60 s.
+
+        Used to anchor the "1H" preset to actual data instead of wall-clock —
+        a strict last-60-minutes window often misses the next ingestion cycle
+        and renders empty even when data is fresh.
+        """
+        cached = cache.get("latest_vm_ts")
+        if cached:
+            try:
+                return datetime.fromisoformat(str(cached).replace("Z", "+00:00"))
+            except Exception:
+                pass
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute('SELECT MAX("timestamp") FROM public.vm_metrics')
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        ts = row[0]
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        cache.set("latest_vm_ts", ts.isoformat(), ttl=60)
+                        return ts
+        except Exception as exc:
+            logger.warning("latest vm_metrics timestamp lookup failed: %s", exc)
+        return None
+
+    def _smart_1h_tr(self, tr: dict | None) -> dict:
+        """For preset='1h', anchor the window to the latest available data
+        instead of `now`. Falls through unchanged for every other preset."""
+        if not tr or tr.get("preset") != "1h":
+            return tr or default_time_range()
+        latest = self._get_latest_data_ts()
+        if not latest:
+            return tr
+        end = latest
+        start = end - timedelta(hours=1)
+        return {
+            "start": start.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+            "end": end.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+            "preset": "1h",
+        }
+
     def get_global_dashboard(self, time_range: dict | None = None) -> dict:
         """Return global overview + platform breakdown for the given time range."""
-        tr = time_range or default_time_range()
+        tr = self._smart_1h_tr(time_range or default_time_range())
         range_suffix = f"{tr.get('start','')}:{tr.get('end','')}"
         cached = cache.get(f"global_dashboard:{range_suffix}")
         if cached is not None:
