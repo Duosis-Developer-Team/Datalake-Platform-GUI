@@ -308,21 +308,42 @@ class CustomerService:
             logger.warning("latest vm_metrics timestamp lookup failed: %s", exc)
         return None
 
+    _RELATIVE_PRESET_OFFSETS = {
+        "1h": timedelta(hours=1),
+        "1d": timedelta(days=1),
+        "7d": timedelta(days=7),
+        "30d": timedelta(days=30),
+        "1m": timedelta(days=30),
+        "2m": timedelta(days=60),
+        "3m": timedelta(days=90),
+        "6m": timedelta(days=180),
+    }
+
     def _smart_1h_tr(self, tr: dict | None) -> dict:
-        """For preset='1h', anchor the window to the latest available data
-        instead of `now` so a strict last-60-minutes window does not render
-        empty when it falls between ingestion cycles."""
-        if not tr or tr.get("preset") != "1h":
-            return tr or default_time_range()
+        """Anchor every relative preset (1h/1d/7d/30d/1m/2m/3m/6m) to the most
+        recent ingested timestamp instead of wall-clock. Custom ranges are
+        left untouched — those are user-chosen on purpose."""
+        if not tr:
+            return default_time_range()
+        preset = tr.get("preset")
+        offset = self._RELATIVE_PRESET_OFFSETS.get(preset)
+        if offset is None:
+            return tr
         latest = self._get_latest_data_ts()
         if not latest:
             return tr
         end = latest
-        start = end - timedelta(hours=1)
+        start = end - offset
+        if preset == "1h":
+            return {
+                "start": start.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+                "end": end.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+                "preset": preset,
+            }
         return {
-            "start": start.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
-            "end": end.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
-            "preset": "1h",
+            "start": start.date().isoformat(),
+            "end": end.date().isoformat(),
+            "preset": preset,
         }
 
     def _load_customer_resources(self, customer_name: str, tr: dict) -> dict:

@@ -1887,20 +1887,46 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             logger.warning("latest vm_metrics timestamp lookup failed: %s", exc)
         return None
 
+    _RELATIVE_PRESET_OFFSETS = {
+        "1h": timedelta(hours=1),
+        "1d": timedelta(days=1),
+        "7d": timedelta(days=7),
+        "30d": timedelta(days=30),
+        "1m": timedelta(days=30),
+        "2m": timedelta(days=60),
+        "3m": timedelta(days=90),
+        "6m": timedelta(days=180),
+    }
+
     def _smart_1h_tr(self, tr: dict | None) -> dict:
-        """For preset='1h', anchor the window to the latest available data
-        instead of `now`. Falls through unchanged for every other preset."""
-        if not tr or tr.get("preset") != "1h":
-            return tr or default_time_range()
+        """Anchor every relative preset (1h/1d/7d/30d/1m/2m/3m/6m) to the most
+        recent ingested timestamp instead of wall-clock. Without this, a window
+        like "last 7 days" returns nothing whenever ingestion is more than a
+        couple of days behind real time — which is exactly what was happening
+        when the customer reported '1H' (and then 7D) showing all zeros."""
+        if not tr:
+            return default_time_range()
+        preset = tr.get("preset")
+        offset = self._RELATIVE_PRESET_OFFSETS.get(preset)
+        if offset is None:  # custom or unknown preset → pass through
+            return tr
         latest = self._get_latest_data_ts()
         if not latest:
             return tr
         end = latest
-        start = end - timedelta(hours=1)
+        start = end - offset
+        if preset == "1h":
+            return {
+                "start": start.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+                "end": end.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+                "preset": preset,
+            }
+        # Day-precision presets keep date-only strings so downstream SQL
+        # `BETWEEN 00:00:00 AND 23:59:59` expansion still applies.
         return {
-            "start": start.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
-            "end": end.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
-            "preset": "1h",
+            "start": start.date().isoformat(),
+            "end": end.date().isoformat(),
+            "preset": preset,
         }
 
     def get_global_dashboard(self, time_range: dict | None = None) -> dict:
