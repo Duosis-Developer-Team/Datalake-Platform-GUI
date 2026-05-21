@@ -69,6 +69,14 @@ def _empty_compute_section() -> dict:
         "mem_pct_max": 0.0,
         "mem_pct_min": 0.0,
         "stor_cap": 0.0, "stor_used": 0.0,
+        # VM-level allocation (storage thin-provisioned, CPU/RAM assigned)
+        "stor_provisioned_gb": 0.0,
+        "stor_actual_used_gb": 0.0,
+        "cpu_alloc_ghz_vm":    0.0,
+        "mem_alloc_gb_vm":     0.0,
+        # Potential sellable economics — CRM TL unit prices × capacity × overcommit
+        "unit_prices": {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
+        "sellable_multiplier": 3.3,
     }
 
 
@@ -644,6 +652,69 @@ LIMIT 20
         """Return Hyperconverged cluster average utilization: cpu_avg_pct, mem_avg_pct."""
         return self._run_row(cursor, vq.HYPERCONV_AVG30, (dc_wc, start_ts, end_ts))
 
+    # VM-level allocation: storage (provisioned/used) + CPU/RAM allocated
+    def get_classic_storage_vm(self, cursor, dc_wc: str) -> dict:
+        row = self._run_row(cursor, vq.CLASSIC_STORAGE_VM, (dc_wc,)) or (0.0, 0.0, 0.0, 0.0)
+        return {
+            "stor_provisioned_gb": round(float(row[0] or 0), 2),
+            "stor_actual_used_gb": round(float(row[1] or 0), 2),
+            "cpu_alloc_ghz_vm":    round(float(row[2] or 0), 2),
+            "mem_alloc_gb_vm":     round(float(row[3] or 0), 2),
+        }
+
+    def get_hyperconv_storage_vm(self, cursor, dc_wc: str) -> dict:
+        vmw = self._run_row(cursor, vq.HYPERCONV_VMWARE_STORAGE_VM, (dc_wc,)) or (0.0, 0.0, 0.0, 0.0)
+        ntx = self._run_row(cursor, nq.NUTANIX_VM_STORAGE, (dc_wc,)) or (0.0, 0.0, 0, 0.0)
+        # Nutanix CPU: vcpu count treated as GHz-equivalent (1 vCPU ≈ 1 GHz per business rule)
+        return {
+            "stor_provisioned_gb": round(float((vmw[0] or 0) + (ntx[0] or 0)), 2),
+            "stor_actual_used_gb": round(float((vmw[1] or 0) + (ntx[1] or 0)), 2),
+            "cpu_alloc_ghz_vm":    round(float((vmw[2] or 0) + (ntx[2] or 0)), 2),
+            "mem_alloc_gb_vm":     round(float((vmw[3] or 0) + (ntx[3] or 0)), 2),
+        }
+
+    # CRM unit prices (TL) per architecture — used to compute potential sellable revenue
+    _SELLABLE_PRODUCT_MAP = {
+        "klasik": {
+            "cpu":     "Klasik Mimari Intel CPU",
+            "ram":     "Klasik Mimari Intel RAM",
+            "storage": "Klasik Mimari Intel Disk - SSD",
+        },
+        "hyperconv": {
+            "cpu":     "Hyperconverged Mimari Intel CPU",
+            "ram":     "Hyperconverged Mimari Intel RAM",
+            "storage": "Hyperconverged Mimari Intel Disk - SSD",
+        },
+    }
+
+    def get_unit_prices_tl(self, cursor, mimari: str) -> dict:
+        """Return {cpu_vcpu, ram_gb, storage_gb} TL unit prices for given architecture."""
+        mapping = self._SELLABLE_PRODUCT_MAP.get(mimari.lower())
+        zero = {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0}
+        if not mapping:
+            return zero
+        names = [mapping["cpu"], mapping["ram"], mapping["storage"]]
+        try:
+            rows = self._run_rows(cursor, """
+                SELECT p.name, ppl.amount
+                FROM discovery_crm_productpricelevels ppl
+                JOIN discovery_crm_products p ON p.productid = ppl.productid
+                JOIN discovery_crm_pricelevels pl ON pl.pricelevelid = ppl.pricelevelid
+                WHERE pl.name ILIKE '%%TL%%'
+                  AND pl.statecode = 0
+                  AND p.statecode  = 0
+                  AND p.name = ANY(%s::text[])
+            """, (names,))
+        except Exception as exc:
+            logger.warning("get_unit_prices_tl(%s) failed: %s", mimari, exc)
+            return zero
+        name_to_price = {r[0]: float(r[1] or 0) for r in (rows or [])}
+        return {
+            "cpu_vcpu":   round(name_to_price.get(mapping["cpu"], 0.0), 4),
+            "ram_gb":     round(name_to_price.get(mapping["ram"], 0.0), 4),
+            "storage_gb": round(name_to_price.get(mapping["storage"], 0.0), 4),
+        }
+
     # ------------------------------------------------------------------
     # Cluster list and filtered metrics (for DC view cluster selector)
     # ------------------------------------------------------------------
@@ -708,6 +779,8 @@ LIMIT 20
                     avg30 = self._run_row(
                         cur, vq.CLASSIC_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
                     )
+                    storage_vm = self.get_classic_storage_vm(cur, dc_wc)
+                    unit_prices = self.get_unit_prices_tl(cur, "klasik")
         except OperationalError as exc:
             logger.error("DB unavailable for get_classic_metrics_filtered(%s): %s", dc_code, exc)
             return _empty_compute_section()
@@ -743,6 +816,9 @@ LIMIT 20
             "mem_pct_min": cl_mem_pct_min,
             "stor_cap": cl_stor_cap,
             "stor_used": cl_stor_used,
+            **storage_vm,
+            "unit_prices": unit_prices,
+            "sellable_multiplier": 3.3,
         }
 
     def get_hyperconv_metrics_filtered(
@@ -768,6 +844,8 @@ LIMIT 20
                     hc_avg30 = self._run_row(
                         cur, vq.HYPERCONV_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
                     )
+                    storage_vm = self.get_hyperconv_storage_vm(cur, dc_wc)
+                    unit_prices = self.get_unit_prices_tl(cur, "hyperconv")
         except OperationalError as exc:
             logger.error("DB unavailable for get_hyperconv_metrics_filtered(%s): %s", dc_code, exc)
             return _empty_compute_section()
@@ -823,6 +901,9 @@ LIMIT 20
             "mem_pct_min": hc_mem_pct_min,
             "stor_cap": hc_stor_cap,
             "stor_used": hc_stor_used,
+            **storage_vm,
+            "unit_prices": unit_prices,
+            "sellable_multiplier": 3.3,
         }
 
     # ------------------------------------------------------------------
@@ -870,6 +951,11 @@ LIMIT 20
         classic_avg30=None,
         hyperconv_row=None,
         hyperconv_avg30=None,
+        classic_storage_vm=None,
+        hyperconv_storage_vm=None,
+        classic_unit_prices=None,
+        hyperconv_unit_prices=None,
+        sellable_multiplier: float = 3.3,
         dc_description: str = "",
     ) -> dict:
         """Apply unit normalization and build the standard DC detail dictionary.
@@ -979,6 +1065,9 @@ LIMIT 20
                 "mem_pct_max": cl_mem_pct_max,
                 "mem_pct_min": cl_mem_pct_min,
                 "stor_cap": cl_stor_cap, "stor_used": cl_stor_used,
+                **(classic_storage_vm or {"stor_provisioned_gb": 0.0, "stor_actual_used_gb": 0.0, "cpu_alloc_ghz_vm": 0.0, "mem_alloc_gb_vm": 0.0}),
+                "unit_prices": classic_unit_prices or {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
+                "sellable_multiplier": sellable_multiplier,
             },
             "hyperconv": {
                 "hosts": hc_hosts, "vms": hc_vms,
@@ -989,6 +1078,9 @@ LIMIT 20
                 "mem_pct_max": hc_mem_pct_max,
                 "mem_pct_min": hc_mem_pct_min,
                 "stor_cap": hc_stor_cap, "stor_used": hc_stor_used,
+                **(hyperconv_storage_vm or {"stor_provisioned_gb": 0.0, "stor_actual_used_gb": 0.0, "cpu_alloc_ghz_vm": 0.0, "mem_alloc_gb_vm": 0.0}),
+                "unit_prices": hyperconv_unit_prices or {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
+                "sellable_multiplier": sellable_multiplier,
             },
             # Legacy combined Intel section — kept for home.py / datacenters.py
             # VM count uses cluster-level dedup: Classic (KM) VMs from VMware cluster_metrics
@@ -1127,6 +1219,10 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                         classic_avg30=self.get_classic_avg30(cur, dc_wc, start_ts, end_ts),
                         hyperconv_row=self.get_hyperconv_metrics(cur, dc_wc, start_ts, end_ts),
                         hyperconv_avg30=self.get_hyperconv_avg30(cur, dc_wc, start_ts, end_ts),
+                        classic_storage_vm=self.get_classic_storage_vm(cur, dc_wc),
+                        hyperconv_storage_vm=self.get_hyperconv_storage_vm(cur, dc_wc),
+                        classic_unit_prices=self.get_unit_prices_tl(cur, "klasik"),
+                        hyperconv_unit_prices=self.get_unit_prices_tl(cur, "hyperconv"),
                     )
 
         try:

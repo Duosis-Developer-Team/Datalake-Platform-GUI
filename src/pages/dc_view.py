@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import time
 import dash
-from dash import html, dcc, dash_table, callback, Input, Output, State
+from dash import html, dcc, dash_table, callback, Input, Output, State, MATCH
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objects as go
@@ -400,9 +400,10 @@ def _kpi(
     )
 
 
-def _gauge_wrap(fig, label: str, avg_label: str = ""):
+def _gauge_wrap(fig, label: str, avg_label: str = "", subtitle: str = ""):
     """Renders gauge with an HTML label above — label never clips into the gauge arc."""
-    subtitle = [html.Span(f"avg {avg_label}", style={"fontSize": "0.68rem", "color": "#A3AED0", "display": "block"})] if avg_label else []
+    sub_text = subtitle if subtitle else (f"avg {avg_label}" if avg_label else "")
+    subtitle_nodes = [html.Span(sub_text, style={"fontSize": "0.68rem", "color": "#A3AED0", "display": "block"})] if sub_text else []
     return html.Div(
         style={"textAlign": "center", "display": "flex", "flexDirection": "column", "width": "100%"},
         children=[
@@ -419,7 +420,7 @@ def _gauge_wrap(fig, label: str, avg_label: str = ""):
                         "whiteSpace": "normal",
                         "wordBreak": "break-word",
                     }),
-                    *subtitle,
+                    *subtitle_nodes,
                 ],
             ),
             html.Div(
@@ -515,7 +516,20 @@ def _section_title(title: str, subtitle: str | None = None):
     )
 
 
-def _capacity_metric_row(label: str, cap_val, used_val, pct: float, unit_fn=None):
+def _format_tl(value: float) -> str:
+    """Format a TL amount with thousands separators and short suffix for large numbers."""
+    if value <= 0:
+        return "—"
+    if value >= 1e9:
+        return f"{value/1e9:,.2f}B TL"
+    if value >= 1e6:
+        return f"{value/1e6:,.2f}M TL"
+    if value >= 1e3:
+        return f"{value/1e3:,.1f}K TL"
+    return f"{value:,.0f} TL"
+
+
+def _capacity_metric_row(label: str, cap_val, used_val, pct: float, unit_fn=None, potential_tl: float = 0.0):
     """Renders a capacity / allocated / utilisation trio inside a card row."""
     cap_str  = unit_fn(cap_val)  if unit_fn else str(cap_val)
     used_str = unit_fn(used_val) if unit_fn else str(used_val)
@@ -539,6 +553,10 @@ def _capacity_metric_row(label: str, cap_val, used_val, pct: float, unit_fn=None
                 },
             ),
             html.Span(f"Capacity: {cap_str}", style={"color": "#A3AED0", "fontSize": "0.8rem"}),
+            html.Span(
+                f"Potential: {_format_tl(potential_tl)}",
+                style={"color": "#05CD99", "fontSize": "0.8rem", "fontWeight": 600},
+            ) if potential_tl > 0 else html.Span(""),
             html.Span(
                 f"Allocated: {used_str}",
                 style={"color": "#4318FF", "fontSize": "0.8rem", "fontWeight": 600},
@@ -577,8 +595,10 @@ def _capacity_metric_row(label: str, cap_val, used_val, pct: float, unit_fn=None
 # Tab content builders
 # ---------------------------------------------------------------------------
 
-def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_power: bool = False):
+def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_power: bool = False, slug: str | None = None):
     """Generic compute type tab panel content (Classic or Hyperconverged)."""
+    if not slug:
+        slug = title.lower().replace(" ", "-").replace("/", "-")
     hosts    = compute.get("hosts", 0)
     vms      = compute.get("vms", 0)
     cpu_cap  = compute.get("cpu_cap", 0.0)
@@ -597,6 +617,99 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     stor_cap_gb  = stor_cap  * 1024
     stor_used_gb = stor_used * 1024
 
+    # Allocation values — cluster_metrics.*_used is the allocated value in this schema.
+    cpu_alloc_pct = pct_float(cpu_used, cpu_cap)
+    mem_alloc_pct = pct_float(mem_used, mem_cap)
+    stor_alloc_pct = pct_float(stor_used, stor_cap)
+
+    # VM-level storage breakdown.
+    # Utilization always uses cluster-level stor_used (reliable).
+    # Allocation uses VM-level provisioned (thin-provision sum) when available.
+    stor_provisioned_gb = float(compute.get("stor_provisioned_gb", 0) or 0)
+    stor_actual_used_gb = float(compute.get("stor_actual_used_gb", 0) or 0)
+    stor_util_pct  = stor_pct  # cluster-level cap-used/cap
+    stor_alloc_vm_pct = pct_float(stor_provisioned_gb, stor_cap_gb) if stor_provisioned_gb > 0 else stor_alloc_pct
+
+    # Potential Sellable revenue (CRM TL prices × overcommit multiplier × physical capacity)
+    unit_prices = compute.get("unit_prices", {}) or {}
+    multiplier  = float(compute.get("sellable_multiplier", 3.3) or 3.3)
+    # 1 GHz = 1 vCPU (per business rule). mem_cap is in GB. stor_cap is in TB → ×1024 for GB.
+    cpu_potential_tl     = cpu_cap          * multiplier * float(unit_prices.get("cpu_vcpu", 0) or 0)
+    ram_potential_tl     = mem_cap          * multiplier * float(unit_prices.get("ram_gb", 0) or 0)
+    storage_potential_tl = (stor_cap * 1024) * multiplier * float(unit_prices.get("storage_gb", 0) or 0)
+
+    util_grid = _dynamic_chart_grid([
+        (_has_value(cpu_cap), _gauge_wrap(
+            create_premium_gauge_chart(cpu_pct_max or cpu_pct, "", color="#4318FF"),
+            "CPU Usage (Max)",
+            subtitle=f"avg {cpu_pct:.1f}%",
+        )),
+        (_has_value(mem_cap), _gauge_wrap(
+            create_premium_gauge_chart(mem_pct_max or mem_pct, "", color="#05CD99"),
+            "RAM Usage (Max)",
+            subtitle=f"avg {mem_pct:.1f}%",
+        )),
+        (_has_value(stor_cap), _gauge_wrap(
+            create_premium_gauge_chart(min(stor_util_pct, 100), "", color="#FFB547"),
+            "Storage Usage",
+            subtitle=(
+                f"{smart_storage(stor_used_gb)} / {smart_storage(stor_cap_gb)} used"
+                if stor_cap_gb > 0 else ""
+            ),
+        )),
+    ])
+    alloc_grid = _dynamic_chart_grid([
+        (_has_value(cpu_cap), _gauge_wrap(
+            create_premium_gauge_chart(cpu_alloc_pct, "", color="#4318FF"),
+            "CPU Allocation",
+            subtitle=f"{smart_cpu(cpu_used)} / {smart_cpu(cpu_cap)}" if cpu_cap > 0 else "",
+        )),
+        (_has_value(mem_cap), _gauge_wrap(
+            create_premium_gauge_chart(mem_alloc_pct, "", color="#05CD99"),
+            "RAM Allocation",
+            subtitle=f"{smart_memory(mem_used)} / {smart_memory(mem_cap)}" if mem_cap > 0 else "",
+        )),
+        (_has_value(stor_cap), _gauge_wrap(
+            create_premium_gauge_chart(min(stor_alloc_vm_pct, 100), "", color="#FFB547"),
+            "Storage Allocation",
+            subtitle=(
+                f"{smart_storage(stor_provisioned_gb)} / {smart_storage(stor_cap_gb)} provisioned"
+                if stor_provisioned_gb > 0 and stor_cap_gb > 0
+                else (f"{smart_storage(stor_used_gb)} / {smart_storage(stor_cap_gb)}" if stor_cap_gb > 0 else "")
+            ),
+        )),
+    ])
+
+    gauges_section: list = []
+    if util_grid is not None or alloc_grid is not None:
+        gauges_section = [
+            dmc.Group(
+                justify="flex-end",
+                style={"marginTop": "8px"},
+                children=[
+                    dmc.SegmentedControl(
+                        id={"type": "compute-gauge-mode", "slug": slug},
+                        value="utilization",
+                        data=[
+                            {"label": "Utilization", "value": "utilization"},
+                            {"label": "Allocation", "value": "allocation"},
+                        ],
+                        size="xs",
+                        color="indigo",
+                    ),
+                ],
+            ),
+            html.Div(
+                id={"type": "compute-gauge-util", "slug": slug},
+                children=util_grid,
+            ),
+            html.Div(
+                id={"type": "compute-gauge-alloc", "slug": slug},
+                children=alloc_grid,
+                style={"display": "none"},
+            ),
+        ]
+
     return dmc.Stack(
         gap="lg",
         children=[
@@ -607,37 +720,17 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
                 _kpi("CPU Capacity",  smart_cpu(cpu_cap),  _DC_ICONS["cpu"],   color=color, is_text=True),
                 _kpi("RAM Capacity",  smart_memory(mem_cap), _DC_ICONS["ram"], color=color, is_text=True),
             ]),
-            # Donut charts — only shown when capacity data exists (None → DMC ignores)
-            _dynamic_chart_grid([
-                (_has_value(cpu_cap), _gauge_wrap(
-                    create_premium_gauge_with_avg(cpu_pct, cpu_pct_max, "", color="#4318FF")
-                    if cpu_pct_max > 0
-                    else create_premium_gauge_chart(cpu_pct, "", color="#4318FF"),
-                    "CPU Usage (peak)" if cpu_pct_max > 0 else "CPU Usage",
-                    avg_label=f"{int(cpu_pct)}%" if cpu_pct_max > 0 else "",
-                )),
-                (_has_value(mem_cap), _gauge_wrap(
-                    create_premium_gauge_with_avg(mem_pct, mem_pct_max, "", color="#05CD99")
-                    if mem_pct_max > 0
-                    else create_premium_gauge_chart(mem_pct, "", color="#05CD99"),
-                    "RAM Usage (peak)" if mem_pct_max > 0 else "RAM Usage",
-                    avg_label=f"{int(mem_pct)}%" if mem_pct_max > 0 else "",
-                )),
-                (_has_value(stor_cap), _gauge_wrap(
-                    create_premium_gauge_chart(stor_pct, "", color="#FFB547"),
-                    "Storage Usage",
-                )),
-            ]),
+            *gauges_section,
             # Capacity details card
             html.Div(
                 className="nexus-card",
                 style={"padding": "20px"},
                 children=[
-                    _section_title("Capacity Planning", "Host-level resources vs. allocated to workloads"),
+                    _section_title("Capacity Planning", f"Host-level resources vs. allocated to workloads · ×{multiplier:g} overcommit"),
                     html.Div(style={"marginTop": "12px"}, children=[
-                        _capacity_metric_row("CPU", cpu_cap, cpu_used, cpu_pct, smart_cpu),
-                        _capacity_metric_row("Memory", mem_cap, mem_used, mem_pct, smart_memory),
-                        _capacity_metric_row("Storage", stor_cap_gb, stor_used_gb, stor_pct, smart_storage),
+                        _capacity_metric_row("CPU", cpu_cap, cpu_used, cpu_pct, smart_cpu, potential_tl=cpu_potential_tl),
+                        _capacity_metric_row("Memory", mem_cap, mem_used, mem_pct, smart_memory, potential_tl=ram_potential_tl),
+                        _capacity_metric_row("Storage", stor_cap_gb, stor_used_gb, stor_pct, smart_storage, potential_tl=storage_potential_tl),
                     ]),
                 ],
             ),
@@ -2934,7 +3027,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                 ),
                                                 html.Div(
                                                     id="classic-virt-panel",
-                                                    children=_build_compute_tab(classic, "Classic Compute", color="blue"),
+                                                    children=_build_compute_tab(classic, "Classic Compute", color="blue", slug="classic"),
                                                 ),
                                                 _build_sellable_inline_kpi(
                                                     dc_id,
@@ -2959,7 +3052,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                 ),
                                                 html.Div(
                                                     id="hyperconv-virt-panel",
-                                                    children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal"),
+                                                    children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv"),
                                                 ),
                                                 _build_sellable_inline_kpi(
                                                     dc_id,
@@ -3261,3 +3354,14 @@ def export_dc_detail(nc, nx, store, time_range, net_filters):
         sections = [("Data", records_to_dataframe([]))]
     csv_body = csv_bytes_with_report_header(report_info, sections)
     return dash_send_csv_bytes(csv_body, base)
+
+
+@callback(
+    Output({"type": "compute-gauge-util", "slug": MATCH}, "style"),
+    Output({"type": "compute-gauge-alloc", "slug": MATCH}, "style"),
+    Input({"type": "compute-gauge-mode", "slug": MATCH}, "value"),
+)
+def _toggle_compute_gauge_mode(mode):
+    if mode == "allocation":
+        return {"display": "none"}, {"display": "block"}
+    return {"display": "block"}, {"display": "none"}

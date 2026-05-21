@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import dash_mantine_components as dmc
 import plotly.graph_objects as go
-from dash import Input, Output, callback, html
+from dash import ALL, Input, Output, State, callback, ctx, html, no_update
 
 from src.components.dc_availability_panel import build_dc_availability_panel
 from src.components.header import create_detail_header
@@ -171,20 +171,17 @@ def build_availability_annual_layout(visible_sections: set[str] | None = None) -
         ],
     )
 
-    # ── DC Select (tek başına, tam genişlik) ─────────────────────────────
+    # Hidden DC selector — driven by clicking overview cards.
+    # Kept as a Select (instead of dcc.Store) so existing callbacks that read its
+    # `.value` and write to it via the card-click callback keep working unchanged.
     filter_row = html.Div(
-        style={"padding": "0 32px", "marginBottom": "24px"},
+        style={"display": "none"},
         children=[
             dmc.Select(
-                label="Data center",
                 id="availability-annual-dc",
                 data=dc_options,
                 value=default_dc_id,
-                searchable=True,
                 clearable=False,
-                nothingFoundMessage="No DCs",
-                w="100%",
-                size="md",
             ),
         ],
     )
@@ -254,71 +251,76 @@ def _render_availability_annual(year, dc_id):
         accent_color, text_color, bg_color, bar_gradient = _sla_tier(pct)
 
         overview_cards.append(
-            dmc.Paper(
-                withBorder=False,
-                p="md",
-                radius="md",
-                style={
-                    "border": f"1.5px solid rgba(67,24,255,0.12)",
-                    "borderLeft": f"4px solid {accent_color}",
-                    "background": "rgba(237,233,254,0.45)" if highlighted else "rgba(255,255,255,0.95)",
-                    "boxShadow": (
-                        "0 0 0 2px #4318FF, 0 4px 16px rgba(67,24,255,0.13)"
-                        if highlighted
-                        else "0 1px 4px rgba(0,0,0,0.04)"
-                    ),
-                    "cursor": "pointer",
-                    "transition": "box-shadow 0.2s ease",
-                },
-                children=[
-                    # İsim + büyük yüzde yan yana
-                    dmc.Group(
-                        justify="space-between",
-                        align="flex-start",
-                        mb=8,
-                        children=[
-                            dmc.Text(
-                                short,
-                                size="xs",
-                                fw=700,
-                                c="#2B3674",
-                                lineClamp=1,
-                                style={"flex": 1, "minWidth": 0},
-                            ),
-                            dmc.Text(
-                                f"{pct:.4f}%",
-                                size="sm",
-                                fw=900,
-                                c=text_color,
-                                style={
-                                    "fontVariantNumeric": "tabular-nums",
-                                    "letterSpacing": "-0.02em",
-                                    "flexShrink": 0,
-                                    "marginLeft": "8px",
-                                },
-                            ),
-                        ],
-                    ),
-                    # Premium CSS progress bar
-                    html.Div(
-                        style={
-                            "height": "7px",
-                            "background": "rgba(67,24,255,0.07)",
-                            "borderRadius": "99px",
-                            "overflow": "hidden",
-                        },
-                        children=[
-                            html.Div(
-                                style={
-                                    "height": "100%",
-                                    "width": f"{pct:.4f}%",
-                                    "background": bar_gradient,
-                                    "borderRadius": "99px",
-                                }
-                            )
-                        ],
-                    ),
-                ],
+            html.Div(
+                id={"type": "availability-annual-card", "dc": sid},
+                n_clicks=0,
+                style={"cursor": "pointer"},
+                children=dmc.Paper(
+                    withBorder=False,
+                    p="md",
+                    radius="md",
+                    style={
+                        "border": f"1.5px solid rgba(67,24,255,0.12)",
+                        "borderLeft": f"4px solid {accent_color}",
+                        "background": "rgba(237,233,254,0.45)" if highlighted else "rgba(255,255,255,0.95)",
+                        "boxShadow": (
+                            "0 0 0 2px #4318FF, 0 4px 16px rgba(67,24,255,0.13)"
+                            if highlighted
+                            else "0 1px 4px rgba(0,0,0,0.04)"
+                        ),
+                        "cursor": "pointer",
+                        "transition": "box-shadow 0.2s ease",
+                    },
+                    children=[
+                        # İsim + büyük yüzde yan yana
+                        dmc.Group(
+                            justify="space-between",
+                            align="flex-start",
+                            mb=8,
+                            children=[
+                                dmc.Text(
+                                    short,
+                                    size="xs",
+                                    fw=700,
+                                    c="#2B3674",
+                                    lineClamp=1,
+                                    style={"flex": 1, "minWidth": 0},
+                                ),
+                                dmc.Text(
+                                    f"{pct:.4f}%",
+                                    size="sm",
+                                    fw=900,
+                                    c=text_color,
+                                    style={
+                                        "fontVariantNumeric": "tabular-nums",
+                                        "letterSpacing": "-0.02em",
+                                        "flexShrink": 0,
+                                        "marginLeft": "8px",
+                                    },
+                                ),
+                            ],
+                        ),
+                        # Premium CSS progress bar
+                        html.Div(
+                            style={
+                                "height": "7px",
+                                "background": "rgba(67,24,255,0.07)",
+                                "borderRadius": "99px",
+                                "overflow": "hidden",
+                            },
+                            children=[
+                                html.Div(
+                                    style={
+                                        "height": "100%",
+                                        "width": f"{pct:.4f}%",
+                                        "background": bar_gradient,
+                                        "borderRadius": "99px",
+                                    }
+                                )
+                            ],
+                        ),
+                    ],
+                ),
             )
         )
 
@@ -378,3 +380,19 @@ def _render_availability_annual(year, dc_id):
         ],
     )
     return overview_content, body, date_badge
+
+
+@callback(
+    Output("availability-annual-dc", "value"),
+    Input({"type": "availability-annual-card", "dc": ALL}, "n_clicks"),
+    State("availability-annual-dc", "value"),
+    prevent_initial_call=True,
+)
+def _select_dc_from_card(_clicks, current):
+    triggered = ctx.triggered_id
+    if not isinstance(triggered, dict):
+        return no_update
+    new_dc = str(triggered.get("dc") or "")
+    if not new_dc or new_dc == str(current or ""):
+        return no_update
+    return new_dc

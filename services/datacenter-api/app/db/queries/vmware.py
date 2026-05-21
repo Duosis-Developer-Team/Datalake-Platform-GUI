@@ -511,3 +511,47 @@ WHERE datacenter ILIKE %s
   AND cluster = ANY(%s::text[])
   AND timestamp BETWEEN %s AND %s
 """
+
+# =============================================================================
+# VM-level storage breakdown (thin-provisioned vs actually used)
+# Params: (dc_pattern,)
+# Returns: (provisioned_gb, used_gb)
+# =============================================================================
+
+CLASSIC_STORAGE_VM = """
+WITH latest AS (
+    SELECT DISTINCT ON (vmname)
+        vmname, provisioned_space_gb, used_space_gb,
+        total_cpu_capacity_mhz, total_memory_capacity_gb
+    FROM public.vm_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster ILIKE '%%KM%%'
+      AND timestamp >= NOW() - INTERVAL '24 hours'
+    ORDER BY vmname, timestamp DESC
+)
+SELECT
+    COALESCE(SUM(provisioned_space_gb), 0)              AS provisioned_gb,
+    COALESCE(SUM(used_space_gb), 0)                     AS used_gb,
+    COALESCE(SUM(total_cpu_capacity_mhz / 1000.0), 0)   AS cpu_alloc_ghz,
+    COALESCE(SUM(total_memory_capacity_gb), 0)          AS mem_alloc_gb
+FROM latest
+"""
+
+HYPERCONV_VMWARE_STORAGE_VM = """
+WITH latest AS (
+    SELECT DISTINCT ON (vmname)
+        vmname, provisioned_space_gb, used_space_gb,
+        total_cpu_capacity_mhz, total_memory_capacity_gb
+    FROM public.vm_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster NOT ILIKE '%%KM%%'
+      AND timestamp >= NOW() - INTERVAL '24 hours'
+    ORDER BY vmname, timestamp DESC
+)
+SELECT
+    COALESCE(SUM(provisioned_space_gb), 0)              AS provisioned_gb,
+    COALESCE(SUM(used_space_gb), 0)                     AS used_gb,
+    COALESCE(SUM(total_cpu_capacity_mhz / 1000.0), 0)   AS cpu_alloc_ghz,
+    COALESCE(SUM(total_memory_capacity_gb), 0)          AS mem_alloc_gb
+FROM latest
+"""
