@@ -537,26 +537,26 @@ def _capacity_metric_row(label: str, cap_val, used_val, pct: float, unit_fn=None
     return html.Div(
         className="dc-capacity-row",
         style={
-            "display": "flex",
-            "justifyContent": "space-between",
+            "display": "grid",
+            "gridTemplateColumns": "140px 1fr 1fr 1fr 70px 90px",
             "alignItems": "center",
+            "gap": "12px",
+            "padding": "8px 0",
             "borderBottom": "1px solid #F4F7FE",
         },
         children=[
             html.Span(
                 label,
-                style={
-                    "color": "#2B3674",
-                    "fontWeight": 700,
-                    "fontSize": "0.85rem",
-                    "minWidth": "120px",
-                },
+                style={"color": "#2B3674", "fontWeight": 700, "fontSize": "0.85rem"},
             ),
-            html.Span(f"Capacity: {cap_str}", style={"color": "#A3AED0", "fontSize": "0.8rem"}),
             html.Span(
-                f"Potential: {_format_tl(potential_tl)}",
+                f"Capacity: {cap_str}",
+                style={"color": "#A3AED0", "fontSize": "0.8rem"},
+            ),
+            html.Span(
+                f"Potential: {_format_tl(potential_tl)}" if potential_tl > 0 else "",
                 style={"color": "#05CD99", "fontSize": "0.8rem", "fontWeight": 600},
-            ) if potential_tl > 0 else html.Span(""),
+            ),
             html.Span(
                 f"Allocated: {used_str}",
                 style={"color": "#4318FF", "fontSize": "0.8rem", "fontWeight": 600},
@@ -566,16 +566,14 @@ def _capacity_metric_row(label: str, cap_val, used_val, pct: float, unit_fn=None
                 color="indigo" if pct < 60 else "yellow" if pct < 80 else "red",
                 variant="light",
                 size="sm",
-                style={"minWidth": "60px", "textAlign": "center"},
+                style={"textAlign": "center"},
             ),
             html.Div(
                 style={
-                    "width": "80px",
                     "height": "6px",
                     "borderRadius": "3px",
                     "background": "#EEF2FF",
                     "overflow": "hidden",
-                    "marginLeft": "8px",
                 },
                 children=html.Div(
                     style={
@@ -630,11 +628,14 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     stor_util_pct  = stor_pct  # cluster-level cap-used/cap
     stor_alloc_vm_pct = pct_float(stor_provisioned_gb, stor_cap_gb) if stor_provisioned_gb > 0 else stor_alloc_pct
 
-    # Potential Sellable revenue (CRM TL prices × overcommit multiplier × physical capacity)
+    # Potential Sellable revenue (CRM TL prices × physical capacity).
+    # Klasik/Hyperconv: cpu_cap (GHz) zaten overcommit'li sellable kapasiteyi temsil ediyor —
+    # 1 GHz = 1 vCPU kuralıyla doğrudan core'a karşılık gelir, ek çarpan uygulanmaz.
+    # RAM (GB) ve Storage (TB→GB) fiziksel birimler; thin-provisioning/overcommit
+    # çarpanı bu iki kalem için korunur.
     unit_prices = compute.get("unit_prices", {}) or {}
     multiplier  = float(compute.get("sellable_multiplier", 3.3) or 3.3)
-    # 1 GHz = 1 vCPU (per business rule). mem_cap is in GB. stor_cap is in TB → ×1024 for GB.
-    cpu_potential_tl     = cpu_cap          * multiplier * float(unit_prices.get("cpu_vcpu", 0) or 0)
+    cpu_potential_tl     = cpu_cap          *              float(unit_prices.get("cpu_vcpu", 0) or 0)
     ram_potential_tl     = mem_cap          * multiplier * float(unit_prices.get("ram_gb", 0) or 0)
     storage_potential_tl = (stor_cap * 1024) * multiplier * float(unit_prices.get("storage_gb", 0) or 0)
 
@@ -726,7 +727,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
                 className="nexus-card",
                 style={"padding": "20px"},
                 children=[
-                    _section_title("Capacity Planning", f"Host-level resources vs. allocated to workloads · ×{multiplier:g} overcommit"),
+                    _section_title("Capacity Planning", "Host-level resources vs. allocated to workloads"),
                     html.Div(style={"marginTop": "12px"}, children=[
                         _capacity_metric_row("CPU", cpu_cap, cpu_used, cpu_pct, smart_cpu, potential_tl=cpu_potential_tl),
                         _capacity_metric_row("Memory", mem_cap, mem_used, mem_pct, smart_memory, potential_tl=ram_potential_tl),
@@ -759,6 +760,13 @@ def _build_power_tab(
     cpu_avail_cores = power.get("cpu_available_cores", 0.0) or 0.0
     cpu_allocated_pu = max(cpu_total_pu - cpu_avail_pu, 0.0)
     cpu_allocated_cores = max(cpu_total_cores - cpu_avail_cores, 0.0)
+
+    # Potential Sellable revenue — Power: 1 core = 3.3 GHz eşdeğeri,
+    # CRM CPU fiyatı (SAP Power HANA CPU) 1 GHz/vCPU üzerinden tutulduğu için
+    # cores × 3.3 × cpu_unit_price formülü uygulanır.
+    power_unit_prices = power.get("unit_prices", {}) or {}
+    power_multiplier  = float(power.get("sellable_multiplier", 3.3) or 3.3)
+    cpu_potential_tl  = cpu_total_cores * power_multiplier * float(power_unit_prices.get("cpu_vcpu", 0) or 0)
 
     storage_capacity = storage_capacity or {}
     storage_performance = storage_performance or {}
@@ -824,6 +832,14 @@ def _build_power_tab(
                             cpu_allocated_cores,
                             pct_float(cpu_allocated_cores, cpu_total_cores),
                             format_power_capacity_count,
+                        ),
+                        _capacity_metric_row(
+                            "CPU (GHz)",
+                            cpu_total_cores * power_multiplier,
+                            cpu_allocated_cores * power_multiplier,
+                            pct_float(cpu_allocated_cores, cpu_total_cores),
+                            smart_cpu,
+                            potential_tl=cpu_potential_tl,
                         ),
                         _capacity_metric_row(
                             "Memory",

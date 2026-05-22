@@ -685,15 +685,21 @@ LIMIT 20
             "ram":     "Hyperconverged Mimari Intel RAM",
             "storage": "Hyperconverged Mimari Intel Disk - SSD",
         },
+        # Power: yalnızca CPU fiyatlandırması. Birim CRM'de "core" geçse de 1 core = 1 GHz
+        # eşdeğeri kabul edilir; Power kaynağı core olduğu için satış hesabında 3.3 ile çarpılarak GHz'e dönüştürülür.
+        "power": {
+            "cpu": "SAP Power HANA CPU",
+        },
     }
 
     def get_unit_prices_tl(self, cursor, mimari: str) -> dict:
-        """Return {cpu_vcpu, ram_gb, storage_gb} TL unit prices for given architecture."""
+        """Return {cpu_vcpu, ram_gb, storage_gb} TL unit prices for given architecture.
+        Power mapping yalnızca CPU içerir; eksik anahtarlar 0.0 döner."""
         mapping = self._SELLABLE_PRODUCT_MAP.get(mimari.lower())
         zero = {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0}
         if not mapping:
             return zero
-        names = [mapping["cpu"], mapping["ram"], mapping["storage"]]
+        names = [v for v in (mapping.get("cpu"), mapping.get("ram"), mapping.get("storage")) if v]
         try:
             rows = self._run_rows(cursor, """
                 SELECT p.name, ppl.amount
@@ -710,9 +716,9 @@ LIMIT 20
             return zero
         name_to_price = {r[0]: float(r[1] or 0) for r in (rows or [])}
         return {
-            "cpu_vcpu":   round(name_to_price.get(mapping["cpu"], 0.0), 4),
-            "ram_gb":     round(name_to_price.get(mapping["ram"], 0.0), 4),
-            "storage_gb": round(name_to_price.get(mapping["storage"], 0.0), 4),
+            "cpu_vcpu":   round(name_to_price.get(mapping.get("cpu") or "", 0.0), 4),
+            "ram_gb":     round(name_to_price.get(mapping.get("ram") or "", 0.0), 4),
+            "storage_gb": round(name_to_price.get(mapping.get("storage") or "", 0.0), 4),
         }
 
     # ------------------------------------------------------------------
@@ -955,6 +961,7 @@ LIMIT 20
         hyperconv_storage_vm=None,
         classic_unit_prices=None,
         hyperconv_unit_prices=None,
+        power_unit_prices=None,
         sellable_multiplier: float = 3.3,
         dc_description: str = "",
     ) -> dict:
@@ -1114,6 +1121,8 @@ LIMIT 20
                 "memory_assigned": round(float(power_mem[2] or 0) / 1024.0, 2),
                 "storage_cap_tb": round(float((power_storage or (0.0, 0.0))[0]), 3),
                 "storage_used_tb": round(float((power_storage or (0.0, 0.0))[1]), 3),
+                "unit_prices": power_unit_prices or {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
+                "sellable_multiplier": sellable_multiplier,
             },
             "energy": {
                 "total_kw": round(total_energy_kw, 2),
@@ -1223,6 +1232,7 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                         hyperconv_storage_vm=self.get_hyperconv_storage_vm(cur, dc_wc),
                         classic_unit_prices=self.get_unit_prices_tl(cur, "klasik"),
                         hyperconv_unit_prices=self.get_unit_prices_tl(cur, "hyperconv"),
+                        power_unit_prices=self.get_unit_prices_tl(cur, "power"),
                     )
 
         try:
@@ -1547,6 +1557,18 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             for dc in dc_list
         }
 
+        # Fetch CRM unit prices once for all archs — these are global, not per-DC.
+        # Required so the dc_details cache populated by this batch path includes Power TL.
+        try:
+            with self._get_connection() as _up_conn:
+                with _up_conn.cursor() as _up_cur:
+                    classic_up   = self.get_unit_prices_tl(_up_cur, "klasik")
+                    hyperconv_up = self.get_unit_prices_tl(_up_cur, "hyperconv")
+                    power_up     = self.get_unit_prices_tl(_up_cur, "power")
+        except Exception as _exc:
+            logger.warning("Batch unit_prices fetch failed: %s", _exc)
+            classic_up = hyperconv_up = power_up = None
+
         # ---- Build per-DC aggregate dicts ----
         results: dict[str, dict] = {}
         for dc in dc_list:
@@ -1656,6 +1678,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 classic_avg30=cl_avg,
                 hyperconv_row=hc_data,
                 hyperconv_avg30=hc_avg,
+                classic_unit_prices=classic_up,
+                hyperconv_unit_prices=hyperconv_up,
+                power_unit_prices=power_up,
                 dc_description=self._dc_description_map.get(dc, ""),
             )
 
