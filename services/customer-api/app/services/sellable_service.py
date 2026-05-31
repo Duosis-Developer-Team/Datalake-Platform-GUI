@@ -509,6 +509,32 @@ class SellableService:
                 f"FROM {_SUBQUERY_NUTANIX_CLUSTER_LATEST} {where_sql};"
             )
             return sql, list(params)
+        if base == "ibm_server_general":
+            pattern = params[0] if params else "%"
+            sql = f"""
+SELECT COALESCE(SUM(latest.{col}), 0)::double precision
+FROM (
+    SELECT DISTINCT ON (server_details_servername)
+        {col}
+    FROM public.ibm_server_general
+    WHERE server_details_servername ILIKE %s
+    ORDER BY server_details_servername, time DESC
+) latest;
+"""
+            return sql, [pattern]
+        if base == "ibm_lpar_general":
+            pattern = params[0] if params else "%"
+            sql = f"""
+SELECT COALESCE(SUM(latest.{col}), 0)::double precision
+FROM (
+    SELECT DISTINCT ON (lparname)
+        {col}
+    FROM public.ibm_lpar_general
+    WHERE lpar_details_servername ILIKE %s
+    ORDER BY lparname, time DESC
+) latest;
+"""
+            return sql, [pattern]
         sql = (
             f"SELECT COALESCE(SUM({col}), 0)::double precision "
             f"FROM {physical_table}{where_sql};"
@@ -586,7 +612,10 @@ SELECT _tot, _used FROM latest
         params: list[Any] = []
         where_total = ""
         where_alloc = ""
-        if src.filter_clause:
+        total_table_bare = self._bare_table_name(src.source_table)
+        if total_table_bare in ("ibm_server_general", "ibm_lpar_general"):
+            params = [self._dc_pattern(dc_code)]
+        elif src.filter_clause:
             cleaned = src.filter_clause.replace(":dc_pattern", "%s")
             where_total = f" WHERE {cleaned}"
             params.append(self._dc_pattern(dc_code))
@@ -610,7 +639,9 @@ SELECT _tot, _used FROM latest
         alloc_from_redis = alloc_table_bare in _VM_TABLE_DC_SECTION
 
         if src.allocated_table and src.allocated_column and not alloc_from_redis:
-            if src.filter_clause:
+            if alloc_table_bare in ("ibm_server_general", "ibm_lpar_general"):
+                alloc_params = [self._dc_pattern(dc_code)]
+            elif src.filter_clause:
                 cleaned = src.filter_clause.replace(":dc_pattern", "%s")
                 where_alloc = f" WHERE {cleaned}"
                 alloc_params.append(self._dc_pattern(dc_code))

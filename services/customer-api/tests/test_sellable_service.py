@@ -200,6 +200,36 @@ def test_sum_sql_nutanix_cluster_metrics_wraps_latest_per_cluster_uuid():
     assert "_infra_ncm.total_cpu_capacity" in sql
 
 
+def test_sum_sql_ibm_server_general_latest_per_server():
+    svc = SellableService.__new__(SellableService)
+    sql, params = SellableService._sum_sql(
+        svc,
+        column="server_processor_totalprocunits",
+        physical_table="ibm_server_general",
+        where_sql=" WHERE site_name ILIKE %s",
+        params=["%dc13%"],
+    )
+    assert "DISTINCT ON (server_details_servername)" in sql
+    assert "server_details_servername ILIKE %s" in sql
+    assert "site_name" not in sql
+    assert params == ["%dc13%"]
+
+
+def test_sum_sql_ibm_lpar_general_latest_per_lpar():
+    svc = SellableService.__new__(SellableService)
+    sql, params = SellableService._sum_sql(
+        svc,
+        column="lpar_processor_entitledprocunits",
+        physical_table="ibm_lpar_general",
+        where_sql=" WHERE site_name ILIKE %s",
+        params=["%ict11%"],
+    )
+    assert "DISTINCT ON (lparname)" in sql
+    assert "lpar_details_servername ILIKE %s" in sql
+    assert "site_name" not in sql
+    assert params == ["%ict11%"]
+
+
 # ---------------------------------------------------------------------------
 # Redis-backed allocated fetch tests
 # ---------------------------------------------------------------------------
