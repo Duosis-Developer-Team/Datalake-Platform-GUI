@@ -93,7 +93,7 @@ def _close_datacenter_redis() -> None:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-REFRESH_INTERVAL_MINUTES = 15
+REFRESH_INTERVAL_MINUTES = int(os.getenv("REFRESH_INTERVAL_MINUTES", "15"))
 
 
 def _env_bool(name: str, default: bool) -> bool:

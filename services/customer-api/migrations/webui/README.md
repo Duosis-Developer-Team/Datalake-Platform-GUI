@@ -24,6 +24,7 @@ Keep numeric prefixes so new migrations always sort after existing ones.
 | `010_seed_full_product_mapping.sql` | Full product → page seed rows | Yes |
 | `011_update_redis_allocated_units.sql` | Updates seed infra bindings for Redis-backed allocated metrics | Yes |
 | `012_power_crm_panels.sql` | IBM Power CRM panels / unit conversions | Yes |
+| `013_panel_result_snapshot_and_manual_override.sql` | Tier-2 `gui_panel_result_snapshot` + `manual_total`/`manual_allocated` on infra source | Yes |
 
 ## Tracking table (`gui_schema_migrations`)
 

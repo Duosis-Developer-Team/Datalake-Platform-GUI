@@ -2,9 +2,6 @@ from __future__ import annotations
 import dash
 import logging
 import os
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dash import html, dcc, callback, Input, Output, State, callback_context
 import dash_mantine_components as dmc
 import plotly.graph_objects as go
@@ -21,80 +18,14 @@ from src.utils.export_helpers import (
     build_report_info_df,
 )
 from src.utils.dc_display import format_dc_display_name
-from src.utils.virt_sellable_aggregate import (
-    VIRT_SELLABLE_FAMILY_LABELS,
-    collect_virt_sellable_panels,
-    total_potential_tl,
+from src.utils.datacenters_virt_sellable import (
+    is_virt_cache_warming,
+    refresh_virt_sellable_cache,
+    resolve_virt_sellable_for_dcs,
 )
+from src.utils.virt_sellable_aggregate import VIRT_SELLABLE_FAMILY_LABELS
 
 _LOG = logging.getLogger(__name__)
-_VIRT_TL_CACHE: dict[str, float] = {}
-_VIRT_CACHE_WARMING = False
-_VIRT_CACHE_TR_KEY = ""
-_VIRT_CACHE_LOCK = threading.Lock()
-
-
-def _virt_cache_tr_key(tr: dict | None) -> str:
-    tr = tr or {}
-    return f"{tr.get('preset', '')}|{tr.get('start', '')}|{tr.get('end', '')}"
-
-
-def _start_virt_cache_warm(
-    dc_ids: list[str],
-    tr: dict,
-    *,
-    max_workers: int,
-    family_workers: int,
-) -> bool:
-    global _VIRT_CACHE_WARMING
-    tr_key = _virt_cache_tr_key(tr)
-    with _VIRT_CACHE_LOCK:
-        if _VIRT_CACHE_WARMING:
-            return False
-        _VIRT_CACHE_WARMING = True
-
-    def _run() -> None:
-        global _VIRT_CACHE_WARMING, _VIRT_TL_CACHE, _VIRT_CACHE_TR_KEY
-        t0 = time.perf_counter()
-        local_vals: dict[str, float] = {}
-        try:
-            def _compute(dc_id: str) -> tuple[str, float]:
-                return dc_id, _virt_sellable_tl_for_dc(dc_id, tr, family_workers)
-
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = [pool.submit(_compute, dc_id) for dc_id in dc_ids]
-                for fut in as_completed(futures):
-                    try:
-                        dc_id, val = fut.result()
-                        local_vals[dc_id] = val
-                    except Exception:
-                        continue
-            with _VIRT_CACHE_LOCK:
-                _VIRT_TL_CACHE = local_vals
-                _VIRT_CACHE_TR_KEY = tr_key
-        finally:
-            with _VIRT_CACHE_LOCK:
-                _VIRT_CACHE_WARMING = False
-
-    threading.Thread(target=_run, daemon=True).start()
-    return True
-
-
-def _virt_sellable_tl_for_dc(dc_id: str, tr: dict, family_workers: int) -> float:
-    """Return virt sellable TL quickly for grid cards.
-
-    Data Centers cards prioritize first-load responsiveness; we avoid per-DC cluster
-    list fan-out here and let crm-engine use its default scope (clusters=None).
-    DC Detail still uses explicit cluster-scoped calculations where precision matters.
-    """
-    return total_potential_tl(
-        collect_virt_sellable_panels(
-            str(dc_id),
-            None,
-            None,
-            max_family_workers=family_workers,
-        )
-    )
 
 
 def _hex_to_rgb(hex_color: str) -> str:
@@ -253,9 +184,13 @@ def _dc_sellable_ribbon(
     virt_tl: float,
     *,
     total_portfolio_tl: float,
+    loading: bool = False,
 ) -> html.Div:
     """Compact virtualization-derived sellable TL strip + share of portfolio progress."""
-    pot_short, pot_full = _fmt_tl_short(virt_tl)
+    if loading:
+        pot_short, pot_full = "…", "Hesaplanıyor"
+    else:
+        pot_short, pot_full = _fmt_tl_short(virt_tl)
     tot = float(total_portfolio_tl or 0.0)
     pct = (
         min(100.0, max(0.0, (virt_tl / tot) * 100.0))
@@ -297,6 +232,7 @@ def _dc_vault_card(
     *,
     virt_tl: float = 0.0,
     total_virt_tl: float = 0.0,
+    virt_loading: bool = False,
 ):
     """Elite DC Vault card: shimmer, dual ring, CPU/RAM footer, SLA accent."""
     dc_title = format_dc_display_name(dc.get("name"), dc.get("description"))
@@ -610,7 +546,11 @@ def _dc_vault_card(
 
             # CPU / RAM footer
             resource_footer,
-            _dc_sellable_ribbon(virt_tl, total_portfolio_tl=total_virt_tl),
+            _dc_sellable_ribbon(
+                virt_tl,
+                total_portfolio_tl=total_virt_tl,
+                loading=virt_loading,
+            ),
         ],
     )
 
@@ -626,35 +566,14 @@ def build_datacenters(time_range=None, visible_sections=None):
     datacenters = api.get_all_datacenters_summary(tr)
     sla_by_dc = api.get_sla_by_dc(tr)
 
-    virt_tl_by_dc: dict[str, float] = {}
-    total_potential_tl = 0.0
     dc_ids: list[str] = [str(dc.get("id")) for dc in datacenters if dc.get("id") is not None]
-
     configured_family_workers = int(os.getenv("DC_OVERVIEW_VIRT_FAMILY_WORKERS", "1") or "1")
     family_workers = max(1, configured_family_workers)
 
-    # Parallelize cold-cache sellable computations so first /datacenters load
-    # doesn't block on N sequential DC calls.
-    configured_workers = int(os.getenv("DC_OVERVIEW_VIRT_WORKERS", "4") or "4")
-    max_workers = min(max(1, configured_workers), max(1, len(dc_ids)))
-    tr_key = _virt_cache_tr_key(tr)
-    with _VIRT_CACHE_LOCK:
-        cache_snapshot = dict(_VIRT_TL_CACHE)
-        cache_key = _VIRT_CACHE_TR_KEY
-        warming = _VIRT_CACHE_WARMING
-    cache_hit_count = sum(1 for dc_id in dc_ids if dc_id in cache_snapshot and cache_key == tr_key)
-    triggered_warm = False
-    if cache_hit_count < len(dc_ids) and not warming:
-        triggered_warm = _start_virt_cache_warm(
-            dc_ids,
-            tr,
-            max_workers=max_workers,
-            family_workers=family_workers,
-        )
-    for dc_id in dc_ids:
-        dc_virt = cache_snapshot.get(dc_id, 0.0) if cache_key == tr_key else 0.0
-        virt_tl_by_dc[dc_id] = dc_virt
-        total_potential_tl += dc_virt
+    virt_state = resolve_virt_sellable_for_dcs(dc_ids, tr, family_workers=family_workers)
+    virt_tl_by_dc = virt_state["virt_tl_by_dc"]
+    total_potential_tl = float(virt_state["total_potential_tl"])
+    virt_loading = bool(virt_state["loading"])
 
     # ── Export rows ──
     export_rows = []
@@ -703,10 +622,10 @@ def build_datacenters(time_range=None, visible_sections=None):
             (lambda short, full: _summary_kpi(
                 "solar:money-bag-bold-duotone",
                 "Potential Sales (Virtualization)",
-                short,
+                "Hesaplanıyor…" if virt_loading else short,
                 "indigo",
                 tooltip=(
-                    f"Total potential (all DCs): {full}\n"
+                    f"Total potential (all DCs): {full if not virt_loading else '—'}\n"
                     "Sum of crm-engine sellable potential_tl for virtualization families: "
                     f"{', '.join(VIRT_SELLABLE_FAMILY_LABELS)}."
                 ),
@@ -715,10 +634,24 @@ def build_datacenters(time_range=None, visible_sections=None):
         )]
     )
 
-    return html.Div([
+    page_body = html.Div([
         dcc.Store(
             id="datacenters-export-store",
             data={"rows": export_rows, "period": f"{tr.get('start', '')}_{tr.get('end', '')}"},
+        ),
+        dcc.Store(
+            id="datacenters-virt-state-store",
+            data={
+                "dc_ids": dc_ids,
+                "tr_key": virt_state.get("tr_key"),
+                "loading": virt_loading,
+            },
+        ),
+        dcc.Interval(
+            id="datacenters-virt-poll",
+            interval=2000,
+            n_intervals=0,
+            disabled=not virt_loading,
         ),
         dcc.Download(id="datacenters-export-download"),
 
@@ -853,10 +786,12 @@ def build_datacenters(time_range=None, visible_sections=None):
         ),
 
         # Summary KPI Strip (C)
-        summary_strip,
+        html.Div(id="datacenters-virt-kpi-slot", children=summary_strip),
 
         # DC Card Grid — stagger wrapped (E1)
-        (
+        html.Div(
+            id="datacenters-dc-grid-slot",
+            children=(
             dmc.SimpleGrid(
                 cols=3,
                 spacing="lg",
@@ -871,6 +806,7 @@ def build_datacenters(time_range=None, visible_sections=None):
                             or sla_by_dc.get(str(dc.get("id", "")).upper()),
                             virt_tl=virt_tl_by_dc.get(str(dc.get("id", "")), 0.0),
                             total_virt_tl=total_potential_tl,
+                            virt_loading=virt_loading,
                         ),
                     )
                     for i, dc in enumerate(datacenters)
@@ -883,7 +819,23 @@ def build_datacenters(time_range=None, visible_sections=None):
                 color="gray",
             )
         ),
+        ),
     ])
+
+    return html.Div(
+        id="datacenters-page-root",
+        style={"position": "relative", "minHeight": "400px"},
+        children=[
+            dmc.LoadingOverlay(
+                id="datacenters-virt-loading-overlay",
+                visible=virt_loading,
+                zIndex=1000,
+                overlayProps={"radius": "sm", "blur": 2},
+                loaderProps={"type": "bars", "color": "indigo"},
+                children=page_body,
+            ),
+        ],
+    )
 
 
 def layout():
@@ -914,3 +866,93 @@ def export_datacenters_page(nc1, nc2, store, time_range):
         csv_bytes_with_report_header(report_info, [("DC_List", df)]),
         "datacenters",
     )
+
+
+@callback(
+    Output("datacenters-virt-loading-overlay", "visible"),
+    Output("datacenters-virt-poll", "disabled"),
+    Output("datacenters-virt-kpi-slot", "children"),
+    Output("datacenters-dc-grid-slot", "children"),
+    Output("datacenters-virt-state-store", "data"),
+    Input("datacenters-virt-poll", "n_intervals"),
+    State("datacenters-virt-state-store", "data"),
+    State("app-time-range", "data"),
+    prevent_initial_call=True,
+)
+def poll_virt_sellable_refresh(_n, state, time_range):
+    """Auto-refresh sellable KPIs and DC ribbons when background warm completes."""
+    if not state or not state.get("loading"):
+        raise dash.exceptions.PreventUpdate
+    if is_virt_cache_warming():
+        raise dash.exceptions.PreventUpdate
+
+    tr = time_range or default_time_range()
+    dc_ids = state.get("dc_ids") or []
+    virt_state = resolve_virt_sellable_for_dcs(dc_ids, tr)
+    if virt_state.get("loading"):
+        raise dash.exceptions.PreventUpdate
+
+    datacenters = api.get_all_datacenters_summary(tr)
+    sla_by_dc = api.get_sla_by_dc(tr)
+    virt_tl_by_dc = virt_state["virt_tl_by_dc"]
+    total_potential_tl = float(virt_state["total_potential_tl"])
+
+    total_hosts = sum(dc.get("host_count", 0) for dc in datacenters)
+    total_vms = sum(dc.get("vm_count", 0) for dc in datacenters)
+    total_clusters = sum(dc.get("cluster_count", 0) for dc in datacenters)
+    total_power = sum(
+        float((dc.get("stats") or {}).get("total_energy_kw", 0) or 0)
+        for dc in datacenters
+    )
+
+    kpi_strip = dmc.SimpleGrid(
+        cols={"base": 2, "sm": 3},
+        spacing="md",
+        style={"alignItems": "stretch"},
+        children=[
+            _summary_kpi("solar:server-bold-duotone", "Active DCs", str(len(datacenters)), "indigo"),
+            _summary_kpi("solar:server-minimalistic-bold-duotone", "Total Hosts", f"{total_hosts:,}", "orange"),
+            _summary_kpi("solar:laptop-bold-duotone", "Total VMs", f"{total_vms:,}", "teal"),
+            _summary_kpi("solar:box-bold-duotone", "Clusters", f"{total_clusters:,}", "grape"),
+            _summary_kpi("solar:bolt-bold-duotone", "Total Power", f"{total_power:.1f} kW", "yellow"),
+            (lambda short, full: _summary_kpi(
+                "solar:money-bag-bold-duotone",
+                "Potential Sales (Virtualization)",
+                short,
+                "indigo",
+                tooltip=(
+                    f"Total potential (all DCs): {full}\n"
+                    "Sum of crm-engine sellable potential_tl for virtualization families: "
+                    f"{', '.join(VIRT_SELLABLE_FAMILY_LABELS)}."
+                ),
+            ))(*_fmt_tl_short(total_potential_tl)),
+        ],
+    )
+
+    grid = dmc.SimpleGrid(
+        cols=3,
+        spacing="lg",
+        style={"padding": "0 32px"},
+        children=[
+            html.Div(
+                className=f"dc-card-enter dc-card-n{min(i + 1, 12)}",
+                style={"height": "100%"},
+                children=_dc_vault_card(
+                    dc,
+                    sla_by_dc.get(dc.get("id"))
+                    or sla_by_dc.get(str(dc.get("id", "")).upper()),
+                    virt_tl=virt_tl_by_dc.get(str(dc.get("id", "")), 0.0),
+                    total_virt_tl=total_potential_tl,
+                    virt_loading=False,
+                ),
+            )
+            for i, dc in enumerate(datacenters)
+        ],
+    )
+
+    new_state = {
+        "dc_ids": dc_ids,
+        "tr_key": virt_state.get("tr_key"),
+        "loading": False,
+    }
+    return False, True, kpi_strip, grid, new_state

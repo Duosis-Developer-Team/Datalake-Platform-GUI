@@ -52,6 +52,7 @@ ON CONFLICT (panel_key) DO UPDATE SET
 LIST_INFRA_SOURCES = """
 SELECT panel_key, dc_code, source_table, total_column, total_unit,
        allocated_table, allocated_column, allocated_unit,
+       manual_total, manual_allocated,
        filter_clause, notes, updated_by, updated_at
 FROM   gui_panel_infra_source
 ORDER BY panel_key, dc_code;
@@ -60,6 +61,7 @@ ORDER BY panel_key, dc_code;
 GET_INFRA_SOURCE = """
 SELECT panel_key, dc_code, source_table, total_column, total_unit,
        allocated_table, allocated_column, allocated_unit,
+       manual_total, manual_allocated,
        filter_clause, notes, updated_by, updated_at
 FROM   gui_panel_infra_source
 WHERE  panel_key = %s
@@ -72,8 +74,9 @@ UPSERT_INFRA_SOURCE = """
 INSERT INTO gui_panel_infra_source
     (panel_key, dc_code, source_table, total_column, total_unit,
      allocated_table, allocated_column, allocated_unit,
+     manual_total, manual_allocated,
      filter_clause, notes, updated_by, updated_at)
-VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, NOW())
+VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, NOW())
 ON CONFLICT (panel_key, dc_code) DO UPDATE SET
     source_table     = EXCLUDED.source_table,
     total_column     = EXCLUDED.total_column,
@@ -81,6 +84,8 @@ ON CONFLICT (panel_key, dc_code) DO UPDATE SET
     allocated_table  = EXCLUDED.allocated_table,
     allocated_column = EXCLUDED.allocated_column,
     allocated_unit   = EXCLUDED.allocated_unit,
+    manual_total     = EXCLUDED.manual_total,
+    manual_allocated = EXCLUDED.manual_allocated,
     filter_clause    = EXCLUDED.filter_clause,
     notes            = COALESCE(EXCLUDED.notes, gui_panel_infra_source.notes),
     updated_by       = EXCLUDED.updated_by,
@@ -268,6 +273,7 @@ BULK_INFRA_SOURCES_FOR_DC = """
 SELECT DISTINCT ON (panel_key)
     panel_key, dc_code, source_table, total_column, total_unit,
     allocated_table, allocated_column, allocated_unit,
+    manual_total, manual_allocated,
     filter_clause, notes
 FROM   gui_panel_infra_source
 WHERE  dc_code = %s OR dc_code = '*'
@@ -295,4 +301,39 @@ JOIN   gui_crm_price_override       po
        ON po.productid = COALESCE(ov.productid, sm.productid)
 WHERE  po.unit_price_tl IS NOT NULL
 ORDER  BY sp.panel_key, po.updated_at DESC;
+"""
+
+# ---------------------------------------------------------------------------
+# Tier-2 durable panel result snapshots (webui-db)
+# ---------------------------------------------------------------------------
+
+GET_PANEL_RESULT_SNAPSHOT = """
+SELECT payload, computed_at
+FROM   gui_panel_result_snapshot
+WHERE  dc_code = %s
+  AND  family = %s
+  AND  clusters_csv = %s;
+"""
+
+UPSERT_PANEL_RESULT_SNAPSHOT = """
+INSERT INTO gui_panel_result_snapshot
+    (dc_code, family, clusters_csv, payload, computed_at)
+VALUES (%s, %s, %s, %s::jsonb, NOW())
+ON CONFLICT (dc_code, family, clusters_csv) DO UPDATE SET
+    payload     = EXCLUDED.payload,
+    computed_at = NOW();
+"""
+
+DELETE_PANEL_RESULT_SNAPSHOTS = """
+DELETE FROM gui_panel_result_snapshot
+WHERE  (%s IS NULL OR dc_code = %s);
+"""
+
+GET_LATEST_SNAPSHOT_META = """
+SELECT dc_code, family, clusters_csv, computed_at
+FROM   gui_panel_result_snapshot
+WHERE  (%s IS NULL OR dc_code = %s)
+  AND  (%s IS NULL OR family = %s)
+ORDER  BY computed_at DESC
+LIMIT  1;
 """

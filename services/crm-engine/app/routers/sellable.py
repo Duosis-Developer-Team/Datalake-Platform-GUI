@@ -73,6 +73,30 @@ def _parse_clusters(raw: Optional[str]) -> Optional[list[str]]:
     return items or None
 
 
+@router.get("/crm/sellable-potential/snapshot-meta", response_model=dict)
+def get_snapshot_meta(
+    dc_code: str = "*",
+    family: Optional[str] = None,
+    clusters: Optional[str] = Query(None),
+    svc: SellableService = Depends(_sellable),
+):
+    return svc.snapshot_meta(
+        dc_code=dc_code,
+        family=family,
+        clusters=_parse_clusters(clusters),
+    )
+
+
+@router.post("/crm/sellable-potential/refresh", response_model=dict)
+def refresh_sellable_potential(svc: SellableService = Depends(_sellable)):
+    """Force recompute: invalidate caches, prewarm per-DC snapshots, emit metrics."""
+    metrics_emitted = svc.snapshot_all()
+    return {
+        "status": "ok",
+        "metrics_emitted": metrics_emitted,
+    }
+
+
 @router.get("/crm/sellable-potential/summary", response_model=dict)
 def get_summary(
     dc_code: str = "*",
@@ -183,7 +207,12 @@ def list_panels(webui: WebuiPool = Depends(_webui)):
 
 
 @router.put("/crm/panels/{panel_key}", response_model=dict)
-def upsert_panel(panel_key: str, body: PanelDefinitionUpsert, webui: WebuiPool = Depends(_webui)):
+def upsert_panel(
+    panel_key: str,
+    body: PanelDefinitionUpsert,
+    request: Request,
+    webui: WebuiPool = Depends(_webui),
+):
     if body.resource_kind not in {"cpu", "ram", "storage", "other"}:
         raise HTTPException(status_code=400, detail="resource_kind must be cpu|ram|storage|other")
     webui.execute(
@@ -200,6 +229,9 @@ def upsert_panel(panel_key: str, body: PanelDefinitionUpsert, webui: WebuiPool =
             "settings-ui",
         ),
     )
+    sellable: SellableService | None = getattr(request.app.state, "sellable", None)
+    if sellable is not None:
+        sellable.invalidate_result_cache()
     return {"status": "ok", "panel_key": panel_key}
 
 
@@ -215,6 +247,7 @@ def get_infra_source(panel_key: str, dc_code: str = "*", webui: WebuiPool = Depe
 def upsert_infra_source(
     panel_key: str,
     body: PanelInfraSourceUpsert,
+    request: Request,
     webui: WebuiPool = Depends(_webui),
 ):
     webui.execute(
@@ -228,11 +261,16 @@ def upsert_infra_source(
             body.allocated_table,
             body.allocated_column,
             body.allocated_unit,
+            body.manual_total,
+            body.manual_allocated,
             body.filter_clause,
             body.notes,
             "settings-ui",
         ),
     )
+    sellable: SellableService | None = getattr(request.app.state, "sellable", None)
+    if sellable is not None:
+        sellable.invalidate_result_cache()
     return {"status": "ok", "panel_key": panel_key, "dc_code": body.dc_code or "*"}
 
 
@@ -247,7 +285,12 @@ def list_ratios(webui: WebuiPool = Depends(_webui)):
 
 
 @router.put("/crm/resource-ratios/{family}", response_model=dict)
-def upsert_ratio(family: str, body: ResourceRatioUpsert, webui: WebuiPool = Depends(_webui)):
+def upsert_ratio(
+    family: str,
+    body: ResourceRatioUpsert,
+    request: Request,
+    webui: WebuiPool = Depends(_webui),
+):
     if body.cpu_per_unit <= 0 or body.ram_gb_per_unit <= 0 or body.storage_gb_per_unit <= 0:
         raise HTTPException(status_code=400, detail="ratios must be > 0")
     webui.execute(
@@ -262,6 +305,9 @@ def upsert_ratio(family: str, body: ResourceRatioUpsert, webui: WebuiPool = Depe
             "settings-ui",
         ),
     )
+    sellable: SellableService | None = getattr(request.app.state, "sellable", None)
+    if sellable is not None:
+        sellable.invalidate_result_cache()
     return {"status": "ok", "family": family, "dc_code": body.dc_code or "*"}
 
 
@@ -280,6 +326,7 @@ def upsert_unit_conversion(
     from_unit: str,
     to_unit: str,
     body: UnitConversionUpsert,
+    request: Request,
     webui: WebuiPool = Depends(_webui),
 ):
     if body.factor <= 0:
@@ -298,6 +345,9 @@ def upsert_unit_conversion(
             "settings-ui",
         ),
     )
+    sellable: SellableService | None = getattr(request.app.state, "sellable", None)
+    if sellable is not None:
+        sellable.invalidate_result_cache()
     return {"status": "ok", "from_unit": from_unit, "to_unit": to_unit}
 
 
@@ -305,7 +355,11 @@ def upsert_unit_conversion(
 def delete_unit_conversion(
     from_unit: str,
     to_unit: str,
+    request: Request,
     webui: WebuiPool = Depends(_webui),
 ):
     n = webui.execute(sq.DELETE_UNIT_CONVERSION, (from_unit, to_unit))
+    sellable: SellableService | None = getattr(request.app.state, "sellable", None)
+    if sellable is not None:
+        sellable.invalidate_result_cache()
     return {"status": "ok", "rows_deleted": int(n)}

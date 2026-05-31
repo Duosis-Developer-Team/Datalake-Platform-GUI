@@ -32,6 +32,8 @@ class InfraSource:
     allocated_column: str | None = None
     allocated_unit: str | None = None
     filter_clause: str | None = None
+    manual_total: float | None = None
+    manual_allocated: float | None = None
     notes: str | None = None
 
 

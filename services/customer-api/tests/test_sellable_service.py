@@ -809,3 +809,142 @@ def test_load_dc_redis_payload_called_once_per_request():
     svc._load_dc_redis_payload = fake_load  # type: ignore[assignment]
     svc.compute_all_panels(dc_code="IST1")
     assert seen["n"] == 1  # ONE Redis GET regardless of panel count
+
+
+def _in_memory_webui():
+    """Minimal webui mock that persists panel result snapshots in memory."""
+    store: dict[tuple[str, str, str], list] = {}
+
+    class _Webui:
+        is_available = True
+
+        def run_one(self, sql, params):
+            from app.db.queries import sellable as sq
+
+            if sql.strip().startswith("SELECT payload"):
+                key = (params[0], params[1], params[2])
+                payload = store.get(key)
+                if payload is None:
+                    return None
+                import json
+
+                return {"payload": json.dumps([p.to_dict() for p in payload]), "computed_at": "2026-05-31T00:00:00+00:00"}
+            if "GET_LATEST_SNAPSHOT_META" in sql or "gui_panel_result_snapshot" in sql and "computed_at DESC" in sql:
+                if not store:
+                    return None
+                key = next(iter(store))
+                return {"dc_code": key[0], "family": key[1], "clusters_csv": key[2], "computed_at": "2026-05-31T00:00:00+00:00"}
+            return None
+
+        def execute(self, sql, params):
+            from app.db.queries import sellable as sq
+
+            if "UPSERT_PANEL_RESULT_SNAPSHOT" in sql or "INSERT INTO gui_panel_result_snapshot" in sql:
+                import json
+
+                dc, fam, clusters_csv, payload_json = params
+                payload = json.loads(payload_json)
+                from shared.sellable.models import PanelResult
+
+                store[(dc, fam, clusters_csv)] = [
+                    PanelResult(
+                        panel_key=d.get("panel_key", ""),
+                        label=d.get("label", ""),
+                        family=d.get("family", ""),
+                        resource_kind=d.get("resource_kind", "other"),
+                        display_unit=d.get("display_unit", ""),
+                        dc_code=d.get("dc_code", dc),
+                        total=float(d.get("total", 0)),
+                        allocated=float(d.get("allocated", 0)),
+                        threshold_pct=float(d.get("threshold_pct", 80)),
+                        sellable_raw=float(d.get("sellable_raw", 0)),
+                        sellable_constrained=float(d.get("sellable_constrained", 0)),
+                        unit_price_tl=float(d.get("unit_price_tl", 0)),
+                        potential_tl=float(d.get("potential_tl", 0)),
+                        ratio_bound=bool(d.get("ratio_bound", False)),
+                        has_infra_source=bool(d.get("has_infra_source", False)),
+                        has_price=bool(d.get("has_price", False)),
+                        notes=list(d.get("notes") or []),
+                    )
+                    for d in payload
+                ]
+                return 1
+            if "DELETE FROM gui_panel_result_snapshot" in sql:
+                if params[0] is None:
+                    store.clear()
+                else:
+                    for k in list(store):
+                        if k[0] == params[0]:
+                            del store[k]
+                return 1
+            return 0
+
+        def run_rows(self, sql, params=None):
+            return []
+
+    return _Webui(), store
+
+
+def test_tier2_db_snapshot_served_on_redis_miss():
+    """Redis miss should load Tier-2 durable snapshot and skip full compute."""
+    webui, _store = _in_memory_webui()
+    svc = _build_service()
+    svc._webui = webui  # type: ignore[assignment]
+    stored = svc.compute_all_panels(dc_code="*")
+    assert stored
+
+    svc._result_cache_get = lambda key: None  # type: ignore[method-assign]
+    compute_calls = {"n": 0}
+    original_compute = svc.compute_panel
+
+    def counting_compute(*args, **kwargs):
+        compute_calls["n"] += 1
+        return original_compute(*args, **kwargs)
+
+    svc.compute_panel = counting_compute  # type: ignore[method-assign]
+    from_db = svc.compute_all_panels(dc_code="*")
+    assert len(from_db) == len(stored)
+    assert compute_calls["n"] == 0
+
+
+def test_manual_override_bypasses_datalake():
+    customer = MagicMock()
+    customer._pool = MagicMock()
+    svc = SellableService(
+        customer_service=customer,
+        webui=MagicMock(is_available=True),
+        config_service=MagicMock(),
+        currency_service=MagicMock(),
+        tagging_service=MagicMock(),
+    )
+    src = InfraSource(
+        "virt_hyperconverged_cpu",
+        "*",
+        source_table="nutanix_cluster_metrics",
+        total_column="total_cpu_capacity",
+        manual_total=100.0,
+        manual_allocated=40.0,
+    )
+    total, alloc = svc._query_total_allocated(src, "*")
+    assert total == 100.0
+    assert alloc == 40.0
+
+
+def test_snapshot_meta_returns_computed_at_after_write():
+    webui, _store = _in_memory_webui()
+    svc = _build_service()
+    svc._webui = webui  # type: ignore[assignment]
+    svc.compute_all_panels(dc_code="*", family="virt_hyperconverged")
+    meta = svc.snapshot_meta(dc_code="*", family="virt_hyperconverged")
+    assert meta.get("computed_at") is not None
+
+
+def test_invalidate_clears_tier2_and_redis():
+    webui, store = _in_memory_webui()
+    svc = _build_service()
+    svc._webui = webui  # type: ignore[assignment]
+    svc.compute_all_panels(dc_code="DC1", family="virt_hyperconverged")
+    assert store
+    svc.invalidate_result_cache()
+    db_cached = svc._snapshot_db_get("DC1", "virt_hyperconverged", "")
+    assert db_cached is None
