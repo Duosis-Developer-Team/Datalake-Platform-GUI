@@ -826,13 +826,13 @@ def build_datacenters(time_range=None, visible_sections=None):
         id="datacenters-page-root",
         style={"position": "relative", "minHeight": "400px"},
         children=[
+            page_body,
             dmc.LoadingOverlay(
                 id="datacenters-virt-loading-overlay",
                 visible=virt_loading,
                 zIndex=1000,
                 overlayProps={"radius": "sm", "blur": 2},
                 loaderProps={"type": "bars", "color": "indigo"},
-                children=page_body,
             ),
         ],
     )
