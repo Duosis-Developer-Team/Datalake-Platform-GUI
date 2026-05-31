@@ -269,10 +269,18 @@ def _has_compute_data(d: dict | None) -> bool:
 
 
 def _has_power_data(d: dict | None) -> bool:
-    """Return True if any meaningful IBM Power metric exists for a section."""
+    """Return True if any meaningful IBM Power compute or storage metric exists."""
     if not d:
         return False
-    keys = ("hosts", "lpar_count", "cpu_used", "memory_total")
+    keys = (
+        "hosts",
+        "lpar_count",
+        "cpu_used",
+        "memory_total",
+        "vios",
+        "storage_cap_tb",
+        "storage_used_tb",
+    )
     return any(d.get(k) not in (None, 0, 0.0, "") for k in keys)
 
 

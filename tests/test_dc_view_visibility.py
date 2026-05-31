@@ -21,6 +21,81 @@ def test_has_power_data_with_lpars():
     assert dc_view._has_power_data({"lpar_count": 1}) is True
 
 
+def test_has_power_data_with_compute_hosts():
+    assert dc_view._has_power_data({"hosts": 3}) is True
+
+
+def test_has_power_data_storage_only():
+    """Storage-only DC: compute keys zero but IBM storage capacity present."""
+    assert dc_view._has_power_data(
+        {
+            "hosts": 0,
+            "lpar_count": 0,
+            "cpu_used": 0,
+            "memory_total": 0,
+            "storage_cap_tb": 3567.3,
+            "storage_used_tb": 1648.86,
+        }
+    ) is True
+
+
+def test_has_power_data_storage_used_only():
+    assert dc_view._has_power_data({"storage_used_tb": 100.0}) is True
+
+
+def test_has_power_data_vios_only():
+    assert dc_view._has_power_data({"vios": 2}) is True
+
+
+def test_power_virt_and_ibm_storage_tabs_shown_for_storage_only_dc(monkeypatch):
+    """Power Mimari + IBM Storage tabs visible when only IBM storage metrics exist."""
+    dc = {
+        "meta": {"name": "DC13", "location": "Istanbul"},
+        "classic": {"hosts": 29, "vms": 1732, "cpu_cap": 5317.44, "mem_cap": 87.49, "stor_cap": 7970.24},
+        "hyperconv": {},
+        "power": {
+            "hosts": 0,
+            "lpar_count": 0,
+            "cpu_used": 0,
+            "memory_total": 0,
+            "storage_cap_tb": 3567.3,
+            "storage_used_tb": 1648.86,
+        },
+        "energy": {},
+    }
+    storage_capacity = {"systems": [{"total_mdisk_capacity": "3567.30 TB"}]}
+    storage_performance = {"series": []}
+    _fake_service_network(
+        monkeypatch,
+        dc,
+        storage_capacity=storage_capacity,
+        storage_performance=storage_performance,
+    )
+
+    layout = dc_view.build_dc_view("DC13", time_range={"from": 0, "to": 0})
+    labels = _collect_tab_labels(layout)
+    assert "Power Mimari" in labels
+    assert "IBM Storage" in labels
+    assert "Virtualization" in labels
+
+
+def test_power_virt_tab_hidden_when_all_power_metrics_empty(monkeypatch):
+    dc = {
+        "meta": {"name": "DCX", "location": "Nowhere"},
+        "classic": {"hosts": 1, "vms": 1, "cpu_cap": 10.0},
+        "hyperconv": {},
+        "power": {},
+        "energy": {},
+    }
+    _fake_service_network(monkeypatch, dc)
+
+    layout = dc_view.build_dc_view("DCX", time_range={"from": 0, "to": 0})
+    labels = _collect_tab_labels(layout)
+    assert "Power Mimari" not in labels
+    assert "IBM Storage" not in labels
+    assert "Virtualization" in labels
+
+
 def _fake_service(monkeypatch, dc_details: dict, s3_pools: dict | None = None):
     """Patch api_client (imported as api) for build_dc_view tests."""
     pools = s3_pools or {}
