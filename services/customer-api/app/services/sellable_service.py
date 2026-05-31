@@ -80,7 +80,7 @@ _DC_DETAILS_WINDOW_DAYS: int = int(os.getenv("SELLABLE_REDIS_WINDOW_DAYS", "7"))
 
 # TTL (seconds) for compute_all_panels result in crm-engine Redis (DB 2).
 # 0 disables caching. Override with SELLABLE_CACHE_TTL_SECONDS.
-_SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "120"))
+_SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Maps allocated_table → Redis section key for per-DC (dc_details) response.
 _VM_TABLE_DC_SECTION: dict[str, str] = {
@@ -224,6 +224,12 @@ class SellableService:
             allocated_column=row.get("allocated_column"),
             allocated_unit=row.get("allocated_unit"),
             filter_clause=row.get("filter_clause"),
+            manual_total=(
+                float(row["manual_total"]) if row.get("manual_total") is not None else None
+            ),
+            manual_allocated=(
+                float(row["manual_allocated"]) if row.get("manual_allocated") is not None else None
+            ),
             notes=row.get("notes"),
         )
 
@@ -300,6 +306,14 @@ class SellableService:
                     allocated_column=row.get("allocated_column"),
                     allocated_unit=row.get("allocated_unit"),
                     filter_clause=row.get("filter_clause"),
+                    manual_total=(
+                        float(row["manual_total"]) if row.get("manual_total") is not None else None
+                    ),
+                    manual_allocated=(
+                        float(row["manual_allocated"])
+                        if row.get("manual_allocated") is not None
+                        else None
+                    ),
                     notes=row.get("notes"),
                 )
                 for row in rows
@@ -565,6 +579,8 @@ SELECT _tot, _used FROM latest
         """
         if not src.source_table or not src.total_column:
             return 0.0, 0.0
+        if src.manual_total is not None:
+            return float(src.manual_total or 0.0), float(src.manual_allocated or 0.0)
         if self._bare_table_name(src.source_table) == "raw_ibm_storage_system":
             return self._query_ibm_storage_string_totals(src, dc_code)
         params: list[Any] = []
@@ -903,7 +919,10 @@ SELECT _tot, _used FROM latest
         unit_price_tl, has_price = self._resolve_unit_price_tl(panel.panel_key, price_overrides)
 
         notes: list[str] = []
-        has_infra = bool(src.source_table and src.total_column)
+        has_infra = bool(
+            src.manual_total is not None
+            or (src.source_table and src.total_column)
+        )
 
         # Cluster-aware path: when caller passed concrete clusters and the panel
         # family maps to a /compute endpoint, both cap and allocated come from
@@ -1008,7 +1027,121 @@ SELECT _tot, _used FROM latest
             notes=notes,
         )
 
-    # -- result cache (crm-engine Redis DB 2) -----------------------------------
+    # -- result cache (crm-engine Redis DB 2) + Tier-2 durable webui-db ---------
+
+    @staticmethod
+    def _clusters_csv(selected_clusters: list[str] | None) -> str:
+        if not selected_clusters:
+            return ""
+        return ",".join(sorted(c for c in selected_clusters if c))
+
+    @staticmethod
+    def _snapshot_family_key(family: str | None) -> str:
+        return family if family else "*"
+
+    def _snapshot_db_get(
+        self,
+        dc_code: str,
+        family: str,
+        clusters_csv: str,
+    ) -> list[PanelResult] | None:
+        if not self._webui.is_available:
+            return None
+        try:
+            row = self._webui.run_one(
+                sq.GET_PANEL_RESULT_SNAPSHOT,
+                (dc_code or "*", family, clusters_csv),
+            )
+        except Exception:
+            logger.debug("_snapshot_db_get failed dc=%s family=%s", dc_code, family)
+            return None
+        if not row or not row.get("payload"):
+            return None
+        payload = row["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if not isinstance(payload, list):
+            return None
+        try:
+            return [self._panel_result_from_dict(d) for d in payload]
+        except Exception:
+            logger.warning("_snapshot_db_get decode failed dc=%s family=%s", dc_code, family)
+            return None
+
+    def _snapshot_db_set(
+        self,
+        dc_code: str,
+        family: str,
+        clusters_csv: str,
+        results: list[PanelResult],
+    ) -> None:
+        if not self._webui.is_available or not results:
+            return
+        try:
+            payload = json.dumps([r.to_dict() for r in results])
+            self._webui.execute(
+                sq.UPSERT_PANEL_RESULT_SNAPSHOT,
+                (dc_code or "*", family, clusters_csv, payload),
+            )
+        except Exception:
+            logger.exception(
+                "_snapshot_db_set failed dc=%s family=%s clusters=%s",
+                dc_code, family, clusters_csv,
+            )
+
+    def _snapshot_db_invalidate(self, dc_code: str | None = None) -> None:
+        webui = getattr(self, "_webui", None)
+        if webui is None or not webui.is_available:
+            return
+        try:
+            code = dc_code if dc_code and dc_code != "*" else None
+            self._webui.execute(sq.DELETE_PANEL_RESULT_SNAPSHOTS, (code, code))
+        except Exception:
+            logger.exception("_snapshot_db_invalidate failed dc=%s", dc_code)
+
+    def snapshot_meta(
+        self,
+        dc_code: str = "*",
+        family: str | None = None,
+        clusters: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return latest Tier-2 snapshot timestamp for the given scope."""
+        if not self._webui.is_available:
+            return {"computed_at": None, "dc_code": dc_code, "family": family or "*"}
+        fam_key = self._snapshot_family_key(family)
+        clusters_csv = self._clusters_csv(clusters)
+        try:
+            row = self._webui.run_one(
+                sq.GET_PANEL_RESULT_SNAPSHOT,
+                (dc_code or "*", fam_key, clusters_csv),
+            )
+        except Exception:
+            row = None
+        if row and row.get("computed_at"):
+            ts = row["computed_at"]
+            return {
+                "computed_at": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                "dc_code": dc_code or "*",
+                "family": fam_key,
+                "clusters_csv": clusters_csv,
+            }
+        try:
+            row = self._webui.run_one(
+                sq.GET_LATEST_SNAPSHOT_META,
+                (dc_code if dc_code != "*" else None, dc_code if dc_code != "*" else None,
+                 fam_key if family else None, fam_key if family else None),
+            )
+        except Exception:
+            row = None
+        if not row:
+            return {"computed_at": None, "dc_code": dc_code, "family": fam_key}
+        ts = row.get("computed_at")
+        return {
+            "computed_at": ts.isoformat() if hasattr(ts, "isoformat") else (str(ts) if ts else None),
+            "dc_code": row.get("dc_code") or dc_code,
+            "family": row.get("family") or fam_key,
+            "clusters_csv": row.get("clusters_csv") or clusters_csv,
+        }
 
     @staticmethod
     def _result_cache_key(
@@ -1048,11 +1181,12 @@ SELECT _tot, _used FROM latest
             logger.exception("crm Redis SETEX failed key=%s", key)
 
     def invalidate_result_cache(self, dc_code: str | None = None) -> int:
-        """Drop cached compute_all_panels payloads.
+        """Drop cached compute_all_panels payloads (Redis Tier-1 + webui Tier-2).
 
-        Called by ``snapshot_all`` so the next request after a scheduler tick
-        re-reads fresh metrics.  Returns the number of keys deleted.
+        Called after config changes and by ``snapshot_all`` before recomputing.
+        Returns the number of Redis keys deleted.
         """
+        self._snapshot_db_invalidate(dc_code)
         if self._crm_redis is None:
             return 0
         pattern = (
@@ -1102,27 +1236,37 @@ SELECT _tot, _used FROM latest
         selected_clusters: list[str] | None = None,
         family: str | None = None,
     ) -> list[PanelResult]:
-        # 1. Result cache lookup — short-circuits the entire compute pipeline.
+        fam_key = self._snapshot_family_key(family)
+        clusters_csv = self._clusters_csv(selected_clusters)
+
+        # 1. Tier-1 Redis result cache lookup.
         cache_key = self._result_cache_key(dc_code, selected_clusters, family)
         cached = self._result_cache_get(cache_key)
         if cached is not None:
             return cached
 
-        # 2. Pull panel definitions; filter by family BEFORE any heavy lookup.
+        # 2. Tier-2 durable webui-db snapshot (repopulate Redis on hit).
+        db_cached = self._snapshot_db_get(dc_code or "*", fam_key, clusters_csv)
+        if db_cached is not None:
+            self._result_cache_set(cache_key, db_cached)
+            return db_cached
+
+        # 3. Pull panel definitions; filter by family BEFORE any heavy lookup.
         defs = self.list_panel_defs()
         if family:
             defs = [d for d in defs if d.family == family]
         if not defs:
             self._result_cache_set(cache_key, [])
+            self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, [])
             return []
 
-        # 3. Bulk-load WebUI metadata in 3 queries instead of N×3 round-trips.
+        # 4. Bulk-load WebUI metadata in 3 queries instead of N×3 round-trips.
         unit_lookup = self._build_unit_lookup()
         infra_lookup = self._bulk_load_infra_sources(dc_code)
         threshold_lookup = self._bulk_load_thresholds(dc_code)
         price_overrides = self._bulk_load_price_overrides()
 
-        # 4. Pre-fetch the DC Redis payload once; every Redis-backed allocated
+        # 5. Pre-fetch the DC Redis payload once; every Redis-backed allocated
         #    panel reuses the same JSON instead of issuing one GET per panel.
         needs_dc_payload = any(
             self._bare_table_name(
@@ -1132,7 +1276,7 @@ SELECT _tot, _used FROM latest
         )
         dc_payload = self._load_dc_redis_payload(dc_code) if needs_dc_payload else None
 
-        # 5. Per-family /compute response cache — 3 cpu/ram/storage panels of
+        # 6. Per-family /compute response cache — 3 cpu/ram/storage panels of
         #    the same family share a single HTTP call when clusters are set.
         compute_response_cache: dict[tuple, dict | None] = {}
 
@@ -1151,7 +1295,7 @@ SELECT _tot, _used FROM latest
             for d in defs
         ]
 
-        # 6. Apply ratio per family.
+        # 7. Apply ratio per family.
         by_family: dict[str, list[PanelResult]] = defaultdict(list)
         for r in results:
             by_family[r.family].append(r)
@@ -1171,6 +1315,7 @@ SELECT _tot, _used FROM latest
         constrained.sort(key=lambda p: (p.family, p.resource_kind, p.panel_key))
 
         self._result_cache_set(cache_key, constrained)
+        self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, constrained)
         return constrained
 
     def compute_summary(
@@ -1248,16 +1393,68 @@ SELECT _tot, _used FROM latest
 
     # ------------------------------------------------------------------ snapshot
 
+    def _fetch_datacenter_codes(self) -> list[str]:
+        """List active DC codes from datacenter-api (for scheduler prewarm)."""
+        if not self._dc_api_url:
+            return []
+        url = f"{self._dc_api_url}/api/v1/datacenters/summary?preset=30d"
+        try:
+            resp = httpx.get(url, timeout=15.0)
+            resp.raise_for_status()
+            rows = resp.json()
+        except Exception:
+            logger.exception("_fetch_datacenter_codes failed url=%s", url)
+            return []
+        if not isinstance(rows, list):
+            return []
+        out: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            dc_id = row.get("id") or row.get("dc_code") or row.get("name")
+            if dc_id:
+                out.append(str(dc_id))
+        return out
+
+    def _prewarm_dc_virt_snapshots(self) -> int:
+        """Compute and persist per-DC virt family snapshots for the DC list page.
+
+        Matches ``datacenters._virt_sellable_tl_for_dc`` which passes ``clusters=None``
+        (dc-wide datalake + Redis path, not cluster-scoped compute).
+        """
+        dc_codes = self._fetch_datacenter_codes()
+        if not dc_codes:
+            return 0
+        warmed = 0
+        for dc in dc_codes:
+            for family in (
+                "virt_classic",
+                "virt_hyperconverged",
+                "virt_power",
+                "virt_power_hana",
+            ):
+                try:
+                    self.compute_all_panels(dc_code=dc, family=family)
+                    warmed += 1
+                except Exception:
+                    logger.exception(
+                        "_prewarm_dc_virt_snapshots failed dc=%s family=%s",
+                        dc, family,
+                    )
+        return warmed
+
     def snapshot_all(self) -> int:
         """Compute the global dashboard, push every metric into TaggingService
         cache + persist a snapshot row. Returns the number of metrics emitted.
 
-        Also invalidates the compute_all_panels result cache so the next user
-        request after the scheduler tick picks up fresh values.
+        Also invalidates stale caches, prewarms per-DC virt snapshots, and
+        repopulates Tier-1/Tier-2 panel result caches.
         """
         # Drop stale cache before re-computing so the scheduler-driven write
         # repopulates fresh keys (and any concurrent user request also misses).
         self.invalidate_result_cache()
+        prewarmed = self._prewarm_dc_virt_snapshots()
+        logger.info("SellableService.snapshot_all: prewarmed %d per-DC family snapshots", prewarmed)
         try:
             summary = self.compute_summary("*")
         except Exception:  # noqa: BLE001

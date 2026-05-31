@@ -58,7 +58,11 @@ def list_thresholds(cfg: CrmConfigService = Depends(_config)):
 
 
 @router.put("/crm/config/thresholds", response_model=dict)
-def upsert_threshold(body: ThresholdUpsert, cfg: CrmConfigService = Depends(_config)):
+def upsert_threshold(
+    body: ThresholdUpsert,
+    request: Request,
+    cfg: CrmConfigService = Depends(_config),
+):
     if body.sellable_limit_pct < 0 or body.sellable_limit_pct > 100:
         raise HTTPException(status_code=400, detail="sellable_limit_pct must be between 0 and 100")
     cfg.upsert_threshold(
@@ -69,6 +73,9 @@ def upsert_threshold(body: ThresholdUpsert, cfg: CrmConfigService = Depends(_con
         updated_by="settings-ui",
         panel_key=body.panel_key,
     )
+    sellable = getattr(request.app.state, "sellable", None)
+    if sellable is not None:
+        sellable.invalidate_result_cache()
     return {
         "status": "ok",
         "resource_type": body.resource_type,
@@ -78,8 +85,11 @@ def upsert_threshold(body: ThresholdUpsert, cfg: CrmConfigService = Depends(_con
 
 
 @router.delete("/crm/config/thresholds/{threshold_id}", response_model=dict)
-def delete_threshold(threshold_id: int, cfg: CrmConfigService = Depends(_config)):
+def delete_threshold(threshold_id: int, request: Request, cfg: CrmConfigService = Depends(_config)):
     n = cfg.delete_threshold(threshold_id)
+    sellable = getattr(request.app.state, "sellable", None)
+    if sellable is not None:
+        sellable.invalidate_result_cache()
     return {"status": "ok", "id": threshold_id, "rows_deleted": n}
 
 
@@ -97,6 +107,7 @@ def list_price_overrides(cfg: CrmConfigService = Depends(_config)):
 def upsert_price_override(
     productid: str,
     body: PriceOverrideUpsert,
+    request: Request,
     cfg: CrmConfigService = Depends(_config),
 ):
     if body.unit_price_tl < 0:
@@ -110,12 +121,18 @@ def upsert_price_override(
         notes=body.notes,
         updated_by="settings-ui",
     )
+    sellable = getattr(request.app.state, "sellable", None)
+    if sellable is not None:
+        sellable.invalidate_result_cache()
     return {"status": "ok", "productid": productid}
 
 
 @router.delete("/crm/config/price-overrides/{productid}", response_model=dict)
-def delete_price_override(productid: str, cfg: CrmConfigService = Depends(_config)):
+def delete_price_override(productid: str, request: Request, cfg: CrmConfigService = Depends(_config)):
     n = cfg.delete_price_override(productid)
+    sellable = getattr(request.app.state, "sellable", None)
+    if sellable is not None:
+        sellable.invalidate_result_cache()
     return {"status": "ok", "productid": productid, "rows_deleted": n}
 
 

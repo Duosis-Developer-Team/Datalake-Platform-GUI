@@ -254,6 +254,8 @@ class PanelInfraSourceRow(BaseModel):
     allocated_column: Optional[str] = None
     allocated_unit: Optional[str] = None
     filter_clause: Optional[str] = None
+    manual_total: Optional[float] = None
+    manual_allocated: Optional[float] = None
     notes: Optional[str] = None
     updated_by: Optional[str] = None
 
@@ -267,6 +269,8 @@ class PanelInfraSourceUpsert(BaseModel):
     allocated_column: Optional[str] = None
     allocated_unit: Optional[str] = None
     filter_clause: Optional[str] = None
+    manual_total: Optional[float] = None
+    manual_allocated: Optional[float] = None
     notes: Optional[str] = None
 
 

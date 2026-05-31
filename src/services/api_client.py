@@ -214,12 +214,120 @@ def _put_json(client: httpx.Client, path: str, body: dict[str, Any]) -> Any:
     return response.json()
 
 
+def _post_json(client: httpx.Client, path: str, body: dict[str, Any] | None = None) -> Any:
+    response = client.post(path, json=body or {}, headers=_auth_headers())
+    response.raise_for_status()
+    if not response.content:
+        return {}
+    return response.json()
+
+
 def _delete_json(client: httpx.Client, path: str) -> Any:
     response = client.delete(path, headers=_auth_headers())
     response.raise_for_status()
     if not response.content:
         return {}
     return response.json()
+
+
+def _sellable_panels_have_data(panels: list) -> bool:
+    """True when at least one panel row carries infra-backed or non-zero potential."""
+    for p in panels:
+        if not isinstance(p, dict):
+            continue
+        if p.get("has_infra_source"):
+            return True
+        if float(p.get("potential_tl") or 0.0) > 0:
+            return True
+    return False
+
+
+def _sellable_summary_has_data(summary: dict) -> bool:
+    if not isinstance(summary, dict):
+        return False
+    if float(summary.get("total_potential_tl") or 0.0) > 0:
+        return True
+    for fam in summary.get("families") or []:
+        if not isinstance(fam, dict):
+            continue
+        if float(fam.get("total_potential_tl") or 0.0) > 0:
+            return True
+        for p in fam.get("panels") or []:
+            if isinstance(p, dict) and (
+                p.get("has_infra_source") or float(p.get("potential_tl") or 0.0) > 0
+            ):
+                return True
+    return False
+
+
+def get_sellable_snapshot_meta(
+    dc_code: str = "*",
+    family: Optional[str] = None,
+    clusters: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    qs = f"dc_code={quote(dc_code, safe='*')}"
+    if family:
+        qs += f"&family={quote(family, safe='')}"
+    cl = _normalize_clusters_arg(clusters)
+    if cl:
+        qs += f"&clusters={quote(','.join(cl), safe=',')}"
+
+    def fetch() -> dict[str, Any]:
+        data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/snapshot-meta?{qs}")
+        return data if isinstance(data, dict) else {}
+
+    cache_key = f"api:sellable_snapshot_meta:{dc_code}:{family or '*'}:{','.join(cl) if cl else '*'}"
+    return _api_cache_get_with_stale(cache_key, fetch, {})
+
+
+def refresh_sellable_potential() -> dict[str, Any]:
+    out = _post_json(_client_crm, "/api/v1/crm/sellable-potential/refresh")
+    _invalidate_sellable_caches()
+    return out if isinstance(out, dict) else {}
+
+
+def _api_cache_get_sellable_panels(
+    cache_key: str,
+    fetch_normalized: Callable[[], list],
+    dc_code: str,
+    family: Optional[str],
+    clusters: Optional[list[str]],
+) -> list:
+    stale = _api_response_cache.get(cache_key)
+    if stale is not None:
+        return _clone(stale)
+    try:
+        out = fetch_normalized()
+        meta = get_sellable_snapshot_meta(dc_code=dc_code, family=family, clusters=clusters)
+        if meta.get("computed_at") or _sellable_panels_have_data(out):
+            _api_response_cache.set(cache_key, out)
+        return out
+    except _HTTP_ERRORS:
+        hit = _api_response_cache.get(cache_key)
+        if hit is not None:
+            return _clone(hit)
+        return []
+
+
+def _api_cache_get_sellable_summary(
+    cache_key: str,
+    fetch_normalized: Callable[[], dict],
+    dc_code: str,
+) -> dict:
+    stale = _api_response_cache.get(cache_key)
+    if stale is not None:
+        return _clone(stale)
+    try:
+        out = fetch_normalized()
+        meta = get_sellable_snapshot_meta(dc_code=dc_code)
+        if meta.get("computed_at") or _sellable_summary_has_data(out):
+            _api_response_cache.set(cache_key, out)
+        return out
+    except _HTTP_ERRORS:
+        hit = _api_response_cache.get(cache_key)
+        if hit is not None:
+            return _clone(hit)
+        return {}
 
 
 _HTTP_ERRORS = (
@@ -1394,7 +1502,7 @@ def get_sellable_summary(dc_code: str = "*") -> dict:
         return data if isinstance(data, dict) else {}
 
     cache_key = f"api:sellable_summary:{dc_code}"
-    return _api_cache_get_with_stale(cache_key, fetch, {})
+    return _api_cache_get_sellable_summary(cache_key, fetch, dc_code)
 
 
 def _normalize_clusters_arg(clusters: Optional[list]) -> Optional[list[str]]:
@@ -1440,7 +1548,7 @@ def get_sellable_by_panel(
 
     cluster_key = ",".join(cl) if cl else "*"
     cache_key = f"api:sellable_by_panel:{dc_code}:{family or '*'}:{cluster_key}"
-    return _api_cache_get_with_stale(cache_key, fetch, [])
+    return _api_cache_get_sellable_panels(cache_key, fetch, dc_code, family, cl)
 
 
 def get_sellable_by_family(
@@ -1551,6 +1659,8 @@ def put_panel_infra_source(
     allocated_column: Optional[str] = None,
     allocated_unit: Optional[str] = None,
     filter_clause: Optional[str] = None,
+    manual_total: Optional[float] = None,
+    manual_allocated: Optional[float] = None,
     notes: Optional[str] = None,
 ) -> dict[str, Any]:
     enc = quote(panel_key, safe="")
@@ -1563,10 +1673,13 @@ def put_panel_infra_source(
         "allocated_column": allocated_column,
         "allocated_unit": allocated_unit,
         "filter_clause": filter_clause,
+        "manual_total": manual_total,
+        "manual_allocated": manual_allocated,
         "notes": notes,
     }
     out = _put_json(_client_crm, f"/api/v1/crm/panels/{enc}/infra-source", body)
     _api_response_cache.delete_prefix(f"api:crm_panel_infra_source:{panel_key}:")
+    _api_response_cache.delete_prefix("api:sellable_snapshot_meta:")
     _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
 
@@ -1654,6 +1767,7 @@ def _invalidate_sellable_caches() -> None:
     _api_response_cache.delete_prefix("api:sellable_summary:")
     _api_response_cache.delete_prefix("api:sellable_by_panel:")
     _api_response_cache.delete_prefix("api:sellable_by_family:")
+    _api_response_cache.delete_prefix("api:sellable_snapshot_meta:")
     _api_response_cache.delete_prefix("api:metric_tags:")
     _api_response_cache.delete_prefix("api:metric_snapshots:")
 

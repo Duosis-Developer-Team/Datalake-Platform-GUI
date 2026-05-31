@@ -1,9 +1,8 @@
 """Integrations - Panel infra-source binding editor (gui_panel_infra_source).
 
 Lets the operator choose which datalake table/column supplies the total and
-allocated values for each panel, optionally per DC. Selecting a panel auto-loads
-its current binding into the form so the operator can edit (instead of starting
-from blanks). The bindings table supports native filter / sort / row-select.
+allocated values for each panel, optionally per DC. Manual total/allocated bypass
+datalake SUM when set (ADR-0015). Force recompute triggers crm-engine refresh.
 """
 from __future__ import annotations
 
@@ -14,6 +13,14 @@ from src.services import api_client as api
 
 
 _INFRA_TABLE_ID = "ifs-table"
+
+
+def _snapshot_badge() -> dmc.Badge | dmc.Text:
+    meta = api.get_sellable_snapshot_meta("*") or {}
+    ts = meta.get("computed_at")
+    if not ts:
+        return dmc.Text("No durable snapshot yet — run Force recompute or wait for scheduler.", size="xs", c="dimmed")
+    return dmc.Badge(f"Last snapshot: {ts}", color="indigo", variant="light", size="sm")
 
 
 def _row_for(panel_key: str) -> dict:
@@ -27,6 +34,8 @@ def _row_for(panel_key: str) -> dict:
         "allocated_table":  str(src.get("allocated_table") or ""),
         "allocated_column": str(src.get("allocated_column") or ""),
         "allocated_unit":   str(src.get("allocated_unit") or ""),
+        "manual_total":     str(src.get("manual_total") if src.get("manual_total") is not None else ""),
+        "manual_allocated": str(src.get("manual_allocated") if src.get("manual_allocated") is not None else ""),
         "filter_clause":    str(src.get("filter_clause") or ""),
         "notes":            str(src.get("notes") or ""),
     }
@@ -42,6 +51,15 @@ def _all_rows() -> list[dict]:
     return rows
 
 
+def _parse_optional_float(raw: str | None) -> float | None:
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_layout(search: str | None = None) -> html.Div:
     rows = _all_rows()
     panel_options = [
@@ -54,14 +72,16 @@ def build_layout(search: str | None = None) -> html.Div:
         dmc.Stack(gap="xs", mb="md", children=[
             dmc.Title("Panel infra-source bindings", order=3),
             dmc.Text(
-                "Each panel pulls its 'total' capacity and 'allocated' provisioned amount from a "
-                "datalake table/column. For VMware, set source_table to datacenter_metrics or "
-                "cluster_metrics (same tables as the WebUI); customer-api automatically applies the "
-                "latest-per-(dc,datacenter) / latest-per-(cluster,datacenter) snapshot before SUM. "
-                "vm_metrics filters use column datacenter, e.g. datacenter ILIKE :dc_pattern "
-                "(and cluster ILIKE '%KM%' for KM-only panels). Selecting a panel loads its binding.",
+                "Each panel pulls its total capacity and allocated provisioned amount from a "
+                "datalake table/column (or manual override). Saving invalidates sellable caches "
+                "immediately. Use Force recompute to rebuild durable Tier-2 snapshots.",
                 size="sm", c="dimmed",
             ),
+            dmc.Group(gap="sm", children=[
+                _snapshot_badge(),
+                dmc.Button("Force recompute", id="ifs-force-recompute", size="xs", variant="light", color="indigo"),
+            ]),
+            html.Div(id="ifs-recompute-msg"),
         ]),
         dmc.Paper(p="md", radius="md", withBorder=True, mb="md", children=[
             dmc.Group(justify="space-between", mb="sm", children=[
@@ -97,6 +117,8 @@ def build_layout(search: str | None = None) -> html.Div:
                 dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.TextInput(id="ifs-atable", label="allocated_table", size="xs", placeholder="nutanix_vm_metrics")),
                 dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.TextInput(id="ifs-acol", label="allocated_column", size="xs")),
                 dmc.GridCol(span={"base": 12, "md": 2}, children=dmc.TextInput(id="ifs-aunit", label="allocated_unit", size="xs")),
+                dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.NumberInput(id="ifs-manual-total", label="manual_total", size="xs", decimalScale=4)),
+                dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.NumberInput(id="ifs-manual-alloc", label="manual_allocated", size="xs", decimalScale=4)),
                 dmc.GridCol(span={"base": 12, "md": 12}, children=dmc.TextInput(id="ifs-filter", label="filter_clause", size="xs", placeholder="datacenter_name ILIKE :dc_pattern")),
                 dmc.GridCol(span={"base": 12, "md": 9}, children=dmc.TextInput(id="ifs-notes", label="notes", size="xs")),
                 dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.Button("Save", id="ifs-save", size="xs")),
@@ -117,10 +139,9 @@ def build_layout(search: str | None = None) -> html.Div:
                     {"name": "dc",               "id": "dc_code"},
                     {"name": "source_table",     "id": "source_table"},
                     {"name": "total_column",     "id": "total_column"},
-                    {"name": "total_unit",       "id": "total_unit"},
+                    {"name": "manual_total",     "id": "manual_total"},
+                    {"name": "manual_allocated", "id": "manual_allocated"},
                     {"name": "allocated_table",  "id": "allocated_table"},
-                    {"name": "allocated_column", "id": "allocated_column"},
-                    {"name": "allocated_unit",   "id": "allocated_unit"},
                     {"name": "filter_clause",    "id": "filter_clause"},
                 ],
                 row_selectable="single",
@@ -145,8 +166,10 @@ def build_layout(search: str | None = None) -> html.Div:
 def _form_fields_for(panel_key: str | None) -> tuple:
     """Fetch existing infra-source for `panel_key` and return form-tuple."""
     if not panel_key:
-        return ("*", "", "", "", "", "", "", "", "")
+        return ("*", "", "", "", "", "", "", "", "", None, None, "")
     src = api.get_panel_infra_source(str(panel_key), "*") or {}
+    mt = src.get("manual_total")
+    ma = src.get("manual_allocated")
     return (
         str(src.get("dc_code") or "*"),
         str(src.get("source_table") or ""),
@@ -156,6 +179,8 @@ def _form_fields_for(panel_key: str | None) -> tuple:
         str(src.get("allocated_column") or ""),
         str(src.get("allocated_unit") or ""),
         str(src.get("filter_clause") or ""),
+        float(mt) if mt is not None else None,
+        float(ma) if ma is not None else None,
         str(src.get("notes") or ""),
     )
 
@@ -170,18 +195,15 @@ def _form_fields_for(panel_key: str | None) -> tuple:
     Output("ifs-acol",   "value", allow_duplicate=True),
     Output("ifs-aunit",  "value", allow_duplicate=True),
     Output("ifs-filter", "value", allow_duplicate=True),
+    Output("ifs-manual-total", "value", allow_duplicate=True),
+    Output("ifs-manual-alloc", "value", allow_duplicate=True),
     Output("ifs-notes",  "value", allow_duplicate=True),
     Input("ifs-panel-quick", "value"),
     prevent_initial_call=True,
 )
 def _autofill_from_quick_pick(panel_key):
-    """Registry dropdown: committed selection only — avoids Mantine Select blur-clear.
-
-    Free-text ``panel_key`` is typed in ``ifs-panel``; this callback runs only when
-    the operator picks from ``ifs-panel-quick``, filling both the text field and DB binding.
-    """
     if not panel_key:
-        return (no_update,) * 10
+        return (no_update,) * 12
     fields = _form_fields_for(panel_key)
     return (str(panel_key),) + fields
 
@@ -197,6 +219,8 @@ def _autofill_from_quick_pick(panel_key):
     Output("ifs-acol",        "value", allow_duplicate=True),
     Output("ifs-aunit",       "value", allow_duplicate=True),
     Output("ifs-filter",      "value", allow_duplicate=True),
+    Output("ifs-manual-total", "value", allow_duplicate=True),
+    Output("ifs-manual-alloc", "value", allow_duplicate=True),
     Output("ifs-notes",       "value", allow_duplicate=True),
     Input(_INFRA_TABLE_ID, "selected_rows"),
     State(_INFRA_TABLE_ID, "data"),
@@ -204,10 +228,10 @@ def _autofill_from_quick_pick(panel_key):
 )
 def _load_selected_row(selected, data):
     if not selected or not data:
-        return [no_update] * 11
+        return [no_update] * 13
     idx = selected[0]
     if idx is None or idx >= len(data):
-        return [no_update] * 11
+        return [no_update] * 13
     r = data[idx] or {}
     pk = r.get("panel_key") or ""
     return (
@@ -221,6 +245,8 @@ def _load_selected_row(selected, data):
         r.get("allocated_column") or "",
         r.get("allocated_unit") or "",
         r.get("filter_clause") or "",
+        _parse_optional_float(r.get("manual_total")),
+        _parse_optional_float(r.get("manual_allocated")),
         "",
     )
 
@@ -236,13 +262,15 @@ def _load_selected_row(selected, data):
     Output("ifs-acol",        "value", allow_duplicate=True),
     Output("ifs-aunit",       "value", allow_duplicate=True),
     Output("ifs-filter",      "value", allow_duplicate=True),
+    Output("ifs-manual-total", "value", allow_duplicate=True),
+    Output("ifs-manual-alloc", "value", allow_duplicate=True),
     Output("ifs-notes",       "value", allow_duplicate=True),
     Output(_INFRA_TABLE_ID, "selected_rows", allow_duplicate=True),
     Input("ifs-reset", "n_clicks"),
     prevent_initial_call=True,
 )
 def _reset_form(_n):
-    return ("", None, "*", "", "", "", "", "", "", "", "", [])
+    return ("", None, "*", "", "", "", "", "", "", "", None, None, "", [])
 
 
 @callback(
@@ -258,10 +286,12 @@ def _reset_form(_n):
     State("ifs-acol",   "value"),
     State("ifs-aunit",  "value"),
     State("ifs-filter", "value"),
+    State("ifs-manual-total", "value"),
+    State("ifs-manual-alloc", "value"),
     State("ifs-notes",  "value"),
     prevent_initial_call=True,
 )
-def _save_infra(_n, panel, dc, stable, tcol, tunit, atable, acol, aunit, filt, notes):
+def _save_infra(_n, panel, dc, stable, tcol, tunit, atable, acol, aunit, filt, manual_total, manual_alloc, notes):
     if not panel:
         return dmc.Alert(color="yellow", title="panel_key required"), no_update
     try:
@@ -275,11 +305,35 @@ def _save_infra(_n, panel, dc, stable, tcol, tunit, atable, acol, aunit, filt, n
             allocated_column=acol or None,
             allocated_unit=aunit or None,
             filter_clause=filt or None,
+            manual_total=manual_total if manual_total is not None else None,
+            manual_allocated=manual_alloc if manual_alloc is not None else None,
             notes=notes or None,
         )
         return (
-            dmc.Alert(color="green", title=f"Saved: {panel}"),
+            dmc.Alert(
+                color="green",
+                title=f"Saved: {panel}",
+                children="Sellable caches invalidated — changes apply on next read.",
+            ),
             _all_rows(),
         )
     except Exception as exc:  # noqa: BLE001
         return dmc.Alert(color="red", title="Save failed", children=str(exc)), no_update
+
+
+@callback(
+    Output("ifs-recompute-msg", "children"),
+    Input("ifs-force-recompute", "n_clicks"),
+    prevent_initial_call=True,
+)
+def _force_recompute(_n):
+    try:
+        result = api.refresh_sellable_potential()
+        metrics = result.get("metrics_emitted", 0)
+        return dmc.Alert(
+            color="green",
+            title="Recompute started",
+            children=f"Snapshot refresh complete. metrics_emitted={metrics}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return dmc.Alert(color="red", title="Recompute failed", children=str(exc))
