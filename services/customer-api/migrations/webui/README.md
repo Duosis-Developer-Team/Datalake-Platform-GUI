@@ -25,6 +25,7 @@ Keep numeric prefixes so new migrations always sort after existing ones.
 | `011_update_redis_allocated_units.sql` | Updates seed infra bindings for Redis-backed allocated metrics | Yes |
 | `012_power_crm_panels.sql` | IBM Power CRM panels / unit conversions | Yes |
 | `013_panel_result_snapshot_and_manual_override.sql` | Tier-2 `gui_panel_result_snapshot` + `manual_total`/`manual_allocated` on infra source | Yes |
+| `014_repair_gui_panel_result_snapshot.sql` | Repairs partial/legacy `gui_panel_result_snapshot` (adds `payload`, PK, index) when 013 was skipped by `IF NOT EXISTS` | Yes |
 
 ## Tracking table (`gui_schema_migrations`)
 
@@ -40,6 +41,14 @@ If a migration fails part-way through the chain, fix the underlying issue and re
 
 ```sql
 DELETE FROM gui_schema_migrations WHERE filename = '004_granular_pages.sql';
+```
+
+### Troubleshooting: `column "payload" does not exist` on `gui_panel_result_snapshot`
+
+If logs show `UndefinedColumn: column "payload" … gui_panel_result_snapshot` but migration `013` is already recorded, an **older partial table** likely existed before 013 ran (`CREATE TABLE IF NOT EXISTS` then skipped DDL). Run the apply script again after pulling **`014_repair_gui_panel_result_snapshot.sql`**. Verify:
+
+```powershell
+docker compose exec -T webui-db psql -U webuiadmin -d bulutwebui -c "\d gui_panel_result_snapshot"
 ```
 
 ## Docker: apply all pending migrations

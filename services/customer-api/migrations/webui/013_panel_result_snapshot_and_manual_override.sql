@@ -8,11 +8,12 @@ BEGIN;
 -- ---------------------------------------------------------------------------
 -- Tier-2 durable panel result snapshots (survives Redis cold start / restart)
 -- ---------------------------------------------------------------------------
+-- NOTE: IF NOT EXISTS alone cannot repair a pre-existing partial table; see 014_repair_*.
 CREATE TABLE IF NOT EXISTS gui_panel_result_snapshot (
     dc_code       TEXT NOT NULL DEFAULT '*',
     family        TEXT NOT NULL DEFAULT '*',
     clusters_csv  TEXT NOT NULL DEFAULT '',
-    payload       JSONB NOT NULL,
+    payload       JSONB NOT NULL DEFAULT '[]'::jsonb,
     computed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (dc_code, family, clusters_csv)
 );
