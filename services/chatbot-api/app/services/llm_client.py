@@ -73,8 +73,16 @@ class LLMError(Exception):
 
 # User-safe Turkish messages (CTO pack 03 Error UX).
 MSG_NOT_CONFIGURED = (
-    "Chatbot servisi LLM API key ile yapılandırılmamış. Sistem yöneticisinin "
-    "BULUTISTAN_LLM_API_KEY secret/env değerini kontrol etmesi gerekiyor."
+    "Chatbot servisi Bulutistan LLMaaS API token'ı ile yapılandırılmamış. Sistem "
+    "yöneticisinin BULUTISTAN_LLM_API_KEY secret/env değerini ayarlaması gerekiyor."
+)
+# Note: the upstream may phrase a 401 as "Invalid or expired JWT token", but the
+# credential we send is a Bulutistan LLMaaS *API token* (Authorization: Bearer
+# <API_TOKEN>), not a user JWT. Our wording reflects that.
+MSG_AUTH_FAILED = (
+    "Bulutistan LLMaaS API token'ı doğrulanamadı (geçersiz, süresi dolmuş, iptal "
+    "edilmiş veya yetkisiz olabilir). Sistem yöneticisinin BULUTISTAN_LLM_API_KEY "
+    "değerini geçerli bir API token ile güncellemesi gerekiyor."
 )
 MSG_RATE_LIMIT = (
     "Şu anda AI servisi rate limit'e takıldı. Biraz sonra tekrar deneyebilirsin."
@@ -154,8 +162,8 @@ class LLMClient:
                 stream=False,
             )
         except AuthenticationError as exc:
-            # Never fall back, never leak: this is a config problem.
-            raise LLMError("auth", MSG_NOT_CONFIGURED, str(exc)) from exc
+            # Upstream rejected the API token (401). Never fall back, never leak.
+            raise LLMError("auth", MSG_AUTH_FAILED, str(exc)) from exc
         except RateLimitError as exc:
             raise LLMError("rate_limit", MSG_RATE_LIMIT, str(exc)) from exc
         except APITimeoutError as exc:

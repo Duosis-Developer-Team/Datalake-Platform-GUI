@@ -27,7 +27,7 @@ Secrets come from the environment / Kubernetes Secret only — **never commit a 
 
 | Var | Default | Purpose |
 |---|---|---|
-| `BULUTISTAN_LLM_API_KEY` | `""` | **Secret.** LLMaaS token. |
+| `BULUTISTAN_LLM_API_KEY` | `""` | **Secret.** Bulutistan LLMaaS **API token** (sent as `Authorization: Bearer <API_TOKEN>`). |
 | `BULUTISTAN_LLM_BASE_URL` | `https://api.bulutistan.ai/v1` | OpenAI-compatible base URL. |
 | `CHATBOT_MODEL` / `BULUTISTAN_LLM_MODEL` | `gpt-oss-120b` | Primary model (both names accepted). |
 | `CHATBOT_FALLBACK_MODEL` / `BULUTISTAN_LLM_FALLBACK_MODEL` | `qwen3-next-80b-instruct` | Used on recoverable failures. |
@@ -84,3 +84,30 @@ kubectl rollout status deploy/bulutistan-chatbot-api
 - Forbidden-intent (secret / prompt-injection / destructive-SQL) requests are refused
   deterministically before any LLM call; benign questions are not over-blocked.
 - Per-user in-memory rate limiting; audit logs metadata only (no raw prompts by default).
+
+## LLM auth (401) troubleshooting
+
+The credential in `BULUTISTAN_LLM_API_KEY` is a **Bulutistan LLMaaS API token / API
+key** sent as `Authorization: Bearer <API_TOKEN>` — it is **not** a user JWT. (The
+WebUI→backend user JWT, `API_JWT_SECRET` / `verify_api_user`, is a separate concern.)
+
+If the LLMaaS endpoint returns **HTTP 401**, the upstream error body may read
+`Invalid or expired JWT token`, but for us that means the **API token is invalid,
+expired, revoked, wrong-format, or unauthorized** — a single 401 alone does not
+prove "expired". To diagnose:
+
+```bash
+export BULUTISTAN_LLM_API_KEY='<api-token>'   # shell only — never a tracked file
+export BULUTISTAN_LLM_BASE_URL='https://api.bulutistan.ai/v1'
+curl -i "$BULUTISTAN_LLM_BASE_URL/models" -H "Authorization: Bearer $BULUTISTAN_LLM_API_KEY"
+curl -i "$BULUTISTAN_LLM_BASE_URL/chat/completions" \
+  -H "Authorization: Bearer $BULUTISTAN_LLM_API_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"gpt-oss-120b","messages":[{"role":"user","content":"Merhaba"}]}'
+```
+
+- `/models` **and** `/chat/completions` both 401 ⇒ auth/token problem (regenerate the API token).
+- `/models` 200 but `/chat/completions` 401/403 ⇒ model-scope / chat-permission problem.
+- API tokens are case-sensitive — verify the exact value from the panel (e.g. `sk-proj-…` vs `Sk-proj-…`).
+
+Fix by generating a **new/valid Bulutistan LLMaaS API token** and setting it as
+`BULUTISTAN_LLM_API_KEY` (Kubernetes Secret in prod). No code change is needed.
