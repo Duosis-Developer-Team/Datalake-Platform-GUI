@@ -52,9 +52,31 @@ ARCHITECTURES: dict[str, dict[str, Any]] = {
     },
 }
 
-_CUSTOMER_FORBIDDEN = ("get_customer_resources", "get_customer_itsm_summary")
+_CUSTOMER_FORBIDDEN = ("get_customer_resources", "get_customer_itsm_summary", "get_customer_s3_vaults")
 
 METRICS: dict[str, MetricDefinition] = {
+    "dc_vmware_cluster_api_db_diff": MetricDefinition(
+        key="dc_vmware_cluster_api_db_diff",
+        aliases=(
+            "endpointlerde gelmeyip db'de olan cluster", "endpointlerde gelmeyip db'de olan",
+            "db'de olup endpointte olmayan cluster", "vmware cluster farkı",
+            "classic cluster api db difference", "dc cluster endpoint database compare",
+            "vmware endpoint db cluster", "endpoint ve database karşılaştır",
+            "endpointlerden ve database", "cluster karşılaştır",
+        ),
+        entity="cluster", architecture="classic", metric="cluster_inventory",
+        calculation="api_db_diff", output_type="comparison", analysis_profile="cluster_diff",
+        primary_tools=("get_dc_classic_clusters", "get_dc_vmware_clusters_from_db"),
+        forbidden_tools=_CUSTOMER_FORBIDDEN,
+        required_params=("dc_code",), default_params={"limit": 200},
+        answer_guidance=(
+            "API cluster sayısı, DB cluster sayısı, ortak ve endpointte olmayan (db_only) sayısını ver.",
+            "db_only cluster'ları tablo halinde listele (host/vm count + son toplama zamanı).",
+            "Endpoint'in zaman filtreli/aktif-cluster filtreli olabileceğini, DB envanterinin daha geniş olabileceğini yorumla.",
+            "Aksiyon: endpoint filtering/cluster visibility kuralı ve cluster_metrics↔API mapping kontrolü.",
+        ),
+        explanation="VMware classic cluster listesini API endpoint ile DB envanteri (cluster_metrics) arasında karşılaştırır; endpointte olmayıp DB'de olan cluster'ları çıkarır.",
+    ),
     "classic_host_cpu_allocation_variability": MetricDefinition(
         key="classic_host_cpu_allocation_variability",
         aliases=(

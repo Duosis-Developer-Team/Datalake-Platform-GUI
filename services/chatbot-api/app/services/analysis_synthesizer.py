@@ -7,6 +7,7 @@ cannot fabricate. Produces an ``AnalysisSummary`` fed into the LLM context.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
@@ -39,6 +40,7 @@ class AnalysisSummary:
     data_quality_warnings: list[str] = field(default_factory=list)
     risks: list[str] = field(default_factory=list)
     recommended_actions: list[str] = field(default_factory=list)
+    extra: dict[str, Any] = field(default_factory=dict)  # profile-specific (e.g. cluster diff)
 
     def as_context(self) -> dict[str, Any]:
         return asdict(self)
@@ -54,6 +56,73 @@ def _max(r: dict) -> Optional[float]:
 
 def _name(r: dict) -> str:
     return str(r.get("vm_name") or r.get("host_name") or "?")
+
+
+def _ckey(s: Any) -> str:
+    return re.sub(r"\s+", " ", str(s or "").strip().lower())
+
+
+def _synthesize_cluster_diff(plan: IntentPlan, results: list[ToolResult], a: AnalysisSummary) -> AnalysisSummary:
+    """Profile: cluster_diff — set difference between the API cluster list and
+    the DB cluster inventory. db_only = clusters present in the DB but not
+    returned by the endpoint (the user's primary ask)."""
+    api_names: list[str] = []
+    db_rows: list[dict] = []
+    for r in results:
+        if r.status != "success":
+            continue
+        if "clusters" in r.name and not (r.source or "").startswith("postgres"):
+            items = r.summary.get("items") if isinstance(r.summary, dict) else None
+            if isinstance(items, list):
+                api_names = [str(x) for x in items]
+        if r.name == "get_dc_vmware_clusters_from_db" or (
+            (r.source or "").startswith("postgres") and "cluster" in r.name
+        ):
+            db_rows = _rows_of(r)
+
+    api_set = {_ckey(n) for n in api_names}
+    db_map: dict[str, dict] = {}
+    for row in db_rows:
+        k = _ckey(row.get("cluster_name"))
+        if k:
+            db_map[k] = row
+    db_only = [row for k, row in db_map.items() if k not in api_set]
+    api_only = [n for n in api_names if _ckey(n) not in db_map]
+    common = [k for k in db_map if k in api_set]
+
+    a.top_entities = [
+        {
+            "name": row.get("cluster_name"), "host": row.get("cluster_type"),
+            "cpu_pct_avg": row.get("host_count"), "cpu_pct_max": row.get("vm_count"),
+            "unit": row.get("latest_collection_time"),
+        }
+        for row in db_only[:25]
+    ]
+    classic_only = sum(1 for row in db_only if row.get("cluster_type") == "classic")
+    a.extra = {
+        "api_cluster_count": len(api_names),
+        "db_cluster_count": len(db_rows),
+        "common_count": len(common),
+        "db_only_count": len(db_only),
+        "api_only_count": len(api_only),
+        "db_only_classic_count": classic_only,
+        "db_only_clusters": [row.get("cluster_name") for row in db_only],
+        "api_only_clusters": api_only,
+    }
+    a.risks = [
+        f"DB'de {len(db_rows)} VMware cluster var; endpoint {len(api_names)} cluster döndürdü → "
+        f"{len(db_only)} cluster endpointte yok ({classic_only} classic/KM).",
+        "Endpoint zaman/aktiflik filtreli olabilir; DB envanteri eski/inactive cluster'ları da içeriyor.",
+    ]
+    if api_only:
+        a.risks.append(f"{len(api_only)} cluster endpointte var ama DB sorgusunda yok (isim/mapping farkı?).")
+    a.recommended_actions = [
+        "Endpoint filtering ve cluster visibility kuralını kontrol et.",
+        "cluster_metrics ↔ API response mapping'ini ve endpoint zaman penceresini gözden geçir.",
+    ]
+    a.risk_level = "medium" if db_only else "low"
+    a.confidence = "high" if (api_names and db_rows) else "low"
+    return a
 
 
 def _synthesize_allocation(plan: IntentPlan, rows: list[dict], a: AnalysisSummary) -> AnalysisSummary:
@@ -109,6 +178,10 @@ def synthesize(
 
     a = AnalysisSummary(confidence=evaluation.confidence, time_window_days=plan.days)
     a.data_quality_warnings = list(evaluation.data_quality_warnings)
+
+    # cluster_diff works off both tool results (API list + DB rows), not primary_rows.
+    if plan.analysis_profile == "cluster_diff":
+        return _synthesize_cluster_diff(plan, results, a)
 
     if not rows:
         a.risk_level = "low"

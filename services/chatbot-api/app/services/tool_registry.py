@@ -56,6 +56,7 @@ class ToolSpec:
     allowed_query_keys: tuple[str, ...] = ()  # only for query-api passthrough
     db_query_key: Optional[str] = None  # set => read-only DB tool (source=postgres)
     db_defaults: dict[str, Any] = field(default_factory=dict)  # default days/limit for DB tools
+    list_items: bool = False  # API returns list[str]; keep the full (capped) list, not a 3-sample
     allowed_roles: Optional[tuple[str, ...]] = None  # None => any authenticated user
 
     def source_label(self, path: str) -> str:
@@ -136,17 +137,19 @@ TOOLS: dict[str, ToolSpec] = {
     ),
     "get_dc_classic_clusters": ToolSpec(
         "get_dc_classic_clusters",
-        "Classic (KM/VMware) cluster names for a datacenter.",
+        "Classic (KM/VMware) cluster names for a datacenter (API).",
         "datacenter-api",
         path="/api/v1/datacenters/{dc_code}/clusters/classic",
         needs=("dc_code",),
+        list_items=True,
     ),
     "get_dc_hyperconverged_clusters": ToolSpec(
         "get_dc_hyperconverged_clusters",
-        "Hyperconverged (Nutanix) cluster names for a datacenter.",
+        "Hyperconverged (Nutanix) cluster names for a datacenter (API).",
         "datacenter-api",
         path="/api/v1/datacenters/{dc_code}/clusters/hyperconverged",
         needs=("dc_code",),
+        list_items=True,
     ),
     "get_dc_compute_classic": ToolSpec(
         "get_dc_compute_classic",
@@ -365,6 +368,14 @@ TOOLS: dict[str, ToolSpec] = {
         needs=("dc_code",),
         db_defaults={"days": 7, "limit": 3},
     ),
+    "get_dc_vmware_clusters_from_db": ToolSpec(
+        "get_dc_vmware_clusters_from_db",
+        "VMware cluster inventory for a datacenter from the DB (classic + hyperconverged-named).",
+        "postgres",
+        db_query_key="db_get_dc_vmware_clusters",
+        needs=("dc_code",),
+        db_defaults={"limit": 200},
+    ),
 }
 
 
@@ -497,7 +508,12 @@ def execute_tool(name: str, args: dict[str, Any], auth_header: Optional[str] = N
         attempted_path = path
         payload = api_clients.get_json(spec.service, path, time_params, auth_header)
         rows = _row_count(payload)
-        summary = _normalize(payload)
+        if spec.list_items and isinstance(payload, list):
+            # Keep the full (capped) list — needed for set comparisons.
+            cap = spec.cap_rows or 200
+            summary = {"_count": len(payload), "items": [str(x) for x in payload[:cap]]}
+        else:
+            summary = _normalize(payload)
         # Defensive note when an endpoint returns more rows than we cap.
         if spec.cap_rows is not None and rows is not None and rows > spec.cap_rows:
             summary = {"_note": f"showing first {spec.cap_rows} of {rows}", "data": summary}

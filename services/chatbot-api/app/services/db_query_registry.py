@@ -238,6 +238,28 @@ DB_QUERIES: dict[str, DBQuery] = {
         params=("dc", "days", "limit"),
         enabled=True,
     ),
+    # ----- VMware cluster inventory (for API-vs-DB comparison) ------------- #
+    # cluster_metrics holds the per-cluster VMware inventory. 'KM' in the name =
+    # classic, otherwise hyperconverged-named. Returns the latest snapshot per
+    # cluster across ALL time (the API endpoint is time-filtered, so the DB set
+    # is broader — the difference is exactly what the user asks for).
+    "db_get_dc_vmware_clusters": DBQuery(
+        key="db_get_dc_vmware_clusters",
+        description="VMware cluster inventory (name, type, host/vm count, latest collection) for a DC.",
+        sql=(
+            "SELECT 'cluster_metrics' AS source, cluster_name, cluster_type, host_count, vm_count, "
+            "latest_collection_time FROM ("
+            "  SELECT DISTINCT ON (cluster) cluster AS cluster_name,"
+            "    CASE WHEN cluster ILIKE '%%KM%%' THEN 'classic' ELSE 'hyperconverged' END AS cluster_type,"
+            "    vhost_count AS host_count, vm_count,"
+            "    to_char(timestamp::timestamptz, 'YYYY-MM-DD HH24:MI') AS latest_collection_time"
+            "  FROM cluster_metrics WHERE datacenter ILIKE %(dc)s"
+            "  ORDER BY cluster, timestamp DESC) c "
+            "ORDER BY cluster_name LIMIT %(limit)s"
+        ),
+        params=("dc", "limit"),
+        enabled=True,
+    ),
     # ----- Generic examples (disabled by default) ------------------------- #
     "db_list_recent_collection_times": DBQuery(
         key="db_list_recent_collection_times",

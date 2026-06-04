@@ -23,7 +23,7 @@ from app.config import settings
 from app.core.api_auth import verify_api_user
 from app.core.security import RateLimiter, classify_intent
 from app.models.schemas import ChatRequest, ChatResponse, ToolCallSummary
-from app.services import agent_loop, context_builder, tool_orchestrator
+from app.services import agent_loop, context_builder, scope_guard, tool_orchestrator
 from app.services.audit_service import AuditRecord, record
 from app.services.llm_client import LLMError, get_llm_client
 
@@ -119,6 +119,19 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
         audit.error_type = "write_intent"
         record(audit)
         return ChatResponse(answer=_READONLY_REFUSAL, model=model, request_id=request_id)
+
+    # 2.5) Domain scope guard (before any tool/LLM). Off-topic + no domain signal
+    #      => deterministic refusal. An instruction-override on a domain question
+    #      is allowed but the prior conversation is dropped.
+    scope = scope_guard.evaluate(message)
+    if not scope.in_scope:
+        audit.status = "out_of_scope"
+        audit.error_type = scope.reason
+        audit.latency_ms = int((time.monotonic() - started) * 1000)
+        record(audit)
+        return ChatResponse(answer=scope_guard.REFUSAL, model=model, request_id=request_id)
+    if scope.reset_conversation:
+        req.conversation = []
 
     # 3) Gather evidence — agentic multi-step loop, or legacy single pass.
     outcome = None
