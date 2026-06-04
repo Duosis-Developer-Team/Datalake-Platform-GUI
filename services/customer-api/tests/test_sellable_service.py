@@ -978,3 +978,99 @@ def test_invalidate_clears_tier2_and_redis():
     svc.invalidate_result_cache()
     db_cached = svc._snapshot_db_get("DC1", "virt_hyperconverged", "")
     assert db_cached is None
+
+
+def test_escape_filter_clause_escapes_literal_percent_for_psycopg2():
+    clause = "datacenter ILIKE :dc_pattern AND cluster ILIKE '%KM%'"
+    escaped = SellableService._escape_filter_clause(clause)
+    assert escaped == "datacenter ILIKE %s AND cluster ILIKE '%%KM%%'"
+
+
+def test_extract_total_from_dc_details_payload():
+    payload = {
+        "classic": {"cpu_cap": 120.5, "cpu_used": 40.0},
+        "power": {"cpu_total_procunits": 80.0, "memory_total": 1024.0},
+    }
+    total = SellableService._extract_total_from_payload(
+        payload, "cluster_metrics", "cpu_ghz_capacity", "DC13",
+    )
+    assert total == 120.5
+    power_cpu = SellableService._extract_total_from_payload(
+        payload, "ibm_server_general", "server_processor_totalprocunits", "DC13",
+    )
+    assert power_cpu == 80.0
+
+
+def test_extract_total_from_global_dashboard_ibm_totals():
+    payload = {
+        "classic_totals": {"cpu_cap": 200.0},
+        "ibm_totals": {"cpu_total_procunits": 16.0, "mem_total": 4096.0},
+    }
+    mem = SellableService._extract_total_from_payload(
+        payload, "ibm_server_general", "server_memory_totalmem", "*",
+    )
+    assert mem == 4096.0
+
+
+def test_query_total_allocated_redis_first_skips_datalake():
+    customer = MagicMock()
+    webui = MagicMock()
+    webui.is_available = True
+    svc = SellableService(
+        customer_service=customer,
+        webui=webui,
+        config_service=MagicMock(),
+        currency_service=MagicMock(),
+        tagging_service=MagicMock(),
+    )
+    src = InfraSource(
+        "virt_power_cpu",
+        "DC13",
+        source_table="ibm_server_general",
+        total_column="server_processor_totalprocunits",
+        total_unit="procunit",
+        allocated_table="ibm_lpar_general",
+        allocated_column="lpar_processor_entitledprocunits",
+        allocated_unit="procunit",
+    )
+    payload = {
+        "power": {
+            "cpu_total_procunits": 50.0,
+            "cpu_assigned": 30.0,
+        },
+    }
+    customer._get_connection = MagicMock()
+    total, alloc = svc._query_total_allocated(src, "DC13", preloaded_dc_payload=payload)
+    assert total == 50.0
+    assert alloc == 30.0
+    customer._get_connection.assert_not_called()
+
+
+def test_count_unmapped_products_two_step_cross_db():
+    customer = MagicMock()
+    conn = MagicMock()
+    cur = MagicMock()
+    customer._pool = MagicMock()
+    customer._get_connection.return_value.__enter__ = MagicMock(return_value=conn)
+    customer._get_connection.return_value.__exit__ = MagicMock(return_value=False)
+    conn.cursor.return_value.__enter__ = MagicMock(return_value=cur)
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+    customer._run_value = MagicMock(return_value=3)
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows = MagicMock(return_value=[{"productid": "p1"}, {"productid": "p2"}])
+
+    svc = SellableService(
+        customer_service=customer,
+        webui=webui,
+        config_service=MagicMock(),
+        currency_service=MagicMock(),
+        tagging_service=MagicMock(),
+    )
+    count = svc._count_unmapped_products()
+    assert count == 3
+    customer._run_value.assert_called_once()
+    sql_arg = customer._run_value.call_args[0][1]
+    assert "discovery_crm_products" in sql_arg
+    assert "gui_crm_service_mapping_seed" not in sql_arg

@@ -39,3 +39,11 @@ Merge each into `development`, then `development` → `main` after approval.
 - NiFi flow XML update (ops).
 - S3 usage telemetry for `storage_s3` category.
 - DC v2: extend `per_resource` beyond Nutanix CPU/RAM proxy (NetBox rack, power meters).
+
+## crm-engine bugfix (2026-06-04)
+
+- **Redis-first totals**: `SellableService._query_total_allocated` reads `cpu_cap` / `mem_cap` / `power.*` from datacenter-api Redis (`dc_details` / `global_dashboard`) before datalake SQL (fixes 887s IBM LPAR scans).
+- **SQL**: `filter_clause` `%` escaping for psycopg2 (`%KM%` panels).
+- **Cross-DB**: `_count_unmapped_products` uses webui mapping IDs + datalake `discovery_crm_products` count.
+- **Migration**: `016_fix_s3icos_pool_filter.sql` (`site_name` → `pool_name` on S3 panels).
+- **Tests**: `pytest services/customer-api/tests/test_sellable_service.py` (51 passed).
