@@ -1,0 +1,64 @@
+from app.models.schemas import FrontendContext
+from app.services import tool_orchestrator
+from app.services.tool_registry import execute_tool, list_tool_names
+
+
+def _names(message, ctx=None):
+    return [s.tool for s in tool_orchestrator.select_tools(message, ctx)]
+
+
+def test_dc_intent_selects_datacenter_tool_from_context():
+    ctx = FrontendContext(selected_datacenter="DC13")
+    assert "get_datacenter_detail" in _names("Bu datacenter'ı özetle", ctx)
+
+
+def test_dc_code_extracted_from_message_text():
+    assert "get_datacenter_detail" in _names("DC13 CPU durumunu özetle", None)
+
+
+def test_customer_intent_selects_customer_tool():
+    ctx = FrontendContext(selected_customer="Boyner")
+    assert "get_customer_resources" in _names("Bu müşterinin kaynak kullanımını yorumla", ctx)
+
+
+def test_backup_intent_selects_backup_tool():
+    ctx = FrontendContext(selected_datacenter="DC13")
+    assert "get_dc_backup_jobs" in _names("DC13 Zerto job durumunu özetle", ctx)
+
+
+def test_crm_intent_selects_sellable_tool():
+    names = _names("Satılabilir potansiyelde riskli panel hangisi?", None)
+    assert "get_sellable_by_panel" in names or "get_sellable_summary" in names
+
+
+def test_unknown_request_falls_back_to_overview():
+    assert "get_dashboard_overview" in _names("Merhaba, nasıl yardımcı olursun?", None)
+
+
+def test_tool_call_cap_enforced():
+    ctx = FrontendContext(selected_datacenter="DC13", selected_customer="Boyner")
+    picks = tool_orchestrator.select_tools(
+        "DC13 cpu storage network backup s3 müşteri sla crm panel", ctx
+    )
+    assert len(picks) <= 4
+
+
+def test_execute_tool_skips_when_required_context_missing():
+    res = execute_tool("get_datacenter_detail", {"dc_code": None}, None)
+    assert res.status == "skipped"
+    assert res.error == "missing:dc_code"
+
+
+def test_query_passthrough_rejects_unapproved_key():
+    res = execute_tool("run_registered_query", {"query_key": "anything"}, None)
+    assert res.status == "skipped"
+    assert res.error == "query_key_not_allowed"
+
+
+def test_unknown_tool_is_skipped():
+    res = execute_tool("definitely_not_a_tool", {}, None)
+    assert res.status == "skipped"
+
+
+def test_registry_is_non_empty():
+    assert len(list_tool_names()) >= 10

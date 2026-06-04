@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bulutistan-chatbot-api-config
+data:
+  BULUTISTAN_LLM_BASE_URL: "https://api.bulutistan.ai/v1"
+  CHATBOT_MODEL: "gpt-oss-120b"
+  CHATBOT_FALLBACK_MODEL: "qwen3-next-80b-instruct"
+  CHATBOT_TEMPERATURE: "0.2"
+  CHATBOT_MAX_TOKENS: "900"
+  CHATBOT_TIMEOUT_SECONDS: "60"
+  API_AUTH_REQUIRED: "true"
+  DATACENTER_API_URL: "http://bulutistan-datacenter-api"
+  CUSTOMER_API_URL: "http://bulutistan-customer-api"
+  QUERY_API_URL: "http://bulutistan-query-api"
+  CRM_ENGINE_URL: "http://bulutistan-crm-engine"
+  ADMIN_API_URL: "http://bulutistan-admin-api"
+  CHATBOT_DB_ENABLED: "false"
