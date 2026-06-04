@@ -323,6 +323,7 @@ app.layout = dmc.MantineProvider(
         dcc.Store(id="chatbot-open-store", data=False, storage_type="session"),
         dcc.Store(id="chatbot-history-store", data=[], storage_type="session"),
         dcc.Store(id="chatbot-context-store", data={}, storage_type="session"),
+        dcc.Store(id="chatbot-pending-store", data=None, storage_type="session"),
         html.Div(id="export-pdf-clientside-dummy", style={"display": "none"}),
         html.Div(
             [
