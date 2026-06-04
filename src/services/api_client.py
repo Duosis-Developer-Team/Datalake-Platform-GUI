@@ -301,6 +301,10 @@ def _api_cache_get_sellable_panels(
         meta = get_sellable_snapshot_meta(dc_code=dc_code, family=family, clusters=clusters)
         if meta.get("computed_at") or _sellable_panels_have_data(out):
             _api_response_cache.set(cache_key, out)
+            return out
+        hit = _api_response_cache.get(cache_key)
+        if hit is not None:
+            return _clone(hit)
         return out
     except _HTTP_ERRORS:
         hit = _api_response_cache.get(cache_key)
@@ -322,6 +326,10 @@ def _api_cache_get_sellable_summary(
         meta = get_sellable_snapshot_meta(dc_code=dc_code)
         if meta.get("computed_at") or _sellable_summary_has_data(out):
             _api_response_cache.set(cache_key, out)
+            return out
+        hit = _api_response_cache.get(cache_key)
+        if hit is not None:
+            return _clone(hit)
         return out
     except _HTTP_ERRORS:
         hit = _api_response_cache.get(cache_key)

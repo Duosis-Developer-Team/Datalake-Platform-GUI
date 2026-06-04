@@ -770,12 +770,13 @@ def test_invalidate_result_cache_uses_scan_iter():
     crm_redis.scan_iter.assert_called_once()
 
 
-def test_snapshot_all_invalidates_cache():
-    """snapshot_all() must wipe stale cache entries before re-computing."""
+def test_snapshot_all_does_not_invalidate_before_compute():
+    """snapshot_all() must not wipe caches up front (zero-downtime publish)."""
     svc = _build_service()
     svc._tags = MagicMock()
     svc._tags.snapshot.return_value = 0
     svc._tags.measures_from_panel = lambda p: []
+    svc._prewarm_dc_virt_snapshots = lambda: 0  # type: ignore[assignment]
     seen = {"invalidate": 0}
 
     def fake_invalidate(dc_code=None):
@@ -783,8 +784,34 @@ def test_snapshot_all_invalidates_cache():
         return 0
 
     svc.invalidate_result_cache = fake_invalidate  # type: ignore[assignment]
+    summary = MagicMock()
+    summary.families = []
+    summary.total_potential_tl = 0.0
+    summary.constrained_loss_tl = 0.0
+    summary.ytd_sales_tl = 0.0
+    summary.unmapped_product_count = 0
+    svc.compute_summary = lambda dc: summary  # type: ignore[assignment]
     svc.snapshot_all()
-    assert seen["invalidate"] == 1
+    assert seen["invalidate"] == 0
+
+
+def test_snapshot_all_preserves_tier2_on_compute_summary_failure():
+    """Failed global summary must not delete existing Tier-2 snapshots."""
+    webui, store = _in_memory_webui()
+    svc = _build_service()
+    svc._webui = webui  # type: ignore[assignment]
+    svc._tags = MagicMock()
+    svc._prewarm_dc_virt_snapshots = lambda: 0  # type: ignore[assignment]
+    svc.compute_all_panels(dc_code="DC1", family="virt_hyperconverged")
+    assert store
+
+    def boom(dc_code="*"):
+        raise RuntimeError("compute failed")
+
+    svc.compute_summary = boom  # type: ignore[assignment]
+    emitted = svc.snapshot_all()
+    assert emitted == 0
+    assert store  # Tier-2 rows still present
 
 
 def test_redis_window_days_default_is_seven():

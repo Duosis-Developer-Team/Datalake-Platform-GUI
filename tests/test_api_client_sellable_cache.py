@@ -27,3 +27,18 @@ def test_api_cache_get_sellable_panels_skips_transient_zero(monkeypatch):
     assert calls["fetch"] == 2
     assert cache_service.get("k1") is None
     assert out2 == [{"panel_key": "x", "potential_tl": 0, "has_infra_source": False}]
+
+
+def test_api_cache_get_sellable_panels_returns_stale_on_empty_refresh(monkeypatch):
+    """Empty backend response during refresh must not replace a warm LRU entry."""
+    cache_service.clear()
+    stale_row = [{"panel_key": "dc_cpu", "potential_tl": 1200.0, "has_infra_source": True}]
+    cache_service.set("k-stale", stale_row)
+
+    def fetch():
+        return []
+
+    with patch.object(api, "get_sellable_snapshot_meta", return_value={"computed_at": None}):
+        out = api._api_cache_get_sellable_panels("k-stale", fetch, "DC13", "virt_classic", None)
+    assert out == stale_row
+    assert cache_service.get("k-stale") == stale_row
