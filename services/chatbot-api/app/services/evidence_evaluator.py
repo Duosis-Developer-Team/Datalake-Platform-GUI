@@ -57,14 +57,18 @@ def _primary(results: list[ToolResult]) -> tuple[list[dict], Optional[str], Opti
     for r in results:
         if r.status != "success" or not (r.source or "").startswith("postgres"):
             continue
-        if "_top" in r.name:
+        if "_summary" in r.name:  # per-source aggregate, not per-entity rows
+            continue
+        rows = _rows_of(r)
+        if not rows:
+            continue
+        if "_top" in r.name or "variability" in r.name:
             k = 0
         elif "_latest" in r.name:
             k = 1
         else:
-            continue
-        rows = _rows_of(r)
-        if rows and (best is None or k < best[0]):
+            k = 2
+        if best is None or k < best[0]:
             best = (k, rows, r.source, r.name)
     if best:
         return best[1], best[2], best[3]
@@ -114,7 +118,9 @@ def evaluate(plan: IntentPlan, results: list[ToolResult]) -> EvidenceEvaluation:
     rows, source, primary_tool = _primary(results)
     ev = EvidenceEvaluation(primary_rows=rows, primary_source=source)
 
-    tools = _ENTITY_TOOLS.get(plan.entity_type)
+    # cpu_usage profile drives the host/vm fallback + concentration follow-ups.
+    cpu_usage = plan.analysis_profile == "cpu_usage"
+    tools = _ENTITY_TOOLS.get(plan.entity_type) if cpu_usage else None
 
     # --- empty result -> deterministic fallbacks (latest, then summary) ----- #
     if tools and not rows:
@@ -139,16 +145,15 @@ def evaluate(plan: IntentPlan, results: list[ToolResult]) -> EvidenceEvaluation:
         return ev
 
     # --- data quality on the rows ------------------------------------------ #
-    if plan.entity_type == "vm":
+    if cpu_usage and plan.entity_type == "vm":
         ev.data_quality_warnings.append(
             "VMware VM CPU% bu veri setinde yok (kapasite kolonu boş); Nutanix + IBM gösteriliyor."
         )
-    has_avg = any(_num(r, "cpu_pct_avg", "cpu_pct") is not None for r in rows)
-    has_max = any(_num(r, "cpu_pct_max") is not None for r in rows)
-    if not has_avg:
-        ev.missing_fields.append("cpu_pct_avg")
-    if not has_max:
-        ev.missing_fields.append("cpu_pct_max")
+    if cpu_usage:
+        if not any(_num(r, "cpu_pct_avg", "cpu_pct") is not None for r in rows):
+            ev.missing_fields.append("cpu_pct_avg")
+        if not any(_num(r, "cpu_pct_max") is not None for r in rows):
+            ev.missing_fields.append("cpu_pct_max")
 
     samples = [s for s in (_num(r, "sample_count") for r in rows) if s is not None]
     if samples and (sum(samples) / len(samples)) < 5:

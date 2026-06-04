@@ -335,6 +335,14 @@ TOOLS: dict[str, ToolSpec] = {
         needs=("dc_code",),
         db_defaults={"days": 7},
     ),
+    "get_dc_classic_host_cpu_allocation_variability": ToolSpec(
+        "get_dc_classic_host_cpu_allocation_variability",
+        "Top classic (KM) hosts by allocated-vCPU variability over N days (read-only DB).",
+        "postgres",
+        db_query_key="db_get_dc_classic_host_cpu_allocation_variability",
+        needs=("dc_code",),
+        db_defaults={"days": 7, "limit": 3},
+    ),
 }
 
 

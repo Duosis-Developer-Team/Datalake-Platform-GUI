@@ -55,6 +55,28 @@ def _summaries(results) -> list[ToolCallSummary]:
     return out
 
 
+# Strong denial phrases the model must NOT use when tools actually returned rows.
+# Kept narrow so legitimate staleness/caveat wording isn't caught.
+_DENY_PHRASES = (
+    "erişemiyorum", "erişimim yok", "veri yok", "veri bulunmuyor", "veriye ulaşamıyorum",
+    "sağlayamıyorum", "veri setinde yok", "elimde veri yok", "bilgiye sahip değilim",
+)
+
+
+def _has_rows(results) -> bool:
+    return any(r.status == "success" and (r.rows or 0) > 0 for r in results)
+
+
+def _denies_data(answer: str) -> bool:
+    # Only treat it as a denial if there's no data presented (no table) — a rich
+    # tabular answer that merely notes staleness must not be discarded.
+    text = answer or ""
+    if "|" in text and "---" in text:
+        return False
+    low = text.lower()
+    return any(p in low for p in _DENY_PHRASES)
+
+
 def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatResponse:
     request_id = uuid.uuid4().hex
     started = time.monotonic()
@@ -102,13 +124,26 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
     outcome = None
     try:
         if settings.chatbot_agentic_mode:
-            outcome = agent_loop.run(message, req.frontend_context, auth_header)
+            outcome = agent_loop.run(
+                message, req.frontend_context, auth_header, conversation=req.conversation
+            )
             tool_results = outcome.results
         else:
             tool_results = tool_orchestrator.run(message, req.frontend_context, auth_header)
     except Exception as exc:  # pragma: no cover - loop/orchestrator already guard
         logger.warning("Evidence gathering failed: %s", exc)
         tool_results = []
+
+    # Page-independent planner needs a required param it couldn't resolve →
+    # ask a short clarification instead of guessing or giving up.
+    if outcome is not None and outcome.plan.clarification:
+        audit.status = "clarification"
+        audit.latency_ms = int((time.monotonic() - started) * 1000)
+        record(audit)
+        return ChatResponse(
+            answer=outcome.plan.clarification, model=model, request_id=request_id
+        )
+
     audit.tools = [r.name for r in tool_results if r.status in ("success", "error")]
     if outcome is not None:
         audit.iterations = outcome.iterations
@@ -148,6 +183,14 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
         answer, usage = exc.user_message, None
         audit.status = "llm_error"
         audit.error_type = exc.error_type
+
+    # Deterministic missing-data guard: if tools returned rows, the model is not
+    # allowed to claim "no data / can't access" — fall back to a formatted answer
+    # built from the analysis summary.
+    if outcome is not None and _has_rows(tool_results) and _denies_data(answer):
+        logger.info("missing-data guard tripped; using deterministic formatter")
+        answer = context_builder.format_from_analysis(outcome)
+        audit.error_type = "missing_data_guard"
 
     audit.latency_ms = int((time.monotonic() - started) * 1000)
     record(audit)

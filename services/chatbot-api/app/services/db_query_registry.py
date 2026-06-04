@@ -202,6 +202,42 @@ DB_QUERIES: dict[str, DBQuery] = {
         params=("dc", "days"),
         enabled=True,
     ),
+    # ----- Classic-architecture host CPU allocation variability ----------- #
+    # "Classic" (Klasik Mimari) = cluster name contains 'KM'. Allocated CPU per
+    # host = sum of VMs' vCPU on that host (number_of_cpus; the GHz capacity
+    # column is empty in this dataset, so we report vCPU count, not GHz — no
+    # fabrication). Per host: variability (stddev / min-max range) of allocated
+    # vCPU over the recent N-day window, plus direction (first vs last sample).
+    "db_get_dc_classic_host_cpu_allocation_variability": DBQuery(
+        key="db_get_dc_classic_host_cpu_allocation_variability",
+        description="Top classic (KM) hosts by allocated-vCPU variability over N days.",
+        sql=(
+            "WITH host_ts AS ("
+            "  SELECT vmhost, cluster, timestamp::timestamptz AS ts, sum(number_of_cpus) AS alloc_vcpu"
+            "  FROM vmware_vm_performance_metrics"
+            "  WHERE cluster ILIKE %(dc)s AND cluster ILIKE '%%KM%%'"
+            "    AND inserted_at >= (SELECT max(inserted_at) FROM vmware_vm_performance_metrics) - (%(days)s * interval '1 day')"
+            "  GROUP BY vmhost, cluster, timestamp), "
+            "agg AS ("
+            "  SELECT vmhost AS host_name, max(cluster) AS cluster,"
+            "    round(avg(alloc_vcpu)::numeric, 1) AS alloc_vcpu_avg,"
+            "    min(alloc_vcpu) AS alloc_vcpu_min, max(alloc_vcpu) AS alloc_vcpu_max,"
+            "    round(stddev(alloc_vcpu)::numeric, 2) AS alloc_vcpu_stddev,"
+            "    (max(alloc_vcpu) - min(alloc_vcpu)) AS alloc_vcpu_range, count(*) AS sample_count,"
+            "    (array_agg(alloc_vcpu ORDER BY ts DESC))[1] AS last_v,"
+            "    (array_agg(alloc_vcpu ORDER BY ts ASC))[1] AS first_v,"
+            "    to_char(min(ts), 'YYYY-MM-DD HH24:MI') AS first_collection_time,"
+            "    to_char(max(ts), 'YYYY-MM-DD HH24:MI') AS last_collection_time"
+            "  FROM host_ts GROUP BY vmhost) "
+            "SELECT host_name, cluster, 'vCPU' AS unit, alloc_vcpu_avg, alloc_vcpu_min, alloc_vcpu_max,"
+            " alloc_vcpu_stddev, alloc_vcpu_range, (last_v - first_v) AS alloc_vcpu_change,"
+            " CASE WHEN last_v > first_v THEN 'artis' WHEN last_v < first_v THEN 'azalis' ELSE 'sabit' END AS direction,"
+            " sample_count, first_collection_time, last_collection_time"
+            " FROM agg ORDER BY alloc_vcpu_stddev DESC NULLS LAST LIMIT %(limit)s"
+        ),
+        params=("dc", "days", "limit"),
+        enabled=True,
+    ),
     # ----- Generic examples (disabled by default) ------------------------- #
     "db_list_recent_collection_times": DBQuery(
         key="db_list_recent_collection_times",

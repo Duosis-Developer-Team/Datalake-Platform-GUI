@@ -151,6 +151,44 @@ _AGENTIC_FORMAT = (
 )
 
 
+def format_from_analysis(outcome) -> str:
+    """Deterministic operational answer built straight from the analysis summary.
+
+    Used by the missing-data guard: if tools returned rows but the model claimed
+    "no data", we replace its answer with this so we never deny existing data.
+    """
+    a = outcome.analysis
+    sources = sorted({r.source for r in outcome.results if r.status == "success" and r.source})
+    lines: list[str] = []
+
+    n = len(a.top_entities) if a and a.top_entities else 0
+    win = f" (son {a.time_window_days} gün)" if a and a.time_window_days else ""
+    lines.append(f"**Kısa sonuç:** İlgili kayıtlardan{win} {n} sonuç bulundu.")
+
+    if a and a.top_entities:
+        lines.append("\n| # | Ad | Host | Ort | Maks | Birim |")
+        lines.append("|---|----|------|----:|-----:|-------|")
+        for i, e in enumerate(a.top_entities, 1):
+            lines.append(
+                f"| {i} | {e.get('name', '?')} | {e.get('host') or '-'} | "
+                f"{e.get('cpu_pct_avg')} | {e.get('cpu_pct_max')} | {e.get('unit') or '-'} |"
+            )
+
+    if a and a.risks:
+        lines.append("\n**Analiz / Risk:**")
+        lines += [f"- {r}" for r in a.risks]
+    if a:
+        lines.append(f"\n**Risk seviyesi:** {a.risk_level}")
+    if a and a.recommended_actions:
+        lines.append("\n**Önerilen aksiyonlar:**")
+        lines += [f"- {x}" for x in a.recommended_actions]
+    if sources:
+        lines.append(f"\n**Kaynak:** {', '.join(sources)}")
+    if a and a.confidence:
+        lines.append(f"_Güven: {a.confidence}_")
+    return "\n".join(lines)
+
+
 def build_agentic_messages(
     user_message: str,
     conversation: list[ChatMessage],

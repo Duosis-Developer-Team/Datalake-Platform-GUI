@@ -14,11 +14,11 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from app.config import settings
-from app.models.schemas import FrontendContext
+from app.models.schemas import ChatMessage, FrontendContext
 from app.services import (
     analysis_synthesizer,
     evidence_evaluator,
-    planner,
+    query_planner,
     tool_registry,
 )
 from app.services.analysis_synthesizer import AnalysisSummary
@@ -48,9 +48,21 @@ def _dedupe_key(tool: str, args: dict[str, Any]) -> tuple:
     return (tool, args.get("dc_code"), args.get("days"), args.get("limit"))
 
 
-def run(message: str, ctx: Optional[FrontendContext], auth_header: Optional[str]) -> AgentOutcome:
-    plan = planner.make_plan(message, ctx)
+def run(
+    message: str,
+    ctx: Optional[FrontendContext],
+    auth_header: Optional[str],
+    conversation: Optional[list[ChatMessage]] = None,
+) -> AgentOutcome:
+    plan = query_planner.plan(message, ctx, conversation)
     outcome = AgentOutcome(plan=plan)
+
+    # A required parameter could not be resolved from message/context/memory:
+    # don't run tools, let the caller ask a short clarification question.
+    if plan.clarification:
+        outcome.evaluation = evidence_evaluator.evaluate(plan, [])
+        outcome.analysis = analysis_synthesizer.synthesize(plan, [], outcome.evaluation)
+        return outcome
 
     max_iter = max(1, settings.chatbot_max_tool_iterations)
     per_iter = max(1, settings.chatbot_max_tool_calls_per_iteration)

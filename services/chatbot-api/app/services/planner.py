@@ -29,12 +29,22 @@ class IntentPlan:
     sort_by: str = "avg"  # avg | max | latest
     needs_analysis: bool = True
     initial_tools: list[dict[str, Any]] = field(default_factory=list)
+    # --- domain-catalog enrichment (query_planner) ---
+    architecture: Optional[str] = None  # classic | hyperconverged
+    calculation: Optional[str] = None  # top | summary | variability | trend | comparison | risk
+    metric_key: Optional[str] = None  # catalog key
+    analysis_profile: str = "generic"  # which synthesizer profile to apply
+    missing_required_params: list[str] = field(default_factory=list)
+    clarification: Optional[str] = None  # set when a required param can't be resolved
 
     def as_context(self) -> dict[str, Any]:
         """Compact, LLM-safe view of the plan (no internals/secrets)."""
         return {
             "entity_type": self.entity_type,
             "metric": self.metric,
+            "metric_key": self.metric_key,
+            "architecture": self.architecture,
+            "calculation": self.calculation,
             "dc_code": self.dc_code,
             "customer": self.customer_name,
             "days": self.days,
@@ -92,12 +102,15 @@ def make_plan(message: str, ctx: Optional[FrontendContext]) -> IntentPlan:
         output, sort_by = ("latest" if entity in ("vm", "host") else "summary"), "latest"
 
     source = "db" if orch._has(text, "explicit_db") else "auto"
+    profile = "cpu_usage" if (metric == "cpu" and entity in ("vm", "host")) else "generic"
 
     initial = [{"tool": s.tool, "args": s.args} for s in orch.select_tools(message, ctx)]
 
     return IntentPlan(
         entity_type=entity,
         metric=metric,
+        calculation=output,
+        analysis_profile=profile,
         dc_code=dc_code,
         customer_name=customer,
         days=orch._extract_days(text),

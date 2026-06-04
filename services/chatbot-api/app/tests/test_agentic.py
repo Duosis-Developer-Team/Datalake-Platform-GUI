@@ -55,7 +55,8 @@ def test_planner_distinguishes_host_from_vm():
 
 def _plan():
     return IntentPlan(entity_type="vm", metric="cpu", dc_code="DC13", days=7,
-                      requested_output="top_list", needs_analysis=True)
+                      requested_output="top_list", needs_analysis=True,
+                      analysis_profile="cpu_usage")
 
 
 def test_evaluator_requests_summary_after_top():

@@ -56,6 +56,49 @@ def _name(r: dict) -> str:
     return str(r.get("vm_name") or r.get("host_name") or "?")
 
 
+def _synthesize_allocation(plan: IntentPlan, rows: list[dict], a: AnalysisSummary) -> AnalysisSummary:
+    """Profile: cpu_allocation — variability of VM-allocated vCPU per host.
+
+    High variability => VM placement / vCPU change / vMotion / capacity-planning
+    signal (not a usage-saturation signal). Direction (artış/azalış) is reported.
+    """
+    a.top_entities = [
+        {
+            "name": r.get("host_name"),
+            "host": r.get("cluster"),
+            "source": "vmware",
+            "cpu_pct_avg": _num(r, "alloc_vcpu_avg"),
+            "cpu_pct_max": _num(r, "alloc_vcpu_max"),
+            "unit": r.get("unit") or "vCPU",
+        }
+        for r in rows[:10]
+    ]
+    for r in rows[:5]:
+        sd = _num(r, "alloc_vcpu_stddev") or 0
+        rng = _num(r, "alloc_vcpu_range") or 0
+        chg = _num(r, "alloc_vcpu_change")
+        a.risks.append(
+            f"{r.get('host_name')} ({r.get('cluster')}): değişkenlik stddev {sd} "
+            f"{r.get('unit') or 'vCPU'} (min {r.get('alloc_vcpu_min')}–max {r.get('alloc_vcpu_max')}, "
+            f"aralık {rng}), yön: {r.get('direction')} (net değişim {chg})"
+        )
+
+    top = rows[0]
+    avg = _num(top, "alloc_vcpu_avg") or 0
+    sd = _num(top, "alloc_vcpu_stddev") or 0
+    ratio = (sd / avg) if avg else 0
+    a.risk_level = "high" if ratio >= 0.2 else ("medium" if ratio >= 0.08 else "low")
+    a.recommended_actions = [
+        "En değişken host'larda VM yerleşimi / vMotion / vCPU değişikliği ve migration geçmişini incele.",
+        "Allocation dalgalanması kapasiteyi zorluyorsa cluster bazında vCPU rezervasyon/limitlerini gözden geçir.",
+    ]
+    is_stale, latest, age_h = _freshness(rows)
+    a.freshness = {"latest": latest, "age_hours": age_h, "stale": is_stale}
+    if is_stale and latest:
+        a.risks.append(f"veri güncel değil (son toplama {latest})")
+    return a
+
+
 def synthesize(
     plan: IntentPlan, results: list[ToolResult], evaluation: EvidenceEvaluation
 ) -> AnalysisSummary:
@@ -72,6 +115,9 @@ def synthesize(
         a.risks = list(evaluation.data_quality_warnings)
         a.recommended_actions = ["İlgili kaynaklarda veri bulunamadı; kaynak/zaman aralığını gözden geçir."]
         return a
+
+    if plan.analysis_profile == "cpu_allocation":
+        return _synthesize_allocation(plan, rows, a)
 
     a.top_entities = [
         {
