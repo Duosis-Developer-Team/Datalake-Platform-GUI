@@ -62,3 +62,45 @@ def test_unknown_tool_is_skipped():
 
 def test_registry_is_non_empty():
     assert len(list_tool_names()) >= 10
+
+
+# --- host-level CPU DB tools ------------------------------------------------ #
+
+
+def test_host_cpu_intent_selects_db_latest_tool():
+    assert "get_dc_host_cpu_latest" in _names("DC13 host bazlı CPU kullanımını göster", None)
+
+
+def test_host_cpu_top_intent_selects_top_tool():
+    assert "get_dc_host_cpu_top" in _names("DC13 en yüksek CPU kullanan hostlar hangileri?", None)
+
+
+def test_host_cpu_summary_intent_selects_summary_tool():
+    assert "get_dc_host_cpu_summary" in _names("DC13 host CPU durumunu özetle", None)
+
+
+def test_cluster_cpu_without_host_keyword_does_not_use_db_tool():
+    # "DC13 CPU durumunu özetle" (no 'host') must use API compute, not the DB tool.
+    names = _names("DC13 CPU durumunu özetle", None)
+    assert "get_dc_host_cpu_latest" not in names
+    assert "get_dc_host_cpu_top" not in names
+
+
+def test_customer_cpu_question_does_not_select_host_db_tool():
+    ctx = FrontendContext(selected_customer="Boyner")
+    names = _names("Bu müşterinin CPU kullanımını özetle", ctx)
+    assert not any(n.startswith("get_dc_host_cpu") for n in names)
+
+
+def test_db_tool_skipped_when_db_disabled(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "chatbot_db_enabled", False)
+    res = execute_tool("get_dc_host_cpu_latest", {"dc_code": "DC13"}, None)
+    assert res.status == "skipped"
+    assert res.error == "db_disabled"
+
+
+def test_db_tool_skipped_when_missing_dc():
+    res = execute_tool("get_dc_host_cpu_summary", {"dc_code": None}, None)
+    assert res.status == "skipped"
