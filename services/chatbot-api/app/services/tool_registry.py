@@ -55,6 +55,7 @@ class ToolSpec:
     cap_rows: Optional[int] = None
     allowed_query_keys: tuple[str, ...] = ()  # only for query-api passthrough
     db_query_key: Optional[str] = None  # set => read-only DB tool (source=postgres)
+    db_defaults: dict[str, Any] = field(default_factory=dict)  # default days/limit for DB tools
     allowed_roles: Optional[tuple[str, ...]] = None  # None => any authenticated user
 
     def source_label(self, path: str) -> str:
@@ -309,6 +310,31 @@ TOOLS: dict[str, ToolSpec] = {
         db_query_key="db_get_dc_host_cpu_summary",
         needs=("dc_code",),
     ),
+    # ---- Read-only DB tools: VM-level CPU (not exposed by the APIs) ------- #
+    "get_dc_vm_cpu_top": ToolSpec(
+        "get_dc_vm_cpu_top",
+        "Top VMs by CPU over the last N days in a datacenter (read-only DB).",
+        "postgres",
+        db_query_key="db_get_dc_vm_cpu_top",
+        needs=("dc_code",),
+        db_defaults={"days": 7, "limit": 10},
+    ),
+    "get_dc_vm_cpu_latest": ToolSpec(
+        "get_dc_vm_cpu_latest",
+        "Most recent per-VM CPU snapshot in a datacenter (read-only DB).",
+        "postgres",
+        db_query_key="db_get_dc_vm_cpu_latest",
+        needs=("dc_code",),
+        db_defaults={"days": 1, "limit": 50},
+    ),
+    "get_dc_vm_cpu_summary": ToolSpec(
+        "get_dc_vm_cpu_summary",
+        "Per-source VM CPU summary for a datacenter (read-only DB).",
+        "postgres",
+        db_query_key="db_get_dc_vm_cpu_summary",
+        needs=("dc_code",),
+        db_defaults={"days": 7},
+    ),
 }
 
 
@@ -367,11 +393,19 @@ def _execute_db_tool(name: str, spec: ToolSpec, args: dict[str, Any]) -> ToolRes
 
     params: dict[str, Any] = {"dc": f"%{dc}%"}
     query = db_query_registry.DB_QUERIES.get(spec.db_query_key or "")
-    if query and "limit" in query.params:
+    tparams = query.params if query else ()
+    defaults = spec.db_defaults or {}
+    if "days" in tparams:
         try:
-            requested = int(args.get("limit") or settings.db_max_rows)
+            days = int(args.get("days") or defaults.get("days") or 7)
         except (TypeError, ValueError):
-            requested = settings.db_max_rows
+            days = int(defaults.get("days") or 7)
+        params["days"] = max(1, min(days, 30))  # bound the lookback window
+    if "limit" in tparams:
+        try:
+            requested = int(args.get("limit") or defaults.get("limit") or settings.db_max_rows)
+        except (TypeError, ValueError):
+            requested = int(defaults.get("limit") or settings.db_max_rows)
         params["limit"] = max(1, min(requested, settings.db_max_rows))
 
     try:

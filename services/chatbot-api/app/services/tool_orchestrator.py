@@ -36,14 +36,39 @@ _KW = {
     "overview": ("genel", "overview", "toplam", "en yoğun", "en yogun", "kapasite", "özet", "ozet"),
     "compute": ("cpu", "ram", "vcpu", "compute", "işlemci", "bellek", "memory"),
     "storage": ("storage", "disk", "depolama", "kapasite"),
-    "network": ("network", "ağ", "port", "bant", "bandwidth", "trafik"),
+    # Avoid over-loose substrings: bare "ağ" matches "bağlantı", bare "port"
+    # matches "rapor/transport". Use specific network terms.
+    "network": ("network", "trafik", "bandwidth", "bant geniş", "switch port", "ağ trafi", "port-summary"),
     "host": ("host", "hostlar", "sunucu", "sunucular", "node", "nodes"),
-    "top": ("en yüksek", "en yuksek", "en çok", "en cok", "top", "yüksek cpu", "yuksek cpu", "en fazla"),
+    "vm": ("vm", "vm'", "vmler", "vm'ler", "sanal makine", "sanal sunucu", "virtual machine", "lpar"),
+    "top": ("en yüksek", "en yuksek", "en çok", "en cok", "top", "yüksek cpu", "yuksek cpu", "en fazla", "listele"),
+    "explicit_db": ("direkt db", "direkt database", "veritaban", "postgre", "postgresql", "db'den", "database'den"),
 }
+
+_DAYS_RE = re.compile(r"son\s+(\d+)\s*g[üu]n")
+_LIMIT_RE = re.compile(r"(\d+)\s*(?:tane|adet|vm|vm'|host|sunucu|lpar)")
+_TOPN_RE = re.compile(r"(?:top|ilk|en\s+(?:çok|cok|fazla|yüksek|yuksek))\s+(\d+)")
 
 
 def _has(text: str, group: str) -> bool:
     return any(kw in text for kw in _KW[group])
+
+
+def _extract_days(text: str) -> Optional[int]:
+    m = _DAYS_RE.search(text)
+    if m:
+        return max(1, min(int(m.group(1)), 30))
+    if "hafta" in text:  # "son bir hafta", "haftalık"
+        return 7
+    return None
+
+
+def _extract_limit(text: str) -> Optional[int]:
+    for rx in (_LIMIT_RE, _TOPN_RE):
+        m = rx.search(text)
+        if m:
+            return max(1, min(int(m.group(1)), 50))
+    return None
 
 
 @dataclass
@@ -75,6 +100,8 @@ def select_tools(message: str, ctx: Optional[FrontendContext]) -> list[Selection
     dc_code = _extract_dc(message, ctx)
     customer = (ctx.selected_customer if ctx and ctx.selected_customer else None)
     base = _base_args(ctx, dc_code, customer)
+    base["days"] = _extract_days(text)  # DB-tool lookback (None => tool default)
+    base["limit"] = _extract_limit(text)  # "top 10 / 10 tane" (None => tool default)
 
     picks: list[Selection] = []
     seen: set[str] = set()
@@ -124,16 +151,29 @@ def select_tools(message: str, ctx: Optional[FrontendContext]) -> list[Selection
 
     # --- Datacenter-scoped compute/storage/network --------------------- #
     if dc_code:
-        # Host-LEVEL CPU lives only in the DB (the APIs expose cluster
-        # aggregates). When the user says "host", prefer the read-only DB tool.
-        host_cpu = _has(text, "host") and ("cpu" in text or _has(text, "compute"))
-        if host_cpu:
+        # VM- and host-level CPU live only in the DB (the APIs expose cluster
+        # aggregates). "vm" => VM DB tool; "host" => host DB tool; an explicit
+        # "direkt DB / postgresql" ask routes CPU to a DB tool instead of the API.
+        cpu_intent = "cpu" in text or _has(text, "compute")
+        vm_cpu = _has(text, "vm") and cpu_intent
+        host_cpu = _has(text, "host") and cpu_intent and not vm_cpu
+        if vm_cpu:
+            if _has(text, "top"):
+                add("get_dc_vm_cpu_top")
+            elif _has(text, "overview"):  # "özetle / durum" → summary
+                add("get_dc_vm_cpu_summary")
+            else:
+                add("get_dc_vm_cpu_latest")
+        elif host_cpu:
             if _has(text, "top"):
                 add("get_dc_host_cpu_top")
-            elif _has(text, "overview"):  # "özetle / durum" → summary
+            elif _has(text, "overview"):
                 add("get_dc_host_cpu_summary")
             else:
                 add("get_dc_host_cpu_latest")
+        elif cpu_intent and _has(text, "explicit_db"):
+            # "direkt DB" + CPU but neither vm/host specified → DB host CPU, not API.
+            add("get_dc_host_cpu_summary")
         elif _has(text, "compute"):
             add("get_dc_compute_classic")
             add("get_dc_compute_hyperconverged")

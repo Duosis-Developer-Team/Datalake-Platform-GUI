@@ -104,3 +104,49 @@ def test_db_tool_skipped_when_db_disabled(monkeypatch):
 def test_db_tool_skipped_when_missing_dc():
     res = execute_tool("get_dc_host_cpu_summary", {"dc_code": None}, None)
     assert res.status == "skipped"
+
+
+# --- VM-level CPU DB tools -------------------------------------------------- #
+
+
+def _sel(message, ctx=None):
+    return tool_orchestrator.select_tools(message, ctx)
+
+
+def test_vm_cpu_top_intent_selects_vm_tool_with_days_and_limit():
+    by = {s.tool: s.args for s in _sel("DC13'teki VM'lerin son bir haftada en çok CPU tüketen 10 tanesini listele")}
+    assert "get_dc_vm_cpu_top" in by
+    assert by["get_dc_vm_cpu_top"]["days"] == 7
+    assert by["get_dc_vm_cpu_top"]["limit"] == 10
+
+
+def test_vm_keyword_routes_to_vm_tool_not_host():
+    names = _names("DC13 VM bazlı CPU kullanımını göster", None)
+    assert any(n.startswith("get_dc_vm_cpu") for n in names)
+    assert not any(n.startswith("get_dc_host_cpu") for n in names)
+
+
+def test_host_keyword_still_routes_to_host_tool():
+    names = _names("DC13 host bazlı CPU kullanımını özetle", None)
+    assert "get_dc_host_cpu_summary" in names
+    assert not any(n.startswith("get_dc_vm_cpu") for n in names)
+
+
+def test_explicit_db_cpu_routes_to_db_not_api():
+    names = _names("DC13 CPU durumunu direkt DB'den çek", None)
+    assert any(n.startswith("get_dc_host_cpu") or n.startswith("get_dc_vm_cpu") for n in names)
+    assert "get_dc_compute_classic" not in names
+
+
+def test_vm_days_extraction_son_n_gun():
+    by = {s.tool: s.args for s in _sel("DC13 son 14 günde en çok CPU kullanan VM'ler")}
+    assert by.get("get_dc_vm_cpu_top", {}).get("days") == 14
+
+
+def test_vm_db_tool_skipped_when_disabled(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "chatbot_db_enabled", False)
+    res = execute_tool("get_dc_vm_cpu_top", {"dc_code": "DC13"}, None)
+    assert res.status == "skipped"
+    assert res.error == "db_disabled"

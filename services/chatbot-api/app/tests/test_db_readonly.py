@@ -93,3 +93,27 @@ def test_host_cpu_templates_are_read_only_select():
         low = sql.lower()
         assert low.startswith("select") or low.startswith("with")
         assert ";" not in sql
+
+
+def test_vm_cpu_templates_enabled_and_read_only():
+    from app.services import db_query_registry
+    from app.services.db_query_registry import DB_QUERIES
+
+    enabled = db_query_registry.list_enabled_keys()
+    for key in (
+        "db_get_dc_vm_cpu_top",
+        "db_get_dc_vm_cpu_latest",
+        "db_get_dc_vm_cpu_summary",
+    ):
+        assert key in enabled
+        sql = DB_QUERIES[key].sql
+        assert_read_only(sql)  # must not raise
+        assert sql.lower().startswith(("select", "with"))
+        assert ";" not in sql
+
+
+def test_vm_cpu_top_has_days_and_limit_params():
+    from app.services.db_query_registry import DB_QUERIES
+
+    assert DB_QUERIES["db_get_dc_vm_cpu_top"].params == ("dc", "days", "limit")
+    assert DB_QUERIES["db_get_dc_vm_cpu_summary"].params == ("dc", "days")

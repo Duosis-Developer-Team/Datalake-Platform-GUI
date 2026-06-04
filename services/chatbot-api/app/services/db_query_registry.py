@@ -85,6 +85,63 @@ _HOST_CPU_UNION = """
 _HOST_CPU_COLS = "source, host_name, cluster, cpu_pct, cpu_used, cpu_total, unit, collection_time"
 
 
+# --------------------------------------------------------------------------- #
+# VM-level CPU — three sources unioned. Data is ~days old, so the recency window
+# is anchored to each source's own max timestamp (NOT now()) via %(days)s.
+# Percentages are only produced where the schema supports them (no fabrication):
+#   * VMware (vmware_vm_performance_metrics): capacity column is 0 in this dataset
+#     -> no %, report raw cpu_usage_avg_mhz (unit MHz). inserted_at (indexed) window.
+#   * Nutanix (nutanix_vm_performance_metrics): cpu_usage_avg is ppm (1e6=100%) -> /10000 = %.
+#   * IBM LPAR (ibm_lpar_performance_metrics): utilized/entitled proc units * 100
+#     (uncapped LPARs can exceed 100%).
+# --------------------------------------------------------------------------- #
+
+_VM_CPU_UNION = """
+    (SELECT 'vmware' AS source, vmname AS vm_name, vmhost AS host_name, cluster AS cluster,
+        NULL::numeric AS cpu_pct_avg, NULL::numeric AS cpu_pct_max,
+        round(avg(cpu_usage_avg_mhz)::numeric, 1) AS cpu_used_avg, NULL::numeric AS cpu_total,
+        'MHz' AS unit, count(*) AS sample_count,
+        to_char(min(timestamp::timestamptz), 'YYYY-MM-DD HH24:MI') AS first_collection_time,
+        to_char(max(timestamp::timestamptz), 'YYYY-MM-DD HH24:MI') AS last_collection_time
+     FROM vmware_vm_performance_metrics
+     WHERE cluster ILIKE %(dc)s
+       AND inserted_at >= (SELECT max(inserted_at) FROM vmware_vm_performance_metrics) - (%(days)s * interval '1 day')
+     GROUP BY vmname, vmhost, cluster)
+    UNION ALL
+    (SELECT 'nutanix' AS source, h.vm_name AS vm_name, h.host_name AS host_name, NULL::text AS cluster,
+        round(avg(h.cpu_usage_avg / 10000.0)::numeric, 1) AS cpu_pct_avg,
+        round(max(h.cpu_usage_max / 10000.0)::numeric, 1) AS cpu_pct_max,
+        round(avg(h.cpu_usage_avg / 10000.0)::numeric, 1) AS cpu_used_avg, NULL::numeric AS cpu_total,
+        'percent' AS unit, count(*) AS sample_count,
+        to_char(min(h.collection_time::timestamptz), 'YYYY-MM-DD HH24:MI') AS first_collection_time,
+        to_char(max(h.collection_time::timestamptz), 'YYYY-MM-DD HH24:MI') AS last_collection_time
+     FROM nutanix_vm_performance_metrics h
+     WHERE h.cluster_uuid::text IN (
+        SELECT DISTINCT cluster_uuid FROM nutanix_cluster_metrics WHERE cluster_name ILIKE %(dc)s
+     )
+       AND h.collection_time >= (SELECT max(collection_time) FROM nutanix_vm_performance_metrics) - (%(days)s * interval '1 day')
+     GROUP BY h.vm_name, h.host_name)
+    UNION ALL
+    (SELECT 'ibm' AS source, lpar_name AS vm_name, server_name AS host_name, NULL::text AS cluster,
+        round(avg(utilized_proc_units / NULLIF(entitled_proc_units, 0) * 100)::numeric, 1) AS cpu_pct_avg,
+        round(max(utilized_proc_units / NULLIF(entitled_proc_units, 0) * 100)::numeric, 1) AS cpu_pct_max,
+        round(avg(utilized_proc_units)::numeric, 2) AS cpu_used_avg,
+        round(max(entitled_proc_units)::numeric, 2) AS cpu_total,
+        'cores' AS unit, count(*) AS sample_count,
+        to_char(min(timestamp), 'YYYY-MM-DD HH24:MI') AS first_collection_time,
+        to_char(max(timestamp), 'YYYY-MM-DD HH24:MI') AS last_collection_time
+     FROM ibm_lpar_performance_metrics
+     WHERE server_name ILIKE %(dc)s
+       AND timestamp >= (SELECT max(timestamp) FROM ibm_lpar_performance_metrics) - (%(days)s * interval '1 day')
+     GROUP BY lpar_name, server_name)
+"""
+
+_VM_CPU_COLS = (
+    "source, vm_name, host_name, cluster, cpu_pct_avg, cpu_pct_max, cpu_used_avg, "
+    "cpu_total, unit, sample_count, first_collection_time, last_collection_time"
+)
+
+
 DB_QUERIES: dict[str, DBQuery] = {
     # ----- Host-level CPU (verified against live schema) ------------------ #
     "db_get_dc_host_cpu_latest": DBQuery(
@@ -120,6 +177,39 @@ DB_QUERIES: dict[str, DBQuery] = {
             "FROM hosts GROUP BY source ORDER BY source"
         ),
         params=("dc",),
+        enabled=True,
+    ),
+    # ----- VM-level CPU (verified against live schema) -------------------- #
+    "db_get_dc_vm_cpu_top": DBQuery(
+        key="db_get_dc_vm_cpu_top",
+        description="Top VMs by CPU over the last N days in a datacenter (VMware/Nutanix/IBM).",
+        sql=(
+            f"SELECT {_VM_CPU_COLS} FROM ({_VM_CPU_UNION}) c "
+            "ORDER BY cpu_pct_avg DESC NULLS LAST, cpu_used_avg DESC NULLS LAST LIMIT %(limit)s"
+        ),
+        params=("dc", "days", "limit"),
+        enabled=True,
+    ),
+    "db_get_dc_vm_cpu_latest": DBQuery(
+        key="db_get_dc_vm_cpu_latest",
+        description="Most recent per-VM CPU snapshot in a datacenter.",
+        sql=(
+            f"SELECT {_VM_CPU_COLS} FROM ({_VM_CPU_UNION}) c "
+            "ORDER BY last_collection_time DESC, cpu_pct_avg DESC NULLS LAST LIMIT %(limit)s"
+        ),
+        params=("dc", "days", "limit"),
+        enabled=True,
+    ),
+    "db_get_dc_vm_cpu_summary": DBQuery(
+        key="db_get_dc_vm_cpu_summary",
+        description="Per-source VM CPU summary (count, avg/max, latest collection).",
+        sql=(
+            f"WITH v AS ({_VM_CPU_UNION}) "
+            "SELECT source, count(*) AS vm_count, round(avg(cpu_pct_avg), 1) AS avg_cpu_pct, "
+            "round(max(cpu_pct_max), 1) AS max_cpu_pct, max(last_collection_time) AS latest_collection "
+            "FROM v GROUP BY source ORDER BY source"
+        ),
+        params=("dc", "days"),
         enabled=True,
     ),
     # ----- Generic examples (disabled by default) ------------------------- #
