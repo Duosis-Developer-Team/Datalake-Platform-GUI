@@ -107,6 +107,33 @@ _VM_COLUMN_TO_REDIS_FIELD: dict[str, str] = {
     "disk_capacity":           "stor_used",
 }
 
+# Maps (bare_source_table, total_column) → (dc_details section, redis field).
+# datacenter-api writes these into dc_details / global_dashboard Redis keys.
+_TOTAL_COLUMN_TO_REDIS: dict[tuple[str, str], tuple[str, str]] = {
+    ("cluster_metrics", "cpu_ghz_capacity"): ("classic", "cpu_cap"),
+    ("cluster_metrics", "memory_capacity_gb"): ("classic", "mem_cap"),
+    ("cluster_metrics", "total_capacity_gb"): ("classic", "stor_cap"),
+    ("datacenter_metrics", "total_cpu_ghz_capacity"): ("classic", "cpu_cap"),
+    ("datacenter_metrics", "total_memory_capacity_gb"): ("classic", "mem_cap"),
+    ("datacenter_metrics", "total_storage_capacity_gb"): ("classic", "stor_cap"),
+    ("nutanix_cluster_metrics", "total_cpu_capacity"): ("hyperconv", "cpu_cap"),
+    ("nutanix_cluster_metrics", "total_memory_capacity"): ("hyperconv", "mem_cap"),
+    ("nutanix_cluster_metrics", "storage_capacity"): ("hyperconv", "stor_cap"),
+    ("ibm_server_general", "server_processor_totalprocunits"): ("power", "cpu_total_procunits"),
+    ("ibm_server_general", "server_memory_totalmem"): ("power", "memory_total"),
+}
+
+# IBM LPAR allocated totals live in the same power section (not vm_metrics Redis path).
+_ALLOCATED_COLUMN_TO_REDIS: dict[tuple[str, str], tuple[str, str]] = {
+    ("ibm_lpar_general", "lpar_processor_entitledprocunits"): ("power", "cpu_assigned"),
+    ("ibm_lpar_general", "lpar_memory_logicalmem"): ("power", "memory_assigned"),
+}
+
+# global_dashboard ibm_totals uses mem_total instead of memory_total.
+_POWER_GLOBAL_FIELD_ALIASES: dict[str, str] = {
+    "memory_total": "mem_total",
+}
+
 # -- Cluster-aware sellable -----------------------------------------------------
 #
 # When the caller passes a non-empty cluster list, we bypass datalake DB + Redis
@@ -480,6 +507,85 @@ class SellableService:
             raise ValueError(f"invalid SQL identifier: {name!r}")
         return name
 
+    @staticmethod
+    def _escape_filter_clause(filter_clause: str) -> str:
+        """Escape literal % for psycopg2, then bind :dc_pattern."""
+        return filter_clause.replace("%", "%%").replace(":dc_pattern", "%s")
+
+    @staticmethod
+    def _infra_uses_dc_redis_payload(src: InfraSource) -> bool:
+        """True when total or allocated can be read from datacenter-api Redis cache."""
+        total_key = (
+            SellableService._bare_table_name(src.source_table),
+            (src.total_column or "").strip(),
+        )
+        if total_key in _TOTAL_COLUMN_TO_REDIS:
+            return True
+        alloc_key = (
+            SellableService._bare_table_name(src.allocated_table),
+            (src.allocated_column or "").strip(),
+        )
+        if alloc_key in _ALLOCATED_COLUMN_TO_REDIS:
+            return True
+        return SellableService._bare_table_name(src.allocated_table) in _VM_TABLE_DC_SECTION
+
+    @staticmethod
+    def _redis_section_data(
+        payload: dict,
+        dc_code: str,
+        section_key: str,
+    ) -> dict:
+        """Return the JSON object for classic/hyperconv/power (per-DC or global totals)."""
+        if not isinstance(payload, dict):
+            return {}
+        is_global = not dc_code or dc_code == "*"
+        if is_global:
+            if section_key == "classic":
+                return payload.get("classic_totals") or {}
+            if section_key == "hyperconv":
+                return payload.get("hyperconv_totals") or {}
+            if section_key == "power":
+                return payload.get("ibm_totals") or {}
+            return {}
+        return payload.get(section_key) or {}
+
+    @classmethod
+    def _extract_mapped_field_from_payload(
+        cls,
+        payload: dict,
+        dc_code: str,
+        section_key: str,
+        field: str,
+    ) -> float | None:
+        is_global = not dc_code or dc_code == "*"
+        lookup_field = field
+        if is_global and section_key == "power":
+            lookup_field = _POWER_GLOBAL_FIELD_ALIASES.get(field, field)
+        section_data = cls._redis_section_data(payload, dc_code, section_key)
+        val = section_data.get(lookup_field)
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _extract_total_from_payload(
+        cls,
+        payload: dict,
+        source_table: str,
+        total_column: str,
+        dc_code: str,
+    ) -> float | None:
+        """Return total capacity from dc_details / global_dashboard payload; None on miss."""
+        key = (cls._bare_table_name(source_table), total_column)
+        mapping = _TOTAL_COLUMN_TO_REDIS.get(key)
+        if not mapping:
+            return None
+        section_key, field = mapping
+        return cls._extract_mapped_field_from_payload(payload, dc_code, section_key, field)
+
     def _sum_sql(
         self,
         *,
@@ -553,7 +659,7 @@ FROM (
         tbl = src.source_table.strip()
         params: list[Any] = []
         if src.filter_clause:
-            cleaned = src.filter_clause.replace(":dc_pattern", "%s")
+            cleaned = self._escape_filter_clause(src.filter_clause)
             where_sql = f"WHERE ({cleaned})"
             params.append(self._dc_pattern(dc_code))
         else:
@@ -609,6 +715,24 @@ SELECT _tot, _used FROM latest
             return float(src.manual_total or 0.0), float(src.manual_allocated or 0.0)
         if self._bare_table_name(src.source_table) == "raw_ibm_storage_system":
             return self._query_ibm_storage_string_totals(src, dc_code)
+
+        payload = preloaded_dc_payload
+        if payload is None and self._infra_uses_dc_redis_payload(src):
+            loaded = self._load_dc_redis_payload(dc_code)
+            if loaded:
+                payload = loaded
+
+        if payload:
+            total_from_redis = self._extract_total_from_payload(
+                payload,
+                src.source_table or "",
+                src.total_column or "",
+                dc_code,
+            )
+            if total_from_redis is not None:
+                alloc_val = self._resolve_allocated_for_panel(src, dc_code, payload)
+                return total_from_redis, alloc_val
+
         params: list[Any] = []
         where_total = ""
         where_alloc = ""
@@ -616,7 +740,7 @@ SELECT _tot, _used FROM latest
         if total_table_bare in ("ibm_server_general", "ibm_lpar_general"):
             params = [self._dc_pattern(dc_code)]
         elif src.filter_clause:
-            cleaned = src.filter_clause.replace(":dc_pattern", "%s")
+            cleaned = self._escape_filter_clause(src.filter_clause)
             where_total = f" WHERE {cleaned}"
             params.append(self._dc_pattern(dc_code))
         try:
@@ -642,7 +766,7 @@ SELECT _tot, _used FROM latest
             if alloc_table_bare in ("ibm_server_general", "ibm_lpar_general"):
                 alloc_params = [self._dc_pattern(dc_code)]
             elif src.filter_clause:
-                cleaned = src.filter_clause.replace(":dc_pattern", "%s")
+                cleaned = self._escape_filter_clause(src.filter_clause)
                 where_alloc = f" WHERE {cleaned}"
                 alloc_params.append(self._dc_pattern(dc_code))
             try:
@@ -671,8 +795,8 @@ SELECT _tot, _used FROM latest
             return 0.0, 0.0
 
         if alloc_from_redis and src.allocated_column:
-            if preloaded_dc_payload is not None:
-                alloc_val = self._extract_allocated_from_payload(preloaded_dc_payload, src, dc_code)
+            if payload is not None:
+                alloc_val = self._extract_allocated_from_payload(payload, src, dc_code)
             else:
                 alloc_val = self._fetch_allocated_from_redis(src, dc_code)
         elif alloc_sql is not None:
@@ -690,6 +814,25 @@ SELECT _tot, _used FROM latest
             alloc_val = 0.0
 
         return total_val, alloc_val
+
+    def _resolve_allocated_for_panel(
+        self,
+        src: InfraSource,
+        dc_code: str,
+        payload: dict,
+    ) -> float:
+        """Resolve allocated_raw from Redis payload when total came from cache."""
+        alloc_table_bare = self._bare_table_name(src.allocated_table)
+        if alloc_table_bare in _VM_TABLE_DC_SECTION and src.allocated_column:
+            return self._extract_allocated_from_payload(payload, src, dc_code)
+        alloc_key = (alloc_table_bare, (src.allocated_column or "").strip())
+        if alloc_key in _ALLOCATED_COLUMN_TO_REDIS:
+            section_key, field = _ALLOCATED_COLUMN_TO_REDIS[alloc_key]
+            val = self._extract_mapped_field_from_payload(
+                payload, dc_code, section_key, field,
+            )
+            return float(val or 0.0)
+        return 0.0
 
     @staticmethod
     def _dc_pattern(dc_code: str) -> str:
@@ -756,10 +899,19 @@ SELECT _tot, _used FROM latest
             logger.exception("datacenter-api fallback failed dc=%s url=%s", dc_code, fallback_url)
             return {}
 
-    @staticmethod
-    def _extract_allocated_from_payload(payload: dict, src: "InfraSource", dc_code: str) -> float:
+    @classmethod
+    def _extract_allocated_from_payload(
+        cls, payload: dict, src: "InfraSource", dc_code: str,
+    ) -> float:
         """Pull the allocated value from a pre-loaded DC payload dict."""
-        alloc_table = SellableService._bare_table_name(src.allocated_table)
+        alloc_table = cls._bare_table_name(src.allocated_table)
+        alloc_key = (alloc_table, (src.allocated_column or "").strip())
+        if alloc_key in _ALLOCATED_COLUMN_TO_REDIS:
+            section_key, field = _ALLOCATED_COLUMN_TO_REDIS[alloc_key]
+            val = cls._extract_mapped_field_from_payload(
+                payload, dc_code, section_key, field,
+            )
+            return float(val or 0.0)
         is_global = not dc_code or dc_code == "*"
         section_map = _VM_TABLE_GLOBAL_SECTION if is_global else _VM_TABLE_DC_SECTION
         section = section_map.get(alloc_table)
@@ -1413,10 +1565,27 @@ SELECT _tot, _used FROM latest
         return total_tl
 
     def _count_unmapped_products(self) -> int:
+        mapped_ids: set[str] = set()
+        if self._webui.is_available:
+            try:
+                rows = self._webui.run_rows(
+                    "SELECT productid FROM gui_crm_service_mapping_seed "
+                    "UNION SELECT productid FROM gui_crm_service_mapping_override"
+                )
+                mapped_ids = {str(r["productid"]) for r in rows if r.get("productid")}
+            except Exception:  # noqa: BLE001
+                logger.exception("Unmapped count: webui mapping fetch failed")
+                return 0
+        bind_ids = list(mapped_ids) if mapped_ids else ["__none__"]
         try:
             with self._svc._get_connection() as conn:
                 with conn.cursor() as cur:
-                    val = self._svc._run_value(cur, sq.UNMAPPED_PRODUCT_COUNT)
+                    val = self._svc._run_value(
+                        cur,
+                        "SELECT COUNT(*)::bigint FROM discovery_crm_products "
+                        "WHERE productid != ALL(%s::text[])",
+                        (bind_ids,),
+                    )
         except Exception:  # noqa: BLE001
             logger.exception("Unmapped product count failed")
             return 0
