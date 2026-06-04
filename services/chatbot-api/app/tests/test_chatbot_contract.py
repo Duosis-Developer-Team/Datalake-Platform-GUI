@@ -10,10 +10,14 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch):
-    # No real downstream HTTP: force empty tool results.
-    from app.services import tool_orchestrator
+    # Contract tests exercise the HTTP contract on the single-pass path with no
+    # real downstream HTTP. (The agentic loop has its own tests in test_agentic.)
+    from app.config import settings
+    from app.services import agent_loop, tool_orchestrator
 
+    monkeypatch.setattr(settings, "chatbot_agentic_mode", False)
     monkeypatch.setattr(tool_orchestrator, "run", lambda *a, **k: [])
+    monkeypatch.setattr(agent_loop, "run", lambda *a, **k: None)
 
 
 def _mock_llm(monkeypatch, result=None, error=None):

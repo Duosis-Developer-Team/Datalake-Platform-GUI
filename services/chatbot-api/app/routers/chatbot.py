@@ -23,7 +23,7 @@ from app.config import settings
 from app.core.api_auth import verify_api_user
 from app.core.security import RateLimiter, classify_intent
 from app.models.schemas import ChatRequest, ChatResponse, ToolCallSummary
-from app.services import context_builder, tool_orchestrator
+from app.services import agent_loop, context_builder, tool_orchestrator
 from app.services.audit_service import AuditRecord, record
 from app.services.llm_client import LLMError, get_llm_client
 
@@ -98,26 +98,42 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
         record(audit)
         return ChatResponse(answer=_READONLY_REFUSAL, model=model, request_id=request_id)
 
-    # 3) Orchestrate read-only tools.
+    # 3) Gather evidence — agentic multi-step loop, or legacy single pass.
+    outcome = None
     try:
-        tool_results = tool_orchestrator.run(message, req.frontend_context, auth_header)
-    except Exception as exc:  # pragma: no cover - orchestrator already guards
-        logger.warning("Orchestration failed: %s", exc)
+        if settings.chatbot_agentic_mode:
+            outcome = agent_loop.run(message, req.frontend_context, auth_header)
+            tool_results = outcome.results
+        else:
+            tool_results = tool_orchestrator.run(message, req.frontend_context, auth_header)
+    except Exception as exc:  # pragma: no cover - loop/orchestrator already guard
+        logger.warning("Evidence gathering failed: %s", exc)
         tool_results = []
     audit.tools = [r.name for r in tool_results if r.status in ("success", "error")]
+    if outcome is not None:
+        audit.iterations = outcome.iterations
     if tool_results:
         audit.tool_status = (
             "success" if any(r.status == "success" for r in tool_results) else "error"
         )
 
     # 4) Build messages + 5) call LLM.
-    messages = context_builder.build_messages(
-        user_message=message,
-        conversation=req.conversation,
-        frontend_context=req.frontend_context,
-        tool_results=tool_results,
-        user_id=user_id,
-    )
+    if outcome is not None:
+        messages = context_builder.build_agentic_messages(
+            user_message=message,
+            conversation=req.conversation,
+            frontend_context=req.frontend_context,
+            outcome=outcome,
+            user_id=user_id,
+        )
+    else:
+        messages = context_builder.build_messages(
+            user_message=message,
+            conversation=req.conversation,
+            frontend_context=req.frontend_context,
+            tool_results=tool_results,
+            user_id=user_id,
+        )
     llm = get_llm_client()
     try:
         result = llm.complete(messages)

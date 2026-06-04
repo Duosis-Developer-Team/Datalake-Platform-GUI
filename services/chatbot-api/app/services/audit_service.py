@@ -28,6 +28,7 @@ class AuditRecord:
     message_chars: int = 0
     tools: list[str] = field(default_factory=list)
     tool_status: str = "none"
+    iterations: Optional[int] = None  # agentic loop iterations (None => single-pass)
     latency_ms: Optional[int] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None

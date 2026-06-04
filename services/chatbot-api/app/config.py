@@ -93,6 +93,24 @@ class Settings(BaseSettings):
     rate_limit_per_hour: int = 100
 
     # ------------------------------------------------------------------ #
+    # Agentic analysis loop (multi-step tool iteration + evaluation)
+    # ------------------------------------------------------------------ #
+    chatbot_agentic_mode: bool = True  # False => legacy single-pass behaviour
+    # Defaults kept conservative (the described VM flow is "max 3 iter / 6 calls")
+    # so worst-case latency stays under the 75s frontend timeout. Env can raise
+    # these toward the 10/20 upper bounds.
+    chatbot_max_tool_iterations: int = 3
+    chatbot_max_tool_calls_per_turn: int = 6
+    chatbot_max_tool_calls_per_iteration: int = 3
+    chatbot_analysis_mode: str = "operational"
+
+    # CPU analysis thresholds (percent) — tunable via env.
+    chatbot_cpu_avg_warning_threshold: float = 70.0
+    chatbot_cpu_avg_critical_threshold: float = 85.0
+    chatbot_cpu_peak_warning_threshold: float = 90.0
+    chatbot_stale_hours: int = 24  # data older than this triggers a freshness note
+
+    # ------------------------------------------------------------------ #
     # Logging / audit
     # ------------------------------------------------------------------ #
     log_full_prompt: bool = False  # never log raw prompts by default

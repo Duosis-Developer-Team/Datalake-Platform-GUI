@@ -181,8 +181,10 @@ def select_tools(message: str, ctx: Optional[FrontendContext]) -> list[Selection
             add("get_dc_storage_capacity")
         if _has(text, "network"):
             add("get_dc_network_summary")
-        # Generic "summarize this datacenter".
-        add("get_datacenter_detail")
+        # Generic DC detail — skip for VM/host CPU asks (the DB tools already have
+        # the data and /datacenters/{dc} is a slow endpoint here).
+        if not (vm_cpu or host_cpu):
+            add("get_datacenter_detail")
 
     # --- Global overview — only when nothing more specific matched, OR a
     #     clearly global ("en yoğun" / compare) ask without DC/customer scope.

@@ -86,28 +86,18 @@ _HOST_CPU_COLS = "source, host_name, cluster, cpu_pct, cpu_used, cpu_total, unit
 
 
 # --------------------------------------------------------------------------- #
-# VM-level CPU — three sources unioned. Data is ~days old, so the recency window
-# is anchored to each source's own max timestamp (NOT now()) via %(days)s.
-# Percentages are only produced where the schema supports them (no fabrication):
-#   * VMware (vmware_vm_performance_metrics): capacity column is 0 in this dataset
-#     -> no %, report raw cpu_usage_avg_mhz (unit MHz). inserted_at (indexed) window.
+# VM-level CPU — Nutanix + IBM LPAR. Data is ~days old, so the recency window is
+# anchored to each source's own max timestamp (NOT now()) via %(days)s.
 #   * Nutanix (nutanix_vm_performance_metrics): cpu_usage_avg is ppm (1e6=100%) -> /10000 = %.
 #   * IBM LPAR (ibm_lpar_performance_metrics): utilized/entitled proc units * 100
 #     (uncapped LPARs can exceed 100%).
+# VMware VM is intentionally excluded: vmware_vm_performance_metrics has no usable
+# CPU capacity (total_cpu_capacity_mhz = 0) so a % can't be computed without
+# fabricating, and its 6.5M-row scan blew the statement timeout. The evaluator
+# surfaces this gap to the model.
 # --------------------------------------------------------------------------- #
 
 _VM_CPU_UNION = """
-    (SELECT 'vmware' AS source, vmname AS vm_name, vmhost AS host_name, cluster AS cluster,
-        NULL::numeric AS cpu_pct_avg, NULL::numeric AS cpu_pct_max,
-        round(avg(cpu_usage_avg_mhz)::numeric, 1) AS cpu_used_avg, NULL::numeric AS cpu_total,
-        'MHz' AS unit, count(*) AS sample_count,
-        to_char(min(timestamp::timestamptz), 'YYYY-MM-DD HH24:MI') AS first_collection_time,
-        to_char(max(timestamp::timestamptz), 'YYYY-MM-DD HH24:MI') AS last_collection_time
-     FROM vmware_vm_performance_metrics
-     WHERE cluster ILIKE %(dc)s
-       AND inserted_at >= (SELECT max(inserted_at) FROM vmware_vm_performance_metrics) - (%(days)s * interval '1 day')
-     GROUP BY vmname, vmhost, cluster)
-    UNION ALL
     (SELECT 'nutanix' AS source, h.vm_name AS vm_name, h.host_name AS host_name, NULL::text AS cluster,
         round(avg(h.cpu_usage_avg / 10000.0)::numeric, 1) AS cpu_pct_avg,
         round(max(h.cpu_usage_max / 10000.0)::numeric, 1) AS cpu_pct_max,

@@ -130,3 +130,69 @@ def build_messages(
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": user_message})
     return messages
+
+
+_AGENTIC_FORMAT = (
+    "Answer format (Turkish, operational):\n"
+    "1. Kısa sonuç (1-2 cümle)\n"
+    "2. Tablo/liste — yalnızca top_list çıktısında, tool satırlarından\n"
+    "3. Analiz — derived_analysis'teki bulguları yorumla (sürekli yüksek mi, spike mi, "
+    "outlier var mı, kaynak dağılımı, host yoğunlaşması)\n"
+    "4. Risk seviyesi — derived_analysis.risk_level\n"
+    "5. Önerilen aksiyonlar — derived_analysis.recommended_actions\n"
+    "6. Kaynak + zaman aralığı — postgres tool key(ler)i ve son toplama zamanı\n\n"
+    "Rules:\n"
+    "- Sayısal değerleri SADECE derived_analysis ve tool sonuçlarından al; uydurma.\n"
+    "- confidence 'low/medium' ise cevapta belirt.\n"
+    "- Veri eski (stale) ise son toplama tarihini ve güncel olmadığını söyle.\n"
+    "- Hiç veri yoksa 'erişemiyorum' deme; hangi kaynakların/araçların denendiğini ve "
+    "sonucun neden boş geldiğini açıkla.\n"
+    "- Ham SQL, bağlantı dizesi veya secret gösterme.\n"
+)
+
+
+def build_agentic_messages(
+    user_message: str,
+    conversation: list[ChatMessage],
+    frontend_context: Optional[FrontendContext],
+    outcome,
+    user_id: Optional[str] = None,
+    username: Optional[str] = None,
+) -> list[dict[str, str]]:
+    """Assemble the LLM messages for the agentic path: intent + tool data +
+    deterministic analysis, plus the operational answer format."""
+    fc = _frontend_context_dict(frontend_context)
+    uc = _safe_user_context(user_id, username)
+    tool_block = _tool_results_block(outcome.results, settings.max_context_chars)
+
+    plan_ctx = outcome.plan.as_context() if outcome.plan else {}
+    analysis_ctx = outcome.analysis.as_context() if outcome.analysis else {}
+    confidence = outcome.evaluation.confidence if outcome.evaluation else "medium"
+    sources = sorted(
+        {r.source for r in outcome.results if r.status == "success" and r.source}
+    )
+
+    developer = (
+        "Current WebUI context:\n"
+        f"{json.dumps(fc, ensure_ascii=False, default=str)}\n\n"
+        "Authenticated user context:\n"
+        f"{json.dumps(uc, ensure_ascii=False)}\n\n"
+        "Intent plan:\n"
+        f"{json.dumps(plan_ctx, ensure_ascii=False, default=str)}\n\n"
+        f"Confidence: {confidence}\n\n"
+        "Derived analysis (deterministic — use ONLY these numbers/verdicts, do not invent):\n"
+        f"{redact_text(json.dumps(analysis_ctx, ensure_ascii=False, default=str))}\n\n"
+        f"Sources used: {json.dumps(sources, ensure_ascii=False)}\n\n"
+        "Raw tool results (already normalized + capped):\n"
+        f"{tool_block}\n\n"
+        f"{_AGENTIC_FORMAT}"
+    )
+
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": developer},
+    ]
+    for msg in _trim_conversation(conversation):
+        messages.append({"role": msg.role, "content": msg.content})
+    messages.append({"role": "user", "content": user_message})
+    return messages
