@@ -136,6 +136,24 @@ _POWER_GLOBAL_FIELD_ALIASES: dict[str, str] = {
     "memory_total": "mem_total",
 }
 
+# Unit carried by datacenter-api Redis payload fields. These are normalized
+# dashboard units, not necessarily the original datalake column units configured
+# in gui_panel_infra_source.
+_REDIS_FIELD_UNITS: dict[tuple[str, str], str] = {
+    ("classic", "cpu_cap"): "GHz",
+    ("classic", "cpu_used"): "GHz",
+    ("classic", "mem_cap"): "GB",
+    ("classic", "mem_used"): "GB",
+    ("classic", "stor_cap"): "TB",
+    ("classic", "stor_used"): "TB",
+    ("hyperconv", "cpu_cap"): "GHz",
+    ("hyperconv", "cpu_used"): "GHz",
+    ("hyperconv", "mem_cap"): "GB",
+    ("hyperconv", "mem_used"): "GB",
+    ("hyperconv", "stor_cap"): "TB",
+    ("hyperconv", "stor_used"): "TB",
+}
+
 # -- Cluster-aware sellable -----------------------------------------------------
 #
 # When the caller passes a non-empty cluster list, we bypass datalake DB + Redis
@@ -558,6 +576,7 @@ class SellableService:
         dc_code: str,
         section_key: str,
         field: str,
+        target_unit: str | None = None,
     ) -> float | None:
         is_global = not dc_code or dc_code == "*"
         lookup_field = field
@@ -568,9 +587,49 @@ class SellableService:
         if val is None:
             return None
         try:
-            return float(val)
+            numeric = float(val)
         except (TypeError, ValueError):
             return None
+        return cls._convert_redis_field_unit(numeric, section_key, field, target_unit)
+
+    @staticmethod
+    def _convert_redis_field_unit(
+        value: float,
+        section_key: str,
+        field: str,
+        target_unit: str | None,
+    ) -> float:
+        """Convert normalized datacenter-api Redis field units to infra config units."""
+        if not target_unit:
+            return value
+        source_unit = _REDIS_FIELD_UNITS.get((section_key, field))
+        if not source_unit or source_unit == target_unit:
+            return value
+        pair = (source_unit.lower(), target_unit.lower())
+        if pair == ("tb", "gb"):
+            return value * 1024.0
+        if pair == ("gb", "tb"):
+            return value / 1024.0
+        if pair == ("ghz", "hz"):
+            return value * 1_000_000_000.0
+        if pair == ("hz", "ghz"):
+            return value / 1_000_000_000.0
+        if pair == ("gb", "bytes"):
+            return value * 1_073_741_824.0
+        if pair == ("bytes", "gb"):
+            return value / 1_073_741_824.0
+        if pair == ("tb", "bytes"):
+            return value * 1_099_511_627_776.0
+        if pair == ("bytes", "tb"):
+            return value / 1_099_511_627_776.0
+        logger.debug(
+            "SellableService: no Redis unit conversion source=%s target=%s section=%s field=%s",
+            source_unit,
+            target_unit,
+            section_key,
+            field,
+        )
+        return value
 
     @classmethod
     def _extract_total_from_payload(
@@ -579,6 +638,7 @@ class SellableService:
         source_table: str,
         total_column: str,
         dc_code: str,
+        total_unit: str | None = None,
     ) -> float | None:
         """Return total capacity from dc_details / global_dashboard payload; None on miss."""
         key = (cls._bare_table_name(source_table), total_column)
@@ -586,7 +646,7 @@ class SellableService:
         if not mapping:
             return None
         section_key, field = mapping
-        return cls._extract_mapped_field_from_payload(payload, dc_code, section_key, field)
+        return cls._extract_mapped_field_from_payload(payload, dc_code, section_key, field, total_unit)
 
     def _sum_sql(
         self,
@@ -730,6 +790,7 @@ SELECT _tot, _used FROM latest
                 src.source_table or "",
                 src.total_column or "",
                 dc_code,
+                src.total_unit,
             )
             if total_from_redis is not None:
                 alloc_val = self._resolve_allocated_for_panel(src, dc_code, payload)
@@ -839,7 +900,7 @@ SELECT _tot, _used FROM latest
         if alloc_key in _ALLOCATED_COLUMN_TO_REDIS:
             section_key, field = _ALLOCATED_COLUMN_TO_REDIS[alloc_key]
             val = self._extract_mapped_field_from_payload(
-                payload, dc_code, section_key, field,
+                payload, dc_code, section_key, field, src.allocated_unit,
             )
             return float(val or 0.0)
         return 0.0
@@ -996,7 +1057,7 @@ SELECT _tot, _used FROM latest
         if alloc_key in _ALLOCATED_COLUMN_TO_REDIS:
             section_key, field = _ALLOCATED_COLUMN_TO_REDIS[alloc_key]
             val = cls._extract_mapped_field_from_payload(
-                payload, dc_code, section_key, field,
+                payload, dc_code, section_key, field, src.allocated_unit,
             )
             return float(val or 0.0)
         is_global = not dc_code or dc_code == "*"
@@ -1010,9 +1071,15 @@ SELECT _tot, _used FROM latest
         if val is None:
             return 0.0
         try:
-            return float(val)
+            numeric = float(val)
         except (TypeError, ValueError):
             return 0.0
+        return cls._convert_redis_field_unit(
+            numeric,
+            "classic" if section in ("classic", "classic_totals") else "hyperconv",
+            redis_field,
+            src.allocated_unit,
+        )
 
     def _fetch_allocated_from_redis(self, src: InfraSource, dc_code: str) -> float:
         """Return the allocated value for vm_metrics / nutanix_vm_metrics panels
@@ -1333,10 +1400,19 @@ SELECT _tot, _used FROM latest
         if not isinstance(payload, list):
             return None
         try:
-            return [self._panel_result_from_dict(d) for d in payload]
+            results = [self._panel_result_from_dict(d) for d in payload]
         except Exception:
             logger.warning("_snapshot_db_get decode failed dc=%s family=%s", dc_code, family)
             return None
+        logger.info(
+            "Sellable cache hit tier=tier2 dc=%s family=%s clusters=%s panels=%d total_tl=%.2f",
+            dc_code,
+            family,
+            clusters_csv,
+            len(results),
+            self._panel_results_total_tl(results),
+        )
+        return results
 
     def _snapshot_db_set(
         self,
@@ -1424,6 +1500,10 @@ SELECT _tot, _used FROM latest
             clusters_part = ",".join(sorted(c for c in selected_clusters if c))
         return f"sellable:panels:{dc_code or '*'}:{family or '*'}:{clusters_part}"
 
+    @staticmethod
+    def _panel_results_total_tl(results: "list[PanelResult]") -> float:
+        return sum(float(r.potential_tl or 0.0) for r in results)
+
     def _result_cache_get(self, key: str) -> "list[PanelResult] | None":
         if self._crm_redis is None or _SELLABLE_CACHE_TTL <= 0:
             return None
@@ -1436,10 +1516,17 @@ SELECT _tot, _used FROM latest
             return None
         try:
             payload = json.loads(raw)
-            return [self._panel_result_from_dict(d) for d in payload]
+            results = [self._panel_result_from_dict(d) for d in payload]
         except Exception:
             logger.warning("Sellable cache key=%s decode failed — ignoring", key)
             return None
+        logger.info(
+            "Sellable cache hit tier=redis key=%s panels=%d total_tl=%.2f",
+            key,
+            len(results),
+            self._panel_results_total_tl(results),
+        )
+        return results
 
     def _result_cache_set(self, key: str, results: "list[PanelResult]") -> None:
         if self._crm_redis is None or _SELLABLE_CACHE_TTL <= 0:
@@ -1507,21 +1594,31 @@ SELECT _tot, _used FROM latest
         *,
         selected_clusters: list[str] | None = None,
         family: str | None = None,
+        force_recompute: bool = False,
     ) -> list[PanelResult]:
         fam_key = self._snapshot_family_key(family)
         clusters_csv = self._clusters_csv(selected_clusters)
 
         # 1. Tier-1 Redis result cache lookup.
         cache_key = self._result_cache_key(dc_code, selected_clusters, family)
-        cached = self._result_cache_get(cache_key)
-        if cached is not None:
-            return cached
+        if force_recompute:
+            logger.info(
+                "compute_all_panels: force_recompute=True dc=%s family=%s clusters=%s",
+                dc_code,
+                fam_key,
+                clusters_csv,
+            )
+        else:
+            cached = self._result_cache_get(cache_key)
+            if cached is not None:
+                return cached
 
         # 2. Tier-2 durable webui-db snapshot (repopulate Redis on hit).
-        db_cached = self._snapshot_db_get(dc_code or "*", fam_key, clusters_csv)
-        if db_cached is not None:
-            self._result_cache_set(cache_key, db_cached)
-            return db_cached
+        if not force_recompute:
+            db_cached = self._snapshot_db_get(dc_code or "*", fam_key, clusters_csv)
+            if db_cached is not None:
+                self._result_cache_set(cache_key, db_cached)
+                return db_cached
 
         # 3. Pull panel definitions; filter by family BEFORE any heavy lookup.
         defs = self.list_panel_defs()
@@ -1590,9 +1687,10 @@ SELECT _tot, _used FROM latest
         if family:
             total_tl = sum(r.potential_tl for r in constrained)
             logger.info(
-                "compute_all_panels: dc=%s family=%s panels=%d total_tl=%.2f",
+                "compute_all_panels: dc=%s family=%s force_recompute=%s panels=%d total_tl=%.2f",
                 dc_code,
                 family,
+                force_recompute,
                 len(constrained),
                 total_tl,
             )
@@ -1604,11 +1702,13 @@ SELECT _tot, _used FROM latest
         *,
         selected_clusters: list[str] | None = None,
         family: str | None = None,
+        force_recompute: bool = False,
     ) -> DashboardSummary:
         panels = self.compute_all_panels(
             dc_code=dc_code,
             selected_clusters=selected_clusters,
             family=family,
+            force_recompute=force_recompute,
         )
 
         by_family: dict[str, list[PanelResult]] = defaultdict(list)
@@ -1757,7 +1857,11 @@ SELECT _tot, _used FROM latest
                 "virt_power_hana",
             ):
                 try:
-                    self.compute_all_panels(dc_code=dc, family=family)
+                    self.compute_all_panels(
+                        dc_code=dc,
+                        family=family,
+                        force_recompute=True,
+                    )
                     warmed += 1
                 except Exception:
                     logger.exception(
@@ -1777,7 +1881,7 @@ SELECT _tot, _used FROM latest
         prewarmed = self._prewarm_dc_virt_snapshots()
         logger.info("SellableService.snapshot_all: prewarmed %d per-DC family snapshots", prewarmed)
         try:
-            summary = self.compute_summary("*")
+            summary = self.compute_summary("*", force_recompute=True)
         except Exception:  # noqa: BLE001
             logger.exception("snapshot_all: compute_summary failed")
             return 0
