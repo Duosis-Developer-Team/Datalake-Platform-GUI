@@ -20,8 +20,9 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from app.catalog import data_source_catalog, domain_catalog
 from app.models.schemas import ChatMessage, FrontendContext
-from app.services import metric_catalog, planner
+from app.services import planner
 from app.services import tool_orchestrator as orch
 from app.services.planner import IntentPlan
 
@@ -92,19 +93,29 @@ def _clarify(param: str) -> str:
     }.get(param, f"Eksik bilgi: {param}")
 
 
+def _order_by_source(tools: tuple[str, ...], pref: str) -> list[str]:
+    """Order tools by source preference; db/api decided via data_source_catalog."""
+    db = data_source_catalog.db_tool_keys()
+    if pref == "db":
+        return sorted(tools, key=lambda t: 0 if t in db else 1)
+    if pref == "api":
+        return sorted(tools, key=lambda t: 0 if t not in db else 1)
+    return list(tools)
+
+
 def plan(message: str, ctx: Optional[FrontendContext],
          conversation: Optional[list[ChatMessage]] = None) -> IntentPlan:
     text = (message or "").lower()
-    md = metric_catalog.match(message)
+    md = domain_catalog.match(message)
 
     # No catalog hit -> legacy keyword planner (keeps prior behaviour).
     if md is None:
         return planner.make_plan(message, ctx)
 
     dc_code = _resolve_dc(message, ctx, conversation)
-    customer = _resolve_customer(message, ctx, conversation) if md.entity == "customer" else (
-        ctx.selected_customer if ctx and ctx.selected_customer else None
-    )
+    # Customer is only resolved for customer metrics — a datacenter/host/cluster
+    # question never picks up a (possibly stale) selected_customer.
+    customer = _resolve_customer(message, ctx, conversation) if md.entity == "customer" else None
     days = orch._extract_days(text) or md.default_params.get("days")
     limit = orch._extract_limit(text) or md.default_params.get("limit")
     architecture = _arch(text) or md.architecture
@@ -128,6 +139,7 @@ def plan(message: str, ctx: Optional[FrontendContext],
         requested_output=md.output_type,
         sort_by="max" if ("peak" in text or "tepe" in text) else "avg",
         needs_analysis=True,
+        answer_guidance=list(md.answer_guidance),
     )
 
     if missing:
@@ -142,5 +154,10 @@ def plan(message: str, ctx: Optional[FrontendContext],
         "limit": limit,
         "time_range": (ctx.time_range if ctx else None),
     }
-    p.initial_tools = [{"tool": t, "args": dict(base)} for t in md.all_tools(source_pref)]
+    # Build the plan from the catalog's primary tools, ordered by source
+    # preference, with forbidden tools (e.g. customer tools on a DC metric)
+    # explicitly excluded — never bypassing the registry allowlist.
+    forbidden = set(md.forbidden_tools)
+    tools = [t for t in _order_by_source(md.primary_tools, source_pref) if t not in forbidden]
+    p.initial_tools = [{"tool": t, "args": dict(base)} for t in tools]
     return p

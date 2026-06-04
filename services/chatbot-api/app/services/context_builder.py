@@ -206,10 +206,15 @@ def build_agentic_messages(
     plan_ctx = outcome.plan.as_context() if outcome.plan else {}
     analysis_ctx = outcome.analysis.as_context() if outcome.analysis else {}
     confidence = outcome.evaluation.confidence if outcome.evaluation else "medium"
+    guidance = list(outcome.plan.answer_guidance) if outcome.plan else []
     sources = sorted(
         {r.source for r in outcome.results if r.status == "success" and r.source}
     )
 
+    guidance_block = (
+        "Metric-specific guidance (follow these):\n"
+        f"{json.dumps(guidance, ensure_ascii=False)}\n\n" if guidance else ""
+    )
     developer = (
         "Current WebUI context:\n"
         f"{json.dumps(fc, ensure_ascii=False, default=str)}\n\n"
@@ -217,6 +222,7 @@ def build_agentic_messages(
         f"{json.dumps(uc, ensure_ascii=False)}\n\n"
         "Intent plan:\n"
         f"{json.dumps(plan_ctx, ensure_ascii=False, default=str)}\n\n"
+        f"{guidance_block}"
         f"Confidence: {confidence}\n\n"
         "Derived analysis (deterministic — use ONLY these numbers/verdicts, do not invent):\n"
         f"{redact_text(json.dumps(analysis_ctx, ensure_ascii=False, default=str))}\n\n"

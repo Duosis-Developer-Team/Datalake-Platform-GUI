@@ -36,6 +36,7 @@ class IntentPlan:
     analysis_profile: str = "generic"  # which synthesizer profile to apply
     missing_required_params: list[str] = field(default_factory=list)
     clarification: Optional[str] = None  # set when a required param can't be resolved
+    answer_guidance: list[str] = field(default_factory=list)  # metric-specific LLM guidance
 
     def as_context(self) -> dict[str, Any]:
         """Compact, LLM-safe view of the plan (no internals/secrets)."""
