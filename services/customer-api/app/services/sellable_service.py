@@ -1366,7 +1366,9 @@ SELECT _tot, _used FROM latest
     def invalidate_result_cache(self, dc_code: str | None = None) -> int:
         """Drop cached compute_all_panels payloads (Redis Tier-1 + webui Tier-2).
 
-        Called after config changes and by ``snapshot_all`` before recomputing.
+        Called after CRM config changes (panels, thresholds, infra sources, etc.).
+        Scheduled ``snapshot_all`` does **not** call this — it overwrites keys in place
+        so readers keep serving the last published snapshot until recompute succeeds.
         Returns the number of Redis keys deleted.
         """
         self._snapshot_db_invalidate(dc_code)
@@ -1646,12 +1648,10 @@ SELECT _tot, _used FROM latest
         """Compute the global dashboard, push every metric into TaggingService
         cache + persist a snapshot row. Returns the number of metrics emitted.
 
-        Also invalidates stale caches, prewarms per-DC virt snapshots, and
-        repopulates Tier-1/Tier-2 panel result caches.
+        Prewarms per-DC virt snapshots and overwrites Tier-1/Tier-2 panel caches
+        per successful scope. Does not invalidate existing caches up front — readers
+        keep the last published values until a scope recomputes successfully.
         """
-        # Drop stale cache before re-computing so the scheduler-driven write
-        # repopulates fresh keys (and any concurrent user request also misses).
-        self.invalidate_result_cache()
         prewarmed = self._prewarm_dc_virt_snapshots()
         logger.info("SellableService.snapshot_all: prewarmed %d per-DC family snapshots", prewarmed)
         try:

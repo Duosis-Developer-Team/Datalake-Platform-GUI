@@ -31,6 +31,27 @@ def _virt_sellable_tl_for_dc(dc_id: str, family_workers: int) -> float:
     )
 
 
+def _publish_virt_cache(
+    local_vals: dict[str, float],
+    dc_ids: list[str],
+    tr_key: str,
+) -> None:
+    """Atomically publish warm results; never wipe prior cache on empty/partial failure."""
+    global _VIRT_TL_CACHE, _VIRT_CACHE_TR_KEY
+    if not local_vals:
+        return
+    with _VIRT_CACHE_LOCK:
+        if len(local_vals) >= len(dc_ids) and len(dc_ids) > 0:
+            _VIRT_TL_CACHE = dict(local_vals)
+            _VIRT_CACHE_TR_KEY = tr_key
+            return
+        merged = dict(_VIRT_TL_CACHE)
+        merged.update(local_vals)
+        _VIRT_TL_CACHE = merged
+        if set(dc_ids).issubset(local_vals.keys()):
+            _VIRT_CACHE_TR_KEY = tr_key
+
+
 def start_virt_cache_warm(
     dc_ids: list[str],
     tr: dict,
@@ -46,7 +67,7 @@ def start_virt_cache_warm(
         _VIRT_CACHE_WARMING = True
 
     def _run() -> None:
-        global _VIRT_CACHE_WARMING, _VIRT_TL_CACHE, _VIRT_CACHE_TR_KEY
+        global _VIRT_CACHE_WARMING
         local_vals: dict[str, float] = {}
         try:
 
@@ -61,9 +82,7 @@ def start_virt_cache_warm(
                         local_vals[dc_id] = val
                     except Exception:
                         continue
-            with _VIRT_CACHE_LOCK:
-                _VIRT_TL_CACHE = local_vals
-                _VIRT_CACHE_TR_KEY = tr_key
+            _publish_virt_cache(local_vals, dc_ids, tr_key)
         finally:
             with _VIRT_CACHE_LOCK:
                 _VIRT_CACHE_WARMING = False
@@ -86,9 +105,8 @@ def resolve_virt_sellable_for_dcs(
 ) -> dict[str, Any]:
     """Resolve per-DC virt sellable TL map and whether UI should show loading.
 
-    Uses in-process warm cache when complete; otherwise triggers background warm
-    and returns partial/zero map with ``loading=True`` until warm finishes.
-    Tier-2 durable snapshots in crm-engine reduce cold-start zeros after restart.
+    Serves the last published in-process cache while a background warm runs (stale-while-refresh).
+    Does not zero out KPIs when the time-range key changes until new values are published.
     """
     tr = tr or {}
     tr_key = virt_cache_tr_key(tr)
@@ -102,7 +120,10 @@ def resolve_virt_sellable_for_dcs(
         cache_key = _VIRT_CACHE_TR_KEY
         warming = _VIRT_CACHE_WARMING
 
-    cache_hit_count = sum(1 for dc_id in dc_ids if dc_id in cache_snapshot and cache_key == tr_key)
+    cache_hit_count = sum(
+        1 for dc_id in dc_ids
+        if dc_id in cache_snapshot and cache_key == tr_key
+    )
     cache_complete = cache_hit_count >= len(dc_ids) and len(dc_ids) > 0
 
     if not cache_complete and not warming:
@@ -113,11 +134,12 @@ def resolve_virt_sellable_for_dcs(
     virt_tl_by_dc: dict[str, float] = {}
     total = 0.0
     for dc_id in dc_ids:
-        dc_virt = cache_snapshot.get(dc_id, 0.0) if cache_key == tr_key else 0.0
+        dc_virt = float(cache_snapshot.get(dc_id, 0.0) or 0.0)
         virt_tl_by_dc[dc_id] = dc_virt
         total += dc_virt
 
-    loading = warming or (not cache_complete and total == 0.0)
+    has_stale = any(dc_id in cache_snapshot for dc_id in dc_ids)
+    loading = (warming or not cache_complete) and not (has_stale and total > 0.0)
     return {
         "virt_tl_by_dc": virt_tl_by_dc,
         "total_potential_tl": total,
@@ -134,6 +156,7 @@ def refresh_virt_sellable_cache(
     family_workers: int | None = None,
 ) -> dict[str, Any]:
     """Synchronously recompute virt TL for all DCs (used by poll callback)."""
+    global _VIRT_CACHE_WARMING
     fw = max(1, int(family_workers or os.getenv("DC_OVERVIEW_VIRT_FAMILY_WORKERS", "1") or "1"))
     tr_key = virt_cache_tr_key(tr)
     local_vals: dict[str, float] = {}
@@ -151,17 +174,18 @@ def refresh_virt_sellable_cache(
             except Exception:
                 continue
 
+    _publish_virt_cache(local_vals, dc_ids, tr_key)
     with _VIRT_CACHE_LOCK:
-        global _VIRT_TL_CACHE, _VIRT_CACHE_TR_KEY, _VIRT_CACHE_WARMING
-        _VIRT_TL_CACHE = local_vals
-        _VIRT_CACHE_TR_KEY = tr_key
         _VIRT_CACHE_WARMING = False
+        snapshot = dict(_VIRT_TL_CACHE)
 
-    total = sum(local_vals.values())
+    virt_tl_by_dc = {dc_id: float(snapshot.get(dc_id, 0.0) or 0.0) for dc_id in dc_ids}
+    total = sum(virt_tl_by_dc.values())
+    cache_complete = set(dc_ids).issubset(snapshot.keys()) and len(dc_ids) > 0
     return {
-        "virt_tl_by_dc": local_vals,
+        "virt_tl_by_dc": virt_tl_by_dc,
         "total_potential_tl": total,
         "loading": False,
-        "cache_complete": True,
+        "cache_complete": cache_complete,
         "tr_key": tr_key,
     }

@@ -112,12 +112,11 @@ VIRT_SELLABLE_FAMILY_LABELS = ("virt_classic", "virt_hyperconverged", "virt_powe
 
 ### `snapshot_all` (scheduler)
 
-1. `invalidate_result_cache()` — bayat Tier-1/Tier-2 cache'i düşür.
-2. `_prewarm_dc_virt_snapshots()` — her DC × her virt family için
+1. `_prewarm_dc_virt_snapshots()` — her DC × her virt family için
    `compute_all_panels(dc_code=dc, family=family)` çalıştırıp snapshot doldurur
    (`clusters=None`, yani dc-geneli datalake+Redis yolu).
-3. `compute_summary("*")` — global pano.
-4. Her panel ölçüsünü (`measures_from_panel`) `TaggingService` cache'ine yazar ve
+2. `compute_summary("*")` — global pano (başarılı scope'lar Tier-1/Tier-2'yi yerinde günceller).
+3. Her panel ölçüsünü (`measures_from_panel`) `TaggingService` cache'ine yazar ve
    `gui_metric_snapshot`'a snapshot'lar; üst-düzey 4 KPI metriğini de ekler.
 
 ---

@@ -53,3 +53,10 @@ Merge each into `development`, then `development` → `main` after approval.
 - **Non-blocking lifespan**: initial `snapshot_all` runs via APScheduler (`next_run_time=now`); `CRM_ENGINE_SYNC_SNAPSHOT_ON_STARTUP` defaults false so `/health` is available immediately.
 - **Redis preload**: `compute_all_panels` loads `dc_payload` when any panel uses `_infra_uses_dc_redis_payload` (IBM/classic/hyperconv totals, not only VM allocated).
 - **Tests**: `services/crm-engine/tests/test_main_startup.py`, `test_compute_all_panels_preloads_redis_for_ibm_power_infra`.
+
+## crm zero-downtime cache (2026-06-04)
+
+- **snapshot_all**: no upfront `invalidate_result_cache()`; successful scopes overwrite Tier-1/Tier-2 in place.
+- **admin cache refresh**: crm-engine no longer `flush *` before recompute.
+- **Data Centers virt warm**: `datacenters_virt_sellable.py` stale-while-refresh + partial publish merge.
+- **GUI api_client**: empty sellable fetch falls back to last LRU entry instead of caching zeros.
