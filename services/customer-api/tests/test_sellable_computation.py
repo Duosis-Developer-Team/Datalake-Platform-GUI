@@ -153,6 +153,33 @@ def test_constrain_by_ratio_other_kind_is_passthrough():
     assert out[0].ratio_bound is False
 
 
+def test_dc11_style_power_ratio_after_ram_threshold():
+    """20 GB total, 16 GB assigned: 4 GB free operationally, 0 RAM sellable at 80%."""
+    ram_raw = apply_threshold(20.0, 16.0, 80.0)
+    assert ram_raw == 0.0
+    cpu_raw = apply_threshold(100.0, 50.0, 80.0)
+    assert cpu_raw == 30.0
+    panels = [
+        _panel("cpu", cpu_raw, family="virt_power"),
+        _panel("ram", ram_raw, family="virt_power"),
+        _panel("storage", 0.0, family="virt_power"),
+    ]
+    ratio = ResourceRatio(
+        family="virt_power",
+        cpu_per_unit=1.0,
+        ram_gb_per_unit=16.0,
+        storage_gb_per_unit=200.0,
+    )
+    out = {
+        p.resource_kind: p
+        for p in constrain_by_ratio(
+            panels, ratio, decouple_resource_kinds=frozenset({"storage"}),
+        )
+    }
+    assert out["cpu"].sellable_constrained == 0.0
+    assert out["cpu"].ratio_bound is True
+
+
 def test_constrain_by_ratio_only_cpu_present_keeps_cpu_raw():
     """When only one resource exists for the family, n is unconstrained
     by the missing resources and the panel keeps its raw value."""

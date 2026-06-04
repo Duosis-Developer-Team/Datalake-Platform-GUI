@@ -68,3 +68,10 @@ Merge each into `development`, then `development` → `main` after approval.
 - **Recompute bypass**: scheduler/admin refresh now uses `force_recompute=True`, bypassing stale Tier-1/Tier-2 zeros and overwriting only after successful compute.
 - **Redis unit normalization**: datacenter-api Redis fields (`cpu_cap` GHz, `mem_cap` GB, `stor_cap` TB) are converted back to configured infra units before existing sellable conversions run.
 - **DC-13 verification**: `virt_classic=1,396,549.49 TL`, `virt_hyperconverged=570,081.47 TL`, GUI helper total `1,966,630.958 TL`.
+
+## ibm power crm unit + explanation fix (2026-06-04)
+
+- **Root cause**: datacenter-api Redis `power.memory_*` fields are **GB**; CRM infra source for `virt_power_ram` expects **MB**. Missing `_REDIS_FIELD_UNITS` for Power caused wrong totals and `sellable_raw=0` for RAM, which ratio-bound CPU to zero (`CPU RATIO-BOUND: N Core LOST` while operational RAM still shows free GB on capacity cards).
+- **Fix**: `_REDIS_FIELD_UNITS` for `power` CPU (procunit) and memory (GB); `GB↔MB` in `_convert_redis_field_unit`; global aliases `memory_assigned→mem_assigned`, `memory_available→mem_available`.
+- **UI**: `sellable_power_hints.py` + DC view badges — RAM threshold-bound vs CPU blocked by RAM ratio (1:16 Power, 1:32 HANA).
+- **Tests**: `test_power_memory_redis_gb_converts_to_mb_infra_unit`, `test_global_ibm_totals_mem_assigned_alias`, `tests/test_sellable_power_hints.py`, `test_dc11_style_power_ratio_after_ram_threshold`.

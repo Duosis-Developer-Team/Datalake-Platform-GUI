@@ -1211,6 +1211,68 @@ def test_extract_total_from_payload_converts_redis_units_to_infra_units():
     assert hyper_storage_bytes == 2.0 * 1_099_511_627_776.0
 
 
+def test_power_memory_redis_gb_converts_to_mb_infra_unit():
+    payload = {
+        "power": {
+            "memory_total": 100.0,
+            "memory_assigned": 80.0,
+        },
+    }
+    total_mb = SellableService._extract_total_from_payload(
+        payload,
+        "ibm_server_general",
+        "server_memory_totalmem",
+        "DC13",
+        "MB",
+    )
+    alloc_mb = SellableService._extract_allocated_from_payload(
+        payload,
+        InfraSource(
+            "virt_power_ram",
+            "DC13",
+            allocated_table="ibm_lpar_general",
+            allocated_column="lpar_memory_logicalmem",
+            allocated_unit="MB",
+        ),
+        "DC13",
+    )
+    assert total_mb == 100.0 * 1024.0
+    assert alloc_mb == 80.0 * 1024.0
+
+
+def test_global_ibm_totals_mem_assigned_alias():
+    payload = {
+        "ibm_totals": {
+            "mem_total": 512.0,
+            "mem_assigned": 400.0,
+        },
+    }
+    total_mb = SellableService._extract_total_from_payload(
+        payload,
+        "ibm_server_general",
+        "server_memory_totalmem",
+        "*",
+        "MB",
+    )
+    src = InfraSource(
+        "virt_power_ram",
+        "*",
+        allocated_table="ibm_lpar_general",
+        allocated_column="lpar_memory_logicalmem",
+        allocated_unit="MB",
+    )
+    alloc_mb = SellableService._extract_allocated_from_payload(payload, src, "*")
+    assert total_mb == 512.0 * 1024.0
+    assert alloc_mb == 400.0 * 1024.0
+
+
+def test_convert_redis_field_unit_power_memory_gb_to_mb():
+    """Redis power memory fields are GB; infra source expects MB."""
+    assert SellableService._convert_redis_field_unit(10.0, "power", "memory_total", "MB") == 10240.0
+    assert SellableService._convert_redis_field_unit(10.0, "power", "memory_assigned", "MB") == 10240.0
+    assert SellableService._convert_redis_field_unit(10.0, "power", "memory_total", "GB") == 10.0
+
+
 def test_query_total_allocated_redis_first_skips_datalake():
     customer = MagicMock()
     webui = MagicMock()

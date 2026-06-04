@@ -131,9 +131,11 @@ _ALLOCATED_COLUMN_TO_REDIS: dict[tuple[str, str], tuple[str, str]] = {
     ("ibm_lpar_general", "lpar_memory_logicalmem"): ("power", "memory_assigned"),
 }
 
-# global_dashboard ibm_totals uses mem_total instead of memory_total.
+# global_dashboard ibm_totals uses shorter field names than dc_details power section.
 _POWER_GLOBAL_FIELD_ALIASES: dict[str, str] = {
     "memory_total": "mem_total",
+    "memory_assigned": "mem_assigned",
+    "memory_available": "mem_available",
 }
 
 # Unit carried by datacenter-api Redis payload fields. These are normalized
@@ -152,6 +154,13 @@ _REDIS_FIELD_UNITS: dict[tuple[str, str], str] = {
     ("hyperconv", "mem_used"): "GB",
     ("hyperconv", "stor_cap"): "TB",
     ("hyperconv", "stor_used"): "TB",
+    ("power", "cpu_total_procunits"): "procunit",
+    ("power", "cpu_assigned"): "procunit",
+    ("power", "cpu_used"): "procunit",
+    ("power", "cpu_available_procunits"): "procunit",
+    ("power", "memory_total"): "GB",
+    ("power", "memory_assigned"): "GB",
+    ("power", "memory_available"): "GB",
 }
 
 # -- Cluster-aware sellable -----------------------------------------------------
@@ -622,6 +631,10 @@ class SellableService:
             return value * 1_099_511_627_776.0
         if pair == ("bytes", "tb"):
             return value / 1_099_511_627_776.0
+        if pair == ("gb", "mb"):
+            return value * 1024.0
+        if pair == ("mb", "gb"):
+            return value / 1024.0
         logger.debug(
             "SellableService: no Redis unit conversion source=%s target=%s section=%s field=%s",
             source_unit,
