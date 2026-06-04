@@ -14,8 +14,11 @@ Exercises the canonical scenario from ADR-0014:
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 from app.services.sellable_service import (
@@ -828,6 +831,71 @@ def test_dc_redis_key_uses_window_days():
     assert key.startswith("dc_details:IST1:")
     # URL preset must reflect the window — never the legacy hardcoded "30d".
     assert f"preset={_DC_DETAILS_WINDOW_DAYS}d" in url
+
+
+def test_dc_redis_key_aligned_with_datacenter_api_seven_day_window(monkeypatch):
+    """7d inclusive window: start=today-6, end=today (UTC) — matches datacenter-api keys."""
+    fixed = datetime.date(2026, 6, 4)
+    monkeypatch.setattr(SellableService, "_utc_today", staticmethod(lambda: fixed))
+    if os.getenv("SELLABLE_REDIS_WINDOW_DAYS"):
+        pytest.skip("SELLABLE_REDIS_WINDOW_DAYS overrides default span")
+    svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
+    key, _ = svc._dc_redis_key("DC13")
+    assert key == "dc_details:DC13:2026-05-29:2026-06-04"
+
+
+def test_dc_redis_key_alternate_includes_legacy_off_by_one(monkeypatch):
+    fixed = datetime.date(2026, 6, 4)
+    monkeypatch.setattr(SellableService, "_utc_today", staticmethod(lambda: fixed))
+    if os.getenv("SELLABLE_REDIS_WINDOW_DAYS"):
+        pytest.skip("SELLABLE_REDIS_WINDOW_DAYS overrides default span")
+    svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
+    alts = svc._dc_redis_key_alternates("DC13")
+    assert "dc_details:DC13:2026-05-28:2026-06-04" in alts
+
+
+def test_dc_wide_compute_reads_total_from_redis_payload():
+    """DC-wide path must use preloaded dc_details payload (not zero on Redis hit)."""
+    customer = MagicMock()
+    webui = MagicMock()
+    webui.is_available = True
+    svc = SellableService(
+        customer_service=customer,
+        webui=webui,
+        config_service=MagicMock(),
+        currency_service=MagicMock(),
+        tagging_service=MagicMock(),
+    )
+    panel = PanelDefinition(
+        "virt_classic_cpu", "Classic CPU", "virt_classic", "cpu", "vCPU",
+    )
+    infra = InfraSource(
+        "virt_classic_cpu",
+        "DC13",
+        source_table="cluster_metrics",
+        total_column="cpu_ghz_capacity",
+        total_unit="GHz",
+        allocated_table="vm_metrics",
+        allocated_column="number_of_cpus",
+        allocated_unit="GHz",
+    )
+    payload = {
+        "classic": {"cpu_cap": 500.0, "cpu_used": 200.0, "mem_cap": 1000.0, "mem_used": 400.0},
+    }
+    svc.list_panel_defs = lambda: [panel]  # type: ignore[method-assign]
+    svc.list_unit_conversions = lambda: [UnitConversion("GHz", "GHz", 1.0)]  # type: ignore[method-assign]
+    svc.list_ratios = lambda: [ResourceRatio(family="virt_classic", cpu_per_unit=1.0, ram_gb_per_unit=8.0, storage_gb_per_unit=100.0)]  # type: ignore[method-assign]
+    svc.get_threshold = lambda *a, **kw: 80.0  # type: ignore[method-assign]
+    svc.get_unit_price_tl = lambda pk: (100.0, True)  # type: ignore[method-assign]
+    svc._bulk_load_infra_sources = lambda dc: {"virt_classic_cpu": infra}  # type: ignore[method-assign]
+    svc._bulk_load_thresholds = lambda dc: None  # type: ignore[method-assign]
+    svc._bulk_load_price_overrides = lambda: {}  # type: ignore[method-assign]
+    svc._load_dc_redis_payload = lambda dc: payload  # type: ignore[method-assign]
+    customer._get_connection = MagicMock()
+    results = svc.compute_all_panels(dc_code="DC13", family="virt_classic")
+    assert results
+    assert results[0].total == 500.0
+    customer._get_connection.assert_not_called()
 
 
 def test_load_dc_redis_payload_called_once_per_request():

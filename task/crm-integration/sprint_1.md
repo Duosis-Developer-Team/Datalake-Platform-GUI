@@ -60,3 +60,8 @@ Merge each into `development`, then `development` → `main` after approval.
 - **admin cache refresh**: crm-engine no longer `flush *` before recompute.
 - **Data Centers virt warm**: `datacenters_virt_sellable.py` stale-while-refresh + partial publish merge.
 - **GUI api_client**: empty sellable fetch falls back to last LRU entry instead of caching zeros.
+
+## crm dc-wide redis key fix (2026-06-04)
+
+- **Root cause**: `_dc_redis_key` used `today-7` while datacenter-api writes `today-6:today` (7d inclusive) → 100% Redis miss on Data Centers list.
+- **Fix**: UTC dates, `start = today - (span_days - 1)`, alternate legacy keys, boundary logs, `summary?preset=7d` prewarm + Redis scan fallback.

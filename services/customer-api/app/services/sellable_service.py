@@ -77,6 +77,8 @@ _SUBQUERY_NUTANIX_CLUSTER_LATEST = """(
 # MUST match the window used by datacenter-api's default_time_range (7 d).
 # Override with SELLABLE_REDIS_WINDOW_DAYS env var.
 _DC_DETAILS_WINDOW_DAYS: int = int(os.getenv("SELLABLE_REDIS_WINDOW_DAYS", "7"))
+# Timeout for datacenter-api DC list fetch during snapshot prewarm.
+_SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT", "30"))
 
 # TTL (seconds) for compute_all_panels result in crm-engine Redis (DB 2).
 # 0 disables caching. Override with SELLABLE_CACHE_TTL_SECONDS.
@@ -732,6 +734,14 @@ SELECT _tot, _used FROM latest
             if total_from_redis is not None:
                 alloc_val = self._resolve_allocated_for_panel(src, dc_code, payload)
                 return total_from_redis, alloc_val
+            if self._infra_uses_dc_redis_payload(src):
+                logger.debug(
+                    "SellableService: Redis total miss panel=%s dc=%s table=%s column=%s — datalake fallback",
+                    src.panel_key,
+                    dc_code,
+                    src.source_table,
+                    src.total_column,
+                )
 
         params: list[Any] = []
         where_total = ""
@@ -840,28 +850,90 @@ SELECT _tot, _used FROM latest
             return "%"
         return f"%{dc_code.lower()}%"
 
-    def _dc_redis_key(self, dc_code: str) -> tuple[str, str]:
-        """Return (redis_key, fallback_url) for the datacenter payload.
+    @staticmethod
+    def _utc_today() -> datetime.date:
+        """UTC calendar date — must match datacenter-api ``_today_utc()`` for Redis keys."""
+        return datetime.datetime.now(datetime.timezone.utc).date()
 
-        Uses ``SELLABLE_REDIS_WINDOW_DAYS`` (default 7) so the keys match the
-        ones populated by datacenter-api's default time range — without that
-        alignment Redis returns miss on every sellable lookup.
+    @staticmethod
+    def _payload_section_hints(payload: dict) -> str:
+        """Compact summary of which dc_details / global_dashboard sections are present."""
+        if not isinstance(payload, dict) or not payload:
+            return "none"
+        hints: list[str] = []
+        for section in (
+            "classic",
+            "hyperconv",
+            "power",
+            "classic_totals",
+            "hyperconv_totals",
+            "ibm_totals",
+            "intel",
+        ):
+            block = payload.get(section)
+            if isinstance(block, dict) and block:
+                hints.append(section)
+        return ",".join(hints) if hints else "empty"
+
+    def _dc_redis_keys_for_span(self, dc_code: str, span_days: int) -> tuple[str, str]:
+        """Return (redis_key, fallback_url) for an inclusive UTC calendar span.
+
+        datacenter-api 7d preset uses ``start = today - (span_days - 1)`` (7 days inclusive).
         """
-        today = datetime.date.today()
-        days = max(_DC_DETAILS_WINDOW_DAYS, 1)
-        start = (today - datetime.timedelta(days=days)).isoformat()
+        today = self._utc_today()
+        span = max(span_days, 1)
+        start = (today - datetime.timedelta(days=span - 1)).isoformat()
         end = today.isoformat()
         is_global = not dc_code or dc_code == "*"
-        preset = f"{days}d"
+        preset = f"{max(_DC_DETAILS_WINDOW_DAYS, 1)}d"
         if is_global:
             return (
                 f"global_dashboard:{start}:{end}",
-                f"{self._dc_api_url}/api/v1/dashboard/overview?preset={preset}" if self._dc_api_url else "",
+                f"{self._dc_api_url}/api/v1/dashboard/overview?preset={preset}"
+                if self._dc_api_url
+                else "",
             )
         return (
             f"dc_details:{dc_code}:{start}:{end}",
-            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}?preset={preset}" if self._dc_api_url else "",
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}?preset={preset}"
+            if self._dc_api_url
+            else "",
         )
+
+    def _dc_redis_key(self, dc_code: str) -> tuple[str, str]:
+        """Primary Redis key aligned with datacenter-api default 7d window (UTC, inclusive)."""
+        days = max(_DC_DETAILS_WINDOW_DAYS, 1)
+        return self._dc_redis_keys_for_span(dc_code, days)
+
+    def _dc_redis_key_alternates(self, dc_code: str) -> list[str]:
+        """Extra Redis keys (legacy off-by-one span, neighbors) before HTTP fallback."""
+        days = max(_DC_DETAILS_WINDOW_DAYS, 1)
+        primary, _ = self._dc_redis_key(dc_code)
+        out: list[str] = []
+        for span in (days + 1, days - 1):
+            if span < 1:
+                continue
+            key, _ = self._dc_redis_keys_for_span(dc_code, span)
+            if key != primary and key not in out:
+                out.append(key)
+        return out
+
+    def _redis_get_json(self, redis_key: str) -> dict | None:
+        if self._dc_redis is None:
+            return None
+        try:
+            raw = self._dc_redis.get(redis_key)
+        except Exception:
+            logger.exception("Redis GET failed for key=%s", redis_key)
+            return None
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            logger.warning("Redis key %s: JSON decode failed", redis_key)
+            return None
 
     def _load_dc_redis_payload(self, dc_code: str) -> dict:
         """Fetch the full datacenter payload from Redis once (or via HTTP fallback).
@@ -871,32 +943,47 @@ SELECT _tot, _used FROM latest
         one Redis GET (or HTTP call) per panel.
         """
         redis_key, fallback_url = self._dc_redis_key(dc_code)
+        keys_to_try = [redis_key, *self._dc_redis_key_alternates(dc_code)]
 
-        raw: str | None = None
-        if self._dc_redis is not None:
-            try:
-                raw = self._dc_redis.get(redis_key)
-            except Exception:
-                logger.exception("Redis GET failed for key=%s", redis_key)
+        for key in keys_to_try:
+            payload = self._redis_get_json(key)
+            if payload is not None:
+                logger.info(
+                    "_load_dc_redis_payload: dc=%s key=%s redis_hit=True sections=%s",
+                    dc_code,
+                    key,
+                    self._payload_section_hints(payload),
+                )
+                return payload
 
-        if raw:
-            try:
-                return json.loads(raw)
-            except Exception:
-                logger.warning("Redis key %s: JSON decode failed — falling back to HTTP", redis_key)
-
+        logger.info(
+            "_load_dc_redis_payload: dc=%s key=%s redis_hit=False sections=none",
+            dc_code,
+            redis_key,
+        )
         if not fallback_url:
             logger.warning(
                 "_load_dc_redis_payload: Redis miss and no datacenter_api_url (dc=%s key=%s)",
-                dc_code, redis_key,
+                dc_code,
+                redis_key,
             )
             return {}
         try:
             resp = httpx.get(fallback_url, timeout=15.0)
             resp.raise_for_status()
-            return resp.json() or {}
+            payload = resp.json() or {}
+            logger.info(
+                "_load_dc_redis_payload: dc=%s http_fallback=True sections=%s",
+                dc_code,
+                self._payload_section_hints(payload if isinstance(payload, dict) else {}),
+            )
+            return payload if isinstance(payload, dict) else {}
         except Exception:
-            logger.exception("datacenter-api fallback failed dc=%s url=%s", dc_code, fallback_url)
+            logger.warning(
+                "_load_dc_redis_payload: datacenter-api fallback failed dc=%s url=%s",
+                dc_code,
+                fallback_url,
+            )
             return {}
 
     @classmethod
@@ -1500,6 +1587,15 @@ SELECT _tot, _used FROM latest
 
         self._result_cache_set(cache_key, constrained)
         self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, constrained)
+        if family:
+            total_tl = sum(r.potential_tl for r in constrained)
+            logger.info(
+                "compute_all_panels: dc=%s family=%s panels=%d total_tl=%.2f",
+                dc_code,
+                family,
+                len(constrained),
+                total_tl,
+            )
         return constrained
 
     def compute_summary(
@@ -1594,20 +1690,43 @@ SELECT _tot, _used FROM latest
 
     # ------------------------------------------------------------------ snapshot
 
+    def _fetch_datacenter_codes_from_redis(self) -> list[str]:
+        """Discover DC codes from datacenter-api Redis keys when HTTP summary fails."""
+        if self._dc_redis is None:
+            return []
+        codes: set[str] = set()
+        try:
+            for key in self._dc_redis.scan_iter(match="dc_details:*", count=200):
+                parts = str(key).split(":")
+                if len(parts) >= 2 and parts[1]:
+                    codes.add(parts[1])
+        except Exception:
+            logger.exception("_fetch_datacenter_codes_from_redis scan failed")
+            return []
+        out = sorted(codes)
+        if out:
+            logger.info("_fetch_datacenter_codes: resolved %d DC(s) from Redis scan", len(out))
+        return out
+
     def _fetch_datacenter_codes(self) -> list[str]:
         """List active DC codes from datacenter-api (for scheduler prewarm)."""
         if not self._dc_api_url:
-            return []
-        url = f"{self._dc_api_url}/api/v1/datacenters/summary?preset=30d"
+            return self._fetch_datacenter_codes_from_redis()
+        days = max(_DC_DETAILS_WINDOW_DAYS, 1)
+        url = f"{self._dc_api_url}/api/v1/datacenters/summary?preset={days}d"
         try:
-            resp = httpx.get(url, timeout=15.0)
+            resp = httpx.get(url, timeout=_SELLABLE_DC_CODES_TIMEOUT)
             resp.raise_for_status()
             rows = resp.json()
         except Exception:
-            logger.exception("_fetch_datacenter_codes failed url=%s", url)
-            return []
+            logger.warning(
+                "_fetch_datacenter_codes HTTP failed url=%s timeout=%.0fs — Redis scan fallback",
+                url,
+                _SELLABLE_DC_CODES_TIMEOUT,
+            )
+            return self._fetch_datacenter_codes_from_redis()
         if not isinstance(rows, list):
-            return []
+            return self._fetch_datacenter_codes_from_redis()
         out: list[str] = []
         for row in rows:
             if not isinstance(row, dict):
@@ -1615,6 +1734,9 @@ SELECT _tot, _used FROM latest
             dc_id = row.get("id") or row.get("dc_code") or row.get("name")
             if dc_id:
                 out.append(str(dc_id))
+        if not out:
+            return self._fetch_datacenter_codes_from_redis()
+        logger.info("_fetch_datacenter_codes: resolved %d DC(s) from summary API", len(out))
         return out
 
     def _prewarm_dc_virt_snapshots(self) -> int:
