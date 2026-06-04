@@ -1033,6 +1033,70 @@ def test_tier2_db_snapshot_served_on_redis_miss():
     assert compute_calls["n"] == 0
 
 
+def test_force_recompute_bypasses_tier1_and_tier2_cache():
+    """Scheduler refresh must read fresh inputs even when old 0 snapshots exist."""
+    svc = _build_service()
+    svc._query_total_allocated = lambda src, dc, **kw: INFRA[src.panel_key][1]  # type: ignore[method-assign]
+    svc._bulk_load_infra_sources = lambda dc: {k: v[0] for k, v in INFRA.items()}  # type: ignore[method-assign]
+    svc._bulk_load_thresholds = lambda dc: None  # type: ignore[method-assign]
+    svc._bulk_load_price_overrides = lambda: {}  # type: ignore[method-assign]
+    svc._result_cache_get = MagicMock(return_value=[PanelResult(  # type: ignore[method-assign]
+        panel_key="stale",
+        label="Stale",
+        family="virt_hyperconverged",
+        resource_kind="cpu",
+        display_unit="vCPU",
+        potential_tl=0.0,
+    )])
+    svc._snapshot_db_get = MagicMock(return_value=[PanelResult(  # type: ignore[method-assign]
+        panel_key="stale_db",
+        label="Stale DB",
+        family="virt_hyperconverged",
+        resource_kind="cpu",
+        display_unit="vCPU",
+        potential_tl=0.0,
+    )])
+
+    panels = svc.compute_all_panels(dc_code="DC1", family="virt_hyperconverged", force_recompute=True)
+
+    assert {p.panel_key for p in panels} == {p.panel_key for p in HC_PANELS}
+    svc._result_cache_get.assert_not_called()
+    svc._snapshot_db_get.assert_not_called()
+
+
+def test_compute_summary_passes_force_recompute_to_panel_compute():
+    svc = _build_service()
+    seen = {"force": None}
+
+    def fake_compute_all_panels(*args, **kwargs):
+        seen["force"] = kwargs.get("force_recompute")
+        return []
+
+    svc.compute_all_panels = fake_compute_all_panels  # type: ignore[method-assign]
+    svc.compute_summary("*", force_recompute=True)
+    assert seen["force"] is True
+
+
+def test_prewarm_uses_force_recompute_for_each_scope():
+    svc = _build_service()
+    svc._fetch_datacenter_codes = lambda: ["DC1"]  # type: ignore[method-assign]
+    seen: list[tuple[str, str, bool]] = []
+
+    def fake_compute_all_panels(*, dc_code="*", family=None, force_recompute=False, **_kwargs):
+        seen.append((dc_code, family, force_recompute))
+        return []
+
+    svc.compute_all_panels = fake_compute_all_panels  # type: ignore[method-assign]
+    assert svc._prewarm_dc_virt_snapshots() == 4
+    assert all(item[0] == "DC1" and item[2] is True for item in seen)
+    assert {item[1] for item in seen} == {
+        "virt_classic",
+        "virt_hyperconverged",
+        "virt_power",
+        "virt_power_hana",
+    }
+
+
 def test_manual_override_bypasses_datalake():
     customer = MagicMock()
     customer._pool = MagicMock()
@@ -1106,6 +1170,45 @@ def test_extract_total_from_global_dashboard_ibm_totals():
         payload, "ibm_server_general", "server_memory_totalmem", "*",
     )
     assert mem == 4096.0
+
+
+def test_extract_total_from_payload_converts_redis_units_to_infra_units():
+    payload = {
+        "classic": {"stor_cap": 10.0},
+        "hyperconv": {"cpu_cap": 8.0, "mem_cap": 16.0, "stor_cap": 2.0},
+    }
+    classic_storage_gb = SellableService._extract_total_from_payload(
+        payload,
+        "datacenter_metrics",
+        "total_storage_capacity_gb",
+        "DC13",
+        "GB",
+    )
+    hyper_cpu_hz = SellableService._extract_total_from_payload(
+        payload,
+        "nutanix_cluster_metrics",
+        "total_cpu_capacity",
+        "DC13",
+        "Hz",
+    )
+    hyper_ram_bytes = SellableService._extract_total_from_payload(
+        payload,
+        "nutanix_cluster_metrics",
+        "total_memory_capacity",
+        "DC13",
+        "bytes",
+    )
+    hyper_storage_bytes = SellableService._extract_total_from_payload(
+        payload,
+        "nutanix_cluster_metrics",
+        "storage_capacity",
+        "DC13",
+        "bytes",
+    )
+    assert classic_storage_gb == 10.0 * 1024.0
+    assert hyper_cpu_hz == 8.0 * 1_000_000_000.0
+    assert hyper_ram_bytes == 16.0 * 1_073_741_824.0
+    assert hyper_storage_bytes == 2.0 * 1_099_511_627_776.0
 
 
 def test_query_total_allocated_redis_first_skips_datalake():

@@ -65,3 +65,6 @@ Merge each into `development`, then `development` → `main` after approval.
 
 - **Root cause**: `_dc_redis_key` used `today-7` while datacenter-api writes `today-6:today` (7d inclusive) → 100% Redis miss on Data Centers list.
 - **Fix**: UTC dates, `start = today - (span_days - 1)`, alternate legacy keys, boundary logs, `summary?preset=7d` prewarm + Redis scan fallback.
+- **Recompute bypass**: scheduler/admin refresh now uses `force_recompute=True`, bypassing stale Tier-1/Tier-2 zeros and overwriting only after successful compute.
+- **Redis unit normalization**: datacenter-api Redis fields (`cpu_cap` GHz, `mem_cap` GB, `stor_cap` TB) are converted back to configured infra units before existing sellable conversions run.
+- **DC-13 verification**: `virt_classic=1,396,549.49 TL`, `virt_hyperconverged=570,081.47 TL`, GUI helper total `1,966,630.958 TL`.
