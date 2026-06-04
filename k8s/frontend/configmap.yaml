@@ -4,3 +4,5 @@ metadata:
   name: bulutistan-frontend-config
 data:
   API_BASE_URL: "http://bulutistan-data-api"
+  # Dash server-side widget -> internal chatbot-api (browser never calls the LLM)
+  CHATBOT_API_URL: "http://bulutistan-chatbot-api"
