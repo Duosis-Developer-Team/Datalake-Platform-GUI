@@ -47,3 +47,9 @@ Merge each into `development`, then `development` → `main` after approval.
 - **Cross-DB**: `_count_unmapped_products` uses webui mapping IDs + datalake `discovery_crm_products` count.
 - **Migration**: `016_fix_s3icos_pool_filter.sql` (`site_name` → `pool_name` on S3 panels).
 - **Tests**: `pytest services/customer-api/tests/test_sellable_service.py` (51 passed).
+
+## crm-engine startup fix (2026-06-04)
+
+- **Non-blocking lifespan**: initial `snapshot_all` runs via APScheduler (`next_run_time=now`); `CRM_ENGINE_SYNC_SNAPSHOT_ON_STARTUP` defaults false so `/health` is available immediately.
+- **Redis preload**: `compute_all_panels` loads `dc_payload` when any panel uses `_infra_uses_dc_redis_payload` (IBM/classic/hyperconv totals, not only VM allocated).
+- **Tests**: `services/crm-engine/tests/test_main_startup.py`, `test_compute_all_panels_preloads_redis_for_ibm_power_infra`.

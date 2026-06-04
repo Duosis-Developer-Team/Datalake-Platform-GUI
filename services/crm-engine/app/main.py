@@ -20,6 +20,7 @@ import atexit
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import redis as _redis
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -104,27 +105,41 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 _WEBUI_REQUIRED = _env_bool("WEBUI_DB_REQUIRED", settings.webui_db_required)
+# When false (default), the first snapshot runs in the APScheduler thread pool so
+# Uvicorn can accept /health and API traffic immediately. Set true only for debugging.
+_SYNC_SNAPSHOT_ON_STARTUP = _env_bool("CRM_ENGINE_SYNC_SNAPSHOT_ON_STARTUP", False)
 
 
 def _start_scheduler(sellable_svc: SellableService) -> BackgroundScheduler:
     scheduler = BackgroundScheduler(daemon=True)
-    scheduler.add_job(
-        func=sellable_svc.snapshot_all,
-        trigger=IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
-        id="sellable_snapshot",
-        name="Sellable Potential snapshot",
-        replace_existing=True,
-        misfire_grace_time=60,
-    )
-    try:
-        sellable_svc.snapshot_all()
-    except Exception:  # noqa: BLE001 - never abort startup
-        logger.exception("Initial sellable snapshot failed")
+    job_kw: dict = {
+        "func": sellable_svc.snapshot_all,
+        "trigger": IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
+        "id": "sellable_snapshot",
+        "name": "Sellable Potential snapshot",
+        "replace_existing": True,
+        "misfire_grace_time": 60,
+    }
+    if not _SYNC_SNAPSHOT_ON_STARTUP:
+        job_kw["next_run_time"] = datetime.now()
+    scheduler.add_job(**job_kw)
+    if _SYNC_SNAPSHOT_ON_STARTUP:
+        try:
+            sellable_svc.snapshot_all()
+        except Exception:  # noqa: BLE001 - never abort startup
+            logger.exception("Initial sellable snapshot failed (sync)")
     scheduler.start()
-    logger.info(
-        "crm-engine scheduler started (sellable snapshot every %d minutes).",
-        REFRESH_INTERVAL_MINUTES,
-    )
+    if _SYNC_SNAPSHOT_ON_STARTUP:
+        logger.info(
+            "crm-engine scheduler started (sellable snapshot every %d minutes, sync startup).",
+            REFRESH_INTERVAL_MINUTES,
+        )
+    else:
+        logger.info(
+            "crm-engine ready; scheduler started (sellable snapshot every %d min, "
+            "first run in background).",
+            REFRESH_INTERVAL_MINUTES,
+        )
     atexit.register(lambda: _stop(scheduler))
     return scheduler
 
