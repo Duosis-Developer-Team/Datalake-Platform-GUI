@@ -1392,9 +1392,18 @@ def _build_sellable_inline_kpi(
         return None
 
     by_kind: dict[str, dict[str, float]] = {
-        "cpu":     {"constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "vCPU"},
-        "ram":     {"constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB"},
-        "storage": {"constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB"},
+        "cpu":     {
+            "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "vCPU",
+            "total": 0.0, "allocated": 0.0, "threshold_pct": 80.0,
+        },
+        "ram":     {
+            "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB",
+            "total": 0.0, "allocated": 0.0, "threshold_pct": 80.0,
+        },
+        "storage": {
+            "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB",
+            "total": 0.0, "allocated": 0.0, "threshold_pct": 85.0,
+        },
     }
     total_tl = 0.0
     has_data = False
@@ -1408,6 +1417,11 @@ def _build_sellable_inline_kpi(
         by_kind[kind]["constrained"] += float(p.get("sellable_constrained") or 0.0)
         by_kind[kind]["raw"]         += float(p.get("sellable_raw") or 0.0)
         by_kind[kind]["tl"]          += float(p.get("potential_tl") or 0.0)
+        by_kind[kind]["total"]       += float(p.get("total") or 0.0)
+        by_kind[kind]["allocated"]   += float(p.get("allocated") or 0.0)
+        thresh = p.get("threshold_pct")
+        if thresh is not None:
+            by_kind[kind]["threshold_pct"] = float(thresh)
         unit = p.get("display_unit")
         if unit:
             by_kind[kind]["unit"] = unit
@@ -1524,6 +1538,22 @@ def _build_sellable_inline_kpi(
                     size="sm",
                 )
             )
+
+    from src.utils.sellable_power_hints import power_sellable_constraint_hints
+
+    for hint in power_sellable_constraint_hints(
+        families,
+        cpu_raw=cpu["raw"],
+        cpu_constrained=cpu["constrained"],
+        ram_raw=ram["raw"],
+        ram_total=float(ram.get("total") or 0),
+        ram_allocated=float(ram.get("allocated") or 0),
+        ram_threshold_pct=float(ram.get("threshold_pct") or 80.0),
+    ):
+        color = "orange" if hint.startswith("CPU blocked") else "yellow"
+        sub_lines.append(
+            dmc.Badge(hint, color=color, variant="light", size="sm"),
+        )
 
     div_kwargs: dict = {
         "className": "nexus-card",
