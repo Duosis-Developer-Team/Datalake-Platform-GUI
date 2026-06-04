@@ -37,6 +37,8 @@ _KW = {
     "compute": ("cpu", "ram", "vcpu", "compute", "işlemci", "bellek", "memory"),
     "storage": ("storage", "disk", "depolama", "kapasite"),
     "network": ("network", "ağ", "port", "bant", "bandwidth", "trafik"),
+    "host": ("host", "hostlar", "sunucu", "sunucular", "node", "nodes"),
+    "top": ("en yüksek", "en yuksek", "en çok", "en cok", "top", "yüksek cpu", "yuksek cpu", "en fazla"),
 }
 
 
@@ -122,7 +124,17 @@ def select_tools(message: str, ctx: Optional[FrontendContext]) -> list[Selection
 
     # --- Datacenter-scoped compute/storage/network --------------------- #
     if dc_code:
-        if _has(text, "compute"):
+        # Host-LEVEL CPU lives only in the DB (the APIs expose cluster
+        # aggregates). When the user says "host", prefer the read-only DB tool.
+        host_cpu = _has(text, "host") and ("cpu" in text or _has(text, "compute"))
+        if host_cpu:
+            if _has(text, "top"):
+                add("get_dc_host_cpu_top")
+            elif _has(text, "overview"):  # "özetle / durum" → summary
+                add("get_dc_host_cpu_summary")
+            else:
+                add("get_dc_host_cpu_latest")
+        elif _has(text, "compute"):
             add("get_dc_compute_classic")
             add("get_dc_compute_hyperconverged")
         if _has(text, "storage"):
@@ -132,12 +144,12 @@ def select_tools(message: str, ctx: Optional[FrontendContext]) -> list[Selection
         # Generic "summarize this datacenter".
         add("get_datacenter_detail")
 
-    # --- Global overview ----------------------------------------------- #
-    if _has(text, "overview") or not picks:
-        if "en yoğun" in text or "en yogun" in text or "compare" in text or "karşılaştır" in text:
-            add("get_datacenters_summary")
-        else:
-            add("get_dashboard_overview")
+    # --- Global overview — only when nothing more specific matched, OR a
+    #     clearly global ("en yoğun" / compare) ask without DC/customer scope.
+    #     (Avoids tacking a slow global overview onto DC-scoped questions.)
+    global_ask = "en yoğun" in text or "en yogun" in text or "compare" in text or "karşılaştır" in text
+    if not picks or (global_ask and not dc_code and not customer):
+        add("get_datacenters_summary" if global_ask else "get_dashboard_overview")
 
     return picks[: settings.max_tool_calls]
 

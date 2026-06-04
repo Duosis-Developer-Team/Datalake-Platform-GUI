@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from app.config import settings
 from app.services import api_clients
 from app.services.api_clients import InternalAPIError
 
@@ -53,6 +54,7 @@ class ToolSpec:
     use_time: bool = False
     cap_rows: Optional[int] = None
     allowed_query_keys: tuple[str, ...] = ()  # only for query-api passthrough
+    db_query_key: Optional[str] = None  # set => read-only DB tool (source=postgres)
     allowed_roles: Optional[tuple[str, ...]] = None  # None => any authenticated user
 
     def source_label(self, path: str) -> str:
@@ -285,6 +287,28 @@ TOOLS: dict[str, ToolSpec] = {
         needs=("query_key",),
         allowed_query_keys=(),  # intentionally empty — no key is approved yet
     ),
+    # ---- Read-only DB tools (host-level CPU not exposed by the APIs) ------ #
+    "get_dc_host_cpu_latest": ToolSpec(
+        "get_dc_host_cpu_latest",
+        "Per-host latest CPU usage in a datacenter (read-only DB: VMware/Nutanix/IBM).",
+        "postgres",
+        db_query_key="db_get_dc_host_cpu_latest",
+        needs=("dc_code",),
+    ),
+    "get_dc_host_cpu_top": ToolSpec(
+        "get_dc_host_cpu_top",
+        "Highest-CPU hosts in a datacenter (read-only DB).",
+        "postgres",
+        db_query_key="db_get_dc_host_cpu_top",
+        needs=("dc_code",),
+    ),
+    "get_dc_host_cpu_summary": ToolSpec(
+        "get_dc_host_cpu_summary",
+        "Per-source host CPU summary for a datacenter (read-only DB).",
+        "postgres",
+        db_query_key="db_get_dc_host_cpu_summary",
+        needs=("dc_code",),
+    ),
 }
 
 
@@ -313,6 +337,53 @@ def _fill_path(template: str, args: dict[str, Any]) -> Optional[str]:
         return None
 
 
+def _clean_db_value(value: Any) -> Any:
+    from decimal import Decimal
+
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def _normalize_db_rows(rows: list[dict[str, Any]], cap: int = 40) -> dict[str, Any]:
+    cleaned = [{k: _clean_db_value(v) for k, v in r.items()} for r in rows[:cap]]
+    out: dict[str, Any] = {"row_count": len(rows), "rows": cleaned}
+    if len(rows) > cap:
+        out["_note"] = f"showing first {cap} of {len(rows)} rows"
+    return out
+
+
+def _execute_db_tool(name: str, spec: ToolSpec, args: dict[str, Any]) -> ToolResult:
+    """Run a read-only DB tool via the allowlisted query registry."""
+    from app.services import db_query_registry
+    from app.services.db_readonly import ReadOnlyViolation, get_db
+
+    source = f"postgres:{spec.db_query_key}"
+    if not get_db().enabled:
+        return ToolResult(name, "skipped", source="postgres", error="db_disabled")
+    dc = args.get("dc_code")
+    if not dc:
+        return ToolResult(name, "skipped", source="postgres", error="missing:dc_code")
+
+    params: dict[str, Any] = {"dc": f"%{dc}%"}
+    query = db_query_registry.DB_QUERIES.get(spec.db_query_key or "")
+    if query and "limit" in query.params:
+        try:
+            requested = int(args.get("limit") or settings.db_max_rows)
+        except (TypeError, ValueError):
+            requested = settings.db_max_rows
+        params["limit"] = max(1, min(requested, settings.db_max_rows))
+
+    try:
+        rows = db_query_registry.run_query(spec.db_query_key, params)
+    except ReadOnlyViolation as exc:
+        return ToolResult(name, "error", source=source, error=str(exc)[:120])
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("DB tool %s failed: %s", name, type(exc).__name__)
+        return ToolResult(name, "error", source=source, error="db_error")
+    return ToolResult(name, "success", source=source, summary=_normalize_db_rows(rows), rows=len(rows))
+
+
 def execute_tool(name: str, args: dict[str, Any], auth_header: Optional[str] = None) -> ToolResult:
     """Run one tool by name. Never raises — failures become ``status='error'``."""
     spec = TOOLS.get(name)
@@ -323,6 +394,10 @@ def execute_tool(name: str, args: dict[str, Any], auth_header: Optional[str] = N
     for key in spec.needs:
         if not args.get(key):
             return ToolResult(name, "skipped", source=spec.service, error=f"missing:{key}")
+
+    # Read-only DB tools route to the allowlisted query registry.
+    if spec.db_query_key:
+        return _execute_db_tool(name, spec, args)
 
     # query-api passthrough: enforce allowlist.
     if spec.service == "query-api":

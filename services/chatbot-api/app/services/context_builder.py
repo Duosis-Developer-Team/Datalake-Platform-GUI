@@ -56,7 +56,12 @@ def _tool_results_block(results: list[ToolResult], budget: int) -> str:
             payload = json.dumps(r.summary, ensure_ascii=False, default=str)
         elif r.status == "error":
             payload = json.dumps({"_error": r.error}, ensure_ascii=False)
-        else:  # skipped
+        elif r.status == "skipped" and (
+            (r.source or "").startswith("postgres") or r.error == "db_disabled"
+        ):
+            # Surface DB-tool skips so the model can explain *why* (e.g. disabled).
+            payload = json.dumps({"_skipped": r.error}, ensure_ascii=False)
+        else:  # other skipped tools — omit (noise)
             continue
         block = (
             f"{i}. {r.name}\n"
@@ -112,6 +117,9 @@ def build_messages(
         "- Operational / CTO-level clarity\n"
         "- No hallucinated numbers\n"
         "- Mention data source briefly when helpful\n"
+        "- Data from a 'postgres:...' source is host-level read-only DB data; cite the\n"
+        "  collection_time. If a postgres tool is '_skipped: db_disabled', say the\n"
+        "  host-level DB tool is disabled rather than claiming the data does not exist.\n"
     )
 
     messages: list[dict[str, str]] = [

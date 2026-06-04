@@ -1,10 +1,21 @@
 """Allowlisted read-only DB query templates (CTO pack 05).
 
 These are the ONLY SQL statements the chatbot may ever run against the DB, and
-only when ``CHATBOT_DB_ENABLED=true``. The examples below are illustrative and
-disabled by default. Before enabling a template, a developer must verify it
-against the real schema and confirm it touches no sensitive columns
-(``assert_read_only`` enforces the latter at execution time).
+only when ``CHATBOT_DB_ENABLED=true``. The LLM never writes SQL; the orchestrator
+picks a query_key and the chatbot binds validated parameters.
+
+The host-CPU templates below were verified against the live bulutlake schema.
+They expose per-HOST CPU (which the existing APIs only surface as cluster
+aggregates), merging three sources into one normalized shape:
+
+    source | host_name | cluster | cpu_pct | cpu_used | cpu_total | unit | collection_time
+
+* VMware  -> vmware_host_performance_metrics       (cpu_usage_avg_perc, GHz)
+* Nutanix -> nutanix_host_performance_metrics       (cpu_usage_avg/total_cpu_capacity, GHz)
+           joined to nutanix_cluster_metrics for the cluster_uuid -> DC mapping
+* IBM     -> ibm_server_general                     (utilized/total proc units, cores)
+
+DC filtering is by ILIKE pattern (e.g. '%DC13%') against the cluster / server name.
 """
 
 from __future__ import annotations
@@ -24,37 +35,109 @@ class DBQuery:
     enabled: bool = False  # opt-in per template after schema verification
 
 
-# NOTE: example templates — kept disabled until verified against live schema.
+# --------------------------------------------------------------------------- #
+# Host-level CPU — three sources unioned into one normalized result set.
+# Each member is parenthesized so its own ORDER BY drives DISTINCT ON (latest
+# row per host). Numeric casts wrap the *whole* arithmetic expression so integer
+# division never silently yields 0.
+# --------------------------------------------------------------------------- #
+
+_HOST_CPU_UNION = """
+    (SELECT DISTINCT ON (vmhost)
+        'vmware' AS source, vmhost AS host_name, cluster AS cluster,
+        round(cpu_usage_avg_perc::numeric, 1) AS cpu_pct,
+        round(cpu_ghz_used::numeric, 1) AS cpu_used,
+        round(cpu_ghz_capacity::numeric, 1) AS cpu_total,
+        'GHz' AS unit,
+        to_char(timestamp::timestamptz, 'YYYY-MM-DD HH24:MI') AS collection_time
+     FROM vmware_host_performance_metrics
+     WHERE cluster ILIKE %(dc)s
+     ORDER BY vmhost, timestamp DESC)
+    UNION ALL
+    (SELECT DISTINCT ON (h.host_name)
+        'nutanix' AS source, h.host_name AS host_name, NULL::text AS cluster,
+        round((h.cpu_usage_avg::numeric / NULLIF(h.total_cpu_capacity, 0) * 100), 1) AS cpu_pct,
+        round((h.cpu_usage_avg / 1e9)::numeric, 1) AS cpu_used,
+        round((h.total_cpu_capacity / 1e9)::numeric, 1) AS cpu_total,
+        'GHz' AS unit,
+        to_char(h.collection_time::timestamptz, 'YYYY-MM-DD HH24:MI') AS collection_time
+     FROM nutanix_host_performance_metrics h
+     WHERE h.cluster_uuid IN (
+        SELECT DISTINCT cluster_uuid FROM nutanix_cluster_metrics WHERE cluster_name ILIKE %(dc)s
+     )
+     ORDER BY h.host_name, h.collection_time DESC)
+    UNION ALL
+    (SELECT DISTINCT ON (server_details_servername)
+        'ibm' AS source, server_details_servername AS host_name, NULL::text AS cluster,
+        round((server_processor_utilizedprocunits / NULLIF(server_processor_totalprocunits, 0) * 100)::numeric, 1) AS cpu_pct,
+        round(server_processor_utilizedprocunits::numeric, 2) AS cpu_used,
+        round(server_processor_totalprocunits::numeric, 2) AS cpu_total,
+        'cores' AS unit,
+        to_char("time"::timestamptz, 'YYYY-MM-DD HH24:MI') AS collection_time
+     FROM ibm_server_general
+     WHERE server_details_servername ILIKE %(dc)s
+       -- ibm_server_general is ~20M rows, so bound to the recent (indexed) window
+       -- to keep DISTINCT ON fast. Returns currently-reporting IBM Power servers.
+       AND "time" >= now() - interval '3 days'
+     ORDER BY server_details_servername, "time" DESC)
+"""
+
+_HOST_CPU_COLS = "source, host_name, cluster, cpu_pct, cpu_used, cpu_total, unit, collection_time"
+
+
 DB_QUERIES: dict[str, DBQuery] = {
+    # ----- Host-level CPU (verified against live schema) ------------------ #
+    "db_get_dc_host_cpu_latest": DBQuery(
+        key="db_get_dc_host_cpu_latest",
+        description="Per-host latest CPU usage in a datacenter (VMware/Nutanix/IBM).",
+        sql=(
+            f"SELECT {_HOST_CPU_COLS} FROM ({_HOST_CPU_UNION}) c "
+            "ORDER BY source, host_name LIMIT %(limit)s"
+        ),
+        params=("dc", "limit"),
+        enabled=True,
+    ),
+    "db_get_dc_host_cpu_top": DBQuery(
+        key="db_get_dc_host_cpu_top",
+        description="Highest-CPU hosts in a datacenter (VMware/Nutanix/IBM).",
+        sql=(
+            f"SELECT {_HOST_CPU_COLS} FROM ({_HOST_CPU_UNION}) c "
+            "ORDER BY cpu_pct DESC NULLS LAST LIMIT %(limit)s"
+        ),
+        params=("dc", "limit"),
+        enabled=True,
+    ),
+    "db_get_dc_host_cpu_summary": DBQuery(
+        key="db_get_dc_host_cpu_summary",
+        description="Per-source host CPU summary (count, avg/max/min, latest collection).",
+        sql=(
+            f"WITH hosts AS ({_HOST_CPU_UNION}) "
+            "SELECT source, count(*) AS host_count, "
+            "round(avg(cpu_pct), 1) AS cpu_avg_pct, "
+            "round(max(cpu_pct), 1) AS cpu_max_pct, "
+            "round(min(cpu_pct), 1) AS cpu_min_pct, "
+            "max(collection_time) AS latest_collection "
+            "FROM hosts GROUP BY source ORDER BY source"
+        ),
+        params=("dc",),
+        enabled=True,
+    ),
+    # ----- Generic examples (disabled by default) ------------------------- #
     "db_list_recent_collection_times": DBQuery(
         key="db_list_recent_collection_times",
         description="Latest collection time per source table.",
         sql=(
             "SELECT source_name, max(collectiontime) AS latest_collectiontime "
-            "FROM data_collection_health "
-            "GROUP BY source_name "
-            "ORDER BY latest_collectiontime DESC "
-            "LIMIT %(limit)s"
+            "FROM data_collection_health GROUP BY source_name "
+            "ORDER BY latest_collectiontime DESC LIMIT %(limit)s"
         ),
         params=("limit",),
         enabled=False,
     ),
-    "db_find_customer_alias": DBQuery(
-        key="db_find_customer_alias",
-        description="Find CRM/customer aliases by name.",
-        sql=(
-            "SELECT crm_accountid, crm_name, webui_customer_name "
-            "FROM crm_customer_aliases "
-            "WHERE crm_name ILIKE %(q)s OR webui_customer_name ILIKE %(q)s "
-            "LIMIT 20"
-        ),
-        params=("q",),
-        enabled=False,
-    ),
 }
 
-# Validate templates at import time so a malformed template fails fast in CI
-# rather than at request time.
+# Validate every template at import time so a malformed/forbidden template fails
+# fast in CI rather than at request time.
 for _q in DB_QUERIES.values():
     assert_read_only(_q.sql)
 

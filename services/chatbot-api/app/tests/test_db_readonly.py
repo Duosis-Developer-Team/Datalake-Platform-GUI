@@ -69,4 +69,27 @@ def test_registry_templates_validate_at_import():
     # Importing the registry runs assert_read_only on every template.
     from app.services import db_query_registry
 
-    assert db_query_registry.list_enabled_keys() == []  # all disabled by default
+    enabled = db_query_registry.list_enabled_keys()
+    # Host-CPU templates are verified + enabled; generic examples stay disabled.
+    for key in (
+        "db_get_dc_host_cpu_latest",
+        "db_get_dc_host_cpu_top",
+        "db_get_dc_host_cpu_summary",
+    ):
+        assert key in enabled
+    assert "db_list_recent_collection_times" not in enabled
+
+
+def test_host_cpu_templates_are_read_only_select():
+    from app.services.db_query_registry import DB_QUERIES
+
+    for key in (
+        "db_get_dc_host_cpu_latest",
+        "db_get_dc_host_cpu_top",
+        "db_get_dc_host_cpu_summary",
+    ):
+        sql = DB_QUERIES[key].sql
+        assert_read_only(sql)  # must not raise
+        low = sql.lower()
+        assert low.startswith("select") or low.startswith("with")
+        assert ";" not in sql
