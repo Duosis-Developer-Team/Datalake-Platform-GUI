@@ -1449,15 +1449,14 @@ SELECT _tot, _used FROM latest
         threshold_lookup = self._bulk_load_thresholds(dc_code)
         price_overrides = self._bulk_load_price_overrides()
 
-        # 5. Pre-fetch the DC Redis payload once; every Redis-backed allocated
-        #    panel reuses the same JSON instead of issuing one GET per panel.
-        needs_dc_payload = any(
-            self._bare_table_name(
-                (infra_lookup or {}).get(d.panel_key, InfraSource(panel_key=d.panel_key)).allocated_table
-            ) in _VM_TABLE_DC_SECTION
+        # 5. Pre-fetch datacenter-api Redis payload once (totals + allocated).
+        needs_redis_payload = any(
+            self._infra_uses_dc_redis_payload(
+                infra_lookup.get(d.panel_key) or InfraSource(panel_key=d.panel_key, dc_code=dc_code)
+            )
             for d in defs
         )
-        dc_payload = self._load_dc_redis_payload(dc_code) if needs_dc_payload else None
+        dc_payload = self._load_dc_redis_payload(dc_code) if needs_redis_payload else None
 
         # 6. Per-family /compute response cache — 3 cpu/ram/storage panels of
         #    the same family share a single HTTP call when clusters are set.

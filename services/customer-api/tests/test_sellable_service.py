@@ -27,6 +27,7 @@ from app.services.sellable_service import (
 from shared.sellable.models import (
     InfraSource,
     PanelDefinition,
+    PanelResult,
     ResourceRatio,
     UnitConversion,
 )
@@ -1044,6 +1045,54 @@ def test_query_total_allocated_redis_first_skips_datalake():
     assert total == 50.0
     assert alloc == 30.0
     customer._get_connection.assert_not_called()
+
+
+def test_compute_all_panels_preloads_redis_for_ibm_power_infra():
+    """IBM Power totals use Redis; dc_payload must be loaded once for the DC."""
+    customer = MagicMock()
+    webui = MagicMock()
+    webui.is_available = True
+    svc = SellableService(
+        customer_service=customer,
+        webui=webui,
+        config_service=MagicMock(),
+        currency_service=MagicMock(),
+        tagging_service=MagicMock(),
+    )
+    panel = PanelDefinition(
+        "virt_power_cpu", "Power CPU", "virt_power", "cpu", "Core",
+    )
+    infra = InfraSource(
+        "virt_power_cpu",
+        "DC13",
+        source_table="ibm_server_general",
+        total_column="server_processor_totalprocunits",
+        total_unit="procunit",
+        allocated_table="ibm_lpar_general",
+        allocated_column="lpar_processor_entitledprocunits",
+        allocated_unit="procunit",
+    )
+    payload = {"power": {"cpu_total_procunits": 10.0, "cpu_assigned": 5.0}}
+    svc.list_panel_defs = lambda: [panel]  # type: ignore[method-assign]
+    svc._bulk_load_infra_sources = lambda dc: {"virt_power_cpu": infra}  # type: ignore[method-assign]
+    svc._bulk_load_thresholds = lambda dc: None  # type: ignore[method-assign]
+    svc._bulk_load_price_overrides = lambda: {}  # type: ignore[method-assign]
+    svc._build_unit_lookup = lambda: {}  # type: ignore[method-assign]
+    load_calls: list[str] = []
+    svc._load_dc_redis_payload = lambda dc: load_calls.append(dc) or payload  # type: ignore[method-assign]
+    svc.compute_panel = MagicMock(return_value=PanelResult(  # type: ignore[method-assign]
+        panel_key="virt_power_cpu",
+        label="Power CPU",
+        family="virt_power",
+        resource_kind="cpu",
+        display_unit="Core",
+        dc_code="DC13",
+        total=10.0,
+        allocated=5.0,
+    ))
+    svc.compute_all_panels(dc_code="DC13", family="virt_power")
+    assert load_calls == ["DC13"]
+    assert svc.compute_panel.call_args.kwargs["dc_payload"] == payload
 
 
 def test_count_unmapped_products_two_step_cross_db():
