@@ -151,13 +151,49 @@ _AGENTIC_FORMAT = (
 )
 
 
+def _format_cluster_diff(outcome) -> str:
+    """Deterministic fallback for the API-vs-DB cluster comparison."""
+    a = outcome.analysis
+    x = a.extra if a and a.extra else {}
+    rows = x.get("db_only_rows") or []
+    lines = [
+        "**Kısa sonuç:**",
+        "- DC13 VMware/Klasik mimari için endpoint ve DB cluster listesi karşılaştırıldı.",
+        f"- API cluster count: {x.get('api_cluster_count', 0)}",
+        f"- DB cluster count: {x.get('db_cluster_count', 0)}",
+        f"- Endpointte olmayıp DB'de olan cluster count: {x.get('db_only_count', 0)}",
+    ]
+    if rows:
+        shown = "" if not x.get("truncated") else " (ilk 50)"
+        lines.append(f"\n**Endpointte olmayan (DB-only) cluster'lar{shown}:**")
+        lines.append("\n| Cluster | DB Source | Host Count | VM Count | Latest Collection Time |")
+        lines.append("|---------|-----------|-----------:|---------:|------------------------|")
+        for r in rows:
+            lines.append(
+                f"| {r.get('cluster_name', '?')} | cluster_metrics ({r.get('cluster_type', '-')}) | "
+                f"{r.get('host_count')} | {r.get('vm_count')} | {r.get('latest_collection_time') or '-'} |"
+            )
+    lines.append("\n**Analiz:**")
+    lines.append("- Endpoint muhtemelen filtreli/aktif cluster setini döndürüyor.")
+    lines.append("- DB envanteri/performance tarafında daha geniş veya historical cluster seti var.")
+    lines.append("- DB-only cluster'lar endpoint visibility/filtering logic açısından kontrol edilmeli.")
+    lines.append("\n**Kaynak:**")
+    lines.append("- API tool: get_dc_classic_clusters")
+    lines.append("- DB tool: get_dc_vmware_clusters_from_db")
+    lines.append("- Comparison: db_only = db_clusters - api_clusters")
+    return "\n".join(lines)
+
+
 def format_from_analysis(outcome) -> str:
     """Deterministic operational answer built straight from the analysis summary.
 
-    Used by the missing-data guard: if tools returned rows but the model claimed
-    "no data", we replace its answer with this so we never deny existing data.
+    Used by the fallback guard: when tools returned rows but the model gave no
+    usable answer (denied data, or errored/empty), we build the answer ourselves
+    so we never show a generic error or deny existing data.
     """
     a = outcome.analysis
+    if a and getattr(a, "extra", None) and "db_only_count" in a.extra:
+        return _format_cluster_diff(outcome)
     sources = sorted({r.source for r in outcome.results if r.status == "success" and r.source})
     lines: list[str] = []
 

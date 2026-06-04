@@ -85,3 +85,56 @@ def test_cluster_diff_empty_when_identical():
     a = synthesize(_plan(), results, evaluate(_plan(), results))
     assert a.extra["db_only_count"] == 0
     assert a.risk_level == "low"
+
+
+# --- deterministic fallback when the LLM fails ---------------------------- #
+
+
+def _outcome_with_diff():
+    from app.services.agent_loop import AgentOutcome
+
+    results = [
+        _api_clusters(["DC13-KM-CLS-NVME"]),
+        _db_clusters([_row("DC13-KM-CLS-NVME"), _row("DC13-G11-CLS-HYBRID", "hyperconverged", 8, 513),
+                      _row("DC13-G3-CLS", "hyperconverged", 0, 0)]),
+    ]
+    plan = _plan()
+    ev = evaluate(plan, results)
+    an = synthesize(plan, results, ev)
+    return AgentOutcome(plan=plan, results=results, evaluation=ev, analysis=an, iterations=1)
+
+
+def test_format_from_analysis_renders_cluster_diff_table():
+    from app.services.context_builder import format_from_analysis
+
+    out = format_from_analysis(_outcome_with_diff())
+    assert "API cluster count: 1" in out
+    assert "DB cluster count: 3" in out
+    assert "Endpointte olmayıp DB'de olan cluster count: 2" in out
+    assert "DC13-G11-CLS-HYBRID" in out and "DC13-G3-CLS" in out
+    assert "| Cluster |" in out
+    assert "get_dc_vmware_clusters_from_db" in out
+
+
+def test_llm_error_falls_back_to_deterministic_answer(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.routers import chatbot as cr
+    from app.services.llm_client import LLMError
+
+    monkeypatch.setattr(cr.settings, "chatbot_agentic_mode", True)
+    monkeypatch.setattr(cr.agent_loop, "run", lambda *a, **k: _outcome_with_diff())
+
+    class _FailLLM:
+        def complete(self, *a, **k):
+            raise LLMError("empty", "AI servisinde geçici bir sorun oluştu. Lütfen biraz sonra tekrar dene.", "empty")
+
+    monkeypatch.setattr(cr, "get_llm_client", lambda: _FailLLM())
+
+    resp = TestClient(app).post("/api/v1/chatbot/messages", json={"message": DIFF_Q})
+    body = resp.json()
+    assert "AI servisinde geçici" not in body["answer"]
+    assert "Endpointte olmayıp DB'de olan cluster count: 2" in body["answer"]
+    assert "DC13-G11-CLS-HYBRID" in body["answer"]
+    assert "| Cluster |" in body["answer"]

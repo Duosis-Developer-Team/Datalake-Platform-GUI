@@ -140,7 +140,7 @@ class LLMClient:
         except LLMError as exc:
             # Only retry on recoverable model/transient errors and only if a
             # *different* fallback model is configured.
-            if exc.error_type in {"model_unavailable", "bad_request", "upstream"} and fallback and fallback != primary:
+            if exc.error_type in {"model_unavailable", "bad_request", "upstream", "empty"} and fallback and fallback != primary:
                 logger.warning("Primary model '%s' failed (%s); trying fallback '%s'", primary, exc.error_type, fallback)
                 try:
                     return self._call(fallback, messages)

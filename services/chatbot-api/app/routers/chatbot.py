@@ -183,6 +183,7 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
             user_id=user_id,
         )
     llm = get_llm_client()
+    llm_failed = False
     try:
         result = llm.complete(messages)
         answer, model, usage = result.answer, result.model, result.usage
@@ -196,14 +197,19 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
         answer, usage = exc.user_message, None
         audit.status = "llm_error"
         audit.error_type = exc.error_type
+        llm_failed = True
 
-    # Deterministic missing-data guard: if tools returned rows, the model is not
-    # allowed to claim "no data / can't access" — fall back to a formatted answer
-    # built from the analysis summary.
-    if outcome is not None and _has_rows(tool_results) and _denies_data(answer):
-        logger.info("missing-data guard tripped; using deterministic formatter")
+    # Deterministic fallback: if the tools actually returned rows, the user must
+    # never see a generic LLM error or a "no data" claim. Build the answer from
+    # the analysis summary instead — whether the model errored/returned empty or
+    # denied existing data.
+    if outcome is not None and _has_rows(tool_results) and (llm_failed or _denies_data(answer)):
+        logger.info("deterministic fallback formatter used (llm_failed=%s)", llm_failed)
         answer = context_builder.format_from_analysis(outcome)
-        audit.error_type = "missing_data_guard"
+        if audit.status == "llm_error":
+            audit.status = "llm_error_fallback"
+        else:
+            audit.error_type = "missing_data_guard"
 
     audit.latency_ms = int((time.monotonic() - started) * 1000)
     record(audit)

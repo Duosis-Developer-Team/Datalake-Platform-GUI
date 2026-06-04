@@ -90,14 +90,9 @@ def _synthesize_cluster_diff(plan: IntentPlan, results: list[ToolResult], a: Ana
     api_only = [n for n in api_names if _ckey(n) not in db_map]
     common = [k for k in db_map if k in api_set]
 
-    a.top_entities = [
-        {
-            "name": row.get("cluster_name"), "host": row.get("cluster_type"),
-            "cpu_pct_avg": row.get("host_count"), "cpu_pct_max": row.get("vm_count"),
-            "unit": row.get("latest_collection_time"),
-        }
-        for row in db_only[:25]
-    ]
+    # Keep the LLM context compact: the diff lives in `extra` (capped), so we do
+    # not also duplicate it into top_entities.
+    a.top_entities = []
     classic_only = sum(1 for row in db_only if row.get("cluster_type") == "classic")
     a.extra = {
         "api_cluster_count": len(api_names),
@@ -106,8 +101,16 @@ def _synthesize_cluster_diff(plan: IntentPlan, results: list[ToolResult], a: Ana
         "db_only_count": len(db_only),
         "api_only_count": len(api_only),
         "db_only_classic_count": classic_only,
-        "db_only_clusters": [row.get("cluster_name") for row in db_only],
-        "api_only_clusters": api_only,
+        # Capped lists keep the LLM context (and fallback table) bounded; the
+        # counts above are always the full totals.
+        "db_only_clusters": [row.get("cluster_name") for row in db_only[:50]],
+        "db_only_rows": [
+            {k: row.get(k) for k in ("cluster_name", "cluster_type", "host_count",
+                                     "vm_count", "latest_collection_time")}
+            for row in db_only[:50]
+        ],
+        "api_only_clusters": api_only[:50],
+        "truncated": len(db_only) > 50,
     }
     a.risks = [
         f"DB'de {len(db_rows)} VMware cluster var; endpoint {len(api_names)} cluster döndürdü → "
