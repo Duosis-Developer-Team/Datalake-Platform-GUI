@@ -89,6 +89,10 @@ class WebuiPool:
                 cols = [d[0] for d in cur.description]
                 return [dict(zip(cols, row)) for row in cur.fetchall()]
 
+    def run_one(self, sql: str, params: Iterable[Any] | None = None) -> dict[str, Any] | None:
+        rows = self.run_rows(sql, params)
+        return rows[0] if rows else None
+
     def close(self) -> None:
         if self._pool is not None:
             try:
