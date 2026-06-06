@@ -447,6 +447,20 @@ Ne yapar: Operatör override'ı ekler/günceller. Params: `(productid, page_key,
 - `UPSERT_ALIAS` — `ON CONFLICT (crm_accountid)` upsert, `source='manual'`. Params: `(crm_accountid, crm_account_name, canonical_customer_key, netbox_musteri_value, notes)`.
 - `DELETE_ALIAS` — `(crm_accountid,)`.
 
+#### Customer aliases GUI (`/settings/integrations/crm/aliases`)
+
+Settings → Integrations → CRM → **Customer aliases** uses a **DataTable list + single-customer detail editor** (same UX pattern as CRM service mapping) for performance with ~100+ CRM project customers:
+
+| UI area | Behaviour |
+|---|---|
+| Summary badges | Total CRM customers, configured count, empty count, Boyner seed mapping count |
+| DataTable | Columns: CRM account name, short account id, mapping count, source coverage (`N/6`), status (`empty` / `configured` / `seed`); native filter, sort, pagination (25/page); single-row selection |
+| Detail editor | Accordion per source group (Virtualization, Backup, Physical, Storage, S3, ITSM); add/remove mapping rows; notes; Save / Reset |
+| API | `GET /api/v1/crm/aliases`, `PUT /api/v1/crm/aliases/{id}/source-mappings`, `POST /api/v1/crm/aliases/seed-boyner` |
+| Local state | `alias-page-data` store holds API payload; save refreshes store + table row without full page reload |
+
+Implementation: `src/pages/settings/integrations/crm_aliases.py`, pure helpers `src/utils/crm_source_mapping_ui.py`.
+
 ---
 
 ### ITSM (datalake — `itsm.py`)

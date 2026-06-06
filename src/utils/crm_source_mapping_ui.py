@@ -18,6 +18,9 @@ MATCH_METHOD_OPTIONS = [
     {"label": "ID exact", "value": "id_exact"},
 ]
 
+_SECTION_KEYS = [key for key, _, _ in UI_COLUMNS]
+_COLUMN_SOURCE_DEFAULTS = {key: sources[0] for key, _, sources in UI_COLUMNS}
+
 
 def mappings_for_column(source_mappings: list[dict], data_sources: tuple[str, ...]) -> list[dict]:
     allowed = set(data_sources)
@@ -28,6 +31,179 @@ def mappings_for_column(source_mappings: list[dict], data_sources: tuple[str, ..
     ]
 
 
+def _short_account_id(account_id: str) -> str:
+    cleaned = (account_id or "").strip()
+    if len(cleaned) <= 12:
+        return cleaned
+    return f"{cleaned[:8]}…"
+
+
+def _mapping_status(source_mappings: list[dict], *, alias_source: str = "") -> str:
+    mappings = source_mappings or []
+    if not mappings:
+        return "empty"
+    if str(alias_source or "").lower() == "seed":
+        return "seed"
+    if any(str(m.get("source") or "").lower() == "seed" for m in mappings):
+        return "seed"
+    if any(str(m.get("match_value") or "").strip() for m in mappings):
+        return "configured"
+    return "empty"
+
+
+def compute_coverage(source_mappings: list[dict]) -> tuple[int, int]:
+    covered = 0
+    for column_key, _, data_sources in UI_COLUMNS:
+        entries = mappings_for_column(source_mappings, data_sources)
+        if any(
+            str(m.get("match_value") or "").strip()
+            for m in entries
+            if m.get("enabled", True) is not False
+        ):
+            covered += 1
+    return covered, len(UI_COLUMNS)
+
+
+def alias_to_table_row(alias: dict) -> dict:
+    account_id = str(alias.get("crm_accountid") or "")
+    mappings = alias.get("source_mappings") or []
+    covered, total = compute_coverage(mappings)
+    mapping_count = len([m for m in mappings if str(m.get("match_value") or "").strip()])
+    status = _mapping_status(mappings, alias_source=str(alias.get("source") or ""))
+    return {
+        "crm_accountid": account_id,
+        "crm_account_name": str(alias.get("crm_account_name") or account_id or "-"),
+        "account_id_short": _short_account_id(account_id),
+        "mapping_count": mapping_count,
+        "coverage": f"{covered}/{total}",
+        "status": status,
+    }
+
+
+def aliases_to_table_rows(aliases: list[dict]) -> list[dict]:
+    rows = [alias_to_table_row(a) for a in (aliases or []) if a.get("crm_accountid")]
+    rows.sort(key=lambda r: str(r.get("crm_account_name") or "").casefold())
+    return rows
+
+
+def compute_summary(aliases: list[dict]) -> dict[str, int]:
+    rows = aliases or []
+    configured = sum(1 for a in rows if (a.get("source_mappings") or []))
+    empty = len(rows) - configured
+    boyner_seed = 0
+    for alias in rows:
+        name = str(alias.get("crm_account_name") or "").casefold()
+        if "boyner" in name:
+            boyner_seed = len(alias.get("source_mappings") or [])
+            break
+    return {
+        "total": len(rows),
+        "configured": configured,
+        "empty": max(empty, 0),
+        "boyner_mappings": boyner_seed,
+    }
+
+
+def _normalize_mapping_entry(entry: dict, *, default_source: str) -> dict:
+    return {
+        "data_source": str(entry.get("data_source") or default_source),
+        "match_method": str(entry.get("match_method") or "contains"),
+        "match_value": str(entry.get("match_value") or ""),
+        "enabled": bool(entry.get("enabled", True)),
+    }
+
+
+def build_editor_state(alias: dict | None) -> dict | None:
+    if not alias or not alias.get("crm_accountid"):
+        return None
+    sections: dict[str, list[dict]] = {}
+    source_mappings = alias.get("source_mappings") or []
+    for column_key, _, data_sources in UI_COLUMNS:
+        default_source = data_sources[0]
+        entries = mappings_for_column(source_mappings, data_sources)
+        if entries:
+            sections[column_key] = [
+                _normalize_mapping_entry(e, default_source=default_source) for e in entries
+            ]
+        else:
+            sections[column_key] = [
+                {
+                    "data_source": default_source,
+                    "match_method": "contains",
+                    "match_value": "",
+                    "enabled": True,
+                }
+            ]
+    return {
+        "crm_accountid": str(alias.get("crm_accountid")),
+        "crm_account_name": str(alias.get("crm_account_name") or alias.get("crm_accountid")),
+        "notes": str(alias.get("notes") or ""),
+        "sections": sections,
+    }
+
+
+def editor_state_to_save_payload(editor_state: dict | None) -> tuple[list[dict], str | None]:
+    if not editor_state:
+        return [], None
+    mappings: list[dict] = []
+    for column_key in _SECTION_KEYS:
+        for entry in editor_state.get("sections", {}).get(column_key) or []:
+            value = str(entry.get("match_value") or "").strip()
+            if not value:
+                continue
+            default_source = _COLUMN_SOURCE_DEFAULTS.get(column_key, "virtualization")
+            mappings.append(
+                {
+                    "data_source": str(entry.get("data_source") or default_source),
+                    "match_method": str(entry.get("match_method") or "contains"),
+                    "match_value": value,
+                    "enabled": bool(entry.get("enabled", True)),
+                }
+            )
+    notes = str(editor_state.get("notes") or "").strip() or None
+    return mappings, notes
+
+
+def merge_alias_after_save(
+    page_data: list[dict],
+    *,
+    account_id: str,
+    saved_mappings: list[dict],
+    notes: str | None,
+) -> list[dict]:
+    out: list[dict] = []
+    updated = False
+    for alias in page_data or []:
+        if str(alias.get("crm_accountid")) != account_id:
+            out.append(alias)
+            continue
+        updated = True
+        merged = dict(alias)
+        merged["source_mappings"] = list(saved_mappings or [])
+        if notes is not None:
+            merged["notes"] = notes
+        merged["source"] = "manual"
+        out.append(merged)
+    if not updated:
+        out.append(
+            {
+                "crm_accountid": account_id,
+                "crm_account_name": account_id,
+                "source_mappings": list(saved_mappings or []),
+                "notes": notes,
+                "source": "manual",
+            }
+        )
+    return out
+
+
+def find_alias(page_data: list[dict], account_id: str) -> dict | None:
+    for alias in page_data or []:
+        if str(alias.get("crm_accountid")) == account_id:
+            return alias
+    return None
+
+
 def collect_mappings_for_account(
     account_id: str,
     method_states: list,
@@ -35,7 +211,8 @@ def collect_mappings_for_account(
     enabled_states: list,
     source_states: list,
 ) -> list[dict]:
-    column_default_source = {key: sources[0] for key, _, sources in UI_COLUMNS}
+    """Legacy helper for pattern-matched row editors (kept for tests)."""
+    column_default_source = _COLUMN_SOURCE_DEFAULTS
 
     def _state_index(state: dict) -> tuple[str, str, int] | None:
         state_id = state.get("id") or {}
@@ -67,3 +244,91 @@ def collect_mappings_for_account(
             }
         )
     return mappings
+
+
+def editor_state_from_form_inputs(
+    editor_state: dict | None,
+    *,
+    section: str,
+    index: int,
+    match_method: str | None = None,
+    match_value: str | None = None,
+    data_source: str | None = None,
+    enabled: bool | None = None,
+    notes: str | None = None,
+) -> dict | None:
+    """Apply a single field change onto editor state (immutable-style copy)."""
+    if not editor_state:
+        return None
+    state = {
+        "crm_accountid": editor_state.get("crm_accountid"),
+        "crm_account_name": editor_state.get("crm_account_name"),
+        "notes": notes if notes is not None else editor_state.get("notes", ""),
+        "sections": {k: [dict(x) for x in v] for k, v in (editor_state.get("sections") or {}).items()},
+    }
+    entries = list(state["sections"].get(section) or [])
+    if index < 0 or index >= len(entries):
+        return state
+    entry = dict(entries[index])
+    if match_method is not None:
+        entry["match_method"] = match_method
+    if match_value is not None:
+        entry["match_value"] = match_value
+    if data_source is not None:
+        entry["data_source"] = data_source
+    if enabled is not None:
+        entry["enabled"] = enabled
+    entries[index] = entry
+    state["sections"][section] = entries
+    return state
+
+
+def add_mapping_row(editor_state: dict | None, section: str) -> dict | None:
+    if not editor_state:
+        return None
+    state = {
+        "crm_accountid": editor_state.get("crm_accountid"),
+        "crm_account_name": editor_state.get("crm_account_name"),
+        "notes": editor_state.get("notes", ""),
+        "sections": {k: [dict(x) for x in v] for k, v in (editor_state.get("sections") or {}).items()},
+    }
+    default_source = _COLUMN_SOURCE_DEFAULTS.get(section, "virtualization")
+    entries = list(state["sections"].get(section) or [])
+    entries.append(
+        {
+            "data_source": default_source,
+            "match_method": "contains",
+            "match_value": "",
+            "enabled": True,
+        }
+    )
+    state["sections"][section] = entries
+    return state
+
+
+def remove_mapping_row(editor_state: dict | None, section: str, index: int) -> dict | None:
+    if not editor_state:
+        return None
+    state = {
+        "crm_accountid": editor_state.get("crm_accountid"),
+        "crm_account_name": editor_state.get("crm_account_name"),
+        "notes": editor_state.get("notes", ""),
+        "sections": {k: [dict(x) for x in v] for k, v in (editor_state.get("sections") or {}).items()},
+    }
+    entries = list(state["sections"].get(section) or [])
+    if index < 0 or index >= len(entries):
+        return state
+    if len(entries) <= 1:
+        default_source = _COLUMN_SOURCE_DEFAULTS.get(section, "virtualization")
+        state["sections"][section] = [
+            {
+                "data_source": default_source,
+                "match_method": "contains",
+                "match_value": "",
+                "enabled": True,
+            }
+        ]
+        return state
+    entries.pop(index)
+    state["sections"][section] = entries
+    return state
