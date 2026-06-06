@@ -18,6 +18,7 @@ from app.db.queries import loki as lq, customer as cq, s3 as s3q, backup as bq
 from app.db.queries import brocade as brq, ibm_storage as isq
 from app.db.queries import zabbix_network as znq, zabbix_storage as zsq
 from app.db.queries import discovery_rack as drq
+from app.db.queries import crm_potential as crm_q
 from app.config import settings
 from app.services import cache_service as cache
 from app.services import query_overrides as qo
@@ -4674,14 +4675,51 @@ JOIN latest l
     # Physical Inventory — derived views (Python-side aggregation)
     # ------------------------------------------------------------------
 
-    def get_physical_inventory_customer(self) -> list[dict]:
-        """Return Boyner (tenant_id=5) physical device list for Customer View (cached)."""
-        cache_key = "phys_inv:customer_boyner"
+    def get_physical_inventory_customer(
+        self,
+        customer_name: str | None = None,
+        *,
+        webui=None,
+    ) -> list[dict]:
+        """Return physical device list for a CRM customer tenant scope (cached)."""
+        normalized = (customer_name or "").strip()
+        cache_key = f"phys_inv:customer:{normalized.casefold() or 'boyner_legacy'}"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
+
+        tenant_ids, text_rules = self._resolve_physical_customer_filters(normalized, webui=webui)
         devices = self._get_physical_inventory_raw()
         loc_map = self._get_location_dc_map()
+
+        def _matches_device(device: dict) -> bool:
+            if tenant_ids and device.get("tenant_id") in tenant_ids:
+                return True
+            tenant_name = str(device.get("tenant_name") or "")
+            tenant_key = tenant_name.casefold()
+            for method, value in text_rules:
+                needle = (value or "").strip()
+                if not needle:
+                    continue
+                key = needle.casefold()
+                if method == "exact" and tenant_key == key:
+                    return True
+                if method == "prefix" and tenant_key.startswith(key):
+                    return True
+                if method == "suffix" and tenant_key.endswith(key):
+                    return True
+                if method in {"contains", "id_exact"} and key in tenant_key:
+                    return True
+            return False
+
+        if not tenant_ids and not text_rules:
+            # Legacy Boyner fallback when mappings are unavailable.
+            if normalized and "boyner" not in normalized.casefold():
+                result: list[dict] = []
+                cache.set(cache_key, result)
+                return result
+            tenant_ids = {5}
+
         result = [
             {
                 "name": d["name"],
@@ -4690,11 +4728,62 @@ JOIN latest l
                 "location": self._resolve_device_location(d, loc_map),
             }
             for d in devices
-            if d.get("tenant_id") == 5
+            if _matches_device(d)
         ]
         result.sort(key=lambda x: (x["device_role_name"], x["name"]))
         cache.set(cache_key, result)
         return result
+
+    @staticmethod
+    def _resolve_physical_customer_filters(
+        customer_name: str,
+        *,
+        webui=None,
+    ) -> tuple[set[int], list[tuple[str, str]]]:
+        tenant_ids: set[int] = set()
+        text_rules: list[tuple[str, str]] = []
+        if not customer_name:
+            tenant_ids.add(5)
+            return tenant_ids, text_rules
+
+        account_id = None
+        if webui is not None and getattr(webui, "is_available", False):
+            try:
+                resolved = webui.run_one(
+                    crm_q.WEBUI_RESOLVE_ACCOUNTID_BY_DISPLAY_NAME,
+                    (customer_name, customer_name, customer_name),
+                )
+                if resolved and resolved.get("crm_accountid"):
+                    account_id = str(resolved["crm_accountid"])
+            except Exception as exc:
+                logger.warning("Physical inventory alias resolve failed: %s", exc)
+
+        mapping_rows: list[dict] = []
+        if account_id and webui is not None and getattr(webui, "is_available", False):
+            try:
+                mapping_rows = webui.run_rows(
+                    crm_q.WEBUI_PHYSICAL_MAPPINGS_FOR_ACCOUNT,
+                    (account_id,),
+                )
+            except Exception as exc:
+                logger.warning("Physical inventory mapping load failed: %s", exc)
+
+        for row in mapping_rows:
+            method = str(row.get("match_method") or "contains").strip().lower()
+            value = str(row.get("match_value") or "").strip()
+            if not value:
+                continue
+            if method == "id_exact":
+                try:
+                    tenant_ids.add(int(value))
+                except ValueError:
+                    text_rules.append((method, value))
+            else:
+                text_rules.append((method, value))
+
+        if not tenant_ids and not text_rules and "boyner" in customer_name.casefold():
+            tenant_ids.add(5)
+        return tenant_ids, text_rules
 
     def get_physical_inventory_dc(self, dc_name: str) -> dict:
         """Return physical inventory for a DC: total, by_role, by_role_manufacturer (cached)."""

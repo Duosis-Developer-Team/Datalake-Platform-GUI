@@ -18,7 +18,14 @@ import time
 from typing import Any, Dict, List, Optional
 
 from app.db.queries import crm_sales as sq
+from app.db.queries import customer as cq
 from app.db.queries import service_mapping as smq
+from app.services.customer_mapping_resolver import (
+    DATA_SOURCES,
+    MATCH_METHODS,
+    boyner_seed_rows,
+    group_mappings_by_account,
+)
 from app.utils.efficiency_usage import efficiency_status, resolve_used_quantity
 from app.services.crm_config_service import CrmConfigService
 from app.services.webui_db import WebuiPool
@@ -322,10 +329,162 @@ class SalesService:
     # Customer alias management (now backed by webui-db)
     # ------------------------------------------------------------------
 
+    def _load_crm_project_customer_rows(self) -> list[dict[str, Any]]:
+        try:
+            rows = self._run_query(cq.CRM_PROJECT_CUSTOMER_ROWS, ())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to load CRM project customer rows: %s", exc)
+            rows = []
+        boyner = self._run_one(cq.CRM_BOYNER_ACCOUNT, ())
+        if boyner and boyner.get("crm_accountid"):
+            account_id = str(boyner["crm_accountid"])
+            account_name = str(boyner.get("crm_account_name") or "").strip()
+            if account_name and not any(str(r.get("crm_accountid")) == account_id for r in rows):
+                rows.append({"crm_accountid": account_id, "crm_account_name": account_name})
+        rows.sort(key=lambda r: str(r.get("crm_account_name") or "").casefold())
+        return rows
+
+    def _load_legacy_alias_index(self) -> dict[str, dict[str, Any]]:
+        if not self._webui or not self._webui.is_available:
+            return {}
+        legacy_rows = self._webui.run_rows(smq.GET_ALL_ALIASES)
+        return {str(r.get("crm_accountid")): r for r in legacy_rows if r.get("crm_accountid")}
+
+    def _load_source_mapping_index(self) -> dict[str, list[dict[str, Any]]]:
+        if not self._webui or not self._webui.is_available:
+            return {}
+        rows = self._webui.run_rows(smq.LIST_SOURCE_MAPPINGS)
+        return group_mappings_by_account(rows)
+
     def get_all_aliases(self) -> List[Dict[str, Any]]:
+        """CRM project customers merged with legacy alias fields and source mappings."""
+        project_rows = self._load_crm_project_customer_rows()
+        legacy_index = self._load_legacy_alias_index()
+        mapping_index = self._load_source_mapping_index()
+
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in project_rows:
+            account_id = str(row.get("crm_accountid") or "").strip()
+            account_name = str(row.get("crm_account_name") or "").strip()
+            if not account_id:
+                continue
+            seen.add(account_id.casefold())
+            legacy = legacy_index.get(account_id, {})
+            mappings = mapping_index.get(account_id, [])
+            out.append(
+                {
+                    "crm_accountid": account_id,
+                    "crm_account_name": account_name,
+                    "canonical_customer_key": legacy.get("canonical_customer_key"),
+                    "netbox_musteri_value": legacy.get("netbox_musteri_value"),
+                    "notes": legacy.get("notes"),
+                    "source": legacy.get("source") or ("seed" if mappings else "auto"),
+                    "source_mappings": mappings,
+                }
+            )
+
+        for account_id, legacy in legacy_index.items():
+            if account_id.casefold() in seen:
+                continue
+            out.append(
+                {
+                    "crm_accountid": account_id,
+                    "crm_account_name": legacy.get("crm_account_name") or account_id,
+                    "canonical_customer_key": legacy.get("canonical_customer_key"),
+                    "netbox_musteri_value": legacy.get("netbox_musteri_value"),
+                    "notes": legacy.get("notes"),
+                    "source": legacy.get("source") or "manual",
+                    "source_mappings": mapping_index.get(account_id, []),
+                }
+            )
+
+        out.sort(key=lambda r: str(r.get("crm_account_name") or "").casefold())
+        return out
+
+    def list_source_mappings_for_account(self, crm_accountid: str) -> list[dict[str, Any]]:
         if not self._webui or not self._webui.is_available:
             return []
-        return self._webui.run_rows(smq.GET_ALL_ALIASES)
+        return self._webui.run_rows(smq.LIST_SOURCE_MAPPINGS_FOR_ACCOUNT, (crm_accountid,))
+
+    def save_source_mappings(
+        self,
+        crm_accountid: str,
+        *,
+        crm_account_name: str,
+        mappings: list[dict[str, Any]],
+        notes: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        if not self._webui:
+            raise RuntimeError("WebUI pool not configured")
+        if not crm_accountid.strip():
+            raise ValueError("crm_accountid is required")
+
+        allowed_sources = set(DATA_SOURCES)
+        allowed_methods = set(MATCH_METHODS)
+        cleaned_name = (crm_account_name or crm_accountid).strip()
+
+        self._webui.execute(smq.DELETE_SOURCE_MAPPINGS_FOR_ACCOUNT, (crm_accountid,))
+        for entry in mappings or []:
+            data_source = str(entry.get("data_source") or "").strip()
+            match_method = str(entry.get("match_method") or "").strip()
+            match_value = str(entry.get("match_value") or "").strip()
+            if not data_source or not match_method or not match_value:
+                continue
+            if data_source not in allowed_sources:
+                raise ValueError(f"Unsupported data_source: {data_source}")
+            if match_method not in allowed_methods:
+                raise ValueError(f"Unsupported match_method: {match_method}")
+            self._webui.execute(
+                smq.UPSERT_SOURCE_MAPPING,
+                (
+                    crm_accountid,
+                    cleaned_name,
+                    data_source,
+                    match_method,
+                    match_value,
+                    entry.get("display_label"),
+                    int(entry.get("priority") or 100),
+                    bool(entry.get("enabled", True)),
+                    entry.get("notes") or notes,
+                    "manual",
+                ),
+            )
+        return self.list_source_mappings_for_account(crm_accountid)
+
+    def seed_boyner_source_mappings(self) -> dict[str, Any]:
+        if not self._webui:
+            raise RuntimeError("WebUI pool not configured")
+        boyner = self._run_one(cq.CRM_BOYNER_ACCOUNT, ())
+        if not boyner or not boyner.get("crm_accountid"):
+            raise ValueError("Boyner CRM account not found in datalake DB")
+        account_id = str(boyner["crm_accountid"])
+        account_name = str(boyner.get("crm_account_name") or "Boyner").strip()
+        rows = boyner_seed_rows(account_id, account_name)
+        inserted = 0
+        for row in rows:
+            self._webui.execute(
+                smq.UPSERT_SOURCE_MAPPING,
+                (
+                    row["crm_accountid"],
+                    row["crm_account_name"],
+                    row["data_source"],
+                    row["match_method"],
+                    row["match_value"],
+                    row.get("display_label"),
+                    row.get("priority", 100),
+                    row.get("enabled", True),
+                    row.get("notes"),
+                    row.get("source", "seed"),
+                ),
+            )
+            inserted += 1
+        return {
+            "status": "ok",
+            "crm_accountid": account_id,
+            "crm_account_name": account_name,
+            "rows_upserted": inserted,
+        }
 
     def upsert_alias(
         self,

@@ -190,3 +190,25 @@ SELECT crm_accountid
 FROM   gui_crm_customer_alias
 WHERE  lower(trim(coalesce(netbox_musteri_value, ''))) = ANY(%s);
 """
+
+WEBUI_RESOLVE_ACCOUNTID_BY_DISPLAY_NAME = """
+SELECT crm_accountid,
+       crm_account_name
+FROM   gui_crm_customer_alias
+WHERE  crm_account_name ILIKE %s
+   OR  canonical_customer_key = %s
+ORDER BY CASE WHEN crm_account_name ILIKE %s THEN 0 ELSE 1 END
+LIMIT 1;
+"""
+
+WEBUI_PHYSICAL_MAPPINGS_FOR_ACCOUNT = """
+SELECT match_method,
+       match_value,
+       enabled,
+       priority
+FROM   gui_crm_customer_source_mapping
+WHERE  crm_accountid = %s
+  AND data_source = 'physical_device'
+  AND enabled = TRUE
+ORDER BY priority, id;
+"""

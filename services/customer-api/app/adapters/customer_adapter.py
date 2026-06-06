@@ -4,6 +4,7 @@ import logging
 from typing import Callable
 
 from app.db.queries import customer as cq
+from app.services.customer_mapping_resolver import ResolvedSourcePatterns, dedupe_vm_rows, dedupe_zerto_vpgs
 from app.utils.time_range import default_time_range, time_range_to_bounds
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,27 @@ class CustomerAdapter:
         self._run_row = run_row
         self._run_rows = run_rows
 
+    @staticmethod
+    def _normalize_ilike_pattern(pattern: str, fallback: str) -> str:
+        cleaned = (pattern or "").strip()
+        if not cleaned:
+            return fallback
+        if "%" in cleaned:
+            return cleaned
+        return f"%{cleaned}%"
+
+    def _resolve_patterns(
+        self,
+        source_patterns: ResolvedSourcePatterns | None,
+        source_key: str,
+        fallback: str,
+    ) -> list[str]:
+        if source_patterns:
+            patterns = source_patterns.ilike_patterns(source_key)
+            if patterns:
+                return [self._normalize_ilike_pattern(p, fallback) for p in patterns]
+        return [fallback]
+
     def fetch(
         self,
         customer_name: str,
@@ -29,17 +51,23 @@ class CustomerAdapter:
         managed_nutanix_clusters: list[str] | None = None,
         pure_nutanix_clusters: list[str] | None = None,
         infra_search_name: str | None = None,
+        source_patterns: ResolvedSourcePatterns | None = None,
     ) -> dict:
         tr = time_range or default_time_range()
         search = (infra_search_name or customer_name or "").strip()
-        name = search
-        # Broader ILIKE: resolved infra key anywhere in VM name (matches datacenter-api)
-        vm_pattern = f"%{name}%" if name else "%"
-        lpar_pattern = f"%{name}%" if name else "%"
-        veeam_pattern = f"%{name}%" if name else "%"
-        storage_like_pattern = f"%{name}%" if name else "%"
-        netbackup_workload_pattern = f"%{name}%" if name else "%"
-        zerto_name_like = f"%{name}%" if name else "%"
+        fallback = f"%{search}%" if search else "%"
+
+        vm_patterns = self._resolve_patterns(source_patterns, "virtualization", fallback)
+        vm_pattern = vm_patterns[0]
+        lpar_pattern = vm_pattern
+        veeam_patterns = self._resolve_patterns(source_patterns, "backup_veeam", fallback)
+        veeam_pattern = veeam_patterns[0]
+        storage_patterns = self._resolve_patterns(source_patterns, "storage_ibm", fallback)
+        storage_like_pattern = storage_patterns[0]
+        netbackup_patterns = self._resolve_patterns(source_patterns, "backup_netbackup", fallback)
+        netbackup_workload_pattern = netbackup_patterns[0]
+        zerto_patterns = self._resolve_patterns(source_patterns, "backup_zerto", fallback)
+        zerto_name_like = zerto_patterns[0]
 
         managed = list(managed_nutanix_clusters or [])
         pure = list(pure_nutanix_clusters or [])
@@ -335,6 +363,18 @@ class CustomerAdapter:
                     cq.CUSTOMER_ZERTO_PROVISIONED_STORAGE,
                     (zerto_name_like,),
                 )
+                if len(zerto_patterns) > 1:
+                    merged_rows = list(zerto_provisioned_rows or [])
+                    for extra_pattern in zerto_patterns[1:]:
+                        merged_rows.extend(
+                            self._run_rows(
+                                cur,
+                                cq.CUSTOMER_ZERTO_PROVISIONED_STORAGE,
+                                (extra_pattern,),
+                            )
+                            or []
+                        )
+                    zerto_provisioned_rows = merged_rows
                 zerto_vpgs = [
                     {
                         "name": r[0],
@@ -343,6 +383,7 @@ class CustomerAdapter:
                     for r in (zerto_provisioned_rows or [])
                     if r and r[0]
                 ]
+                zerto_vpgs = dedupe_zerto_vpgs(zerto_vpgs)
                 zerto_provisioned_total_gib = sum(v["provisioned_storage_gib"] for v in zerto_vpgs)
 
                 storage_volume_gb = 0.0

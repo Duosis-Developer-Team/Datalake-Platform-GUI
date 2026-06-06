@@ -1698,7 +1698,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     has_s3 = bool(s3_data.get("vaults"))
 
     # Physical inventory for the customer tenant scope (API-side filter)
-    phys_inv_devices = api.get_physical_inventory_customer()
+    phys_inv_devices = api.get_physical_inventory_customer(name)
     has_phys_inv = True
 
     # ITSM (ServiceCore) data

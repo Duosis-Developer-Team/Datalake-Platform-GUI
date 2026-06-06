@@ -19,6 +19,11 @@ from app.db.queries import s3 as s3q
 from app.db.queries import service_mapping as smq
 from app.services import cache_service as cache
 from app.services.crm_customer_list import build_crm_project_customer_list, resolve_infra_search_name
+from app.services.customer_mapping_resolver import (
+    MappingRule,
+    ResolvedSourcePatterns,
+    build_resolved_patterns,
+)
 from app.utils.cluster_match import build_cluster_arch_map
 from app.utils.time_range import cache_time_ranges, default_time_range, time_range_to_bounds
 
@@ -357,12 +362,14 @@ class CustomerService:
     def _load_customer_resources(self, customer_name: str, tr: dict) -> dict:
         arch = self._get_cluster_arch_map(tr)
         search_name = self.resolve_infra_search_name(customer_name)
+        source_patterns = self.resolve_source_patterns(customer_name)
         return self._customer.fetch(
             customer_name,
             tr,
             managed_nutanix_clusters=arch.get("managed_nutanix") or [],
             pure_nutanix_clusters=arch.get("pure_nutanix") or [],
             infra_search_name=search_name,
+            source_patterns=source_patterns,
         )
 
     def get_customer_resources(self, customer_name: str, time_range: dict | None = None) -> dict:
@@ -447,26 +454,77 @@ class CustomerService:
             logger.warning("Failed to load CRM project customer names: %s", exc)
             return []
 
-    def _lookup_alias_for_display_name(self, display_name: str) -> tuple[str | None, str | None]:
+    def _lookup_alias_for_display_name(self, display_name: str) -> tuple[str | None, str | None, str | None]:
         webui = self._webui
         if webui is None or not getattr(webui, "is_available", False):
-            return None, None
+            return None, None, None
         try:
             rows = webui.run_rows(
                 smq.RESOLVE_ALIAS_BY_NAME,
                 (display_name, f"%{display_name}%"),
             )
-            if not rows:
-                return None, None
-            row = rows[0]
-            return row.get("netbox_musteri_value"), row.get("canonical_customer_key")
+            if rows:
+                row = rows[0]
+                return (
+                    row.get("netbox_musteri_value"),
+                    row.get("canonical_customer_key"),
+                    row.get("crm_accountid"),
+                )
+            resolved = webui.run_one(
+                smq.RESOLVE_ACCOUNTID_BY_DISPLAY_NAME,
+                (display_name, display_name, display_name),
+            )
+            if resolved:
+                return (
+                    resolved.get("netbox_musteri_value"),
+                    resolved.get("canonical_customer_key"),
+                    resolved.get("crm_accountid"),
+                )
+            if self._pool is not None:
+                with self._get_connection() as conn:
+                    with conn.cursor() as cur:
+                        crm_row = self._run_row(
+                            cur,
+                            cq.CRM_ACCOUNT_BY_DISPLAY_NAME,
+                            (display_name, display_name),
+                        )
+                if crm_row:
+                    if isinstance(crm_row, dict):
+                        return None, None, crm_row.get("crm_accountid")
+                    return None, None, crm_row[0]
         except Exception as exc:
             logger.warning("Alias lookup failed for customer=%s: %s", display_name, exc)
-            return None, None
+        return None, None, None
+
+    def _load_source_mapping_rules(self, crm_accountid: str | None) -> list[MappingRule]:
+        webui = self._webui
+        if webui is None or not getattr(webui, "is_available", False) or not crm_accountid:
+            return []
+        try:
+            rows = webui.run_rows(smq.LIST_SOURCE_MAPPINGS_FOR_ACCOUNT, (crm_accountid,))
+            return [MappingRule.from_row(r) for r in rows if r.get("enabled", True)]
+        except Exception as exc:
+            logger.warning("Source mapping load failed for account=%s: %s", crm_accountid, exc)
+            return []
+
+    def resolve_source_patterns(self, display_name: str) -> ResolvedSourcePatterns:
+        """Resolve enabled source mappings for a CRM display name."""
+        netbox_value, canonical_key, account_id = self._lookup_alias_for_display_name(display_name)
+        fallback = resolve_infra_search_name(
+            display_name,
+            alias_netbox_value=netbox_value,
+            alias_canonical_key=canonical_key,
+            netbox_tenant_names=self._load_netbox_tenant_names(),
+        )
+        rules = self._load_source_mapping_rules(account_id)
+        resolved = build_resolved_patterns(rules, fallback_search_name=fallback)
+        if not resolved.has_mappings():
+            return build_resolved_patterns([], fallback_search_name=fallback)
+        return resolved
 
     def resolve_infra_search_name(self, display_name: str) -> str:
         """Resolve CRM display name to infra ILIKE search key."""
-        netbox_value, canonical_key = self._lookup_alias_for_display_name(display_name)
+        netbox_value, canonical_key, _account_id = self._lookup_alias_for_display_name(display_name)
         return resolve_infra_search_name(
             display_name,
             alias_netbox_value=netbox_value,
@@ -518,18 +576,25 @@ class CustomerService:
 
     def _fetch_customer_s3_vaults(self, customer_name: str, start_ts, end_ts) -> dict:
         """Fetch S3 vault metrics for a customer (same logic as datacenter-api DatabaseService)."""
-        search_name = self.resolve_infra_search_name(customer_name)
-        name = (search_name or customer_name or "").strip()
-        pattern = f"%{name}%" if name else "%"
+        source_patterns = self.resolve_source_patterns(customer_name)
+        patterns = source_patterns.ilike_patterns("s3_icos")
+        if not patterns:
+            search_name = self.resolve_infra_search_name(customer_name)
+            patterns = [f"%{(search_name or customer_name or '').strip()}%"]
 
+        vault_names: set[str] = set()
         with self._get_connection() as conn:
             with conn.cursor() as cur:
-                vault_rows = self._run_rows(
-                    cur,
-                    s3q.VAULT_LIST,
-                    (pattern, start_ts, end_ts),
-                )
-                vaults = [r[0] for r in (vault_rows or []) if r and r[0]]
+                for pattern in patterns:
+                    vault_rows = self._run_rows(
+                        cur,
+                        s3q.VAULT_LIST,
+                        (pattern, start_ts, end_ts),
+                    )
+                    for row in (vault_rows or []):
+                        if row and row[0]:
+                            vault_names.add(str(row[0]))
+                vaults = sorted(vault_names)
                 if not vaults:
                     return {"vaults": [], "latest": {}, "growth": {}}
 

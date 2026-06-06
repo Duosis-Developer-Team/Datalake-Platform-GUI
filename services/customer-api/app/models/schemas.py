@@ -89,6 +89,42 @@ class CustomerAliasUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+class CustomerSourceMapping(BaseModel):
+    id: Optional[int] = None
+    crm_accountid: str
+    crm_account_name: str
+    data_source: str
+    match_method: str
+    match_value: str
+    display_label: Optional[str] = None
+    priority: int = 100
+    enabled: bool = True
+    notes: Optional[str] = None
+    source: str = "manual"
+
+
+class CustomerSourceMappingEntry(BaseModel):
+    """Payload entry for bulk save (no id / account metadata required)."""
+
+    data_source: str
+    match_method: str
+    match_value: str
+    display_label: Optional[str] = None
+    priority: int = 100
+    enabled: bool = True
+    notes: Optional[str] = None
+
+
+class CustomerSourceMappingUpdate(BaseModel):
+    crm_account_name: Optional[str] = None
+    mappings: List[CustomerSourceMappingEntry] = []
+    notes: Optional[str] = None
+
+
+class CustomerAliasWithMappings(CustomerAlias):
+    source_mappings: List[CustomerSourceMapping] = []
+
+
 class SalesEfficiencyByCategoryRow(BaseModel):
     model_config = {"extra": "allow"}
 

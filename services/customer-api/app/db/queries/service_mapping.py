@@ -102,3 +102,105 @@ ON CONFLICT (crm_accountid) DO UPDATE
 DELETE_ALIAS = """
 DELETE FROM gui_crm_customer_alias WHERE crm_accountid = %s;
 """
+
+# ---------------------------------------------------------------------------
+# Customer source mappings (gui_crm_customer_source_mapping)
+# ---------------------------------------------------------------------------
+
+LIST_SOURCE_MAPPINGS = """
+SELECT id,
+       crm_accountid,
+       crm_account_name,
+       data_source,
+       match_method,
+       match_value,
+       display_label,
+       priority,
+       enabled,
+       notes,
+       source,
+       created_at,
+       updated_at
+FROM   gui_crm_customer_source_mapping
+ORDER BY crm_account_name, data_source, priority, id;
+"""
+
+LIST_SOURCE_MAPPINGS_FOR_ACCOUNT = """
+SELECT id,
+       crm_accountid,
+       crm_account_name,
+       data_source,
+       match_method,
+       match_value,
+       display_label,
+       priority,
+       enabled,
+       notes,
+       source,
+       created_at,
+       updated_at
+FROM   gui_crm_customer_source_mapping
+WHERE  crm_accountid = %s
+ORDER BY data_source, priority, id;
+"""
+
+LIST_SOURCE_MAPPINGS_BY_ACCOUNT_IDS = """
+SELECT id,
+       crm_accountid,
+       crm_account_name,
+       data_source,
+       match_method,
+       match_value,
+       display_label,
+       priority,
+       enabled,
+       notes,
+       source,
+       created_at,
+       updated_at
+FROM   gui_crm_customer_source_mapping
+WHERE  crm_accountid = ANY(%s)
+ORDER BY crm_accountid, data_source, priority, id;
+"""
+
+DELETE_SOURCE_MAPPINGS_FOR_ACCOUNT = """
+DELETE FROM gui_crm_customer_source_mapping WHERE crm_accountid = %s;
+"""
+
+UPSERT_SOURCE_MAPPING = """
+INSERT INTO gui_crm_customer_source_mapping (
+    crm_accountid,
+    crm_account_name,
+    data_source,
+    match_method,
+    match_value,
+    display_label,
+    priority,
+    enabled,
+    notes,
+    source,
+    created_at,
+    updated_at
+)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+ON CONFLICT (crm_accountid, data_source, match_method, match_value) DO UPDATE
+    SET crm_account_name = EXCLUDED.crm_account_name,
+        display_label    = COALESCE(EXCLUDED.display_label, gui_crm_customer_source_mapping.display_label),
+        priority         = EXCLUDED.priority,
+        enabled          = EXCLUDED.enabled,
+        notes            = COALESCE(EXCLUDED.notes, gui_crm_customer_source_mapping.notes),
+        source           = EXCLUDED.source,
+        updated_at       = now();
+"""
+
+RESOLVE_ACCOUNTID_BY_DISPLAY_NAME = """
+SELECT crm_accountid,
+       crm_account_name,
+       canonical_customer_key,
+       netbox_musteri_value
+FROM   gui_crm_customer_alias
+WHERE  crm_account_name ILIKE %s
+   OR  canonical_customer_key = %s
+ORDER BY CASE WHEN crm_account_name ILIKE %s THEN 0 ELSE 1 END
+LIMIT 1;
+"""

@@ -190,9 +190,13 @@ def phys_inv_overview_by_role(db: DatabaseService = Depends(get_db)):
 
 
 @router.get("/physical-inventory/customer", response_model=list[dict[str, Any]])
-def phys_inv_customer(db: DatabaseService = Depends(get_db)):
-    """Boyner tenant physical device list for Customer View."""
-    return db.get_physical_inventory_customer()
+def phys_inv_customer(
+    customer: str | None = None,
+    db: DatabaseService = Depends(get_db),
+    webui: WebuiPool = Depends(get_webui),
+):
+    """Customer-scoped physical device list for Customer View."""
+    return db.get_physical_inventory_customer(customer, webui=webui)
 
 
 @router.get("/physical-inventory/overview/manufacturer", response_model=list[dict[str, Any]])

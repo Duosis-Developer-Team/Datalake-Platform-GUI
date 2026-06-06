@@ -63,7 +63,8 @@ servis katmanında (Python) çözülür — cross-DB join yoktur.
 | `gui_crm_service_pages` | GUI sayfa/kategori kayıt defteri (page_key registry) | `page_key`, `category_label`, `gui_tab_binding`, `resource_unit`, `icon`, `route_hint`, `tab_hint`, `sub_tab_hint` |
 | `gui_crm_service_mapping_seed` | YAML türevli ürün→sayfa seed eşleştirmesi | `productid`, `page_key` |
 | `gui_crm_service_mapping_override` | Operatör override eşleştirmesi | `productid`, `page_key`, `notes`, `updated_by`, `updated_at` |
-| `gui_crm_customer_alias` | CRM hesap ↔ kanonik müşteri ↔ NetBox musteri değeri | `crm_accountid`, `crm_account_name`, `canonical_customer_key`, `netbox_musteri_value`, `notes`, `source`, `created_at`, `updated_at` |
+| `gui_crm_customer_alias` | CRM hesap ↔ kanonik müşteri ↔ NetBox musteri değeri (legacy sales alias) | `crm_accountid`, `crm_account_name`, `canonical_customer_key`, `netbox_musteri_value`, `notes`, `source`, `created_at`, `updated_at` |
+| `gui_crm_customer_source_mapping` | CRM müşteri ↔ veri kaynağı bazlı çoklu eşleştirme kuralları | `crm_accountid`, `data_source`, `match_method`, `match_value`, `priority`, `enabled`, `source`, `created_at`, `updated_at` |
 | `gui_crm_threshold_config` | Sellable tavan % (kaynak tipi, opsiyonel DC) | `id`, `panel_key`, `resource_type`, `dc_code`, `sellable_limit_pct`, `notes`, `updated_by`, `updated_at` |
 | `gui_crm_price_override` | Operatör birim fiyatları (boş price-level'a fallback) | `productid`, `product_name`, `unit_price_tl`, `resource_unit`, `currency`, `notes`, `updated_by`, `updated_at` |
 | `gui_crm_calc_config` | Genel sayısal/string hesaplama değişkenleri | `config_key`, `config_value`, `value_type`, `description`, `updated_by`, `updated_at` |

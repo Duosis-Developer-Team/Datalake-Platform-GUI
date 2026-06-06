@@ -56,6 +56,7 @@ async def lifespan(app: FastAPI):
         get_connection=svc._get_connection,
         run_row=svc._run_row,
         run_rows=svc._run_rows,
+        resolve_needles=lambda name: svc.resolve_source_patterns(name).itsm_needles,
     )
     init_redis_pool()
 

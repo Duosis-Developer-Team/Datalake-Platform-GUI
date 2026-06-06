@@ -20,6 +20,8 @@ from app.models.schemas import (
     CatalogValuationRow,
     CustomerAlias,
     CustomerAliasUpdate,
+    CustomerAliasWithMappings,
+    CustomerSourceMappingUpdate,
     SalesEfficiencyByCategoryRow,
     SalesEfficiencyRow,
     SalesLineItem,
@@ -86,10 +88,32 @@ def catalog_valuation(
 # Customer alias management
 # ---------------------------------------------------------------------------
 
-@router.get("/crm/aliases", response_model=List[CustomerAlias])
+@router.get("/crm/aliases", response_model=List[CustomerAliasWithMappings])
 def list_aliases(svc: SalesService = Depends(get_sales_service)):
-    """Return all CRM → platform customer alias mappings."""
+    """Return CRM project customers with legacy alias fields and source mappings."""
     return svc.get_all_aliases()
+
+
+@router.put("/crm/aliases/{crm_accountid}/source-mappings", response_model=List[dict])
+def save_source_mappings(
+    crm_accountid: str,
+    body: CustomerSourceMappingUpdate,
+    svc: SalesService = Depends(get_sales_service),
+):
+    """Replace all source mappings for a CRM account."""
+    mappings = [m.model_dump() for m in (body.mappings or [])]
+    return svc.save_source_mappings(
+        crm_accountid,
+        crm_account_name=body.crm_account_name or crm_accountid,
+        mappings=mappings,
+        notes=body.notes,
+    )
+
+
+@router.post("/crm/aliases/seed-boyner", response_model=dict)
+def seed_boyner_mappings(svc: SalesService = Depends(get_sales_service)):
+    """Idempotently seed Boyner default source mappings."""
+    return svc.seed_boyner_source_mappings()
 
 
 @router.put("/crm/aliases/{crm_accountid}", response_model=dict)

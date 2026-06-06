@@ -764,11 +764,18 @@ def get_physical_inventory_overview_location(role: str, manufacturer: str) -> li
     return _api_cache_get_with_stale(ck, fetch, [])
 
 
-def get_physical_inventory_customer() -> list[dict]:
-    ck = "api:phys_inv_customer"
+def get_physical_inventory_customer(customer_name: str | None = None) -> list[dict]:
+    ck = f"api:phys_inv_customer:{(customer_name or '').strip().casefold()}"
 
     def fetch() -> list[dict]:
-        data = _get_json(_get_client_dc(), "/api/v1/physical-inventory/customer")
+        params = {}
+        if customer_name and str(customer_name).strip():
+            params["customer"] = str(customer_name).strip()
+        data = _get_json(
+            _get_client_dc(),
+            "/api/v1/physical-inventory/customer",
+            params=params or None,
+        )
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale(ck, fetch, [])
@@ -1396,6 +1403,30 @@ def put_crm_alias(
         "notes": notes,
     }
     out = _put_json(_get_client_cust(), f"/api/v1/crm/aliases/{enc}", body)
+    _api_response_cache.delete("api:crm_aliases")
+    return out if isinstance(out, dict) else {}
+
+
+def put_crm_source_mappings(
+    crm_accountid: str,
+    *,
+    crm_account_name: Optional[str] = None,
+    mappings: Optional[list[dict[str, Any]]] = None,
+    notes: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    enc = quote(crm_accountid, safe="")
+    body = {
+        "crm_account_name": crm_account_name,
+        "mappings": mappings or [],
+        "notes": notes,
+    }
+    out = _put_json(_get_client_cust(), f"/api/v1/crm/aliases/{enc}/source-mappings", body)
+    _api_response_cache.delete("api:crm_aliases")
+    return out if isinstance(out, list) else []
+
+
+def seed_boyner_source_mappings() -> dict[str, Any]:
+    out = _post_json(_get_client_cust(), "/api/v1/crm/aliases/seed-boyner", {})
     _api_response_cache.delete("api:crm_aliases")
     return out if isinstance(out, dict) else {}
 
