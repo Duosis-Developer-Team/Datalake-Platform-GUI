@@ -1050,3 +1050,22 @@ WHERE status_value = 'active'
   AND BTRIM(tenant_name) <> ''
 ORDER BY name
 """
+
+# CRM accounts with at least one project sales order (ordernumber PRJ-*).
+CRM_PROJECT_CUSTOMER_LIST = """
+SELECT DISTINCT TRIM(a.name) AS name
+FROM public.discovery_crm_accounts a
+JOIN public.discovery_crm_salesorders so ON so.customerid = a.accountid
+WHERE so.ordernumber LIKE 'PRJ-%'
+  AND TRIM(COALESCE(a.name, '')) <> ''
+ORDER BY name
+"""
+
+# Best-effort Boyner CRM account display name (may have zero PRJ orders).
+CRM_BOYNER_ACCOUNT_NAME = """
+SELECT TRIM(a.name) AS name
+FROM public.discovery_crm_accounts a
+WHERE a.name ILIKE '%boyner%'
+ORDER BY CASE WHEN a.name ILIKE 'boyner%' THEN 0 ELSE 1 END, a.name
+LIMIT 1
+"""

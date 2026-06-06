@@ -15,11 +15,63 @@ def test_get_customer_list_empty_without_db_and_no_env(monkeypatch):
     assert svc.get_customer_list() == []
 
 
-def test_get_customer_list_respects_warmed_customers_env(monkeypatch):
+def test_get_customer_list_loads_crm_project_customers(monkeypatch):
+    monkeypatch.delenv("WARMED_CUSTOMERS", raising=False)
+
+    class _CursorCtx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _ConnCtx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return _CursorCtx()
+
+    def _run_rows_side_effect(_cur, sql, params=None):
+        if sql == cq.CRM_PROJECT_CUSTOMER_LIST:
+            return [("Acme Corp",), ("Beta Ltd",)]
+        return []
+
+    def _run_row_side_effect(_cur, sql, params=None):
+        if sql == cq.CRM_BOYNER_ACCOUNT_NAME:
+            return ("BOYNER BUYUK MAGAZACILIK A.S.",)
+        return None
+
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", return_value=object()):
+        svc = CustomerService()
+    svc._pool = object()
+
+    with patch.object(svc, "_get_connection", return_value=_ConnCtx()), \
+         patch.object(svc, "_run_rows", side_effect=_run_rows_side_effect), \
+         patch.object(svc, "_run_row", side_effect=_run_row_side_effect):
+        result = svc.get_customer_list()
+
+    assert "Acme Corp" in result
+    assert "Beta Ltd" in result
+    assert "BOYNER BUYUK MAGAZACILIK A.S." in result
+    assert "Boyner" not in result
+
+
+def test_get_customer_list_respects_warmed_customers_for_cache_only(monkeypatch):
     monkeypatch.setenv("WARMED_CUSTOMERS", "Acme, Beta")
     with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
         svc = CustomerService()
-    assert svc.get_customer_list() == ["Acme", "Beta"]
+    assert svc._customers_for_cache_rebuild() == ("Acme", "Beta")
+
+
+def test_resolve_infra_search_name_uses_boyner_for_crm_display_name(monkeypatch):
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    svc._netbox_tenant_names = ["Boyner"]
+    assert svc.resolve_infra_search_name("BOYNER BUYUK MAGAZACILIK A.S.") == "Boyner"
 
 
 def test_get_customer_resources_returns_empty_when_pool_none():

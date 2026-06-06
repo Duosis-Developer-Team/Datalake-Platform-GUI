@@ -28,10 +28,12 @@ class CustomerAdapter:
         time_range: dict,
         managed_nutanix_clusters: list[str] | None = None,
         pure_nutanix_clusters: list[str] | None = None,
+        infra_search_name: str | None = None,
     ) -> dict:
         tr = time_range or default_time_range()
-        name = (customer_name or "").strip()
-        # Broader ILIKE: customer name anywhere in VM name (matches datacenter-api)
+        search = (infra_search_name or customer_name or "").strip()
+        name = search
+        # Broader ILIKE: resolved infra key anywhere in VM name (matches datacenter-api)
         vm_pattern = f"%{name}%" if name else "%"
         lpar_pattern = f"%{name}%" if name else "%"
         veeam_pattern = f"%{name}%" if name else "%"

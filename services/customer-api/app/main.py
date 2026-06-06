@@ -42,6 +42,7 @@ _WEBUI_REQUIRED = _env_bool("WEBUI_DB_REQUIRED", settings.webui_db_required)
 async def lifespan(app: FastAPI):
     svc = CustomerService()
     webui = WebuiPool()
+    svc.attach_webui_pool(webui)
     app.state.db = svc
     app.state.webui = webui
     app.state.sales = SalesService(

@@ -82,7 +82,26 @@ servis katmanında (Python) çözülür — cross-DB join yoktur.
 filtreleri (`<> '_'`), ayrı silinmiş-VM listeleri, util min/avg/max kolonları ve Power memory böleni `/1.048576`
 içerir. Aşağıdaki SQL'ler aksi belirtilmedikçe `customer-api/.../customer.py`'den verbatim alınmıştır.
 
-#### `CUSTOMER_NAME_LIST` — müşteri adları (customers_list)
+#### `CUSTOMER_NAME_LIST` — NetBox tenant names (legacy infra discovery)
+
+Used for infra search-key resolution and physical inventory tenant matching. **Not** the primary source for `GET /api/v1/customers` since 2026-06.
+
+#### `CRM_PROJECT_CUSTOMER_LIST` — CRM project customers (`GET /api/v1/customers`)
+
+```sql
+SELECT DISTINCT TRIM(a.name) AS name
+FROM public.discovery_crm_accounts a
+JOIN public.discovery_crm_salesorders so ON so.customerid = a.accountid
+WHERE so.ordernumber LIKE 'PRJ-%'
+  AND TRIM(COALESCE(a.name, '')) <> ''
+ORDER BY name
+```
+
+Ne yapar: CRM'de en az bir `PRJ-*` sales order kaydı olan aktif customer hesap adlarını döner. Boyner CRM hesabı varsa legacy `Boyner` etiketi CRM account adıyla hizalanır; PRJ kaydı olmasa da Boyner pilot olarak listede kalabilir.
+
+Satış/finans endpoint'leri (`crm_sales.py`) ayrı kapsamda **`statecode IN (3,4)`** realized-only filtresini kullanmaya devam eder — bkz. [[ADR-0010-crm-realized-sales-only-scope]].
+
+#### `CUSTOMER_NAME_LIST` (NetBox) — verbatim
 
 ```sql
 SELECT DISTINCT TRIM(tenant_name) AS name

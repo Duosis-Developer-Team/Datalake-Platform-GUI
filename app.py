@@ -144,8 +144,7 @@ try:
 except Exception as exc:
     logging.getLogger(__name__).warning("get_customer_list failed at startup (using defaults): %s", exc)
     _fetched_customers = []
-_warmed_customers = set(WARMED_CUSTOMERS)
-_customers = [c for c in _fetched_customers if c in _warmed_customers]
+_customers = [c for c in _fetched_customers if c and str(c).strip()]
 if not _customers:
     _customers = list(WARMED_CUSTOMERS)
 _default_customer = _customers[0] if _customers else DEFAULT_CUSTOMER_NAME

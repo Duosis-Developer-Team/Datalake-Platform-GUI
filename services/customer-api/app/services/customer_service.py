@@ -16,7 +16,9 @@ from app.adapters.customer_adapter import CustomerAdapter
 from app.config import settings
 from app.db.queries import customer as cq
 from app.db.queries import s3 as s3q
+from app.db.queries import service_mapping as smq
 from app.services import cache_service as cache
+from app.services.crm_customer_list import build_crm_project_customer_list, resolve_infra_search_name
 from app.utils.cluster_match import build_cluster_arch_map
 from app.utils.time_range import cache_time_ranges, default_time_range, time_range_to_bounds
 
@@ -72,6 +74,8 @@ class CustomerService:
         self._db_user = os.getenv("DB_USER", "customer_svc")
         self._db_pass = os.getenv("DB_PASS")
         self._pool: pg_pool.ThreadedConnectionPool | None = None
+        self._webui = None
+        self._netbox_tenant_names: list[str] | None = None
         self._init_pool()
         self._customer = CustomerAdapter(
             self._get_connection,
@@ -79,6 +83,10 @@ class CustomerService:
             self._run_row,
             self._run_rows,
         )
+
+    def attach_webui_pool(self, webui) -> None:
+        """Optional WebUI pool for alias resolution (set from FastAPI lifespan)."""
+        self._webui = webui
 
     def _init_pool(self) -> None:
         try:
@@ -348,11 +356,13 @@ class CustomerService:
 
     def _load_customer_resources(self, customer_name: str, tr: dict) -> dict:
         arch = self._get_cluster_arch_map(tr)
+        search_name = self.resolve_infra_search_name(customer_name)
         return self._customer.fetch(
             customer_name,
             tr,
             managed_nutanix_clusters=arch.get("managed_nutanix") or [],
             pure_nutanix_clusters=arch.get("pure_nutanix") or [],
+            infra_search_name=search_name,
         )
 
     def get_customer_resources(self, customer_name: str, time_range: dict | None = None) -> dict:
@@ -400,27 +410,116 @@ class CustomerService:
             logger.warning("Failed to load customer names from DB: %s", exc)
             return []
 
+    def _load_netbox_tenant_names(self) -> list[str]:
+        if self._netbox_tenant_names is not None:
+            return self._netbox_tenant_names
+        self._netbox_tenant_names = self._load_customer_names_from_db()
+        return self._netbox_tenant_names
+
+    def _load_boyner_crm_display_name(self) -> str | None:
+        if self._pool is None:
+            return None
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    row = self._run_row(cur, cq.CRM_BOYNER_ACCOUNT_NAME)
+            if row and row[0]:
+                return str(row[0]).strip()
+        except Exception as exc:
+            logger.warning("Failed to load Boyner CRM account name: %s", exc)
+        return None
+
+    def _load_crm_project_customer_names(self) -> list[str]:
+        """CRM accounts with at least one PRJ-* sales order."""
+        if self._pool is None:
+            return []
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, cq.CRM_PROJECT_CUSTOMER_LIST)
+            project_names = [str(r[0]).strip() for r in (rows or []) if r and r[0]]
+            boyner_crm_name = self._load_boyner_crm_display_name()
+            return build_crm_project_customer_list(
+                project_names,
+                boyner_crm_name=boyner_crm_name,
+            )
+        except Exception as exc:
+            logger.warning("Failed to load CRM project customer names: %s", exc)
+            return []
+
+    def _lookup_alias_for_display_name(self, display_name: str) -> tuple[str | None, str | None]:
+        webui = self._webui
+        if webui is None or not getattr(webui, "is_available", False):
+            return None, None
+        try:
+            rows = webui.run_rows(
+                smq.RESOLVE_ALIAS_BY_NAME,
+                (display_name, f"%{display_name}%"),
+            )
+            if not rows:
+                return None, None
+            row = rows[0]
+            return row.get("netbox_musteri_value"), row.get("canonical_customer_key")
+        except Exception as exc:
+            logger.warning("Alias lookup failed for customer=%s: %s", display_name, exc)
+            return None, None
+
+    def resolve_infra_search_name(self, display_name: str) -> str:
+        """Resolve CRM display name to infra ILIKE search key."""
+        netbox_value, canonical_key = self._lookup_alias_for_display_name(display_name)
+        return resolve_infra_search_name(
+            display_name,
+            alias_netbox_value=netbox_value,
+            alias_canonical_key=canonical_key,
+            netbox_tenant_names=self._load_netbox_tenant_names(),
+        )
+
     def get_customer_list(self) -> list[str]:
         """
         Customer names for the GUI selector.
-        If WARMED_CUSTOMERS is set, returns that explicit list; otherwise loads from the database.
+
+        Primary source: CRM accounts with PRJ-* project sales orders.
+        Boyner remains pinned as legacy pilot; when a Boyner CRM account exists,
+        its CRM display name is used instead of the manual label.
         """
-        raw = (os.getenv("WARMED_CUSTOMERS") or "").strip()
-        if raw:
-            return sorted({n.strip() for n in raw.split(",") if n.strip()})
-        return self._load_customer_names_from_db()
+        return self._load_crm_project_customer_names()
 
     def _customers_for_cache_rebuild(self) -> tuple[str, ...]:
-        """Customers used by warm_cache / scheduler (env override, else DB-derived names)."""
+        """Customers used by warm_cache / scheduler.
+
+        WARMED_CUSTOMERS env optionally limits warm-up scope. When set, it filters the
+        CRM project customer list (Boyner matches by substring). If the CRM list is
+        unavailable, the env value is used directly for warm-up only.
+        """
         raw = (os.getenv("WARMED_CUSTOMERS") or "").strip()
+        all_names = self.get_customer_list()
         if raw:
-            names = tuple(n.strip() for n in raw.split(",") if n.strip())
-            return names
-        return tuple(self._load_customer_names_from_db())
+            allowed = {n.strip().casefold() for n in raw.split(",") if n.strip()}
+            if all_names:
+                filtered = [
+                    n
+                    for n in all_names
+                    if n.casefold() in allowed or "boyner" in n.casefold()
+                ]
+                if filtered:
+                    return tuple(filtered)
+            return tuple(n.strip() for n in raw.split(",") if n.strip())
+        boyner_crm = self._load_boyner_crm_display_name()
+        if boyner_crm:
+            for name in all_names:
+                if name.casefold() == boyner_crm.casefold():
+                    return (name,)
+            if boyner_crm:
+                return (boyner_crm,)
+        for name in all_names:
+            if "boyner" in name.casefold():
+                return (name,)
+        return tuple(all_names[:1])
 
     def _fetch_customer_s3_vaults(self, customer_name: str, start_ts, end_ts) -> dict:
         """Fetch S3 vault metrics for a customer (same logic as datacenter-api DatabaseService)."""
-        name = (customer_name or "").strip()
+        search_name = self.resolve_infra_search_name(customer_name)
+        name = (search_name or customer_name or "").strip()
         pattern = f"%{name}%" if name else "%"
 
         with self._get_connection() as conn:

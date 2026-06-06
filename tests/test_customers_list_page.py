@@ -5,16 +5,19 @@ import dash_mantine_components as dmc
 from src.pages import customers_list
 
 
-def test_load_customers_filters_to_warmed(monkeypatch):
+def test_load_customers_uses_api_list(monkeypatch):
     monkeypatch.setattr(
         customers_list.api,
         "get_customer_list",
-        lambda: ["Boyner", "Another Customer"],
+        lambda: ["BOYNER BUYUK MAGAZACILIK A.S.", "Another Customer"],
     )
 
     result = customers_list._load_customers()
 
-    assert result == ["Boyner"]
+    assert result == {
+        "active": ["BOYNER BUYUK MAGAZACILIK A.S.", "Another Customer"],
+        "disabled": list(customers_list.DISABLED_CUSTOMERS),
+    }
 
 
 def test_build_customer_cards_returns_alert_when_no_match():

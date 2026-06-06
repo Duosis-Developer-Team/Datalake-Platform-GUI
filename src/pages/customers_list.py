@@ -5,7 +5,7 @@ import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 
 from src.services import api_client as api
-from src.services.db_service import DISABLED_CUSTOMERS, WARMED_CUSTOMERS
+from src.services.db_service import DISABLED_CUSTOMERS
 from src.utils.time_range import default_time_range
 
 
@@ -14,8 +14,7 @@ def _load_customers() -> dict[str, list[str]]:
         fetched = api.get_customer_list()
     except Exception:
         fetched = []
-    warmed = set(WARMED_CUSTOMERS)
-    active = [name for name in fetched if name in warmed] or list(WARMED_CUSTOMERS)
+    active = [name for name in fetched if name and str(name).strip()]
     return {"active": active, "disabled": list(DISABLED_CUSTOMERS)}
 
 
@@ -277,8 +276,6 @@ def filter_customer_cards(query, store_data):
         return _build_customer_cards(store_data, query or "")
     # Backward compatibility if store still holds a flat list
     if isinstance(store_data, list):
-        warmed = set(WARMED_CUSTOMERS)
         names = [str(n) for n in store_data if str(n).strip()]
-        active = [n for n in names if n in warmed] or list(WARMED_CUSTOMERS)
-        return _build_customer_cards({"active": active, "disabled": list(DISABLED_CUSTOMERS)}, query or "")
+        return _build_customer_cards({"active": names, "disabled": list(DISABLED_CUSTOMERS)}, query or "")
     return _build_customer_cards({"active": [], "disabled": list(DISABLED_CUSTOMERS)}, query or "")
