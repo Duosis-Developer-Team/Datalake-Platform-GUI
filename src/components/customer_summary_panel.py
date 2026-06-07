@@ -13,6 +13,7 @@ from src.services import product_catalog as pc
 from src.utils.visibility import (
     asset_has_usage,
     compute_sla_compliance_pct,
+    compute_total_overage_loss_tl,
     count_outage_vms,
     filter_overusage_rows,
     is_meaningful_value,
@@ -113,6 +114,7 @@ def _build_signal_defs(
     vm_outage_counts: dict | None,
     sla_categories: list[dict[str, Any]] | None,
     service_breakdown: list[dict[str, Any]] | None,
+    total_overage_loss: float | None = None,
 ) -> list[tuple[Any, str, str]]:
     """Billable + satisfaction signal definitions for the summary strip."""
     summary = sales_summary or {}
@@ -131,6 +133,7 @@ def _build_signal_defs(
 
     billable: list[tuple[Any, str, str]] = [
         (total_vms, "Total instances", f"{total_vms:,}"),
+        (total_overage_loss, "Est. overage loss (total)", format_crm_money(total_overage_loss, currency)),
         (summary.get("active_order_value"), "Active order value", format_crm_money(summary.get("active_order_value"), currency)),
         (veeam_defined, "Veeam sessions", f"{veeam_defined:,}"),
         (zerto_protected, "Zerto protected VMs", f"{zerto_protected:,}"),
@@ -186,6 +189,7 @@ def build_summary_problems_section(
     itsm_summary: dict | None,
     low_availability_services: list[dict[str, Any]] | None,
     currency: str | None = "TL",
+    total_overage_loss: float | None = None,
 ) -> html.Div:
     """Bottom section: unified problems list (overusage, tickets, SLA, low availability)."""
     sm = itsm_summary or {}
@@ -198,11 +202,23 @@ def build_summary_problems_section(
 
     overusage_table = build_compliance_issue_table(overusage_rows, currency=currency)
     if overusage_table.children:
+        overage_header_children: list = [
+            dmc.Text("Resource overusage", size="sm", fw=700, c="#2B3674"),
+        ]
+        if is_meaningful_value(total_overage_loss):
+            overage_header_children.append(
+                dmc.Text(
+                    f"Estimated total overage loss: {format_crm_money(total_overage_loss, currency)}",
+                    size="sm",
+                    fw=700,
+                    c="#E03131",
+                )
+            )
         problem_lines.append(
             dmc.Stack(
                 gap="xs",
                 children=[
-                    dmc.Text("Resource overusage", size="sm", fw=700, c="#2B3674"),
+                    dmc.Group(justify="space-between", align="flex-start", children=overage_header_children),
                     overusage_table,
                 ],
             )
@@ -284,11 +300,11 @@ def build_customer_summary_panel(
     summary = sales_summary or {}
     currency = summary.get("currency")
     compliance_summary = (compliance_payload or {}).get("summary") or {}
-    has_overuse = bool(compliance_summary.get("has_overuse"))
-
     compliance_rows = (compliance_payload or {}).get("rows") or []
     overusage_source = compliance_rows if compliance_rows else (efficiency_rows or [])
     overusage_rows = filter_overusage_rows(overusage_source)
+    total_overage_loss = compute_total_overage_loss_tl(compliance_payload, efficiency_rows)
+    has_overuse = bool(compliance_summary.get("has_overuse")) or bool(overusage_rows) or total_overage_loss > 0
     low_availability = collect_low_availability_services(service_breakdown, sla_categories)
 
     signal_defs = _build_signal_defs(
@@ -301,6 +317,7 @@ def build_customer_summary_panel(
         vm_outage_counts=vm_outage_counts,
         sla_categories=sla_categories,
         service_breakdown=service_breakdown,
+        total_overage_loss=total_overage_loss,
     )
     signal_strip = build_summary_signal_strip(signal_defs)
 
@@ -330,10 +347,10 @@ def build_customer_summary_panel(
                 fw=700,
             )
         )
-    if has_overuse and is_meaningful_value(compliance_summary.get("total_overage_loss_tl")):
+    if has_overuse and is_meaningful_value(total_overage_loss):
         header_children.append(
             dmc.Text(
-                f"Est. overage loss: {format_crm_money(compliance_summary.get('total_overage_loss_tl'), currency)}",
+                f"Est. overage loss (total): {format_crm_money(total_overage_loss, currency)}",
                 size="sm",
                 c="#E03131",
                 fw=700,
@@ -358,6 +375,7 @@ def build_customer_summary_panel(
             itsm_summary=itsm_summary,
             low_availability_services=low_availability,
             currency=currency,
+            total_overage_loss=total_overage_loss,
         )
     )
 

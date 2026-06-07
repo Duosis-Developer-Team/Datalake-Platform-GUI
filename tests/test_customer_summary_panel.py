@@ -93,4 +93,7 @@ def test_build_customer_summary_panel_unified_layout():
     assert "Customer signals" in text
     assert "Issues requiring attention" in text
     assert "Resource overusage" in text
+    assert "Est. overage loss (total)" in text
+    assert "Estimated total overage loss" in text
+    assert "50.00 TL" in text
     assert "nexus-card" in text

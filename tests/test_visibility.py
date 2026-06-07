@@ -6,6 +6,7 @@ from src.utils.visibility import (
     asset_has_usage,
     backup_vendor_has_data,
     compute_sla_compliance_pct,
+    compute_total_overage_loss_tl,
     count_outage_vms,
     filter_compliance_rows_for_display,
     filter_efficiency_rows_for_display,
@@ -97,3 +98,17 @@ def test_filter_overusage_rows():
 
 def test_compute_sla_compliance_pct():
     assert compute_sla_compliance_pct({"total_count": 4, "sla_breach_count": 1}) == 75.0
+
+
+def test_compute_total_overage_loss_tl_from_summary():
+    payload = {"summary": {"total_overage_loss_tl": 123.45}, "rows": []}
+    assert compute_total_overage_loss_tl(payload) == 123.45
+
+
+def test_compute_total_overage_loss_tl_sums_rows_when_summary_missing():
+    rows = [
+        {"status": "over", "overage_loss_tl": 100},
+        {"status": "optimal", "overage_loss_tl": 0},
+        {"status": "over", "overage_loss_tl": 50},
+    ]
+    assert compute_total_overage_loss_tl(None, rows) == 150.0

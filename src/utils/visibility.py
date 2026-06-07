@@ -140,6 +140,24 @@ def filter_overusage_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, A
     return out
 
 
+def compute_total_overage_loss_tl(
+    compliance_payload: dict[str, Any] | None = None,
+    efficiency_rows: list[dict[str, Any]] | None = None,
+) -> float:
+    """Resolve total estimated overage loss from compliance summary or row sums."""
+    summary = (compliance_payload or {}).get("summary") or {}
+    total = summary.get("total_overage_loss_tl")
+    if total is not None:
+        try:
+            return float(total)
+        except (TypeError, ValueError):
+            pass
+    rows = (compliance_payload or {}).get("rows") or efficiency_rows or []
+    over_rows = filter_overusage_rows(rows)
+    source = over_rows if over_rows else rows
+    return sum(float(r.get("overage_loss_tl") or 0) for r in source)
+
+
 def compute_sla_compliance_pct(itsm_summary: dict[str, Any] | None) -> float | None:
     """ITSM SLA compliance rate from breach count vs total records."""
     sm = itsm_summary or {}
