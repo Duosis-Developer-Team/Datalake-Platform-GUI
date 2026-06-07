@@ -27,24 +27,26 @@ from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_f
 from src.components.header import create_detail_header
 from src.pages.home import metric_card
 from src.components.s3_panel import build_customer_s3_panel
+from src.components.customer_summary_panel import (
+    aggregate_sla_categories,
+    build_customer_summary_panel,
+)
 from src.components.sold_vs_used_panel import (
-    build_compliance_stack,
     build_sold_vs_used_stack,
     filter_efficiency_rows,
 )
 from src.components.crm_sales_panel import (
     build_crm_active_orders_section,
-    build_crm_context_card,
     build_crm_invoiced_orders_section,
     build_crm_intro_kpi_strip,
     build_crm_summary_kv_panel,
     format_crm_money,
 )
+from src.services import auranotify_client as aura
+from src.utils.time_range import time_range_to_bounds
 from src.utils.visibility import (
     asset_has_usage,
     backup_vendor_has_data,
-    count_outage_vms,
-    filter_efficiency_rows_for_display,
     is_meaningful_value,
 )
 
@@ -456,101 +458,35 @@ def _deleted_vms_panel(deleted_names: list[str] | None):
 # ---------------------------------------------------------------------------
 
 def _tab_summary(
+    customer_name: str,
     totals: dict,
     assets: dict,
+    backup_totals: dict,
     *,
     sales_summary: dict | None = None,
+    compliance_payload: dict | None = None,
     efficiency_rows: list | None = None,
+    itsm_summary: dict | None = None,
     vm_outage_counts: dict | None = None,
+    service_breakdown: list | None = None,
+    s3_data: dict | None = None,
+    sla_categories: list | None = None,
 ):
-    """Summary tab: decision-focused signals only (no CRM detail tables)."""
-    classic = assets.get("classic", {}) or {}
-    hyperconv = assets.get("hyperconv", {}) or {}
-    pure_nx = assets.get("pure_nutanix", {}) or {}
-    power = assets.get("power", {}) or {}
-    backup_totals = totals.get("backup", {}) or {}
-    summary = sales_summary or {}
-    currency = summary.get("currency")
-
-    total_vms = int(totals.get("vms_total", 0) or 0)
-    active_orders = int(summary.get("active_order_count") or 0)
-    active_value = summary.get("active_order_value")
-    overage_loss = _total_overage_loss_tl(efficiency_rows)
-    outage_vms = count_outage_vms(vm_outage_counts)
-    nb_pre_gib = float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0)
-
-    signal_defs = [
-        (total_vms, "Total instances", f"{total_vms:,}", "solar:laptop-bold-duotone", "teal"),
-        (active_orders, "Active orders", f"{active_orders:,}", "solar:cart-bold-duotone", "cyan"),
-        (active_value, "Active order value", format_crm_money(active_value, currency), "solar:wallet-money-bold-duotone", "grape"),
-        (overage_loss, "Est. overage loss", format_crm_money(overage_loss, currency), "solar:danger-triangle-bold-duotone", "red"),
-        (outage_vms, "VMs with outages", f"{outage_vms:,}", "solar:shield-warning-bold-duotone", "orange"),
-        (nb_pre_gib, "NetBackup pre-dedup", f"{nb_pre_gib:.2f} GiB", "mdi:database-lock-outline", "orange"),
-    ]
-    if asset_has_usage(classic):
-        signal_defs.append(
-            (int(classic.get("vm_count", 0) or 0), "Classic VMs", f"{int(classic.get('vm_count', 0) or 0):,}", "solar:laptop-bold-duotone", "blue")
-        )
-    if asset_has_usage(hyperconv):
-        signal_defs.append(
-            (int(hyperconv.get("vm_count", 0) or 0), "Hyperconverged VMs", f"{int(hyperconv.get('vm_count', 0) or 0):,}", "solar:laptop-bold-duotone", "indigo")
-        )
-    if asset_has_usage(pure_nx):
-        signal_defs.append(
-            (int(pure_nx.get("vm_count", 0) or 0), "Pure Nutanix (AHV)", f"{int(pure_nx.get('vm_count', 0) or 0):,}", "solar:laptop-bold-duotone", "cyan")
-        )
-    if asset_has_usage(power, instance_keys=("lpar_count",)):
-        signal_defs.append(
-            (int(power.get("lpar_count", 0) or 0), "Power LPARs", f"{int(power.get('lpar_count', 0) or 0):,}", "solar:server-square-bold-duotone", "grape")
-        )
-
-    children: list = []
-    signal_grid = _build_metrics_grid(signal_defs[:8], cols=4)
-    if signal_grid is not None:
-        children.append(
-            _section_card(
-                "Customer signals",
-                "Key indicators for this customer and report period",
-                signal_grid,
-            )
-        )
-
-    issue_rows = filter_efficiency_rows_for_display(efficiency_rows)
-    if issue_rows:
-        issue_lines = []
-        for row in issue_rows[:6]:
-            label = str(row.get("category_label") or row.get("category_code") or "Category")
-            status = str(row.get("status") or "")
-            issue_lines.append(
-                dmc.Group(
-                    justify="space-between",
-                    children=[
-                        dmc.Text(label, size="sm", fw=600, c="#2B3674"),
-                        dmc.Badge(
-                            status.replace("_", " ").title(),
-                            color="red" if status in ("over", "unsold_usage") else "indigo",
-                            variant="light",
-                            size="sm",
-                        ),
-                    ],
-                )
-            )
-        children.append(
-            _section_card(
-                "Resource compliance issues",
-                "Entitlement vs usage — open Virtualization or Billing for detail",
-                dmc.Stack(gap="xs", children=issue_lines),
-            )
-        )
-
-    if not children:
-        return dmc.Alert(
-            color="gray",
-            variant="light",
-            title="No summary signals",
-            children="No meaningful infrastructure or CRM indicators for this customer in the selected period.",
-        )
-    return dmc.Stack(gap="lg", children=children)
+    """Summary tab: unified panel with compact signals and problems list."""
+    return build_customer_summary_panel(
+        customer_name,
+        totals=totals,
+        assets=assets,
+        backup_totals=backup_totals,
+        sales_summary=sales_summary,
+        compliance_payload=compliance_payload,
+        efficiency_rows=efficiency_rows,
+        itsm_summary=itsm_summary,
+        vm_outage_counts=vm_outage_counts,
+        service_breakdown=service_breakdown,
+        s3_data=s3_data,
+        sla_categories=sla_categories,
+    )
 
 
 def _compute_billing_rows(
@@ -1780,7 +1716,6 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             children="Open a customer from the Customers catalog to load metrics.",
         )
         return {
-            "intro_card": _build_customer_intro_card(""),
             "summary": empty,
             "virt": empty,
             "avail": empty,
@@ -1794,7 +1729,11 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             "export_context": {},
         }
 
-    with ThreadPoolExecutor(max_workers=10) as pool:
+    start_ts, end_ts = time_range_to_bounds(tr)
+    sla_start = start_ts.strftime("%Y-%m-%dT%H:%M:%S")
+    sla_end = end_ts.strftime("%Y-%m-%dT%H:%M:%S")
+
+    with ThreadPoolExecutor(max_workers=11) as pool:
         f_resources = pool.submit(api.get_customer_resources, name, tr)
         f_avail = pool.submit(api.get_customer_availability_bundle, name, tr)
         f_s3 = pool.submit(api.get_customer_s3_vaults, name, tr)
@@ -1808,6 +1747,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         f_active_orders = pool.submit(api.get_customer_sales_active_orders, name)
         f_active_items = pool.submit(api.get_customer_sales_active_items, name)
         f_service_breakdown = pool.submit(api.get_customer_sales_service_breakdown, name)
+        f_sla = pool.submit(aura.get_dc_services_availability, sla_start, sla_end)
         data = f_resources.result()
         # Compliance reads infra from Redis populated by /resources — run after resources, not in parallel.
         compliance_payload = api.get_customer_resource_compliance(name, "virtualization")
@@ -1823,6 +1763,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         active_orders = f_active_orders.result()
         active_items = f_active_items.result()
         service_breakdown = f_service_breakdown.result()
+        sla_categories = aggregate_sla_categories(f_sla.result())
 
     vm_outage_counts = avail_bundle.get("vm_outage_counts") or {}
 
@@ -1888,11 +1829,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             (
                 "classic",
                 "Klasik Mimari",
-                _tab_classic(
-                    classic,
-                    vm_outage_counts,
-                    crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.classic"),
-                ),
+                _tab_classic(classic, vm_outage_counts),
             )
         )
     if show_hyperconv_tab:
@@ -1900,12 +1837,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             (
                 "hyperconv",
                 "Hyperconverged Mimari",
-                _tab_hyperconv(
-                    hyperconv,
-                    pure_nx,
-                    vm_outage_counts,
-                    crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.hyperconverged"),
-                ),
+                _tab_hyperconv(hyperconv, pure_nx, vm_outage_counts),
             )
         )
     if show_pure_tab:
@@ -1913,11 +1845,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             (
                 "pure_nx",
                 "Pure Nutanix (AHV)",
-                _tab_pure_nutanix(
-                    pure_nx,
-                    vm_outage_counts,
-                    crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.nutanix"),
-                ),
+                _tab_pure_nutanix(pure_nx, vm_outage_counts),
             )
         )
     if show_power_tab:
@@ -1925,11 +1853,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             (
                 "power",
                 "Power Mimari",
-                _tab_power(
-                    power_asset,
-                    vm_outage_counts,
-                    crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.power"),
-                ),
+                _tab_power(power_asset, vm_outage_counts),
             )
         )
 
@@ -2037,13 +1961,19 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     }
 
     return {
-        "intro_card": build_crm_context_card(name, sales_summary, compliance_payload=compliance_payload),
         "summary": _tab_summary(
+            name,
             totals,
             assets,
+            backup_totals,
             sales_summary=sales_summary,
+            compliance_payload=compliance_payload,
             efficiency_rows=eff_by_cat,
+            itsm_summary=itsm_summary,
             vm_outage_counts=vm_outage_counts,
+            service_breakdown=service_breakdown,
+            s3_data=s3_data,
+            sla_categories=sla_categories,
         ),
         "virt": virt_content,
         "avail": _tab_customer_availability(avail_bundle),
@@ -2228,7 +2158,6 @@ def render_customer_page(chosen: str, time_range, content: dict, visible_section
                 value="summary",
                 children=[
                     header,
-                    content.get("intro_card") or _build_customer_intro_card(chosen),
                     dmc.TabsPanel(
                         value="summary",
                         children=dmc.Stack(

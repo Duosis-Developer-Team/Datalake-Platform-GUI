@@ -127,3 +127,24 @@ def count_outage_vms(vm_outage_counts: dict[str, Any] | None) -> int:
     """Total VMs with at least one outage record in the report period."""
     counts = vm_outage_counts or {}
     return sum(1 for _name, c in counts.items() if int(c or 0) > 0)
+
+
+def filter_overusage_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Keep rows with resource overage or unsold usage."""
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        status = str(row.get("status") or "").lower()
+        overage = float(row.get("overage_qty") or 0)
+        if status in ("over", "unsold_usage") or overage > 0:
+            out.append(row)
+    return out
+
+
+def compute_sla_compliance_pct(itsm_summary: dict[str, Any] | None) -> float | None:
+    """ITSM SLA compliance rate from breach count vs total records."""
+    sm = itsm_summary or {}
+    total = int(sm.get("total_count") or 0)
+    if total <= 0:
+        return None
+    breaches = int(sm.get("sla_breach_count") or 0)
+    return round(max(0.0, 100.0 * (1.0 - breaches / total)), 1)

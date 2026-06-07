@@ -5,9 +5,11 @@ from __future__ import annotations
 from src.utils.visibility import (
     asset_has_usage,
     backup_vendor_has_data,
+    compute_sla_compliance_pct,
     count_outage_vms,
     filter_compliance_rows_for_display,
     filter_efficiency_rows_for_display,
+    filter_overusage_rows,
     is_meaningful_value,
     visible_kv_rows,
     visible_metrics,
@@ -85,3 +87,13 @@ def test_filter_efficiency_rows_for_display():
 def test_count_outage_vms():
     assert count_outage_vms({"vm-a": 0, "vm-b": 2, "vm-c": 1}) == 2
     assert count_outage_vms({}) == 0
+
+
+def test_filter_overusage_rows():
+    rows = filter_overusage_rows([{"status": "optimal"}, {"status": "over", "overage_qty": 1}])
+    assert len(rows) == 1
+    assert rows[0]["status"] == "over"
+
+
+def test_compute_sla_compliance_pct():
+    assert compute_sla_compliance_pct({"total_count": 4, "sla_breach_count": 1}) == 75.0

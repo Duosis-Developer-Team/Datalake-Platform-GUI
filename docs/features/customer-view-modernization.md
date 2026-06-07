@@ -23,8 +23,9 @@ Related: [LOADING_UX_DESIGN.md](../LOADING_UX_DESIGN.md) | [[02-Module-Platform-
 
 ### Summary (decision)
 
-- **Shows:** Customer signals (up to 4 meaningful KPIs), resource compliance issues (filtered rows), overage footer when applicable.
-- **Hides:** CRM KV panel, active/invoiced order tables, compute resource grid, backup capacity cards, zero platform counts.
+- **Shows:** Single unified panel (`build_customer_summary_panel`) — customer header (name, overage badge, active order value), compact **Customer signals** strip (billable: instances, backup, S3, CRM; satisfaction: SLA compliance %, lowest service availability %, avg ticket resolution, open tickets, VM outages), and **Issues requiring attention** list (resource overusage table, open tickets, SLA breaches, services &lt; 98% availability via product_catalog + AuraNotify categories).
+- **Hides:** Separate intro card above tabs, large metric cards, CRM KV panel, active/invoiced order tables, virtualization gauge panels.
+- **Data:** `compliance_payload`, `itsm_summary`, `service_breakdown`, `aura.get_dc_services_availability` for SLA category matching.
 
 ### Billing (commercial)
 
@@ -33,8 +34,8 @@ Related: [LOADING_UX_DESIGN.md](../LOADING_UX_DESIGN.md) | [[02-Module-Platform-
 
 ### Virtualization
 
-- **Shows:** Platform sub-tabs only when platform has VMs/LPARs or resources; compliance stack for mapped categories with usage/entitlement; VM tables.
-- **Hides:** Pure Nutanix / Power sub-tabs when count is zero; gauge cards for `no_sales` / `no_usage` with no quantities.
+- **Shows:** Platform sub-tabs only when platform has VMs/LPARs or resources; VM tables and compute metrics.
+- **Hides:** Pure Nutanix / Power sub-tabs when count is zero; sold-vs-used gauge/compliance stack (moved to Summary overusage list).
 
 ### Backup
 
@@ -66,15 +67,17 @@ Implemented in `src/utils/visibility.py`:
 - `visible_metrics()` — metric dicts with `value` key.
 - `filter_compliance_rows_for_display()` — drops inert compliance rows.
 - `filter_efficiency_rows_for_display()` — drops `no_sales` / `no_usage` without quantities.
+- `filter_overusage_rows()` — over/unsold_usage rows for Summary problems table.
+- `compute_sla_compliance_pct()` — ITSM breach rate for satisfaction strip.
 - `asset_has_usage()` — platform-level non-zero check.
 
 ---
 
-## Header / context card
+## Summary panel (unified)
 
-- Single `build_crm_context_card()` replaces dual intro strip.
-- Customer name, overage badge, active order value, optional overage loss line.
-- CRM KPI strip removed from header (lives in Billing).
+- `src/components/customer_summary_panel.py` — replaces separate intro card + large signals grid.
+- Overusage detail: `build_compliance_issue_table()` in `sold_vs_used_panel.py` (no gauges).
+- CRM KPI strip remains in Billing only.
 
 ---
 
@@ -88,4 +91,5 @@ Implemented in `src/utils/visibility.py`:
 | Billing refactor | Done |
 | Panel refactors (CRM, compliance, sold-vs-used) | Done |
 | Conditional tabs (phys inv, backup vendors, virt platforms) | Done |
+| Unified Summary panel + virt gauge removal | Done |
 | Unit tests | Done |

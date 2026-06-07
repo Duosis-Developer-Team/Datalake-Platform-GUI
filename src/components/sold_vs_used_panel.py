@@ -12,8 +12,9 @@ from dash import dcc, html
 import plotly.graph_objects as go
 
 from src.components.charts import create_grouped_bar_chart, create_premium_gauge_chart
+from src.components.crm_sales_panel import format_crm_money
 from src.components.status_badges import compliance_status_badge
-from src.utils.visibility import filter_efficiency_rows_for_display
+from src.utils.visibility import filter_efficiency_rows_for_display, filter_overusage_rows
 
 
 def filter_efficiency_rows(rows: list[dict[str, Any]] | None, gui_tab_prefix: str) -> list[dict[str, Any]]:
@@ -142,3 +143,63 @@ def build_sold_vs_used_stack(rows: list[dict[str, Any]] | None) -> html.Div:
     if not visible:
         return html.Div()
     return html.Div(children=[_one_row_card(r) for r in visible])
+
+
+def _compliance_qty(row: dict[str, Any], key: str) -> float:
+    if key == "sold":
+        return float(
+            row.get("entitled_qty")
+            if row.get("entitled_qty") is not None
+            else row.get("sold_qty") or 0
+        )
+    return float(row.get(key) or 0)
+
+
+def build_compliance_issue_table(
+    rows: list[dict[str, Any]] | None,
+    *,
+    currency: str | None = "TL",
+) -> html.Div:
+    """Compact table for summary overusage issues (no gauges or charts)."""
+    visible = filter_overusage_rows(rows)
+    if not visible:
+        return html.Div()
+
+    cols = ["Category", "Sold", "Used", "Overage", "Est. loss", "Status"]
+
+    def _row(r: dict[str, Any]) -> html.Tr:
+        unit = str(r.get("resource_unit") or "")
+        sold = _compliance_qty(r, "sold")
+        used = _compliance_qty(r, "used")
+        overage = _compliance_qty(r, "overage_qty")
+        loss = r.get("overage_loss_tl")
+        label = str(r.get("category_label") or r.get("category_code") or "Category")
+
+        def _qty(v: float) -> str:
+            return f"{v:,.2f} {unit}".strip() if unit else f"{v:,.2f}"
+
+        return html.Tr(
+            [
+                html.Td(label),
+                html.Td(_qty(sold)),
+                html.Td(_qty(used)),
+                html.Td(_qty(overage)),
+                html.Td(format_crm_money(loss, currency) if loss is not None else "-"),
+                html.Td(compliance_status_badge(str(r.get("status")))),
+            ]
+        )
+
+    return html.Div(
+        style={"overflowX": "auto"},
+        children=[
+            dmc.Table(
+                striped=True,
+                highlightOnHover=True,
+                withColumnBorders=True,
+                children=[
+                    html.Thead(html.Tr([html.Th(c) for c in cols])),
+                    html.Tbody([_row(r) for r in visible]),
+                ],
+            )
+        ],
+    )
