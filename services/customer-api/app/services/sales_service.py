@@ -32,6 +32,11 @@ from app.services.customer_mapping_resolver import (
     group_mappings_by_account,
 )
 from app.utils.efficiency_usage import efficiency_status, resolve_used_quantity
+from app.utils.usage_comparison import (
+    aggregate_entitled_by_category,
+    build_virtualization_compliance,
+    catalog_product_names_for_compliance,
+)
 from app.services.crm_config_service import CrmConfigService
 from app.services.webui_db import WebuiPool
 
@@ -102,6 +107,38 @@ class SalesService:
         if not self._config:
             return {}
         return {str(r["productid"]): float(r["unit_price_tl"]) for r in self._config.list_price_overrides()}
+
+    def _load_catalog_price_indexes(
+        self,
+    ) -> tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
+        """Return (price_overrides, catalog_by_productid, catalog_by_name)."""
+        price_overrides = self._load_price_override_dict()
+        catalog_by_productid: Dict[str, float] = {}
+        catalog_by_name: Dict[str, float] = {}
+        try:
+            for row in self._run_query(sq.SALES_CATALOG_PRICES, ()):
+                pid = str(row.get("productid") or "")
+                price = row.get("catalog_unit_price")
+                if pid and price is not None and pid not in catalog_by_productid:
+                    catalog_by_productid[pid] = float(price)
+            names = catalog_product_names_for_compliance()
+            if names:
+                for row in self._run_query(sq.SALES_CATALOG_PRICE_BY_PRODUCT_NAME, (names,)):
+                    name = str(row.get("product_name") or "").strip()
+                    price = row.get("catalog_unit_price")
+                    if name and price is not None and name not in catalog_by_name:
+                        catalog_by_name[name] = float(price)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Catalog price index unavailable: %s", exc)
+        return price_overrides, catalog_by_productid, catalog_by_name
+
+    def _empty_compliance_summary(self) -> Dict[str, Any]:
+        return {
+            "total_overage_loss_tl": 0.0,
+            "has_overuse": False,
+            "overuse_categories": [],
+            "overuse_status": "ok",
+        }
 
     # ------------------------------------------------------------------
     # /customers/{name}/sales/summary
@@ -328,6 +365,67 @@ class SalesService:
                 "usage_note": note,
             })
         return out
+
+    # ------------------------------------------------------------------
+    # /customers/{name}/sales/resource-compliance
+    # ------------------------------------------------------------------
+
+    def get_resource_compliance(
+        self,
+        customer_name: str,
+        scope: str = "virtualization",
+    ) -> Dict[str, Any]:
+        if scope != "virtualization":
+            return {
+                "scope": scope,
+                "rows": [],
+                "summary": self._empty_compliance_summary(),
+            }
+
+        account_ids = self._resolve_account_ids(customer_name)
+        if not account_ids:
+            return {
+                "scope": scope,
+                "rows": [],
+                "summary": self._empty_compliance_summary(),
+            }
+
+        entitled_raw = self._run_query(sq.SALES_ENTITLED_RAW_BY_PRODUCT, (account_ids,))
+        weighted_rows = self._run_query(sq.SALES_ENTITLED_UNIT_PRICE_BY_PRODUCT, (account_ids,))
+        weighted_prices = {
+            str(r["productid"]): float(r["weighted_unit_price"])
+            for r in weighted_rows
+            if r.get("productid") and r.get("weighted_unit_price") is not None
+        }
+
+        mapping = self._load_product_mapping()
+        price_overrides, catalog_by_productid, catalog_by_name = self._load_catalog_price_indexes()
+        entitled_agg = aggregate_entitled_by_category(entitled_raw, mapping)
+
+        bundle: Dict[str, Any] = {}
+        if self._get_customer_assets:
+            try:
+                bundle = self._get_customer_assets(customer_name) or {}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("get_customer_assets failed for compliance: %s", exc)
+                bundle = {}
+
+        calc = self._config.get_calc_dict() if self._config else {}
+        under_pct = float(calc.get("efficiency.under_pct", 80.0))
+        over_pct = float(calc.get("efficiency.over_pct", 110.0))
+
+        rows, summary = build_virtualization_compliance(
+            entitled_agg=entitled_agg,
+            assets=bundle.get("assets") or {},
+            totals=bundle.get("totals") or {},
+            weighted_prices=weighted_prices,
+            price_overrides=price_overrides,
+            catalog_by_productid=catalog_by_productid,
+            catalog_by_name=catalog_by_name,
+            under_pct=under_pct,
+            over_pct=over_pct,
+        )
+        return {"scope": scope, "rows": rows, "summary": summary}
 
     # ------------------------------------------------------------------
     # /customers/{name}/sales/catalog-valuation — gui_crm_price_override + catalog

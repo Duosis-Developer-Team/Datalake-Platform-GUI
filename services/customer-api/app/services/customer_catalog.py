@@ -48,10 +48,9 @@ def _real_data_cached(display_name: str) -> bool:
         return False
 
 
-def _overuse_status(*, mapped: bool, is_vip: bool) -> str:
+def _default_overuse_status(*, mapped: bool, is_vip: bool) -> str:
     if not mapped:
         return "not_applicable"
-    # Comparison engine not wired yet — surface pending for mapped/VIP rows.
     return "pending"
 
 
@@ -66,10 +65,15 @@ def build_catalog_row(
     active_order_value: float = 0.0,
     active_order_count: int = 0,
     currency: Optional[str] = None,
+    overuse_status: Optional[str] = None,
 ) -> dict[str, Any]:
     mapped = _is_mapped(source_mappings)
     mapping_count = _enabled_mapping_count(source_mappings)
     status = _mapping_status(source_mappings)
+    resolved_overuse = overuse_status if overuse_status is not None else _default_overuse_status(
+        mapped=mapped,
+        is_vip=is_vip,
+    )
     return {
         "crm_accountid": crm_accountid,
         "crm_account_name": crm_account_name,
@@ -80,7 +84,7 @@ def build_catalog_row(
         "mapping_status": status,
         "mapping_count": mapping_count,
         "real_data_cached": _real_data_cached(crm_account_name) if mapped else False,
-        "overuse_status": _overuse_status(mapped=mapped, is_vip=is_vip),
+        "overuse_status": resolved_overuse,
         "ytd_revenue": float(ytd_revenue or 0.0),
         "active_order_value": float(active_order_value or 0.0),
         "active_order_count": int(active_order_count or 0),
@@ -110,11 +114,21 @@ def build_overview_payload(
     service_sales: list[dict[str, Any]],
 ) -> dict[str, Any]:
     groups = group_catalog_rows(catalog_rows)
+    overuse_detected = sum(
+        1
+        for row in catalog_rows
+        if row.get("mapped") and row.get("overuse_status") == "overuse"
+    )
     overuse_pending = sum(
         1
         for row in catalog_rows
         if row.get("mapped") and row.get("overuse_status") == "pending"
     )
+    overview_overuse_status = "pending"
+    if overuse_detected > 0:
+        overview_overuse_status = "overuse"
+    elif overuse_pending == 0 and any(row.get("mapped") for row in catalog_rows):
+        overview_overuse_status = "ok"
     return {
         "total_customers": len(catalog_rows),
         "vip_count": len(groups["vip"]),
@@ -130,8 +144,9 @@ def build_overview_payload(
         "currency": sales_total.get("currency"),
         "order_count": int(sales_total.get("order_count") or 0),
         "service_sales": service_sales,
-        "overuse_customer_count": overuse_pending,
-        "overuse_status": "pending",
+        "overuse_customer_count": overuse_detected,
+        "overuse_pending_count": overuse_pending,
+        "overuse_status": overview_overuse_status,
     }
 
 

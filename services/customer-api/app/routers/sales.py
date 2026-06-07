@@ -8,6 +8,7 @@ Routes:
   GET /customers/{customer_name}/sales/active-items
   GET /customers/{customer_name}/sales/efficiency
   GET /customers/{customer_name}/sales/efficiency-by-category
+  GET /customers/{customer_name}/sales/resource-compliance
   GET /customers/{customer_name}/sales/catalog-valuation
   GET /customers/{customer_name}/sales/service-breakdown
   GET /crm/aliases
@@ -26,6 +27,7 @@ from app.models.schemas import (
     CustomerAliasWithMappings,
     CustomerServiceSalesSlice,
     CustomerSourceMappingUpdate,
+    ResourceComplianceResponse,
     SalesEfficiencyByCategoryRow,
     SalesEfficiencyRow,
     SalesLineItem,
@@ -102,6 +104,19 @@ def sales_efficiency_by_category(
 ):
     """Realized CRM sales quantities vs observed usage, grouped by product category alias."""
     return svc.get_efficiency_by_category(customer_name)
+
+
+@router.get(
+    "/customers/{customer_name}/sales/resource-compliance",
+    response_model=ResourceComplianceResponse,
+)
+def sales_resource_compliance(
+    customer_name: str,
+    scope: str = "virtualization",
+    svc: SalesService = Depends(get_sales_service),
+):
+    """CRM entitlement (active + invoiced) vs infrastructure usage with overage loss."""
+    return svc.get_resource_compliance(customer_name, scope=scope)
 
 
 @router.get("/customers/{customer_name}/sales/catalog-valuation", response_model=List[CatalogValuationRow])

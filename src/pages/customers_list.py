@@ -218,10 +218,10 @@ def _overview_strip(overview: dict):
                 color="violet",
             ),
             kpi_card(
-                "Overuse (pending)",
+                "Overuse detected",
                 int(ov.get("overuse_customer_count") or 0),
                 icon="solar:danger-triangle-bold-duotone",
-                color="orange",
+                color="red" if int(ov.get("overuse_customer_count") or 0) > 0 else "teal",
             ),
         ],
     )
@@ -491,7 +491,8 @@ def build_customers_list(time_range=None, visible_sections=None):
                                                         c="dimmed",
                                                     ),
                                                     dmc.Text(
-                                                        "CRM vs infrastructure overuse comparison is pending; badges show draft status only.",
+                                                        "Overuse badges compare CRM entitlement (active + invoiced) "
+                                                        "with cached infrastructure usage for mapped customers.",
                                                         size="sm",
                                                         c="dimmed",
                                                     ),

@@ -185,6 +185,93 @@ ORDER BY sold_amount_tl DESC NULLS LAST;
 """
 
 # ---------------------------------------------------------------------------
+# Resource compliance — entitled quantities (active + invoiced orders).
+# statecode 0,1 = open; 3,4 = fulfilled/invoiced (ADR-0016 entitlement baseline).
+# ---------------------------------------------------------------------------
+
+SALES_ENTITLED_RAW_BY_PRODUCT = """
+SELECT
+    d.productid,
+    d.product_name,
+    COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
+    SUM(d.quantity)::double precision       AS entitled_qty,
+    SUM(d.extendedamount)::double precision AS entitled_amount_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (0, 1, 3, 4)
+GROUP BY d.productid, d.product_name, COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet')
+ORDER BY entitled_amount_tl DESC NULLS LAST;
+"""
+
+SALES_ENTITLED_UNIT_PRICE_BY_PRODUCT = """
+SELECT
+    d.productid,
+    CASE
+        WHEN SUM(d.quantity) > 0
+        THEN SUM(d.priceperunit * d.quantity) / SUM(d.quantity)
+        ELSE NULL
+    END::double precision AS weighted_unit_price
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (0, 1, 3, 4)
+  AND  d.priceperunit IS NOT NULL
+  AND  d.quantity IS NOT NULL
+  AND  d.quantity > 0
+GROUP BY d.productid;
+"""
+
+SALES_ENTITLED_RAW_BY_CUSTOMER_PRODUCT = """
+SELECT
+    so.customerid                          AS crm_accountid,
+    d.productid,
+    d.product_name,
+    COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
+    SUM(d.quantity)::double precision       AS entitled_qty,
+    SUM(d.extendedamount)::double precision AS entitled_amount_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (0, 1, 3, 4)
+GROUP BY so.customerid, d.productid, d.product_name,
+         COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet');
+"""
+
+SALES_ENTITLED_UNIT_PRICE_BY_CUSTOMER_PRODUCT = """
+SELECT
+    so.customerid                          AS crm_accountid,
+    d.productid,
+    CASE
+        WHEN SUM(d.quantity) > 0
+        THEN SUM(d.priceperunit * d.quantity) / SUM(d.quantity)
+        ELSE NULL
+    END::double precision AS weighted_unit_price
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (0, 1, 3, 4)
+  AND  d.priceperunit IS NOT NULL
+  AND  d.quantity IS NOT NULL
+  AND  d.quantity > 0
+GROUP BY so.customerid, d.productid;
+"""
+
+SALES_CATALOG_PRICE_BY_PRODUCT_NAME = """
+SELECT p.productid,
+       p.name                 AS product_name,
+       ppl.amount             AS catalog_unit_price,
+       pl.name                AS price_list
+FROM   discovery_crm_products p
+JOIN   discovery_crm_productpricelevels ppl ON ppl.productid = p.productid
+JOIN   discovery_crm_pricelevels pl ON pl.pricelevelid = ppl.pricelevelid
+WHERE  pl.statecode = 0
+  AND  pl.name ILIKE '%%TL%%'
+  AND  p.name = ANY(%s::text[])
+ORDER BY p.name, ppl.amount DESC NULLS LAST;
+"""
+
+# ---------------------------------------------------------------------------
 # Full CRM product list (for service mapping page and price override dropdowns).
 # ---------------------------------------------------------------------------
 

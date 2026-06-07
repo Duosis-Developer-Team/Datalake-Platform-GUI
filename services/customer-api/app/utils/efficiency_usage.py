@@ -152,9 +152,12 @@ def efficiency_status(
     *,
     under_pct: float = 80.0,
     over_pct: float = 110.0,
+    used_qty: float | None = None,
 ) -> str:
     """Classify a sold/used ratio. Bands come from gui_crm_calc_config when caller supplies them."""
     if sold_qty <= 0:
+        if used_qty is not None and used_qty > 0:
+            return "unsold_usage"
         return "no_sales"
     if efficiency_pct is None:
         return "unknown"

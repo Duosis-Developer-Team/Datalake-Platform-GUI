@@ -26,7 +26,12 @@ from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_f
 from src.components.header import create_detail_header
 from src.pages.home import metric_card
 from src.components.s3_panel import build_customer_s3_panel
-from src.components.sold_vs_used_panel import build_sold_vs_used_stack, filter_efficiency_rows
+from src.components.sold_vs_used_panel import (
+    build_compliance_stack,
+    build_sold_vs_used_stack,
+    filter_efficiency_rows,
+)
+from src.components.resource_compliance_panel import build_resource_compliance_table
 from src.components.crm_sales_panel import (
     build_crm_active_orders_section,
     build_crm_intro_card,
@@ -432,6 +437,7 @@ def _tab_summary(
     active_orders: list | None = None,
     active_items: list | None = None,
     efficiency_rows: list | None = None,
+    compliance_payload: dict | None = None,
 ):
     """Summary tab: CRM sales overview plus aggregated infrastructure billing."""
     classic   = assets.get("classic", {})
@@ -535,6 +541,14 @@ def _tab_summary(
                     ]
                 ],
             ]),
+        ),
+        _section_card(
+            "Resource Compliance",
+            "CRM entitlement (active + invoiced) vs infrastructure usage — virtualization phase 1",
+            build_resource_compliance_table(
+                compliance_payload,
+                currency=(sales_summary or {}).get("currency"),
+            ),
         ),
         # Backup summary
         _section_card("Backup Services", "Backup session and storage consumption",
@@ -1739,6 +1753,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         f_itsm_tickets = pool.submit(api.get_customer_itsm_tickets, name, tr)
         f_sales = pool.submit(api.get_customer_sales_summary, name)
         f_eff = pool.submit(api.get_customer_efficiency_by_category, name)
+        f_compliance = pool.submit(api.get_customer_resource_compliance, name, "virtualization")
         f_sales_items = pool.submit(api.get_customer_sales_items, name)
         f_active_orders = pool.submit(api.get_customer_sales_active_orders, name)
         f_active_items = pool.submit(api.get_customer_sales_active_items, name)
@@ -1752,6 +1767,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         itsm_tickets = f_itsm_tickets.result()
         sales_summary = f_sales.result()
         eff_by_cat = f_eff.result()
+        compliance_payload = f_compliance.result()
         sales_items = f_sales_items.result()
         active_orders = f_active_orders.result()
         active_items = f_active_items.result()
@@ -1827,9 +1843,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             children=_tab_classic(
                 classic,
                 vm_outage_counts,
-                crm_eff_panel=build_sold_vs_used_stack(
-                    filter_efficiency_rows(eff_by_cat, "virtualization.classic")
-                ),
+                crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.classic"),
             ),
         ),
         dmc.TabsPanel(
@@ -1839,9 +1853,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
                 hyperconv,
                 pure_nx,
                 vm_outage_counts,
-                crm_eff_panel=build_sold_vs_used_stack(
-                    filter_efficiency_rows(eff_by_cat, "virtualization.hyperconverged")
-                ),
+                crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.hyperconverged"),
             ),
         ),
     ]
@@ -1944,7 +1956,12 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     }
 
     return {
-        "intro_card": build_crm_intro_card(name, sales_summary, service_breakdown),
+        "intro_card": build_crm_intro_card(
+            name,
+            sales_summary,
+            service_breakdown,
+            compliance_payload=compliance_payload,
+        ),
         "summary": _tab_summary(
             totals,
             assets,
@@ -1955,6 +1972,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             active_orders=active_orders,
             active_items=active_items,
             efficiency_rows=eff_by_cat,
+            compliance_payload=compliance_payload,
         ),
         "virt": virt_content,
         "avail": _tab_customer_availability(avail_bundle),

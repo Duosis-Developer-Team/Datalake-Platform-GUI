@@ -156,6 +156,40 @@ class SalesEfficiencyByCategoryRow(BaseModel):
     usage_note: Optional[str] = None
 
 
+class ResourceComplianceRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    category_code: Optional[str] = None
+    category_label: Optional[str] = None
+    gui_tab_binding: Optional[str] = None
+    resource_unit: Optional[str] = None
+    entitled_qty: float = 0.0
+    entitled_amount_tl: float = 0.0
+    used_qty: float = 0.0
+    overage_qty: float = 0.0
+    unit_price_tl: float = 0.0
+    price_source: Optional[str] = None
+    overage_loss_tl: float = 0.0
+    efficiency_pct: Optional[float] = None
+    status: str = "unknown"
+    usage_note: Optional[str] = None
+
+
+class ResourceComplianceSummary(BaseModel):
+    model_config = {"extra": "allow"}
+
+    total_overage_loss_tl: float = 0.0
+    has_overuse: bool = False
+    overuse_categories: List[str] = []
+    overuse_status: str = "ok"
+
+
+class ResourceComplianceResponse(BaseModel):
+    scope: str = "virtualization"
+    rows: List[ResourceComplianceRow] = []
+    summary: ResourceComplianceSummary = ResourceComplianceSummary()
+
+
 class ServiceMappingPageRow(BaseModel):
     model_config = {"extra": "allow"}
 
@@ -315,6 +349,7 @@ class CustomerOverviewResponse(BaseModel):
     order_count: int = 0
     service_sales: list[CustomerServiceSalesSlice] = []
     overuse_customer_count: int = 0
+    overuse_pending_count: int = 0
     overuse_status: str = "pending"
 
 

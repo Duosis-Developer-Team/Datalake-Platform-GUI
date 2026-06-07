@@ -1408,6 +1408,21 @@ def get_customer_efficiency_by_category(name: str) -> list:
     return _api_cache_get_with_stale(ck, fetch, [])
 
 
+def get_customer_resource_compliance(name: str, scope: str = "virtualization") -> dict:
+    enc = quote(name, safe="")
+    scope_q = quote(scope, safe="")
+
+    def fetch() -> dict:
+        data = _get_json(
+            _get_client_cust(),
+            f"/api/v1/customers/{enc}/sales/resource-compliance?scope={scope_q}",
+        )
+        return data if isinstance(data, dict) else {}
+
+    ck = f"api:crm_resource_compliance:{enc}:{scope_q}"
+    return _api_cache_get_with_stale(ck, fetch, {})
+
+
 def get_crm_service_mapping_pages() -> list:
     def fetch() -> list:
         data = _get_json(_get_client_cust(), "/api/v1/crm/service-mapping/pages")

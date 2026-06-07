@@ -36,6 +36,14 @@ from app.services.customer_mapping_resolver import (
 )
 from app.utils.cluster_match import build_cluster_arch_map
 from app.utils.time_range import cache_time_ranges, default_time_range, time_range_to_bounds
+from app.utils.usage_comparison import (
+    build_lightweight_compliance_from_bundle,
+    catalog_product_names_for_compliance,
+    derive_catalog_overuse_status,
+    group_entitled_by_customer,
+    group_weighted_prices_by_customer,
+)
+from app.services.crm_config_service import CrmConfigService
 
 logger = logging.getLogger(__name__)
 
@@ -756,6 +764,50 @@ class CustomerService:
         rows = self._run_query(sql, params)
         return rows[0] if rows else None
 
+    def _load_compliance_price_indexes(self) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
+        price_overrides: dict[str, float] = {}
+        catalog_by_productid: dict[str, float] = {}
+        catalog_by_name: dict[str, float] = {}
+        webui = self._webui
+        if webui is not None and getattr(webui, "is_available", False):
+            try:
+                cfg = CrmConfigService(webui)
+                price_overrides = {
+                    str(r["productid"]): float(r["unit_price_tl"])
+                    for r in cfg.list_price_overrides()
+                    if r.get("productid")
+                }
+            except Exception as exc:
+                logger.warning("Compliance price override load failed: %s", exc)
+        if self._pool is not None:
+            try:
+                for row in self._run_query(crm_sq.SALES_CATALOG_PRICES, ()):
+                    pid = str(row.get("productid") or "")
+                    price = row.get("catalog_unit_price")
+                    if pid and price is not None and pid not in catalog_by_productid:
+                        catalog_by_productid[pid] = float(price)
+                names = catalog_product_names_for_compliance()
+                if names:
+                    for row in self._run_query(crm_sq.SALES_CATALOG_PRICE_BY_PRODUCT_NAME, (names,)):
+                        name = str(row.get("product_name") or "").strip()
+                        price = row.get("catalog_unit_price")
+                        if name and price is not None and name not in catalog_by_name:
+                            catalog_by_name[name] = float(price)
+            except Exception as exc:
+                logger.warning("Compliance catalog price load failed: %s", exc)
+        return price_overrides, catalog_by_productid, catalog_by_name
+
+    def _cached_customer_bundle(self, display_name: str) -> dict[str, Any] | None:
+        tr = default_time_range()
+        cache_key = f"customer_assets:{display_name}:{tr.get('start', '')}:{tr.get('end', '')}"
+        try:
+            hit = cache.get(cache_key)
+            if isinstance(hit, dict):
+                return hit
+        except Exception:
+            return None
+        return None
+
     def get_customer_catalog(self) -> dict[str, Any]:
         project_rows = load_project_customer_rows(self._run_query, self._run_one)
         flags = self._load_profile_flags_index()
@@ -763,6 +815,12 @@ class CustomerService:
         account_ids = [str(r.get("crm_accountid")) for r in project_rows if r.get("crm_accountid")]
         ytd_index: dict[str, dict[str, Any]] = {}
         active_index: dict[str, dict[str, Any]] = {}
+        entitled_by_customer: dict[str, list[dict[str, Any]]] = {}
+        weighted_by_customer: dict[str, dict[str, float]] = {}
+        product_mapping: dict[str, dict[str, Any]] = {}
+        under_pct = 80.0
+        over_pct = 110.0
+
         if account_ids and self._pool is not None:
             try:
                 for row in self._run_query(crm_sq.CRM_PROJECT_SALES_BY_CUSTOMER_YTD, (account_ids,)):
@@ -774,6 +832,32 @@ class CustomerService:
                     active_index[str(row.get("crm_accountid"))] = row
             except Exception as exc:
                 logger.warning("Customer active orders lookup failed: %s", exc)
+            try:
+                entitled_by_customer = group_entitled_by_customer(
+                    self._run_query(crm_sq.SALES_ENTITLED_RAW_BY_CUSTOMER_PRODUCT, (account_ids,))
+                )
+            except Exception as exc:
+                logger.warning("Customer entitled sales lookup failed: %s", exc)
+            try:
+                weighted_by_customer = group_weighted_prices_by_customer(
+                    self._run_query(crm_sq.SALES_ENTITLED_UNIT_PRICE_BY_CUSTOMER_PRODUCT, (account_ids,))
+                )
+            except Exception as exc:
+                logger.warning("Customer entitled unit price lookup failed: %s", exc)
+
+        webui = self._webui
+        if webui is not None and getattr(webui, "is_available", False):
+            try:
+                rows = webui.run_rows(smq.LIST_SERVICE_MAPPINGS_WEBUI)
+                product_mapping = {str(r["productid"]): r for r in rows if r.get("productid")}
+                cfg = CrmConfigService(webui)
+                calc = cfg.get_calc_dict()
+                under_pct = float(calc.get("efficiency.under_pct", 80.0))
+                over_pct = float(calc.get("efficiency.over_pct", 110.0))
+            except Exception as exc:
+                logger.warning("Catalog compliance mapping load failed: %s", exc)
+
+        price_overrides, catalog_by_productid, catalog_by_name = self._load_compliance_price_indexes()
 
         catalog_rows: list[dict[str, Any]] = []
         for row in project_rows:
@@ -785,17 +869,44 @@ class CustomerService:
             ytd = ytd_index.get(account_id) or {}
             active = active_index.get(account_id) or {}
             currency = ytd.get("currency") or active.get("currency")
+            source_mappings = mapping_index.get(account_id, [])
+            mapped = _is_mapped(source_mappings)
+            has_cache = self._cached_customer_bundle(account_name) is not None
+            compliance_summary = None
+            if mapped and has_cache:
+                bundle = self._cached_customer_bundle(account_name) or {}
+                try:
+                    compliance_summary = build_lightweight_compliance_from_bundle(
+                        entitled_raw=entitled_by_customer.get(account_id, []),
+                        product_mapping=product_mapping,
+                        assets=bundle.get("assets") or {},
+                        totals=bundle.get("totals") or {},
+                        weighted_prices=weighted_by_customer.get(account_id, {}),
+                        price_overrides=price_overrides,
+                        catalog_by_productid=catalog_by_productid,
+                        catalog_by_name=catalog_by_name,
+                        under_pct=under_pct,
+                        over_pct=over_pct,
+                    )
+                except Exception as exc:
+                    logger.warning("Catalog overuse check failed for %s: %s", account_name, exc)
+            overuse_status = derive_catalog_overuse_status(
+                mapped=mapped,
+                has_infra_cache=has_cache,
+                compliance_summary=compliance_summary,
+            )
             catalog_rows.append(
                 build_catalog_row(
                     crm_accountid=account_id,
                     crm_account_name=account_name,
-                    source_mappings=mapping_index.get(account_id, []),
+                    source_mappings=source_mappings,
                     is_vip=bool(flag.get("is_vip")),
                     cache_pinned=bool(flag.get("cache_pinned") or flag.get("is_vip")),
                     ytd_revenue=float(ytd.get("ytd_revenue") or 0.0),
                     active_order_value=float(active.get("active_order_value") or 0.0),
                     active_order_count=int(active.get("active_order_count") or 0),
                     currency=currency,
+                    overuse_status=overuse_status,
                 )
             )
 

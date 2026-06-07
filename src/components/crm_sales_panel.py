@@ -395,9 +395,29 @@ def build_crm_sold_services_panel(
     return build_crm_invoiced_orders_section(service_breakdown, efficiency_rows, sales_items)
 
 
-def build_crm_intro_card(customer_name: str, sales_summary: dict | None, service_breakdown: list[dict] | None):
+def build_crm_intro_card(
+    customer_name: str,
+    sales_summary: dict | None,
+    service_breakdown: list[dict] | None,
+    compliance_payload: dict | None = None,
+):
     summary = sales_summary or {}
     currency = summary.get("currency")
+    compliance_summary = (compliance_payload or {}).get("summary") or {}
+    has_overuse = bool(compliance_summary.get("has_overuse"))
+    overuse_badges = []
+    if has_overuse:
+        overuse_badges.append(
+            dmc.Badge("Resource overage", color="red", variant="filled", size="sm")
+        )
+        overuse_badges.append(
+            dmc.Text(
+                f"Est. overage loss: {format_crm_money(compliance_summary.get('total_overage_loss_tl'), currency)}",
+                size="sm",
+                c="#E03131",
+                fw=700,
+            )
+        )
     return dmc.SimpleGrid(
         cols={"base": 1, "md": 2},
         spacing="lg",
@@ -421,7 +441,14 @@ def build_crm_intro_card(customer_name: str, sales_summary: dict | None, service
                             dmc.Stack(
                                 gap=0,
                                 children=[
-                                    dmc.Text(customer_name, fw=700, size="lg", c="#2B3674"),
+                                    dmc.Group(
+                                        gap="xs",
+                                        align="center",
+                                        children=[
+                                            dmc.Text(customer_name, fw=700, size="lg", c="#2B3674"),
+                                            *overuse_badges[:1],
+                                        ],
+                                    ),
                                     dmc.Text(
                                         "CRM sales · Infrastructure assets",
                                         size="sm",
@@ -434,6 +461,7 @@ def build_crm_intro_card(customer_name: str, sales_summary: dict | None, service
                                         c="#4318FF",
                                         fw=700,
                                     ),
+                                    *overuse_badges[1:],
                                 ],
                             ),
                         ],

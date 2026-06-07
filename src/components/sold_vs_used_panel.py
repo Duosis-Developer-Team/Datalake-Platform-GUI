@@ -29,6 +29,8 @@ def filter_efficiency_rows(rows: list[dict[str, Any]] | None, gui_tab_prefix: st
 
 def _status_badge(status: str | None) -> dmc.Badge:
     s = (status or "unknown").lower()
+    if s == "unsold_usage":
+        return dmc.Badge("Unsold usage", color="red", variant="filled", size="sm")
     if s == "under":
         return dmc.Badge("Under-utilized", color="green", variant="light", size="sm")
     if s == "optimal":
@@ -37,14 +39,18 @@ def _status_badge(status: str | None) -> dmc.Badge:
         return dmc.Badge("Over-utilized", color="red", variant="light", size="sm")
     if s == "no_sales":
         return dmc.Badge("No CRM sales", color="gray", variant="light", size="sm")
+    if s == "no_usage":
+        return dmc.Badge("No usage", color="gray", variant="outline", size="sm")
     return dmc.Badge("N/A", color="gray", variant="outline", size="sm")
 
 
 def _one_row_card(r: dict[str, Any]) -> html.Div:
     title = str(r.get("category_label") or r.get("category_code") or "Category")
     unit = str(r.get("resource_unit") or "")
-    sold = float(r.get("sold_qty") or 0)
+    sold = float(r.get("entitled_qty") if r.get("entitled_qty") is not None else r.get("sold_qty") or 0)
     used = float(r.get("used_qty") or 0)
+    overage = float(r.get("overage_qty") or 0)
+    overage_loss = r.get("overage_loss_tl")
     eff = r.get("efficiency_pct")
     note = r.get("usage_note")
     gauge_pct = min(float(eff or 0), 100.0) if eff is not None else 0.0
@@ -90,6 +96,15 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
         if alloc is not None
         else None
     )
+    overage_line = None
+    if overage > 0 or overage_loss is not None:
+        loss_txt = f"{float(overage_loss or 0):,.2f} TL" if overage_loss is not None else "-"
+        overage_line = dmc.Text(
+            f"Overage: {overage:,.2f} {unit} · Est. loss: {loss_txt}",
+            size="xs",
+            c="#E03131",
+            fw=600,
+        )
 
     return html.Div(
         className="nexus-card",
@@ -117,9 +132,22 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
                 children=[gauge, bar],
             ),
             alloc_line,
+            overage_line,
             dmc.Text(note, size="xs", c="orange", mt="xs") if note else None,
         ],
     )
+
+
+def build_compliance_stack(compliance_payload: dict[str, Any] | None, gui_tab_prefix: str) -> html.Div:
+    """Compliance cards filtered by virtualization tab prefix."""
+    rows = filter_efficiency_rows((compliance_payload or {}).get("rows") or [], gui_tab_prefix)
+    if not rows:
+        rows = [
+            r
+            for r in ((compliance_payload or {}).get("rows") or [])
+            if str(r.get("gui_tab_binding") or "").lower().startswith(gui_tab_prefix.lower())
+        ]
+    return build_sold_vs_used_stack(rows)
 
 
 def build_sold_vs_used_stack(rows: list[dict[str, Any]] | None) -> html.Div:

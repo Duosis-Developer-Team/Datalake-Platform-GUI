@@ -104,7 +104,30 @@ def test_build_overview_payload_counts_groups_and_pending_overuse():
     assert overview["vip_count"] == 0
     assert overview["total_revenue"] == 500000.0
     assert overview["overuse_status"] == "pending"
+    assert overview["overuse_customer_count"] == 0
+    assert overview["overuse_pending_count"] == 1
+
+
+def test_build_overview_payload_counts_detected_overuse():
+    rows = [
+        cc.build_catalog_row(
+            crm_accountid="acc-o",
+            crm_account_name="Over Customer",
+            source_mappings=[
+                {"data_source": "virtualization", "match_value": "OVER", "enabled": True, "source": "manual"}
+            ],
+            is_vip=False,
+            cache_pinned=False,
+            overuse_status="overuse",
+        ),
+    ]
+    overview = cc.build_overview_payload(
+        catalog_rows=rows,
+        sales_total={"total_revenue": 0.0, "currency": "TL", "order_count": 0},
+        service_sales=[],
+    )
     assert overview["overuse_customer_count"] == 1
+    assert overview["overuse_status"] == "overuse"
 
 
 def test_build_overview_payload_aggregates_active_orders():
