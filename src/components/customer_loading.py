@@ -1,4 +1,7 @@
-"""Psychology-focused loading shell for Customer View (skeleton + reassurance copy)."""
+"""Psychology-focused loading shell for Customer View (skeleton + reassurance copy).
+
+Design standard: docs/LOADING_UX_DESIGN.md — use as reference for future loading screens.
+"""
 from __future__ import annotations
 
 from dash import html, dcc

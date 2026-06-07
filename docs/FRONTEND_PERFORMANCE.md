@@ -2,7 +2,7 @@
 
 This document covers all client-side and server-render-side optimisation targets for the Datalake-Platform-GUI Dash application. It is scoped to the existing **Dash (Python) + Gunicorn + NGINX Ingress** stack and explicitly notes what is achievable within that stack versus what requires migration to a different technology.
 
-Related: [PROD_ARCHITECTURE.md](PROD_ARCHITECTURE.md) | [CACHE_STRATEGY_COMPARISON.md](CACHE_STRATEGY_COMPARISON.md)
+Related: [PROD_ARCHITECTURE.md](PROD_ARCHITECTURE.md) | [CACHE_STRATEGY_COMPARISON.md](CACHE_STRATEGY_COMPARISON.md) | **[LOADING_UX_DESIGN.md](LOADING_UX_DESIGN.md)** (psychology-focused loading standard; Customer View reference)
 
 ---
 
@@ -58,6 +58,8 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
 **Constraint:** Dash callbacks are synchronous Python. `ThreadPoolExecutor` is the correct approach inside a sync callback — do not use `asyncio` (Gunicorn gthread does not run an event loop).
 
 ### 2.2 Tab-lazy loading (progressive render)
+
+> **Loading UX:** For full-page multi-API waits, follow **[LOADING_UX_DESIGN.md](LOADING_UX_DESIGN.md)** (two-phase shell + skeleton). Customer View implements this pattern; tab-lazy loading below is a complementary optimisation.
 
 **Current behaviour:** all tab content is computed in a single `_customer_content` call and returned as one large HTML tree. The browser receives the complete document before displaying anything.
 
