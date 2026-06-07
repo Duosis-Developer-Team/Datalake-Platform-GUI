@@ -37,10 +37,14 @@ from app.utils.usage_comparison import (
     build_virtualization_compliance,
     catalog_product_names_for_compliance,
 )
+from app.services import cache_service as cache
 from app.services.crm_config_service import CrmConfigService
 from app.services.webui_db import WebuiPool
+from app.utils.time_range import default_time_range
 
 logger = logging.getLogger(__name__)
+
+_ACCOUNT_IDS_CACHE_TTL_SEC = 120.0
 
 
 class SalesService:
@@ -60,10 +64,25 @@ class SalesService:
         self._get_customer_assets = get_customer_assets
         self._webui = webui
         self._config = CrmConfigService(webui) if webui is not None else None
+        self._account_ids_cache: Dict[str, tuple[float, List[str]]] = {}
+        self._product_mapping_cache: tuple[float, Dict[str, Dict[str, Any]]] | None = None
+        self._catalog_price_cache: tuple[float, tuple[Dict[str, float], Dict[str, float], Dict[str, float]]] | None = None
 
     # ------------------------------------------------------------------
     # Datalake helpers
     # ------------------------------------------------------------------
+
+    def _cached_customer_bundle(self, customer_name: str) -> Dict[str, Any]:
+        """Read infra bundle from Redis only — avoids duplicate heavy SQL during parallel Customer View loads."""
+        tr = default_time_range()
+        cache_key = f"customer_assets:{customer_name}:{tr.get('start', '')}:{tr.get('end', '')}"
+        try:
+            hit = cache.get(cache_key)
+            if isinstance(hit, dict):
+                return hit
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("customer bundle cache read failed: %s", exc)
+        return {}
 
     def _run_query(self, sql: str, params: tuple) -> List[Dict[str, Any]]:
         """Execute a SELECT against the datalake DB and return list of column-name dicts."""
@@ -87,21 +106,34 @@ class SalesService:
 
     def _resolve_account_ids(self, customer_name: str) -> List[str]:
         """Resolve a customer display name -> list of CRM accountids (alias + display-name fallbacks)."""
+        key = (customer_name or "").strip().casefold()
+        if key:
+            cached = self._account_ids_cache.get(key)
+            if cached and (time.perf_counter() - cached[0]) < _ACCOUNT_IDS_CACHE_TTL_SEC:
+                return list(cached[1])
         datalake_lookup = None
         if self._get_connection is not None:
             datalake_lookup = make_datalake_account_lookup(self._get_connection, self._run_row)
-        return resolve_crm_account_ids(
+        account_ids = resolve_crm_account_ids(
             customer_name,
             webui=self._webui,
             datalake_account_lookup=datalake_lookup,
         )
+        if key:
+            self._account_ids_cache[key] = (time.perf_counter(), list(account_ids))
+        return account_ids
 
     def _load_product_mapping(self) -> Dict[str, Dict[str, Any]]:
         """Return productid -> {category_code, category_label, gui_tab_binding, resource_unit, source}."""
+        now = time.perf_counter()
+        if self._product_mapping_cache and (now - self._product_mapping_cache[0]) < _ACCOUNT_IDS_CACHE_TTL_SEC:
+            return self._product_mapping_cache[1]
         if not self._webui or not self._webui.is_available:
             return {}
         rows = self._webui.run_rows(smq.LIST_SERVICE_MAPPINGS_WEBUI)
-        return {str(r["productid"]): r for r in rows if r.get("productid")}
+        mapping = {str(r["productid"]): r for r in rows if r.get("productid")}
+        self._product_mapping_cache = (now, mapping)
+        return mapping
 
     def _load_price_override_dict(self) -> Dict[str, float]:
         if not self._config:
@@ -112,6 +144,9 @@ class SalesService:
         self,
     ) -> tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
         """Return (price_overrides, catalog_by_productid, catalog_by_name)."""
+        now = time.perf_counter()
+        if self._catalog_price_cache and (now - self._catalog_price_cache[0]) < _ACCOUNT_IDS_CACHE_TTL_SEC:
+            return self._catalog_price_cache[1]
         price_overrides = self._load_price_override_dict()
         catalog_by_productid: Dict[str, float] = {}
         catalog_by_name: Dict[str, float] = {}
@@ -130,7 +165,9 @@ class SalesService:
                         catalog_by_name[name] = float(price)
         except Exception as exc:  # noqa: BLE001
             logger.info("Catalog price index unavailable: %s", exc)
-        return price_overrides, catalog_by_productid, catalog_by_name
+        indexes = (price_overrides, catalog_by_productid, catalog_by_name)
+        self._catalog_price_cache = (now, indexes)
+        return indexes
 
     def _empty_compliance_summary(self) -> Dict[str, Any]:
         return {
@@ -320,14 +357,7 @@ class SalesService:
             bucket["sold_qty"] += float(row.get("sold_qty") or 0)
             bucket["sold_amount_tl"] += float(row.get("sold_amount_tl") or 0)
 
-        # Pull live usage bundle
-        bundle: Dict[str, Any] = {}
-        if self._get_customer_assets:
-            try:
-                bundle = self._get_customer_assets(customer_name) or {}
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("get_customer_assets failed: %s", exc)
-                bundle = {}
+        bundle = self._cached_customer_bundle(customer_name)
         assets = bundle.get("assets") or {}
         totals = bundle.get("totals") or {}
 
@@ -402,13 +432,12 @@ class SalesService:
         price_overrides, catalog_by_productid, catalog_by_name = self._load_catalog_price_indexes()
         entitled_agg = aggregate_entitled_by_category(entitled_raw, mapping)
 
-        bundle: Dict[str, Any] = {}
-        if self._get_customer_assets:
-            try:
-                bundle = self._get_customer_assets(customer_name) or {}
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("get_customer_assets failed for compliance: %s", exc)
-                bundle = {}
+        bundle = self._cached_customer_bundle(customer_name)
+        if not bundle:
+            logger.info(
+                "resource_compliance for %s: infra cache miss (used_qty may be zero until /resources warms cache)",
+                customer_name,
+            )
 
         calc = self._config.get_calc_dict() if self._config else {}
         under_pct = float(calc.get("efficiency.under_pct", 80.0))
@@ -425,6 +454,10 @@ class SalesService:
             under_pct=under_pct,
             over_pct=over_pct,
         )
+        if not bundle:
+            summary = {**summary, "infra_cache_hit": False}
+        else:
+            summary = {**summary, "infra_cache_hit": True}
         return {"scope": scope, "rows": rows, "summary": summary}
 
     # ------------------------------------------------------------------

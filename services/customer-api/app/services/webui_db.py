@@ -40,8 +40,8 @@ class WebuiPool:
     def _init_pool(self) -> None:
         try:
             kw: dict[str, Any] = dict(
-                minconn=1,
-                maxconn=4,
+                minconn=settings.webui_db_pool_minconn,
+                maxconn=settings.webui_db_pool_maxconn,
                 host=self._host,
                 port=self._port,
                 dbname=self._name,
@@ -57,9 +57,11 @@ class WebuiPool:
                 kw["options"] = f"-c statement_timeout={timeout}"
             self._pool = pg_pool.ThreadedConnectionPool(**kw)
             logger.info(
-                "WebUI DB connection pool initialized (host=%s, db=%s, min=1, max=4).",
+                "WebUI DB connection pool initialized (host=%s, db=%s, min=%d, max=%d).",
                 self._host,
                 self._name,
+                settings.webui_db_pool_minconn,
+                settings.webui_db_pool_maxconn,
             )
         except OperationalError as exc:
             logger.error("Failed to initialize WebUI DB pool: %s", exc)

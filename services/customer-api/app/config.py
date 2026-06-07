@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     db_pass: str = ""
     # 0 = omit client-side statement_timeout (align with datacenter-api pool; server default applies).
     db_statement_timeout_ms: int = Field(default=60000)
+    db_pool_minconn: int = Field(default=2)
+    db_pool_maxconn: int = Field(default=16)
 
     # WebUI App DB — separate Postgres holding GUI configuration (gui_crm_* tables).
     # Datalake DB stays read-only for raw vendor data.
@@ -21,6 +23,8 @@ class Settings(BaseSettings):
     webui_db_user: str = "webuiadmin"
     webui_db_pass: str = ""
     webui_db_statement_timeout_ms: int = Field(default=15000)
+    webui_db_pool_minconn: int = Field(default=1)
+    webui_db_pool_maxconn: int = Field(default=8)
     # When false, `/ready` does not fail closed if the WebUI DB is unreachable (dev/tests).
     webui_db_required: bool = Field(default=False)
     redis_host: str = "localhost"

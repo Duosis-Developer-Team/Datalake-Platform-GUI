@@ -121,8 +121,8 @@ class CustomerService:
     def _init_pool(self) -> None:
         try:
             pool_kw: dict[str, Any] = dict(
-                minconn=2,
-                maxconn=8,
+                minconn=settings.db_pool_minconn,
+                maxconn=settings.db_pool_maxconn,
                 host=self._db_host,
                 port=self._db_port,
                 dbname=self._db_name,
@@ -139,12 +139,16 @@ class CustomerService:
             self._pool = pg_pool.ThreadedConnectionPool(**pool_kw)
             if timeout_ms > 0:
                 logger.info(
-                    "DB connection pool initialized (min=2, max=8, statement_timeout=%dms).",
+                    "DB connection pool initialized (min=%d, max=%d, statement_timeout=%dms).",
+                    settings.db_pool_minconn,
+                    settings.db_pool_maxconn,
                     timeout_ms,
                 )
             else:
                 logger.info(
-                    "DB connection pool initialized (min=2, max=8, no client statement_timeout).",
+                    "DB connection pool initialized (min=%d, max=%d, no client statement_timeout).",
+                    settings.db_pool_minconn,
+                    settings.db_pool_maxconn,
                 )
         except OperationalError as exc:
             logger.error("Failed to initialize DB pool: %s", exc)
