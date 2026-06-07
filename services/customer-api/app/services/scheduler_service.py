@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REFRESH_INTERVAL_MINUTES = 15
+MAPPED_BATCH_WARM_INTERVAL_HOURS = 6
 
 
 def start_scheduler(
@@ -25,25 +26,49 @@ def start_scheduler(
     sellable: "SellableService | None" = None,
 ) -> BackgroundScheduler:
     def _warm_cache_bg() -> None:
-        logger.info("Customer API: initial cache warm-up started (background).")
+        logger.info("Customer API: initial hot-tier cache warm-up started (background).")
         t0 = time.perf_counter()
         try:
             svc.warm_cache()
             logger.info(
-                "Customer API: initial cache warm-up finished in %.2fs.",
+                "Customer API: initial hot-tier cache warm-up finished in %.2fs.",
                 time.perf_counter() - t0,
             )
         except Exception:  # noqa: BLE001 - never abort startup
-            logger.exception("Customer API: initial cache warm-up failed")
+            logger.exception("Customer API: initial hot-tier cache warm-up failed")
+
+    def _warm_mapped_batch_bg() -> None:
+        logger.info("Customer API: initial mapped non-VIP batch warm started (background).")
+        t0 = time.perf_counter()
+        try:
+            svc.warm_mapped_non_vip_batch()
+            logger.info(
+                "Customer API: initial mapped batch warm finished in %.2fs.",
+                time.perf_counter() - t0,
+            )
+        except Exception:  # noqa: BLE001 - never abort startup
+            logger.exception("Customer API: initial mapped batch warm failed")
 
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
         func=svc.refresh_all_data,
         trigger=IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
         id="customer_cache_refresh",
-        name="Customer API cache refresh",
+        name="Customer API hot-tier cache refresh (VIP/pinned)",
         replace_existing=True,
         misfire_grace_time=60,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        func=svc.warm_mapped_non_vip_batch,
+        trigger=IntervalTrigger(hours=MAPPED_BATCH_WARM_INTERVAL_HOURS),
+        id="mapped_non_vip_batch_warm",
+        name="Customer API mapped non-VIP batch warm (6h)",
+        replace_existing=True,
+        misfire_grace_time=300,
+        max_instances=1,
+        coalesce=True,
     )
     if sellable is not None:
         scheduler.add_job(
@@ -63,11 +88,17 @@ def start_scheduler(
     threading.Thread(
         target=_warm_cache_bg,
         daemon=True,
-        name="customer-initial-warm",
+        name="customer-initial-hot-warm",
+    ).start()
+    threading.Thread(
+        target=_warm_mapped_batch_bg,
+        daemon=True,
+        name="customer-initial-mapped-batch-warm",
     ).start()
     logger.info(
-        "Customer API background scheduler started (refresh every %d minutes).",
+        "Customer API background scheduler started (hot refresh every %d minutes, mapped batch every %dh).",
         REFRESH_INTERVAL_MINUTES,
+        MAPPED_BATCH_WARM_INTERVAL_HOURS,
     )
 
     atexit.register(lambda: _stop(scheduler))

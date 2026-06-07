@@ -29,22 +29,11 @@ SLA_REFRESH_INTERVAL_MINUTES = 60
 
 def warm_warmed_customer_caches(db_service: "DatabaseService") -> None:
     """
-    Populate customer_assets cache for every standard reporting range (7d, 30d, previous month)
-    and every entry in WARMED_CUSTOMERS.
-
-    Important: the customer page reads via customer-api HTTP, so we warm that cache first.
-    We also keep warming local DatabaseService cache for compatibility with any direct callers.
+    Legacy hook — customer resource cache warm is owned by customer-api (VIP hot tier +
+    mapped non-VIP 6h batch). GUI scheduler no longer duplicates Redis warm here.
     """
-    for tr in cache_time_ranges():
-        for name in WARMED_CUSTOMERS:
-            try:
-                api.get_customer_resources(name, tr)
-            except Exception as exc:
-                logger.warning("customer-api cache warm failed for %s (%s): %s", name, tr.get("preset"), exc)
-            try:
-                db_service.get_customer_resources(name, tr)
-            except Exception as exc:
-                logger.warning("local DB cache warm failed for %s (%s): %s", name, tr.get("preset"), exc)
+    _ = db_service
+    logger.debug("Skipping GUI customer Redis warm; customer-api owns cache tiers.")
 
 
 def refresh_warmed_customer_availability_bundles() -> None:

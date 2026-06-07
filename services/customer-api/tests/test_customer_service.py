@@ -60,22 +60,71 @@ def test_get_customer_list_loads_crm_project_customers(monkeypatch):
     assert "Boyner" not in result
 
 
-def test_get_customer_list_respects_warmed_customers_for_cache_only(monkeypatch):
+def test_customers_for_cache_rebuild_returns_pinned_only(monkeypatch):
     monkeypatch.setenv("WARMED_CUSTOMERS", "Acme, Beta")
     with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
         svc = CustomerService()
-    assert svc._customers_for_cache_rebuild() == ("Acme", "Beta")
+    monkeypatch.setattr(svc, "_load_cache_pinned_display_names", lambda: ("VIP Corp",))
+    assert svc._customers_for_cache_rebuild() == ("VIP Corp",)
 
 
 def test_customers_for_cache_rebuild_includes_vip_display_names(monkeypatch):
     monkeypatch.delenv("WARMED_CUSTOMERS", raising=False)
     with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
         svc = CustomerService()
-    monkeypatch.setattr(svc, "get_customer_list", lambda: ["Alpha Corp"])
     monkeypatch.setattr(svc, "_load_cache_pinned_display_names", lambda: ("VIP Corp",))
     names = svc._customers_for_cache_rebuild()
-    assert "VIP Corp" in names
-    assert "Alpha Corp" in names
+    assert names == ("VIP Corp",)
+
+
+def test_mapped_non_vip_customers_for_warm_excludes_vip_and_unmapped(monkeypatch):
+    monkeypatch.delenv("WARMED_CUSTOMERS", raising=False)
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    svc._pool = object()
+    monkeypatch.setattr(
+        "app.services.customer_service.load_project_customer_rows",
+        lambda *_a, **_k: [
+            {"crm_accountid": "a1", "crm_account_name": "Boyner Holding"},
+            {"crm_accountid": "a2", "crm_account_name": "Alpha Corp"},
+            {"crm_accountid": "a3", "crm_account_name": "VIP Corp"},
+        ],
+    )
+    monkeypatch.setattr(
+        svc,
+        "_load_profile_flags_index",
+        lambda: {
+            "a3": {"is_vip": True, "cache_pinned": True},
+        },
+    )
+    monkeypatch.setattr(
+        svc,
+        "_load_source_mapping_index",
+        lambda: {
+            "a1": [{"enabled": True, "match_value": "Boyner"}],
+            "a2": [],
+            "a3": [{"enabled": True, "match_value": "VIP"}],
+        },
+    )
+    names = svc._mapped_non_vip_customers_for_warm()
+    assert names == ("Boyner Holding",)
+
+
+def test_warm_mapped_non_vip_batch_calls_customers_sequentially(monkeypatch):
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    svc._pool = object()
+    order: list[str] = []
+    monkeypatch.setattr(svc, "_mapped_non_vip_customers_for_warm", lambda: ("Alpha", "Beta"))
+    monkeypatch.setattr(
+        svc,
+        "_rebuild_customer_caches_for_customer",
+        lambda name, cache_ttl=None: order.append(name),
+    )
+    monkeypatch.setattr("app.services.customer_service.time.sleep", lambda _s: None)
+    monkeypatch.setattr("app.services.customer_service.cache.set", lambda *_a, **_k: None)
+    svc.warm_mapped_non_vip_batch()
+    assert order == ["Alpha", "Beta"]
 
 
 def test_resolve_infra_search_name_uses_boyner_for_crm_display_name(monkeypatch):

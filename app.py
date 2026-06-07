@@ -36,7 +36,7 @@ from src.components.charts import (
     create_premium_gauge_chart,
 )
 from src.services import api_client as api
-from src.services.db_service import DEFAULT_CUSTOMER_NAME, WARMED_CUSTOMERS
+from src.services.db_service import WARMED_CUSTOMERS
 from src.utils.time_range import (
     PRESET_CUSTOM,
     cache_time_ranges,
@@ -111,6 +111,7 @@ _NET_STALE_CACHE: dict[str, dict] = {}
 
 
 from src.pages import home, datacenters, dc_view, customer_view, customers_list, query_explorer, global_view, region_drilldown, dc_detail
+from src.pages import customer_view_callbacks  # noqa: F401 — async customer view load
 from src.pages import availability_annual  # noqa: F401 — annual availability layout + callbacks
 from src.pages import crm_sellable_potential
 from src.pages import login as login_page_mod
@@ -141,25 +142,10 @@ _custom_picker_start = _custom_st.strftime("%Y-%m-%dT%H:%M:%S")
 _custom_picker_end = _custom_en.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-try:
-    _fetched_customers = api.get_customer_list()
-except Exception as exc:
-    logging.getLogger(__name__).warning("get_customer_list failed at startup (using defaults): %s", exc)
-    _fetched_customers = []
-_customers = [c for c in _fetched_customers if c and str(c).strip()]
-if not _customers:
-    _customers = list(WARMED_CUSTOMERS)
-_default_customer = _customers[0] if _customers else DEFAULT_CUSTOMER_NAME
-_customer_options = [{"value": c, "label": c} for c in _customers]
-
-
 def _warm_worker_local_customer_availability_cache() -> None:
-    """
-    Warm per-worker in-memory AuraNotify cache so the first customer page render
-    does not depend on a cold external HTTP call.
-    """
+    """Warm AuraNotify in-process cache for legacy pilot customers (resource cache is customer-api)."""
     for tr in cache_time_ranges():
-        for customer_name in _customers:
+        for customer_name in WARMED_CUSTOMERS:
             try:
                 api.get_customer_availability_bundle(customer_name, tr, force_refresh=True)
             except Exception as exc:
@@ -265,29 +251,6 @@ _sidebar = html.Div(
             mt="auto",
         ),
 
-        html.Div(
-            id="customer-section",
-            children=[
-                dmc.Text("Customer", size="xs", fw=600, c="#A3AED0", style={"marginBottom": "6px"}),
-                dmc.Select(
-                    id="customer-select",
-                    data=_customer_options,
-                    value=_default_customer,
-                    placeholder="Select customer",
-                    clearable=True,
-                    radius="md",
-                    variant="default",
-                    size="sm",
-                    style={"width": "100%"},
-                ),
-            ],
-            style={
-                "marginTop": "16px",
-                "paddingTop": "12px",
-                "borderTop": "1px solid #E9ECEF",
-                "display": "none",
-            },
-        ),
     ],
 )
 
@@ -497,17 +460,6 @@ def sync_auth_stores(pathname):
     return {"id": int(uid), "username": u.get("username")}, pmap
 
 
-@app.callback(
-    dash.Output("customer-section", "style"),
-    dash.Input("url", "pathname"),
-)
-def toggle_customer_section(pathname):
-    base = {"marginTop": "16px", "paddingTop": "12px", "borderTop": "1px solid #E9ECEF"}
-    if (pathname or "/") == "/customer-view":
-        return {**base, "display": "block"}
-    return {**base, "display": "none"}
-
-
 def _normalize_custom_iso(v: str | None) -> str | None:
     if not v:
         return None
@@ -652,11 +604,10 @@ def update_time_range_store(preset, start_dt, end_dt, anchor_latest, current):
     dash.Output("main-content", "children"),
     dash.Input("url", "pathname"),
     dash.Input("app-time-range", "data"),
-    dash.Input("customer-select", "value"),
     dash.Input("url", "search"),
 )
 @trace_dash_callback("render_main_content")
-def render_main_content(pathname, time_range, selected_customer, search):
+def render_main_content(pathname, time_range, search):
     from flask import g, has_request_context, request as flask_request
 
     from src.auth.config import AUTH_DISABLED
@@ -718,8 +669,7 @@ def render_main_content(pathname, time_range, selected_customer, search):
         return customers_list.build_customers_list(tr, visible_sections=vis)
     if pathname == "/customer-view":
         params = parse_qs((search or "").lstrip("?"))
-        url_customer = (params.get("customer", [""])[0] or "").strip()
-        chosen_customer = url_customer or (selected_customer or "").strip()
+        chosen_customer = (params.get("customer", [""])[0] or "").strip()
         return customer_view.build_customer_layout(tr, chosen_customer, visible_sections=vis)
     if pathname == "/query-explorer":
         return query_explorer.layout(visible_sections=vis)
@@ -763,10 +713,11 @@ def update_s3_dc_panel(selected_pools, time_range, pathname):
     dash.Output("s3-customer-metrics-panel", "children"),
     dash.Input("s3-customer-vault-selector", "value"),
     dash.Input("app-time-range", "data"),
-    dash.State("customer-select", "value"),
+    dash.State("url", "search"),
 )
-def update_s3_customer_panel(selected_vaults, time_range, customer_name):
-    name = (customer_name or "").strip()
+def update_s3_customer_panel(selected_vaults, time_range, search):
+    params = parse_qs((search or "").lstrip("?"))
+    name = (params.get("customer", [""])[0] or "").strip()
     if not name:
         return html.Div()
     tr = time_range or default_time_range()

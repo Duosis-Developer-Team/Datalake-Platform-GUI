@@ -9,7 +9,9 @@ from dash_iconify import DashIconify
 import plotly.graph_objs as go
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 
+from src.components.customer_loading import build_customer_loading_shell
 from src.services import api_client as api
 from src.utils.time_range import default_time_range
 from src.utils.export_helpers import (
@@ -1668,7 +1670,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         empty = dmc.Alert(
             color="yellow",
             title="No customer selected",
-            children="Choose a customer from the sidebar to load metrics.",
+            children="Open a customer from the Customers catalog to load metrics.",
         )
         return {
             "summary": empty,
@@ -1684,8 +1686,26 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             "export_sheets": {},
         }
 
-    data = api.get_customer_resources(name, tr)
-    avail_bundle = api.get_customer_availability_bundle(name, tr)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        f_resources = pool.submit(api.get_customer_resources, name, tr)
+        f_avail = pool.submit(api.get_customer_availability_bundle, name, tr)
+        f_s3 = pool.submit(api.get_customer_s3_vaults, name, tr)
+        f_phys = pool.submit(api.get_physical_inventory_customer, name)
+        f_itsm_summary = pool.submit(api.get_customer_itsm_summary, name, tr)
+        f_itsm_extremes = pool.submit(api.get_customer_itsm_extremes, name, tr)
+        f_itsm_tickets = pool.submit(api.get_customer_itsm_tickets, name, tr)
+        f_sales = pool.submit(api.get_customer_sales_summary, name)
+        f_eff = pool.submit(api.get_customer_efficiency_by_category, name)
+        data = f_resources.result()
+        avail_bundle = f_avail.result()
+        s3_data = f_s3.result()
+        phys_inv_devices = f_phys.result()
+        itsm_summary = f_itsm_summary.result()
+        itsm_extremes = f_itsm_extremes.result()
+        itsm_tickets = f_itsm_tickets.result()
+        sales_summary = f_sales.result()
+        eff_by_cat = f_eff.result()
+
     vm_outage_counts = avail_bundle.get("vm_outage_counts") or {}
 
     totals = data.get("totals", {})
@@ -1693,21 +1713,8 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     backup_assets = assets.get("backup", {}) or {}
     backup_totals = totals.get("backup", {}) or {}
 
-    # S3 vault metrics (may be empty if customer has no S3 vaults)
-    s3_data = api.get_customer_s3_vaults(name, tr)
     has_s3 = bool(s3_data.get("vaults"))
-
-    # Physical inventory for the customer tenant scope (API-side filter)
-    phys_inv_devices = api.get_physical_inventory_customer(name)
     has_phys_inv = True
-
-    # ITSM (ServiceCore) data
-    itsm_summary  = api.get_customer_itsm_summary(name, tr)
-    itsm_extremes = api.get_customer_itsm_extremes(name, tr)
-    itsm_tickets  = api.get_customer_itsm_tickets(name, tr)
-
-    sales_summary = api.get_customer_sales_summary(name)
-    eff_by_cat = api.get_customer_efficiency_by_category(name)
 
     # Values used by Summary "Backup summary" cards (kept here to avoid NameError).
     veeam_defined = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
@@ -1915,34 +1922,82 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
 # Page builders
 # ---------------------------------------------------------------------------
 
-def build_customer_layout(time_range=None, selected_customer=None, visible_sections=None):
-    tr = time_range or default_time_range()
-    chosen = (selected_customer or "").strip()
-    vs = visible_sections
+def _section_visible(visible_sections, code: str) -> bool:
+    return visible_sections is None or code in visible_sections
 
-    def cv(code: str) -> bool:
-        return vs is None or code in vs
 
-    if not chosen:
-        return html.Div(
-            style={"padding": "40px 30px"},
-            children=[
-                dmc.Alert(
-                    color="yellow",
-                    title="No customer selected",
-                    children=(
-                        "Select a customer from the sidebar. If the list is empty, "
-                        "configure WARMED_CUSTOMERS or ensure NetBox inventory includes tenant names."
+def _build_customer_intro_card(chosen: str) -> dmc.SimpleGrid:
+    return dmc.SimpleGrid(
+        cols=3,
+        spacing="lg",
+        style={"padding": "0 30px", "marginBottom": "24px"},
+        children=[
+            html.Div(
+                className="nexus-card",
+                style={"padding": "24px"},
+                children=[
+                    dmc.Group(
+                        justify="space-between",
+                        mb="lg",
+                        children=[
+                            dmc.Group(
+                                gap="sm",
+                                children=[
+                                    dmc.ThemeIcon(
+                                        size="xl",
+                                        variant="light",
+                                        color="indigo",
+                                        radius="md",
+                                        children=DashIconify(
+                                            icon="solar:users-group-two-rounded-bold-duotone",
+                                            width=30,
+                                        ),
+                                    ),
+                                    dmc.Stack(
+                                        gap=0,
+                                        children=[
+                                            dmc.Text(chosen, fw=700, size="lg", c="#2B3674"),
+                                            dmc.Text("Billing assets", size="sm", c="#A3AED0", fw=500),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                        ],
                     ),
-                )
-            ],
-        )
+                    dmc.Text(
+                        "All metrics show resources allocated/provisioned to this customer across all platforms.",
+                        size="sm",
+                        c="#A3AED0",
+                    ),
+                ],
+            ),
+        ],
+    )
 
-    content = _customer_content(chosen, tr)
-    has_s3 = bool(content.get("has_s3"))
-    has_phys_inv = bool(content.get("has_phys_inv"))
 
-    tabs_list = dmc.TabsList(
+def _build_customer_export_group(visible_sections) -> dmc.Group | None:
+    if not _section_visible(visible_sections, "action:customer:export"):
+        return None
+    return dmc.Group(
+        gap=6,
+        align="center",
+        children=[
+            dmc.Text("Export", size="xs", c="dimmed"),
+            dmc.Button("CSV", id="customer-export-csv", size="xs", variant="light", color="gray"),
+            dmc.Button("Excel", id="customer-export-xlsx", size="xs", variant="light", color="gray"),
+            dmc.Button(
+                "PDF",
+                id={"type": "pdf-export-btn", "index": "customer"},
+                size="xs",
+                variant="light",
+                color="gray",
+            ),
+        ],
+    )
+
+
+def _build_customer_tabs_list(*, has_s3: bool = False, has_phys_inv: bool = False) -> dmc.TabsList:
+    return dmc.TabsList(
         style={"paddingTop": "8px"},
         children=[
             dmc.TabsTab("Summary", value="summary"),
@@ -1956,85 +2011,24 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
         ],
     )
 
-    export_sheets = content.get("export_sheets") or {}
-    export_group = (
-        dmc.Group(
-            gap=6,
-            align="center",
-            children=[
-                dmc.Text("Export", size="xs", c="dimmed"),
-                dmc.Button("CSV", id="customer-export-csv", size="xs", variant="light", color="gray"),
-                dmc.Button("Excel", id="customer-export-xlsx", size="xs", variant="light", color="gray"),
-                dmc.Button("PDF", id={"type": "pdf-export-btn", "index": "customer"}, size="xs", variant="light", color="gray"),
-            ],
-        )
-        if cv("action:customer:export")
-        else None
-    )
 
+def render_customer_loading_page(chosen: str, time_range, visible_sections=None) -> html.Div:
+    tr = time_range or default_time_range()
+    export_group = _build_customer_export_group(visible_sections)
     header = create_detail_header(
         title="Customer View",
-        back_href="/",
-        back_label="Overview",
+        back_href="/customers",
+        back_label="Customers",
         subtitle_badge=f"Customer: {chosen}",
         subtitle_color="teal",
         time_range=tr,
         icon="solar:users-group-two-rounded-bold-duotone",
-        tabs=tabs_list,
+        tabs=_build_customer_tabs_list(),
         right_extra=[export_group] if export_group else [],
     )
-
-    intro_card = dmc.SimpleGrid(
-        cols=3,
-        spacing="lg",
-        style={"padding": "0 30px", "marginBottom": "24px"},
+    return html.Div(
+        className="customer-page-enter",
         children=[
-            html.Div(
-                className="nexus-card",
-                style={"padding": "24px"},
-                children=[
-                    dmc.Group(justify="space-between", mb="lg", children=[
-                        dmc.Group(gap="sm", children=[
-                            dmc.ThemeIcon(
-                                size="xl",
-                                variant="light",
-                                color="indigo",
-                                radius="md",
-                                children=DashIconify(icon="solar:users-group-two-rounded-bold-duotone", width=30),
-                            ),
-                            dmc.Stack(
-                                gap=0,
-                                children=[
-                                    dmc.Text(chosen, fw=700, size="lg", c="#2B3674"),
-                                    dmc.Text("Billing assets", size="sm", c="#A3AED0", fw=500),
-                                ],
-                            ),
-                        ]),
-                    ]),
-                    dmc.Text(
-                        "All metrics show resources allocated/provisioned to this customer across all platforms.",
-                        size="sm",
-                        c="#A3AED0",
-                    ),
-                ],
-            ),
-        ],
-    )
-
-    return dcc.Loading(
-        id="customer-view-page-loading",
-        type="circle",
-        color="#4318FF",
-        delay_show=200,
-        overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.75)"},
-        children=html.Div(
-            className="customer-page-enter",
-            children=[
-            dcc.Store(
-                id="customer-export-store",
-                data={"customer": chosen, "sheets": export_sheets},
-            ),
-            dcc.Download(id="customer-export-download"),
             dmc.Tabs(
                 color="indigo",
                 variant="pills",
@@ -2042,10 +2036,51 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
                 value="summary",
                 children=[
                     header,
-                    intro_card,
+                    _build_customer_intro_card(chosen),
                     dmc.TabsPanel(
                         value="summary",
-                        children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("summary")]),
+                        children=build_customer_loading_shell(chosen),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
+def render_customer_page(chosen: str, time_range, content: dict, visible_sections=None) -> html.Div:
+    tr = time_range or default_time_range()
+    has_s3 = bool(content.get("has_s3"))
+    has_phys_inv = bool(content.get("has_phys_inv"))
+    export_group = _build_customer_export_group(visible_sections)
+    header = create_detail_header(
+        title="Customer View",
+        back_href="/customers",
+        back_label="Customers",
+        subtitle_badge=f"Customer: {chosen}",
+        subtitle_color="teal",
+        time_range=tr,
+        icon="solar:users-group-two-rounded-bold-duotone",
+        tabs=_build_customer_tabs_list(has_s3=has_s3, has_phys_inv=has_phys_inv),
+        right_extra=[export_group] if export_group else [],
+    )
+    return html.Div(
+        className="customer-page-enter",
+        children=[
+            dmc.Tabs(
+                color="indigo",
+                variant="pills",
+                radius="md",
+                value="summary",
+                children=[
+                    header,
+                    _build_customer_intro_card(chosen),
+                    dmc.TabsPanel(
+                        value="summary",
+                        children=dmc.Stack(
+                            gap="lg",
+                            style={"padding": "0 30px"},
+                            children=[content.get("summary")],
+                        ),
                     ),
                     dmc.TabsPanel(
                         value="virt",
@@ -2054,7 +2089,9 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
                     dmc.TabsPanel(
                         value="avail",
                         children=dmc.Stack(
-                            gap="lg", style={"padding": "0 30px"}, children=[content.get("avail")]
+                            gap="lg",
+                            style={"padding": "0 30px"},
+                            children=[content.get("avail")],
                         ),
                     ),
                     dmc.TabsPanel(
@@ -2063,18 +2100,30 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
                     ),
                     dmc.TabsPanel(
                         value="billing",
-                        children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("billing")]),
+                        children=dmc.Stack(
+                            gap="lg",
+                            style={"padding": "0 30px"},
+                            children=[content.get("billing")],
+                        ),
                     ),
                     dmc.TabsPanel(
                         value="itsm",
-                        children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("itsm")]),
+                        children=dmc.Stack(
+                            gap="lg",
+                            style={"padding": "0 30px"},
+                            children=[content.get("itsm")],
+                        ),
                     ),
                     dmc.TabsPanel(
                         value="phys-inv",
-                        children=dmc.Stack(gap="lg", style={"padding": "0 30px"}, children=[content.get("phys_inv")]),
-                    )
-                    if has_phys_inv
-                    else None,
+                        children=dmc.Stack(
+                            gap="lg",
+                            style={"padding": "0 30px"},
+                            children=[content.get("phys_inv")],
+                        )
+                        if has_phys_inv
+                        else None,
+                    ),
                     dmc.TabsPanel(
                         value="s3",
                         children=content.get("s3") if has_s3 else html.Div(),
@@ -2082,9 +2131,48 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
                     if has_s3
                     else None,
                 ],
-            )
+            ),
+        ],
+    )
+
+
+def build_customer_layout(time_range=None, selected_customer=None, visible_sections=None):
+    tr = time_range or default_time_range()
+    chosen = (selected_customer or "").strip()
+    vs = visible_sections
+
+    if not chosen:
+        return html.Div(
+            style={"padding": "40px 30px"},
+            children=[
+                dmc.Alert(
+                    color="yellow",
+                    title="No customer selected",
+                    children=[
+                        "Open a customer from the ",
+                        dmc.Anchor("Customers catalog", href="/customers", underline="always"),
+                        " to view billing assets and metrics.",
+                    ],
+                )
             ],
-        ),
+        )
+
+    return html.Div(
+        children=[
+            dcc.Store(
+                id="customer-view-visible-sections",
+                data=list(vs) if vs is not None else None,
+            ),
+            dcc.Store(
+                id="customer-export-store",
+                data={"customer": chosen, "sheets": {}},
+            ),
+            dcc.Download(id="customer-export-download"),
+            html.Div(
+                id="customer-view-page-root",
+                children=render_customer_loading_page(chosen, tr, visible_sections=vs),
+            ),
+        ],
     )
 
 

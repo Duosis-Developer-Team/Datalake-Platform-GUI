@@ -494,6 +494,43 @@ body {
     animation: customer-page-enter 0.35s ease-out both;
 }
 
+.customer-loading-layer {
+    padding: 8px 0 24px;
+}
+
+.customer-loading-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 24px 30px 32px;
+}
+
+.customer-loading-icon {
+    animation: buildingFloat 1.8s ease-in-out infinite;
+}
+
+.customer-load-shimmer {
+    position: relative;
+    overflow: hidden;
+}
+
+.customer-load-shimmer::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -120%;
+    width: 60%;
+    height: 100%;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.55),
+        transparent
+    );
+    animation: dc-shimmer 1.4s ease-in-out infinite;
+}
+
 /* ── Kart Shimmer Efekti (A4) ── */
 @keyframes dc-shimmer {
     0%   { left: -120%; }

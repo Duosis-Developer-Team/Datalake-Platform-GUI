@@ -26,6 +26,7 @@ from app.services.customer_catalog import (
     group_catalog_rows,
     load_project_customer_rows,
     map_service_sales_lines,
+    _is_mapped,
 )
 from app.services.customer_mapping_resolver import (
     MappingRule,
@@ -39,7 +40,14 @@ logger = logging.getLogger(__name__)
 
 # Aligned with datacenter scheduler (15m): avoid long stale windows and key TTL mismatch.
 CLUSTER_ARCH_MAP_TTL_SECONDS = 900
-CUSTOMER_DATA_CACHE_TTL_SECONDS = 900
+CUSTOMER_DATA_CACHE_TTL_HOT = 900
+CUSTOMER_DATA_CACHE_TTL_WARM = 21600
+CUSTOMER_DATA_CACHE_TTL_COLD = 900
+# Backward-compatible alias for tests and legacy imports.
+CUSTOMER_DATA_CACHE_TTL_SECONDS = CUSTOMER_DATA_CACHE_TTL_COLD
+
+BATCH_WARM_STATUS_KEY = "customer_warm_batch:status"
+BATCH_WARM_COMPLETED_KEY = "customer_warm_batch:last_completed_at"
 
 
 class QueryTimeoutError(Exception):
@@ -380,18 +388,19 @@ class CustomerService:
             source_patterns=source_patterns,
         )
 
-    def get_customer_resources(self, customer_name: str, time_range: dict | None = None) -> dict:
+    def get_customer_resources(self, customer_name: str, time_range: dict | None = None, *, cache_ttl: int | None = None) -> dict:
         tr = time_range or default_time_range()
         if tr.get("anchor_latest"):
             tr = self._smart_1h_tr(tr)
         cache_key = f"customer_assets:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
         if self._pool is None:
             return self._customer._empty_result()
+        ttl = cache_ttl if cache_ttl is not None else self._cache_ttl_for_customer(customer_name)
         try:
             return cache.run_singleflight(
                 cache_key,
                 lambda: self._load_customer_resources(customer_name, tr),
-                ttl=CUSTOMER_DATA_CACHE_TTL_SECONDS,
+                ttl=ttl,
             )
         except QueryTimeoutError as exc:
             logger.warning(
@@ -551,42 +560,114 @@ class CustomerService:
         return self._load_crm_project_customer_names()
 
     def _customers_for_cache_rebuild(self) -> tuple[str, ...]:
-        """Customers used by warm_cache / scheduler.
+        """VIP / cache-pinned customers refreshed every 15 minutes (hot tier)."""
+        return self._load_cache_pinned_display_names()
 
-        WARMED_CUSTOMERS env optionally limits warm-up scope. When set, it filters the
-        CRM project customer list (Boyner matches by substring). If the CRM list is
-        unavailable, the env value is used directly for warm-up only.
+    def _mapped_non_vip_customers_for_warm(self) -> tuple[str, ...]:
+        """Mapped CRM project customers that are not VIP — warm tier batch queue."""
+        if self._pool is None:
+            return ()
+        try:
+            project_rows = load_project_customer_rows(self._run_query, self._run_one)
+            flags = self._load_profile_flags_index()
+            mapping_index = self._load_source_mapping_index()
+            names: list[str] = []
+            for row in project_rows:
+                account_id = str(row.get("crm_accountid") or "").strip()
+                account_name = str(row.get("crm_account_name") or account_id).strip()
+                if not account_id or not account_name:
+                    continue
+                flag = flags.get(account_id) or {}
+                if flag.get("is_vip") or flag.get("cache_pinned"):
+                    continue
+                mappings = mapping_index.get(account_id, [])
+                if _is_mapped(mappings):
+                    names.append(account_name)
+            return tuple(sorted(set(names), key=str.casefold))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Mapped non-VIP warm list load failed: %s", exc)
+            return ()
 
-        VIP and cache-pinned CRM accounts are always included when resolvable to a
-        display name.
-        """
-        raw = (os.getenv("WARMED_CUSTOMERS") or "").strip()
-        all_names = self.get_customer_list()
-        pinned_names = self._load_cache_pinned_display_names()
-        if raw:
-            allowed = {n.strip().casefold() for n in raw.split(",") if n.strip()}
-            if all_names:
-                filtered = [
-                    n
-                    for n in all_names
-                    if n.casefold() in allowed or "boyner" in n.casefold()
-                ]
-                if filtered:
-                    return self._merge_customer_names(filtered, pinned_names)
-            env_names = [n.strip() for n in raw.split(",") if n.strip()]
-            return self._merge_customer_names(env_names, pinned_names)
-        boyner_crm = self._load_boyner_crm_display_name()
-        if boyner_crm:
-            for name in all_names:
-                if name.casefold() == boyner_crm.casefold():
-                    return self._merge_customer_names((name,), pinned_names)
-            if boyner_crm:
-                return self._merge_customer_names((boyner_crm,), pinned_names)
-        for name in all_names:
-            if "boyner" in name.casefold():
-                return self._merge_customer_names((name,), pinned_names)
-        default = tuple(all_names[:1]) if all_names else tuple()
-        return self._merge_customer_names(default, pinned_names)
+    def _cache_ttl_for_customer(self, customer_name: str) -> int:
+        name = str(customer_name or "").strip()
+        if not name:
+            return CUSTOMER_DATA_CACHE_TTL_COLD
+        pinned = {n.casefold() for n in self._load_cache_pinned_display_names()}
+        if name.casefold() in pinned:
+            return CUSTOMER_DATA_CACHE_TTL_HOT
+        mapped_warm = {n.casefold() for n in self._mapped_non_vip_customers_for_warm()}
+        if name.casefold() in mapped_warm:
+            return CUSTOMER_DATA_CACHE_TTL_WARM
+        return CUSTOMER_DATA_CACHE_TTL_COLD
+
+    def _rebuild_customer_caches_for_customer(
+        self,
+        customer_name: str,
+        *,
+        cache_ttl: int | None = None,
+    ) -> None:
+        for tr in cache_time_ranges():
+            try:
+                self.get_customer_resources(customer_name, tr, cache_ttl=cache_ttl)
+            except Exception as exc:
+                logger.warning(
+                    "Customer cache rebuild failed for customer=%s preset=%s: %s",
+                    customer_name,
+                    tr.get("preset", ""),
+                    exc,
+                )
+            try:
+                self.get_customer_s3_vaults(customer_name, tr, cache_ttl=cache_ttl)
+            except Exception as exc:
+                logger.warning(
+                    "Customer S3 cache rebuild failed for customer=%s preset=%s: %s",
+                    customer_name,
+                    tr.get("preset", ""),
+                    exc,
+                )
+
+    def warm_mapped_non_vip_batch(self) -> None:
+        """Sequentially warm mapped non-VIP customers; runs on a 6-hour scheduler cadence."""
+        if self._pool is None:
+            logger.warning("warm_mapped_non_vip_batch skipped: database pool is not available.")
+            return
+        customers = self._mapped_non_vip_customers_for_warm()
+        total = len(customers)
+        logger.info("Customer API mapped batch warm started (%d customers).", total)
+        cache.set(BATCH_WARM_STATUS_KEY, {"status": "running", "total": total, "completed": 0}, ttl=86400)
+        completed = 0
+        t0 = time.perf_counter()
+        for customer_name in customers:
+            completed += 1
+            logger.info(
+                "Customer API mapped batch warm %d/%d: %s",
+                completed,
+                total,
+                customer_name,
+            )
+            self._rebuild_customer_caches_for_customer(
+                customer_name,
+                cache_ttl=CUSTOMER_DATA_CACHE_TTL_WARM,
+            )
+            if completed < total:
+                time.sleep(1)
+        elapsed = time.perf_counter() - t0
+        completed_at = datetime.now(timezone.utc).isoformat()
+        cache.set(
+            BATCH_WARM_COMPLETED_KEY,
+            {"completed_at": completed_at, "customer_count": total, "elapsed_seconds": round(elapsed, 2)},
+            ttl=86400,
+        )
+        cache.set(
+            BATCH_WARM_STATUS_KEY,
+            {"status": "idle", "total": total, "completed": total, "last_completed_at": completed_at},
+            ttl=86400,
+        )
+        logger.info(
+            "Customer API mapped batch warm finished (%d customers in %.2fs).",
+            total,
+            elapsed,
+        )
 
     @staticmethod
     def _merge_customer_names(*name_groups: tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -836,17 +917,18 @@ class CustomerService:
             "growth": growth,
         }
 
-    def get_customer_s3_vaults(self, customer_name: str, time_range: dict | None = None) -> dict:
+    def get_customer_s3_vaults(self, customer_name: str, time_range: dict | None = None, *, cache_ttl: int | None = None) -> dict:
         """Return cached S3 vault metrics for a customer and time range."""
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
         cache_key = f"customer_s3:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
+        ttl = cache_ttl if cache_ttl is not None else self._cache_ttl_for_customer(customer_name)
 
         try:
             return cache.run_singleflight(
                 cache_key,
                 lambda: self._fetch_customer_s3_vaults(customer_name, start_ts, end_ts),
-                ttl=CUSTOMER_DATA_CACHE_TTL_SECONDS,
+                ttl=ttl,
             )
         except QueryTimeoutError as exc:
             logger.warning(
@@ -869,31 +951,16 @@ class CustomerService:
             return {"vaults": [], "latest": {}, "growth": {}, "trend": []}
 
     def _rebuild_customer_caches_for_warmed_customers(self) -> None:
-        """Populate Redis/memory cache for configured customers and standard time ranges."""
+        """Populate Redis/memory cache for VIP / cache-pinned customers (hot tier)."""
         customers = self._customers_for_cache_rebuild()
-        for tr in cache_time_ranges():
-            for customer_name in customers:
-                try:
-                    self.get_customer_resources(customer_name, tr)
-                except Exception as exc:
-                    logger.warning(
-                        "Customer cache rebuild failed for customer=%s preset=%s: %s",
-                        customer_name,
-                        tr.get("preset", ""),
-                        exc,
-                    )
-                try:
-                    self.get_customer_s3_vaults(customer_name, tr)
-                except Exception as exc:
-                    logger.warning(
-                        "Customer S3 cache rebuild failed for customer=%s preset=%s: %s",
-                        customer_name,
-                        tr.get("preset", ""),
-                        exc,
-                    )
+        for customer_name in customers:
+            self._rebuild_customer_caches_for_customer(
+                customer_name,
+                cache_ttl=CUSTOMER_DATA_CACHE_TTL_HOT,
+            )
 
     def warm_cache(self) -> None:
-        """Synchronous warm-up before serving traffic (same ranges as datacenter-api)."""
+        """Synchronous warm-up before serving traffic (VIP/pinned hot tier only)."""
         if self._pool is None:
             logger.warning("warm_cache skipped: database pool is not available.")
             return
