@@ -595,7 +595,7 @@ Parametreler: `{needle, start_ts, end_ts}`.
 Tüm satış sorguları yalnızca **gerçekleşmiş** siparişleri kapsar: `statecode IN (3, 4)` (3=Fulfilled, 4=Invoiced) —
 ADR-0010. Müşteri filtresi `so.customerid = ANY(%s)` ile çözülmüş CRM accountid `text[]` listesi alır.
 
-#### `SALES_SUMMARY` — YTD gerçekleşen satış
+#### `SALES_SUMMARY` — YTD + lifetime gerçekleşen satış
 
 ```sql
 WITH ytd_realized AS (
@@ -608,6 +608,13 @@ WITH ytd_realized AS (
       AND  EXTRACT(YEAR FROM COALESCE(so.fulfilldate, so.submitdate, so.modifiedon::date))
            = EXTRACT(YEAR FROM CURRENT_DATE)
 ),
+lifetime_realized AS (
+    SELECT COALESCE(SUM(so.totalamount), 0) AS lifetime_revenue_total,
+           COALESCE(COUNT(DISTINCT so.salesorderid), 0) AS lifetime_order_count
+    FROM   discovery_crm_salesorders so
+    WHERE  so.customerid = ANY(%s)
+      AND  so.statecode IN (3, 4)
+),
 in_progress_orders AS (
     SELECT COALESCE(COUNT(*), 0) AS active_order_count,
            COALESCE(SUM(so.totalamount), 0) AS active_order_value
@@ -619,20 +626,27 @@ SELECT
     ytd_realized.ytd_revenue_total,
     ytd_realized.ytd_order_count,
     ytd_realized.currency,
-    0.0::double precision AS pipeline_value,
-    0::bigint AS opportunity_count,
-    in_progress_orders.active_order_count,
-    in_progress_orders.active_order_value,
-    0::bigint AS active_contract_count,
-    0.0::double precision AS total_contract_value,
-    0.0::double precision AS estimated_mrr
-FROM ytd_realized, in_progress_orders;
+    lifetime_realized.lifetime_revenue_total,
+    lifetime_realized.lifetime_order_count,
+    ...
+FROM ytd_realized, lifetime_realized, in_progress_orders;
 ```
 
-Ne yapar: Cari yıl gerçekleşen ciro/sipariş sayısı + aktif (statecode 0/1) sipariş sayı/değeri. Pipeline/opportunity/
-contract/MRR alanları şu an sabit 0 (placeholder). YTD yılı `fulfilldate → submitdate → modifiedon` fallback
-zincirinden alınır.
-Parametreler: `(accountids[], accountids[])`.
+Ne yapar: Cari yıl (YTD) ve tüm zamanlar (lifetime) gerçekleşen ciro/sipariş sayısı + aktif (statecode 0/1) sipariş
+sayı/değeri. Pipeline/opportunity/contract/MRR alanları şu an sabit 0 (placeholder).
+Parametreler: `(accountids[], accountids[], accountids[])`.
+
+**GUI:** `GET /api/v1/customers/{name}/sales/summary` — Customer View intro card + Summary tab.
+
+**Alias çözümleme:** `app/services/crm_account_resolver.py` — `gui_crm_customer_alias` → display-name fallback →
+`CRM_ACCOUNT_BY_DISPLAY_NAME` (datalake).
+
+#### `SALES_LINES_BY_PRODUCT_FOR_CUSTOMER` — müşteri servis kırılımı (ham)
+
+Ürün bazında `SUM(extendedamount)`; Python'da `map_service_sales_lines` (`app/utils/service_sales_mapping.py`) ile
+`gui_crm_service_mapping_*` kategorilerine bucket edilir.
+
+**GUI:** `GET /api/v1/customers/{name}/sales/service-breakdown` → `List[CustomerServiceSalesSlice]`.
 
 #### `SALES_ITEMS` — gerçekleşen sipariş satırları
 

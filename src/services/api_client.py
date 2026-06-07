@@ -1320,6 +1320,17 @@ def get_customer_sales_items(name: str) -> list:
     return _api_cache_get_with_stale(ck, fetch, [])
 
 
+def get_customer_sales_service_breakdown(name: str) -> list:
+    enc = quote(name, safe="")
+
+    def fetch() -> list:
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/service-breakdown")
+        return data if isinstance(data, list) else []
+
+    ck = f"api:crm_sales_service_breakdown:{enc}"
+    return _api_cache_get_with_stale(ck, fetch, [])
+
+
 def get_customer_sales_efficiency(name: str) -> list:
     enc = quote(name, safe="")
 

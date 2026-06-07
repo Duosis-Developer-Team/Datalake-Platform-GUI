@@ -27,6 +27,11 @@ from src.components.header import create_detail_header
 from src.pages.home import metric_card
 from src.components.s3_panel import build_customer_s3_panel
 from src.components.sold_vs_used_panel import build_sold_vs_used_stack, filter_efficiency_rows
+from src.components.crm_sales_panel import (
+    build_crm_intro_card,
+    build_crm_sold_services_panel,
+    build_crm_summary_kv_panel,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -415,8 +420,17 @@ def _deleted_vms_panel(deleted_names: list[str] | None):
 # Tab content builders
 # ---------------------------------------------------------------------------
 
-def _tab_summary(totals: dict, assets: dict):
-    """Summary tab: aggregated billing overview."""
+def _tab_summary(
+    totals: dict,
+    assets: dict,
+    *,
+    customer_name: str = "",
+    sales_summary: dict | None = None,
+    service_breakdown: list | None = None,
+    sales_items: list | None = None,
+    efficiency_rows: list | None = None,
+):
+    """Summary tab: CRM sales overview plus aggregated infrastructure billing."""
     classic   = assets.get("classic", {})
     hyperconv = assets.get("hyperconv", {})
     pure_nx   = assets.get("pure_nutanix", {}) or {}
@@ -457,7 +471,26 @@ def _tab_summary(totals: dict, assets: dict):
         _metric("Power LPARs",        f"{power_lpars:,}",   "solar:server-square-bold-duotone",   color="grape"),
     ]
 
+    crm_sections = [
+        _section_card(
+            "CRM Sales Summary",
+            "Realized sales only (fulfilled / invoiced) — YTD primary, lifetime secondary",
+            build_crm_summary_kv_panel(
+                customer_name,
+                sales_summary,
+                service_breakdown,
+                sales_items,
+            ),
+        ),
+        _section_card(
+            "CRM — Sold Services",
+            "Service category distribution and order line items from CRM",
+            build_crm_sold_services_panel(service_breakdown, efficiency_rows, sales_items),
+        ),
+    ]
+
     return dmc.Stack(gap="lg", children=[
+        *crm_sections,
         # VM count overview
         _section_card("VM / LPAR Summary", "Total provisioned instances per compute type",
             dmc.SimpleGrid(cols=5, spacing="lg", children=summary_grid),
@@ -1673,6 +1706,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             children="Open a customer from the Customers catalog to load metrics.",
         )
         return {
+            "intro_card": _build_customer_intro_card(""),
             "summary": empty,
             "virt": empty,
             "avail": empty,
@@ -1686,7 +1720,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             "export_sheets": {},
         }
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=10) as pool:
         f_resources = pool.submit(api.get_customer_resources, name, tr)
         f_avail = pool.submit(api.get_customer_availability_bundle, name, tr)
         f_s3 = pool.submit(api.get_customer_s3_vaults, name, tr)
@@ -1696,6 +1730,8 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         f_itsm_tickets = pool.submit(api.get_customer_itsm_tickets, name, tr)
         f_sales = pool.submit(api.get_customer_sales_summary, name)
         f_eff = pool.submit(api.get_customer_efficiency_by_category, name)
+        f_sales_items = pool.submit(api.get_customer_sales_items, name)
+        f_service_breakdown = pool.submit(api.get_customer_sales_service_breakdown, name)
         data = f_resources.result()
         avail_bundle = f_avail.result()
         s3_data = f_s3.result()
@@ -1705,6 +1741,8 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         itsm_tickets = f_itsm_tickets.result()
         sales_summary = f_sales.result()
         eff_by_cat = f_eff.result()
+        sales_items = f_sales_items.result()
+        service_breakdown = f_service_breakdown.result()
 
     vm_outage_counts = avail_bundle.get("vm_outage_counts") or {}
 
@@ -1893,7 +1931,16 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     )
 
     return {
-        "summary": _tab_summary(totals, assets),
+        "intro_card": build_crm_intro_card(name, sales_summary, service_breakdown),
+        "summary": _tab_summary(
+            totals,
+            assets,
+            customer_name=name,
+            sales_summary=sales_summary,
+            service_breakdown=service_breakdown,
+            sales_items=sales_items,
+            efficiency_rows=eff_by_cat,
+        ),
         "virt": virt_content,
         "avail": _tab_customer_availability(avail_bundle),
         "itsm": _tab_itsm(name, tr, itsm_summary, itsm_extremes, itsm_tickets),
@@ -2073,7 +2120,7 @@ def render_customer_page(chosen: str, time_range, content: dict, visible_section
                 value="summary",
                 children=[
                     header,
-                    _build_customer_intro_card(chosen),
+                    content.get("intro_card") or _build_customer_intro_card(chosen),
                     dmc.TabsPanel(
                         value="summary",
                         children=dmc.Stack(

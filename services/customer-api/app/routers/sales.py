@@ -7,6 +7,7 @@ Routes:
   GET /customers/{customer_name}/sales/efficiency
   GET /customers/{customer_name}/sales/efficiency-by-category
   GET /customers/{customer_name}/sales/catalog-valuation
+  GET /customers/{customer_name}/sales/service-breakdown
   GET /crm/aliases
   PUT /crm/aliases/{crm_accountid}
 """
@@ -21,6 +22,7 @@ from app.models.schemas import (
     CustomerAlias,
     CustomerAliasUpdate,
     CustomerAliasWithMappings,
+    CustomerServiceSalesSlice,
     CustomerSourceMappingUpdate,
     SalesEfficiencyByCategoryRow,
     SalesEfficiencyRow,
@@ -82,6 +84,18 @@ def catalog_valuation(
 ):
     """Standard TL catalog prices for all active products — basis for datacenter valuation."""
     return svc.get_catalog_valuation(customer_name)
+
+
+@router.get(
+    "/customers/{customer_name}/sales/service-breakdown",
+    response_model=List[CustomerServiceSalesSlice],
+)
+def sales_service_breakdown(
+    customer_name: str,
+    svc: SalesService = Depends(get_sales_service),
+):
+    """Realized CRM sales amounts grouped by mapped service category for one customer."""
+    return svc.get_service_breakdown(customer_name)
 
 
 # ---------------------------------------------------------------------------

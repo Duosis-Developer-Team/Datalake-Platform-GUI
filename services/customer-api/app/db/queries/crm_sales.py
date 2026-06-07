@@ -19,6 +19,13 @@ WITH ytd_realized AS (
       AND  EXTRACT(YEAR FROM COALESCE(so.fulfilldate, so.submitdate, so.modifiedon::date))
            = EXTRACT(YEAR FROM CURRENT_DATE)
 ),
+lifetime_realized AS (
+    SELECT COALESCE(SUM(so.totalamount), 0) AS lifetime_revenue_total,
+           COALESCE(COUNT(DISTINCT so.salesorderid), 0) AS lifetime_order_count
+    FROM   discovery_crm_salesorders so
+    WHERE  so.customerid = ANY(%s)
+      AND  so.statecode IN (3, 4)
+),
 in_progress_orders AS (
     SELECT COALESCE(COUNT(*), 0) AS active_order_count,
            COALESCE(SUM(so.totalamount), 0) AS active_order_value
@@ -30,6 +37,8 @@ SELECT
     ytd_realized.ytd_revenue_total,
     ytd_realized.ytd_order_count,
     ytd_realized.currency,
+    lifetime_realized.lifetime_revenue_total,
+    lifetime_realized.lifetime_order_count,
     0.0::double precision AS pipeline_value,
     0::bigint AS opportunity_count,
     in_progress_orders.active_order_count,
@@ -37,7 +46,20 @@ SELECT
     0::bigint AS active_contract_count,
     0.0::double precision AS total_contract_value,
     0.0::double precision AS estimated_mrr
-FROM ytd_realized, in_progress_orders;
+FROM ytd_realized, lifetime_realized, in_progress_orders;
+"""
+
+# Per-customer realized sales lines aggregated by product (service layer maps to categories).
+SALES_LINES_BY_PRODUCT_FOR_CUSTOMER = """
+SELECT d.productid,
+       d.product_name,
+       SUM(d.extendedamount)::double precision AS amount_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (3, 4)
+GROUP BY d.productid, d.product_name
+ORDER BY amount_tl DESC NULLS LAST;
 """
 
 # ---------------------------------------------------------------------------

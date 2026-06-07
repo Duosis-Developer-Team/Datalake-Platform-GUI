@@ -19,15 +19,16 @@ from app.db.queries import crm_sales as crm_sq
 from app.db.queries import s3 as s3q
 from app.db.queries import service_mapping as smq
 from app.services import cache_service as cache
+from app.services.crm_account_resolver import make_datalake_account_lookup, resolve_crm_account_ids
 from app.services.crm_customer_list import build_crm_project_customer_list, resolve_infra_search_name
 from app.services.customer_catalog import (
     build_catalog_row,
     build_overview_payload,
     group_catalog_rows,
     load_project_customer_rows,
-    map_service_sales_lines,
     _is_mapped,
 )
+from app.utils.service_sales_mapping import map_service_sales_lines
 from app.services.customer_mapping_resolver import (
     MappingRule,
     ResolvedSourcePatterns,
@@ -497,18 +498,16 @@ class CustomerService:
                     resolved.get("canonical_customer_key"),
                     resolved.get("crm_accountid"),
                 )
+            datalake_lookup = None
             if self._pool is not None:
-                with self._get_connection() as conn:
-                    with conn.cursor() as cur:
-                        crm_row = self._run_row(
-                            cur,
-                            cq.CRM_ACCOUNT_BY_DISPLAY_NAME,
-                            (display_name, display_name),
-                        )
-                if crm_row:
-                    if isinstance(crm_row, dict):
-                        return None, None, crm_row.get("crm_accountid")
-                    return None, None, crm_row[0]
+                datalake_lookup = make_datalake_account_lookup(self._get_connection, self._run_row)
+            account_ids = resolve_crm_account_ids(
+                display_name,
+                webui=None,
+                datalake_account_lookup=datalake_lookup,
+            )
+            if account_ids:
+                return None, None, account_ids[0]
         except Exception as exc:
             logger.warning("Alias lookup failed for customer=%s: %s", display_name, exc)
         return None, None, None

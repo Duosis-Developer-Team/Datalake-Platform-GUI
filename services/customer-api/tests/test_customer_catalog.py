@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from app.services import customer_catalog as cc
+from app.utils.service_sales_mapping import map_service_sales_lines
 
 
 def _boyner_row(*, is_vip: bool = False, mapped: bool = True) -> dict:
@@ -100,6 +101,6 @@ def test_map_service_sales_lines_aggregates_by_category():
         {"productid": "p2", "amount_tl": 50.0},
         {"productid": "p3", "amount_tl": 25.0},
     ]
-    out = cc.map_service_sales_lines(lines, product_mapping)
+    out = map_service_sales_lines(lines, product_mapping)
     assert out[0]["service_code"] == "virt"
     assert out[0]["amount_tl"] == 150.0

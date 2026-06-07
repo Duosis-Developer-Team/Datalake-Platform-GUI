@@ -29,10 +29,13 @@ def test_get_sales_summary_maps_ytd_order_count_to_invoice_count():
     svc = SalesService(None, None, None, get_customer_assets=None, webui=_FakeWebuiPool())
 
     def _fake_run_one(sql: str, params: tuple):
+        assert len(params) == 3
         return {
             "ytd_revenue_total": 100.0,
             "ytd_order_count": 7,
             "currency": "TRY",
+            "lifetime_revenue_total": 420.0,
+            "lifetime_order_count": 12,
             "pipeline_value": 0.0,
             "opportunity_count": 0,
             "active_order_count": 1,
@@ -46,3 +49,5 @@ def test_get_sales_summary_maps_ytd_order_count_to_invoice_count():
 
     out = svc.get_sales_summary("demo")
     assert out["invoice_count"] == 7
+    assert out["lifetime_revenue_total"] == 420.0
+    assert out["lifetime_order_count"] == 12

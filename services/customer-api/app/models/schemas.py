@@ -27,6 +27,8 @@ class SalesSummary(BaseModel):
     ytd_revenue_total: float
     invoice_count: int
     currency: Optional[str]
+    lifetime_revenue_total: float = 0.0
+    lifetime_order_count: int = 0
     pipeline_value: float
     opportunity_count: int
     active_order_count: int

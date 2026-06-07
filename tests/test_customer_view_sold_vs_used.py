@@ -18,8 +18,19 @@ def test_crm_rows_outside_virt_backup():
     assert {r["x"] for r in out} == {3, 4}
 
 
+@patch("src.pages.customer_view.api.get_customer_sales_service_breakdown", return_value=[])
+@patch("src.pages.customer_view.api.get_customer_sales_items", return_value=[])
 @patch("src.pages.customer_view.api.get_customer_efficiency_by_category", return_value=[])
-@patch("src.pages.customer_view.api.get_customer_sales_summary", return_value={"ytd_revenue_total": 0, "invoice_count": 0})
+@patch(
+    "src.pages.customer_view.api.get_customer_sales_summary",
+    return_value={
+        "ytd_revenue_total": 100.0,
+        "lifetime_revenue_total": 250.0,
+        "invoice_count": 2,
+        "lifetime_order_count": 5,
+        "currency": "TRY",
+    },
+)
 @patch("src.pages.customer_view.api.get_customer_itsm_tickets", return_value=[])
 @patch("src.pages.customer_view.api.get_customer_itsm_extremes", return_value={})
 @patch("src.pages.customer_view.api.get_customer_itsm_summary", return_value={})
@@ -40,10 +51,14 @@ def test_crm_rows_outside_virt_backup():
         },
     },
 )
-def test_customer_content_has_no_sales_key(_a, _b, _c, _d, _e, _f, _g, _h, _i):
+def test_customer_content_has_crm_summary_sections(_a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k):
     from src.pages.customer_view import _customer_content
 
     content = _customer_content("Acme", {"preset": "30d"})
     assert "sales" not in content
+    assert "intro_card" in content
     assert "billing" in content
     assert "virt" in content
+    summary_text = str(content.get("summary"))
+    assert "CRM Sales Summary" in summary_text
+    assert "CRM — Sold Services" in summary_text

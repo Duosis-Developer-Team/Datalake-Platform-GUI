@@ -20,6 +20,11 @@ from typing import Any, Dict, List, Optional
 from app.db.queries import crm_sales as sq
 from app.db.queries import customer as cq
 from app.db.queries import service_mapping as smq
+from app.services.crm_account_resolver import (
+    make_datalake_account_lookup,
+    resolve_crm_account_ids,
+)
+from app.utils.service_sales_mapping import map_service_sales_lines
 from app.services.customer_mapping_resolver import (
     DATA_SOURCES,
     MATCH_METHODS,
@@ -76,15 +81,15 @@ class SalesService:
     # ------------------------------------------------------------------
 
     def _resolve_account_ids(self, customer_name: str) -> List[str]:
-        """Resolve a customer display name -> list of CRM accountids via webui alias table."""
-        if not self._webui or not self._webui.is_available:
-            logger.warning("WebUI pool unavailable; alias resolution returns empty list.")
-            return []
-        rows = self._webui.run_rows(
-            smq.RESOLVE_ALIAS_BY_NAME,
-            (customer_name, f"%{customer_name}%"),
+        """Resolve a customer display name -> list of CRM accountids (alias + display-name fallbacks)."""
+        datalake_lookup = None
+        if self._get_connection is not None:
+            datalake_lookup = make_datalake_account_lookup(self._get_connection, self._run_row)
+        return resolve_crm_account_ids(
+            customer_name,
+            webui=self._webui,
+            datalake_account_lookup=datalake_lookup,
         )
-        return [str(r["crm_accountid"]) for r in rows if r.get("crm_accountid")]
 
     def _load_product_mapping(self) -> Dict[str, Dict[str, Any]]:
         """Return productid -> {category_code, category_label, gui_tab_binding, resource_unit, source}."""
@@ -108,6 +113,8 @@ class SalesService:
             "invoice_count": 0,
             "ytd_order_count": 0,
             "currency": None,
+            "lifetime_revenue_total": 0.0,
+            "lifetime_order_count": 0,
             "pipeline_value": 0.0,
             "opportunity_count": 0,
             "active_order_count": 0,
@@ -121,30 +128,30 @@ class SalesService:
         account_ids = self._resolve_account_ids(customer_name)
         if not account_ids:
             return self._empty_summary()
-        row = self._run_one(sq.SALES_SUMMARY, (account_ids, account_ids))
+        row = self._run_one(sq.SALES_SUMMARY, (account_ids, account_ids, account_ids))
         if row is None:
             return self._empty_summary()
+        int_keys = {
+            "invoice_count",
+            "ytd_order_count",
+            "lifetime_order_count",
+            "opportunity_count",
+            "active_order_count",
+            "active_contract_count",
+        }
         out = {
             k: (
                 float(v)
-                if v is not None
-                and k
-                not in (
-                    "currency",
-                    "invoice_count",
-                    "ytd_order_count",
-                    "opportunity_count",
-                    "active_order_count",
-                    "active_contract_count",
-                )
+                if v is not None and k not in int_keys and k != "currency"
                 else v
             )
             for k, v in row.items()
         }
         if "invoice_count" not in out and out.get("ytd_order_count") is not None:
             out["invoice_count"] = int(out["ytd_order_count"] or 0)
-        if "invoice_count" in out and out["invoice_count"] is not None:
-            out["invoice_count"] = int(out["invoice_count"])
+        for key in int_keys:
+            if key in out and out[key] is not None:
+                out[key] = int(out[key])
         return out
 
     # ------------------------------------------------------------------
@@ -156,6 +163,18 @@ class SalesService:
         if not account_ids:
             return []
         return self._run_query(sq.SALES_ITEMS, (account_ids,))
+
+    # ------------------------------------------------------------------
+    # /customers/{name}/sales/service-breakdown
+    # ------------------------------------------------------------------
+
+    def get_service_breakdown(self, customer_name: str) -> List[Dict[str, Any]]:
+        account_ids = self._resolve_account_ids(customer_name)
+        if not account_ids:
+            return []
+        raw_lines = self._run_query(sq.SALES_LINES_BY_PRODUCT_FOR_CUSTOMER, (account_ids,))
+        mapping = self._load_product_mapping()
+        return map_service_sales_lines(raw_lines, mapping)
 
     # ------------------------------------------------------------------
     # /customers/{name}/sales/efficiency
