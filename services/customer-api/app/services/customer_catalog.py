@@ -63,6 +63,8 @@ def build_catalog_row(
     is_vip: bool,
     cache_pinned: bool,
     ytd_revenue: float = 0.0,
+    active_order_value: float = 0.0,
+    active_order_count: int = 0,
     currency: Optional[str] = None,
 ) -> dict[str, Any]:
     mapped = _is_mapped(source_mappings)
@@ -80,6 +82,8 @@ def build_catalog_row(
         "real_data_cached": _real_data_cached(crm_account_name) if mapped else False,
         "overuse_status": _overuse_status(mapped=mapped, is_vip=is_vip),
         "ytd_revenue": float(ytd_revenue or 0.0),
+        "active_order_value": float(active_order_value or 0.0),
+        "active_order_count": int(active_order_count or 0),
         "currency": currency,
         "list_group": "vip" if is_vip else ("mapped" if mapped else "unmapped"),
     }

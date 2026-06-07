@@ -81,6 +81,7 @@ def _compact_customer_card(row: dict, *, allow_vip_toggle: bool):
     name = str(row.get("display_name") or row.get("crm_account_name") or "-")
     account_id = str(row.get("crm_accountid") or "")
     revenue = format_revenue(row.get("ytd_revenue"), row.get("currency"))
+    active_value = format_revenue(row.get("active_order_value"), row.get("currency"))
     star = None
     if allow_vip_toggle:
         star = dmc.ActionIcon(
@@ -107,6 +108,7 @@ def _compact_customer_card(row: dict, *, allow_vip_toggle: bool):
                 children=[
                     dmc.Text(name, fw=700, size="sm", c="#2B3674", lineClamp=2),
                     dmc.Text(f"YTD {revenue}", size="xs", c="#A3AED0"),
+                    dmc.Text(f"Active {active_value}", size="xs", c="#4318FF", fw=600),
                     dmc.Group(gap=4, wrap="wrap", children=_status_badges(row, show_unmapped_on_vip=True)),
                 ],
             ),

@@ -396,6 +396,8 @@ def build_crm_sold_services_panel(
 
 
 def build_crm_intro_card(customer_name: str, sales_summary: dict | None, service_breakdown: list[dict] | None):
+    summary = sales_summary or {}
+    currency = summary.get("currency")
     return dmc.SimpleGrid(
         cols={"base": 1, "md": 2},
         spacing="lg",
@@ -425,6 +427,12 @@ def build_crm_intro_card(customer_name: str, sales_summary: dict | None, service
                                         size="sm",
                                         c="#A3AED0",
                                         fw=500,
+                                    ),
+                                    dmc.Text(
+                                        f"Active order value: {format_crm_money(summary.get('active_order_value'), currency)}",
+                                        size="sm",
+                                        c="#4318FF",
+                                        fw=700,
                                     ),
                                 ],
                             ),

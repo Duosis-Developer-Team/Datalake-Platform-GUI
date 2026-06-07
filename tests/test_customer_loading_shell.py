@@ -67,3 +67,5 @@ def test_build_customer_layout_with_customer_has_async_roots():
     assert "customer-view-page-root" in string_ids
     assert "customer-export-store" in string_ids
     assert "customer-view-visible-sections" in string_ids
+    assert "customer-export-toolbar" in string_ids
+    assert "customer-export-csv" in str(layout)

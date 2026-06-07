@@ -687,6 +687,21 @@ Sipariş referansı, tarih, durum, toplam tutar ve kalem sayısı (`COUNT(d.sale
 
 Ne yapar: Müşterinin açık sipariş özet başlıkları. Parametreler: `(accountids[],)`.
 
+#### `CRM_PROJECT_ACTIVE_ORDERS_BY_CUSTOMER` — catalog kartları için batch aktif sipariş
+
+```sql
+SELECT so.customerid AS crm_accountid,
+       COALESCE(SUM(so.totalamount), 0)::double precision AS active_order_value,
+       COALESCE(COUNT(DISTINCT so.salesorderid), 0)::bigint AS active_order_count,
+       MIN(so.transactioncurrency_text) AS currency
+FROM   discovery_crm_salesorders so
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (0, 1)
+GROUP BY so.customerid;
+```
+
+**GUI:** `GET /api/v1/customers/catalog` → `CustomerCatalogRow.active_order_value`, `active_order_count` (compact cards: `Active {value}`).
+
 #### `SALES_EFFICIENCY_BILLED` — ürün bazında faturalanan miktar
 
 ```sql

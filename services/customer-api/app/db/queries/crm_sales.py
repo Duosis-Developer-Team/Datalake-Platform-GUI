@@ -231,6 +231,17 @@ WHERE  so.customerid = ANY(%s)
 GROUP BY so.customerid;
 """
 
+CRM_PROJECT_ACTIVE_ORDERS_BY_CUSTOMER = """
+SELECT so.customerid AS crm_accountid,
+       COALESCE(SUM(so.totalamount), 0)::double precision AS active_order_value,
+       COALESCE(COUNT(DISTINCT so.salesorderid), 0)::bigint AS active_order_count,
+       MIN(so.transactioncurrency_text) AS currency
+FROM   discovery_crm_salesorders so
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (0, 1)
+GROUP BY so.customerid;
+"""
+
 CRM_PROJECT_SALES_LINES_BY_PRODUCT = """
 WITH project_accounts AS (
     SELECT DISTINCT a.accountid

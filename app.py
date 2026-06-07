@@ -325,7 +325,7 @@ app.clientside_callback(
         const triggered = dash_clientside.callback_context.triggered;
         if (!triggered || !triggered.length) return window.dash_clientside.no_update;
         const trigger = triggered[0];
-        if (!trigger || !trigger.value) return window.dash_clientside.no_update;
+        if (!trigger || !trigger.value || trigger.value < 1) return window.dash_clientside.no_update;
 
         const propId = trigger.prop_id || "";
         let index = "";

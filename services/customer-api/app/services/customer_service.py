@@ -762,12 +762,18 @@ class CustomerService:
         mapping_index = self._load_source_mapping_index()
         account_ids = [str(r.get("crm_accountid")) for r in project_rows if r.get("crm_accountid")]
         ytd_index: dict[str, dict[str, Any]] = {}
+        active_index: dict[str, dict[str, Any]] = {}
         if account_ids and self._pool is not None:
             try:
                 for row in self._run_query(crm_sq.CRM_PROJECT_SALES_BY_CUSTOMER_YTD, (account_ids,)):
                     ytd_index[str(row.get("crm_accountid"))] = row
             except Exception as exc:
                 logger.warning("Customer YTD sales lookup failed: %s", exc)
+            try:
+                for row in self._run_query(crm_sq.CRM_PROJECT_ACTIVE_ORDERS_BY_CUSTOMER, (account_ids,)):
+                    active_index[str(row.get("crm_accountid"))] = row
+            except Exception as exc:
+                logger.warning("Customer active orders lookup failed: %s", exc)
 
         catalog_rows: list[dict[str, Any]] = []
         for row in project_rows:
@@ -777,6 +783,8 @@ class CustomerService:
                 continue
             flag = flags.get(account_id) or {}
             ytd = ytd_index.get(account_id) or {}
+            active = active_index.get(account_id) or {}
+            currency = ytd.get("currency") or active.get("currency")
             catalog_rows.append(
                 build_catalog_row(
                     crm_accountid=account_id,
@@ -785,7 +793,9 @@ class CustomerService:
                     is_vip=bool(flag.get("is_vip")),
                     cache_pinned=bool(flag.get("cache_pinned") or flag.get("is_vip")),
                     ytd_revenue=float(ytd.get("ytd_revenue") or 0.0),
-                    currency=ytd.get("currency"),
+                    active_order_value=float(active.get("active_order_value") or 0.0),
+                    active_order_count=int(active.get("active_order_count") or 0),
+                    currency=currency,
                 )
             )
 

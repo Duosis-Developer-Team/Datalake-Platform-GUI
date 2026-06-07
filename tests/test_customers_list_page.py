@@ -27,6 +27,8 @@ def _sample_catalog() -> dict:
                 "overuse_status": "pending",
                 "list_group": "mapped",
                 "ytd_revenue": 1000.0,
+                "active_order_value": 500.0,
+                "active_order_count": 1,
                 "currency": "TL",
             },
             {
@@ -110,6 +112,24 @@ def test_pagination_helpers():
     rows = list(range(10))
     assert page_count(10, 4) == 3
     assert paginate_rows(rows, 1, 4) == [4, 5, 6, 7]
+
+
+def test_compact_customer_card_shows_active_value():
+    card = customers_list._compact_customer_card(
+        {
+            "display_name": "3S Sigorta",
+            "crm_accountid": "acc-3s",
+            "ytd_revenue": 0.0,
+            "active_order_value": 3788.42,
+            "currency": "TRY",
+            "mapped": False,
+            "is_vip": False,
+        },
+        allow_vip_toggle=False,
+    )
+    text = str(card)
+    assert "Active" in text
+    assert "3.8K TRY" in text or "3,788" in text
 
 
 def test_format_revenue_and_badges():

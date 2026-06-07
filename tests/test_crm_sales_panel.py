@@ -65,8 +65,16 @@ def test_build_crm_summary_kv_panel_contains_customer_and_ytd():
 def test_build_crm_intro_card_renders():
     card = build_crm_intro_card(
         "Acme Corp",
-        {"ytd_revenue_total": 100.0, "lifetime_revenue_total": 200.0, "invoice_count": 1, "currency": "TRY"},
+        {
+            "ytd_revenue_total": 100.0,
+            "lifetime_revenue_total": 200.0,
+            "invoice_count": 1,
+            "active_order_value": 2500.0,
+            "currency": "TRY",
+        },
         [],
     )
     assert card is not None
     assert "CRM sales" in str(card)
+    assert "Active order value" in str(card)
+    assert "2,500.00 TRY" in str(card)

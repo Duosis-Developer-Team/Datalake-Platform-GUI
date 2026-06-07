@@ -606,7 +606,7 @@ def _tab_billing(
             _metric("YTD realized revenue", _money(sales_summary.get("ytd_revenue_total")), "solar:money-bag-bold-duotone", color="green"),
             _metric("YTD Orders (Fulfilled)", f"{int(sales_summary.get('invoice_count') or 0):,}", "solar:bill-list-bold-duotone", color="teal"),
             _metric("Active orders (open)", f"{int(sales_summary.get('active_order_count') or 0):,}", "solar:cart-bold-duotone", color="cyan"),
-            _metric("Estimated MRR", _money(sales_summary.get("estimated_mrr")), "solar:calendar-bold-duotone", color="violet"),
+            _metric("Active order value", _money(sales_summary.get("active_order_value")), "solar:wallet-money-bold-duotone", color="grape"),
         ],
     )
 
@@ -1726,7 +1726,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             "has_s3": False,
             "phys_inv": empty,
             "has_phys_inv": False,
-            "export_sheets": {},
+            "export_context": {},
         }
 
     with ThreadPoolExecutor(max_workers=10) as pool:
@@ -1927,21 +1927,21 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         ],
     )
 
-    export_sheets = _build_customer_export_sheets(
-        name,
-        totals or {},
-        backup_totals or {},
-        assets or {},
-        classic,
-        hyperconv,
-        pure_nx,
-        power_asset,
-        s3_data,
-        phys_inv_devices or [],
-        itsm_summary=itsm_summary or {},
-        itsm_extremes=itsm_extremes or {},
-        itsm_tickets=itsm_tickets or [],
-    )
+    export_context = {
+        "customer_name": name,
+        "totals": totals or {},
+        "backup_totals": backup_totals or {},
+        "assets": assets or {},
+        "classic": classic,
+        "hyperconv": hyperconv,
+        "pure_nx": pure_nx,
+        "power_asset": power_asset,
+        "s3_data": s3_data or {},
+        "phys_inv_devices": phys_inv_devices or [],
+        "itsm_summary": itsm_summary or {},
+        "itsm_extremes": itsm_extremes or {},
+        "itsm_tickets": itsm_tickets or [],
+    }
 
     return {
         "intro_card": build_crm_intro_card(name, sales_summary, service_breakdown),
@@ -1976,7 +1976,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         "has_s3": has_s3,
         "phys_inv": _tab_physical_inventory(phys_inv_devices),
         "has_phys_inv": has_phys_inv,
-        "export_sheets": export_sheets,
+        "export_context": export_context,
     }
 
 
@@ -2075,8 +2075,8 @@ def _build_customer_tabs_list(*, has_s3: bool = False, has_phys_inv: bool = Fals
 
 
 def render_customer_loading_page(chosen: str, time_range, visible_sections=None) -> html.Div:
+    del visible_sections
     tr = time_range or default_time_range()
-    export_group = _build_customer_export_group(visible_sections)
     header = create_detail_header(
         title="Customer View",
         back_href="/customers",
@@ -2086,7 +2086,6 @@ def render_customer_loading_page(chosen: str, time_range, visible_sections=None)
         time_range=tr,
         icon="solar:users-group-two-rounded-bold-duotone",
         tabs=_build_customer_tabs_list(),
-        right_extra=[export_group] if export_group else [],
     )
     return html.Div(
         className="customer-page-enter",
@@ -2110,10 +2109,10 @@ def render_customer_loading_page(chosen: str, time_range, visible_sections=None)
 
 
 def render_customer_page(chosen: str, time_range, content: dict, visible_sections=None) -> html.Div:
+    del visible_sections
     tr = time_range or default_time_range()
     has_s3 = bool(content.get("has_s3"))
     has_phys_inv = bool(content.get("has_phys_inv"))
-    export_group = _build_customer_export_group(visible_sections)
     header = create_detail_header(
         title="Customer View",
         back_href="/customers",
@@ -2123,7 +2122,6 @@ def render_customer_page(chosen: str, time_range, content: dict, visible_section
         time_range=tr,
         icon="solar:users-group-two-rounded-bold-duotone",
         tabs=_build_customer_tabs_list(has_s3=has_s3, has_phys_inv=has_phys_inv),
-        right_extra=[export_group] if export_group else [],
     )
     return html.Div(
         className="customer-page-enter",
@@ -2219,6 +2217,17 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
             ],
         )
 
+    export_group = _build_customer_export_group(vs)
+    export_toolbar = (
+        html.Div(
+            id="customer-export-toolbar",
+            style={"display": "flex", "justifyContent": "flex-end", "padding": "8px 30px 0"},
+            children=[export_group],
+        )
+        if export_group
+        else html.Div(id="customer-export-toolbar")
+    )
+
     return html.Div(
         children=[
             dcc.Store(
@@ -2227,9 +2236,10 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
             ),
             dcc.Store(
                 id="customer-export-store",
-                data={"customer": chosen, "sheets": {}},
+                data={"customer": chosen, "export_context": {}},
             ),
             dcc.Download(id="customer-export-download"),
+            export_toolbar,
             html.Div(
                 id="customer-view-page-root",
                 children=render_customer_loading_page(chosen, tr, visible_sections=vs),
@@ -2250,7 +2260,36 @@ def layout():
     State("app-time-range", "data"),
     prevent_initial_call=True,
 )
+def _export_sheets_from_store(store: dict | None) -> dict[str, list[dict]]:
+    store = store or {}
+    export_context = store.get("export_context")
+    if isinstance(export_context, dict) and export_context.get("customer_name"):
+        return _build_customer_export_sheets(
+            export_context["customer_name"],
+            export_context.get("totals") or {},
+            export_context.get("backup_totals") or {},
+            export_context.get("assets") or {},
+            export_context.get("classic") or {},
+            export_context.get("hyperconv") or {},
+            export_context.get("pure_nx") or {},
+            export_context.get("power_asset") or {},
+            export_context.get("s3_data") or {},
+            export_context.get("phys_inv_devices") or [],
+            itsm_summary=export_context.get("itsm_summary") or {},
+            itsm_extremes=export_context.get("itsm_extremes") or {},
+            itsm_tickets=export_context.get("itsm_tickets") or [],
+        )
+    sheets_raw = store.get("sheets")
+    if isinstance(sheets_raw, dict) and sheets_raw:
+        return sheets_raw
+    if store.get("rows"):
+        return {"Legacy": store.get("rows") or []}
+    return {}
+
+
 def export_customer_view(nc, nx, store, time_range):
+    if not nc and not nx:
+        raise dash.exceptions.PreventUpdate
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update
@@ -2259,14 +2298,14 @@ def export_customer_view(nc, nx, store, time_range):
     fmt = fmt_map.get(tid)
     if not fmt:
         return dash.no_update
+    if fmt == "csv" and not nc:
+        raise dash.exceptions.PreventUpdate
+    if fmt == "xlsx" and not nx:
+        raise dash.exceptions.PreventUpdate
     store = store or {}
     base = str(store.get("customer") or "customer_view")
     extra = {"customer": base}
-    sheets_raw = store.get("sheets")
-    if not isinstance(sheets_raw, dict):
-        sheets_raw = {}
-    if not sheets_raw and store.get("rows"):
-        sheets_raw = {"Legacy": store.get("rows") or []}
+    sheets_raw = _export_sheets_from_store(store)
 
     order = [
         "Customer_Meta",

@@ -279,6 +279,8 @@ class CustomerCatalogRow(BaseModel):
     real_data_cached: bool = False
     overuse_status: str = "not_applicable"
     ytd_revenue: float = 0.0
+    active_order_value: float = 0.0
+    active_order_count: int = 0
     currency: Optional[str] = None
     list_group: str = "unmapped"
 

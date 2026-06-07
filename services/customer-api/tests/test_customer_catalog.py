@@ -30,6 +30,23 @@ def test_build_catalog_row_marks_boyner_seed_as_mapped(monkeypatch):
     assert row["list_group"] == "mapped"
 
 
+def test_build_catalog_row_includes_active_order_fields(monkeypatch):
+    monkeypatch.setattr(cc, "_real_data_cached", lambda _name: False)
+    row = cc.build_catalog_row(
+        crm_accountid="acc-3s",
+        crm_account_name="3S Sigorta",
+        source_mappings=[],
+        is_vip=False,
+        cache_pinned=False,
+        ytd_revenue=0.0,
+        active_order_value=3788.42,
+        active_order_count=1,
+        currency="TRY",
+    )
+    assert row["active_order_value"] == 3788.42
+    assert row["active_order_count"] == 1
+
+
 def test_group_catalog_rows_excludes_vip_from_mapped_and_unmapped():
     rows = [
         _boyner_row(),

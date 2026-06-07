@@ -44,7 +44,6 @@ def load_customer_view_data(pathname, search, time_range, visible_sections):
     tr = time_range or default_time_range()
     vs = set(visible_sections) if visible_sections else None
     content = _customer_content(chosen, tr)
-    export_sheets = content.get("export_sheets") or {}
     page = render_customer_page(chosen, tr, content, visible_sections=vs)
-    store = {"customer": chosen, "sheets": export_sheets}
+    store = {"customer": chosen, "export_context": content.get("export_context") or {}}
     return page, store
