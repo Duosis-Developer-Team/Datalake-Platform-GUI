@@ -7,12 +7,14 @@ from dash.exceptions import PreventUpdate
 
 from src.pages.settings.integrations.crm_aliases import (
     TABLE_PAGE_SIZE,
+    build_editor_shell,
     build_table_body_rows,
-    render_editor_panel,
+    section_refresh_outputs,
     visible_table_rows,
 )
 from src.services import api_client as api
 from src.utils.crm_source_mapping_ui import (
+    UI_COLUMNS,
     add_mapping_row,
     alias_from_table_selection,
     aliases_to_table_rows,
@@ -81,6 +83,7 @@ def sync_alias_panel_class(store):
     Output("alias-panel-subtitle", "children"),
     Output("alias-editor-state", "data"),
     Output("alias-editor-panel", "children"),
+    Output("alias-editor-open-sections", "data"),
     Input({"type": "alias-edit-open", "account": ALL}, "n_clicks"),
     State("alias-page-data", "data"),
     prevent_initial_call=True,
@@ -98,12 +101,14 @@ def open_alias_editor_panel(_clicks, page_data):
     if not editor:
         raise PreventUpdate
     name = str(alias.get("crm_account_name") if alias else account_id)
+    open_sections = [UI_COLUMNS[0][0]]
     return (
         _panel_store(True, account_id),
         f"Edit mappings — {name}",
         account_id,
         editor,
-        render_editor_panel(editor),
+        build_editor_shell(editor, open_sections=open_sections),
+        open_sections,
     )
 
 
@@ -134,6 +139,29 @@ def refresh_alias_table(query, page_value, page_data):
     if trig == "alias-table-search":
         page = 0
     return _table_refresh_outputs(page_data or [], query or "", page)
+
+
+@callback(
+    Output({"type": "alias-section-rows", "section": ALL}, "children"),
+    Output({"type": "alias-section-count", "section": ALL}, "children"),
+    Input("alias-editor-state", "data"),
+    prevent_initial_call=True,
+)
+def refresh_editor_sections(editor_state):
+    if not isinstance(editor_state, dict):
+        raise PreventUpdate
+    return section_refresh_outputs(editor_state)
+
+
+@callback(
+    Output("alias-editor-open-sections", "data", allow_duplicate=True),
+    Input("alias-editor-accordion", "value"),
+    prevent_initial_call=True,
+)
+def persist_editor_accordion_open(value):
+    if isinstance(value, list) and value:
+        return value
+    return [UI_COLUMNS[0][0]]
 
 
 @callback(
@@ -173,7 +201,6 @@ def sync_editor_inputs(_methods, _values, _enabled, _sources, notes, editor_stat
 
 @callback(
     Output("alias-editor-state", "data", allow_duplicate=True),
-    Output("alias-editor-panel", "children", allow_duplicate=True),
     Input({"type": "alias-edit-add", "section": ALL}, "n_clicks"),
     State("alias-editor-state", "data"),
     prevent_initial_call=True,
@@ -181,19 +208,18 @@ def sync_editor_inputs(_methods, _values, _enabled, _sources, notes, editor_stat
 def add_mapping_row_cb(_n_clicks, editor_state):
     trig = ctx.triggered_id
     if not isinstance(trig, dict) or trig.get("type") != "alias-edit-add":
-        return no_update, no_update
+        return no_update
     if not ctx.triggered or not ctx.triggered[0].get("value"):
-        return no_update, no_update
+        return no_update
     section = str(trig.get("section") or "")
     updated = add_mapping_row(editor_state, section)
     if updated is None:
-        return no_update, no_update
-    return updated, render_editor_panel(updated)
+        return no_update
+    return updated
 
 
 @callback(
     Output("alias-editor-state", "data", allow_duplicate=True),
-    Output("alias-editor-panel", "children", allow_duplicate=True),
     Input({"type": "alias-edit-remove", "section": ALL, "index": ALL}, "n_clicks"),
     State("alias-editor-state", "data"),
     prevent_initial_call=True,
@@ -201,15 +227,15 @@ def add_mapping_row_cb(_n_clicks, editor_state):
 def remove_mapping_row_cb(_n_clicks, editor_state):
     trig = ctx.triggered_id
     if not isinstance(trig, dict) or trig.get("type") != "alias-edit-remove":
-        return no_update, no_update
+        return no_update
     if not ctx.triggered or not ctx.triggered[0].get("value"):
-        return no_update, no_update
+        return no_update
     section = str(trig.get("section") or "")
     index = int(trig.get("index", 0))
     updated = remove_mapping_row(editor_state, section, index)
     if updated is None:
-        return no_update, no_update
-    return updated, render_editor_panel(updated)
+        return no_update
+    return updated
 
 
 @callback(
@@ -218,16 +244,18 @@ def remove_mapping_row_cb(_n_clicks, editor_state):
     Input("alias-edit-reset", "n_clicks"),
     State("alias-page-data", "data"),
     State("alias-editor-state", "data"),
+    State("alias-editor-open-sections", "data"),
     prevent_initial_call=True,
 )
-def reset_editor_cb(_n_clicks, page_data, editor_state):
+def reset_editor_cb(_n_clicks, page_data, editor_state, open_sections):
     if not editor_state:
         return no_update, no_update
     account_id = str(editor_state.get("crm_accountid") or "")
     _, refreshed = _editor_for_account(page_data or [], account_id)
     if not refreshed:
         return no_update, no_update
-    return refreshed, render_editor_panel(refreshed)
+    sections = open_sections if isinstance(open_sections, list) else [UI_COLUMNS[0][0]]
+    return refreshed, build_editor_shell(refreshed, open_sections=sections)
 
 
 @callback(
@@ -254,6 +282,7 @@ def reset_editor_cb(_n_clicks, page_data, editor_state):
     State("alias-page-data", "data"),
     State("alias-table-search", "value"),
     State("alias-table-page", "data"),
+    State("alias-editor-open-sections", "data"),
     prevent_initial_call=True,
 )
 def save_editor_mappings_cb(
@@ -267,6 +296,7 @@ def save_editor_mappings_cb(
     page_data,
     query,
     page_index,
+    open_sections,
 ):
     if not editor_state:
         return (dmc.Alert(color="yellow", title="Select a customer first."),) + (no_update,) * 11
@@ -303,6 +333,7 @@ def save_editor_mappings_cb(
         )
         refreshed_editor = build_editor_state(find_alias(updated_page, account_id))
         table_out = _table_refresh_outputs(updated_page, query or "", int(page_index or 0))
+        sections = open_sections if isinstance(open_sections, list) else [UI_COLUMNS[0][0]]
         return (
             dmc.Alert(color="green", title="Saved", children=f"Mappings updated for {account_name}."),
             updated_page,
@@ -311,7 +342,7 @@ def save_editor_mappings_cb(
             f"Edit mappings — {account_name}",
             account_id,
             refreshed_editor,
-            render_editor_panel(refreshed_editor),
+            build_editor_shell(refreshed_editor, open_sections=sections),
         )
     except Exception as exc:  # noqa: BLE001
         return (dmc.Alert(color="red", title="Save failed", children=str(exc)),) + (no_update,) * 11
@@ -344,6 +375,7 @@ def seed_boyner_cb(_n_clicks, query):
         alias, editor = _editor_for_account(aliases, boyner_id) if boyner_id else (None, None)
         table_out = _table_refresh_outputs(aliases, query or "", 0)
         name = str(alias.get("crm_account_name") if alias else "Boyner")
+        open_sections = [UI_COLUMNS[0][0]]
         return (
             dmc.Alert(color="green", title=f"Boyner seed applied ({rows_upserted} rows)"),
             aliases,
@@ -352,7 +384,7 @@ def seed_boyner_cb(_n_clicks, query):
             f"Edit mappings — {name}" if boyner_id else "Edit mappings",
             boyner_id if boyner_id else "",
             editor,
-            render_editor_panel(editor) if editor else render_editor_panel(None),
+            build_editor_shell(editor, open_sections=open_sections) if editor else build_editor_shell(None),
         )
     except Exception as exc:  # noqa: BLE001
         return (dmc.Alert(color="red", title="Seed failed", children=str(exc)),) + (no_update,) * 11

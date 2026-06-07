@@ -12,6 +12,7 @@ from src.utils.crm_source_mapping_ui import (
     collect_mappings_for_account,
     compute_summary,
     editor_state_from_dash_states,
+    editor_state_from_form_inputs,
     editor_state_to_save_payload,
     filter_alias_table_rows,
     mappings_for_column,
@@ -118,6 +119,70 @@ def test_add_and_remove_mapping_row():
     assert len(updated["sections"]["backup"]) == 2
     trimmed = remove_mapping_row(updated, "backup", 1)
     assert len(trimmed["sections"]["backup"]) == 1
+
+
+def test_editor_state_from_form_inputs_returns_none_when_index_out_of_bounds():
+    editor = build_editor_state({"crm_accountid": "a", "crm_account_name": "A", "source_mappings": []})
+    assert editor is not None
+    result = editor_state_from_form_inputs(
+        editor,
+        section="virtualization",
+        index=99,
+        match_value="stale",
+    )
+    assert result is None
+
+
+def test_section_refresh_outputs_reflects_added_row():
+    from src.pages.settings.integrations import crm_aliases as page_mod
+
+    editor = build_editor_state({"crm_accountid": "a", "crm_account_name": "A", "source_mappings": []})
+    updated = add_mapping_row(editor, "virtualization")
+    rows, counts = page_mod.section_refresh_outputs(updated)
+    assert len(rows) == len(page_mod.UI_COLUMNS)
+    virt_idx = next(i for i, (key, _, _) in enumerate(page_mod.UI_COLUMNS) if key == "virtualization")
+    assert len(rows[virt_idx]) == 2
+
+
+def test_build_editor_shell_includes_section_row_pattern_ids():
+    from src.pages.settings.integrations import crm_aliases as page_mod
+
+    editor = build_editor_state(
+        {
+            "crm_accountid": "a",
+            "crm_account_name": "Aselsan",
+            "source_mappings": [
+                {
+                    "data_source": "virtualization",
+                    "match_method": "contains",
+                    "match_value": "aselsan",
+                    "enabled": True,
+                }
+            ],
+        }
+    )
+    shell = page_mod.build_editor_shell(editor)
+
+    def _walk(obj):
+        if obj is None:
+            return
+        if isinstance(obj, (list, tuple)):
+            for item in obj:
+                yield from _walk(item)
+            return
+        yield obj
+        children = getattr(obj, "children", None)
+        if children is not None:
+            yield from _walk(children)
+
+    pattern_ids = [
+        getattr(node, "id", None)
+        for node in _walk(shell)
+        if isinstance(getattr(node, "id", None), dict)
+    ]
+    assert any(item.get("type") == "alias-section-rows" for item in pattern_ids)
+    string_ids = {getattr(node, "id", None) for node in _walk(shell) if isinstance(getattr(node, "id", None), str)}
+    assert "alias-editor-accordion" in string_ids
 
 
 def test_merge_alias_after_save_updates_page_data():
@@ -286,4 +351,5 @@ def test_build_layout_includes_slide_panel_and_edit_buttons(monkeypatch):
     assert "alias-slide-panel" in string_ids
     assert "alias-table-body" in string_ids
     assert "alias-panel-store" in string_ids
+    assert "alias-editor-open-sections" in string_ids
     assert any(item.get("type") == "alias-edit-open" for item in pattern_ids)

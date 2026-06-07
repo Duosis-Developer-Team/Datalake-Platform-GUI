@@ -27,6 +27,7 @@ _STATUS_COLORS = {
     "seed": "blue",
     "empty": "gray",
 }
+_SECTION_ROW_STYLE = {"transition": "opacity 0.15s ease-in-out"}
 
 
 def summary_strip(aliases: list[dict]) -> dmc.Group:
@@ -46,6 +47,10 @@ def summary_strip(aliases: list[dict]) -> dmc.Group:
             ),
         ],
     )
+
+
+def _filled_mapping_count(entries: list[dict]) -> int:
+    return len([e for e in entries if str(e.get("match_value") or "").strip()])
 
 
 def _render_mapping_entry(section_key: str, data_sources: tuple[str, ...], entry: dict, index: int):
@@ -103,7 +108,25 @@ def _render_mapping_entry(section_key: str, data_sources: tuple[str, ...], entry
     )
 
 
-def render_editor_panel(editor_state: dict | None) -> html.Div:
+def render_section_rows(section_key: str, data_sources: tuple[str, ...], entries: list[dict]) -> list:
+    return [
+        _render_mapping_entry(section_key, data_sources, entry, idx)
+        for idx, entry in enumerate(entries)
+    ]
+
+
+def section_refresh_outputs(editor_state: dict | None) -> tuple[list, list]:
+    sections = (editor_state or {}).get("sections") or {}
+    rows_out: list = []
+    counts_out: list = []
+    for column_key, _label, data_sources in UI_COLUMNS:
+        entries = sections.get(column_key) or []
+        rows_out.append(render_section_rows(column_key, data_sources, entries))
+        counts_out.append(str(_filled_mapping_count(entries)))
+    return rows_out, counts_out
+
+
+def build_editor_shell(editor_state: dict | None, *, open_sections: list[str] | None = None) -> html.Div:
     if not editor_state:
         return html.Div(
             children=dmc.Alert(
@@ -113,23 +136,12 @@ def render_editor_panel(editor_state: dict | None) -> html.Div:
             )
         )
 
-    account_name = editor_state.get("crm_account_name") or editor_state.get("crm_accountid")
     sections = editor_state.get("sections") or {}
+    initial_rows, initial_counts = section_refresh_outputs(editor_state)
+    accordion_value = list(open_sections) if open_sections else [UI_COLUMNS[0][0]]
 
     accordion_items = []
-    for column_key, label, data_sources in UI_COLUMNS:
-        entries = sections.get(column_key) or []
-        body = [
-            *[_render_mapping_entry(column_key, data_sources, entry, idx) for idx, entry in enumerate(entries)],
-            dmc.Button(
-                "Add mapping",
-                id={"type": "alias-edit-add", "section": column_key},
-                size="xs",
-                variant="light",
-                color="gray",
-                mt="xs",
-            ),
-        ]
+    for idx, (column_key, label, _data_sources) in enumerate(UI_COLUMNS):
         accordion_items.append(
             dmc.AccordionItem(
                 value=column_key,
@@ -140,14 +152,34 @@ def render_editor_panel(editor_state: dict | None) -> html.Div:
                             children=[
                                 dmc.Text(label, fw=600, size="sm"),
                                 dmc.Badge(
-                                    str(len([e for e in entries if str(e.get("match_value") or "").strip()])),
+                                    id={"type": "alias-section-count", "section": column_key},
+                                    children=initial_counts[idx],
                                     color="gray",
                                     size="sm",
                                 ),
                             ],
                         )
                     ),
-                    dmc.AccordionPanel(dmc.Stack(gap="xs", children=body)),
+                    dmc.AccordionPanel(
+                        dmc.Stack(
+                            gap="xs",
+                            children=[
+                                html.Div(
+                                    id={"type": "alias-section-rows", "section": column_key},
+                                    style=_SECTION_ROW_STYLE,
+                                    children=initial_rows[idx],
+                                ),
+                                dmc.Button(
+                                    "Add mapping",
+                                    id={"type": "alias-edit-add", "section": column_key},
+                                    size="xs",
+                                    variant="light",
+                                    color="gray",
+                                    mt="xs",
+                                ),
+                            ],
+                        )
+                    ),
                 ],
             )
         )
@@ -172,12 +204,18 @@ def render_editor_panel(editor_state: dict | None) -> html.Div:
                 placeholder="Optional operator notes",
             ),
             dmc.Accordion(
+                id="alias-editor-accordion",
                 multiple=True,
-                value=[UI_COLUMNS[0][0]],
+                value=accordion_value,
                 children=accordion_items,
             ),
         ]
     )
+
+
+def render_editor_panel(editor_state: dict | None) -> html.Div:
+    """Backward-compatible alias for build_editor_shell."""
+    return build_editor_shell(editor_state)
 
 
 def _status_badge(status: str) -> dmc.Badge:
@@ -316,7 +354,7 @@ def build_layout(search: str | None = None) -> html.Div:
                             ),
                         ],
                     ),
-                    html.Div(id="alias-editor-panel", children=render_editor_panel(None)),
+                    html.Div(id="alias-editor-panel", children=build_editor_shell(None)),
                 ],
             ),
         ],
@@ -442,6 +480,7 @@ def build_layout(search: str | None = None) -> html.Div:
             dcc.Store(id="alias-page-data", data=aliases),
             dcc.Store(id="alias-editor-state", data=None),
             dcc.Store(id="alias-panel-store", data={"open": False, "crm_accountid": None}),
+            dcc.Store(id="alias-editor-open-sections", data=[UI_COLUMNS[0][0]]),
             dcc.Store(id="alias-table-page", data=0),
         ],
     )

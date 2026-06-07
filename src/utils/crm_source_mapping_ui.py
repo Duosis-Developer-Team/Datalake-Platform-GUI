@@ -429,7 +429,7 @@ def editor_state_from_form_inputs(
     }
     entries = list(state["sections"].get(section) or [])
     if index < 0 or index >= len(entries):
-        return state
+        return None
     entry = dict(entries[index])
     if match_method is not None:
         entry["match_method"] = match_method
@@ -478,7 +478,7 @@ def remove_mapping_row(editor_state: dict | None, section: str, index: int) -> d
     }
     entries = list(state["sections"].get(section) or [])
     if index < 0 or index >= len(entries):
-        return state
+        return None
     if len(entries) <= 1:
         default_source = _COLUMN_SOURCE_DEFAULTS.get(section, "virtualization")
         state["sections"][section] = [
