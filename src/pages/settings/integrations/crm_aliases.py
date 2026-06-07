@@ -17,6 +17,8 @@ from src.utils.crm_source_mapping_ui import (
     aliases_to_table_rows,
     build_editor_state,
     compute_summary,
+    editor_state_from_dash_states,
+    editor_state_from_form_inputs,
     editor_state_to_save_payload,
     find_alias,
     merge_alias_after_save,
@@ -234,7 +236,7 @@ def build_layout(search: str | None = None) -> html.Div:
         )
     else:
         empty_alert = dmc.Text(
-            "Filter and sort using column headers. Select one row to edit mappings in the panel above.",
+            "Filter and sort using column headers. Click a row or use the checkbox to edit mappings in the panel above.",
             size="sm",
             c="dimmed",
             mb="sm",
@@ -324,77 +326,93 @@ def build_layout(search: str | None = None) -> html.Div:
     )
 
 
-def _mappings_from_editor_inputs(
-    method_states: list,
-    value_states: list,
-    enabled_states: list,
-    source_states: list,
-) -> list[dict]:
-    def _index_states(states: list, field: str) -> dict[tuple[str, int], object]:
-        indexed: dict[tuple[str, int], object] = {}
-        for state in states:
-            sid = state.get("id") or {}
-            section = str(sid.get("section") or "")
-            if not section:
-                continue
-            key = (section, int(sid.get("index", 0)))
-            indexed[key] = state.get(field)
-        return indexed
-
-    methods = _index_states(method_states, "value")
-    values = _index_states(value_states, "value")
-    enabled = _index_states(enabled_states, "value")
-    sources = _index_states(source_states, "value")
-    column_default = {key: sources_tuple[0] for key, _, sources_tuple in UI_COLUMNS}
-
-    mappings: list[dict] = []
-    for key, raw_value in values.items():
-        section_key, _idx = key
-        cleaned = str(raw_value or "").strip()
-        if not cleaned:
-            continue
-        mappings.append(
-            {
-                "data_source": str(sources.get(key) or column_default.get(section_key, "virtualization")),
-                "match_method": str(methods.get(key) or "contains"),
-                "match_value": cleaned,
-                "enabled": bool(enabled.get(key, True)),
-            }
-        )
-    return mappings
-
-
-def _selected_account_id(page_data: list[dict], selected_rows: list[int], table_data: list[dict]) -> str | None:
-    if not selected_rows or not table_data:
+def _account_id_from_visible_row(row: dict | None, page_data: list[dict]) -> str | None:
+    if not row:
         return None
-    idx = selected_rows[0]
-    if idx is None or idx >= len(table_data):
-        return None
-    account_id = str(table_data[idx].get("crm_accountid") or "")
+    account_id = str(row.get("crm_accountid") or "")
     if account_id:
         return account_id
-    name = str(table_data[idx].get("crm_account_name") or "")
+    name = str(row.get("crm_account_name") or "")
     for alias in page_data or []:
         if str(alias.get("crm_account_name") or "") == name:
             return str(alias.get("crm_accountid"))
     return None
 
 
+def _resolve_selection_row_index(
+    *,
+    trigger_id,
+    selected_rows: list[int] | None,
+    active_cell: dict | None,
+) -> int | None:
+    if trigger_id == f"{_TABLE_ID}.active_cell" and active_cell and active_cell.get("row") is not None:
+        return int(active_cell["row"])
+    if selected_rows:
+        return int(selected_rows[0])
+    return None
+
+
 @callback(
     Output("alias-editor-state", "data"),
     Output("alias-editor-panel", "children"),
+    Output(_TABLE_ID, "selected_rows"),
     Input(_TABLE_ID, "selected_rows"),
+    Input(_TABLE_ID, "active_cell"),
+    State(_TABLE_ID, "derived_virtual_data"),
     State(_TABLE_ID, "data"),
     State("alias-page-data", "data"),
     prevent_initial_call=True,
 )
-def _load_selected_customer(selected_rows, table_data, page_data):
-    account_id = _selected_account_id(page_data, selected_rows or [], table_data or [])
+def _load_selected_customer(selected_rows, active_cell, virtual_data, table_data, page_data):
+    visible_rows = virtual_data if virtual_data is not None else (table_data or [])
+    row_index = _resolve_selection_row_index(
+        trigger_id=ctx.triggered_id,
+        selected_rows=selected_rows or [],
+        active_cell=active_cell,
+    )
+    if row_index is None or row_index < 0 or row_index >= len(visible_rows):
+        return None, _render_editor_panel(None), []
+    account_id = _account_id_from_visible_row(visible_rows[row_index], page_data or [])
     if not account_id:
-        return None, _render_editor_panel(None)
+        return None, _render_editor_panel(None), []
     alias = find_alias(page_data or [], account_id)
     editor = build_editor_state(alias)
-    return editor, _render_editor_panel(editor)
+    return editor, _render_editor_panel(editor), [row_index]
+
+
+@callback(
+    Output("alias-editor-state", "data", allow_duplicate=True),
+    Input({"type": "alias-edit-method", "section": ALL, "index": ALL}, "value"),
+    Input({"type": "alias-edit-value", "section": ALL, "index": ALL}, "value"),
+    Input({"type": "alias-edit-enabled", "section": ALL, "index": ALL}, "checked"),
+    Input({"type": "alias-edit-source", "section": ALL, "index": ALL}, "value"),
+    Input("alias-edit-notes", "value"),
+    State("alias-editor-state", "data"),
+    prevent_initial_call=True,
+)
+def _sync_editor_inputs(_methods, _values, _enabled, _sources, notes, editor_state):
+    if not editor_state:
+        return no_update
+    trig = ctx.triggered_id
+    if trig == "alias-edit-notes":
+        return {**editor_state, "notes": str(notes or "")}
+    if not isinstance(trig, dict):
+        return no_update
+    section = str(trig.get("section") or "")
+    index = int(trig.get("index", 0))
+    trig_type = str(trig.get("type") or "")
+    triggered_value = ctx.triggered[0].get("value") if ctx.triggered else None
+    kwargs: dict = {}
+    if trig_type == "alias-edit-method":
+        kwargs["match_method"] = triggered_value
+    elif trig_type == "alias-edit-value":
+        kwargs["match_value"] = triggered_value
+    elif trig_type == "alias-edit-enabled":
+        kwargs["enabled"] = bool(triggered_value)
+    elif trig_type == "alias-edit-source":
+        kwargs["data_source"] = triggered_value
+    updated = editor_state_from_form_inputs(editor_state, section=section, index=index, **kwargs)
+    return updated if updated is not None else no_update
 
 
 @callback(
@@ -487,8 +505,15 @@ def _save_editor_mappings(
     enabled_states = ctx.states_list[2] if len(ctx.states_list) > 2 else []
     source_states = ctx.states_list[3] if len(ctx.states_list) > 3 else []
 
-    mappings = _mappings_from_editor_inputs(method_states, value_states, enabled_states, source_states)
-    note_text = str(notes or "").strip() or None
+    synced_editor = editor_state_from_dash_states(
+        editor_state,
+        method_states=method_states,
+        value_states=value_states,
+        enabled_states=enabled_states,
+        source_states=source_states,
+        notes=notes,
+    )
+    mappings, note_text = editor_state_to_save_payload(synced_editor)
 
     try:
         saved = api.put_crm_source_mappings(

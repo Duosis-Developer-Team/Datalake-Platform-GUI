@@ -416,6 +416,38 @@ def get_customer_list() -> list[str]:
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_CUSTOMERS)
 
 
+def get_customer_catalog() -> dict[str, Any]:
+    ck = "api:customer_catalog"
+
+    def fetch() -> dict[str, Any]:
+        data = _get_json(_get_client_cust(), "/api/v1/customers/catalog")
+        return data if isinstance(data, dict) else {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
+
+
+def get_customer_overview() -> dict[str, Any]:
+    ck = "api:customer_overview"
+
+    def fetch() -> dict[str, Any]:
+        data = _get_json(_get_client_cust(), "/api/v1/customers/overview")
+        return data if isinstance(data, dict) else {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
+
+
+def set_customer_vip(crm_accountid: str, *, is_vip: bool) -> dict[str, Any]:
+    enc = quote(crm_accountid, safe="")
+    out = _put_json(
+        _get_client_cust(),
+        f"/api/v1/customers/{enc}/vip",
+        {"is_vip": bool(is_vip)},
+    )
+    _api_response_cache.delete("api:customer_catalog")
+    _api_response_cache.delete("api:customer_overview")
+    return out if isinstance(out, dict) else {}
+
+
 def get_customer_resources(name: str, tr: Optional[dict]) -> dict:
     enc = quote(name, safe="")
     ck = f"api:customer_resources:{enc}:{_serialize_tr_params(tr)}"

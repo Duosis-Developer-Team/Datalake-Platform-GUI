@@ -15,10 +15,18 @@ from psycopg2.pool import PoolError
 from app.adapters.customer_adapter import CustomerAdapter
 from app.config import settings
 from app.db.queries import customer as cq
+from app.db.queries import crm_sales as crm_sq
 from app.db.queries import s3 as s3q
 from app.db.queries import service_mapping as smq
 from app.services import cache_service as cache
 from app.services.crm_customer_list import build_crm_project_customer_list, resolve_infra_search_name
+from app.services.customer_catalog import (
+    build_catalog_row,
+    build_overview_payload,
+    group_catalog_rows,
+    load_project_customer_rows,
+    map_service_sales_lines,
+)
 from app.services.customer_mapping_resolver import (
     MappingRule,
     ResolvedSourcePatterns,
@@ -548,9 +556,13 @@ class CustomerService:
         WARMED_CUSTOMERS env optionally limits warm-up scope. When set, it filters the
         CRM project customer list (Boyner matches by substring). If the CRM list is
         unavailable, the env value is used directly for warm-up only.
+
+        VIP and cache-pinned CRM accounts are always included when resolvable to a
+        display name.
         """
         raw = (os.getenv("WARMED_CUSTOMERS") or "").strip()
         all_names = self.get_customer_list()
+        pinned_names = self._load_cache_pinned_display_names()
         if raw:
             allowed = {n.strip().casefold() for n in raw.split(",") if n.strip()}
             if all_names:
@@ -560,19 +572,200 @@ class CustomerService:
                     if n.casefold() in allowed or "boyner" in n.casefold()
                 ]
                 if filtered:
-                    return tuple(filtered)
-            return tuple(n.strip() for n in raw.split(",") if n.strip())
+                    return self._merge_customer_names(filtered, pinned_names)
+            env_names = [n.strip() for n in raw.split(",") if n.strip()]
+            return self._merge_customer_names(env_names, pinned_names)
         boyner_crm = self._load_boyner_crm_display_name()
         if boyner_crm:
             for name in all_names:
                 if name.casefold() == boyner_crm.casefold():
-                    return (name,)
+                    return self._merge_customer_names((name,), pinned_names)
             if boyner_crm:
-                return (boyner_crm,)
+                return self._merge_customer_names((boyner_crm,), pinned_names)
         for name in all_names:
             if "boyner" in name.casefold():
-                return (name,)
-        return tuple(all_names[:1])
+                return self._merge_customer_names((name,), pinned_names)
+        default = tuple(all_names[:1]) if all_names else tuple()
+        return self._merge_customer_names(default, pinned_names)
+
+    @staticmethod
+    def _merge_customer_names(*name_groups: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for group in name_groups:
+            for name in group or []:
+                cleaned = str(name or "").strip()
+                if not cleaned:
+                    continue
+                key = cleaned.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(cleaned)
+        return tuple(out)
+
+    def _load_profile_flags_index(self) -> dict[str, dict[str, Any]]:
+        webui = self._webui
+        if webui is None or not getattr(webui, "is_available", False):
+            return {}
+        try:
+            rows = webui.run_rows(smq.LIST_PROFILE_FLAGS)
+            return {str(r.get("crm_accountid")): r for r in rows if r.get("crm_accountid")}
+        except Exception as exc:
+            logger.warning("Profile flags load failed: %s", exc)
+            return {}
+
+    def _load_mapping_count_index(self) -> dict[str, int]:
+        webui = self._webui
+        if webui is None or not getattr(webui, "is_available", False):
+            return {}
+        try:
+            rows = webui.run_rows(smq.MAPPING_COUNTS_BY_ACCOUNT)
+            return {
+                str(r.get("crm_accountid")): int(r.get("enabled_mapping_count") or 0)
+                for r in rows
+                if r.get("crm_accountid")
+            }
+        except Exception as exc:
+            logger.warning("Mapping count load failed: %s", exc)
+            return {}
+
+    def _load_source_mapping_index(self) -> dict[str, list[dict[str, Any]]]:
+        webui = self._webui
+        if webui is None or not getattr(webui, "is_available", False):
+            return {}
+        try:
+            from app.services.customer_mapping_resolver import group_mappings_by_account
+
+            rows = webui.run_rows(smq.LIST_SOURCE_MAPPINGS)
+            return group_mappings_by_account(rows)
+        except Exception as exc:
+            logger.warning("Source mapping index load failed: %s", exc)
+            return {}
+
+    def _load_cache_pinned_display_names(self) -> tuple[str, ...]:
+        if self._pool is None:
+            return ()
+        try:
+            project_rows = load_project_customer_rows(self._run_query, self._run_one)
+            flags = self._load_profile_flags_index()
+            names: list[str] = []
+            for row in project_rows:
+                account_id = str(row.get("crm_accountid") or "")
+                flag = flags.get(account_id) or {}
+                if not (flag.get("is_vip") or flag.get("cache_pinned")):
+                    continue
+                name = str(row.get("crm_account_name") or "").strip()
+                if name:
+                    names.append(name)
+            return tuple(names)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cache pinned display names load failed: %s", exc)
+            return ()
+
+    def _run_query(self, sql: str, params: tuple) -> list[dict[str, Any]]:
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                if cur.description is None:
+                    return []
+                cols = [desc[0] for desc in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def _run_one(self, sql: str, params: tuple) -> dict[str, Any] | None:
+        rows = self._run_query(sql, params)
+        return rows[0] if rows else None
+
+    def get_customer_catalog(self) -> dict[str, Any]:
+        project_rows = load_project_customer_rows(self._run_query, self._run_one)
+        flags = self._load_profile_flags_index()
+        mapping_index = self._load_source_mapping_index()
+        account_ids = [str(r.get("crm_accountid")) for r in project_rows if r.get("crm_accountid")]
+        ytd_index: dict[str, dict[str, Any]] = {}
+        if account_ids and self._pool is not None:
+            try:
+                for row in self._run_query(crm_sq.CRM_PROJECT_SALES_BY_CUSTOMER_YTD, (account_ids,)):
+                    ytd_index[str(row.get("crm_accountid"))] = row
+            except Exception as exc:
+                logger.warning("Customer YTD sales lookup failed: %s", exc)
+
+        catalog_rows: list[dict[str, Any]] = []
+        for row in project_rows:
+            account_id = str(row.get("crm_accountid") or "").strip()
+            account_name = str(row.get("crm_account_name") or account_id).strip()
+            if not account_id:
+                continue
+            flag = flags.get(account_id) or {}
+            ytd = ytd_index.get(account_id) or {}
+            catalog_rows.append(
+                build_catalog_row(
+                    crm_accountid=account_id,
+                    crm_account_name=account_name,
+                    source_mappings=mapping_index.get(account_id, []),
+                    is_vip=bool(flag.get("is_vip")),
+                    cache_pinned=bool(flag.get("cache_pinned") or flag.get("is_vip")),
+                    ytd_revenue=float(ytd.get("ytd_revenue") or 0.0),
+                    currency=ytd.get("currency"),
+                )
+            )
+
+        groups = group_catalog_rows(catalog_rows)
+        return {
+            "customers": catalog_rows,
+            "groups": groups,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def get_customer_overview(self) -> dict[str, Any]:
+        catalog = self.get_customer_catalog()
+        catalog_rows = catalog.get("customers") or []
+        sales_total: dict[str, Any] = {
+            "total_revenue": 0.0,
+            "currency": None,
+            "order_count": 0,
+        }
+        raw_lines: list[dict[str, Any]] = []
+        if self._pool is not None:
+            try:
+                sales_total = self._run_one(crm_sq.CRM_PROJECT_SALES_TOTAL, ()) or sales_total
+                raw_lines = self._run_query(crm_sq.CRM_PROJECT_SALES_LINES_BY_PRODUCT, ())
+            except Exception as exc:
+                logger.warning("Customer overview sales query failed: %s", exc)
+
+        product_mapping: dict[str, dict[str, Any]] = {}
+        webui = self._webui
+        if webui is not None and getattr(webui, "is_available", False):
+            try:
+                rows = webui.run_rows(smq.LIST_SERVICE_MAPPINGS_WEBUI)
+                product_mapping = {str(r["productid"]): r for r in rows if r.get("productid")}
+            except Exception as exc:
+                logger.warning("Overview product mapping load failed: %s", exc)
+
+        service_sales = map_service_sales_lines(raw_lines, product_mapping)
+        return build_overview_payload(
+            catalog_rows=catalog_rows,
+            sales_total=sales_total or {},
+            service_sales=service_sales,
+        )
+
+    def set_customer_vip(self, crm_accountid: str, *, is_vip: bool, updated_by: str | None = None) -> dict[str, Any]:
+        webui = self._webui
+        if webui is None or not getattr(webui, "is_available", False):
+            raise RuntimeError("WebUI pool not configured")
+        account_id = (crm_accountid or "").strip()
+        if not account_id:
+            raise ValueError("crm_accountid is required")
+        cache_pinned = bool(is_vip)
+        webui.execute(
+            smq.UPSERT_PROFILE_VIP,
+            (account_id, bool(is_vip), cache_pinned, updated_by),
+        )
+        return {
+            "status": "ok",
+            "crm_accountid": account_id,
+            "is_vip": bool(is_vip),
+            "cache_pinned": cache_pinned,
+        }
 
     def _fetch_customer_s3_vaults(self, customer_name: str, start_ts, end_ts) -> dict:
         """Fetch S3 vault metrics for a customer (same logic as datacenter-api DatabaseService)."""

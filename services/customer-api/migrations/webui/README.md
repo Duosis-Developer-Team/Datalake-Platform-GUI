@@ -27,6 +27,8 @@ Keep numeric prefixes so new migrations always sort after existing ones.
 | `013_panel_result_snapshot_and_manual_override.sql` | Tier-2 `gui_panel_result_snapshot` + `manual_total`/`manual_allocated` on infra source | Yes |
 | `014_repair_gui_panel_result_snapshot.sql` | Repairs partial/legacy `gui_panel_result_snapshot` (adds `payload`, PK, index) when 013 was skipped by `IF NOT EXISTS` | Yes |
 | `015_fix_ibm_power_infra_filter.sql` | Clears invalid `site_name` filter on `virt_power_cpu` / `virt_power_ram` (SellableService uses HMC server name columns) | Yes |
+| `017_customer_source_mappings.sql` | `gui_crm_customer_source_mapping` — per-CRM-account infrastructure source match rules (virtualization, backup, storage, S3, ITSM, etc.) | Yes |
+| `018_customer_profile_flags.sql` | `gui_crm_customer_profile_flags` — GUI-owned VIP and cache-pinned flags keyed by `crm_accountid` | Yes |
 
 ## Tracking table (`gui_schema_migrations`)
 

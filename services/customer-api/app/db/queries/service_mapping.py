@@ -204,3 +204,66 @@ WHERE  crm_account_name ILIKE %s
 ORDER BY CASE WHEN crm_account_name ILIKE %s THEN 0 ELSE 1 END
 LIMIT 1;
 """
+
+# ---------------------------------------------------------------------------
+# Customer profile flags (VIP / cache-pinned) — migration 018
+# ---------------------------------------------------------------------------
+
+LIST_PROFILE_FLAGS = """
+SELECT crm_accountid,
+       is_vip,
+       cache_pinned,
+       updated_by,
+       created_at,
+       updated_at
+FROM   gui_crm_customer_profile_flags;
+"""
+
+GET_PROFILE_FLAG = """
+SELECT crm_accountid,
+       is_vip,
+       cache_pinned,
+       updated_by,
+       created_at,
+       updated_at
+FROM   gui_crm_customer_profile_flags
+WHERE  crm_accountid = %s;
+"""
+
+UPSERT_PROFILE_VIP = """
+INSERT INTO gui_crm_customer_profile_flags
+    (crm_accountid, is_vip, cache_pinned, updated_by, created_at, updated_at)
+VALUES (%s, %s, %s, %s, now(), now())
+ON CONFLICT (crm_accountid) DO UPDATE SET
+    is_vip       = EXCLUDED.is_vip,
+    cache_pinned = EXCLUDED.cache_pinned,
+    updated_by   = EXCLUDED.updated_by,
+    updated_at   = now();
+"""
+
+LIST_PINNED_DISPLAY_NAMES = """
+SELECT DISTINCT TRIM(m.crm_account_name) AS crm_account_name
+FROM   gui_crm_customer_profile_flags f
+JOIN   gui_crm_customer_source_mapping m ON m.crm_accountid = f.crm_accountid
+WHERE  (f.cache_pinned = TRUE OR f.is_vip = TRUE)
+  AND  TRIM(COALESCE(m.crm_account_name, '')) <> ''
+UNION
+SELECT TRIM(a.crm_account_name) AS crm_account_name
+FROM   gui_crm_customer_profile_flags f
+JOIN   (
+    SELECT DISTINCT crm_accountid, crm_account_name
+    FROM gui_crm_customer_source_mapping
+) a ON a.crm_accountid = f.crm_accountid
+WHERE  (f.cache_pinned = TRUE OR f.is_vip = TRUE)
+  AND  TRIM(COALESCE(a.crm_account_name, '')) <> '';
+"""
+
+MAPPING_COUNTS_BY_ACCOUNT = """
+SELECT crm_accountid,
+       COUNT(*) FILTER (
+           WHERE enabled = TRUE
+             AND TRIM(COALESCE(match_value, '')) <> ''
+       )::int AS enabled_mapping_count
+FROM   gui_crm_customer_source_mapping
+GROUP BY crm_accountid;
+"""

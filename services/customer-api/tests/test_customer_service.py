@@ -67,6 +67,17 @@ def test_get_customer_list_respects_warmed_customers_for_cache_only(monkeypatch)
     assert svc._customers_for_cache_rebuild() == ("Acme", "Beta")
 
 
+def test_customers_for_cache_rebuild_includes_vip_display_names(monkeypatch):
+    monkeypatch.delenv("WARMED_CUSTOMERS", raising=False)
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    monkeypatch.setattr(svc, "get_customer_list", lambda: ["Alpha Corp"])
+    monkeypatch.setattr(svc, "_load_cache_pinned_display_names", lambda: ("VIP Corp",))
+    names = svc._customers_for_cache_rebuild()
+    assert "VIP Corp" in names
+    assert "Alpha Corp" in names
+
+
 def test_resolve_infra_search_name_uses_boyner_for_crm_display_name(monkeypatch):
     with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
         svc = CustomerService()

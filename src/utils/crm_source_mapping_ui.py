@@ -142,6 +142,75 @@ def build_editor_state(alias: dict | None) -> dict | None:
     }
 
 
+def _index_pattern_states(states: list, field: str) -> dict[tuple[str, int], object]:
+    indexed: dict[tuple[str, int], object] = {}
+    for state in states or []:
+        sid = state.get("id") or {}
+        section = str(sid.get("section") or "")
+        if not section:
+            continue
+        key = (section, int(sid.get("index", 0)))
+        indexed[key] = state.get(field)
+    return indexed
+
+
+def editor_state_from_dash_states(
+    editor_state: dict | None,
+    *,
+    method_states: list,
+    value_states: list,
+    enabled_states: list,
+    source_states: list,
+    notes: str | None,
+) -> dict | None:
+    """Rebuild editor sections from Dash pattern-matched component states."""
+    if not editor_state:
+        return None
+    methods = _index_pattern_states(method_states, "value")
+    values = _index_pattern_states(value_states, "value")
+    enabled = _index_pattern_states(enabled_states, "value")
+    sources = _index_pattern_states(source_states, "value")
+    all_keys = set(methods) | set(values) | set(enabled) | set(sources)
+
+    sections: dict[str, list[dict]] = {}
+    for section_key in _SECTION_KEYS:
+        default_source = _COLUMN_SOURCE_DEFAULTS.get(section_key, "virtualization")
+        section_keys = sorted((k for k in all_keys if k[0] == section_key), key=lambda k: k[1])
+        if section_keys:
+            sections[section_key] = [
+                _normalize_mapping_entry(
+                    {
+                        "data_source": sources.get(key) or default_source,
+                        "match_method": methods.get(key) or "contains",
+                        "match_value": values.get(key) or "",
+                        "enabled": enabled.get(key, True),
+                    },
+                    default_source=default_source,
+                )
+                for key in section_keys
+            ]
+        else:
+            original = editor_state.get("sections", {}).get(section_key) or []
+            sections[section_key] = [
+                _normalize_mapping_entry(dict(entry), default_source=default_source)
+                for entry in original
+            ] or [
+                {
+                    "data_source": default_source,
+                    "match_method": "contains",
+                    "match_value": "",
+                    "enabled": True,
+                }
+            ]
+
+    return {
+        "crm_accountid": str(editor_state.get("crm_accountid") or ""),
+        "crm_account_name": str(editor_state.get("crm_account_name") or editor_state.get("crm_accountid") or ""),
+        "notes": str(notes if notes is not None else editor_state.get("notes") or ""),
+        "sections": sections,
+    }
+
+
 def editor_state_to_save_payload(editor_state: dict | None) -> tuple[list[dict], str | None]:
     if not editor_state:
         return [], None

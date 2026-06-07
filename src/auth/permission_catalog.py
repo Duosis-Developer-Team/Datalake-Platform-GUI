@@ -255,6 +255,12 @@ def build_default_permission_roots() -> list[PermissionNode]:
                     _n("sec:customer:phys_inv", "Physical Inventory", "section"),
                     _n("sec:customer:s3", "S3", "section"),
                     _n("action:customer:export", "Export", "action"),
+                    _n(
+                        "action:customer_view:vip_manage",
+                        "Manage VIP Customers",
+                        "action",
+                        sort_order=110,
+                    ),
                 ],
             ),
         ],

@@ -9,6 +9,7 @@ from src.utils.crm_source_mapping_ui import (
     build_editor_state,
     collect_mappings_for_account,
     compute_summary,
+    editor_state_from_dash_states,
     editor_state_to_save_payload,
     mappings_for_column,
     merge_alias_after_save,
@@ -64,6 +65,33 @@ def test_build_editor_state_groups_by_ui_columns():
     assert editor["sections"]["virtualization"][0]["match_value"] == "Boyner"
     assert len(editor["sections"]["s3"]) == 1
     assert editor["sections"]["s3"][0]["match_value"] == ""
+
+
+def test_editor_state_from_dash_states_rebuilds_sections():
+    editor = build_editor_state(_boyner_alias())
+    method_states = [
+        {"id": {"section": "virtualization", "index": 0}, "value": "exact"},
+    ]
+    value_states = [
+        {"id": {"section": "virtualization", "index": 0}, "value": "Boyner Updated"},
+    ]
+    enabled_states = [
+        {"id": {"section": "virtualization", "index": 0}, "value": True},
+    ]
+    source_states = [
+        {"id": {"section": "virtualization", "index": 0}, "value": "virtualization"},
+    ]
+    synced = editor_state_from_dash_states(
+        editor,
+        method_states=method_states,
+        value_states=value_states,
+        enabled_states=enabled_states,
+        source_states=source_states,
+        notes="updated note",
+    )
+    mappings, notes = editor_state_to_save_payload(synced)
+    assert notes == "updated note"
+    assert any(m["match_value"] == "Boyner Updated" for m in mappings)
 
 
 def test_editor_state_to_save_payload_skips_blank_values():

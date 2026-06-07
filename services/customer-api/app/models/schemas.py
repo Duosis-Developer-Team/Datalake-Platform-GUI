@@ -249,6 +249,69 @@ class CrmDiscoveryCount(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Customer catalog (/customers page)
+# ---------------------------------------------------------------------------
+
+
+class CustomerCatalogRow(BaseModel):
+    crm_accountid: str
+    crm_account_name: str
+    display_name: str
+    is_vip: bool = False
+    cache_pinned: bool = False
+    mapped: bool = False
+    mapping_status: str = "empty"
+    mapping_count: int = 0
+    real_data_cached: bool = False
+    overuse_status: str = "not_applicable"
+    ytd_revenue: float = 0.0
+    currency: Optional[str] = None
+    list_group: str = "unmapped"
+
+
+class CustomerCatalogGroups(BaseModel):
+    vip: list[CustomerCatalogRow] = []
+    mapped: list[CustomerCatalogRow] = []
+    unmapped: list[CustomerCatalogRow] = []
+
+
+class CustomerCatalogResponse(BaseModel):
+    customers: list[CustomerCatalogRow]
+    groups: CustomerCatalogGroups
+    generated_at: Optional[str] = None
+
+
+class CustomerServiceSalesSlice(BaseModel):
+    service_code: str
+    service_label: str
+    amount_tl: float = 0.0
+
+
+class CustomerOverviewResponse(BaseModel):
+    total_customers: int = 0
+    vip_count: int = 0
+    mapped_count: int = 0
+    unmapped_count: int = 0
+    total_revenue: float = 0.0
+    currency: Optional[str] = None
+    order_count: int = 0
+    service_sales: list[CustomerServiceSalesSlice] = []
+    overuse_customer_count: int = 0
+    overuse_status: str = "pending"
+
+
+class CustomerVipUpdate(BaseModel):
+    is_vip: bool
+
+
+class CustomerVipUpdateResponse(BaseModel):
+    status: str
+    crm_accountid: str
+    is_vip: bool
+    cache_pinned: bool
+
+
+# ---------------------------------------------------------------------------
 # Sellable Potential schemas (gui_panel_definition / infra_source / ratio /
 #                             unit_conversion / metric_snapshot)
 # ---------------------------------------------------------------------------

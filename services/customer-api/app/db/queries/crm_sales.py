@@ -140,6 +140,53 @@ ORDER BY name NULLS LAST, productid;
 # Discovery counts for the CRM Overview page (raw datalake tables).
 # ---------------------------------------------------------------------------
 
+# Platform-wide realized sales for CRM project customers (PRJ-* scope).
+CRM_PROJECT_SALES_TOTAL = """
+WITH project_accounts AS (
+    SELECT DISTINCT a.accountid
+    FROM   discovery_crm_accounts a
+    JOIN   discovery_crm_salesorders so ON so.customerid = a.accountid
+    WHERE  so.ordernumber LIKE 'PRJ-%%'
+)
+SELECT COALESCE(SUM(so.totalamount), 0)::double precision AS total_revenue,
+       COALESCE(COUNT(DISTINCT so.customerid), 0)::bigint AS paying_customer_count,
+       COALESCE(COUNT(DISTINCT so.salesorderid), 0)::bigint AS order_count,
+       MIN(so.transactioncurrency_text) AS currency
+FROM   discovery_crm_salesorders so
+WHERE  so.customerid IN (SELECT accountid FROM project_accounts)
+  AND  so.statecode IN (3, 4);
+"""
+
+CRM_PROJECT_SALES_BY_CUSTOMER_YTD = """
+SELECT so.customerid AS crm_accountid,
+       COALESCE(SUM(so.totalamount), 0)::double precision AS ytd_revenue,
+       MIN(so.transactioncurrency_text) AS currency
+FROM   discovery_crm_salesorders so
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (3, 4)
+  AND  EXTRACT(YEAR FROM COALESCE(so.fulfilldate, so.submitdate, so.modifiedon::date))
+       = EXTRACT(YEAR FROM CURRENT_DATE)
+GROUP BY so.customerid;
+"""
+
+CRM_PROJECT_SALES_LINES_BY_PRODUCT = """
+WITH project_accounts AS (
+    SELECT DISTINCT a.accountid
+    FROM   discovery_crm_accounts a
+    JOIN   discovery_crm_salesorders so ON so.customerid = a.accountid
+    WHERE  so.ordernumber LIKE 'PRJ-%%'
+)
+SELECT d.productid,
+       d.product_name,
+       SUM(d.extendedamount)::double precision AS amount_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.customerid IN (SELECT accountid FROM project_accounts)
+  AND  so.statecode IN (3, 4)
+GROUP BY d.productid, d.product_name
+ORDER BY amount_tl DESC NULLS LAST;
+"""
+
 DISCOVERY_TABLE_COUNTS = """
 SELECT 'discovery_crm_accounts' AS table_name,
        (SELECT COUNT(*) FROM discovery_crm_accounts) AS row_count,
