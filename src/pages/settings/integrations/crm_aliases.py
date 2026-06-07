@@ -173,7 +173,7 @@ def render_editor_panel(editor_state: dict | None) -> html.Div:
             ),
             dmc.Accordion(
                 multiple=True,
-                defaultValue=[UI_COLUMNS[0][0]],
+                value=[UI_COLUMNS[0][0]],
                 children=accordion_items,
             ),
         ]
