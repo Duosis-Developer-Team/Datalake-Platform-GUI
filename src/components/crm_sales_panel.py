@@ -1,4 +1,4 @@
-"""CRM realized sales panels for the customer detail Summary tab and intro card."""
+"""CRM sales panels for the customer detail Summary tab and intro card."""
 from __future__ import annotations
 
 from dash import dcc, html
@@ -18,13 +18,19 @@ def format_crm_money(value, currency: str | None = None) -> str:
     return f"{amount:,.2f} {cur}"
 
 
-def crm_has_sales_data(sales_summary: dict | None) -> bool:
+def crm_has_sales_data(
+    sales_summary: dict | None,
+    active_items: list[dict] | None = None,
+) -> bool:
     summary = sales_summary or {}
     return bool(
         float(summary.get("ytd_revenue_total") or 0) > 0
         or float(summary.get("lifetime_revenue_total") or 0) > 0
         or int(summary.get("invoice_count") or 0) > 0
         or int(summary.get("lifetime_order_count") or 0) > 0
+        or int(summary.get("active_order_count") or 0) > 0
+        or float(summary.get("active_order_value") or 0) > 0
+        or len(active_items or []) > 0
     )
 
 
@@ -79,11 +85,13 @@ def build_crm_summary_kv_panel(
     sales_summary: dict | None,
     service_breakdown: list[dict] | None,
     sales_items: list[dict] | None,
+    active_items: list[dict] | None = None,
 ):
     summary = sales_summary or {}
     currency = summary.get("currency")
     service_count = len(service_breakdown or [])
     line_count = len(sales_items or [])
+    active_line_count = len(active_items or [])
 
     rows = [
         _kv_row("Customer reference", customer_name or "-"),
@@ -92,8 +100,10 @@ def build_crm_summary_kv_panel(
         _kv_row("YTD orders (fulfilled)", f"{int(summary.get('invoice_count') or 0):,}"),
         _kv_row("Lifetime orders", f"{int(summary.get('lifetime_order_count') or 0):,}"),
         _kv_row("Active orders (open)", f"{int(summary.get('active_order_count') or 0):,}"),
+        _kv_row("Active order value", format_crm_money(summary.get("active_order_value"), currency)),
         _kv_row("Service categories sold", f"{service_count:,}"),
-        _kv_row("Sold line items", f"{line_count:,}"),
+        _kv_row("Invoiced line items", f"{line_count:,}"),
+        _kv_row("Active line items", f"{active_line_count:,}"),
         _kv_row("Currency", str(currency or "-")),
     ]
     return html.Div(children=rows)
@@ -104,18 +114,21 @@ def build_crm_intro_kpi_strip(sales_summary: dict | None, service_breakdown: lis
     currency = summary.get("currency")
     service_count = len(service_breakdown or [])
     return dmc.SimpleGrid(
-        cols=4,
+        cols={"base": 2, "md": 3, "lg": 6},
         spacing="md",
         children=[
             _intro_kpi("YTD Revenue", format_crm_money(summary.get("ytd_revenue_total"), currency), "green"),
             _intro_kpi("Lifetime Revenue", format_crm_money(summary.get("lifetime_revenue_total"), currency), "teal"),
             _intro_kpi("YTD Orders", f"{int(summary.get('invoice_count') or 0):,}", "cyan"),
+            _intro_kpi("Active Orders", f"{int(summary.get('active_order_count') or 0):,}", "orange"),
+            _intro_kpi("Active Order Value", format_crm_money(summary.get("active_order_value"), currency), "grape"),
             _intro_kpi("Service categories", f"{service_count:,}", "violet"),
         ],
     )
 
 
 def _intro_kpi(title: str, value: str, color: str):
+    del color
     return html.Div(
         style={
             "padding": "14px 12px",
@@ -172,26 +185,33 @@ def build_crm_category_table(efficiency_rows: list[dict] | None, service_breakdo
     )
 
 
-def build_crm_line_items_table(sales_items: list[dict] | None, limit: int = 25):
-    items = list(sales_items or [])[:limit]
-    if not items:
-        return dmc.Text("No realized sales line items.", size="sm", c="dimmed")
-
+def _line_items_table_body(items: list[dict], *, include_order_ref: bool = True):
     body = []
     for item in items:
         qty = item.get("quantity")
         qty_display = f"{float(qty):,.2f}" if qty is not None else "-"
-        body.append(
-            html.Tr(
+        product = str(item.get("product_name") or item.get("productdescription") or "-")
+        cells = [
+            html.Td(product),
+            html.Td(qty_display, style={"textAlign": "right"}),
+            html.Td(format_crm_money(item.get("line_total"), item.get("currency"))),
+        ]
+        if include_order_ref:
+            cells.extend(
                 [
-                    html.Td(str(item.get("product_name") or "-")),
-                    html.Td(qty_display, style={"textAlign": "right"}),
-                    html.Td(format_crm_money(item.get("line_total"), item.get("currency"))),
                     html.Td(str(item.get("reference_number") or "-")),
                     html.Td(str(item.get("status") or "-")),
                 ]
             )
-        )
+        body.append(html.Tr(cells))
+    return body
+
+
+def build_crm_line_items_table(sales_items: list[dict] | None, limit: int = 25):
+    items = list(sales_items or [])[:limit]
+    if not items:
+        return dmc.Text("No invoiced sales line items.", size="sm", c="dimmed")
+
     return dmc.Table(
         striped=True,
         highlightOnHover=True,
@@ -208,21 +228,147 @@ def build_crm_line_items_table(sales_items: list[dict] | None, limit: int = 25):
                     ]
                 )
             ),
-            html.Tbody(body),
+            html.Tbody(_line_items_table_body(items)),
         ],
     )
 
 
-def build_crm_sold_services_panel(
+def _order_header_cards(headers: list[dict] | None):
+    rows = headers or []
+    if not rows:
+        return None
+    cards = []
+    for header in rows:
+        currency = header.get("currency")
+        cards.append(
+            html.Div(
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "1.2fr 1fr 1fr 1fr",
+                    "gap": "8px",
+                    "padding": "10px 12px",
+                    "borderRadius": "10px",
+                    "background": "#F4F7FE",
+                    "marginBottom": "8px",
+                    "fontSize": "0.8rem",
+                },
+                children=[
+                    html.Div(
+                        [
+                            html.Div("Order ref", style={"color": "#A3AED0", "fontWeight": 600}),
+                            html.Div(
+                                str(header.get("reference_number") or "-"),
+                                style={"color": "#2B3674", "fontWeight": 700},
+                            ),
+                        ]
+                    ),
+                    html.Div(
+                        [
+                            html.Div("Date", style={"color": "#A3AED0", "fontWeight": 600}),
+                            html.Div(str(header.get("date") or "-"), style={"color": "#2B3674", "fontWeight": 600}),
+                        ]
+                    ),
+                    html.Div(
+                        [
+                            html.Div("Status", style={"color": "#A3AED0", "fontWeight": 600}),
+                            html.Div(str(header.get("status") or "-"), style={"color": "#2B3674", "fontWeight": 600}),
+                        ]
+                    ),
+                    html.Div(
+                        [
+                            html.Div("Order total", style={"color": "#A3AED0", "fontWeight": 600}),
+                            html.Div(
+                                format_crm_money(header.get("order_total"), currency),
+                                style={"color": "#2B3674", "fontWeight": 700},
+                            ),
+                        ]
+                    ),
+                ],
+            )
+        )
+    return html.Div(children=cards)
+
+
+def build_crm_active_orders_section(
+    active_orders: list[dict] | None,
+    active_items: list[dict] | None,
+    limit: int = 50,
+):
+    headers = active_orders or []
+    items = list(active_items or [])[:limit]
+    if not headers and not items:
+        return dmc.Alert(
+            color="gray",
+            variant="light",
+            title="No active orders",
+            children="No open CRM sales orders were returned for this customer.",
+        )
+
+    header_cards = _order_header_cards(headers)
+    table = dmc.Table(
+        striped=True,
+        highlightOnHover=True,
+        withTableBorder=True,
+        children=[
+            html.Thead(
+                html.Tr(
+                    [
+                        html.Th("Order ref"),
+                        html.Th("Date"),
+                        html.Th("Status"),
+                        html.Th("Product"),
+                        html.Th("Quantity", style={"textAlign": "right"}),
+                        html.Th("Unit price", style={"textAlign": "right"}),
+                        html.Th("Line total"),
+                    ]
+                )
+            ),
+            html.Tbody(
+                [
+                    html.Tr(
+                        [
+                            html.Td(str(item.get("reference_number") or "-")),
+                            html.Td(str(item.get("date") or "-")),
+                            html.Td(str(item.get("status") or "-")),
+                            html.Td(str(item.get("product_name") or item.get("productdescription") or "-")),
+                            html.Td(
+                                f"{float(item.get('quantity')):,.2f}"
+                                if item.get("quantity") is not None
+                                else "-",
+                                style={"textAlign": "right"},
+                            ),
+                            html.Td(
+                                format_crm_money(item.get("unit_price"), item.get("currency")),
+                                style={"textAlign": "right"},
+                            ),
+                            html.Td(format_crm_money(item.get("line_total"), item.get("currency"))),
+                        ]
+                    )
+                    for item in items
+                ]
+                if items
+                else [html.Tr(html.Td("No line items", colSpan=7))]
+            ),
+        ],
+    )
+
+    children = []
+    if header_cards is not None:
+        children.append(header_cards)
+    children.append(table)
+    return dmc.Stack(gap="md", children=children)
+
+
+def build_crm_invoiced_orders_section(
     service_breakdown: list[dict] | None,
     efficiency_rows: list[dict] | None,
     sales_items: list[dict] | None,
 ):
     if not (service_breakdown or sales_items):
         return dmc.Alert(
-            color="gray",
+            color="blue",
             variant="light",
-            title="No realized sales",
+            title="No invoiced orders yet",
             children="No fulfilled or invoiced CRM sales were returned for this customer.",
         )
     return dmc.Stack(
@@ -232,12 +378,21 @@ def build_crm_sold_services_panel(
             build_crm_category_table(efficiency_rows, service_breakdown),
             html.Div(
                 children=[
-                    dmc.Text("Sold line items", fw=700, size="sm", c="#2B3674", mb="xs"),
+                    dmc.Text("Invoiced line items", fw=700, size="sm", c="#2B3674", mb="xs"),
                     build_crm_line_items_table(sales_items),
                 ]
             ),
         ],
     )
+
+
+def build_crm_sold_services_panel(
+    service_breakdown: list[dict] | None,
+    efficiency_rows: list[dict] | None,
+    sales_items: list[dict] | None,
+):
+    """Backward-compatible wrapper for invoiced orders panel."""
+    return build_crm_invoiced_orders_section(service_breakdown, efficiency_rows, sales_items)
 
 
 def build_crm_intro_card(customer_name: str, sales_summary: dict | None, service_breakdown: list[dict] | None):
@@ -276,7 +431,7 @@ def build_crm_intro_card(customer_name: str, sales_summary: dict | None, service
                         ],
                     ),
                     dmc.Text(
-                        "Realized CRM sales (YTD and lifetime) plus infrastructure billing assets for this customer.",
+                        "CRM sales overview: open orders plus realized (YTD and lifetime) revenue.",
                         size="sm",
                         c="#A3AED0",
                     ),

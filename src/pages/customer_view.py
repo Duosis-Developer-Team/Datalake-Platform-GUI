@@ -28,8 +28,9 @@ from src.pages.home import metric_card
 from src.components.s3_panel import build_customer_s3_panel
 from src.components.sold_vs_used_panel import build_sold_vs_used_stack, filter_efficiency_rows
 from src.components.crm_sales_panel import (
+    build_crm_active_orders_section,
     build_crm_intro_card,
-    build_crm_sold_services_panel,
+    build_crm_invoiced_orders_section,
     build_crm_summary_kv_panel,
 )
 
@@ -428,6 +429,8 @@ def _tab_summary(
     sales_summary: dict | None = None,
     service_breakdown: list | None = None,
     sales_items: list | None = None,
+    active_orders: list | None = None,
+    active_items: list | None = None,
     efficiency_rows: list | None = None,
 ):
     """Summary tab: CRM sales overview plus aggregated infrastructure billing."""
@@ -474,18 +477,24 @@ def _tab_summary(
     crm_sections = [
         _section_card(
             "CRM Sales Summary",
-            "Realized sales only (fulfilled / invoiced) — YTD primary, lifetime secondary",
+            "Open orders plus realized sales (YTD primary, lifetime secondary)",
             build_crm_summary_kv_panel(
                 customer_name,
                 sales_summary,
                 service_breakdown,
                 sales_items,
+                active_items,
             ),
         ),
         _section_card(
-            "CRM — Sold Services",
-            "Service category distribution and order line items from CRM",
-            build_crm_sold_services_panel(service_breakdown, efficiency_rows, sales_items),
+            "Active Orders",
+            "Open CRM sales orders (active / submitted)",
+            build_crm_active_orders_section(active_orders, active_items),
+        ),
+        _section_card(
+            "Invoiced Orders",
+            "Fulfilled and invoiced CRM sales — service breakdown and line items",
+            build_crm_invoiced_orders_section(service_breakdown, efficiency_rows, sales_items),
         ),
     ]
 
@@ -1731,6 +1740,8 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         f_sales = pool.submit(api.get_customer_sales_summary, name)
         f_eff = pool.submit(api.get_customer_efficiency_by_category, name)
         f_sales_items = pool.submit(api.get_customer_sales_items, name)
+        f_active_orders = pool.submit(api.get_customer_sales_active_orders, name)
+        f_active_items = pool.submit(api.get_customer_sales_active_items, name)
         f_service_breakdown = pool.submit(api.get_customer_sales_service_breakdown, name)
         data = f_resources.result()
         avail_bundle = f_avail.result()
@@ -1742,6 +1753,8 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         sales_summary = f_sales.result()
         eff_by_cat = f_eff.result()
         sales_items = f_sales_items.result()
+        active_orders = f_active_orders.result()
+        active_items = f_active_items.result()
         service_breakdown = f_service_breakdown.result()
 
     vm_outage_counts = avail_bundle.get("vm_outage_counts") or {}
@@ -1939,6 +1952,8 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             sales_summary=sales_summary,
             service_breakdown=service_breakdown,
             sales_items=sales_items,
+            active_orders=active_orders,
+            active_items=active_items,
             efficiency_rows=eff_by_cat,
         ),
         "virt": virt_content,

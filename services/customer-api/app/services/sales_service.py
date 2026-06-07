@@ -165,6 +165,31 @@ class SalesService:
         return self._run_query(sq.SALES_ITEMS, (account_ids,))
 
     # ------------------------------------------------------------------
+    # /customers/{name}/sales/active-orders
+    # /customers/{name}/sales/active-items
+    # ------------------------------------------------------------------
+
+    def get_active_order_headers(self, customer_name: str) -> List[Dict[str, Any]]:
+        account_ids = self._resolve_account_ids(customer_name)
+        if not account_ids:
+            return []
+        rows = self._run_query(sq.SALES_ORDER_HEADERS_ACTIVE, (account_ids,))
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            out.append({
+                **row,
+                "order_total": float(row["order_total"]) if row.get("order_total") is not None else None,
+                "line_count": int(row.get("line_count") or 0),
+            })
+        return out
+
+    def get_active_sales_items(self, customer_name: str) -> List[Dict[str, Any]]:
+        account_ids = self._resolve_account_ids(customer_name)
+        if not account_ids:
+            return []
+        return self._run_query(sq.SALES_ITEMS_ACTIVE, (account_ids,))
+
+    # ------------------------------------------------------------------
     # /customers/{name}/sales/service-breakdown
     # ------------------------------------------------------------------
 

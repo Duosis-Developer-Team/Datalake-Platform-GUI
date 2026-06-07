@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from src.components.crm_sales_panel import (
+    build_crm_active_orders_section,
+    build_crm_invoiced_orders_section,
     build_crm_intro_card,
     build_crm_summary_kv_panel,
     crm_has_sales_data,
@@ -20,6 +22,31 @@ def test_crm_has_sales_data_true_when_ytd_positive():
 
 def test_crm_has_sales_data_false_when_empty():
     assert crm_has_sales_data({}) is False
+
+
+def test_crm_has_sales_data_true_when_active_orders_only():
+    assert crm_has_sales_data({"active_order_count": 1}, active_items=[]) is True
+    assert crm_has_sales_data({}, active_items=[{"product_name": "RAM"}]) is True
+
+
+def test_build_crm_active_orders_section_renders_items():
+    panel = build_crm_active_orders_section(
+        [{"reference_number": "PRJ-001", "date": "2026-01-01", "status": "Active", "order_total": 100.0}],
+        [{"reference_number": "PRJ-001", "product_name": "RAM", "quantity": 2, "line_total": 100.0}],
+    )
+    text = str(panel)
+    assert "PRJ-001" in text
+    assert "RAM" in text
+
+
+def test_build_crm_invoiced_orders_section_empty_state():
+    panel = build_crm_invoiced_orders_section([], [], [])
+    assert "No invoiced orders yet" in str(panel)
+
+
+def test_build_crm_active_orders_section_empty_state():
+    panel = build_crm_active_orders_section([], [])
+    assert "No active orders" in str(panel)
 
 
 def test_build_crm_summary_kv_panel_contains_customer_and_ytd():

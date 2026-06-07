@@ -54,6 +54,18 @@ class SalesLineItem(BaseModel):
     currency: Optional[str]
 
 
+class SalesOrderHeader(BaseModel):
+    model_config = {"extra": "allow"}
+
+    source_type: str
+    reference_number: Optional[str]
+    date: Optional[str]
+    status: Optional[str]
+    order_total: Optional[float]
+    line_count: int = 0
+    currency: Optional[str]
+
+
 class SalesEfficiencyRow(BaseModel):
     model_config = {"extra": "allow"}
 

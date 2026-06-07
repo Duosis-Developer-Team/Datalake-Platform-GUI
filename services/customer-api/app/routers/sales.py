@@ -4,6 +4,8 @@ CRM Sales endpoints for the customer-api microservice.
 Routes:
   GET /customers/{customer_name}/sales/summary
   GET /customers/{customer_name}/sales/items
+  GET /customers/{customer_name}/sales/active-orders
+  GET /customers/{customer_name}/sales/active-items
   GET /customers/{customer_name}/sales/efficiency
   GET /customers/{customer_name}/sales/efficiency-by-category
   GET /customers/{customer_name}/sales/catalog-valuation
@@ -27,6 +29,7 @@ from app.models.schemas import (
     SalesEfficiencyByCategoryRow,
     SalesEfficiencyRow,
     SalesLineItem,
+    SalesOrderHeader,
     SalesSummary,
 )
 from app.services.sales_service import SalesService
@@ -52,8 +55,32 @@ def sales_items(
     customer_name: str,
     svc: SalesService = Depends(get_sales_service),
 ):
-    """Realized sales-order line items (fulfilled/invoiced) for a customer."""
+    """Realized sales-order line items (fulfilled/invoiced) for invoiced orders display."""
     return svc.get_sales_items(customer_name)
+
+
+@router.get(
+    "/customers/{customer_name}/sales/active-orders",
+    response_model=List[SalesOrderHeader],
+)
+def sales_active_orders(
+    customer_name: str,
+    svc: SalesService = Depends(get_sales_service),
+):
+    """Open CRM sales order headers (active/submitted) for a customer."""
+    return svc.get_active_order_headers(customer_name)
+
+
+@router.get(
+    "/customers/{customer_name}/sales/active-items",
+    response_model=List[SalesLineItem],
+)
+def sales_active_items(
+    customer_name: str,
+    svc: SalesService = Depends(get_sales_service),
+):
+    """Open CRM sales order line items (active/submitted) for a customer."""
+    return svc.get_active_sales_items(customer_name)
 
 
 @router.get("/customers/{customer_name}/sales/efficiency", response_model=List[SalesEfficiencyRow])

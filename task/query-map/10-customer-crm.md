@@ -648,30 +648,44 @@ Parametreler: `(accountids[], accountids[], accountids[])`.
 
 **GUI:** `GET /api/v1/customers/{name}/sales/service-breakdown` → `List[CustomerServiceSalesSlice]`.
 
-#### `SALES_ITEMS` — gerçekleşen sipariş satırları
+#### Statecode matrisi (Customer View CRM panel)
+
+| statecode | Anlam | Customer View bölümü | Revenue KPI |
+|---|---|---|---|
+| 0, 1 | Active / Submitted | **Active Orders** | Hayır (display-only) |
+| 3, 4 | Fulfilled / Invoiced | **Invoiced Orders** | Evet (ADR-0010) |
+
+#### `SALES_ITEMS` — faturalandırılmış sipariş satırları (Invoiced Orders)
+
+`SALES_ITEMS` ve `SALES_ITEMS_ACTIVE` ortak şablon (`_SALES_ITEMS_SELECT`); `product_name` için
+`COALESCE(NULLIF(TRIM(d.product_name),''), NULLIF(TRIM(d.productdescription),''), p.name)` ve
+`LEFT JOIN discovery_crm_products p`.
 
 ```sql
-SELECT
-    'salesorder'                       AS source_type,
-    so.ordernumber                     AS reference_number,
-    COALESCE(so.fulfilldate::text, so.submitdate::text, so.modifiedon::text) AS date,
-    so.statecode_text                  AS status,
-    d.product_name,
-    d.productdescription,
-    d.uomid_name                       AS unit,
-    d.quantity,
-    d.priceperunit                     AS unit_price,
-    d.extendedamount                   AS line_total,
-    so.transactioncurrency_text        AS currency,
-    d.productid                        AS productid
-FROM   discovery_crm_salesorderdetails d
-JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
-WHERE  so.customerid = ANY(%s)
-  AND  so.statecode IN (3, 4)
-ORDER BY so.modifiedon DESC NULLS LAST, d.extendedamount DESC NULLS LAST;
+-- statecode IN (3, 4) — realized only
 ```
 
-Ne yapar: Müşterinin gerçekleşen sipariş satır kalemleri. Parametreler: `(accountids[],)`.
+**GUI:** `GET /api/v1/customers/{name}/sales/items` → `List[SalesLineItem]`.
+
+Ne yapar: Müşterinin gerçekleşen (fulfilled/invoiced) sipariş satır kalemleri. Parametreler: `(accountids[],)`.
+
+#### `SALES_ITEMS_ACTIVE` — açık sipariş satırları (Active Orders)
+
+```sql
+-- statecode IN (0, 1) — open orders, display-only
+```
+
+**GUI:** `GET /api/v1/customers/{name}/sales/active-items` → `List[SalesLineItem]`.
+
+Ne yapar: Müşterinin açık (active/submitted) sipariş satır kalemleri. Parametreler: `(accountids[],)`.
+
+#### `SALES_ORDER_HEADERS_ACTIVE` — açık sipariş başlıkları
+
+Sipariş referansı, tarih, durum, toplam tutar ve kalem sayısı (`COUNT(d.salesorderdetailid)`).
+
+**GUI:** `GET /api/v1/customers/{name}/sales/active-orders` → `List[SalesOrderHeader]`.
+
+Ne yapar: Müşterinin açık sipariş özet başlıkları. Parametreler: `(accountids[],)`.
 
 #### `SALES_EFFICIENCY_BILLED` — ürün bazında faturalanan miktar
 

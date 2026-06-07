@@ -19,6 +19,8 @@ def test_crm_rows_outside_virt_backup():
 
 
 @patch("src.pages.customer_view.api.get_customer_sales_service_breakdown", return_value=[])
+@patch("src.pages.customer_view.api.get_customer_sales_active_items", return_value=[])
+@patch("src.pages.customer_view.api.get_customer_sales_active_orders", return_value=[])
 @patch("src.pages.customer_view.api.get_customer_sales_items", return_value=[])
 @patch("src.pages.customer_view.api.get_customer_efficiency_by_category", return_value=[])
 @patch(
@@ -51,7 +53,7 @@ def test_crm_rows_outside_virt_backup():
         },
     },
 )
-def test_customer_content_has_crm_summary_sections(_a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k):
+def test_customer_content_has_crm_summary_sections(_a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m):
     from src.pages.customer_view import _customer_content
 
     content = _customer_content("Acme", {"preset": "30d"})
@@ -61,4 +63,5 @@ def test_customer_content_has_crm_summary_sections(_a, _b, _c, _d, _e, _f, _g, _
     assert "virt" in content
     summary_text = str(content.get("summary"))
     assert "CRM Sales Summary" in summary_text
-    assert "CRM — Sold Services" in summary_text
+    assert "Active Orders" in summary_text
+    assert "Invoiced Orders" in summary_text

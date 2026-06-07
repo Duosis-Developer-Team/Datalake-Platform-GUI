@@ -1320,6 +1320,28 @@ def get_customer_sales_items(name: str) -> list:
     return _api_cache_get_with_stale(ck, fetch, [])
 
 
+def get_customer_sales_active_orders(name: str) -> list:
+    enc = quote(name, safe="")
+
+    def fetch() -> list:
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/active-orders")
+        return data if isinstance(data, list) else []
+
+    ck = f"api:crm_sales_active_orders:{enc}"
+    return _api_cache_get_with_stale(ck, fetch, [])
+
+
+def get_customer_sales_active_items(name: str) -> list:
+    enc = quote(name, safe="")
+
+    def fetch() -> list:
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/active-items")
+        return data if isinstance(data, list) else []
+
+    ck = f"api:crm_sales_active_items:{enc}"
+    return _api_cache_get_with_stale(ck, fetch, [])
+
+
 def get_customer_sales_service_breakdown(name: str) -> list:
     enc = quote(name, safe="")
 

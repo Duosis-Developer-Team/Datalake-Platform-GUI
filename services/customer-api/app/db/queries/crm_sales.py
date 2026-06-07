@@ -63,16 +63,21 @@ ORDER BY amount_tl DESC NULLS LAST;
 """
 
 # ---------------------------------------------------------------------------
-# /customers/{name}/sales/items
+# /customers/{name}/sales/items — realized (statecode 3, 4)
+# /customers/{name}/sales/active-items — open orders (statecode 0, 1)
 # ---------------------------------------------------------------------------
 
-SALES_ITEMS = """
+_SALES_ITEMS_SELECT = """
 SELECT
     'salesorder'                       AS source_type,
     so.ordernumber                     AS reference_number,
-    COALESCE(so.fulfilldate::text, so.submitdate::text, so.modifiedon::text) AS date,
+    {date_expr}                        AS date,
     so.statecode_text                  AS status,
-    d.product_name,
+    COALESCE(
+        NULLIF(TRIM(d.product_name), ''),
+        NULLIF(TRIM(d.productdescription), ''),
+        p.name
+    )                                  AS product_name,
     d.productdescription,
     d.uomid_name                       AS unit,
     d.quantity,
@@ -82,9 +87,44 @@ SELECT
     d.productid                        AS productid
 FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+LEFT JOIN discovery_crm_products p ON p.productid = d.productid
 WHERE  so.customerid = ANY(%s)
-  AND  so.statecode IN (3, 4)
-ORDER BY so.modifiedon DESC NULLS LAST, d.extendedamount DESC NULLS LAST;
+  AND  so.statecode IN ({statecodes})
+ORDER BY {order_by};
+"""
+
+SALES_ITEMS = _SALES_ITEMS_SELECT.format(
+    date_expr="COALESCE(so.fulfilldate::text, so.submitdate::text, so.modifiedon::text)",
+    statecodes="3, 4",
+    order_by="so.modifiedon DESC NULLS LAST, d.extendedamount DESC NULLS LAST",
+)
+
+SALES_ITEMS_ACTIVE = _SALES_ITEMS_SELECT.format(
+    date_expr="COALESCE(so.submitdate::text, so.createdon::text, so.modifiedon::text)",
+    statecodes="0, 1",
+    order_by="so.createdon DESC NULLS LAST, d.extendedamount DESC NULLS LAST",
+)
+
+# ---------------------------------------------------------------------------
+# /customers/{name}/sales/active-orders — order headers for open orders
+# ---------------------------------------------------------------------------
+
+SALES_ORDER_HEADERS_ACTIVE = """
+SELECT
+    'salesorder'                       AS source_type,
+    so.ordernumber                     AS reference_number,
+    COALESCE(so.submitdate::text, so.createdon::text, so.modifiedon::text) AS date,
+    so.statecode_text                  AS status,
+    so.totalamount                     AS order_total,
+    COUNT(d.salesorderdetailid)::bigint AS line_count,
+    so.transactioncurrency_text        AS currency
+FROM   discovery_crm_salesorders so
+LEFT JOIN discovery_crm_salesorderdetails d ON d.salesorderid = so.salesorderid
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (0, 1)
+GROUP BY so.salesorderid, so.ordernumber, so.submitdate, so.createdon, so.modifiedon,
+         so.statecode_text, so.totalamount, so.transactioncurrency_text
+ORDER BY so.modifiedon DESC NULLS LAST;
 """
 
 # ---------------------------------------------------------------------------
