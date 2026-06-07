@@ -121,6 +121,12 @@ def build_overview_payload(
         "mapped_count": len(groups["mapped"]),
         "unmapped_count": len(groups["unmapped"]),
         "total_revenue": float(sales_total.get("total_revenue") or 0.0),
+        "total_active_order_value": sum(
+            float(row.get("active_order_value") or 0.0) for row in catalog_rows
+        ),
+        "total_active_order_count": sum(
+            int(row.get("active_order_count") or 0) for row in catalog_rows
+        ),
         "currency": sales_total.get("currency"),
         "order_count": int(sales_total.get("order_count") or 0),
         "service_sales": service_sales,

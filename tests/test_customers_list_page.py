@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from src.pages import customers_list
 from src.utils.customers_list_ui import (
+    apply_vip_toggle_local,
     badge_color_for_mapping_status,
     filter_catalog_rows,
     format_revenue,
+    group_catalog_rows,
     overuse_badge_props,
     page_count,
     paginate_rows,
@@ -69,11 +71,19 @@ def _sample_catalog() -> dict:
             "unmapped_count": 1,
             "vip_count": 1,
             "total_revenue": 1500.0,
+            "total_active_order_value": 500.0,
+            "total_active_order_count": 1,
             "currency": "TL",
             "service_sales": [],
             "overuse_customer_count": 1,
         },
     }
+
+
+def _sample_catalog_with_groups() -> dict:
+    data = _sample_catalog()
+    data["groups"] = group_catalog_rows(data["customers"])
+    return data
 
 
 def test_load_page_data_uses_catalog_and_overview(monkeypatch):
@@ -99,6 +109,8 @@ def test_build_customers_list_contains_catalog_stores(monkeypatch):
     store_ids = [child.id for child in layout.children if getattr(child, "id", None)]
     assert "customer-catalog-store" in store_ids
     assert "customer-section-pages" in store_ids
+    assert "customer-vip-pending" in store_ids
+    assert "customer-accordion-open" in store_ids
 
 
 def test_filter_catalog_rows_matches_display_name():
@@ -138,3 +150,47 @@ def test_format_revenue_and_badges():
     label, color = overuse_badge_props("pending")
     assert label == "Comparison pending"
     assert color == "orange"
+
+
+def test_overview_strip_includes_active_orders_kpi():
+    strip = customers_list._overview_strip(
+        {
+            "total_active_order_value": 3788.42,
+            "total_active_order_count": 1,
+            "currency": "TRY",
+            "total_customers": 10,
+            "mapped_count": 5,
+            "unmapped_count": 4,
+            "vip_count": 1,
+            "total_revenue": 0.0,
+            "overuse_customer_count": 0,
+        }
+    )
+    text = str(strip)
+    assert "ACTIVE ORDERS" in text
+    assert "1 open order" in text
+
+
+def test_apply_vip_toggle_local_moves_customer_between_groups():
+    data = _sample_catalog_with_groups()
+    updated = apply_vip_toggle_local(data, "acc-a", is_vip=True)
+    assert updated["overview"]["vip_count"] == 2
+    assert updated["overview"]["unmapped_count"] == 0
+    vip_names = [r["crm_account_name"] for r in updated["groups"]["vip"]]
+    assert "Alpha Corp" in vip_names
+
+
+def test_section_refresh_outputs_updates_pagination_without_full_accordion():
+    data = _sample_catalog_with_groups()
+    outputs = customers_list._section_refresh_outputs(
+        data,
+        "",
+        {"vip": 0, "mapped": 0, "unmapped": 0},
+        allow_vip_toggle=True,
+    )
+    cards, page_totals, page_values, count_badges, total_labels, page_store, overview = outputs
+    assert len(cards) == 3
+    assert len(page_totals) == 3
+    assert page_store["mapped"] == 0
+    assert "ACTIVE ORDERS" in str(overview)
+    assert count_badges[1] == "1"

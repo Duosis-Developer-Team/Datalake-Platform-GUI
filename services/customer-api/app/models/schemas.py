@@ -309,6 +309,8 @@ class CustomerOverviewResponse(BaseModel):
     mapped_count: int = 0
     unmapped_count: int = 0
     total_revenue: float = 0.0
+    total_active_order_value: float = 0.0
+    total_active_order_count: int = 0
     currency: Optional[str] = None
     order_count: int = 0
     service_sales: list[CustomerServiceSalesSlice] = []

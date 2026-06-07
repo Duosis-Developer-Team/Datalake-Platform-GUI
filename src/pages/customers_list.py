@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 
 from src.services import api_client as api
 from src.utils.customers_list_ui import (
+    apply_vip_toggle_local,
     badge_color_for_mapping_status,
     filter_catalog_rows,
     format_revenue,
@@ -19,6 +20,20 @@ from src.utils.ui_tokens import card_style, kpi_card
 
 _PAGE_SIZE = 12
 _SECTION_KEYS = ("vip", "mapped", "unmapped")
+_SECTION_LABELS = {
+    "vip": "VIP Customers",
+    "mapped": "Mapped Customers",
+    "unmapped": "Unmapped CRM Customers",
+}
+_SECTION_DESCRIPTIONS = {
+    "vip": "Pinned customers with continuous cache warm-up.",
+    "mapped": "CRM customers linked to infrastructure source mappings.",
+    "unmapped": "CRM-only customers without enabled source mappings.",
+}
+_CARDS_TRANSITION_STYLE = {
+    "transition": "opacity 0.18s ease-in-out",
+    "minHeight": "120px",
+}
 
 
 def _load_page_data() -> dict:
@@ -77,11 +92,17 @@ def _status_badges(row: dict, *, show_unmapped_on_vip: bool = False) -> list:
     return badges
 
 
-def _compact_customer_card(row: dict, *, allow_vip_toggle: bool):
+def _compact_customer_card(
+    row: dict,
+    *,
+    allow_vip_toggle: bool,
+    pending_account_id: str | None = None,
+):
     name = str(row.get("display_name") or row.get("crm_account_name") or "-")
     account_id = str(row.get("crm_accountid") or "")
     revenue = format_revenue(row.get("ytd_revenue"), row.get("currency"))
     active_value = format_revenue(row.get("active_order_value"), row.get("currency"))
+    is_pending = bool(pending_account_id and account_id == pending_account_id)
     star = None
     if allow_vip_toggle:
         star = dmc.ActionIcon(
@@ -95,6 +116,8 @@ def _compact_customer_card(row: dict, *, allow_vip_toggle: bool):
             size="sm",
             style={"opacity": 0.85},
             n_clicks=0,
+            disabled=is_pending,
+            loading=is_pending,
         )
 
     header = dmc.Group(
@@ -171,14 +194,23 @@ def _service_sales_chart(service_sales: list[dict]):
 
 def _overview_strip(overview: dict):
     ov = overview or {}
+    active_count = int(ov.get("total_active_order_count") or 0)
+    active_trend = f"{active_count} open order{'s' if active_count != 1 else ''}"
     return dmc.SimpleGrid(
-        cols={"base": 2, "sm": 3, "lg": 6},
+        cols={"base": 2, "sm": 3, "lg": 4, "xl": 7},
         spacing="md",
         children=[
             kpi_card("CRM Customers", int(ov.get("total_customers") or 0), icon="solar:users-group-rounded-bold-duotone", color="indigo"),
             kpi_card("Mapped", int(ov.get("mapped_count") or 0), icon="solar:link-circle-bold-duotone", color="teal"),
             kpi_card("Unmapped", int(ov.get("unmapped_count") or 0), icon="solar:unlink-circle-bold-duotone", color="gray"),
             kpi_card("VIP", int(ov.get("vip_count") or 0), icon="solar:star-bold-duotone", color="yellow"),
+            kpi_card(
+                "Active Orders",
+                format_revenue(ov.get("total_active_order_value"), ov.get("currency")),
+                icon="solar:cart-check-bold-duotone",
+                color="indigo",
+                trend=active_trend,
+            ),
             kpi_card(
                 "Realized Sales",
                 format_revenue(ov.get("total_revenue"), ov.get("currency")),
@@ -195,7 +227,12 @@ def _overview_strip(overview: dict):
     )
 
 
-def _render_section_cards(rows: list[dict], *, allow_vip_toggle: bool):
+def _render_section_cards(
+    rows: list[dict],
+    *,
+    allow_vip_toggle: bool,
+    pending_account_id: str | None = None,
+):
     if not rows:
         return dmc.Alert(
             color="gray",
@@ -206,54 +243,88 @@ def _render_section_cards(rows: list[dict], *, allow_vip_toggle: bool):
     return dmc.SimpleGrid(
         cols={"base": 1, "sm": 2, "lg": 3},
         spacing="sm",
-        children=[_compact_customer_card(row, allow_vip_toggle=allow_vip_toggle) for row in rows],
-    )
-
-
-def _section_panel(section_key: str, rows: list[dict], page: int, *, allow_vip_toggle: bool):
-    total = len(rows)
-    pages = page_count(total, _PAGE_SIZE)
-    page = min(max(int(page or 0), 0), pages - 1)
-    page_rows = paginate_rows(rows, page, _PAGE_SIZE)
-    return html.Div(
         children=[
-            _render_section_cards(page_rows, allow_vip_toggle=allow_vip_toggle),
-            dmc.Group(
-                justify="space-between",
-                mt="sm",
-                children=[
-                    dmc.Text(f"{total} customer(s)", size="xs", c="dimmed"),
-                    dmc.Pagination(
-                        id={"type": "customer-section-page", "section": section_key},
-                        total=pages,
-                        value=page + 1,
-                        size="sm",
-                    ),
-                ],
-            ),
-        ]
+            _compact_customer_card(
+                row,
+                allow_vip_toggle=allow_vip_toggle,
+                pending_account_id=pending_account_id,
+            )
+            for row in rows
+        ],
     )
 
 
-def _build_accordion(store_data: dict, query: str, pages: dict[str, int], *, allow_vip_toggle: bool):
+def _filtered_groups(store_data: dict, query: str) -> dict[str, list[dict]]:
     groups = store_data.get("groups") if isinstance(store_data.get("groups"), dict) else {}
-    filtered_groups = {
+    return {
         key: filter_catalog_rows(groups.get(key) or [], query)
         for key in _SECTION_KEYS
     }
-    labels = {
-        "vip": "VIP Customers",
-        "mapped": "Mapped Customers",
-        "unmapped": "Unmapped CRM Customers",
-    }
-    descriptions = {
-        "vip": "Pinned customers with continuous cache warm-up.",
-        "mapped": "CRM customers linked to infrastructure source mappings.",
-        "unmapped": "CRM-only customers without enabled source mappings.",
-    }
-    items = []
+
+
+def _section_refresh_outputs(
+    store_data: dict,
+    query: str,
+    pages: dict[str, int],
+    *,
+    allow_vip_toggle: bool,
+    pending_account_id: str | None = None,
+):
+    filtered = _filtered_groups(store_data, query)
+    cards_out: list = []
+    page_totals: list[int] = []
+    page_values: list[int] = []
+    count_badges: list[str] = []
+    total_labels: list[str] = []
+    page_store = dict(pages or {"vip": 0, "mapped": 0, "unmapped": 0})
+
     for key in _SECTION_KEYS:
-        count = len(filtered_groups.get(key) or [])
+        rows = filtered.get(key) or []
+        total = len(rows)
+        pages_n = page_count(total, _PAGE_SIZE)
+        safe_page = min(max(int(page_store.get(key, 0) or 0), 0), pages_n - 1)
+        page_store[key] = safe_page
+        page_rows = paginate_rows(rows, safe_page, _PAGE_SIZE)
+        cards_out.append(
+            _render_section_cards(
+                page_rows,
+                allow_vip_toggle=allow_vip_toggle,
+                pending_account_id=pending_account_id,
+            )
+        )
+        page_totals.append(pages_n)
+        page_values.append(safe_page + 1)
+        count_badges.append(str(total))
+        total_labels.append(f"{total} customer(s)")
+
+    overview = store_data.get("overview") if isinstance(store_data.get("overview"), dict) else {}
+    return (
+        cards_out,
+        page_totals,
+        page_values,
+        count_badges,
+        total_labels,
+        page_store,
+        _overview_strip(overview),
+    )
+
+
+def _build_static_accordion_shell(
+    store_data: dict,
+    query: str,
+    pages: dict[str, int],
+    *,
+    allow_vip_toggle: bool,
+):
+    initial = _section_refresh_outputs(
+        store_data,
+        query,
+        pages,
+        allow_vip_toggle=allow_vip_toggle,
+    )
+    cards, page_totals, page_values, count_badges, total_labels, _, _ = initial
+    items = []
+    for idx, key in enumerate(_SECTION_KEYS):
         items.append(
             dmc.AccordionItem(
                 value=key,
@@ -262,18 +333,45 @@ def _build_accordion(store_data: dict, query: str, pages: dict[str, int], *, all
                         dmc.Group(
                             gap="xs",
                             children=[
-                                dmc.Text(labels[key], fw=600, size="sm"),
-                                dmc.Badge(str(count), color="indigo", variant="light", size="sm"),
-                                dmc.Text(descriptions[key], size="xs", c="dimmed"),
+                                dmc.Text(_SECTION_LABELS[key], fw=600, size="sm"),
+                                dmc.Badge(
+                                    id={"type": "customer-section-count", "section": key},
+                                    children=count_badges[idx],
+                                    color="indigo",
+                                    variant="light",
+                                    size="sm",
+                                ),
+                                dmc.Text(_SECTION_DESCRIPTIONS[key], size="xs", c="dimmed"),
                             ],
                         )
                     ),
                     dmc.AccordionPanel(
-                        _section_panel(
-                            key,
-                            filtered_groups.get(key) or [],
-                            pages.get(key, 0),
-                            allow_vip_toggle=allow_vip_toggle,
+                        html.Div(
+                            children=[
+                                html.Div(
+                                    id={"type": "customer-section-cards", "section": key},
+                                    style=_CARDS_TRANSITION_STYLE,
+                                    children=cards[idx],
+                                ),
+                                dmc.Group(
+                                    justify="space-between",
+                                    mt="sm",
+                                    children=[
+                                        dmc.Text(
+                                            id={"type": "customer-section-total", "section": key},
+                                            children=total_labels[idx],
+                                            size="xs",
+                                            c="dimmed",
+                                        ),
+                                        dmc.Pagination(
+                                            id={"type": "customer-section-page", "section": key},
+                                            total=page_totals[idx],
+                                            value=page_values[idx],
+                                            size="sm",
+                                        ),
+                                    ],
+                                ),
+                            ]
                         )
                     ),
                 ],
@@ -292,12 +390,15 @@ def build_customers_list(time_range=None, visible_sections=None):
     tr = time_range or default_time_range()
     store_data = _load_page_data()
     overview = store_data.get("overview") or {}
+    initial_pages = {"vip": 0, "mapped": 0, "unmapped": 0}
 
     return html.Div(
         className="customer-page-enter",
         children=[
             dcc.Store(id="customer-catalog-store", data=store_data),
-            dcc.Store(id="customer-section-pages", data={"vip": 0, "mapped": 0, "unmapped": 0}),
+            dcc.Store(id="customer-section-pages", data=initial_pages),
+            dcc.Store(id="customer-accordion-open", data=["mapped"]),
+            dcc.Store(id="customer-vip-pending", data=None),
             dmc.Stack(
                 gap="lg",
                 style={"padding": "8px 0 24px"},
@@ -360,7 +461,8 @@ def build_customers_list(time_range=None, visible_sections=None):
                                         ),
                                     ],
                                 ),
-                                _overview_strip(overview),
+                                html.Div(id="customer-vip-alert"),
+                                html.Div(id="customer-overview-strip", children=_overview_strip(overview)),
                                 dmc.SimpleGrid(
                                     cols={"base": 1, "lg": 2},
                                     spacing="md",
@@ -401,14 +503,19 @@ def build_customers_list(time_range=None, visible_sections=None):
                             ],
                         ),
                     ),
-                    html.Div(
-                        id="customer-section-accordion-wrap",
-                        style={"padding": "0 32px"},
-                        children=_build_accordion(
-                            store_data,
-                            "",
-                            {"vip": 0, "mapped": 0, "unmapped": 0},
-                            allow_vip_toggle=False,
+                    dcc.Loading(
+                        id="customer-section-loading",
+                        type="circle",
+                        color="#4318FF",
+                        children=html.Div(
+                            id="customer-section-accordion-wrap",
+                            style={"padding": "0 32px"},
+                            children=_build_static_accordion_shell(
+                                store_data,
+                                "",
+                                initial_pages,
+                                allow_vip_toggle=False,
+                            ),
                         ),
                     ),
                 ],
@@ -418,54 +525,113 @@ def build_customers_list(time_range=None, visible_sections=None):
 
 
 @callback(
-    Output("customer-section-accordion-wrap", "children"),
+    Output({"type": "customer-section-cards", "section": ALL}, "children"),
+    Output({"type": "customer-section-page", "section": ALL}, "total"),
+    Output({"type": "customer-section-page", "section": ALL}, "value"),
+    Output({"type": "customer-section-count", "section": ALL}, "children"),
+    Output({"type": "customer-section-total", "section": ALL}, "children"),
+    Output("customer-section-pages", "data"),
+    Output("customer-overview-strip", "children"),
     Input("customer-search-input", "value"),
     Input({"type": "customer-section-page", "section": ALL}, "value"),
-    State("customer-catalog-store", "data"),
+    Input("customer-catalog-store", "data"),
+    Input("auth-permissions-store", "data"),
+    Input("customer-vip-pending", "data"),
     State("customer-section-pages", "data"),
-    State("auth-permissions-store", "data"),
 )
-def refresh_customer_sections(query, _page_values, store_data, page_store, permissions):
+def refresh_customer_sections(
+    query,
+    _page_values,
+    store_data,
+    permissions,
+    pending_account_id,
+    page_store,
+):
     pages = dict(page_store or {"vip": 0, "mapped": 0, "unmapped": 0})
     trig = ctx.triggered_id
-    if isinstance(trig, dict) and trig.get("type") == "customer-section-page":
+    if trig == "customer-search-input":
+        pages = {"vip": 0, "mapped": 0, "unmapped": 0}
+    elif isinstance(trig, dict) and trig.get("type") == "customer-section-page":
         section = str(trig.get("section") or "")
-        idx = next(
-            (i for i, key in enumerate(_SECTION_KEYS) if key == section),
-            None,
-        )
+        idx = next((i for i, key in enumerate(_SECTION_KEYS) if key == section), None)
         if idx is not None and _page_values and idx < len(_page_values):
             pages[section] = max(int(_page_values[idx] or 1) - 1, 0)
+
     allow_vip = _can_manage_vip(permissions)
-    if isinstance(store_data, dict):
-        return _build_accordion(store_data, query or "", pages, allow_vip_toggle=allow_vip)
-    return _build_accordion({"groups": {}}, query or "", pages, allow_vip_toggle=allow_vip)
+    data = store_data if isinstance(store_data, dict) else {"groups": {}, "overview": {}}
+    return _section_refresh_outputs(
+        data,
+        query or "",
+        pages,
+        allow_vip_toggle=allow_vip,
+        pending_account_id=str(pending_account_id) if pending_account_id else None,
+    )
 
 
 @callback(
-    Output("customer-catalog-store", "data"),
+    Output("customer-accordion-open", "data"),
+    Input("customer-section-accordion", "value"),
+    prevent_initial_call=True,
+)
+def persist_accordion_open(value):
+    return value if isinstance(value, list) else ["mapped"]
+
+
+@callback(
+    Output("customer-vip-pending", "data"),
     Input({"type": "customer-vip-toggle", "account": ALL}, "n_clicks"),
-    State({"type": "customer-vip-toggle", "account": ALL}, "id"),
     State("customer-catalog-store", "data"),
     State("auth-permissions-store", "data"),
     prevent_initial_call=True,
 )
-def toggle_customer_vip(_clicks, ids, store_data, permissions):
+def queue_customer_vip_toggle(_clicks, store_data, permissions):
     if not _can_manage_vip(permissions):
         return no_update
     trig = ctx.triggered_id
     if not isinstance(trig, dict) or trig.get("type") != "customer-vip-toggle":
         return no_update
     account_id = str(trig.get("account") or "")
-    if not account_id:
+    if not account_id or not isinstance(store_data, dict):
         return no_update
-    customers = (store_data or {}).get("customers") if isinstance(store_data, dict) else []
+    customers = store_data.get("customers") if isinstance(store_data.get("customers"), list) else []
+    if not any(str(c.get("crm_accountid")) == account_id for c in customers):
+        return no_update
+    return account_id
+
+
+@callback(
+    Output("customer-catalog-store", "data"),
+    Output("customer-vip-alert", "children"),
+    Output("customer-vip-pending", "data", allow_duplicate=True),
+    Input("customer-vip-pending", "data"),
+    State("customer-catalog-store", "data"),
+    prevent_initial_call=True,
+)
+def complete_customer_vip_toggle(pending_account_id, store_data):
+    account_id = str(pending_account_id or "")
+    if not account_id or not isinstance(store_data, dict):
+        return no_update, no_update, None
+    customers = store_data.get("customers") if isinstance(store_data.get("customers"), list) else []
     current = next((c for c in customers if str(c.get("crm_accountid")) == account_id), None)
     if not current:
-        return no_update
+        return no_update, no_update, None
     new_vip = not bool(current.get("is_vip"))
+    name = str(current.get("display_name") or current.get("crm_account_name") or account_id)
     try:
         api.set_customer_vip(account_id, is_vip=new_vip)
-    except Exception:
-        return no_update
-    return _load_page_data()
+    except Exception as exc:
+        action = "add to VIP" if new_vip else "remove from VIP"
+        alert = dmc.Alert(
+            color="red",
+            title="VIP update failed",
+            children=f"Could not {action} for {name}: {exc}",
+        )
+        return no_update, alert, None
+    updated = apply_vip_toggle_local(store_data, account_id, new_vip)
+    action_label = "added to VIP" if new_vip else "removed from VIP"
+    alert = dmc.Alert(
+        color="green",
+        title="VIP updated",
+        children=f"{name} {action_label}.",
+    )
+    return updated, alert, None

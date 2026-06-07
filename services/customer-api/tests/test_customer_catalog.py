@@ -107,6 +107,36 @@ def test_build_overview_payload_counts_groups_and_pending_overuse():
     assert overview["overuse_customer_count"] == 1
 
 
+def test_build_overview_payload_aggregates_active_orders():
+    rows = [
+        cc.build_catalog_row(
+            crm_accountid="acc-1",
+            crm_account_name="Customer One",
+            source_mappings=[],
+            is_vip=False,
+            cache_pinned=False,
+            active_order_value=3788.42,
+            active_order_count=1,
+        ),
+        cc.build_catalog_row(
+            crm_accountid="acc-2",
+            crm_account_name="Customer Two",
+            source_mappings=[],
+            is_vip=False,
+            cache_pinned=False,
+            active_order_value=9401.71,
+            active_order_count=2,
+        ),
+    ]
+    overview = cc.build_overview_payload(
+        catalog_rows=rows,
+        sales_total={"total_revenue": 0.0, "currency": "TRY", "order_count": 0},
+        service_sales=[],
+    )
+    assert overview["total_active_order_value"] == 13190.13
+    assert overview["total_active_order_count"] == 3
+
+
 def test_map_service_sales_lines_aggregates_by_category():
     product_mapping = {
         "p1": {"category_code": "virt", "category_label": "Virtualization"},

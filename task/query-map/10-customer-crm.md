@@ -700,7 +700,7 @@ WHERE  so.customerid = ANY(%s)
 GROUP BY so.customerid;
 ```
 
-**GUI:** `GET /api/v1/customers/catalog` → `CustomerCatalogRow.active_order_value`, `active_order_count` (compact cards: `Active {value}`).
+**GUI:** `GET /api/v1/customers/catalog` → `CustomerCatalogRow.active_order_value`, `active_order_count` (compact cards: `Active {value}`). `GET /api/v1/customers/overview` → `total_active_order_value`, `total_active_order_count` (KPI strip: **Active Orders** + open-order count trend).
 
 #### `SALES_EFFICIENCY_BILLED` — ürün bazında faturalanan miktar
 

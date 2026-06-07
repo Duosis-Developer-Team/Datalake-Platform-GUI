@@ -69,3 +69,47 @@ def format_revenue(amount: float | int | None, currency: str | None = None) -> s
     if value >= 1_000:
         return f"{value / 1_000:.1f}K {cur}"
     return f"{value:,.0f} {cur}"
+
+
+def group_catalog_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    vip: list[dict[str, Any]] = []
+    mapped: list[dict[str, Any]] = []
+    unmapped: list[dict[str, Any]] = []
+    for row in rows or []:
+        item = dict(row)
+        if item.get("is_vip"):
+            item["list_group"] = "vip"
+            vip.append(item)
+        elif item.get("mapped"):
+            item["list_group"] = "mapped"
+            mapped.append(item)
+        else:
+            item["list_group"] = "unmapped"
+            unmapped.append(item)
+    return {"vip": vip, "mapped": mapped, "unmapped": unmapped}
+
+
+def apply_vip_toggle_local(store_data: dict[str, Any], account_id: str, is_vip: bool) -> dict[str, Any]:
+    """Optimistic catalog store update after VIP toggle (no API round-trip)."""
+    data = dict(store_data or {})
+    customers = [dict(c) for c in (data.get("customers") or [])]
+    overview = dict(data.get("overview") or {})
+    target = str(account_id or "")
+    for row in customers:
+        if str(row.get("crm_accountid") or "") == target:
+            row["is_vip"] = bool(is_vip)
+            row["cache_pinned"] = bool(is_vip)
+            break
+    groups = group_catalog_rows(customers)
+    overview.update(
+        {
+            "vip_count": len(groups["vip"]),
+            "mapped_count": len(groups["mapped"]),
+            "unmapped_count": len(groups["unmapped"]),
+        }
+    )
+    return {
+        "customers": customers,
+        "groups": groups,
+        "overview": overview,
+    }
