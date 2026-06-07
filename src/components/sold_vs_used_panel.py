@@ -12,6 +12,8 @@ from dash import dcc, html
 import plotly.graph_objects as go
 
 from src.components.charts import create_grouped_bar_chart, create_premium_gauge_chart
+from src.components.status_badges import compliance_status_badge
+from src.utils.visibility import filter_efficiency_rows_for_display
 
 
 def filter_efficiency_rows(rows: list[dict[str, Any]] | None, gui_tab_prefix: str) -> list[dict[str, Any]]:
@@ -27,27 +29,12 @@ def filter_efficiency_rows(rows: list[dict[str, Any]] | None, gui_tab_prefix: st
     return out
 
 
-def _status_badge(status: str | None) -> dmc.Badge:
-    s = (status or "unknown").lower()
-    if s == "unsold_usage":
-        return dmc.Badge("Unsold usage", color="red", variant="filled", size="sm")
-    if s == "under":
-        return dmc.Badge("Under-utilized", color="green", variant="light", size="sm")
-    if s == "optimal":
-        return dmc.Badge("Optimal", color="indigo", variant="light", size="sm")
-    if s == "over":
-        return dmc.Badge("Over-utilized", color="red", variant="light", size="sm")
-    if s == "no_sales":
-        return dmc.Badge("No CRM sales", color="gray", variant="light", size="sm")
-    if s == "no_usage":
-        return dmc.Badge("No usage", color="gray", variant="outline", size="sm")
-    return dmc.Badge("N/A", color="gray", variant="outline", size="sm")
-
-
 def _one_row_card(r: dict[str, Any]) -> html.Div:
     title = str(r.get("category_label") or r.get("category_code") or "Category")
     unit = str(r.get("resource_unit") or "")
-    sold = float(r.get("entitled_qty") if r.get("entitled_qty") is not None else r.get("sold_qty") or 0)
+    sold = float(
+        r.get("entitled_qty") if r.get("entitled_qty") is not None else r.get("sold_qty") or 0
+    )
     used = float(r.get("used_qty") or 0)
     overage = float(r.get("overage_qty") or 0)
     overage_loss = r.get("overage_loss_tl")
@@ -122,7 +109,7 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
                             dmc.Text(f"Unit: {unit}" if unit else "", size="xs", c="#A3AED0"),
                         ],
                     ),
-                    _status_badge(str(r.get("status"))),
+                    compliance_status_badge(str(r.get("status"))),
                 ],
             ),
             dmc.SimpleGrid(
@@ -150,14 +137,8 @@ def build_compliance_stack(compliance_payload: dict[str, Any] | None, gui_tab_pr
 
 
 def build_sold_vs_used_stack(rows: list[dict[str, Any]] | None) -> html.Div:
-    """Vertical stack of cards; empty state when no matching categories."""
-    if not rows:
-        return html.Div(
-            dmc.Alert(
-                color="gray",
-                variant="light",
-                title="Sold vs Used",
-                children="No CRM category sales mapped to this tab for the selected customer.",
-            )
-        )
-    return html.Div(children=[_one_row_card(r) for r in rows])
+    """Vertical stack of cards; omit section when no meaningful categories."""
+    visible = filter_efficiency_rows_for_display(rows)
+    if not visible:
+        return html.Div()
+    return html.Div(children=[_one_row_card(r) for r in visible])

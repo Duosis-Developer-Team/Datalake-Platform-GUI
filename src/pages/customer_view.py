@@ -10,6 +10,7 @@ import plotly.graph_objs as go
 
 import math
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from src.components.customer_loading import build_customer_loading_shell
 from src.services import api_client as api
@@ -31,12 +32,20 @@ from src.components.sold_vs_used_panel import (
     build_sold_vs_used_stack,
     filter_efficiency_rows,
 )
-from src.components.resource_compliance_panel import build_resource_compliance_table
 from src.components.crm_sales_panel import (
     build_crm_active_orders_section,
-    build_crm_intro_card,
+    build_crm_context_card,
     build_crm_invoiced_orders_section,
+    build_crm_intro_kpi_strip,
     build_crm_summary_kv_panel,
+    format_crm_money,
+)
+from src.utils.visibility import (
+    asset_has_usage,
+    backup_vendor_has_data,
+    count_outage_vms,
+    filter_efficiency_rows_for_display,
+    is_meaningful_value,
 )
 
 
@@ -70,6 +79,26 @@ def _backup_storage_volume_gb(backup_totals: dict) -> float:
     return float(
         backup_totals.get("storage_volume_gb", backup_totals.get("ibm_storage_volume_gb", 0)) or 0
     )
+
+
+def _build_metrics_grid(
+    metric_defs: list[tuple[Any, str, str, str, str]],
+    *,
+    cols: int = 4,
+) -> dmc.SimpleGrid | None:
+    """Build a KPI grid from (raw_value, title, display, icon, color) tuples; omit empty values."""
+    cards = [
+        _metric(title, display, icon, color=color)
+        for raw, title, display, icon, color in metric_defs
+        if is_meaningful_value(raw)
+    ]
+    if not cards:
+        return None
+    return dmc.SimpleGrid(cols=min(cols, len(cards)), spacing="lg", children=cards)
+
+
+def _total_overage_loss_tl(efficiency_rows: list | None) -> float:
+    return sum(float(r.get("overage_loss_tl") or 0) for r in (efficiency_rows or []))
 
 
 def _metric(title: str, value, icon: str, color: str = "indigo"):
@@ -430,142 +459,134 @@ def _tab_summary(
     totals: dict,
     assets: dict,
     *,
-    customer_name: str = "",
     sales_summary: dict | None = None,
-    service_breakdown: list | None = None,
-    sales_items: list | None = None,
-    active_orders: list | None = None,
-    active_items: list | None = None,
     efficiency_rows: list | None = None,
-    compliance_payload: dict | None = None,
+    vm_outage_counts: dict | None = None,
 ):
-    """Summary tab: CRM sales overview plus aggregated infrastructure billing."""
-    classic   = assets.get("classic", {})
-    hyperconv = assets.get("hyperconv", {})
-    pure_nx   = assets.get("pure_nutanix", {}) or {}
-    power     = assets.get("power", {})
-
-    classic_vms   = int(classic.get("vm_count", 0) or 0)
-    hyperconv_vms = int(hyperconv.get("vm_count", 0) or 0)
-    pure_nx_vms   = int(pure_nx.get("vm_count", 0) or 0)
-    power_lpars   = int(power.get("lpar_count", 0) or 0)
-    total_vms     = int(totals.get("vms_total", 0) or 0)
-
-    classic_cpu   = float(classic.get("cpu_total", 0) or 0)
-    hyperconv_cpu = float(hyperconv.get("cpu_total", 0) or 0)
-    pure_nx_cpu   = float(pure_nx.get("cpu_total", 0) or 0)
-    power_cpu     = float(power.get("cpu_total", 0) or 0)
-
-    classic_mem   = float(classic.get("memory_gb", 0) or 0)
-    hyperconv_mem = float(hyperconv.get("memory_gb", 0) or 0)
-    pure_nx_mem   = float(pure_nx.get("memory_gb", 0) or 0)
-    power_mem     = float(power.get("memory_total_gb", 0) or 0)
-
-    classic_disk   = float(classic.get("disk_gb", 0) or 0)
-    hyperconv_disk = float(hyperconv.get("disk_gb", 0) or 0)
-    pure_nx_disk   = float(pure_nx.get("disk_gb", 0) or 0)
-
+    """Summary tab: decision-focused signals only (no CRM detail tables)."""
+    classic = assets.get("classic", {}) or {}
+    hyperconv = assets.get("hyperconv", {}) or {}
+    pure_nx = assets.get("pure_nutanix", {}) or {}
+    power = assets.get("power", {}) or {}
     backup_totals = totals.get("backup", {}) or {}
-    veeam_defined   = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
-    zerto_protected = int(backup_totals.get("zerto_protected_vms", 0) or 0)
-    nb_pre_gib      = float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0)
-    nb_post_gib     = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
-    zerto_prov_gib  = float(backup_totals.get("zerto_provisioned_gib", 0) or 0)
+    summary = sales_summary or {}
+    currency = summary.get("currency")
 
-    summary_grid = [
-        _metric("Total Instances",   f"{total_vms:,}",     "solar:laptop-bold-duotone",          color="teal"),
-        _metric("Classic VMs",        f"{classic_vms:,}",   "solar:laptop-bold-duotone",          color="blue"),
-        _metric("Hyperconverged VMs", f"{hyperconv_vms:,}", "solar:laptop-bold-duotone",          color="indigo"),
-        _metric("Pure Nutanix (AHV)", f"{pure_nx_vms:,}",   "solar:laptop-bold-duotone",          color="cyan"),
-        _metric("Power LPARs",        f"{power_lpars:,}",   "solar:server-square-bold-duotone",   color="grape"),
+    total_vms = int(totals.get("vms_total", 0) or 0)
+    active_orders = int(summary.get("active_order_count") or 0)
+    active_value = summary.get("active_order_value")
+    overage_loss = _total_overage_loss_tl(efficiency_rows)
+    outage_vms = count_outage_vms(vm_outage_counts)
+    nb_pre_gib = float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0)
+
+    signal_defs = [
+        (total_vms, "Total instances", f"{total_vms:,}", "solar:laptop-bold-duotone", "teal"),
+        (active_orders, "Active orders", f"{active_orders:,}", "solar:cart-bold-duotone", "cyan"),
+        (active_value, "Active order value", format_crm_money(active_value, currency), "solar:wallet-money-bold-duotone", "grape"),
+        (overage_loss, "Est. overage loss", format_crm_money(overage_loss, currency), "solar:danger-triangle-bold-duotone", "red"),
+        (outage_vms, "VMs with outages", f"{outage_vms:,}", "solar:shield-warning-bold-duotone", "orange"),
+        (nb_pre_gib, "NetBackup pre-dedup", f"{nb_pre_gib:.2f} GiB", "mdi:database-lock-outline", "orange"),
     ]
+    if asset_has_usage(classic):
+        signal_defs.append(
+            (int(classic.get("vm_count", 0) or 0), "Classic VMs", f"{int(classic.get('vm_count', 0) or 0):,}", "solar:laptop-bold-duotone", "blue")
+        )
+    if asset_has_usage(hyperconv):
+        signal_defs.append(
+            (int(hyperconv.get("vm_count", 0) or 0), "Hyperconverged VMs", f"{int(hyperconv.get('vm_count', 0) or 0):,}", "solar:laptop-bold-duotone", "indigo")
+        )
+    if asset_has_usage(pure_nx):
+        signal_defs.append(
+            (int(pure_nx.get("vm_count", 0) or 0), "Pure Nutanix (AHV)", f"{int(pure_nx.get('vm_count', 0) or 0):,}", "solar:laptop-bold-duotone", "cyan")
+        )
+    if asset_has_usage(power, instance_keys=("lpar_count",)):
+        signal_defs.append(
+            (int(power.get("lpar_count", 0) or 0), "Power LPARs", f"{int(power.get('lpar_count', 0) or 0):,}", "solar:server-square-bold-duotone", "grape")
+        )
 
-    crm_sections = [
-        _section_card(
-            "CRM Sales Summary",
-            "Open orders plus realized sales (YTD primary, lifetime secondary)",
-            build_crm_summary_kv_panel(
-                customer_name,
-                sales_summary,
-                service_breakdown,
-                sales_items,
-                active_items,
-            ),
-        ),
-        _section_card(
-            "Active Orders",
-            "Open CRM sales orders (active / submitted)",
-            build_crm_active_orders_section(active_orders, active_items),
-        ),
-        _section_card(
-            "Invoiced Orders",
-            "Fulfilled and invoiced CRM sales — service breakdown and line items",
-            build_crm_invoiced_orders_section(service_breakdown, efficiency_rows, sales_items),
-        ),
+    children: list = []
+    signal_grid = _build_metrics_grid(signal_defs[:8], cols=4)
+    if signal_grid is not None:
+        children.append(
+            _section_card(
+                "Customer signals",
+                "Key indicators for this customer and report period",
+                signal_grid,
+            )
+        )
+
+    issue_rows = filter_efficiency_rows_for_display(efficiency_rows)
+    if issue_rows:
+        issue_lines = []
+        for row in issue_rows[:6]:
+            label = str(row.get("category_label") or row.get("category_code") or "Category")
+            status = str(row.get("status") or "")
+            issue_lines.append(
+                dmc.Group(
+                    justify="space-between",
+                    children=[
+                        dmc.Text(label, size="sm", fw=600, c="#2B3674"),
+                        dmc.Badge(
+                            status.replace("_", " ").title(),
+                            color="red" if status in ("over", "unsold_usage") else "indigo",
+                            variant="light",
+                            size="sm",
+                        ),
+                    ],
+                )
+            )
+        children.append(
+            _section_card(
+                "Resource compliance issues",
+                "Entitlement vs usage — open Virtualization or Billing for detail",
+                dmc.Stack(gap="xs", children=issue_lines),
+            )
+        )
+
+    if not children:
+        return dmc.Alert(
+            color="gray",
+            variant="light",
+            title="No summary signals",
+            children="No meaningful infrastructure or CRM indicators for this customer in the selected period.",
+        )
+    return dmc.Stack(gap="lg", children=children)
+
+
+def _compute_billing_rows(
+    classic: dict,
+    hyperconv: dict,
+    pure_nx: dict,
+    power: dict,
+) -> list[html.Tr]:
+    """Table rows for platforms with provisioned resources."""
+    rows: list[html.Tr] = []
+    platforms = [
+        ("Classic Compute", classic, "vm_count"),
+        ("Hyperconverged", hyperconv, "vm_count"),
+        ("Pure Nutanix (AHV)", pure_nx, "vm_count"),
+        ("Power Compute (IBM)", power, "lpar_count"),
     ]
-
-    return dmc.Stack(gap="lg", children=[
-        *crm_sections,
-        # VM count overview
-        _section_card("VM / LPAR Summary", "Total provisioned instances per compute type",
-            dmc.SimpleGrid(cols=5, spacing="lg", children=summary_grid),
-        ),
-        # Compute resource summary
-        _section_card("Compute Resources", "Allocated CPU, Memory and Disk per compute type",
-            children=html.Div([
-                # Header row
-                html.Div(
-                    style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr 1fr",
-                           "padding": "8px 0", "borderBottom": "2px solid #4318FF",
-                           "fontSize": "0.8rem", "fontWeight": 700, "color": "#A3AED0"},
-                    children=[html.Span("Compute Type"), html.Span("CPU (vCPU)"),
-                              html.Span("Memory"), html.Span("Disk")],
-                ),
-                *[
-                    html.Div(
-                        style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr 1fr",
-                               "padding": "10px 0", "borderBottom": "1px solid #F4F7FE",
-                               "fontSize": "0.85rem"},
-                        children=[
-                            html.Span(label, style={"color": "#2B3674", "fontWeight": 600}),
-                            html.Span(f"{cpu:.0f}", style={"color": "#4318FF"}),
-                            html.Span(smart_memory(mem), style={"color": "#4318FF"}),
-                            html.Span(smart_storage(disk), style={"color": "#4318FF"}),
-                        ],
-                    )
-                    for label, cpu, mem, disk in [
-                        ("Classic Compute",      classic_cpu,   classic_mem,   classic_disk),
-                        ("Hyperconverged",        hyperconv_cpu, hyperconv_mem, hyperconv_disk),
-                        ("Pure Nutanix (AHV)",    pure_nx_cpu,   pure_nx_mem,   pure_nx_disk),
-                        ("Power Compute (IBM)",   power_cpu,     power_mem,     0),
-                    ]
-                ],
-            ]),
-        ),
-        _section_card(
-            "Resource Compliance",
-            "CRM entitlement (active + invoiced) vs infrastructure usage — virtualization phase 1",
-            build_resource_compliance_table(
-                compliance_payload,
-                currency=(sales_summary or {}).get("currency"),
-            ),
-        ),
-        # Backup summary
-        _section_card("Backup Services", "Backup session and storage consumption",
-            dmc.SimpleGrid(cols=3, spacing="lg", children=[
-                _metric("Veeam Sessions",        f"{veeam_defined:,}",     "material-symbols:backup-outline"),
-                _metric("Zerto Protected VMs",   f"{zerto_protected:,}",   "material-symbols:shield-outline", color="teal"),
-                _metric("NetBackup Pre-Dedup",   f"{nb_pre_gib:.2f} GiB",  "mdi:database-lock-outline",       color="orange"),
-            ]),
-        ),
-        _section_card("Backup Capacity (Billing)", "Storage capacity billed per backup service",
-            dmc.SimpleGrid(cols=3, spacing="lg", children=[
-                _metric("NetBackup Stored (GiB)",   f"{nb_post_gib:.2f}",   "mdi:database-arrow-down-outline"),
-                _metric("Zerto Max Provisioned",    f"{zerto_prov_gib:.2f} GiB", "solar:database-bold-duotone",  color="teal"),
-                _metric("Pre-Dedup (GiB)",          f"{nb_pre_gib:.2f}",    "mdi:database-lock-outline",     color="orange"),
-            ]),
-        ),
-    ])
+    for label, block, instance_key in platforms:
+        if not asset_has_usage(block, instance_keys=(instance_key,)):
+            continue
+        inst = int(block.get(instance_key, 0) or 0)
+        cpu = float(block.get("cpu_total", 0) or 0)
+        mem = float(block.get("memory_gb", block.get("memory_total_gb", 0)) or 0)
+        disk = float(block.get("disk_gb", 0) or 0)
+        disk_cell = smart_storage(disk) if disk > 0 else "-"
+        rows.append(
+            html.Tr(
+                [
+                    html.Td(label),
+                    html.Td(f"{inst:,}"),
+                    html.Td(f"{cpu:.1f}"),
+                    html.Td(smart_memory(mem)),
+                    html.Td(disk_cell),
+                ]
+            )
+        )
+    return rows
 
 
 def _tab_billing(
@@ -575,16 +596,22 @@ def _tab_billing(
     s3_data: dict | None = None,
     sales_summary: dict | None = None,
     crm_eff_panel: html.Div | None = None,
+    *,
+    customer_name: str = "",
+    service_breakdown: list | None = None,
+    sales_items: list | None = None,
+    active_orders: list | None = None,
+    active_items: list | None = None,
+    efficiency_rows: list | None = None,
 ):
-    """Billing tab: realized CRM KPIs, invoice-style compute/backup/S3, and cross-cutting sold vs used."""
+    """Billing tab: CRM commercial detail plus billable infrastructure lines."""
     sales_summary = sales_summary or {}
-    classic   = assets.get("classic", {}) or {}
+    classic = assets.get("classic", {}) or {}
     hyperconv = assets.get("hyperconv", {}) or {}
-    pure_nx   = assets.get("pure_nutanix", {}) or {}
-    power     = assets.get("power", {}) or {}
-
-    total_vms   = int(totals.get("vms_total", 0) or 0)
-    total_cpu   = float(totals.get("cpu_total", 0.0) or 0.0)
+    pure_nx = assets.get("pure_nutanix", {}) or {}
+    power = assets.get("power", {}) or {}
+    total_vms = int(totals.get("vms_total", 0) or 0)
+    total_cpu = float(totals.get("cpu_total", 0.0) or 0.0)
     total_intel_mem = (
         float(classic.get("memory_gb", 0) or 0)
         + float(hyperconv.get("memory_gb", 0) or 0)
@@ -595,17 +622,13 @@ def _tab_billing(
         + float(hyperconv.get("disk_gb", 0) or 0)
         + float(pure_nx.get("disk_gb", 0) or 0)
     )
-    total_power_mem = float(power.get("memory_total_gb", 0) or 0)
 
-    veeam_defined   = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
+    nb_post_gib = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
+    veeam_defined = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
     zerto_protected = int(backup_totals.get("zerto_protected_vms", 0) or 0)
-    nb_pre_gib      = float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0)
-    nb_post_gib     = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
-    zerto_prov_gib  = float(backup_totals.get("zerto_provisioned_gib", 0) or 0)
 
     vaults = (s3_data or {}).get("vaults", []) or []
     vault_count = len(vaults)
-
     cur = str(sales_summary.get("currency") or "TL")
 
     def _money(v):
@@ -613,36 +636,84 @@ def _tab_billing(
             return "-"
         return f"{float(v):,.2f} {cur}"
 
-    kpi_crm = dmc.SimpleGrid(
-        cols=4,
-        spacing="lg",
-        children=[
-            _metric("YTD realized revenue", _money(sales_summary.get("ytd_revenue_total")), "solar:money-bag-bold-duotone", color="green"),
-            _metric("YTD Orders (Fulfilled)", f"{int(sales_summary.get('invoice_count') or 0):,}", "solar:bill-list-bold-duotone", color="teal"),
-            _metric("Active orders (open)", f"{int(sales_summary.get('active_order_count') or 0):,}", "solar:cart-bold-duotone", color="cyan"),
-            _metric("Active order value", _money(sales_summary.get("active_order_value")), "solar:wallet-money-bold-duotone", color="grape"),
-        ],
-    )
+    children: list = []
 
-    return dmc.Stack(
-        gap="lg",
-        children=[
+    kpi_strip = build_crm_intro_kpi_strip(sales_summary, service_breakdown)
+    if kpi_strip is not None:
+        children.append(
             _section_card(
                 "CRM — realized sales (YTD)",
                 "Fulfilled / invoiced sales orders only (no pipeline) — see ADR-0010",
-                kpi_crm,
-            ),
-            crm_eff_panel if crm_eff_panel is not None else html.Div(),
-            dmc.SimpleGrid(
-                cols=4,
-                spacing="lg",
-                children=[
-                    _metric("Total Instances", f"{total_vms:,}", "solar:laptop-bold-duotone", color="teal"),
-                    _metric("Total CPU (vCPU)", f"{total_cpu:.1f}", "solar:cpu-bold-duotone"),
-                    _metric("Intel Memory (GB)", smart_memory(total_intel_mem), "solar:ram-bold-duotone"),
-                    _metric("Intel Disk (GB)", smart_storage(total_intel_disk), "solar:database-bold-duotone", color="orange"),
-                ],
-            ),
+                kpi_strip,
+            )
+        )
+
+    kv_panel = build_crm_summary_kv_panel(
+        customer_name,
+        sales_summary,
+        service_breakdown,
+        sales_items,
+        active_items,
+    )
+    if kv_panel is not None and "No CRM sales metrics" not in str(kv_panel):
+        children.append(
+            _section_card(
+                "CRM sales summary",
+                "Open orders plus realized sales (YTD primary, lifetime secondary)",
+                kv_panel,
+            )
+        )
+
+    active_section = build_crm_active_orders_section(active_orders, active_items)
+    if active_section is not None and "No active orders" not in str(active_section):
+        children.append(
+            _section_card(
+                "Active orders",
+                "Open CRM sales orders (active / submitted)",
+                active_section,
+            )
+        )
+
+    invoiced_section = build_crm_invoiced_orders_section(service_breakdown, efficiency_rows, sales_items)
+    if invoiced_section is not None and "No invoiced orders yet" not in str(invoiced_section):
+        children.append(
+            _section_card(
+                "Invoiced orders",
+                "Fulfilled and invoiced CRM sales — service breakdown and line items",
+                invoiced_section,
+            )
+        )
+
+    if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None):
+        children.append(
+            _section_card(
+                "Sold vs used (other categories)",
+                "Firewall, licensing, colocation, S3, and other mapped CRM categories",
+                crm_eff_panel,
+            )
+        )
+
+    infra_grid = _build_metrics_grid(
+        [
+            (total_vms, "Total instances", f"{total_vms:,}", "solar:laptop-bold-duotone", "teal"),
+            (total_cpu, "Total CPU (vCPU)", f"{total_cpu:.1f}", "solar:cpu-bold-duotone", "indigo"),
+            (total_intel_mem, "Intel memory", smart_memory(total_intel_mem), "solar:ram-bold-duotone", "blue"),
+            (total_intel_disk, "Intel disk", smart_storage(total_intel_disk), "solar:database-bold-duotone", "orange"),
+        ],
+        cols=4,
+    )
+    if infra_grid is not None:
+        children.append(
+            _section_card(
+                "Infrastructure totals",
+                "Billable compute footprint for this customer",
+                infra_grid,
+            )
+        )
+
+    compute_rows = _compute_billing_rows(classic, hyperconv, pure_nx, power)
+    if compute_rows:
+        children.append(
             _section_card(
                 "Compute billing lines",
                 "Per compute platform billable resource totals",
@@ -664,81 +735,53 @@ def _tab_billing(
                                     ]
                                 )
                             ),
-                            html.Tbody(
-                                [
-                                    html.Tr(
-                                        [
-                                            html.Td("Classic Compute"),
-                                            html.Td(f"{int(classic.get('vm_count', 0) or 0):,}"),
-                                            html.Td(f"{float(classic.get('cpu_total', 0) or 0):.1f}"),
-                                            html.Td(smart_memory(float(classic.get('memory_gb', 0) or 0))),
-                                            html.Td(smart_storage(float(classic.get('disk_gb', 0) or 0))),
-                                        ]
-                                    ),
-                                    html.Tr(
-                                        [
-                                            html.Td("Hyperconverged"),
-                                            html.Td(f"{int(hyperconv.get('vm_count', 0) or 0):,}"),
-                                            html.Td(f"{float(hyperconv.get('cpu_total', 0) or 0):.1f}"),
-                                            html.Td(smart_memory(float(hyperconv.get('memory_gb', 0) or 0))),
-                                            html.Td(smart_storage(float(hyperconv.get('disk_gb', 0) or 0))),
-                                        ]
-                                    ),
-                                    html.Tr(
-                                        [
-                                            html.Td("Pure Nutanix (AHV)"),
-                                            html.Td(f"{int(pure_nx.get('vm_count', 0) or 0):,}"),
-                                            html.Td(f"{float(pure_nx.get('cpu_total', 0) or 0):.1f}"),
-                                            html.Td(smart_memory(float(pure_nx.get('memory_gb', 0) or 0))),
-                                            html.Td(smart_storage(float(pure_nx.get('disk_gb', 0) or 0))),
-                                        ]
-                                    ),
-                                    html.Tr(
-                                        [
-                                            html.Td("Power Compute (IBM)"),
-                                            html.Td(f"{int(power.get('lpar_count', 0) or 0):,}"),
-                                            html.Td(f"{float(power.get('cpu_total', 0) or 0):.1f}"),
-                                            html.Td(smart_memory(total_power_mem)),
-                                            html.Td("-"),
-                                        ]
-                                    ),
-                                ]
-                            ),
+                            html.Tbody(compute_rows),
                         ],
                     ),
                 ),
-            ),
+            )
+        )
+
+    backup_grid = _build_metrics_grid(
+        [
+            (veeam_defined, "Veeam sessions", f"{veeam_defined:,}", "material-symbols:backup-outline", "indigo"),
+            (zerto_protected, "Zerto protected VMs", f"{zerto_protected:,}", "material-symbols:shield-outline", "teal"),
+            (nb_post_gib, "NetBackup stored (GiB)", f"{nb_post_gib:.2f}", "mdi:database-arrow-down-outline", "orange"),
+        ],
+        cols=3,
+    )
+    if backup_grid is not None:
+        children.append(
             _section_card(
                 "Backup billing lines",
                 "Billable backup services and capacities",
-                dmc.SimpleGrid(
-                    cols=3,
-                    spacing="lg",
-                    children=[
-                        _metric("Veeam sessions", veeam_defined, "material-symbols:backup-outline"),
-                        _metric("Zerto protected VMs", zerto_protected, "material-symbols:shield-outline", color="teal"),
-                        _metric("NetBackup stored (GiB)", f"{nb_post_gib:.2f}", "mdi:database-arrow-down-outline", color="orange"),
-                    ],
-                ),
-            ),
+                backup_grid,
+            )
+        )
+
+    if vault_count > 0:
+        children.append(
             _section_card(
-                "S3 Object Storage (billing)",
+                "S3 object storage (billing)",
                 "Vault-level objects relevant for billing",
-                dmc.Group(
-                    gap="xl",
+                dmc.Stack(
+                    gap="xs",
                     children=[
-                        dmc.Stack(
-                            gap="xs",
-                            children=[
-                                dmc.Text("Vaults", size="sm", c="#A3AED0"),
-                                dmc.Text(f"{vault_count}", fw=700, c="#2B3674"),
-                            ],
-                        ),
+                        dmc.Text("Vaults", size="sm", c="#A3AED0"),
+                        dmc.Text(f"{vault_count}", fw=700, c="#2B3674"),
                     ],
                 ),
-            ),
-        ],
-    )
+            )
+        )
+
+    if not children:
+        return dmc.Alert(
+            color="gray",
+            variant="light",
+            title="No billing data",
+            children="No commercial or billable infrastructure data for this customer.",
+        )
+    return dmc.Stack(gap="lg", children=children)
 
 
 def _tab_classic(classic: dict, vm_outage_counts: dict | None = None, crm_eff_panel: html.Div | None = None):
@@ -801,41 +844,38 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None, crm_eff_pa
         "Availability",
     ]
     _classic_numeric_cols = frozenset(range(2, 13))
-    head = [crm_eff_panel] if crm_eff_panel is not None else []
-    return dmc.Stack(
-        gap="lg",
-        children=head
-        + [
-            dmc.SimpleGrid(
-                cols=4,
-                spacing="lg",
+    head = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
+    kpi_grid = _build_metrics_grid(
+        [
+            (vm_count, "Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", "blue"),
+            (cpu, "CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", "blue"),
+            (mem_gb, "Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", "blue"),
+            (disk_gb, "Disk", smart_storage(disk_gb), "solar:database-bold-duotone", "blue"),
+        ],
+        cols=4,
+    )
+    body: list = head + ([kpi_grid] if kpi_grid is not None else [])
+    body.append(
+        _section_card(
+            "Classic VMs",
+            "VMs hosted on Classic (KM) VMware clusters — usage min/avg/max over report period",
+            dmc.Stack(
+                gap="md",
                 children=[
-                    _metric("Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", color="blue"),
-                    _metric("CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", color="blue"),
-                    _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="blue"),
-                    _metric("Disk", smart_storage(disk_gb), "solar:database-bold-duotone", color="blue"),
+                    _vm_table(
+                        vm_list,
+                        cols,
+                        row_fn,
+                        empty_cols=len(cols),
+                        numeric_col_indices=_classic_numeric_cols,
+                        comfortable=True,
+                    ),
+                    _deleted_vms_panel(deleted),
                 ],
             ),
-            _section_card(
-                "Classic VMs",
-                "VMs hosted on Classic (KM) VMware clusters — usage min/avg/max over report period",
-                dmc.Stack(
-                    gap="md",
-                    children=[
-                        _vm_table(
-                            vm_list,
-                            cols,
-                            row_fn,
-                            empty_cols=len(cols),
-                            numeric_col_indices=_classic_numeric_cols,
-                            comfortable=True,
-                        ),
-                        _deleted_vms_panel(deleted),
-                    ],
-                ),
-            ),
-        ],
+        )
     )
+    return dmc.Stack(gap="lg", children=body)
 
 
 def _tab_hyperconv(
@@ -909,71 +949,62 @@ def _tab_hyperconv(
         "Availability",
     ]
     _hyperconv_numeric_cols = frozenset(range(3, 14))
-    head_h = [crm_eff_panel] if crm_eff_panel is not None else []
-    return dmc.Stack(
-        gap="lg",
-        children=head_h
-        + [
-            dmc.SimpleGrid(
-                cols=4,
-                spacing="lg",
+    head_h = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
+    kpi_grid = _build_metrics_grid(
+        [
+            (vm_count, "Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", "indigo"),
+            (cpu, "CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", "indigo"),
+            (mem_gb, "Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", "indigo"),
+            (disk_gb, "Disk", smart_storage(disk_gb), "solar:database-bold-duotone", "indigo"),
+        ],
+        cols=4,
+    )
+    platform_stacks = []
+    for label, count in (
+        ("VMware (non-KM cluster)", vmware_only),
+        ("Nutanix (VMware-managed)", nutanix_cnt),
+        ("Pure Nutanix (AHV)", pure_nx_vms),
+    ):
+        if is_meaningful_value(count):
+            platform_stacks.append(
+                dmc.Stack(
+                    gap="xs",
+                    children=[
+                        dmc.Text(label, c="#A3AED0", size="sm"),
+                        dmc.Text(f"{count:,} VMs", fw=700, c="#2B3674"),
+                    ],
+                )
+            )
+    body_h: list = head_h + ([kpi_grid] if kpi_grid is not None else [])
+    if platform_stacks:
+        body_h.append(
+            _section_card(
+                "Platform breakdown",
+                "VMware non-KM vs Nutanix on VMware-managed clusters vs Pure Nutanix (AHV-only clusters)",
+                dmc.Group(gap="xl", children=platform_stacks),
+            )
+        )
+    body_h.append(
+        _section_card(
+            "Hyperconverged VMs",
+            "VMs on non-KM clusters (VMware-managed Nutanix + Acropolis)",
+            dmc.Stack(
+                gap="md",
                 children=[
-                    _metric("Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", color="indigo"),
-                    _metric("CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", color="indigo"),
-                    _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="indigo"),
-                    _metric("Disk", smart_storage(disk_gb), "solar:database-bold-duotone", color="indigo"),
+                    _vm_table(
+                        vm_list,
+                        cols,
+                        row_fn,
+                        empty_cols=len(cols),
+                        numeric_col_indices=_hyperconv_numeric_cols,
+                        comfortable=True,
+                    ),
+                    _deleted_vms_panel(deleted),
                 ],
             ),
-            _section_card(
-                "Platform Breakdown",
-                "VMware non-KM vs Nutanix on VMware-managed clusters vs Pure Nutanix (AHV-only clusters)",
-                dmc.Group(
-                    gap="xl",
-                    children=[
-                        dmc.Stack(
-                            gap="xs",
-                            children=[
-                                dmc.Text("VMware (non-KM cluster)", c="#A3AED0", size="sm"),
-                                dmc.Text(f"{vmware_only:,} VMs", fw=700, c="#2B3674"),
-                            ],
-                        ),
-                        dmc.Stack(
-                            gap="xs",
-                            children=[
-                                dmc.Text("Nutanix (VMware-managed)", c="#A3AED0", size="sm"),
-                                dmc.Text(f"{nutanix_cnt:,} VMs", fw=700, c="#2B3674"),
-                            ],
-                        ),
-                        dmc.Stack(
-                            gap="xs",
-                            children=[
-                                dmc.Text("Pure Nutanix (AHV)", c="#A3AED0", size="sm"),
-                                dmc.Text(f"{pure_nx_vms:,} VMs", fw=700, c="#2B3674"),
-                            ],
-                        ),
-                    ],
-                ),
-            ),
-            _section_card(
-                "Hyperconverged VMs",
-                "VMs on non-KM clusters (VMware-managed Nutanix + Acropolis)",
-                dmc.Stack(
-                    gap="md",
-                    children=[
-                        _vm_table(
-                            vm_list,
-                            cols,
-                            row_fn,
-                            empty_cols=len(cols),
-                            numeric_col_indices=_hyperconv_numeric_cols,
-                            comfortable=True,
-                        ),
-                        _deleted_vms_panel(deleted),
-                    ],
-                ),
-            ),
-        ],
+        )
     )
+    return dmc.Stack(gap="lg", children=body_h)
 
 
 def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None, crm_eff_panel: html.Div | None = None):
@@ -1165,12 +1196,16 @@ def _tab_veeam(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div
     veeam_types = veeam.get("session_types", []) or []
     defined     = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
 
-    head_v = [crm_eff_panel] if crm_eff_panel is not None else []
-    return dmc.Stack(gap="lg", children=head_v + [
-        dmc.SimpleGrid(cols=2, spacing="lg", children=[
-            _metric("Defined Sessions", f"{defined:,}", "material-symbols:backup-outline"),
-            _metric("Session Types",    f"{len(veeam_types):,}", "material-symbols:list-alt-outline", color="teal"),
-        ]),
+    head_v = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
+    kpi_v = _build_metrics_grid(
+        [
+            (defined, "Defined sessions", f"{defined:,}", "material-symbols:backup-outline", "indigo"),
+            (len(veeam_types), "Session types", f"{len(veeam_types):,}", "material-symbols:list-alt-outline", "teal"),
+        ],
+        cols=2,
+    )
+    body_v = head_v + ([kpi_v] if kpi_v is not None else [])
+    body_v.append(
         _section_card("Sessions by Type", "Veeam backup session distribution",
             dmc.Table(
                 striped=True, highlightOnHover=True,
@@ -1183,8 +1218,9 @@ def _tab_veeam(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div
                     ),
                 ],
             ),
-        ),
-    ])
+        )
+    )
+    return dmc.Stack(gap="lg", children=body_v)
 
 
 def _tab_zerto(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div | None = None):
@@ -1193,12 +1229,16 @@ def _tab_zerto(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div
     protected  = int(backup_totals.get("zerto_protected_vms", 0) or 0)
     prov_total = float(backup_totals.get("zerto_provisioned_gib", 0) or 0)
 
-    head_z = [crm_eff_panel] if crm_eff_panel is not None else []
-    return dmc.Stack(gap="lg", children=head_z + [
-        dmc.SimpleGrid(cols=2, spacing="lg", children=[
-            _metric("Protected VMs",      f"{protected:,}",        "material-symbols:shield-outline", color="teal"),
-            _metric("Total Provisioned",  f"{prov_total:.2f} GiB", "solar:database-bold-duotone",          color="teal"),
-        ]),
+    head_z = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
+    kpi_z = _build_metrics_grid(
+        [
+            (protected, "Protected VMs", f"{protected:,}", "material-symbols:shield-outline", "teal"),
+            (prov_total, "Total provisioned", f"{prov_total:.2f} GiB", "solar:database-bold-duotone", "teal"),
+        ],
+        cols=2,
+    )
+    body_z = head_z + ([kpi_z] if kpi_z is not None else [])
+    body_z.append(
         _section_card("VPG Provisioned Storage (last 30 days)", "Max provisioned storage per VPG",
             html.Div(style={"maxHeight": "360px", "overflowY": "auto"}, children=[
                 dmc.Table(
@@ -1214,8 +1254,9 @@ def _tab_zerto(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div
                     ],
                 )
             ]),
-        ),
-    ])
+        )
+    )
+    return dmc.Stack(gap="lg", children=body_z)
 
 
 def _tab_netbackup(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div | None = None):
@@ -1224,13 +1265,17 @@ def _tab_netbackup(backup_assets: dict, backup_totals: dict, crm_eff_panel: html
     post_gib   = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
     dedup_fact = nb.get("deduplication_factor", "1x")
 
-    head_nb = [crm_eff_panel] if crm_eff_panel is not None else []
-    return dmc.Stack(gap="lg", children=head_nb + [
-        dmc.SimpleGrid(cols=3, spacing="lg", children=[
-            _metric("Pre-Dedup (GiB)",  f"{pre_gib:.2f}",  "mdi:database-lock-outline"),
-            _metric("Stored (GiB)",     f"{post_gib:.2f}", "mdi:database-arrow-down-outline", color="teal"),
-            _metric("Dedup Factor",     dedup_fact,        "mdi:percent-outline",             color="orange"),
-        ]),
+    head_nb = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
+    kpi_nb = _build_metrics_grid(
+        [
+            (pre_gib, "Pre-dedup (GiB)", f"{pre_gib:.2f}", "mdi:database-lock-outline", "indigo"),
+            (post_gib, "Stored (GiB)", f"{post_gib:.2f}", "mdi:database-arrow-down-outline", "teal"),
+            (dedup_fact if dedup_fact not in (None, "1x", "1.0x") else None, "Dedup factor", dedup_fact, "mdi:percent-outline", "orange"),
+        ],
+        cols=3,
+    )
+    body_nb = head_nb + ([kpi_nb] if kpi_nb is not None else [])
+    body_nb.append(
         _section_card("Billing Summary",
             "Total backup data transferred vs. stored after deduplication",
             dmc.Table(
@@ -1244,8 +1289,9 @@ def _tab_netbackup(backup_assets: dict, backup_totals: dict, crm_eff_panel: html
                     ]),
                 ],
             ),
-        ),
-    ])
+        )
+    )
+    return dmc.Stack(gap="lg", children=body_nb)
 
 
 def _tab_physical_inventory(devices: list[dict]):
@@ -1260,12 +1306,16 @@ def _tab_physical_inventory(devices: list[dict]):
             html.Td(title_case(r.get("location") or "") or "-"),
         ])
 
-    return dmc.Stack(gap="lg", children=[
-        dmc.SimpleGrid(cols=1, spacing="lg", children=[
-            _metric("Total Physical Devices", f"{total:,}", "solar:server-bold-duotone", color="indigo"),
-        ]),
+    children: list = []
+    device_kpi = _build_metrics_grid(
+        [(total, "Total physical devices", f"{total:,}", "solar:server-bold-duotone", "indigo")],
+        cols=1,
+    )
+    if device_kpi is not None:
+        children.append(device_kpi)
+    children.append(
         _section_card(
-            "Device List",
+            "Device list",
             "NetBox physical inventory (customer tenant scope)",
             _vm_table(
                 devices or [],
@@ -1273,8 +1323,9 @@ def _tab_physical_inventory(devices: list[dict]):
                 row_fn,
                 empty_cols=4,
             ),
-        ),
-    ])
+        )
+    )
+    return dmc.Stack(gap="lg", children=children)
 
 
 def _tab_customer_availability(avail: dict):
@@ -1322,15 +1373,16 @@ def _tab_customer_availability(avail: dict):
     ]
     vm_cols = ["VM / Subject", "Datacenter group", "Start", "End", "Duration (min)", "Reason"]
 
-    return dmc.Stack(
-        gap="lg",
-        children=[
-            dmc.Text(
-                f"AuraNotify availability (customer ids: {cids or 'none'}) — "
-                "aligned with report period start.",
-                size="sm",
-                c="dimmed",
-            ),
+    children: list = [
+        dmc.Text(
+            f"AuraNotify availability (customer ids: {cids or 'none'}) — "
+            "aligned with report period start.",
+            size="sm",
+            c="dimmed",
+        ),
+    ]
+    if svc:
+        children.append(
             _section_card(
                 "Service outages",
                 "Infrastructure / service interruptions (source=service)",
@@ -1339,14 +1391,13 @@ def _tab_customer_availability(avail: dict):
                     highlightOnHover=True,
                     children=[
                         html.Thead(html.Tr([html.Th(c) for c in svc_cols])),
-                        html.Tbody(
-                            [_svc_row(e) for e in svc if isinstance(e, dict)]
-                            if svc
-                            else [html.Tr([html.Td("No data", colSpan=len(svc_cols))])],
-                        ),
+                        html.Tbody([_svc_row(e) for e in svc if isinstance(e, dict)]),
                     ],
                 ),
-            ),
+            )
+        )
+    if vm:
+        children.append(
             _section_card(
                 "VM outages",
                 "Virtual machine downtime records (source=vm)",
@@ -1355,16 +1406,21 @@ def _tab_customer_availability(avail: dict):
                     highlightOnHover=True,
                     children=[
                         html.Thead(html.Tr([html.Th(c) for c in vm_cols])),
-                        html.Tbody(
-                            [_vm_row(e) for e in vm if isinstance(e, dict)]
-                            if vm
-                            else [html.Tr([html.Td("No data", colSpan=len(vm_cols))])],
-                        ),
+                        html.Tbody([_vm_row(e) for e in vm if isinstance(e, dict)]),
                     ],
                 ),
-            ),
-        ],
-    )
+            )
+        )
+    if len(children) == 1:
+        children.append(
+            dmc.Alert(
+                color="teal",
+                variant="light",
+                title="No outages in period",
+                children="No service or VM downtime records for this customer in the selected report period.",
+            )
+        )
+    return dmc.Stack(gap="lg", children=children)
 
 
 def _fmt_hours(h) -> str:
@@ -1473,33 +1529,21 @@ def _tab_itsm(
     inc_tickets = [t for t in all_tickets if t.get("source") == "incident"]
     sr_tickets  = [t for t in all_tickets if t.get("source") == "servicerequest"]
 
-    # ---- KPI cards ----
-    kpi_grid = dmc.SimpleGrid(cols=4, spacing="lg", children=[
-        _metric("Total Records",
-                f"{total:,}",
-                "solar:ticket-bold-duotone", color="indigo"),
-        _metric("Incidents (Open / Closed)",
-                f"{inc_open:,} / {inc_closed:,}",
-                "solar:bug-minimalistic-bold-duotone", color="blue"),
-        _metric("Service Requests (Open / Closed)",
-                f"{sr_open:,} / {sr_closed:,}",
-                "solar:document-add-bold-duotone", color="teal"),
-        _metric("SLA Breach",
-                f"{sla_breach:,}",
-                "solar:danger-triangle-bold-duotone", color="red"),
-        _metric("Avg Incident Resolution",
-                avg_rh,
-                "solar:clock-circle-bold-duotone", color="violet"),
-        _metric("Median Resolution",
-                median_rh,
-                "solar:clock-square-bold-duotone", color="grape"),
-        _metric("P95 Resolution",
-                p95_rh,
-                "solar:alarm-bold-duotone", color="orange"),
-        _metric("Top Category",
-                top_cat,
-                "solar:tag-bold-duotone", color="cyan"),
-    ])
+    inc_pair = inc_open + inc_closed
+    sr_pair = sr_open + sr_closed
+    kpi_grid = _build_metrics_grid(
+        [
+            (total, "Total records", f"{total:,}", "solar:ticket-bold-duotone", "indigo"),
+            (inc_pair, "Incidents (open / closed)", f"{inc_open:,} / {inc_closed:,}", "solar:bug-minimalistic-bold-duotone", "blue"),
+            (sr_pair, "Service requests (open / closed)", f"{sr_open:,} / {sr_closed:,}", "solar:document-add-bold-duotone", "teal"),
+            (sla_breach, "SLA breach", f"{sla_breach:,}", "solar:danger-triangle-bold-duotone", "red"),
+            (sm.get("avg_resolution_hours"), "Avg incident resolution", avg_rh, "solar:clock-circle-bold-duotone", "violet"),
+            (sm.get("median_resolution_hours"), "Median resolution", median_rh, "solar:clock-square-bold-duotone", "grape"),
+            (sm.get("p95_resolution_hours"), "P95 resolution", p95_rh, "solar:alarm-bold-duotone", "orange"),
+            (top_cat if top_cat != "-" else None, "Top category", top_cat, "solar:tag-bold-duotone", "cyan"),
+        ],
+        cols=4,
+    )
 
     # ---- Distribution charts ----
     charts_row = dmc.SimpleGrid(cols=2, spacing="lg", children=[
@@ -1685,24 +1729,31 @@ def _tab_itsm(
         ],
     )
 
-    return dmc.Stack(gap="lg", children=[
-        _section_card(
-            "ITSM Overview",
-            f"Incidents & Service Requests for {customer_name} in the report period",
-            kpi_grid,
-        ),
-        charts_row,
-        _section_card(
-            "Extreme Cases",
-            "Long-tail closed incidents (resolution > mean+1\u03c3) and open SLA breaches",
-            extremes_accordion,
-        ),
-        _section_card(
-            "All Records",
-            "All tickets in the report period \u2014 expand to view incidents or service requests",
-            all_tickets_accordion,
-        ),
-    ])
+    itsm_children: list = []
+    if kpi_grid is not None:
+        itsm_children.append(
+            _section_card(
+                "ITSM overview",
+                f"Incidents and service requests for {customer_name} in the report period",
+                kpi_grid,
+            )
+        )
+    itsm_children.extend(
+        [
+            charts_row,
+            _section_card(
+                "Extreme cases",
+                "Long-tail closed incidents (resolution > mean+1σ) and open SLA breaches",
+                extremes_accordion,
+            ),
+            _section_card(
+                "All records",
+                "All tickets in the report period — expand to view incidents or service requests",
+                all_tickets_accordion,
+            ),
+        ]
+    )
+    return dmc.Stack(gap="lg", children=itsm_children)
 
 
 # ---------------------------------------------------------------------------
@@ -1781,7 +1832,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     backup_totals = totals.get("backup", {}) or {}
 
     has_s3 = bool(s3_data.get("vaults"))
-    has_phys_inv = True
+    has_phys_inv = bool(phys_inv_devices)
 
     # Values used by Summary "Backup summary" cards (kept here to avoid NameError).
     veeam_defined = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
@@ -1826,118 +1877,148 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     classic   = assets.get("classic", {}) or {}
     hyperconv = assets.get("hyperconv", {}) or {}
     pure_nx   = assets.get("pure_nutanix", {}) or {}
-    show_pure_tab = int(pure_nx.get("vm_count", 0) or 0) > 0
+    show_pure_tab = asset_has_usage(pure_nx)
+    show_classic_tab = asset_has_usage(classic)
+    show_hyperconv_tab = asset_has_usage(hyperconv)
+    show_power_tab = asset_has_usage(power_asset, instance_keys=("lpar_count",))
 
-    virt_tabs_list = [
-        dmc.TabsTab("Klasik Mimari", value="classic"),
-        dmc.TabsTab("Hyperconverged Mimari", value="hyperconv"),
-    ]
-    if show_pure_tab:
-        virt_tabs_list.append(dmc.TabsTab("Pure Nutanix (AHV)", value="pure_nx"))
-    virt_tabs_list.append(dmc.TabsTab("Power Mimari", value="power"))
-
-    virt_panels_list = [
-        dmc.TabsPanel(
-            value="classic",
-            pt="lg",
-            children=_tab_classic(
-                classic,
-                vm_outage_counts,
-                crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.classic"),
-            ),
-        ),
-        dmc.TabsPanel(
-            value="hyperconv",
-            pt="lg",
-            children=_tab_hyperconv(
-                hyperconv,
-                pure_nx,
-                vm_outage_counts,
-                crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.hyperconverged"),
-            ),
-        ),
-    ]
-    if show_pure_tab:
-        virt_panels_list.append(
-            dmc.TabsPanel(
-                value="pure_nx",
-                pt="lg",
-                children=_tab_pure_nutanix(
-                    pure_nx,
+    virt_tab_defs: list[tuple[str, str, html.Div]] = []
+    if show_classic_tab:
+        virt_tab_defs.append(
+            (
+                "classic",
+                "Klasik Mimari",
+                _tab_classic(
+                    classic,
                     vm_outage_counts,
-                    crm_eff_panel=build_sold_vs_used_stack(
-                        filter_efficiency_rows(eff_by_cat, "virtualization.nutanix")
-                    ),
+                    crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.classic"),
                 ),
             )
         )
-    virt_panels_list.append(
-        dmc.TabsPanel(
-            value="power",
-            pt="lg",
-            children=_tab_power(
-                power_asset,
-                vm_outage_counts,
-                crm_eff_panel=build_sold_vs_used_stack(
-                    filter_efficiency_rows(eff_by_cat, "virtualization.power")
+    if show_hyperconv_tab:
+        virt_tab_defs.append(
+            (
+                "hyperconv",
+                "Hyperconverged Mimari",
+                _tab_hyperconv(
+                    hyperconv,
+                    pure_nx,
+                    vm_outage_counts,
+                    crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.hyperconverged"),
                 ),
-            ),
+            )
         )
-    )
+    if show_pure_tab:
+        virt_tab_defs.append(
+            (
+                "pure_nx",
+                "Pure Nutanix (AHV)",
+                _tab_pure_nutanix(
+                    pure_nx,
+                    vm_outage_counts,
+                    crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.nutanix"),
+                ),
+            )
+        )
+    if show_power_tab:
+        virt_tab_defs.append(
+            (
+                "power",
+                "Power Mimari",
+                _tab_power(
+                    power_asset,
+                    vm_outage_counts,
+                    crm_eff_panel=build_compliance_stack(compliance_payload, "virtualization.power"),
+                ),
+            )
+        )
 
-    virt_content = dmc.Tabs(
-        color="violet",
-        variant="outline",
-        radius="md",
-        value="classic",
-        children=[
-            dmc.TabsList(children=virt_tabs_list),
-            *virt_panels_list,
-        ],
-    )
+    if virt_tab_defs:
+        default_virt = virt_tab_defs[0][0]
+        virt_content = dmc.Tabs(
+            color="violet",
+            variant="outline",
+            radius="md",
+            value=default_virt,
+            children=[
+                dmc.TabsList(
+                    children=[dmc.TabsTab(label, value=value) for value, label, _panel in virt_tab_defs]
+                ),
+                *[
+                    dmc.TabsPanel(value=value, pt="lg", children=panel)
+                    for value, _label, panel in virt_tab_defs
+                ],
+            ],
+        )
+    else:
+        virt_content = dmc.Alert(
+            color="gray",
+            variant="light",
+            title="No virtualization assets",
+            children="No provisioned compute instances were returned for this customer.",
+        )
 
-    backup_tabs = dmc.Tabs(
-        color="green",
-        variant="outline",
-        radius="md",
-        value="veeam",
-        children=[
-            dmc.TabsList(
-                children=[
-                    dmc.TabsTab("Veeam", value="veeam"),
-                    dmc.TabsTab("Zerto", value="zerto"),
-                    dmc.TabsTab("Netbackup", value="netbackup"),
-                ]
-            ),
-            dmc.TabsPanel(
-                value="veeam",
-                pt="lg",
-                children=_tab_veeam(
+    backup_tab_defs: list[tuple[str, str, html.Div]] = []
+    if backup_vendor_has_data(backup_totals, backup_assets, "veeam"):
+        backup_tab_defs.append(
+            (
+                "veeam",
+                "Veeam",
+                _tab_veeam(
                     backup_assets,
                     backup_totals,
                     crm_eff_panel=build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, "backup.veeam")),
                 ),
-            ),
-            dmc.TabsPanel(
-                value="zerto",
-                pt="lg",
-                children=_tab_zerto(
+            )
+        )
+    if backup_vendor_has_data(backup_totals, backup_assets, "zerto"):
+        backup_tab_defs.append(
+            (
+                "zerto",
+                "Zerto",
+                _tab_zerto(
                     backup_assets,
                     backup_totals,
                     crm_eff_panel=build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, "backup.zerto")),
                 ),
-            ),
-            dmc.TabsPanel(
-                value="netbackup",
-                pt="lg",
-                children=_tab_netbackup(
+            )
+        )
+    if backup_vendor_has_data(backup_totals, backup_assets, "netbackup"):
+        backup_tab_defs.append(
+            (
+                "netbackup",
+                "Netbackup",
+                _tab_netbackup(
                     backup_assets,
                     backup_totals,
                     crm_eff_panel=build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, "backup.netbackup")),
                 ),
-            ),
-        ],
-    )
+            )
+        )
+
+    if backup_tab_defs:
+        backup_tabs = dmc.Tabs(
+            color="green",
+            variant="outline",
+            radius="md",
+            value=backup_tab_defs[0][0],
+            children=[
+                dmc.TabsList(
+                    children=[dmc.TabsTab(label, value=value) for value, label, _panel in backup_tab_defs]
+                ),
+                *[
+                    dmc.TabsPanel(value=value, pt="lg", children=panel)
+                    for value, _label, panel in backup_tab_defs
+                ],
+            ],
+        )
+    else:
+        backup_tabs = dmc.Alert(
+            color="gray",
+            variant="light",
+            title="No backup services",
+            children="No billable backup vendor data for this customer in the selected period.",
+        )
 
     export_context = {
         "customer_name": name,
@@ -1956,23 +2037,13 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     }
 
     return {
-        "intro_card": build_crm_intro_card(
-            name,
-            sales_summary,
-            service_breakdown,
-            compliance_payload=compliance_payload,
-        ),
+        "intro_card": build_crm_context_card(name, sales_summary, compliance_payload=compliance_payload),
         "summary": _tab_summary(
             totals,
             assets,
-            customer_name=name,
             sales_summary=sales_summary,
-            service_breakdown=service_breakdown,
-            sales_items=sales_items,
-            active_orders=active_orders,
-            active_items=active_items,
             efficiency_rows=eff_by_cat,
-            compliance_payload=compliance_payload,
+            vm_outage_counts=vm_outage_counts,
         ),
         "virt": virt_content,
         "avail": _tab_customer_availability(avail_bundle),
@@ -1985,6 +2056,12 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             s3_data,
             sales_summary=sales_summary,
             crm_eff_panel=build_sold_vs_used_stack(_crm_rows_outside_virt_backup(eff_by_cat)),
+            customer_name=name,
+            service_breakdown=service_breakdown,
+            sales_items=sales_items,
+            active_orders=active_orders,
+            active_items=active_items,
+            efficiency_rows=eff_by_cat,
         ),
         "s3": html.Div(
             id="s3-customer-metrics-panel",

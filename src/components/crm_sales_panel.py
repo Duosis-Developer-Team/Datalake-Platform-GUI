@@ -1,10 +1,12 @@
-"""CRM sales panels for the customer detail Summary tab and intro card."""
+"""CRM sales panels for Customer View context card and Billing tab."""
 from __future__ import annotations
 
 from dash import dcc, html
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objects as go
+
+from src.utils.visibility import is_meaningful_value, visible_kv_rows
 
 
 def format_crm_money(value, currency: str | None = None) -> str:
@@ -93,19 +95,32 @@ def build_crm_summary_kv_panel(
     line_count = len(sales_items or [])
     active_line_count = len(active_items or [])
 
-    rows = [
-        _kv_row("Customer reference", customer_name or "-"),
-        _kv_row("YTD realized revenue", format_crm_money(summary.get("ytd_revenue_total"), currency)),
-        _kv_row("Lifetime realized revenue", format_crm_money(summary.get("lifetime_revenue_total"), currency)),
-        _kv_row("YTD orders (fulfilled)", f"{int(summary.get('invoice_count') or 0):,}"),
-        _kv_row("Lifetime orders", f"{int(summary.get('lifetime_order_count') or 0):,}"),
-        _kv_row("Active orders (open)", f"{int(summary.get('active_order_count') or 0):,}"),
-        _kv_row("Active order value", format_crm_money(summary.get("active_order_value"), currency)),
-        _kv_row("Service categories sold", f"{service_count:,}"),
-        _kv_row("Invoiced line items", f"{line_count:,}"),
-        _kv_row("Active line items", f"{active_line_count:,}"),
-        _kv_row("Currency", str(currency or "-")),
+    candidate_rows = [
+        ("Customer reference", customer_name or None),
+        ("YTD realized revenue", summary.get("ytd_revenue_total")),
+        ("Lifetime realized revenue", summary.get("lifetime_revenue_total")),
+        ("YTD orders (fulfilled)", int(summary.get("invoice_count") or 0)),
+        ("Lifetime orders", int(summary.get("lifetime_order_count") or 0)),
+        ("Active orders (open)", int(summary.get("active_order_count") or 0)),
+        ("Active order value", summary.get("active_order_value")),
+        ("Service categories sold", service_count),
+        ("Invoiced line items", line_count),
+        ("Active line items", active_line_count),
+        ("Currency", currency),
     ]
+    rows = []
+    for label, raw in visible_kv_rows(candidate_rows):
+        if label == "Customer reference":
+            display = str(raw)
+        elif label == "Currency":
+            display = str(raw)
+        elif label in ("YTD orders (fulfilled)", "Lifetime orders", "Active orders (open)", "Service categories sold", "Invoiced line items", "Active line items"):
+            display = f"{int(raw):,}"
+        else:
+            display = format_crm_money(raw, currency)
+        rows.append(_kv_row(label, display))
+    if not rows:
+        return dmc.Text("No CRM sales metrics for this customer.", size="sm", c="dimmed")
     return html.Div(children=rows)
 
 
@@ -113,17 +128,21 @@ def build_crm_intro_kpi_strip(sales_summary: dict | None, service_breakdown: lis
     summary = sales_summary or {}
     currency = summary.get("currency")
     service_count = len(service_breakdown or [])
+    candidates = [
+        ("YTD Revenue", summary.get("ytd_revenue_total"), format_crm_money(summary.get("ytd_revenue_total"), currency), "green"),
+        ("Lifetime Revenue", summary.get("lifetime_revenue_total"), format_crm_money(summary.get("lifetime_revenue_total"), currency), "teal"),
+        ("YTD Orders", int(summary.get("invoice_count") or 0), f"{int(summary.get('invoice_count') or 0):,}", "cyan"),
+        ("Active Orders", int(summary.get("active_order_count") or 0), f"{int(summary.get('active_order_count') or 0):,}", "orange"),
+        ("Active Order Value", summary.get("active_order_value"), format_crm_money(summary.get("active_order_value"), currency), "grape"),
+        ("Service categories", service_count, f"{service_count:,}", "violet"),
+    ]
+    tiles = [_intro_kpi(t, display, color) for t, raw, display, color in candidates if is_meaningful_value(raw)]
+    if not tiles:
+        return dmc.Text("No realized or active CRM sales in scope.", size="sm", c="dimmed")
     return dmc.SimpleGrid(
-        cols={"base": 2, "md": 3, "lg": 6},
+        cols={"base": 2, "md": min(3, len(tiles)), "lg": min(6, len(tiles))},
         spacing="md",
-        children=[
-            _intro_kpi("YTD Revenue", format_crm_money(summary.get("ytd_revenue_total"), currency), "green"),
-            _intro_kpi("Lifetime Revenue", format_crm_money(summary.get("lifetime_revenue_total"), currency), "teal"),
-            _intro_kpi("YTD Orders", f"{int(summary.get('invoice_count') or 0):,}", "cyan"),
-            _intro_kpi("Active Orders", f"{int(summary.get('active_order_count') or 0):,}", "orange"),
-            _intro_kpi("Active Order Value", format_crm_money(summary.get("active_order_value"), currency), "grape"),
-            _intro_kpi("Service categories", f"{service_count:,}", "violet"),
-        ],
+        children=tiles,
     )
 
 
@@ -395,22 +414,45 @@ def build_crm_sold_services_panel(
     return build_crm_invoiced_orders_section(service_breakdown, efficiency_rows, sales_items)
 
 
-def build_crm_intro_card(
+def build_crm_context_card(
     customer_name: str,
     sales_summary: dict | None,
-    service_breakdown: list[dict] | None,
     compliance_payload: dict | None = None,
 ):
+    """Single header context card — identity, risk badge, primary commercial signal."""
     summary = sales_summary or {}
     currency = summary.get("currency")
     compliance_summary = (compliance_payload or {}).get("summary") or {}
     has_overuse = bool(compliance_summary.get("has_overuse"))
-    overuse_badges = []
-    if has_overuse:
-        overuse_badges.append(
-            dmc.Badge("Resource overage", color="red", variant="filled", size="sm")
+    active_value = summary.get("active_order_value")
+
+    stack_children: list = [
+        dmc.Group(
+            gap="xs",
+            align="center",
+            children=[
+                dmc.Text(customer_name, fw=700, size="lg", c="#2B3674"),
+                dmc.Badge("Resource overage", color="red", variant="filled", size="sm") if has_overuse else None,
+            ],
+        ),
+        dmc.Text(
+            "Customer overview — use Summary for signals, Billing for commercial detail.",
+            size="sm",
+            c="#A3AED0",
+            fw=500,
+        ),
+    ]
+    if is_meaningful_value(active_value):
+        stack_children.append(
+            dmc.Text(
+                f"Active order value: {format_crm_money(active_value, currency)}",
+                size="sm",
+                c="#4318FF",
+                fw=700,
+            )
         )
-        overuse_badges.append(
+    if has_overuse and is_meaningful_value(compliance_summary.get("total_overage_loss_tl")):
+        stack_children.append(
             dmc.Text(
                 f"Est. overage loss: {format_crm_money(compliance_summary.get('total_overage_loss_tl'), currency)}",
                 size="sm",
@@ -418,68 +460,34 @@ def build_crm_intro_card(
                 fw=700,
             )
         )
-    return dmc.SimpleGrid(
-        cols={"base": 1, "md": 2},
-        spacing="lg",
-        style={"padding": "0 30px", "marginBottom": "24px"},
+
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "24px", "margin": "0 30px 24px"},
         children=[
-            html.Div(
-                className="nexus-card",
-                style={"padding": "24px"},
+            dmc.Group(
+                gap="sm",
                 children=[
-                    dmc.Group(
-                        gap="sm",
-                        mb="md",
-                        children=[
-                            dmc.ThemeIcon(
-                                size="xl",
-                                variant="light",
-                                color="indigo",
-                                radius="md",
-                                children=DashIconify(icon="solar:users-group-two-rounded-bold-duotone", width=30),
-                            ),
-                            dmc.Stack(
-                                gap=0,
-                                children=[
-                                    dmc.Group(
-                                        gap="xs",
-                                        align="center",
-                                        children=[
-                                            dmc.Text(customer_name, fw=700, size="lg", c="#2B3674"),
-                                            *overuse_badges[:1],
-                                        ],
-                                    ),
-                                    dmc.Text(
-                                        "CRM sales · Infrastructure assets",
-                                        size="sm",
-                                        c="#A3AED0",
-                                        fw=500,
-                                    ),
-                                    dmc.Text(
-                                        f"Active order value: {format_crm_money(summary.get('active_order_value'), currency)}",
-                                        size="sm",
-                                        c="#4318FF",
-                                        fw=700,
-                                    ),
-                                    *overuse_badges[1:],
-                                ],
-                            ),
-                        ],
+                    dmc.ThemeIcon(
+                        size="xl",
+                        variant="light",
+                        color="indigo",
+                        radius="md",
+                        children=DashIconify(icon="solar:users-group-two-rounded-bold-duotone", width=30),
                     ),
-                    dmc.Text(
-                        "CRM sales overview: open orders plus realized (YTD and lifetime) revenue.",
-                        size="sm",
-                        c="#A3AED0",
-                    ),
-                ],
-            ),
-            html.Div(
-                className="nexus-card",
-                style={"padding": "20px"},
-                children=[
-                    dmc.Text("CRM Sales", fw=700, size="sm", c="#2B3674", mb="sm"),
-                    build_crm_intro_kpi_strip(sales_summary, service_breakdown),
+                    dmc.Stack(gap=4, children=stack_children),
                 ],
             ),
         ],
     )
+
+
+def build_crm_intro_card(
+    customer_name: str,
+    sales_summary: dict | None,
+    service_breakdown: list[dict] | None,
+    compliance_payload: dict | None = None,
+):
+    """Backward-compatible wrapper — delegates to single context card."""
+    del service_breakdown
+    return build_crm_context_card(customer_name, sales_summary, compliance_payload=compliance_payload)

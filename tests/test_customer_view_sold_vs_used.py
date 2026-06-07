@@ -62,6 +62,9 @@ def test_customer_content_has_crm_summary_sections(_a, _b, _c, _d, _e, _f, _g, _
     assert "billing" in content
     assert "virt" in content
     summary_text = str(content.get("summary"))
-    assert "CRM Sales Summary" in summary_text
-    assert "Active Orders" in summary_text
-    assert "Invoiced Orders" in summary_text
+    billing_text = str(content.get("billing"))
+    assert "CRM Sales Summary" not in summary_text
+    assert "Active Orders" not in summary_text
+    assert "Invoiced Orders" not in summary_text
+    assert "CRM" in billing_text or "realized" in billing_text.lower()
+    assert "CRM sales summary" in billing_text or "YTD Revenue" in billing_text
