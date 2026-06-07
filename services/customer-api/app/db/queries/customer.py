@@ -689,7 +689,7 @@ SELECT
     'Classic' AS "Source",
     l.cluster AS "Cluster",
     COALESCE(l.number_of_cpus, 0) AS "CPU",
-    -- vm_metrics.cpu_usage_*_mhz are VMware cpu.usage % (0-100), not MHz despite column name.
+    -- VMware cpu_usage_*_mhz columns store 0-100 percent (not MHz).
     ROUND(COALESCE(a.cpu_mhz_min, 0)::numeric, 2) AS "CPU min pct",
     ROUND(COALESCE(a.cpu_mhz_avg, 0)::numeric, 2) AS "CPU avg pct",
     ROUND(COALESCE(a.cpu_mhz_max, 0)::numeric, 2) AS "CPU max pct",

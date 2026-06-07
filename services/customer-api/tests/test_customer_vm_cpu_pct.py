@@ -1,6 +1,13 @@
 """VM CPU percent normalization in customer CRM queries."""
 
+import re
+
 from app.db.queries import customer as cq
+
+
+def _count_psycopg2_placeholders(sql: str) -> int:
+    """Count %s placeholders (ignore %% escapes)."""
+    return len(re.findall(r"(?<!%)%s", sql))
 
 
 def test_classic_vm_list_uses_vmware_cpu_usage_as_percent():
@@ -8,6 +15,8 @@ def test_classic_vm_list_uses_vmware_cpu_usage_as_percent():
     assert "cpu_usage_min_mhz" in sql
     assert "100.0 * COALESCE(a.cpu_mhz_min" not in sql
     assert '"CPU min pct"' in sql
+    assert _count_psycopg2_placeholders(sql) == 6
+    assert re.search(r"(?<!%)%(?!s)", sql.replace("%%", "")) is None
 
 
 def test_hyperconv_vmware_cpu_usage_as_percent_nutanix_divided_by_10000():
