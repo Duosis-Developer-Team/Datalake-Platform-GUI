@@ -75,6 +75,31 @@ def test_build_crm_intro_card_renders():
         [],
     )
     assert card is not None
-    assert "CRM sales" in str(card)
+    assert "Acme Corp" in str(card)
     assert "Active order value" in str(card)
     assert "2,500.00 TRY" in str(card)
+
+
+def test_build_crm_summary_kv_panel_hides_zero_metrics():
+    panel = build_crm_summary_kv_panel(
+        "Acme Corp",
+        {"ytd_revenue_total": 0, "active_order_count": 1, "currency": "TRY"},
+        [],
+        [],
+    )
+    text = str(panel)
+    assert "Acme Corp" in text
+    assert "0.00 TRY" not in text
+    assert "Active orders" in text
+
+
+def test_build_crm_intro_kpi_strip_hides_zeros():
+    from src.components.crm_sales_panel import build_crm_intro_kpi_strip
+
+    strip = build_crm_intro_kpi_strip(
+        {"ytd_revenue_total": 0, "active_order_value": 500.0, "currency": "TRY"},
+        [],
+    )
+    text = str(strip)
+    assert "500.00 TRY" in text
+    assert "YTD Revenue" not in text
