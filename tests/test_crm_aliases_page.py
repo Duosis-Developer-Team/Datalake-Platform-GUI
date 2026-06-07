@@ -121,6 +121,26 @@ def test_add_and_remove_mapping_row():
     assert len(trimmed["sections"]["backup"]) == 1
 
 
+def test_add_mapping_row_preserves_unsaved_form_values():
+    editor = build_editor_state({"crm_accountid": "a", "crm_account_name": "A", "source_mappings": []})
+    assert editor is not None
+    value_states = [
+        {"id": {"section": "virtualization", "index": 0}, "value": "typed-before-add"},
+    ]
+    synced = editor_state_from_dash_states(
+        editor,
+        method_states=[],
+        value_states=value_states,
+        enabled_states=[],
+        source_states=[],
+        notes="draft note",
+    )
+    updated = add_mapping_row(synced, "virtualization")
+    assert updated["sections"]["virtualization"][0]["match_value"] == "typed-before-add"
+    assert len(updated["sections"]["virtualization"]) == 2
+    assert updated["notes"] == "draft note"
+
+
 def test_editor_state_from_form_inputs_returns_none_when_index_out_of_bounds():
     editor = build_editor_state({"crm_accountid": "a", "crm_account_name": "A", "source_mappings": []})
     assert editor is not None

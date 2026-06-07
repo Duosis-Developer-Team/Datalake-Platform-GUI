@@ -20,7 +20,6 @@ from src.utils.crm_source_mapping_ui import (
     aliases_to_table_rows,
     build_editor_state,
     editor_state_from_dash_states,
-    editor_state_from_form_inputs,
     editor_state_to_save_payload,
     filter_alias_table_rows,
     find_alias,
@@ -31,6 +30,28 @@ from src.utils.crm_source_mapping_ui import (
 
 def _panel_store(open_state: bool, account_id: str | None) -> dict:
     return {"open": bool(open_state), "crm_accountid": account_id}
+
+
+def _merge_editor_from_form_states(
+    editor_state: dict | None,
+    *,
+    method_states: list,
+    value_states: list,
+    enabled_states: list,
+    source_states: list,
+    notes: str | None,
+) -> dict | None:
+    """Capture live form values before structural editor changes (add/remove row)."""
+    if not editor_state:
+        return None
+    return editor_state_from_dash_states(
+        editor_state,
+        method_states=method_states,
+        value_states=value_states,
+        enabled_states=enabled_states,
+        source_states=source_states,
+        notes=notes,
+    )
 
 
 def _editor_for_account(page_data: list[dict], account_id: str) -> tuple[dict | None, dict | None]:
@@ -166,53 +187,39 @@ def persist_editor_accordion_open(value):
 
 @callback(
     Output("alias-editor-state", "data", allow_duplicate=True),
-    Input({"type": "alias-edit-method", "section": ALL, "index": ALL}, "value"),
-    Input({"type": "alias-edit-value", "section": ALL, "index": ALL}, "value"),
-    Input({"type": "alias-edit-enabled", "section": ALL, "index": ALL}, "checked"),
-    Input({"type": "alias-edit-source", "section": ALL, "index": ALL}, "value"),
-    Input("alias-edit-notes", "value"),
-    State("alias-editor-state", "data"),
-    prevent_initial_call=True,
-)
-def sync_editor_inputs(_methods, _values, _enabled, _sources, notes, editor_state):
-    if not editor_state:
-        return no_update
-    trig = ctx.triggered_id
-    if trig == "alias-edit-notes":
-        return {**editor_state, "notes": str(notes or "")}
-    if not isinstance(trig, dict):
-        return no_update
-    section = str(trig.get("section") or "")
-    index = int(trig.get("index", 0))
-    trig_type = str(trig.get("type") or "")
-    triggered_value = ctx.triggered[0].get("value") if ctx.triggered else None
-    kwargs: dict = {}
-    if trig_type == "alias-edit-method":
-        kwargs["match_method"] = triggered_value
-    elif trig_type == "alias-edit-value":
-        kwargs["match_value"] = triggered_value
-    elif trig_type == "alias-edit-enabled":
-        kwargs["enabled"] = bool(triggered_value)
-    elif trig_type == "alias-edit-source":
-        kwargs["data_source"] = triggered_value
-    updated = editor_state_from_form_inputs(editor_state, section=section, index=index, **kwargs)
-    return updated if updated is not None else no_update
-
-
-@callback(
-    Output("alias-editor-state", "data", allow_duplicate=True),
     Input({"type": "alias-edit-add", "section": ALL}, "n_clicks"),
+    State({"type": "alias-edit-method", "section": ALL, "index": ALL}, "value"),
+    State({"type": "alias-edit-value", "section": ALL, "index": ALL}, "value"),
+    State({"type": "alias-edit-enabled", "section": ALL, "index": ALL}, "checked"),
+    State({"type": "alias-edit-source", "section": ALL, "index": ALL}, "value"),
+    State("alias-edit-notes", "value"),
     State("alias-editor-state", "data"),
     prevent_initial_call=True,
 )
-def add_mapping_row_cb(_n_clicks, editor_state):
+def add_mapping_row_cb(
+    _n_clicks,
+    _methods,
+    _values,
+    _enabled,
+    _sources,
+    notes,
+    editor_state,
+):
     trig = ctx.triggered_id
     if not isinstance(trig, dict) or trig.get("type") != "alias-edit-add":
         return no_update
     if not ctx.triggered or not ctx.triggered[0].get("value"):
         return no_update
     section = str(trig.get("section") or "")
-    updated = add_mapping_row(editor_state, section)
+    synced = _merge_editor_from_form_states(
+        editor_state,
+        method_states=ctx.states_list[0] if ctx.states_list else [],
+        value_states=ctx.states_list[1] if len(ctx.states_list) > 1 else [],
+        enabled_states=ctx.states_list[2] if len(ctx.states_list) > 2 else [],
+        source_states=ctx.states_list[3] if len(ctx.states_list) > 3 else [],
+        notes=notes,
+    )
+    updated = add_mapping_row(synced, section)
     if updated is None:
         return no_update
     return updated
@@ -221,10 +228,23 @@ def add_mapping_row_cb(_n_clicks, editor_state):
 @callback(
     Output("alias-editor-state", "data", allow_duplicate=True),
     Input({"type": "alias-edit-remove", "section": ALL, "index": ALL}, "n_clicks"),
+    State({"type": "alias-edit-method", "section": ALL, "index": ALL}, "value"),
+    State({"type": "alias-edit-value", "section": ALL, "index": ALL}, "value"),
+    State({"type": "alias-edit-enabled", "section": ALL, "index": ALL}, "checked"),
+    State({"type": "alias-edit-source", "section": ALL, "index": ALL}, "value"),
+    State("alias-edit-notes", "value"),
     State("alias-editor-state", "data"),
     prevent_initial_call=True,
 )
-def remove_mapping_row_cb(_n_clicks, editor_state):
+def remove_mapping_row_cb(
+    _n_clicks,
+    _methods,
+    _values,
+    _enabled,
+    _sources,
+    notes,
+    editor_state,
+):
     trig = ctx.triggered_id
     if not isinstance(trig, dict) or trig.get("type") != "alias-edit-remove":
         return no_update
@@ -232,7 +252,15 @@ def remove_mapping_row_cb(_n_clicks, editor_state):
         return no_update
     section = str(trig.get("section") or "")
     index = int(trig.get("index", 0))
-    updated = remove_mapping_row(editor_state, section, index)
+    synced = _merge_editor_from_form_states(
+        editor_state,
+        method_states=ctx.states_list[0] if ctx.states_list else [],
+        value_states=ctx.states_list[1] if len(ctx.states_list) > 1 else [],
+        enabled_states=ctx.states_list[2] if len(ctx.states_list) > 2 else [],
+        source_states=ctx.states_list[3] if len(ctx.states_list) > 3 else [],
+        notes=notes,
+    )
+    updated = remove_mapping_row(synced, section, index)
     if updated is None:
         return no_update
     return updated
