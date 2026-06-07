@@ -126,9 +126,8 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
                 ],
             ),
             dmc.SimpleGrid(
-                cols=2,
+                cols={"base": 1, "sm": 2},
                 spacing="md",
-                breakpoints=[{"maxWidth": 900, "cols": 1}],
                 children=[gauge, bar],
             ),
             alloc_line,
