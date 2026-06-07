@@ -734,9 +734,9 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None, crm_eff_pa
             html.Td(r.get("name")),
             html.Td(r.get("cluster", "-")),
             _vm_metric_td(r.get("cpu", 0), decimals=0),
-            _vm_metric_td(r.get("cpu_mhz_max", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_mhz_avg", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_mhz_min", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_pct_max", r.get("cpu_mhz_max", 0)), suffix="%"),
+            _vm_metric_td(r.get("cpu_pct_avg", r.get("cpu_mhz_avg", 0)), suffix="%"),
+            _vm_metric_td(r.get("cpu_pct_min", r.get("cpu_mhz_min", 0)), suffix="%"),
             html.Td(
                 smart_memory(r.get("memory_gb", 0)),
                 style={
@@ -838,9 +838,9 @@ def _tab_hyperconv(
             html.Td(r.get("source", "-")),
             html.Td(r.get("cluster", "-")),
             _vm_metric_td(r.get("cpu", 0), decimals=0),
-            _vm_metric_td(r.get("cpu_mhz_max", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_mhz_avg", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_mhz_min", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_pct_max", r.get("cpu_mhz_max", 0)), suffix="%"),
+            _vm_metric_td(r.get("cpu_pct_avg", r.get("cpu_mhz_avg", 0)), suffix="%"),
+            _vm_metric_td(r.get("cpu_pct_min", r.get("cpu_mhz_min", 0)), suffix="%"),
             html.Td(
                 smart_memory(r.get("memory_gb", 0)),
                 style={
@@ -959,9 +959,9 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None, crm_eff_
             html.Td(r.get("source", "-")),
             html.Td(r.get("cluster", "-")),
             _vm_metric_td(r.get("cpu", 0), decimals=0),
-            _vm_metric_td(r.get("cpu_mhz_max", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_mhz_avg", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_mhz_min", 0), suffix="%"),
+            _vm_metric_td(r.get("cpu_pct_max", r.get("cpu_mhz_max", 0)), suffix="%"),
+            _vm_metric_td(r.get("cpu_pct_avg", r.get("cpu_mhz_avg", 0)), suffix="%"),
+            _vm_metric_td(r.get("cpu_pct_min", r.get("cpu_mhz_min", 0)), suffix="%"),
             html.Td(
                 smart_memory(r.get("memory_gb", 0)),
                 style={

@@ -675,6 +675,7 @@ latest AS (
         vmname,
         cluster,
         number_of_cpus,
+        total_cpu_capacity_mhz,
         total_memory_capacity_gb,
         provisioned_space_gb
     FROM public.vm_metrics
@@ -689,9 +690,21 @@ SELECT
     'Classic' AS "Source",
     l.cluster AS "Cluster",
     COALESCE(l.number_of_cpus, 0) AS "CPU",
-    ROUND(COALESCE(a.cpu_mhz_min, 0)::numeric, 2) AS "CPU min mhz",
-    ROUND(COALESCE(a.cpu_mhz_avg, 0)::numeric, 2) AS "CPU avg mhz",
-    ROUND(COALESCE(a.cpu_mhz_max, 0)::numeric, 2) AS "CPU max mhz",
+    ROUND(
+        (100.0 * COALESCE(a.cpu_mhz_min, 0)
+         / NULLIF(GREATEST(COALESCE(NULLIF(l.total_cpu_capacity_mhz, 0), l.number_of_cpus * 2000.0, 1), 1), 0))::numeric,
+        2
+    ) AS "CPU min pct",
+    ROUND(
+        (100.0 * COALESCE(a.cpu_mhz_avg, 0)
+         / NULLIF(GREATEST(COALESCE(NULLIF(l.total_cpu_capacity_mhz, 0), l.number_of_cpus * 2000.0, 1), 1), 0))::numeric,
+        2
+    ) AS "CPU avg pct",
+    ROUND(
+        (100.0 * COALESCE(a.cpu_mhz_max, 0)
+         / NULLIF(GREATEST(COALESCE(NULLIF(l.total_cpu_capacity_mhz, 0), l.number_of_cpus * 2000.0, 1), 1), 0))::numeric,
+        2
+    ) AS "CPU max pct",
     COALESCE(l.total_memory_capacity_gb, 0) AS "Memory (GB)",
     ROUND(COALESCE(a.mem_pct_min, 0)::numeric, 2) AS "Mem min pct",
     ROUND(COALESCE(a.mem_pct_avg, 0)::numeric, 2) AS "Mem avg pct",
@@ -822,6 +835,7 @@ vmware_latest AS (
         vmname,
         cluster,
         number_of_cpus,
+        total_cpu_capacity_mhz,
         total_memory_capacity_gb,
         provisioned_space_gb
     FROM public.vm_metrics
@@ -833,9 +847,9 @@ vmware_latest AS (
 ),
 nutanix_agg AS (
     SELECT vm_name,
-        COALESCE(MIN(cpu_usage_min), 0) AS cpu_mhz_min,
-        COALESCE(AVG(cpu_usage_avg), 0) AS cpu_mhz_avg,
-        COALESCE(MAX(cpu_usage_max), 0) AS cpu_mhz_max,
+        COALESCE(MIN(cpu_usage_min / 10000.0), 0) AS cpu_pct_min,
+        COALESCE(AVG(cpu_usage_avg / 10000.0), 0) AS cpu_pct_avg,
+        COALESCE(MAX(cpu_usage_max / 10000.0), 0) AS cpu_pct_max,
         MIN(memory_usage_min / 10000.0) AS mem_pct_min,
         AVG(memory_usage_avg / 10000.0) AS mem_pct_avg,
         MAX(memory_usage_max / 10000.0) AS mem_pct_max,
@@ -874,17 +888,32 @@ SELECT
     COALESCE(v.cluster, 'Nutanix') AS "Cluster",
     COALESCE(v.number_of_cpus, n.cpu_count, 0) AS "CPU",
     ROUND(
-        (CASE WHEN v.vmname IS NOT NULL THEN va.cpu_mhz_min ELSE na.cpu_mhz_min END)::numeric,
+        (CASE
+            WHEN v.vmname IS NOT NULL THEN
+                100.0 * va.cpu_mhz_min
+                / NULLIF(GREATEST(COALESCE(NULLIF(v.total_cpu_capacity_mhz, 0), v.number_of_cpus * 2000.0, 1), 1), 0)
+            ELSE na.cpu_pct_min
+        END)::numeric,
         2
-    ) AS "CPU min mhz",
+    ) AS "CPU min pct",
     ROUND(
-        (CASE WHEN v.vmname IS NOT NULL THEN va.cpu_mhz_avg ELSE na.cpu_mhz_avg END)::numeric,
+        (CASE
+            WHEN v.vmname IS NOT NULL THEN
+                100.0 * va.cpu_mhz_avg
+                / NULLIF(GREATEST(COALESCE(NULLIF(v.total_cpu_capacity_mhz, 0), v.number_of_cpus * 2000.0, 1), 1), 0)
+            ELSE na.cpu_pct_avg
+        END)::numeric,
         2
-    ) AS "CPU avg mhz",
+    ) AS "CPU avg pct",
     ROUND(
-        (CASE WHEN v.vmname IS NOT NULL THEN va.cpu_mhz_max ELSE na.cpu_mhz_max END)::numeric,
+        (CASE
+            WHEN v.vmname IS NOT NULL THEN
+                100.0 * va.cpu_mhz_max
+                / NULLIF(GREATEST(COALESCE(NULLIF(v.total_cpu_capacity_mhz, 0), v.number_of_cpus * 2000.0, 1), 1), 0)
+            ELSE na.cpu_pct_max
+        END)::numeric,
         2
-    ) AS "CPU max mhz",
+    ) AS "CPU max pct",
     COALESCE(v.total_memory_capacity_gb, n.memory_gb, 0) AS "Memory (GB)",
     ROUND(
         (CASE WHEN v.vmname IS NOT NULL THEN va.mem_pct_min ELSE na.mem_pct_min END)::numeric,
@@ -991,9 +1020,9 @@ WITH cluster_uuids AS (
 ),
 agg AS (
     SELECT nvm.vm_name,
-        COALESCE(MIN(nvm.cpu_usage_min), 0) AS cpu_mhz_min,
-        COALESCE(AVG(nvm.cpu_usage_avg), 0) AS cpu_mhz_avg,
-        COALESCE(MAX(nvm.cpu_usage_max), 0) AS cpu_mhz_max,
+        COALESCE(MIN(nvm.cpu_usage_min / 10000.0), 0) AS cpu_pct_min,
+        COALESCE(AVG(nvm.cpu_usage_avg / 10000.0), 0) AS cpu_pct_avg,
+        COALESCE(MAX(nvm.cpu_usage_max / 10000.0), 0) AS cpu_pct_max,
         MIN(nvm.memory_usage_min / 10000.0) AS mem_pct_min,
         AVG(nvm.memory_usage_avg / 10000.0) AS mem_pct_avg,
         MAX(nvm.memory_usage_max / 10000.0) AS mem_pct_max,
@@ -1025,9 +1054,9 @@ SELECT
     'Pure Nutanix (AHV)' AS "Source",
     cu.cluster_name AS "Cluster",
     COALESCE(l.cpu_count, 0) AS "CPU",
-    ROUND(COALESCE(a.cpu_mhz_min, 0)::numeric, 2) AS "CPU min mhz",
-    ROUND(COALESCE(a.cpu_mhz_avg, 0)::numeric, 2) AS "CPU avg mhz",
-    ROUND(COALESCE(a.cpu_mhz_max, 0)::numeric, 2) AS "CPU max mhz",
+    ROUND(COALESCE(a.cpu_pct_min, 0)::numeric, 2) AS "CPU min pct",
+    ROUND(COALESCE(a.cpu_pct_avg, 0)::numeric, 2) AS "CPU avg pct",
+    ROUND(COALESCE(a.cpu_pct_max, 0)::numeric, 2) AS "CPU max pct",
     COALESCE(l.memory_gb, 0) AS "Memory (GB)",
     ROUND(COALESCE(a.mem_pct_min, 0)::numeric, 2) AS "Mem min pct",
     ROUND(COALESCE(a.mem_pct_avg, 0)::numeric, 2) AS "Mem avg pct",
