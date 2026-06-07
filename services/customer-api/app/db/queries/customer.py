@@ -675,7 +675,6 @@ latest AS (
         vmname,
         cluster,
         number_of_cpus,
-        total_cpu_capacity_mhz,
         total_memory_capacity_gb,
         provisioned_space_gb
     FROM public.vm_metrics
@@ -690,21 +689,10 @@ SELECT
     'Classic' AS "Source",
     l.cluster AS "Cluster",
     COALESCE(l.number_of_cpus, 0) AS "CPU",
-    ROUND(
-        (100.0 * COALESCE(a.cpu_mhz_min, 0)
-         / NULLIF(GREATEST(COALESCE(NULLIF(l.total_cpu_capacity_mhz, 0), l.number_of_cpus * 2000.0, 1), 1), 0))::numeric,
-        2
-    ) AS "CPU min pct",
-    ROUND(
-        (100.0 * COALESCE(a.cpu_mhz_avg, 0)
-         / NULLIF(GREATEST(COALESCE(NULLIF(l.total_cpu_capacity_mhz, 0), l.number_of_cpus * 2000.0, 1), 1), 0))::numeric,
-        2
-    ) AS "CPU avg pct",
-    ROUND(
-        (100.0 * COALESCE(a.cpu_mhz_max, 0)
-         / NULLIF(GREATEST(COALESCE(NULLIF(l.total_cpu_capacity_mhz, 0), l.number_of_cpus * 2000.0, 1), 1), 0))::numeric,
-        2
-    ) AS "CPU max pct",
+    -- vm_metrics.cpu_usage_*_mhz are VMware cpu.usage % (0-100), not MHz despite column name.
+    ROUND(COALESCE(a.cpu_mhz_min, 0)::numeric, 2) AS "CPU min pct",
+    ROUND(COALESCE(a.cpu_mhz_avg, 0)::numeric, 2) AS "CPU avg pct",
+    ROUND(COALESCE(a.cpu_mhz_max, 0)::numeric, 2) AS "CPU max pct",
     COALESCE(l.total_memory_capacity_gb, 0) AS "Memory (GB)",
     ROUND(COALESCE(a.mem_pct_min, 0)::numeric, 2) AS "Mem min pct",
     ROUND(COALESCE(a.mem_pct_avg, 0)::numeric, 2) AS "Mem avg pct",
@@ -835,7 +823,6 @@ vmware_latest AS (
         vmname,
         cluster,
         number_of_cpus,
-        total_cpu_capacity_mhz,
         total_memory_capacity_gb,
         provisioned_space_gb
     FROM public.vm_metrics
@@ -889,27 +876,21 @@ SELECT
     COALESCE(v.number_of_cpus, n.cpu_count, 0) AS "CPU",
     ROUND(
         (CASE
-            WHEN v.vmname IS NOT NULL THEN
-                100.0 * va.cpu_mhz_min
-                / NULLIF(GREATEST(COALESCE(NULLIF(v.total_cpu_capacity_mhz, 0), v.number_of_cpus * 2000.0, 1), 1), 0)
+            WHEN v.vmname IS NOT NULL THEN va.cpu_mhz_min
             ELSE na.cpu_pct_min
         END)::numeric,
         2
     ) AS "CPU min pct",
     ROUND(
         (CASE
-            WHEN v.vmname IS NOT NULL THEN
-                100.0 * va.cpu_mhz_avg
-                / NULLIF(GREATEST(COALESCE(NULLIF(v.total_cpu_capacity_mhz, 0), v.number_of_cpus * 2000.0, 1), 1), 0)
+            WHEN v.vmname IS NOT NULL THEN va.cpu_mhz_avg
             ELSE na.cpu_pct_avg
         END)::numeric,
         2
     ) AS "CPU avg pct",
     ROUND(
         (CASE
-            WHEN v.vmname IS NOT NULL THEN
-                100.0 * va.cpu_mhz_max
-                / NULLIF(GREATEST(COALESCE(NULLIF(v.total_cpu_capacity_mhz, 0), v.number_of_cpus * 2000.0, 1), 1), 0)
+            WHEN v.vmname IS NOT NULL THEN va.cpu_mhz_max
             ELSE na.cpu_pct_max
         END)::numeric,
         2

@@ -145,7 +145,7 @@ class CustomerAdapter:
                 )
                 classic_deleted_vm_list = [str(r[0]) for r in (classic_deleted_rows or []) if r and r[0]]
 
-                # VM CPU usage percent (SQL normalizes VMware MHz and Nutanix /10000).
+                # VM CPU usage percent (VMware cpu_usage_*_mhz is 0-100%%; Nutanix /10000 in SQL).
                 classic_vm_rows = self._run_rows(
                     cur,
                     cq.CUSTOMER_CLASSIC_VM_LIST,
