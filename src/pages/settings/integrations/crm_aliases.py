@@ -15,6 +15,7 @@ from src.utils.crm_source_mapping_ui import (
     UI_COLUMNS,
     add_mapping_row,
     aliases_to_table_rows,
+    alias_from_table_selection,
     build_editor_state,
     compute_summary,
     editor_state_from_dash_states,
@@ -23,6 +24,8 @@ from src.utils.crm_source_mapping_ui import (
     find_alias,
     merge_alias_after_save,
     remove_mapping_row,
+    resolve_visible_row_index,
+    resolve_visible_rows,
 )
 
 _TABLE_ID = "alias-customer-table"
@@ -326,58 +329,49 @@ def build_layout(search: str | None = None) -> html.Div:
     )
 
 
-def _account_id_from_visible_row(row: dict | None, page_data: list[dict]) -> str | None:
-    if not row:
-        return None
-    account_id = str(row.get("crm_accountid") or "")
-    if account_id:
-        return account_id
-    name = str(row.get("crm_account_name") or "")
-    for alias in page_data or []:
-        if str(alias.get("crm_account_name") or "") == name:
-            return str(alias.get("crm_accountid"))
-    return None
-
-
-def _resolve_selection_row_index(
-    *,
-    trigger_id,
-    selected_rows: list[int] | None,
-    active_cell: dict | None,
-) -> int | None:
-    if trigger_id == f"{_TABLE_ID}.active_cell" and active_cell and active_cell.get("row") is not None:
-        return int(active_cell["row"])
-    if selected_rows:
-        return int(selected_rows[0])
-    return None
-
-
 @callback(
     Output("alias-editor-state", "data"),
     Output("alias-editor-panel", "children"),
-    Output(_TABLE_ID, "selected_rows"),
     Input(_TABLE_ID, "selected_rows"),
     Input(_TABLE_ID, "active_cell"),
     State(_TABLE_ID, "derived_virtual_data"),
+    State(_TABLE_ID, "derived_viewport_data"),
     State(_TABLE_ID, "data"),
+    State(_TABLE_ID, "page_current"),
+    State(_TABLE_ID, "page_size"),
     State("alias-page-data", "data"),
     prevent_initial_call=True,
 )
-def _load_selected_customer(selected_rows, active_cell, virtual_data, table_data, page_data):
-    visible_rows = virtual_data if virtual_data is not None else (table_data or [])
-    row_index = _resolve_selection_row_index(
+def _load_selected_customer(
+    selected_rows,
+    active_cell,
+    virtual_data,
+    viewport_data,
+    table_data,
+    page_current,
+    page_size,
+    page_data,
+):
+    visible_rows = resolve_visible_rows(
+        virtual_data,
+        viewport_data,
+        table_data,
+        page_current,
+        page_size,
+    )
+    row_index = resolve_visible_row_index(
+        selected_rows or [],
+        active_cell,
         trigger_id=ctx.triggered_id,
-        selected_rows=selected_rows or [],
-        active_cell=active_cell,
+        table_id=_TABLE_ID,
     )
     if row_index is None or row_index < 0 or row_index >= len(visible_rows):
-        return None, _render_editor_panel(None), []
-    account_id = _account_id_from_visible_row(visible_rows[row_index], page_data or [])
-    if not account_id:
-        return None, _render_editor_panel(None), []
-    alias = find_alias(page_data or [], account_id)
+        return None, _render_editor_panel(None)
+    alias = alias_from_table_selection(visible_rows[row_index], page_data or [])
     editor = build_editor_state(alias)
-    return editor, _render_editor_panel(editor), [row_index]
+    if editor is None:
+        return None, _render_editor_panel(None)
+    return editor, _render_editor_panel(editor)
 
 
 @callback(

@@ -273,6 +273,67 @@ def find_alias(page_data: list[dict], account_id: str) -> dict | None:
     return None
 
 
+def resolve_visible_row_index(
+    selected_rows: list[int] | None,
+    active_cell: dict | None,
+    *,
+    trigger_id,
+    table_id: str,
+) -> int | None:
+    """Resolve a page-relative row index; prefer radio selection over active_cell."""
+    if selected_rows:
+        return int(selected_rows[0])
+    if trigger_id == f"{table_id}.active_cell" and active_cell and active_cell.get("row") is not None:
+        return int(active_cell["row"])
+    if active_cell and active_cell.get("row") is not None:
+        return int(active_cell["row"])
+    return None
+
+
+def resolve_visible_rows(
+    virtual_data: list[dict] | None,
+    viewport_data: list[dict] | None,
+    table_data: list[dict] | None,
+    page_current: int | None,
+    page_size: int | None,
+) -> list[dict]:
+    """Rows visible in the DataTable after filter/sort/pagination."""
+    if virtual_data is not None:
+        return list(virtual_data)
+    if viewport_data is not None:
+        return list(viewport_data)
+    rows = list(table_data or [])
+    if not rows:
+        return []
+    size = max(int(page_size or 25), 1)
+    page = max(int(page_current or 0), 0)
+    start = page * size
+    return rows[start : start + size]
+
+
+def alias_from_table_selection(row: dict | None, page_data: list[dict]) -> dict | None:
+    """Build alias payload for editor load, even when page_data lookup misses."""
+    if not row:
+        return None
+    account_id = str(row.get("crm_accountid") or "")
+    if not account_id:
+        name = str(row.get("crm_account_name") or "")
+        for alias in page_data or []:
+            if str(alias.get("crm_account_name") or "") == name:
+                return dict(alias)
+        return None
+    found = find_alias(page_data or [], account_id)
+    if found:
+        return found
+    return {
+        "crm_accountid": account_id,
+        "crm_account_name": str(row.get("crm_account_name") or account_id),
+        "source_mappings": [],
+        "notes": "",
+        "source": "manual",
+    }
+
+
 def collect_mappings_for_account(
     account_id: str,
     method_states: list,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from src.utils.crm_source_mapping_ui import (
     add_mapping_row,
+    alias_from_table_selection,
     alias_to_table_row,
     aliases_to_table_rows,
     build_editor_state,
@@ -14,7 +15,11 @@ from src.utils.crm_source_mapping_ui import (
     mappings_for_column,
     merge_alias_after_save,
     remove_mapping_row,
+    resolve_visible_row_index,
+    resolve_visible_rows,
 )
+
+_TABLE_ID = "alias-customer-table"
 
 
 def _boyner_alias() -> dict:
@@ -156,3 +161,49 @@ def test_mappings_for_column_filters_sources():
     ]
     virt = mappings_for_column(rows, ("virtualization", "netbox_vm_customer"))
     assert len(virt) == 1
+
+
+def test_resolve_visible_row_index_prefers_selected_rows_over_cleared_active_cell():
+    idx = resolve_visible_row_index(
+        [1],
+        {"row": None, "column": 0},
+        trigger_id=f"{_TABLE_ID}.active_cell",
+        table_id=_TABLE_ID,
+    )
+    assert idx == 1
+
+
+def test_resolve_visible_row_index_uses_active_cell_when_no_selection():
+    idx = resolve_visible_row_index(
+        [],
+        {"row": 3, "column": 1},
+        trigger_id=f"{_TABLE_ID}.active_cell",
+        table_id=_TABLE_ID,
+    )
+    assert idx == 3
+
+
+def test_resolve_visible_rows_uses_page_offset_when_virtual_data_missing():
+    table_data = [{"crm_accountid": f"acc-{i}", "crm_account_name": f"Customer {i}"} for i in range(30)]
+    visible = resolve_visible_rows(None, None, table_data, page_current=1, page_size=25)
+    assert len(visible) == 5
+    assert visible[0]["crm_accountid"] == "acc-25"
+
+
+def test_alias_from_table_selection_builds_minimal_alias_when_missing_in_page_data():
+    row = {"crm_accountid": "acc-new", "crm_account_name": "New Corp"}
+    alias = alias_from_table_selection(row, [])
+    assert alias is not None
+    assert alias["crm_accountid"] == "acc-new"
+    assert alias["source_mappings"] == []
+    editor = build_editor_state(alias)
+    assert editor is not None
+    assert editor["crm_account_name"] == "New Corp"
+
+
+def test_alias_from_table_selection_uses_page_data_when_present():
+    page = [{"crm_accountid": "acc-1", "crm_account_name": "Alpha", "source_mappings": [], "notes": "x"}]
+    row = {"crm_accountid": "acc-1", "crm_account_name": "Alpha"}
+    alias = alias_from_table_selection(row, page)
+    assert alias is not None
+    assert alias["notes"] == "x"
