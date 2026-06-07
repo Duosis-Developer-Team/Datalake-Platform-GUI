@@ -39,9 +39,10 @@
     animation: fadeInUp 0.35s ease-out;
 }
 
-/* Settings IAM: slide-in panels (Users / Teams) */
+/* Settings IAM: slide-in panels (Users / Teams / CRM aliases) */
 .user-slide-panel,
-.team-slide-panel {
+.team-slide-panel,
+.alias-slide-panel {
     flex-shrink: 0;
     overflow: hidden;
     transition:
@@ -51,7 +52,8 @@
 }
 
 .user-slide-panel.closed,
-.team-slide-panel.closed {
+.team-slide-panel.closed,
+.alias-slide-panel.closed {
     width: 0 !important;
     min-width: 0 !important;
     opacity: 0;
@@ -63,6 +65,12 @@
 .user-slide-panel.open,
 .team-slide-panel.open {
     width: 440px;
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.alias-slide-panel.open {
+    width: 520px;
     opacity: 1;
     pointer-events: auto;
 }

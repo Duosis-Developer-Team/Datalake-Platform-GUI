@@ -86,6 +86,37 @@ def aliases_to_table_rows(aliases: list[dict]) -> list[dict]:
     return rows
 
 
+DEFAULT_ALIAS_TABLE_PAGE_SIZE = 25
+
+
+def filter_alias_table_rows(rows: list[dict], query: str) -> list[dict]:
+    q = (query or "").strip().casefold()
+    if not q:
+        return list(rows or [])
+    return [
+        row
+        for row in (rows or [])
+        if q in str(row.get("crm_account_name") or "").casefold()
+        or q in str(row.get("crm_accountid") or "").casefold()
+    ]
+
+
+def paginate_alias_table_rows(
+    rows: list[dict],
+    page: int,
+    page_size: int = DEFAULT_ALIAS_TABLE_PAGE_SIZE,
+) -> list[dict]:
+    size = max(int(page_size or DEFAULT_ALIAS_TABLE_PAGE_SIZE), 1)
+    start = max(int(page or 0), 0) * size
+    return list(rows or [])[start : start + size]
+
+
+def page_count_for_rows(total: int, page_size: int = DEFAULT_ALIAS_TABLE_PAGE_SIZE) -> int:
+    if page_size <= 0 or total <= 0:
+        return 1
+    return max(1, (total + page_size - 1) // page_size)
+
+
 def compute_summary(aliases: list[dict]) -> dict[str, int]:
     rows = aliases or []
     configured = sum(1 for a in rows if (a.get("source_mappings") or []))

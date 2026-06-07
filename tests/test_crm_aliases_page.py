@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from src.utils.crm_source_mapping_ui import (
+    DEFAULT_ALIAS_TABLE_PAGE_SIZE,
     add_mapping_row,
     alias_from_table_selection,
     alias_to_table_row,
@@ -12,8 +13,11 @@ from src.utils.crm_source_mapping_ui import (
     compute_summary,
     editor_state_from_dash_states,
     editor_state_to_save_payload,
+    filter_alias_table_rows,
     mappings_for_column,
     merge_alias_after_save,
+    page_count_for_rows,
+    paginate_alias_table_rows,
     remove_mapping_row,
     resolve_visible_row_index,
     resolve_visible_rows,
@@ -207,3 +211,79 @@ def test_alias_from_table_selection_uses_page_data_when_present():
     alias = alias_from_table_selection(row, page)
     assert alias is not None
     assert alias["notes"] == "x"
+
+
+def test_filter_alias_table_rows_matches_name():
+    rows = aliases_to_table_rows(
+        [
+            {"crm_accountid": "a", "crm_account_name": "Alpha Corp", "source_mappings": []},
+            {"crm_accountid": "b", "crm_account_name": "Beta Corp", "source_mappings": []},
+        ]
+    )
+    filtered = filter_alias_table_rows(rows, "alpha")
+    assert len(filtered) == 1
+    assert filtered[0]["crm_account_name"] == "Alpha Corp"
+
+
+def test_paginate_alias_table_rows_and_page_count():
+    rows = [{"crm_accountid": f"acc-{i}"} for i in range(30)]
+    assert page_count_for_rows(len(rows), DEFAULT_ALIAS_TABLE_PAGE_SIZE) == 2
+    page0 = paginate_alias_table_rows(rows, 0, DEFAULT_ALIAS_TABLE_PAGE_SIZE)
+    page1 = paginate_alias_table_rows(rows, 1, DEFAULT_ALIAS_TABLE_PAGE_SIZE)
+    assert len(page0) == 25
+    assert len(page1) == 5
+    assert page0[0]["crm_accountid"] == "acc-0"
+    assert page1[0]["crm_accountid"] == "acc-25"
+
+
+def test_visible_table_rows_applies_filter_and_page(monkeypatch):
+    from src.pages.settings.integrations import crm_aliases as page_mod
+
+    aliases = [
+        {"crm_accountid": "a", "crm_account_name": "Alpha", "source_mappings": []},
+        {"crm_accountid": "b", "crm_account_name": "Beta", "source_mappings": []},
+    ]
+    rows, pages = page_mod.visible_table_rows(aliases, "beta", 0)
+    assert pages == 1
+    assert len(rows) == 1
+    assert rows[0]["crm_account_name"] == "Beta"
+
+
+def test_build_layout_includes_slide_panel_and_edit_buttons(monkeypatch):
+    from src.pages.settings.integrations import crm_aliases as page_mod
+
+    monkeypatch.setattr(
+        page_mod.api,
+        "get_crm_aliases",
+        lambda: [{"crm_accountid": "acc-1", "crm_account_name": "Alpha", "source_mappings": []}],
+    )
+    layout = page_mod.build_layout()
+    assert layout is not None
+
+    def _walk(obj):
+        if obj is None:
+            return
+        if isinstance(obj, (list, tuple)):
+            for item in obj:
+                yield from _walk(item)
+            return
+        yield obj
+        children = getattr(obj, "children", None)
+        if children is not None:
+            yield from _walk(children)
+
+    string_ids = set()
+    pattern_ids = []
+    for node in _walk(layout):
+        node_id = getattr(node, "id", None)
+        if node_id is None:
+            continue
+        if isinstance(node_id, dict):
+            pattern_ids.append(node_id)
+        else:
+            string_ids.add(node_id)
+
+    assert "alias-slide-panel" in string_ids
+    assert "alias-table-body" in string_ids
+    assert "alias-panel-store" in string_ids
+    assert any(item.get("type") == "alias-edit-open" for item in pattern_ids)

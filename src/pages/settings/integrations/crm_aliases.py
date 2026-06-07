@@ -1,34 +1,27 @@
 """Integrations — CRM customer source mappings (gui_crm_customer_source_mapping).
 
-Lightweight DataTable list + focused detail editor for one customer at a time.
+Slide-in edit panel (Users/Teams pattern) + searchable paginated html.Table.
 """
 from __future__ import annotations
 
-import dash
-from dash import Input, Output, State, ALL, callback, ctx, dash_table, dcc, html, no_update
 import dash_mantine_components as dmc
+from dash import dcc, html
 from dash_iconify import DashIconify
 
 from src.services import api_client as api
 from src.utils.crm_source_mapping_ui import (
+    DEFAULT_ALIAS_TABLE_PAGE_SIZE,
     MATCH_METHOD_OPTIONS,
     UI_COLUMNS,
-    add_mapping_row,
     aliases_to_table_rows,
-    alias_from_table_selection,
-    build_editor_state,
     compute_summary,
-    editor_state_from_dash_states,
-    editor_state_from_form_inputs,
-    editor_state_to_save_payload,
-    find_alias,
-    merge_alias_after_save,
-    remove_mapping_row,
-    resolve_visible_row_index,
-    resolve_visible_rows,
+    filter_alias_table_rows,
+    page_count_for_rows,
+    paginate_alias_table_rows,
 )
+from src.utils.ui_tokens import ON_SURFACE
 
-_TABLE_ID = "alias-customer-table"
+TABLE_PAGE_SIZE = DEFAULT_ALIAS_TABLE_PAGE_SIZE
 _STATUS_COLORS = {
     "configured": "teal",
     "seed": "blue",
@@ -36,7 +29,7 @@ _STATUS_COLORS = {
 }
 
 
-def _summary_strip(aliases: list[dict]) -> dmc.Group:
+def summary_strip(aliases: list[dict]) -> dmc.Group:
     stats = compute_summary(aliases)
     return dmc.Group(
         gap="xs",
@@ -53,31 +46,6 @@ def _summary_strip(aliases: list[dict]) -> dmc.Group:
             ),
         ],
     )
-
-
-def _table_style_conditional() -> list[dict]:
-    styles = [
-        {
-            "if": {"state": "selected"},
-            "backgroundColor": "rgba(67,24,255,0.08)",
-            "border": "1px solid #4318FF",
-        },
-        {
-            "if": {"filter_query": "{status} = 'empty'", "column_id": "status"},
-            "color": "#868E96",
-        },
-        {
-            "if": {"filter_query": "{status} = 'configured'", "column_id": "status"},
-            "color": "#0CA678",
-            "fontWeight": "600",
-        },
-        {
-            "if": {"filter_query": "{status} = 'seed'", "column_id": "status"},
-            "color": "#1971C2",
-            "fontWeight": "600",
-        },
-    ]
-    return styles
 
 
 def _render_mapping_entry(section_key: str, data_sources: tuple[str, ...], entry: dict, index: int):
@@ -135,13 +103,13 @@ def _render_mapping_entry(section_key: str, data_sources: tuple[str, ...], entry
     )
 
 
-def _render_editor_panel(editor_state: dict | None) -> html.Div:
+def render_editor_panel(editor_state: dict | None) -> html.Div:
     if not editor_state:
         return html.Div(
             children=dmc.Alert(
                 color="blue",
-                title="Select a customer",
-                children="Choose a row in the table below to edit source mappings for that CRM account.",
+                title="No customer selected",
+                children="Click Edit mappings on a customer row to configure source rules.",
             )
         )
 
@@ -187,27 +155,12 @@ def _render_editor_panel(editor_state: dict | None) -> html.Div:
     return html.Div(
         children=[
             dmc.Group(
-                justify="space-between",
+                justify="flex-end",
+                gap="xs",
                 mb="sm",
                 children=[
-                    dmc.Stack(
-                        gap=0,
-                        children=[
-                            dmc.Title(order=5, children=f"Edit: {account_name}"),
-                            dmc.Text(
-                                str(editor_state.get("crm_accountid") or ""),
-                                size="xs",
-                                c="dimmed",
-                            ),
-                        ],
-                    ),
-                    dmc.Group(
-                        gap="xs",
-                        children=[
-                            dmc.Button("Reset", id="alias-edit-reset", size="xs", variant="subtle", color="gray"),
-                            dmc.Button("Save mappings", id="alias-edit-save", size="xs", color="indigo"),
-                        ],
-                    ),
+                    dmc.Button("Reset", id="alias-edit-reset", size="xs", variant="subtle", color="gray"),
+                    dmc.Button("Save mappings", id="alias-edit-save", size="xs", color="indigo"),
                 ],
             ),
             dmc.TextInput(
@@ -227,23 +180,226 @@ def _render_editor_panel(editor_state: dict | None) -> html.Div:
     )
 
 
+def _status_badge(status: str) -> dmc.Badge:
+    return dmc.Badge(
+        str(status or "empty"),
+        color=_STATUS_COLORS.get(str(status or "").lower(), "gray"),
+        variant="light",
+        size="xs",
+    )
+
+
+def build_table_body_rows(rows: list[dict]) -> list[html.Tr]:
+    body: list[html.Tr] = []
+    for row in rows or []:
+        account_id = str(row.get("crm_accountid") or "")
+        body.append(
+            html.Tr(
+                style={"borderBottom": "1px solid #eef1f4"},
+                children=[
+                    html.Td(str(row.get("crm_account_name") or "-")),
+                    html.Td(str(row.get("account_id_short") or "")),
+                    html.Td(str(row.get("mapping_count") or 0)),
+                    html.Td(str(row.get("coverage") or "")),
+                    html.Td(_status_badge(str(row.get("status") or "empty"))),
+                    html.Td(
+                        dmc.Button(
+                            "Edit mappings",
+                            id={"type": "alias-edit-open", "account": account_id},
+                            size="xs",
+                            variant="light",
+                            color="indigo",
+                        )
+                    ),
+                ],
+            )
+        )
+    if not body:
+        body.append(
+            html.Tr(
+                children=html.Td(
+                    dmc.Text("No customers match the current filter.", size="sm", c="dimmed"),
+                    colSpan=6,
+                    style={"padding": "16px"},
+                )
+            )
+        )
+    return body
+
+
+def visible_table_rows(page_data: list[dict], query: str, page: int) -> tuple[list[dict], int]:
+    all_rows = aliases_to_table_rows(page_data or [])
+    filtered = filter_alias_table_rows(all_rows, query)
+    pages = page_count_for_rows(len(filtered), TABLE_PAGE_SIZE)
+    safe_page = min(max(int(page or 0), 0), pages - 1)
+    return paginate_alias_table_rows(filtered, safe_page, TABLE_PAGE_SIZE), pages
+
+
+def _th():
+    return {
+        "textAlign": "left",
+        "padding": "12px 16px",
+        "borderBottom": "1px solid #e9ecef",
+        "color": "#2B3674",
+        "fontSize": "11px",
+        "textTransform": "uppercase",
+    }
+
+
 def build_layout(search: str | None = None) -> html.Div:
+    _ = search
     aliases = api.get_crm_aliases()
-    table_rows = aliases_to_table_rows(aliases)
+    initial_rows, initial_pages = visible_table_rows(aliases, "", 0)
+    all_count = len(aliases_to_table_rows(aliases))
+    initial_label = (
+        f"Showing 1-{len(initial_rows)} of {all_count}"
+        if all_count
+        else "No matches"
+    )
 
     if not aliases:
-        empty_alert = dmc.Alert(
+        empty_block = dmc.Alert(
             color="yellow",
             title="No CRM project customers",
             children="Customer list comes from CRM PRJ-* sales orders. Verify customer-api connectivity.",
         )
     else:
-        empty_alert = dmc.Text(
-            "Filter and sort using column headers. Click a row or use the checkbox to edit mappings in the panel above.",
+        empty_block = dmc.Text(
+            "Search by customer name, then click Edit mappings to open the slide-in editor.",
             size="sm",
             c="dimmed",
             mb="sm",
         )
+
+    slide_panel = html.Div(
+        id="alias-slide-panel",
+        className="alias-slide-panel closed",
+        style={"alignSelf": "stretch"},
+        children=[
+            dmc.Paper(
+                p="lg",
+                radius="md",
+                withBorder=True,
+                style={"minWidth": "480px", "maxHeight": "calc(100vh - 220px)", "overflowY": "auto"},
+                children=[
+                    dmc.Group(
+                        justify="space-between",
+                        align="center",
+                        mb="md",
+                        wrap="nowrap",
+                        children=[
+                            dmc.Stack(
+                                gap=2,
+                                style={"minWidth": 0},
+                                children=[
+                                    dmc.Text(
+                                        id="alias-panel-title",
+                                        children="Edit mappings",
+                                        fw=700,
+                                        c=ON_SURFACE,
+                                        lineClamp=2,
+                                    ),
+                                    dmc.Text(
+                                        id="alias-panel-subtitle",
+                                        children="",
+                                        size="xs",
+                                        c="dimmed",
+                                    ),
+                                ],
+                            ),
+                            dmc.ActionIcon(
+                                DashIconify(icon="solar:close-circle-bold", width=22),
+                                id="alias-panel-close",
+                                variant="subtle",
+                                color="gray",
+                                radius="xl",
+                            ),
+                        ],
+                    ),
+                    html.Div(id="alias-editor-panel", children=render_editor_panel(None)),
+                ],
+            ),
+        ],
+    )
+
+    table_paper = dmc.Paper(
+        p=0,
+        radius="md",
+        withBorder=True,
+        style={"flex": "1", "minWidth": 0},
+        children=[
+            html.Div(
+                style={"padding": "16px 20px", "borderBottom": "1px solid #eef1f4"},
+                children=[
+                    dmc.Group(
+                        justify="space-between",
+                        align="flex-end",
+                        wrap="wrap",
+                        gap="sm",
+                        children=[
+                            dmc.TextInput(
+                                id="alias-table-search",
+                                placeholder="Search customer name…",
+                                leftSection=DashIconify(icon="solar:magnifer-linear", width=16, color="#A3AED0"),
+                                size="sm",
+                                style={"width": "min(320px, 100%)"},
+                            ),
+                            dmc.Text(
+                                id="alias-table-count",
+                                size="xs",
+                                c="dimmed",
+                                children=f"{len(aliases)} customer(s)",
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            html.Div(
+                style={"overflowX": "auto"},
+                children=[
+                    html.Table(
+                        style={"width": "100%", "borderCollapse": "collapse", "fontSize": "13px"},
+                        children=[
+                            html.Thead(
+                                html.Tr(
+                                    [
+                                        html.Th("CRM Account", style=_th()),
+                                        html.Th("Account ID", style=_th()),
+                                        html.Th("Mappings", style=_th()),
+                                        html.Th("Coverage", style=_th()),
+                                        html.Th("Status", style=_th()),
+                                        html.Th("Actions", style=_th()),
+                                    ]
+                                )
+                            ),
+                            html.Tbody(
+                                id="alias-table-body",
+                                children=build_table_body_rows(initial_rows),
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            dmc.Group(
+                justify="space-between",
+                p="sm",
+                children=[
+                    dmc.Text(id="alias-table-page-label", size="xs", c="dimmed", children=initial_label),
+                    dmc.Pagination(
+                        id="alias-table-pagination",
+                        total=max(initial_pages, 1),
+                        value=1,
+                        size="sm",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    body_row = html.Div(
+        style={"display": "flex", "gap": "24px", "alignItems": "flex-start", "width": "100%"},
+        children=[slide_panel, table_paper],
+    )
 
     return html.Div(
         style={"padding": "30px"},
@@ -264,7 +420,7 @@ def build_layout(search: str | None = None) -> html.Div:
                         children=[
                             dmc.Text("Customer source mappings", fw=700, size="xl", c="#2B3674"),
                             dmc.Text(
-                                "Browse CRM project customers in the table, then edit one account at a time.",
+                                "Browse CRM project customers and edit source mappings per account.",
                                 size="sm",
                                 c="#A3AED0",
                             ),
@@ -279,298 +435,13 @@ def build_layout(search: str | None = None) -> html.Div:
                     ),
                 ],
             ),
-            _summary_strip(aliases),
+            summary_strip(aliases),
             html.Div(id="alias-feedback", style={"marginBottom": "12px"}),
-            dmc.Paper(
-                p="md",
-                radius="md",
-                withBorder=True,
-                mb="md",
-                children=html.Div(id="alias-editor-panel", children=_render_editor_panel(None)),
-            ),
-            empty_alert,
-            dash_table.DataTable(
-                id=_TABLE_ID,
-                data=table_rows,
-                columns=[
-                    {"name": "CRM Account", "id": "crm_account_name"},
-                    {"name": "Account ID", "id": "account_id_short"},
-                    {"name": "Mappings", "id": "mapping_count", "type": "numeric"},
-                    {"name": "Coverage", "id": "coverage"},
-                    {"name": "Status", "id": "status"},
-                ],
-                row_selectable="single",
-                selected_rows=[],
-                page_size=25,
-                page_action="native",
-                filter_action="native",
-                sort_action="native",
-                sort_mode="multi",
-                style_table={"overflowX": "auto"},
-                style_cell={
-                    "fontSize": "12px",
-                    "fontFamily": "Inter, system-ui, sans-serif",
-                    "padding": "6px 8px",
-                    "textAlign": "left",
-                    "whiteSpace": "normal",
-                    "height": "auto",
-                },
-                style_header={
-                    "backgroundColor": "#F4F7FE",
-                    "color": "#2B3674",
-                    "fontWeight": "700",
-                    "border": "none",
-                },
-                style_data_conditional=_table_style_conditional(),
-            ),
+            empty_block,
+            body_row,
             dcc.Store(id="alias-page-data", data=aliases),
             dcc.Store(id="alias-editor-state", data=None),
+            dcc.Store(id="alias-panel-store", data={"open": False, "crm_accountid": None}),
+            dcc.Store(id="alias-table-page", data=0),
         ],
     )
-
-
-@callback(
-    Output("alias-editor-state", "data"),
-    Output("alias-editor-panel", "children"),
-    Input(_TABLE_ID, "selected_rows"),
-    Input(_TABLE_ID, "active_cell"),
-    State(_TABLE_ID, "derived_virtual_data"),
-    State(_TABLE_ID, "derived_viewport_data"),
-    State(_TABLE_ID, "data"),
-    State(_TABLE_ID, "page_current"),
-    State(_TABLE_ID, "page_size"),
-    State("alias-page-data", "data"),
-    prevent_initial_call=True,
-)
-def _load_selected_customer(
-    selected_rows,
-    active_cell,
-    virtual_data,
-    viewport_data,
-    table_data,
-    page_current,
-    page_size,
-    page_data,
-):
-    visible_rows = resolve_visible_rows(
-        virtual_data,
-        viewport_data,
-        table_data,
-        page_current,
-        page_size,
-    )
-    row_index = resolve_visible_row_index(
-        selected_rows or [],
-        active_cell,
-        trigger_id=ctx.triggered_id,
-        table_id=_TABLE_ID,
-    )
-    if row_index is None or row_index < 0 or row_index >= len(visible_rows):
-        return None, _render_editor_panel(None)
-    alias = alias_from_table_selection(visible_rows[row_index], page_data or [])
-    editor = build_editor_state(alias)
-    if editor is None:
-        return None, _render_editor_panel(None)
-    return editor, _render_editor_panel(editor)
-
-
-@callback(
-    Output("alias-editor-state", "data", allow_duplicate=True),
-    Input({"type": "alias-edit-method", "section": ALL, "index": ALL}, "value"),
-    Input({"type": "alias-edit-value", "section": ALL, "index": ALL}, "value"),
-    Input({"type": "alias-edit-enabled", "section": ALL, "index": ALL}, "checked"),
-    Input({"type": "alias-edit-source", "section": ALL, "index": ALL}, "value"),
-    Input("alias-edit-notes", "value"),
-    State("alias-editor-state", "data"),
-    prevent_initial_call=True,
-)
-def _sync_editor_inputs(_methods, _values, _enabled, _sources, notes, editor_state):
-    if not editor_state:
-        return no_update
-    trig = ctx.triggered_id
-    if trig == "alias-edit-notes":
-        return {**editor_state, "notes": str(notes or "")}
-    if not isinstance(trig, dict):
-        return no_update
-    section = str(trig.get("section") or "")
-    index = int(trig.get("index", 0))
-    trig_type = str(trig.get("type") or "")
-    triggered_value = ctx.triggered[0].get("value") if ctx.triggered else None
-    kwargs: dict = {}
-    if trig_type == "alias-edit-method":
-        kwargs["match_method"] = triggered_value
-    elif trig_type == "alias-edit-value":
-        kwargs["match_value"] = triggered_value
-    elif trig_type == "alias-edit-enabled":
-        kwargs["enabled"] = bool(triggered_value)
-    elif trig_type == "alias-edit-source":
-        kwargs["data_source"] = triggered_value
-    updated = editor_state_from_form_inputs(editor_state, section=section, index=index, **kwargs)
-    return updated if updated is not None else no_update
-
-
-@callback(
-    Output("alias-editor-state", "data", allow_duplicate=True),
-    Output("alias-editor-panel", "children", allow_duplicate=True),
-    Input({"type": "alias-edit-add", "section": ALL}, "n_clicks"),
-    State("alias-editor-state", "data"),
-    prevent_initial_call=True,
-)
-def _add_mapping_row(_n_clicks, editor_state):
-    trig = ctx.triggered_id
-    if not isinstance(trig, dict) or trig.get("type") != "alias-edit-add":
-        return no_update, no_update
-    section = str(trig.get("section") or "")
-    updated = add_mapping_row(editor_state, section)
-    if updated is None:
-        return no_update, no_update
-    return updated, _render_editor_panel(updated)
-
-
-@callback(
-    Output("alias-editor-state", "data", allow_duplicate=True),
-    Output("alias-editor-panel", "children", allow_duplicate=True),
-    Input({"type": "alias-edit-remove", "section": ALL, "index": ALL}, "n_clicks"),
-    State("alias-editor-state", "data"),
-    prevent_initial_call=True,
-)
-def _remove_mapping_row(_n_clicks, editor_state):
-    trig = ctx.triggered_id
-    if not isinstance(trig, dict) or trig.get("type") != "alias-edit-remove":
-        return no_update, no_update
-    section = str(trig.get("section") or "")
-    index = int(trig.get("index", 0))
-    updated = remove_mapping_row(editor_state, section, index)
-    if updated is None:
-        return no_update, no_update
-    return updated, _render_editor_panel(updated)
-
-
-@callback(
-    Output("alias-editor-state", "data", allow_duplicate=True),
-    Output("alias-editor-panel", "children", allow_duplicate=True),
-    Input("alias-edit-reset", "n_clicks"),
-    State("alias-page-data", "data"),
-    State("alias-editor-state", "data"),
-    prevent_initial_call=True,
-)
-def _reset_editor(_n_clicks, page_data, editor_state):
-    if not editor_state:
-        return no_update, no_update
-    account_id = str(editor_state.get("crm_accountid") or "")
-    alias = find_alias(page_data or [], account_id)
-    refreshed = build_editor_state(alias)
-    return refreshed, _render_editor_panel(refreshed)
-
-
-@callback(
-    Output("alias-feedback", "children"),
-    Output("alias-page-data", "data"),
-    Output(_TABLE_ID, "data"),
-    Output("alias-editor-state", "data", allow_duplicate=True),
-    Output("alias-editor-panel", "children", allow_duplicate=True),
-    Input("alias-edit-save", "n_clicks"),
-    State({"type": "alias-edit-method", "section": ALL, "index": ALL}, "value"),
-    State({"type": "alias-edit-value", "section": ALL, "index": ALL}, "value"),
-    State({"type": "alias-edit-enabled", "section": ALL, "index": ALL}, "checked"),
-    State({"type": "alias-edit-source", "section": ALL, "index": ALL}, "value"),
-    State("alias-edit-notes", "value"),
-    State("alias-editor-state", "data"),
-    State("alias-page-data", "data"),
-    prevent_initial_call=True,
-)
-def _save_editor_mappings(
-    _n_clicks,
-    methods,
-    values,
-    enabled_flags,
-    sources,
-    notes,
-    editor_state,
-    page_data,
-):
-    if not editor_state:
-        return dmc.Alert(color="yellow", title="Select a customer first."), no_update, no_update, no_update, no_update
-
-    account_id = str(editor_state.get("crm_accountid") or "")
-    account_name = str(editor_state.get("crm_account_name") or account_id)
-    method_states = ctx.states_list[0] if ctx.states_list else []
-    value_states = ctx.states_list[1] if len(ctx.states_list) > 1 else []
-    enabled_states = ctx.states_list[2] if len(ctx.states_list) > 2 else []
-    source_states = ctx.states_list[3] if len(ctx.states_list) > 3 else []
-
-    synced_editor = editor_state_from_dash_states(
-        editor_state,
-        method_states=method_states,
-        value_states=value_states,
-        enabled_states=enabled_states,
-        source_states=source_states,
-        notes=notes,
-    )
-    mappings, note_text = editor_state_to_save_payload(synced_editor)
-
-    try:
-        saved = api.put_crm_source_mappings(
-            account_id,
-            crm_account_name=account_name,
-            mappings=mappings,
-            notes=note_text,
-        )
-        updated_page = merge_alias_after_save(
-            page_data or [],
-            account_id=account_id,
-            saved_mappings=saved or mappings,
-            notes=note_text,
-        )
-        updated_alias = find_alias(updated_page, account_id)
-        refreshed_editor = build_editor_state(updated_alias)
-        table_rows = aliases_to_table_rows(updated_page)
-        return (
-            dmc.Alert(color="green", title="Saved", children=f"Mappings updated for {account_name}."),
-            updated_page,
-            table_rows,
-            refreshed_editor,
-            _render_editor_panel(refreshed_editor),
-        )
-    except Exception as exc:  # noqa: BLE001
-        return (
-            dmc.Alert(color="red", title="Save failed", children=str(exc)),
-            no_update,
-            no_update,
-            no_update,
-            no_update,
-        )
-
-
-@callback(
-    Output("alias-feedback", "children", allow_duplicate=True),
-    Output("alias-page-data", "data", allow_duplicate=True),
-    Output(_TABLE_ID, "data", allow_duplicate=True),
-    Output("alias-editor-state", "data", allow_duplicate=True),
-    Output("alias-editor-panel", "children", allow_duplicate=True),
-    Input("alias-seed-boyner-btn", "n_clicks"),
-    prevent_initial_call=True,
-)
-def _seed_boyner(_n_clicks):
-    try:
-        result = api.seed_boyner_source_mappings()
-        aliases = api.get_crm_aliases()
-        rows = result.get("rows_upserted", 0)
-        boyner_id = str(result.get("crm_accountid") or "")
-        boyner_alias = find_alias(aliases, boyner_id) if boyner_id else None
-        editor = build_editor_state(boyner_alias) if boyner_alias else None
-        return (
-            dmc.Alert(color="green", title=f"Boyner seed applied ({rows} rows)"),
-            aliases,
-            aliases_to_table_rows(aliases),
-            editor,
-            _render_editor_panel(editor),
-        )
-    except Exception as exc:  # noqa: BLE001
-        return (
-            dmc.Alert(color="red", title="Seed failed", children=str(exc)),
-            no_update,
-            no_update,
-            no_update,
-            no_update,
-        )
