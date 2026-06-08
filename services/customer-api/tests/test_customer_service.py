@@ -110,6 +110,36 @@ def test_mapped_non_vip_customers_for_warm_excludes_vip_and_unmapped(monkeypatch
     assert names == ("Boyner Holding",)
 
 
+def test_refresh_all_data_rebuilds_hot_and_warm_tiers(monkeypatch):
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    svc._pool = object()
+    calls: list[str] = []
+
+    def _hot() -> None:
+        calls.append("hot")
+
+    def _warm() -> None:
+        calls.append("warm")
+
+    monkeypatch.setattr(svc, "refresh_all_tier_caches", lambda: calls.extend(["hot", "warm"]))
+    svc.refresh_all_data()
+    assert calls == ["hot", "warm"]
+
+
+def test_warm_mapped_non_vip_batch_skips_when_already_running(monkeypatch):
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    svc._pool = object()
+    monkeypatch.setattr(svc, "_batch_warm_already_running", lambda: True)
+    monkeypatch.setattr(
+        svc,
+        "_rebuild_customer_caches_for_customer",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+    svc.warm_mapped_non_vip_batch()
+
+
 def test_warm_mapped_non_vip_batch_calls_customers_sequentially(monkeypatch):
     with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
         svc = CustomerService()

@@ -637,10 +637,22 @@ class CustomerService:
                     exc,
                 )
 
+    def _batch_warm_already_running(self) -> bool:
+        try:
+            status = cache.get(BATCH_WARM_STATUS_KEY)
+            if isinstance(status, dict) and str(status.get("status") or "").lower() == "running":
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
     def warm_mapped_non_vip_batch(self) -> None:
         """Sequentially warm mapped non-VIP customers; runs on a 6-hour scheduler cadence."""
         if self._pool is None:
             logger.warning("warm_mapped_non_vip_batch skipped: database pool is not available.")
+            return
+        if self._batch_warm_already_running():
+            logger.info("warm_mapped_non_vip_batch skipped: another batch warm is already running.")
             return
         customers = self._mapped_non_vip_customers_for_warm()
         total = len(customers)
@@ -1083,6 +1095,32 @@ class CustomerService:
                 cache_ttl=CUSTOMER_DATA_CACHE_TTL_HOT,
             )
 
+    def refresh_warm_tier_caches(self) -> None:
+        """Rebuild mapped non-VIP customer caches (warm tier) without flushing Redis."""
+        if self._pool is None:
+            logger.warning("refresh_warm_tier_caches skipped: database pool is not available.")
+            return
+        customers = self._mapped_non_vip_customers_for_warm()
+        total = len(customers)
+        if total == 0:
+            logger.info("Customer API warm-tier refresh: no mapped non-VIP customers.")
+            return
+        logger.info("Customer API warm-tier refresh started (%d customers).", total)
+        for customer_name in customers:
+            self._rebuild_customer_caches_for_customer(
+                customer_name,
+                cache_ttl=CUSTOMER_DATA_CACHE_TTL_WARM,
+            )
+        logger.info("Customer API warm-tier refresh complete (%d customers).", total)
+
+    def refresh_all_tier_caches(self) -> None:
+        """Rebuild hot (VIP/pinned) and warm (mapped non-VIP) tiers — stale until overwrite."""
+        if self._pool is None:
+            logger.warning("refresh_all_tier_caches skipped: database pool is not available.")
+            return
+        self._rebuild_customer_caches_for_warmed_customers()
+        self.refresh_warm_tier_caches()
+
     def warm_cache(self) -> None:
         """Synchronous warm-up before serving traffic (VIP/pinned hot tier only)."""
         if self._pool is None:
@@ -1093,11 +1131,11 @@ class CustomerService:
     def refresh_all_data(self) -> None:
         """
         Called by the background scheduler every 15 minutes.
-        Rebuilds cache for fixed ranges without clearing keys first (stale until overwrite).
+        Rebuilds hot and warm tier caches without clearing keys first (stale until overwrite).
         """
         logger.info("Customer API background cache refresh started.")
         try:
-            self._rebuild_customer_caches_for_warmed_customers()
+            self.refresh_all_tier_caches()
             logger.info("Customer API background cache refresh complete.")
         except Exception as exc:
             logger.error("Customer API background cache refresh failed: %s", exc)
