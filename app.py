@@ -129,6 +129,7 @@ from src.pages.settings.integrations import ldap_callbacks  # noqa: F401 — LDA
 from src.pages.settings import crm_service_mapping  # noqa: F401 — CRM service mapping callbacks
 from src.pages.settings.integrations import crm_aliases  # noqa: F401 — CRM customer aliases layout
 from src.pages.settings.integrations import crm_aliases_callbacks  # noqa: F401 — CRM customer aliases callbacks
+from src.pages.settings.integrations import netbox_visualization_callbacks  # noqa: F401 — NetBox viz exclusions
 from src.pages.settings import dashboard_callbacks  # noqa: F401 — Settings overview (cache refresh)
 
 _default_tr = default_time_range()

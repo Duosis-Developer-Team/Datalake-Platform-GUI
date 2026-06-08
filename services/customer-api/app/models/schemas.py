@@ -310,6 +310,7 @@ class NetboxVizExclusionRow(BaseModel):
     dimension_value: str
     notes: Optional[str] = None
     updated_by: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class NetboxVizExclusionUpsert(BaseModel):
