@@ -5185,6 +5185,49 @@ JOIN latest l
         except Exception as exc:
             logger.error("Background backup cache refresh failed: %s", exc)
 
+    def _warm_network_cache_for_range(self, tr: dict) -> None:
+        """Warm Zabbix network endpoints for one time range (unfiltered default view)."""
+        for dc_code in self.dc_list:
+            try:
+                filters = self.get_network_filters(dc_code, tr)
+                if not filters.get("manufacturers"):
+                    continue
+                self.get_network_port_summary(dc_code, tr)
+                self.get_network_95th_percentile(dc_code, tr, top_n=20)
+                self.get_network_interface_table(dc_code, tr, page=1, page_size=50)
+            except Exception as exc:
+                logger.warning("network cache warm failed for DC %s: %s", dc_code, exc)
+
+    def warm_network_cache(self) -> None:
+        """
+        Warm Zabbix network cache for the default reporting range.
+
+        Triggered once in the background after startup so Network panels open
+        with data on first visit (same pattern as S3 warm-up).
+        """
+        logger.info("Warming network cache for default time range…")
+        try:
+            tr = default_time_range()
+            self._warm_network_cache_for_range(tr)
+            logger.info("Network cache warm-up complete for default range.")
+        except Exception as exc:
+            logger.warning("Network cache warm-up failed: %s", exc)
+
+    def refresh_network_cache(self) -> None:
+        """
+        Refresh Zabbix network cache for the standard reporting ranges.
+
+        Called by the background scheduler every 30 minutes. Entries are updated
+        in place so the UI keeps serving previous values until new data is written.
+        """
+        logger.info("Background network cache refresh started.")
+        try:
+            for tr in cache_time_ranges():
+                self._warm_network_cache_for_range(tr)
+            logger.info("Background network cache refresh complete.")
+        except Exception as exc:
+            logger.error("Background network cache refresh failed: %s", exc)
+
     def _warm_backup_jobs_cache(self) -> None:
         """
         Warm Phase 1 backup-jobs endpoints for every vendor × window × granularity.

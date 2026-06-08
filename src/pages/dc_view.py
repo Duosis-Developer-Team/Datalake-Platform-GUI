@@ -2862,14 +2862,25 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
 
     net_filters = batch2["net_filters"]
     has_network = bool((net_filters or {}).get("manufacturers"))
-    # Network payload is lazy-loaded when user opens the Network tab.
     net_port_summary: dict = {}
     net_percentile: dict = {}
     net_interface_table: dict = {}
-    net_port_ms = 0.0
-    net_p95_ms = 0.0
-    net_table_ms = 0.0
     net_ms = 0.0
+    if has_network:
+        t_net = time.perf_counter()
+        net_batch = parallel_execute(
+            {
+                "port_summary": lambda: api.get_dc_network_port_summary(dc_id, tr),
+                "percentile": lambda: api.get_dc_network_95th_percentile(dc_id, tr, top_n=20),
+                "interface_table": lambda: api.get_dc_network_interface_table(
+                    dc_id, tr, page=1, page_size=50
+                ),
+            }
+        )
+        net_port_summary = net_batch["port_summary"]
+        net_percentile = net_batch["percentile"]
+        net_interface_table = net_batch["interface_table"]
+        net_ms = round((time.perf_counter() - t_net) * 1000, 1)
 
     energy    = data.get("energy", {})
     classic   = data.get("classic", {})
@@ -2992,7 +3003,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
         overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.75)"},
         children=html.Div([
         dcc.Store(id="net-filters-store", data=net_filters or {}),
-        dcc.Store(id="dc-network-ready-store", data=False),
         dcc.Store(
             id="dc-export-store",
             data={
@@ -3283,14 +3293,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                     children=html.Div(
                         style={"padding": "0 30px"},
                         children=[
-                            dmc.Alert(
-                                "Network verisi bu sekme açıldığında yüklenir.",
-                                title="Network lazy-load",
-                                color="indigo",
-                                variant="light",
-                                radius="md",
-                                mb="md",
-                            ),
                             dmc.Tabs(
                                 color="indigo",
                                 variant="outline",

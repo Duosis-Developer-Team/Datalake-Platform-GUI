@@ -22,6 +22,7 @@ def refresh_cache(request: Request) -> dict:
     db.warm_cache()
     db.warm_additional_ranges()
     db.warm_s3_cache()
+    db.warm_network_cache()
     stats = cache_stats()
     logger.info(
         "Admin cache refresh complete (datacenter-api). redis_keys=%s memory_size=%s",

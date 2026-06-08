@@ -16,3 +16,4 @@ def test_admin_cache_refresh_calls_warm_and_flush(client: TestClient, mock_db):
     mock_db.warm_cache.assert_called_once()
     mock_db.warm_additional_ranges.assert_called_once()
     mock_db.warm_s3_cache.assert_called_once()
+    mock_db.warm_network_cache.assert_called_once()

@@ -46,6 +46,48 @@ def refresh_warmed_customer_availability_bundles() -> None:
             api.get_customer_availability_bundle(name, tr, force_refresh=True)
 
 
+def _warm_dc_network_for_range(tr: dict) -> None:
+    """Prime GUI in-process api:* cache for Zabbix network endpoints (unfiltered default view)."""
+    try:
+        summaries = api.get_all_datacenters_summary(tr)
+    except Exception as exc:
+        logger.warning("GUI network warm: datacenter summary failed: %s", exc)
+        return
+
+    dc_ids = [dc.get("id") for dc in (summaries or []) if dc.get("id")]
+    for dc_id in dc_ids:
+        try:
+            filters = api.get_dc_network_filters(dc_id, tr)
+            if not filters.get("manufacturers"):
+                continue
+            api.get_dc_network_port_summary(dc_id, tr)
+            api.get_dc_network_95th_percentile(dc_id, tr, top_n=20)
+            api.get_dc_network_interface_table(dc_id, tr, page=1, page_size=50)
+        except Exception as exc:
+            logger.warning("GUI network warm failed for DC %s: %s", dc_id, exc)
+
+
+def warm_dc_network_caches() -> None:
+    """Warm GUI HTTP response cache for network panels (default reporting range)."""
+    logger.info("Warming GUI network cache for default time range…")
+    try:
+        _warm_dc_network_for_range(default_time_range())
+        logger.info("GUI network cache warm-up complete for default range.")
+    except Exception as exc:
+        logger.warning("GUI network cache warm-up failed: %s", exc)
+
+
+def refresh_dc_network_caches() -> None:
+    """Refresh GUI network HTTP cache for all standard reporting ranges."""
+    logger.info("GUI network cache refresh started.")
+    try:
+        for tr in cache_time_ranges():
+            _warm_dc_network_for_range(tr)
+        logger.info("GUI network cache refresh complete.")
+    except Exception as exc:
+        logger.warning("GUI network cache refresh failed: %s", exc)
+
+
 def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
     """
     1. Warm the cache immediately (blocking, runs in the calling thread).
@@ -227,6 +269,34 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
         logger.info("Scheduled Backup cache refresh every 30 minutes.")
     except Exception as exc:
         logger.warning("Failed to schedule Backup cache refresh: %s", exc)
+
+    # Step 8a: warm network cache once in the background (default range).
+    try:
+        scheduler.add_job(
+            func=warm_dc_network_caches,
+            trigger=DateTrigger(run_date=datetime.now()),
+            id="network_initial_warm",
+            name="Initial network cache warm-up (default range)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled initial network cache warm-up for default range.")
+    except Exception as exc:
+        logger.warning("Failed to schedule initial network cache warm-up: %s", exc)
+
+    # Step 8b: periodic network cache refresh (every 30 minutes).
+    try:
+        scheduler.add_job(
+            func=refresh_dc_network_caches,
+            trigger=IntervalTrigger(minutes=30),
+            id="network_refresh",
+            name="Network cache refresh (30 minutes)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled network cache refresh every 30 minutes.")
+    except Exception as exc:
+        logger.warning("Failed to schedule network cache refresh: %s", exc)
 
     # Step 9: schedule periodic physical inventory cache refresh (every 30 minutes).
     try:

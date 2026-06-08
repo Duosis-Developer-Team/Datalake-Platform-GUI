@@ -53,9 +53,17 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
         replace_existing=True,
         misfire_grace_time=120,
     )
+    scheduler.add_job(
+        func=db_service.refresh_network_cache,
+        trigger=IntervalTrigger(minutes=S3_BACKUP_REFRESH_INTERVAL_MINUTES),
+        id="network_cache_refresh",
+        name="Zabbix network cache refresh",
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
     scheduler.start()
     logger.info(
-        "Background scheduler started: DB/overview every %d min; S3/backup every %d min.",
+        "Background scheduler started: DB/overview every %d min; S3/backup/network every %d min.",
         REFRESH_INTERVAL_MINUTES,
         S3_BACKUP_REFRESH_INTERVAL_MINUTES,
     )
@@ -74,6 +82,19 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
         logger.info("Scheduled initial DC cache warm-up for 30d and previous month.")
     except Exception as exc:
         logger.warning("Failed to schedule initial DC long-range warm-up: %s", exc)
+
+    try:
+        scheduler.add_job(
+            func=db_service.warm_network_cache,
+            trigger=DateTrigger(run_date=initial_run_time),
+            id="network_initial_warm",
+            name="Initial Zabbix network cache warm-up (default range)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled initial network cache warm-up for default range.")
+    except Exception as exc:
+        logger.warning("Failed to schedule initial network cache warm-up: %s", exc)
 
     atexit.register(lambda: _stop(scheduler))
 
