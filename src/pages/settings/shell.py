@@ -28,6 +28,7 @@ from src.pages.settings.integrations import crm_panels as crm_panels_page
 from src.pages.settings.integrations import crm_infra_sources as crm_infra_sources_page
 from src.pages.settings.integrations import crm_resource_ratios as crm_resource_ratios_page
 from src.pages.settings.integrations import crm_unit_conversions as crm_unit_conversions_page
+from src.pages.settings.integrations import netbox_visualization as netbox_visualization_page
 from src.pages.settings import crm_service_mapping as crm_service_mapping_page
 
 # (href, label, permission code)
@@ -43,6 +44,7 @@ IAM_TABS: list[tuple[str, str, str]] = [
 INT_TABS: list[tuple[str, str, str]] = [
     ("/settings/integrations", "Overview", "page:settings_integrations"),
     ("/settings/integrations/crm", "CRM Dynamics 365", "page:settings_crm_overview"),
+    ("/settings/integrations/netbox/visualization", "NetBox / Loki", "page:settings_netbox_visualization"),
     ("/settings/integrations/ldap", "LDAP", "page:settings_ldap"),
     ("/settings/integrations/auranotify", "AuraNotify", "page:settings_auranotify"),
 ]
@@ -106,6 +108,10 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
     "/settings/integrations/crm/unit-conversions": ("page:settings_crm_unit_conversions", crm_unit_conversions_page.build_layout),
     "/settings/integrations/ldap": ("page:settings_ldap", ldap_page.build_layout),
     "/settings/integrations/auranotify": ("page:settings_auranotify", auranotify_page.build_layout),
+    "/settings/integrations/netbox/visualization": (
+        "page:settings_netbox_visualization",
+        netbox_visualization_page.build_layout,
+    ),
 }
 
 

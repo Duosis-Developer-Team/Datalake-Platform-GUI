@@ -40,6 +40,28 @@ def test_physical_inventory_customer_matches_tenant_id_mapping(monkeypatch):
     assert rows[0]["name"] == "d1"
 
 
+def test_physical_inventory_customer_excludes_configured_roles(monkeypatch):
+    svc = DatabaseService.__new__(DatabaseService)
+    monkeypatch.setattr(
+        svc,
+        "_get_physical_inventory_raw",
+        lambda force=False: [
+            _device("keep", 5, "Boyner"),
+            _device("drop", 5, "Boyner") | {"device_role_name": "Patch Panel"},
+        ],
+    )
+    monkeypatch.setattr(svc, "_get_location_dc_map", lambda: {})
+    monkeypatch.setattr(svc, "_filter_phys_inventory_devices", lambda devices, scope, webui=None: [
+        d for d in devices if d.get("device_role_name") != "Patch Panel"
+    ])
+    monkeypatch.setattr("app.services.dc_service.cache.get", lambda key: None)
+    monkeypatch.setattr("app.services.dc_service.cache.set", lambda key, val: None)
+
+    rows = svc.get_physical_inventory_customer("Boyner CRM", webui=None)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "keep"
+
+
 def test_physical_inventory_customer_boyner_fallback_without_mappings(monkeypatch):
     svc = DatabaseService.__new__(DatabaseService)
     monkeypatch.setattr(

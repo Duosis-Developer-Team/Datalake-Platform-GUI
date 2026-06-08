@@ -1620,6 +1620,73 @@ def get_crm_calc_config() -> list:
 
 
 # ---------------------------------------------------------------------------
+# NetBox / Loki visualization exclusions
+# ---------------------------------------------------------------------------
+
+
+def get_netbox_device_roles() -> list[dict[str, Any]]:
+    def fetch() -> list[dict[str, Any]]:
+        data = _get_json(_get_client_dc(), "/api/v1/netbox/device-roles")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:netbox_device_roles", fetch, [])
+
+
+def get_netbox_viz_exclusions() -> list[dict[str, Any]]:
+    def fetch() -> list[dict[str, Any]]:
+        data = _get_json(_get_client_cust(), "/api/v1/netbox/config/visualization-exclusions")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:netbox_viz_exclusions", fetch, [])
+
+
+def put_netbox_viz_exclusion(
+    *,
+    view_scope: str,
+    dimension_value: str,
+    dimension: str = "device_role",
+    notes: Optional[str] = None,
+) -> dict[str, Any]:
+    body = {
+        "view_scope": view_scope,
+        "dimension": dimension,
+        "dimension_value": dimension_value,
+        "notes": notes,
+    }
+    out = _put_json(_get_client_cust(), "/api/v1/netbox/config/visualization-exclusions", body)
+    _invalidate_netbox_viz_caches()
+    return out if isinstance(out, dict) else {}
+
+
+def delete_netbox_viz_exclusion(exclusion_id: int) -> dict[str, Any]:
+    out = _delete_json(
+        _get_client_cust(),
+        f"/api/v1/netbox/config/visualization-exclusions/{exclusion_id}",
+    )
+    _invalidate_netbox_viz_caches()
+    return out if isinstance(out, dict) else {}
+
+
+def _invalidate_netbox_viz_caches() -> None:
+    """Clear GUI and datacenter-api caches affected by NetBox viz exclusions."""
+    prefixes = (
+        "api:phys_inv_",
+        "api:dc_net_",
+        "api:dc_storage_",
+        "api:netbox_",
+    )
+    for prefix in prefixes:
+        try:
+            _api_response_cache.delete_prefix(prefix)
+        except Exception:
+            pass
+    try:
+        _post_json(_get_client_dc(), "/api/v1/admin/cache/invalidate-netbox-viz", {})
+    except _HTTP_ERRORS:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Sellable Potential dashboard endpoints (customer-api FAZ 5)
 # ---------------------------------------------------------------------------
 

@@ -297,6 +297,29 @@ class CrmDiscoveryCount(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# NetBox/Loki visualization exclusions (gui_netbox_viz_exclusion)
+# ---------------------------------------------------------------------------
+
+
+class NetboxVizExclusionRow(BaseModel):
+    model_config = {"extra": "allow"}
+
+    id: int
+    view_scope: str
+    dimension: str = "device_role"
+    dimension_value: str
+    notes: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class NetboxVizExclusionUpsert(BaseModel):
+    view_scope: str
+    dimension: str = "device_role"
+    dimension_value: str
+    notes: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
 # Customer catalog (/customers page)
 # ---------------------------------------------------------------------------
 

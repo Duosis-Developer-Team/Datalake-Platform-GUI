@@ -19,6 +19,7 @@ from app.db.queries import brocade as brq, ibm_storage as isq
 from app.db.queries import zabbix_network as znq, zabbix_storage as zsq
 from app.db.queries import discovery_rack as drq
 from app.db.queries import crm_potential as crm_q
+from app.db.queries import netbox_config as nbq
 from app.config import settings
 from app.services import cache_service as cache
 from app.services import query_overrides as qo
@@ -30,6 +31,11 @@ from app.utils.time_range import (
     BACKUP_JOBS_WARM_GRANULARITIES,
 )
 from app.utils.format_units import smart_cpu, smart_memory, smart_storage
+from app.services.netbox_viz_filter import (
+    filter_devices_by_role_exclusion,
+    is_role_excluded,
+    load_excluded_roles,
+)
 
 _DC_CODE_RE = re.compile(r'(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)', re.IGNORECASE)
 
@@ -150,7 +156,11 @@ class DatabaseService:
         # Cache for IBM storage storage_ip -> resolved DC code.
         # Value can be None when no resolution is possible.
         self._ibm_storage_ip_dc_cache: dict[str, str | None] = {}
+        self._webui: Any | None = None
         self._init_pool()
+
+    def attach_webui_pool(self, webui: Any | None) -> None:
+        self._webui = webui
 
     # ------------------------------------------------------------------
     # Connection pool
@@ -3877,6 +3887,13 @@ JOIN latest l
                     }
                 )
 
+            excluded_roles = self._excluded_roles_for_scope("datacenter")
+            if excluded_roles:
+                devices = [
+                    d for d in devices
+                    if not is_role_excluded(d.get("device_role_name"), excluded_roles)
+                ]
+
             # Optional hierarchical filters
             if manufacturer is not None:
                 devices = [d for d in devices if d.get("manufacturer_name") == manufacturer]
@@ -4231,6 +4248,10 @@ JOIN latest l
                     }
                 )
 
+            excluded_roles = self._excluded_roles_for_scope("datacenter")
+            if excluded_roles:
+                devices = filter_devices_by_role_exclusion(devices, excluded_roles)
+
             devices.sort(key=lambda d: d.get("total_capacity_bytes", 0), reverse=True)
             result = devices
         except (OperationalError, PoolError) as exc:
@@ -4272,6 +4293,13 @@ JOIN latest l
 
             if host is not None:
                 rows = [r for r in (rows or []) if r and r[1] and str(r[1]) == str(host)]
+
+            excluded_roles = self._excluded_roles_for_scope("datacenter")
+            if excluded_roles:
+                rows = [
+                    r for r in (rows or [])
+                    if r and not is_role_excluded(r[4] if len(r) > 4 else None, excluded_roles)
+                ]
 
             # STORAGE_DEVICES_FOR_DC_LATEST select order:
             # 0:loki_id, 1:host, 2:storage_device_name, 3:manufacturer, 4:device_role,
@@ -4599,6 +4627,23 @@ JOIN latest l
     # Physical Inventory (discovery_netbox_inventory_device)
     # ------------------------------------------------------------------
 
+    def get_netbox_device_roles(self) -> list[dict]:
+        """Return distinct active device roles for Settings multi-select."""
+        cache_key = "netbox:device_roles"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, nbq.DISTINCT_DEVICE_ROLES)
+            result = [{"role": r[0]} for r in (rows or []) if r and r[0]]
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_netbox_device_roles failed: %s", exc)
+            result = []
+        cache.set(cache_key, result, ttl=3600)
+        return result
+
     # ------------------------------------------------------------------
     # Physical Inventory — raw data loaders (SQL-side)
     # ------------------------------------------------------------------
@@ -4675,6 +4720,20 @@ JOIN latest l
     # Physical Inventory — derived views (Python-side aggregation)
     # ------------------------------------------------------------------
 
+    def _excluded_roles_for_scope(self, scope: str, *, webui=None) -> set[str]:
+        pool = webui if webui is not None else getattr(self, "_webui", None)
+        return load_excluded_roles(pool, scope)
+
+    def _filter_phys_inventory_devices(
+        self,
+        devices: list[dict],
+        scope: str,
+        *,
+        webui=None,
+    ) -> list[dict]:
+        excluded = self._excluded_roles_for_scope(scope, webui=webui)
+        return filter_devices_by_role_exclusion(devices, excluded)
+
     def get_physical_inventory_customer(
         self,
         customer_name: str | None = None,
@@ -4689,7 +4748,11 @@ JOIN latest l
             return cached_val
 
         tenant_ids, text_rules = self._resolve_physical_customer_filters(normalized, webui=webui)
-        devices = self._get_physical_inventory_raw()
+        devices = self._filter_phys_inventory_devices(
+            self._get_physical_inventory_raw(),
+            "customer",
+            webui=webui,
+        )
         loc_map = self._get_location_dc_map()
 
         def _matches_device(device: dict) -> bool:
@@ -4796,7 +4859,7 @@ JOIN latest l
         if cached_val is not None:
             return cached_val
 
-        devices = self._get_physical_inventory_raw()
+        devices = self._filter_phys_inventory_devices(self._get_physical_inventory_raw(), "datacenter")
         loc_map = self._get_location_dc_map()
 
         def _matches_dc(d: dict) -> bool:
@@ -4835,7 +4898,7 @@ JOIN latest l
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
-        devices = self._get_physical_inventory_raw()
+        devices = self._filter_phys_inventory_devices(self._get_physical_inventory_raw(), "datacenter")
         role_counts: dict[str, int] = {}
         for d in devices:
             role_counts[d["device_role_name"]] = role_counts.get(d["device_role_name"], 0) + 1
@@ -4855,7 +4918,7 @@ JOIN latest l
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
-        devices = self._get_physical_inventory_raw()
+        devices = self._filter_phys_inventory_devices(self._get_physical_inventory_raw(), "datacenter")
         mfr_counts: dict[str, int] = {}
         for d in devices:
             if d["device_role_name"].lower() == role_key:
@@ -4878,7 +4941,7 @@ JOIN latest l
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
-        devices = self._get_physical_inventory_raw()
+        devices = self._filter_phys_inventory_devices(self._get_physical_inventory_raw(), "datacenter")
         loc_map = self._get_location_dc_map()
         loc_counts: dict[str, int] = {}
         for d in devices:

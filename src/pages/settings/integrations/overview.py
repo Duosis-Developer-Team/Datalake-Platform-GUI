@@ -75,9 +75,18 @@ def build_layout(search: str | None = None) -> html.Div:
 
     crm_status = "connected"
 
-    connected = sum([crm_status == "connected", ldap_status == "connected", aura_status == "connected"])
+    netbox_status = "connected"
+
+    connected = sum(
+        [
+            crm_status == "connected",
+            netbox_status == "connected",
+            ldap_status == "connected",
+            aura_status == "connected",
+        ]
+    )
     degraded = (1 if aura_status == "degraded" else 0)
-    disconnected = 3 - connected - degraded
+    disconnected = 4 - connected - degraded
 
     kpis = dmc.SimpleGrid(
         cols=3,
@@ -101,6 +110,15 @@ def build_layout(search: str | None = None) -> html.Div:
                 "Open",
                 border_color="#552cf8",
                 icon="solar:case-round-bold-duotone",
+            ),
+            _connector_card(
+                "NetBox / Loki",
+                "Exclude device roles from datacenter and customer visualization scopes.",
+                netbox_status,
+                "/settings/integrations/netbox/visualization",
+                "Configure",
+                border_color="#552cf8",
+                icon="solar:server-square-cloud-bold-duotone",
             ),
             _connector_card(
                 "LDAP Directory",

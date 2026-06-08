@@ -15,7 +15,7 @@ from app.core.api_auth import verify_api_user
 from app.services.dc_service import DatabaseService
 from app.services.scheduler_service import start_scheduler
 from app.services.webui_db import WebuiPool
-from app.routers import admin_cache, datacenters, dashboard
+from app.routers import admin_cache, datacenters, dashboard, netbox_config
 from app.core.redis_client import init_redis_pool, close_redis_pool, redis_is_healthy
 
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +25,7 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI):
     db = DatabaseService()
     webui = WebuiPool()
+    db.attach_webui_pool(webui)
     app.state.db = db
     app.state.webui = webui
     init_redis_pool()
@@ -71,6 +72,12 @@ app.include_router(
     admin_cache.router,
     prefix="/api/v1",
     tags=["admin"],
+    dependencies=[Depends(verify_api_user)],
+)
+app.include_router(
+    netbox_config.router,
+    prefix="/api/v1",
+    tags=["netbox-config"],
     dependencies=[Depends(verify_api_user)],
 )
 

@@ -29,6 +29,7 @@ Keep numeric prefixes so new migrations always sort after existing ones.
 | `015_fix_ibm_power_infra_filter.sql` | Clears invalid `site_name` filter on `virt_power_cpu` / `virt_power_ram` (SellableService uses HMC server name columns) | Yes |
 | `017_customer_source_mappings.sql` | `gui_crm_customer_source_mapping` — per-CRM-account infrastructure source match rules (virtualization, backup, storage, S3, ITSM, etc.) | Yes |
 | `018_customer_profile_flags.sql` | `gui_crm_customer_profile_flags` — GUI-owned VIP and cache-pinned flags keyed by `crm_accountid` | Yes |
+| `019_netbox_viz_exclusion.sql` | `gui_netbox_viz_exclusion` — per-scope NetBox/Loki visualization exclusions (device role MVP) | Yes |
 
 ## Tracking table (`gui_schema_migrations`)
 

@@ -305,6 +305,13 @@ def build_default_permission_roots() -> list[PermissionNode]:
             _n("page:settings_integrations", "Integrations Overview", "config", route_pattern="/settings/integrations", sort_order=55),
             _n("page:settings_auranotify", "AuraNotify Integration", "config", route_pattern="/settings/integrations/auranotify", sort_order=58),
             _n(
+                "page:settings_netbox_visualization",
+                "NetBox / Loki visualization filters",
+                "config",
+                route_pattern="/settings/integrations/netbox/visualization",
+                sort_order=57,
+            ),
+            _n(
                 "page:settings_crm_overview",
                 "CRM Dynamics 365 overview",
                 "config",

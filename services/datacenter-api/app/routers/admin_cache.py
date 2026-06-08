@@ -7,6 +7,8 @@ import logging
 from fastapi import APIRouter, Request
 
 from app.core.cache_backend import cache_flush_pattern, cache_stats
+from app.services import cache_service as cache
+from app.services.netbox_viz_filter import invalidate_exclusion_cache
 
 logger = logging.getLogger(__name__)
 
@@ -30,3 +32,14 @@ def refresh_cache(request: Request) -> dict:
         stats.get("memory_size"),
     )
     return {"status": "ok", "cache": stats}
+
+
+@router.post("/admin/cache/invalidate-netbox-viz")
+def invalidate_netbox_viz_cache() -> dict:
+    """Drop NetBox/Loki visualization caches after exclusion config changes."""
+    invalidate_exclusion_cache()
+    cache.delete_prefix("phys_inv:")
+    cache.delete_prefix("dc_zabbix_net_")
+    cache.delete_prefix("dc_zabbix_storage_")
+    cache.delete("netbox:device_roles")
+    return {"status": "ok"}

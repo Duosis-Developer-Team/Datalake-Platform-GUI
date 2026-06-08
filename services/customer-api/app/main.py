@@ -21,7 +21,7 @@ from app.services.itsm_service import ITSMService
 from app.services.sales_service import SalesService
 from app.services.scheduler_service import start_scheduler
 from app.services.webui_db import WebuiPool
-from app.routers import admin_cache, customers, itsm, sales
+from app.routers import admin_cache, customers, itsm, netbox_config, sales
 from app.core.redis_client import init_redis_pool, close_redis_pool, redis_is_healthy
 
 logging.basicConfig(level=logging.INFO)
@@ -114,6 +114,12 @@ app.include_router(
     admin_cache.router,
     prefix="/api/v1",
     tags=["admin"],
+    dependencies=[Depends(verify_api_user)],
+)
+app.include_router(
+    netbox_config.router,
+    prefix="/api/v1",
+    tags=["netbox-config"],
     dependencies=[Depends(verify_api_user)],
 )
 
