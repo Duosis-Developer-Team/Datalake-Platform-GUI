@@ -142,6 +142,76 @@ def test_compact_customer_card_shows_active_value():
     text = str(card)
     assert "Active" in text
     assert "3.8K TRY" in text or "3,788" in text
+    assert "Open" not in text
+    assert "customer-view" in text
+
+
+def test_compact_customer_card_clickable_with_star_overlay():
+    card = customers_list._compact_customer_card(
+        {
+            "display_name": "Alpha Corp",
+            "crm_accountid": "acc-a",
+            "ytd_revenue": 0.0,
+            "active_order_value": 0.0,
+            "currency": "TL",
+            "mapped": True,
+            "is_vip": False,
+        },
+        allow_vip_toggle=True,
+    )
+    text = str(card)
+    assert "Open" not in text
+    assert "customer-list-card--clickable" in text
+    assert "customer-list-card__vip-toggle" in text
+    assert "customer-vip-toggle" in text
+
+
+def test_pending_account_id_from_dict_or_legacy_string():
+    assert customers_list._pending_account_id({"account_id": "acc-a", "is_vip": True}) == "acc-a"
+    assert customers_list._pending_account_id("acc-a") == "acc-a"
+    assert customers_list._pending_account_id(None) is None
+
+
+def test_build_vip_pending_request_ignores_zero_clicks():
+    data = _sample_catalog_with_groups()
+    assert (
+        customers_list._build_vip_pending_request(
+            {"type": "customer-vip-toggle", "account": "acc-a"},
+            data,
+            click_count=0,
+        )
+        is None
+    )
+
+
+def test_build_vip_pending_request_returns_explicit_intent():
+    data = _sample_catalog_with_groups()
+    result = customers_list._build_vip_pending_request(
+        {"type": "customer-vip-toggle", "account": "acc-a"},
+        data,
+        click_count=1,
+    )
+    assert result == {"account_id": "acc-a", "is_vip": True}
+
+
+def test_complete_customer_vip_toggle_uses_explicit_is_vip(monkeypatch):
+    calls: list[tuple[str, bool]] = []
+
+    def _set_vip(account_id: str, *, is_vip: bool):
+        calls.append((account_id, is_vip))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(customers_list.api, "set_customer_vip", _set_vip)
+    data = _sample_catalog_with_groups()
+    updated, alert, pending = customers_list.complete_customer_vip_toggle(
+        {"account_id": "acc-a", "is_vip": True},
+        data,
+    )
+    assert calls == [("acc-a", True)]
+    assert pending is None
+    assert updated["overview"]["vip_count"] == 2
+    assert alert is not None
+    assert "added to VIP" in str(alert)
 
 
 def test_format_revenue_and_badges():

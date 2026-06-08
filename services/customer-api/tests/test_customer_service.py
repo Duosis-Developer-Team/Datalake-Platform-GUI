@@ -157,6 +157,44 @@ def test_warm_mapped_non_vip_batch_calls_customers_sequentially(monkeypatch):
     assert order == ["Alpha", "Beta"]
 
 
+def test_set_customer_vip_upserts_profile_flags():
+    webui = MagicMock()
+    webui.is_available = True
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    svc.attach_webui_pool(webui)
+    out = svc.set_customer_vip("acc-1", is_vip=True, updated_by="tester")
+    webui.execute.assert_called_once()
+    args = webui.execute.call_args[0]
+    assert args[1] == ("acc-1", True, True, "tester")
+    assert out == {
+        "status": "ok",
+        "crm_accountid": "acc-1",
+        "is_vip": True,
+        "cache_pinned": True,
+    }
+
+
+def test_set_customer_vip_clears_cache_pinned_when_not_vip():
+    webui = MagicMock()
+    webui.is_available = True
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    svc.attach_webui_pool(webui)
+    out = svc.set_customer_vip("acc-2", is_vip=False)
+    args = webui.execute.call_args[0]
+    assert args[1] == ("acc-2", False, False, None)
+    assert out["is_vip"] is False
+    assert out["cache_pinned"] is False
+
+
+def test_set_customer_vip_requires_webui_pool():
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    with pytest.raises(RuntimeError, match="WebUI pool not configured"):
+        svc.set_customer_vip("acc-1", is_vip=True)
+
+
 def test_resolve_infra_search_name_uses_boyner_for_crm_display_name(monkeypatch):
     with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
         svc = CustomerService()

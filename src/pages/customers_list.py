@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from dash import Input, Output, State, ALL, callback, ctx, dcc, html, no_update
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
@@ -64,6 +66,55 @@ def _can_manage_vip(permissions: dict | None) -> bool:
     return bool(row.get("edit") or row.get("view"))
 
 
+def _pending_account_id(pending_data: dict | str | None) -> str | None:
+    if isinstance(pending_data, dict):
+        account_id = str(pending_data.get("account_id") or "").strip()
+        return account_id or None
+    if pending_data:
+        return str(pending_data)
+    return None
+
+
+def _build_vip_pending_request(
+    triggered_id: dict | str | None,
+    store_data: dict | None,
+    *,
+    click_count: int,
+) -> dict | None:
+    if not click_count:
+        return None
+    if not isinstance(triggered_id, dict) or triggered_id.get("type") != "customer-vip-toggle":
+        return None
+    account_id = str(triggered_id.get("account") or "")
+    if not account_id or not isinstance(store_data, dict):
+        return None
+    customers = store_data.get("customers") if isinstance(store_data.get("customers"), list) else []
+    current = next((c for c in customers if str(c.get("crm_accountid")) == account_id), None)
+    if not current:
+        return None
+    return {"account_id": account_id, "is_vip": not bool(current.get("is_vip"))}
+
+
+def _complete_vip_pending_request(
+    pending_data: dict | None,
+    store_data: dict | None,
+) -> tuple[dict | None, str | None, bool | None]:
+    if not isinstance(pending_data, dict):
+        return None, None, None
+    account_id = str(pending_data.get("account_id") or "")
+    if "is_vip" not in pending_data:
+        return None, None, None
+    new_vip = bool(pending_data.get("is_vip"))
+    if not account_id or not isinstance(store_data, dict):
+        return None, None, None
+    customers = store_data.get("customers") if isinstance(store_data.get("customers"), list) else []
+    current = next((c for c in customers if str(c.get("crm_accountid")) == account_id), None)
+    if not current:
+        return None, None, None
+    name = str(current.get("display_name") or current.get("crm_account_name") or account_id)
+    return current, name, new_vip
+
+
 def _status_badges(row: dict, *, show_unmapped_on_vip: bool = False) -> list:
     badges: list = []
     if row.get("is_vip"):
@@ -103,7 +154,9 @@ def _compact_customer_card(
     revenue = format_revenue(row.get("ytd_revenue"), row.get("currency"))
     active_value = format_revenue(row.get("active_order_value"), row.get("currency"))
     is_pending = bool(pending_account_id and account_id == pending_account_id)
-    star = None
+    customer_href = f"/customer-view?customer={quote(name, safe='')}"
+
+    star_overlay = None
     if allow_vip_toggle:
         star = dmc.ActionIcon(
             DashIconify(
@@ -119,46 +172,48 @@ def _compact_customer_card(
             disabled=is_pending,
             loading=is_pending,
         )
+        star_overlay = html.Div(
+            className="customer-list-card__vip-toggle",
+            style={
+                "position": "absolute",
+                "top": "8px",
+                "right": "8px",
+                "zIndex": 2,
+            },
+            children=star,
+        )
 
-    header = dmc.Group(
-        justify="space-between",
-        align="flex-start",
-        wrap="nowrap",
-        children=[
-            dmc.Stack(
-                gap=2,
-                style={"minWidth": 0, "flex": 1},
-                children=[
-                    dmc.Text(name, fw=700, size="sm", c="#2B3674", lineClamp=2),
-                    dmc.Text(f"YTD {revenue}", size="xs", c="#A3AED0"),
-                    dmc.Text(f"Active {active_value}", size="xs", c="#4318FF", fw=600),
-                    dmc.Group(gap=4, wrap="wrap", children=_status_badges(row, show_unmapped_on_vip=True)),
-                ],
-            ),
-            dmc.Stack(
-                gap=4,
-                align="flex-end",
-                children=[
-                    star,
-                    dmc.Anchor(
-                        "Open",
-                        href=f"/customer-view?customer={name}",
-                        size="xs",
-                        c="#4318FF",
-                        underline="never",
-                    ),
-                ],
-            ),
-        ],
+    link_body = dcc.Link(
+        href=customer_href,
+        style={
+            "textDecoration": "none",
+            "color": "inherit",
+            "display": "block",
+            "paddingRight": "28px" if star_overlay else "0",
+        },
+        children=dmc.Stack(
+            gap=2,
+            style={"minWidth": 0},
+            children=[
+                dmc.Text(name, fw=700, size="sm", c="#2B3674", lineClamp=2),
+                dmc.Text(f"YTD {revenue}", size="xs", c="#A3AED0"),
+                dmc.Text(f"Active {active_value}", size="xs", c="#4318FF", fw=600),
+                dmc.Group(gap=4, wrap="wrap", children=_status_badges(row, show_unmapped_on_vip=True)),
+            ],
+        ),
     )
 
+    children: list = [link_body]
+    if star_overlay is not None:
+        children.append(star_overlay)
+
     return dmc.Paper(
-        className="nexus-card customer-list-card customer-list-card--compact",
+        className="nexus-card customer-list-card customer-list-card--compact customer-list-card--clickable",
         radius="md",
         p="sm",
         withBorder=True,
-        style={"minHeight": "96px"},
-        children=header,
+        style={"minHeight": "96px", "position": "relative"},
+        children=children,
     )
 
 
@@ -545,7 +600,7 @@ def refresh_customer_sections(
     _page_values,
     store_data,
     permissions,
-    pending_account_id,
+    pending_data,
     page_store,
 ):
     pages = dict(page_store or {"vip": 0, "mapped": 0, "unmapped": 0})
@@ -565,7 +620,7 @@ def refresh_customer_sections(
         query or "",
         pages,
         allow_vip_toggle=allow_vip,
-        pending_account_id=str(pending_account_id) if pending_account_id else None,
+        pending_account_id=_pending_account_id(pending_data),
     )
 
 
@@ -588,16 +643,12 @@ def persist_accordion_open(value):
 def queue_customer_vip_toggle(_clicks, store_data, permissions):
     if not _can_manage_vip(permissions):
         return no_update
-    trig = ctx.triggered_id
-    if not isinstance(trig, dict) or trig.get("type") != "customer-vip-toggle":
+    trigger = ctx.triggered[0] if ctx.triggered else None
+    click_count = int(trigger.get("value") or 0) if trigger else 0
+    pending = _build_vip_pending_request(ctx.triggered_id, store_data, click_count=click_count)
+    if not pending:
         return no_update
-    account_id = str(trig.get("account") or "")
-    if not account_id or not isinstance(store_data, dict):
-        return no_update
-    customers = store_data.get("customers") if isinstance(store_data.get("customers"), list) else []
-    if not any(str(c.get("crm_accountid")) == account_id for c in customers):
-        return no_update
-    return account_id
+    return pending
 
 
 @callback(
@@ -608,16 +659,11 @@ def queue_customer_vip_toggle(_clicks, store_data, permissions):
     State("customer-catalog-store", "data"),
     prevent_initial_call=True,
 )
-def complete_customer_vip_toggle(pending_account_id, store_data):
-    account_id = str(pending_account_id or "")
-    if not account_id or not isinstance(store_data, dict):
+def complete_customer_vip_toggle(pending_data, store_data):
+    _current, name, new_vip = _complete_vip_pending_request(pending_data, store_data)
+    if _current is None or name is None or new_vip is None:
         return no_update, no_update, None
-    customers = store_data.get("customers") if isinstance(store_data.get("customers"), list) else []
-    current = next((c for c in customers if str(c.get("crm_accountid")) == account_id), None)
-    if not current:
-        return no_update, no_update, None
-    new_vip = not bool(current.get("is_vip"))
-    name = str(current.get("display_name") or current.get("crm_account_name") or account_id)
+    account_id = str(pending_data.get("account_id") or "")
     try:
         api.set_customer_vip(account_id, is_vip=new_vip)
     except Exception as exc:

@@ -1307,4 +1307,17 @@ body {
     width: 100%;
     border-collapse: collapse;
 }
+
+.customer-list-card--clickable:hover {
+    border-color: #4318FF !important;
+    box-shadow: 0 4px 14px rgba(67, 24, 255, 0.08);
+}
+
+.customer-list-card--clickable a {
+    cursor: pointer;
+}
+
+.customer-list-card__vip-toggle {
+    cursor: default;
+}
 /* ───────────────────────────────────────────────────────────────────── */
