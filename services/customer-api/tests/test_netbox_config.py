@@ -2,10 +2,12 @@
 """Tests for NetBox visualization exclusion config service."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
+from app.models.schemas import NetboxVizExclusionRow
 from app.services.netbox_config_service import NetboxConfigService
 
 
@@ -88,3 +90,13 @@ def test_delete_exclusion():
     svc = NetboxConfigService(pool)
     assert svc.delete_exclusion(7) == 1
     pool.execute.assert_called_once()
+
+
+def test_exclusion_row_accepts_datetime_updated_at():
+    row = NetboxVizExclusionRow(
+        id=1,
+        view_scope="datacenter",
+        dimension_value="HOST",
+        updated_at=datetime(2026, 6, 8, 14, 10, 2, tzinfo=timezone.utc),
+    )
+    assert row.updated_at is not None

@@ -9,7 +9,7 @@ from dash.exceptions import PreventUpdate
 from src.services import api_client as api
 from src.utils.netbox_viz_ui import (
     build_exclusion_table,
-    build_summary_badges,
+    build_summary_badge_children,
     compute_exclusion_summary,
     filter_exclusions_by_scope,
     scope_table_count_label,
@@ -30,7 +30,7 @@ def _table_outputs(exclusions: list[dict], scope: str, search: str | None):
 
 def _summary_output(exclusions: list[dict]):
     roles = api.get_netbox_device_roles()
-    return build_summary_badges(compute_exclusion_summary(exclusions, roles))
+    return build_summary_badge_children(compute_exclusion_summary(exclusions, roles))
 
 
 def _refresh_all_outputs(exclusions: list[dict], search_dc: str | None, search_cust: str | None):

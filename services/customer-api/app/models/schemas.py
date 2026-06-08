@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, List, Optional
 
 from pydantic import BaseModel
@@ -310,7 +311,7 @@ class NetboxVizExclusionRow(BaseModel):
     dimension_value: str
     notes: Optional[str] = None
     updated_by: Optional[str] = None
-    updated_at: Optional[str] = None
+    updated_at: Optional[datetime] = None
 
 
 class NetboxVizExclusionUpsert(BaseModel):

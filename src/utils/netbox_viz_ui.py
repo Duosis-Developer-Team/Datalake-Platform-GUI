@@ -47,31 +47,35 @@ def filter_exclusions_by_scope(
     ]
 
 
+def build_summary_badge_children(summary: dict[str, int]) -> list:
+    return [
+        dmc.Badge(
+            f"Datacenter: {summary['datacenter']} excluded",
+            color="indigo",
+            variant="light",
+            size="lg",
+        ),
+        dmc.Badge(
+            f"Customer: {summary['customer']} excluded",
+            color="violet",
+            variant="light",
+            size="lg",
+        ),
+        dmc.Badge(
+            f"Roles in catalog: {summary['catalog']}",
+            color="gray",
+            variant="light",
+            size="lg",
+        ),
+    ]
+
+
 def build_summary_badges(summary: dict[str, int]) -> dmc.Group:
     return dmc.Group(
         id="nbx-summary-badges",
         gap="xs",
         mb="md",
-        children=[
-            dmc.Badge(
-                f"Datacenter: {summary['datacenter']} excluded",
-                color="indigo",
-                variant="light",
-                size="lg",
-            ),
-            dmc.Badge(
-                f"Customer: {summary['customer']} excluded",
-                color="violet",
-                variant="light",
-                size="lg",
-            ),
-            dmc.Badge(
-                f"Roles in catalog: {summary['catalog']}",
-                color="gray",
-                variant="light",
-                size="lg",
-            ),
-        ],
+        children=build_summary_badge_children(summary),
     )
 
 
