@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from typing import Any, Optional
 
 import httpx
@@ -21,11 +22,24 @@ AURANOTIFY_KEY = (
     or "aura_yq3bFR0MxfOQR3GabuwS-EEzY8NdWKjra-gqPQCd"
 )
 
-_transport = httpx.HTTPTransport(retries=2)
+_HTTP_TLS = threading.local()
 
 
-def _client() -> httpx.Client:
-    return httpx.Client(base_url=AURANOTIFY_BASE, timeout=20.0, transport=_transport)
+def _new_http_transport() -> httpx.HTTPTransport:
+    return httpx.HTTPTransport(retries=2)
+
+
+def _get_client() -> httpx.Client:
+    """One httpx client per thread — shared transport caused EBADF under ThreadPoolExecutor."""
+    c = getattr(_HTTP_TLS, "client", None)
+    if c is None:
+        _HTTP_TLS.client = httpx.Client(
+            base_url=AURANOTIFY_BASE,
+            timeout=20.0,
+            transport=_new_http_transport(),
+        )
+        c = _HTTP_TLS.client
+    return c
 
 
 def _headers() -> dict[str, str]:
@@ -49,18 +63,17 @@ def get_dc_services_availability(
         params: dict[str, str] = {"start_date": start_date}
         if end_date:
             params["end_date"] = end_date
-        with _client() as c:
-            r = c.get(
-                "/api/sla/datacenter-services",
-                params=params,
-                headers=_headers(),
-            )
-            r.raise_for_status()
-            data = r.json()
-            if isinstance(data, list):
-                return data
-            items = data.get("items") or data.get("data") or data.get("results")
-            return items if isinstance(items, list) else []
+        r = _get_client().get(
+            "/api/sla/datacenter-services",
+            params=params,
+            headers=_headers(),
+        )
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, list):
+            return data
+        items = data.get("items") or data.get("data") or data.get("results")
+        return items if isinstance(items, list) else []
     except Exception as exc:
         logger.warning("get_dc_services_availability failed: %s", exc)
         return []
@@ -95,11 +108,10 @@ def get_customer_list_aura() -> list[dict[str, Any]]:
     if not AURANOTIFY_KEY:
         return []
     try:
-        with _client() as c:
-            r = c.get("/api/customers/list", headers=_headers())
-            r.raise_for_status()
-            data = r.json()
-            return data if isinstance(data, list) else []
+        r = _get_client().get("/api/customers/list", headers=_headers())
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
     except Exception as exc:
         logger.warning("get_customer_list_aura failed: %s", exc)
         return []
@@ -110,15 +122,14 @@ def get_customer_downtimes(customer_id: int, start_date: str, source: str) -> di
     if not AURANOTIFY_KEY:
         return {}
     try:
-        with _client() as c:
-            r = c.get(
-                f"/api/customers/{customer_id}/downtimes",
-                params={"start_date": start_date, "source": source},
-                headers=_headers(),
-            )
-            r.raise_for_status()
-            data = r.json()
-            return data if isinstance(data, dict) else {}
+        r = _get_client().get(
+            f"/api/customers/{customer_id}/downtimes",
+            params={"start_date": start_date, "source": source},
+            headers=_headers(),
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, dict) else {}
     except Exception as exc:
         logger.warning("get_customer_downtimes failed (%s): %s", source, exc)
         return {}
