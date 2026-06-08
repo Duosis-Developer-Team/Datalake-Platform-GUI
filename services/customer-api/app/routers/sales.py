@@ -20,6 +20,8 @@ from typing import List
 
 from fastapi import APIRouter, Depends, Request
 
+from app.core.time_filter import TimeFilter
+
 from app.models.schemas import (
     CatalogValuationRow,
     CustomerAlias,
@@ -100,10 +102,11 @@ def sales_efficiency(
 )
 def sales_efficiency_by_category(
     customer_name: str,
+    tf: TimeFilter = Depends(),
     svc: SalesService = Depends(get_sales_service),
 ):
     """Realized CRM sales quantities vs observed usage, grouped by product category alias."""
-    return svc.get_efficiency_by_category(customer_name)
+    return svc.get_efficiency_by_category(customer_name, tf.to_dict())
 
 
 @router.get(
@@ -113,10 +116,11 @@ def sales_efficiency_by_category(
 def sales_resource_compliance(
     customer_name: str,
     scope: str = "virtualization",
+    tf: TimeFilter = Depends(),
     svc: SalesService = Depends(get_sales_service),
 ):
     """CRM entitlement (active + invoiced) vs infrastructure usage with overage loss."""
-    return svc.get_resource_compliance(customer_name, scope=scope)
+    return svc.get_resource_compliance(customer_name, scope=scope, time_range=tf.to_dict())
 
 
 @router.get("/customers/{customer_name}/sales/catalog-valuation", response_model=List[CatalogValuationRow])

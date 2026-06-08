@@ -49,7 +49,9 @@ async def lifespan(app: FastAPI):
         get_connection=svc._get_connection,
         run_row=svc._run_row,
         run_rows=svc._run_rows,
-        get_customer_assets=lambda name: svc.get_customer_resources(name, None),
+        get_customer_assets=lambda name, time_range=None: svc.get_customer_resources(
+            name, time_range
+        ),
         webui=webui,
     )
     app.state.itsm = ITSMService(

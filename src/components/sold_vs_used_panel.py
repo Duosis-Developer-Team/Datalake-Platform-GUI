@@ -152,6 +152,8 @@ def _compliance_qty(row: dict[str, Any], key: str) -> float:
             if row.get("entitled_qty") is not None
             else row.get("sold_qty") or 0
         )
+    if key == "used":
+        return float(row.get("used_qty") or 0)
     return float(row.get(key) or 0)
 
 

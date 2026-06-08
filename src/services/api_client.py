@@ -1397,29 +1397,39 @@ def get_dc_sales_potential_v2(dc_code: str) -> dict:
     return _api_cache_get_with_stale(ck, fetch, {})
 
 
-def get_customer_efficiency_by_category(name: str) -> list:
+def get_customer_efficiency_by_category(name: str, tr: Optional[dict] = None) -> list:
     enc = quote(name, safe="")
 
     def fetch() -> list:
-        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/efficiency-by-category")
+        data = _get_json(
+            _get_client_cust(),
+            f"/api/v1/customers/{enc}/sales/efficiency-by-category",
+            params=_build_time_params(tr),
+        )
         return data if isinstance(data, list) else []
 
-    ck = f"api:crm_efficiency_by_cat:{enc}"
+    ck = f"api:crm_efficiency_by_cat:{enc}:{_serialize_tr_params(tr)}"
     return _api_cache_get_with_stale(ck, fetch, [])
 
 
-def get_customer_resource_compliance(name: str, scope: str = "virtualization") -> dict:
+def get_customer_resource_compliance(
+    name: str,
+    scope: str = "virtualization",
+    tr: Optional[dict] = None,
+) -> dict:
     enc = quote(name, safe="")
     scope_q = quote(scope, safe="")
 
     def fetch() -> dict:
+        params = {**_build_time_params(tr), "scope": scope}
         data = _get_json(
             _get_client_cust(),
-            f"/api/v1/customers/{enc}/sales/resource-compliance?scope={scope_q}",
+            f"/api/v1/customers/{enc}/sales/resource-compliance",
+            params=params,
         )
         return data if isinstance(data, dict) else {}
 
-    ck = f"api:crm_resource_compliance:{enc}:{scope_q}"
+    ck = f"api:crm_resource_compliance:{enc}:{scope_q}:{_serialize_tr_params(tr)}"
     return _api_cache_get_with_stale(ck, fetch, {})
 
 

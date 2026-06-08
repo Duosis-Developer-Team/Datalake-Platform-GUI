@@ -61,6 +61,7 @@ def test_build_compliance_issue_table_renders_over_rows():
     )
     text = str(table)
     assert "Classic CPU" in text
+    assert "20.00" in text
     assert "Over-utilized" in text or "over" in text.lower()
 
 

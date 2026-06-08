@@ -72,9 +72,13 @@ class SalesService:
     # Datalake helpers
     # ------------------------------------------------------------------
 
-    def _cached_customer_bundle(self, customer_name: str) -> Dict[str, Any]:
-        """Read infra bundle from Redis only — avoids duplicate heavy SQL during parallel Customer View loads."""
-        tr = default_time_range()
+    def _customer_infra_bundle(
+        self,
+        customer_name: str,
+        time_range: dict | None = None,
+    ) -> Dict[str, Any]:
+        """Read infra bundle from Redis; on miss optionally load via get_customer_resources."""
+        tr = time_range or default_time_range()
         cache_key = f"customer_assets:{customer_name}:{tr.get('start', '')}:{tr.get('end', '')}"
         try:
             hit = cache.get(cache_key)
@@ -82,6 +86,19 @@ class SalesService:
                 return hit
         except Exception as exc:  # noqa: BLE001
             logger.debug("customer bundle cache read failed: %s", exc)
+
+        if self._get_customer_assets:
+            try:
+                bundle = self._get_customer_assets(customer_name, tr)
+            except TypeError:
+                bundle = self._get_customer_assets(customer_name)
+            if isinstance(bundle, dict) and bundle:
+                logger.info(
+                    "Loaded infra bundle on demand for %s (cache miss: %s)",
+                    customer_name,
+                    cache_key,
+                )
+                return bundle
         return {}
 
     def _run_query(self, sql: str, params: tuple) -> List[Dict[str, Any]]:
@@ -321,7 +338,11 @@ class SalesService:
     # /customers/{name}/sales/efficiency-by-category
     # ------------------------------------------------------------------
 
-    def get_efficiency_by_category(self, customer_name: str) -> List[Dict[str, Any]]:
+    def get_efficiency_by_category(
+        self,
+        customer_name: str,
+        time_range: dict | None = None,
+    ) -> List[Dict[str, Any]]:
         account_ids = self._resolve_account_ids(customer_name)
         if not account_ids:
             return []
@@ -357,7 +378,7 @@ class SalesService:
             bucket["sold_qty"] += float(row.get("sold_qty") or 0)
             bucket["sold_amount_tl"] += float(row.get("sold_amount_tl") or 0)
 
-        bundle = self._cached_customer_bundle(customer_name)
+        bundle = self._customer_infra_bundle(customer_name, time_range)
         assets = bundle.get("assets") or {}
         totals = bundle.get("totals") or {}
 
@@ -404,6 +425,7 @@ class SalesService:
         self,
         customer_name: str,
         scope: str = "virtualization",
+        time_range: dict | None = None,
     ) -> Dict[str, Any]:
         if scope != "virtualization":
             return {
@@ -432,10 +454,10 @@ class SalesService:
         price_overrides, catalog_by_productid, catalog_by_name = self._load_catalog_price_indexes()
         entitled_agg = aggregate_entitled_by_category(entitled_raw, mapping)
 
-        bundle = self._cached_customer_bundle(customer_name)
+        bundle = self._customer_infra_bundle(customer_name, time_range)
         if not bundle:
             logger.info(
-                "resource_compliance for %s: infra cache miss (used_qty may be zero until /resources warms cache)",
+                "resource_compliance for %s: no infra bundle (mapping or telemetry unavailable)",
                 customer_name,
             )
 

@@ -1742,7 +1742,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         f_itsm_extremes = pool.submit(api.get_customer_itsm_extremes, name, tr)
         f_itsm_tickets = pool.submit(api.get_customer_itsm_tickets, name, tr)
         f_sales = pool.submit(api.get_customer_sales_summary, name)
-        f_eff = pool.submit(api.get_customer_efficiency_by_category, name)
+        f_eff = pool.submit(api.get_customer_efficiency_by_category, name, tr)
         f_sales_items = pool.submit(api.get_customer_sales_items, name)
         f_active_orders = pool.submit(api.get_customer_sales_active_orders, name)
         f_active_items = pool.submit(api.get_customer_sales_active_items, name)
@@ -1750,7 +1750,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         f_sla = pool.submit(aura.get_dc_services_availability, sla_start, sla_end)
         data = f_resources.result()
         # Compliance reads infra from Redis populated by /resources — run after resources, not in parallel.
-        compliance_payload = api.get_customer_resource_compliance(name, "virtualization")
+        compliance_payload = api.get_customer_resource_compliance(name, "virtualization", tr)
         avail_bundle = f_avail.result()
         s3_data = f_s3.result()
         phys_inv_devices = f_phys.result()
