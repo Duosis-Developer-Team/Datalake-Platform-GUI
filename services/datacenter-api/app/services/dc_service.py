@@ -681,7 +681,7 @@ LIMIT 20
         """Read UI-configured fallback GHz from webui gui_crm_calc_config."""
         default = DEFAULT_HOST_CPU_GHZ
         webui = getattr(self, "_webui", None)
-        if webui is None or not getattr(webui, "is_available", lambda: False)():
+        if webui is None or not getattr(webui, "is_available", False):
             return default
         try:
             row = webui.run_one(
