@@ -259,6 +259,10 @@ Hyperconv VM listesi (`CUSTOMER_HYPERCONV_VM_LIST`) min/avg/max util kolonların
 `CASE WHEN v.vmname IS NOT NULL THEN va... ELSE na...` ile seçer. Nutanix util normalizasyonu: CPU `cpu_usage_*`,
 memory `memory_usage_* / 10000.0` (yüzde), used disk `used_storage / 1073741824.0` (GiB).
 
+**Real CPU enrichment (2026-06):** Classic/Hyperconv `_VM_LIST` sorgularına `vmhost` eklendi. Service katmanı
+NetBox host GHz map ile her VM satırına `cpu_ghz_sales`, `cpu_ghz_real`, `host_ghz_per_core`,
+`cpu_exceeds_sales_limit` alanlarını ekler. Block KPI: `cpu_real_total`.
+
 Örnek (`CUSTOMER_CLASSIC_VM_COUNT`, customer-api sürümü):
 
 ```sql

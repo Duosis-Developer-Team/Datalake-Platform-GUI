@@ -352,7 +352,9 @@ def _build_customer_export_sheets(
         sheets["Assets_Intel_Aggregate"] = iw
 
     sheets["Classic_VMs"] = _vm_records_for_export(classic.get("vm_list") or [])
+    sheets["Classic_VMs_Real_CPU"] = _real_cpu_export_records(classic.get("vm_list") or [])
     sheets["HyperConv_VMs"] = _vm_records_for_export(hyperconv.get("vm_list") or [])
+    sheets["HyperConv_VMs_Real_CPU"] = _real_cpu_export_records(hyperconv.get("vm_list") or [])
     sheets["Pure_Nutanix_VMs"] = _vm_records_for_export(pure_nx.get("vm_list") or [])
     pl = (
         power_asset.get("vm_list")
@@ -720,10 +722,64 @@ def _tab_billing(
     return dmc.Stack(gap="lg", children=children)
 
 
+def _real_cpu_limit_badge(exceeds: bool):
+    if exceeds:
+        return dmc.Badge("Exceeds 1 GHz/core limit", color="orange", variant="light", size="sm")
+    return dmc.Text("—", c="dimmed", size="xs")
+
+
+def _real_cpu_vm_table(vm_list: list, *, title: str, subtitle: str):
+    cols = ["VM Name", "Cluster", "Host", "CPU Sold (GHz)", "CPU Real (GHz)", "GHz/core", "Status"]
+
+    def row_fn(r):
+        return html.Tr([
+            html.Td(r.get("name")),
+            html.Td(r.get("cluster", "-")),
+            html.Td(r.get("vmhost") or "—"),
+            _vm_metric_td(r.get("cpu_ghz_sales", r.get("cpu", 0)), decimals=0),
+            _vm_metric_td(r.get("cpu_ghz_real", 0), decimals=1),
+            _vm_metric_td(r.get("host_ghz_per_core", 0), decimals=2),
+            html.Td(_real_cpu_limit_badge(bool(r.get("cpu_exceeds_sales_limit")))),
+        ])
+
+    return _section_card(
+        title,
+        subtitle,
+        _vm_table(
+            vm_list,
+            cols,
+            row_fn,
+            empty_cols=len(cols),
+            numeric_col_indices=frozenset({3, 4, 5}),
+            comfortable=True,
+        ),
+    )
+
+
+def _real_cpu_export_records(vm_list: list | None) -> list[dict]:
+    if not vm_list:
+        return []
+    out: list[dict] = []
+    for r in vm_list:
+        if not isinstance(r, dict):
+            continue
+        out.append({
+            "name": r.get("name"),
+            "cluster": r.get("cluster"),
+            "vmhost": r.get("vmhost"),
+            "cpu_ghz_sales": r.get("cpu_ghz_sales", r.get("cpu")),
+            "cpu_ghz_real": r.get("cpu_ghz_real"),
+            "host_ghz_per_core": r.get("host_ghz_per_core"),
+            "cpu_exceeds_sales_limit": r.get("cpu_exceeds_sales_limit"),
+        })
+    return out
+
+
 def _tab_classic(classic: dict, vm_outage_counts: dict | None = None, crm_eff_panel: html.Div | None = None):
     """Classic Compute (KM cluster) billing tab."""
     vm_count = int(classic.get("vm_count", 0) or 0)
     cpu = float(classic.get("cpu_total", 0) or 0)
+    cpu_real = float(classic.get("cpu_real_total", 0) or 0)
     mem_gb = float(classic.get("memory_gb", 0) or 0)
     disk_gb = float(classic.get("disk_gb", 0) or 0)
     vm_list = classic.get("vm_list", []) or []
@@ -785,10 +841,11 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None, crm_eff_pa
         [
             (vm_count, "Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", "blue"),
             (cpu, "CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", "blue"),
+            (cpu_real, "Real CPU", smart_cpu(cpu_real), "solar:cpu-bolt-bold-duotone", "gray"),
             (mem_gb, "Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", "blue"),
             (disk_gb, "Disk", smart_storage(disk_gb), "solar:database-bold-duotone", "blue"),
         ],
-        cols=4,
+        cols=5,
     )
     body: list = head + ([kpi_grid] if kpi_grid is not None else [])
     body.append(
@@ -811,6 +868,13 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None, crm_eff_pa
             ),
         )
     )
+    body.append(
+        _real_cpu_vm_table(
+            vm_list,
+            title="Classic VMs — Real CPU (Infrastructure)",
+            subtitle="Infrastructure GHz (vCPU × host GHz/core from NetBox); flags VMs where real exceeds 1 GHz/core sales limit",
+        )
+    )
     return dmc.Stack(gap="lg", children=body)
 
 
@@ -827,6 +891,7 @@ def _tab_hyperconv(
     nutanix_cnt = int(hyperconv.get("nutanix_count", 0) or 0)
     pure_nx_vms = int(pure_nutanix.get("vm_count", 0) or 0)
     cpu = float(hyperconv.get("cpu_total", 0) or 0)
+    cpu_real = float(hyperconv.get("cpu_real_total", 0) or 0)
     mem_gb = float(hyperconv.get("memory_gb", 0) or 0)
     disk_gb = float(hyperconv.get("disk_gb", 0) or 0)
     vm_list = hyperconv.get("vm_list", []) or []
@@ -890,10 +955,11 @@ def _tab_hyperconv(
         [
             (vm_count, "Total VMs", f"{vm_count:,}", "solar:laptop-bold-duotone", "indigo"),
             (cpu, "CPU (vCPU)", f"{cpu:.0f}", "solar:cpu-bold-duotone", "indigo"),
+            (cpu_real, "Real CPU", smart_cpu(cpu_real), "solar:cpu-bolt-bold-duotone", "gray"),
             (mem_gb, "Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", "indigo"),
             (disk_gb, "Disk", smart_storage(disk_gb), "solar:database-bold-duotone", "indigo"),
         ],
-        cols=4,
+        cols=5,
     )
     platform_stacks = []
     for label, count in (
@@ -938,6 +1004,13 @@ def _tab_hyperconv(
                     _deleted_vms_panel(deleted),
                 ],
             ),
+        )
+    )
+    body_h.append(
+        _real_cpu_vm_table(
+            vm_list,
+            title="Hyperconverged VMs — Real CPU (Infrastructure)",
+            subtitle="Infrastructure GHz per VM; Nutanix rows use 1 GHz/core (sales ≈ real)",
         )
     )
     return dmc.Stack(gap="lg", children=body_h)

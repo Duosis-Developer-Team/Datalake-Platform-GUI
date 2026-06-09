@@ -33,8 +33,13 @@ from app.utils.time_range import (
 from app.utils.format_units import smart_cpu, smart_memory, smart_storage
 from shared.vmware.host_cpu_ghz import (
     DEFAULT_HOST_CPU_GHZ,
+    NETBOX_HOST_CPU_STRINGS,
     aggregate_vm_allocation,
     cached_host_map,
+    compute_cpu_overalloc_flags,
+    enrich_customer_vm_cpu_list,
+    enrich_vm_cpu_sales_fields,
+    sum_cpu_real_total,
 )
 from app.services.netbox_viz_filter import (
     filter_devices_by_role_exclusion,
@@ -85,7 +90,10 @@ def _empty_compute_section() -> dict:
         "stor_provisioned_gb": 0.0,
         "stor_actual_used_gb": 0.0,
         "cpu_alloc_ghz_vm":    0.0,
+        "cpu_alloc_ghz_sales": 0.0,
         "mem_alloc_gb_vm":     0.0,
+        "cpu_overallocated_sales": False,
+        "cpu_overallocated_real": False,
         "cpu_alloc_hosts_resolved": 0,
         "cpu_alloc_hosts_fallback_default": 0,
         "cpu_util_pct": 0.0,
@@ -737,15 +745,36 @@ LIMIT 20
             cursor, dc_wc, classic_km=False, cluster_filter=cluster_filter
         )
         ntx = self._run_row(cursor, nq.NUTANIX_VM_STORAGE, (dc_wc,)) or (0.0, 0.0, 0, 0.0)
+        ntx_vcpu = float(ntx[2] or 0)
         # Nutanix CPU: vcpu count treated as GHz-equivalent (1 vCPU ≈ 1 GHz per business rule)
         return {
             "stor_provisioned_gb": round(float(vmw.get("stor_provisioned_gb") or 0) + float(ntx[0] or 0), 2),
             "stor_actual_used_gb": round(float(vmw.get("stor_actual_used_gb") or 0) + float(ntx[1] or 0), 2),
-            "cpu_alloc_ghz_vm": round(float(vmw.get("cpu_alloc_ghz_vm") or 0) + float(ntx[2] or 0), 2),
+            "cpu_alloc_ghz_vm": round(float(vmw.get("cpu_alloc_ghz_vm") or 0) + ntx_vcpu, 2),
+            "cpu_alloc_ghz_sales": round(float(vmw.get("cpu_alloc_ghz_sales") or 0) + ntx_vcpu, 2),
             "mem_alloc_gb_vm": round(float(vmw.get("mem_alloc_gb_vm") or 0) + float(ntx[3] or 0), 2),
             "cpu_alloc_hosts_resolved": int(vmw.get("cpu_alloc_hosts_resolved") or 0),
             "cpu_alloc_hosts_fallback_default": int(vmw.get("cpu_alloc_hosts_fallback_default") or 0),
         }
+
+    @staticmethod
+    def _apply_cpu_overalloc_flags(section: dict) -> dict:
+        """Merge cpu_overallocated_* flags into a compute section dict."""
+        flags = compute_cpu_overalloc_flags(
+            section.get("cpu_cap", 0),
+            section.get("cpu_alloc_ghz_sales", 0),
+            section.get("cpu_alloc_ghz_vm", 0),
+        )
+        return {**section, **flags}
+
+    def _enrich_customer_vm_list(self, cursor, vm_list: list[dict]) -> list[dict]:
+        default_ghz = self._get_default_host_cpu_ghz()
+
+        def _loader():
+            return self._run_rows(cursor, NETBOX_HOST_CPU_STRINGS)
+
+        host_map = cached_host_map(_loader, default_ghz=default_ghz)
+        return enrich_customer_vm_cpu_list(vm_list, host_map, default_ghz=default_ghz)
 
     # CRM unit prices (TL) per architecture — used to compute potential sellable revenue
     _SELLABLE_PRODUCT_MAP = {
@@ -885,7 +914,7 @@ LIMIT 20
         cl_mem_pct_max = round(float(avg30[3] or 0), 1)
         cl_cpu_pct_min = round(float(avg30[4] or 0), 1)
         cl_mem_pct_min = round(float(avg30[5] or 0), 1)
-        return {
+        return self._apply_cpu_overalloc_flags({
             "hosts": cl_hosts,
             "vms": cl_vms,
             "cpu_cap": cl_cpu_cap,
@@ -907,7 +936,7 @@ LIMIT 20
             **storage_vm,
             "unit_prices": unit_prices,
             "sellable_multiplier": 3.3,
-        }
+        })
 
     def get_hyperconv_metrics_filtered(
         self, dc_code: str, selected_clusters: list[str] | None, time_range: dict | None = None
@@ -974,7 +1003,7 @@ LIMIT 20
             hc_cpu_pct = hc_cpu_pct_cap
         if hc_mem_pct_max <= 0 and hc_mem_pct_cap > 0:
             hc_mem_pct = hc_mem_pct_cap
-        return {
+        return self._apply_cpu_overalloc_flags({
             "hosts": hc_hosts,
             "vms": hc_vms,
             "cpu_cap": hc_cpu_cap,
@@ -996,7 +1025,7 @@ LIMIT 20
             **storage_vm,
             "unit_prices": unit_prices,
             "sellable_multiplier": 3.3,
-        }
+        })
 
     # ------------------------------------------------------------------
     # Unit normalization & aggregation (shared by single + batch paths)
@@ -1142,6 +1171,47 @@ LIMIT 20
         hc_stor_used = round(n_stor_used_tb, 3)
 
         desc = (dc_description or "").strip()
+        _vm_alloc_defaults = {
+            "stor_provisioned_gb": 0.0,
+            "stor_actual_used_gb": 0.0,
+            "cpu_alloc_ghz_vm": 0.0,
+            "cpu_alloc_ghz_sales": 0.0,
+            "mem_alloc_gb_vm": 0.0,
+        }
+        classic_section = DatabaseService._apply_cpu_overalloc_flags({
+            "hosts": cl_hosts, "vms": cl_vms,
+            "cpu_cap": cl_cpu_cap, "cpu_used": cl_cpu_used, "cpu_pct": cl_cpu_pct,
+            "cpu_pct_max": cl_cpu_pct_max,
+            "cpu_pct_min": cl_cpu_pct_min,
+            "cpu_util_pct": cl_cpu_pct,
+            "cpu_util_pct_max": cl_cpu_pct_max,
+            "mem_cap": cl_mem_cap, "mem_used": cl_mem_used, "mem_pct": cl_mem_pct,
+            "mem_pct_max": cl_mem_pct_max,
+            "mem_pct_min": cl_mem_pct_min,
+            "mem_util_pct": cl_mem_pct,
+            "mem_util_pct_max": cl_mem_pct_max,
+            "stor_cap": cl_stor_cap, "stor_used": cl_stor_used,
+            **(classic_storage_vm or _vm_alloc_defaults),
+            "unit_prices": classic_unit_prices or {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
+            "sellable_multiplier": sellable_multiplier,
+        })
+        hyperconv_section = DatabaseService._apply_cpu_overalloc_flags({
+            "hosts": hc_hosts, "vms": hc_vms,
+            "cpu_cap": hc_cpu_cap, "cpu_used": hc_cpu_used, "cpu_pct": hc_cpu_pct,
+            "cpu_pct_max": hc_cpu_pct_max,
+            "cpu_pct_min": hc_cpu_pct_min,
+            "cpu_util_pct": hc_cpu_pct,
+            "cpu_util_pct_max": hc_cpu_pct_max,
+            "mem_cap": hc_mem_cap, "mem_used": hc_mem_used, "mem_pct": hc_mem_pct,
+            "mem_pct_max": hc_mem_pct_max,
+            "mem_pct_min": hc_mem_pct_min,
+            "mem_util_pct": hc_mem_pct,
+            "mem_util_pct_max": hc_mem_pct_max,
+            "stor_cap": hc_stor_cap, "stor_used": hc_stor_used,
+            **(hyperconv_storage_vm or _vm_alloc_defaults),
+            "unit_prices": hyperconv_unit_prices or {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
+            "sellable_multiplier": sellable_multiplier,
+        })
         return {
             "meta": {
                 "name": dc_code,
@@ -1149,40 +1219,8 @@ LIMIT 20
                 "description": desc,
             },
             # Compute-type split (new) — used by dc_view tabs
-            "classic": {
-                "hosts": cl_hosts, "vms": cl_vms,
-                "cpu_cap": cl_cpu_cap, "cpu_used": cl_cpu_used, "cpu_pct": cl_cpu_pct,
-                "cpu_pct_max": cl_cpu_pct_max,
-                "cpu_pct_min": cl_cpu_pct_min,
-                "cpu_util_pct": cl_cpu_pct,
-                "cpu_util_pct_max": cl_cpu_pct_max,
-                "mem_cap": cl_mem_cap, "mem_used": cl_mem_used, "mem_pct": cl_mem_pct,
-                "mem_pct_max": cl_mem_pct_max,
-                "mem_pct_min": cl_mem_pct_min,
-                "mem_util_pct": cl_mem_pct,
-                "mem_util_pct_max": cl_mem_pct_max,
-                "stor_cap": cl_stor_cap, "stor_used": cl_stor_used,
-                **(classic_storage_vm or {"stor_provisioned_gb": 0.0, "stor_actual_used_gb": 0.0, "cpu_alloc_ghz_vm": 0.0, "mem_alloc_gb_vm": 0.0}),
-                "unit_prices": classic_unit_prices or {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
-                "sellable_multiplier": sellable_multiplier,
-            },
-            "hyperconv": {
-                "hosts": hc_hosts, "vms": hc_vms,
-                "cpu_cap": hc_cpu_cap, "cpu_used": hc_cpu_used, "cpu_pct": hc_cpu_pct,
-                "cpu_pct_max": hc_cpu_pct_max,
-                "cpu_pct_min": hc_cpu_pct_min,
-                "cpu_util_pct": hc_cpu_pct,
-                "cpu_util_pct_max": hc_cpu_pct_max,
-                "mem_cap": hc_mem_cap, "mem_used": hc_mem_used, "mem_pct": hc_mem_pct,
-                "mem_pct_max": hc_mem_pct_max,
-                "mem_pct_min": hc_mem_pct_min,
-                "mem_util_pct": hc_mem_pct,
-                "mem_util_pct_max": hc_mem_pct_max,
-                "stor_cap": hc_stor_cap, "stor_used": hc_stor_used,
-                **(hyperconv_storage_vm or {"stor_provisioned_gb": 0.0, "stor_actual_used_gb": 0.0, "cpu_alloc_ghz_vm": 0.0, "mem_alloc_gb_vm": 0.0}),
-                "unit_prices": hyperconv_unit_prices or {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
-                "sellable_multiplier": sellable_multiplier,
-            },
+            "classic": classic_section,
+            "hyperconv": hyperconv_section,
             # Legacy combined Intel section — kept for home.py / datacenters.py
             # VM count uses cluster-level dedup: Classic (KM) VMs from VMware cluster_metrics
             # + all Nutanix VMs (covers Nutanix-only and VMware-managed Nutanix VMs once each).
@@ -1790,6 +1828,8 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                         hyper_vm = self.get_hyperconv_storage_vm(cur, dc_wc)
                         results[dc]["classic"].update(classic_vm)
                         results[dc]["hyperconv"].update(hyper_vm)
+                        results[dc]["classic"] = self._apply_cpu_overalloc_flags(results[dc]["classic"])
+                        results[dc]["hyperconv"] = self._apply_cpu_overalloc_flags(results[dc]["hyperconv"])
         except OperationalError as exc:
             logger.warning("Batch VM allocation enrichment failed: %s", exc)
 
@@ -2297,13 +2337,15 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                     )
                     classic_vm_list = [
                         {
-                            "name": r[0], "source": r[1], "cluster": r[2],
-                            "cpu": float(r[3] or 0.0),
-                            "memory_gb": float(r[4] or 0.0),
-                            "disk_gb": float(r[5] or 0.0),
+                            "name": r[0], "source": r[1], "cluster": r[2], "vmhost": r[3],
+                            "cpu": float(r[4] or 0.0),
+                            "memory_gb": float(r[5] or 0.0),
+                            "disk_gb": float(r[6] or 0.0),
                         }
                         for r in (classic_vm_rows or []) if r and r[0]
                     ]
+                    classic_vm_list = self._enrich_customer_vm_list(cur, classic_vm_list)
+                    classic_cpu_real = sum_cpu_real_total(classic_vm_list)
 
                     # --- Hyperconverged Compute (non-KM VMware + Nutanix) ---
                     hc_count_row = self._run_row(
@@ -2328,13 +2370,15 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                     )
                     hc_vm_list = [
                         {
-                            "name": r[0], "source": r[1], "cluster": r[2],
-                            "cpu": float(r[3] or 0.0),
-                            "memory_gb": float(r[4] or 0.0),
-                            "disk_gb": float(r[5] or 0.0),
+                            "name": r[0], "source": r[1], "cluster": r[2], "vmhost": r[3],
+                            "cpu": float(r[4] or 0.0),
+                            "memory_gb": float(r[5] or 0.0),
+                            "disk_gb": float(r[6] or 0.0),
                         }
                         for r in (hc_vm_rows or []) if r and r[0]
                     ]
+                    hc_vm_list = self._enrich_customer_vm_list(cur, hc_vm_list)
+                    hc_cpu_real = sum_cpu_real_total(hc_vm_list)
 
                     # Power / HANA (IBM LPAR)
                     power_cpu = float(
@@ -2441,7 +2485,10 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
         except (OperationalError, PoolError) as exc:
             logger.warning("get_customer_resources failed: %s", exc)
-            _empty_compute = {"vm_count": 0, "cpu_total": 0.0, "memory_gb": 0.0, "disk_gb": 0.0, "vm_list": []}
+            _empty_compute = {
+                "vm_count": 0, "cpu_total": 0.0, "cpu_real_total": 0.0,
+                "memory_gb": 0.0, "disk_gb": 0.0, "vm_list": [],
+            }
             return {
                 "totals": {
                     "vms_total": 0,
@@ -2527,6 +2574,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             "classic": {
                 "vm_count": classic_vm_count,
                 "cpu_total": classic_cpu,
+                "cpu_real_total": classic_cpu_real,
                 "memory_gb": classic_mem_gb,
                 "disk_gb": classic_disk_gb,
                 "vm_list": classic_vm_list,
@@ -2536,6 +2584,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 "vmware_only": hc_vmware_only,
                 "nutanix_count": hc_nutanix,
                 "cpu_total": hc_cpu,
+                "cpu_real_total": hc_cpu_real,
                 "memory_gb": hc_mem_gb,
                 "disk_gb": hc_disk_gb,
                 "vm_list": hc_vm_list,

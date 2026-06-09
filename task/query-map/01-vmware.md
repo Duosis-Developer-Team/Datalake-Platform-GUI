@@ -590,14 +590,18 @@ if cl_cpu_pct == 0.0 and cl_cpu_cap > 0:
 `get_classic_storage_vm` / `get_hyperconv_storage_vm` artık `CLASSIC_VM_ALLOCATION_ROWS` / `HYPERCONV_VMWARE_VM_ALLOCATION_ROWS` ile VM snapshot'larını çeker; CPU allocation Python'da hesaplanır:
 
 ```
-cpu_alloc_ghz_vm = SUM(number_of_cpus × host_ghz_per_core)
+cpu_alloc_ghz_sales = SUM(number_of_cpus)          # 1 vCPU = 1 GHz (billing / sellable)
+cpu_alloc_ghz_vm    = SUM(number_of_cpus × host_ghz_per_core)  # infrastructure real
 ```
 
 `host_ghz_per_core` → `discovery_netbox_inventory_device.custom_fields['CPU']` regex (`@ 2.50GHz`); eşleşme `vm_metrics.vmhost = netbox.name`. Eksik host'ta `gui_crm_calc_config.vmware.default_host_cpu_ghz` (UI default, seed **2.0**).
 
 RAM allocation: `SUM(total_memory_capacity_gb)`. Storage: `SUM(provisioned_space_gb)`.
 
-Redis / sellable allocated alanları: `cpu_alloc_ghz_vm`, `mem_alloc_gb_vm`, `stor_provisioned_gb`.
+Redis / sellable **allocated (sales)** alanları: `cpu_alloc_ghz_sales`, `mem_alloc_gb_vm`, `stor_provisioned_gb`.  
+`cpu_alloc_ghz_vm` yanıtta kalır (DC view real subtitle, ops); sellable hesabına karışmaz.
+
+Overallocation bayrakları (DC seviyesi): `cpu_overallocated_sales`, `cpu_overallocated_real`.
 
 ---
 

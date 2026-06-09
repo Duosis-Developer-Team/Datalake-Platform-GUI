@@ -6,6 +6,13 @@ from typing import Callable
 from app.db.queries import customer as cq
 from app.services.customer_mapping_resolver import ResolvedSourcePatterns, dedupe_vm_rows, dedupe_zerto_vpgs
 from app.utils.time_range import default_time_range, time_range_to_bounds
+from shared.vmware.host_cpu_ghz import (
+    DEFAULT_HOST_CPU_GHZ,
+    NETBOX_HOST_CPU_STRINGS,
+    cached_host_map,
+    enrich_customer_vm_cpu_list,
+    sum_cpu_real_total,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +50,13 @@ class CustomerAdapter:
             if patterns:
                 return [self._normalize_ilike_pattern(p, fallback) for p in patterns]
         return [fallback]
+
+    def _enrich_customer_vm_list(self, cursor, vm_list: list[dict]) -> list[dict]:
+        def _loader():
+            return self._run_rows(cursor, NETBOX_HOST_CPU_STRINGS)
+
+        host_map = cached_host_map(_loader, default_ghz=DEFAULT_HOST_CPU_GHZ)
+        return enrich_customer_vm_cpu_list(vm_list, host_map, default_ghz=DEFAULT_HOST_CPU_GHZ)
 
     def fetch(
         self,
@@ -156,24 +170,27 @@ class CustomerAdapter:
                         "name": r[0],
                         "source": r[1],
                         "cluster": r[2],
-                        "cpu": float(r[3] or 0.0),
-                        "cpu_pct_min": float(r[4] or 0.0),
-                        "cpu_pct_avg": float(r[5] or 0.0),
-                        "cpu_pct_max": float(r[6] or 0.0),
-                        "cpu_mhz_min": float(r[4] or 0.0),
-                        "cpu_mhz_avg": float(r[5] or 0.0),
-                        "cpu_mhz_max": float(r[6] or 0.0),
-                        "memory_gb": float(r[7] or 0.0),
-                        "mem_pct_min": float(r[8] or 0.0),
-                        "mem_pct_avg": float(r[9] or 0.0),
-                        "mem_pct_max": float(r[10] or 0.0),
-                        "disk_gb": float(r[11] or 0.0),
-                        "disk_used_min_gb": float(r[12] or 0.0),
-                        "disk_used_max_gb": float(r[13] or 0.0),
+                        "vmhost": r[3],
+                        "cpu": float(r[4] or 0.0),
+                        "cpu_pct_min": float(r[5] or 0.0),
+                        "cpu_pct_avg": float(r[6] or 0.0),
+                        "cpu_pct_max": float(r[7] or 0.0),
+                        "cpu_mhz_min": float(r[5] or 0.0),
+                        "cpu_mhz_avg": float(r[6] or 0.0),
+                        "cpu_mhz_max": float(r[7] or 0.0),
+                        "memory_gb": float(r[8] or 0.0),
+                        "mem_pct_min": float(r[9] or 0.0),
+                        "mem_pct_avg": float(r[10] or 0.0),
+                        "mem_pct_max": float(r[11] or 0.0),
+                        "disk_gb": float(r[12] or 0.0),
+                        "disk_used_min_gb": float(r[13] or 0.0),
+                        "disk_used_max_gb": float(r[14] or 0.0),
                     }
                     for r in (classic_vm_rows or [])
                     if r and r[0]
                 ]
+                classic_vm_list = self._enrich_customer_vm_list(cur, classic_vm_list)
+                classic_cpu_real = sum_cpu_real_total(classic_vm_list)
 
                 # --- Hyperconverged (non-KM VMware + all Nutanix, filtered by vm_name only) ---
                 hc_params = (
@@ -217,24 +234,27 @@ class CustomerAdapter:
                         "name": r[0],
                         "source": r[1],
                         "cluster": r[2],
-                        "cpu": float(r[3] or 0.0),
-                        "cpu_pct_min": float(r[4] or 0.0),
-                        "cpu_pct_avg": float(r[5] or 0.0),
-                        "cpu_pct_max": float(r[6] or 0.0),
-                        "cpu_mhz_min": float(r[4] or 0.0),
-                        "cpu_mhz_avg": float(r[5] or 0.0),
-                        "cpu_mhz_max": float(r[6] or 0.0),
-                        "memory_gb": float(r[7] or 0.0),
-                        "mem_pct_min": float(r[8] or 0.0),
-                        "mem_pct_avg": float(r[9] or 0.0),
-                        "mem_pct_max": float(r[10] or 0.0),
-                        "disk_gb": float(r[11] or 0.0),
-                        "disk_used_min_gb": float(r[12] or 0.0),
-                        "disk_used_max_gb": float(r[13] or 0.0),
+                        "vmhost": r[3],
+                        "cpu": float(r[4] or 0.0),
+                        "cpu_pct_min": float(r[5] or 0.0),
+                        "cpu_pct_avg": float(r[6] or 0.0),
+                        "cpu_pct_max": float(r[7] or 0.0),
+                        "cpu_mhz_min": float(r[5] or 0.0),
+                        "cpu_mhz_avg": float(r[6] or 0.0),
+                        "cpu_mhz_max": float(r[7] or 0.0),
+                        "memory_gb": float(r[8] or 0.0),
+                        "mem_pct_min": float(r[9] or 0.0),
+                        "mem_pct_avg": float(r[10] or 0.0),
+                        "mem_pct_max": float(r[11] or 0.0),
+                        "disk_gb": float(r[12] or 0.0),
+                        "disk_used_min_gb": float(r[13] or 0.0),
+                        "disk_used_max_gb": float(r[14] or 0.0),
                     }
                     for r in (hc_vm_rows or [])
                     if r and r[0]
                 ]
+                hc_vm_list = self._enrich_customer_vm_list(cur, hc_vm_list)
+                hc_cpu_real = sum_cpu_real_total(hc_vm_list)
 
                 # --- Pure Nutanix (AHV-only clusters, cluster lookup uses latest — no time filter) ---
                 pure_params = (pure, vm_pattern, start_ts, end_ts)
@@ -435,6 +455,7 @@ class CustomerAdapter:
             "classic": {
                 "vm_count": classic_vm_count,
                 "cpu_total": classic_cpu,
+                "cpu_real_total": classic_cpu_real,
                 "memory_gb": classic_mem_gb,
                 "disk_gb": classic_disk_gb,
                 "vm_list": classic_vm_list,
@@ -446,6 +467,7 @@ class CustomerAdapter:
                 "nutanix_count": hc_nutanix,
                 "managed_nutanix_clusters": len(managed),
                 "cpu_total": hc_cpu,
+                "cpu_real_total": hc_cpu_real,
                 "memory_gb": hc_mem_gb,
                 "disk_gb": hc_disk_gb,
                 "vm_list": hc_vm_list,
@@ -518,6 +540,7 @@ class CustomerAdapter:
         _empty_compute = {
             "vm_count": 0,
             "cpu_total": 0.0,
+            "cpu_real_total": 0.0,
             "memory_gb": 0.0,
             "disk_gb": 0.0,
             "vm_list": [],

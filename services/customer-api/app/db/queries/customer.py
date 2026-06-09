@@ -674,6 +674,7 @@ latest AS (
     SELECT DISTINCT ON (vmname)
         vmname,
         cluster,
+        vmhost,
         number_of_cpus,
         total_memory_capacity_gb,
         provisioned_space_gb
@@ -688,6 +689,7 @@ SELECT
     l.vmname AS "VM Name",
     'Classic' AS "Source",
     l.cluster AS "Cluster",
+    l.vmhost AS "VM Host",
     COALESCE(l.number_of_cpus, 0) AS "CPU",
     -- VMware cpu_usage_*_mhz columns store 0-100 percent (not MHz).
     ROUND(COALESCE(a.cpu_mhz_min, 0)::numeric, 2) AS "CPU min pct",
@@ -822,6 +824,7 @@ vmware_latest AS (
     SELECT DISTINCT ON (vmname)
         vmname,
         cluster,
+        vmhost,
         number_of_cpus,
         total_memory_capacity_gb,
         provisioned_space_gb
@@ -873,6 +876,7 @@ SELECT
         ELSE 'Nutanix'
     END AS "Source",
     COALESCE(v.cluster, 'Nutanix') AS "Cluster",
+    v.vmhost AS "VM Host",
     COALESCE(v.number_of_cpus, n.cpu_count, 0) AS "CPU",
     ROUND(
         (CASE

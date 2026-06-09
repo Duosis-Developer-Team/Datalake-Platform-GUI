@@ -409,26 +409,61 @@ def _kpi(
     )
 
 
-def _gauge_wrap(fig, label: str, avg_label: str = "", subtitle: str = ""):
+def _gauge_wrap(
+    fig,
+    label: str,
+    avg_label: str = "",
+    subtitle: str = "",
+    badge: str | None = None,
+    secondary_subtitle: str = "",
+):
     """Renders gauge with an HTML label above — label never clips into the gauge arc."""
     sub_text = subtitle if subtitle else (f"avg {avg_label}" if avg_label else "")
-    subtitle_nodes = [html.Span(sub_text, style={"fontSize": "0.68rem", "color": "#A3AED0", "display": "block"})] if sub_text else []
+    subtitle_nodes: list = []
+    if sub_text:
+        subtitle_nodes.append(
+            html.Span(sub_text, style={"fontSize": "0.68rem", "color": "#A3AED0", "display": "block"})
+        )
+    if secondary_subtitle:
+        subtitle_nodes.append(
+            html.Span(
+                secondary_subtitle,
+                className="cpu-alloc-real-hint",
+                style={"fontSize": "0.62rem", "color": "#8F9BB3", "display": "block"},
+            )
+        )
+    label_nodes = [
+        html.Span(label, style={
+            "fontSize": "0.72rem",
+            "fontWeight": 600,
+            "color": "#A3AED0",
+            "textTransform": "uppercase",
+            "letterSpacing": "0.04em",
+            "lineHeight": "1.3",
+            "whiteSpace": "normal",
+            "wordBreak": "break-word",
+        }),
+    ]
+    if badge:
+        label_nodes.append(
+            dmc.Badge(badge, color="red", size="xs", variant="light", style={"verticalAlign": "middle"})
+        )
     return html.Div(
         style={"textAlign": "center", "display": "flex", "flexDirection": "column", "width": "100%"},
         children=[
             html.Div(
                 style={"padding": "8px 4px 0", "minHeight": "32px"},
                 children=[
-                    html.Span(label, style={
-                        "fontSize": "0.72rem",
-                        "fontWeight": 600,
-                        "color": "#A3AED0",
-                        "textTransform": "uppercase",
-                        "letterSpacing": "0.04em",
-                        "lineHeight": "1.3",
-                        "whiteSpace": "normal",
-                        "wordBreak": "break-word",
-                    }),
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "justifyContent": "center",
+                            "flexWrap": "wrap",
+                            "gap": "4px",
+                        },
+                        children=label_nodes,
+                    ),
                     *subtitle_nodes,
                 ],
             ),
@@ -447,6 +482,48 @@ def _gauge_wrap(fig, label: str, avg_label: str = "", subtitle: str = ""):
             ),
         ],
     )
+
+
+def _cpu_allocation_gauge_block(compute: dict, cpu_cap: float):
+    """Sales-primary CPU allocation gauge with real GHz subtitle and overalloc badge."""
+    sales = float(compute.get("cpu_alloc_ghz_sales", 0) or 0)
+    real = float(compute.get("cpu_alloc_ghz_vm", 0) or 0)
+    sales_pct = alloc_pct_float(sales, cpu_cap)
+    real_pct = alloc_pct_float(real, cpu_cap)
+    over_real = bool(compute.get("cpu_overallocated_real")) or (cpu_cap > 0 and real > cpu_cap)
+    primary_sub = (
+        f"{smart_cpu(sales)} / {smart_cpu(cpu_cap)}"
+        + (f" ({sales_pct:.1f}%)" if sales_pct > 100 else "")
+        if cpu_cap > 0 else ""
+    )
+    secondary_sub = f"Real: {smart_cpu(real)}" + (f" ({real_pct:.1f}%)" if cpu_cap > 0 else "")
+    return _gauge_wrap(
+        create_premium_gauge_chart(min(sales_pct, 100), "", color="#4318FF"),
+        "CPU Allocation",
+        subtitle=primary_sub,
+        secondary_subtitle=secondary_sub,
+        badge="Overallocated" if over_real else None,
+    )
+
+
+def _cpu_sales_overalloc_alerts(compute: dict, cpu_cap: float) -> list:
+    """Prominent alert when sales allocation exceeds physical CPU capacity."""
+    sales = float(compute.get("cpu_alloc_ghz_sales", 0) or 0)
+    over_sales = bool(compute.get("cpu_overallocated_sales")) or (cpu_cap > 0 and sales > cpu_cap)
+    if not over_sales:
+        return []
+    return [
+        dmc.Alert(
+            title="Overallocated for Sales",
+            color="red",
+            variant="light",
+            className="cpu-overalloc-alert",
+            children=(
+                f"Sales allocation ({smart_cpu(sales)}) exceeds physical capacity "
+                f"({smart_cpu(cpu_cap)})."
+            ),
+        )
+    ]
 
 
 def _chart_card(graph_component):
@@ -625,8 +702,10 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     stor_used_gb = stor_used * 1024
 
     cpu_alloc_ghz = float(compute.get("cpu_alloc_ghz_vm", 0) or 0)
+    cpu_alloc_sales = float(compute.get("cpu_alloc_ghz_sales", 0) or 0)
     mem_alloc_gb  = float(compute.get("mem_alloc_gb_vm", 0) or 0)
     cpu_alloc_pct = alloc_pct_float(cpu_alloc_ghz, cpu_cap)
+    cpu_alloc_pct_sales = alloc_pct_float(cpu_alloc_sales, cpu_cap)
     mem_alloc_pct = alloc_pct_float(mem_alloc_gb, mem_cap)
 
     # VM-level storage breakdown.
@@ -667,15 +746,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
         )),
     ])
     alloc_grid = _dynamic_chart_grid([
-        (_has_value(cpu_cap), _gauge_wrap(
-            create_premium_gauge_chart(min(cpu_alloc_pct, 100), "", color="#4318FF"),
-            "CPU Allocation",
-            subtitle=(
-                f"{smart_cpu(cpu_alloc_ghz)} / {smart_cpu(cpu_cap)}"
-                + (f" ({cpu_alloc_pct:.0f}%)" if cpu_alloc_pct > 100 else "")
-                if cpu_cap > 0 else ""
-            ),
-        )),
+        (_has_value(cpu_cap), _cpu_allocation_gauge_block(compute, cpu_cap)),
         (_has_value(mem_cap), _gauge_wrap(
             create_premium_gauge_chart(min(mem_alloc_pct, 100), "", color="#05CD99"),
             "RAM Allocation",
@@ -696,8 +767,15 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
         )),
     ])
 
+    cpu_alloc_alerts = _cpu_sales_overalloc_alerts(compute, cpu_cap)
+    alloc_panel_children: list = []
+    if cpu_alloc_alerts:
+        alloc_panel_children.extend(cpu_alloc_alerts)
+    if alloc_grid is not None:
+        alloc_panel_children.append(alloc_grid)
+
     gauges_section: list = []
-    if util_grid is not None or alloc_grid is not None:
+    if util_grid is not None or alloc_panel_children:
         gauges_section = [
             dmc.Group(
                 justify="flex-end",
@@ -721,7 +799,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
             ),
             html.Div(
                 id={"type": "compute-gauge-alloc", "slug": slug},
-                children=alloc_grid,
+                children=alloc_panel_children or None,
                 style={"display": "none"},
             ),
         ]
@@ -745,7 +823,8 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
                     _section_title("Capacity Planning", "Physical capacity vs. utilization and VM allocation"),
                     html.Div(style={"marginTop": "12px"}, children=[
                         _capacity_metric_row("CPU", cpu_cap, cpu_used, cpu_pct, smart_cpu, potential_tl=cpu_potential_tl),
-                        _capacity_metric_row("CPU allocated", cpu_cap, cpu_alloc_ghz, min(cpu_alloc_pct, 100), smart_cpu),
+                        _capacity_metric_row("CPU allocated (sales)", cpu_cap, cpu_alloc_sales, min(cpu_alloc_pct_sales, 100), smart_cpu),
+                        _capacity_metric_row("CPU allocated (real)", cpu_cap, cpu_alloc_ghz, min(cpu_alloc_pct, 100), smart_cpu),
                         _capacity_metric_row("Memory", mem_cap, mem_used, mem_pct, smart_memory, potential_tl=ram_potential_tl),
                         _capacity_metric_row("Memory allocated", mem_cap, mem_alloc_gb, min(mem_alloc_pct, 100), smart_memory),
                         _capacity_metric_row("Storage", stor_cap_gb, stor_used_gb, stor_pct, smart_storage, potential_tl=storage_potential_tl),

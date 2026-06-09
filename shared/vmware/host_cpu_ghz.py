@@ -12,6 +12,16 @@ _GHZ_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*GHz", re.IGNORECASE)
 _host_map_cache: tuple[dict[str, float], float] | None = None
 _HOST_MAP_TTL_SEC = 1200.0
 
+NETBOX_HOST_CPU_STRINGS = """
+SELECT DISTINCT ON (name)
+    name,
+    custom_fields->'CPU'->>0 AS cpu_cf,
+    cpu AS cpu_col
+FROM public.discovery_netbox_inventory_device
+WHERE status_value = 'active'
+ORDER BY name, collection_time DESC NULLS LAST
+"""
+
 
 def parse_cpu_ghz_from_text(text: str | None) -> float | None:
     """Extract base GHz from strings like 'Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz'."""
@@ -72,6 +82,7 @@ def aggregate_vm_allocation(
       (vmhost, number_of_cpus, total_memory_capacity_gb, provisioned_space_gb, used_space_gb)
     """
     cpu_alloc_ghz = 0.0
+    cpu_alloc_ghz_sales = 0.0
     mem_alloc_gb = 0.0
     stor_provisioned_gb = 0.0
     stor_actual_used_gb = 0.0
@@ -90,6 +101,7 @@ def aggregate_vm_allocation(
 
         ghz, source = resolve_host_ghz(vmhost, host_map, default_ghz=default_ghz)
         cpu_alloc_ghz += vcpus * ghz
+        cpu_alloc_ghz_sales += vcpus
         mem_alloc_gb += mem_gb
         stor_provisioned_gb += prov_gb
         stor_actual_used_gb += used_gb
@@ -105,10 +117,76 @@ def aggregate_vm_allocation(
         "stor_provisioned_gb": round(stor_provisioned_gb, 2),
         "stor_actual_used_gb": round(stor_actual_used_gb, 2),
         "cpu_alloc_ghz_vm": round(cpu_alloc_ghz, 2),
+        "cpu_alloc_ghz_sales": round(cpu_alloc_ghz_sales, 2),
         "mem_alloc_gb_vm": round(mem_alloc_gb, 2),
         "cpu_alloc_hosts_resolved": hosts_resolved,
         "cpu_alloc_hosts_fallback_default": hosts_fallback_default,
         "cpu_alloc_hosts_unmatched": hosts_fallback_default,
+    }
+
+
+def enrich_vm_cpu_sales_fields(
+    vmhost: str | None,
+    vcpus: float,
+    host_map: Mapping[str, float],
+    *,
+    default_ghz: float = DEFAULT_HOST_CPU_GHZ,
+    is_nutanix: bool = False,
+) -> dict[str, Any]:
+    """Per-VM sales (1 vCPU = 1 GHz) vs real (vCPU × host GHz) for customer views."""
+    sales = float(vcpus or 0)
+    if is_nutanix:
+        host_ghz = 1.0
+        real = sales
+    else:
+        host_ghz, _ = resolve_host_ghz(vmhost, host_map, default_ghz=default_ghz)
+        real = sales * host_ghz
+    return {
+        "cpu_ghz_sales": round(sales, 2),
+        "cpu_ghz_real": round(real, 2),
+        "host_ghz_per_core": round(host_ghz, 2),
+        "cpu_exceeds_sales_limit": real > sales + 1e-9,
+    }
+
+
+def enrich_customer_vm_cpu_list(
+    vm_rows: list[dict],
+    host_map: Mapping[str, float],
+    *,
+    default_ghz: float = DEFAULT_HOST_CPU_GHZ,
+) -> list[dict]:
+    """Attach sales/real CPU fields to customer VM dict rows."""
+    enriched: list[dict] = []
+    for vm in vm_rows or []:
+        source = str(vm.get("source") or "")
+        is_nutanix_only = source.strip().lower() == "nutanix"
+        extras = enrich_vm_cpu_sales_fields(
+            vm.get("vmhost"),
+            float(vm.get("cpu") or 0),
+            host_map,
+            default_ghz=default_ghz,
+            is_nutanix=is_nutanix_only,
+        )
+        enriched.append({**vm, **extras})
+    return enriched
+
+
+def sum_cpu_real_total(vm_rows: list[dict]) -> float:
+    return round(sum(float(vm.get("cpu_ghz_real") or 0) for vm in (vm_rows or [])), 2)
+
+
+def compute_cpu_overalloc_flags(
+    cpu_cap: float,
+    cpu_alloc_ghz_sales: float,
+    cpu_alloc_ghz_vm: float,
+) -> dict[str, bool]:
+    """Derive DC-level overallocation flags for UI badges/alerts."""
+    cap = float(cpu_cap or 0)
+    if cap <= 0:
+        return {"cpu_overallocated_sales": False, "cpu_overallocated_real": False}
+    return {
+        "cpu_overallocated_sales": float(cpu_alloc_ghz_sales or 0) > cap,
+        "cpu_overallocated_real": float(cpu_alloc_ghz_vm or 0) > cap,
     }
 
 

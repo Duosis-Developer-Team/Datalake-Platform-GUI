@@ -637,6 +637,7 @@ WITH latest AS (
     SELECT DISTINCT ON (vmname)
         vmname,
         cluster,
+        vmhost,
         number_of_cpus,
         total_memory_capacity_gb,
         provisioned_space_gb
@@ -650,6 +651,7 @@ SELECT
     vmname           AS "VM Name",
     'Classic'        AS "Source",
     cluster          AS "Cluster",
+    vmhost           AS "VM Host",
     COALESCE(number_of_cpus, 0)           AS "CPU",
     COALESCE(total_memory_capacity_gb, 0) AS "Memory (GB)",
     COALESCE(provisioned_space_gb, 0)     AS "Disk (GB)"
@@ -737,6 +739,7 @@ WITH vmware_latest AS (
     SELECT DISTINCT ON (vmname)
         vmname,
         cluster,
+        vmhost,
         number_of_cpus,
         total_memory_capacity_gb,
         provisioned_space_gb
@@ -769,6 +772,7 @@ SELECT
         ELSE 'Nutanix'
     END AS "Source",
     COALESCE(v.cluster, 'Nutanix') AS "Cluster",
+    v.vmhost AS "VM Host",
     COALESCE(v.number_of_cpus, n.cpu_count, 0)           AS "CPU",
     COALESCE(v.total_memory_capacity_gb, n.memory_gb, 0) AS "Memory (GB)",
     COALESCE(v.provisioned_space_gb, n.disk_gb, 0)       AS "Disk (GB)"

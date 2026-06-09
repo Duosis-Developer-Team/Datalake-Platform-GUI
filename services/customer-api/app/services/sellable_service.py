@@ -99,12 +99,12 @@ _VM_TABLE_GLOBAL_SECTION: dict[str, str] = {
 # Maps allocated_column (as configured in gui_panel_infra_source) → Redis field.
 # Values are the exact field names present in the dc_details and global_dashboard JSON.
 _VM_COLUMN_TO_REDIS_FIELD: dict[str, str] = {
-    # vm_metrics — classic KM VMware (allocated = VM sum via NetBox GHz resolver)
-    "number_of_cpus":          "cpu_alloc_ghz_vm",
+    # vm_metrics — classic KM VMware (allocated = sales GHz: 1 vCPU = 1 GHz)
+    "number_of_cpus":          "cpu_alloc_ghz_sales",
     "total_memory_capacity_gb": "mem_alloc_gb_vm",
     "provisioned_space_gb":    "stor_provisioned_gb",
-    # nutanix_vm_metrics — hyperconverged Nutanix
-    "cpu_count":               "cpu_alloc_ghz_vm",
+    # nutanix_vm_metrics — hyperconverged Nutanix (sales ≈ real for Nutanix vCPU)
+    "cpu_count":               "cpu_alloc_ghz_sales",
     "memory_capacity":         "mem_alloc_gb_vm",
     "disk_capacity":           "stor_provisioned_gb",
 }
@@ -179,7 +179,7 @@ _FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
 
 # Maps resource_kind → (capacity_field, used_field, source_unit) in the compute response.
 _RESOURCE_KIND_TO_COMPUTE_FIELDS: dict[str, tuple[str, str, str]] = {
-    "cpu":     ("cpu_cap",  "cpu_alloc_ghz_vm",  "GHz"),
+    "cpu":     ("cpu_cap",  "cpu_alloc_ghz_sales",  "GHz"),
     "ram":     ("mem_cap",  "mem_alloc_gb_vm",  "GB"),
     "storage": ("stor_cap", "stor_provisioned_gb", "TB"),
 }

@@ -7,8 +7,12 @@ from shared.vmware.host_cpu_ghz import (
     aggregate_vm_allocation,
     build_host_ghz_map,
     clear_host_map_cache,
+    compute_cpu_overalloc_flags,
+    enrich_customer_vm_cpu_list,
+    enrich_vm_cpu_sales_fields,
     parse_cpu_ghz_from_text,
     resolve_host_ghz,
+    sum_cpu_real_total,
 )
 
 
@@ -51,6 +55,7 @@ class TestAggregateVmAllocation(unittest.TestCase):
         host_map = {"host-a": 2.5, "host-b": 2.6}
         result = aggregate_vm_allocation(rows, host_map, default_ghz=2.0)
         self.assertAlmostEqual(result["cpu_alloc_ghz_vm"], 4 * 2.5 + 2 * 2.5 + 8 * 2.6)
+        self.assertAlmostEqual(result["cpu_alloc_ghz_sales"], 4 + 2 + 8)
         self.assertAlmostEqual(result["mem_alloc_gb_vm"], 56.0)
         self.assertEqual(result["cpu_alloc_hosts_resolved"], 2)
 
@@ -69,6 +74,42 @@ class TestResolveHostGhz(unittest.TestCase):
         ghz2, src2 = resolve_host_ghz("missing", {}, default_ghz=2.0)
         self.assertEqual(src2, "default")
         self.assertAlmostEqual(ghz2, 2.0)
+
+
+class TestCustomerVmEnrichment(unittest.TestCase):
+    def test_enrich_vmware_row_exceeds_sales_limit(self):
+        host_map = {"host-a": 2.5}
+        row = enrich_vm_cpu_sales_fields("host-a", 4, host_map, default_ghz=2.0)
+        self.assertAlmostEqual(row["cpu_ghz_sales"], 4.0)
+        self.assertAlmostEqual(row["cpu_ghz_real"], 10.0)
+        self.assertTrue(row["cpu_exceeds_sales_limit"])
+
+    def test_enrich_nutanix_row_sales_equals_real(self):
+        row = enrich_vm_cpu_sales_fields(None, 8, {}, is_nutanix=True)
+        self.assertAlmostEqual(row["cpu_ghz_sales"], 8.0)
+        self.assertAlmostEqual(row["cpu_ghz_real"], 8.0)
+        self.assertFalse(row["cpu_exceeds_sales_limit"])
+
+    def test_enrich_customer_vm_list_and_total(self):
+        vms = [
+            {"name": "vm1", "source": "Classic", "cluster": "KM-1", "vmhost": "h1", "cpu": 2.0},
+            {"name": "vm2", "source": "Nutanix", "cluster": "NX-1", "vmhost": None, "cpu": 4.0},
+        ]
+        enriched = enrich_customer_vm_cpu_list(vms, {"h1": 2.0})
+        self.assertAlmostEqual(enriched[0]["cpu_ghz_real"], 4.0)
+        self.assertAlmostEqual(enriched[1]["cpu_ghz_real"], 4.0)
+        self.assertAlmostEqual(sum_cpu_real_total(enriched), 8.0)
+
+
+class TestCpuOverallocFlags(unittest.TestCase):
+    def test_sales_and_real_flags(self):
+        flags = compute_cpu_overalloc_flags(100.0, 120.0, 80.0)
+        self.assertTrue(flags["cpu_overallocated_sales"])
+        self.assertFalse(flags["cpu_overallocated_real"])
+
+        flags2 = compute_cpu_overalloc_flags(100.0, 80.0, 150.0)
+        self.assertFalse(flags2["cpu_overallocated_sales"])
+        self.assertTrue(flags2["cpu_overallocated_real"])
 
 
 if __name__ == "__main__":

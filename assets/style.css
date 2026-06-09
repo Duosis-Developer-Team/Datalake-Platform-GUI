@@ -1320,4 +1320,13 @@ body {
 .customer-list-card__vip-toggle {
     cursor: default;
 }
+
+.cpu-alloc-real-hint {
+    opacity: 0.85;
+}
+
+.cpu-overalloc-alert {
+    border-left: 3px solid #FA5252;
+    margin-bottom: 8px;
+}
 /* ───────────────────────────────────────────────────────────────────── */

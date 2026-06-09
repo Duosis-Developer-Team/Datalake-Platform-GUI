@@ -245,32 +245,42 @@ def _make_svc_with_redis(dc_redis=None, dc_api_url="") -> SellableService:
     return svc
 
 
-def _dc_details_payload(cpu_used=32.0, mem_used=128.0, stor_used=5.0) -> dict:
+def _dc_details_payload(cpu_alloc_sales=32.0, mem_alloc_gb=128.0, stor_provisioned_gb=5.0) -> dict:
     return {
         "classic": {
-            "cpu_cap": 200.0, "cpu_used": cpu_used,
-            "mem_cap": 512.0, "mem_used": mem_used,
-            "stor_cap": 50.0, "stor_used": stor_used,
+            "cpu_cap": 200.0, "cpu_used": 50.0,
+            "cpu_alloc_ghz_sales": cpu_alloc_sales,
+            "cpu_alloc_ghz_vm": cpu_alloc_sales * 2.5,
+            "mem_cap": 512.0, "mem_used": 64.0,
+            "mem_alloc_gb_vm": mem_alloc_gb,
+            "stor_cap": 50.0, "stor_used": 10.0,
+            "stor_provisioned_gb": stor_provisioned_gb,
         },
         "hyperconv": {
-            "cpu_cap": 100.0, "cpu_used": cpu_used,
-            "mem_cap": 256.0, "mem_used": mem_used,
-            "stor_cap": 20.0, "stor_used": stor_used,
+            "cpu_cap": 100.0, "cpu_used": 25.0,
+            "cpu_alloc_ghz_sales": cpu_alloc_sales,
+            "cpu_alloc_ghz_vm": cpu_alloc_sales,
+            "mem_cap": 256.0, "mem_used": 32.0,
+            "mem_alloc_gb_vm": mem_alloc_gb,
+            "stor_cap": 20.0, "stor_used": 5.0,
+            "stor_provisioned_gb": stor_provisioned_gb,
         },
     }
 
 
-def _global_dashboard_payload(cpu_used=64.0, mem_used=256.0, stor_used=10.0) -> dict:
+def _global_dashboard_payload(cpu_alloc_sales=64.0, mem_alloc_gb=256.0, stor_provisioned_gb=10.0) -> dict:
     return {
         "classic_totals": {
-            "cpu_cap": 400.0, "cpu_used": cpu_used,
-            "mem_cap": 1024.0, "mem_used": mem_used,
-            "stor_cap": 100.0, "stor_used": stor_used,
+            "cpu_cap": 400.0, "cpu_used": 100.0,
+            "cpu_alloc_ghz_sales": cpu_alloc_sales,
+            "mem_alloc_gb_vm": mem_alloc_gb,
+            "stor_provisioned_gb": stor_provisioned_gb,
         },
         "hyperconv_totals": {
-            "cpu_cap": 200.0, "cpu_used": cpu_used,
-            "mem_cap": 512.0, "mem_used": mem_used,
-            "stor_cap": 40.0, "stor_used": stor_used,
+            "cpu_cap": 200.0, "cpu_used": 50.0,
+            "cpu_alloc_ghz_sales": cpu_alloc_sales,
+            "mem_alloc_gb_vm": mem_alloc_gb,
+            "stor_provisioned_gb": stor_provisioned_gb,
         },
     }
 
@@ -292,9 +302,9 @@ def test_vm_table_section_maps_both_tables():
 
 
 def test_fetch_allocated_from_redis_classic_cpu_hit():
-    """Redis hit: vm_metrics + number_of_cpus → classic.cpu_used."""
+    """Redis hit: vm_metrics + number_of_cpus → classic.cpu_alloc_ghz_sales."""
     redis_mock = MagicMock()
-    redis_mock.get.return_value = json.dumps(_dc_details_payload(cpu_used=32.0))
+    redis_mock.get.return_value = json.dumps(_dc_details_payload(cpu_alloc_sales=32.0))
     svc = _make_svc_with_redis(dc_redis=redis_mock)
 
     src = InfraSource("virt_classic_cpu", "IST1", allocated_table="vm_metrics", allocated_column="number_of_cpus")
@@ -306,9 +316,9 @@ def test_fetch_allocated_from_redis_classic_cpu_hit():
 
 
 def test_fetch_allocated_from_redis_hyperconv_mem_hit():
-    """Redis hit: nutanix_vm_metrics + memory_capacity → hyperconv.mem_used."""
+    """Redis hit: nutanix_vm_metrics + memory_capacity → hyperconv.mem_alloc_gb_vm."""
     redis_mock = MagicMock()
-    redis_mock.get.return_value = json.dumps(_dc_details_payload(mem_used=128.0))
+    redis_mock.get.return_value = json.dumps(_dc_details_payload(mem_alloc_gb=128.0))
     svc = _make_svc_with_redis(dc_redis=redis_mock)
 
     src = InfraSource("virt_hyperconverged_ram", "DC2", allocated_table="nutanix_vm_metrics", allocated_column="memory_capacity")
@@ -320,7 +330,7 @@ def test_fetch_allocated_from_redis_hyperconv_mem_hit():
 def test_fetch_allocated_from_redis_global_uses_global_dashboard_key():
     """dc_code='*' must read global_dashboard key, not dc_details."""
     redis_mock = MagicMock()
-    redis_mock.get.return_value = json.dumps(_global_dashboard_payload(cpu_used=64.0))
+    redis_mock.get.return_value = json.dumps(_global_dashboard_payload(cpu_alloc_sales=64.0))
     svc = _make_svc_with_redis(dc_redis=redis_mock)
 
     src = InfraSource("virt_classic_cpu", "*", allocated_table="vm_metrics", allocated_column="number_of_cpus")
@@ -340,7 +350,7 @@ def test_fetch_allocated_from_redis_cache_miss_calls_http_fallback():
     src = InfraSource("virt_km_cpu", "IST1", allocated_table="vm_metrics", allocated_column="number_of_cpus")
 
     mock_resp = MagicMock()
-    mock_resp.json.return_value = _dc_details_payload(cpu_used=16.0)
+    mock_resp.json.return_value = _dc_details_payload(cpu_alloc_sales=16.0)
     mock_resp.raise_for_status = MagicMock()
 
     with patch("app.services.sellable_service.httpx.get", return_value=mock_resp) as mock_get:
@@ -384,9 +394,9 @@ def test_family_compute_endpoint_covers_virt_classic_and_hyperconverged():
 
 
 def test_resource_kind_to_compute_fields_maps_cpu_ram_storage():
-    assert _RESOURCE_KIND_TO_COMPUTE_FIELDS["cpu"]     == ("cpu_cap",  "cpu_used",  "GHz")
-    assert _RESOURCE_KIND_TO_COMPUTE_FIELDS["ram"]     == ("mem_cap",  "mem_used",  "GB")
-    assert _RESOURCE_KIND_TO_COMPUTE_FIELDS["storage"] == ("stor_cap", "stor_used", "TB")
+    assert _RESOURCE_KIND_TO_COMPUTE_FIELDS["cpu"]     == ("cpu_cap",  "cpu_alloc_ghz_sales",  "GHz")
+    assert _RESOURCE_KIND_TO_COMPUTE_FIELDS["ram"]     == ("mem_cap",  "mem_alloc_gb_vm",  "GB")
+    assert _RESOURCE_KIND_TO_COMPUTE_FIELDS["storage"] == ("stor_cap", "stor_provisioned_gb", "TB")
 
 
 def test_fetch_compute_metrics_returns_cap_used_from_compute_endpoint():
@@ -395,9 +405,9 @@ def test_fetch_compute_metrics_returns_cap_used_from_compute_endpoint():
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
     mock_resp.json.return_value = {
-        "cpu_cap": 5317.39, "cpu_used": 3869.44,
-        "mem_cap": 1024.0,  "mem_used": 512.0,
-        "stor_cap": 200.0,  "stor_used": 80.0,
+        "cpu_cap": 5317.39, "cpu_alloc_ghz_sales": 3869.44,
+        "mem_cap": 1024.0,  "mem_alloc_gb_vm": 512.0,
+        "stor_cap": 200.0,  "stor_provisioned_gb": 81920.0,
     }
     with patch("app.services.sellable_service.httpx.get", return_value=mock_resp) as mock_get:
         result = svc._fetch_compute_metrics_for_clusters(
