@@ -739,10 +739,10 @@ LIMIT 20
         ntx = self._run_row(cursor, nq.NUTANIX_VM_STORAGE, (dc_wc,)) or (0.0, 0.0, 0, 0.0)
         # Nutanix CPU: vcpu count treated as GHz-equivalent (1 vCPU ≈ 1 GHz per business rule)
         return {
-            "stor_provisioned_gb": round(float((vmw.get("stor_provisioned_gb") or 0) + (ntx[0] or 0)), 2),
-            "stor_actual_used_gb": round(float((vmw.get("stor_actual_used_gb") or 0) + (ntx[1] or 0)), 2),
-            "cpu_alloc_ghz_vm": round(float((vmw.get("cpu_alloc_ghz_vm") or 0) + (ntx[2] or 0)), 2),
-            "mem_alloc_gb_vm": round(float((vmw.get("mem_alloc_gb_vm") or 0) + (ntx[3] or 0)), 2),
+            "stor_provisioned_gb": round(float(vmw.get("stor_provisioned_gb") or 0) + float(ntx[0] or 0), 2),
+            "stor_actual_used_gb": round(float(vmw.get("stor_actual_used_gb") or 0) + float(ntx[1] or 0), 2),
+            "cpu_alloc_ghz_vm": round(float(vmw.get("cpu_alloc_ghz_vm") or 0) + float(ntx[2] or 0), 2),
+            "mem_alloc_gb_vm": round(float(vmw.get("mem_alloc_gb_vm") or 0) + float(ntx[3] or 0), 2),
             "cpu_alloc_hosts_resolved": int(vmw.get("cpu_alloc_hosts_resolved") or 0),
             "cpu_alloc_hosts_fallback_default": int(vmw.get("cpu_alloc_hosts_fallback_default") or 0),
         }
