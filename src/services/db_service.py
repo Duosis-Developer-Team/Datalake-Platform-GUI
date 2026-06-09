@@ -1475,6 +1475,20 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 dc_description=self._dc_description_map.get(dc, ""),
             )
 
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    for dc in dc_list:
+                        dc_wc = f"%{dc}%"
+                        if dc not in results:
+                            continue
+                        classic_vm = self.get_classic_storage_vm(cur, dc_wc)
+                        hyper_vm = self.get_hyperconv_storage_vm(cur, dc_wc)
+                        results[dc]["classic"].update(classic_vm)
+                        results[dc]["hyperconv"].update(hyper_vm)
+        except OperationalError as exc:
+            logger.warning("Batch VM allocation enrichment failed: %s", exc)
+
         return results, platform_counts
 
     # ------------------------------------------------------------------
