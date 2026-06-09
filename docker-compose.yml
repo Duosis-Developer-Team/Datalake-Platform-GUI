@@ -176,8 +176,9 @@ services:
 
   datacenter-api:
     build:
-      context: ./services/datacenter-api
-      dockerfile: Dockerfile
+      # Repo root so Dockerfile can COPY shared/ (VMware host GHz resolver).
+      context: .
+      dockerfile: services/datacenter-api/Dockerfile
     container_name: bulutistan-datacenter-api
     ports:
       - "8000:8000"
