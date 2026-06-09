@@ -31,6 +31,7 @@ from app.utils.time_range import (
     BACKUP_JOBS_WARM_GRANULARITIES,
 )
 from app.utils.format_units import smart_cpu, smart_memory, smart_storage
+from shared.customer.cache_keys import customer_assets_cache_key
 from shared.vmware.host_cpu_ghz import (
     DEFAULT_HOST_CPU_GHZ,
     NETBOX_HOST_CPU_STRINGS,
@@ -2246,7 +2247,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         - Backup (Veeam/Zerto/storage) summary metrics
         """
         tr = time_range or default_time_range()
-        cache_key = f"customer_assets:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
+        cache_key = customer_assets_cache_key(customer_name, tr.get("start", ""), tr.get("end", ""))
         cached = cache.get(cache_key)
         if cached is not None:
             return cached

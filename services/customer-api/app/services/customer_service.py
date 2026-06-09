@@ -36,6 +36,7 @@ from app.services.customer_mapping_resolver import (
 )
 from app.utils.cluster_match import build_cluster_arch_map
 from app.utils.time_range import cache_time_ranges, default_time_range, time_range_to_bounds
+from shared.customer.cache_keys import customer_assets_cache_key
 from app.utils.usage_comparison import (
     build_lightweight_compliance_from_bundle,
     catalog_product_names_for_compliance,
@@ -405,7 +406,7 @@ class CustomerService:
         tr = time_range or default_time_range()
         if tr.get("anchor_latest"):
             tr = self._smart_1h_tr(tr)
-        cache_key = f"customer_assets:{customer_name}:{tr.get('start','')}:{tr.get('end','')}"
+        cache_key = customer_assets_cache_key(customer_name, tr.get("start", ""), tr.get("end", ""))
         if self._pool is None:
             return self._customer._empty_result()
         ttl = cache_ttl if cache_ttl is not None else self._cache_ttl_for_customer(customer_name)
@@ -815,7 +816,7 @@ class CustomerService:
 
     def _cached_customer_bundle(self, display_name: str) -> dict[str, Any] | None:
         tr = default_time_range()
-        cache_key = f"customer_assets:{display_name}:{tr.get('start', '')}:{tr.get('end', '')}"
+        cache_key = customer_assets_cache_key(display_name, tr.get("start", ""), tr.get("end", ""))
         try:
             hit = cache.get(cache_key)
             if isinstance(hit, dict):

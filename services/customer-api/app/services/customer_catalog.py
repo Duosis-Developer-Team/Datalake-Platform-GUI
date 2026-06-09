@@ -10,6 +10,7 @@ from app.db.queries import service_mapping as smq
 from app.services import cache_service as cache
 from app.utils.service_sales_mapping import map_service_sales_lines
 from app.utils.time_range import default_time_range
+from shared.customer.cache_keys import customer_assets_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ def _is_mapped(source_mappings: list[dict[str, Any]] | None) -> bool:
 
 def _real_data_cached(display_name: str) -> bool:
     tr = default_time_range()
-    cache_key = f"customer_assets:{display_name}:{tr.get('start', '')}:{tr.get('end', '')}"
+    cache_key = customer_assets_cache_key(display_name, tr.get("start", ""), tr.get("end", ""))
     try:
         return cache.get(cache_key) is not None
     except Exception:

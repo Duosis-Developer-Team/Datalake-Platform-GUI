@@ -41,6 +41,7 @@ from app.services import cache_service as cache
 from app.services.crm_config_service import CrmConfigService
 from app.services.webui_db import WebuiPool
 from app.utils.time_range import default_time_range
+from shared.customer.cache_keys import customer_assets_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class SalesService:
     ) -> Dict[str, Any]:
         """Read infra bundle from Redis; on miss optionally load via get_customer_resources."""
         tr = time_range or default_time_range()
-        cache_key = f"customer_assets:{customer_name}:{tr.get('start', '')}:{tr.get('end', '')}"
+        cache_key = customer_assets_cache_key(customer_name, tr.get("start", ""), tr.get("end", ""))
         try:
             hit = cache.get(cache_key)
             if isinstance(hit, dict):
