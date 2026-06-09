@@ -91,6 +91,13 @@ def pct_float(used: float, cap: float) -> float:
     return min(float(used) / float(cap) * 100, 100.0)
 
 
+def alloc_pct_float(allocated: float, cap: float) -> float:
+    """Return allocation percentage without capping (overcommit may exceed 100%)."""
+    if not cap:
+        return 0.0
+    return float(allocated) / float(cap) * 100.0
+
+
 def parse_storage_string(value: str | None) -> float:
     """
     Parse a storage capacity string like '110.00 TB' into a float in GB.

@@ -31,6 +31,11 @@ from app.utils.time_range import (
     BACKUP_JOBS_WARM_GRANULARITIES,
 )
 from app.utils.format_units import smart_cpu, smart_memory, smart_storage
+from shared.vmware.host_cpu_ghz import (
+    DEFAULT_HOST_CPU_GHZ,
+    aggregate_vm_allocation,
+    cached_host_map,
+)
 from app.services.netbox_viz_filter import (
     filter_devices_by_role_exclusion,
     is_role_excluded,
@@ -81,6 +86,12 @@ def _empty_compute_section() -> dict:
         "stor_actual_used_gb": 0.0,
         "cpu_alloc_ghz_vm":    0.0,
         "mem_alloc_gb_vm":     0.0,
+        "cpu_alloc_hosts_resolved": 0,
+        "cpu_alloc_hosts_fallback_default": 0,
+        "cpu_util_pct": 0.0,
+        "cpu_util_pct_max": 0.0,
+        "mem_util_pct": 0.0,
+        "mem_util_pct_max": 0.0,
         # Potential sellable economics — CRM TL unit prices × capacity × overcommit
         "unit_prices": {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
         "sellable_multiplier": 3.3,
@@ -663,25 +674,77 @@ LIMIT 20
         """Return Hyperconverged cluster average utilization: cpu_avg_pct, mem_avg_pct."""
         return self._run_row(cursor, vq.HYPERCONV_AVG30, (dc_wc, start_ts, end_ts))
 
-    # VM-level allocation: storage (provisioned/used) + CPU/RAM allocated
-    def get_classic_storage_vm(self, cursor, dc_wc: str) -> dict:
-        row = self._run_row(cursor, vq.CLASSIC_STORAGE_VM, (dc_wc,)) or (0.0, 0.0, 0.0, 0.0)
-        return {
-            "stor_provisioned_gb": round(float(row[0] or 0), 2),
-            "stor_actual_used_gb": round(float(row[1] or 0), 2),
-            "cpu_alloc_ghz_vm":    round(float(row[2] or 0), 2),
-            "mem_alloc_gb_vm":     round(float(row[3] or 0), 2),
-        }
+    # VM-level allocation: storage (provisioned/used) + CPU/RAM allocated via NetBox host GHz
+    _VMWARE_DEFAULT_GHZ_KEY = "vmware.default_host_cpu_ghz"
 
-    def get_hyperconv_storage_vm(self, cursor, dc_wc: str) -> dict:
-        vmw = self._run_row(cursor, vq.HYPERCONV_VMWARE_STORAGE_VM, (dc_wc,)) or (0.0, 0.0, 0.0, 0.0)
+    def _get_default_host_cpu_ghz(self) -> float:
+        """Read UI-configured fallback GHz from webui gui_crm_calc_config."""
+        default = DEFAULT_HOST_CPU_GHZ
+        webui = getattr(self, "_webui", None)
+        if webui is None or not getattr(webui, "is_available", lambda: False)():
+            return default
+        try:
+            row = webui.run_one(
+                "SELECT config_value FROM gui_crm_calc_config WHERE config_key = %s",
+                (self._VMWARE_DEFAULT_GHZ_KEY,),
+            )
+            if row and row[0] is not None:
+                parsed = float(row[0])
+                if parsed > 0:
+                    return parsed
+        except Exception as exc:
+            logger.warning("Failed to read %s from webui: %s", self._VMWARE_DEFAULT_GHZ_KEY, exc)
+        return default
+
+    def _load_host_ghz_map(self, cursor) -> dict[str, float]:
+        def _loader():
+            return self._run_rows(cursor, vq.NETBOX_HOST_CPU_STRINGS)
+
+        return cached_host_map(_loader, default_ghz=self._get_default_host_cpu_ghz())
+
+    def _compute_vmware_vm_allocation(
+        self,
+        cursor,
+        dc_wc: str,
+        *,
+        classic_km: bool,
+        cluster_filter: list[str] | None = None,
+    ) -> dict:
+        """Aggregate VM-level CPU/RAM/storage allocation for KM or VMware hyperconv."""
+        clusters = cluster_filter or []
+        sql = vq.CLASSIC_VM_ALLOCATION_ROWS if classic_km else vq.HYPERCONV_VMWARE_VM_ALLOCATION_ROWS
+        rows = self._run_rows(cursor, sql, (dc_wc, clusters, clusters))
+        host_map = self._load_host_ghz_map(cursor)
+        return aggregate_vm_allocation(rows, host_map, default_ghz=self._get_default_host_cpu_ghz())
+
+    def get_classic_storage_vm(
+        self,
+        cursor,
+        dc_wc: str,
+        cluster_filter: list[str] | None = None,
+    ) -> dict:
+        return self._compute_vmware_vm_allocation(
+            cursor, dc_wc, classic_km=True, cluster_filter=cluster_filter
+        )
+
+    def get_hyperconv_storage_vm(
+        self,
+        cursor,
+        dc_wc: str,
+        cluster_filter: list[str] | None = None,
+    ) -> dict:
+        vmw = self._compute_vmware_vm_allocation(
+            cursor, dc_wc, classic_km=False, cluster_filter=cluster_filter
+        )
         ntx = self._run_row(cursor, nq.NUTANIX_VM_STORAGE, (dc_wc,)) or (0.0, 0.0, 0, 0.0)
         # Nutanix CPU: vcpu count treated as GHz-equivalent (1 vCPU ≈ 1 GHz per business rule)
         return {
-            "stor_provisioned_gb": round(float((vmw[0] or 0) + (ntx[0] or 0)), 2),
-            "stor_actual_used_gb": round(float((vmw[1] or 0) + (ntx[1] or 0)), 2),
-            "cpu_alloc_ghz_vm":    round(float((vmw[2] or 0) + (ntx[2] or 0)), 2),
-            "mem_alloc_gb_vm":     round(float((vmw[3] or 0) + (ntx[3] or 0)), 2),
+            "stor_provisioned_gb": round(float((vmw.get("stor_provisioned_gb") or 0) + (ntx[0] or 0)), 2),
+            "stor_actual_used_gb": round(float((vmw.get("stor_actual_used_gb") or 0) + (ntx[1] or 0)), 2),
+            "cpu_alloc_ghz_vm": round(float((vmw.get("cpu_alloc_ghz_vm") or 0) + (ntx[2] or 0)), 2),
+            "mem_alloc_gb_vm": round(float((vmw.get("mem_alloc_gb_vm") or 0) + (ntx[3] or 0)), 2),
+            "cpu_alloc_hosts_resolved": int(vmw.get("cpu_alloc_hosts_resolved") or 0),
+            "cpu_alloc_hosts_fallback_default": int(vmw.get("cpu_alloc_hosts_fallback_default") or 0),
         }
 
     # CRM unit prices (TL) per architecture — used to compute potential sellable revenue
@@ -796,7 +859,7 @@ LIMIT 20
                     avg30 = self._run_row(
                         cur, vq.CLASSIC_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
                     )
-                    storage_vm = self.get_classic_storage_vm(cur, dc_wc)
+                    storage_vm = self.get_classic_storage_vm(cur, dc_wc, selected_clusters)
                     unit_prices = self.get_unit_prices_tl(cur, "klasik")
         except OperationalError as exc:
             logger.error("DB unavailable for get_classic_metrics_filtered(%s): %s", dc_code, exc)
@@ -814,6 +877,10 @@ LIMIT 20
         cl_stor_used = round(float(row[7] or 0) / 1024.0, 3)
         cl_cpu_pct = round(float(avg30[0] or 0), 1)
         cl_mem_pct = round(float(avg30[1] or 0), 1)
+        if cl_cpu_pct == 0.0 and cl_cpu_cap > 0:
+            cl_cpu_pct = round(100.0 * cl_cpu_used / cl_cpu_cap, 1)
+        if cl_mem_pct == 0.0 and cl_mem_cap > 0:
+            cl_mem_pct = round(100.0 * cl_mem_used / cl_mem_cap, 1)
         cl_cpu_pct_max = round(float(avg30[2] or 0), 1)
         cl_mem_pct_max = round(float(avg30[3] or 0), 1)
         cl_cpu_pct_min = round(float(avg30[4] or 0), 1)
@@ -826,11 +893,15 @@ LIMIT 20
             "cpu_pct": cl_cpu_pct,
             "cpu_pct_max": cl_cpu_pct_max,
             "cpu_pct_min": cl_cpu_pct_min,
+            "cpu_util_pct": cl_cpu_pct,
+            "cpu_util_pct_max": cl_cpu_pct_max,
             "mem_cap": cl_mem_cap,
             "mem_used": cl_mem_used,
             "mem_pct": cl_mem_pct,
             "mem_pct_max": cl_mem_pct_max,
             "mem_pct_min": cl_mem_pct_min,
+            "mem_util_pct": cl_mem_pct,
+            "mem_util_pct_max": cl_mem_pct_max,
             "stor_cap": cl_stor_cap,
             "stor_used": cl_stor_used,
             **storage_vm,
@@ -911,11 +982,15 @@ LIMIT 20
             "cpu_pct": hc_cpu_pct,
             "cpu_pct_max": hc_cpu_pct_max,
             "cpu_pct_min": hc_cpu_pct_min,
+            "cpu_util_pct": hc_cpu_pct,
+            "cpu_util_pct_max": hc_cpu_pct_max if hc_cpu_pct_max > 0 else hc_cpu_pct_cap,
             "mem_cap": hc_mem_cap,
             "mem_used": hc_mem_used,
             "mem_pct": hc_mem_pct,
             "mem_pct_max": hc_mem_pct_max,
             "mem_pct_min": hc_mem_pct_min,
+            "mem_util_pct": hc_mem_pct,
+            "mem_util_pct_max": hc_mem_pct_max if hc_mem_pct_max > 0 else hc_mem_pct_cap,
             "stor_cap": hc_stor_cap,
             "stor_used": hc_stor_used,
             **storage_vm,
@@ -1079,9 +1154,13 @@ LIMIT 20
                 "cpu_cap": cl_cpu_cap, "cpu_used": cl_cpu_used, "cpu_pct": cl_cpu_pct,
                 "cpu_pct_max": cl_cpu_pct_max,
                 "cpu_pct_min": cl_cpu_pct_min,
+                "cpu_util_pct": cl_cpu_pct,
+                "cpu_util_pct_max": cl_cpu_pct_max,
                 "mem_cap": cl_mem_cap, "mem_used": cl_mem_used, "mem_pct": cl_mem_pct,
                 "mem_pct_max": cl_mem_pct_max,
                 "mem_pct_min": cl_mem_pct_min,
+                "mem_util_pct": cl_mem_pct,
+                "mem_util_pct_max": cl_mem_pct_max,
                 "stor_cap": cl_stor_cap, "stor_used": cl_stor_used,
                 **(classic_storage_vm or {"stor_provisioned_gb": 0.0, "stor_actual_used_gb": 0.0, "cpu_alloc_ghz_vm": 0.0, "mem_alloc_gb_vm": 0.0}),
                 "unit_prices": classic_unit_prices or {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
@@ -1092,9 +1171,13 @@ LIMIT 20
                 "cpu_cap": hc_cpu_cap, "cpu_used": hc_cpu_used, "cpu_pct": hc_cpu_pct,
                 "cpu_pct_max": hc_cpu_pct_max,
                 "cpu_pct_min": hc_cpu_pct_min,
+                "cpu_util_pct": hc_cpu_pct,
+                "cpu_util_pct_max": hc_cpu_pct_max,
                 "mem_cap": hc_mem_cap, "mem_used": hc_mem_used, "mem_pct": hc_mem_pct,
                 "mem_pct_max": hc_mem_pct_max,
                 "mem_pct_min": hc_mem_pct_min,
+                "mem_util_pct": hc_mem_pct,
+                "mem_util_pct_max": hc_mem_pct_max,
                 "stor_cap": hc_stor_cap, "stor_used": hc_stor_used,
                 **(hyperconv_storage_vm or {"stor_provisioned_gb": 0.0, "stor_actual_used_gb": 0.0, "cpu_alloc_ghz_vm": 0.0, "mem_alloc_gb_vm": 0.0}),
                 "unit_prices": hyperconv_unit_prices or {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},

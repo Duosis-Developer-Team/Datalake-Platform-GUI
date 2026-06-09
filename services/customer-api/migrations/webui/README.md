@@ -30,6 +30,7 @@ Keep numeric prefixes so new migrations always sort after existing ones.
 | `017_customer_source_mappings.sql` | `gui_crm_customer_source_mapping` — per-CRM-account infrastructure source match rules (virtualization, backup, storage, S3, ITSM, etc.) | Yes |
 | `018_customer_profile_flags.sql` | `gui_crm_customer_profile_flags` — GUI-owned VIP and cache-pinned flags keyed by `crm_accountid` | Yes |
 | `019_netbox_viz_exclusion.sql` | `gui_netbox_viz_exclusion` — per-scope NetBox/Loki visualization exclusions (device role MVP) | Yes |
+| `020_seed_vmware_default_host_ghz.sql` | `gui_crm_calc_config.vmware.default_host_cpu_ghz` — fallback GHz for VM CPU allocation | Yes |
 
 ## Tracking table (`gui_schema_migrations`)
 

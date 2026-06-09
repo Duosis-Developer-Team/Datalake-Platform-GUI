@@ -17,6 +17,11 @@ from src.services import cache_service as cache
 from src.services import query_overrides as qo
 from src.utils.time_range import default_time_range, time_range_to_bounds, cache_time_ranges
 from src.utils.format_units import smart_cpu, smart_memory, smart_storage
+from shared.vmware.host_cpu_ghz import (
+    DEFAULT_HOST_CPU_GHZ,
+    aggregate_vm_allocation,
+    cached_host_map,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +62,18 @@ def _empty_compute_section() -> dict:
         "cpu_cap": 0.0, "cpu_used": 0.0, "cpu_pct": 0.0,
         "cpu_pct_max": 0.0,
         "cpu_pct_min": 0.0,
+        "cpu_util_pct": 0.0,
+        "cpu_util_pct_max": 0.0,
         "mem_cap": 0.0, "mem_used": 0.0, "mem_pct": 0.0,
         "mem_pct_max": 0.0,
         "mem_pct_min": 0.0,
+        "mem_util_pct": 0.0,
+        "mem_util_pct_max": 0.0,
         "stor_cap": 0.0, "stor_used": 0.0,
+        "stor_provisioned_gb": 0.0,
+        "stor_actual_used_gb": 0.0,
+        "cpu_alloc_ghz_vm": 0.0,
+        "mem_alloc_gb_vm": 0.0,
     }
 
 
@@ -551,6 +564,55 @@ class DatabaseService:
         """Return Hyperconverged cluster average utilization: cpu_avg_pct, mem_avg_pct."""
         return self._run_row(cursor, vq.HYPERCONV_AVG30, (dc_wc, start_ts, end_ts))
 
+    def _load_host_ghz_map(self, cursor) -> dict[str, float]:
+        def _loader():
+            return self._run_rows(cursor, vq.NETBOX_HOST_CPU_STRINGS)
+
+        return cached_host_map(_loader, default_ghz=DEFAULT_HOST_CPU_GHZ)
+
+    def _compute_vmware_vm_allocation(
+        self,
+        cursor,
+        dc_wc: str,
+        *,
+        classic_km: bool,
+        cluster_filter: list[str] | None = None,
+    ) -> dict:
+        clusters = cluster_filter or []
+        sql = vq.CLASSIC_VM_ALLOCATION_ROWS if classic_km else vq.HYPERCONV_VMWARE_VM_ALLOCATION_ROWS
+        rows = self._run_rows(cursor, sql, (dc_wc, clusters, clusters))
+        host_map = self._load_host_ghz_map(cursor)
+        return aggregate_vm_allocation(rows, host_map, default_ghz=DEFAULT_HOST_CPU_GHZ)
+
+    def get_classic_storage_vm(
+        self,
+        cursor,
+        dc_wc: str,
+        cluster_filter: list[str] | None = None,
+    ) -> dict:
+        return self._compute_vmware_vm_allocation(
+            cursor, dc_wc, classic_km=True, cluster_filter=cluster_filter
+        )
+
+    def get_hyperconv_storage_vm(
+        self,
+        cursor,
+        dc_wc: str,
+        cluster_filter: list[str] | None = None,
+    ) -> dict:
+        vmw = self._compute_vmware_vm_allocation(
+            cursor, dc_wc, classic_km=False, cluster_filter=cluster_filter
+        )
+        ntx = self._run_row(cursor, nq.NUTANIX_VM_STORAGE, (dc_wc,)) or (0.0, 0.0, 0, 0.0)
+        return {
+            "stor_provisioned_gb": round(float((vmw.get("stor_provisioned_gb") or 0) + (ntx[0] or 0)), 2),
+            "stor_actual_used_gb": round(float((vmw.get("stor_actual_used_gb") or 0) + (ntx[1] or 0)), 2),
+            "cpu_alloc_ghz_vm": round(float((vmw.get("cpu_alloc_ghz_vm") or 0) + (ntx[2] or 0)), 2),
+            "mem_alloc_gb_vm": round(float((vmw.get("mem_alloc_gb_vm") or 0) + (ntx[3] or 0)), 2),
+            "cpu_alloc_hosts_resolved": int(vmw.get("cpu_alloc_hosts_resolved") or 0),
+            "cpu_alloc_hosts_fallback_default": int(vmw.get("cpu_alloc_hosts_fallback_default") or 0),
+        }
+
     # ------------------------------------------------------------------
     # Cluster list and filtered metrics (for DC view cluster selector)
     # ------------------------------------------------------------------
@@ -615,6 +677,7 @@ class DatabaseService:
                     avg30 = self._run_row(
                         cur, vq.CLASSIC_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
                     )
+                    storage_vm = self.get_classic_storage_vm(cur, dc_wc, selected_clusters)
         except OperationalError as exc:
             logger.error("DB unavailable for get_classic_metrics_filtered(%s): %s", dc_code, exc)
             return _empty_compute_section()
@@ -631,6 +694,10 @@ class DatabaseService:
         cl_stor_used = round(float(row[7] or 0) / 1024.0, 3)
         cl_cpu_pct = round(float(avg30[0] or 0), 1)
         cl_mem_pct = round(float(avg30[1] or 0), 1)
+        if cl_cpu_pct == 0.0 and cl_cpu_cap > 0:
+            cl_cpu_pct = round(100.0 * cl_cpu_used / cl_cpu_cap, 1)
+        if cl_mem_pct == 0.0 and cl_mem_cap > 0:
+            cl_mem_pct = round(100.0 * cl_mem_used / cl_mem_cap, 1)
         cl_cpu_pct_max = round(float(avg30[2] or 0), 1)
         cl_mem_pct_max = round(float(avg30[3] or 0), 1)
         cl_cpu_pct_min = round(float(avg30[4] or 0), 1)
@@ -643,13 +710,18 @@ class DatabaseService:
             "cpu_pct": cl_cpu_pct,
             "cpu_pct_max": cl_cpu_pct_max,
             "cpu_pct_min": cl_cpu_pct_min,
+            "cpu_util_pct": cl_cpu_pct,
+            "cpu_util_pct_max": cl_cpu_pct_max,
             "mem_cap": cl_mem_cap,
             "mem_used": cl_mem_used,
             "mem_pct": cl_mem_pct,
             "mem_pct_max": cl_mem_pct_max,
             "mem_pct_min": cl_mem_pct_min,
+            "mem_util_pct": cl_mem_pct,
+            "mem_util_pct_max": cl_mem_pct_max,
             "stor_cap": cl_stor_cap,
             "stor_used": cl_stor_used,
+            **storage_vm,
         }
 
     def get_hyperconv_metrics_filtered(
@@ -675,6 +747,7 @@ class DatabaseService:
                     hc_avg30 = self._run_row(
                         cur, vq.HYPERCONV_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
                     )
+                    storage_vm = self.get_hyperconv_storage_vm(cur, dc_wc)
         except OperationalError as exc:
             logger.error("DB unavailable for get_hyperconv_metrics_filtered(%s): %s", dc_code, exc)
             return _empty_compute_section()
@@ -723,13 +796,18 @@ class DatabaseService:
             "cpu_pct": hc_cpu_pct,
             "cpu_pct_max": hc_cpu_pct_max,
             "cpu_pct_min": hc_cpu_pct_min,
+            "cpu_util_pct": hc_cpu_pct,
+            "cpu_util_pct_max": hc_cpu_pct_max if hc_cpu_pct_max > 0 else hc_cpu_pct_cap,
             "mem_cap": hc_mem_cap,
             "mem_used": hc_mem_used,
             "mem_pct": hc_mem_pct,
             "mem_pct_max": hc_mem_pct_max,
             "mem_pct_min": hc_mem_pct_min,
+            "mem_util_pct": hc_mem_pct,
+            "mem_util_pct_max": hc_mem_pct_max if hc_mem_pct_max > 0 else hc_mem_pct_cap,
             "stor_cap": hc_stor_cap,
             "stor_used": hc_stor_used,
+            **storage_vm,
         }
 
     # ------------------------------------------------------------------
@@ -774,6 +852,8 @@ class DatabaseService:
         classic_avg30=None,
         hyperconv_row=None,
         hyperconv_avg30=None,
+        classic_storage_vm=None,
+        hyperconv_storage_vm=None,
         ibm_storage_tb=None,
         dc_description: str = "",
     ) -> dict:
@@ -835,6 +915,10 @@ class DatabaseService:
         cl_mem_used = round(float(classic_row[5] or 0), 2)
         cl_cpu_pct  = round(float(classic_avg30[0] or 0), 1)
         cl_mem_pct  = round(float(classic_avg30[1] or 0), 1)
+        if cl_cpu_pct == 0.0 and cl_cpu_cap > 0:
+            cl_cpu_pct = round(100.0 * cl_cpu_used / cl_cpu_cap, 1)
+        if cl_mem_pct == 0.0 and cl_mem_cap > 0:
+            cl_mem_pct = round(100.0 * cl_mem_used / cl_mem_cap, 1)
         cl_cpu_pct_max = round(float(classic_avg30[2] or 0), 1)
         cl_mem_pct_max = round(float(classic_avg30[3] or 0), 1)
         cl_cpu_pct_min = round(float(classic_avg30[4] or 0), 1)
@@ -854,6 +938,10 @@ class DatabaseService:
         hc_mem_used = round(float(hyperconv_row[5] or 0), 2)
         hc_cpu_pct  = round(float(hyperconv_avg30[0] or 0), 1)
         hc_mem_pct  = round(float(hyperconv_avg30[1] or 0), 1)
+        if hc_cpu_pct == 0.0 and hc_cpu_cap > 0:
+            hc_cpu_pct = round(100.0 * hc_cpu_used / hc_cpu_cap, 1)
+        if hc_mem_pct == 0.0 and hc_mem_cap > 0:
+            hc_mem_pct = round(100.0 * hc_mem_used / hc_mem_cap, 1)
         hc_cpu_pct_max = round(float(hyperconv_avg30[2] or 0), 1)
         hc_mem_pct_max = round(float(hyperconv_avg30[3] or 0), 1)
         hc_cpu_pct_min = round(float(hyperconv_avg30[4] or 0), 1)
@@ -875,20 +963,30 @@ class DatabaseService:
                 "cpu_cap": cl_cpu_cap, "cpu_used": cl_cpu_used, "cpu_pct": cl_cpu_pct,
                 "cpu_pct_max": cl_cpu_pct_max,
                 "cpu_pct_min": cl_cpu_pct_min,
+                "cpu_util_pct": cl_cpu_pct,
+                "cpu_util_pct_max": cl_cpu_pct_max,
                 "mem_cap": cl_mem_cap, "mem_used": cl_mem_used, "mem_pct": cl_mem_pct,
                 "mem_pct_max": cl_mem_pct_max,
                 "mem_pct_min": cl_mem_pct_min,
+                "mem_util_pct": cl_mem_pct,
+                "mem_util_pct_max": cl_mem_pct_max,
                 "stor_cap": cl_stor_cap, "stor_used": cl_stor_used,
+                **(classic_storage_vm or {"stor_provisioned_gb": 0.0, "stor_actual_used_gb": 0.0, "cpu_alloc_ghz_vm": 0.0, "mem_alloc_gb_vm": 0.0}),
             },
             "hyperconv": {
                 "hosts": hc_hosts, "vms": hc_vms,
                 "cpu_cap": hc_cpu_cap, "cpu_used": hc_cpu_used, "cpu_pct": hc_cpu_pct,
                 "cpu_pct_max": hc_cpu_pct_max,
                 "cpu_pct_min": hc_cpu_pct_min,
+                "cpu_util_pct": hc_cpu_pct,
+                "cpu_util_pct_max": hc_cpu_pct_max,
                 "mem_cap": hc_mem_cap, "mem_used": hc_mem_used, "mem_pct": hc_mem_pct,
                 "mem_pct_max": hc_mem_pct_max,
                 "mem_pct_min": hc_mem_pct_min,
+                "mem_util_pct": hc_mem_pct,
+                "mem_util_pct_max": hc_mem_pct_max,
                 "stor_cap": hc_stor_cap, "stor_used": hc_stor_used,
+                **(hyperconv_storage_vm or {"stor_provisioned_gb": 0.0, "stor_actual_used_gb": 0.0, "cpu_alloc_ghz_vm": 0.0, "mem_alloc_gb_vm": 0.0}),
             },
             # Legacy combined Intel section — kept for home.py / datacenters.py
             # VM count uses cluster-level dedup: Classic (KM) VMs from VMware cluster_metrics
@@ -984,6 +1082,8 @@ class DatabaseService:
                         classic_avg30=self.get_classic_avg30(cur, dc_wc, start_ts, end_ts),
                         hyperconv_row=self.get_hyperconv_metrics(cur, dc_wc, start_ts, end_ts),
                         hyperconv_avg30=self.get_hyperconv_avg30(cur, dc_wc, start_ts, end_ts),
+                        classic_storage_vm=self.get_classic_storage_vm(cur, dc_wc),
+                        hyperconv_storage_vm=self.get_hyperconv_storage_vm(cur, dc_wc),
                     )
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_details(%s): %s", dc_code, exc)

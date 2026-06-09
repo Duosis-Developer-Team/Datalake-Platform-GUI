@@ -229,15 +229,21 @@ SELECT
 FROM latest_per_cluster
 """
 
-# --- Classic Compute 30-day average utilization ---
+# --- Classic Compute utilization stats (used/capacity ratio over time range) ---
 CLASSIC_AVG30 = """
 SELECT
-    COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
-    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
-    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
-    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
+    COALESCE(AVG(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_avg_pct,
+    COALESCE(AVG(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_avg_pct,
+    COALESCE(MAX(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_max_pct,
+    COALESCE(MAX(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_max_pct,
+    COALESCE(MIN(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_min_pct,
+    COALESCE(MIN(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_min_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster ILIKE '%%KM%%'
@@ -270,15 +276,21 @@ SELECT
 FROM latest_per_cluster
 """
 
-# --- Hyperconverged Compute 30-day average utilization ---
+# --- Hyperconverged Compute utilization stats (VMware non-KM clusters) ---
 HYPERCONV_AVG30 = """
 SELECT
-    COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
-    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
-    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
-    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
+    COALESCE(AVG(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_avg_pct,
+    COALESCE(AVG(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_avg_pct,
+    COALESCE(MAX(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_max_pct,
+    COALESCE(MAX(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_max_pct,
+    COALESCE(MIN(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_min_pct,
+    COALESCE(MIN(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_min_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster NOT ILIKE '%%KM%%'
@@ -362,11 +374,12 @@ FROM latest_per_cluster
 GROUP BY dc_code
 """
 
-# --- Batch 30-day average utilization for Classic ---
+# --- Batch utilization stats for Classic ---
 BATCH_CLASSIC_AVG30 = """
 WITH matched AS (
     SELECT c.datacenter, c.timestamp,
-           c.cpu_usage_avg_perc, c.memory_usage_avg_perc,
+           c.cpu_ghz_capacity, c.cpu_ghz_used,
+           c.memory_capacity_gb, c.memory_used_gb,
            u.dc_code
     FROM public.cluster_metrics c
     INNER JOIN unnest(%s::text[], %s::text[]) WITH ORDINALITY AS u(dc_code, pattern, ord)
@@ -376,21 +389,28 @@ WITH matched AS (
 )
 SELECT
     dc_code,
-    COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
-    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
-    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
-    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
+    COALESCE(AVG(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_avg_pct,
+    COALESCE(AVG(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_avg_pct,
+    COALESCE(MAX(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_max_pct,
+    COALESCE(MAX(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_max_pct,
+    COALESCE(MIN(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_min_pct,
+    COALESCE(MIN(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_min_pct
 FROM matched
 GROUP BY dc_code
 """
 
-# --- Batch 30-day average utilization for Hyperconverged ---
+# --- Batch utilization stats for Hyperconverged ---
 BATCH_HYPERCONV_AVG30 = """
 WITH matched AS (
     SELECT c.datacenter, c.timestamp,
-           c.cpu_usage_avg_perc, c.memory_usage_avg_perc,
+           c.cpu_ghz_capacity, c.cpu_ghz_used,
+           c.memory_capacity_gb, c.memory_used_gb,
            u.dc_code
     FROM public.cluster_metrics c
     INNER JOIN unnest(%s::text[], %s::text[]) WITH ORDINALITY AS u(dc_code, pattern, ord)
@@ -400,12 +420,18 @@ WITH matched AS (
 )
 SELECT
     dc_code,
-    COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
-    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
-    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
-    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
+    COALESCE(AVG(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_avg_pct,
+    COALESCE(AVG(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_avg_pct,
+    COALESCE(MAX(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_max_pct,
+    COALESCE(MAX(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_max_pct,
+    COALESCE(MIN(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_min_pct,
+    COALESCE(MIN(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_min_pct
 FROM matched
 GROUP BY dc_code
 """
@@ -461,12 +487,18 @@ FROM latest_per_cluster
 
 CLASSIC_AVG30_FILTERED = """
 SELECT
-    COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
-    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
-    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
-    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
+    COALESCE(AVG(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_avg_pct,
+    COALESCE(AVG(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_avg_pct,
+    COALESCE(MAX(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_max_pct,
+    COALESCE(MAX(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_max_pct,
+    COALESCE(MIN(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_min_pct,
+    COALESCE(MIN(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_min_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster = ANY(%s::text[])
@@ -500,12 +532,18 @@ FROM latest_per_cluster
 
 HYPERCONV_AVG30_FILTERED = """
 SELECT
-    COALESCE(AVG(cpu_usage_avg_perc), 0)    AS cpu_avg_pct,
-    COALESCE(AVG(memory_usage_avg_perc), 0) AS mem_avg_pct,
-    COALESCE(MAX(cpu_usage_avg_perc), 0)    AS cpu_max_pct,
-    COALESCE(MAX(memory_usage_avg_perc), 0) AS mem_max_pct,
-    COALESCE(MIN(cpu_usage_avg_perc), 0)    AS cpu_min_pct,
-    COALESCE(MIN(memory_usage_avg_perc), 0) AS mem_min_pct
+    COALESCE(AVG(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_avg_pct,
+    COALESCE(AVG(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_avg_pct,
+    COALESCE(MAX(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_max_pct,
+    COALESCE(MAX(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_max_pct,
+    COALESCE(MIN(CASE WHEN cpu_ghz_capacity > 0
+        THEN 100.0 * cpu_ghz_used / cpu_ghz_capacity END), 0)    AS cpu_min_pct,
+    COALESCE(MIN(CASE WHEN memory_capacity_gb > 0
+        THEN 100.0 * memory_used_gb / memory_capacity_gb END), 0) AS mem_min_pct
 FROM public.cluster_metrics
 WHERE datacenter ILIKE %s
   AND cluster = ANY(%s::text[])
@@ -553,5 +591,71 @@ SELECT
     COALESCE(SUM(used_space_gb), 0)                     AS used_gb,
     COALESCE(SUM(total_cpu_capacity_mhz / 1000.0), 0)   AS cpu_alloc_ghz,
     COALESCE(SUM(total_memory_capacity_gb), 0)          AS mem_alloc_gb
+FROM latest
+"""
+
+# =============================================================================
+# NetBox host CPU strings + VM allocation rows (Python-side GHz conversion)
+# =============================================================================
+
+NETBOX_HOST_CPU_STRINGS = """
+SELECT DISTINCT ON (name)
+    name,
+    custom_fields->'CPU'->>0 AS cpu_cf,
+    cpu AS cpu_col
+FROM public.discovery_netbox_inventory_device
+WHERE status_value = 'active'
+ORDER BY name, collection_time DESC NULLS LAST
+"""
+
+# Params: (dc_pattern, cluster_filter[], cluster_filter[])
+# Empty cluster_filter[] = all clusters in scope.
+CLASSIC_VM_ALLOCATION_ROWS = """
+WITH latest AS (
+    SELECT DISTINCT ON (vmname)
+        vmhost,
+        number_of_cpus,
+        total_memory_capacity_gb,
+        provisioned_space_gb,
+        used_space_gb
+    FROM public.vm_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster ILIKE '%%KM%%'
+      AND LEFT(vmname, 1) <> '_'
+      AND timestamp >= NOW() - INTERVAL '24 hours'
+      AND (cardinality(%s::text[]) = 0 OR cluster = ANY(%s::text[]))
+    ORDER BY vmname, timestamp DESC
+)
+SELECT
+    vmhost,
+    COALESCE(number_of_cpus, 0),
+    COALESCE(total_memory_capacity_gb, 0),
+    COALESCE(provisioned_space_gb, 0),
+    COALESCE(used_space_gb, 0)
+FROM latest
+"""
+
+HYPERCONV_VMWARE_VM_ALLOCATION_ROWS = """
+WITH latest AS (
+    SELECT DISTINCT ON (vmname)
+        vmhost,
+        number_of_cpus,
+        total_memory_capacity_gb,
+        provisioned_space_gb,
+        used_space_gb
+    FROM public.vm_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster NOT ILIKE '%%KM%%'
+      AND LEFT(vmname, 1) <> '_'
+      AND timestamp >= NOW() - INTERVAL '24 hours'
+      AND (cardinality(%s::text[]) = 0 OR cluster = ANY(%s::text[]))
+    ORDER BY vmname, timestamp DESC
+)
+SELECT
+    vmhost,
+    COALESCE(number_of_cpus, 0),
+    COALESCE(total_memory_capacity_gb, 0),
+    COALESCE(provisioned_space_gb, 0),
+    COALESCE(used_space_gb, 0)
 FROM latest
 """

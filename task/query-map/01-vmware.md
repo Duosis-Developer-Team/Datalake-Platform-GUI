@@ -569,20 +569,35 @@ Tüm normalize işlemleri `dc_service.py` içindeki `_aggregate_dc` (ve filtreli
 
 ### Utilization yüzdesi
 
-Birincil kaynak AVG30 sorgularıdır (`cpu_avg_pct`, `mem_avg_pct`). AVG30 sıfır ama kapasite > 0 ise capacity tabanlı yedek hesaplanır:
+**2026-06 güncellemesi:** `cpu_usage_*_perc` / `memory_usage_*_perc` kolonları kullanılmaz. `CLASSIC_AVG30` / `HYPERCONV_AVG30` (ve batch/filtered karşılıkları) zaman aralığında **used/capacity** oranının AVG/MAX/MIN değerlerini döner:
+
+```sql
+100.0 * cpu_ghz_used / cpu_ghz_capacity
+100.0 * memory_used_gb / memory_capacity_gb
+```
+
+`cluster_metrics.*_used` alanları **utilization** (anlık kullanım) anlamına gelir; allocation değildir.
+
+AVG30 sıfır ama kapasite > 0 ise anlık snapshot yedek hesabı:
 
 ```python
 if cl_cpu_pct == 0.0 and cl_cpu_cap > 0:
     cl_cpu_pct = round(100.0 * cl_cpu_used / cl_cpu_cap, 1)
-if cl_mem_pct == 0.0 and cl_mem_cap > 0:
-    cl_mem_pct = round(100.0 * cl_mem_used / cl_mem_cap, 1)
 ```
 
-`_normalize_avg30_row` 6/4/2 sütunlu satırları güvenli biçimde `(cpu_avg, mem_avg, cpu_max, mem_max, cpu_min, mem_min)` altılısına çevirir (eski 4/2 sütunlu satırlarda min ≈ avg yaklaşımı).
+### VM-level allocation (vm_metrics + NetBox)
 
-### VM-level allocation (vm_metrics)
+`get_classic_storage_vm` / `get_hyperconv_storage_vm` artık `CLASSIC_VM_ALLOCATION_ROWS` / `HYPERCONV_VMWARE_VM_ALLOCATION_ROWS` ile VM snapshot'larını çeker; CPU allocation Python'da hesaplanır:
 
-`get_classic_storage_vm` / `get_hyperconv_storage_vm` `CLASSIC_STORAGE_VM` / `HYPERCONV_VMWARE_STORAGE_VM` satırını `round(..., 2)` ile şu sözlüğe map'ler: `stor_provisioned_gb`, `stor_actual_used_gb`, `cpu_alloc_ghz_vm`, `mem_alloc_gb_vm`. Bu değerler "sellable potential" hesabında girdi olur (bkz. [05-sellable-potential.md](05-sellable-potential.md)). Her compute bölümünde ayrıca `unit_prices` (CRM TL fiyatları) ve `sellable_multiplier = 3.3` taşınır.
+```
+cpu_alloc_ghz_vm = SUM(number_of_cpus × host_ghz_per_core)
+```
+
+`host_ghz_per_core` → `discovery_netbox_inventory_device.custom_fields['CPU']` regex (`@ 2.50GHz`); eşleşme `vm_metrics.vmhost = netbox.name`. Eksik host'ta `gui_crm_calc_config.vmware.default_host_cpu_ghz` (UI default, seed **2.0**).
+
+RAM allocation: `SUM(total_memory_capacity_gb)`. Storage: `SUM(provisioned_space_gb)`.
+
+Redis / sellable allocated alanları: `cpu_alloc_ghz_vm`, `mem_alloc_gb_vm`, `stor_provisioned_gb`.
 
 ---
 

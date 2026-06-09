@@ -18,6 +18,7 @@ from src.utils.format_units import (
     smart_cpu,
     format_power_capacity_count,
     pct_float,
+    alloc_pct_float,
     title_case,
     parse_storage_string,
 )
@@ -609,12 +610,12 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     vms      = compute.get("vms", 0)
     cpu_cap  = compute.get("cpu_cap", 0.0)
     cpu_used = compute.get("cpu_used", 0.0)
-    cpu_pct  = compute.get("cpu_pct", pct_float(cpu_used, cpu_cap))
+    cpu_pct  = float(compute.get("cpu_util_pct") or compute.get("cpu_pct") or pct_float(cpu_used, cpu_cap))
     mem_cap  = compute.get("mem_cap", 0.0)
     mem_used = compute.get("mem_used", 0.0)
-    mem_pct  = compute.get("mem_pct", pct_float(mem_used, mem_cap))
-    cpu_pct_max = float(compute.get("cpu_pct_max") or 0)
-    mem_pct_max = float(compute.get("mem_pct_max") or 0)
+    mem_pct  = float(compute.get("mem_util_pct") or compute.get("mem_pct") or pct_float(mem_used, mem_cap))
+    cpu_pct_max = float(compute.get("cpu_util_pct_max") or compute.get("cpu_pct_max") or 0)
+    mem_pct_max = float(compute.get("mem_util_pct_max") or compute.get("mem_pct_max") or 0)
     stor_cap  = compute.get("stor_cap", 0.0)
     stor_used = compute.get("stor_used", 0.0)
     stor_pct  = pct_float(stor_used, stor_cap)
@@ -623,18 +624,16 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     stor_cap_gb  = stor_cap  * 1024
     stor_used_gb = stor_used * 1024
 
-    # Allocation values — cluster_metrics.*_used is the allocated value in this schema.
-    cpu_alloc_pct = pct_float(cpu_used, cpu_cap)
-    mem_alloc_pct = pct_float(mem_used, mem_cap)
-    stor_alloc_pct = pct_float(stor_used, stor_cap)
+    cpu_alloc_ghz = float(compute.get("cpu_alloc_ghz_vm", 0) or 0)
+    mem_alloc_gb  = float(compute.get("mem_alloc_gb_vm", 0) or 0)
+    cpu_alloc_pct = alloc_pct_float(cpu_alloc_ghz, cpu_cap)
+    mem_alloc_pct = alloc_pct_float(mem_alloc_gb, mem_cap)
 
     # VM-level storage breakdown.
-    # Utilization always uses cluster-level stor_used (reliable).
-    # Allocation uses VM-level provisioned (thin-provision sum) when available.
     stor_provisioned_gb = float(compute.get("stor_provisioned_gb", 0) or 0)
     stor_actual_used_gb = float(compute.get("stor_actual_used_gb", 0) or 0)
-    stor_util_pct  = stor_pct  # cluster-level cap-used/cap
-    stor_alloc_vm_pct = pct_float(stor_provisioned_gb, stor_cap_gb) if stor_provisioned_gb > 0 else stor_alloc_pct
+    stor_util_pct  = stor_pct
+    stor_alloc_vm_pct = alloc_pct_float(stor_provisioned_gb, stor_cap_gb) if stor_provisioned_gb > 0 else pct_float(stor_used, stor_cap)
 
     # Potential Sellable revenue (CRM TL prices × physical capacity).
     # Klasik/Hyperconv: cpu_cap (GHz) zaten overcommit'li sellable kapasiteyi temsil ediyor —
@@ -669,14 +668,22 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     ])
     alloc_grid = _dynamic_chart_grid([
         (_has_value(cpu_cap), _gauge_wrap(
-            create_premium_gauge_chart(cpu_alloc_pct, "", color="#4318FF"),
+            create_premium_gauge_chart(min(cpu_alloc_pct, 100), "", color="#4318FF"),
             "CPU Allocation",
-            subtitle=f"{smart_cpu(cpu_used)} / {smart_cpu(cpu_cap)}" if cpu_cap > 0 else "",
+            subtitle=(
+                f"{smart_cpu(cpu_alloc_ghz)} / {smart_cpu(cpu_cap)}"
+                + (f" ({cpu_alloc_pct:.0f}%)" if cpu_alloc_pct > 100 else "")
+                if cpu_cap > 0 else ""
+            ),
         )),
         (_has_value(mem_cap), _gauge_wrap(
-            create_premium_gauge_chart(mem_alloc_pct, "", color="#05CD99"),
+            create_premium_gauge_chart(min(mem_alloc_pct, 100), "", color="#05CD99"),
             "RAM Allocation",
-            subtitle=f"{smart_memory(mem_used)} / {smart_memory(mem_cap)}" if mem_cap > 0 else "",
+            subtitle=(
+                f"{smart_memory(mem_alloc_gb)} / {smart_memory(mem_cap)}"
+                + (f" ({mem_alloc_pct:.0f}%)" if mem_alloc_pct > 100 else "")
+                if mem_cap > 0 else ""
+            ),
         )),
         (_has_value(stor_cap), _gauge_wrap(
             create_premium_gauge_chart(min(stor_alloc_vm_pct, 100), "", color="#FFB547"),
@@ -735,10 +742,12 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
                 className="nexus-card",
                 style={"padding": "20px"},
                 children=[
-                    _section_title("Capacity Planning", "Host-level resources vs. allocated to workloads"),
+                    _section_title("Capacity Planning", "Physical capacity vs. utilization and VM allocation"),
                     html.Div(style={"marginTop": "12px"}, children=[
                         _capacity_metric_row("CPU", cpu_cap, cpu_used, cpu_pct, smart_cpu, potential_tl=cpu_potential_tl),
+                        _capacity_metric_row("CPU allocated", cpu_cap, cpu_alloc_ghz, min(cpu_alloc_pct, 100), smart_cpu),
                         _capacity_metric_row("Memory", mem_cap, mem_used, mem_pct, smart_memory, potential_tl=ram_potential_tl),
+                        _capacity_metric_row("Memory allocated", mem_cap, mem_alloc_gb, min(mem_alloc_pct, 100), smart_memory),
                         _capacity_metric_row("Storage", stor_cap_gb, stor_used_gb, stor_pct, smart_storage, potential_tl=storage_potential_tl),
                     ]),
                 ],

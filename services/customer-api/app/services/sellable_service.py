@@ -99,14 +99,14 @@ _VM_TABLE_GLOBAL_SECTION: dict[str, str] = {
 # Maps allocated_column (as configured in gui_panel_infra_source) → Redis field.
 # Values are the exact field names present in the dc_details and global_dashboard JSON.
 _VM_COLUMN_TO_REDIS_FIELD: dict[str, str] = {
-    # vm_metrics — classic KM VMware
-    "number_of_cpus":          "cpu_used",
-    "total_memory_capacity_gb": "mem_used",
-    "provisioned_space_gb":    "stor_used",
+    # vm_metrics — classic KM VMware (allocated = VM sum via NetBox GHz resolver)
+    "number_of_cpus":          "cpu_alloc_ghz_vm",
+    "total_memory_capacity_gb": "mem_alloc_gb_vm",
+    "provisioned_space_gb":    "stor_provisioned_gb",
     # nutanix_vm_metrics — hyperconverged Nutanix
-    "cpu_count":               "cpu_used",
-    "memory_capacity":         "mem_used",
-    "disk_capacity":           "stor_used",
+    "cpu_count":               "cpu_alloc_ghz_vm",
+    "memory_capacity":         "mem_alloc_gb_vm",
+    "disk_capacity":           "stor_provisioned_gb",
 }
 
 # Maps (bare_source_table, total_column) → (dc_details section, redis field).
@@ -179,9 +179,9 @@ _FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
 
 # Maps resource_kind → (capacity_field, used_field, source_unit) in the compute response.
 _RESOURCE_KIND_TO_COMPUTE_FIELDS: dict[str, tuple[str, str, str]] = {
-    "cpu":     ("cpu_cap",  "cpu_used",  "GHz"),
-    "ram":     ("mem_cap",  "mem_used",  "GB"),
-    "storage": ("stor_cap", "stor_used", "TB"),
+    "cpu":     ("cpu_cap",  "cpu_alloc_ghz_vm",  "GHz"),
+    "ram":     ("mem_cap",  "mem_alloc_gb_vm",  "GB"),
+    "storage": ("stor_cap", "stor_provisioned_gb", "TB"),
 }
 
 from app.db.queries import sellable as sq
@@ -1151,6 +1151,8 @@ SELECT _tot, _used FROM latest
         try:
             cap = float(raw.get(cap_field) or 0.0)
             used = float(raw.get(used_field) or 0.0)
+            if resource_kind == "storage" and used_field == "stor_provisioned_gb":
+                used = used / 1024.0
         except (TypeError, ValueError):
             return None
         return cap, used, source_unit
@@ -1204,12 +1206,7 @@ SELECT _tot, _used FROM latest
             return None
         if not isinstance(data, dict):
             return None
-        try:
-            cap = float(data.get(cap_field) or 0.0)
-            used = float(data.get(used_field) or 0.0)
-        except (TypeError, ValueError):
-            return None
-        return cap, used, source_unit
+        return self._extract_compute_metrics(data, resource_kind)
 
     # ------------------------------------------------------------------ compute
 
