@@ -659,3 +659,57 @@ SELECT
     COALESCE(used_space_gb, 0)
 FROM latest
 """
+
+# =============================================================================
+# Host-level compute rows (vmhost_metrics) — per-host capacity/usage for the
+# DC view Hosts panel and the host-based sellable computation (ADR: host-based
+# CRM calculation). Latest snapshot per host within the time range.
+# Params: (dc_pattern, cluster_filter[], cluster_filter[], start_ts, end_ts)
+# Empty cluster_filter[] = all KM clusters in scope.
+# =============================================================================
+
+CLASSIC_HOST_ROWS = """
+SELECT DISTINCT ON (vmhost)
+    vmhost,
+    cluster,
+    COALESCE(cpu_ghz_capacity, 0)   AS cpu_cap_ghz,
+    COALESCE(cpu_ghz_used, 0)       AS cpu_used_ghz,
+    COALESCE(memory_capacity_gb, 0) AS mem_cap_gb,
+    COALESCE(memory_used_gb, 0)     AS mem_used_gb
+FROM public.vmhost_metrics
+WHERE datacenter ILIKE %s
+  AND cluster ILIKE '%%KM%%'
+  AND (cardinality(%s::text[]) = 0 OR cluster = ANY(%s::text[]))
+  AND "timestamp" BETWEEN %s AND %s
+ORDER BY vmhost, "timestamp" DESC
+"""
+
+# Per-host VM allocation aggregate (vCPU / RAM / storage provisioned by VMs on
+# each host). Sales CPU rule: 1 vCPU = 1 GHz (applied in Python).
+# Params: (dc_pattern, cluster_filter[], cluster_filter[])
+CLASSIC_HOST_VM_ALLOCATION = """
+WITH latest AS (
+    SELECT DISTINCT ON (vmname)
+        vmhost,
+        number_of_cpus,
+        total_memory_capacity_gb,
+        provisioned_space_gb,
+        used_space_gb
+    FROM public.vm_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster ILIKE '%%KM%%'
+      AND LEFT(vmname, 1) <> '_'
+      AND timestamp >= NOW() - INTERVAL '24 hours'
+      AND (cardinality(%s::text[]) = 0 OR cluster = ANY(%s::text[]))
+    ORDER BY vmname, timestamp DESC
+)
+SELECT
+    vmhost,
+    COUNT(*)                                    AS vm_count,
+    COALESCE(SUM(number_of_cpus), 0)            AS vcpu_total,
+    COALESCE(SUM(total_memory_capacity_gb), 0)  AS mem_alloc_gb,
+    COALESCE(SUM(provisioned_space_gb), 0)      AS stor_provisioned_gb,
+    COALESCE(SUM(used_space_gb), 0)             AS stor_used_gb
+FROM latest
+GROUP BY vmhost
+"""

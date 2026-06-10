@@ -78,6 +78,12 @@ class PanelResult:
     has_infra_source: bool = False
     has_price: bool = False
     notes: list[str] = field(default_factory=list)
+    # Architecture-aware storage range (IBM capacity shared by KM + Power).
+    # None means "no range — single value" (sellable_constrained applies).
+    sellable_min: float | None = None
+    sellable_max: float | None = None
+    potential_tl_min: float | None = None
+    potential_tl_max: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

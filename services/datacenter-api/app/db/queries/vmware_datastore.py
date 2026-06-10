@@ -11,6 +11,10 @@
 # KM-only: classic (Klasik Mimari) datastores only — `datacenter_name ILIKE '%KM%'`.
 # Hyperconverged (Nutanix) datastore data is sourced from Nutanix directly and shown
 # elsewhere, so it is excluded here.
+# Backup-only datastores (name containing NBU or Veeam) are excluded from
+# visualization and sellable computations.
+# Backing classification (service layer): datastore_name containing 'IBM' =
+# IBM-backed storage (capacity shared with the Power architecture), else Intel.
 # The mount/inventory tables have no datacenter column, so they are scoped via the
 # set of datastore_moid values that belong to the DC in the metrics table.
 #
@@ -40,6 +44,8 @@ SELECT DISTINCT ON (datastore_moid)
 FROM public.raw_vmware_datastore_metrics_agg
 WHERE datacenter_name ILIKE ('%%' || %s || '%%')
   AND datacenter_name ILIKE '%%KM%%'
+  AND datastore_name NOT ILIKE '%%NBU%%'
+  AND datastore_name NOT ILIKE '%%veeam%%'
   AND collection_timestamp::timestamptz BETWEEN %s AND %s
 ORDER BY datastore_moid, collection_timestamp::timestamptz DESC
 """
@@ -63,6 +69,8 @@ WHERE hm.collection_timestamp::timestamptz BETWEEN %s AND %s
       FROM public.raw_vmware_datastore_metrics_agg
       WHERE datacenter_name ILIKE ('%%' || %s || '%%')
         AND datacenter_name ILIKE '%%KM%%'
+        AND datastore_name NOT ILIKE '%%NBU%%'
+        AND datastore_name NOT ILIKE '%%veeam%%'
         AND collection_timestamp::timestamptz BETWEEN %s AND %s
   )
 ORDER BY hm.datastore_moid, hm.host_moid, hm.collection_timestamp::timestamptz DESC

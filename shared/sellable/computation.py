@@ -140,3 +140,117 @@ def constrain_by_ratio(
 def compute_potential_tl(sellable_constrained: float, unit_price_tl: float) -> float:
     """Final monetary projection. Negative inputs collapse to 0."""
     return max(sellable_constrained, 0.0) * max(unit_price_tl, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Host-based computation (ADR: host-based CRM calculation)
+#
+# A VM is provisioned on a single host, so sellable capacity must respect
+# per-host fragmentation: a DC with 10 hosts each having 1 free unit cannot
+# host a 10-unit VM. Each host is evaluated on its own (CPU + RAM coupled by
+# the family ratio); the family unit count is the SUM of per-host unit counts.
+# Storage is intentionally excluded from the per-host min() — it is computed
+# separately per architecture (KM datastores vs HCI/Power own storage).
+# ---------------------------------------------------------------------------
+
+
+def host_effective_units(
+    hosts: "Iterable[dict]",
+    ratio: ResourceRatio,
+    *,
+    cpu_threshold_pct: float = 100.0,
+    ram_threshold_pct: float = 100.0,
+) -> float:
+    """Sum of per-host effective unit counts.
+
+    Each host dict must carry ``cpu_total``/``cpu_alloc`` and ``ram_total``/
+    ``ram_alloc`` in the SAME units as the family ratio (display units).
+    Per host: ``n_h = min(sellable_cpu_h / ratio.cpu, sellable_ram_h / ratio.ram)``
+    where ``sellable_*_h = max(total * threshold% - allocated, 0)``.
+    """
+    if ratio.cpu_per_unit <= 0 or ratio.ram_gb_per_unit <= 0:
+        return 0.0
+    n_total = 0.0
+    for h in hosts:
+        raw_cpu = apply_threshold(
+            float(h.get("cpu_total") or 0.0),
+            float(h.get("cpu_alloc") or 0.0),
+            cpu_threshold_pct,
+        )
+        raw_ram = apply_threshold(
+            float(h.get("ram_total") or 0.0),
+            float(h.get("ram_alloc") or 0.0),
+            ram_threshold_pct,
+        )
+        n_total += min(raw_cpu / ratio.cpu_per_unit, raw_ram / ratio.ram_gb_per_unit)
+    return n_total
+
+
+def constrain_by_ratio_per_host(
+    panels: Iterable[PanelResult],
+    ratio: ResourceRatio,
+    hosts: "list[dict]",
+    *,
+    cpu_threshold_pct: float = 100.0,
+    ram_threshold_pct: float = 100.0,
+) -> list[PanelResult]:
+    """Host-based variant of :func:`constrain_by_ratio` for CPU/RAM panels.
+
+    ``n = host_effective_units(...)`` is computed across the host list, then
+    ``sellable_constrained_cpu = n * ratio.cpu_per_unit`` and
+    ``sellable_constrained_ram = n * ratio.ram_gb_per_unit``.
+
+    Storage and 'other' panels pass through unchanged (``sellable_constrained
+    == sellable_raw``, ``ratio_bound = False``) — the architecture-aware
+    storage range model fills their values separately.
+    """
+    panel_list = list(panels)
+    n = host_effective_units(
+        hosts,
+        ratio,
+        cpu_threshold_pct=cpu_threshold_pct,
+        ram_threshold_pct=ram_threshold_pct,
+    )
+
+    out: list[PanelResult] = []
+    for p in panel_list:
+        if p.resource_kind == "cpu":
+            constrained = n * ratio.cpu_per_unit
+        elif p.resource_kind == "ram":
+            constrained = n * ratio.ram_gb_per_unit
+        else:
+            out.append(replace(p, sellable_constrained=p.sellable_raw, ratio_bound=False))
+            continue
+        ratio_bound = constrained + 1e-6 < p.sellable_raw
+        out.append(replace(p, sellable_constrained=constrained, ratio_bound=ratio_bound))
+    return out
+
+
+def compute_storage_range(
+    *,
+    intel_free: float,
+    ibm_backed_datastore_free: float,
+    ibm_storage_free: float,
+) -> dict[str, float]:
+    """Architecture-aware sellable storage range (KM vs IBM Power).
+
+    IBM storage free space can be sold either as KM datastores or as native
+    Power storage, so both families get a [min, max] range instead of a single
+    number:
+
+      KM    min = intel_free
+      KM    max = intel_free + ibm_backed_datastore_free
+      Power min = max(ibm_storage_free - ibm_backed_datastore_free, 0)
+      Power max = ibm_storage_free
+
+    All inputs must be pre-thresholded free capacities in the same unit.
+    """
+    intel_free = max(intel_free, 0.0)
+    ibm_ds_free = max(ibm_backed_datastore_free, 0.0)
+    ibm_free = max(ibm_storage_free, 0.0)
+    return {
+        "km_min": intel_free,
+        "km_max": intel_free + ibm_ds_free,
+        "power_min": max(ibm_free - ibm_ds_free, 0.0),
+        "power_max": ibm_free,
+    }

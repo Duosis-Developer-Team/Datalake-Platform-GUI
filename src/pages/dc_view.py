@@ -1626,17 +1626,21 @@ def _build_sellable_inline_kpi(
         "cpu":     {
             "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "vCPU",
             "total": 0.0, "allocated": 0.0, "threshold_pct": 80.0,
+            "min": 0.0, "max": 0.0, "tl_min": 0.0, "tl_max": 0.0, "has_range": 0.0,
         },
         "ram":     {
             "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB",
             "total": 0.0, "allocated": 0.0, "threshold_pct": 80.0,
+            "min": 0.0, "max": 0.0, "tl_min": 0.0, "tl_max": 0.0, "has_range": 0.0,
         },
         "storage": {
             "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB",
             "total": 0.0, "allocated": 0.0, "threshold_pct": 85.0,
+            "min": 0.0, "max": 0.0, "tl_min": 0.0, "tl_max": 0.0, "has_range": 0.0,
         },
     }
     total_tl = 0.0
+    total_tl_max = 0.0
     has_data = False
     for p in panels:
         if not isinstance(p, dict):
@@ -1644,19 +1648,40 @@ def _build_sellable_inline_kpi(
         kind = (p.get("resource_kind") or "other").lower()
         if kind not in by_kind:
             total_tl += float(p.get("potential_tl") or 0.0)
+            total_tl_max += float(
+                p.get("potential_tl_max") if p.get("potential_tl_max") is not None else (p.get("potential_tl") or 0.0)
+            )
             continue
-        by_kind[kind]["constrained"] += float(p.get("sellable_constrained") or 0.0)
+        constrained = float(p.get("sellable_constrained") or 0.0)
+        tl = float(p.get("potential_tl") or 0.0)
+        by_kind[kind]["constrained"] += constrained
         by_kind[kind]["raw"]         += float(p.get("sellable_raw") or 0.0)
-        by_kind[kind]["tl"]          += float(p.get("potential_tl") or 0.0)
+        by_kind[kind]["tl"]          += tl
         by_kind[kind]["total"]       += float(p.get("total") or 0.0)
         by_kind[kind]["allocated"]   += float(p.get("allocated") or 0.0)
+        # Architecture-aware storage range (IBM capacity shared by KM + Power).
+        s_min = p.get("sellable_min")
+        s_max = p.get("sellable_max")
+        if s_min is not None and s_max is not None:
+            by_kind[kind]["min"] += float(s_min)
+            by_kind[kind]["max"] += float(s_max)
+            by_kind[kind]["tl_min"] += float(p.get("potential_tl_min") or 0.0)
+            by_kind[kind]["tl_max"] += float(p.get("potential_tl_max") or 0.0)
+            by_kind[kind]["has_range"] = 1.0
+            total_tl_max += float(p.get("potential_tl_max") or tl)
+        else:
+            by_kind[kind]["min"] += constrained
+            by_kind[kind]["max"] += constrained
+            by_kind[kind]["tl_min"] += tl
+            by_kind[kind]["tl_max"] += tl
+            total_tl_max += tl
         thresh = p.get("threshold_pct")
         if thresh is not None:
             by_kind[kind]["threshold_pct"] = float(thresh)
         unit = p.get("display_unit")
         if unit:
             by_kind[kind]["unit"] = unit
-        total_tl += float(p.get("potential_tl") or 0.0)
+        total_tl += tl
         has_data = True
 
     if not has_data and total_tl <= 0:
@@ -1726,6 +1751,31 @@ def _build_sellable_inline_kpi(
     stor_short, stor_full = _fmt_tl_short(stor["tl"])
     total_short, total_full = _fmt_tl_short(total_tl)
 
+    # Storage range display: "X – Y" when IBM-shared capacity yields a range.
+    stor_has_range = bool(stor.get("has_range")) and stor["max"] > stor["min"] + 1e-6
+    if stor_has_range:
+        stor_value = f"{stor['min']:,.0f} – {stor['max']:,.0f} {stor['unit']}"
+        stor_tl_min_short, _ = _fmt_tl_short(stor["tl_min"])
+        stor_tl_max_short, _ = _fmt_tl_short(stor["tl_max"])
+        stor_short = f"{stor_tl_min_short} – {stor_tl_max_short}"
+        stor_full = (
+            "IBM storage alanı hem KM datastore hem Power olarak satılabildiğinden aralık verilir. "
+            f"Min (garanti): {stor['min']:,.0f} {stor['unit']} · Max (paylaşımlı dahil): {stor['max']:,.0f} {stor['unit']}"
+        )
+    else:
+        stor_value = _fmt_unit(stor["constrained"], stor["unit"])
+
+    total_has_range = total_tl_max > total_tl + 1e-6
+    if total_has_range:
+        total_max_short, total_max_full = _fmt_tl_short(total_tl_max)
+        total_value = f"{total_short} – {total_max_short}"
+        total_tooltip = (
+            f"Min (garanti): {total_full} · Max (paylaşımlı IBM kapasitesi dahil): {total_max_full}"
+        )
+    else:
+        total_value = total_short
+        total_tooltip = total_full or "constrained × catalog price"
+
     cards = [
         _kpi_with_sub(
             "CPU Sellable",
@@ -1743,22 +1793,31 @@ def _build_sellable_inline_kpi(
         ),
         _kpi_with_sub(
             "Storage Sellable",
-            _fmt_unit(stor["constrained"], stor["unit"]),
+            stor_value,
             stor_short,
             stor_full,
             _DC_ICONS["storage"],
         ),
         _kpi_with_sub(
             "Total Potential",
-            total_short,
+            total_value,
             "× catalog price",
-            total_full or "constrained × catalog price",
+            total_tooltip,
             "solar:wallet-money-bold-duotone",
             c="grape",
         ),
     ]
 
     sub_lines: list = []
+    if stor_has_range:
+        sub_lines.append(
+            dmc.Badge(
+                "Storage aralığı: IBM kapasitesi KM + Power arasında paylaşımlı",
+                color="blue",
+                variant="light",
+                size="sm",
+            )
+        )
     for kind_label, k in (("CPU", cpu), ("RAM", ram), ("Storage", stor)):
         if k["raw"] > 0 and k["constrained"] < k["raw"] - 1e-6:
             sub_lines.append(
@@ -3054,6 +3113,189 @@ def _ds_type_badge(ds_type: str | None):
     return dmc.Badge(ds_type or "—", color=color, variant="outline", size="sm", radius="sm")
 
 
+def _ds_backing_badge(backing: str | None):
+    """IBM-backed vs Intel-backed datastore badge (storage range model)."""
+    b = (backing or "").strip().lower()
+    if b == "ibm":
+        return dmc.Badge("IBM", color="blue", variant="filled", size="sm", radius="sm")
+    return dmc.Badge("INTEL", color="cyan", variant="light", size="sm", radius="sm")
+
+
+# ---------------------------------------------------------------------------
+# Hosts panel (Klasik / Hyperconverged) — host-based capacity & usage detail.
+# Collapsible section at the bottom of the virtualization tabs; content is
+# filled by cluster-selector-aware callbacks (see app.py).
+# ---------------------------------------------------------------------------
+
+
+def _host_metric_row(
+    label: str,
+    used: float,
+    cap: float,
+    unit: str,
+    alloc: float | None = None,
+    alloc_pct: float | None = None,
+):
+    """Single resource row inside a host card: % + numeric capacity-usage."""
+    pct = (100.0 * used / cap) if cap > 0 else 0.0
+    _, solid = _ds_usage_palette(pct)
+    children = [
+        html.Div(
+            style={"display": "flex", "justifyContent": "space-between", "alignItems": "baseline", "marginBottom": "4px"},
+            children=[
+                html.Span(
+                    label,
+                    style={"fontSize": "0.72rem", "fontWeight": 700, "color": "#A3AED0",
+                           "textTransform": "uppercase", "letterSpacing": "0.04em", "fontFamily": "DM Sans"},
+                ),
+                html.Span(
+                    children=[
+                        html.Span(f"%{pct:.1f}", style={"fontWeight": 800, "color": solid, "marginRight": "6px"}),
+                        html.Span(f"{used:,.1f} / {cap:,.1f} {unit}", style={"color": "#2B3674", "fontWeight": 600}),
+                    ],
+                    style={"fontSize": "0.78rem", "fontFamily": "DM Sans", "whiteSpace": "nowrap"},
+                ),
+            ],
+        ),
+        _ds_usage_bar(pct, height="10px", show_label=False),
+    ]
+    if alloc is not None:
+        children.append(
+            html.Div(
+                f"Tahsis (satış): {alloc:,.1f} {unit}" + (f" · %{alloc_pct:.1f}" if alloc_pct is not None else ""),
+                style={"fontSize": "0.7rem", "color": "#A3AED0", "marginTop": "3px", "fontFamily": "DM Sans"},
+            )
+        )
+    return html.Div(style={"marginBottom": "10px"}, children=children)
+
+
+def _host_card(h: dict, color: str = "blue"):
+    """Single host card: cluster badge + VM count + CPU/RAM(/Disk) bars."""
+    host_name = h.get("host") or "Unknown"
+    rows = [
+        _host_metric_row(
+            "CPU",
+            float(h.get("cpu_used_ghz") or 0), float(h.get("cpu_cap_ghz") or 0), "GHz",
+            alloc=float(h.get("cpu_alloc_ghz") or 0), alloc_pct=float(h.get("cpu_alloc_pct") or 0),
+        ),
+        _host_metric_row(
+            "Memory",
+            float(h.get("mem_used_gb") or 0), float(h.get("mem_cap_gb") or 0), "GB",
+            alloc=float(h.get("mem_alloc_gb") or 0), alloc_pct=float(h.get("mem_alloc_pct") or 0),
+        ),
+    ]
+    # HCI hosts expose their own per-host storage (Nutanix); show when present.
+    if float(h.get("stor_cap_gb") or 0) > 0:
+        rows.append(
+            _host_metric_row(
+                "Disk",
+                float(h.get("stor_used_host_gb") or 0) / 1024.0,
+                float(h.get("stor_cap_gb") or 0) / 1024.0,
+                "TB",
+            )
+        )
+    return html.Div(
+        className="nexus-card",
+        style={
+            "padding": "16px",
+            "background": "#FBFCFE",
+            "border": "1px solid #E6EBF5",
+            "boxShadow": "none",
+        },
+        children=[
+            html.Div(
+                style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
+                       "marginBottom": "12px", "gap": "8px"},
+                children=[
+                    html.Span(
+                        host_name,
+                        title=host_name,
+                        style={"fontWeight": 800, "color": "#2B3674", "fontSize": "0.9rem",
+                               "fontFamily": "DM Sans", "overflow": "hidden",
+                               "textOverflow": "ellipsis", "whiteSpace": "nowrap", "minWidth": 0},
+                    ),
+                    html.Div(
+                        style={"display": "flex", "gap": "6px", "flexShrink": 0},
+                        children=[
+                            dmc.Badge(h.get("cluster") or "—", color=color, variant="light", size="sm", radius="sm"),
+                            dmc.Badge(f"{int(h.get('vm_count') or 0)} VM", color="gray", variant="outline", size="sm", radius="sm"),
+                        ],
+                    ),
+                ],
+            ),
+            *rows,
+        ],
+    )
+
+
+def _build_hosts_panel_content(hosts_data: dict, color: str = "blue"):
+    """Host card grid — rendered into the collapsible Hosts panel by callbacks."""
+    hosts = (hosts_data or {}).get("hosts") or []
+    if not hosts:
+        return dmc.Alert(
+            "Seçili cluster'lar için host verisi bulunamadı.",
+            title="Veri yok",
+            color="gray",
+            radius="md",
+        )
+    return dmc.SimpleGrid(
+        cols={"base": 1, "md": 2, "xl": 3},
+        spacing="md",
+        children=[_host_card(h, color) for h in hosts],
+    )
+
+
+def _build_hosts_panel_shell(slug: str, color: str = "blue"):
+    """Static collapsible shell for the Hosts panel.
+
+    Content (`hosts-panel-{slug}`) and count badge (`hosts-count-{slug}`) are
+    updated by cluster-selector callbacks; the collapse state survives content
+    refreshes because the Collapse itself is never re-rendered.
+    """
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "20px"},
+        children=[
+            html.Div(
+                style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "gap": "12px"},
+                children=[
+                    _section_title(
+                        "Host Detayları",
+                        "Seçili cluster'ların hostları — CPU / RAM kapasite, kullanım ve satış tahsisi",
+                    ),
+                    html.Div(
+                        style={"display": "flex", "alignItems": "center", "gap": "8px", "flexShrink": 0},
+                        children=[
+                            dmc.Badge(
+                                id=f"hosts-count-{slug}",
+                                children="—",
+                                color=color,
+                                variant="light",
+                                size="lg",
+                                radius="sm",
+                            ),
+                            dmc.Button(
+                                "Göster",
+                                id=f"hosts-toggle-{slug}",
+                                variant="light",
+                                color=color,
+                                size="xs",
+                                radius="md",
+                                rightSection=DashIconify(icon="solar:alt-arrow-down-bold", width=14),
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            dmc.Collapse(
+                id=f"hosts-collapse-{slug}",
+                **{"in": False},
+                children=html.Div(id=f"hosts-panel-{slug}", style={"marginTop": "16px"}),
+            ),
+        ],
+    )
+
+
 def _build_datastore_subtab(datastore_mapping: dict):
     """
     VMware Datastore subtab — klasik mimari "storage eşleştirmesi".
@@ -3203,7 +3445,7 @@ def _build_datastore_subtab(datastore_mapping: dict):
                                 ),
                             ],
                         ),
-                        html.Div(style={"display": "flex", "gap": "4px", "flexShrink": 0}, children=[_ds_type_badge(ds.get("type")), _ds_vdc_badge(ds.get("datacenter_name"))]),
+                        html.Div(style={"display": "flex", "gap": "4px", "flexShrink": 0}, children=[_ds_backing_badge(ds.get("backing")), _ds_type_badge(ds.get("type")), _ds_vdc_badge(ds.get("datacenter_name"))]),
                     ],
                 ),
                 _ds_usage_bar(pct, height="30px"),
@@ -3243,6 +3485,7 @@ def _build_datastore_subtab(datastore_mapping: dict):
         summary_rows.append({
             "datastore": ds_name,
             "vdc": _ds_vdc_label(ds.get("datacenter_name")),
+            "backing": (ds.get("backing") or "intel").upper(),
             "type": ds.get("type") or "—",
             "capacity_gb": round((ds.get("capacity_bytes") or 0) / _DS_GiB, 1),
             "used_gb": round((ds.get("used_bytes") or 0) / _DS_GiB, 1),
@@ -3278,6 +3521,7 @@ def _build_datastore_subtab(datastore_mapping: dict):
         columns=[
             {"name": "Datastore", "id": "datastore"},
             {"name": "vDC", "id": "vdc"},
+            {"name": "Backing", "id": "backing"},
             {"name": "Tip", "id": "type"},
             {"name": "Kapasite (GB)", "id": "capacity_gb", "type": "numeric"},
             {"name": "Kullanılan (GB)", "id": "used_gb", "type": "numeric"},
@@ -3309,6 +3553,8 @@ def _build_datastore_subtab(datastore_mapping: dict):
             {"if": {"filter_query": "{used_pct} < 75", "column_id": "used_pct"}, "color": "#05CD99", "fontWeight": 700},
             {"if": {"filter_query": '{status} = "active"', "column_id": "status"}, "color": "#05CD99", "fontWeight": 700},
             {"if": {"filter_query": '{status} = "passive"', "column_id": "status"}, "color": "#A3AED0"},
+            {"if": {"filter_query": '{backing} = "IBM"', "column_id": "backing"}, "color": "#4318FF", "fontWeight": 800},
+            {"if": {"filter_query": '{backing} = "INTEL"', "column_id": "backing"}, "color": "#00B5D8", "fontWeight": 700},
         ],
         css=_hover_css,
         tooltip_data=[{"datastore": {"value": r["datastore"], "type": "text"}, "nas_target": {"value": r["nas_target"], "type": "text"}} for r in summary_rows],
@@ -4148,6 +4394,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     show_classic = has_classic and _sec("sub:dc_view:virt:classic")
     show_hyperconv = has_hyperconv and _sec("sub:dc_view:virt:hyperconv")
     show_power_inner = has_power and _sec("sub:dc_view:virt:power")
+    show_virt_hosts = _sec("sub:dc_view:virt:hosts")
     virt_order = [
         ("classic", show_classic),
         ("hyperconv", show_hyperconv),
@@ -4279,6 +4526,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     color="blue",
                                                     container_id="sellable-classic-card",
                                                 ),
+                                                _build_hosts_panel_shell("classic", "blue") if show_virt_hosts else None,
                                             ],
                                         ),
                                     ) if show_classic else None,
@@ -4304,6 +4552,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     color="teal",
                                                     container_id="sellable-hyperconv-card",
                                                 ),
+                                                _build_hosts_panel_shell("hyperconv", "teal") if show_virt_hosts else None,
                                             ],
                                         ),
                                     ) if show_hyperconv else None,

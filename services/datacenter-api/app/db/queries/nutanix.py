@@ -287,6 +287,76 @@ FROM (
 # Returns: (provisioned_gb, used_gb, vcpu_count, mem_alloc_gb)
 # =============================================================================
 
+# =============================================================================
+# Host-level compute rows (nutanix_host_metrics) — per-host capacity/usage for
+# the DC view Hosts panel and the host-based sellable computation.
+# Cluster names resolved via nutanix_cluster_metrics (cluster_uuid join);
+# CPU values are in Hz, memory/storage in bytes (converted in Python).
+# Params: (dc_code, cluster_filter[], cluster_filter[], start_ts, end_ts)
+# Empty cluster_filter[] = all clusters in the DC.
+# =============================================================================
+
+NUTANIX_HOST_ROWS = """
+WITH dc_clusters AS (
+    SELECT DISTINCT ON (cluster_uuid)
+        cluster_uuid::text AS cluster_uuid,
+        cluster_name
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND (cardinality(%s::text[]) = 0 OR cluster_name = ANY(%s::text[]))
+      AND collection_time >= NOW() - INTERVAL '7 days'
+    ORDER BY cluster_uuid, collection_time DESC
+)
+SELECT DISTINCT ON (h.host_uuid)
+    h.host_name,
+    c.cluster_name,
+    COALESCE(h.total_cpu_capacity, 0)     AS cpu_cap_hz,
+    COALESCE(h.cpu_usage_avg, 0)          AS cpu_used_hz,
+    COALESCE(h.total_memory_capacity, 0)  AS mem_cap_bytes,
+    COALESCE(h.memory_usage_avg, 0)       AS mem_used_bytes,
+    COALESCE(h.storage_capacity, 0)       AS stor_cap_bytes,
+    COALESCE(h.storage_usage, 0)          AS stor_used_bytes,
+    COALESCE(h.total_vms, 0)              AS vm_count
+FROM public.nutanix_host_metrics h
+JOIN dc_clusters c ON h.cluster_uuid::text = c.cluster_uuid
+WHERE h.collectiontime BETWEEN %s AND %s
+ORDER BY h.host_uuid, h.collectiontime DESC
+"""
+
+# Per-host VM allocation aggregate (vCPU / RAM provisioned by Nutanix VMs on
+# each host). Sales CPU rule: 1 vCPU = 1 GHz (applied in Python).
+# Params: (dc_code, cluster_filter[], cluster_filter[])
+NUTANIX_HOST_VM_ALLOCATION = """
+WITH dc_clusters AS (
+    SELECT DISTINCT cluster_uuid::text AS cluster_uuid
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND (cardinality(%s::text[]) = 0 OR cluster_name = ANY(%s::text[]))
+      AND collection_time >= NOW() - INTERVAL '7 days'
+),
+latest AS (
+    SELECT DISTINCT ON (vm_name)
+        host_name,
+        cpu_count,
+        memory_capacity,
+        disk_capacity,
+        used_storage
+    FROM public.nutanix_vm_metrics
+    WHERE cluster_uuid::text IN (SELECT cluster_uuid FROM dc_clusters)
+      AND collection_time >= NOW() - INTERVAL '24 hours'
+    ORDER BY vm_name, collection_time DESC
+)
+SELECT
+    host_name,
+    COUNT(*)                                              AS vm_count,
+    COALESCE(SUM(cpu_count), 0)                           AS vcpu_total,
+    COALESCE(SUM(memory_capacity / 1073741824.0), 0)      AS mem_alloc_gb,
+    COALESCE(SUM(disk_capacity / 1073741824.0), 0)        AS stor_provisioned_gb,
+    COALESCE(SUM(used_storage / 1073741824.0), 0)         AS stor_used_gb
+FROM latest
+GROUP BY host_name
+"""
+
 NUTANIX_VM_STORAGE = """
 WITH dc_clusters AS (
     SELECT DISTINCT cluster_uuid::text AS cluster_uuid

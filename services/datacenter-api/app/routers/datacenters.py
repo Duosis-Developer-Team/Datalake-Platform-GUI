@@ -169,6 +169,30 @@ def hyperconv_compute_filtered(
     return db.get_hyperconv_metrics_filtered(dc_code, selected, tf.to_dict())
 
 
+@router.get("/datacenters/{dc_code}/compute/classic/hosts", response_model=dict[str, Any])
+def classic_compute_hosts(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    clusters: Optional[str] = Query(None, description="Comma-separated cluster names; empty = all"),
+):
+    """Per-host CPU/RAM capacity, usage and sales allocation for Classic (KM) clusters."""
+    selected = [c.strip() for c in clusters.split(",") if c.strip()] if clusters else None
+    return db.get_classic_host_rows(dc_code, selected, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/compute/hyperconverged/hosts", response_model=dict[str, Any])
+def hyperconv_compute_hosts(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    clusters: Optional[str] = Query(None, description="Comma-separated cluster names; empty = all"),
+):
+    """Per-host CPU/RAM/storage capacity, usage and sales allocation for Hyperconverged (Nutanix) clusters."""
+    selected = [c.strip() for c in clusters.split(",") if c.strip()] if clusters else None
+    return db.get_hyperconv_host_rows(dc_code, selected, tf.to_dict())
+
+
 @router.get("/datacenters/{dc_code}/racks", response_model=dict[str, Any])
 def dc_racks(dc_code: str, db: DatabaseService = Depends(get_db)):
     return db.get_dc_racks(dc_code)
