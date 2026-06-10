@@ -7,7 +7,7 @@ from typing import Any
 from app.db import pool
 
 ROOT_LOCATIONS_SQL = """
-SELECT
+SELECT DISTINCT ON (name)
     id,
     name,
     description,
@@ -16,7 +16,7 @@ SELECT
 FROM public.loki_locations
 WHERE parent_id IS NULL
   AND status_value = 'active'
-ORDER BY name
+ORDER BY name, collection_time DESC NULLS LAST
 """
 
 
