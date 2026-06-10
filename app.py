@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import math
 import logging
 import os
 import threading
@@ -130,19 +131,12 @@ from src.pages.settings import crm_service_mapping  # noqa: F401 — CRM service
 from src.pages.settings.integrations import crm_aliases  # noqa: F401 — CRM customer aliases layout
 from src.pages.settings.integrations import crm_aliases_callbacks  # noqa: F401 — CRM customer aliases callbacks
 from src.pages.settings.integrations import netbox_visualization_callbacks  # noqa: F401 — NetBox viz exclusions
-from src.pages.settings.integrations import hmdl_callbacks  # noqa: F401 — HMDL sync health filters
 from src.pages.settings import dashboard_callbacks  # noqa: F401 — Settings overview (cache refresh)
-from src.pages.settings.admin_routes import to_administration_path
 
 _default_tr = default_time_range()
 _custom_st, _custom_en = time_range_to_bounds(_default_tr)
 _custom_picker_start = _custom_st.strftime("%Y-%m-%dT%H:%M:%S")
 _custom_picker_end = _custom_en.strftime("%Y-%m-%dT%H:%M:%S")
-
-
-def _is_administration_path(pathname: str | None) -> bool:
-    p = str(pathname or "")
-    return p.startswith("/administration") or p.startswith("/settings")
 
 
 def _warm_worker_local_customer_availability_cache() -> None:
@@ -604,17 +598,6 @@ def update_time_range_store(preset, start_dt, end_dt, anchor_latest, current):
 
 
 @app.callback(
-    dash.Output("url", "pathname", allow_duplicate=True),
-    dash.Input("url", "pathname"),
-    prevent_initial_call="initial_duplicate",
-)
-def redirect_legacy_settings_urls(pathname):
-    if pathname and str(pathname).startswith("/settings"):
-        return to_administration_path(str(pathname))
-    return dash.no_update
-
-
-@app.callback(
     dash.Output("main-content", "children"),
     dash.Input("url", "pathname"),
     dash.Input("app-time-range", "data"),
@@ -656,14 +639,14 @@ def render_main_content(pathname, time_range, search):
     page_code = resolve_pathname_to_page_code(pathname)
     vis = (
         get_visible_sections(int(uid), page_code)
-        if uid and page_code and not _is_administration_path(pathname)
+        if uid and page_code and not str(pathname).startswith("/settings")
         else None
     )
 
     if (
         page_code
         and uid
-        and not _is_administration_path(pathname)
+        and not str(pathname).startswith("/settings")
         and not can_view(int(uid), page_code)
     ):
         return build_access_denied()
@@ -696,7 +679,7 @@ def render_main_content(pathname, time_range, search):
         params = parse_qs((search or "").lstrip("?"))
         region = params.get("region", [""])[0]
         return region_drilldown.build_region_drilldown(region, tr)
-    if _is_administration_path(pathname):
+    if pathname.startswith("/settings"):
         return settings_shell.build_settings_page(pathname, int(uid), search)
     return home.build_overview(tr, visible_sections=vis)
 
@@ -1653,6 +1636,23 @@ def _net_interface_table_footer(page: int, page_size: int, total: int, row_count
     return f"Showing {start:,}–{end:,} of {total:,} interfaces"
 
 
+def _net_interface_table_page_count(total: int, page_size: int) -> int:
+    if total <= 0:
+        return 1
+    return max(1, math.ceil(total / page_size))
+
+
+def _net_interface_table_triggered_id() -> str | None:
+    ctx = dash.callback_context
+    try:
+        triggered_id = getattr(ctx, "triggered_id", None)
+    except dash.exceptions.MissingCallbackContextException:
+        return None
+    if triggered_id is None and ctx.triggered:
+        triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    return triggered_id
+
+
 def _net_export_interfaces_csv(items: list[dict]) -> str:
     import csv
     import io
@@ -1926,20 +1926,14 @@ def update_net_kpis_and_charts(top_scope, switch_role, manufacturer, device_name
     )
 
     donut_active = create_premium_gauge_chart(
-        port_availability_pct,
-        "Interface Availability" if interface_scope == "backbone" else "Port Availability",
-        color="#FFB547",
+        port_availability_pct, "", color="#FFB547", height=180
     )
     donut_util = create_premium_gauge_chart(
-        overall_util_pct,
-        "P95 Utilization" if interface_scope == "backbone" else "Port Utilization",
-        color="#05CD99",
+        overall_util_pct, "", color="#05CD99", height=180
     )
-    donut_icmp = create_premium_gauge_chart(icmp_availability_pct, "ICMP Availability", color="#4318FF")
+    donut_icmp = create_premium_gauge_chart(icmp_availability_pct, "", color="#4318FF", height=180)
     single_gauge = create_premium_gauge_chart(
-        overall_util_pct,
-        "P95 Utilization",
-        color="#05CD99",
+        overall_util_pct, "", color="#05CD99", height=180
     )
 
     top_interfaces = percentile_data.get("top_interfaces") or []
@@ -1963,6 +1957,8 @@ def update_net_kpis_and_charts(top_scope, switch_role, manufacturer, device_name
     dash.Output("net-interface-table", "data"),
     dash.Output("net-interface-table", "columns"),
     dash.Output("net-interface-table", "page_size"),
+    dash.Output("net-interface-table", "page_count"),
+    dash.Output("net-interface-table", "page_current"),
     dash.Output("net-interface-table-footer", "children"),
     dash.Input("net-scope-tabs", "value"),
     dash.Input("net-switch-role-segment", "value"),
@@ -1986,19 +1982,26 @@ def update_net_interface_table(
     pathname,
 ):
     if not pathname or not pathname.startswith("/datacenter/"):
-        return [], dash.no_update, dash.no_update, dash.no_update
+        return [], dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     top_scope = top_scope or "overview"
     if not _net_scope_is_interface_panel(top_scope):
-        return [], dash.no_update, dash.no_update, dash.no_update
+        return [], dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    triggered_id = _net_interface_table_triggered_id()
+
+    page_size_safe = max(1, min(200, int(page_size_sel or 50)))
+    if triggered_id == "net-interface-table":
+        page_current_safe = int(page_current or 0)
+        page_current_out = dash.no_update
+    else:
+        page_current_safe = 0
+        page_current_out = 0
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
     interface_scope = dc_view.resolve_network_interface_scope(top_scope, switch_role)
     columns = dc_view._network_interface_table_columns(interface_scope)
-
-    page_current_safe = int(page_current or 0)
-    page_size_safe = max(1, min(200, int(page_size_sel or 50)))
     page_backend = page_current_safe + 1
 
     interface_data = api.get_dc_network_interface_table(
@@ -2015,8 +2018,9 @@ def update_net_interface_table(
     total = int(interface_data.get("total") or len(items))
     rows = dc_view._interface_table_rows(items)
     footer = _net_interface_table_footer(page_backend, page_size_safe, total, len(rows))
+    page_count = _net_interface_table_page_count(total, page_size_safe)
 
-    return rows, columns, page_size_safe, footer
+    return rows, columns, page_size_safe, page_count, page_current_out, footer
 
 
 @app.callback(

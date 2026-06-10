@@ -2,6 +2,7 @@ from __future__ import annotations
 # DC Detail view - Capacity Planning
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup | Physical Inventory
 import json
+import math
 import time
 import dash
 from dash import html, dcc, dash_table, callback, Input, Output, State, MATCH
@@ -416,6 +417,7 @@ def _gauge_wrap(
     subtitle: str = "",
     badge: str | None = None,
     secondary_subtitle: str = "",
+    graph_id: str | None = None,
 ):
     """Renders gauge with an HTML label above — label never clips into the gauge arc."""
     sub_text = subtitle if subtitle else (f"avg {avg_label}" if avg_label else "")
@@ -475,6 +477,7 @@ def _gauge_wrap(
                     "margin": "0 auto",
                 },
                 children=dcc.Graph(
+                    **({"id": graph_id} if graph_id else {}),
                     figure=fig,
                     config={"displayModeBar": False, "responsive": True},
                     style={"height": "100%", "width": "100%"},
@@ -482,6 +485,13 @@ def _gauge_wrap(
             ),
         ],
     )
+
+
+def _network_gauge_labels(interface_scope: str | None) -> tuple[str, str, str]:
+    """HTML labels for overview network gauge trio."""
+    if interface_scope == "backbone":
+        return "Interface Availability", "P95 Utilization", "ICMP Availability"
+    return "Port Availability", "Port Utilization", "ICMP Availability"
 
 
 def _cpu_allocation_gauge_block(compute: dict, cpu_cap: float):
@@ -512,7 +522,7 @@ def _chart_card(graph_component):
             "flexDirection": "column",
             "alignItems": "center",
             "justifyContent": "center",
-            "overflow": "visible",
+            "overflow": "hidden",
         },
         children=graph_component,
     )
@@ -2399,18 +2409,11 @@ def _build_network_interface_page(
         ],
     )
 
-    donut_active = create_premium_gauge_chart(
-        port_availability_pct,
-        "Interface Availability" if billing else "Port Availability",
-        color="#FFB547",
-    )
-    donut_util = create_premium_gauge_chart(
-        overall_util_pct,
-        "P95 Utilization" if billing else "Port Utilization",
-        color="#05CD99",
-    )
-    donut_icmp = create_premium_gauge_chart(icmp_availability_pct, "ICMP Availability", color="#4318FF")
-    single_gauge = create_premium_gauge_chart(overall_util_pct, "P95 Utilization", color="#05CD99")
+    gauge_l1, gauge_l2, gauge_l3 = _network_gauge_labels(interface_scope)
+    donut_active = create_premium_gauge_chart(port_availability_pct, "", color="#FFB547", height=180)
+    donut_util = create_premium_gauge_chart(overall_util_pct, "", color="#05CD99", height=180)
+    donut_icmp = create_premium_gauge_chart(icmp_availability_pct, "", color="#4318FF", height=180)
+    single_gauge = create_premium_gauge_chart(overall_util_pct, "", color="#05CD99", height=180)
 
     top_interfaces = percentile_data.get("top_interfaces") or []
     bar_labels = [
@@ -2428,6 +2431,8 @@ def _build_network_interface_page(
 
     items = interface_table.get("items") or []
     total_count = int(interface_table.get("total") or len(items))
+    page_size_init = 50
+    page_count_init = max(1, math.ceil(total_count / page_size_init)) if total_count else 1
     columns = _network_interface_table_columns(interface_scope)
 
     return dmc.Stack(
@@ -2469,25 +2474,13 @@ def _build_network_interface_page(
                         spacing="lg",
                         children=[
                             _chart_card(
-                                dcc.Graph(
-                                    id="net-donut-active-ports",
-                                    figure=donut_active,
-                                    config={"displayModeBar": False},
-                                )
+                                _gauge_wrap(donut_active, gauge_l1, graph_id="net-donut-active-ports")
                             ),
                             _chart_card(
-                                dcc.Graph(
-                                    id="net-donut-utilization",
-                                    figure=donut_util,
-                                    config={"displayModeBar": False},
-                                )
+                                _gauge_wrap(donut_util, gauge_l2, graph_id="net-donut-utilization")
                             ),
                             _chart_card(
-                                dcc.Graph(
-                                    id="net-donut-icmp",
-                                    figure=donut_icmp,
-                                    config={"displayModeBar": False},
-                                )
+                                _gauge_wrap(donut_icmp, gauge_l3, graph_id="net-donut-icmp")
                             ),
                         ],
                     )
@@ -2498,11 +2491,7 @@ def _build_network_interface_page(
                 style={"display": "block" if flags["show_single_gauge"] else "none"},
                 children=[
                     _chart_card(
-                        dcc.Graph(
-                            id="net-single-util-gauge",
-                            figure=single_gauge,
-                            config={"displayModeBar": False},
-                        )
+                        _gauge_wrap(single_gauge, "P95 Utilization", graph_id="net-single-util-gauge")
                     )
                 ],
             ),
@@ -2570,7 +2559,8 @@ def _build_network_interface_page(
                         columns=columns,
                         data=_interface_table_rows(items),
                         page_current=0,
-                        page_size=50,
+                        page_size=page_size_init,
+                        page_count=page_count_init,
                         page_action="custom",
                         sort_action="native",
                         style_table={"overflowX": "auto", "marginTop": "6px"},

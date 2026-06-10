@@ -829,7 +829,7 @@ def create_premium_gauge_chart(
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=10, r=10, t=8 if not has_title else 44, b=10),
-        autosize=True,
+        height=height,
         font=dict(family="DM Sans", color="#A3AED0"),
     )
     return fig
