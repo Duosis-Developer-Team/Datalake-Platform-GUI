@@ -4421,43 +4421,16 @@ JOIN latest l
         cache.set(cache_key, result)
         return result
 
-    def get_network_interface_table(
+    def _resolve_network_interface_hosts(
         self,
-        dc_code: str,
-        time_range: dict | None = None,
+        dc_target: str,
+        tr: dict,
+        interface_scope: str | None,
         manufacturer: str | None = None,
         device_role: str | None = None,
         device_name: str | None = None,
-        page: int = 1,
-        page_size: int = 50,
-        search: str | None = None,
-        interface_scope: str | None = None,
-    ) -> dict:
-        """
-        Return a paginated, searchable table of interface p95 bandwidth stats.
-        """
-        tr = time_range or default_time_range()
-        dc_target = (dc_code or "").upper()
-        if not dc_target:
-            return {"items": [], "page": 1, "page_size": page_size}
-
-        page_safe = max(1, int(page or 1))
-        page_size_safe = max(1, min(200, int(page_size or 50)))
-        offset = (page_safe - 1) * page_size_safe
-        search_val = (search or "").strip()
-        like = f"%{search_val}%"
-
+    ) -> tuple[list[str], str]:
         scope_key = interface_scope or "overview"
-        cache_key = (
-            f"dc_zabbix_net_iface_table:{dc_target}:"
-            f"{manufacturer or ''}:{device_role or ''}:{device_name or ''}:"
-            f"scope={scope_key}:p={page_safe}:ps={page_size_safe}:q={search_val}:"
-            f"{tr.get('start','')}:{tr.get('end','')}"
-        )
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
-
         if scope_key != "overview":
             resolved = self._resolve_scoped_network_devices(
                 dc_target,
@@ -4474,10 +4447,98 @@ JOIN latest l
                 device_role=device_role,
                 device_name=device_name,
             )
-        hosts: list[str] = resolved.get("hosts") or []
+        return list(resolved.get("hosts") or []), scope_key
+
+    @staticmethod
+    def _network_p95_rows_to_items(rows: list | None, include_total: bool = False) -> tuple[list[dict], int]:
+        items: list[dict] = []
+        total = 0
+        for row in rows or []:
+            if include_total and len(row) >= 8:
+                (
+                    host_name,
+                    iface_name,
+                    iface_alias,
+                    p95_rx_bps,
+                    p95_tx_bps,
+                    p95_total_bps,
+                    speed_bps,
+                    total_count,
+                ) = row
+                total = int(total_count or 0)
+            elif len(row) >= 7:
+                host_name, iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
+            else:
+                host_name = None
+                iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
+            speed = float(speed_bps or 0)
+            p95_total = float(p95_total_bps or 0)
+            utilization_pct = (p95_total / speed * 100.0) if speed > 0 else 0.0
+            items.append(
+                {
+                    "host": host_name,
+                    "interface_name": iface_name,
+                    "interface_alias": iface_alias,
+                    "p95_rx_bps": float(p95_rx_bps or 0),
+                    "p95_tx_bps": float(p95_tx_bps or 0),
+                    "p95_total_bps": p95_total,
+                    "speed_bps": speed,
+                    "utilization_pct": float(utilization_pct),
+                }
+            )
+        if include_total and not total:
+            total = len(items)
+        return items, total
+
+    def get_network_interface_table(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        manufacturer: str | None = None,
+        device_role: str | None = None,
+        device_name: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        search: str | None = None,
+        interface_scope: str | None = None,
+    ) -> dict:
+        """
+        Return a paginated, searchable table of interface p95 utilization stats.
+        """
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return {"items": [], "total": 0, "page": 1, "page_size": page_size}
+
+        page_safe = max(1, int(page or 1))
+        page_size_safe = max(1, min(200, int(page_size or 50)))
+        offset = (page_safe - 1) * page_size_safe
+        search_val = (search or "").strip()
+        like = f"%{search_val}%"
+
+        hosts, scope_key = self._resolve_network_interface_hosts(
+            dc_target,
+            tr,
+            interface_scope,
+            manufacturer=manufacturer,
+            device_role=device_role,
+            device_name=device_name,
+        )
+
+        cache_key = (
+            f"dc_zabbix_net_iface_table:{dc_target}:"
+            f"{manufacturer or ''}:{device_role or ''}:{device_name or ''}:"
+            f"scope={scope_key}:p={page_safe}:ps={page_size_safe}:q={search_val}:"
+            f"{tr.get('start','')}:{tr.get('end','')}"
+        )
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
         if not hosts:
             result = {
                 "items": [],
+                "total": 0,
                 "page": page_safe,
                 "page_size": page_size_safe,
                 "interface_scope": scope_key,
@@ -4489,8 +4550,6 @@ JOIN latest l
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    # Prevent a slow DISTINCT ON / p95 CTE from hanging the worker
-                    # and OOM-killing the container. 90 s covers the current ~52 s runtime.
                     cur.execute("SET statement_timeout = '90000'")
                     sql = znq.build_interface_bandwidth_table_p95_sql(interface_scope)
                     rows = self._run_rows(
@@ -4509,31 +4568,10 @@ JOIN latest l
                         ),
                     )
 
-            items: list[dict] = []
-            for row in (rows or []):
-                if len(row) >= 7:
-                    host_name, iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
-                else:
-                    host_name = None
-                    iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
-                speed = float(speed_bps or 0)
-                p95_total = float(p95_total_bps or 0)
-                utilization_pct = (p95_total / speed * 100.0) if speed > 0 else 0.0
-                items.append(
-                    {
-                        "host": host_name,
-                        "interface_name": iface_name,
-                        "interface_alias": iface_alias,
-                        "p95_rx_bps": float(p95_rx_bps or 0),
-                        "p95_tx_bps": float(p95_tx_bps or 0),
-                        "p95_total_bps": p95_total,
-                        "speed_bps": speed,
-                        "utilization_pct": float(utilization_pct),
-                    }
-                )
-
+            items, total = self._network_p95_rows_to_items(rows, include_total=True)
             result = {
                 "items": items,
+                "total": total,
                 "page": page_safe,
                 "page_size": page_size_safe,
                 "search": search_val,
@@ -4543,11 +4581,90 @@ JOIN latest l
             logger.warning("get_network_interface_table failed for %s: %s", dc_target, exc)
             result = {
                 "items": [],
+                "total": 0,
                 "page": page_safe,
                 "page_size": page_size_safe,
                 "search": search_val,
                 "interface_scope": scope_key,
             }
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_network_interface_export(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        manufacturer: str | None = None,
+        device_role: str | None = None,
+        device_name: str | None = None,
+        search: str | None = None,
+        interface_scope: str | None = None,
+    ) -> dict:
+        """Return all interface p95 rows for billing export (capped)."""
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return {"items": [], "total": 0, "interface_scope": "overview"}
+
+        search_val = (search or "").strip()
+        like = f"%{search_val}%"
+        hosts, scope_key = self._resolve_network_interface_hosts(
+            dc_target,
+            tr,
+            interface_scope,
+            manufacturer=manufacturer,
+            device_role=device_role,
+            device_name=device_name,
+        )
+
+        cache_key = (
+            f"dc_zabbix_net_iface_export:{dc_target}:"
+            f"{manufacturer or ''}:{device_role or ''}:{device_name or ''}:"
+            f"scope={scope_key}:q={search_val}:"
+            f"{tr.get('start','')}:{tr.get('end','')}"
+        )
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        if not hosts:
+            result = {"items": [], "total": 0, "interface_scope": scope_key}
+            cache.set(cache_key, result)
+            return result
+
+        start_ts, end_ts = time_range_to_bounds(tr)
+        max_rows = znq.INTERFACE_EXPORT_MAX_ROWS
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SET statement_timeout = '120000'")
+                    sql = znq.build_interface_bandwidth_table_p95_export_sql(interface_scope)
+                    rows = self._run_rows(
+                        cur,
+                        sql,
+                        (
+                            hosts,
+                            start_ts,
+                            end_ts,
+                            search_val,
+                            like,
+                            like,
+                            like,
+                            max_rows,
+                        ),
+                    )
+
+            items, total = self._network_p95_rows_to_items(rows, include_total=False)
+            result = {
+                "items": items,
+                "total": len(items),
+                "interface_scope": scope_key,
+                "export_cap": max_rows,
+            }
+        except Exception as exc:
+            logger.warning("get_network_interface_export failed for %s: %s", dc_target, exc)
+            result = {"items": [], "total": 0, "interface_scope": scope_key, "export_cap": max_rows}
 
         cache.set(cache_key, result)
         return result

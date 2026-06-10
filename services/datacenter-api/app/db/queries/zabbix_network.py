@@ -459,7 +459,7 @@ ORDER BY p95_total_bps DESC;
 """
 
 
-def build_interface_bandwidth_table_p95_sql(scope: str | None) -> str:
+def _interface_table_p95_cte(scope: str | None) -> str:
     table = resolve_interface_table(scope)
     overlap = _scope_overlap_filter(scope)
     return f"""
@@ -507,6 +507,35 @@ p95 AS (
     FROM bucketed
     GROUP BY host, interface_name, interface_alias
 )
+"""
+
+
+def build_interface_bandwidth_table_p95_sql(scope: str | None) -> str:
+    return (
+        _interface_table_p95_cte(scope)
+        + """
+SELECT
+    host,
+    interface_name,
+    interface_alias,
+    COALESCE(p95_rx_bps, 0)::double precision AS p95_rx_bps,
+    COALESCE(p95_tx_bps, 0)::double precision AS p95_tx_bps,
+    (COALESCE(p95_rx_bps, 0) + COALESCE(p95_tx_bps, 0)) AS p95_total_bps,
+    COALESCE(max_speed_bps, 0)::double precision AS speed_bps,
+    COUNT(*) OVER()::bigint AS total_count
+FROM p95
+WHERE
+    (%s = '' OR host ILIKE %s OR interface_name ILIKE %s OR COALESCE(interface_alias, '') ILIKE %s)
+ORDER BY p95_total_bps DESC, host, interface_name
+LIMIT %s OFFSET %s;
+"""
+    )
+
+
+def build_interface_bandwidth_table_p95_export_sql(scope: str | None) -> str:
+    return (
+        _interface_table_p95_cte(scope)
+        + """
 SELECT
     host,
     interface_name,
@@ -519,8 +548,12 @@ FROM p95
 WHERE
     (%s = '' OR host ILIKE %s OR interface_name ILIKE %s OR COALESCE(interface_alias, '') ILIKE %s)
 ORDER BY p95_total_bps DESC, host, interface_name
-LIMIT %s OFFSET %s;
+LIMIT %s;
 """
+    )
+
+
+INTERFACE_EXPORT_MAX_ROWS = 5000
 
 
 FIREWALL_SUMMARY_LATEST = """

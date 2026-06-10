@@ -1621,6 +1621,57 @@ def _net_scope_is_device_panel(top_scope: str | None) -> bool:
     return (top_scope or "overview") in {"firewall", "load_balancer"}
 
 
+def _net_scope_is_interface_panel(top_scope: str | None) -> bool:
+    return (top_scope or "overview") in {"overview", "switch", "router_uplink"}
+
+
+def _net_interface_table_footer(page: int, page_size: int, total: int, row_count: int) -> str:
+    if total <= 0:
+        return "No interfaces in scope"
+    start = (page - 1) * page_size + 1
+    end = min(page * page_size, total)
+    if row_count == 0:
+        return f"No matches — {total:,} interfaces in scope"
+    return f"Showing {start:,}–{end:,} of {total:,} interfaces"
+
+
+def _net_export_interfaces_csv(items: list[dict]) -> str:
+    import csv
+    import io
+
+    fields = [
+        "host",
+        "interface_name",
+        "interface_alias",
+        "p95_rx_gbps",
+        "p95_tx_gbps",
+        "p95_total_gbps",
+        "speed_gbps",
+        "utilization_pct",
+    ]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    for it in items or []:
+        speed_gbps = (float(it.get("speed_bps") or 0) / 1e9) if it.get("speed_bps") is not None else 0.0
+        rx_gbps = (float(it.get("p95_rx_bps") or 0) / 1e9) if it.get("p95_rx_bps") is not None else 0.0
+        tx_gbps = (float(it.get("p95_tx_bps") or 0) / 1e9) if it.get("p95_tx_bps") is not None else 0.0
+        total_gbps = (float(it.get("p95_total_bps") or 0) / 1e9) if it.get("p95_total_bps") is not None else 0.0
+        writer.writerow(
+            {
+                "host": it.get("host") or "",
+                "interface_name": it.get("interface_name") or "",
+                "interface_alias": it.get("interface_alias") or "",
+                "p95_rx_gbps": round(rx_gbps, 3),
+                "p95_tx_gbps": round(tx_gbps, 3),
+                "p95_total_gbps": round(total_gbps, 3),
+                "speed_gbps": round(speed_gbps, 3),
+                "utilization_pct": round(float(it.get("utilization_pct") or 0), 2),
+            }
+        )
+    return buf.getvalue()
+
+
 @app.callback(
     dash.Output("net-filters-store", "data"),
     dash.Input("net-scope-tabs", "value"),
@@ -1698,44 +1749,88 @@ def update_net_scope_subtitle(top_scope, switch_role):
 
 
 @app.callback(
-    dash.Output("net-interface-section", "style"),
-    dash.Output("net-special-section", "children"),
-    dash.Output("net-special-section", "style"),
+    dash.Output("net-page-interface", "style"),
+    dash.Output("net-page-firewall", "style"),
+    dash.Output("net-page-load-balancer", "style"),
+    dash.Output("net-donut-grid-wrap", "style"),
+    dash.Output("net-single-gauge-wrap", "style"),
+    dash.Output("net-export-btn-wrap", "style"),
+    dash.Output("net-preview-collapse-wrap", "style"),
     dash.Input("net-scope-tabs", "value"),
-    dash.State("net-firewall-store", "data"),
-    dash.State("net-load-balancer-store", "data"),
+    dash.Input("net-switch-role-segment", "value"),
+)
+def update_net_page_visibility(top_scope, switch_role):
+    top_scope = top_scope or "overview"
+    flags = dc_view._network_page_flags(top_scope, switch_role)
+    block = {"display": "block"}
+    none = {"display": "none"}
+    return (
+        block if flags["is_interface_page"] else none,
+        block if top_scope == "firewall" else none,
+        block if top_scope == "load_balancer" else none,
+        block if flags["show_donut_grid"] else none,
+        block if flags["show_single_gauge"] else none,
+        block if flags["show_export"] else none,
+        block if flags["show_preview_collapse"] else none,
+    )
+
+
+@app.callback(
+    dash.Output("net-fw-kpi-container", "children"),
+    dash.Output("net-firewall-table", "data"),
+    dash.Input("net-scope-tabs", "value"),
     dash.State("url", "pathname"),
     dash.State("app-time-range", "data"),
 )
-def update_net_scope_layout(top_scope, firewall_store, lb_store, pathname, time_range):
-    top_scope = top_scope or "overview"
+def update_net_firewall_panel(top_scope, pathname, time_range):
+    if (top_scope or "overview") != "firewall":
+        return dash.no_update, dash.no_update
     if not pathname or not pathname.startswith("/datacenter/"):
-        return dash.no_update, dash.no_update, dash.no_update
-
-    if top_scope == "firewall":
-        dc_id = pathname.replace("/datacenter/", "").strip("/")
-        tr = time_range or default_time_range()
-        fw_data = api.get_dc_network_firewall_summary(dc_id, tr)
-        return (
-            {"display": "none"},
-            [dc_view._build_network_firewall_table(fw_data)],
-            {"display": "block"},
-        )
-    if top_scope == "load_balancer":
-        dc_id = pathname.replace("/datacenter/", "").strip("/")
-        tr = time_range or default_time_range()
-        lb_data = api.get_dc_network_load_balancer_summary(dc_id, tr)
-        return (
-            {"display": "none"},
-            [dc_view._build_network_load_balancer_table(lb_data)],
-            {"display": "block"},
-        )
-
-    return (
-        {"padding": "20px", "display": "block"},
-        [],
-        {"display": "none"},
+        return dash.no_update, dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    fw_data = api.get_dc_network_firewall_summary(dc_id, tr)
+    device_count, total_sessions, total_intrusions, ha_pairs = dc_view._firewall_aggregate_kpis(fw_data)
+    kpis = dmc.SimpleGrid(
+        cols=4,
+        spacing="lg",
+        children=[
+            dc_view._kpi("Firewall Devices", f"{device_count:,}", _DC_ICONS["total_devices"], color="indigo"),
+            dc_view._kpi("Active Sessions", f"{total_sessions:,}", _DC_ICONS["active_ports"], color="indigo"),
+            dc_view._kpi("Intrusions", f"{total_intrusions:,}", _DC_ICONS["port_availability"], color="indigo"),
+            dc_view._kpi("HA Devices", f"{ha_pairs:,}", _DC_ICONS["total_ports"], color="indigo"),
+        ],
     )
+    devices = (fw_data or {}).get("devices") or []
+    rows = [
+        {
+            "host": d.get("host") or "",
+            "device_name": d.get("device_name") or "",
+            "manufacturer_name": d.get("manufacturer_name") or "",
+            "cpu_utilization_pct": round(float(d.get("cpu_utilization_pct") or 0), 2),
+            "memory_utilization_pct": round(float(d.get("memory_utilization_pct") or 0), 2),
+            "active_sessions": int(d.get("active_sessions") or 0),
+            "intrusions_detected": int(d.get("intrusions_detected") or 0),
+            "intrusions_blocked": int(d.get("intrusions_blocked") or 0),
+            "ha_mode": d.get("ha_mode") or "",
+            "ha_cluster_name": d.get("ha_cluster_name") or "",
+            "session_setup_rate": round(float(d.get("session_setup_rate") or 0), 2),
+            "icmp_status": d.get("icmp_status") if d.get("icmp_status") is not None else "",
+            "icmp_loss_pct": round(float(d.get("icmp_loss_pct") or 0), 2),
+        }
+        for d in devices
+    ]
+    return kpis, rows
+
+
+@app.callback(
+    dash.Output("net-top-preview-collapse", "in"),
+    dash.Input("net-top-preview-toggle", "n_clicks"),
+    dash.State("net-top-preview-collapse", "in"),
+    prevent_initial_call=True,
+)
+def toggle_net_top_preview(n_clicks, opened):
+    return not bool(opened)
 
 
 @app.callback(
@@ -1743,6 +1838,7 @@ def update_net_scope_layout(top_scope, firewall_store, lb_store, pathname, time_
     dash.Output("net-donut-active-ports", "figure"),
     dash.Output("net-donut-utilization", "figure"),
     dash.Output("net-donut-icmp", "figure"),
+    dash.Output("net-single-util-gauge", "figure"),
     dash.Output("net-top-interfaces-bar", "figure"),
     dash.Input("net-scope-tabs", "value"),
     dash.Input("net-switch-role-segment", "value"),
@@ -1753,15 +1849,14 @@ def update_net_scope_layout(top_scope, firewall_store, lb_store, pathname, time_
 )
 def update_net_kpis_and_charts(top_scope, switch_role, manufacturer, device_name, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
     top_scope = top_scope or "overview"
 
-    if _net_scope_is_device_panel(top_scope):
-        empty = create_premium_gauge_chart(0, "N/A", color="#E9EDF7")
-        return html.Div(), empty, empty, empty, empty
+    if not _net_scope_is_interface_panel(top_scope):
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     interface_scope = dc_view.resolve_network_interface_scope(top_scope, switch_role)
     kpi1, kpi2, kpi3, kpi4 = dc_view._network_kpi_labels(interface_scope)
@@ -1776,7 +1871,7 @@ def update_net_kpis_and_charts(top_scope, switch_role, manufacturer, device_name
     percentile_data = api.get_dc_network_95th_percentile(
         dc_id,
         tr,
-        top_n=20,
+        top_n=10,
         manufacturer=manufacturer,
         device_name=device_name,
         interface_scope=interface_scope,
@@ -1823,34 +1918,41 @@ def update_net_kpis_and_charts(top_scope, switch_role, manufacturer, device_name
         color="#05CD99",
     )
     donut_icmp = create_premium_gauge_chart(icmp_availability_pct, "ICMP Availability", color="#4318FF")
+    single_gauge = create_premium_gauge_chart(
+        overall_util_pct,
+        "P95 Utilization",
+        color="#05CD99",
+    )
 
     top_interfaces = percentile_data.get("top_interfaces") or []
     bar_labels = [
         (t.get("interface_alias") or t.get("interface_name") or "").strip() or "Unknown"
-        for t in top_interfaces
+        for t in top_interfaces[:10]
     ]
-    bar_values = [_bps_to_gbps(t.get("p95_total_bps")) for t in top_interfaces]
+    bar_values = [_bps_to_gbps(t.get("p95_total_bps")) for t in top_interfaces[:10]]
     bar_fig = create_horizontal_bar_chart(
         labels=bar_labels,
         values=bar_values,
         title=dc_view._network_bar_chart_title(interface_scope),
         color="#4318FF",
-        height=320,
+        height=280,
     )
 
-    return kpis, donut_active, donut_util, donut_icmp, bar_fig
+    return kpis, donut_active, donut_util, donut_icmp, single_gauge, bar_fig
 
 
 @app.callback(
     dash.Output("net-interface-table", "data"),
     dash.Output("net-interface-table", "columns"),
+    dash.Output("net-interface-table", "page_size"),
+    dash.Output("net-interface-table-footer", "children"),
     dash.Input("net-scope-tabs", "value"),
     dash.Input("net-switch-role-segment", "value"),
     dash.Input("net-manufacturer-selector", "value"),
     dash.Input("net-device-selector", "value"),
     dash.Input("net-interface-search", "value"),
     dash.Input("net-interface-table", "page_current"),
-    dash.Input("net-interface-table", "page_size"),
+    dash.Input("net-interface-page-size", "value"),
     dash.State("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
@@ -1861,16 +1963,16 @@ def update_net_interface_table(
     device_name,
     search_value,
     page_current,
-    page_size,
+    page_size_sel,
     time_range,
     pathname,
 ):
     if not pathname or not pathname.startswith("/datacenter/"):
-        return [], dash.no_update
+        return [], dash.no_update, dash.no_update, dash.no_update
 
     top_scope = top_scope or "overview"
-    if _net_scope_is_device_panel(top_scope):
-        return [], dash.no_update
+    if not _net_scope_is_interface_panel(top_scope):
+        return [], dash.no_update, dash.no_update, dash.no_update
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
@@ -1878,7 +1980,7 @@ def update_net_interface_table(
     columns = dc_view._network_interface_table_columns(interface_scope)
 
     page_current_safe = int(page_current or 0)
-    page_size_safe = int(page_size or 50)
+    page_size_safe = max(1, min(200, int(page_size_sel or 50)))
     page_backend = page_current_safe + 1
 
     interface_data = api.get_dc_network_interface_table(
@@ -1892,26 +1994,45 @@ def update_net_interface_table(
         interface_scope=interface_scope,
     )
     items = interface_data.get("items") or []
-    rows = []
-    for it in items:
-        speed_gbps = (float(it.get("speed_bps") or 0) / 1e9) if it.get("speed_bps") is not None else 0.0
-        rx_gbps = (float(it.get("p95_rx_bps") or 0) / 1e9) if it.get("p95_rx_bps") is not None else 0.0
-        tx_gbps = (float(it.get("p95_tx_bps") or 0) / 1e9) if it.get("p95_tx_bps") is not None else 0.0
-        total_gbps = (float(it.get("p95_total_bps") or 0) / 1e9) if it.get("p95_total_bps") is not None else 0.0
-        rows.append(
-            {
-                "host": it.get("host") or "",
-                "interface_name": it.get("interface_name") or "",
-                "interface_alias": it.get("interface_alias") or "",
-                "p95_rx_gbps": round(rx_gbps, 3),
-                "p95_tx_gbps": round(tx_gbps, 3),
-                "p95_total_gbps": round(total_gbps, 3),
-                "speed_gbps": round(speed_gbps, 3),
-                "utilization_pct": round(float(it.get("utilization_pct") or 0), 2),
-            }
-        )
+    total = int(interface_data.get("total") or len(items))
+    rows = dc_view._interface_table_rows(items)
+    footer = _net_interface_table_footer(page_backend, page_size_safe, total, len(rows))
 
-    return rows, columns
+    return rows, columns, page_size_safe, footer
+
+
+@app.callback(
+    dash.Output("net-interface-export-download", "data"),
+    dash.Input("net-interface-export-btn", "n_clicks"),
+    dash.State("net-scope-tabs", "value"),
+    dash.State("net-switch-role-segment", "value"),
+    dash.State("net-manufacturer-selector", "value"),
+    dash.State("net-device-selector", "value"),
+    dash.State("net-interface-search", "value"),
+    dash.State("app-time-range", "data"),
+    dash.State("url", "pathname"),
+    prevent_initial_call=True,
+)
+def export_net_interfaces(n_clicks, top_scope, switch_role, manufacturer, device_name, search_value, time_range, pathname):
+    if not n_clicks or not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update
+    top_scope = top_scope or "overview"
+    if not dc_view._network_page_flags(top_scope, switch_role).get("show_export"):
+        return dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    interface_scope = dc_view.resolve_network_interface_scope(top_scope, switch_role)
+    export_data = api.get_dc_network_interface_export(
+        dc_id,
+        tr,
+        search=search_value or "",
+        manufacturer=manufacturer,
+        device_name=device_name,
+        interface_scope=interface_scope,
+    )
+    csv_text = _net_export_interfaces_csv(export_data.get("items") or [])
+    scope_label = interface_scope or "overview"
+    return dict(content=csv_text, filename=f"network_interfaces_{dc_id}_{scope_label}.csv")
 
 
 @app.callback(

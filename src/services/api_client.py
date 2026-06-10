@@ -1026,6 +1026,37 @@ def get_dc_network_interface_table(
     return _api_cache_get_with_stale(ck, fetch, {})
 
 
+def get_dc_network_interface_export(
+    dc_code: str,
+    tr: Optional[dict],
+    search: Optional[str] = None,
+    manufacturer: Optional[str] = None,
+    device_role: Optional[str] = None,
+    device_name: Optional[str] = None,
+    interface_scope: Optional[str] = None,
+) -> dict:
+    enc = quote(dc_code, safe="")
+    params = _build_optional_params(
+        _build_time_params(tr),
+        search=search or "",
+        manufacturer=manufacturer,
+        device_role=device_role,
+        device_name=device_name,
+        interface_scope=interface_scope,
+    )
+    ck = f"api:dc_net_iface_export:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
+
+    def fetch() -> dict:
+        data = _get_json(
+            _get_client_dc(),
+            f"/api/v1/datacenters/{enc}/network/interface-export",
+            params=params,
+        )
+        return data if isinstance(data, dict) else {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
+
+
 def get_dc_network_firewall_summary(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
