@@ -329,25 +329,41 @@ class CustomerAdapter:
                 power_lpar_detail_rows = self._run_rows(
                     cur,
                     cq.CUSTOMER_POWER_LPAR_DETAIL_LIST,
-                    (lpar_pattern, start_ts, end_ts, lpar_pattern, start_ts, end_ts),
+                    (
+                        lpar_pattern,
+                        start_ts,
+                        end_ts,
+                        lpar_pattern,
+                        start_ts,
+                        end_ts,
+                        start_ts,
+                        end_ts,
+                        start_ts,
+                        end_ts,
+                    ),
                 )
                 power_vm_list = [
                     {
                         "name": r[0],
-                        "source": r[1],
-                        "cpu": float(r[2] or 0.0),
-                        "cpu_pct_min": float(r[3] or 0.0),
-                        "cpu_pct_avg": float(r[4] or 0.0),
-                        "cpu_pct_max": float(r[5] or 0.0),
-                        "memory_gb": float(r[6] or 0.0),
-                        "mem_pct_min": float(r[7] or 0.0),
-                        "mem_pct_avg": float(r[8] or 0.0),
-                        "mem_pct_max": float(r[9] or 0.0),
-                        "state": r[10],
+                        "lpar_name": r[1],
+                        "source": r[2],
+                        "cpu": float(r[3] or 0.0),
+                        "cpu_pct_min": float(r[4] or 0.0),
+                        "cpu_pct_avg": float(r[5] or 0.0),
+                        "cpu_pct_max": float(r[6] or 0.0),
+                        "memory_gb": float(r[7] or 0.0),
+                        "mem_pct_min": float(r[8] or 0.0),
+                        "mem_pct_avg": float(r[9] or 0.0),
+                        "mem_pct_max": float(r[10] or 0.0),
+                        "disk_gb": float(r[11] or 0.0),
+                        "disk_used_min_gb": float(r[12] or 0.0),
+                        "disk_used_max_gb": float(r[13] or 0.0),
+                        "state": r[14],
                     }
                     for r in (power_lpar_detail_rows or [])
                     if r and r[0]
                 ]
+                power_disk_total = sum(float(row.get("disk_gb") or 0.0) for row in power_vm_list)
 
                 veeam_defined_sessions = int(
                     self._run_value(cur, cq.CUSTOMER_VEEAM_DEFINED_SESSIONS, (veeam_pattern,)) or 0
@@ -496,6 +512,7 @@ class CustomerAdapter:
                 "cpu_total": power_cpu,
                 "lpar_count": power_lpars,
                 "memory_total_gb": power_memory,
+                "disk_total_gb": power_disk_total,
                 "vm_list": power_vm_list,
                 "deleted_vm_list": power_deleted_vm_list,
             },
@@ -601,6 +618,7 @@ class CustomerAdapter:
                     "cpu_total": 0.0,
                     "lpar_count": 0,
                     "memory_total_gb": 0.0,
+                    "disk_total_gb": 0.0,
                     "vm_list": [],
                     "deleted_vm_list": [],
                 },

@@ -453,21 +453,57 @@ latest_lpar AS (
       AND LEFT(lparname, 1) <> '_'
       AND time BETWEEN %s AND %s
     ORDER BY lparname, time DESC
+),
+zabbix_agg AS (
+    SELECT ibm_partition_name,
+        MIN(memory_utilization_pct) AS zbx_mem_pct_min,
+        AVG(memory_utilization_pct) AS zbx_mem_pct_avg,
+        MAX(memory_utilization_pct) AS zbx_mem_pct_max,
+        MIN(disk_utilization_pct) AS zbx_disk_pct_min,
+        AVG(disk_utilization_pct) AS zbx_disk_pct_avg,
+        MAX(disk_utilization_pct) AS zbx_disk_pct_max,
+        MIN(disk_used_bytes / 1073741824.0) AS zbx_disk_used_min_gb,
+        MAX(disk_used_bytes / 1073741824.0) AS zbx_disk_used_max_gb
+    FROM public.raw_zabbix_hana_linux_host_metrics
+    WHERE ibm_partition_name IS NOT NULL
+      AND ibm_partition_name <> ''
+      AND collection_timestamp BETWEEN %s AND %s
+    GROUP BY ibm_partition_name
+),
+zabbix_latest AS (
+    SELECT DISTINCT ON (ibm_partition_name)
+        ibm_partition_name,
+        agent_hostname,
+        disk_total_bytes
+    FROM public.raw_zabbix_hana_linux_host_metrics
+    WHERE ibm_partition_name IS NOT NULL
+      AND ibm_partition_name <> ''
+      AND collection_timestamp BETWEEN %s AND %s
+    ORDER BY ibm_partition_name, collection_timestamp DESC
 )
 SELECT
-    l.lparname AS "VM Name",
-    'Power HMC' AS "Source",
+    COALESCE(zl.agent_hostname, l.lparname) AS "VM Name",
+    l.lparname AS "LPAR Name",
+    CASE
+        WHEN zl.agent_hostname IS NOT NULL THEN 'Power HMC + Zabbix'
+        ELSE 'Power HMC'
+    END AS "Source",
     COALESCE(l.lpar_processor_currentvirtualprocessors, 0) AS "CPU",
     ROUND(COALESCE(a.cpu_pct_min, 0)::numeric, 2) AS "CPU min pct",
     ROUND(COALESCE(a.cpu_pct_avg, 0)::numeric, 2) AS "CPU avg pct",
     ROUND(COALESCE(a.cpu_pct_max, 0)::numeric, 2) AS "CPU max pct",
     COALESCE(l.memory_gb, 0) AS "Memory (GB)",
-    ROUND(COALESCE(a.mem_pct_min, 0)::numeric, 2) AS "Mem min pct",
-    ROUND(COALESCE(a.mem_pct_avg, 0)::numeric, 2) AS "Mem avg pct",
-    ROUND(COALESCE(a.mem_pct_max, 0)::numeric, 2) AS "Mem max pct",
+    ROUND(COALESCE(za.zbx_mem_pct_min, a.mem_pct_min, 0)::numeric, 2) AS "Mem min pct",
+    ROUND(COALESCE(za.zbx_mem_pct_avg, a.mem_pct_avg, 0)::numeric, 2) AS "Mem avg pct",
+    ROUND(COALESCE(za.zbx_mem_pct_max, a.mem_pct_max, 0)::numeric, 2) AS "Mem max pct",
+    COALESCE(zl.disk_total_bytes / 1073741824.0, 0) AS "Disk (GB)",
+    ROUND(COALESCE(za.zbx_disk_used_min_gb, 0)::numeric, 2) AS "Disk used min (GB)",
+    ROUND(COALESCE(za.zbx_disk_used_max_gb, 0)::numeric, 2) AS "Disk used max (GB)",
     COALESCE(l.lpar_details_state, '') AS "State"
 FROM latest_lpar l
 JOIN agg a ON a.lparname = l.lparname
+LEFT JOIN zabbix_latest zl ON zl.ibm_partition_name = l.lparname
+LEFT JOIN zabbix_agg za ON za.ibm_partition_name = l.lparname
 ORDER BY "VM Name"
 """
 
