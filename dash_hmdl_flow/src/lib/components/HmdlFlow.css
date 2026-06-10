@@ -88,6 +88,31 @@
     display: inline-block;
 }
 
+.hmdl-legend-hint {
+    color: #667085;
+    font-style: italic;
+}
+
+.hmdl-node-expanded {
+    box-shadow: 0 12px 32px rgba(85, 44, 248, 0.15);
+}
+
+.hmdl-sync-health-btn {
+    margin-top: 6px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #552cf8;
+    background: #f6f2ff;
+    border: 1px solid #d8d2f8;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.hmdl-sync-health-btn:hover {
+    background: #ede8ff;
+}
+
 @keyframes hmdl-flow-dash {
     to {
         stroke-dashoffset: -28;

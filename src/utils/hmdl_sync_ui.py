@@ -51,6 +51,80 @@ def node_status_badge(node: dict) -> dmc.Badge:
     return sync_status_badge(str(node.get("loki_sync_status") or "not_synced"))
 
 
+def environment_status_badge(status: str | None, *, issue_count: int = 0) -> dmc.Badge:
+    s = str(status or "").lower()
+    if s == "connected":
+        return dmc.Badge("Connected", color="green", variant="light", size="sm")
+    if s == "connectivity_issue":
+        label = f"Connectivity issue ({issue_count})" if issue_count else "Connectivity issue"
+        return dmc.Badge(label, color="orange", variant="light", size="sm")
+    return dmc.Badge("No configured proxy", color="gray", variant="light", size="sm")
+
+
+def build_environment_health_grid(locations: list[dict], selected_dc: str | None) -> html.Div:
+    if not locations:
+        return dmc.Alert("No Loki root locations returned from hmdl-api.", color="gray", variant="light")
+
+    cards = []
+    for loc in locations:
+        dc_code = str(loc.get("dc_code") or "").strip().upper()
+        location_name = str(loc.get("location_name") or dc_code or "—")
+        title = dc_code or location_name
+        env_status = str(loc.get("environment_status") or "no_configured_proxy")
+        issue_count = int(loc.get("connectivity_issue_count") or 0)
+        proxy_count = int(loc.get("proxy_count") or 0)
+        is_selected = bool(dc_code and selected_dc and dc_code == selected_dc.upper())
+
+        card_body = dmc.Stack(
+            gap=6,
+            children=[
+                dmc.Text(title, fw=700, size="sm"),
+                dmc.Text(location_name if dc_code and location_name != dc_code else "", size="xs", c="dimmed"),
+                environment_status_badge(env_status, issue_count=issue_count),
+                dmc.Text(
+                    f"{proxy_count} NiFi proxy" if proxy_count != 1 else "1 NiFi proxy",
+                    size="xs",
+                    c="dimmed",
+                )
+                if proxy_count
+                else dmc.Text("No proxy configured", size="xs", c="dimmed"),
+            ],
+        )
+
+        if dc_code:
+            cards.append(
+                html.Div(
+                    id={"type": "hmdl-env-select", "dc": dc_code},
+                    n_clicks=0,
+                    style={"cursor": "pointer"},
+                    children=[
+                        dmc.Card(
+                            withBorder=True,
+                            padding="sm",
+                            radius="md",
+                            style={
+                                "borderColor": "#552cf8" if is_selected else "#eef1f4",
+                                "background": "#f6f2ff" if is_selected else "#ffffff",
+                            },
+                            children=card_body,
+                        )
+                    ],
+                )
+            )
+        else:
+            cards.append(
+                dmc.Card(
+                    withBorder=True,
+                    padding="sm",
+                    radius="md",
+                    style={"borderColor": "#eef1f4", "opacity": 0.85},
+                    children=card_body,
+                )
+            )
+
+    return dmc.SimpleGrid(cols={"base": 1, "sm": 2, "md": 3, "lg": 4}, spacing="md", children=cards)
+
+
 def category_chip(category: str, *, active: bool = False) -> dmc.Badge:
     label = CATEGORY_LABELS.get(category, category.replace("_", " ").title())
     color = CATEGORY_COLORS.get(category, "gray")

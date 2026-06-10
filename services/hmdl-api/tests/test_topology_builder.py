@@ -82,10 +82,12 @@ def test_build_topology_payload_counts_and_edges(mock_proxies, mock_catalog, moc
     assert payload["no_configured_proxy_count"] == 1
     assert payload["source_node"]["id"] == "LOKI"
 
-    collection_edges = [e for e in payload["edges"] if e["edge_type"] == "collection"]
-    assert len(collection_edges) == 2
-    assert any(e["to_dc"] == "DC20" for e in collection_edges)
+    ingestion_edges = [e for e in payload["edges"] if e["edge_type"] == "ingestion"]
+    assert len(ingestion_edges) == 1
+    assert ingestion_edges[0]["from_dc"] == "DC20"
+    assert ingestion_edges[0]["to_dc"] == "DC13"
 
     distribution_edges = [e for e in payload["edges"] if e["edge_type"] == "distribution"]
     assert len(distribution_edges) == 1
-    assert distribution_edges[0]["to_dc"] == "DC13-NIFI1"
+    assert distribution_edges[0]["from_dc"] == "DC13-NIFI1"
+    assert distribution_edges[0]["to_dc"] == "DC13"

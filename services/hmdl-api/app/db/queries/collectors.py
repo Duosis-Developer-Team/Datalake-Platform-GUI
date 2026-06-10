@@ -71,18 +71,51 @@ def _proxy_to_dc_map() -> dict[str, str]:
     return mapping
 
 
+def _enrich_node_environment(node: dict[str, Any], run_id: str | None) -> dict[str, Any]:
+    from app.services import environment_status as env
+
+    proxy_config = str(node.get("proxy_config_status") or "")
+    dc_code = node.get("dc_code")
+    if proxy_config == "no_configured_proxy" or not dc_code:
+        return {
+            **node,
+            "environment_status": "no_configured_proxy",
+            "connectivity_issue_count": 0,
+        }
+    counts = _category_counts_for_dc(str(dc_code).upper(), run_id)
+    status = env.resolve_environment_status(proxy_config, counts)
+    return {
+        **node,
+        "environment_status": status,
+        "connectivity_issue_count": int(counts.get("connectivity_issue") or 0),
+    }
+
+
+def _enrich_topology_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    from app.services import environment_status as env
+
+    run_id = payload.get("last_prod_run_id")
+    nodes = [_enrich_node_environment(n, run_id) for n in payload.get("nodes") or []]
+    payload["nodes"] = nodes
+    connected, connectivity, _no_proxy = env.count_environments(nodes)
+    payload["connected_environment_count"] = connected
+    payload["connectivity_issue_environment_count"] = connectivity
+    return payload
+
+
 def build_topology(hub_dc: str) -> dict[str, Any]:
     from app.services import topology_builder
 
     last_run = _last_prod_run()
     logs = _latest_logs_by_proxy()
     stats = _target_stats_by_proxy()
-    return topology_builder.build_topology_payload(
+    payload = topology_builder.build_topology_payload(
         hub_dc,
         last_run=last_run,
         logs=logs,
         stats=stats,
     )
+    return _enrich_topology_payload(payload)
 
 
 def build_sync_summary() -> dict[str, Any]:
@@ -102,6 +135,8 @@ def build_sync_summary() -> dict[str, Any]:
         "total_dc_count": topo["total_dc_count"],
         "configured_location_count": topo.get("configured_location_count", 0),
         "no_configured_proxy_count": topo.get("no_configured_proxy_count", 0),
+        "connected_environment_count": topo.get("connected_environment_count", 0),
+        "connectivity_issue_environment_count": topo.get("connectivity_issue_environment_count", 0),
         "synced_proxy_count": sum(1 for s in proxy_statuses if s == "loki_synced"),
         "total_proxy_count": len(proxy_statuses),
         "dc_statuses": topo.get("dc_statuses") or {},
@@ -165,6 +200,8 @@ def get_dc_summary(dc_code: str) -> dict[str, Any] | None:
             "dc_code": dc_code,
             "location_name": node.get("location_name"),
             "proxy_config_status": "no_configured_proxy",
+            "environment_status": "no_configured_proxy",
+            "connectivity_issue_count": 0,
             "loki_sync_status": "not_synced",
             "proxy_count": 0,
             "target_count": 0,
@@ -215,6 +252,8 @@ def get_dc_summary(dc_code: str) -> dict[str, Any] | None:
         "dc_code": dc_code,
         "location_name": node.get("location_name"),
         "proxy_config_status": "configured",
+        "environment_status": node.get("environment_status"),
+        "connectivity_issue_count": node.get("connectivity_issue_count", 0),
         "loki_sync_status": node["loki_sync_status"],
         "proxy_count": len(proxy_ids),
         "target_count": int(target_count_row["cnt"] or 0) if target_count_row else 0,
@@ -389,12 +428,22 @@ def get_dc_targets(
 
 
 def list_root_locations() -> list[dict[str, Any]]:
-    from app.services import topology_builder
-
-    return topology_builder.build_locations_payload(
-        logs=_latest_logs_by_proxy(),
-        stats=_target_stats_by_proxy(),
-    )
+    topo = build_topology(settings.hub_dc_code)
+    return [
+        {
+            "location_id": n.get("location_id"),
+            "location_name": n.get("location_name"),
+            "dc_code": n.get("dc_code"),
+            "site_name": n.get("site_name"),
+            "description": n.get("description"),
+            "proxy_config_status": n.get("proxy_config_status"),
+            "loki_sync_status": n.get("loki_sync_status"),
+            "environment_status": n.get("environment_status"),
+            "connectivity_issue_count": n.get("connectivity_issue_count", 0),
+            "proxy_count": len(n.get("proxies") or []),
+        }
+        for n in topo.get("nodes") or []
+    ]
 
 
 def list_recent_runs(limit: int = 20) -> list[dict[str, Any]]:

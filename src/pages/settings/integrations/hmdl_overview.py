@@ -59,8 +59,8 @@ def build_layout(search: str | None = None) -> html.Div:
         withBorder=True,
         children=[
             section_header(
-                "Loki → NiFi data flow",
-                f"Root locations from Loki inventory; hub {topology.get('hub_dc', 'DC13')} highlighted.",
+                "DC13 ETL hub — remote proxy ingestion",
+                f"Remote NiFi proxies ingest toward central hub {topology.get('hub_dc', 'DC13')}. Click a location to expand NiFi nodes.",
                 icon="solar:diagram-up-bold-duotone",
             ),
             dcc.Loading(build_topology_graph(topology), type="circle"),

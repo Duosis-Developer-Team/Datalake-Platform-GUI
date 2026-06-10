@@ -24,7 +24,7 @@ def build_topology_graph(topology: dict) -> html.Div:
                 id="hmdl-topology-flow",
                 topologyData=topology,
                 hubDc=str(topology.get("hub_dc") or "DC13"),
-                height=560,
+                height=640,
             ),
             html.Div(
                 style={"marginTop": "12px"},
@@ -35,7 +35,11 @@ def build_topology_graph(topology: dict) -> html.Div:
                         sync_status_badge("loki_synced"),
                         sync_status_badge("not_synced"),
                         proxy_config_badge(),
-                        dmc.Text("Drag nodes to rearrange · Click a DC for Sync Health", size="xs", c="dimmed"),
+                        dmc.Text(
+                            "Click location to expand NiFi · Sync Health button for detail · Drag to rearrange",
+                            size="xs",
+                            c="dimmed",
+                        ),
                     ],
                 ),
             ),

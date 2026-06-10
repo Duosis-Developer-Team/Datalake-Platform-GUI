@@ -19,6 +19,8 @@ const PRIMARY = '#552cf8';
 const SYNC_GREEN = '#17B26A';
 const SYNC_RED = '#F04438';
 const NO_PROXY = '#98A2B3';
+const NODE_W = 152;
+const NODE_H = 88;
 
 function statusColor(node) {
     if (node.proxy_config_status === 'no_configured_proxy') return NO_PROXY;
@@ -32,27 +34,60 @@ function badgeLabel(node) {
     return 'Not synced';
 }
 
-function SourceNode({ data }) {
-    return (
-        <div className="hmdl-node hmdl-node-source">
-            <Handle type="source" position={Position.Bottom} />
-            <div className="hmdl-node-title">{data.label || 'Loki Inventory'}</div>
-            <div className="hmdl-node-sub">NetBox locations</div>
-        </div>
-    );
+function nodeId(dc) {
+    return String(dc.dc_code || dc.location_name || `loc-${dc.location_id || ''}`);
+}
+
+function proxyLabel(proxyId) {
+    const name = String(proxyId || '');
+    if (name.includes('-NIFI')) {
+        return name.replace(/-NIFI/i, ' NiFi');
+    }
+    return name;
 }
 
 function DcNode({ data }) {
     const color = statusColor(data.raw || {});
     const isHub = data.isHub;
+    const expanded = data.expanded;
     return (
-        <div className={`hmdl-node hmdl-node-dc${isHub ? ' hmdl-node-hub' : ''}`} style={{ borderColor: color }}>
-            <Handle type="target" position={Position.Top} />
-            <Handle type="source" position={Position.Bottom} />
+        <div
+            className={`hmdl-node hmdl-node-dc${isHub ? ' hmdl-node-hub' : ''}${expanded ? ' hmdl-node-expanded' : ''}`}
+            style={{ borderColor: color }}
+        >
+            {!isHub && <Handle type="source" position={Position.Bottom} id="out" />}
+            {isHub && (
+                <>
+                    <Handle type="target" position={Position.Top} id="t" />
+                    <Handle type="target" position={Position.Right} id="r" />
+                    <Handle type="target" position={Position.Bottom} id="b" />
+                    <Handle type="target" position={Position.Left} id="l" />
+                </>
+            )}
+            {!isHub && <Handle type="target" position={Position.Top} id="in" />}
             <div className="hmdl-node-title">{data.label}</div>
-            <div className="hmdl-badge" style={{ background: `${color}22`, color }}>{badgeLabel(data.raw || {})}</div>
-            {data.proxyCount > 0 && (
-                <div className="hmdl-node-sub">{data.proxyCount} proxy</div>
+            {!isHub && (
+                <div className="hmdl-badge" style={{ background: `${color}22`, color }}>
+                    {badgeLabel(data.raw || {})}
+                </div>
+            )}
+            {isHub && <div className="hmdl-node-sub">Central collector hub</div>}
+            {!isHub && data.proxyCount > 0 && (
+                <div className="hmdl-node-sub">
+                    {expanded ? 'Click to collapse' : `${data.proxyCount} NiFi · click to expand`}
+                </div>
+            )}
+            {data.dcCode && data.onSyncHealth && (
+                <button
+                    type="button"
+                    className="hmdl-sync-health-btn"
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        data.onSyncHealth(data.dcCode);
+                    }}
+                >
+                    Sync Health
+                </button>
             )}
         </div>
     );
@@ -63,7 +98,7 @@ function ProxyNode({ data }) {
     const color = synced ? SYNC_GREEN : SYNC_RED;
     return (
         <div className="hmdl-node hmdl-node-proxy" style={{ borderColor: color }}>
-            <Handle type="target" position={Position.Top} />
+            <Handle type="source" position={Position.Bottom} id="out" />
             <div className="hmdl-node-title">{data.label}</div>
             <div className="hmdl-badge" style={{ background: `${color}22`, color }}>
                 {synced ? 'Synced' : 'Not synced'}
@@ -73,7 +108,6 @@ function ProxyNode({ data }) {
 }
 
 const nodeTypes = {
-    source: SourceNode,
     dc: DcNode,
     proxy: ProxyNode,
 };
@@ -107,130 +141,217 @@ const edgeTypes = {
     animated: AnimatedEdge,
 };
 
-function layoutTopology(topology, hubDc) {
+function layoutTopology(topology, hubDc, expandedDcs, onSyncHealth) {
     const nodes = [];
     const edges = [];
     if (!topology || typeof topology !== 'object') {
         return { nodes, edges };
     }
 
-    const source = topology.source_node || { id: 'LOKI', label: 'Loki Inventory' };
+    const hub = String(hubDc || topology.hub_dc || 'DC13').toUpperCase();
     const dcNodes = topology.nodes || [];
-    const cx = 420;
-    const sourceY = 20;
-    const dcRadius = 240;
-    const dcY = 220;
+    const cx = 520;
+    const cy = 340;
 
-    nodes.push({
-        id: source.id || 'LOKI',
-        type: 'source',
-        position: { x: cx - 90, y: sourceY },
-        data: { label: source.label || 'Loki Inventory' },
-        draggable: true,
+    const hubData = dcNodes.find(
+        (n) => n.role === 'hub' || (n.dc_code && String(n.dc_code).toUpperCase() === hub),
+    );
+    const spokes = dcNodes.filter((n) => {
+        if (hubData && nodeId(n) === nodeId(hubData)) return false;
+        return true;
     });
 
-    const count = dcNodes.length || 1;
-    dcNodes.forEach((dc, index) => {
-        const angle = (2 * Math.PI * index) / count - Math.PI / 2;
-        const dcId = dc.dc_code || dc.location_name || `loc-${index}`;
-        const x = cx + dcRadius * Math.cos(angle) - 80;
-        const y = dcY + dcRadius * Math.sin(angle) * 0.55;
-        const isHub = dc.role === 'hub' || (hubDc && dc.dc_code === hubDc);
+    const spokeCount = Math.max(spokes.length, 1);
+    const radius = Math.max(340, ((NODE_W + 48) * spokeCount) / (2 * Math.PI));
+
+    if (hubData) {
+        const hid = nodeId(hubData);
+        const hubExpanded = expandedDcs.has(hid);
+        nodes.push({
+            id: hid,
+            type: 'dc',
+            position: { x: cx - NODE_W / 2, y: cy - 50 },
+            data: {
+                label: `${hub} ETL Engine`,
+                raw: hubData,
+                isHub: true,
+                expanded: hubExpanded,
+                proxyCount: (hubData.proxies || []).length,
+                dcCode: hubData.dc_code,
+                onSyncHealth,
+            },
+            draggable: true,
+        });
+
+        if (hubExpanded) {
+            (hubData.proxies || []).forEach((proxy, pIndex) => {
+                const pid = String(proxy.proxy_id);
+                const offset = (pIndex - (hubData.proxies.length - 1) / 2) * 145;
+                nodes.push({
+                    id: pid,
+                    type: 'proxy',
+                    position: { x: cx + offset - 55, y: cy + 105 },
+                    data: {
+                        label: proxyLabel(pid),
+                        loki_sync_status: proxy.loki_sync_status,
+                    },
+                    draggable: true,
+                });
+                edges.push({
+                    id: `dist-${pid}-${hid}`,
+                    source: pid,
+                    target: hid,
+                    targetHandle: 'b',
+                    type: 'animated',
+                    data: {
+                        stroke: proxy.loki_sync_status === 'loki_synced' ? SYNC_GREEN : SYNC_RED,
+                        animated: true,
+                    },
+                });
+            });
+        }
+    }
+
+    const hubTargetId = hubData ? nodeId(hubData) : hub;
+
+    spokes.forEach((dc, index) => {
+        const angle = (2 * Math.PI * index) / spokeCount - Math.PI / 2;
+        const dcId = nodeId(dc);
+        const x = cx + radius * Math.cos(angle) - NODE_W / 2;
+        const y = cy + radius * Math.sin(angle) - 44;
+        const displayName = dc.dc_code || dc.location_name;
+        const expanded = expandedDcs.has(dcId);
+        const configured = dc.proxy_config_status === 'configured';
 
         nodes.push({
             id: dcId,
             type: 'dc',
             position: { x, y },
             data: {
-                label: dc.dc_code || dc.location_name,
+                label: `${displayName} Proxy`,
                 raw: dc,
-                isHub,
+                isHub: false,
+                expanded,
                 proxyCount: (dc.proxies || []).length,
-                dcCode: dc.dc_code,
+                dcCode: dc.dc_code || null,
+                onSyncHealth: dc.dc_code ? onSyncHealth : null,
             },
             draggable: true,
         });
 
-        edges.push({
-            id: `e-${source.id}-${dcId}`,
-            source: source.id || 'LOKI',
-            target: dcId,
-            type: 'animated',
-            data: {
-                stroke: dc.proxy_config_status === 'no_configured_proxy' ? NO_PROXY : PRIMARY,
-                animated: dc.proxy_config_status === 'configured',
-            },
-        });
-
-        (dc.proxies || []).forEach((proxy, pIndex) => {
-            const pid = proxy.proxy_id;
-            const px = x + (pIndex - ((dc.proxies.length - 1) / 2)) * 130;
-            const py = y + 110;
-            nodes.push({
-                id: pid,
-                type: 'proxy',
-                position: { x: px, y: py },
-                data: {
-                    label: pid,
-                    loki_sync_status: proxy.loki_sync_status,
-                },
-                draggable: true,
-            });
+        if (hubData) {
             edges.push({
-                id: `e-${dcId}-${pid}`,
+                id: `ingest-${dcId}-${hubTargetId}`,
                 source: dcId,
-                target: pid,
+                sourceHandle: 'out',
+                target: hubTargetId,
                 type: 'animated',
                 data: {
-                    stroke: proxy.loki_sync_status === 'loki_synced' ? SYNC_GREEN : SYNC_RED,
-                    animated: true,
+                    stroke: configured ? PRIMARY : NO_PROXY,
+                    animated: configured,
                 },
             });
-        });
+        }
+
+        if (expanded) {
+            (dc.proxies || []).forEach((proxy, pIndex) => {
+                const pid = String(proxy.proxy_id);
+                const towardHub = Math.atan2(cy - y, cx - x);
+                const spread = (pIndex - (dc.proxies.length - 1) / 2) * 0.35;
+                const childAngle = towardHub + spread;
+                const childDist = 95;
+                const px = x + NODE_W / 2 + childDist * Math.cos(childAngle) - 55;
+                const py = y + NODE_H + childDist * Math.sin(childAngle) * 0.4;
+
+                nodes.push({
+                    id: `${dcId}::${pid}`,
+                    type: 'proxy',
+                    position: { x: px, y: py },
+                    data: {
+                        label: proxyLabel(pid),
+                        loki_sync_status: proxy.loki_sync_status,
+                    },
+                    draggable: true,
+                });
+                edges.push({
+                    id: `dist-${dcId}-${pid}`,
+                    source: `${dcId}::${pid}`,
+                    target: dcId,
+                    targetHandle: 'in',
+                    type: 'animated',
+                    data: {
+                        stroke: proxy.loki_sync_status === 'loki_synced' ? SYNC_GREEN : SYNC_RED,
+                        animated: true,
+                    },
+                });
+            });
+        }
     });
 
     return { nodes, edges };
 }
 
-const HmdlFlow = ({ id, setProps, topologyData, hubDc, height, clickedNode }) => {
-    const layout = useMemo(
-        () => layoutTopology(topologyData, hubDc || topologyData?.hub_dc),
-        [topologyData, hubDc],
+const HmdlFlow = ({ id, setProps, topologyData, hubDc, height }) => {
+    const [expandedDcs, setExpandedDcs] = useState(() => new Set());
+
+    const onSyncHealth = useCallback(
+        (dcCode) => {
+            if (!setProps || !dcCode) return;
+            setProps({
+                clickedNode: {
+                    action: 'navigate',
+                    nodeType: 'dc',
+                    dcCode: String(dcCode).toUpperCase(),
+                },
+            });
+        },
+        [setProps],
     );
+
+    const layout = useMemo(
+        () => layoutTopology(topologyData, hubDc || topologyData?.hub_dc, expandedDcs, onSyncHealth),
+        [topologyData, hubDc, expandedDcs, onSyncHealth],
+    );
+
     const [nodes, setNodes, onNodesChange] = useNodesState(layout.nodes);
     const [edges, setEdges, onEdgesChange] = useEdgesState(layout.edges);
-    const [positionsLoaded, setPositionsLoaded] = useState(false);
 
     useEffect(() => {
-        const storageKey = `hmdl-flow-positions-${id || 'default'}`;
+        const storageKey = `hmdl-flow-hub-positions-${id || 'default'}`;
+        const nextLayout = layoutTopology(
+            topologyData,
+            hubDc || topologyData?.hub_dc,
+            expandedDcs,
+            onSyncHealth,
+        );
         try {
             const saved = localStorage.getItem(storageKey);
             if (saved) {
                 const parsed = JSON.parse(saved);
-                setNodes((current) =>
-                    current.map((n) => (parsed[n.id] ? { ...n, position: parsed[n.id] } : n)),
+                nextLayout.nodes = nextLayout.nodes.map((n) =>
+                    parsed[n.id] && (n.type === 'dc') ? { ...n, position: parsed[n.id] } : n,
                 );
-            } else {
-                setNodes(layout.nodes);
             }
         } catch (_err) {
-            setNodes(layout.nodes);
+            /* ignore */
         }
-        setEdges(layout.edges);
-        setPositionsLoaded(true);
-    }, [layout, id, setNodes, setEdges]);
+        setNodes(nextLayout.nodes);
+        setEdges(nextLayout.edges);
+    }, [topologyData, hubDc, expandedDcs, onSyncHealth, id, setNodes, setEdges]);
 
     const persistPositions = useCallback(
         (nextNodes) => {
-            const storageKey = `hmdl-flow-positions-${id || 'default'}`;
+            const storageKey = `hmdl-flow-hub-positions-${id || 'default'}`;
             const map = {};
             nextNodes.forEach((n) => {
-                map[n.id] = n.position;
+                if (n.type === 'dc') {
+                    map[n.id] = n.position;
+                }
             });
             try {
                 localStorage.setItem(storageKey, JSON.stringify(map));
             } catch (_err) {
-                /* ignore quota errors */
+                /* ignore */
             }
         },
         [id],
@@ -243,25 +364,21 @@ const HmdlFlow = ({ id, setProps, topologyData, hubDc, height, clickedNode }) =>
         });
     }, [persistPositions, setNodes]);
 
-    const onNodeClick = useCallback(
-        (_event, node) => {
-            if (!setProps) return;
-            const payload = {
-                nodeId: node.id,
-                nodeType: node.type,
-                dcCode: node.data?.dcCode || (node.type === 'dc' ? node.id : null),
-            };
-            setProps({ clickedNode: payload });
-        },
-        [setProps],
-    );
-
-    if (!positionsLoaded) {
-        return <div className="hmdl-flow-shell" style={{ height: height || 560 }} />;
-    }
+    const onNodeClick = useCallback((_event, node) => {
+        if (node.type !== 'dc') return;
+        setExpandedDcs((prev) => {
+            const next = new Set(prev);
+            if (next.has(node.id)) {
+                next.delete(node.id);
+            } else {
+                next.add(node.id);
+            }
+            return next;
+        });
+    }, []);
 
     return (
-        <div className="hmdl-flow-shell" style={{ height: height || 560 }}>
+        <div className="hmdl-flow-shell" style={{ height: height || 640 }}>
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
@@ -272,8 +389,8 @@ const HmdlFlow = ({ id, setProps, topologyData, hubDc, height, clickedNode }) =>
                 nodeTypes={nodeTypes}
                 edgeTypes={edgeTypes}
                 fitView
-                fitViewOptions={{ padding: 0.2 }}
-                minZoom={0.35}
+                fitViewOptions={{ padding: 0.25 }}
+                minZoom={0.25}
                 maxZoom={1.5}
                 proOptions={{ hideAttribution: true }}
             >
@@ -284,8 +401,10 @@ const HmdlFlow = ({ id, setProps, topologyData, hubDc, height, clickedNode }) =>
                     pannable
                     zoomable
                     nodeColor={(n) => {
-                        if (n.type === 'source') return PRIMARY;
-                        if (n.type === 'proxy') return n.data?.loki_sync_status === 'loki_synced' ? SYNC_GREEN : SYNC_RED;
+                        if (n.type === 'proxy') {
+                            return n.data?.loki_sync_status === 'loki_synced' ? SYNC_GREEN : SYNC_RED;
+                        }
+                        if (n.data?.isHub) return PRIMARY;
                         return statusColor(n.data?.raw || {});
                     }}
                 />
@@ -294,6 +413,7 @@ const HmdlFlow = ({ id, setProps, topologyData, hubDc, height, clickedNode }) =>
                 <span className="hmdl-legend-item"><i style={{ background: SYNC_GREEN }} /> Loki synced</span>
                 <span className="hmdl-legend-item"><i style={{ background: SYNC_RED }} /> Not synced</span>
                 <span className="hmdl-legend-item"><i style={{ background: NO_PROXY }} /> No configured proxy</span>
+                <span className="hmdl-legend-item hmdl-legend-hint">Click location to expand NiFi nodes</span>
             </div>
         </div>
     );
@@ -311,7 +431,7 @@ HmdlFlow.propTypes = {
 HmdlFlow.defaultProps = {
     topologyData: {},
     hubDc: 'DC13',
-    height: 560,
+    height: 640,
 };
 
 export default HmdlFlow;

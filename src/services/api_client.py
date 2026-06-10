@@ -2132,6 +2132,8 @@ _EMPTY_HMDL_TOPOLOGY: dict[str, Any] = {
     "total_dc_count": 0,
     "configured_location_count": 0,
     "no_configured_proxy_count": 0,
+    "connected_environment_count": 0,
+    "connectivity_issue_environment_count": 0,
     "dc_statuses": {},
 }
 
@@ -2143,6 +2145,8 @@ _EMPTY_HMDL_SUMMARY: dict[str, Any] = {
     "total_dc_count": 0,
     "configured_location_count": 0,
     "no_configured_proxy_count": 0,
+    "connected_environment_count": 0,
+    "connectivity_issue_environment_count": 0,
     "synced_proxy_count": 0,
     "total_proxy_count": 0,
     "dc_statuses": {},

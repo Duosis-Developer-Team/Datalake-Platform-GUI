@@ -2,7 +2,12 @@
 
 from src.components.hmdl_topology import build_topology_legend_only
 from src.services.api_client import _EMPTY_HMDL_SUMMARY, _EMPTY_HMDL_TOPOLOGY
-from src.utils.hmdl_sync_ui import node_status_badge, proxy_config_badge, sync_status_badge
+from src.utils.hmdl_sync_ui import (
+    environment_status_badge,
+    node_status_badge,
+    proxy_config_badge,
+    sync_status_badge,
+)
 
 
 def test_empty_topology_contract():
@@ -27,3 +32,9 @@ def test_node_status_badges():
 def test_topology_legend():
     legend = build_topology_legend_only()
     assert legend is not None
+
+
+def test_environment_status_badges():
+    assert environment_status_badge("connected") is not None
+    assert environment_status_badge("connectivity_issue", issue_count=2) is not None
+    assert environment_status_badge("no_configured_proxy") is not None

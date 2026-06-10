@@ -113,38 +113,31 @@ def build_location_nodes(
 
 
 def build_flow_edges(nodes: list[dict[str, Any]], hub_dc: str) -> list[dict[str, Any]]:
+    """Spoke locations ingest toward hub DC; proxy nodes distribute to parent location."""
     edges: list[dict[str, Any]] = []
+    hub = hub_dc.upper()
     for node in nodes:
-        target = node.get("dc_code") or node.get("location_name") or ""
-        if not target:
+        parent = node.get("dc_code") or node.get("location_name") or ""
+        for proxy in node.get("proxies") or []:
+            pid = str(proxy.get("proxy_id") or "")
+            if pid and parent:
+                edges.append(
+                    {
+                        "from_dc": pid,
+                        "to_dc": parent,
+                        "edge_type": "distribution",
+                    }
+                )
+        if node.get("role") == "hub":
+            continue
+        spoke = parent
+        if not spoke:
             continue
         edges.append(
             {
-                "from_dc": LOKI_SOURCE_ID,
-                "to_dc": target,
-                "edge_type": "collection",
-            }
-        )
-        for proxy in node.get("proxies") or []:
-            edges.append(
-                {
-                    "from_dc": target,
-                    "to_dc": str(proxy.get("proxy_id") or ""),
-                    "edge_type": "distribution",
-                }
-            )
-
-    spokes = [
-        n.get("dc_code")
-        for n in nodes
-        if n.get("role") == "spoke" and n.get("dc_code")
-    ]
-    for dc in spokes:
-        edges.append(
-            {
-                "from_dc": hub_dc.upper(),
-                "to_dc": dc,
-                "edge_type": "hub_spoke",
+                "from_dc": spoke,
+                "to_dc": hub,
+                "edge_type": "ingestion",
             }
         )
     return edges

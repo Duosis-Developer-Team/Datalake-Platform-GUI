@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 LokiSyncStatus = Literal["loki_synced", "not_synced"]
 ProxyConfigStatus = Literal["configured", "no_configured_proxy"]
 NodeRole = Literal["hub", "spoke", "source"]
-EdgeType = Literal["collection", "distribution", "hub_spoke"]
+EdgeType = Literal["collection", "distribution", "hub_spoke", "ingestion"]
+EnvironmentStatus = Literal["connected", "connectivity_issue", "no_configured_proxy"]
 InclusionCategory = Literal[
     "monitored",
     "not_monitored",
@@ -42,6 +43,8 @@ class TopologyNode(BaseModel):
     role: NodeRole
     proxy_config_status: ProxyConfigStatus
     loki_sync_status: LokiSyncStatus | None = None
+    environment_status: EnvironmentStatus | None = None
+    connectivity_issue_count: int = 0
     proxies: list[ProxyNode] = Field(default_factory=list)
 
 
@@ -69,6 +72,8 @@ class TopologyResponse(BaseModel):
     total_dc_count: int
     configured_location_count: int = 0
     no_configured_proxy_count: int = 0
+    connected_environment_count: int = 0
+    connectivity_issue_environment_count: int = 0
     dc_statuses: dict[str, LokiSyncStatus] = Field(default_factory=dict)
 
 
@@ -80,6 +85,8 @@ class SyncSummaryResponse(BaseModel):
     total_dc_count: int
     configured_location_count: int = 0
     no_configured_proxy_count: int = 0
+    connected_environment_count: int = 0
+    connectivity_issue_environment_count: int = 0
     synced_proxy_count: int
     total_proxy_count: int
     dc_statuses: dict[str, LokiSyncStatus]
@@ -125,6 +132,8 @@ class DcSummaryResponse(BaseModel):
     dc_code: str
     location_name: str | None = None
     proxy_config_status: ProxyConfigStatus = "configured"
+    environment_status: EnvironmentStatus | None = None
+    connectivity_issue_count: int = 0
     loki_sync_status: LokiSyncStatus
     proxy_count: int
     target_count: int
@@ -142,6 +151,8 @@ class LocationRow(BaseModel):
     description: str | None = None
     proxy_config_status: ProxyConfigStatus
     loki_sync_status: LokiSyncStatus | None = None
+    environment_status: EnvironmentStatus | None = None
+    connectivity_issue_count: int = 0
     proxy_count: int = 0
 
 
