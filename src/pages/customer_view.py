@@ -1152,12 +1152,14 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None, crm_eff_panel:
     lpars = int(power.get("lpar_count", 0) or 0)
     cpu = float(power.get("cpu_total", 0) or 0)
     mem_gb = float(power.get("memory_total_gb", 0) or 0)
+    disk_gb = float(power.get("disk_total_gb", 0) or 0)
     vm_list = power.get("vm_list", []) or []
     deleted = power.get("deleted_vm_list", []) or []
 
     def row_fn(r):
         return html.Tr([
             html.Td(r.get("name")),
+            html.Td(r.get("lpar_name", "-")),
             html.Td(r.get("source", "Power HMC")),
             _vm_metric_td(r.get("cpu", 0), decimals=1),
             _vm_metric_td(r.get("cpu_pct_max", 0), suffix="%"),
@@ -1175,11 +1177,23 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None, crm_eff_panel:
             _vm_metric_td(r.get("mem_pct_max", 0), suffix="%"),
             _vm_metric_td(r.get("mem_pct_avg", 0), suffix="%"),
             _vm_metric_td(r.get("mem_pct_min", 0), suffix="%"),
+            html.Td(
+                smart_storage(r.get("disk_gb", 0)),
+                style={
+                    "textAlign": "right",
+                    "fontVariantNumeric": "tabular-nums",
+                    "fontSize": "0.8125rem",
+                    "verticalAlign": "middle",
+                },
+            ),
+            _vm_metric_td(r.get("disk_used_max_gb", 0)),
+            _vm_metric_td(r.get("disk_used_min_gb", 0)),
             html.Td(r.get("state", "-")),
             html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
         ])
 
     cols = [
+        "Host Name",
         "LPAR Name",
         "Source",
         "CPU (vProc)",
@@ -1190,27 +1204,31 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None, crm_eff_panel:
         "Mem % max",
         "Mem % avg",
         "Mem % min",
+        "Disk",
+        "Disk used max (GB)",
+        "Disk used min (GB)",
         "State",
         "Availability",
     ]
-    _power_numeric_cols = frozenset(range(2, 10))
+    _power_numeric_cols = frozenset(range(3, 14))
     head_pw = [crm_eff_panel] if crm_eff_panel is not None else []
     return dmc.Stack(
         gap="lg",
         children=head_pw
         + [
             dmc.SimpleGrid(
-                cols=3,
+                cols=4,
                 spacing="lg",
                 children=[
                     _metric("LPARs", f"{lpars:,}", "solar:server-square-bold-duotone", color="grape"),
                     _metric("CPU (vCPU)", f"{cpu:.1f}", "solar:cpu-bold-duotone", color="grape"),
                     _metric("Memory", smart_memory(mem_gb), "solar:ram-bold-duotone", color="grape"),
+                    _metric("Disk", smart_storage(disk_gb), "solar:database-bold-duotone", color="grape"),
                 ],
             ),
             _section_card(
                 "IBM LPARs",
-                "IBM Power LPAR allocation — CPU/Memory usage % over report period",
+                "IBM Power LPAR allocation — HMC capacity with Zabbix agent memory/disk usage",
                 dmc.Stack(
                     gap="md",
                     children=[
