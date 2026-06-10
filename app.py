@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import math
 import logging
 import os
 import threading
@@ -1635,6 +1636,23 @@ def _net_interface_table_footer(page: int, page_size: int, total: int, row_count
     return f"Showing {start:,}–{end:,} of {total:,} interfaces"
 
 
+def _net_interface_table_page_count(total: int, page_size: int) -> int:
+    if total <= 0:
+        return 1
+    return max(1, math.ceil(total / page_size))
+
+
+def _net_interface_table_triggered_id() -> str | None:
+    ctx = dash.callback_context
+    try:
+        triggered_id = getattr(ctx, "triggered_id", None)
+    except dash.exceptions.MissingCallbackContextException:
+        return None
+    if triggered_id is None and ctx.triggered:
+        triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    return triggered_id
+
+
 def _net_export_interfaces_csv(items: list[dict]) -> str:
     import csv
     import io
@@ -1945,6 +1963,8 @@ def update_net_kpis_and_charts(top_scope, switch_role, manufacturer, device_name
     dash.Output("net-interface-table", "data"),
     dash.Output("net-interface-table", "columns"),
     dash.Output("net-interface-table", "page_size"),
+    dash.Output("net-interface-table", "page_count"),
+    dash.Output("net-interface-table", "page_current"),
     dash.Output("net-interface-table-footer", "children"),
     dash.Input("net-scope-tabs", "value"),
     dash.Input("net-switch-role-segment", "value"),
@@ -1968,19 +1988,26 @@ def update_net_interface_table(
     pathname,
 ):
     if not pathname or not pathname.startswith("/datacenter/"):
-        return [], dash.no_update, dash.no_update, dash.no_update
+        return [], dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     top_scope = top_scope or "overview"
     if not _net_scope_is_interface_panel(top_scope):
-        return [], dash.no_update, dash.no_update, dash.no_update
+        return [], dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    triggered_id = _net_interface_table_triggered_id()
+
+    page_size_safe = max(1, min(200, int(page_size_sel or 50)))
+    if triggered_id == "net-interface-table":
+        page_current_safe = int(page_current or 0)
+        page_current_out = dash.no_update
+    else:
+        page_current_safe = 0
+        page_current_out = 0
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
     interface_scope = dc_view.resolve_network_interface_scope(top_scope, switch_role)
     columns = dc_view._network_interface_table_columns(interface_scope)
-
-    page_current_safe = int(page_current or 0)
-    page_size_safe = max(1, min(200, int(page_size_sel or 50)))
     page_backend = page_current_safe + 1
 
     interface_data = api.get_dc_network_interface_table(
@@ -1997,8 +2024,9 @@ def update_net_interface_table(
     total = int(interface_data.get("total") or len(items))
     rows = dc_view._interface_table_rows(items)
     footer = _net_interface_table_footer(page_backend, page_size_safe, total, len(rows))
+    page_count = _net_interface_table_page_count(total, page_size_safe)
 
-    return rows, columns, page_size_safe, footer
+    return rows, columns, page_size_safe, page_count, page_current_out, footer
 
 
 @app.callback(

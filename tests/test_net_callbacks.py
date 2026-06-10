@@ -21,7 +21,7 @@ def test_update_net_kpis_skips_firewall_tab():
         mock_api.get_dc_network_port_summary.assert_not_called()
 
 
-def test_update_net_interface_table_returns_footer_with_total():
+def test_update_net_interface_table_returns_footer_and_page_count():
     import app as app_module
 
     with patch.object(app_module, "api") as mock_api:
@@ -41,7 +41,7 @@ def test_update_net_interface_table_returns_footer_with_total():
             "total": 42,
         }
 
-        rows, columns, page_size, footer = app_module.update_net_interface_table(
+        rows, columns, page_size, page_count, page_current, footer = app_module.update_net_interface_table(
             "switch",
             "backbone",
             None,
@@ -56,4 +56,30 @@ def test_update_net_interface_table_returns_footer_with_total():
         mock_api.get_dc_network_interface_table.assert_called_once()
         assert len(rows) == 1
         assert page_size == 50
+        assert page_count == 1
+        assert page_current == 0
         assert "42" in footer
+
+
+def test_update_net_interface_table_page_count_for_multiple_pages():
+    import app as app_module
+
+    with patch.object(app_module, "api") as mock_api:
+        mock_api.get_dc_network_interface_table.return_value = {
+            "items": [],
+            "total": 100,
+        }
+
+        _, _, _, page_count, _, _ = app_module.update_net_interface_table(
+            "switch",
+            "backbone",
+            None,
+            None,
+            "",
+            0,
+            "50",
+            {"preset": "last_7d"},
+            "/datacenter/DC13",
+        )
+
+        assert page_count == 2

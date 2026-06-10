@@ -2,6 +2,7 @@ from __future__ import annotations
 # DC Detail view - Capacity Planning
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup | Physical Inventory
 import json
+import math
 import time
 import dash
 from dash import html, dcc, dash_table, callback, Input, Output, State, MATCH
@@ -2428,6 +2429,8 @@ def _build_network_interface_page(
 
     items = interface_table.get("items") or []
     total_count = int(interface_table.get("total") or len(items))
+    page_size_init = 50
+    page_count_init = max(1, math.ceil(total_count / page_size_init)) if total_count else 1
     columns = _network_interface_table_columns(interface_scope)
 
     return dmc.Stack(
@@ -2570,7 +2573,8 @@ def _build_network_interface_page(
                         columns=columns,
                         data=_interface_table_rows(items),
                         page_current=0,
-                        page_size=50,
+                        page_size=page_size_init,
+                        page_count=page_count_init,
                         page_action="custom",
                         sort_action="native",
                         style_table={"overflowX": "auto", "marginTop": "6px"},
