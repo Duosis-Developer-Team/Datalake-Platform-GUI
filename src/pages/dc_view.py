@@ -2883,10 +2883,8 @@ def _build_storage_section_with_san(
         return None
 
     default_tab = (
-        "datastore"
-        if has_datastore
-        else "intel"
-        if has_intel_storage
+        "intel"
+        if (has_intel_storage or has_datastore)
         else "ibm"
         if has_power
         else "san"
@@ -2894,10 +2892,11 @@ def _build_storage_section_with_san(
         else "obj-storage"
     )
 
+    # KM Datastore lives as an inner tab under "Intel Storage" (per Can: classic/KM
+    # datastores are surfaced beside Intel/x86 storage; Nutanix datastores come from
+    # Nutanix directly and are shown elsewhere).
     tab_list = []
-    if has_datastore:
-        tab_list.append(dmc.TabsTab("Datastore", value="datastore"))
-    if has_intel_storage:
+    if has_intel_storage or has_datastore:
         tab_list.append(dmc.TabsTab("Intel Storage", value="intel"))
     if has_power:
         tab_list.append(dmc.TabsTab("IBM Storage", value="ibm"))
@@ -2907,23 +2906,38 @@ def _build_storage_section_with_san(
         tab_list.append(dmc.TabsTab("Object Storage - S3", value="obj-storage"))
 
     panels = []
-    if has_datastore:
-        panels.append(
-            dmc.TabsPanel(
-                value="datastore",
-                pt="lg",
-                children=_build_datastore_subtab(datastore_mapping or {}),
-            )
-        )
-    if has_intel_storage:
-        panels.append(
-            dmc.TabsPanel(
-                value="intel",
-                pt="lg",
+    if has_intel_storage or has_datastore:
+        inner_tabs = []
+        inner_panels = []
+        if has_intel_storage:
+            inner_tabs.append(dmc.TabsTab("Intel Storage", value="intel-zabbix"))
+            inner_panels.append(dmc.TabsPanel(
+                value="intel-zabbix",
+                pt="md",
                 children=_build_intel_storage_subtab(
                     zabbix_storage_devices,
                     zabbix_storage_capacity,
                     zabbix_storage_trend,
+                ),
+            ))
+        if has_datastore:
+            inner_tabs.append(dmc.TabsTab("KM Datastore", value="km-datastore"))
+            inner_panels.append(dmc.TabsPanel(
+                value="km-datastore",
+                pt="md",
+                children=_build_datastore_subtab(datastore_mapping or {}),
+            ))
+        inner_default = "intel-zabbix" if has_intel_storage else "km-datastore"
+        panels.append(
+            dmc.TabsPanel(
+                value="intel",
+                pt="lg",
+                children=dmc.Tabs(
+                    color="indigo",
+                    variant="pills",
+                    radius="md",
+                    value=inner_default,
+                    children=[dmc.TabsList(children=inner_tabs), *inner_panels],
                 ),
             )
         )
