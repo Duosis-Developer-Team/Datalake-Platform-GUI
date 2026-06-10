@@ -1926,20 +1926,14 @@ def update_net_kpis_and_charts(top_scope, switch_role, manufacturer, device_name
     )
 
     donut_active = create_premium_gauge_chart(
-        port_availability_pct,
-        "Interface Availability" if interface_scope == "backbone" else "Port Availability",
-        color="#FFB547",
+        port_availability_pct, "", color="#FFB547", height=180
     )
     donut_util = create_premium_gauge_chart(
-        overall_util_pct,
-        "P95 Utilization" if interface_scope == "backbone" else "Port Utilization",
-        color="#05CD99",
+        overall_util_pct, "", color="#05CD99", height=180
     )
-    donut_icmp = create_premium_gauge_chart(icmp_availability_pct, "ICMP Availability", color="#4318FF")
+    donut_icmp = create_premium_gauge_chart(icmp_availability_pct, "", color="#4318FF", height=180)
     single_gauge = create_premium_gauge_chart(
-        overall_util_pct,
-        "P95 Utilization",
-        color="#05CD99",
+        overall_util_pct, "", color="#05CD99", height=180
     )
 
     top_interfaces = percentile_data.get("top_interfaces") or []
