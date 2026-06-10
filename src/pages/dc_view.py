@@ -485,12 +485,12 @@ def _gauge_wrap(
 
 
 def _cpu_allocation_gauge_block(compute: dict, cpu_cap: float):
-    """Sales-primary CPU allocation gauge with real GHz subtitle and overalloc badge."""
+    """Sales-primary CPU allocation gauge with real GHz subtitle and sales overalloc badge."""
     sales = float(compute.get("cpu_alloc_ghz_sales", 0) or 0)
     real = float(compute.get("cpu_alloc_ghz_vm", 0) or 0)
     sales_pct = alloc_pct_float(sales, cpu_cap)
     real_pct = alloc_pct_float(real, cpu_cap)
-    over_real = bool(compute.get("cpu_overallocated_real")) or (cpu_cap > 0 and real > cpu_cap)
+    over_sales = bool(compute.get("cpu_overallocated_sales")) or (cpu_cap > 0 and sales > cpu_cap)
     primary_sub = (
         f"{smart_cpu(sales)} / {smart_cpu(cpu_cap)}"
         + (f" ({sales_pct:.1f}%)" if sales_pct > 100 else "")
@@ -498,32 +498,12 @@ def _cpu_allocation_gauge_block(compute: dict, cpu_cap: float):
     )
     secondary_sub = f"Real: {smart_cpu(real)}" + (f" ({real_pct:.1f}%)" if cpu_cap > 0 else "")
     return _gauge_wrap(
-        create_premium_gauge_chart(min(sales_pct, 100), "", color="#4318FF"),
+        create_premium_gauge_chart(sales_pct, "", color="#4318FF", allow_over_100=True),
         "CPU Allocation",
         subtitle=primary_sub,
         secondary_subtitle=secondary_sub,
-        badge="Overallocated" if over_real else None,
+        badge="Overallocated for Sales" if over_sales else None,
     )
-
-
-def _cpu_sales_overalloc_alerts(compute: dict, cpu_cap: float) -> list:
-    """Prominent alert when sales allocation exceeds physical CPU capacity."""
-    sales = float(compute.get("cpu_alloc_ghz_sales", 0) or 0)
-    over_sales = bool(compute.get("cpu_overallocated_sales")) or (cpu_cap > 0 and sales > cpu_cap)
-    if not over_sales:
-        return []
-    return [
-        dmc.Alert(
-            title="Overallocated for Sales",
-            color="red",
-            variant="light",
-            className="cpu-overalloc-alert",
-            children=(
-                f"Sales allocation ({smart_cpu(sales)}) exceeds physical capacity "
-                f"({smart_cpu(cpu_cap)})."
-            ),
-        )
-    ]
 
 
 def _chart_card(graph_component):
@@ -613,6 +593,174 @@ def _format_tl(value: float) -> str:
     if value >= 1e3:
         return f"{value/1e3:,.1f}K TL"
     return f"{value:,.0f} TL"
+
+
+def _capacity_pct_badge_color(pct: float) -> str:
+    return "indigo" if pct < 60 else "yellow" if pct < 80 else "red"
+
+
+def _capacity_pct_bar_color(pct: float) -> str:
+    return "#05CD99" if pct < 60 else "#FFB547" if pct < 80 else "#EE5D50"
+
+
+def _capacity_value_cell(value_str: str, pct: float):
+    """Value with colored percentage badge in parentheses."""
+    return html.Div(
+        style={"display": "flex", "alignItems": "center", "gap": "6px", "flexWrap": "wrap"},
+        children=[
+            html.Span(value_str, style={"color": "#4318FF", "fontSize": "0.8rem", "fontWeight": 600}),
+            dmc.Badge(
+                f"({pct:.1f}%)",
+                color=_capacity_pct_badge_color(pct),
+                variant="light",
+                size="sm",
+            ),
+        ],
+    )
+
+
+def _capacity_alloc_bar(pct: float):
+    """Horizontal allocation bar; full width when pct exceeds 100%."""
+    bar_pct = min(float(pct), 100.0)
+    bar_color = _capacity_pct_bar_color(pct)
+    if pct > 100:
+        bar_color = "#EE5D50"
+    return html.Div(
+        style={
+            "height": "6px",
+            "borderRadius": "3px",
+            "background": "#EEF2FF",
+            "overflow": "hidden",
+        },
+        children=html.Div(
+            style={
+                "width": f"{bar_pct:.1f}%",
+                "height": "100%",
+                "borderRadius": "3px",
+                "background": f"linear-gradient(90deg, #4318FF 0%, {bar_color} 100%)",
+                "transition": "width 0.6s cubic-bezier(0.25, 0.8, 0.25, 1)",
+            },
+        ),
+    )
+
+
+def _capacity_resource_table(rows: list[dict]):
+    """One row per resource: total, allocation, sales (CPU only), max util, bar."""
+    header_style = {
+        "color": "#A3AED0",
+        "fontSize": "0.72rem",
+        "fontWeight": 700,
+        "textTransform": "uppercase",
+        "letterSpacing": "0.04em",
+    }
+    cell_style = {"padding": "10px 8px", "verticalAlign": "middle"}
+    label_style = {"color": "#2B3674", "fontWeight": 700, "fontSize": "0.85rem"}
+
+    def _metric_cell(pair: tuple[str, float] | None):
+        if pair is None:
+            return html.Td("—", style={**cell_style, "color": "#A3AED0"})
+        value_str, pct = pair
+        return html.Td(_capacity_value_cell(value_str, pct), style=cell_style)
+
+    body_rows = []
+    for row in rows:
+        body_rows.append(
+            html.Tr(
+                [
+                    html.Td(row["label"], style={**cell_style, **label_style}),
+                    html.Td(
+                        row["total_str"],
+                        style={**cell_style, "color": "#2B3674", "fontSize": "0.8rem", "fontWeight": 600},
+                    ),
+                    _metric_cell(row.get("allocation")),
+                    _metric_cell(row.get("sales")),
+                    _metric_cell(row.get("max_util")),
+                    html.Td(_capacity_alloc_bar(row["bar_pct"]), style=cell_style),
+                ]
+            )
+        )
+
+    return html.Div(
+        style={"overflowX": "auto"},
+        children=[
+            html.Table(
+                style={"width": "100%", "borderCollapse": "collapse"},
+                children=[
+                    html.Thead(
+                        html.Tr(
+                            [
+                                html.Th("Resource", style=header_style),
+                                html.Th("Total", style=header_style),
+                                html.Th("Allocation", style=header_style),
+                                html.Th("Sales allocation", style=header_style),
+                                html.Th("Max utilization", style=header_style),
+                                html.Th("", style=header_style),
+                            ]
+                        )
+                    ),
+                    html.Tbody(body_rows),
+                ],
+            )
+        ],
+    )
+
+
+def _build_compute_capacity_rows(
+    *,
+    cpu_cap: float,
+    cpu_alloc_ghz: float,
+    cpu_alloc_sales: float,
+    cpu_alloc_pct: float,
+    cpu_alloc_pct_sales: float,
+    cpu_pct_max: float,
+    cpu_pct: float,
+    mem_cap: float,
+    mem_alloc_gb: float,
+    mem_alloc_pct: float,
+    mem_pct_max: float,
+    mem_pct: float,
+    stor_cap_gb: float,
+    stor_provisioned_gb: float,
+    stor_used_gb: float,
+    stor_alloc_vm_pct: float,
+    stor_pct: float,
+) -> list[dict]:
+    """Build three capacity planning rows for Classic/Hyperconv compute tabs."""
+    cpu_max_pct = cpu_pct_max or cpu_pct
+    mem_max_pct = mem_pct_max or mem_pct
+    stor_alloc_gb = stor_provisioned_gb if stor_provisioned_gb > 0 else stor_used_gb
+    return [
+        {
+            "label": "CPU",
+            "total_str": smart_cpu(cpu_cap),
+            "allocation": (smart_cpu(cpu_alloc_ghz), cpu_alloc_pct),
+            "sales": (smart_cpu(cpu_alloc_sales), cpu_alloc_pct_sales),
+            "max_util": (
+                smart_cpu(cpu_cap * cpu_max_pct / 100.0 if cpu_cap else 0),
+                cpu_max_pct,
+            ),
+            "bar_pct": cpu_alloc_pct,
+        },
+        {
+            "label": "Memory",
+            "total_str": smart_memory(mem_cap),
+            "allocation": (smart_memory(mem_alloc_gb), mem_alloc_pct),
+            "sales": None,
+            "max_util": (
+                smart_memory(mem_cap * mem_max_pct / 100.0 if mem_cap else 0),
+                mem_max_pct,
+            ),
+            "bar_pct": mem_alloc_pct,
+        },
+        {
+            "label": "Storage",
+            "total_str": smart_storage(stor_cap_gb),
+            "allocation": (smart_storage(stor_alloc_gb), stor_alloc_vm_pct),
+            "sales": None,
+            "max_util": (smart_storage(stor_used_gb), stor_pct),
+            "bar_pct": stor_alloc_vm_pct,
+        },
+    ]
 
 
 def _capacity_metric_row(label: str, cap_val, used_val, pct: float, unit_fn=None, potential_tl: float = 0.0):
@@ -714,16 +862,25 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     stor_util_pct  = stor_pct
     stor_alloc_vm_pct = alloc_pct_float(stor_provisioned_gb, stor_cap_gb) if stor_provisioned_gb > 0 else pct_float(stor_used, stor_cap)
 
-    # Potential Sellable revenue (CRM TL prices × physical capacity).
-    # Klasik/Hyperconv: cpu_cap (GHz) zaten overcommit'li sellable kapasiteyi temsil ediyor —
-    # 1 GHz = 1 vCPU kuralıyla doğrudan core'a karşılık gelir, ek çarpan uygulanmaz.
-    # RAM (GB) ve Storage (TB→GB) fiziksel birimler; thin-provisioning/overcommit
-    # çarpanı bu iki kalem için korunur.
-    unit_prices = compute.get("unit_prices", {}) or {}
-    multiplier  = float(compute.get("sellable_multiplier", 3.3) or 3.3)
-    cpu_potential_tl     = cpu_cap          *              float(unit_prices.get("cpu_vcpu", 0) or 0)
-    ram_potential_tl     = mem_cap          * multiplier * float(unit_prices.get("ram_gb", 0) or 0)
-    storage_potential_tl = (stor_cap * 1024) * multiplier * float(unit_prices.get("storage_gb", 0) or 0)
+    capacity_rows = _build_compute_capacity_rows(
+        cpu_cap=cpu_cap,
+        cpu_alloc_ghz=cpu_alloc_ghz,
+        cpu_alloc_sales=cpu_alloc_sales,
+        cpu_alloc_pct=cpu_alloc_pct,
+        cpu_alloc_pct_sales=cpu_alloc_pct_sales,
+        cpu_pct_max=cpu_pct_max,
+        cpu_pct=cpu_pct,
+        mem_cap=mem_cap,
+        mem_alloc_gb=mem_alloc_gb,
+        mem_alloc_pct=mem_alloc_pct,
+        mem_pct_max=mem_pct_max,
+        mem_pct=mem_pct,
+        stor_cap_gb=stor_cap_gb,
+        stor_provisioned_gb=stor_provisioned_gb,
+        stor_used_gb=stor_used_gb,
+        stor_alloc_vm_pct=stor_alloc_vm_pct,
+        stor_pct=stor_pct,
+    )
 
     util_grid = _dynamic_chart_grid([
         (_has_value(cpu_cap), _gauge_wrap(
@@ -748,7 +905,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     alloc_grid = _dynamic_chart_grid([
         (_has_value(cpu_cap), _cpu_allocation_gauge_block(compute, cpu_cap)),
         (_has_value(mem_cap), _gauge_wrap(
-            create_premium_gauge_chart(min(mem_alloc_pct, 100), "", color="#05CD99"),
+            create_premium_gauge_chart(mem_alloc_pct, "", color="#05CD99", allow_over_100=True),
             "RAM Allocation",
             subtitle=(
                 f"{smart_memory(mem_alloc_gb)} / {smart_memory(mem_cap)}"
@@ -757,7 +914,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
             ),
         )),
         (_has_value(stor_cap), _gauge_wrap(
-            create_premium_gauge_chart(min(stor_alloc_vm_pct, 100), "", color="#FFB547"),
+            create_premium_gauge_chart(stor_alloc_vm_pct, "", color="#FFB547", allow_over_100=True),
             "Storage Allocation",
             subtitle=(
                 f"{smart_storage(stor_provisioned_gb)} / {smart_storage(stor_cap_gb)} provisioned"
@@ -767,10 +924,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
         )),
     ])
 
-    cpu_alloc_alerts = _cpu_sales_overalloc_alerts(compute, cpu_cap)
     alloc_panel_children: list = []
-    if cpu_alloc_alerts:
-        alloc_panel_children.extend(cpu_alloc_alerts)
     if alloc_grid is not None:
         alloc_panel_children.append(alloc_grid)
 
@@ -822,12 +976,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
                 children=[
                     _section_title("Capacity Planning", "Physical capacity vs. utilization and VM allocation"),
                     html.Div(style={"marginTop": "12px"}, children=[
-                        _capacity_metric_row("CPU", cpu_cap, cpu_used, cpu_pct, smart_cpu, potential_tl=cpu_potential_tl),
-                        _capacity_metric_row("CPU allocated (sales)", cpu_cap, cpu_alloc_sales, min(cpu_alloc_pct_sales, 100), smart_cpu),
-                        _capacity_metric_row("CPU allocated (real)", cpu_cap, cpu_alloc_ghz, min(cpu_alloc_pct, 100), smart_cpu),
-                        _capacity_metric_row("Memory", mem_cap, mem_used, mem_pct, smart_memory, potential_tl=ram_potential_tl),
-                        _capacity_metric_row("Memory allocated", mem_cap, mem_alloc_gb, min(mem_alloc_pct, 100), smart_memory),
-                        _capacity_metric_row("Storage", stor_cap_gb, stor_used_gb, stor_pct, smart_storage, potential_tl=storage_potential_tl),
+                        _capacity_resource_table(capacity_rows),
                     ]),
                 ],
             ),

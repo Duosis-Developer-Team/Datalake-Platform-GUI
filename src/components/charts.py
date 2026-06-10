@@ -1,3 +1,5 @@
+import math
+
 import plotly.graph_objects as go
 
 # J1. Global Premium Theme
@@ -781,7 +783,14 @@ def create_gauge_chart(value, max_value, title, color="#4318FF", height=200):
     return fig
 
 
-def create_premium_gauge_chart(pct_value, title, color="#4318FF", height=200, show_threshold=True):
+def create_premium_gauge_chart(
+    pct_value,
+    title,
+    color="#4318FF",
+    height=200,
+    show_threshold=True,
+    allow_over_100=False,
+):
     """Premium semi-circle gauge chart using percentage value directly.
     Pass title='' to suppress the built-in label (use _gauge_wrap in dc_view instead)."""
     try:
@@ -790,16 +799,25 @@ def create_premium_gauge_chart(pct_value, title, color="#4318FF", height=200, sh
         pct = 0.0
     has_title = bool(title)
     step_mid = f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.3)" if color.startswith("#") and len(color) == 7 else "rgba(67,24,255,0.3)"
+    axis_max = 100.0
+    if allow_over_100 and pct > 100:
+        axis_max = float(max(100, math.ceil(pct / 50) * 50))
     gauge_cfg = {
-        "axis": {"range": [0, 100], "nticks": 5, "tickfont": {"size": 8, "color": "#A3AED0", "family": "DM Sans"}, "ticklen": 3, "tickwidth": 1},
+        "axis": {
+            "range": [0, axis_max],
+            "nticks": 5,
+            "tickfont": {"size": 8, "color": "#A3AED0", "family": "DM Sans"},
+            "ticklen": 3,
+            "tickwidth": 1,
+        },
         "bar": {"color": color},
         "steps": [
-            {"range": [0, 50], "color": "#E9EDF7"},
-            {"range": [50, 80], "color": step_mid},
-            {"range": [80, 100], "color": "rgba(238, 93, 80, 0.3)"},
+            {"range": [0, axis_max * 0.5], "color": "#E9EDF7"},
+            {"range": [axis_max * 0.5, axis_max * 0.8], "color": step_mid},
+            {"range": [axis_max * 0.8, axis_max], "color": "rgba(238, 93, 80, 0.3)"},
         ],
     }
-    if show_threshold:
+    if show_threshold and axis_max <= 100:
         gauge_cfg["threshold"] = {"line": {"color": "#2B3674", "width": 4}, "value": 90}
     fig = go.Figure(go.Indicator(
         mode="gauge+number",

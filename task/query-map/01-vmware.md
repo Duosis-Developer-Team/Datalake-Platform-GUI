@@ -603,6 +603,8 @@ Redis / sellable **allocated (sales)** alanları: `cpu_alloc_ghz_sales`, `mem_al
 
 Overallocation bayrakları (DC seviyesi): `cpu_overallocated_sales`, `cpu_overallocated_real`.
 
+**DC View Capacity Planning (Classic/Hyperconv, 2026-06):** Tek satır/kaynak tablo — Total, Allocation (real VM), Sales allocation (CPU only), Max utilization, allocation bar. Allocation gauge merkezinde `%100+` değerler (`allow_over_100`); sales overalloc → gauge badge `Overallocated for Sales` (üst alert kaldırıldı).
+
 ---
 
 ## Birim Dönüşümleri
