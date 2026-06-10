@@ -2869,13 +2869,23 @@ def _build_storage_section_with_san(
     san_health_alerts: list,
     san_traffic_trend: list,
     sec_check=None,
+    has_datastore: bool = False,
+    datastore_mapping: dict | None = None,
 ) -> html.Div | None:
     check = sec_check or (lambda _code: True)
-    if not (has_intel_storage or has_power or has_s3 or (has_san and check("sub:dc_view:storage:san"))):
+    if not (
+        has_intel_storage
+        or has_power
+        or has_s3
+        or has_datastore
+        or (has_san and check("sub:dc_view:storage:san"))
+    ):
         return None
 
     default_tab = (
-        "intel"
+        "datastore"
+        if has_datastore
+        else "intel"
         if has_intel_storage
         else "ibm"
         if has_power
@@ -2885,6 +2895,8 @@ def _build_storage_section_with_san(
     )
 
     tab_list = []
+    if has_datastore:
+        tab_list.append(dmc.TabsTab("Datastore", value="datastore"))
     if has_intel_storage:
         tab_list.append(dmc.TabsTab("Intel Storage", value="intel"))
     if has_power:
@@ -2895,6 +2907,14 @@ def _build_storage_section_with_san(
         tab_list.append(dmc.TabsTab("Object Storage - S3", value="obj-storage"))
 
     panels = []
+    if has_datastore:
+        panels.append(
+            dmc.TabsPanel(
+                value="datastore",
+                pt="lg",
+                children=_build_datastore_subtab(datastore_mapping or {}),
+            )
+        )
     if has_intel_storage:
         panels.append(
             dmc.TabsPanel(
@@ -2951,6 +2971,391 @@ def _build_storage_section_with_san(
                 value=default_tab,
                 children=[dmc.TabsList(children=tab_list), *panels],
             )
+        ],
+    )
+
+
+_DS_GiB = 1024 ** 3
+
+
+def _ds_usage_palette(pct: float):
+    """Gradient + solid color for a datastore usage level (matches IBM/Intel subtabs)."""
+    if pct >= 90:
+        return ("linear-gradient(90deg, #FF6B6B, #EE5D50)", "#EE5D50")
+    if pct >= 75:
+        return ("linear-gradient(90deg, #FFD080, #FFB547)", "#FFB547")
+    return ("linear-gradient(90deg, #868CFF, #4318FF)", "#4318FF")
+
+
+def _ds_usage_bar(used_pct: float, height: str = "34px", show_label: bool = True):
+    """Premium used/free split bar."""
+    used_pct = max(0.0, min(100.0, used_pct))
+    free_pct = 100.0 - used_pct
+    grad, _ = _ds_usage_palette(used_pct)
+    label = show_label and used_pct > 10
+    return html.Div(
+        style={"display": "flex", "borderRadius": "8px", "overflow": "hidden", "height": height, "background": "#EAF0F7"},
+        children=[
+            html.Div(
+                style={
+                    "width": f"{used_pct}%", "background": grad,
+                    "display": "flex", "alignItems": "center", "justifyContent": "center",
+                },
+                children=html.Span(
+                    f"{used_pct:.1f}%",
+                    style={"color": "white", "fontSize": "0.74rem", "fontWeight": 800, "fontFamily": "DM Sans"},
+                ) if label else None,
+            ),
+        ],
+    )
+
+
+def _ds_vdc_label(datacenter_name: str | None) -> str:
+    """`DC13-KM-SSD-vDC` -> `KM-SSD`."""
+    s = (datacenter_name or "").strip()
+    for pre in ("DC13-", "DC12-", "DC11-"):
+        if s.startswith(pre):
+            s = s[len(pre):]
+            break
+    return s.replace("-vDC", "").replace("-VDC", "") or "—"
+
+
+def _ds_vdc_badge(datacenter_name: str | None):
+    lbl = _ds_vdc_label(datacenter_name)
+    up = lbl.upper()
+    if "NUTANIX" in up:
+        color = "teal"
+    elif "SSD" in up:
+        color = "violet"
+    elif "KM" in up:
+        color = "indigo"
+    else:
+        color = "gray"
+    return dmc.Badge(lbl, color=color, variant="light", size="sm", radius="sm")
+
+
+def _ds_type_badge(ds_type: str | None):
+    t = (ds_type or "").strip().upper()
+    color = "grape" if t.startswith("VMFS") else "cyan" if t in ("NFS", "NAS", "NFS41") else "gray"
+    return dmc.Badge(ds_type or "—", color=color, variant="outline", size="sm", radius="sm")
+
+
+def _build_datastore_subtab(datastore_mapping: dict):
+    """
+    VMware Datastore subtab — klasik mimari "storage eşleştirmesi".
+
+    Premium layout: KPI strip → capacity-by-vDC bars → fullest-datastore highlights
+    → full datastore table (with usage data-bars) → host↔datastore mapping table.
+    Surfaces all three collected tables (metrics_agg + host_mount + inventory).
+    """
+    datastores = (datastore_mapping or {}).get("datastores") or []
+
+    if not datastores:
+        return html.Div(
+            className="nexus-card",
+            style={"padding": "20px"},
+            children=[
+                _section_title("Datastore Eşleştirme", "VMware datastore kapasite, host eşleştirmesi ve envanter"),
+                dmc.Alert(
+                    "Bu data center için datastore verisi bulunamadı.",
+                    title="Veri yok",
+                    color="gray",
+                    radius="md",
+                ),
+            ],
+        )
+
+    # ── Aggregates ─────────────────────────────────────────────────────────
+    total_cap = sum(ds.get("capacity_bytes") or 0 for ds in datastores)
+    total_used = sum(ds.get("used_bytes") or 0 for ds in datastores)
+    total_free = sum(ds.get("free_bytes") or 0 for ds in datastores)
+    overall_pct = (total_used / total_cap * 100) if total_cap > 0 else 0.0
+    total_vms = sum(int(ds.get("vm_count") or 0) for ds in datastores)
+
+    host_set: set[str] = set()
+    inaccessible_mounts = 0
+    for ds in datastores:
+        for h in ds.get("hosts") or []:
+            if h.get("host_moid"):
+                host_set.add(h["host_moid"])
+            if h.get("accessible") is False:
+                inaccessible_mounts += 1
+
+    vdc_groups: dict[str, dict] = {}
+    for ds in datastores:
+        key = ds.get("datacenter_name") or "—"
+        g = vdc_groups.setdefault(key, {"cap": 0, "used": 0, "count": 0})
+        g["cap"] += ds.get("capacity_bytes") or 0
+        g["used"] += ds.get("used_bytes") or 0
+        g["count"] += 1
+
+    type_counts: dict[str, int] = {}
+    for ds in datastores:
+        t = ds.get("type") or "—"
+        type_counts[t] = type_counts.get(t, 0) + 1
+
+    # ── KPI strip ──────────────────────────────────────────────────────────
+    used_color = "red" if overall_pct >= 90 else "orange" if overall_pct >= 75 else "indigo"
+    kpi_strip = dmc.SimpleGrid(
+        cols={"base": 2, "sm": 3, "lg": 5},
+        spacing="md",
+        children=[
+            _kpi("Datastore", f"{len(datastores):,}", _DC_ICONS["storage_systems"], color="indigo", stagger=1),
+            _kpi("Toplam Kapasite", smart_storage(total_cap / _DS_GiB), _DC_ICONS["total_capacity"], color="grape", is_text=True, stagger=2),
+            _kpi("Kullanılan", f"{smart_storage(total_used / _DS_GiB)}  ·  {overall_pct:.0f}%", _DC_ICONS["used_capacity"], color=used_color, is_text=True, stagger=3),
+            _kpi("Boş", smart_storage(total_free / _DS_GiB), _DC_ICONS["storage"], color="teal", is_text=True, stagger=4),
+            _kpi("Bağlı Host", f"{len(host_set):,}", _DC_ICONS["total_devices"], color="cyan", stagger=5,
+                 tooltip=f"{total_vms:,} VM · {inaccessible_mounts} erişilemeyen mount" if inaccessible_mounts else f"{total_vms:,} VM"),
+        ],
+    )
+
+    # ── Capacity by vDC ────────────────────────────────────────────────────
+    def _vdc_row(name: str, g: dict):
+        cap, used, count = g["cap"], g["used"], g["count"]
+        pct = (used / cap * 100) if cap > 0 else 0.0
+        _, pct_color = _ds_usage_palette(pct)
+        return html.Div(
+            style={"background": "#FAFBFF", "border": "1px solid #E9EDF7", "borderRadius": "12px", "padding": "16px 18px"},
+            children=[
+                # Row 1: badge + datastore count (left) · usage % (right, short → never wraps)
+                html.Div(
+                    style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "gap": "8px", "marginBottom": "10px"},
+                    children=[
+                        html.Div(
+                            style={"display": "flex", "alignItems": "center", "gap": "8px", "minWidth": 0},
+                            children=[_ds_vdc_badge(name), html.Span(f"{count} datastore", style={"fontSize": "0.74rem", "color": "#A3AED0", "fontFamily": "DM Sans", "fontWeight": 600, "whiteSpace": "nowrap"})],
+                        ),
+                        html.Span(f"{pct:.1f}%", style={"fontSize": "0.95rem", "color": pct_color, "fontFamily": "DM Sans", "fontWeight": 800, "flexShrink": 0}),
+                    ],
+                ),
+                # Row 2: used / total — always its own line so all cards align identically
+                html.Div(
+                    f"{smart_storage(used / _DS_GiB)} / {smart_storage(cap / _DS_GiB)}",
+                    style={"fontSize": "0.82rem", "color": "#2B3674", "fontFamily": "DM Sans", "fontWeight": 700, "fontVariantNumeric": "tabular-nums", "marginBottom": "10px"},
+                ),
+                _ds_usage_bar(pct, height="20px", show_label=False),
+            ],
+        )
+
+    vdc_sorted = sorted(vdc_groups.items(), key=lambda kv: kv[1]["cap"], reverse=True)
+    type_chips = dmc.Group(
+        gap="xs",
+        children=[
+            dmc.Badge(f"{t} · {c}", color=("grape" if t.upper().startswith("VMFS") else "cyan" if t.upper() in ("NFS", "NAS", "NFS41") else "gray"),
+                      variant="dot", size="sm", radius="sm")
+            for t, c in sorted(type_counts.items(), key=lambda kv: kv[1], reverse=True)
+        ],
+    )
+    vdc_card = html.Div(
+        className="nexus-card",
+        style={"padding": "20px"},
+        children=[
+            html.Div(
+                style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "gap": "12px", "flexWrap": "wrap", "marginBottom": "14px"},
+                children=[_section_title("Kapasite Dağılımı", "vCenter datacenter (vDC) bazında kullanım"), type_chips],
+            ),
+            dmc.SimpleGrid(cols={"base": 1, "md": min(3, len(vdc_sorted)) or 1}, spacing="md", children=[_vdc_row(n, g) for n, g in vdc_sorted]),
+        ],
+    )
+
+    # ── Fullest datastores (highlight) ─────────────────────────────────────
+    fullest = sorted(
+        [ds for ds in datastores if (ds.get("capacity_bytes") or 0) > 0],
+        key=lambda ds: float(ds.get("used_percent") or 0),
+        reverse=True,
+    )[:6]
+
+    def _highlight_card(ds: dict):
+        pct = float(ds.get("used_percent") or 0)
+        _, color = _ds_usage_palette(pct)
+        cap = (ds.get("capacity_bytes") or 0) / _DS_GiB
+        used = (ds.get("used_bytes") or 0) / _DS_GiB
+        free = (ds.get("free_bytes") or 0) / _DS_GiB
+        return html.Div(
+            style={"background": "#FAFBFF", "border": "1px solid #E9EDF7", "borderRadius": "12px", "padding": "16px 18px"},
+            children=[
+                html.Div(
+                    style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "gap": "8px", "marginBottom": "12px"},
+                    children=[
+                        html.Div(
+                            style={"display": "flex", "alignItems": "center", "gap": "8px", "minWidth": 0},
+                            children=[
+                                html.Div(style={"width": "8px", "height": "8px", "borderRadius": "50%", "background": color, "flexShrink": 0}),
+                                html.Span(
+                                    ds.get("datastore_name") or "Unknown",
+                                    style={"fontWeight": 700, "fontSize": "0.86rem", "color": "#2B3674", "fontFamily": "DM Sans",
+                                           "whiteSpace": "nowrap", "overflow": "hidden", "textOverflow": "ellipsis"},
+                                    title=ds.get("datastore_name") or "",
+                                ),
+                            ],
+                        ),
+                        html.Div(style={"display": "flex", "gap": "4px", "flexShrink": 0}, children=[_ds_type_badge(ds.get("type")), _ds_vdc_badge(ds.get("datacenter_name"))]),
+                    ],
+                ),
+                _ds_usage_bar(pct, height="30px"),
+                html.Div(
+                    style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "marginTop": "10px"},
+                    children=[
+                        html.Span(f"Kullanılan {smart_storage(used)}", style={"fontSize": "0.76rem", "color": color, "fontFamily": "DM Sans", "fontWeight": 700}),
+                        html.Span(f"Boş {smart_storage(free)}", style={"fontSize": "0.76rem", "color": "#05CD99", "fontFamily": "DM Sans", "fontWeight": 600}),
+                        html.Span(f"Σ {smart_storage(cap)}", style={"fontSize": "0.74rem", "color": "#A3AED0", "fontFamily": "DM Sans"}),
+                    ],
+                ),
+                html.Div(
+                    style={"display": "flex", "gap": "6px", "marginTop": "10px"},
+                    children=[
+                        dmc.Badge(f"{int(ds.get('host_count') or 0)} host", color="gray", variant="light", size="xs", radius="sm"),
+                        dmc.Badge(f"{int(ds.get('vm_count') or 0)} VM", color="gray", variant="light", size="xs", radius="sm"),
+                    ],
+                ),
+            ],
+        )
+
+    fullest_card = html.Div(
+        className="nexus-card",
+        style={"padding": "20px"},
+        children=[
+            _section_title("En Dolu Datastore'lar", "Kullanım oranına göre ilk 6"),
+            dmc.SimpleGrid(cols={"base": 1, "sm": 2, "lg": 3}, spacing="md", style={"marginTop": "4px"}, children=[_highlight_card(ds) for ds in fullest]),
+        ],
+    )
+
+    # ── Full datastore table (with usage data-bars) ────────────────────────
+    summary_rows = []
+    mount_rows = []
+    for ds in datastores:
+        ds_name = ds.get("datastore_name") or "Unknown"
+        nas_target = f"{ds.get('nas_remote_host')}:{ds.get('nas_remote_path') or ''}" if ds.get("nas_remote_host") else "—"
+        summary_rows.append({
+            "datastore": ds_name,
+            "vdc": _ds_vdc_label(ds.get("datacenter_name")),
+            "type": ds.get("type") or "—",
+            "capacity_gb": round((ds.get("capacity_bytes") or 0) / _DS_GiB, 1),
+            "used_gb": round((ds.get("used_bytes") or 0) / _DS_GiB, 1),
+            "free_gb": round((ds.get("free_bytes") or 0) / _DS_GiB, 1),
+            "used_pct": round(float(ds.get("used_percent") or 0), 1),
+            "host_count": int(ds.get("host_count") or 0),
+            "vm_count": int(ds.get("vm_count") or 0),
+            "vmfs_version": ds.get("vmfs_version") or "—",
+            "nas_target": nas_target,
+            "status": ds.get("status") or "—",
+        })
+        for h in ds.get("hosts") or []:
+            mount_rows.append({
+                "datastore": ds_name,
+                "host": h.get("host_name") or "Unknown",
+                "mount_path": h.get("mount_path") or "—",
+                "access_mode": h.get("access_mode") or "—",
+                "mounted": "✓" if h.get("mounted") else "✗",
+                "accessible": "✓" if h.get("accessible") else "✗",
+            })
+
+    _header_style = {
+        "fontWeight": 700, "backgroundColor": "#F4F7FE", "color": "#707EAE",
+        "textTransform": "uppercase", "fontSize": "0.68rem", "letterSpacing": "0.04em",
+        "border": "none", "padding": "12px",
+    }
+    _cell_style = {"fontFamily": "DM Sans", "fontSize": "0.82rem", "padding": "10px 12px", "color": "#2B3674", "border": "none"}
+    _table_style = {"overflowX": "auto", "marginTop": "10px", "borderRadius": "12px"}
+    _hover_css = [{"selector": "tr:hover td", "rule": "background-color: #F4F7FE !important;"}]
+
+    summary_table = dash_table.DataTable(
+        id="datastore-summary-table",
+        columns=[
+            {"name": "Datastore", "id": "datastore"},
+            {"name": "vDC", "id": "vdc"},
+            {"name": "Tip", "id": "type"},
+            {"name": "Kapasite (GB)", "id": "capacity_gb", "type": "numeric"},
+            {"name": "Kullanılan (GB)", "id": "used_gb", "type": "numeric"},
+            {"name": "Boş (GB)", "id": "free_gb", "type": "numeric"},
+            {"name": "Kullanım %", "id": "used_pct", "type": "numeric"},
+            {"name": "Host", "id": "host_count", "type": "numeric"},
+            {"name": "VM", "id": "vm_count", "type": "numeric"},
+            {"name": "VMFS", "id": "vmfs_version"},
+            {"name": "NAS Hedef", "id": "nas_target"},
+            {"name": "Durum", "id": "status"},
+        ],
+        data=summary_rows,
+        page_size=15,
+        sort_action="native",
+        filter_action="native",
+        sort_by=[{"column_id": "used_pct", "direction": "desc"}],
+        style_table=_table_style,
+        style_cell=_cell_style,
+        style_header=_header_style,
+        style_data={"borderBottom": "1px solid #F0F2F8"},
+        style_cell_conditional=[
+            {"if": {"column_id": "datastore"}, "textAlign": "left", "fontWeight": 600, "minWidth": "200px", "maxWidth": "320px"},
+            {"if": {"column_id": "nas_target"}, "textAlign": "left", "maxWidth": "240px", "overflow": "hidden", "textOverflow": "ellipsis"},
+        ],
+        style_data_conditional=[
+            {"if": {"row_index": "odd"}, "backgroundColor": "#FBFCFF"},
+            {"if": {"filter_query": "{used_pct} >= 90", "column_id": "used_pct"}, "color": "#EE5D50", "fontWeight": 800},
+            {"if": {"filter_query": "{used_pct} >= 75 && {used_pct} < 90", "column_id": "used_pct"}, "color": "#FFB547", "fontWeight": 800},
+            {"if": {"filter_query": "{used_pct} < 75", "column_id": "used_pct"}, "color": "#05CD99", "fontWeight": 700},
+            {"if": {"filter_query": '{status} = "active"', "column_id": "status"}, "color": "#05CD99", "fontWeight": 700},
+            {"if": {"filter_query": '{status} = "passive"', "column_id": "status"}, "color": "#A3AED0"},
+        ],
+        css=_hover_css,
+        tooltip_data=[{"datastore": {"value": r["datastore"], "type": "text"}, "nas_target": {"value": r["nas_target"], "type": "text"}} for r in summary_rows],
+        tooltip_duration=None,
+    )
+
+    mount_table = dash_table.DataTable(
+        id="datastore-host-mount-table",
+        columns=[
+            {"name": "Datastore", "id": "datastore"},
+            {"name": "Host", "id": "host"},
+            {"name": "Mount Path", "id": "mount_path"},
+            {"name": "Access", "id": "access_mode"},
+            {"name": "Mounted", "id": "mounted"},
+            {"name": "Accessible", "id": "accessible"},
+        ],
+        data=mount_rows,
+        page_size=15,
+        sort_action="native",
+        filter_action="native",
+        style_table=_table_style,
+        style_cell=_cell_style,
+        style_header=_header_style,
+        style_data={"borderBottom": "1px solid #F0F2F8"},
+        style_cell_conditional=[
+            {"if": {"column_id": "datastore"}, "textAlign": "left", "fontWeight": 600},
+            {"if": {"column_id": "mount_path"}, "textAlign": "left", "maxWidth": "320px", "overflow": "hidden", "textOverflow": "ellipsis"},
+            *[{"if": {"column_id": c}, "textAlign": "center"} for c in ("mounted", "accessible")],
+        ],
+        style_data_conditional=[
+            {"if": {"row_index": "odd"}, "backgroundColor": "#FBFCFF"},
+            {"if": {"filter_query": '{mounted} = "✓"', "column_id": "mounted"}, "color": "#05CD99", "fontWeight": 800},
+            {"if": {"filter_query": '{mounted} = "✗"', "column_id": "mounted"}, "color": "#EE5D50", "fontWeight": 800},
+            {"if": {"filter_query": '{accessible} = "✓"', "column_id": "accessible"}, "color": "#05CD99", "fontWeight": 800},
+            {"if": {"filter_query": '{accessible} = "✗"', "column_id": "accessible"}, "color": "#EE5D50", "fontWeight": 800},
+        ],
+        css=_hover_css,
+    )
+
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            kpi_strip,
+            vdc_card,
+            fullest_card,
+            html.Div(
+                className="nexus-card",
+                style={"padding": "20px"},
+                children=[
+                    _section_title(f"Tüm Datastore'lar ({len(summary_rows)})", "Kapasite, kullanım ve VMFS/NAS envanteri — sıralanabilir & filtrelenebilir"),
+                    summary_table,
+                ],
+            ),
+            html.Div(
+                className="nexus-card",
+                style={"padding": "20px"},
+                children=[
+                    _section_title(f"Host Eşleştirme ({len(mount_rows)})", "Her datastore'un mount edildiği host kayıtları"),
+                    mount_table,
+                ],
+            ),
         ],
     )
 
@@ -3684,7 +4089,12 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     zabbix_storage_devices = api.get_dc_zabbix_storage_devices(dc_id, tr) if has_intel_storage else []
     zabbix_storage_trend = api.get_dc_zabbix_storage_trend(dc_id, tr) if has_intel_storage else {}
     intel_storage_ms = round((time.perf_counter() - t_intel_storage) * 1000, 1)
-    has_storage = bool(has_intel_storage or has_power or has_s3 or has_san)
+
+    # VMware Datastore mapping (klasik mimari storage eşleştirmesi)
+    datastore_mapping = api.get_dc_datastore_mapping(dc_id, tr)
+    has_datastore = int(datastore_mapping.get("datastore_count", 0) or 0) > 0
+
+    has_storage = bool(has_intel_storage or has_power or has_s3 or has_san or has_datastore)
 
     has_virt = has_classic or has_hyperconv or has_power
     has_summary = has_virt
@@ -4011,6 +4421,8 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                         san_health_alerts,
                         san_traffic_trend,
                         sec_check=_sec,
+                        has_datastore=has_datastore,
+                        datastore_mapping=datastore_mapping,
                     ),
                 ) if show_storage else None,
 
