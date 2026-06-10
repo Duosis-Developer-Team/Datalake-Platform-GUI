@@ -1,7 +1,7 @@
 ---
 # DC / site code -> Proxy NiFi SSH targets (AWX inventory: NiFi_Prod_Envanter).
 # Host names are AWX inventory entries (IP addresses).
-# Updated automatically from AWX group mapping.
+# Regenerate with: python3 scripts/sync_proxy_assignment_from_awx.py
 
 DC11:
   dc_code: DC11
@@ -89,6 +89,19 @@ DC17:
     ssh_user: root
     conf_path: /Datalake_Project/configuration_file.json
     gitea_audit_path: proxies/dc17/nifi2/configuration_file.json
+DC18:
+  dc_code: DC18
+  proxies:
+  - id: DC18-NIFI1
+    proxy_nifi_host: 10.134.16.207
+    ssh_user: root
+    conf_path: /Datalake_Project/configuration_file.json
+    gitea_audit_path: proxies/dc18/nifi1/configuration_file.json
+  - id: DC18-NIFI2
+    proxy_nifi_host: 10.134.16.208
+    ssh_user: root
+    conf_path: /Datalake_Project/configuration_file.json
+    gitea_audit_path: proxies/dc18/nifi2/configuration_file.json
 AZ11:
   dc_code: AZ11
   proxies:
@@ -115,3 +128,29 @@ ICT11:
     ssh_user: root
     conf_path: /Datalake_Project/configuration_file.json
     gitea_audit_path: proxies/ict11/nifi2/configuration_file.json
+ICT21:
+  dc_code: ICT21
+  proxies:
+  - id: ICT21-NIFI1
+    proxy_nifi_host: 10.125.16.2
+    ssh_user: root
+    conf_path: /Datalake_Project/configuration_file.json
+    gitea_audit_path: proxies/ict21/nifi1/configuration_file.json
+  - id: ICT21-NIFI2
+    proxy_nifi_host: 10.125.16.3
+    ssh_user: root
+    conf_path: /Datalake_Project/configuration_file.json
+    gitea_audit_path: proxies/ict21/nifi2/configuration_file.json
+UZ11:
+  dc_code: UZ11
+  proxies:
+  - id: UZ11-NIFI1
+    proxy_nifi_host: 10.85.16.13
+    ssh_user: root
+    conf_path: /Datalake_Project/configuration_file.json
+    gitea_audit_path: proxies/uz11/nifi1/configuration_file.json
+  - id: UZ11-NIFI2
+    proxy_nifi_host: 10.85.16.14
+    ssh_user: root
+    conf_path: /Datalake_Project/configuration_file.json
+    gitea_audit_path: proxies/uz11/nifi2/configuration_file.json
