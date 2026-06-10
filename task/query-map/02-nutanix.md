@@ -45,7 +45,7 @@ Cluster düzeyindeki periyodik metrikler. Tüm ana sorgular bu tabloyu kullanır
 |-------|---------------------|
 | `cluster_name` | DC eşleştirme anahtarı (`LIKE '%<dc>%'`) ve `DISTINCT ON` grup anahtarı |
 | `cluster_uuid` | VM tablosuna join anahtarı (`NUTANIX_VM_STORAGE`) |
-| `datacenter_name` | DC eşleştirme için `ILIKE` (yalnızca `NUTANIX_VM_STORAGE`) |
+| `cluster_name` | DC eşleştirme (`LIKE '%dc_code%'`) — tüm Nutanix sorgularında |
 | `collection_time` | Zaman filtresi (`BETWEEN`) ve `DISTINCT ON` sıralaması |
 | `num_nodes` | Host (node) sayısı |
 | `total_vms` | VM sayısı |
@@ -445,12 +445,17 @@ SELECT
 FROM latest
 ```
 
-**Ne yapar:** Önce `datacenter_name ILIKE <dc_pattern>` ile DC'ye ait cluster_uuid'leri
+**Ne yapar:** Önce `cluster_name LIKE '%' || dc_code || '%'` ile DC'ye ait cluster_uuid'leri
 (son 24 saat) bulur; ardından bu cluster'lardaki VM'lerin son snapshot'larını
 (`DISTINCT ON (vm_name)`) alıp provisioned disk, kullanılan storage, vCPU ve tahsisli
 memory toplamlarını döner. Byte → GB için **1073741824.0 (1024³)** ile bölünür.
-**Parametreler:** `(dc_pattern,)` — örn. `'%DC13%'` (tam ILIKE wildcard string).
+**Parametreler:** `(dc_code,)` — örn. `'AZ11'` (wildcard değil; diğer Nutanix sorgularıyla aynı).
+**Filtered:** `(dc_code, cluster_array)` — `NUTANIX_VM_STORAGE_FILTERED`, cluster selector ile uyumlu.
 **Dönen sütunlar:** `provisioned_gb`, `used_gb`, `vcpu_count`, `mem_alloc_gb`.
+
+> **2026-06 düzeltme:** Eski `datacenter_name ILIKE` eşleştirmesi AZ11 gibi DC'lerde
+> (`PRISM-AZ11-SSD`, `datacenter_name='PRISM'`) allocation'ı 0 gösteriyordu; artık
+> `cluster_name LIKE '%dc_code%'` kullanılır.
 
 > `dc_service.get_hyperconv_storage_vm()` bu sorgu sonucunu VMware tarafıyla toplar ve
 > `vcpu_count`'u **GHz-eşdeğeri** olarak ele alır (iş kuralı: 1 vCPU ≈ 1 GHz).

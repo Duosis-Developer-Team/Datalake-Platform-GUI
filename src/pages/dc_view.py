@@ -728,7 +728,6 @@ def _build_compute_capacity_rows(
     """Build three capacity planning rows for Classic/Hyperconv compute tabs."""
     cpu_max_pct = cpu_pct_max or cpu_pct
     mem_max_pct = mem_pct_max or mem_pct
-    stor_alloc_gb = stor_provisioned_gb if stor_provisioned_gb > 0 else stor_used_gb
     return [
         {
             "label": "CPU",
@@ -755,7 +754,7 @@ def _build_compute_capacity_rows(
         {
             "label": "Storage",
             "total_str": smart_storage(stor_cap_gb),
-            "allocation": (smart_storage(stor_alloc_gb), stor_alloc_vm_pct),
+            "allocation": (smart_storage(stor_provisioned_gb), stor_alloc_vm_pct),
             "sales": None,
             "max_util": (smart_storage(stor_used_gb), stor_pct),
             "bar_pct": stor_alloc_vm_pct,
@@ -860,7 +859,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     stor_provisioned_gb = float(compute.get("stor_provisioned_gb", 0) or 0)
     stor_actual_used_gb = float(compute.get("stor_actual_used_gb", 0) or 0)
     stor_util_pct  = stor_pct
-    stor_alloc_vm_pct = alloc_pct_float(stor_provisioned_gb, stor_cap_gb) if stor_provisioned_gb > 0 else pct_float(stor_used, stor_cap)
+    stor_alloc_vm_pct = alloc_pct_float(stor_provisioned_gb, stor_cap_gb) if stor_cap_gb > 0 else 0.0
 
     capacity_rows = _build_compute_capacity_rows(
         cpu_cap=cpu_cap,

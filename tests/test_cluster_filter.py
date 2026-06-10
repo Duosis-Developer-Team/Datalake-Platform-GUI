@@ -162,8 +162,12 @@ class TestHyperconvMetricsFiltered(unittest.TestCase):
                 (bytes_5_tb, bytes_2_tb),
                 # HYPERCONV_AVG30_FILTERED — zeros => fallback to capacity-based pct
                 (0, 0, 0, 0),
+                # NUTANIX_VM_STORAGE_FILTERED
+                (0.0, 0.0, 0, 0.0),
             ]
         )
+        svc._run_rows = MagicMock(return_value=[])
+        svc._load_host_ghz_map = MagicMock(return_value={})
 
         result = svc.get_hyperconv_metrics_filtered("AZ11", ["AZ11-Nutanix-1"], tr)
         self.assertEqual(result["hosts"], 3)

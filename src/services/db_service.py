@@ -603,16 +603,30 @@ class DatabaseService:
             cursor, dc_wc, classic_km=True, cluster_filter=cluster_filter
         )
 
+    def _run_nutanix_vm_storage(
+        self,
+        cursor,
+        dc_code: str,
+        cluster_filter: list[str] | None = None,
+    ) -> tuple:
+        clusters = cluster_filter or []
+        if clusters:
+            row = self._run_row(cursor, nq.NUTANIX_VM_STORAGE_FILTERED, (dc_code, clusters))
+        else:
+            row = self._run_row(cursor, nq.NUTANIX_VM_STORAGE, (dc_code,))
+        return row or (0.0, 0.0, 0, 0.0)
+
     def get_hyperconv_storage_vm(
         self,
         cursor,
-        dc_wc: str,
+        dc_code: str,
         cluster_filter: list[str] | None = None,
     ) -> dict:
+        dc_wc = f"%{dc_code}%"
         vmw = self._compute_vmware_vm_allocation(
             cursor, dc_wc, classic_km=False, cluster_filter=cluster_filter
         )
-        ntx = self._run_row(cursor, nq.NUTANIX_VM_STORAGE, (dc_wc,)) or (0.0, 0.0, 0, 0.0)
+        ntx = self._run_nutanix_vm_storage(cursor, dc_code, cluster_filter)
         ntx_vcpu = float(ntx[2] or 0)
         return {
             "stor_provisioned_gb": round(float(vmw.get("stor_provisioned_gb") or 0) + float(ntx[0] or 0), 2),
@@ -774,7 +788,7 @@ class DatabaseService:
                     hc_avg30 = self._run_row(
                         cur, vq.HYPERCONV_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
                     )
-                    storage_vm = self.get_hyperconv_storage_vm(cur, dc_wc)
+                    storage_vm = self.get_hyperconv_storage_vm(cur, dc_code, selected_clusters)
         except OperationalError as exc:
             logger.error("DB unavailable for get_hyperconv_metrics_filtered(%s): %s", dc_code, exc)
             return _empty_compute_section()
@@ -1110,7 +1124,7 @@ class DatabaseService:
                         hyperconv_row=self.get_hyperconv_metrics(cur, dc_wc, start_ts, end_ts),
                         hyperconv_avg30=self.get_hyperconv_avg30(cur, dc_wc, start_ts, end_ts),
                         classic_storage_vm=self.get_classic_storage_vm(cur, dc_wc),
-                        hyperconv_storage_vm=self.get_hyperconv_storage_vm(cur, dc_wc),
+                        hyperconv_storage_vm=self.get_hyperconv_storage_vm(cur, dc_code),
                     )
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_details(%s): %s", dc_code, exc)
@@ -1510,7 +1524,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                         if dc not in results:
                             continue
                         classic_vm = self.get_classic_storage_vm(cur, dc_wc)
-                        hyper_vm = self.get_hyperconv_storage_vm(cur, dc_wc)
+                        hyper_vm = self.get_hyperconv_storage_vm(cur, dc)
                         results[dc]["classic"].update(classic_vm)
                         results[dc]["hyperconv"].update(hyper_vm)
                         results[dc]["classic"] = self._apply_cpu_overalloc_flags(results[dc]["classic"])
