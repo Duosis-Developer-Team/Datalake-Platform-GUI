@@ -31,6 +31,8 @@ SETTINGS_ENTRY_CODES: tuple[str, ...] = (
     "page:settings_integrations",
     "page:settings_auranotify",
     "page:settings_service_mapping",
+    "page:settings_hmdl_overview",
+    "page:settings_hmdl_sync_health",
 )
 
 
@@ -103,12 +105,12 @@ def create_sidebar_nav(active_path, perm_map: dict | None = None, username: str 
         )
 
     if _settings_visible(perm_map):
-        settings_active = active_path.startswith("/settings")
+        settings_active = active_path.startswith("/administration") or active_path.startswith("/settings")
         links.append(
             dmc.NavLink(
-                label="Settings",
+                label="Administration",
                 leftSection=DashIconify(icon="solar:settings-bold-duotone", width=20),
-                href="/settings",
+                href="/administration",
                 className="sidebar-link",
                 active=settings_active,
                 variant="subtle",

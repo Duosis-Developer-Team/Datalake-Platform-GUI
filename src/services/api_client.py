@@ -22,6 +22,7 @@ QUERY_API_URL = os.getenv("QUERY_API_URL", _API_BASE).rstrip("/")
 # config, service-mapping, metric-tags). Falls back to CUSTOMER_API_URL for
 # legacy single-binary deployments that still serve those routes.
 CRM_ENGINE_URL = os.getenv("CRM_ENGINE_URL", CUSTOMER_API_URL).rstrip("/")
+HMDL_API_URL = os.getenv("HMDL_API_URL", "http://localhost:8007").rstrip("/")
 
 _EMPTY_DASHBOARD = {
     "overview": {
@@ -154,6 +155,16 @@ def _get_client_query() -> httpx.Client:
             base_url=QUERY_API_URL, timeout=30.0, transport=_new_http_transport()
         )
         c = _HTTP_TLS.query
+    return c
+
+
+def _get_client_hmdl() -> httpx.Client:
+    c = getattr(_HTTP_TLS, "hmdl", None)
+    if c is None:
+        _HTTP_TLS.hmdl = httpx.Client(
+            base_url=HMDL_API_URL, timeout=30.0, transport=_new_http_transport()
+        )
+        c = _HTTP_TLS.hmdl
     return c
 
 
@@ -2076,3 +2087,77 @@ def refresh_platform_redis_caches() -> dict[str, Any]:
     except Exception as exc:
         out["gui_cache_error"] = str(exc)
     return out
+
+
+_EMPTY_HMDL_TOPOLOGY: dict[str, Any] = {
+    "hub_dc": "DC13",
+    "generated_at": None,
+    "last_prod_run_id": None,
+    "last_prod_run_at": None,
+    "nodes": [],
+    "edges": [],
+    "synced_dc_count": 0,
+    "total_dc_count": 0,
+}
+
+_EMPTY_HMDL_SUMMARY: dict[str, Any] = {
+    "generated_at": None,
+    "last_prod_run_id": None,
+    "last_prod_run_at": None,
+    "synced_dc_count": 0,
+    "total_dc_count": 0,
+    "synced_proxy_count": 0,
+    "total_proxy_count": 0,
+    "dc_statuses": {},
+}
+
+
+def get_hmdl_topology() -> dict[str, Any]:
+    try:
+        data = _get_json(_get_client_hmdl(), "/api/v1/collectors/topology")
+        return data if isinstance(data, dict) else _clone(_EMPTY_HMDL_TOPOLOGY)
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api topology unavailable: %s", exc)
+        return _clone(_EMPTY_HMDL_TOPOLOGY)
+
+
+def get_hmdl_sync_summary() -> dict[str, Any]:
+    try:
+        data = _get_json(_get_client_hmdl(), "/api/v1/collectors/sync-summary")
+        return data if isinstance(data, dict) else _clone(_EMPTY_HMDL_SUMMARY)
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api sync-summary unavailable: %s", exc)
+        return _clone(_EMPTY_HMDL_SUMMARY)
+
+
+def get_hmdl_dc_summary(dc_code: str) -> dict[str, Any]:
+    enc = quote((dc_code or "").strip().upper(), safe="")
+    try:
+        data = _get_json(_get_client_hmdl(), f"/api/v1/collectors/dc/{enc}")
+        return data if isinstance(data, dict) else {}
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api dc summary unavailable dc=%s: %s", dc_code, exc)
+        return {}
+
+
+def get_hmdl_dc_targets(
+    dc_code: str,
+    *,
+    category: str | None = None,
+    entity_name: str | None = None,
+    ip: str | None = None,
+) -> dict[str, Any]:
+    enc = quote((dc_code or "").strip().upper(), safe="")
+    params: dict[str, str] = {}
+    if category:
+        params["category"] = category
+    if entity_name:
+        params["entity_name"] = entity_name
+    if ip:
+        params["ip"] = ip
+    try:
+        data = _get_json(_get_client_hmdl(), f"/api/v1/collectors/dc/{enc}/targets", params=params or None)
+        return data if isinstance(data, dict) else {"items": []}
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api dc targets unavailable dc=%s: %s", dc_code, exc)
+        return {"items": []}

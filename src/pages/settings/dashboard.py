@@ -8,7 +8,9 @@ import dash_mantine_components as dmc
 from dash import html
 from dash_iconify import DashIconify
 
+from src.pages.settings.admin_routes import ADMIN_PREFIX
 from src.services import admin_client as settings_crud
+from src.services import api_client as api
 from src.utils.ui_tokens import (
     ON_DIM,
     ON_SURFACE,
@@ -37,15 +39,28 @@ def build_layout(search: str | None = None) -> html.Div:
     audit = settings_crud.list_audit_log(5)
     auth_disabled = os.environ.get("AUTH_DISABLED", "").lower() in ("1", "true", "yes")
     build_id = (os.environ.get("APP_BUILD_ID") or "dev").strip()
+    hmdl_summary = api.get_hmdl_sync_summary()
+    hmdl_synced = int(hmdl_summary.get("synced_dc_count") or 0)
+    hmdl_total = int(hmdl_summary.get("total_dc_count") or 0)
 
     kpi_row = dmc.SimpleGrid(
-        cols=4,
+        cols={"base": 2, "md": 5},
         spacing="md",
         children=[
             kpi_card("Active users", active_u, icon="solar:users-group-rounded-bold-duotone", color="green"),
             kpi_card("Inactive users", inactive_u, icon="solar:user-block-bold-duotone", color="gray"),
             kpi_card("Teams", len(teams), icon="solar:users-group-two-rounded-bold-duotone", color="indigo"),
             kpi_card("Roles", len(roles), icon="solar:shield-user-bold-duotone", color="violet"),
+            dmc.Anchor(
+                kpi_card(
+                    "HMDL DCs synced",
+                    f"{hmdl_synced}/{hmdl_total}" if hmdl_total else "—",
+                    icon="solar:server-path-bold-duotone",
+                    color="green" if hmdl_total and hmdl_synced == hmdl_total else "orange",
+                ),
+                href=f"{ADMIN_PREFIX}/integrations/hmdl",
+                underline=False,
+            ),
         ],
     )
 
@@ -56,14 +71,14 @@ def build_layout(search: str | None = None) -> html.Div:
             section_nav_card(
                 "Identity & Access Management",
                 "Users, teams, roles, permissions, authentication and audit trail.",
-                "/settings/iam/users",
+                f"{ADMIN_PREFIX}/iam/users",
                 icon="solar:shield-user-bold-duotone",
                 badges=[f"{len(users)} users", f"{len(roles)} roles"],
             ),
             section_nav_card(
                 "Integrations",
                 "LDAP directory and AuraNotify SLA connectivity.",
-                "/settings/integrations",
+                f"{ADMIN_PREFIX}/integrations",
                 icon="solar:link-round-angle-bold-duotone",
                 badges=[
                     "LDAP ● " + ("connected" if ldap_ok else "offline"),
@@ -80,7 +95,7 @@ def build_layout(search: str | None = None) -> html.Div:
             section_nav_card(
                 "CRM Dynamics 365",
                 "Operator-managed mappings, aliases, thresholds and pricing knobs (WebUI App DB).",
-                "/settings/integrations/crm",
+                f"{ADMIN_PREFIX}/integrations/crm",
                 icon="solar:case-round-bold-duotone",
                 badges=["customer-api", "datacenter-api", "bulutwebui"],
             ),
@@ -124,7 +139,7 @@ def build_layout(search: str | None = None) -> html.Div:
                     ),
                     dmc.Anchor(
                         "View all",
-                        href="/settings/iam/audit",
+                        href=f"{ADMIN_PREFIX}/iam/audit",
                         size="sm",
                         c="indigo",
                         underline=False,
@@ -281,9 +296,9 @@ def build_layout(search: str | None = None) -> html.Div:
                     dmc.Stack(
                         gap=6,
                         children=[
-                            dmc.Title("Settings overview", order=2, c=ON_SURFACE),
+                            dmc.Title("Administration overview", order=2, c=ON_SURFACE),
                             dmc.Text(
-                                "Monitor identity health, integrations, and recent administrative activity.",
+                                "Monitor identity health, integrations, HMDL sync and recent administrative activity.",
                                 size="sm",
                                 c=ON_DIM,
                             ),

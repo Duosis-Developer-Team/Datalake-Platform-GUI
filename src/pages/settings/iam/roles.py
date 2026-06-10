@@ -48,7 +48,7 @@ def build_layout(search: str | None = None) -> html.Div:
                         wrap="nowrap",
                         children=[
                             dmc.Anchor(
-                                href=f"/settings/iam/roles?role_id={rid}",
+                                href=f"/administration/iam/roles?role_id={rid}",
                                 underline=False,
                                 style={"flex": 1, "minWidth": 0},
                                 children=dmc.Group(

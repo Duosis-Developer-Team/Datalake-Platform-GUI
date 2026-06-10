@@ -88,63 +88,75 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
         return "page:query_explorer"
     if p == "/login":
         return None
-    if p == "/settings" or p == "/settings/":
+    from src.pages.settings.admin_routes import to_administration_path
+
+    admin_p = to_administration_path(p)
+    if admin_p == "/administration" or admin_p == "/administration/":
         return "grp:settings"
-    if p.startswith("/settings/"):
-        # Legacy paths (also normalized in settings shell)
-        if p.startswith("/settings/users"):
+    if admin_p.startswith("/administration/"):
+        if admin_p.startswith("/administration/users"):
             return "page:settings_users"
-        if p.startswith("/settings/roles"):
+        if admin_p.startswith("/administration/roles"):
             return "page:settings_roles"
-        if p.startswith("/settings/permissions"):
+        if admin_p.startswith("/administration/permissions"):
             return "page:settings_permissions"
-        if p.startswith("/settings/ldap"):
+        if admin_p.startswith("/administration/ldap"):
             return "page:settings_ldap"
-        if p.startswith("/settings/teams"):
+        if admin_p.startswith("/administration/teams"):
             return "page:settings_teams"
-        if p.startswith("/settings/auth"):
+        if admin_p.startswith("/administration/auth"):
             return "page:settings_auth"
-        if p.startswith("/settings/audit"):
+        if admin_p.startswith("/administration/audit"):
             return "page:settings_audit"
-        # New structured settings paths
-        if p.startswith("/settings/iam/users"):
+        if admin_p.startswith("/administration/iam/users"):
             return "page:settings_users"
-        if p.startswith("/settings/iam/roles"):
+        if admin_p.startswith("/administration/iam/roles"):
             return "page:settings_roles"
-        if p.startswith("/settings/iam/permissions"):
+        if admin_p.startswith("/administration/iam/permissions"):
             return "page:settings_permissions"
-        if p.startswith("/settings/iam/teams"):
+        if admin_p.startswith("/administration/iam/teams"):
             return "page:settings_teams"
-        if p.startswith("/settings/iam/auth"):
+        if admin_p.startswith("/administration/iam/auth"):
             return "page:settings_auth"
-        if p.startswith("/settings/iam/audit"):
+        if admin_p.startswith("/administration/iam/audit"):
             return "page:settings_audit"
-        if p.startswith("/settings/integrations/ldap"):
+        if admin_p.startswith("/administration/integrations/ldap"):
             return "page:settings_ldap"
-        if p.startswith("/settings/integrations/auranotify"):
+        if admin_p.startswith("/administration/integrations/auranotify"):
             return "page:settings_auranotify"
-        if p.startswith("/settings/integrations/netbox/visualization"):
+        if admin_p.startswith("/administration/integrations/netbox/visualization"):
             return "page:settings_netbox_visualization"
-        if p.rstrip("/") == "/settings/integrations/crm":
+        if admin_p.startswith("/administration/integrations/hmdl/sync-health"):
+            return "page:settings_hmdl_sync_health"
+        if admin_p.rstrip("/") == "/administration/integrations/hmdl":
+            return "page:settings_hmdl_overview"
+        if admin_p.rstrip("/") == "/administration/integrations/crm":
             return "page:settings_crm_overview"
-        if p.startswith("/settings/integrations/crm/service-mapping"):
+        if admin_p.startswith("/administration/integrations/crm/service-mapping"):
             return "page:settings_service_mapping"
-        if p.startswith("/settings/integrations/crm/aliases"):
+        if admin_p.startswith("/administration/integrations/crm/aliases"):
             return "page:settings_crm_aliases"
-        if p.startswith("/settings/integrations/crm/thresholds"):
+        if admin_p.startswith("/administration/integrations/crm/thresholds"):
             return "page:settings_crm_thresholds"
-        if p.startswith("/settings/integrations/crm/price-overrides"):
+        if admin_p.startswith("/administration/integrations/crm/price-overrides"):
             return "page:settings_crm_price_overrides"
-        if p.startswith("/settings/integrations/crm/calc-config"):
+        if admin_p.startswith("/administration/integrations/crm/calc-config"):
             return "page:settings_crm_calc_config"
-        # Legacy CRM paths (removed top-nav CRM section)
-        if p.startswith("/settings/crm/service-mapping"):
+        if admin_p.startswith("/administration/integrations/crm/panels"):
+            return "page:settings_crm_panels"
+        if admin_p.startswith("/administration/integrations/crm/infra-sources"):
+            return "page:settings_crm_infra_sources"
+        if admin_p.startswith("/administration/integrations/crm/resource-ratios"):
+            return "page:settings_crm_resource_ratios"
+        if admin_p.startswith("/administration/integrations/crm/unit-conversions"):
+            return "page:settings_crm_unit_conversions"
+        if admin_p.startswith("/administration/crm/service-mapping"):
             return "page:settings_service_mapping"
-        if p.rstrip("/") == "/settings/integrations":
+        if admin_p.rstrip("/") == "/administration/integrations":
             return "page:settings_integrations"
-        if p.startswith("/settings/iam"):
+        if admin_p.startswith("/administration/iam"):
             return "grp:settings"
-        if p.startswith("/settings/integrations"):
+        if admin_p.startswith("/administration/integrations"):
             return "page:settings_integrations"
         return "grp:settings"
     return "page:overview"

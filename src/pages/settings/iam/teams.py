@@ -171,7 +171,7 @@ def build_layout(search: str | None = None) -> html.Div:
 
     toolbar = html.Form(
         method="GET",
-        action="/settings/iam/teams",
+        action="/administration/iam/teams",
         style={"flex": 1, "maxWidth": "420px", "display": "flex", "gap": "8px", "alignItems": "center"},
         children=[
             dcc.Input(

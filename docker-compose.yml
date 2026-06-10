@@ -106,6 +106,7 @@ services:
       DATACENTER_API_URL: ${DATACENTER_API_URL:-http://datacenter-api:8000}
       CUSTOMER_API_URL: ${CUSTOMER_API_URL:-http://customer-api:8000}
       CRM_ENGINE_URL: ${CRM_ENGINE_URL:-http://crm-engine:8000}
+      HMDL_API_URL: ${HMDL_API_URL:-http://hmdl-api:8000}
       QUERY_API_URL: ${QUERY_API_URL:-http://query-api:8000}
       # Admin API — when set, settings CRUD is routed through the admin-api service
       ADMIN_API_URL: ${ADMIN_API_URL:-http://admin-api:8000}
@@ -323,6 +324,44 @@ services:
       timeout: 5s
       retries: 5
       start_period: 40s
+    profiles:
+      - microservice
+
+  hmdl-api:
+    build:
+      context: .
+      dockerfile: services/hmdl-api/Dockerfile
+    container_name: bulutistan-hmdl-api
+    ports:
+      - "8007:8000"
+    env_file:
+      - .env
+    environment:
+      HMDL_DB_HOST: ${HMDL_DB_HOST:-${DB_HOST:-}}
+      HMDL_DB_PORT: ${HMDL_DB_PORT:-${DB_PORT:-5000}}
+      HMDL_DB_NAME: ${HMDL_DB_NAME:-${DB_NAME:-bulutlake}}
+      HMDL_DB_USER: ${HMDL_DB_USER:-${DB_USER:-infra_svc}}
+      HMDL_DB_PASSWORD: ${HMDL_DB_PASSWORD:-${DB_PASS:-}}
+      HMDL_PROXY_ASSIGNMENT_PATH: ${HMDL_PROXY_ASSIGNMENT_PATH:-/app/data/proxy_assignment.yml}
+      API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-false}
+      API_JWT_SECRET: ${API_JWT_SECRET:-}
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: hmdl-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
+    networks:
+      - datalake
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     profiles:
       - microservice
 

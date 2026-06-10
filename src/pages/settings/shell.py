@@ -1,4 +1,4 @@
-"""Settings area: IAM / Integrations navigation and permission-aware layout."""
+"""Administration area: IAM / Integrations navigation and permission-aware layout."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from dash_iconify import DashIconify
 
 from src.components.access_denied import build_access_denied
 from src.pages.settings import dashboard as dashboard_page
+from src.pages.settings.admin_routes import ADMIN_PREFIX, to_administration_path
 from src.pages.settings.iam import audit as audit_page
 from src.pages.settings.iam import auth_settings as auth_settings_page
 from src.pages.settings.iam import permissions as permissions_page
@@ -29,57 +30,66 @@ from src.pages.settings.integrations import crm_infra_sources as crm_infra_sourc
 from src.pages.settings.integrations import crm_resource_ratios as crm_resource_ratios_page
 from src.pages.settings.integrations import crm_unit_conversions as crm_unit_conversions_page
 from src.pages.settings.integrations import netbox_visualization as netbox_visualization_page
+from src.pages.settings.integrations import hmdl_overview as hmdl_overview_page
+from src.pages.settings.integrations import hmdl_sync_health as hmdl_sync_health_page
 from src.pages.settings import crm_service_mapping as crm_service_mapping_page
+
+_A = ADMIN_PREFIX
 
 # (href, label, permission code)
 IAM_TABS: list[tuple[str, str, str]] = [
-    ("/settings/iam/users", "Users", "page:settings_users"),
-    ("/settings/iam/teams", "Teams", "page:settings_teams"),
-    ("/settings/iam/roles", "Roles", "page:settings_roles"),
-    ("/settings/iam/permissions", "Permissions", "page:settings_permissions"),
-    ("/settings/iam/auth", "Auth", "page:settings_auth"),
-    ("/settings/iam/audit", "Audit Log", "page:settings_audit"),
+    (f"{_A}/iam/users", "Users", "page:settings_users"),
+    (f"{_A}/iam/teams", "Teams", "page:settings_teams"),
+    (f"{_A}/iam/roles", "Roles", "page:settings_roles"),
+    (f"{_A}/iam/permissions", "Permissions", "page:settings_permissions"),
+    (f"{_A}/iam/auth", "Auth", "page:settings_auth"),
+    (f"{_A}/iam/audit", "Audit Log", "page:settings_audit"),
 ]
 
 INT_TABS: list[tuple[str, str, str]] = [
-    ("/settings/integrations", "Overview", "page:settings_integrations"),
-    ("/settings/integrations/crm", "CRM Dynamics 365", "page:settings_crm_overview"),
-    ("/settings/integrations/netbox/visualization", "NetBox / Loki", "page:settings_netbox_visualization"),
-    ("/settings/integrations/ldap", "LDAP", "page:settings_ldap"),
-    ("/settings/integrations/auranotify", "AuraNotify", "page:settings_auranotify"),
+    (f"{_A}/integrations", "Overview", "page:settings_integrations"),
+    (f"{_A}/integrations/hmdl", "HMDL", "page:settings_hmdl_overview"),
+    (f"{_A}/integrations/crm", "CRM Dynamics 365", "page:settings_crm_overview"),
+    (f"{_A}/integrations/netbox/visualization", "NetBox / Loki", "page:settings_netbox_visualization"),
+    (f"{_A}/integrations/ldap", "LDAP", "page:settings_ldap"),
+    (f"{_A}/integrations/auranotify", "AuraNotify", "page:settings_auranotify"),
+]
+
+HMDL_TABS: list[tuple[str, str, str]] = [
+    (f"{_A}/integrations/hmdl", "Overview", "page:settings_hmdl_overview"),
+    (f"{_A}/integrations/hmdl/sync-health", "Datalake Sync Health", "page:settings_hmdl_sync_health"),
 ]
 
 CRM_INT_TABS: list[tuple[str, str, str]] = [
-    ("/settings/integrations/crm", "Overview", "page:settings_crm_overview"),
-    ("/settings/integrations/crm/service-mapping", "Service mapping", "page:settings_service_mapping"),
-    ("/settings/integrations/crm/panels", "Panels", "page:settings_crm_panels"),
-    ("/settings/integrations/crm/infra-sources", "Infra sources", "page:settings_crm_infra_sources"),
-    ("/settings/integrations/crm/resource-ratios", "Resource ratios", "page:settings_crm_resource_ratios"),
-    ("/settings/integrations/crm/unit-conversions", "Unit conversions", "page:settings_crm_unit_conversions"),
-    ("/settings/integrations/crm/aliases", "Customer aliases", "page:settings_crm_aliases"),
-    ("/settings/integrations/crm/thresholds", "Thresholds", "page:settings_crm_thresholds"),
-    ("/settings/integrations/crm/price-overrides", "Price overrides", "page:settings_crm_price_overrides"),
-    ("/settings/integrations/crm/calc-config", "Calc variables", "page:settings_crm_calc_config"),
+    (f"{_A}/integrations/crm", "Overview", "page:settings_crm_overview"),
+    (f"{_A}/integrations/crm/service-mapping", "Service mapping", "page:settings_service_mapping"),
+    (f"{_A}/integrations/crm/panels", "Panels", "page:settings_crm_panels"),
+    (f"{_A}/integrations/crm/infra-sources", "Infra sources", "page:settings_crm_infra_sources"),
+    (f"{_A}/integrations/crm/resource-ratios", "Resource ratios", "page:settings_crm_resource_ratios"),
+    (f"{_A}/integrations/crm/unit-conversions", "Unit conversions", "page:settings_crm_unit_conversions"),
+    (f"{_A}/integrations/crm/aliases", "Customer aliases", "page:settings_crm_aliases"),
+    (f"{_A}/integrations/crm/thresholds", "Thresholds", "page:settings_crm_thresholds"),
+    (f"{_A}/integrations/crm/price-overrides", "Price overrides", "page:settings_crm_price_overrides"),
+    (f"{_A}/integrations/crm/calc-config", "Calc variables", "page:settings_crm_calc_config"),
 ]
 
 LEGACY_REDIRECTS: dict[str, str] = {
-    "/settings/users": "/settings/iam/users",
-    "/settings/roles": "/settings/iam/roles",
-    "/settings/permissions": "/settings/iam/permissions",
-    "/settings/teams": "/settings/iam/teams",
-    "/settings/auth": "/settings/iam/auth",
-    "/settings/audit": "/settings/iam/audit",
-    "/settings/ldap": "/settings/integrations/ldap",
-    "/settings/crm": "/settings/integrations/crm",
-    "/settings/crm/service-mapping": "/settings/integrations/crm/service-mapping",
-    "/settings/customer-alias": "/settings/integrations/crm/aliases",
-    "/settings/crm/product-categories": "/settings/integrations/crm/service-mapping",
+    f"{_A}/users": f"{_A}/iam/users",
+    f"{_A}/roles": f"{_A}/iam/roles",
+    f"{_A}/permissions": f"{_A}/iam/permissions",
+    f"{_A}/teams": f"{_A}/iam/teams",
+    f"{_A}/auth": f"{_A}/iam/auth",
+    f"{_A}/audit": f"{_A}/iam/audit",
+    f"{_A}/ldap": f"{_A}/integrations/ldap",
+    f"{_A}/crm": f"{_A}/integrations/crm",
+    f"{_A}/crm/service-mapping": f"{_A}/integrations/crm/service-mapping",
+    f"{_A}/customer-alias": f"{_A}/integrations/crm/aliases",
+    f"{_A}/crm/product-categories": f"{_A}/integrations/crm/service-mapping",
 }
 
-# Ordered longest-prefix redirects for nested legacy URLs.
 LEGACY_PREFIX_REDIRECTS: list[tuple[str, str]] = [
-    ("/settings/crm/service-mapping", "/settings/integrations/crm/service-mapping"),
-    ("/settings/crm", "/settings/integrations/crm"),
+    (f"{_A}/crm/service-mapping", f"{_A}/integrations/crm/service-mapping"),
+    (f"{_A}/crm", f"{_A}/integrations/crm"),
 ]
 
 
@@ -88,27 +98,29 @@ def _call_page_builder(builder: Callable[..., html.Div], search: str | None) -> 
 
 
 _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
-    "/settings": ("grp:settings", dashboard_page.build_layout),
-    "/settings/iam/users": ("page:settings_users", users_page.build_layout),
-    "/settings/iam/teams": ("page:settings_teams", teams_page.build_layout),
-    "/settings/iam/roles": ("page:settings_roles", roles_page.build_layout),
-    "/settings/iam/permissions": ("page:settings_permissions", permissions_page.build_layout),
-    "/settings/iam/auth": ("page:settings_auth", auth_settings_page.build_layout),
-    "/settings/iam/audit": ("page:settings_audit", audit_page.build_layout),
-    "/settings/integrations": ("page:settings_integrations", integrations_overview_page.build_layout),
-    "/settings/integrations/crm": ("page:settings_crm_overview", crm_overview_page.build_layout),
-    "/settings/integrations/crm/service-mapping": ("page:settings_service_mapping", crm_service_mapping_page.build_layout),
-    "/settings/integrations/crm/aliases": ("page:settings_crm_aliases", crm_aliases_page.build_layout),
-    "/settings/integrations/crm/thresholds": ("page:settings_crm_thresholds", crm_thresholds_page.build_layout),
-    "/settings/integrations/crm/price-overrides": ("page:settings_crm_price_overrides", crm_price_overrides_page.build_layout),
-    "/settings/integrations/crm/calc-config": ("page:settings_crm_calc_config", crm_calc_config_page.build_layout),
-    "/settings/integrations/crm/panels": ("page:settings_crm_panels", crm_panels_page.build_layout),
-    "/settings/integrations/crm/infra-sources": ("page:settings_crm_infra_sources", crm_infra_sources_page.build_layout),
-    "/settings/integrations/crm/resource-ratios": ("page:settings_crm_resource_ratios", crm_resource_ratios_page.build_layout),
-    "/settings/integrations/crm/unit-conversions": ("page:settings_crm_unit_conversions", crm_unit_conversions_page.build_layout),
-    "/settings/integrations/ldap": ("page:settings_ldap", ldap_page.build_layout),
-    "/settings/integrations/auranotify": ("page:settings_auranotify", auranotify_page.build_layout),
-    "/settings/integrations/netbox/visualization": (
+    _A: ("grp:settings", dashboard_page.build_layout),
+    f"{_A}/iam/users": ("page:settings_users", users_page.build_layout),
+    f"{_A}/iam/teams": ("page:settings_teams", teams_page.build_layout),
+    f"{_A}/iam/roles": ("page:settings_roles", roles_page.build_layout),
+    f"{_A}/iam/permissions": ("page:settings_permissions", permissions_page.build_layout),
+    f"{_A}/iam/auth": ("page:settings_auth", auth_settings_page.build_layout),
+    f"{_A}/iam/audit": ("page:settings_audit", audit_page.build_layout),
+    f"{_A}/integrations": ("page:settings_integrations", integrations_overview_page.build_layout),
+    f"{_A}/integrations/hmdl": ("page:settings_hmdl_overview", hmdl_overview_page.build_layout),
+    f"{_A}/integrations/hmdl/sync-health": ("page:settings_hmdl_sync_health", hmdl_sync_health_page.build_layout),
+    f"{_A}/integrations/crm": ("page:settings_crm_overview", crm_overview_page.build_layout),
+    f"{_A}/integrations/crm/service-mapping": ("page:settings_service_mapping", crm_service_mapping_page.build_layout),
+    f"{_A}/integrations/crm/aliases": ("page:settings_crm_aliases", crm_aliases_page.build_layout),
+    f"{_A}/integrations/crm/thresholds": ("page:settings_crm_thresholds", crm_thresholds_page.build_layout),
+    f"{_A}/integrations/crm/price-overrides": ("page:settings_crm_price_overrides", crm_price_overrides_page.build_layout),
+    f"{_A}/integrations/crm/calc-config": ("page:settings_crm_calc_config", crm_calc_config_page.build_layout),
+    f"{_A}/integrations/crm/panels": ("page:settings_crm_panels", crm_panels_page.build_layout),
+    f"{_A}/integrations/crm/infra-sources": ("page:settings_crm_infra_sources", crm_infra_sources_page.build_layout),
+    f"{_A}/integrations/crm/resource-ratios": ("page:settings_crm_resource_ratios", crm_resource_ratios_page.build_layout),
+    f"{_A}/integrations/crm/unit-conversions": ("page:settings_crm_unit_conversions", crm_unit_conversions_page.build_layout),
+    f"{_A}/integrations/ldap": ("page:settings_ldap", ldap_page.build_layout),
+    f"{_A}/integrations/auranotify": ("page:settings_auranotify", auranotify_page.build_layout),
+    f"{_A}/integrations/netbox/visualization": (
         "page:settings_netbox_visualization",
         netbox_visualization_page.build_layout,
     ),
@@ -116,7 +128,8 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
 
 
 def _normalize_path(pathname: str) -> str:
-    p = (pathname or "/settings").rstrip("/") or "/settings"
+    p = to_administration_path(pathname or _A)
+    p = p.rstrip("/") or _A
     p = LEGACY_REDIRECTS.get(p, p)
     for old_prefix, new_prefix in LEGACY_PREFIX_REDIRECTS:
         if p == old_prefix or p.startswith(old_prefix + "/"):
@@ -132,6 +145,7 @@ def has_any_settings_access(user_id: int) -> bool:
         [c for _, _, c in IAM_TABS]
         + [c for _, _, c in INT_TABS]
         + [c for _, _, c in CRM_INT_TABS]
+        + [c for _, _, c in HMDL_TABS]
     )
     if any(can_view(user_id, c) for c in codes):
         return True
@@ -157,26 +171,24 @@ def first_allowed_integrations_path(user_id: int) -> str | None:
 
 
 def first_allowed_settings_path(user_id: int) -> str | None:
-    """First page user may open (prefers overview dashboard)."""
     from src.auth.permission_service import can_view
 
     if can_view(user_id, "grp:settings") or has_any_settings_access(user_id):
-        return "/settings"
+        return _A
     return None
 
 
 def _section_for_path(p: str) -> str:
-    if p == "/settings" or p == "/settings/":
+    if p == _A or p == f"{_A}/":
         return "overview"
-    if p.startswith("/settings/iam"):
+    if p.startswith(f"{_A}/iam"):
         return "iam"
-    if p.startswith("/settings/integrations"):
+    if p.startswith(f"{_A}/integrations"):
         return "integrations"
     return "overview"
 
 
 def _nav_btn_props(*, active: bool) -> dict:
-    """Primary nav: gradient fill when active (brand), light when inactive."""
     if active:
         return {
             "variant": "filled",
@@ -196,8 +208,7 @@ def _top_nav(user_id: int, current_path: str) -> dmc.Group:
     from src.auth.permission_service import can_view
 
     items = []
-    # Overview
-    active_o = current_path.rstrip("/") in ("/settings", "")
+    active_o = current_path.rstrip("/") in (_A, "")
     if can_view(user_id, "grp:settings") or has_any_settings_access(user_id):
         items.append(
             dmc.Anchor(
@@ -207,15 +218,13 @@ def _top_nav(user_id: int, current_path: str) -> dmc.Group:
                     radius="md",
                     **_nav_btn_props(active=active_o),
                 ),
-                href="/settings",
+                href=_A,
                 underline=False,
             )
         )
-    # IAM
     iam_href = first_allowed_iam_path(user_id)
     if iam_href:
-        sec = _section_for_path(current_path)
-        active_i = sec == "iam"
+        active_i = _section_for_path(current_path) == "iam"
         items.append(
             dmc.Anchor(
                 dmc.Button(
@@ -228,10 +237,9 @@ def _top_nav(user_id: int, current_path: str) -> dmc.Group:
                 underline=False,
             )
         )
-    # Integrations
     int_href = first_allowed_integrations_path(user_id)
     if int_href:
-        active_g = current_path.startswith("/settings/integrations")
+        active_g = current_path.startswith(f"{_A}/integrations")
         items.append(
             dmc.Anchor(
                 dmc.Button(
@@ -311,7 +319,7 @@ def _sub_nav(user_id: int, current_path: str) -> html.Div | None:
             )
         ]
 
-        if current_path.startswith("/settings/integrations/crm"):
+        if current_path.startswith(f"{_A}/integrations/crm"):
             crm_links = []
             for href, label, code in CRM_INT_TABS:
                 if not can_view(user_id, code):
@@ -336,8 +344,38 @@ def _sub_nav(user_id: int, current_path: str) -> html.Div | None:
             if crm_links:
                 blocks.append(
                     html.Div(
-                        style={"borderBottom": "1px solid #eef1f4", "paddingBottom": "8px", "marginBottom": "16px"},
+                        style={"borderBottom": "1px solid #eef1f4", "paddingBottom": "8px", "marginBottom": "12px"},
                         children=[dmc.Group(gap="xs", children=crm_links)],
+                    )
+                )
+
+        if current_path.startswith(f"{_A}/integrations/hmdl"):
+            hmdl_links = []
+            for href, label, code in HMDL_TABS:
+                if not can_view(user_id, code):
+                    continue
+                active = current_path.rstrip("/") == href.rstrip("/")
+                hmdl_links.append(
+                    dmc.Anchor(
+                        dmc.Button(
+                            label,
+                            variant="subtle" if not active else "light",
+                            color="indigo",
+                            size="xs",
+                            style={
+                                "borderBottom": "2px solid #552cf8" if active else "2px solid transparent",
+                                "borderRadius": 0,
+                            },
+                        ),
+                        href=href,
+                        underline=False,
+                    )
+                )
+            if hmdl_links:
+                blocks.append(
+                    html.Div(
+                        style={"borderBottom": "1px solid #eef1f4", "paddingBottom": "8px", "marginBottom": "16px"},
+                        children=[dmc.Group(gap="xs", children=hmdl_links)],
                     )
                 )
 
@@ -348,32 +386,34 @@ def _sub_nav(user_id: int, current_path: str) -> html.Div | None:
 def _breadcrumb(current_path: str) -> str:
     sec = _section_for_path(current_path)
     if sec == "overview":
-        return "Settings › Overview"
+        return "Administration › Overview"
     if sec == "iam":
-        return "Settings › Identity & Access Management"
+        return "Administration › Identity & Access Management"
     if sec == "integrations":
-        if current_path.startswith("/settings/integrations/crm"):
-            return "Settings › Integrations › CRM Dynamics 365"
-        return "Settings › Integrations"
-    return "Settings"
+        if current_path.startswith(f"{_A}/integrations/crm"):
+            return "Administration › Integrations › CRM Dynamics 365"
+        if current_path.startswith(f"{_A}/integrations/hmdl"):
+            return "Administration › Integrations › HMDL"
+        return "Administration › Integrations"
+    return "Administration"
 
 
 def build_settings_page(pathname: str, user_id: int, search: str | None = None) -> html.Div:
     from src.auth.permission_service import can_view
 
-    p = _normalize_path(pathname or "/settings")
-    if p == "/settings/iam":
-        p = first_allowed_iam_path(user_id) or "/settings"
+    p = _normalize_path(pathname or _A)
+    if p == f"{_A}/iam":
+        p = first_allowed_iam_path(user_id) or _A
 
     if not has_any_settings_access(user_id):
-        return build_access_denied("You have no access to Settings.")
+        return build_access_denied("You have no access to Administration.")
 
     if p not in _PAGE_BUILDERS:
-        p = "/settings"
+        p = _A
 
     code, builder = _PAGE_BUILDERS[p]
 
-    if p == "/settings":
+    if p == _A:
         if not (can_view(user_id, "grp:settings") or has_any_settings_access(user_id)):
             return build_access_denied()
     elif not can_view(user_id, code):
@@ -403,7 +443,7 @@ def build_settings_page(pathname: str, user_id: int, search: str | None = None) 
                         gap=2,
                         children=[
                             dmc.Text(_breadcrumb(p), size="xs", c="dimmed", fw=600),
-                            dmc.Title("Settings", order=3, c="#2B3674"),
+                            dmc.Title("Administration", order=3, c="#2B3674"),
                         ],
                     ),
                     _top_nav(user_id, p),

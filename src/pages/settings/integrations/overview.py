@@ -8,7 +8,9 @@ import dash_mantine_components as dmc
 from dash import html
 from dash_iconify import DashIconify
 
+from src.pages.settings.admin_routes import ADMIN_PREFIX
 from src.services import admin_client as settings_crud
+from src.services import api_client as api
 from src.utils.ui_tokens import ON_SURFACE, kpi_card, section_header, settings_page_shell
 
 
@@ -77,16 +79,22 @@ def build_layout(search: str | None = None) -> html.Div:
 
     netbox_status = "connected"
 
+    hmdl_summary = api.get_hmdl_sync_summary()
+    hmdl_synced = int(hmdl_summary.get("synced_dc_count") or 0)
+    hmdl_total = int(hmdl_summary.get("total_dc_count") or 0)
+    hmdl_status = "connected" if hmdl_total and hmdl_synced == hmdl_total else "degraded" if hmdl_total else "disconnected"
+
     connected = sum(
         [
             crm_status == "connected",
             netbox_status == "connected",
             ldap_status == "connected",
             aura_status == "connected",
+            hmdl_status == "connected",
         ]
     )
-    degraded = (1 if aura_status == "degraded" else 0)
-    disconnected = 4 - connected - degraded
+    degraded = sum([1 if aura_status == "degraded" else 0, 1 if hmdl_status == "degraded" else 0])
+    disconnected = 5 - connected - degraded
 
     kpis = dmc.SimpleGrid(
         cols=3,
@@ -106,7 +114,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 "CRM Dynamics 365",
                 "Mappings, aliases, thresholds and manual catalog pricing (WebUI App DB).",
                 "connected",
-                "/settings/integrations/crm",
+                f"{ADMIN_PREFIX}/integrations/crm",
                 "Open",
                 border_color="#552cf8",
                 icon="solar:case-round-bold-duotone",
@@ -115,7 +123,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 "NetBox / Loki",
                 "Exclude device roles from datacenter and customer visualization scopes.",
                 netbox_status,
-                "/settings/integrations/netbox/visualization",
+                f"{ADMIN_PREFIX}/integrations/netbox/visualization",
                 "Configure",
                 border_color="#552cf8",
                 icon="solar:server-square-cloud-bold-duotone",
@@ -124,7 +132,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 "LDAP Directory",
                 "Centralized authentication and group → role mapping.",
                 ldap_status,
-                "/settings/integrations/ldap",
+                f"{ADMIN_PREFIX}/integrations/ldap",
                 "Configure",
                 border_color="#552cf8" if ldap_active else None,
                 icon="solar:key-minimalistic-bold-duotone",
@@ -133,10 +141,19 @@ def build_layout(search: str | None = None) -> html.Div:
                 "AuraNotify",
                 "SLA / downtime and customer availability APIs.",
                 aura_status,
-                "/settings/integrations/auranotify",
+                f"{ADMIN_PREFIX}/integrations/auranotify",
                 "Open",
                 border_color="#552cf8" if aura_status == "connected" else None,
                 icon="solar:graph-new-up-bold-duotone",
+            ),
+            _connector_card(
+                "HMDL / NiFi collectors",
+                f"Datalake collector sync topology and Loki target health ({hmdl_synced}/{hmdl_total} DCs synced).",
+                hmdl_status,
+                f"{ADMIN_PREFIX}/integrations/hmdl",
+                "Open topology",
+                border_color="#552cf8" if hmdl_status == "connected" else None,
+                icon="solar:server-path-bold-duotone",
             ),
         ],
     )

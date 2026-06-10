@@ -130,12 +130,19 @@ from src.pages.settings import crm_service_mapping  # noqa: F401 — CRM service
 from src.pages.settings.integrations import crm_aliases  # noqa: F401 — CRM customer aliases layout
 from src.pages.settings.integrations import crm_aliases_callbacks  # noqa: F401 — CRM customer aliases callbacks
 from src.pages.settings.integrations import netbox_visualization_callbacks  # noqa: F401 — NetBox viz exclusions
+from src.pages.settings.integrations import hmdl_callbacks  # noqa: F401 — HMDL sync health filters
 from src.pages.settings import dashboard_callbacks  # noqa: F401 — Settings overview (cache refresh)
+from src.pages.settings.admin_routes import to_administration_path
 
 _default_tr = default_time_range()
 _custom_st, _custom_en = time_range_to_bounds(_default_tr)
 _custom_picker_start = _custom_st.strftime("%Y-%m-%dT%H:%M:%S")
 _custom_picker_end = _custom_en.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _is_administration_path(pathname: str | None) -> bool:
+    p = str(pathname or "")
+    return p.startswith("/administration") or p.startswith("/settings")
 
 
 def _warm_worker_local_customer_availability_cache() -> None:
@@ -597,6 +604,17 @@ def update_time_range_store(preset, start_dt, end_dt, anchor_latest, current):
 
 
 @app.callback(
+    dash.Output("url", "pathname", allow_duplicate=True),
+    dash.Input("url", "pathname"),
+    prevent_initial_call="initial_duplicate",
+)
+def redirect_legacy_settings_urls(pathname):
+    if pathname and str(pathname).startswith("/settings"):
+        return to_administration_path(str(pathname))
+    return dash.no_update
+
+
+@app.callback(
     dash.Output("main-content", "children"),
     dash.Input("url", "pathname"),
     dash.Input("app-time-range", "data"),
@@ -638,14 +656,14 @@ def render_main_content(pathname, time_range, search):
     page_code = resolve_pathname_to_page_code(pathname)
     vis = (
         get_visible_sections(int(uid), page_code)
-        if uid and page_code and not str(pathname).startswith("/settings")
+        if uid and page_code and not _is_administration_path(pathname)
         else None
     )
 
     if (
         page_code
         and uid
-        and not str(pathname).startswith("/settings")
+        and not _is_administration_path(pathname)
         and not can_view(int(uid), page_code)
     ):
         return build_access_denied()
@@ -678,7 +696,7 @@ def render_main_content(pathname, time_range, search):
         params = parse_qs((search or "").lstrip("?"))
         region = params.get("region", [""])[0]
         return region_drilldown.build_region_drilldown(region, tr)
-    if pathname.startswith("/settings"):
+    if _is_administration_path(pathname):
         return settings_shell.build_settings_page(pathname, int(uid), search)
     return home.build_overview(tr, visible_sections=vis)
 
