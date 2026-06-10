@@ -760,6 +760,36 @@ def get_hyperconv_metrics_filtered(
     return _api_cache_get_with_stale(ck, fetch, {})
 
 
+def get_classic_host_rows(
+    dc_code: str, selected_clusters: Optional[list[str]], tr: Optional[dict]
+) -> dict:
+    """Per-host compute rows (capacity/usage/allocation) for Classic (KM) clusters."""
+    enc = quote(dc_code, safe="")
+    params = {**_build_time_params(tr), **_clusters_param(selected_clusters)}
+    ck = f"api:classic_hosts:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
+
+    def fetch() -> dict:
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/compute/classic/hosts", params=params)
+        return data if isinstance(data, dict) else {}
+
+    return _api_cache_get_with_stale(ck, fetch, {"hosts": [], "host_count": 0})
+
+
+def get_hyperconv_host_rows(
+    dc_code: str, selected_clusters: Optional[list[str]], tr: Optional[dict]
+) -> dict:
+    """Per-host compute rows (capacity/usage/allocation) for Hyperconverged (Nutanix) clusters."""
+    enc = quote(dc_code, safe="")
+    params = {**_build_time_params(tr), **_clusters_param(selected_clusters)}
+    ck = f"api:hyperconv_hosts:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
+
+    def fetch() -> dict:
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/compute/hyperconverged/hosts", params=params)
+        return data if isinstance(data, dict) else {}
+
+    return _api_cache_get_with_stale(ck, fetch, {"hosts": [], "host_count": 0})
+
+
 def get_physical_inventory_dc(dc_name: str) -> dict:
     enc = quote(dc_name, safe="")
     empty = {"total": 0, "by_role": [], "by_role_manufacturer": []}

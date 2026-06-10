@@ -698,7 +698,7 @@ def test_compute_all_panels_dedups_compute_http_per_family(monkeypatch):
     svc._bulk_load_thresholds    = lambda dc: {"_by_panel_key": {}, "_by_resource_type": {}}  # type: ignore[assignment]
     svc._bulk_load_price_overrides = lambda: {}       # type: ignore[assignment]
 
-    call_count = {"n": 0}
+    call_count = {"compute": 0, "hosts": 0}
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
     mock_resp.json.return_value = {
@@ -708,14 +708,19 @@ def test_compute_all_panels_dedups_compute_http_per_family(monkeypatch):
     }
 
     def counting_get(url, *a, **kw):
-        call_count["n"] += 1
+        if "/hosts" in url:
+            call_count["hosts"] += 1
+        else:
+            call_count["compute"] += 1
         return mock_resp
 
     monkeypatch.setattr("app.services.sellable_service.httpx.get", counting_get)
     out = svc.compute_all_panels(dc_code="IST1", selected_clusters=["KM-1", "KM-2"])
 
     # 3 panels × 1 family / 1 cluster set → ONE HTTP call to /compute/classic
-    assert call_count["n"] == 1
+    # plus at most one host-rows call for the host-based constrain path.
+    assert call_count["compute"] == 1
+    assert call_count["hosts"] <= 1
     assert {p.panel_key for p in out} == {p.panel_key for p in panels}
 
 

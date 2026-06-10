@@ -207,6 +207,47 @@ LIMIT 1;
 """
 
 # ---------------------------------------------------------------------------
+# Architecture-aware storage range (datalake DB).
+# IBM storage space can be sold either as KM datastores or as native Power
+# storage, so KM and Power storage sellables are computed as [min, max] ranges.
+# ---------------------------------------------------------------------------
+
+# Latest KM datastore snapshot aggregated by backing storage type.
+# Backing classification: datastore_name containing 'IBM' = IBM-backed,
+# otherwise Intel-backed. Backup-only datastores (NBU / Veeam) are excluded.
+# Params: (dc_pattern,)
+KM_DATASTORE_BACKING_AGG = """
+WITH latest AS (
+    SELECT DISTINCT ON (datastore_moid)
+        datastore_moid, datastore_name, capacity_bytes, used_bytes, free_bytes
+    FROM raw_vmware_datastore_metrics_agg
+    WHERE datacenter_name ILIKE %s
+      AND datacenter_name ILIKE '%%KM%%'
+      AND datastore_name NOT ILIKE '%%NBU%%'
+      AND datastore_name NOT ILIKE '%%veeam%%'
+    ORDER BY datastore_moid, collection_timestamp::timestamptz DESC
+)
+SELECT
+    CASE WHEN datastore_name ILIKE '%%IBM%%' THEN 'ibm' ELSE 'intel' END AS backing,
+    COALESCE(SUM(capacity_bytes), 0)::double precision AS capacity_bytes,
+    COALESCE(SUM(used_bytes), 0)::double precision     AS used_bytes,
+    COALESCE(SUM(free_bytes), 0)::double precision     AS free_bytes
+FROM latest
+GROUP BY 1;
+"""
+
+# Latest IBM storage system totals per storage_ip (varchar capacities like
+# '388.1TB' — parsed to GB on the caller side).
+# Params: (dc_pattern,)
+IBM_STORAGE_SYSTEM_TOTALS = """
+SELECT DISTINCT ON (storage_ip)
+    storage_ip, name, total_mdisk_capacity, total_used_capacity, total_free_space
+FROM raw_ibm_storage_system
+WHERE name ILIKE %s
+ORDER BY storage_ip, "timestamp" DESC;
+"""
+
+# ---------------------------------------------------------------------------
 # Currency exchange rates from CRM price levels (TL is the base / target).
 # ---------------------------------------------------------------------------
 

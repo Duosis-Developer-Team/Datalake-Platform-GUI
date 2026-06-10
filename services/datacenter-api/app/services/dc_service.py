@@ -1070,6 +1070,168 @@ LIMIT 20
         })
 
     # ------------------------------------------------------------------
+    # Host-level compute rows (DC view Hosts panel + host-based sellable)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _host_row_payload(
+        *,
+        host: str,
+        cluster: str,
+        cpu_cap_ghz: float,
+        cpu_used_ghz: float,
+        mem_cap_gb: float,
+        mem_used_gb: float,
+        alloc: dict | None,
+    ) -> dict:
+        """Normalize a single host record. Sales CPU rule: 1 vCPU = 1 GHz."""
+        alloc = alloc or {}
+        vcpu_total = float(alloc.get("vcpu_total") or 0)
+        cpu_alloc_ghz = vcpu_total * 1.0
+        mem_alloc_gb = float(alloc.get("mem_alloc_gb") or 0)
+        return {
+            "host": host,
+            "cluster": cluster,
+            "vm_count": int(alloc.get("vm_count") or 0),
+            "cpu_cap_ghz": round(cpu_cap_ghz, 2),
+            "cpu_used_ghz": round(cpu_used_ghz, 2),
+            "cpu_used_pct": round(100.0 * cpu_used_ghz / cpu_cap_ghz, 1) if cpu_cap_ghz > 0 else 0.0,
+            "cpu_alloc_ghz": round(cpu_alloc_ghz, 2),
+            "cpu_alloc_pct": round(100.0 * cpu_alloc_ghz / cpu_cap_ghz, 1) if cpu_cap_ghz > 0 else 0.0,
+            "mem_cap_gb": round(mem_cap_gb, 2),
+            "mem_used_gb": round(mem_used_gb, 2),
+            "mem_used_pct": round(100.0 * mem_used_gb / mem_cap_gb, 1) if mem_cap_gb > 0 else 0.0,
+            "mem_alloc_gb": round(mem_alloc_gb, 2),
+            "mem_alloc_pct": round(100.0 * mem_alloc_gb / mem_cap_gb, 1) if mem_cap_gb > 0 else 0.0,
+            "stor_provisioned_gb": round(float(alloc.get("stor_provisioned_gb") or 0), 2),
+            "stor_used_gb": round(float(alloc.get("stor_used_gb") or 0), 2),
+        }
+
+    @staticmethod
+    def _host_alloc_map(rows) -> dict[str, dict]:
+        """Index per-host VM allocation rows by short hostname (lowercase, no domain)."""
+        out: dict[str, dict] = {}
+        for r in rows or []:
+            if not r or not r[0]:
+                continue
+            key = str(r[0]).strip().lower().split(".")[0]
+            out[key] = {
+                "vm_count": int(r[1] or 0),
+                "vcpu_total": float(r[2] or 0),
+                "mem_alloc_gb": float(r[3] or 0),
+                "stor_provisioned_gb": float(r[4] or 0),
+                "stor_used_gb": float(r[5] or 0),
+            }
+        return out
+
+    def get_classic_host_rows(
+        self, dc_code: str, selected_clusters: list[str] | None = None, time_range: dict | None = None
+    ) -> dict:
+        """Per-host compute capacity/usage/allocation for Classic (KM) clusters.
+
+        Source: vmhost_metrics (capacity/usage) + vm_metrics grouped by vmhost
+        (sales allocation, 1 vCPU = 1 GHz). Cached per DC + cluster filter.
+        """
+        tr = time_range or default_time_range()
+        clusters = sorted(c for c in (selected_clusters or []) if c)
+        cache_key = f"classic_hosts:{dc_code}:{','.join(clusters)}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        start_ts, end_ts = time_range_to_bounds(tr)
+        dc_wc = f"%{dc_code}%"
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    host_rows = self._run_rows(
+                        cur, vq.CLASSIC_HOST_ROWS, (dc_wc, clusters, clusters, start_ts, end_ts)
+                    )
+                    alloc_rows = self._run_rows(
+                        cur, vq.CLASSIC_HOST_VM_ALLOCATION, (dc_wc, clusters, clusters)
+                    )
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_classic_host_rows(%s): %s", dc_code, exc)
+            return {"hosts": [], "host_count": 0}
+
+        alloc_map = self._host_alloc_map(alloc_rows)
+        hosts = []
+        for r in host_rows or []:
+            host_name = str(r[0] or "").strip()
+            if not host_name:
+                continue
+            hosts.append(self._host_row_payload(
+                host=host_name,
+                cluster=str(r[1] or ""),
+                cpu_cap_ghz=float(r[2] or 0),
+                cpu_used_ghz=float(r[3] or 0),
+                mem_cap_gb=float(r[4] or 0),
+                mem_used_gb=float(r[5] or 0),
+                alloc=alloc_map.get(host_name.lower().split(".")[0]),
+            ))
+        hosts.sort(key=lambda h: (h["cluster"], h["host"]))
+        result = {"hosts": hosts, "host_count": len(hosts)}
+        cache.set(cache_key, result)
+        return result
+
+    def get_hyperconv_host_rows(
+        self, dc_code: str, selected_clusters: list[str] | None = None, time_range: dict | None = None
+    ) -> dict:
+        """Per-host compute capacity/usage/allocation for Hyperconverged (Nutanix) clusters.
+
+        Source: nutanix_host_metrics (capacity/usage, Hz/bytes converted here)
+        + nutanix_vm_metrics grouped by host_name (sales allocation, 1 vCPU = 1 GHz).
+        """
+        tr = time_range or default_time_range()
+        clusters = sorted(c for c in (selected_clusters or []) if c)
+        cache_key = f"hyperconv_hosts:{dc_code}:{','.join(clusters)}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        start_ts, end_ts = time_range_to_bounds(tr)
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    host_rows = self._run_rows(
+                        cur, nq.NUTANIX_HOST_ROWS, (dc_code, clusters, clusters, start_ts, end_ts)
+                    )
+                    alloc_rows = self._run_rows(
+                        cur, nq.NUTANIX_HOST_VM_ALLOCATION, (dc_code, clusters, clusters)
+                    )
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_hyperconv_host_rows(%s): %s", dc_code, exc)
+            return {"hosts": [], "host_count": 0}
+
+        _hz_per_ghz = 1_000_000_000
+        _bytes_per_gb = 1024 ** 3
+        alloc_map = self._host_alloc_map(alloc_rows)
+        hosts = []
+        for r in host_rows or []:
+            host_name = str(r[0] or "").strip()
+            if not host_name:
+                continue
+            alloc = alloc_map.get(host_name.lower().split(".")[0]) or {}
+            payload = self._host_row_payload(
+                host=host_name,
+                cluster=str(r[1] or ""),
+                cpu_cap_ghz=float(r[2] or 0) / _hz_per_ghz,
+                cpu_used_ghz=float(r[3] or 0) / _hz_per_ghz,
+                mem_cap_gb=float(r[4] or 0) / _bytes_per_gb,
+                mem_used_gb=float(r[5] or 0) / _bytes_per_gb,
+                alloc=alloc,
+            )
+            # Nutanix exposes per-host storage capacity/usage natively (HCI).
+            payload["stor_cap_gb"] = round(float(r[6] or 0) / _bytes_per_gb, 2)
+            payload["stor_used_host_gb"] = round(float(r[7] or 0) / _bytes_per_gb, 2)
+            # Prefer the Prism host VM count when the allocation join found none.
+            if payload["vm_count"] == 0:
+                payload["vm_count"] = int(r[8] or 0)
+            hosts.append(payload)
+        hosts.sort(key=lambda h: (h["cluster"], h["host"]))
+        result = {"hosts": hosts, "host_count": len(hosts)}
+        cache.set(cache_key, result)
+        return result
+
+    # ------------------------------------------------------------------
     # Unit normalization & aggregation (shared by single + batch paths)
     # ------------------------------------------------------------------
 
@@ -4877,11 +5039,15 @@ JOIN latest l
                     mounts_by_ds.get(ds_moid, []),
                     key=lambda h: (h.get("host_name") or ""),
                 )
+                # IBM-backed datastores carry 'IBM' in their name; their capacity
+                # is shared with the Power architecture (sellable range model).
+                backing = "ibm" if "ibm" in (ds_name or "").lower() else "intel"
                 datastores.append(
                     {
                         "datastore_moid": ds_moid,
                         "datastore_name": ds_name or "Unknown",
                         "datacenter_name": datacenter_name,
+                        "backing": backing,
                         "type": ds_type or inv.get("type"),
                         "capacity_bytes": int(capacity_bytes or 0),
                         "free_bytes": int(free_bytes or 0),

@@ -110,6 +110,7 @@ def build_default_permission_roots() -> list[PermissionNode]:
                             _n("sub:dc_view:virt:classic", "Classic Architecture", "sub_section", component_id="classic-virt-panel"),
                             _n("sub:dc_view:virt:hyperconv", "Hyperconverged Architecture", "sub_section", component_id="hyperconv-virt-panel"),
                             _n("sub:dc_view:virt:power", "Power Architecture", "sub_section"),
+                            _n("sub:dc_view:virt:hosts", "Host Details Panel", "sub_section", component_id="hosts-panel-classic"),
                         ],
                     ),
                     _n(

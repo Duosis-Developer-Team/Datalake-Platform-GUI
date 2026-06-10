@@ -177,6 +177,17 @@ _FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
     "virt_hyperconverged":  "hyperconverged",
 }
 
+# Families whose CPU/RAM sellable is computed host-by-host (ADR: host-based
+# CRM calculation). Each host is evaluated on its own min(CPU, RAM) ratio
+# constraint and the family unit count is the sum across hosts. Storage is
+# excluded from the per-host min() and handled by the architecture-aware
+# storage range model below.
+_HOST_BASED_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_hyperconverged"})
+
+# Families whose storage panel carries a [min, max] sellable range because
+# IBM storage free space is shared between KM datastores and native Power.
+_STORAGE_RANGE_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_power"})
+
 # Maps resource_kind → (capacity_field, used_field, source_unit) in the compute response.
 _RESOURCE_KIND_TO_COMPUTE_FIELDS: dict[str, tuple[str, str, str]] = {
     "cpu":     ("cpu_cap",  "cpu_alloc_ghz_sales",  "GHz"),
@@ -193,7 +204,9 @@ from app.services.webui_db import WebuiPool
 from shared.sellable.computation import (
     apply_threshold,
     compute_potential_tl,
+    compute_storage_range,
     constrain_by_ratio,
+    constrain_by_ratio_per_host,
     convert_unit,
 )
 from shared.sellable.models import (
@@ -1208,6 +1221,196 @@ SELECT _tot, _used FROM latest
             return None
         return self._extract_compute_metrics(data, resource_kind)
 
+    # ----------------------------------------------- host-based sellable path
+
+    def _fetch_host_rows(
+        self, dc_code: str, family: str, clusters: list[str] | None
+    ) -> "list[dict] | None":
+        """Fetch per-host compute rows from datacenter-api /compute/{kind}/hosts.
+
+        Returns None when the host endpoint cannot serve this scope (global
+        dc_code, unknown family, missing API URL or HTTP failure) so callers
+        fall back to the legacy aggregate constrain path.
+        """
+        kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
+        if not kind or not dc_code or dc_code == "*" or not self._dc_api_url:
+            return None
+        url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}/hosts"
+        cl = [c for c in (clusters or []) if c]
+        if cl:
+            url += f"?clusters={','.join(cl)}"
+        try:
+            resp = httpx.get(url, timeout=15.0)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            logger.warning("host rows fetch failed dc=%s family=%s url=%s", dc_code, family, url)
+            return None
+        if not isinstance(data, dict):
+            return None
+        hosts = data.get("hosts")
+        return hosts if isinstance(hosts, list) else None
+
+    def _apply_host_based_constraints(
+        self,
+        group: "list[PanelResult]",
+        ratio: ResourceRatio,
+        host_rows: "list[dict]",
+        unit_lookup: dict[tuple[str, str], UnitConversion],
+    ) -> "list[PanelResult]":
+        """Recompute CPU/RAM panel totals + sellable from per-host rows.
+
+        Host rows arrive in GHz / GB (datacenter-api units); they are converted
+        to each panel's display_unit so the family ratio (display units) applies
+        directly. Panel total/allocated/sellable_raw are overridden with host
+        sums to keep aggregate and per-host numbers internally consistent.
+        """
+        by_kind = {p.resource_kind: p for p in group}
+        cpu_p = by_kind.get("cpu")
+        ram_p = by_kind.get("ram")
+        if cpu_p is None or ram_p is None:
+            return constrain_by_ratio(group, ratio)
+
+        cpu_conv = self._lookup_conversion(unit_lookup, "GHz", cpu_p.display_unit)
+        ram_conv = self._lookup_conversion(unit_lookup, "GB", ram_p.display_unit)
+
+        host_units: list[dict] = []
+        cpu_total = cpu_alloc = ram_total = ram_alloc = 0.0
+        cpu_raw_sum = ram_raw_sum = 0.0
+        for h in host_rows:
+            hc = convert_unit(float(h.get("cpu_cap_ghz") or 0.0), cpu_conv)
+            ha = convert_unit(float(h.get("cpu_alloc_ghz") or 0.0), cpu_conv)
+            mc = convert_unit(float(h.get("mem_cap_gb") or 0.0), ram_conv)
+            ma = convert_unit(float(h.get("mem_alloc_gb") or 0.0), ram_conv)
+            host_units.append({"cpu_total": hc, "cpu_alloc": ha, "ram_total": mc, "ram_alloc": ma})
+            cpu_total += hc
+            cpu_alloc += ha
+            ram_total += mc
+            ram_alloc += ma
+            cpu_raw_sum += apply_threshold(hc, ha, cpu_p.threshold_pct)
+            ram_raw_sum += apply_threshold(mc, ma, ram_p.threshold_pct)
+
+        note = f"host-based ({len(host_units)} host)"
+        rebuilt: list[PanelResult] = []
+        for p in group:
+            if p.resource_kind == "cpu":
+                p.total, p.allocated, p.sellable_raw = cpu_total, cpu_alloc, cpu_raw_sum
+                p.notes = [*p.notes, note]
+            elif p.resource_kind == "ram":
+                p.total, p.allocated, p.sellable_raw = ram_total, ram_alloc, ram_raw_sum
+                p.notes = [*p.notes, note]
+            rebuilt.append(p)
+
+        return constrain_by_ratio_per_host(
+            rebuilt,
+            ratio,
+            host_units,
+            cpu_threshold_pct=cpu_p.threshold_pct,
+            ram_threshold_pct=ram_p.threshold_pct,
+        )
+
+    # ------------------------------------------- architecture storage range
+
+    def _query_storage_range_inputs(self, dc_code: str) -> "dict | None":
+        """Fetch KM datastore backing aggregates + IBM storage totals (GB).
+
+        Returns None when the datalake is unreachable so callers keep the
+        legacy single-value storage sellable.
+        """
+        pattern = self._dc_pattern(dc_code)
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    backing_rows = self._svc._run_rows(
+                        cur, sq.KM_DATASTORE_BACKING_AGG, (pattern,)
+                    ) or []
+                    ibm_rows = self._svc._run_rows(
+                        cur, sq.IBM_STORAGE_SYSTEM_TOTALS, (pattern,)
+                    ) or []
+        except Exception:
+            logger.exception("storage range inputs failed dc=%s", dc_code)
+            return None
+
+        _gb = 1024.0 ** 3
+        out = {
+            "intel_cap_gb": 0.0, "intel_used_gb": 0.0,
+            "ibm_ds_cap_gb": 0.0, "ibm_ds_used_gb": 0.0,
+            "ibm_total_gb": 0.0, "ibm_used_gb": 0.0,
+        }
+        for r in backing_rows:
+            backing = (r[0] or "").strip().lower()
+            cap_gb = float(r[1] or 0) / _gb
+            used_gb = float(r[2] or 0) / _gb
+            if backing == "ibm":
+                out["ibm_ds_cap_gb"] += cap_gb
+                out["ibm_ds_used_gb"] += used_gb
+            else:
+                out["intel_cap_gb"] += cap_gb
+                out["intel_used_gb"] += used_gb
+        for r in ibm_rows:
+            out["ibm_total_gb"] += parse_storage_string_to_gb(r[2])
+            out["ibm_used_gb"] += parse_storage_string_to_gb(r[3])
+        return out
+
+    def _apply_storage_range(
+        self,
+        group: "list[PanelResult]",
+        family: str,
+        range_inputs: "dict | None",
+        unit_lookup: dict[tuple[str, str], UnitConversion],
+    ) -> None:
+        """Populate the family's storage panel with the [min, max] sellable range.
+
+        KM (virt_classic): min = Intel-backed datastore free, max = + IBM-backed
+        datastore free. Power (virt_power): min = IBM storage free − KM-exposed
+        IBM datastore free, max = full IBM storage free. The conservative min is
+        published as ``sellable_constrained`` (headline number); the range is
+        carried in ``sellable_min`` / ``sellable_max``.
+        """
+        if not range_inputs:
+            return
+        sto_p = next((p for p in group if p.resource_kind == "storage"), None)
+        if sto_p is None:
+            return
+
+        thr = sto_p.threshold_pct
+        intel_free = apply_threshold(range_inputs["intel_cap_gb"], range_inputs["intel_used_gb"], thr)
+        ibm_ds_free = apply_threshold(range_inputs["ibm_ds_cap_gb"], range_inputs["ibm_ds_used_gb"], thr)
+        ibm_free = apply_threshold(range_inputs["ibm_total_gb"], range_inputs["ibm_used_gb"], thr)
+        rng = compute_storage_range(
+            intel_free=intel_free,
+            ibm_backed_datastore_free=ibm_ds_free,
+            ibm_storage_free=ibm_free,
+        )
+
+        conv = self._lookup_conversion(unit_lookup, "GB", sto_p.display_unit)
+        if family == "virt_classic":
+            total_gb = range_inputs["intel_cap_gb"] + range_inputs["ibm_ds_cap_gb"]
+            used_gb = range_inputs["intel_used_gb"] + range_inputs["ibm_ds_used_gb"]
+            lo, hi = rng["km_min"], rng["km_max"]
+            note = "KM storage range: min=Intel-backed, max=+IBM-backed datastore free"
+        else:  # virt_power
+            total_gb = range_inputs["ibm_total_gb"]
+            # Realized attribution: KM-exposed datastore usage belongs to KM.
+            used_gb = max(range_inputs["ibm_used_gb"] - range_inputs["ibm_ds_used_gb"], 0.0)
+            lo, hi = rng["power_min"], rng["power_max"]
+            note = "Power storage range: min=IBM free − KM-exposed, max=full IBM free"
+        if total_gb <= 0:
+            return
+
+        sto_p.total = convert_unit(total_gb, conv)
+        sto_p.allocated = convert_unit(used_gb, conv)
+        sto_p.sellable_min = convert_unit(lo, conv)
+        sto_p.sellable_max = convert_unit(hi, conv)
+        sto_p.sellable_raw = sto_p.sellable_max
+        sto_p.sellable_constrained = sto_p.sellable_min
+        sto_p.ratio_bound = False
+        sto_p.has_infra_source = True
+        sto_p.potential_tl_min = compute_potential_tl(sto_p.sellable_min, sto_p.unit_price_tl)
+        sto_p.potential_tl_max = compute_potential_tl(sto_p.sellable_max, sto_p.unit_price_tl)
+        sto_p.potential_tl = sto_p.potential_tl_min
+        sto_p.notes = [*sto_p.notes, note]
+
     # ------------------------------------------------------------------ compute
 
     def _resolve_threshold(
@@ -1596,6 +1799,14 @@ SELECT _tot, _used FROM latest
             has_infra_source=bool(d.get("has_infra_source", False)),
             has_price=bool(d.get("has_price", False)),
             notes=list(d.get("notes") or []),
+            sellable_min=(float(d["sellable_min"]) if d.get("sellable_min") is not None else None),
+            sellable_max=(float(d["sellable_max"]) if d.get("sellable_max") is not None else None),
+            potential_tl_min=(
+                float(d["potential_tl_min"]) if d.get("potential_tl_min") is not None else None
+            ),
+            potential_tl_max=(
+                float(d["potential_tl_max"]) if d.get("potential_tl_max") is not None else None
+            ),
         )
 
     def compute_all_panels(
@@ -1673,11 +1884,22 @@ SELECT _tot, _used FROM latest
             for d in defs
         ]
 
-        # 7. Apply ratio per family.
+        # 7. Apply ratio per family — host-based for virt_classic / virt_hyperconverged
+        #    (per-host min(CPU, RAM), summed across hosts), aggregate otherwise.
         by_family: dict[str, list[PanelResult]] = defaultdict(list)
         for r in results:
             by_family[r.family].append(r)
         ratio_lookup = {(r.family, r.dc_code): r for r in self.list_ratios()}
+
+        # Architecture storage range inputs are shared by virt_classic + virt_power.
+        # Only hit the datalake when a storage panel of a range family is present.
+        range_inputs: dict | None = None
+        needs_range = any(
+            r.resource_kind == "storage" and r.family in _STORAGE_RANGE_FAMILIES
+            for r in results
+        )
+        if dc_code and dc_code != "*" and needs_range:
+            range_inputs = self._query_storage_range_inputs(dc_code)
 
         constrained: list[PanelResult] = []
         # IBM Power: SAN-backed storage is often absent from sellable infra — do not let
@@ -1685,10 +1907,26 @@ SELECT _tot, _used FROM latest
         virt_power_storage_decouple = frozenset({"storage"})
         for fam, group in by_family.items():
             ratio = ratio_lookup.get((fam, dc_code)) or ratio_lookup.get((fam, "*")) or ResourceRatio(family=fam)
-            decouple = virt_power_storage_decouple if fam == "virt_power" else None
-            new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=decouple)
+
+            host_rows: list[dict] | None = None
+            if fam in _HOST_BASED_FAMILIES:
+                host_rows = self._fetch_host_rows(dc_code, fam, selected_clusters)
+
+            if host_rows:
+                new_group = self._apply_host_based_constraints(group, ratio, host_rows, unit_lookup)
+            else:
+                decouple = virt_power_storage_decouple if fam == "virt_power" else None
+                new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=decouple)
+
+            if fam in _STORAGE_RANGE_FAMILIES and range_inputs:
+                self._apply_storage_range(new_group, fam, range_inputs, unit_lookup)
+
             for new in new_group:
                 new.potential_tl = compute_potential_tl(new.sellable_constrained, new.unit_price_tl)
+                if new.sellable_min is not None and new.potential_tl_min is None:
+                    new.potential_tl_min = compute_potential_tl(new.sellable_min, new.unit_price_tl)
+                if new.sellable_max is not None and new.potential_tl_max is None:
+                    new.potential_tl_max = compute_potential_tl(new.sellable_max, new.unit_price_tl)
                 constrained.append(new)
         constrained.sort(key=lambda p: (p.family, p.resource_kind, p.panel_key))
 

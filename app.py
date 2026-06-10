@@ -116,6 +116,7 @@ from src.components.access_denied import build_access_denied
 from src.pages.dc_view import (
     _bps_to_gbps,
     _build_compute_tab,
+    _build_hosts_panel_content,
     _build_sellable_inline_kpi,
     _DC_ICONS,
 )
@@ -775,6 +776,72 @@ def update_hyperconv_virt_panel(selected_clusters, time_range, pathname):
     tr = time_range or default_time_range()
     hyperconv = api.get_hyperconv_metrics_filtered(dc_id, selected_clusters, tr)
     return _build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal")
+
+
+# ---- Hosts panel (DC view: Klasik / Hyperconverged) ------------------------
+#
+# The collapsible Hosts panel at the bottom of the virtualization tabs follows
+# the same cluster selectors as Capacity Planning. Content + count badge are
+# refreshed on selection change; the Collapse shell itself is static so the
+# open/closed state survives refreshes.
+
+
+@app.callback(
+    dash.Output("hosts-panel-classic", "children"),
+    dash.Output("hosts-count-classic", "children"),
+    dash.Input("virt-classic-cluster-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_classic_hosts_panel(selected_clusters, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update, dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    data = api.get_classic_host_rows(dc_id, selected_clusters, tr)
+    count = int(data.get("host_count") or 0)
+    return _build_hosts_panel_content(data, color="blue"), f"{count} host"
+
+
+@app.callback(
+    dash.Output("hosts-panel-hyperconv", "children"),
+    dash.Output("hosts-count-hyperconv", "children"),
+    dash.Input("virt-hyperconv-cluster-selector", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_hyperconv_hosts_panel(selected_clusters, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update, dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    data = api.get_hyperconv_host_rows(dc_id, selected_clusters, tr)
+    count = int(data.get("host_count") or 0)
+    return _build_hosts_panel_content(data, color="teal"), f"{count} host"
+
+
+@app.callback(
+    dash.Output("hosts-collapse-classic", "in"),
+    dash.Output("hosts-toggle-classic", "children"),
+    dash.Input("hosts-toggle-classic", "n_clicks"),
+    dash.State("hosts-collapse-classic", "in"),
+    prevent_initial_call=True,
+)
+def toggle_classic_hosts_panel(n_clicks, opened):
+    now_open = not bool(opened)
+    return now_open, ("Gizle" if now_open else "Göster")
+
+
+@app.callback(
+    dash.Output("hosts-collapse-hyperconv", "in"),
+    dash.Output("hosts-toggle-hyperconv", "children"),
+    dash.Input("hosts-toggle-hyperconv", "n_clicks"),
+    dash.State("hosts-collapse-hyperconv", "in"),
+    prevent_initial_call=True,
+)
+def toggle_hyperconv_hosts_panel(n_clicks, opened):
+    now_open = not bool(opened)
+    return now_open, ("Gizle" if now_open else "Göster")
 
 
 # ---- Cluster-aware Sellable Potential cards (DC view) ----------------------
