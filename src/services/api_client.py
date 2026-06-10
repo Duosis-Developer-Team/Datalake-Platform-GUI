@@ -2122,6 +2122,7 @@ def refresh_platform_redis_caches() -> dict[str, Any]:
 
 _EMPTY_HMDL_TOPOLOGY: dict[str, Any] = {
     "hub_dc": "DC13",
+    "source_node": {"id": "LOKI", "label": "Loki Inventory", "role": "source"},
     "generated_at": None,
     "last_prod_run_id": None,
     "last_prod_run_at": None,
@@ -2129,6 +2130,9 @@ _EMPTY_HMDL_TOPOLOGY: dict[str, Any] = {
     "edges": [],
     "synced_dc_count": 0,
     "total_dc_count": 0,
+    "configured_location_count": 0,
+    "no_configured_proxy_count": 0,
+    "dc_statuses": {},
 }
 
 _EMPTY_HMDL_SUMMARY: dict[str, Any] = {
@@ -2137,6 +2141,8 @@ _EMPTY_HMDL_SUMMARY: dict[str, Any] = {
     "last_prod_run_at": None,
     "synced_dc_count": 0,
     "total_dc_count": 0,
+    "configured_location_count": 0,
+    "no_configured_proxy_count": 0,
     "synced_proxy_count": 0,
     "total_proxy_count": 0,
     "dc_statuses": {},
@@ -2192,3 +2198,12 @@ def get_hmdl_dc_targets(
     except _HTTP_ERRORS as exc:
         logger.warning("hmdl-api dc targets unavailable dc=%s: %s", dc_code, exc)
         return {"items": []}
+
+
+def get_hmdl_locations() -> dict[str, Any]:
+    try:
+        data = _get_json(_get_client_hmdl(), "/api/v1/collectors/locations")
+        return data if isinstance(data, dict) else {"items": [], "total": 0}
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api locations unavailable: %s", exc)
+        return {"items": [], "total": 0}

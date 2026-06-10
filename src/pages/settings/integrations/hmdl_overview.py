@@ -8,7 +8,7 @@ from dash_iconify import DashIconify
 
 from src.components.hmdl_topology import build_topology_graph
 from src.services import api_client as api
-from src.utils.hmdl_sync_ui import sync_status_badge
+from src.utils.hmdl_sync_ui import node_status_badge, proxy_config_badge, sync_status_badge
 from src.utils.ui_tokens import kpi_card, section_header, settings_page_shell
 
 
@@ -18,23 +18,31 @@ def build_layout(search: str | None = None) -> html.Div:
 
     synced = int(summary.get("synced_dc_count") or topology.get("synced_dc_count") or 0)
     total = int(summary.get("total_dc_count") or topology.get("total_dc_count") or 0)
+    configured = int(summary.get("configured_location_count") or topology.get("configured_location_count") or 0)
+    no_proxy = int(summary.get("no_configured_proxy_count") or topology.get("no_configured_proxy_count") or 0)
     last_run = summary.get("last_prod_run_id") or topology.get("last_prod_run_id") or "—"
 
     kpis = dmc.SimpleGrid(
-        cols=3,
+        cols=4,
         spacing="md",
         children=[
             kpi_card(
-                "DCs synced",
+                "Locations synced",
                 f"{synced}/{total}",
                 icon="solar:server-path-bold-duotone",
                 color="green" if synced == total and total else "orange",
             ),
             kpi_card(
-                "Proxies synced",
-                f"{summary.get('synced_proxy_count', 0)}/{summary.get('total_proxy_count', 0)}",
+                "With proxy",
+                str(configured),
                 icon="solar:transfer-horizontal-bold-duotone",
                 color="indigo",
+            ),
+            kpi_card(
+                "No configured proxy",
+                str(no_proxy),
+                icon="solar:plug-circle-bold-duotone",
+                color="gray" if no_proxy == 0 else "orange",
             ),
             kpi_card(
                 "Last prod run",
@@ -51,8 +59,8 @@ def build_layout(search: str | None = None) -> html.Div:
         withBorder=True,
         children=[
             section_header(
-                "NiFi hub-spoke topology",
-                f"Central hub {topology.get('hub_dc', 'DC13')} — remote datacenter proxy nodes.",
+                "Loki → NiFi data flow",
+                f"Root locations from Loki inventory; hub {topology.get('hub_dc', 'DC13')} highlighted.",
                 icon="solar:diagram-up-bold-duotone",
             ),
             dcc.Loading(build_topology_graph(topology), type="circle"),
@@ -60,12 +68,26 @@ def build_layout(search: str | None = None) -> html.Div:
     )
 
     proxy_rows = []
+    unconfigured_rows = []
     for node in topology.get("nodes") or []:
+        dc_label = str(node.get("dc_code") or node.get("location_name") or "")
+        if node.get("proxy_config_status") == "no_configured_proxy":
+            unconfigured_rows.append(
+                html.Tr(
+                    children=[
+                        html.Td(dc_label),
+                        html.Td(str(node.get("location_name") or "")),
+                        html.Td(str(node.get("site_name") or "—")),
+                        html.Td(proxy_config_badge()),
+                    ]
+                )
+            )
+            continue
         for p in node.get("proxies") or []:
             proxy_rows.append(
                 html.Tr(
                     children=[
-                        html.Td(str(node.get("dc_code") or "")),
+                        html.Td(dc_label),
                         html.Td(str(p.get("proxy_id") or "")),
                         html.Td(str(p.get("proxy_nifi_host") or "")),
                         html.Td(sync_status_badge(str(p.get("loki_sync_status") or "not_synced"))),
@@ -104,6 +126,41 @@ def build_layout(search: str | None = None) -> html.Div:
         ],
     )
 
+    unconfigured_table = dmc.Paper(
+        p="lg",
+        radius="md",
+        withBorder=True,
+        mt="lg",
+        children=[
+            section_header(
+                "Locations without proxy",
+                "Root Loki locations with no proxy_assignment.yml entry (AWX inventory unknown).",
+                icon="solar:map-point-wave-bold-duotone",
+            ),
+            html.Div(
+                style={"overflowX": "auto"},
+                children=[
+                    html.Table(
+                        [
+                            html.Tr(
+                                [
+                                    html.Th("DC code"),
+                                    html.Th("Location"),
+                                    html.Th("Site"),
+                                    html.Th("Status"),
+                                ]
+                            ),
+                            *unconfigured_rows,
+                        ],
+                        style={"width": "100%", "fontSize": "13px", "borderCollapse": "collapse"},
+                    )
+                    if unconfigured_rows
+                    else dmc.Text("All root locations have a configured proxy.", size="sm", c="dimmed"),
+                ],
+            ),
+        ],
+    ) if unconfigured_rows else html.Div()
+
     return html.Div(
         settings_page_shell(
             [
@@ -122,7 +179,7 @@ def build_layout(search: str | None = None) -> html.Div:
                             children=[
                                 dmc.Title("HMDL collector sync", order=3),
                                 dmc.Text(
-                                    "Read-only view of AWX collector sync state across datacenter NiFi proxies.",
+                                    "Loki root locations mapped to NiFi proxy nodes — read-only AWX sync state.",
                                     size="sm",
                                     c="dimmed",
                                 ),
@@ -134,6 +191,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 dmc.Space(h="lg"),
                 topo_card,
                 table,
+                unconfigured_table,
                 dcc.Store(id="hmdl-topology-store", data=topology),
             ]
         )

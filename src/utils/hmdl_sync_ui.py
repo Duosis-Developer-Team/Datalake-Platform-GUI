@@ -24,7 +24,9 @@ CATEGORY_COLORS: dict[str, str] = {
 }
 
 
-def sync_status_badge(status: str) -> dmc.Badge:
+def sync_status_badge(status: str | None) -> dmc.Badge:
+    if not status:
+        return proxy_config_badge()
     synced = str(status).lower() == "loki_synced"
     return dmc.Badge(
         "Loki synced" if synced else "Not synced",
@@ -32,6 +34,21 @@ def sync_status_badge(status: str) -> dmc.Badge:
         variant="light",
         size="sm",
     )
+
+
+def proxy_config_badge() -> dmc.Badge:
+    return dmc.Badge(
+        "No configured proxy",
+        color="gray",
+        variant="light",
+        size="sm",
+    )
+
+
+def node_status_badge(node: dict) -> dmc.Badge:
+    if str(node.get("proxy_config_status") or "") == "no_configured_proxy":
+        return proxy_config_badge()
+    return sync_status_badge(str(node.get("loki_sync_status") or "not_synced"))
 
 
 def category_chip(category: str, *, active: bool = False) -> dmc.Badge:

@@ -8,6 +8,7 @@ from app.config import settings
 from app.db.queries import collectors as q
 from app.models.schemas import (
     DcSummaryResponse,
+    LocationsResponse,
     ProxyDetailResponse,
     RunsResponse,
     SyncSummaryResponse,
@@ -26,6 +27,12 @@ def get_topology():
 @router.get("/sync-summary", response_model=SyncSummaryResponse)
 def get_sync_summary():
     return q.build_sync_summary()
+
+
+@router.get("/locations", response_model=LocationsResponse)
+def get_locations():
+    items = q.list_root_locations()
+    return {"items": items, "total": len(items)}
 
 
 @router.get("/proxies/{proxy_id}", response_model=ProxyDetailResponse)

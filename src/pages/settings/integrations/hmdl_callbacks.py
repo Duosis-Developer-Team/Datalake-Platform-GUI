@@ -1,4 +1,4 @@
-"""Dash callbacks for HMDL Sync Health detail page."""
+"""Dash callbacks for HMDL Sync Health detail page and topology navigation."""
 
 from __future__ import annotations
 
@@ -21,6 +21,28 @@ def hmdl_dc_changed(dc_code, pathname):
         return no_update, no_update
     dc = (dc_code or "DC13").upper()
     return pathname, f"?dc={dc}"
+
+
+@callback(
+    Output("url", "pathname", allow_duplicate=True),
+    Output("url", "search", allow_duplicate=True),
+    Input("hmdl-topology-flow", "clickedNode"),
+    State("url", "pathname"),
+    prevent_initial_call=True,
+)
+def hmdl_topology_node_clicked(clicked_node, pathname):
+    if not clicked_node or not pathname:
+        return no_update, no_update
+    if not str(pathname).startswith(f"{ADMIN_PREFIX}/integrations/hmdl"):
+        return no_update, no_update
+    node_type = str(clicked_node.get("nodeType") or "")
+    dc_code = str(clicked_node.get("dcCode") or "").strip().upper()
+    if node_type != "dc" or not dc_code:
+        return no_update, no_update
+    return (
+        f"{ADMIN_PREFIX}/integrations/hmdl/sync-health",
+        f"?dc={dc_code}",
+    )
 
 
 @callback(

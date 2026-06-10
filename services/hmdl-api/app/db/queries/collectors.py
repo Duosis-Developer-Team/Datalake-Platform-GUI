@@ -72,66 +72,17 @@ def _proxy_to_dc_map() -> dict[str, str]:
 
 
 def build_topology(hub_dc: str) -> dict[str, Any]:
-    from datetime import datetime, timezone
+    from app.services import topology_builder
 
-    catalog = load_proxy_catalog()
     last_run = _last_prod_run()
     logs = _latest_logs_by_proxy()
     stats = _target_stats_by_proxy()
-
-    nodes = []
-    dc_statuses: dict[str, str] = {}
-
-    for dc_code in sorted(catalog.keys()):
-        proxy_nodes = []
-        proxy_statuses = []
-        for p in proxies_for_dc(dc_code):
-            pid = str(p["id"])
-            st = stats.get(pid, {"total": 0, "distributed": 0})
-            pstatus = sync_status.proxy_loki_sync_status(
-                logs.get(pid),
-                total_targets=st["total"],
-                distributed_targets=st["distributed"],
-            )
-            proxy_statuses.append(pstatus)
-            log = logs.get(pid)
-            proxy_nodes.append(
-                {
-                    "proxy_id": pid,
-                    "proxy_nifi_host": p.get("proxy_nifi_host", ""),
-                    "loki_sync_status": pstatus,
-                    "target_count": st["total"],
-                    "distributed_count": st["distributed"],
-                    "last_sync_at": log.get("finished_at") if log else None,
-                    "last_sync_status": log.get("status") if log else None,
-                    "last_run_id": log.get("run_id") if log else None,
-                }
-            )
-        dc_status = sync_status.dc_loki_sync_status(proxy_statuses)
-        dc_statuses[dc_code] = dc_status
-        nodes.append(
-            {
-                "dc_code": dc_code,
-                "role": "hub" if dc_code.upper() == hub_dc.upper() else "spoke",
-                "loki_sync_status": dc_status,
-                "proxies": proxy_nodes,
-            }
-        )
-
-    spokes = [n["dc_code"] for n in nodes if n["role"] == "spoke"]
-    edges = [{"from_dc": hub_dc.upper(), "to_dc": dc} for dc in spokes]
-    synced, total = sync_status.count_synced_dcs(dc_statuses)
-
-    return {
-        "hub_dc": hub_dc.upper(),
-        "generated_at": datetime.now(timezone.utc),
-        "last_prod_run_id": last_run.get("run_id") if last_run else None,
-        "last_prod_run_at": last_run.get("finished_at") if last_run else None,
-        "nodes": nodes,
-        "edges": edges,
-        "synced_dc_count": synced,
-        "total_dc_count": total,
-    }
+    return topology_builder.build_topology_payload(
+        hub_dc,
+        last_run=last_run,
+        logs=logs,
+        stats=stats,
+    )
 
 
 def build_sync_summary() -> dict[str, Any]:
@@ -140,19 +91,20 @@ def build_sync_summary() -> dict[str, Any]:
     topo = build_topology(settings.hub_dc_code)
     proxy_statuses: list[str] = []
     for node in topo["nodes"]:
-        for p in node["proxies"]:
+        for p in node.get("proxies") or []:
             proxy_statuses.append(p["loki_sync_status"])
 
-    dc_statuses = {n["dc_code"]: n["loki_sync_status"] for n in topo["nodes"]}
     return {
         "generated_at": datetime.now(timezone.utc),
         "last_prod_run_id": topo.get("last_prod_run_id"),
         "last_prod_run_at": topo.get("last_prod_run_at"),
         "synced_dc_count": topo["synced_dc_count"],
         "total_dc_count": topo["total_dc_count"],
+        "configured_location_count": topo.get("configured_location_count", 0),
+        "no_configured_proxy_count": topo.get("no_configured_proxy_count", 0),
         "synced_proxy_count": sum(1 for s in proxy_statuses if s == "loki_synced"),
         "total_proxy_count": len(proxy_statuses),
-        "dc_statuses": dc_statuses,
+        "dc_statuses": topo.get("dc_statuses") or {},
     }
 
 
@@ -200,15 +152,29 @@ def get_proxy_detail(proxy_id: str) -> dict[str, Any] | None:
 
 def get_dc_summary(dc_code: str) -> dict[str, Any] | None:
     dc_code = dc_code.upper()
-    if dc_code not in load_proxy_catalog():
-        return None
-
     topo = build_topology(settings.hub_dc_code)
-    node = next((n for n in topo["nodes"] if n["dc_code"] == dc_code), None)
+    node = next(
+        (n for n in topo["nodes"] if str(n.get("dc_code") or "").upper() == dc_code),
+        None,
+    )
     if not node:
         return None
 
-    proxy_ids = [p["proxy_id"] for p in node["proxies"]]
+    if node.get("proxy_config_status") == "no_configured_proxy":
+        return {
+            "dc_code": dc_code,
+            "location_name": node.get("location_name"),
+            "proxy_config_status": "no_configured_proxy",
+            "loki_sync_status": "not_synced",
+            "proxy_count": 0,
+            "target_count": 0,
+            "last_prod_run_id": topo.get("last_prod_run_id"),
+            "last_prod_run_at": topo.get("last_prod_run_at"),
+            "recent_diffs": [],
+            "category_counts": {},
+        }
+
+    proxy_ids = [p["proxy_id"] for p in node.get("proxies") or []]
     if not proxy_ids:
         return {
             "dc_code": dc_code,
@@ -247,6 +213,8 @@ def get_dc_summary(dc_code: str) -> dict[str, Any] | None:
 
     return {
         "dc_code": dc_code,
+        "location_name": node.get("location_name"),
+        "proxy_config_status": "configured",
         "loki_sync_status": node["loki_sync_status"],
         "proxy_count": len(proxy_ids),
         "target_count": int(target_count_row["cnt"] or 0) if target_count_row else 0,
@@ -387,6 +355,20 @@ def get_dc_targets(
     ip: str | None = None,
 ) -> dict[str, Any] | None:
     dc_code = dc_code.upper()
+    topo = build_topology(settings.hub_dc_code)
+    node = next(
+        (n for n in topo["nodes"] if str(n.get("dc_code") or "").upper() == dc_code),
+        None,
+    )
+    if not node:
+        return None
+    if node.get("proxy_config_status") == "no_configured_proxy":
+        return {
+            "dc_code": dc_code,
+            "total": 0,
+            "items": [],
+            "category_filter": category,
+        }
     if dc_code not in load_proxy_catalog():
         return None
     last_run = _last_prod_run()
@@ -404,6 +386,15 @@ def get_dc_targets(
         "items": items,
         "category_filter": category,
     }
+
+
+def list_root_locations() -> list[dict[str, Any]]:
+    from app.services import topology_builder
+
+    return topology_builder.build_locations_payload(
+        logs=_latest_logs_by_proxy(),
+        stats=_target_stats_by_proxy(),
+    )
 
 
 def list_recent_runs(limit: int = 20) -> list[dict[str, Any]]:

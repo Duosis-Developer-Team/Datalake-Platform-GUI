@@ -40,3 +40,37 @@ def count_synced_dcs(dc_statuses: dict[str, str]) -> tuple[int, int]:
     total = len(dc_statuses)
     synced = sum(1 for s in dc_statuses.values() if s == "loki_synced")
     return synced, total
+
+
+def dc_statuses_from_nodes(nodes: list[dict]) -> dict[str, str]:
+    """Map dc_code (or location_name) to sync status for configured locations only."""
+    out: dict[str, str] = {}
+    for node in nodes:
+        if node.get("proxy_config_status") != "configured":
+            continue
+        status = node.get("loki_sync_status")
+        if not status:
+            continue
+        key = str(node.get("dc_code") or node.get("location_name") or "")
+        if key:
+            out[key] = str(status)
+    return out
+
+
+def count_synced_locations(nodes: list[dict]) -> tuple[int, int]:
+    """Return (synced_count, total_location_count) for Loki root locations."""
+    total = len(nodes)
+    synced = sum(
+        1
+        for n in nodes
+        if n.get("proxy_config_status") == "configured"
+        and n.get("loki_sync_status") == "loki_synced"
+    )
+    return synced, total
+
+
+def count_proxy_config_status(nodes: list[dict]) -> tuple[int, int]:
+    """Return (configured_count, no_configured_proxy_count)."""
+    configured = sum(1 for n in nodes if n.get("proxy_config_status") == "configured")
+    no_proxy = sum(1 for n in nodes if n.get("proxy_config_status") == "no_configured_proxy")
+    return configured, no_proxy

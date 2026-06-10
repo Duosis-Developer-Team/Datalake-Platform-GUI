@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field
 
 
 LokiSyncStatus = Literal["loki_synced", "not_synced"]
+ProxyConfigStatus = Literal["configured", "no_configured_proxy"]
+NodeRole = Literal["hub", "spoke", "source"]
+EdgeType = Literal["collection", "distribution", "hub_spoke"]
 InclusionCategory = Literal[
     "monitored",
     "not_monitored",
@@ -31,19 +34,32 @@ class ProxyNode(BaseModel):
 
 
 class TopologyNode(BaseModel):
-    dc_code: str
-    role: Literal["hub", "spoke"]
-    loki_sync_status: LokiSyncStatus
+    location_id: int | None = None
+    location_name: str
+    dc_code: str | None = None
+    description: str | None = None
+    site_name: str | None = None
+    role: NodeRole
+    proxy_config_status: ProxyConfigStatus
+    loki_sync_status: LokiSyncStatus | None = None
     proxies: list[ProxyNode] = Field(default_factory=list)
+
+
+class SourceNode(BaseModel):
+    id: str
+    label: str
+    role: Literal["source"] = "source"
 
 
 class TopologyEdge(BaseModel):
     from_dc: str
     to_dc: str
+    edge_type: EdgeType = "hub_spoke"
 
 
 class TopologyResponse(BaseModel):
     hub_dc: str
+    source_node: SourceNode | None = None
     generated_at: datetime
     last_prod_run_id: str | None = None
     last_prod_run_at: datetime | None = None
@@ -51,6 +67,9 @@ class TopologyResponse(BaseModel):
     edges: list[TopologyEdge]
     synced_dc_count: int
     total_dc_count: int
+    configured_location_count: int = 0
+    no_configured_proxy_count: int = 0
+    dc_statuses: dict[str, LokiSyncStatus] = Field(default_factory=dict)
 
 
 class SyncSummaryResponse(BaseModel):
@@ -59,6 +78,8 @@ class SyncSummaryResponse(BaseModel):
     last_prod_run_at: datetime | None = None
     synced_dc_count: int
     total_dc_count: int
+    configured_location_count: int = 0
+    no_configured_proxy_count: int = 0
     synced_proxy_count: int
     total_proxy_count: int
     dc_statuses: dict[str, LokiSyncStatus]
@@ -102,6 +123,8 @@ class DiffEntry(BaseModel):
 
 class DcSummaryResponse(BaseModel):
     dc_code: str
+    location_name: str | None = None
+    proxy_config_status: ProxyConfigStatus = "configured"
     loki_sync_status: LokiSyncStatus
     proxy_count: int
     target_count: int
@@ -109,6 +132,22 @@ class DcSummaryResponse(BaseModel):
     last_prod_run_at: datetime | None = None
     recent_diffs: list[DiffEntry] = Field(default_factory=list)
     category_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class LocationRow(BaseModel):
+    location_id: int | None = None
+    location_name: str
+    dc_code: str | None = None
+    site_name: str | None = None
+    description: str | None = None
+    proxy_config_status: ProxyConfigStatus
+    loki_sync_status: LokiSyncStatus | None = None
+    proxy_count: int = 0
+
+
+class LocationsResponse(BaseModel):
+    items: list[LocationRow]
+    total: int
 
 
 class TargetRow(BaseModel):

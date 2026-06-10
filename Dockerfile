@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 RUN pip install --no-cache-dir -e dash_globe_component/
+RUN pip install --no-cache-dir -e dash_hmdl_flow/
 
 EXPOSE 8050
 

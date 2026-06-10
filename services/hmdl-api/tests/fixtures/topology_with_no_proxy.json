@@ -1,0 +1,32 @@
+{
+  "hub_dc": "DC13",
+  "source_node": {"id": "LOKI", "label": "Loki Inventory", "role": "source"},
+  "synced_dc_count": 8,
+  "total_dc_count": 9,
+  "configured_location_count": 8,
+  "no_configured_proxy_count": 1,
+  "nodes": [
+    {
+      "location_id": 10,
+      "location_name": "DC13",
+      "dc_code": "DC13",
+      "role": "hub",
+      "proxy_config_status": "configured",
+      "loki_sync_status": "loki_synced",
+      "proxies": [{"proxy_id": "DC13-NIFI1", "loki_sync_status": "loki_synced", "target_count": 12}]
+    },
+    {
+      "location_id": 20,
+      "location_name": "DC20",
+      "dc_code": "DC20",
+      "role": "spoke",
+      "proxy_config_status": "no_configured_proxy",
+      "loki_sync_status": null,
+      "proxies": []
+    }
+  ],
+  "edges": [
+    {"from_dc": "LOKI", "to_dc": "DC13", "edge_type": "collection"},
+    {"from_dc": "LOKI", "to_dc": "DC20", "edge_type": "collection"}
+  ]
+}

@@ -1,0 +1,3 @@
+include dash_hmdl_flow/*.js
+include dash_hmdl_flow/*.json
+include dash_hmdl_flow/*.map
