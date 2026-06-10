@@ -255,8 +255,16 @@ def storage_performance(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseSe
 
 
 @router.get("/datacenters/{dc_code}/network/filters", response_model=dict[str, Any])
-def network_filters(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
-    return db.get_network_filters(dc_code, tf.to_dict())
+def network_filters(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    interface_scope: Optional[str] = Query(
+        None,
+        description="Interface scope: backbone, leaf, spine, management, router_uplink",
+    ),
+):
+    return db.get_network_filters(dc_code, tf.to_dict(), interface_scope=interface_scope)
 
 
 @router.get("/datacenters/{dc_code}/network/port-summary", response_model=dict[str, Any])
@@ -267,6 +275,10 @@ def network_port_summary(
     manufacturer: Optional[str] = Query(None),
     device_role: Optional[str] = Query(None),
     device_name: Optional[str] = Query(None),
+    interface_scope: Optional[str] = Query(
+        None,
+        description="Interface scope: backbone, leaf, spine, management, router_uplink",
+    ),
 ):
     return db.get_network_port_summary(
         dc_code,
@@ -274,6 +286,7 @@ def network_port_summary(
         manufacturer=manufacturer,
         device_role=device_role,
         device_name=device_name,
+        interface_scope=interface_scope,
     )
 
 

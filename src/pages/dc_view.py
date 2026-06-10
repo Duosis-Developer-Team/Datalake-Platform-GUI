@@ -2183,44 +2183,60 @@ def _health_icon(status: str | None) -> tuple[str, str]:
     return "solar:danger-triangle-bold-duotone", "#FFB547"
 
 
-NETWORK_SCOPE_LABELS: dict[str, tuple[str, str]] = {
+NETWORK_TOP_SCOPES = ["overview", "switch", "router_uplink", "firewall", "load_balancer"]
+
+NETWORK_TOP_LABELS: dict[str, tuple[str, str]] = {
     "overview": ("Overview", "Device health and all billable interfaces (unified view)"),
-    "backbone": ("Backbone", "Backbone billing interfaces"),
-    "leaf": ("Leaf", "Leaf switch data ports (shared ports excluded)"),
-    "spine": ("Spine", "Spine interconnect ports"),
-    "management": ("Management", "Management and OOB ports"),
-    "shared": ("Shared Ports", "Customer and shared ports (g/SW/to_sw2)"),
-    "router_uplink": ("Router Uplinks", "Carrier uplink interfaces"),
+    "switch": ("Switch", "Backbone, leaf, spine and management port analytics"),
+    "router_uplink": ("Router Uplinks", "Carrier uplink interfaces for billing"),
     "firewall": ("Firewall", "Firewall device sessions, HA and security metrics"),
     "load_balancer": ("Load Balancer", "Citrix ADC health (vserver metrics pending Zabbix items)"),
 }
 
-NETWORK_SCOPE_PERMISSIONS: dict[str, str] = {
+NETWORK_TOP_PERMISSIONS: dict[str, str] = {
     "overview": "sub:dc_view:net:overview",
-    "backbone": "sub:dc_view:net:backbone",
-    "leaf": "sub:dc_view:net:leaf",
-    "spine": "sub:dc_view:net:spine",
-    "management": "sub:dc_view:net:management",
-    "shared": "sub:dc_view:net:shared",
+    "switch": "sub:dc_view:net:switch",
     "router_uplink": "sub:dc_view:net:router_uplink",
     "firewall": "sub:dc_view:net:firewall",
     "load_balancer": "sub:dc_view:net:load_balancer",
 }
 
+SWITCH_ROLE_SCOPES = ["backbone", "leaf", "spine", "management"]
+
+SWITCH_ROLE_LABELS: dict[str, tuple[str, str]] = {
+    "backbone": ("Backbone", "Billing interfaces — 95th percentile bandwidth"),
+    "leaf": ("Leaf", "Data ports (shared ports excluded)"),
+    "spine": ("Spine", "Spine interconnect ports"),
+    "management": ("Management", "Management and OOB ports"),
+}
+
 NETWORK_API_SCOPE: dict[str, str | None] = {
     "overview": None,
-    "backbone": "backbone",
-    "leaf": "leaf",
-    "spine": "spine",
-    "management": "management",
-    "shared": "shared",
     "router_uplink": "router_uplink",
 }
 
 
+def resolve_network_interface_scope(top_scope: str | None, switch_role: str | None = None) -> str | None:
+    """Map UI tab + switch segment to datacenter-api interface_scope."""
+    scope = top_scope or "overview"
+    if scope == "switch":
+        return switch_role or "backbone"
+    if scope == "overview":
+        return None
+    return NETWORK_API_SCOPE.get(scope)
+
+
+def _network_scope_subtitle(top_scope: str | None, switch_role: str | None = None) -> str:
+    scope = top_scope or "overview"
+    if scope == "switch":
+        role = switch_role or "backbone"
+        return SWITCH_ROLE_LABELS.get(role, ("", ""))[1]
+    return NETWORK_TOP_LABELS.get(scope, ("", ""))[1]
+
+
 def _visible_network_scopes(sec_check=None) -> list[str]:
     check = sec_check or (lambda _code: True)
-    scopes = [scope for scope, perm in NETWORK_SCOPE_PERMISSIONS.items() if check(perm)]
+    scopes = [scope for scope, perm in NETWORK_TOP_PERMISSIONS.items() if check(perm)]
     if scopes:
         return scopes
     if check("sec:dc_view:network"):
@@ -2228,19 +2244,63 @@ def _visible_network_scopes(sec_check=None) -> list[str]:
     return []
 
 
-def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, percentile_data: dict, interface_table: dict):
+def _network_kpi_labels(interface_scope: str | None) -> tuple[str, str, str, str]:
+    if interface_scope == "backbone":
+        return (
+            "Billable Devices",
+            "Active Interfaces",
+            "Total Interfaces",
+            "P95 Utilization",
+        )
+    if interface_scope == "router_uplink":
+        return ("Router Devices", "Active Uplinks", "Total Uplinks", "ICMP Availability")
+    return ("Total Devices", "Active Ports", "Total Ports", "Port Availability")
+
+
+def _network_interface_table_columns(interface_scope: str | None) -> list[dict]:
+    cols = [
+        {"name": "Host", "id": "host"},
+        {"name": "Interface", "id": "interface_name"},
+        {"name": "Alias", "id": "interface_alias"},
+        {"name": "P95 RX (Gbps)", "id": "p95_rx_gbps", "type": "numeric"},
+        {"name": "P95 TX (Gbps)", "id": "p95_tx_gbps", "type": "numeric"},
+        {"name": "P95 Total (Gbps)", "id": "p95_total_gbps", "type": "numeric"},
+        {"name": "Speed (Gbps)", "id": "speed_gbps", "type": "numeric"},
+        {"name": "Util %", "id": "utilization_pct", "type": "numeric"},
+    ]
+    if interface_scope == "backbone":
+        cols[5]["name"] = "P95 Billable (Gbps)"
+    return cols
+
+
+def _network_bar_chart_title(interface_scope: str | None) -> str:
+    if interface_scope == "backbone":
+        return "Top Billable Interfaces — 95th Percentile (Gbps)"
+    if interface_scope == "router_uplink":
+        return "Top Router Uplinks — 95th Percentile (Gbps)"
+    return "Top 95th Percentile Interfaces (Gbps)"
+
+
+def _build_network_dashboard_subtab(
+    net_filters: dict,
+    port_summary: dict,
+    percentile_data: dict,
+    interface_table: dict,
+    top_scope: str = "overview",
+    switch_role: str = "backbone",
+):
     """
-    Network role panel (shared layout for overview + interface scopes):
-    - Hierarchical filters (Manufacturer -> Device Role -> Device)
-    - KPI cards
-    - Donut charts
-    - Top-N (95th percentile) bar chart
-    - Paginated interface bandwidth table
+    Network interface panel (overview, switch roles, router uplinks):
+    - Scope-aware filters (Manufacturer -> Device)
+    - KPI cards, donuts, p95 bar chart, paginated billing table
     """
     net_filters = net_filters or {}
     port_summary = port_summary or {}
     percentile_data = percentile_data or {}
     interface_table = interface_table or {}
+
+    interface_scope = resolve_network_interface_scope(top_scope, switch_role)
+    kpi1, kpi2, kpi3, kpi4 = _network_kpi_labels(interface_scope)
 
     device_count = int(port_summary.get("device_count", 0) or 0)
     total_ports = int(port_summary.get("total_ports", 0) or 0)
@@ -2251,49 +2311,70 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
     icmp_availability_pct = max(0.0, min(100.0, 100.0 - avg_icmp_loss_pct))
     overall_util_pct = float(percentile_data.get("overall_port_utilization_pct", 0) or 0)
 
-    # Build initial filter options (default selection = None => "All")
     manufacturers = net_filters.get("manufacturers") or []
-    roles_by_manufacturer = net_filters.get("roles_by_manufacturer") or {}
-    devices_by_manufacturer_role = net_filters.get("devices_by_manufacturer_role") or {}
+    devices_by_manufacturer = net_filters.get("devices_by_manufacturer") or {}
+    if not devices_by_manufacturer:
+        devices_by_manufacturer_role = net_filters.get("devices_by_manufacturer_role") or {}
+        for manu, roles_map in devices_by_manufacturer_role.items():
+            devs: set[str] = set()
+            for dev_list in (roles_map or {}).values():
+                devs.update(dev_list or [])
+            devices_by_manufacturer[manu] = sorted(devs)
 
-    roles_all = sorted({r for roles in roles_by_manufacturer.values() for r in (roles or [])})
     devices_all = sorted(
-        {
-            d
-            for roles_map in devices_by_manufacturer_role.values()
-            for devs in roles_map.values()
-            for d in (devs or [])
-        }
+        {d for devs in devices_by_manufacturer.values() for d in (devs or [])}
     )
 
     manufacturers_data = [{"label": m, "value": m} for m in manufacturers]
-    roles_data = [{"label": r, "value": r} for r in roles_all]
     devices_data = [{"label": d, "value": d} for d in devices_all]
 
-    # KPIs (initial)
+    kpi4_value = (
+        f"{overall_util_pct:.1f}%"
+        if interface_scope == "backbone"
+        else (f"{port_availability_pct:.1f}%" if kpi4 != "ICMP Availability" else f"{icmp_availability_pct:.1f}%")
+    )
+    if kpi4 == "ICMP Availability":
+        kpi4_value = f"{icmp_availability_pct:.1f}%"
+
     kpis = dmc.SimpleGrid(
         cols=4,
         spacing="lg",
         children=[
-            _kpi("Total Devices", f"{device_count:,}", _DC_ICONS["total_devices"], color="indigo", stagger=1),
-            _kpi("Active Ports", f"{active_ports:,}", _DC_ICONS["active_ports"], color="indigo", stagger=2),
-            _kpi("Total Ports", f"{total_ports:,}", _DC_ICONS["total_ports"], color="indigo", stagger=3),
-            _kpi("Port Availability", f"{port_availability_pct:.1f}%", _DC_ICONS["port_availability"], color="indigo", stagger=4),
+            _kpi(kpi1, f"{device_count:,}", _DC_ICONS["total_devices"], color="indigo", stagger=1),
+            _kpi(kpi2, f"{active_ports:,}", _DC_ICONS["active_ports"], color="indigo", stagger=2),
+            _kpi(kpi3, f"{total_ports:,}", _DC_ICONS["total_ports"], color="indigo", stagger=3),
+            _kpi(
+                kpi4,
+                kpi4_value,
+                _DC_ICONS["port_availability"] if kpi4 != "P95 Utilization" else _DC_ICONS["active_ports"],
+                color="indigo",
+                stagger=4,
+            ),
         ],
     )
 
-    # Donut charts (initial)
-    donut_active = create_premium_gauge_chart(port_availability_pct, "Port Availability", color="#FFB547")
-    donut_util = create_premium_gauge_chart(overall_util_pct, "Port Utilization", color="#05CD99")
+    donut_active = create_premium_gauge_chart(
+        port_availability_pct,
+        "Port Availability" if interface_scope != "backbone" else "Interface Availability",
+        color="#FFB547",
+    )
+    donut_util = create_premium_gauge_chart(
+        overall_util_pct,
+        "P95 Utilization" if interface_scope == "backbone" else "Port Utilization",
+        color="#05CD99",
+    )
     donut_icmp = create_premium_gauge_chart(icmp_availability_pct, "ICMP Availability", color="#4318FF")
 
     top_interfaces = percentile_data.get("top_interfaces") or []
-    bar_labels = [(t.get("interface_name") or "").strip() or "Unknown" for t in top_interfaces]
+    bar_labels = [
+        (t.get("interface_alias") or t.get("interface_name") or "").strip() or "Unknown"
+        for t in top_interfaces
+    ]
     bar_values = [_bps_to_gbps(t.get("p95_total_bps")) for t in top_interfaces]
     bar_fig = create_premium_horizontal_bar_chart(
         labels=bar_labels,
         values=bar_values,
-        title="Top 95th Percentile Interfaces (Gbps)",
+        title=_network_bar_chart_title(interface_scope),
         unit_suffix="Gbps",
         height=360,
     )
@@ -2315,16 +2396,7 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
             }
         )
 
-    columns = [
-        {"name": "Host", "id": "host"},
-        {"name": "Interface", "id": "interface_name"},
-        {"name": "Alias", "id": "interface_alias"},
-        {"name": "P95 RX (Gbps)", "id": "p95_rx_gbps", "type": "numeric"},
-        {"name": "P95 TX (Gbps)", "id": "p95_tx_gbps", "type": "numeric"},
-        {"name": "P95 Total (Gbps)", "id": "p95_total_gbps", "type": "numeric"},
-        {"name": "Speed (Gbps)", "id": "speed_gbps", "type": "numeric"},
-        {"name": "Utilization (%)", "id": "utilization_pct", "type": "numeric"},
-    ]
+    columns = _network_interface_table_columns(interface_scope)
 
     data_table = dash_table.DataTable(
         id="net-interface-table",
@@ -2366,7 +2438,7 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
         gap="lg",
         children=[
             dmc.SimpleGrid(
-                cols=3,
+                cols=2,
                 spacing="lg",
                 children=[
                     dmc.Select(
@@ -2378,16 +2450,6 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
                         clearable=True,
                         searchable=True,
                         nothingFoundMessage="No manufacturers",
-                    ),
-                    dmc.Select(
-                        id="net-role-selector",
-                        label="Device Role",
-                        placeholder="All roles",
-                        data=roles_data,
-                        value=None,
-                        clearable=True,
-                        searchable=True,
-                        nothingFoundMessage="No roles",
                     ),
                     dmc.Select(
                         id="net-device-selector",
@@ -2495,6 +2557,9 @@ def _build_network_firewall_table(firewall_data: dict) -> html.Div:
             "intrusions_detected": int(d.get("intrusions_detected") or 0),
             "intrusions_blocked": int(d.get("intrusions_blocked") or 0),
             "ha_mode": d.get("ha_mode") or "",
+            "ha_cluster_name": d.get("ha_cluster_name") or "",
+            "session_setup_rate": round(float(d.get("session_setup_rate") or 0), 2),
+            "icmp_status": d.get("icmp_status") if d.get("icmp_status") is not None else "",
             "icmp_loss_pct": round(float(d.get("icmp_loss_pct") or 0), 2),
         }
         for d in devices
@@ -2515,7 +2580,10 @@ def _build_network_firewall_table(firewall_data: dict) -> html.Div:
                     {"name": "Sessions", "id": "active_sessions", "type": "numeric"},
                     {"name": "Intrusions", "id": "intrusions_detected", "type": "numeric"},
                     {"name": "Blocked", "id": "intrusions_blocked", "type": "numeric"},
+                    {"name": "Session Rate", "id": "session_setup_rate", "type": "numeric"},
                     {"name": "HA Mode", "id": "ha_mode"},
+                    {"name": "HA Cluster", "id": "ha_cluster_name"},
+                    {"name": "ICMP Status", "id": "icmp_status"},
                     {"name": "ICMP Loss %", "id": "icmp_loss_pct", "type": "numeric"},
                 ],
                 data=rows,
@@ -2546,7 +2614,15 @@ def _build_network_load_balancer_table(lb_data: dict) -> html.Div:
         className="nexus-card",
         style={"padding": "20px"},
         children=[
-            _section_title("Load Balancer Health", "ICMP/CPU/RAM and port summary (vserver metrics pending)"),
+            dmc.Alert(
+                "Citrix ADC vserver metrics (RX/TX byte rate, customer vserver name) are not yet "
+                "collected in Zabbix. Device-level health is shown below until templates are defined.",
+                title="Vserver metrics pending",
+                color="yellow",
+                radius="md",
+                style={"marginBottom": "12px"},
+            ),
+            _section_title("Load Balancer Health", "ICMP/CPU/RAM and port summary"),
             dash_table.DataTable(
                 id="net-load-balancer-table",
                 columns=[
@@ -2575,24 +2651,21 @@ def _build_network_zabbix_section(
     interface_table: dict,
     firewall_data: dict,
     lb_data: dict,
-    has_san: bool,
-    san_port_usage: dict,
-    san_health_alerts: list,
-    san_traffic_trend: list,
     sec_check=None,
 ) -> html.Div:
     check = sec_check or (lambda _code: True)
     visible_scopes = _visible_network_scopes(sec_check=check)
     default_scope = visible_scopes[0] if visible_scopes else "overview"
+    default_switch_role = SWITCH_ROLE_SCOPES[0]
     tab_items = [
-        dmc.TabsTab(NETWORK_SCOPE_LABELS[scope][0], value=scope)
+        dmc.TabsTab(NETWORK_TOP_LABELS[scope][0], value=scope)
         for scope in visible_scopes
-        if scope in NETWORK_SCOPE_LABELS
+        if scope in NETWORK_TOP_LABELS
     ]
     tab_panels = [
         dmc.TabsPanel(value=scope, children=html.Div())
         for scope in visible_scopes
-        if scope in NETWORK_SCOPE_LABELS
+        if scope in NETWORK_TOP_LABELS
     ]
     zabbix_children: list = []
     if tab_items:
@@ -2610,9 +2683,26 @@ def _build_network_zabbix_section(
             )
         )
         zabbix_children.append(
+            html.Div(
+                id="net-switch-role-wrap",
+                style={"display": "block" if default_scope == "switch" else "none", "marginTop": "12px"},
+                children=[
+                    dmc.SegmentedControl(
+                        id="net-switch-role-segment",
+                        value=default_switch_role,
+                        data=[
+                            {"label": SWITCH_ROLE_LABELS[role][0], "value": role}
+                            for role in SWITCH_ROLE_SCOPES
+                        ],
+                        fullWidth=True,
+                    ),
+                ],
+            )
+        )
+        zabbix_children.append(
             dmc.Text(
                 id="net-scope-subtitle",
-                children=NETWORK_SCOPE_LABELS.get(default_scope, ("", ""))[1],
+                children=_network_scope_subtitle(default_scope, default_switch_role),
                 c="#A3AED0",
                 size="sm",
                 style={"marginTop": "8px"},
@@ -2624,16 +2714,8 @@ def _build_network_zabbix_section(
                 port_summary,
                 percentile_data,
                 interface_table,
-            )
-        )
-    if has_san and check("sub:dc_view:net:san"):
-        zabbix_children.append(
-            html.Div(
-                style={"marginTop": "24px"},
-                children=[
-                    _section_title("SAN", "Brocade switch licensing and health"),
-                    _build_san_subtab(san_port_usage, san_health_alerts, san_traffic_trend),
-                ],
+                top_scope=default_scope,
+                switch_role=default_switch_role,
             )
         )
     return html.Div(
@@ -2642,6 +2724,109 @@ def _build_network_zabbix_section(
             dcc.Store(id="net-firewall-store", data=firewall_data or {}),
             dcc.Store(id="net-load-balancer-store", data=lb_data or {}),
             dmc.Stack(gap="lg", children=zabbix_children),
+        ],
+    )
+
+
+def _build_storage_section_with_san(
+    has_intel_storage: bool,
+    has_power: bool,
+    has_s3: bool,
+    has_san: bool,
+    zabbix_storage_devices: list,
+    zabbix_storage_capacity: dict,
+    zabbix_storage_trend: dict,
+    storage_capacity: dict,
+    storage_performance: dict,
+    dc_name: str,
+    s3_data: dict,
+    tr: dict,
+    san_port_usage: dict,
+    san_health_alerts: list,
+    san_traffic_trend: list,
+    sec_check=None,
+) -> html.Div | None:
+    check = sec_check or (lambda _code: True)
+    if not (has_intel_storage or has_power or has_s3 or (has_san and check("sub:dc_view:storage:san"))):
+        return None
+
+    default_tab = (
+        "intel"
+        if has_intel_storage
+        else "ibm"
+        if has_power
+        else "san"
+        if has_san and check("sub:dc_view:storage:san")
+        else "obj-storage"
+    )
+
+    tab_list = []
+    if has_intel_storage:
+        tab_list.append(dmc.TabsTab("Intel Storage", value="intel"))
+    if has_power:
+        tab_list.append(dmc.TabsTab("IBM Storage", value="ibm"))
+    if has_san and check("sub:dc_view:storage:san"):
+        tab_list.append(dmc.TabsTab("SAN Switch", value="san"))
+    if has_s3:
+        tab_list.append(dmc.TabsTab("Object Storage - S3", value="obj-storage"))
+
+    panels = []
+    if has_intel_storage:
+        panels.append(
+            dmc.TabsPanel(
+                value="intel",
+                pt="lg",
+                children=_build_intel_storage_subtab(
+                    zabbix_storage_devices,
+                    zabbix_storage_capacity,
+                    zabbix_storage_trend,
+                ),
+            )
+        )
+    if has_power:
+        panels.append(
+            dmc.TabsPanel(
+                value="ibm",
+                pt="lg",
+                children=_build_ibm_storage_subtab(storage_capacity, storage_performance),
+            )
+        )
+    if has_san and check("sub:dc_view:storage:san"):
+        panels.append(
+            dmc.TabsPanel(
+                value="san",
+                pt="lg",
+                children=html.Div(
+                    children=[
+                        _section_title("SAN Switch", "Brocade switch licensing and health"),
+                        _build_san_subtab(san_port_usage, san_health_alerts, san_traffic_trend),
+                    ]
+                ),
+            )
+        )
+    if has_s3:
+        panels.append(
+            dmc.TabsPanel(
+                value="obj-storage",
+                pt="lg",
+                children=html.Div(
+                    id="s3-dc-metrics-panel",
+                    style={"marginTop": "0"},
+                    children=build_dc_s3_panel(dc_name, s3_data, tr, None),
+                ),
+            )
+        )
+
+    return html.Div(
+        style={"padding": "0 30px"},
+        children=[
+            dmc.Tabs(
+                color="indigo",
+                variant="outline",
+                radius="md",
+                value=default_tab,
+                children=[dmc.TabsList(children=tab_list), *panels],
+            )
         ],
     )
 
@@ -3372,7 +3557,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     zabbix_storage_devices = api.get_dc_zabbix_storage_devices(dc_id, tr) if has_intel_storage else []
     zabbix_storage_trend = api.get_dc_zabbix_storage_trend(dc_id, tr) if has_intel_storage else {}
     intel_storage_ms = round((time.perf_counter() - t_intel_storage) * 1000, 1)
-    has_storage = bool(has_intel_storage or has_power or has_s3)
+    has_storage = bool(has_intel_storage or has_power or has_s3 or has_san)
 
     has_virt = has_classic or has_hyperconv or has_power
     has_summary = has_virt
@@ -3395,7 +3580,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     show_storage = has_storage and _sec("sec:dc_view:storage")
     show_backup = has_backup and _sec("sec:dc_view:backup")
     show_phys = has_phys_inv and _sec("sec:dc_view:phys_inv")
-    show_network = (has_network or has_san) and _sec("sec:dc_view:network")
+    show_network = has_network and _sec("sec:dc_view:network")
     show_avail = has_avail and _sec("sec:dc_view:availability")
 
     tabs_order = [
@@ -3680,58 +3865,30 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                         children=[_build_physical_inventory_dc_tab(phys_inv)],
                     ),
                 ) if show_phys else None,
-                # Storage (Intel / IBM)
+                # Storage (Intel / IBM / SAN / S3)
                 dmc.TabsPanel(
                     value="storage",
-                    children=html.Div(
-                        style={"padding": "0 30px"},
-                        children=[
-                            dmc.Tabs(
-                                color="indigo",
-                                variant="outline",
-                                radius="md",
-                                value="intel" if has_intel_storage else "ibm" if has_power else "obj-storage",
-                                children=[
-                                    dmc.TabsList(
-                                        children=[
-                                            dmc.TabsTab("Intel Storage", value="intel") if has_intel_storage else None,
-                                            dmc.TabsTab("IBM Storage", value="ibm") if has_power else None,
-                                            dmc.TabsTab("Object Storage - S3", value="obj-storage") if has_s3 else None,
-                                        ]
-                                    ),
-                                    dmc.TabsPanel(
-                                        value="intel",
-                                        pt="lg",
-                                        children=_build_intel_storage_subtab(
-                                            zabbix_storage_devices,
-                                            zabbix_storage_capacity,
-                                            zabbix_storage_trend,
-                                        ),
-                                    ) if has_intel_storage else None,
-                                    dmc.TabsPanel(
-                                        value="ibm",
-                                        pt="lg",
-                                        children=_build_ibm_storage_subtab(
-                                            storage_capacity,
-                                            storage_performance,
-                                        ),
-                                    ) if has_power else None,
-                                    dmc.TabsPanel(
-                                        value="obj-storage",
-                                        pt="lg",
-                                        children=html.Div(
-                                            id="s3-dc-metrics-panel",
-                                            style={"marginTop": "0"},
-                                            children=build_dc_s3_panel(dc_name, s3_data, tr, None) if has_s3 else html.Div(),
-                                        ),
-                                    ) if has_s3 else None,
-                                ],
-                            )
-                        ],
+                    children=_build_storage_section_with_san(
+                        has_intel_storage,
+                        has_power,
+                        has_s3,
+                        has_san,
+                        zabbix_storage_devices,
+                        zabbix_storage_capacity,
+                        zabbix_storage_trend,
+                        storage_capacity,
+                        storage_performance,
+                        dc_name,
+                        s3_data,
+                        tr,
+                        san_port_usage,
+                        san_health_alerts,
+                        san_traffic_trend,
+                        sec_check=_sec,
                     ),
                 ) if show_storage else None,
 
-                # Network (role-based Zabbix scopes + SAN)
+                # Network (role-based Zabbix scopes)
                 dmc.TabsPanel(
                     value="network",
                     pt="lg",
@@ -3742,10 +3899,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                         net_interface_table,
                         net_firewall_data,
                         net_lb_data,
-                        has_san,
-                        san_port_usage,
-                        san_health_alerts,
-                        san_traffic_trend,
                         sec_check=_sec,
                     ),
                 ) if show_network else None,

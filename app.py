@@ -1617,81 +1617,84 @@ def update_global_detail_from_menu(store_data, time_range):
 # ---------------------------------------------------------------------------
 
 
+def _net_scope_is_device_panel(top_scope: str | None) -> bool:
+    return (top_scope or "overview") in {"firewall", "load_balancer"}
+
+
 @app.callback(
-    dash.Output("net-role-selector", "data"),
-    dash.Output("net-role-selector", "value"),
+    dash.Output("net-filters-store", "data"),
+    dash.Input("net-scope-tabs", "value"),
+    dash.Input("net-switch-role-segment", "value"),
+    dash.State("url", "pathname"),
+    dash.State("app-time-range", "data"),
+)
+def refresh_net_filters_store(top_scope, switch_role, pathname, time_range):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update
+    if _net_scope_is_device_panel(top_scope):
+        return dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    interface_scope = dc_view.resolve_network_interface_scope(top_scope, switch_role)
+    return api.get_dc_network_filters(dc_id, tr, interface_scope=interface_scope)
+
+
+@app.callback(
+    dash.Output("net-switch-role-wrap", "style"),
+    dash.Input("net-scope-tabs", "value"),
+)
+def toggle_switch_role_segment(top_scope):
+    if (top_scope or "overview") == "switch":
+        return {"display": "block", "marginTop": "12px"}
+    return {"display": "none"}
+
+
+@app.callback(
+    dash.Output("net-manufacturer-selector", "data"),
+    dash.Output("net-manufacturer-selector", "value"),
     dash.Output("net-device-selector", "data"),
     dash.Output("net-device-selector", "value"),
     dash.Input("net-manufacturer-selector", "value"),
-    dash.Input("net-role-selector", "value"),
     dash.Input("net-filters-store", "data"),
 )
-def update_net_selectors(manufacturer, role, net_filters):
-    """Single callback for role + device dropdowns (avoids duplicate Output writers)."""
+def update_net_selectors(manufacturer, net_filters):
+    """Manufacturer -> device cascade (scope-aware filters from store)."""
     net_filters = net_filters or {}
-    roles_by_manu = net_filters.get("roles_by_manufacturer") or {}
-    devices_by_manu_role = net_filters.get("devices_by_manufacturer_role") or {}
+    devices_by_manu = net_filters.get("devices_by_manufacturer") or {}
+    if not devices_by_manu:
+        devices_by_manu_role = net_filters.get("devices_by_manufacturer_role") or {}
+        for manu, roles_map in devices_by_manu_role.items():
+            devs: set[str] = set()
+            for dev_list in (roles_map or {}).values():
+                devs.update(dev_list or [])
+            devices_by_manu[manu] = sorted(devs)
 
-    if not roles_by_manu:
-        return [], None, [], None
+    manufacturers = net_filters.get("manufacturers") or []
+    manu_data = [{"label": m, "value": m} for m in manufacturers]
 
     if manufacturer:
-        roles = sorted(roles_by_manu.get(manufacturer) or [])
-        devs_set: set = set()
-        for r in roles:
-            devs_set.update(devices_by_manu_role.get(manufacturer, {}).get(r, []) or [])
-        devices_all = sorted(devs_set)
+        devices = sorted(devices_by_manu.get(manufacturer) or [])
     else:
-        roles = sorted({r for rs in roles_by_manu.values() for r in (rs or [])})
-        devices_all = sorted(
-            d
-            for rm in devices_by_manu_role.values()
-            for devs in rm.values()
-            for d in (devs or [])
-        )
+        devices = sorted({d for devs in devices_by_manu.values() for d in (devs or [])})
 
-    role_data = [{"label": r, "value": r} for r in roles]
+    device_data = [{"label": d, "value": d} for d in devices]
     ctx = dash.callback_context
     triggered_id = getattr(ctx, "triggered_id", None)
     if triggered_id is None and ctx.triggered:
         triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
 
-    if triggered_id == "net-role-selector":
-        if manufacturer and role:
-            devices = devices_by_manu_role.get(manufacturer, {}).get(role, []) or []
-        elif manufacturer and not role:
-            devices = []
-            for r in roles_by_manu.get(manufacturer, []) or []:
-                devices.extend(devices_by_manu_role.get(manufacturer, {}).get(r, []) or [])
-        elif not manufacturer and role:
-            devs = set()
-            for roles_map in devices_by_manu_role.values():
-                devs.update(roles_map.get(role, []) or [])
-            devices = sorted(devs)
-        else:
-            devices = devices_all
-        device_data = [{"label": d, "value": d} for d in sorted(devices or [])]
-        return role_data, dash.no_update, device_data, None
-
-    device_data = [{"label": d, "value": d} for d in devices_all]
-    return role_data, None, device_data, None
-
-
-def _net_scope_api_value(scope: str | None) -> str | None:
-    return dc_view.NETWORK_API_SCOPE.get(scope or "overview")
-
-
-def _net_scope_is_device_panel(scope: str | None) -> bool:
-    return (scope or "overview") in {"firewall", "load_balancer"}
+    if triggered_id == "net-filters-store":
+        return manu_data, None, device_data, None
+    return manu_data, dash.no_update, device_data, None
 
 
 @app.callback(
     dash.Output("net-scope-subtitle", "children"),
     dash.Input("net-scope-tabs", "value"),
+    dash.Input("net-switch-role-segment", "value"),
 )
-def update_net_scope_subtitle(scope):
-    label = dc_view.NETWORK_SCOPE_LABELS.get(scope or "overview", ("", ""))[1]
-    return label or ""
+def update_net_scope_subtitle(top_scope, switch_role):
+    return dc_view._network_scope_subtitle(top_scope, switch_role)
 
 
 @app.callback(
@@ -1704,12 +1707,12 @@ def update_net_scope_subtitle(scope):
     dash.State("url", "pathname"),
     dash.State("app-time-range", "data"),
 )
-def update_net_scope_layout(scope, firewall_store, lb_store, pathname, time_range):
-    scope = scope or "overview"
+def update_net_scope_layout(top_scope, firewall_store, lb_store, pathname, time_range):
+    top_scope = top_scope or "overview"
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update, dash.no_update, dash.no_update
 
-    if scope == "firewall":
+    if top_scope == "firewall":
         dc_id = pathname.replace("/datacenter/", "").strip("/")
         tr = time_range or default_time_range()
         fw_data = api.get_dc_network_firewall_summary(dc_id, tr)
@@ -1718,7 +1721,7 @@ def update_net_scope_layout(scope, firewall_store, lb_store, pathname, time_rang
             [dc_view._build_network_firewall_table(fw_data)],
             {"display": "block"},
         )
-    if scope == "load_balancer":
+    if top_scope == "load_balancer":
         dc_id = pathname.replace("/datacenter/", "").strip("/")
         tr = time_range or default_time_range()
         lb_data = api.get_dc_network_load_balancer_summary(dc_id, tr)
@@ -1742,41 +1745,43 @@ def update_net_scope_layout(scope, firewall_store, lb_store, pathname, time_rang
     dash.Output("net-donut-icmp", "figure"),
     dash.Output("net-top-interfaces-bar", "figure"),
     dash.Input("net-scope-tabs", "value"),
+    dash.Input("net-switch-role-segment", "value"),
     dash.Input("net-manufacturer-selector", "value"),
-    dash.Input("net-role-selector", "value"),
     dash.Input("net-device-selector", "value"),
     dash.State("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
-def update_net_kpis_and_charts(scope, manufacturer, device_role, device_name, time_range, pathname):
+def update_net_kpis_and_charts(top_scope, switch_role, manufacturer, device_name, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
+    top_scope = top_scope or "overview"
 
-    scope = scope or "overview"
+    if _net_scope_is_device_panel(top_scope):
+        empty = create_premium_gauge_chart(0, "N/A", color="#E9EDF7")
+        return html.Div(), empty, empty, empty, empty
+
+    interface_scope = dc_view.resolve_network_interface_scope(top_scope, switch_role)
+    kpi1, kpi2, kpi3, kpi4 = dc_view._network_kpi_labels(interface_scope)
+
     port_summary = api.get_dc_network_port_summary(
         dc_id,
         tr,
         manufacturer=manufacturer,
-        device_role=device_role,
         device_name=device_name,
+        interface_scope=interface_scope,
     )
-    interface_scope = _net_scope_api_value(scope)
-    percentile_data = (
-        {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
-        if _net_scope_is_device_panel(scope)
-        else api.get_dc_network_95th_percentile(
-            dc_id,
-            tr,
-            top_n=20,
-            manufacturer=manufacturer,
-            device_role=device_role,
-            device_name=device_name,
-            interface_scope=interface_scope,
-        )
+    percentile_data = api.get_dc_network_95th_percentile(
+        dc_id,
+        tr,
+        top_n=20,
+        manufacturer=manufacturer,
+        device_name=device_name,
+        interface_scope=interface_scope,
     )
+
     device_count = int(port_summary.get("device_count", 0) or 0)
     total_ports = int(port_summary.get("total_ports", 0) or 0)
     active_ports = int(port_summary.get("active_ports", 0) or 0)
@@ -1786,28 +1791,49 @@ def update_net_kpis_and_charts(scope, manufacturer, device_role, device_name, ti
     icmp_availability_pct = max(0.0, min(100.0, 100.0 - avg_icmp_loss_pct))
     overall_util_pct = float(percentile_data.get("overall_port_utilization_pct", 0) or 0)
 
+    if kpi4 == "P95 Utilization":
+        kpi4_display = f"{overall_util_pct:.1f}%"
+        kpi4_icon = _DC_ICONS["active_ports"]
+    elif kpi4 == "ICMP Availability":
+        kpi4_display = f"{icmp_availability_pct:.1f}%"
+        kpi4_icon = _DC_ICONS["port_availability"]
+    else:
+        kpi4_display = f"{port_availability_pct:.1f}%"
+        kpi4_icon = _DC_ICONS["port_availability"]
+
     kpis = dmc.SimpleGrid(
         cols=4,
         spacing="lg",
         children=[
-            dc_view._kpi("Total Devices", f"{device_count:,}", _DC_ICONS["total_devices"], color="indigo"),
-            dc_view._kpi("Active Ports", f"{active_ports:,}", _DC_ICONS["active_ports"], color="indigo"),
-            dc_view._kpi("Total Ports", f"{total_ports:,}", _DC_ICONS["total_ports"], color="indigo"),
-            dc_view._kpi("Port Availability", f"{port_availability_pct:.1f}%", _DC_ICONS["port_availability"], color="indigo"),
+            dc_view._kpi(kpi1, f"{device_count:,}", _DC_ICONS["total_devices"], color="indigo"),
+            dc_view._kpi(kpi2, f"{active_ports:,}", _DC_ICONS["active_ports"], color="indigo"),
+            dc_view._kpi(kpi3, f"{total_ports:,}", _DC_ICONS["total_ports"], color="indigo"),
+            dc_view._kpi(kpi4, kpi4_display, kpi4_icon, color="indigo"),
         ],
     )
 
-    donut_active = create_premium_gauge_chart(port_availability_pct, "Port Availability", color="#FFB547")
-    donut_util = create_premium_gauge_chart(overall_util_pct, "Port Utilization", color="#05CD99")
+    donut_active = create_premium_gauge_chart(
+        port_availability_pct,
+        "Interface Availability" if interface_scope == "backbone" else "Port Availability",
+        color="#FFB547",
+    )
+    donut_util = create_premium_gauge_chart(
+        overall_util_pct,
+        "P95 Utilization" if interface_scope == "backbone" else "Port Utilization",
+        color="#05CD99",
+    )
     donut_icmp = create_premium_gauge_chart(icmp_availability_pct, "ICMP Availability", color="#4318FF")
 
     top_interfaces = percentile_data.get("top_interfaces") or []
-    bar_labels = [(t.get("interface_name") or "").strip() or "Unknown" for t in top_interfaces]
+    bar_labels = [
+        (t.get("interface_alias") or t.get("interface_name") or "").strip() or "Unknown"
+        for t in top_interfaces
+    ]
     bar_values = [_bps_to_gbps(t.get("p95_total_bps")) for t in top_interfaces]
     bar_fig = create_horizontal_bar_chart(
         labels=bar_labels,
         values=bar_values,
-        title="Top 95th Percentile Interfaces (Gbps)",
+        title=dc_view._network_bar_chart_title(interface_scope),
         color="#4318FF",
         height=320,
     )
@@ -1817,9 +1843,10 @@ def update_net_kpis_and_charts(scope, manufacturer, device_role, device_name, ti
 
 @app.callback(
     dash.Output("net-interface-table", "data"),
+    dash.Output("net-interface-table", "columns"),
     dash.Input("net-scope-tabs", "value"),
+    dash.Input("net-switch-role-segment", "value"),
     dash.Input("net-manufacturer-selector", "value"),
-    dash.Input("net-role-selector", "value"),
     dash.Input("net-device-selector", "value"),
     dash.Input("net-interface-search", "value"),
     dash.Input("net-interface-table", "page_current"),
@@ -1828,9 +1855,9 @@ def update_net_kpis_and_charts(scope, manufacturer, device_role, device_name, ti
     dash.State("url", "pathname"),
 )
 def update_net_interface_table(
-    scope,
+    top_scope,
+    switch_role,
     manufacturer,
-    device_role,
     device_name,
     search_value,
     page_current,
@@ -1839,18 +1866,20 @@ def update_net_interface_table(
     pathname,
 ):
     if not pathname or not pathname.startswith("/datacenter/"):
-        return []
+        return [], dash.no_update
 
-    scope = scope or "overview"
-    if _net_scope_is_device_panel(scope):
-        return []
+    top_scope = top_scope or "overview"
+    if _net_scope_is_device_panel(top_scope):
+        return [], dash.no_update
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
+    interface_scope = dc_view.resolve_network_interface_scope(top_scope, switch_role)
+    columns = dc_view._network_interface_table_columns(interface_scope)
 
     page_current_safe = int(page_current or 0)
     page_size_safe = int(page_size or 50)
-    page_backend = page_current_safe + 1  # backend is 1-based
+    page_backend = page_current_safe + 1
 
     interface_data = api.get_dc_network_interface_table(
         dc_id,
@@ -1859,9 +1888,8 @@ def update_net_interface_table(
         page_size=page_size_safe,
         search=search_value or "",
         manufacturer=manufacturer,
-        device_role=device_role,
         device_name=device_name,
-        interface_scope=_net_scope_api_value(scope),
+        interface_scope=interface_scope,
     )
     items = interface_data.get("items") or []
     rows = []
@@ -1883,7 +1911,7 @@ def update_net_interface_table(
             }
         )
 
-    return rows
+    return rows, columns
 
 
 @app.callback(

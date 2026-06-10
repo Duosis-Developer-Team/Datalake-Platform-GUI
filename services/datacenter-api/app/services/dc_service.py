@@ -4101,22 +4101,96 @@ JOIN latest l
         cache.set(cache_key, result)
         return result
 
-    def get_network_filters(self, dc_code: str, time_range: dict | None = None) -> dict:
+    def _resolve_scoped_network_devices(
+        self,
+        dc_target: str,
+        tr: dict,
+        interface_scope: str | None,
+        manufacturer: str | None = None,
+        device_name: str | None = None,
+    ) -> dict:
+        """Resolve hosts from scoped interface table (or all DC devices for overview)."""
+        if not interface_scope or interface_scope == "overview":
+            return self._resolve_zabbix_dc_devices(
+                dc_target,
+                tr,
+                manufacturer=manufacturer,
+                device_name=device_name,
+            )
+
+        start_ts, end_ts = time_range_to_bounds(tr)
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        znq.build_scoped_hosts_for_dc_sql(interface_scope),
+                        (dc_target, start_ts, end_ts),
+                    )
+        except (OperationalError, PoolError, ValueError) as exc:
+            logger.warning("Scoped network host resolution failed for %s: %s", dc_target, exc)
+            return {"devices": [], "hosts": [], "loki_ids": []}
+
+        devices: list[dict] = []
+        for host, manufacturer_val, device_name_val, device_role_val in (rows or []):
+            devices.append(
+                {
+                    "host": str(host) if host is not None else None,
+                    "device_name": device_name_val or "Unknown",
+                    "manufacturer_name": manufacturer_val or "Unknown",
+                    "device_role_name": device_role_val or "Unknown",
+                }
+            )
+
+        if manufacturer is not None:
+            devices = [d for d in devices if d.get("manufacturer_name") == manufacturer]
+        if device_name is not None:
+            devices = [d for d in devices if d.get("device_name") == device_name]
+
+        hosts = sorted({d.get("host") for d in devices if d.get("host")})
+        return {"devices": devices, "hosts": hosts, "loki_ids": []}
+
+    def get_network_filters(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        interface_scope: str | None = None,
+    ) -> dict:
         """
-        Return hierarchical filter options (Manufacturer -> Device Role -> Device).
-        Values are derived from Zabbix network device rows (latest snapshot).
+        Return filter options for the Network dashboard.
+        When interface_scope is set, manufacturers/devices come from the scoped interface table.
         """
         tr = time_range or default_time_range()
         dc_target = (dc_code or "").upper()
+        empty = {
+            "manufacturers": [],
+            "roles_by_manufacturer": {},
+            "devices_by_manufacturer_role": {},
+            "devices_by_manufacturer": {},
+            "interface_scope": interface_scope or "overview",
+        }
         if not dc_target:
-            return {"manufacturers": [], "roles_by_manufacturer": {}, "devices_by_manufacturer_role": {}}
+            return empty
 
-        resolved = self._resolve_zabbix_dc_devices(dc_target, tr)
+        scope_key = interface_scope or "overview"
+        cache_key = (
+            f"dc_zabbix_net_filters:{dc_target}:scope={scope_key}:"
+            f"{tr.get('start','')}:{tr.get('end','')}"
+        )
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        if scope_key != "overview":
+            resolved = self._resolve_scoped_network_devices(dc_target, tr, interface_scope)
+        else:
+            resolved = self._resolve_zabbix_dc_devices(dc_target, tr)
         devices = resolved.get("devices") or []
 
         manufacturers = sorted({d.get("manufacturer_name") or "Unknown" for d in devices})
-        roles_by_manufacturer: dict[str, list[str]] = {}
-        devices_by_manufacturer_role: dict[str, dict[str, list[str]]] = {}
+        roles_by_manufacturer: dict[str, set[str]] = {}
+        devices_by_manufacturer_role: dict[str, dict[str, set[str]]] = {}
+        devices_by_manufacturer: dict[str, set[str]] = {}
 
         for d in devices:
             manu = d.get("manufacturer_name") or "Unknown"
@@ -4125,20 +4199,24 @@ JOIN latest l
 
             roles_by_manufacturer.setdefault(manu, set()).add(role)
             devices_by_manufacturer_role.setdefault(manu, {}).setdefault(role, set()).add(dev_name)
+            devices_by_manufacturer.setdefault(manu, set()).add(dev_name)
 
-        roles_by_manufacturer = {
-            manu: sorted(list(roles_set)) for manu, roles_set in roles_by_manufacturer.items()
-        }
-        devices_by_manufacturer_role = {
-            manu: {role: sorted(list(dev_set)) for role, dev_set in roles_map.items()}
-            for manu, roles_map in devices_by_manufacturer_role.items()
-        }
-
-        return {
+        result = {
             "manufacturers": manufacturers,
-            "roles_by_manufacturer": roles_by_manufacturer,
-            "devices_by_manufacturer_role": devices_by_manufacturer_role,
+            "roles_by_manufacturer": {
+                manu: sorted(list(roles_set)) for manu, roles_set in roles_by_manufacturer.items()
+            },
+            "devices_by_manufacturer_role": {
+                manu: {role: sorted(list(dev_set)) for role, dev_set in roles_map.items()}
+                for manu, roles_map in devices_by_manufacturer_role.items()
+            },
+            "devices_by_manufacturer": {
+                manu: sorted(list(dev_set)) for manu, dev_set in devices_by_manufacturer.items()
+            },
+            "interface_scope": scope_key,
         }
+        cache.set(cache_key, result)
+        return result
 
     def get_network_port_summary(
         self,
@@ -4147,47 +4225,94 @@ JOIN latest l
         manufacturer: str | None = None,
         device_role: str | None = None,
         device_name: str | None = None,
+        interface_scope: str | None = None,
     ) -> dict:
         """
         Return KPI numbers for the Network Dashboard port capacity view.
-        Aggregation is done from latest-per-device Zabbix snapshots.
+        When interface_scope is set, counts come from scoped interface tables.
         """
         tr = time_range or default_time_range()
         dc_target = (dc_code or "").upper()
+        scope_key = interface_scope or "overview"
+        empty = {
+            "device_count": 0,
+            "total_ports": 0,
+            "active_ports": 0,
+            "avg_icmp_loss_pct": 0.0,
+            "interface_scope": scope_key,
+        }
         if not dc_target:
-            return {"device_count": 0, "total_ports": 0, "active_ports": 0, "avg_icmp_loss_pct": 0.0}
+            return empty
 
         cache_key = (
             f"dc_zabbix_net_port_summary:{dc_target}:"
             f"{manufacturer or ''}:{device_role or ''}:{device_name or ''}:"
-            f"{tr.get('start','')}:{tr.get('end','')}"
+            f"scope={scope_key}:{tr.get('start','')}:{tr.get('end','')}"
         )
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
 
-        resolved = self._resolve_zabbix_dc_devices(
-            dc_target,
-            tr,
-            manufacturer=manufacturer,
-            device_role=device_role,
-            device_name=device_name,
-        )
-        devices = resolved.get("devices") or []
+        if scope_key != "overview":
+            resolved = self._resolve_scoped_network_devices(
+                dc_target,
+                tr,
+                interface_scope,
+                manufacturer=manufacturer,
+                device_name=device_name,
+            )
+            hosts: list[str] = resolved.get("hosts") or []
+            if not hosts:
+                cache.set(cache_key, empty)
+                return empty
 
-        device_count = len(devices)
-        total_ports = sum(int(d.get("total_ports_count") or 0) for d in devices)
-        active_ports = sum(int(d.get("active_ports_count") or 0) for d in devices)
-        avg_icmp_loss_pct = (
-            sum(float(d.get("icmp_loss_pct") or 0) for d in devices) / device_count if device_count else 0.0
-        )
-
-        result = {
-            "device_count": int(device_count),
-            "total_ports": int(total_ports),
-            "active_ports": int(active_ports),
-            "avg_icmp_loss_pct": float(avg_icmp_loss_pct),
-        }
+            start_ts, end_ts = time_range_to_bounds(tr)
+            try:
+                with self._get_connection() as conn:
+                    with conn.cursor() as cur:
+                        row = self._run_rows(
+                            cur,
+                            znq.build_scoped_port_summary_sql(interface_scope),
+                            (hosts, start_ts, end_ts, hosts, start_ts, end_ts),
+                        )
+                if row:
+                    device_count, total_ports, active_ports, avg_icmp_loss_pct = row[0]
+                    result = {
+                        "device_count": int(device_count or 0),
+                        "total_ports": int(total_ports or 0),
+                        "active_ports": int(active_ports or 0),
+                        "avg_icmp_loss_pct": float(avg_icmp_loss_pct or 0),
+                        "interface_scope": scope_key,
+                    }
+                else:
+                    result = dict(empty)
+            except (OperationalError, PoolError, ValueError) as exc:
+                logger.warning("get_network_port_summary scoped failed for %s: %s", dc_target, exc)
+                result = dict(empty)
+        else:
+            resolved = self._resolve_zabbix_dc_devices(
+                dc_target,
+                tr,
+                manufacturer=manufacturer,
+                device_role=device_role,
+                device_name=device_name,
+            )
+            devices = resolved.get("devices") or []
+            device_count = len(devices)
+            total_ports = sum(int(d.get("total_ports_count") or 0) for d in devices)
+            active_ports = sum(int(d.get("active_ports_count") or 0) for d in devices)
+            avg_icmp_loss_pct = (
+                sum(float(d.get("icmp_loss_pct") or 0) for d in devices) / device_count
+                if device_count
+                else 0.0
+            )
+            result = {
+                "device_count": int(device_count),
+                "total_ports": int(total_ports),
+                "active_ports": int(active_ports),
+                "avg_icmp_loss_pct": float(avg_icmp_loss_pct),
+                "interface_scope": scope_key,
+            }
 
         cache.set(cache_key, result)
         return result
@@ -4221,13 +4346,22 @@ JOIN latest l
         if cached_val is not None:
             return cached_val
 
-        resolved = self._resolve_zabbix_dc_devices(
-            dc_target,
-            tr,
-            manufacturer=manufacturer,
-            device_role=device_role,
-            device_name=device_name,
-        )
+        if scope_key != "overview":
+            resolved = self._resolve_scoped_network_devices(
+                dc_target,
+                tr,
+                interface_scope,
+                manufacturer=manufacturer,
+                device_name=device_name,
+            )
+        else:
+            resolved = self._resolve_zabbix_dc_devices(
+                dc_target,
+                tr,
+                manufacturer=manufacturer,
+                device_role=device_role,
+                device_name=device_name,
+            )
         hosts: list[str] = resolved.get("hosts") or []
         if not hosts:
             result = {"top_interfaces": [], "overall_port_utilization_pct": 0.0, "interface_scope": scope_key}
@@ -4324,13 +4458,22 @@ JOIN latest l
         if cached_val is not None:
             return cached_val
 
-        resolved = self._resolve_zabbix_dc_devices(
-            dc_target,
-            tr,
-            manufacturer=manufacturer,
-            device_role=device_role,
-            device_name=device_name,
-        )
+        if scope_key != "overview":
+            resolved = self._resolve_scoped_network_devices(
+                dc_target,
+                tr,
+                interface_scope,
+                manufacturer=manufacturer,
+                device_name=device_name,
+            )
+        else:
+            resolved = self._resolve_zabbix_dc_devices(
+                dc_target,
+                tr,
+                manufacturer=manufacturer,
+                device_role=device_role,
+                device_name=device_name,
+            )
         hosts: list[str] = resolved.get("hosts") or []
         if not hosts:
             result = {

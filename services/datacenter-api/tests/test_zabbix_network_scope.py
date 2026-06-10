@@ -39,6 +39,17 @@ class ZabbixNetworkScopeTests(unittest.TestCase):
         self.assertIn("raw_zabbix_network_switch_shared_interface_metrics", sql)
         self.assertNotIn("switch_shared_interface_metrics s", sql)
 
+    def test_scoped_hosts_sql_uses_backbone_table(self):
+        sql = znq.build_scoped_hosts_for_dc_sql("backbone")
+        self.assertIn("raw_zabbix_network_backbone_interface_metrics", sql)
+        self.assertIn("dc_map", sql)
+
+    def test_scoped_port_summary_sql_counts_interfaces(self):
+        sql = znq.build_scoped_port_summary_sql("leaf")
+        self.assertIn("raw_zabbix_network_leaf_interface_metrics", sql)
+        self.assertIn("operational_status", sql)
+        self.assertIn("switch_shared_interface_metrics", sql)
+
 
 if __name__ == "__main__":
     unittest.main()

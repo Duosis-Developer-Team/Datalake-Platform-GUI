@@ -915,10 +915,15 @@ def _build_optional_params(base: dict[str, str], **kwargs: Optional[Any]) -> dic
     return base
 
 
-def get_dc_network_filters(dc_code: str, tr: Optional[dict]) -> dict:
+def get_dc_network_filters(
+    dc_code: str,
+    tr: Optional[dict],
+    interface_scope: Optional[str] = None,
+) -> dict:
     enc = quote(dc_code, safe="")
-    params = _build_time_params(tr)
-    ck = f"api:dc_net_filters:{enc}:{_serialize_tr_params(tr)}"
+    params = _build_optional_params(_build_time_params(tr), interface_scope=interface_scope)
+    scope_key = interface_scope or "overview"
+    ck = f"api:dc_net_filters:{enc}:scope={scope_key}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/network/filters", params=params)
@@ -933,6 +938,7 @@ def get_dc_network_port_summary(
     manufacturer: Optional[str] = None,
     device_role: Optional[str] = None,
     device_name: Optional[str] = None,
+    interface_scope: Optional[str] = None,
 ) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_optional_params(
@@ -940,6 +946,7 @@ def get_dc_network_port_summary(
         manufacturer=manufacturer,
         device_role=device_role,
         device_name=device_name,
+        interface_scope=interface_scope,
     )
     ck = f"api:dc_net_port_sum:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
 

@@ -159,17 +159,23 @@ def _fake_service(monkeypatch, dc_details: dict, s3_pools: dict | None = None):
             return storage_performance
 
         # Network Dashboard (Zabbix)
-        def get_dc_network_filters(self, dc_id, tr):
-            return {"manufacturers": [], "roles_by_manufacturer": {}, "devices_by_manufacturer_role": {}}
+        def get_dc_network_filters(self, dc_id, tr, interface_scope=None):
+            return {"manufacturers": [], "devices_by_manufacturer": {}}
 
-        def get_dc_network_port_summary(self, dc_id, tr, manufacturer=None, device_role=None, device_name=None):
+        def get_dc_network_port_summary(self, dc_id, tr, manufacturer=None, device_role=None, device_name=None, interface_scope=None):
             return {}
 
-        def get_dc_network_95th_percentile(self, dc_id, tr, top_n=20, manufacturer=None, device_role=None, device_name=None):
+        def get_dc_network_95th_percentile(self, dc_id, tr, top_n=20, manufacturer=None, device_role=None, device_name=None, interface_scope=None):
             return {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
 
-        def get_dc_network_interface_table(self, dc_id, tr, page=1, page_size=50, search="", manufacturer=None, device_role=None, device_name=None):
+        def get_dc_network_interface_table(self, dc_id, tr, page=1, page_size=50, search="", manufacturer=None, device_role=None, device_name=None, interface_scope=None):
             return {"items": []}
+
+        def get_dc_network_firewall_summary(self, dc_id, tr):
+            return {"devices": []}
+
+        def get_dc_network_load_balancer_summary(self, dc_id, tr):
+            return {"devices": []}
 
         # Intel Storage (Zabbix)
         def get_dc_zabbix_storage_capacity(self, dc_id, tr, host=None):
@@ -262,18 +268,23 @@ def _fake_service_network(
             return storage_performance_val
 
         # Network Dashboard (Zabbix)
-        def get_dc_network_filters(self, dc_id, tr):
-            # Default: no Zabbix network data (only SAN gate is active in existing tests)
-            return {"manufacturers": [], "roles_by_manufacturer": {}, "devices_by_manufacturer_role": {}}
+        def get_dc_network_filters(self, dc_id, tr, interface_scope=None):
+            return {"manufacturers": [], "devices_by_manufacturer": {}}
 
-        def get_dc_network_port_summary(self, dc_id, tr, manufacturer=None, device_role=None, device_name=None):
+        def get_dc_network_port_summary(self, dc_id, tr, manufacturer=None, device_role=None, device_name=None, interface_scope=None):
             return {}
 
-        def get_dc_network_95th_percentile(self, dc_id, tr, top_n=20, manufacturer=None, device_role=None, device_name=None):
+        def get_dc_network_95th_percentile(self, dc_id, tr, top_n=20, manufacturer=None, device_role=None, device_name=None, interface_scope=None):
             return {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
 
-        def get_dc_network_interface_table(self, dc_id, tr, page=1, page_size=50, search="", manufacturer=None, device_role=None, device_name=None):
+        def get_dc_network_interface_table(self, dc_id, tr, page=1, page_size=50, search="", manufacturer=None, device_role=None, device_name=None, interface_scope=None):
             return {"items": []}
+
+        def get_dc_network_firewall_summary(self, dc_id, tr):
+            return {"devices": []}
+
+        def get_dc_network_load_balancer_summary(self, dc_id, tr):
+            return {"devices": []}
 
         # Intel Storage (Zabbix)
         def get_dc_zabbix_storage_capacity(self, dc_id, tr, host=None):
@@ -376,7 +387,7 @@ def test_network_tab_hidden_when_no_san_switches(monkeypatch):
     assert "SAN" not in labels
 
 
-def test_network_tab_shown_when_san_present(monkeypatch):
+def test_storage_tab_shown_with_san_switch_subtab(monkeypatch):
     dc = {
         "meta": {"name": "DCX", "location": "Nowhere"},
         "classic": {},
@@ -402,8 +413,9 @@ def test_network_tab_shown_when_san_present(monkeypatch):
 
     layout = dc_view.build_dc_view("DCX", time_range={"from": 0, "to": 0})
     labels = _collect_tab_labels(layout)
-    assert "Network" in labels
-    assert "SAN" in labels
+    assert "Storage" in labels
+    assert "SAN Switch" in labels
+    assert "Network" not in labels
 
 
 def test_build_power_tab_storage_widgets_render_without_error():

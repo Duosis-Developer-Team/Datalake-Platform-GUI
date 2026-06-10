@@ -584,6 +584,102 @@ ORDER BY latest.host;
 """
 
 
+_DC_MAP_CTE = """
+dc_map AS (
+    SELECT
+        distinct name AS location_name,
+        CASE
+            WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
+            ELSE parent_name
+        END AS dc_name
+    FROM public.loki_locations
+    WHERE
+        CASE
+            WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
+            ELSE parent_name
+        END IS NOT NULL
+)
+"""
+
+
+def build_scoped_hosts_for_dc_sql(scope: str | None) -> str:
+    """Hosts with interface rows in the scoped table for a DC and time window."""
+    table = resolve_interface_table(scope)
+    overlap = _scope_overlap_filter(scope)
+    return f"""
+WITH {_DC_MAP_CTE},
+scoped AS (
+    SELECT DISTINCT
+        zndi.host,
+        dev.manufacturer_name,
+        dev.name AS device_name,
+        dev.device_role_name
+    FROM public.{table} zndi
+    JOIN public.discovery_netbox_inventory_device dev
+        ON dev.id = zndi.loki_id::bigint
+        AND dev.status_value = 'active'
+        AND zndi.loki_id ~ '^[0-9]+$'
+    JOIN dc_map m
+        ON m.location_name IN (dev.location_name, dev.site_name, dev.name)
+    WHERE
+        m.dc_name = %s
+        AND zndi.collection_timestamp BETWEEN %s AND %s
+        {overlap}
+)
+SELECT
+    host,
+    manufacturer_name,
+    device_name,
+    device_role_name
+FROM scoped
+WHERE host IS NOT NULL
+ORDER BY manufacturer_name NULLS LAST, device_name NULLS LAST;
+"""
+
+
+def build_scoped_port_summary_sql(scope: str | None) -> str:
+    """KPI counts from latest-per-interface rows in the scoped table."""
+    table = resolve_interface_table(scope)
+    overlap = _scope_overlap_filter(scope)
+    return f"""
+WITH latest_iface AS (
+    SELECT DISTINCT ON (zndi.host, zndi.interface_name, COALESCE(zndi.interface_alias, ''))
+        zndi.host,
+        zndi.interface_name,
+        zndi.operational_status
+    FROM public.{table} zndi
+    WHERE
+        zndi.host = ANY(%s)
+        AND zndi.collection_timestamp BETWEEN %s AND %s
+        {overlap}
+    ORDER BY
+        zndi.host,
+        zndi.interface_name,
+        COALESCE(zndi.interface_alias, ''),
+        zndi.collection_timestamp DESC
+),
+health AS (
+    SELECT DISTINCT ON (ndm.host)
+        ndm.host,
+        ndm.icmp_loss_pct
+    FROM public.raw_zabbix_network_device_health_metrics ndm
+    WHERE
+        ndm.host = ANY(%s)
+        AND ndm.collection_timestamp BETWEEN %s AND %s
+    ORDER BY ndm.host, ndm.collection_timestamp DESC
+)
+SELECT
+    COUNT(DISTINCT li.host)::bigint AS device_count,
+    COUNT(*)::bigint AS total_ports,
+    COUNT(*) FILTER (WHERE COALESCE(li.operational_status, 0) = 1)::bigint AS active_ports,
+    COALESCE(AVG(COALESCE(h.icmp_loss_pct, 0)), 0)::double precision AS avg_icmp_loss_pct
+FROM latest_iface li
+LEFT JOIN health h ON h.host = li.host;
+"""
+
+
 LOAD_BALANCER_SUMMARY_LATEST = """
 WITH dc_map AS (
     SELECT
