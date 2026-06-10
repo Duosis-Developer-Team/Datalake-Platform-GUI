@@ -2,7 +2,7 @@ from __future__ import annotations
 # Zabbix Network query definitions
 #
 # Network dashboard is DC-scoped using NetBox inventory mapped via:
-#   zabbix_network_device_metrics.loki_id (varchar/text)
+#   raw_zabbix_network_device_health_metrics.loki_id (varchar/text)
 #   -> discovery_netbox_inventory_device.id (int8)
 #
 # DC scoping is derived by joining NetBox location/site/name to loki_locations
@@ -46,7 +46,7 @@ latest AS (
         ndm.active_ports_count,
         ndm.icmp_loss_pct,
         ndm.collection_timestamp
-    FROM public.zabbix_network_device_metrics ndm
+    FROM public.raw_zabbix_network_device_health_metrics ndm
     WHERE
         ndm.icmp_status IS NOT NULL
         AND ndm.collection_timestamp BETWEEN %s AND %s
@@ -108,7 +108,7 @@ WITH devices AS (
             ndm.active_ports_count,
             ndm.icmp_loss_pct,
             ndm.collection_timestamp
-        FROM public.zabbix_network_device_metrics ndm
+        FROM public.raw_zabbix_network_device_health_metrics ndm
         WHERE
             ndm.icmp_status IS NOT NULL
             AND ndm.collection_timestamp BETWEEN %s AND %s
@@ -173,7 +173,7 @@ latest AS (
         ndm.active_ports_count,
         ndm.icmp_loss_pct,
         ndm.collection_timestamp
-    FROM public.zabbix_network_device_metrics ndm
+    FROM public.raw_zabbix_network_device_health_metrics ndm
     WHERE
         ndm.icmp_status IS NOT NULL
         AND ndm.collection_timestamp BETWEEN %s AND %s
@@ -216,7 +216,7 @@ WITH latest_iface AS (
         zndi.operational_status,
         zndi.speed,
         zndi.collection_timestamp
-    FROM public.zabbix_network_interface_metrics zndi
+    FROM public.raw_zabbix_network_interface_metrics_v zndi
     WHERE
         zndi.host = ANY(%s)
         AND zndi.collection_timestamp BETWEEN %s AND %s
@@ -253,7 +253,7 @@ WITH deduped AS (
         zndi.bits_received,
         zndi.bits_sent,
         zndi.collection_timestamp
-    FROM public.zabbix_network_interface_metrics zndi
+    FROM public.raw_zabbix_network_interface_metrics_v zndi
     WHERE
         zndi.host = ANY(%s)
         AND zndi.collection_timestamp BETWEEN %s AND %s
@@ -314,7 +314,7 @@ WITH deduped AS (
         zndi.bits_received,
         zndi.bits_sent,
         zndi.collection_timestamp
-    FROM public.zabbix_network_interface_metrics zndi
+    FROM public.raw_zabbix_network_interface_metrics_v zndi
     WHERE
         zndi.host = ANY(%s)
         AND zndi.collection_timestamp BETWEEN %s AND %s
