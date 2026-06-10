@@ -4175,6 +4175,7 @@ JOIN latest l
         device_role: str | None = None,
         device_name: str | None = None,
         top_n: int = 20,
+        interface_scope: str | None = None,
     ) -> dict:
         """
         Compute interface 95th percentile bandwidth (p95_rx/p95_tx) for the
@@ -4185,10 +4186,11 @@ JOIN latest l
         if not dc_target:
             return {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
 
+        scope_key = interface_scope or "overview"
         cache_key = (
             f"dc_zabbix_net_95:{dc_target}:"
             f"{manufacturer or ''}:{device_role or ''}:{device_name or ''}:"
-            f"top={top_n}:{tr.get('start','')}:{tr.get('end','')}"
+            f"scope={scope_key}:top={top_n}:{tr.get('start','')}:{tr.get('end','')}"
         )
         cached_val = cache.get(cache_key)
         if cached_val is not None:
@@ -4203,7 +4205,7 @@ JOIN latest l
         )
         hosts: list[str] = resolved.get("hosts") or []
         if not hosts:
-            result = {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
+            result = {"top_interfaces": [], "overall_port_utilization_pct": 0.0, "interface_scope": scope_key}
             cache.set(cache_key, result)
             return result
 
@@ -4213,7 +4215,7 @@ JOIN latest l
                 with conn.cursor() as cur:
                     rows = self._run_rows(
                         cur,
-                        znq.INTERFACE_95TH_PERCENTILE,
+                        znq.build_interface_95th_percentile_sql(interface_scope),
                         (hosts, start_ts, end_ts),
                     )
 
@@ -4223,19 +4225,18 @@ JOIN latest l
 
             sum_total = 0.0
             sum_speed = 0.0
-            for (
-                iface_name,
-                iface_alias,
-                p95_rx_bps,
-                p95_tx_bps,
-                p95_total_bps,
-                speed_bps,
-            ) in top_rows:
+            for row in top_rows:
+                if len(row) >= 7:
+                    host_name, iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
+                else:
+                    host_name = None
+                    iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
                 p95_total = float(p95_total_bps or 0)
                 speed = float(speed_bps or 0)
                 utilization_pct = (p95_total / speed * 100.0) if speed > 0 else 0.0
                 top_interfaces.append(
                     {
+                        "host": host_name,
                         "interface_name": iface_name,
                         "interface_alias": iface_alias,
                         "p95_rx_bps": float(p95_rx_bps or 0),
@@ -4252,10 +4253,11 @@ JOIN latest l
             result = {
                 "top_interfaces": top_interfaces,
                 "overall_port_utilization_pct": float(overall_port_utilization_pct),
+                "interface_scope": scope_key,
             }
-        except (OperationalError, PoolError) as exc:
+        except (OperationalError, PoolError, ValueError) as exc:
             logger.warning("get_network_95th_percentile failed for %s: %s", dc_target, exc)
-            result = {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
+            result = {"top_interfaces": [], "overall_port_utilization_pct": 0.0, "interface_scope": scope_key}
 
         cache.set(cache_key, result)
         return result
@@ -4270,6 +4272,7 @@ JOIN latest l
         page: int = 1,
         page_size: int = 50,
         search: str | None = None,
+        interface_scope: str | None = None,
     ) -> dict:
         """
         Return a paginated, searchable table of interface p95 bandwidth stats.
@@ -4285,10 +4288,11 @@ JOIN latest l
         search_val = (search or "").strip()
         like = f"%{search_val}%"
 
+        scope_key = interface_scope or "overview"
         cache_key = (
             f"dc_zabbix_net_iface_table:{dc_target}:"
             f"{manufacturer or ''}:{device_role or ''}:{device_name or ''}:"
-            f"p={page_safe}:ps={page_size_safe}:q={search_val}:"
+            f"scope={scope_key}:p={page_safe}:ps={page_size_safe}:q={search_val}:"
             f"{tr.get('start','')}:{tr.get('end','')}"
         )
         cached_val = cache.get(cache_key)
@@ -4304,7 +4308,12 @@ JOIN latest l
         )
         hosts: list[str] = resolved.get("hosts") or []
         if not hosts:
-            result = {"items": [], "page": page_safe, "page_size": page_size_safe}
+            result = {
+                "items": [],
+                "page": page_safe,
+                "page_size": page_size_safe,
+                "interface_scope": scope_key,
+            }
             cache.set(cache_key, result)
             return result
 
@@ -4315,26 +4324,36 @@ JOIN latest l
                     # Prevent a slow DISTINCT ON / p95 CTE from hanging the worker
                     # and OOM-killing the container. 90 s covers the current ~52 s runtime.
                     cur.execute("SET statement_timeout = '90000'")
+                    sql = znq.build_interface_bandwidth_table_p95_sql(interface_scope)
                     rows = self._run_rows(
                         cur,
-                        znq.INTERFACE_BANDWIDTH_TABLE_P95,
-                        (hosts, start_ts, end_ts, search_val, like, like, page_size_safe, offset),
+                        sql,
+                        (
+                            hosts,
+                            start_ts,
+                            end_ts,
+                            search_val,
+                            like,
+                            like,
+                            like,
+                            page_size_safe,
+                            offset,
+                        ),
                     )
 
             items: list[dict] = []
-            for (
-                iface_name,
-                iface_alias,
-                p95_rx_bps,
-                p95_tx_bps,
-                p95_total_bps,
-                speed_bps,
-            ) in (rows or []):
+            for row in (rows or []):
+                if len(row) >= 7:
+                    host_name, iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
+                else:
+                    host_name = None
+                    iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
                 speed = float(speed_bps or 0)
                 p95_total = float(p95_total_bps or 0)
                 utilization_pct = (p95_total / speed * 100.0) if speed > 0 else 0.0
                 items.append(
                     {
+                        "host": host_name,
                         "interface_name": iface_name,
                         "interface_alias": iface_alias,
                         "p95_rx_bps": float(p95_rx_bps or 0),
@@ -4345,10 +4364,104 @@ JOIN latest l
                     }
                 )
 
-            result = {"items": items, "page": page_safe, "page_size": page_size_safe, "search": search_val}
+            result = {
+                "items": items,
+                "page": page_safe,
+                "page_size": page_size_safe,
+                "search": search_val,
+                "interface_scope": scope_key,
+            }
         except Exception as exc:
             logger.warning("get_network_interface_table failed for %s: %s", dc_target, exc)
-            result = {"items": [], "page": page_safe, "page_size": page_size_safe, "search": search_val}
+            result = {
+                "items": [],
+                "page": page_safe,
+                "page_size": page_size_safe,
+                "search": search_val,
+                "interface_scope": scope_key,
+            }
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_network_firewall_summary(self, dc_code: str, time_range: dict | None = None) -> dict:
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return {"devices": []}
+
+        cache_key = f"dc_zabbix_net_firewall:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        start_ts, end_ts = time_range_to_bounds(tr)
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, znq.FIREWALL_SUMMARY_LATEST, (start_ts, end_ts, dc_target))
+            devices = [
+                {
+                    "host": row[0],
+                    "device_name": row[1],
+                    "manufacturer_name": row[2],
+                    "cpu_utilization_pct": float(row[3] or 0),
+                    "memory_utilization_pct": float(row[4] or 0),
+                    "active_sessions": int(row[5] or 0),
+                    "session_setup_rate": float(row[6] or 0),
+                    "intrusions_detected": int(row[7] or 0),
+                    "intrusions_blocked": int(row[8] or 0),
+                    "ha_mode": row[9],
+                    "ha_cluster_name": row[10],
+                    "icmp_status": row[11],
+                    "icmp_loss_pct": float(row[12] or 0),
+                }
+                for row in (rows or [])
+            ]
+            result = {"devices": devices}
+        except Exception as exc:
+            logger.warning("get_network_firewall_summary failed for %s: %s", dc_target, exc)
+            result = {"devices": []}
+
+        cache.set(cache_key, result)
+        return result
+
+    def get_network_load_balancer_summary(self, dc_code: str, time_range: dict | None = None) -> dict:
+        tr = time_range or default_time_range()
+        dc_target = (dc_code or "").upper()
+        if not dc_target:
+            return {"devices": []}
+
+        cache_key = f"dc_zabbix_net_lb:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        start_ts, end_ts = time_range_to_bounds(tr)
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, znq.LOAD_BALANCER_SUMMARY_LATEST, (start_ts, end_ts, dc_target))
+            devices = [
+                {
+                    "host": row[0],
+                    "device_name": row[1],
+                    "manufacturer_name": row[2],
+                    "icmp_status": row[3],
+                    "icmp_loss_pct": float(row[4] or 0),
+                    "icmp_response_time_ms": float(row[5] or 0),
+                    "cpu_utilization_pct": float(row[6] or 0),
+                    "memory_utilization_pct": float(row[7] or 0),
+                    "uptime_seconds": int(row[8] or 0),
+                    "total_ports_count": int(row[9] or 0),
+                    "active_ports_count": int(row[10] or 0),
+                }
+                for row in (rows or [])
+            ]
+            result = {"devices": devices}
+        except Exception as exc:
+            logger.warning("get_network_load_balancer_summary failed for %s: %s", dc_target, exc)
+            result = {"devices": []}
 
         cache.set(cache_key, result)
         return result

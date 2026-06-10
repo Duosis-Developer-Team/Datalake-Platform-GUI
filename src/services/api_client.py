@@ -961,6 +961,7 @@ def get_dc_network_95th_percentile(
     manufacturer: Optional[str] = None,
     device_role: Optional[str] = None,
     device_name: Optional[str] = None,
+    interface_scope: Optional[str] = None,
 ) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_optional_params(
@@ -969,6 +970,7 @@ def get_dc_network_95th_percentile(
         manufacturer=manufacturer,
         device_role=device_role,
         device_name=device_name,
+        interface_scope=interface_scope,
     )
     ck = f"api:dc_net_95:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
 
@@ -992,6 +994,7 @@ def get_dc_network_interface_table(
     manufacturer: Optional[str] = None,
     device_role: Optional[str] = None,
     device_name: Optional[str] = None,
+    interface_scope: Optional[str] = None,
 ) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_optional_params(
@@ -1002,6 +1005,7 @@ def get_dc_network_interface_table(
         manufacturer=manufacturer,
         device_role=device_role,
         device_name=device_name,
+        interface_scope=interface_scope,
     )
     ck = f"api:dc_net_iface:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'), ensure_ascii=False)}"
 
@@ -1012,6 +1016,38 @@ def get_dc_network_interface_table(
             params=params,
         )
         return data if isinstance(data, dict) else {}
+    return _api_cache_get_with_stale(ck, fetch, {})
+
+
+def get_dc_network_firewall_summary(dc_code: str, tr: Optional[dict]) -> dict:
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_net_fw:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(
+            _get_client_dc(),
+            f"/api/v1/datacenters/{enc}/network/firewall-summary",
+            params=params,
+        )
+        return data if isinstance(data, dict) else {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
+
+
+def get_dc_network_load_balancer_summary(dc_code: str, tr: Optional[dict]) -> dict:
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_net_lb:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(
+            _get_client_dc(),
+            f"/api/v1/datacenters/{enc}/network/load-balancer-summary",
+            params=params,
+        )
+        return data if isinstance(data, dict) else {}
+
     return _api_cache_get_with_stale(ck, fetch, {})
 
 

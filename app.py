@@ -1677,25 +1677,85 @@ def update_net_selectors(manufacturer, role, net_filters):
     return role_data, None, device_data, None
 
 
+def _net_scope_api_value(scope: str | None) -> str | None:
+    return dc_view.NETWORK_API_SCOPE.get(scope or "overview")
+
+
+def _net_scope_is_device_panel(scope: str | None) -> bool:
+    return (scope or "overview") in {"firewall", "load_balancer"}
+
+
+@app.callback(
+    dash.Output("net-scope-subtitle", "children"),
+    dash.Input("net-scope-tabs", "value"),
+)
+def update_net_scope_subtitle(scope):
+    label = dc_view.NETWORK_SCOPE_LABELS.get(scope or "overview", ("", ""))[1]
+    return label or ""
+
+
+@app.callback(
+    dash.Output("net-interface-section", "style"),
+    dash.Output("net-special-section", "children"),
+    dash.Output("net-special-section", "style"),
+    dash.Input("net-scope-tabs", "value"),
+    dash.State("net-firewall-store", "data"),
+    dash.State("net-load-balancer-store", "data"),
+    dash.State("url", "pathname"),
+    dash.State("app-time-range", "data"),
+)
+def update_net_scope_layout(scope, firewall_store, lb_store, pathname, time_range):
+    scope = scope or "overview"
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update, dash.no_update, dash.no_update
+
+    if scope == "firewall":
+        dc_id = pathname.replace("/datacenter/", "").strip("/")
+        tr = time_range or default_time_range()
+        fw_data = api.get_dc_network_firewall_summary(dc_id, tr)
+        return (
+            {"display": "none"},
+            [dc_view._build_network_firewall_table(fw_data)],
+            {"display": "block"},
+        )
+    if scope == "load_balancer":
+        dc_id = pathname.replace("/datacenter/", "").strip("/")
+        tr = time_range or default_time_range()
+        lb_data = api.get_dc_network_load_balancer_summary(dc_id, tr)
+        return (
+            {"display": "none"},
+            [dc_view._build_network_load_balancer_table(lb_data)],
+            {"display": "block"},
+        )
+
+    return (
+        {"padding": "20px", "display": "block"},
+        [],
+        {"display": "none"},
+    )
+
+
 @app.callback(
     dash.Output("net-kpi-container", "children"),
     dash.Output("net-donut-active-ports", "figure"),
     dash.Output("net-donut-utilization", "figure"),
     dash.Output("net-donut-icmp", "figure"),
     dash.Output("net-top-interfaces-bar", "figure"),
+    dash.Input("net-scope-tabs", "value"),
     dash.Input("net-manufacturer-selector", "value"),
     dash.Input("net-role-selector", "value"),
     dash.Input("net-device-selector", "value"),
     dash.State("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
-def update_net_kpis_and_charts(manufacturer, device_role, device_name, time_range, pathname):
+def update_net_kpis_and_charts(scope, manufacturer, device_role, device_name, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
 
+    scope = scope or "overview"
     port_summary = api.get_dc_network_port_summary(
         dc_id,
         tr,
@@ -1703,13 +1763,19 @@ def update_net_kpis_and_charts(manufacturer, device_role, device_name, time_rang
         device_role=device_role,
         device_name=device_name,
     )
-    percentile_data = api.get_dc_network_95th_percentile(
-        dc_id,
-        tr,
-        top_n=20,
-        manufacturer=manufacturer,
-        device_role=device_role,
-        device_name=device_name,
+    interface_scope = _net_scope_api_value(scope)
+    percentile_data = (
+        {"top_interfaces": [], "overall_port_utilization_pct": 0.0}
+        if _net_scope_is_device_panel(scope)
+        else api.get_dc_network_95th_percentile(
+            dc_id,
+            tr,
+            top_n=20,
+            manufacturer=manufacturer,
+            device_role=device_role,
+            device_name=device_name,
+            interface_scope=interface_scope,
+        )
     )
     device_count = int(port_summary.get("device_count", 0) or 0)
     total_ports = int(port_summary.get("total_ports", 0) or 0)
@@ -1751,6 +1817,7 @@ def update_net_kpis_and_charts(manufacturer, device_role, device_name, time_rang
 
 @app.callback(
     dash.Output("net-interface-table", "data"),
+    dash.Input("net-scope-tabs", "value"),
     dash.Input("net-manufacturer-selector", "value"),
     dash.Input("net-role-selector", "value"),
     dash.Input("net-device-selector", "value"),
@@ -1761,6 +1828,7 @@ def update_net_kpis_and_charts(manufacturer, device_role, device_name, time_rang
     dash.State("url", "pathname"),
 )
 def update_net_interface_table(
+    scope,
     manufacturer,
     device_role,
     device_name,
@@ -1771,6 +1839,10 @@ def update_net_interface_table(
     pathname,
 ):
     if not pathname or not pathname.startswith("/datacenter/"):
+        return []
+
+    scope = scope or "overview"
+    if _net_scope_is_device_panel(scope):
         return []
 
     dc_id = pathname.replace("/datacenter/", "").strip("/")
@@ -1789,16 +1861,22 @@ def update_net_interface_table(
         manufacturer=manufacturer,
         device_role=device_role,
         device_name=device_name,
+        interface_scope=_net_scope_api_value(scope),
     )
     items = interface_data.get("items") or []
     rows = []
     for it in items:
         speed_gbps = (float(it.get("speed_bps") or 0) / 1e9) if it.get("speed_bps") is not None else 0.0
+        rx_gbps = (float(it.get("p95_rx_bps") or 0) / 1e9) if it.get("p95_rx_bps") is not None else 0.0
+        tx_gbps = (float(it.get("p95_tx_bps") or 0) / 1e9) if it.get("p95_tx_bps") is not None else 0.0
         total_gbps = (float(it.get("p95_total_bps") or 0) / 1e9) if it.get("p95_total_bps") is not None else 0.0
         rows.append(
             {
+                "host": it.get("host") or "",
                 "interface_name": it.get("interface_name") or "",
                 "interface_alias": it.get("interface_alias") or "",
+                "p95_rx_gbps": round(rx_gbps, 3),
+                "p95_tx_gbps": round(tx_gbps, 3),
                 "p95_total_gbps": round(total_gbps, 3),
                 "speed_gbps": round(speed_gbps, 3),
                 "utilization_pct": round(float(it.get("utilization_pct") or 0), 2),

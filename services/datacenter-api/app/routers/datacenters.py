@@ -286,6 +286,10 @@ def network_95th_percentile(
     manufacturer: Optional[str] = Query(None),
     device_role: Optional[str] = Query(None),
     device_name: Optional[str] = Query(None),
+    interface_scope: Optional[str] = Query(
+        None,
+        description="Interface scope: backbone, leaf, spine, management, shared, router_uplink",
+    ),
 ):
     return db.get_network_95th_percentile(
         dc_code,
@@ -294,6 +298,7 @@ def network_95th_percentile(
         device_role=device_role,
         device_name=device_name,
         top_n=top_n,
+        interface_scope=interface_scope,
     )
 
 
@@ -308,6 +313,10 @@ def network_interface_table(
     manufacturer: Optional[str] = Query(None),
     device_role: Optional[str] = Query(None),
     device_name: Optional[str] = Query(None),
+    interface_scope: Optional[str] = Query(
+        None,
+        description="Interface scope: backbone, leaf, spine, management, shared, router_uplink",
+    ),
 ):
     return db.get_network_interface_table(
         dc_code,
@@ -318,7 +327,26 @@ def network_interface_table(
         page=page,
         page_size=page_size,
         search=search,
+        interface_scope=interface_scope,
     )
+
+
+@router.get("/datacenters/{dc_code}/network/firewall-summary", response_model=dict[str, Any])
+def network_firewall_summary(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+):
+    return db.get_network_firewall_summary(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/network/load-balancer-summary", response_model=dict[str, Any])
+def network_load_balancer_summary(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+):
+    return db.get_network_load_balancer_summary(dc_code, tf.to_dict())
 
 
 @router.get("/datacenters/{dc_code}/zabbix-storage/capacity", response_model=dict[str, Any])

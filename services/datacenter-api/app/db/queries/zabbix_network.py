@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 # Zabbix Network query definitions
 #
 # Network dashboard is DC-scoped using NetBox inventory mapped via:
@@ -359,5 +360,289 @@ WHERE
     (%s = '' OR interface_name ILIKE %s OR COALESCE(interface_alias, '') ILIKE %s)
 ORDER BY p95_total_bps DESC, interface_name
 LIMIT %s OFFSET %s;
+"""
+
+
+INTERFACE_SCOPE_TABLE_MAP: dict[str, str] = {
+    "backbone": "raw_zabbix_network_backbone_interface_metrics",
+    "leaf": "raw_zabbix_network_leaf_interface_metrics",
+    "spine": "raw_zabbix_network_spine_interface_metrics",
+    "management": "raw_zabbix_network_management_interface_metrics",
+    "shared": "raw_zabbix_network_switch_shared_interface_metrics",
+    "router_uplink": "raw_zabbix_network_router_uplink_metrics",
+}
+
+VALID_INTERFACE_SCOPES = frozenset(INTERFACE_SCOPE_TABLE_MAP.keys())
+
+
+def resolve_interface_table(scope: str | None) -> str:
+    """Return a whitelisted interface metrics table or the unified read view."""
+    if not scope or scope == "overview":
+        return "raw_zabbix_network_interface_metrics_v"
+    if scope not in VALID_INTERFACE_SCOPES:
+        raise ValueError(f"Invalid interface_scope: {scope}")
+    return INTERFACE_SCOPE_TABLE_MAP[scope]
+
+
+def _scope_overlap_filter(scope: str | None) -> str:
+    if scope != "leaf":
+        return ""
+    return """
+        AND NOT EXISTS (
+            SELECT 1
+            FROM public.raw_zabbix_network_switch_shared_interface_metrics s
+            WHERE s.host = zndi.host
+              AND s.interface_name = zndi.interface_name
+              AND s.collection_timestamp = zndi.collection_timestamp
+        )
+    """
+
+
+def build_interface_95th_percentile_sql(scope: str | None) -> str:
+    table = resolve_interface_table(scope)
+    overlap = _scope_overlap_filter(scope)
+    return f"""
+WITH deduped AS (
+    SELECT DISTINCT ON (zndi.host, zndi.interface_name, COALESCE(zndi.interface_alias, ''), zndi.collection_timestamp)
+        zndi.host,
+        zndi.interface_name,
+        zndi.interface_alias,
+        zndi.speed,
+        zndi.bits_received,
+        zndi.bits_sent,
+        zndi.collection_timestamp
+    FROM public.{table} zndi
+    WHERE
+        zndi.host = ANY(%s)
+        AND zndi.collection_timestamp BETWEEN %s AND %s
+        {overlap}
+    ORDER BY
+        zndi.host,
+        zndi.interface_name,
+        COALESCE(zndi.interface_alias, ''),
+        zndi.collection_timestamp,
+        zndi.id DESC
+),
+bucketed AS (
+    SELECT
+        time_bucket('1 hour', d.collection_timestamp) AS ts,
+        d.host,
+        d.interface_name,
+        d.interface_alias,
+        d.speed,
+        AVG(COALESCE(d.bits_received, 0))::double precision AS avg_rx_bps,
+        AVG(COALESCE(d.bits_sent, 0))::double precision AS avg_tx_bps
+    FROM deduped d
+    GROUP BY 1, 2, 3, 4, 5
+),
+ranked AS (
+    SELECT
+        host,
+        interface_name,
+        interface_alias,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_rx_bps) AS p95_rx_bps,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_tx_bps) AS p95_tx_bps,
+        MAX(speed) AS max_speed_bps
+    FROM bucketed
+    GROUP BY host, interface_name, interface_alias
+)
+SELECT
+    host,
+    interface_name,
+    interface_alias,
+    COALESCE(p95_rx_bps, 0)::double precision AS p95_rx_bps,
+    COALESCE(p95_tx_bps, 0)::double precision AS p95_tx_bps,
+    COALESCE(p95_rx_bps, 0) + COALESCE(p95_tx_bps, 0) AS p95_total_bps,
+    COALESCE(max_speed_bps, 0)::double precision AS speed_bps
+FROM ranked
+ORDER BY p95_total_bps DESC;
+"""
+
+
+def build_interface_bandwidth_table_p95_sql(scope: str | None) -> str:
+    table = resolve_interface_table(scope)
+    overlap = _scope_overlap_filter(scope)
+    return f"""
+WITH deduped AS (
+    SELECT DISTINCT ON (zndi.host, zndi.interface_name, COALESCE(zndi.interface_alias, ''), zndi.collection_timestamp)
+        zndi.host,
+        zndi.interface_name,
+        zndi.interface_alias,
+        zndi.speed,
+        zndi.bits_received,
+        zndi.bits_sent,
+        zndi.collection_timestamp
+    FROM public.{table} zndi
+    WHERE
+        zndi.host = ANY(%s)
+        AND zndi.collection_timestamp BETWEEN %s AND %s
+        {overlap}
+    ORDER BY
+        zndi.host,
+        zndi.interface_name,
+        COALESCE(zndi.interface_alias, ''),
+        zndi.collection_timestamp,
+        zndi.id DESC
+),
+bucketed AS (
+    SELECT
+        time_bucket('1 hour', d.collection_timestamp) AS ts,
+        d.host,
+        d.interface_name,
+        d.interface_alias,
+        d.speed,
+        AVG(COALESCE(d.bits_received, 0))::double precision AS avg_rx_bps,
+        AVG(COALESCE(d.bits_sent, 0))::double precision AS avg_tx_bps
+    FROM deduped d
+    GROUP BY 1, 2, 3, 4, 5
+),
+p95 AS (
+    SELECT
+        host,
+        interface_name,
+        interface_alias,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_rx_bps) AS p95_rx_bps,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_tx_bps) AS p95_tx_bps,
+        MAX(speed) AS max_speed_bps
+    FROM bucketed
+    GROUP BY host, interface_name, interface_alias
+)
+SELECT
+    host,
+    interface_name,
+    interface_alias,
+    COALESCE(p95_rx_bps, 0)::double precision AS p95_rx_bps,
+    COALESCE(p95_tx_bps, 0)::double precision AS p95_tx_bps,
+    (COALESCE(p95_rx_bps, 0) + COALESCE(p95_tx_bps, 0)) AS p95_total_bps,
+    COALESCE(max_speed_bps, 0)::double precision AS speed_bps
+FROM p95
+WHERE
+    (%s = '' OR host ILIKE %s OR interface_name ILIKE %s OR COALESCE(interface_alias, '') ILIKE %s)
+ORDER BY p95_total_bps DESC, host, interface_name
+LIMIT %s OFFSET %s;
+"""
+
+
+FIREWALL_SUMMARY_LATEST = """
+WITH dc_map AS (
+    SELECT
+        distinct name AS location_name,
+        CASE
+            WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
+            ELSE parent_name
+        END AS dc_name
+    FROM public.loki_locations
+    WHERE
+        CASE
+            WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
+            ELSE parent_name
+        END IS NOT NULL
+),
+latest AS (
+    SELECT DISTINCT ON (fm.host)
+        fm.host,
+        fm.loki_id,
+        fm.cpu_utilization_pct,
+        fm.memory_utilization_pct,
+        fm.active_sessions,
+        fm.session_setup_rate,
+        fm.intrusions_detected,
+        fm.intrusions_blocked,
+        fm.ha_mode,
+        fm.ha_cluster_name,
+        fm.icmp_status,
+        fm.icmp_loss_pct,
+        fm.collection_timestamp
+    FROM public.raw_zabbix_network_firewall_metrics fm
+    WHERE fm.collection_timestamp BETWEEN %s AND %s
+    ORDER BY fm.host, fm.collection_timestamp DESC
+)
+SELECT
+    latest.host,
+    dev.name AS device_name,
+    dev.manufacturer_name,
+    latest.cpu_utilization_pct,
+    latest.memory_utilization_pct,
+    latest.active_sessions,
+    latest.session_setup_rate,
+    latest.intrusions_detected,
+    latest.intrusions_blocked,
+    latest.ha_mode,
+    latest.ha_cluster_name,
+    latest.icmp_status,
+    latest.icmp_loss_pct
+FROM latest
+JOIN public.discovery_netbox_inventory_device dev
+    ON dev.id = latest.loki_id::bigint
+    AND dev.status_value = 'active'
+JOIN dc_map m
+    ON m.location_name IN (dev.location_name, dev.site_name, dev.name)
+WHERE m.dc_name = %s
+ORDER BY latest.host;
+"""
+
+
+LOAD_BALANCER_SUMMARY_LATEST = """
+WITH dc_map AS (
+    SELECT
+        distinct name AS location_name,
+        CASE
+            WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
+            ELSE parent_name
+        END AS dc_name
+    FROM public.loki_locations
+    WHERE
+        CASE
+            WHEN parent_id IS NULL THEN name
+            when parent_name = 'DH3' then 'DC13'
+            ELSE parent_name
+        END IS NOT NULL
+),
+latest AS (
+    SELECT DISTINCT ON (dh.host)
+        dh.host,
+        dh.loki_id,
+        dh.icmp_status,
+        dh.icmp_loss_pct,
+        dh.icmp_response_time_ms,
+        dh.cpu_utilization_pct,
+        dh.memory_utilization_pct,
+        dh.uptime_seconds,
+        dh.total_ports_count,
+        dh.active_ports_count,
+        dh.collection_timestamp
+    FROM public.raw_zabbix_network_device_health_metrics dh
+    WHERE
+        dh.collection_timestamp BETWEEN %s AND %s
+        AND (
+            lower(COALESCE(dh.device_type_category, '')) LIKE '%load balancer%'
+            OR lower(COALESCE(dh.applied_templates, '')) LIKE '%citrix%'
+            OR lower(COALESCE(dh.applied_templates, '')) LIKE '%load balancer%'
+        )
+    ORDER BY dh.host, dh.collection_timestamp DESC
+)
+SELECT
+    latest.host,
+    dev.name AS device_name,
+    dev.manufacturer_name,
+    latest.icmp_status,
+    latest.icmp_loss_pct,
+    latest.icmp_response_time_ms,
+    latest.cpu_utilization_pct,
+    latest.memory_utilization_pct,
+    latest.uptime_seconds,
+    latest.total_ports_count,
+    latest.active_ports_count
+FROM latest
+JOIN public.discovery_netbox_inventory_device dev
+    ON dev.id = latest.loki_id::bigint
+    AND dev.status_value = 'active'
+JOIN dc_map m
+    ON m.location_name IN (dev.location_name, dev.site_name, dev.name)
+WHERE m.dc_name = %s
+ORDER BY latest.host;
 """
 

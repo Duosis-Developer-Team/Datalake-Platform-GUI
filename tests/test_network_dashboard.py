@@ -96,6 +96,25 @@ def test_network_dashboard_builds_and_maps_values():
     assert len(table.data) == 1
 
 
+def test_network_zabbix_section_exposes_scope_tabs():
+    node = dc_view._build_network_zabbix_section(
+        net_filters={"manufacturers": ["M1"], "roles_by_manufacturer": {}, "devices_by_manufacturer_role": {}},
+        port_summary={"device_count": 1, "total_ports": 10, "active_ports": 5, "avg_icmp_loss_pct": 0.0},
+        percentile_data={"overall_port_utilization_pct": 0.0, "top_interfaces": []},
+        interface_table={"items": []},
+        firewall_data={"devices": []},
+        lb_data={"devices": []},
+        has_san=False,
+        san_port_usage={},
+        san_health_alerts=[],
+        san_traffic_trend=[],
+        sec_check=lambda _code: True,
+    )
+    tabs = _find_by_id(node, "net-scope-tabs")
+    assert tabs is not None
+    assert tabs.value == "overview"
+
+
 def test_network_dashboard_empty_top_interfaces_no_crash():
     """95th percentile API may return no interfaces; bar chart must not raise."""
     net_filters = {

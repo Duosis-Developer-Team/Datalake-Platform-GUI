@@ -2198,9 +2198,54 @@ def _health_icon(status: str | None) -> tuple[str, str]:
     return "solar:danger-triangle-bold-duotone", "#FFB547"
 
 
+NETWORK_SCOPE_LABELS: dict[str, tuple[str, str]] = {
+    "overview": ("Overview", "Device health and all billable interfaces (unified view)"),
+    "backbone": ("Backbone", "Backbone billing interfaces"),
+    "leaf": ("Leaf", "Leaf switch data ports (shared ports excluded)"),
+    "spine": ("Spine", "Spine interconnect ports"),
+    "management": ("Management", "Management and OOB ports"),
+    "shared": ("Shared Ports", "Customer and shared ports (g/SW/to_sw2)"),
+    "router_uplink": ("Router Uplinks", "Carrier uplink interfaces"),
+    "firewall": ("Firewall", "Firewall device sessions, HA and security metrics"),
+    "load_balancer": ("Load Balancer", "Citrix ADC health (vserver metrics pending Zabbix items)"),
+}
+
+NETWORK_SCOPE_PERMISSIONS: dict[str, str] = {
+    "overview": "sub:dc_view:net:overview",
+    "backbone": "sub:dc_view:net:backbone",
+    "leaf": "sub:dc_view:net:leaf",
+    "spine": "sub:dc_view:net:spine",
+    "management": "sub:dc_view:net:management",
+    "shared": "sub:dc_view:net:shared",
+    "router_uplink": "sub:dc_view:net:router_uplink",
+    "firewall": "sub:dc_view:net:firewall",
+    "load_balancer": "sub:dc_view:net:load_balancer",
+}
+
+NETWORK_API_SCOPE: dict[str, str | None] = {
+    "overview": None,
+    "backbone": "backbone",
+    "leaf": "leaf",
+    "spine": "spine",
+    "management": "management",
+    "shared": "shared",
+    "router_uplink": "router_uplink",
+}
+
+
+def _visible_network_scopes(sec_check=None) -> list[str]:
+    check = sec_check or (lambda _code: True)
+    scopes = [scope for scope, perm in NETWORK_SCOPE_PERMISSIONS.items() if check(perm)]
+    if scopes:
+        return scopes
+    if check("sec:dc_view:network"):
+        return ["overview"]
+    return []
+
+
 def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, percentile_data: dict, interface_table: dict):
     """
-    Network Dashboard subtab:
+    Network role panel (shared layout for overview + interface scopes):
     - Hierarchical filters (Manufacturer -> Device Role -> Device)
     - KPI cards
     - Donut charts
@@ -2274,8 +2319,11 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
     for it in items:
         rows.append(
             {
+                "host": it.get("host") or "",
                 "interface_name": it.get("interface_name") or "",
                 "interface_alias": it.get("interface_alias") or "",
+                "p95_rx_gbps": round(_bps_to_gbps(it.get("p95_rx_bps")), 3),
+                "p95_tx_gbps": round(_bps_to_gbps(it.get("p95_tx_bps")), 3),
                 "p95_total_gbps": round(_bps_to_gbps(it.get("p95_total_bps")), 3),
                 "speed_gbps": round(_bps_to_gbps(it.get("speed_bps")), 3),
                 "utilization_pct": round(float(it.get("utilization_pct") or 0), 2),
@@ -2283,8 +2331,11 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
         )
 
     columns = [
+        {"name": "Host", "id": "host"},
         {"name": "Interface", "id": "interface_name"},
         {"name": "Alias", "id": "interface_alias"},
+        {"name": "P95 RX (Gbps)", "id": "p95_rx_gbps", "type": "numeric"},
+        {"name": "P95 TX (Gbps)", "id": "p95_tx_gbps", "type": "numeric"},
         {"name": "P95 Total (Gbps)", "id": "p95_total_gbps", "type": "numeric"},
         {"name": "Speed (Gbps)", "id": "speed_gbps", "type": "numeric"},
         {"name": "Utilization (%)", "id": "utilization_pct", "type": "numeric"},
@@ -2426,13 +2477,14 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
             ),
 
             html.Div(
+                id="net-interface-section",
                 className="nexus-card",
                 style={"padding": "20px"},
                 children=[
                     _section_title("Interface Details", "Paginated p95 bandwidth table"),
                     dmc.TextInput(
                         id="net-interface-search",
-                        placeholder="Search interface name / alias...",
+                        placeholder="Search host / interface / alias...",
                         value="",
                         leftSection=DashIconify(icon="solar:magnifer-linear", width=16, color="#A3AED0"),
                         style={"marginTop": "6px", "marginBottom": "6px"},
@@ -2440,6 +2492,171 @@ def _build_network_dashboard_subtab(net_filters: dict, port_summary: dict, perce
                     data_table,
                 ],
             ),
+            html.Div(id="net-special-section", style={"display": "none"}),
+        ],
+    )
+
+
+def _build_network_firewall_table(firewall_data: dict) -> html.Div:
+    devices = (firewall_data or {}).get("devices") or []
+    rows = [
+        {
+            "host": d.get("host") or "",
+            "device_name": d.get("device_name") or "",
+            "manufacturer_name": d.get("manufacturer_name") or "",
+            "cpu_utilization_pct": round(float(d.get("cpu_utilization_pct") or 0), 2),
+            "memory_utilization_pct": round(float(d.get("memory_utilization_pct") or 0), 2),
+            "active_sessions": int(d.get("active_sessions") or 0),
+            "intrusions_detected": int(d.get("intrusions_detected") or 0),
+            "intrusions_blocked": int(d.get("intrusions_blocked") or 0),
+            "ha_mode": d.get("ha_mode") or "",
+            "icmp_loss_pct": round(float(d.get("icmp_loss_pct") or 0), 2),
+        }
+        for d in devices
+    ]
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "20px"},
+        children=[
+            _section_title("Firewall Devices", "Sessions, HA mode and security counters"),
+            dash_table.DataTable(
+                id="net-firewall-table",
+                columns=[
+                    {"name": "Host", "id": "host"},
+                    {"name": "Device", "id": "device_name"},
+                    {"name": "Manufacturer", "id": "manufacturer_name"},
+                    {"name": "CPU %", "id": "cpu_utilization_pct", "type": "numeric"},
+                    {"name": "Memory %", "id": "memory_utilization_pct", "type": "numeric"},
+                    {"name": "Sessions", "id": "active_sessions", "type": "numeric"},
+                    {"name": "Intrusions", "id": "intrusions_detected", "type": "numeric"},
+                    {"name": "Blocked", "id": "intrusions_blocked", "type": "numeric"},
+                    {"name": "HA Mode", "id": "ha_mode"},
+                    {"name": "ICMP Loss %", "id": "icmp_loss_pct", "type": "numeric"},
+                ],
+                data=rows,
+                page_size=25,
+                sort_action="native",
+                style_table={"overflowX": "auto", "marginTop": "8px"},
+            ),
+        ],
+    )
+
+
+def _build_network_load_balancer_table(lb_data: dict) -> html.Div:
+    devices = (lb_data or {}).get("devices") or []
+    rows = [
+        {
+            "host": d.get("host") or "",
+            "device_name": d.get("device_name") or "",
+            "manufacturer_name": d.get("manufacturer_name") or "",
+            "cpu_utilization_pct": round(float(d.get("cpu_utilization_pct") or 0), 2),
+            "memory_utilization_pct": round(float(d.get("memory_utilization_pct") or 0), 2),
+            "icmp_loss_pct": round(float(d.get("icmp_loss_pct") or 0), 2),
+            "active_ports": int(d.get("active_ports_count") or 0),
+            "total_ports": int(d.get("total_ports_count") or 0),
+        }
+        for d in devices
+    ]
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "20px"},
+        children=[
+            _section_title("Load Balancer Health", "ICMP/CPU/RAM and port summary (vserver metrics pending)"),
+            dash_table.DataTable(
+                id="net-load-balancer-table",
+                columns=[
+                    {"name": "Host", "id": "host"},
+                    {"name": "Device", "id": "device_name"},
+                    {"name": "Manufacturer", "id": "manufacturer_name"},
+                    {"name": "CPU %", "id": "cpu_utilization_pct", "type": "numeric"},
+                    {"name": "Memory %", "id": "memory_utilization_pct", "type": "numeric"},
+                    {"name": "ICMP Loss %", "id": "icmp_loss_pct", "type": "numeric"},
+                    {"name": "Active Ports", "id": "active_ports", "type": "numeric"},
+                    {"name": "Total Ports", "id": "total_ports", "type": "numeric"},
+                ],
+                data=rows,
+                page_size=25,
+                sort_action="native",
+                style_table={"overflowX": "auto", "marginTop": "8px"},
+            ),
+        ],
+    )
+
+
+def _build_network_zabbix_section(
+    net_filters: dict,
+    port_summary: dict,
+    percentile_data: dict,
+    interface_table: dict,
+    firewall_data: dict,
+    lb_data: dict,
+    has_san: bool,
+    san_port_usage: dict,
+    san_health_alerts: list,
+    san_traffic_trend: list,
+    sec_check=None,
+) -> html.Div:
+    check = sec_check or (lambda _code: True)
+    visible_scopes = _visible_network_scopes(sec_check=check)
+    default_scope = visible_scopes[0] if visible_scopes else "overview"
+    tab_items = [
+        dmc.TabsTab(NETWORK_SCOPE_LABELS[scope][0], value=scope)
+        for scope in visible_scopes
+        if scope in NETWORK_SCOPE_LABELS
+    ]
+    tab_panels = [
+        dmc.TabsPanel(value=scope, children=html.Div())
+        for scope in visible_scopes
+        if scope in NETWORK_SCOPE_LABELS
+    ]
+    zabbix_children: list = []
+    if tab_items:
+        zabbix_children.append(
+            dmc.Tabs(
+                id="net-scope-tabs",
+                value=default_scope,
+                color="indigo",
+                variant="outline",
+                radius="md",
+                children=[
+                    dmc.TabsList(children=tab_items),
+                    *tab_panels,
+                ],
+            )
+        )
+        zabbix_children.append(
+            dmc.Text(
+                id="net-scope-subtitle",
+                children=NETWORK_SCOPE_LABELS.get(default_scope, ("", ""))[1],
+                c="#A3AED0",
+                size="sm",
+                style={"marginTop": "8px"},
+            )
+        )
+        zabbix_children.append(
+            _build_network_dashboard_subtab(
+                net_filters,
+                port_summary,
+                percentile_data,
+                interface_table,
+            )
+        )
+    if has_san and check("sub:dc_view:net:san"):
+        zabbix_children.append(
+            html.Div(
+                style={"marginTop": "24px"},
+                children=[
+                    _section_title("SAN", "Brocade switch licensing and health"),
+                    _build_san_subtab(san_port_usage, san_health_alerts, san_traffic_trend),
+                ],
+            )
+        )
+    return html.Div(
+        style={"padding": "0 30px"},
+        children=[
+            dcc.Store(id="net-firewall-store", data=firewall_data or {}),
+            dcc.Store(id="net-load-balancer-store", data=lb_data or {}),
+            dmc.Stack(gap="lg", children=zabbix_children),
         ],
     )
 
@@ -3101,6 +3318,8 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     net_port_summary: dict = {}
     net_percentile: dict = {}
     net_interface_table: dict = {}
+    net_firewall_data: dict = {}
+    net_lb_data: dict = {}
     net_ms = 0.0
     if has_network:
         t_net = time.perf_counter()
@@ -3111,11 +3330,15 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                 "interface_table": lambda: api.get_dc_network_interface_table(
                     dc_id, tr, page=1, page_size=50
                 ),
+                "firewall": lambda: api.get_dc_network_firewall_summary(dc_id, tr),
+                "load_balancer": lambda: api.get_dc_network_load_balancer_summary(dc_id, tr),
             }
         )
         net_port_summary = net_batch["port_summary"]
         net_percentile = net_batch["percentile"]
         net_interface_table = net_batch["interface_table"]
+        net_firewall_data = net_batch["firewall"]
+        net_lb_data = net_batch["load_balancer"]
         net_ms = round((time.perf_counter() - t_net) * 1000, 1)
 
     energy    = data.get("energy", {})
@@ -3523,46 +3746,22 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                     ),
                 ) if show_storage else None,
 
-                # Network (Dashboard / SAN)
+                # Network (role-based Zabbix scopes + SAN)
                 dmc.TabsPanel(
                     value="network",
-                    children=html.Div(
-                        style={"padding": "0 30px"},
-                        children=[
-                            dmc.Tabs(
-                                color="indigo",
-                                variant="outline",
-                                radius="md",
-                                value="dashboard" if has_network else "san",
-                                children=[
-                                    dmc.TabsList(
-                                        children=[
-                                            dmc.TabsTab("Dashboard", value="dashboard") if has_network else None,
-                                            dmc.TabsTab("SAN", value="san") if has_san else None,
-                                        ]
-                                    ),
-                                    dmc.TabsPanel(
-                                        value="dashboard",
-                                        pt="lg",
-                                        children=_build_network_dashboard_subtab(
-                                            net_filters,
-                                            net_port_summary,
-                                            net_percentile,
-                                            net_interface_table,
-                                        ),
-                                    ) if has_network else None,
-                                    dmc.TabsPanel(
-                                        value="san",
-                                        pt="lg",
-                                        children=_build_san_subtab(
-                                            san_port_usage,
-                                            san_health_alerts,
-                                            san_traffic_trend,
-                                        ),
-                                    ) if has_san else None,
-                                ],
-                            )
-                        ],
+                    pt="lg",
+                    children=_build_network_zabbix_section(
+                        net_filters,
+                        net_port_summary,
+                        net_percentile,
+                        net_interface_table,
+                        net_firewall_data,
+                        net_lb_data,
+                        has_san,
+                        san_port_usage,
+                        san_health_alerts,
+                        san_traffic_trend,
+                        sec_check=_sec,
                     ),
                 ) if show_network else None,
 
