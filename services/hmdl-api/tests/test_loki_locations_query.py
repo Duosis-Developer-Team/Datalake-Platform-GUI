@@ -15,3 +15,4 @@ def test_fetch_root_locations_only_parent_null(mock_fetch):
     sql = mock_fetch.call_args[0][0]
     assert "parent_id IS NULL" in sql
     assert "status_value = 'active'" in sql
+    assert "DISTINCT ON (name)" in sql
