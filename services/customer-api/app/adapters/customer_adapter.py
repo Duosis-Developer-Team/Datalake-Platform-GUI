@@ -12,6 +12,8 @@ from shared.vmware.host_cpu_ghz import (
     cached_host_map,
     enrich_customer_vm_cpu_list,
     sum_cpu_real_total,
+    sum_cpu_used_ghz_avg_total,
+    sum_cpu_used_ghz_max_total,
 )
 
 logger = logging.getLogger(__name__)
@@ -191,6 +193,8 @@ class CustomerAdapter:
                 ]
                 classic_vm_list = self._enrich_customer_vm_list(cur, classic_vm_list)
                 classic_cpu_real = sum_cpu_real_total(classic_vm_list)
+                classic_cpu_used_avg = sum_cpu_used_ghz_avg_total(classic_vm_list)
+                classic_cpu_used_max = sum_cpu_used_ghz_max_total(classic_vm_list)
 
                 # --- Hyperconverged (non-KM VMware + all Nutanix, filtered by vm_name only) ---
                 hc_params = (
@@ -255,6 +259,8 @@ class CustomerAdapter:
                 ]
                 hc_vm_list = self._enrich_customer_vm_list(cur, hc_vm_list)
                 hc_cpu_real = sum_cpu_real_total(hc_vm_list)
+                hc_cpu_used_avg = sum_cpu_used_ghz_avg_total(hc_vm_list)
+                hc_cpu_used_max = sum_cpu_used_ghz_max_total(hc_vm_list)
 
                 # --- Pure Nutanix (AHV-only clusters, cluster lookup uses latest — no time filter) ---
                 pure_params = (pure, vm_pattern, start_ts, end_ts)
@@ -456,6 +462,8 @@ class CustomerAdapter:
                 "vm_count": classic_vm_count,
                 "cpu_total": classic_cpu,
                 "cpu_real_total": classic_cpu_real,
+                "cpu_used_ghz_avg_total": classic_cpu_used_avg,
+                "cpu_used_ghz_max_total": classic_cpu_used_max,
                 "memory_gb": classic_mem_gb,
                 "disk_gb": classic_disk_gb,
                 "vm_list": classic_vm_list,
@@ -468,6 +476,8 @@ class CustomerAdapter:
                 "managed_nutanix_clusters": len(managed),
                 "cpu_total": hc_cpu,
                 "cpu_real_total": hc_cpu_real,
+                "cpu_used_ghz_avg_total": hc_cpu_used_avg,
+                "cpu_used_ghz_max_total": hc_cpu_used_max,
                 "memory_gb": hc_mem_gb,
                 "disk_gb": hc_disk_gb,
                 "vm_list": hc_vm_list,
@@ -541,6 +551,8 @@ class CustomerAdapter:
             "vm_count": 0,
             "cpu_total": 0.0,
             "cpu_real_total": 0.0,
+            "cpu_used_ghz_avg_total": 0.0,
+            "cpu_used_ghz_max_total": 0.0,
             "memory_gb": 0.0,
             "disk_gb": 0.0,
             "vm_list": [],

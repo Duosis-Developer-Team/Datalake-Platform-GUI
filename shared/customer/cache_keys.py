@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 # Bump when customer assets JSON shape changes (e.g. Real CPU enrichment fields).
-CUSTOMER_ASSETS_CACHE_VERSION = "cpu-real-v2"
+CUSTOMER_ASSETS_CACHE_VERSION = "cpu-usage-v3"
 
 
 def customer_assets_cache_key(customer_name: str, start: str, end: str) -> str:

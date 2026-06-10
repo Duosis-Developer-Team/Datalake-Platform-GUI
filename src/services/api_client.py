@@ -450,7 +450,7 @@ def set_customer_vip(crm_accountid: str, *, is_vip: bool) -> dict[str, Any]:
 
 def get_customer_resources(name: str, tr: Optional[dict]) -> dict:
     enc = quote(name, safe="")
-    ck = f"api:customer_resources:cpu-real-v2:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:customer_resources:cpu-usage-v3:{enc}:{_serialize_tr_params(tr)}"
 
     def fetch() -> dict:
         data = _get_json(

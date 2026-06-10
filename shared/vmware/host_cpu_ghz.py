@@ -149,13 +149,34 @@ def enrich_vm_cpu_sales_fields(
     }
 
 
+def compute_cpu_usage_vs_sold(
+    cpu_ghz_sales: float,
+    cpu_ghz_real: float,
+    cpu_pct_avg: float,
+    cpu_pct_max: float,
+) -> dict[str, Any]:
+    """Derive GHz usage from CPU % and compare against sold GHz (1 vCPU = 1 GHz)."""
+    sales = float(cpu_ghz_sales or 0)
+    real = float(cpu_ghz_real or 0)
+    pct_avg = max(float(cpu_pct_avg or 0), 0.0)
+    pct_max = max(float(cpu_pct_max or 0), 0.0)
+    used_avg = round(real * pct_avg / 100.0, 2)
+    used_max = round(real * pct_max / 100.0, 2)
+    return {
+        "cpu_used_ghz_avg": used_avg,
+        "cpu_used_ghz_max": used_max,
+        "cpu_usage_exceeds_sold_avg": used_avg > sales + 1e-9,
+        "cpu_usage_exceeds_sold_max": used_max > sales + 1e-9,
+    }
+
+
 def enrich_customer_vm_cpu_list(
     vm_rows: list[dict],
     host_map: Mapping[str, float],
     *,
     default_ghz: float = DEFAULT_HOST_CPU_GHZ,
 ) -> list[dict]:
-    """Attach sales/real CPU fields to customer VM dict rows."""
+    """Attach sales/real CPU and usage-vs-sold fields to customer VM dict rows."""
     enriched: list[dict] = []
     for vm in vm_rows or []:
         source = str(vm.get("source") or "")
@@ -167,12 +188,26 @@ def enrich_customer_vm_cpu_list(
             default_ghz=default_ghz,
             is_nutanix=is_nutanix_only,
         )
-        enriched.append({**vm, **extras})
+        usage = compute_cpu_usage_vs_sold(
+            extras["cpu_ghz_sales"],
+            extras["cpu_ghz_real"],
+            float(vm.get("cpu_pct_avg") or vm.get("cpu_mhz_avg") or 0),
+            float(vm.get("cpu_pct_max") or vm.get("cpu_mhz_max") or 0),
+        )
+        enriched.append({**vm, **extras, **usage})
     return enriched
 
 
 def sum_cpu_real_total(vm_rows: list[dict]) -> float:
     return round(sum(float(vm.get("cpu_ghz_real") or 0) for vm in (vm_rows or [])), 2)
+
+
+def sum_cpu_used_ghz_avg_total(vm_rows: list[dict]) -> float:
+    return round(sum(float(vm.get("cpu_used_ghz_avg") or 0) for vm in (vm_rows or [])), 2)
+
+
+def sum_cpu_used_ghz_max_total(vm_rows: list[dict]) -> float:
+    return round(sum(float(vm.get("cpu_used_ghz_max") or 0) for vm in (vm_rows or [])), 2)
 
 
 def compute_cpu_overalloc_flags(

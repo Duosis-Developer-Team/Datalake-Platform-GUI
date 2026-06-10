@@ -8,11 +8,14 @@ from shared.vmware.host_cpu_ghz import (
     build_host_ghz_map,
     clear_host_map_cache,
     compute_cpu_overalloc_flags,
+    compute_cpu_usage_vs_sold,
     enrich_customer_vm_cpu_list,
     enrich_vm_cpu_sales_fields,
     parse_cpu_ghz_from_text,
     resolve_host_ghz,
     sum_cpu_real_total,
+    sum_cpu_used_ghz_avg_total,
+    sum_cpu_used_ghz_max_total,
 )
 
 
@@ -92,13 +95,45 @@ class TestCustomerVmEnrichment(unittest.TestCase):
 
     def test_enrich_customer_vm_list_and_total(self):
         vms = [
-            {"name": "vm1", "source": "Classic", "cluster": "KM-1", "vmhost": "h1", "cpu": 2.0},
-            {"name": "vm2", "source": "Nutanix", "cluster": "NX-1", "vmhost": None, "cpu": 4.0},
+            {
+                "name": "vm1",
+                "source": "Classic",
+                "cluster": "KM-1",
+                "vmhost": "h1",
+                "cpu": 4.0,
+                "cpu_pct_avg": 40.0,
+                "cpu_pct_max": 60.0,
+            },
+            {"name": "vm2", "source": "Nutanix", "cluster": "NX-1", "vmhost": None, "cpu": 4.0, "cpu_pct_max": 50.0},
         ]
-        enriched = enrich_customer_vm_cpu_list(vms, {"h1": 2.0})
-        self.assertAlmostEqual(enriched[0]["cpu_ghz_real"], 4.0)
-        self.assertAlmostEqual(enriched[1]["cpu_ghz_real"], 4.0)
-        self.assertAlmostEqual(sum_cpu_real_total(enriched), 8.0)
+        enriched = enrich_customer_vm_cpu_list(vms, {"h1": 3.0})
+        self.assertAlmostEqual(enriched[0]["cpu_ghz_real"], 12.0)
+        self.assertAlmostEqual(enriched[0]["cpu_used_ghz_avg"], 4.8)
+        self.assertAlmostEqual(enriched[0]["cpu_used_ghz_max"], 7.2)
+        self.assertTrue(enriched[0]["cpu_usage_exceeds_sold_avg"])
+        self.assertTrue(enriched[0]["cpu_usage_exceeds_sold_max"])
+        self.assertAlmostEqual(enriched[1]["cpu_used_ghz_max"], 2.0)
+        self.assertFalse(enriched[1]["cpu_usage_exceeds_sold_max"])
+        self.assertAlmostEqual(sum_cpu_used_ghz_max_total(enriched), 9.2)
+
+
+class TestCpuUsageVsSold(unittest.TestCase):
+    def test_avg_exceeds_sold(self):
+        out = compute_cpu_usage_vs_sold(4.0, 12.0, 40.0, 25.0)
+        self.assertAlmostEqual(out["cpu_used_ghz_avg"], 4.8)
+        self.assertAlmostEqual(out["cpu_used_ghz_max"], 3.0)
+        self.assertTrue(out["cpu_usage_exceeds_sold_avg"])
+        self.assertFalse(out["cpu_usage_exceeds_sold_max"])
+
+    def test_max_exceeds_sold(self):
+        out = compute_cpu_usage_vs_sold(4.0, 12.0, 20.0, 60.0)
+        self.assertAlmostEqual(out["cpu_used_ghz_max"], 7.2)
+        self.assertTrue(out["cpu_usage_exceeds_sold_max"])
+
+    def test_nutanix_peak_over_100_pct(self):
+        out = compute_cpu_usage_vs_sold(8.0, 8.0, 90.0, 110.0)
+        self.assertAlmostEqual(out["cpu_used_ghz_max"], 8.8)
+        self.assertTrue(out["cpu_usage_exceeds_sold_max"])
 
 
 class TestCpuOverallocFlags(unittest.TestCase):
