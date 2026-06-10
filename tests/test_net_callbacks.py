@@ -1,48 +1,27 @@
-"""Network dashboard callback tests (scope-aware API mapping)."""
+"""Network dashboard callback tests (role-specific pages)."""
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
 
-def test_update_net_kpis_passes_interface_scope_for_backbone():
+def test_update_net_kpis_skips_firewall_tab():
     import app as app_module
 
     with patch.object(app_module, "api") as mock_api:
-        mock_api.get_dc_network_port_summary.return_value = {
-            "device_count": 2,
-            "total_ports": 100,
-            "active_ports": 80,
-            "avg_icmp_loss_pct": 1.0,
-        }
-        mock_api.get_dc_network_95th_percentile.return_value = {
-            "overall_port_utilization_pct": 40.0,
-            "top_interfaces": [],
-        }
-
-        kpis, donut_active, donut_util, donut_icmp, bar_fig = app_module.update_net_kpis_and_charts(
-            "switch",
-            "backbone",
+        result = app_module.update_net_kpis_and_charts(
+            "firewall",
+            None,
             None,
             None,
             {"preset": "last_7d"},
             "/datacenter/DC13",
         )
-
-        mock_api.get_dc_network_port_summary.assert_called_once()
-        mock_api.get_dc_network_95th_percentile.assert_called_once()
-        _, kwargs = mock_api.get_dc_network_port_summary.call_args
-        assert kwargs.get("interface_scope") == "backbone"
-        _, pct_kwargs = mock_api.get_dc_network_95th_percentile.call_args
-        assert pct_kwargs.get("interface_scope") == "backbone"
-        assert kpis is not None
-        assert donut_active is not None
-        assert donut_util is not None
-        assert donut_icmp is not None
-        assert bar_fig is not None
+        assert result == (app_module.dash.no_update,) * 6
+        mock_api.get_dc_network_port_summary.assert_not_called()
 
 
-def test_update_net_interface_table_passes_interface_scope():
+def test_update_net_interface_table_returns_footer_with_total():
     import app as app_module
 
     with patch.object(app_module, "api") as mock_api:
@@ -58,24 +37,23 @@ def test_update_net_interface_table_passes_interface_scope():
                     "speed_bps": 10_000_000_000,
                     "utilization_pct": 50.0,
                 }
-            ]
+            ],
+            "total": 42,
         }
 
-        rows, columns = app_module.update_net_interface_table(
-            "router_uplink",
-            None,
+        rows, columns, page_size, footer = app_module.update_net_interface_table(
+            "switch",
+            "backbone",
             None,
             None,
             "",
             0,
-            50,
+            "50",
             {"preset": "last_7d"},
             "/datacenter/DC13",
         )
 
         mock_api.get_dc_network_interface_table.assert_called_once()
-        _, kwargs = mock_api.get_dc_network_interface_table.call_args
-        assert kwargs.get("interface_scope") == "router_uplink"
         assert len(rows) == 1
-        assert rows[0]["interface_name"] == "eth0"
-        assert any(c["id"] == "p95_total_gbps" for c in columns)
+        assert page_size == 50
+        assert "42" in footer

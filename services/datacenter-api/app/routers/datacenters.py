@@ -344,6 +344,31 @@ def network_interface_table(
     )
 
 
+@router.get("/datacenters/{dc_code}/network/interface-export", response_model=dict[str, Any])
+def network_interface_export(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    search: Optional[str] = Query("", description="Interface name/alias contains filter"),
+    manufacturer: Optional[str] = Query(None),
+    device_role: Optional[str] = Query(None),
+    device_name: Optional[str] = Query(None),
+    interface_scope: Optional[str] = Query(
+        None,
+        description="Interface scope: backbone, leaf, spine, management, router_uplink, overview",
+    ),
+):
+    return db.get_network_interface_export(
+        dc_code,
+        tf.to_dict(),
+        manufacturer=manufacturer,
+        device_role=device_role,
+        device_name=device_name,
+        search=search,
+        interface_scope=interface_scope,
+    )
+
+
 @router.get("/datacenters/{dc_code}/network/firewall-summary", response_model=dict[str, Any])
 def network_firewall_summary(
     dc_code: str,

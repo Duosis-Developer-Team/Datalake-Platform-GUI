@@ -2275,13 +2275,68 @@ def _network_interface_table_columns(interface_scope: str | None) -> list[dict]:
 
 def _network_bar_chart_title(interface_scope: str | None) -> str:
     if interface_scope == "backbone":
-        return "Top Billable Interfaces — 95th Percentile (Gbps)"
+        return "Top 10 Billable Interfaces — P95 Preview (Gbps)"
     if interface_scope == "router_uplink":
-        return "Top Router Uplinks — 95th Percentile (Gbps)"
-    return "Top 95th Percentile Interfaces (Gbps)"
+        return "Top 10 Router Uplinks — P95 Preview (Gbps)"
+    return "Top 10 Interfaces — P95 Preview (Gbps)"
 
 
-def _build_network_dashboard_subtab(
+def _network_table_section_titles(interface_scope: str | None, billing: bool) -> tuple[str, str]:
+    if billing:
+        return (
+            "Billable Interface Table",
+            "P95 interface utilization for all in-scope interfaces",
+        )
+    return (
+        "Interface Utilization Table",
+        "P95 utilization across interfaces in the selected scope",
+    )
+
+
+def _network_page_flags(top_scope: str | None, switch_role: str | None = None) -> dict:
+    scope = top_scope or "overview"
+    iface_scope = resolve_network_interface_scope(scope, switch_role)
+    billing = iface_scope in ("backbone", "router_uplink")
+    switch_segment = switch_role or "backbone"
+    return {
+        "top_scope": scope,
+        "interface_scope": iface_scope,
+        "billing": billing,
+        "show_export": billing,
+        "show_donut_grid": scope == "overview",
+        "show_single_gauge": scope == "switch" and switch_segment == "leaf",
+        "show_preview_collapse": billing or scope == "overview",
+        "is_interface_page": scope in ("overview", "switch", "router_uplink"),
+    }
+
+
+def _firewall_aggregate_kpis(firewall_data: dict) -> tuple[int, int, int, int]:
+    devices = (firewall_data or {}).get("devices") or []
+    total_sessions = sum(int(d.get("active_sessions") or 0) for d in devices)
+    total_intrusions = sum(int(d.get("intrusions_detected") or 0) for d in devices)
+    ha_pairs = sum(1 for d in devices if (d.get("ha_mode") or "").strip())
+    return len(devices), total_sessions, total_intrusions, ha_pairs
+
+
+def _interface_table_rows(items: list) -> list[dict]:
+    rows = []
+    for it in items or []:
+        rows.append(
+            {
+                "host": it.get("host") or "",
+                "interface_name": it.get("interface_name") or "",
+                "interface_alias": it.get("interface_alias") or "",
+                "p95_rx_gbps": round(_bps_to_gbps(it.get("p95_rx_bps")), 3),
+                "p95_tx_gbps": round(_bps_to_gbps(it.get("p95_tx_bps")), 3),
+                "p95_total_gbps": round(_bps_to_gbps(it.get("p95_total_bps")), 3),
+                "speed_gbps": round(_bps_to_gbps(it.get("speed_bps")), 3),
+                "utilization_pct": round(float(it.get("utilization_pct") or 0), 2),
+            }
+        )
+    return rows
+
+
+def _build_network_interface_page(
     net_filters: dict,
     port_summary: dict,
     percentile_data: dict,
@@ -2289,24 +2344,22 @@ def _build_network_dashboard_subtab(
     top_scope: str = "overview",
     switch_role: str = "backbone",
 ):
-    """
-    Network interface panel (overview, switch roles, router uplinks):
-    - Scope-aware filters (Manufacturer -> Device)
-    - KPI cards, donuts, p95 bar chart, paginated billing table
-    """
+    """Interface utilization page (overview, switch segments, router uplinks)."""
+    flags = _network_page_flags(top_scope, switch_role)
+    interface_scope = flags["interface_scope"]
+    billing = flags["billing"]
+    kpi1, kpi2, kpi3, kpi4 = _network_kpi_labels(interface_scope)
+    table_title, table_subtitle = _network_table_section_titles(interface_scope, billing)
+
     net_filters = net_filters or {}
     port_summary = port_summary or {}
     percentile_data = percentile_data or {}
     interface_table = interface_table or {}
 
-    interface_scope = resolve_network_interface_scope(top_scope, switch_role)
-    kpi1, kpi2, kpi3, kpi4 = _network_kpi_labels(interface_scope)
-
     device_count = int(port_summary.get("device_count", 0) or 0)
     total_ports = int(port_summary.get("total_ports", 0) or 0)
     active_ports = int(port_summary.get("active_ports", 0) or 0)
     avg_icmp_loss_pct = float(port_summary.get("avg_icmp_loss_pct", 0) or 0)
-
     port_availability_pct = pct_float(active_ports, total_ports)
     icmp_availability_pct = max(0.0, min(100.0, 100.0 - avg_icmp_loss_pct))
     overall_util_pct = float(percentile_data.get("overall_port_utilization_pct", 0) or 0)
@@ -2320,21 +2373,14 @@ def _build_network_dashboard_subtab(
             for dev_list in (roles_map or {}).values():
                 devs.update(dev_list or [])
             devices_by_manufacturer[manu] = sorted(devs)
+    devices_all = sorted({d for devs in devices_by_manufacturer.values() for d in (devs or [])})
 
-    devices_all = sorted(
-        {d for devs in devices_by_manufacturer.values() for d in (devs or [])}
-    )
-
-    manufacturers_data = [{"label": m, "value": m} for m in manufacturers]
-    devices_data = [{"label": d, "value": d} for d in devices_all]
-
-    kpi4_value = (
-        f"{overall_util_pct:.1f}%"
-        if interface_scope == "backbone"
-        else (f"{port_availability_pct:.1f}%" if kpi4 != "ICMP Availability" else f"{icmp_availability_pct:.1f}%")
-    )
-    if kpi4 == "ICMP Availability":
+    if kpi4 == "P95 Utilization":
+        kpi4_value = f"{overall_util_pct:.1f}%"
+    elif kpi4 == "ICMP Availability":
         kpi4_value = f"{icmp_availability_pct:.1f}%"
+    else:
+        kpi4_value = f"{port_availability_pct:.1f}%"
 
     kpis = dmc.SimpleGrid(
         cols=4,
@@ -2346,7 +2392,7 @@ def _build_network_dashboard_subtab(
             _kpi(
                 kpi4,
                 kpi4_value,
-                _DC_ICONS["port_availability"] if kpi4 != "P95 Utilization" else _DC_ICONS["active_ports"],
+                _DC_ICONS["active_ports"] if kpi4 == "P95 Utilization" else _DC_ICONS["port_availability"],
                 color="indigo",
                 stagger=4,
             ),
@@ -2355,84 +2401,34 @@ def _build_network_dashboard_subtab(
 
     donut_active = create_premium_gauge_chart(
         port_availability_pct,
-        "Port Availability" if interface_scope != "backbone" else "Interface Availability",
+        "Interface Availability" if billing else "Port Availability",
         color="#FFB547",
     )
     donut_util = create_premium_gauge_chart(
         overall_util_pct,
-        "P95 Utilization" if interface_scope == "backbone" else "Port Utilization",
+        "P95 Utilization" if billing else "Port Utilization",
         color="#05CD99",
     )
     donut_icmp = create_premium_gauge_chart(icmp_availability_pct, "ICMP Availability", color="#4318FF")
+    single_gauge = create_premium_gauge_chart(overall_util_pct, "P95 Utilization", color="#05CD99")
 
     top_interfaces = percentile_data.get("top_interfaces") or []
     bar_labels = [
         (t.get("interface_alias") or t.get("interface_name") or "").strip() or "Unknown"
-        for t in top_interfaces
+        for t in top_interfaces[:10]
     ]
-    bar_values = [_bps_to_gbps(t.get("p95_total_bps")) for t in top_interfaces]
+    bar_values = [_bps_to_gbps(t.get("p95_total_bps")) for t in top_interfaces[:10]]
     bar_fig = create_premium_horizontal_bar_chart(
         labels=bar_labels,
         values=bar_values,
         title=_network_bar_chart_title(interface_scope),
         unit_suffix="Gbps",
-        height=360,
+        height=280,
     )
 
-    # Interface table (initial page=1)
     items = interface_table.get("items") or []
-    rows = []
-    for it in items:
-        rows.append(
-            {
-                "host": it.get("host") or "",
-                "interface_name": it.get("interface_name") or "",
-                "interface_alias": it.get("interface_alias") or "",
-                "p95_rx_gbps": round(_bps_to_gbps(it.get("p95_rx_bps")), 3),
-                "p95_tx_gbps": round(_bps_to_gbps(it.get("p95_tx_bps")), 3),
-                "p95_total_gbps": round(_bps_to_gbps(it.get("p95_total_bps")), 3),
-                "speed_gbps": round(_bps_to_gbps(it.get("speed_bps")), 3),
-                "utilization_pct": round(float(it.get("utilization_pct") or 0), 2),
-            }
-        )
-
+    total_count = int(interface_table.get("total") or len(items))
     columns = _network_interface_table_columns(interface_scope)
-
-    data_table = dash_table.DataTable(
-        id="net-interface-table",
-        columns=columns,
-        data=rows,
-        page_current=0,
-        page_size=50,
-        page_action="custom",
-        sort_action="native",
-        style_table={"overflowX": "auto", "marginTop": "6px"},
-        style_cell={
-            "padding": "10px 14px",
-            "color": "#2B3674",
-            "fontFamily": "DM Sans, sans-serif",
-            "fontSize": "0.82rem",
-            "borderColor": "#F4F7FE",
-            "fontWeight": 500,
-        },
-        style_header={
-            "backgroundColor": "#F8F9FC",
-            "color": "#A3AED0",
-            "fontWeight": 700,
-            "fontFamily": "DM Sans, sans-serif",
-            "fontSize": "0.72rem",
-            "textTransform": "uppercase",
-            "letterSpacing": "0.05em",
-            "borderBottom": "2px solid #E9EDF7",
-        },
-        style_data_conditional=[
-            {
-                "if": {"state": "active"},
-                "backgroundColor": "rgba(67, 24, 255, 0.04)",
-                "border": "1px solid rgba(67, 24, 255, 0.1)",
-            },
-        ],
-    )
 
     return dmc.Stack(
         gap="lg",
@@ -2445,7 +2441,7 @@ def _build_network_dashboard_subtab(
                         id="net-manufacturer-selector",
                         label="Manufacturer",
                         placeholder="All manufacturers",
-                        data=manufacturers_data,
+                        data=[{"label": m, "value": m} for m in manufacturers],
                         value=None,
                         clearable=True,
                         searchable=True,
@@ -2455,96 +2451,205 @@ def _build_network_dashboard_subtab(
                         id="net-device-selector",
                         label="Device",
                         placeholder="All devices",
-                        data=devices_data,
+                        data=[{"label": d, "value": d} for d in devices_all],
                         value=None,
                         clearable=True,
                         searchable=True,
                         nothingFoundMessage="No devices",
                     ),
                 ],
-                style={"marginTop": "10px"},
             ),
-
             html.Div(id="net-kpi-container", children=kpis),
-
-            dmc.SimpleGrid(
-                cols=3,
-                spacing="lg",
+            html.Div(
+                id="net-donut-grid-wrap",
+                style={"display": "block" if flags["show_donut_grid"] else "none"},
                 children=[
-                    _chart_card(
-                        html.Div(
-                            style={"width": "100%", "aspectRatio": "16 / 11", "maxWidth": "360px", "margin": "0 auto"},
-                            children=dcc.Graph(
-                                id="net-donut-active-ports",
-                                figure=donut_active,
-                                config={"displayModeBar": False, "responsive": True},
-                                style={"height": "100%", "width": "100%"},
+                    dmc.SimpleGrid(
+                        cols=3,
+                        spacing="lg",
+                        children=[
+                            _chart_card(
+                                dcc.Graph(
+                                    id="net-donut-active-ports",
+                                    figure=donut_active,
+                                    config={"displayModeBar": False},
+                                )
                             ),
-                        )
-                    ),
-                    _chart_card(
-                        html.Div(
-                            style={"width": "100%", "aspectRatio": "16 / 11", "maxWidth": "360px", "margin": "0 auto"},
-                            children=dcc.Graph(
-                                id="net-donut-utilization",
-                                figure=donut_util,
-                                config={"displayModeBar": False, "responsive": True},
-                                style={"height": "100%", "width": "100%"},
+                            _chart_card(
+                                dcc.Graph(
+                                    id="net-donut-utilization",
+                                    figure=donut_util,
+                                    config={"displayModeBar": False},
+                                )
                             ),
-                        )
-                    ),
-                    _chart_card(
-                        html.Div(
-                            style={"width": "100%", "aspectRatio": "16 / 11", "maxWidth": "360px", "margin": "0 auto"},
-                            children=dcc.Graph(
-                                id="net-donut-icmp",
-                                figure=donut_icmp,
-                                config={"displayModeBar": False, "responsive": True},
-                                style={"height": "100%", "width": "100%"},
+                            _chart_card(
+                                dcc.Graph(
+                                    id="net-donut-icmp",
+                                    figure=donut_icmp,
+                                    config={"displayModeBar": False},
+                                )
                             ),
-                        )
-                    ),
+                        ],
+                    )
                 ],
             ),
-
             html.Div(
-                className="nexus-card",
-                style={"padding": "20px"},
+                id="net-single-gauge-wrap",
+                style={"display": "block" if flags["show_single_gauge"] else "none"},
                 children=[
-                    _section_title("Bandwidth (95th Percentile)", "Top consumers across the selected time range"),
                     _chart_card(
                         dcc.Graph(
-                            id="net-top-interfaces-bar",
-                            figure=bar_fig,
+                            id="net-single-util-gauge",
+                            figure=single_gauge,
                             config={"displayModeBar": False},
-                            style={"height": "320px"},
                         )
-                    ),
+                    )
                 ],
             ),
-
             html.Div(
-                id="net-interface-section",
                 className="nexus-card",
                 style={"padding": "20px"},
                 children=[
-                    _section_title("Interface Details", "Paginated p95 bandwidth table"),
-                    dmc.TextInput(
-                        id="net-interface-search",
-                        placeholder="Search host / interface / alias...",
-                        value="",
-                        leftSection=DashIconify(icon="solar:magnifer-linear", width=16, color="#A3AED0"),
-                        style={"marginTop": "6px", "marginBottom": "6px"},
+                    dmc.Group(
+                        justify="space-between",
+                        align="flex-end",
+                        children=[
+                            html.Div(
+                                children=[
+                                    _section_title(table_title, table_subtitle),
+                                ]
+                            ),
+                            html.Div(
+                                id="net-export-btn-wrap",
+                                style={"display": "block" if flags["show_export"] else "none"},
+                                children=[
+                                    dmc.Button(
+                                        "Export All CSV",
+                                        id="net-interface-export-btn",
+                                        variant="light",
+                                        color="indigo",
+                                        leftSection=DashIconify(icon="solar:download-minimalistic-linear", width=16),
+                                    ),
+                                ],
+                            ),
+                        ],
                     ),
-                    data_table,
+                    dmc.Group(
+                        grow=True,
+                        align="flex-end",
+                        children=[
+                            dmc.TextInput(
+                                id="net-interface-search",
+                                placeholder="Search host / interface / alias...",
+                                value="",
+                                leftSection=DashIconify(icon="solar:magnifer-linear", width=16, color="#A3AED0"),
+                            ),
+                            dmc.Select(
+                                id="net-interface-page-size",
+                                label="Rows per page",
+                                data=[
+                                    {"label": "50", "value": "50"},
+                                    {"label": "100", "value": "100"},
+                                    {"label": "200", "value": "200"},
+                                ],
+                                value="50",
+                                allowDeselect=False,
+                                style={"maxWidth": "160px"},
+                            ),
+                        ],
+                    ),
+                    dmc.Text(
+                        id="net-interface-table-footer",
+                        children=f"Showing 1–{min(len(items), 50)} of {total_count:,} interfaces",
+                        size="sm",
+                        c="dimmed",
+                        style={"marginTop": "8px", "marginBottom": "4px"},
+                    ),
+                    dash_table.DataTable(
+                        id="net-interface-table",
+                        columns=columns,
+                        data=_interface_table_rows(items),
+                        page_current=0,
+                        page_size=50,
+                        page_action="custom",
+                        sort_action="native",
+                        style_table={"overflowX": "auto", "marginTop": "6px"},
+                        style_cell={
+                            "padding": "10px 14px",
+                            "color": "#2B3674",
+                            "fontFamily": "DM Sans, sans-serif",
+                            "fontSize": "0.82rem",
+                            "borderColor": "#F4F7FE",
+                            "fontWeight": 500,
+                        },
+                        style_header={
+                            "backgroundColor": "#F8F9FC",
+                            "color": "#A3AED0",
+                            "fontWeight": 700,
+                            "fontFamily": "DM Sans, sans-serif",
+                            "fontSize": "0.72rem",
+                            "textTransform": "uppercase",
+                            "letterSpacing": "0.05em",
+                            "borderBottom": "2px solid #E9EDF7",
+                        },
+                    ),
                 ],
             ),
-            html.Div(id="net-special-section", style={"display": "none"}),
+            html.Div(
+                id="net-preview-collapse-wrap",
+                style={"display": "block" if flags["show_preview_collapse"] else "none"},
+                children=[
+                    dmc.Collapse(
+                        id="net-top-preview-collapse",
+                        **{"in": False},
+                        children=[
+                            html.Div(
+                                className="nexus-card",
+                                style={"padding": "20px", "marginTop": "8px"},
+                                children=[
+                                    _section_title(
+                                        "Interface Utilization (95th Percentile)",
+                                        "Top 10 preview — use the table above for full billing data",
+                                    ),
+                                    _chart_card(
+                                        dcc.Graph(
+                                            id="net-top-interfaces-bar",
+                                            figure=bar_fig,
+                                            config={"displayModeBar": False},
+                                            style={"height": "280px"},
+                                        )
+                                    ),
+                                ],
+                            )
+                        ],
+                    ),
+                    dmc.Button(
+                        "Show Top 10 Preview",
+                        id="net-top-preview-toggle",
+                        variant="subtle",
+                        color="gray",
+                        size="xs",
+                        style={"marginTop": "6px"},
+                    ),
+                ],
+            ),
+            dcc.Download(id="net-interface-export-download"),
         ],
     )
 
 
-def _build_network_firewall_table(firewall_data: dict) -> html.Div:
+def _build_network_firewall_page(firewall_data: dict) -> html.Div:
+    device_count, total_sessions, total_intrusions, ha_pairs = _firewall_aggregate_kpis(firewall_data)
+    kpis = dmc.SimpleGrid(
+        cols=4,
+        spacing="lg",
+        children=[
+            _kpi("Firewall Devices", f"{device_count:,}", _DC_ICONS["total_devices"], color="indigo"),
+            _kpi("Active Sessions", f"{total_sessions:,}", _DC_ICONS["active_ports"], color="indigo"),
+            _kpi("Intrusions", f"{total_intrusions:,}", _DC_ICONS["port_availability"], color="indigo"),
+            _kpi("HA Devices", f"{ha_pairs:,}", _DC_ICONS["total_ports"], color="indigo"),
+        ],
+    )
     devices = (firewall_data or {}).get("devices") or []
     rows = [
         {
@@ -2564,38 +2669,44 @@ def _build_network_firewall_table(firewall_data: dict) -> html.Div:
         }
         for d in devices
     ]
-    return html.Div(
-        className="nexus-card",
-        style={"padding": "20px"},
+    return dmc.Stack(
+        gap="lg",
         children=[
-            _section_title("Firewall Devices", "Sessions, HA mode and security counters"),
-            dash_table.DataTable(
-                id="net-firewall-table",
-                columns=[
-                    {"name": "Host", "id": "host"},
-                    {"name": "Device", "id": "device_name"},
-                    {"name": "Manufacturer", "id": "manufacturer_name"},
-                    {"name": "CPU %", "id": "cpu_utilization_pct", "type": "numeric"},
-                    {"name": "Memory %", "id": "memory_utilization_pct", "type": "numeric"},
-                    {"name": "Sessions", "id": "active_sessions", "type": "numeric"},
-                    {"name": "Intrusions", "id": "intrusions_detected", "type": "numeric"},
-                    {"name": "Blocked", "id": "intrusions_blocked", "type": "numeric"},
-                    {"name": "Session Rate", "id": "session_setup_rate", "type": "numeric"},
-                    {"name": "HA Mode", "id": "ha_mode"},
-                    {"name": "HA Cluster", "id": "ha_cluster_name"},
-                    {"name": "ICMP Status", "id": "icmp_status"},
-                    {"name": "ICMP Loss %", "id": "icmp_loss_pct", "type": "numeric"},
+            html.Div(id="net-fw-kpi-container", children=kpis),
+            html.Div(
+                className="nexus-card",
+                style={"padding": "20px"},
+                children=[
+                    _section_title("Firewall Devices", "Sessions, HA mode and security counters"),
+                    dash_table.DataTable(
+                        id="net-firewall-table",
+                        columns=[
+                            {"name": "Host", "id": "host"},
+                            {"name": "Device", "id": "device_name"},
+                            {"name": "Manufacturer", "id": "manufacturer_name"},
+                            {"name": "CPU %", "id": "cpu_utilization_pct", "type": "numeric"},
+                            {"name": "Memory %", "id": "memory_utilization_pct", "type": "numeric"},
+                            {"name": "Sessions", "id": "active_sessions", "type": "numeric"},
+                            {"name": "Intrusions", "id": "intrusions_detected", "type": "numeric"},
+                            {"name": "Blocked", "id": "intrusions_blocked", "type": "numeric"},
+                            {"name": "Session Rate", "id": "session_setup_rate", "type": "numeric"},
+                            {"name": "HA Mode", "id": "ha_mode"},
+                            {"name": "HA Cluster", "id": "ha_cluster_name"},
+                            {"name": "ICMP Status", "id": "icmp_status"},
+                            {"name": "ICMP Loss %", "id": "icmp_loss_pct", "type": "numeric"},
+                        ],
+                        data=rows,
+                        page_size=25,
+                        sort_action="native",
+                        style_table={"overflowX": "auto", "marginTop": "8px"},
+                    ),
                 ],
-                data=rows,
-                page_size=25,
-                sort_action="native",
-                style_table={"overflowX": "auto", "marginTop": "8px"},
             ),
         ],
     )
 
 
-def _build_network_load_balancer_table(lb_data: dict) -> html.Div:
+def _build_network_load_balancer_page(lb_data: dict) -> html.Div:
     devices = (lb_data or {}).get("devices") or []
     rows = [
         {
@@ -2610,9 +2721,8 @@ def _build_network_load_balancer_table(lb_data: dict) -> html.Div:
         }
         for d in devices
     ]
-    return html.Div(
-        className="nexus-card",
-        style={"padding": "20px"},
+    return dmc.Stack(
+        gap="lg",
         children=[
             dmc.Alert(
                 "Citrix ADC vserver metrics (RX/TX byte rate, customer vserver name) are not yet "
@@ -2620,25 +2730,30 @@ def _build_network_load_balancer_table(lb_data: dict) -> html.Div:
                 title="Vserver metrics pending",
                 color="yellow",
                 radius="md",
-                style={"marginBottom": "12px"},
             ),
-            _section_title("Load Balancer Health", "ICMP/CPU/RAM and port summary"),
-            dash_table.DataTable(
-                id="net-load-balancer-table",
-                columns=[
-                    {"name": "Host", "id": "host"},
-                    {"name": "Device", "id": "device_name"},
-                    {"name": "Manufacturer", "id": "manufacturer_name"},
-                    {"name": "CPU %", "id": "cpu_utilization_pct", "type": "numeric"},
-                    {"name": "Memory %", "id": "memory_utilization_pct", "type": "numeric"},
-                    {"name": "ICMP Loss %", "id": "icmp_loss_pct", "type": "numeric"},
-                    {"name": "Active Ports", "id": "active_ports", "type": "numeric"},
-                    {"name": "Total Ports", "id": "total_ports", "type": "numeric"},
+            html.Div(
+                className="nexus-card",
+                style={"padding": "20px"},
+                children=[
+                    _section_title("Load Balancer Health", "ICMP/CPU/RAM and port summary"),
+                    dash_table.DataTable(
+                        id="net-load-balancer-table",
+                        columns=[
+                            {"name": "Host", "id": "host"},
+                            {"name": "Device", "id": "device_name"},
+                            {"name": "Manufacturer", "id": "manufacturer_name"},
+                            {"name": "CPU %", "id": "cpu_utilization_pct", "type": "numeric"},
+                            {"name": "Memory %", "id": "memory_utilization_pct", "type": "numeric"},
+                            {"name": "ICMP Loss %", "id": "icmp_loss_pct", "type": "numeric"},
+                            {"name": "Active Ports", "id": "active_ports", "type": "numeric"},
+                            {"name": "Total Ports", "id": "total_ports", "type": "numeric"},
+                        ],
+                        data=rows,
+                        page_size=25,
+                        sort_action="native",
+                        style_table={"overflowX": "auto", "marginTop": "8px"},
+                    ),
                 ],
-                data=rows,
-                page_size=25,
-                sort_action="native",
-                style_table={"overflowX": "auto", "marginTop": "8px"},
             ),
         ],
     )
@@ -2657,13 +2772,13 @@ def _build_network_zabbix_section(
     visible_scopes = _visible_network_scopes(sec_check=check)
     default_scope = visible_scopes[0] if visible_scopes else "overview"
     default_switch_role = SWITCH_ROLE_SCOPES[0]
+    iface_flags = _network_page_flags(default_scope, default_switch_role)
+    show_iface = iface_flags["is_interface_page"]
+    show_fw = default_scope == "firewall"
+    show_lb = default_scope == "load_balancer"
+
     tab_items = [
         dmc.TabsTab(NETWORK_TOP_LABELS[scope][0], value=scope)
-        for scope in visible_scopes
-        if scope in NETWORK_TOP_LABELS
-    ]
-    tab_panels = [
-        dmc.TabsPanel(value=scope, children=html.Div())
         for scope in visible_scopes
         if scope in NETWORK_TOP_LABELS
     ]
@@ -2676,10 +2791,7 @@ def _build_network_zabbix_section(
                 color="indigo",
                 variant="outline",
                 radius="md",
-                children=[
-                    dmc.TabsList(children=tab_items),
-                    *tab_panels,
-                ],
+                children=[dmc.TabsList(children=tab_items)],
             )
         )
         zabbix_children.append(
@@ -2709,18 +2821,39 @@ def _build_network_zabbix_section(
             )
         )
         zabbix_children.append(
-            _build_network_dashboard_subtab(
-                net_filters,
-                port_summary,
-                percentile_data,
-                interface_table,
-                top_scope=default_scope,
-                switch_role=default_switch_role,
+            html.Div(
+                id="net-page-interface",
+                style={"display": "block" if show_iface else "none"},
+                children=[
+                    _build_network_interface_page(
+                        net_filters,
+                        port_summary,
+                        percentile_data,
+                        interface_table,
+                        top_scope=default_scope if default_scope != "switch" else "switch",
+                        switch_role=default_switch_role,
+                    )
+                ],
+            )
+        )
+        zabbix_children.append(
+            html.Div(
+                id="net-page-firewall",
+                style={"display": "block" if show_fw else "none"},
+                children=[_build_network_firewall_page(firewall_data)],
+            )
+        )
+        zabbix_children.append(
+            html.Div(
+                id="net-page-load-balancer",
+                style={"display": "block" if show_lb else "none"},
+                children=[_build_network_load_balancer_page(lb_data)],
             )
         )
     return html.Div(
         style={"padding": "0 30px"},
         children=[
+            dcc.Store(id="net-filters-store", data=net_filters or {}),
             dcc.Store(id="net-firewall-store", data=firewall_data or {}),
             dcc.Store(id="net-load-balancer-store", data=lb_data or {}),
             dmc.Stack(gap="lg", children=zabbix_children),
@@ -3488,6 +3621,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     net_port_summary: dict = {}
     net_percentile: dict = {}
     net_interface_table: dict = {}
+    net_interface_export: dict = {}
     net_firewall_data: dict = {}
     net_lb_data: dict = {}
     net_ms = 0.0
@@ -3500,6 +3634,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                 "interface_table": lambda: api.get_dc_network_interface_table(
                     dc_id, tr, page=1, page_size=50
                 ),
+                "interface_export": lambda: api.get_dc_network_interface_export(dc_id, tr),
                 "firewall": lambda: api.get_dc_network_firewall_summary(dc_id, tr),
                 "load_balancer": lambda: api.get_dc_network_load_balancer_summary(dc_id, tr),
             }
@@ -3507,6 +3642,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
         net_port_summary = net_batch["port_summary"]
         net_percentile = net_batch["percentile"]
         net_interface_table = net_batch["interface_table"]
+        net_interface_export = net_batch["interface_export"]
         net_firewall_data = net_batch["firewall"]
         net_lb_data = net_batch["load_balancer"]
         net_ms = round((time.perf_counter() - t_net) * 1000, 1)
@@ -3527,7 +3663,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
         str(dc_id),
         data,
         phys_inv,
-        net_interface_table,
+        net_interface_export or net_interface_table,
         nb_data,
         zerto_data,
         veeam_data,
@@ -3631,7 +3767,6 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
         delay_show=200,
         overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.75)"},
         children=html.Div([
-        dcc.Store(id="net-filters-store", data=net_filters or {}),
         dcc.Store(
             id="dc-export-store",
             data={
