@@ -333,3 +333,58 @@ SELECT
     COALESCE(SUM(memory_capacity / 1073741824.0), 0)   AS mem_alloc_gb
 FROM latest
 """
+
+# =============================================================================
+# Per-VM allocation rows for Python host-GHz aggregation (same CTE as above).
+# Params: (dc_code,) or (dc_code, cluster_array) for FILTERED variant.
+# Returns rows: (host_name, cpu_count, mem_gb, prov_gb, used_gb)
+# =============================================================================
+
+NUTANIX_VM_ALLOCATION_ROWS = """
+WITH dc_clusters AS (
+    SELECT DISTINCT cluster_uuid::text AS cluster_uuid
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND collection_time >= NOW() - INTERVAL '24 hours'
+),
+latest AS (
+    SELECT DISTINCT ON (vm_name)
+        vm_name, host_name, disk_capacity, used_storage, cpu_count, memory_capacity
+    FROM public.nutanix_vm_metrics
+    WHERE cluster_uuid::text IN (SELECT cluster_uuid FROM dc_clusters)
+      AND collection_time >= NOW() - INTERVAL '24 hours'
+    ORDER BY vm_name, collection_time DESC
+)
+SELECT
+    host_name,
+    COALESCE(cpu_count, 0)::int,
+    COALESCE(memory_capacity / 1073741824.0, 0),
+    COALESCE(disk_capacity / 1073741824.0, 0),
+    COALESCE(used_storage / 1073741824.0, 0)
+FROM latest
+"""
+
+NUTANIX_VM_ALLOCATION_ROWS_FILTERED = """
+WITH dc_clusters AS (
+    SELECT DISTINCT cluster_uuid::text AS cluster_uuid
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND cluster_name = ANY(%s::text[])
+      AND collection_time >= NOW() - INTERVAL '24 hours'
+),
+latest AS (
+    SELECT DISTINCT ON (vm_name)
+        vm_name, host_name, disk_capacity, used_storage, cpu_count, memory_capacity
+    FROM public.nutanix_vm_metrics
+    WHERE cluster_uuid::text IN (SELECT cluster_uuid FROM dc_clusters)
+      AND collection_time >= NOW() - INTERVAL '24 hours'
+    ORDER BY vm_name, collection_time DESC
+)
+SELECT
+    host_name,
+    COALESCE(cpu_count, 0)::int,
+    COALESCE(memory_capacity / 1073741824.0, 0),
+    COALESCE(disk_capacity / 1073741824.0, 0),
+    COALESCE(used_storage / 1073741824.0, 0)
+FROM latest
+"""

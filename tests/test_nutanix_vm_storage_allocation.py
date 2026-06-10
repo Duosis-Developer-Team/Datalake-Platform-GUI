@@ -48,30 +48,75 @@ class TestRunNutanixVmStorage(unittest.TestCase):
         )
         self.assertEqual(row[0], 80.0)
 
-    def test_get_hyperconv_storage_vm_passes_dc_code_and_clusters(self):
+
+class TestComputeNutanixVmAllocation(unittest.TestCase):
+    def setUp(self):
+        cache.clear()
+
+    def test_filtered_uses_allocation_rows_with_host_ghz(self):
+        svc = _make_service()
+        cursor = MagicMock()
+        clusters = ["PRISM-AZ11-SSD"]
+        svc._run_rows = MagicMock(
+            return_value=[
+                ("ntx-host-a", 4, 16.0, 100.0, 50.0),
+                ("ntx-host-b", 2, 8.0, 50.0, 25.0),
+            ]
+        )
+        svc._load_host_ghz_map = MagicMock(return_value={"ntx-host-a": 2.5, "ntx-host-b": 2.0})
+
+        result = svc._compute_nutanix_vm_allocation(cursor, "AZ11", clusters)
+
+        svc._run_rows.assert_called_once_with(
+            cursor, nq.NUTANIX_VM_ALLOCATION_ROWS_FILTERED, ("AZ11", clusters)
+        )
+        self.assertEqual(result["cpu_alloc_ghz_vm"], 4 * 2.5 + 2 * 2.0)
+        self.assertEqual(result["cpu_alloc_ghz_sales"], 6.0)
+        self.assertEqual(result["mem_alloc_gb_vm"], 24.0)
+        self.assertEqual(result["stor_provisioned_gb"], 150.0)
+
+
+class TestGetHyperconvStorageVm(unittest.TestCase):
+    def setUp(self):
+        cache.clear()
+
+    def test_merges_vmware_and_nutanix_allocation(self):
         svc = _make_service()
         cursor = MagicMock()
         svc._compute_vmware_vm_allocation = MagicMock(
             return_value={
-                "stor_provisioned_gb": 0.0,
-                "stor_actual_used_gb": 0.0,
-                "cpu_alloc_ghz_vm": 0.0,
-                "cpu_alloc_ghz_sales": 0.0,
-                "mem_alloc_gb_vm": 0.0,
-                "cpu_alloc_hosts_resolved": 0,
+                "stor_provisioned_gb": 100.0,
+                "stor_actual_used_gb": 40.0,
+                "cpu_alloc_ghz_vm": 10.0,
+                "cpu_alloc_ghz_sales": 5.0,
+                "mem_alloc_gb_vm": 32.0,
+                "cpu_alloc_hosts_resolved": 2,
                 "cpu_alloc_hosts_fallback_default": 0,
             }
         )
-        svc._run_nutanix_vm_storage = MagicMock(return_value=(91946.0, 18000.0, 793, 1864.0))
+        svc._compute_nutanix_vm_allocation = MagicMock(
+            return_value={
+                "stor_provisioned_gb": 91946.0,
+                "stor_actual_used_gb": 18000.0,
+                "cpu_alloc_ghz_vm": 1586.0,
+                "cpu_alloc_ghz_sales": 793.0,
+                "mem_alloc_gb_vm": 1864.0,
+                "cpu_alloc_hosts_resolved": 3,
+                "cpu_alloc_hosts_fallback_default": 1,
+            }
+        )
 
         result = svc.get_hyperconv_storage_vm(cursor, "AZ11", ["PRISM-AZ11-SSD"])
 
-        svc._run_nutanix_vm_storage.assert_called_once_with(
+        svc._compute_nutanix_vm_allocation.assert_called_once_with(
             cursor, "AZ11", ["PRISM-AZ11-SSD"]
         )
-        self.assertEqual(result["cpu_alloc_ghz_vm"], 793.0)
-        self.assertEqual(result["mem_alloc_gb_vm"], 1864.0)
-        self.assertEqual(result["stor_provisioned_gb"], 91946.0)
+        self.assertEqual(result["cpu_alloc_ghz_vm"], 1596.0)
+        self.assertEqual(result["cpu_alloc_ghz_sales"], 798.0)
+        self.assertEqual(result["mem_alloc_gb_vm"], 1896.0)
+        self.assertEqual(result["stor_provisioned_gb"], 92046.0)
+        self.assertEqual(result["cpu_alloc_hosts_resolved"], 5)
+        self.assertEqual(result["cpu_alloc_hosts_fallback_default"], 1)
 
 
 class TestHyperconvMetricsFilteredStorageVm(unittest.TestCase):
@@ -107,11 +152,11 @@ class TestHyperconvMetricsFilteredStorageVm(unittest.TestCase):
             return_value={
                 "stor_provisioned_gb": 91946.0,
                 "stor_actual_used_gb": 18000.0,
-                "cpu_alloc_ghz_vm": 793.0,
+                "cpu_alloc_ghz_vm": 1586.0,
                 "cpu_alloc_ghz_sales": 793.0,
                 "mem_alloc_gb_vm": 1864.0,
-                "cpu_alloc_hosts_resolved": 0,
-                "cpu_alloc_hosts_fallback_default": 0,
+                "cpu_alloc_hosts_resolved": 3,
+                "cpu_alloc_hosts_fallback_default": 1,
             }
         )
         svc.get_unit_prices_tl = MagicMock(return_value={"cpu_vcpu": 0, "ram_gb": 0, "storage_gb": 0})

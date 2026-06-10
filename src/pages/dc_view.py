@@ -485,24 +485,20 @@ def _gauge_wrap(
 
 
 def _cpu_allocation_gauge_block(compute: dict, cpu_cap: float):
-    """Sales-primary CPU allocation gauge with real GHz subtitle and sales overalloc badge."""
-    sales = float(compute.get("cpu_alloc_ghz_sales", 0) or 0)
+    """Physical CPU allocation gauge with overalloc badge."""
     real = float(compute.get("cpu_alloc_ghz_vm", 0) or 0)
-    sales_pct = alloc_pct_float(sales, cpu_cap)
     real_pct = alloc_pct_float(real, cpu_cap)
-    over_sales = bool(compute.get("cpu_overallocated_sales")) or (cpu_cap > 0 and sales > cpu_cap)
+    over_real = bool(compute.get("cpu_overallocated_real")) or (cpu_cap > 0 and real > cpu_cap)
     primary_sub = (
-        f"{smart_cpu(sales)} / {smart_cpu(cpu_cap)}"
-        + (f" ({sales_pct:.1f}%)" if sales_pct > 100 else "")
+        f"{smart_cpu(real)} / {smart_cpu(cpu_cap)}"
+        + (f" ({real_pct:.1f}%)" if real_pct > 100 else "")
         if cpu_cap > 0 else ""
     )
-    secondary_sub = f"Real: {smart_cpu(real)}" + (f" ({real_pct:.1f}%)" if cpu_cap > 0 else "")
     return _gauge_wrap(
-        create_premium_gauge_chart(sales_pct, "", color="#4318FF", allow_over_100=True),
+        create_premium_gauge_chart(real_pct, "", color="#4318FF", allow_over_100=True),
         "CPU Allocation",
         subtitle=primary_sub,
-        secondary_subtitle=secondary_sub,
-        badge="Overallocated for Sales" if over_sales else None,
+        badge="Overallocated" if over_real else None,
     )
 
 
@@ -665,7 +661,7 @@ def _capacity_resource_table(rows: list[dict]):
     body_rows = []
     for row in rows:
         body_rows.append(
-            html.Tr(
+                    html.Tr(
                 [
                     html.Td(row["label"], style={**cell_style, **label_style}),
                     html.Td(
@@ -673,7 +669,6 @@ def _capacity_resource_table(rows: list[dict]):
                         style={**cell_style, "color": "#2B3674", "fontSize": "0.8rem", "fontWeight": 600},
                     ),
                     _metric_cell(row.get("allocation")),
-                    _metric_cell(row.get("sales")),
                     _metric_cell(row.get("max_util")),
                     html.Td(_capacity_alloc_bar(row["bar_pct"]), style=cell_style),
                 ]
@@ -691,8 +686,7 @@ def _capacity_resource_table(rows: list[dict]):
                             [
                                 html.Th("Resource", style=header_style),
                                 html.Th("Total", style=header_style),
-                                html.Th("Allocation", style=header_style),
-                                html.Th("Sales allocation", style=header_style),
+                                html.Th("Physical allocation", style=header_style),
                                 html.Th("Max utilization", style=header_style),
                                 html.Th("", style=header_style),
                             ]
@@ -709,9 +703,7 @@ def _build_compute_capacity_rows(
     *,
     cpu_cap: float,
     cpu_alloc_ghz: float,
-    cpu_alloc_sales: float,
     cpu_alloc_pct: float,
-    cpu_alloc_pct_sales: float,
     cpu_pct_max: float,
     cpu_pct: float,
     mem_cap: float,
@@ -733,7 +725,6 @@ def _build_compute_capacity_rows(
             "label": "CPU",
             "total_str": smart_cpu(cpu_cap),
             "allocation": (smart_cpu(cpu_alloc_ghz), cpu_alloc_pct),
-            "sales": (smart_cpu(cpu_alloc_sales), cpu_alloc_pct_sales),
             "max_util": (
                 smart_cpu(cpu_cap * cpu_max_pct / 100.0 if cpu_cap else 0),
                 cpu_max_pct,
@@ -744,7 +735,6 @@ def _build_compute_capacity_rows(
             "label": "Memory",
             "total_str": smart_memory(mem_cap),
             "allocation": (smart_memory(mem_alloc_gb), mem_alloc_pct),
-            "sales": None,
             "max_util": (
                 smart_memory(mem_cap * mem_max_pct / 100.0 if mem_cap else 0),
                 mem_max_pct,
@@ -755,7 +745,6 @@ def _build_compute_capacity_rows(
             "label": "Storage",
             "total_str": smart_storage(stor_cap_gb),
             "allocation": (smart_storage(stor_provisioned_gb), stor_alloc_vm_pct),
-            "sales": None,
             "max_util": (smart_storage(stor_used_gb), stor_pct),
             "bar_pct": stor_alloc_vm_pct,
         },
@@ -849,10 +838,8 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     stor_used_gb = stor_used * 1024
 
     cpu_alloc_ghz = float(compute.get("cpu_alloc_ghz_vm", 0) or 0)
-    cpu_alloc_sales = float(compute.get("cpu_alloc_ghz_sales", 0) or 0)
     mem_alloc_gb  = float(compute.get("mem_alloc_gb_vm", 0) or 0)
     cpu_alloc_pct = alloc_pct_float(cpu_alloc_ghz, cpu_cap)
-    cpu_alloc_pct_sales = alloc_pct_float(cpu_alloc_sales, cpu_cap)
     mem_alloc_pct = alloc_pct_float(mem_alloc_gb, mem_cap)
 
     # VM-level storage breakdown.
@@ -864,9 +851,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     capacity_rows = _build_compute_capacity_rows(
         cpu_cap=cpu_cap,
         cpu_alloc_ghz=cpu_alloc_ghz,
-        cpu_alloc_sales=cpu_alloc_sales,
         cpu_alloc_pct=cpu_alloc_pct,
-        cpu_alloc_pct_sales=cpu_alloc_pct_sales,
         cpu_pct_max=cpu_pct_max,
         cpu_pct=cpu_pct,
         mem_cap=mem_cap,

@@ -68,6 +68,16 @@ class TestAggregateVmAllocation(unittest.TestCase):
         self.assertAlmostEqual(result["cpu_alloc_ghz_vm"], 4.0)
         self.assertEqual(result["cpu_alloc_hosts_fallback_default"], 1)
 
+    def test_nutanix_style_host_rows_use_netbox_ghz(self):
+        rows = [
+            ("NTNX-AZ11-AHV-01", 8, 32.0, 500.0, 200.0),
+            ("NTNX-AZ11-AHV-02", 4, 16.0, 250.0, 100.0),
+        ]
+        host_map = {"NTNX-AZ11-AHV-01": 2.5, "NTNX-AZ11-AHV-02": 2.5}
+        result = aggregate_vm_allocation(rows, host_map, default_ghz=2.0)
+        self.assertAlmostEqual(result["cpu_alloc_ghz_vm"], 8 * 2.5 + 4 * 2.5)
+        self.assertAlmostEqual(result["cpu_alloc_ghz_sales"], 12.0)
+
 
 class TestResolveHostGhz(unittest.TestCase):
     def test_netbox_then_default(self):

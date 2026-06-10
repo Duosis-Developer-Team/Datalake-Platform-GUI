@@ -162,7 +162,7 @@ class TestHyperconvMetricsFiltered(unittest.TestCase):
                 (bytes_5_tb, bytes_2_tb),
                 # HYPERCONV_AVG30_FILTERED — zeros => fallback to capacity-based pct
                 (0, 0, 0, 0),
-                # NUTANIX_VM_STORAGE_FILTERED
+                # HYPERCONV_AVG30_FILTERED duplicate guard — not used when _run_rows handles Nutanix
                 (0.0, 0.0, 0, 0.0),
             ]
         )

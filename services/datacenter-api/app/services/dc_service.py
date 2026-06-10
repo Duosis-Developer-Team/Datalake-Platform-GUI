@@ -750,6 +750,21 @@ LIMIT 20
             row = self._run_row(cursor, nq.NUTANIX_VM_STORAGE, (dc_code,))
         return row or (0.0, 0.0, 0, 0.0)
 
+    def _compute_nutanix_vm_allocation(
+        self,
+        cursor,
+        dc_code: str,
+        cluster_filter: list[str] | None = None,
+    ) -> dict:
+        """Aggregate Nutanix VM allocation with host GHz from NetBox inventory."""
+        clusters = cluster_filter or []
+        if clusters:
+            rows = self._run_rows(cursor, nq.NUTANIX_VM_ALLOCATION_ROWS_FILTERED, (dc_code, clusters))
+        else:
+            rows = self._run_rows(cursor, nq.NUTANIX_VM_ALLOCATION_ROWS, (dc_code,))
+        host_map = self._load_host_ghz_map(cursor)
+        return aggregate_vm_allocation(rows, host_map, default_ghz=self._get_default_host_cpu_ghz())
+
     def get_hyperconv_storage_vm(
         self,
         cursor,
@@ -760,17 +775,27 @@ LIMIT 20
         vmw = self._compute_vmware_vm_allocation(
             cursor, dc_wc, classic_km=False, cluster_filter=cluster_filter
         )
-        ntx = self._run_nutanix_vm_storage(cursor, dc_code, cluster_filter)
-        ntx_vcpu = float(ntx[2] or 0)
-        # Nutanix CPU: vcpu count treated as GHz-equivalent (1 vCPU ≈ 1 GHz per business rule)
+        ntx = self._compute_nutanix_vm_allocation(cursor, dc_code, cluster_filter)
         return {
-            "stor_provisioned_gb": round(float(vmw.get("stor_provisioned_gb") or 0) + float(ntx[0] or 0), 2),
-            "stor_actual_used_gb": round(float(vmw.get("stor_actual_used_gb") or 0) + float(ntx[1] or 0), 2),
-            "cpu_alloc_ghz_vm": round(float(vmw.get("cpu_alloc_ghz_vm") or 0) + ntx_vcpu, 2),
-            "cpu_alloc_ghz_sales": round(float(vmw.get("cpu_alloc_ghz_sales") or 0) + ntx_vcpu, 2),
-            "mem_alloc_gb_vm": round(float(vmw.get("mem_alloc_gb_vm") or 0) + float(ntx[3] or 0), 2),
-            "cpu_alloc_hosts_resolved": int(vmw.get("cpu_alloc_hosts_resolved") or 0),
-            "cpu_alloc_hosts_fallback_default": int(vmw.get("cpu_alloc_hosts_fallback_default") or 0),
+            "stor_provisioned_gb": round(
+                float(vmw.get("stor_provisioned_gb") or 0) + float(ntx.get("stor_provisioned_gb") or 0), 2
+            ),
+            "stor_actual_used_gb": round(
+                float(vmw.get("stor_actual_used_gb") or 0) + float(ntx.get("stor_actual_used_gb") or 0), 2
+            ),
+            "cpu_alloc_ghz_vm": round(
+                float(vmw.get("cpu_alloc_ghz_vm") or 0) + float(ntx.get("cpu_alloc_ghz_vm") or 0), 2
+            ),
+            "cpu_alloc_ghz_sales": round(
+                float(vmw.get("cpu_alloc_ghz_sales") or 0) + float(ntx.get("cpu_alloc_ghz_sales") or 0), 2
+            ),
+            "mem_alloc_gb_vm": round(
+                float(vmw.get("mem_alloc_gb_vm") or 0) + float(ntx.get("mem_alloc_gb_vm") or 0), 2
+            ),
+            "cpu_alloc_hosts_resolved": int(vmw.get("cpu_alloc_hosts_resolved") or 0)
+            + int(ntx.get("cpu_alloc_hosts_resolved") or 0),
+            "cpu_alloc_hosts_fallback_default": int(vmw.get("cpu_alloc_hosts_fallback_default") or 0)
+            + int(ntx.get("cpu_alloc_hosts_fallback_default") or 0),
         }
 
     @staticmethod

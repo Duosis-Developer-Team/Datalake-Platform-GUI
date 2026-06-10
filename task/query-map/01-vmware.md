@@ -546,7 +546,9 @@ FROM latest
 **Parametreler:** `(dc_pattern,)` — yalnızca DC wildcard; zaman penceresi sorgunun içinde sabit (`NOW() - INTERVAL '24 hours'`).
 **Dönen sütunlar:** `(provisioned_gb, used_gb, cpu_alloc_ghz, mem_alloc_gb)`.
 
-> `get_hyperconv_storage_vm` bu VMware sonucunu Nutanix `NUTANIX_VM_STORAGE` sonucuyla **toplar** (her dört alan da Nutanix + VMware): provisioned, used, cpu_alloc_ghz, mem_alloc_gb. Nutanix tarafında 1 vCPU ≈ 1 GHz iş kuralı geçerlidir (bkz. [02-nutanix.md](02-nutanix.md)).
+> `get_hyperconv_storage_vm` VMware (`HYPERCONV_VMWARE_VM_ALLOCATION_ROWS`) ile Nutanix
+> (`NUTANIX_VM_ALLOCATION_ROWS`) allocation dict'lerini toplar. Her iki platformda
+> `cpu_alloc_ghz_vm = SUM(vCPU × host_ghz_per_core)` (NetBox + fallback); bkz. [02-nutanix.md](02-nutanix.md).
 
 ---
 
@@ -599,11 +601,11 @@ cpu_alloc_ghz_vm    = SUM(number_of_cpus × host_ghz_per_core)  # infrastructure
 RAM allocation: `SUM(total_memory_capacity_gb)`. Storage: `SUM(provisioned_space_gb)`.
 
 Redis / sellable **allocated (sales)** alanları: `cpu_alloc_ghz_sales`, `mem_alloc_gb_vm`, `stor_provisioned_gb`.  
-`cpu_alloc_ghz_vm` yanıtta kalır (DC view real subtitle, ops); sellable hesabına karışmaz.
+`cpu_alloc_ghz_vm` yanıtta kalır (DC View physical allocation + gauge); sellable hesabına karışmaz.
 
 Overallocation bayrakları (DC seviyesi): `cpu_overallocated_sales`, `cpu_overallocated_real`.
 
-**DC View Capacity Planning (Classic/Hyperconv, 2026-06):** Tek satır/kaynak tablo — Total, Allocation (real VM), Sales allocation (CPU only), Max utilization, allocation bar. Allocation gauge merkezinde `%100+` değerler (`allow_over_100`); sales overalloc → gauge badge `Overallocated for Sales` (üst alert kaldırıldı).
+**DC View Capacity Planning (Classic/Hyperconv, 2026-06-09):** Tek satır/kaynak tablo — Total, **Physical allocation**, Max utilization, allocation bar. CPU allocation gauge = `cpu_alloc_ghz_vm` (uncapped `%` via `allow_over_100`); overalloc badge `Overallocated` (`cpu_overallocated_real`). Sales allocation kolonu kaldırıldı (max utilization satış bakışını karşılar).
 
 ---
 

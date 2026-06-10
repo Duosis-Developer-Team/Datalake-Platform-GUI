@@ -6,6 +6,7 @@ from src.pages.dc_view import (
     _build_compute_capacity_rows,
     _capacity_pct_badge_color,
     _capacity_resource_table,
+    _cpu_allocation_gauge_block,
 )
 
 
@@ -17,13 +18,11 @@ class TestCapacityPctBadgeColor:
 
 
 class TestBuildComputeCapacityRows:
-    def test_three_rows_with_cpu_sales(self):
+    def test_three_rows_physical_allocation_only(self):
         rows = _build_compute_capacity_rows(
             cpu_cap=5317.44,
             cpu_alloc_ghz=33811.0,
-            cpu_alloc_sales=14787.0,
             cpu_alloc_pct=635.9,
-            cpu_alloc_pct_sales=278.1,
             cpu_pct_max=60.4,
             cpu_pct=55.0,
             mem_cap=89568.0,
@@ -39,9 +38,7 @@ class TestBuildComputeCapacityRows:
         )
         assert len(rows) == 3
         assert rows[0]["label"] == "CPU"
-        assert rows[0]["sales"] is not None
-        assert rows[1]["sales"] is None
-        assert rows[2]["sales"] is None
+        assert "sales" not in rows[0]
         assert rows[0]["bar_pct"] == 635.9
 
 
@@ -50,9 +47,7 @@ class TestCapacityResourceTable:
         rows = _build_compute_capacity_rows(
             cpu_cap=100.0,
             cpu_alloc_ghz=120.0,
-            cpu_alloc_sales=110.0,
             cpu_alloc_pct=120.0,
-            cpu_alloc_pct_sales=110.0,
             cpu_pct_max=50.0,
             cpu_pct=40.0,
             mem_cap=1000.0,
@@ -71,13 +66,11 @@ class TestCapacityResourceTable:
         tbody = table.children[0].children[1]
         assert len(tbody.children) == 3
 
-    def test_memory_sales_cell_is_dash(self):
+    def test_table_has_five_columns_including_bar(self):
         rows = _build_compute_capacity_rows(
             cpu_cap=100.0,
             cpu_alloc_ghz=120.0,
-            cpu_alloc_sales=110.0,
             cpu_alloc_pct=120.0,
-            cpu_alloc_pct_sales=110.0,
             cpu_pct_max=50.0,
             cpu_pct=40.0,
             mem_cap=1000.0,
@@ -92,6 +85,16 @@ class TestCapacityResourceTable:
             stor_pct=20.0,
         )
         table = _capacity_resource_table(rows)
-        mem_row = table.children[0].children[1].children[1]
-        sales_cell = mem_row.children[3]
-        assert sales_cell.children == "—"
+        header_row = table.children[0].children[0].children[0]
+        assert len(header_row.children) == 5
+        assert header_row.children[2].children == "Physical allocation"
+
+
+class TestCpuAllocationGaugeBlock:
+    def test_physical_overalloc_badge(self):
+        block = _cpu_allocation_gauge_block(
+            {"cpu_alloc_ghz_vm": 150.0, "cpu_overallocated_real": True},
+            cpu_cap=100.0,
+        )
+        assert "Overallocated" in str(block)
+        assert "Overallocated for Sales" not in str(block)
