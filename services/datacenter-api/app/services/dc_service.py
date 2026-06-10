@@ -14,6 +14,7 @@ from psycopg2 import OperationalError
 from psycopg2.pool import PoolError
 
 from app.db.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
+from app.db.queries import vmware_datastore as vdq
 from app.db.queries import loki as lq, customer as cq, s3 as s3q, backup as bq
 from app.db.queries import brocade as brq, ibm_storage as isq
 from app.db.queries import zabbix_network as znq, zabbix_storage as zsq
@@ -4754,6 +4755,165 @@ JOIN latest l
     # ------------------------------------------------------------------
     # Zabbix Intel Storage Dashboard (capacity planning + disk health)
     # ------------------------------------------------------------------
+
+    def get_datastore_mapping(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """
+        Return all VMware datastores for a DC with capacity/usage, per-host mount
+        mapping (eşleştirme) and static inventory detail (VMFS / NAS).
+
+        Backed by three datalake tables joined on datastore_moid:
+          raw_vmware_datastore_metrics_agg      — capacity / usage / host & vm counts
+          raw_vmware_datastore_host_mount       — datastore ↔ host mounts
+          discovery_vmware_inventory_datastore  — VMFS version / NAS path / status
+
+        Shape:
+          {
+            "datastore_count": int,
+            "datastores": [
+              { ...metrics..., ...inventory..., "hosts": [ {host_name, mount_path, ...} ] }
+            ]
+          }
+        """
+        tr = time_range or default_time_range()
+        # Datastore tables are a one-shot snapshot; pin the window's end to the
+        # latest ingested timestamp (like get_dc_details) so a relative preset
+        # keeps finding the data instead of zeroing out as wall-clock advances.
+        if tr.get("anchor_latest"):
+            tr = self._smart_1h_tr(tr)
+        dc_target = (dc_code or "").upper()
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        cache_key = f"dc_datastore_mapping:{dc_target}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    metric_rows = self._run_rows(
+                        cur, vdq.DATASTORE_METRICS, (dc_target, start_ts, end_ts)
+                    )
+                    mount_rows = self._run_rows(
+                        cur,
+                        vdq.DATASTORE_HOST_MOUNTS,
+                        (start_ts, end_ts, dc_target, start_ts, end_ts),
+                    )
+                    inv_rows = self._run_rows(cur, vdq.DATASTORE_INVENTORY, None)
+
+            # Inventory detail keyed by datastore moid (component_moid).
+            inv_by_moid: dict[str, dict[str, Any]] = {}
+            for (
+                moid,
+                inv_type,
+                capacity_gb,
+                status,
+                status_description,
+                vmfs_uuid,
+                vmfs_version,
+                vmfs_block_size_mb,
+                nas_remote_host,
+                nas_remote_path,
+                nas_type,
+            ) in (inv_rows or []):
+                inv_by_moid[moid] = {
+                    "type": inv_type,
+                    "capacity_gb": float(capacity_gb) if capacity_gb is not None else None,
+                    "status": status,
+                    "status_description": status_description,
+                    "vmfs_uuid": vmfs_uuid,
+                    "vmfs_version": vmfs_version,
+                    "vmfs_block_size_mb": int(vmfs_block_size_mb)
+                    if vmfs_block_size_mb is not None
+                    else None,
+                    "nas_remote_host": nas_remote_host,
+                    "nas_remote_path": nas_remote_path,
+                    "nas_type": nas_type,
+                }
+
+            # Host mounts grouped by datastore moid (the eşleştirme).
+            mounts_by_ds: dict[str, list[dict[str, Any]]] = {}
+            for (
+                ds_moid,
+                host_moid,
+                host_name,
+                mount_path,
+                access_mode,
+                mounted,
+                accessible,
+                inaccessible_reason,
+            ) in (mount_rows or []):
+                mounts_by_ds.setdefault(ds_moid, []).append(
+                    {
+                        "host_moid": host_moid,
+                        "host_name": host_name or "Unknown",
+                        "mount_path": mount_path,
+                        "access_mode": access_mode,
+                        "mounted": bool(mounted) if mounted is not None else None,
+                        "accessible": bool(accessible) if accessible is not None else None,
+                        "inaccessible_reason": inaccessible_reason,
+                    }
+                )
+
+            datastores: list[dict[str, Any]] = []
+            for (
+                ds_moid,
+                ds_name,
+                datacenter_name,
+                ds_type,
+                capacity_bytes,
+                free_bytes,
+                used_bytes,
+                uncommitted_bytes,
+                used_percent,
+                accessible,
+                maintenance_mode,
+                multiple_host_access,
+                host_count,
+                vm_count,
+            ) in (metric_rows or []):
+                inv = inv_by_moid.get(ds_moid, {})
+                hosts = sorted(
+                    mounts_by_ds.get(ds_moid, []),
+                    key=lambda h: (h.get("host_name") or ""),
+                )
+                datastores.append(
+                    {
+                        "datastore_moid": ds_moid,
+                        "datastore_name": ds_name or "Unknown",
+                        "datacenter_name": datacenter_name,
+                        "type": ds_type or inv.get("type"),
+                        "capacity_bytes": int(capacity_bytes or 0),
+                        "free_bytes": int(free_bytes or 0),
+                        "used_bytes": int(used_bytes or 0),
+                        "uncommitted_bytes": int(uncommitted_bytes or 0),
+                        "used_percent": float(used_percent or 0.0),
+                        "accessible": bool(accessible) if accessible is not None else None,
+                        "maintenance_mode": maintenance_mode,
+                        "multiple_host_access": bool(multiple_host_access)
+                        if multiple_host_access is not None
+                        else None,
+                        "host_count": int(host_count or 0),
+                        "vm_count": int(vm_count or 0),
+                        "status": inv.get("status"),
+                        "status_description": inv.get("status_description"),
+                        "vmfs_version": inv.get("vmfs_version"),
+                        "vmfs_block_size_mb": inv.get("vmfs_block_size_mb"),
+                        "nas_remote_host": inv.get("nas_remote_host"),
+                        "nas_remote_path": inv.get("nas_remote_path"),
+                        "nas_type": inv.get("nas_type"),
+                        "hosts": hosts,
+                    }
+                )
+
+            datastores.sort(key=lambda d: d.get("capacity_bytes", 0), reverse=True)
+            result = {"datastore_count": len(datastores), "datastores": datastores}
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_datastore_mapping failed for %s: %s", dc_target, exc)
+            result = {"datastore_count": 0, "datastores": []}
+
+        cache.set(cache_key, result)
+        return result
 
     def get_zabbix_storage_devices(self, dc_code: str, time_range: dict | None = None) -> list[dict[str, Any]]:
         """

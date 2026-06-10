@@ -249,6 +249,12 @@ def storage_performance(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseSe
     return db.get_storage_performance(dc_code, tf.to_dict())
 
 
+@router.get("/datacenters/{dc_code}/storage/datastores", response_model=dict[str, Any])
+def storage_datastores(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    """VMware datastores for a DC with host-mount mapping + VMFS/NAS inventory detail."""
+    return db.get_datastore_mapping(dc_code, tf.to_dict())
+
+
 # ---------------------------------------------------------------------------
 # Network Dashboard (Zabbix) + Intel Storage (Zabbix) - DC scoped
 # ---------------------------------------------------------------------------

@@ -901,6 +901,18 @@ def get_dc_storage_capacity(dc_code: str, tr: Optional[dict]) -> dict:
     return _api_cache_get_with_stale(ck, fetch, {})
 
 
+def get_dc_datastore_mapping(dc_code: str, tr: Optional[dict]) -> dict:
+    enc = quote(dc_code, safe="")
+    params = _build_time_params(tr)
+    ck = f"api:dc_datastore_mapping:{enc}:{_serialize_tr_params(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/storage/datastores", params=params)
+        return data if isinstance(data, dict) else {}
+
+    return _api_cache_get_with_stale(ck, fetch, {})
+
+
 def get_dc_storage_performance(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
