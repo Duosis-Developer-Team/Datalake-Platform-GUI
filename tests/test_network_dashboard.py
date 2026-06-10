@@ -32,6 +32,7 @@ def test_backbone_billing_page_table_first():
     assert table is not None
     assert getattr(table, "page_count", None) == 1
     assert getattr(table, "page_action", None) == "custom"
+    assert getattr(table, "sort_action", None) == "none"
     assert _find_by_id(node, "net-interface-export-btn") is not None
     assert _find_by_id(node, "net-donut-grid-wrap") is not None
     assert _find_by_id(node, "net-export-btn-wrap") is not None

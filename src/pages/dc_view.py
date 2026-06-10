@@ -2562,7 +2562,8 @@ def _build_network_interface_page(
                         page_size=page_size_init,
                         page_count=page_count_init,
                         page_action="custom",
-                        sort_action="native",
+                        sort_action="none",
+                        filter_action="none",
                         style_table={"overflowX": "auto", "marginTop": "6px"},
                         style_cell={
                             "padding": "10px 14px",
