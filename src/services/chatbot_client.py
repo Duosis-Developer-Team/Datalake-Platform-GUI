@@ -17,7 +17,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 CHATBOT_API_URL = os.getenv("CHATBOT_API_URL", "http://chatbot-api:8000").rstrip("/")
-CHATBOT_TIMEOUT_SECONDS = float(os.getenv("CHATBOT_CLIENT_TIMEOUT", "75"))
+CHATBOT_TIMEOUT_SECONDS = float(os.getenv("CHATBOT_CLIENT_TIMEOUT", "600"))
 
 
 def _headers() -> dict[str, str]:

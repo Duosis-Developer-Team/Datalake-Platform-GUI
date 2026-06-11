@@ -29,6 +29,7 @@ class IntentPlan:
     sort_by: str = "avg"  # avg | max | latest
     needs_analysis: bool = True
     initial_tools: list[dict[str, Any]] = field(default_factory=list)
+    fallback_tools: list[dict[str, Any]] = field(default_factory=list)
     # --- domain-catalog enrichment (query_planner) ---
     architecture: Optional[str] = None  # classic | hyperconverged
     calculation: Optional[str] = None  # top | summary | variability | trend | comparison | risk

@@ -2,14 +2,16 @@
 
 ## Standard answer structure
 
-For operational metric questions, use:
+For operational metric questions (executive audience), use **analysis before conclusion**:
 
-1. **Kısa sonuç** — direct answer in 1-3 sentences.
-2. **Tablo/liste** — if the user asks top/list/comparison.
-3. **Analiz** — sustained/spike/variability/concentration/source distribution.
+1. **Analiz** — what was checked (`investigation_trace`), findings, business/ops interpretation (sustained/spike/variability/concentration).
+2. **Sonuç** — direct answer in 1-3 sentences.
+3. **Tablo/liste** — if the user asks top/list/comparison.
 4. **Risk seviyesi** — low/medium/high with reason.
 5. **Önerilen aksiyonlar** — concrete operational next checks.
 6. **Kaynak ve veri kalitesi** — tool/source, time window, latest collection time, confidence.
+
+See also [[13_executive_investigation]].
 
 ## CPU usage analysis
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+from app.catalog import domain_catalog
 from app.config import settings
 from app.services.planner import IntentPlan
 from app.services.tool_registry import ToolResult, get_tool
@@ -113,6 +114,22 @@ def _followup_args(plan: IntentPlan) -> dict[str, Any]:
     return {"dc_code": plan.dc_code, "days": plan.days, "limit": plan.limit}
 
 
+def _pending_fallbacks(plan: IntentPlan, run: set[str]) -> list[ToolRequest]:
+    """Catalog fallback tools not yet executed."""
+    pending: list[ToolRequest] = []
+    for req in plan.fallback_tools:
+        tool, args = (req.get("tool"), dict(req.get("args") or {})) if isinstance(req, dict) else (req.tool, dict(req.args or {}))
+        if tool and tool not in run:
+            pending.append(ToolRequest(tool, args))
+    if plan.metric_key:
+        md = domain_catalog.get_by_key(plan.metric_key)
+        if md:
+            for t in md.fallback_tools:
+                if t not in run and not any(p.tool == t for p in pending):
+                    pending.append(ToolRequest(t, _followup_args(plan)))
+    return pending
+
+
 def _aggregate_only_without_rows(results: list[ToolResult]) -> bool:
     """True when only platform/DC aggregate API tools ran (no per-entity rows)."""
     if not results:
@@ -124,7 +141,11 @@ def _aggregate_only_without_rows(results: list[ToolResult]) -> bool:
     return not any(_rows_of(r) for r in results if r.status == "success")
 
 
-def evaluate(plan: IntentPlan, results: list[ToolResult]) -> EvidenceEvaluation:
+def evaluate(
+    plan: IntentPlan,
+    results: list[ToolResult],
+    tool_budget_exhausted: bool = False,
+) -> EvidenceEvaluation:
     run = {r.name for r in results}
     rows, source, primary_tool = _primary(results)
     ev = EvidenceEvaluation(primary_rows=rows, primary_source=source)
@@ -184,7 +205,7 @@ def evaluate(plan: IntentPlan, results: list[ToolResult]) -> EvidenceEvaluation:
         return ev
 
     if not rows:
-        # Non host/vm entity — avoid claiming sufficiency when only aggregates ran.
+        # Non host/vm entity — try catalog fallbacks before giving up.
         if _aggregate_only_without_rows(results) and plan.metric_key == "global_km_cluster_memory_top":
             db_tool = "get_global_km_cluster_memory_top"
             if db_tool not in run:
@@ -192,8 +213,21 @@ def evaluate(plan: IntentPlan, results: list[ToolResult]) -> EvidenceEvaluation:
                     ToolRequest(db_tool, {"limit": plan.limit or 5, **({"dc_code": plan.dc_code} if plan.dc_code else {})})
                 ]
                 return ev
+        fallbacks = _pending_fallbacks(plan, run)
+        if fallbacks and not tool_budget_exhausted:
+            ev.recommended_followup_tools = fallbacks[: settings.chatbot_max_tool_calls_per_iteration]
+            ev.data_quality_warnings.append("primary tools returned no rows; trying catalog fallbacks")
+            return ev
+        if _aggregate_only_without_rows(results) and not tool_budget_exhausted:
+            ev.recommended_followup_tools = [
+                ToolRequest("get_datacenters_summary", {}),
+            ]
+            ev.data_quality_warnings.append("only aggregates ran; broadening to datacenter summary")
+            return ev
         ev.enough_for_answer = True
-        ev.confidence = "medium"
+        ev.confidence = "low" if not results else "medium"
+        if not results:
+            ev.data_quality_warnings.append("no tools returned usable rows after investigation")
         return ev
 
     # --- data quality on the rows ------------------------------------------ #

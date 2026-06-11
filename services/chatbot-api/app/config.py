@@ -44,8 +44,9 @@ class Settings(BaseSettings):
     chatbot_temperature: float = 0.2
     chatbot_max_tokens: int = 900
     chatbot_top_p: float = 1.0
-    chatbot_timeout_seconds: float = 60.0
+    chatbot_timeout_seconds: float = 120.0
     chatbot_max_retries: int = 2
+    chatbot_request_timeout_seconds: float = 600.0
 
     # ------------------------------------------------------------------ #
     # Internal backend service URLs (Docker/K8s service DNS)
@@ -96,12 +97,11 @@ class Settings(BaseSettings):
     # Agentic analysis loop (multi-step tool iteration + evaluation)
     # ------------------------------------------------------------------ #
     chatbot_agentic_mode: bool = True  # False => legacy single-pass behaviour
-    # Defaults kept conservative (the described VM flow is "max 3 iter / 6 calls")
-    # so worst-case latency stays under the 75s frontend timeout. Env can raise
-    # these toward the 10/20 upper bounds.
-    chatbot_max_tool_iterations: int = 3
-    chatbot_max_tool_calls_per_turn: int = 6
-    chatbot_max_tool_calls_per_iteration: int = 3
+    chatbot_llm_react_mode: bool = True  # LLM function-calling ReAct loop (falls back if unsupported)
+    chatbot_max_tool_iterations: int = 50
+    chatbot_max_tool_calls_per_turn: int = 150
+    chatbot_max_tool_calls_per_iteration: int = 10
+    chatbot_max_llm_rounds: int = 150
     chatbot_analysis_mode: str = "operational"
 
     # CPU analysis thresholds (percent) — tunable via env.

@@ -66,6 +66,9 @@ class ChatResponse(BaseModel):
     used_tools: list[ToolCallSummary] = Field(default_factory=list)
     usage: Optional[dict[str, Any]] = None
     request_id: str
+    llm_rounds: Optional[int] = None
+    tool_call_count: Optional[int] = None
+    investigation_summary: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #

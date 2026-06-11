@@ -29,10 +29,10 @@ Chatbot eklentisi bunun yanında ayrı internal service'tir:
 WebUI chatbot widget
   ↓ server-side callback
 chatbot-api
-  ↓ deterministic planner/agent loop
+  ↓ hybrid planner + seed tools + optional LLM ReAct loop
 allowlisted API tools + allowlisted read-only DB tools
   ↓
-Bulutistan LLMaaS final answer synthesis
+Bulutistan LLMaaS analysis-first answer (ReAct draft or synthesis)
 ```
 
 ## Chatbot'un rolü
@@ -51,5 +51,6 @@ Chatbot genel amaçlı internet botu değildir. Şu rolü üstlenmelidir:
 3. **Tool-first factuality:** Sayısal cevaplar yalnızca API/DB tool sonuçlarına dayanmalıdır.
 4. **Repo/data model knowledge:** WebUI'da görünen kart/grafiklerin hangi endpointlerden ve tablolardan beslendiğini bilmelidir (ör. cluster listesi için `get_dc_classic_clusters` / `get_dc_hyperconverged_clusters`, zabbix storage trend için `get_dc_zabbix_storage_trend` gibi mevcut tool'lar dahil).
 5. **Safe DB access:** DB'ye serbest SQL yok; sadece allowlist SELECT template. API yetersizse DB fallback — bkz. [[11_api_vs_db_routing]].
-6. **Analytical answer:** Cevaplarda kısa sonuç, tablo, analiz, risk, aksiyon ve kaynak olmalıdır.
+6. **Analytical answer:** Cevaplarda önce analiz, sonra sonuç; tablo, risk, aksiyon ve kaynak — bkz. [[13_executive_investigation]].
 7. **Conversation session:** X ile kapatınca history silinir; açık oturumda context korunur — bkz. [[12_conversation_session]].
+8. **Investigation budget:** Soru başına en fazla 150 tool + 150 LLM ReAct turu; veri yok iddiası yalnızca investigation_trace sonrası — bkz. [[13_executive_investigation]].

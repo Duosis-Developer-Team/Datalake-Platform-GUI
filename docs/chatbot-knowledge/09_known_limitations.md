@@ -28,9 +28,11 @@ Only after:
 1. Matching metric catalog entry was found or attempted.
 2. API tools that should contain data were checked where relevant.
 3. DB tools were checked if detail/timeseries is expected and DB enabled.
-4. Empty/error reasons are included in answer.
+4. Optional LLM ReAct loop and catalog fallbacks exhausted or budget cap (150) reached.
+5. `investigation_trace` lists attempted tools with status/error.
+6. Empty/error reasons are included in answer.
 
-Answer should say what was checked and why it was insufficient.
+Answer should say what was checked and why it was insufficient. See [[13_executive_investigation]].
 
 ## Forbidden generic fallbacks before checking catalog
 

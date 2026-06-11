@@ -190,7 +190,10 @@ def _typing_bubble() -> Any:
         [
             _avatar(),
             html.Div(
-                html.Div([html.Span(), html.Span(), html.Span()], className="chatbot-loading-dots"),
+                [
+                    html.Div([html.Span(), html.Span(), html.Span()], className="chatbot-loading-dots"),
+                    html.Div("Veri kaynakları analiz ediliyor…", className="chatbot-typing-label"),
+                ],
                 className="chatbot-bubble-assistant chatbot-typing",
             ),
         ],

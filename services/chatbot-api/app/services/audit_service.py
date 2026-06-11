@@ -29,6 +29,9 @@ class AuditRecord:
     tools: list[str] = field(default_factory=list)
     tool_status: str = "none"
     iterations: Optional[int] = None  # agentic loop iterations (None => single-pass)
+    llm_rounds: Optional[int] = None
+    tool_call_count: Optional[int] = None
+    react_mode_used: bool = False
     latency_ms: Optional[int] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None

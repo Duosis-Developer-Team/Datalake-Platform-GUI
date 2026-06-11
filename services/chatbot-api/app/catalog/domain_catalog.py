@@ -291,3 +291,7 @@ def find_metric_candidates(text: str) -> list[MetricDefinition]:
 def match(text: str) -> Optional[MetricDefinition]:
     cands = find_metric_candidates(text)
     return cands[0] if cands else None
+
+
+def get_by_key(key: str) -> Optional[MetricDefinition]:
+    return METRICS.get(key)

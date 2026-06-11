@@ -165,5 +165,7 @@ def plan(message: str, ctx: Optional[FrontendContext],
     # explicitly excluded — never bypassing the registry allowlist.
     forbidden = set(md.forbidden_tools)
     tools = [t for t in _order_by_source(md.primary_tools, source_pref) if t not in forbidden]
+    fallbacks = [t for t in _order_by_source(md.fallback_tools, source_pref) if t not in forbidden]
     p.initial_tools = [{"tool": t, "args": dict(base)} for t in tools]
+    p.fallback_tools = [{"tool": t, "args": dict(base)} for t in fallbacks]
     return p

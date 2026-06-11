@@ -53,9 +53,25 @@ except Exception:  # pragma: no cover - dev venv without openai
 
 
 @dataclass
+class ToolCallRequest:
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass
 class LLMResult:
     answer: str
     model: str
+    usage: Optional[dict[str, Any]] = None
+
+
+@dataclass
+class LLMResultWithTools:
+    content: Optional[str]
+    model: str
+    tool_calls: list[ToolCallRequest] = field(default_factory=list)
+    finish_reason: Optional[str] = None
     usage: Optional[dict[str, Any]] = None
 
 
@@ -98,6 +114,7 @@ class LLMClient:
     def __init__(self, settings_obj=settings) -> None:
         self.settings = settings_obj
         self._client = None  # lazy
+        self._tools_support: Optional[bool] = None  # cached probe result
 
     # -- configuration ------------------------------------------------------ #
 
@@ -153,7 +170,133 @@ class LLMClient:
                     raise
             raise
 
+    def probe_tools_support(self) -> bool:
+        """Return whether the provider accepts the ``tools`` parameter (cached)."""
+        if self._tools_support is not None:
+            return self._tools_support
+        if not self.is_configured or not _OPENAI_AVAILABLE:
+            self._tools_support = False
+            return False
+        dummy_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "ping_tool",
+                    "description": "Connectivity probe",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        try:
+            client = self._get_client()
+            resp = client.chat.completions.create(
+                model=self.settings.chatbot_model,
+                messages=[{"role": "user", "content": "Reply with OK only."}],
+                tools=dummy_tools,
+                max_tokens=5,
+                temperature=0,
+                stream=False,
+            )
+            msg = resp.choices[0].message
+            _ = msg.content or msg.tool_calls
+            self._tools_support = True
+        except BadRequestError as exc:
+            detail = str(exc).lower()
+            if "tool" in detail or "function" in detail:
+                logger.info("LLM provider rejected tools parameter: %s", exc)
+                self._tools_support = False
+            else:
+                # Bad request for another reason — assume tools may work in ReAct.
+                self._tools_support = True
+        except Exception as exc:
+            logger.warning("tools support probe failed: %s", exc)
+            self._tools_support = False
+        return self._tools_support
+
+    def complete_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> LLMResultWithTools:
+        """Chat completion with optional function/tool calls."""
+        if not self.is_configured:
+            raise LLMError("not_configured", MSG_NOT_CONFIGURED)
+
+        use_model = model or self.settings.chatbot_model
+        return self._call_with_tools(use_model, messages, tools, max_tokens=max_tokens)
+
     # -- internals ---------------------------------------------------------- #
+
+    def _call_with_tools(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: Optional[int] = None,
+    ) -> LLMResultWithTools:
+        client = self._get_client()
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools,
+                temperature=self.settings.chatbot_temperature,
+                max_tokens=max_tokens or self.settings.chatbot_max_tokens,
+                top_p=self.settings.chatbot_top_p,
+                stream=False,
+            )
+        except AuthenticationError as exc:
+            raise LLMError("auth", MSG_AUTH_FAILED, str(exc)) from exc
+        except RateLimitError as exc:
+            raise LLMError("rate_limit", MSG_RATE_LIMIT, str(exc)) from exc
+        except APITimeoutError as exc:
+            raise LLMError("timeout", MSG_TIMEOUT, str(exc)) from exc
+        except NotFoundError as exc:
+            raise LLMError("model_unavailable", MSG_BAD_REQUEST, str(exc)) from exc
+        except BadRequestError as exc:
+            raise LLMError("bad_request", MSG_BAD_REQUEST, str(exc)) from exc
+        except (APIConnectionError, APIError) as exc:
+            raise LLMError("upstream", MSG_UPSTREAM, str(exc)) from exc
+        except Exception as exc:  # pragma: no cover
+            raise LLMError("upstream", MSG_UPSTREAM, str(exc)) from exc
+
+        choice = resp.choices[0]
+        msg = choice.message
+        content = (msg.content or "").strip() or None
+        tool_calls: list[ToolCallRequest] = []
+        for tc in getattr(msg, "tool_calls", None) or []:
+            fn = tc.function
+            tool_calls.append(
+                ToolCallRequest(
+                    id=tc.id,
+                    name=fn.name,
+                    arguments=fn.arguments or "{}",
+                )
+            )
+
+        usage = None
+        try:
+            if getattr(resp, "usage", None) is not None:
+                usage = {
+                    "prompt_tokens": resp.usage.prompt_tokens,
+                    "completion_tokens": resp.usage.completion_tokens,
+                    "total_tokens": resp.usage.total_tokens,
+                }
+        except Exception:  # pragma: no cover
+            usage = None
+
+        if not content and not tool_calls:
+            raise LLMError("empty", MSG_UPSTREAM, "empty completion from provider")
+
+        return LLMResultWithTools(
+            content=content,
+            model=model,
+            tool_calls=tool_calls,
+            finish_reason=getattr(choice, "finish_reason", None),
+            usage=usage,
+        )
 
     def _call(
         self,

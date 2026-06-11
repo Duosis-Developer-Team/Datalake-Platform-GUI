@@ -160,50 +160,64 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
     audit.tools = [r.name for r in tool_results if r.status in ("success", "error")]
     if outcome is not None:
         audit.iterations = outcome.iterations
+        audit.llm_rounds = outcome.llm_rounds
+        audit.tool_call_count = outcome.tool_call_count
+        audit.react_mode_used = outcome.react_mode_used
     if tool_results:
         audit.tool_status = (
             "success" if any(r.status == "success" for r in tool_results) else "error"
         )
 
-    # 4) Build messages + 5) call LLM.
-    if outcome is not None:
-        messages = context_builder.build_agentic_messages(
-            user_message=message,
-            conversation=req.conversation,
-            frontend_context=req.frontend_context,
-            outcome=outcome,
-            user_id=user_id,
-        )
-    else:
-        messages = context_builder.build_messages(
-            user_message=message,
-            conversation=req.conversation,
-            frontend_context=req.frontend_context,
-            tool_results=tool_results,
-            user_id=user_id,
-        )
-    llm = get_llm_client()
-    llm_failed = False
-    try:
-        result = llm.complete(messages)
-        answer, model, usage = result.answer, result.model, result.usage
-        audit.status = "success"
-        if usage:
-            audit.prompt_tokens = usage.get("prompt_tokens")
-            audit.completion_tokens = usage.get("completion_tokens")
-    except LLMError as exc:
-        # User-safe message; technical detail stays in logs only.
-        logger.warning("LLM error [%s]: %s", exc.error_type, exc.detail)
-        answer, usage = exc.user_message, None
-        audit.status = "llm_error"
-        audit.error_type = exc.error_type
-        llm_failed = True
+    investigation_summary = None
+    if outcome is not None and outcome.analysis and outcome.analysis.extra:
+        investigation_summary = outcome.analysis.extra.get("investigation_summary")
 
-    # Deterministic fallback: if the tools actually returned rows, the user must
-    # never see a generic LLM error or a "no data" claim. Build the answer from
-    # the analysis summary instead — whether the model errored/returned empty or
-    # denied existing data.
-    if outcome is not None and _has_rows(tool_results) and (llm_failed or _denies_data(answer)):
+    # 4) Build messages + 5) call LLM (skip if ReAct already produced draft_answer).
+    answer = ""
+    usage = None
+    llm_failed = False
+    if outcome is not None and outcome.draft_answer:
+        answer = outcome.draft_answer
+        model = outcome.react_mode_used and settings.chatbot_model or model
+        audit.status = "success"
+    else:
+        if outcome is not None:
+            messages = context_builder.build_agentic_messages(
+                user_message=message,
+                conversation=req.conversation,
+                frontend_context=req.frontend_context,
+                outcome=outcome,
+                user_id=user_id,
+            )
+        else:
+            messages = context_builder.build_messages(
+                user_message=message,
+                conversation=req.conversation,
+                frontend_context=req.frontend_context,
+                tool_results=tool_results,
+                user_id=user_id,
+            )
+        llm = get_llm_client()
+        try:
+            result = llm.complete(messages)
+            answer, model, usage = result.answer, result.model, result.usage
+            audit.status = "success"
+            if usage:
+                audit.prompt_tokens = usage.get("prompt_tokens")
+                audit.completion_tokens = usage.get("completion_tokens")
+        except LLMError as exc:
+            logger.warning("LLM error [%s]: %s", exc.error_type, exc.detail)
+            answer, usage = exc.user_message, None
+            audit.status = "llm_error"
+            audit.error_type = exc.error_type
+            llm_failed = True
+
+    # Deterministic fallback: rows exist OR investigation ran but model denied data.
+    inv_ran = bool(investigation_summary)
+    if outcome is not None and (
+        (_has_rows(tool_results) and (llm_failed or _denies_data(answer)))
+        or (inv_ran and _denies_data(answer) and not _has_rows(tool_results))
+    ):
         logger.info("deterministic fallback formatter used (llm_failed=%s)", llm_failed)
         answer = context_builder.format_from_analysis(outcome)
         if audit.status == "llm_error":
@@ -220,6 +234,9 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
         used_tools=_summaries(tool_results),
         usage=usage,
         request_id=request_id,
+        llm_rounds=outcome.llm_rounds if outcome else None,
+        tool_call_count=outcome.tool_call_count if outcome else None,
+        investigation_summary=investigation_summary,
     )
 
 
