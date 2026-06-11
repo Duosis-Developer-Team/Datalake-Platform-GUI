@@ -1788,9 +1788,11 @@ def _net_interface_table_footer(
     row_count: int,
     *,
     interface_scope: str | None = None,
-    rows: list[dict] | None = None,
+    billing_items: list[dict] | None = None,
     billing_meta: dict | None = None,
 ) -> str:
+    from src.utils.format_units import format_compact_money_tl
+
     if total <= 0:
         return "No interfaces in scope"
     start = (page - 1) * page_size + 1
@@ -1803,9 +1805,9 @@ def _net_interface_table_footer(
         return base
     if billing_meta and not billing_meta.get("has_price"):
         return f"{base} — CRM unit price unavailable"
-    page_cost = sum(float(r.get("estimated_cost_tl") or 0) for r in (rows or []))
+    page_cost = sum(float(it.get("estimated_cost_tl") or 0) for it in (billing_items or []))
     if page_cost > 0:
-        return f"{base} — Page est. cost: {page_cost:,.2f} TL"
+        return f"{base} — Page est. cost: {format_compact_money_tl(page_cost)}"
     return base
 
 
@@ -1862,12 +1864,14 @@ def _net_export_interfaces_csv(items: list[dict], *, interface_scope: str | None
             "utilization_pct": round(float(it.get("utilization_pct") or 0), 2),
         }
         if include_billing:
-            p95_total_bps = float(it.get("p95_total_bps") or 0)
-            row["p95_billable_mbit"] = it.get("p95_billable_mbit")
-            if row["p95_billable_mbit"] is None:
-                row["p95_billable_mbit"] = round(p95_total_bps / 1_000_000, 3)
-            row["unit_price_tl_per_mbit"] = it.get("unit_price_tl_per_mbit")
-            row["estimated_cost_tl"] = it.get("estimated_cost_tl")
+            mbit_val = it.get("p95_billable_mbit")
+            if mbit_val is None:
+                mbit_val = float(it.get("p95_total_bps") or 0) / 1_000_000
+            unit_val = it.get("unit_price_tl_per_mbit")
+            cost_val = it.get("estimated_cost_tl")
+            row["p95_billable_mbit"] = f"{float(mbit_val):.6f}" if mbit_val is not None else ""
+            row["unit_price_tl_per_mbit"] = f"{float(unit_val):.4f}" if unit_val is not None else ""
+            row["estimated_cost_tl"] = f"{float(cost_val):.2f}" if cost_val is not None else ""
         writer.writerow(row)
     return buf.getvalue()
 
@@ -2205,7 +2209,7 @@ def update_net_interface_table(
         total,
         len(rows),
         interface_scope=interface_scope,
-        rows=rows,
+        billing_items=items,
         billing_meta=interface_data.get("billing"),
     )
     page_count = _net_interface_table_page_count(total, page_size_safe)

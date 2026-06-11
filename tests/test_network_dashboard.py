@@ -120,8 +120,8 @@ def test_backbone_interface_table_rows_map_billing_fields():
         ],
         interface_scope="backbone",
     )
-    assert rows[0]["p95_billable_mbit"] == 3000.0
-    assert rows[0]["estimated_cost_tl"] == 993360.0
+    assert rows[0]["p95_billable_mbit"] == "3.00K"
+    assert "993" in rows[0]["estimated_cost_tl"]
 
 
 def test_backbone_table_subtitle_includes_crm_price():

@@ -64,7 +64,7 @@ def test_update_net_interface_table_returns_footer_and_page_count():
 
         mock_api.get_dc_network_interface_table.assert_called_once()
         assert len(rows) == 1
-        assert rows[0]["estimated_cost_tl"] == 1_655_600.0
+        assert rows[0]["estimated_cost_tl"] == "1.66M TL"
         assert page_size == 50
         assert page_count == 1
         assert page_current == 0

@@ -34,6 +34,7 @@ from app.utils.time_range import (
 )
 from app.utils.format_units import smart_cpu, smart_memory, smart_storage
 from shared.customer.cache_keys import customer_assets_cache_key
+from shared.network.backbone_billing import estimate_backbone_cost_tl, p95_bps_to_mbit
 from shared.vmware.host_cpu_ghz import (
     DEFAULT_HOST_CPU_GHZ,
     NETBOX_HOST_CPU_STRINGS,
@@ -4762,16 +4763,19 @@ JOIN latest l
 
     @staticmethod
     def _apply_backbone_billing(items: list[dict], price_meta: dict) -> list[dict]:
+        """Enrich rows: Mbit from P95(total bps), cost = Mbit * CRM TL/Mbit (interface_calculation.py)."""
         unit_price = float(price_meta.get("unit_price_tl") or 0)
         has_price = bool(price_meta.get("has_price"))
         enriched: list[dict] = []
         for it in items or []:
             row = dict(it)
             p95_total = float(row.get("p95_total_bps") or 0)
-            p95_mbit = round(p95_total / 1_000_000, 3)
-            row["p95_billable_mbit"] = p95_mbit
+            p95_mbit = p95_bps_to_mbit(p95_total)
+            row["p95_billable_mbit"] = round(p95_mbit, 6)
             row["unit_price_tl_per_mbit"] = round(unit_price, 4) if has_price else None
-            row["estimated_cost_tl"] = round(p95_mbit * unit_price, 2) if has_price else None
+            row["estimated_cost_tl"] = (
+                estimate_backbone_cost_tl(p95_total, unit_price) if has_price else None
+            )
             enriched.append(row)
         return enriched
 

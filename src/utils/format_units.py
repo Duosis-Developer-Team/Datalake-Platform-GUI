@@ -91,6 +91,48 @@ def pct_float(used: float, cap: float) -> float:
     return min(float(used) / float(cap) * 100, 100.0)
 
 
+def format_full_decimal(value, decimals: int = 2) -> str:
+    """Format a numeric value with fixed decimals (export / full display)."""
+    if value is None:
+        return "-"
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    return f"{amount:,.{decimals}f}"
+
+
+def format_compact_decimal(value, decimals: int = 2) -> str:
+    """Abbreviate large numbers for UI tables (e.g. 1.65M, 5.00K)."""
+    if value is None:
+        return "-"
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    sign = "-" if amount < 0 else ""
+    n = abs(amount)
+    if n >= 1_000_000_000:
+        return f"{sign}{n / 1_000_000_000:.{decimals}f}B"
+    if n >= 1_000_000:
+        return f"{sign}{n / 1_000_000:.{decimals}f}M"
+    if n >= 1_000:
+        return f"{sign}{n / 1_000:.{decimals}f}K"
+    return f"{sign}{n:,.{decimals}f}" if decimals else f"{sign}{n:,.0f}"
+
+
+def format_compact_money_tl(value, decimals: int = 2) -> str:
+    """Compact TL amount for UI; use format_full_decimal for export."""
+    if value is None:
+        return "-"
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    compact = format_compact_decimal(amount, decimals=decimals)
+    return f"{compact} TL" if compact != "-" else "-"
+
+
 def alloc_pct_float(allocated: float, cap: float) -> float:
     """Return allocation percentage without capping (overcommit may exceed 100%)."""
     if not cap:

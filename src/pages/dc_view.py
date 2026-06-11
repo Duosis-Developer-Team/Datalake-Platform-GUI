@@ -24,6 +24,9 @@ from src.utils.format_units import (
     alloc_pct_float,
     title_case,
     parse_storage_string,
+    format_compact_decimal,
+    format_compact_money_tl,
+    format_full_decimal,
 )
 from src.utils.ibm_storage_capacity import (
     aggregate_ibm_storage_capacities,
@@ -2298,9 +2301,9 @@ def _network_interface_table_columns(interface_scope: str | None) -> list[dict]:
         cols[5]["name"] = "P95 Billable (Gbps)"
         cols.extend(
             [
-                {"name": "P95 Billable (Mbit)", "id": "p95_billable_mbit", "type": "numeric"},
-                {"name": "Unit Price (TL/Mbit)", "id": "unit_price_tl_per_mbit", "type": "numeric"},
-                {"name": "Est. Cost (TL)", "id": "estimated_cost_tl", "type": "numeric"},
+                {"name": "P95 Billable (Mbit)", "id": "p95_billable_mbit"},
+                {"name": "Unit Price (TL/Mbit)", "id": "unit_price_tl_per_mbit"},
+                {"name": "Est. Cost (TL)", "id": "estimated_cost_tl"},
             ]
         )
     return cols
@@ -2379,11 +2382,16 @@ def _interface_table_rows(items: list, interface_scope: str | None = None) -> li
             "utilization_pct": round(float(it.get("utilization_pct") or 0), 2),
         }
         if include_billing:
+            mbit = it.get("p95_billable_mbit")
             unit_price = it.get("unit_price_tl_per_mbit")
             est_cost = it.get("estimated_cost_tl")
-            row["p95_billable_mbit"] = it.get("p95_billable_mbit")
-            row["unit_price_tl_per_mbit"] = unit_price
-            row["estimated_cost_tl"] = est_cost
+            row["p95_billable_mbit"] = format_compact_decimal(mbit) if mbit is not None else "-"
+            row["unit_price_tl_per_mbit"] = (
+                format_full_decimal(unit_price, decimals=4) if unit_price is not None else "-"
+            )
+            row["estimated_cost_tl"] = (
+                format_compact_money_tl(est_cost) if est_cost is not None else "-"
+            )
         rows.append(row)
     return rows
 

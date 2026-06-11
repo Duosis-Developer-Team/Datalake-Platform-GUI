@@ -238,8 +238,9 @@ ORDER BY interface_name, interface_alias NULLS LAST;
 
 
 # --- 95th percentile interface bandwidth (downsampled) ---
-# Uses time_bucket to downsample points into buckets, then computes percentile_cont
-# across buckets per interface.
+# Aligns with interface_calculation.py:
+#   total_bps = rx + tx per sample, then P95(total_bps), then / 1_000_000 for Mbps/Mbit.
+# Platform uses 1-hour buckets (avg rx/tx per hour) before percentile_cont(0.95).
 #
 # Params:
 #   - hosts: list[str]
@@ -283,6 +284,7 @@ ranked AS (
         interface_alias,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_rx_bps) AS p95_rx_bps,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_tx_bps) AS p95_tx_bps,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY (avg_rx_bps + avg_tx_bps)) AS p95_total_bps,
         MAX(speed) AS max_speed_bps
     FROM bucketed
     GROUP BY interface_name, interface_alias
@@ -292,7 +294,7 @@ SELECT
     interface_alias,
     COALESCE(p95_rx_bps, 0)::double precision AS p95_rx_bps,
     COALESCE(p95_tx_bps, 0)::double precision AS p95_tx_bps,
-    COALESCE(p95_rx_bps, 0) + COALESCE(p95_tx_bps, 0) AS p95_total_bps,
+    COALESCE(p95_total_bps, 0)::double precision AS p95_total_bps,
     COALESCE(max_speed_bps, 0)::double precision AS speed_bps
 FROM ranked
 ORDER BY p95_total_bps DESC;
@@ -344,6 +346,7 @@ p95 AS (
         interface_alias,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_rx_bps) AS p95_rx_bps,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_tx_bps) AS p95_tx_bps,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY (avg_rx_bps + avg_tx_bps)) AS p95_total_bps,
         MAX(speed) AS max_speed_bps
     FROM bucketed
     GROUP BY interface_name, interface_alias
@@ -353,7 +356,7 @@ SELECT
     interface_alias,
     COALESCE(p95_rx_bps, 0)::double precision AS p95_rx_bps,
     COALESCE(p95_tx_bps, 0)::double precision AS p95_tx_bps,
-    (COALESCE(p95_rx_bps, 0) + COALESCE(p95_tx_bps, 0)) AS p95_total_bps,
+    COALESCE(p95_total_bps, 0)::double precision AS p95_total_bps,
     COALESCE(max_speed_bps, 0)::double precision AS speed_bps
 FROM p95
 WHERE
@@ -442,6 +445,7 @@ ranked AS (
         interface_alias,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_rx_bps) AS p95_rx_bps,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_tx_bps) AS p95_tx_bps,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY (avg_rx_bps + avg_tx_bps)) AS p95_total_bps,
         MAX(speed) AS max_speed_bps
     FROM bucketed
     GROUP BY host, interface_name, interface_alias
@@ -452,7 +456,7 @@ SELECT
     interface_alias,
     COALESCE(p95_rx_bps, 0)::double precision AS p95_rx_bps,
     COALESCE(p95_tx_bps, 0)::double precision AS p95_tx_bps,
-    COALESCE(p95_rx_bps, 0) + COALESCE(p95_tx_bps, 0) AS p95_total_bps,
+    COALESCE(p95_total_bps, 0)::double precision AS p95_total_bps,
     COALESCE(max_speed_bps, 0)::double precision AS speed_bps
 FROM ranked
 ORDER BY p95_total_bps DESC;
@@ -503,6 +507,7 @@ p95 AS (
         interface_alias,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_rx_bps) AS p95_rx_bps,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY avg_tx_bps) AS p95_tx_bps,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY (avg_rx_bps + avg_tx_bps)) AS p95_total_bps,
         MAX(speed) AS max_speed_bps
     FROM bucketed
     GROUP BY host, interface_name, interface_alias
@@ -520,7 +525,7 @@ SELECT
     interface_alias,
     COALESCE(p95_rx_bps, 0)::double precision AS p95_rx_bps,
     COALESCE(p95_tx_bps, 0)::double precision AS p95_tx_bps,
-    (COALESCE(p95_rx_bps, 0) + COALESCE(p95_tx_bps, 0)) AS p95_total_bps,
+    COALESCE(p95_total_bps, 0)::double precision AS p95_total_bps,
     COALESCE(max_speed_bps, 0)::double precision AS speed_bps,
     COUNT(*) OVER()::bigint AS total_count
 FROM p95
@@ -542,7 +547,7 @@ SELECT
     interface_alias,
     COALESCE(p95_rx_bps, 0)::double precision AS p95_rx_bps,
     COALESCE(p95_tx_bps, 0)::double precision AS p95_tx_bps,
-    (COALESCE(p95_rx_bps, 0) + COALESCE(p95_tx_bps, 0)) AS p95_total_bps,
+    COALESCE(p95_total_bps, 0)::double precision AS p95_total_bps,
     COALESCE(max_speed_bps, 0)::double precision AS speed_bps
 FROM p95
 WHERE
