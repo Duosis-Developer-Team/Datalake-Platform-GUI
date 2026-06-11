@@ -57,7 +57,6 @@ def sync_dc_active_tab(active_tab):
     Output("dc-view-page-root", "children"),
     Output("dc-view-loaded-tabs", "data"),
     Output("dc-view-context-store", "data"),
-    Output("dc-view-active-tab", "data", allow_duplicate=True),
     Input("url", "pathname"),
     Input("app-time-range", "data"),
     State("dc-view-visible-sections", "data"),
@@ -104,7 +103,23 @@ def load_dc_view_data(
         active_outer_tab=active,
     )
     wrapper = html.Div(className="dc-page-enter customer-page-enter", children=[page])
-    return wrapper, sorted(eager), _dc_context(dc_id, tr), active
+    return wrapper, sorted(eager), _dc_context(dc_id, tr)
+
+
+@callback(
+    Output("dc-view-active-tab", "data", allow_duplicate=True),
+    Input("url", "pathname"),
+    State("dc-view-dc-id", "data"),
+    prevent_initial_call=True,
+)
+def reset_dc_active_tab_on_dc_change(pathname, prev_dc_id):
+    """Reset tab to Summary when navigating to a different datacenter."""
+    dc_id = _dc_id_from_path(pathname)
+    if not dc_id:
+        raise dash.exceptions.PreventUpdate
+    if str(dc_id).upper() == str(prev_dc_id or "").upper():
+        raise dash.exceptions.PreventUpdate
+    return "summary"
 
 
 @callback(
@@ -117,11 +132,12 @@ def load_dc_view_data(
     Output("dc-view-loaded-tabs", "data", allow_duplicate=True),
     Input("dc-main-tabs", "value"),
     State("url", "pathname"),
+    State("app-time-range", "data"),
     State("dc-view-visible-sections", "data"),
     State("dc-view-loaded-tabs", "data"),
     prevent_initial_call=True,
 )
-def expand_dc_view_on_tab(active_tab, time_range, pathname, visible_sections, loaded_tabs):
+def expand_dc_view_on_tab(active_tab, pathname, time_range, visible_sections, loaded_tabs):
     dc_id = _dc_id_from_path(pathname)
     if not dc_id or not active_tab:
         raise dash.exceptions.PreventUpdate
