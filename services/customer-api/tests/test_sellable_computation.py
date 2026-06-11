@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from shared.sellable.computation import (
     apply_threshold,
+    apply_utilization_gate,
     compute_potential_tl,
     constrain_by_ratio,
     convert_unit,
@@ -67,6 +68,21 @@ def test_apply_threshold_zero_capacity_is_zero():
 
 def test_apply_threshold_negative_pct_treated_as_zero():
     assert apply_threshold(100.0, 0.0, -5.0) == 0.0
+
+
+# ---------------------------------------------------- apply_utilization_gate
+
+
+def test_apply_utilization_gate_blocks_when_allocation_over_threshold():
+    assert apply_utilization_gate(100.0, 85.0, None, 80.0) == 0.0
+
+
+def test_apply_utilization_gate_blocks_when_peak_util_over_threshold():
+    assert apply_utilization_gate(100.0, 50.0, 88.0, 80.0) == 0.0
+
+
+def test_apply_utilization_gate_allows_headroom_when_under_threshold():
+    assert apply_utilization_gate(100.0, 50.0, 70.0, 80.0) == 30.0
 
 
 # ------------------------------------------------------- constrain_by_ratio

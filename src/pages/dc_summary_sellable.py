@@ -10,7 +10,12 @@ from dash_iconify import DashIconify
 
 from src.services import api_client as api
 from src.utils.format_units import smart_cpu, smart_memory, smart_storage
-from src.utils.virt_sellable_aggregate import collect_virt_sellable_panels
+from src.utils.virt_sellable_aggregate import (
+    collect_virt_sellable_panels,
+    merge_power_panels_for_summary,
+    virt_constrained_loss_tl,
+    virt_total_potential_range,
+)
 
 _BRAND = "#4318FF"
 _MUTED = "#A3AED0"
@@ -153,29 +158,46 @@ def _resolve_virt_panels(dc_id: str, summary: dict | None) -> list[dict]:
     return out
 
 
-def build_sellable_executive_strip(summary: dict) -> html.Div:
-    """Executive KPI strip for Summary tab."""
-    modes = summary.get("computation_modes") or {}
+def build_sellable_executive_strip(
+    summary: dict | None = None,
+    *,
+    virt_panels: list[dict] | None = None,
+) -> html.Div:
+    """Executive KPI strip for Summary tab (virt-scoped, Virt tab parity)."""
+    panels = virt_panels or []
+    _, tl_min, tl_max = virt_total_potential_range(panels)
+    constrained_loss = virt_constrained_loss_tl(panels)
+    mapped_count = sum(
+        1 for p in panels if p.get("has_infra_source") or p.get("has_price")
+    )
+    modes = {
+        p.get("family"): p.get("computation_mode")
+        for p in panels
+        if p.get("computation_mode")
+    }
+    if not modes and summary:
+        modes = summary.get("computation_modes") or {}
     mode_badge = ", ".join(f"{k}: {v}" for k, v in modes.items()) or "aggregate"
+    unmapped = (summary or {}).get("unmapped_product_count") or 0
     exec_strip = dmc.SimpleGrid(cols={"base": 1, "sm": 2, "lg": 4}, spacing="md", children=[
         _exec_kpi(
             "Total Potential",
-            _fmt_tl_range(summary.get("total_potential_tl_min"), summary.get("total_potential_tl_max")),
-            "Physical – Effective aralığı",
+            _fmt_tl_range(tl_min, tl_max),
+            "Classic + Hyperconverged + Power (Virt tab parity)",
             "solar:wallet-money-bold-duotone",
             "grape",
         ),
         _exec_kpi(
             "Constrained Loss",
-            _fmt_tl(summary.get("constrained_loss_tl")),
-            "Ratio-bound kayıp",
+            _fmt_tl(constrained_loss),
+            "Ratio-bound kayıp (sanallaştırma)",
             "solar:chart-2-bold-duotone",
             "orange",
         ),
         _exec_kpi(
             "Mapped Panels",
-            str(summary.get("mapped_panel_count") or 0),
-            f"Unmapped products: {summary.get('unmapped_product_count') or 0}",
+            str(mapped_count),
+            f"Unmapped products: {unmapped}",
             "solar:checklist-bold-duotone",
             "teal",
         ),
@@ -200,7 +222,7 @@ def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] 
     """Sanallaştırma — Compute block (host-based CPU/RAM sellable)."""
     grouped = _group_panels_by_family(panels or []) if panels else {}
     cards = []
-    for fam in ("virt_classic", "virt_hyperconverged", "virt_power", "virt_power_hana"):
+    for fam in ("virt_classic", "virt_hyperconverged", "virt_power"):
         fam_panels = grouped.get(fam) if panels else _family_panels(summary or {}, fam)
         if not fam_panels:
             continue
@@ -326,12 +348,14 @@ def build_summary_sellable_section(dc_id: str, summary: dict | None = None) -> h
     if not data or not isinstance(data, dict):
         return None
 
-    virt_panels = _resolve_virt_panels(str(dc_id), data)
+    virt_panels = merge_power_panels_for_summary(
+        _resolve_virt_panels(str(dc_id), data)
+    )
 
     return html.Div(
         id="dc-summary-sellable-root",
         children=[
-            build_sellable_executive_strip(data),
+            build_sellable_executive_strip(data, virt_panels=virt_panels),
             html.Div(style={"marginTop": "16px"}, children=build_virt_compute_block(panels=virt_panels)),
             build_virt_storage_block(panels=virt_panels),
         ],

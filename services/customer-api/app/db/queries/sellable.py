@@ -237,11 +237,15 @@ GROUP BY 1;
 """
 
 # Latest IBM storage system totals per storage_ip (varchar capacities like
-# '388.1TB' — parsed to GB on the caller side).
+# '388.1TB' — parsed to GB on the caller side). Uses physical capacity columns
+# for Power sellable (not mdisk/datastore aggregates).
 # Params: (dc_pattern,)
 IBM_STORAGE_SYSTEM_TOTALS = """
 SELECT DISTINCT ON (storage_ip)
-    storage_ip, name, total_mdisk_capacity, total_used_capacity, total_free_space
+    storage_ip,
+    name,
+    physical_capacity,
+    physical_free_capacity
 FROM raw_ibm_storage_system
 WHERE name ILIKE %s
 ORDER BY storage_ip, "timestamp" DESC;

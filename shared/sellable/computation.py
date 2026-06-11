@@ -52,6 +52,27 @@ def apply_threshold(total: float, allocated: float, pct: float) -> float:
     return max(capped - max(allocated, 0.0), 0.0)
 
 
+def apply_utilization_gate(
+    total: float,
+    allocated: float,
+    utilization_pct: float | None,
+    threshold_pct: float,
+) -> float:
+    """Apply CRM threshold with allocation and peak-utilization gates.
+
+    When ``max(allocation%, utilization%)`` exceeds ``threshold_pct``, sellable
+    headroom is zero. Otherwise falls back to :func:`apply_threshold`.
+    """
+    if total <= 0:
+        return 0.0
+    alloc_pct = 100.0 * max(allocated, 0.0) / total
+    util_pct = max(utilization_pct or 0.0, 0.0)
+    effective_pct = max(alloc_pct, util_pct)
+    if effective_pct > threshold_pct + 1e-9:
+        return 0.0
+    return apply_threshold(total, allocated, threshold_pct)
+
+
 def _split_by_kind(panels: Iterable[PanelResult]) -> dict[str, PanelResult]:
     """Index panels by resource_kind (cpu/ram/storage). Last one wins; we
     expect a single panel per kind per family."""
@@ -183,10 +204,16 @@ def host_effective_units(
             cpu_total = float(h.get("cpu_total") or 0.0)
             cpu_alloc = float(h.get("cpu_alloc") or 0.0)
             cpu_den = ratio.cpu_per_unit * max(effective_ghz_per_unit, 1e-9)
-        raw_cpu = apply_threshold(cpu_total, cpu_alloc, cpu_threshold_pct)
-        raw_ram = apply_threshold(
+        raw_cpu = apply_utilization_gate(
+            cpu_total,
+            cpu_alloc,
+            float(h.get("cpu_util_pct") or 0.0),
+            cpu_threshold_pct,
+        )
+        raw_ram = apply_utilization_gate(
             float(h.get("ram_total") or 0.0),
             float(h.get("ram_alloc") or 0.0),
+            float(h.get("ram_util_pct") or 0.0),
             ram_threshold_pct,
         )
         n_total += min(raw_cpu / cpu_den, raw_ram / ratio.ram_gb_per_unit)

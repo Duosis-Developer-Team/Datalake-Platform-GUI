@@ -87,6 +87,79 @@ def total_potential_tl(panels: list[dict]) -> float:
     return total
 
 
+def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
+    """Collapse virt_power + virt_power_hana into a single virt_power family for Summary UI."""
+    from collections import defaultdict
+
+    out: list[dict] = []
+    power_by_kind: dict[str, list[dict]] = defaultdict(list)
+    sum_fields = (
+        "sellable_constrained",
+        "sellable_raw",
+        "sellable_physical",
+        "sellable_effective",
+        "total",
+        "allocated",
+        "potential_tl",
+        "potential_tl_min",
+        "potential_tl_max",
+        "sellable_min",
+        "sellable_max",
+    )
+    for p in panels:
+        if not isinstance(p, dict):
+            continue
+        fam = p.get("family") or ""
+        if fam in VIRT_POWER_FAMILIES:
+            kind = (p.get("resource_kind") or "other").lower()
+            power_by_kind[kind].append(p)
+        else:
+            out.append(p)
+    for kind, group in power_by_kind.items():
+        if not group:
+            continue
+        merged = dict(group[0])
+        merged["family"] = "virt_power"
+        for field in sum_fields:
+            merged[field] = sum(float(g.get(field) or 0.0) for g in group)
+        out.append(merged)
+    return out
+
+
+def virt_total_potential_range(panels: list[dict]) -> tuple[float, float, float]:
+    """Return (total_tl, min_tl, max_tl) across virt panel dicts."""
+    total = 0.0
+    lo = 0.0
+    hi = 0.0
+    for p in panels:
+        if not isinstance(p, dict):
+            continue
+        tl = float(p.get("potential_tl") or 0.0)
+        total += tl
+        lo += float(
+            p.get("potential_tl_min") if p.get("potential_tl_min") is not None else tl
+        )
+        hi += float(
+            p.get("potential_tl_max") if p.get("potential_tl_max") is not None else tl
+        )
+    return total, lo, hi
+
+
+def virt_constrained_loss_tl(panels: list[dict]) -> float:
+    """Ratio-bound TL loss across virt panels (raw potential minus constrained)."""
+    loss = 0.0
+    for p in panels:
+        if not isinstance(p, dict):
+            continue
+        price = float(p.get("unit_price_tl") or 0.0)
+        if price <= 0:
+            continue
+        raw = float(p.get("sellable_raw") or 0.0)
+        constrained = float(p.get("sellable_constrained") or 0.0)
+        loss += max((raw - constrained) * price, 0.0)
+    return loss
+
+
 def aggregate_virt_sellable_panels(
     panels: list[dict],
 ) -> tuple[float, dict[str, dict[str, float | str]], bool]:

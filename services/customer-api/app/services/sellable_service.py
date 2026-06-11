@@ -200,6 +200,20 @@ _RESOURCE_KIND_TO_COMPUTE_FIELDS: dict[str, tuple[str, str, str]] = {
     "storage": ("stor_cap", "stor_provisioned_gb", "TB"),
 }
 
+# Peak utilization fields in datacenter-api /compute responses (30d max).
+_RESOURCE_KIND_TO_UTIL_FIELDS: dict[str, tuple[str, ...]] = {
+    "cpu": ("cpu_util_pct_max", "cpu_pct_max"),
+    "ram": ("mem_util_pct_max", "mem_pct_max"),
+    "storage": ("stor_pct", "stor_alloc_vm_pct"),
+}
+
+# virt_power_hana shares IBM Power infrastructure with virt_power.
+_POWER_HANA_INFRA_ALIASES: dict[str, str] = {
+    "virt_power_hana_cpu": "virt_power_cpu",
+    "virt_power_hana_ram": "virt_power_ram",
+    "virt_power_hana_storage": "virt_power_storage",
+}
+
 from app.db.queries import sellable as sq
 from app.services.crm_config_service import CrmConfigService
 from app.services.currency_service import CurrencyService
@@ -208,6 +222,7 @@ from app.services.tagging_service import TaggingService, build_metric_key
 from app.services.webui_db import WebuiPool
 from shared.sellable.computation import (
     apply_threshold,
+    apply_utilization_gate,
     compute_potential_tl,
     compute_storage_range,
     constrain_by_ratio,
@@ -759,18 +774,23 @@ FROM (
             params.append(self._dc_pattern(dc_code))
         else:
             where_sql = ""
+        # physical_free_capacity is free space; used = physical_capacity - free.
+        derive_used_from_free = (
+            (src.total_column or "").strip().lower() == "physical_capacity"
+            and (src.allocated_column or "").strip().lower() == "physical_free_capacity"
+        )
         sql = f"""
 WITH latest AS (
     SELECT DISTINCT ON (storage_ip)
         storage_ip,
         {tc} AS _tot,
-        {ac} AS _used,
+        {ac} AS _alloc,
         "timestamp"
     FROM {tbl}
     {where_sql}
     ORDER BY storage_ip, "timestamp" DESC
 )
-SELECT _tot, _used FROM latest
+SELECT _tot, _alloc FROM latest
 """
         try:
             with self._svc._get_connection() as conn:
@@ -783,8 +803,18 @@ SELECT _tot, _used FROM latest
                 dc_code,
             )
             return 0.0, 0.0
-        total_gb = sum(parse_storage_string_to_gb(r[0]) for r in rows if r)
-        used_gb = sum(parse_storage_string_to_gb(r[1]) for r in rows if r)
+        total_gb = 0.0
+        used_gb = 0.0
+        for r in rows or []:
+            if not r:
+                continue
+            cap = parse_storage_string_to_gb(r[0])
+            second = parse_storage_string_to_gb(r[1])
+            total_gb += cap
+            if derive_used_from_free:
+                used_gb += max(cap - second, 0.0)
+            else:
+                used_gb += second
         return total_gb, used_gb
 
     def _query_total_allocated(
@@ -1177,6 +1207,20 @@ SELECT _tot, _used FROM latest
             return None
         return cap, used, source_unit
 
+    @staticmethod
+    def _extract_utilization_pct(raw: dict | None, resource_kind: str) -> float | None:
+        """Read peak utilization % from a datacenter-api /compute JSON blob."""
+        if not raw or not isinstance(raw, dict):
+            return None
+        for field in _RESOURCE_KIND_TO_UTIL_FIELDS.get(resource_kind, ()):
+            try:
+                val = float(raw.get(field) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0:
+                return val
+        return None
+
     def _fetch_compute_metrics_for_clusters(
         self,
         *,
@@ -1367,6 +1411,8 @@ SELECT _tot, _used FROM latest
             ha = convert_unit(alloc_sales, cpu_conv)
             mc = convert_unit(float(h.get("mem_cap_gb") or 0.0), ram_conv)
             ma = convert_unit(float(h.get("mem_alloc_gb") or 0.0), ram_conv)
+            cpu_util = float(h.get("cpu_used_pct") or 0.0)
+            ram_util = float(h.get("mem_used_pct") or 0.0)
             host_units.append({
                 "cpu_total": hc,
                 "cpu_alloc": ha,
@@ -1375,6 +1421,8 @@ SELECT _tot, _used FROM latest
                 "ghz_per_core": ghz,
                 "ram_total": mc,
                 "ram_alloc": ma,
+                "cpu_util_pct": cpu_util,
+                "ram_util_pct": ram_util,
             })
             cpu_total += hc
             cpu_alloc += ha
@@ -1382,9 +1430,11 @@ SELECT _tot, _used FROM latest
             cpu_alloc_phys += alloc_phys
             ram_total += mc
             ram_alloc += ma
-            cpu_raw_sum += apply_threshold(hc, ha, cpu_p.threshold_pct)
-            cpu_raw_phys_sum += apply_threshold(cap_ghz, alloc_phys, cpu_p.threshold_pct)
-            ram_raw_sum += apply_threshold(mc, ma, ram_p.threshold_pct)
+            cpu_raw_sum += apply_utilization_gate(hc, ha, cpu_util, cpu_p.threshold_pct)
+            cpu_raw_phys_sum += apply_utilization_gate(
+                cap_ghz, alloc_phys, cpu_util, cpu_p.threshold_pct
+            )
+            ram_raw_sum += apply_utilization_gate(mc, ma, ram_util, ram_p.threshold_pct)
 
         note = f"host-based ({len(host_units)} host)"
         rebuilt: list[PanelResult] = []
@@ -1436,8 +1486,13 @@ SELECT _tot, _used FROM latest
             cap = float(raw.get("cpu_cap") or cpu_p.total or 0.0)
             alloc_phys = float(raw.get("cpu_alloc_ghz_vm") or 0.0)
             alloc_eff = float(raw.get("cpu_alloc_ghz_sales") or cpu_p.allocated or 0.0)
-            cpu_raw_phys = apply_threshold(cap, alloc_phys, cpu_p.threshold_pct)
-            cpu_raw_eff = apply_threshold(cap, alloc_eff, cpu_p.threshold_pct)
+            cpu_util = self._extract_utilization_pct(raw, "cpu")
+            cpu_raw_phys = apply_utilization_gate(
+                cap, alloc_phys, cpu_util, cpu_p.threshold_pct
+            )
+            cpu_raw_eff = apply_utilization_gate(
+                cap, alloc_eff, cpu_util, cpu_p.threshold_pct
+            )
             cpu_conv = None
             if cpu_p.display_unit.lower() not in ("ghz",):
                 cpu_conv = UnitConversion("GHz", cpu_p.display_unit, 1.0, "divide", False)
@@ -1450,6 +1505,20 @@ SELECT _tot, _used FROM latest
             cpu_p.sellable_raw = cpu_raw_eff
             cpu_p.sellable_effective = cpu_raw_eff
             cpu_p.sellable_physical = cpu_raw_phys
+
+            ram_p = next((p for p in group if p.resource_kind == "ram"), None)
+            if ram_p is not None:
+                mem_cap = float(raw.get("mem_cap") or ram_p.total or 0.0)
+                mem_alloc = float(raw.get("mem_alloc_gb_vm") or ram_p.allocated or 0.0)
+                mem_util = self._extract_utilization_pct(raw, "ram")
+                ram_conv = self._lookup_conversion(
+                    self._build_unit_lookup(), "GB", ram_p.display_unit
+                )
+                ram_p.total = convert_unit(mem_cap, ram_conv)
+                ram_p.allocated = convert_unit(mem_alloc, ram_conv)
+                ram_p.sellable_raw = apply_utilization_gate(
+                    ram_p.total, ram_p.allocated, mem_util, ram_p.threshold_pct
+                )
 
         note = f"cluster_fallback ({host_status})"
         for p in group:
@@ -1525,8 +1594,10 @@ SELECT _tot, _used FROM latest
                 out["intel_cap_gb"] += cap_gb
                 out["intel_used_gb"] += used_gb
         for r in ibm_rows:
-            out["ibm_total_gb"] += parse_storage_string_to_gb(r[2])
-            out["ibm_used_gb"] += parse_storage_string_to_gb(r[3])
+            phys_cap = parse_storage_string_to_gb(r[2])
+            phys_free = parse_storage_string_to_gb(r[3])
+            out["ibm_total_gb"] += phys_cap
+            out["ibm_used_gb"] += max(phys_cap - phys_free, 0.0)
         return out
 
     def _apply_storage_range(
@@ -1551,9 +1622,13 @@ SELECT _tot, _used FROM latest
             return
 
         thr = sto_p.threshold_pct
-        intel_free = apply_threshold(range_inputs["intel_cap_gb"], range_inputs["intel_used_gb"], thr)
-        ibm_ds_free = apply_threshold(range_inputs["ibm_ds_cap_gb"], range_inputs["ibm_ds_used_gb"], thr)
-        ibm_free = apply_threshold(range_inputs["ibm_total_gb"], range_inputs["ibm_used_gb"], thr)
+        def _gated_free(cap: float, used: float) -> float:
+            util = (100.0 * used / cap) if cap > 0 else 100.0
+            return apply_utilization_gate(cap, used, util, thr)
+
+        intel_free = _gated_free(range_inputs["intel_cap_gb"], range_inputs["intel_used_gb"])
+        ibm_ds_free = _gated_free(range_inputs["ibm_ds_cap_gb"], range_inputs["ibm_ds_used_gb"])
+        ibm_free = _gated_free(range_inputs["ibm_total_gb"], range_inputs["ibm_used_gb"])
         rng = compute_storage_range(
             intel_free=intel_free,
             ibm_backed_datastore_free=ibm_ds_free,
@@ -1635,6 +1710,7 @@ SELECT _tot, _used FROM latest
         dc_payload: "dict | None" = None,
     ) -> PanelResult:
         unit_lookup = unit_lookup if unit_lookup is not None else self._build_unit_lookup()
+        notes: list[str] = []
         if infra_lookup is not None:
             src = infra_lookup.get(panel.panel_key) or InfraSource(
                 panel_key=panel.panel_key, dc_code=dc_code,
@@ -1643,10 +1719,23 @@ SELECT _tot, _used FROM latest
             src = self.get_infra_source(panel.panel_key, dc_code) or InfraSource(
                 panel_key=panel.panel_key, dc_code=dc_code,
             )
+        if not (src.manual_total is not None or (src.source_table and src.total_column)):
+            alias_key = _POWER_HANA_INFRA_ALIASES.get(panel.panel_key)
+            if alias_key:
+                alias_src = (
+                    (infra_lookup or {}).get(alias_key)
+                    if infra_lookup is not None
+                    else self.get_infra_source(alias_key, dc_code)
+                )
+                if alias_src and (
+                    alias_src.manual_total is not None
+                    or (alias_src.source_table and alias_src.total_column)
+                ):
+                    src = alias_src
+                    notes.append(f"infra aliased from {alias_key}")
         threshold_pct = self._resolve_threshold(panel, dc_code, threshold_lookup)
         unit_price_tl, has_price = self._resolve_unit_price_tl(panel.panel_key, price_overrides)
 
-        notes: list[str] = []
         has_infra = bool(
             src.manual_total is not None
             or (src.source_table and src.total_column)
@@ -1657,6 +1746,7 @@ SELECT _tot, _used FROM latest
         # datacenter-api so the sellable card matches the DC view Capacity Planning
         # card exactly.
         compute_metrics = None
+        util_pct: float | None = None
         if selected_clusters and panel.family in _FAMILY_COMPUTE_ENDPOINT:
             # Reuse a per-family raw response when compute_all_panels pre-fetched it.
             raw: dict | None = None
@@ -1690,6 +1780,7 @@ SELECT _tot, _used FROM latest
             total_disp = convert_unit(cap, conv)
             alloc_disp = convert_unit(used, conv)
             has_infra = True
+            util_pct = self._extract_utilization_pct(raw, panel.resource_kind)
             notes.append(
                 f"cluster-scoped via datacenter-api/compute/{_FAMILY_COMPUTE_ENDPOINT[panel.family]} "
                 f"({len(selected_clusters)} cluster)"
@@ -1732,7 +1823,9 @@ SELECT _tot, _used FROM latest
             total_disp = convert_unit(total_raw, total_conv)
             alloc_disp = convert_unit(alloc_raw, alloc_conv)
 
-        sellable_raw = apply_threshold(total_disp, alloc_disp, threshold_pct)
+        sellable_raw = apply_utilization_gate(
+            total_disp, alloc_disp, util_pct, threshold_pct
+        )
 
         # constrained will be filled in by the family-pass below; default = raw.
         return PanelResult(
@@ -2121,7 +2214,11 @@ SELECT _tot, _used FROM latest
                     decouple_resource_kinds=decouple,
                 )
             else:
-                decouple = virt_power_storage_decouple if fam == "virt_power" else None
+                decouple = (
+                    virt_power_storage_decouple
+                    if fam in ("virt_power", "virt_power_hana")
+                    else None
+                )
                 new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=decouple)
 
             if fam in _STORAGE_RANGE_FAMILIES and range_inputs:

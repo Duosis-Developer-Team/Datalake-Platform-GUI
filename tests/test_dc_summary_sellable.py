@@ -1,7 +1,15 @@
 """Tests for DC Summary sellable executive section."""
 from __future__ import annotations
 
-from src.pages.dc_summary_sellable import build_summary_sellable_section, _fmt_tl_range
+from unittest.mock import patch
+
+from src.pages.dc_summary_sellable import (
+    build_sellable_executive_strip,
+    build_summary_sellable_section,
+    build_virt_compute_block,
+    _fmt_tl_range,
+)
+from src.utils.virt_sellable_aggregate import merge_power_panels_for_summary
 
 
 def test_fmt_tl_range_shows_bounds():
@@ -58,6 +66,98 @@ def test_build_summary_sellable_section_with_mock_summary():
             },
         ],
     }
-    block = build_summary_sellable_section("DC13", summary)
+    virt_panels = [
+        {
+            "family": "virt_classic",
+            "resource_kind": "cpu",
+            "potential_tl": 100000.0,
+            "potential_tl_min": 90000.0,
+            "potential_tl_max": 110000.0,
+            "sellable_raw": 200.0,
+            "sellable_constrained": 180.0,
+            "unit_price_tl": 500.0,
+            "has_infra_source": True,
+            "computation_mode": "host_based",
+            "display_unit": "vCPU",
+            "total": 1000,
+            "allocated": 800,
+            "sellable_physical": 450.0,
+            "sellable_effective": 180.0,
+            "threshold_pct": 80,
+        },
+        {
+            "family": "virt_classic",
+            "resource_kind": "ram",
+            "potential_tl": 50000.0,
+            "sellable_constrained": 11502,
+            "display_unit": "GB",
+            "has_infra_source": True,
+        },
+        {
+            "family": "virt_classic",
+            "resource_kind": "storage",
+            "potential_tl": 650000.0,
+            "potential_tl_min": 500000.0,
+            "potential_tl_max": 800000.0,
+            "sellable_min": 100000,
+            "sellable_max": 143781,
+            "display_unit": "GB",
+            "has_price": True,
+        },
+    ]
+
+    with patch(
+        "src.pages.dc_summary_sellable._resolve_virt_panels",
+        return_value=virt_panels,
+    ):
+        block = build_summary_sellable_section("DC13", summary)
     assert block is not None
     assert block.id == "dc-summary-sellable-root"
+
+
+def test_executive_strip_uses_virt_panels_not_full_crm_rollup():
+    panels = [
+        {
+            "family": "virt_classic",
+            "resource_kind": "cpu",
+            "potential_tl": 1000.0,
+            "potential_tl_min": 900.0,
+            "potential_tl_max": 1100.0,
+            "sellable_raw": 10.0,
+            "sellable_constrained": 8.0,
+            "unit_price_tl": 100.0,
+            "has_infra_source": True,
+            "computation_mode": "host_based",
+        },
+    ]
+    strip = build_sellable_executive_strip(
+        {"unmapped_product_count": 99, "total_potential_tl_max": 9e12},
+        virt_panels=panels,
+    )
+    text = str(strip)
+    assert "Virt tab parity" in text
+    assert "9" not in text or "Milyon" not in text
+
+
+def test_merge_power_panels_collapses_hana_into_power():
+    merged = merge_power_panels_for_summary([
+        {"family": "virt_power", "resource_kind": "cpu", "sellable_constrained": 10, "potential_tl": 100},
+        {"family": "virt_power_hana", "resource_kind": "cpu", "sellable_constrained": 5, "potential_tl": 50},
+    ])
+    power_cpu = [p for p in merged if p.get("family") == "virt_power" and p.get("resource_kind") == "cpu"]
+    assert len(power_cpu) == 1
+    assert power_cpu[0]["sellable_constrained"] == 15
+    assert power_cpu[0]["potential_tl"] == 150
+
+
+def test_virt_compute_block_has_no_power_hana_card():
+    panels = merge_power_panels_for_summary([
+        {"family": "virt_classic", "resource_kind": "cpu", "sellable_constrained": 1, "computation_mode": "host_based", "display_unit": "vCPU", "total": 10, "allocated": 5, "threshold_pct": 80},
+        {"family": "virt_classic", "resource_kind": "ram", "sellable_constrained": 2, "display_unit": "GB"},
+        {"family": "virt_power", "resource_kind": "cpu", "sellable_constrained": 3, "computation_mode": "aggregate", "display_unit": "Core", "total": 20, "allocated": 10, "threshold_pct": 80},
+        {"family": "virt_power", "resource_kind": "ram", "sellable_constrained": 4, "display_unit": "GB"},
+    ])
+    block = build_virt_compute_block(panels=panels)
+    text = str(block)
+    assert "Power HANA" not in text
+    assert "Power" in text
