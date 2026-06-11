@@ -10,8 +10,8 @@ def _compose_text() -> str:
 
 def test_docker_compose_builds_three_apis_from_services_dirs() -> None:
     text = _compose_text()
-    assert "context: ./services/datacenter-api" in text
-    # customer-api builds from repo root so its Dockerfile can COPY shared/.
+    # datacenter-api and customer-api build from repo root so Dockerfiles can COPY shared/.
+    assert "dockerfile: services/datacenter-api/Dockerfile" in text
     assert "dockerfile: services/customer-api/Dockerfile" in text
     assert "context: ./services/query-api" in text
 
