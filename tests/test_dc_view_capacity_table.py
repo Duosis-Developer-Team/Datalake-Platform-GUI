@@ -40,6 +40,8 @@ class TestBuildComputeCapacityRows:
         assert rows[0]["label"] == "CPU"
         assert "sales" not in rows[0]
         assert rows[0]["bar_pct"] == 635.9
+        assert rows[1]["max_util"][1] == 70.0
+        assert rows[1]["max_util"][1] != rows[1]["allocation"][1]
 
 
 class TestCapacityResourceTable:

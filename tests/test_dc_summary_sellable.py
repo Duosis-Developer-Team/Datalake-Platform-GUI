@@ -141,13 +141,27 @@ def test_executive_strip_uses_virt_panels_not_full_crm_rollup():
 
 def test_merge_power_panels_collapses_hana_into_power():
     merged = merge_power_panels_for_summary([
-        {"family": "virt_power", "resource_kind": "cpu", "sellable_constrained": 10, "potential_tl": 100},
-        {"family": "virt_power_hana", "resource_kind": "cpu", "sellable_constrained": 5, "potential_tl": 50},
+        {"family": "virt_power", "resource_kind": "cpu", "sellable_constrained": 10, "potential_tl": 100, "total": 7904, "allocated": 324},
+        {"family": "virt_power_hana", "resource_kind": "cpu", "sellable_constrained": 5, "potential_tl": 50, "total": 7904, "allocated": 324},
     ])
     power_cpu = [p for p in merged if p.get("family") == "virt_power" and p.get("resource_kind") == "cpu"]
     assert len(power_cpu) == 1
     assert power_cpu[0]["sellable_constrained"] == 15
     assert power_cpu[0]["potential_tl"] == 150
+    assert power_cpu[0]["total"] == 7904
+    assert power_cpu[0]["allocated"] == 324
+
+
+def test_merge_power_infra_fields_use_max_not_sum():
+    """virt_power_hana aliases same IBM Power infra — Cap/Alloc must not double-count."""
+    merged = merge_power_panels_for_summary([
+        {"family": "virt_power", "resource_kind": "ram", "total": 174080, "allocated": 145856, "sellable_constrained": 0},
+        {"family": "virt_power_hana", "resource_kind": "ram", "total": 174080, "allocated": 145856, "sellable_constrained": 0},
+    ])
+    power_ram = [p for p in merged if p.get("family") == "virt_power" and p.get("resource_kind") == "ram"]
+    assert len(power_ram) == 1
+    assert power_ram[0]["total"] == 174080
+    assert power_ram[0]["allocated"] == 145856
 
 
 def test_virt_compute_block_has_no_power_hana_card():

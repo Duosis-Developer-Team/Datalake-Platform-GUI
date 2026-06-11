@@ -98,14 +98,14 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
         "sellable_raw",
         "sellable_physical",
         "sellable_effective",
-        "total",
-        "allocated",
         "potential_tl",
         "potential_tl_min",
         "potential_tl_max",
         "sellable_min",
         "sellable_max",
     )
+    # Shared IBM Power infra: total/allocated must not double-count when HANA aliases virt_power.
+    infra_fields = ("total", "allocated")
     for p in panels:
         if not isinstance(p, dict):
             continue
@@ -122,6 +122,8 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
         merged["family"] = "virt_power"
         for field in sum_fields:
             merged[field] = sum(float(g.get(field) or 0.0) for g in group)
+        for field in infra_fields:
+            merged[field] = max(float(g.get(field) or 0.0) for g in group)
         out.append(merged)
     return out
 

@@ -748,9 +748,6 @@ def _build_compute_capacity_rows(
     """Build three capacity planning rows for Classic/Hyperconv compute tabs."""
     cpu_max_pct = cpu_pct_max or cpu_pct
     mem_peak_pct = mem_pct_max or mem_pct
-    mem_display_pct = (
-        min(mem_peak_pct, mem_alloc_pct) if mem_alloc_pct > 0 else mem_peak_pct
-    )
     return [
         {
             "label": "CPU",
@@ -767,11 +764,10 @@ def _build_compute_capacity_rows(
             "total_str": smart_memory(mem_cap),
             "allocation": (smart_memory(mem_alloc_gb), mem_alloc_pct),
             "max_util": (
-                smart_memory(mem_cap * mem_display_pct / 100.0 if mem_cap else 0),
-                mem_display_pct,
+                smart_memory(mem_cap * mem_peak_pct / 100.0 if mem_cap else 0),
+                mem_peak_pct,
             ),
             "bar_pct": mem_alloc_pct,
-            "reconciliation_pending": mem_alloc_pct > 0 and mem_peak_pct > mem_alloc_pct + 0.05,
         },
         {
             "label": "Storage",
@@ -994,17 +990,6 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
                     html.Div(style={"marginTop": "12px"}, children=[
                         _capacity_resource_table(capacity_rows),
                     ]),
-                    *([
-                        dmc.Alert(
-                            "Peak utilization exceeds VM allocation sum — data reconciliation pending; "
-                            "displayed max capped to allocation.",
-                            color="orange",
-                            variant="light",
-                            radius="md",
-                            mt="sm",
-                            icon=DashIconify(icon="solar:danger-triangle-bold", width=18),
-                        ),
-                    ] if any(r.get("reconciliation_pending") for r in capacity_rows) else []),
                 ],
             ),
         ],
