@@ -13,6 +13,10 @@
 # elsewhere, so it is excluded here.
 # Backup-only datastores (name containing NBU or Veeam) are excluded from
 # visualization and sellable computations.
+# Nutanix SVM (controller-VM) datastores leak into the KM scope because their
+# vDC name contains "KM" (e.g. DC13-Retail-NTNX-SVM under DC13-KM-vDC). They are
+# hyperconverged Nutanix storage sourced elsewhere, so they're excluded here too
+# (name containing 'NTNX-SVM') — otherwise they're double-counted in KM totals.
 # Backing classification (service layer): datastore_name containing 'IBM' =
 # IBM-backed storage (capacity shared with the Power architecture), else Intel.
 # The mount/inventory tables have no datacenter column, so they are scoped via the
@@ -46,6 +50,7 @@ WHERE datacenter_name ILIKE ('%%' || %s || '%%')
   AND datacenter_name ILIKE '%%KM%%'
   AND datastore_name NOT ILIKE '%%NBU%%'
   AND datastore_name NOT ILIKE '%%veeam%%'
+  AND datastore_name NOT ILIKE '%%NTNX-SVM%%'
   AND collection_timestamp::timestamptz BETWEEN %s AND %s
 ORDER BY datastore_moid, collection_timestamp::timestamptz DESC
 """
@@ -71,6 +76,7 @@ WHERE hm.collection_timestamp::timestamptz BETWEEN %s AND %s
         AND datacenter_name ILIKE '%%KM%%'
         AND datastore_name NOT ILIKE '%%NBU%%'
         AND datastore_name NOT ILIKE '%%veeam%%'
+        AND datastore_name NOT ILIKE '%%NTNX-SVM%%'
         AND collection_timestamp::timestamptz BETWEEN %s AND %s
   )
 ORDER BY hm.datastore_moid, hm.host_moid, hm.collection_timestamp::timestamptz DESC
