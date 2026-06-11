@@ -6,7 +6,9 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.config import settings
 from app.db.queries import collectors as q
+from app.db.queries import coverage as cov_q
 from app.models.schemas import (
+    CoverageResponse,
     DcSummaryResponse,
     LocationsResponse,
     ProxyDetailResponse,
@@ -72,3 +74,12 @@ def get_dc_targets(
 @router.get("/runs", response_model=RunsResponse)
 def get_runs(limit: int = Query(default=20, ge=1, le=100)):
     return {"items": q.list_recent_runs(limit)}
+
+
+@router.get("/coverage", response_model=CoverageResponse)
+def get_coverage(
+    dc: str | None = Query(default=None),
+    source: str | None = Query(default=None),
+):
+    """Datalake coverage: per-cluster/host present-absent + X/Y summary + reason."""
+    return cov_q.build_coverage(dc=dc, source=source)

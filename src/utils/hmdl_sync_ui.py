@@ -181,6 +181,148 @@ def build_targets_table(rows: list[dict]) -> html.Div:
     )
 
 
+COVERAGE_STATUS_LABELS: dict[str, str] = {
+    "live": "Canlı",
+    "stale": "Bayat",
+    "missing": "Yok",
+    "extra": "Envanter dışı",
+    "unknown": "—",
+}
+
+COVERAGE_STATUS_COLORS: dict[str, str] = {
+    "live": "green",
+    "stale": "yellow",
+    "missing": "red",
+    "extra": "gray",
+    "unknown": "gray",
+}
+
+_SOURCE_LABELS: dict[str, str] = {"vmware": "VMware", "nutanix": "Nutanix", "ibm": "IBM"}
+_SOURCE_COLORS: dict[str, str] = {"vmware": "indigo", "nutanix": "violet", "ibm": "teal"}
+
+
+def coverage_status_badge(status: str | None) -> dmc.Badge:
+    s = str(status or "unknown")
+    return dmc.Badge(
+        COVERAGE_STATUS_LABELS.get(s, s),
+        color=COVERAGE_STATUS_COLORS.get(s, "gray"),
+        variant="light",
+        size="sm",
+    )
+
+
+def _coverage_count_card(title: str, bucket: dict, *, color: str) -> dmc.Paper:
+    total = int((bucket or {}).get("total") or 0)
+    collected = int((bucket or {}).get("collected") or 0)
+    missing = int((bucket or {}).get("missing") or 0)
+    live = int((bucket or {}).get("live") or 0)
+    return dmc.Paper(
+        p="md",
+        withBorder=True,
+        radius="md",
+        children=dmc.Stack(
+            gap=4,
+            children=[
+                dmc.Text(title, size="xs", c="dimmed", fw=600),
+                dmc.Text(f"{collected} / {total}", fw=800, size="xl", c=color),
+                dmc.Group(
+                    gap="xs",
+                    children=[
+                        dmc.Badge(f"{missing} eksik", color="red" if missing else "gray", variant="light", size="xs"),
+                        dmc.Badge(f"{live} canlı", color="green" if live else "gray", variant="light", size="xs"),
+                    ],
+                ),
+            ],
+        ),
+    )
+
+
+def build_coverage_summary(summary: dict) -> dmc.SimpleGrid:
+    summary = summary or {}
+    cluster = summary.get("cluster") or {}
+    host = summary.get("ibm_host") or {}
+    cards = [
+        _coverage_count_card("Cluster (toplam)", cluster.get("all") or {}, color="indigo"),
+        _coverage_count_card("VMware cluster", cluster.get("vmware") or {}, color="indigo"),
+        _coverage_count_card("Nutanix cluster", cluster.get("nutanix") or {}, color="violet"),
+        _coverage_count_card("IBM host", host, color="teal"),
+    ]
+    return dmc.SimpleGrid(cols={"base": 2, "md": 4}, spacing="md", children=cards)
+
+
+def _coverage_row(kind: str, name: str, dc: str, status: str, reason: str) -> html.Tr:
+    return html.Tr(
+        style={"borderBottom": "1px solid #eef1f4"},
+        children=[
+            html.Td(
+                dmc.Badge(
+                    _SOURCE_LABELS.get(kind, kind),
+                    color=_SOURCE_COLORS.get(kind, "gray"),
+                    variant="dot",
+                    size="sm",
+                ),
+                style={"padding": "8px"},
+            ),
+            html.Td(str(name or "—"), style={"padding": "8px", "fontSize": "13px", "fontWeight": 600}),
+            html.Td(str(dc or "—"), style={"padding": "8px", "fontSize": "12px"}),
+            html.Td(coverage_status_badge(status), style={"padding": "8px"}),
+            html.Td(str(reason or "—"), style={"padding": "8px", "fontSize": "12px", "color": "#555"}),
+        ],
+    )
+
+
+def build_coverage_table(clusters: list[dict], hosts: list[dict]) -> html.Div:
+    clusters = clusters or []
+    hosts = hosts or []
+    if not clusters and not hosts:
+        return dmc.Alert("Bu filtreyle eşleşen kayıt yok.", color="gray", variant="light")
+
+    header = html.Tr(
+        [
+            html.Th("Kaynak", style={"textAlign": "left", "padding": "8px"}),
+            html.Th("Ad", style={"textAlign": "left", "padding": "8px"}),
+            html.Th("Location", style={"textAlign": "left", "padding": "8px"}),
+            html.Th("Durum", style={"textAlign": "left", "padding": "8px"}),
+            html.Th("Sebep", style={"textAlign": "left", "padding": "8px"}),
+        ]
+    )
+    # Missing first, then stale, then the rest — so problems surface at the top.
+    order = {"missing": 0, "stale": 1, "extra": 2, "live": 3, "unknown": 4}
+    body_rows = []
+    cluster_sorted = sorted(clusters, key=lambda c: (order.get(c.get("status"), 9), c.get("cluster_name") or ""))
+    for c in cluster_sorted:
+        body_rows.append(
+            _coverage_row(
+                str(c.get("source") or ""),
+                str(c.get("cluster_name") or ""),
+                str(c.get("dc") or ""),
+                str(c.get("status") or ""),
+                str(c.get("reason") or ""),
+            )
+        )
+    host_sorted = sorted(hosts, key=lambda h: (order.get(h.get("status"), 9), h.get("servername") or ""))
+    for h in host_sorted:
+        body_rows.append(
+            _coverage_row("ibm", str(h.get("servername") or ""), str(h.get("dc") or ""), str(h.get("status") or ""), str(h.get("reason") or ""))
+        )
+    return html.Div(
+        style={"overflowX": "auto"},
+        children=[html.Table([header, *body_rows], style={"width": "100%", "borderCollapse": "collapse"})],
+    )
+
+
+def build_coverage_section(data: dict) -> html.Div:
+    """Summary cards + present/absent table for the Datalake Coverage section."""
+    data = data or {}
+    return html.Div(
+        children=[
+            build_coverage_summary(data.get("summary") or {}),
+            dmc.Space(h="md"),
+            build_coverage_table(data.get("clusters") or [], data.get("ibm_hosts") or []),
+        ]
+    )
+
+
 def build_diff_panel(diffs: list[dict]) -> dmc.Paper:
     if not diffs:
         return dmc.Paper(

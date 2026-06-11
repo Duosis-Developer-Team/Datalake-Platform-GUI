@@ -6,7 +6,7 @@ from dash import ALL, Input, Output, State, callback, ctx, no_update
 
 from src.pages.settings.admin_routes import ADMIN_PREFIX
 from src.services import api_client as api
-from src.utils.hmdl_sync_ui import build_targets_table
+from src.utils.hmdl_sync_ui import build_coverage_section, build_targets_table
 
 
 @callback(
@@ -81,3 +81,13 @@ def refresh_hmdl_targets(dc_code, category, entity_name):
         entity_name=entity_name or None,
     )
     return build_targets_table(data.get("items") or [])
+
+
+@callback(
+    Output("hmdl-coverage-content", "children"),
+    Input("hmdl-coverage-dc", "value"),
+    Input("hmdl-coverage-source", "value"),
+)
+def refresh_hmdl_coverage(dc, source):
+    data = api.get_hmdl_coverage(dc or None, source=source or None)
+    return build_coverage_section(data)
