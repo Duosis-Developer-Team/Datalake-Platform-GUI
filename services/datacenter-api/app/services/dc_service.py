@@ -1580,6 +1580,29 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
             used_tb += parse_capacity(used_str)
         return (cap_tb, used_tb)
 
+    def _overlay_classic_datastore_storage(
+        self,
+        dc_code: str,
+        time_range: dict | None,
+        result: dict,
+    ) -> dict:
+        """Replace classic stor_* with KM datastore mapping totals (same as Storage tab)."""
+        mapping = self.get_datastore_mapping(dc_code, time_range)
+        datastores = mapping.get("datastores") or []
+        if not datastores:
+            return result
+        cap_bytes = sum(int(d.get("capacity_bytes") or 0) for d in datastores)
+        used_bytes = sum(int(d.get("used_bytes") or 0) for d in datastores)
+        cap_tb = cap_bytes / (1024**4)
+        used_tb = used_bytes / (1024**4)
+        if cap_tb > 0 and isinstance(result.get("classic"), dict):
+            result = dict(result)
+            classic = dict(result["classic"])
+            classic["stor_cap"] = round(cap_tb, 3)
+            classic["stor_used"] = round(used_tb, 3)
+            result["classic"] = classic
+        return result
+
     def get_dc_details(self, dc_code: str, time_range: dict | None = None) -> dict:
         """Return full metrics dict for a single data center. Result is TTL-cached per time range."""
         tr = time_range or default_time_range()
@@ -1589,7 +1612,7 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
         cache_key = f"dc_details:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
         cached_val = cache.get(cache_key)
         if cached_val is not None:
-            return cached_val
+            return self._overlay_classic_datastore_storage(dc_code, tr, cached_val)
 
         def _fetch():
             with self._get_connection() as conn:
@@ -1638,16 +1661,8 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
 
         try:
             result = cache.run_singleflight(cache_key, _fetch)
-            mapping = self.get_datastore_mapping(dc_code, tr)
-            datastores = mapping.get("datastores") or []
-            if datastores:
-                cap_bytes = sum(int(d.get("capacity_bytes") or 0) for d in datastores)
-                used_bytes = sum(int(d.get("used_bytes") or 0) for d in datastores)
-                cap_tb = cap_bytes / (1024**4)
-                used_tb = used_bytes / (1024**4)
-                if cap_tb > 0 and isinstance(result.get("classic"), dict):
-                    result["classic"]["stor_cap"] = round(cap_tb, 3)
-                    result["classic"]["stor_used"] = round(used_tb, 3)
+            result = self._overlay_classic_datastore_storage(dc_code, tr, result)
+            cache.set(cache_key, result)
             return result
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_details(%s): %s", dc_code, exc)
