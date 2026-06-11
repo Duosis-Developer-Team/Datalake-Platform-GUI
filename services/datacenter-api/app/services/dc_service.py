@@ -742,11 +742,14 @@ LIMIT 20
         self,
         cursor,
         dc_code: str,
-        start_ts,
-        end_ts,
+        time_range: dict | None,
     ) -> tuple[float, float]:
         """Sum KM datastore capacity/used (GB) — canonical classic storage source."""
+        tr = time_range or default_time_range()
+        if tr.get("anchor_latest"):
+            tr = self._smart_1h_tr(tr)
         dc_target = (dc_code or "").upper()
+        start_ts, end_ts = time_range_to_bounds(tr)
         rows = self._run_rows(cursor, vdq.DATASTORE_METRICS, (dc_target, start_ts, end_ts))
         cap_bytes = sum(int(r[4] or 0) for r in (rows or []))
         used_bytes = sum(int(r[6] or 0) for r in (rows or []))
@@ -968,9 +971,7 @@ LIMIT 20
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(
-                        cur, dc_code, start_ts, end_ts
-                    )
+                    ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(cur, dc_code, tr)
                     row = self._patch_classic_row_storage(row, ds_cap_gb, ds_used_gb)
         except OperationalError:
             pass
@@ -1595,9 +1596,7 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                     self._ensure_dc_description_map(cur)
                     dc_wc = f"%{dc_code}%"
                     classic_row = self.get_classic_metrics(cur, dc_wc, start_ts, end_ts)
-                    ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(
-                        cur, dc_code, start_ts, end_ts
-                    )
+                    ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(cur, dc_code, tr)
                     classic_row = self._patch_classic_row_storage(
                         classic_row, ds_cap_gb, ds_used_gb
                     )
