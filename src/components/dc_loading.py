@@ -8,12 +8,45 @@ from dash import dcc, html
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 
-_LOADING_STAGES = (
+_LOADING_STAGES_SUMMARY = (
     "Preparing data center dashboard…",
     "Loading capacity metrics…",
     "Fetching sellable potential summary…",
     "Building executive overview…",
 )
+
+_LOADING_STAGES_VIRT = (
+    "Loading virtualization metrics…",
+    "Fetching cluster capacity…",
+    "Building compute gauges…",
+    "Preparing sellable potential cards…",
+)
+
+_LOADING_STAGES_STORAGE = (
+    "Loading storage metrics…",
+    "Fetching capacity pools…",
+    "Building storage overview…",
+)
+
+_LOADING_STAGES_GENERIC = (
+    "Loading tab content…",
+    "Fetching metrics…",
+    "Building dashboard panels…",
+)
+
+_TAB_STAGE_MAP = {
+    "summary": _LOADING_STAGES_SUMMARY,
+    "virt": _LOADING_STAGES_VIRT,
+    "storage": _LOADING_STAGES_STORAGE,
+}
+
+LOADING_STAGE_MESSAGES = _LOADING_STAGES_SUMMARY
+
+
+def loading_stages_for_tab(tab: str | None) -> tuple[str, ...]:
+    """Return rotating status messages for a tab key."""
+    key = str(tab or "summary").strip().lower()
+    return _TAB_STAGE_MAP.get(key, _LOADING_STAGES_GENERIC)
 
 
 def _kpi_skeleton() -> html.Div:
@@ -30,6 +63,26 @@ def _kpi_skeleton() -> html.Div:
             dmc.Skeleton(height=12, width="50%", mb="sm", radius="sm"),
             dmc.Skeleton(height=24, width="70%", mb="xs", radius="sm"),
             dmc.Skeleton(height=10, width="85%", radius="sm"),
+        ],
+    )
+
+
+def _gauge_skeleton() -> html.Div:
+    return html.Div(
+        className="dc-load-shimmer customer-load-shimmer",
+        style={
+            "background": "#fff",
+            "borderRadius": "16px",
+            "padding": "20px",
+            "border": "1px solid #eef1f4",
+            "minHeight": "160px",
+            "display": "flex",
+            "flexDirection": "column",
+            "alignItems": "center",
+        },
+        children=[
+            dmc.Skeleton(height=100, width=100, radius="xl", mb="sm"),
+            dmc.Skeleton(height=12, width="60%", radius="sm"),
         ],
     )
 
@@ -53,9 +106,10 @@ def _section_skeleton(height: int = 200) -> html.Div:
     )
 
 
-def build_dc_loading_shell(dc_id: str) -> html.Div:
+def build_dc_loading_shell(dc_display: str, *, tab: str = "summary") -> html.Div:
     """Instant shell shown while DC View data loads asynchronously."""
-    label = str(dc_id or "Data Center").strip() or "Data Center"
+    label = str(dc_display or "Data Center").strip() or "Data Center"
+    stages = loading_stages_for_tab(tab)
     return html.Div(
         id="dc-loading-layer",
         className="dc-loading-layer customer-loading-layer",
@@ -72,7 +126,7 @@ def build_dc_loading_shell(dc_id: str) -> html.Div:
                     dmc.Text(label, fw=700, size="xl", c="#2B3674", ta="center"),
                     dmc.Text(
                         id="dc-loading-status",
-                        children=_LOADING_STAGES[0],
+                        children=stages[0],
                         size="sm",
                         c="#A3AED0",
                         ta="center",
@@ -104,7 +158,7 @@ def build_dc_loading_shell(dc_id: str) -> html.Div:
                 ],
             ),
             dmc.Text(
-                "First visit may take a few seconds while caches warm in the background.",
+                "This usually takes a few seconds on first visit.",
                 size="xs",
                 c="dimmed",
                 ta="center",
@@ -119,4 +173,72 @@ def build_dc_loading_shell(dc_id: str) -> html.Div:
     )
 
 
-LOADING_STAGE_MESSAGES = _LOADING_STAGES
+def build_dc_tab_loading_shell(tab: str, dc_display: str) -> html.Div:
+    """Per-tab loading skeleton shown while a lazy tab panel loads."""
+    label = str(dc_display or "Data Center").strip() or "Data Center"
+    stages = loading_stages_for_tab(tab)
+    tab_key = str(tab or "summary").strip().lower()
+
+    if tab_key == "virt":
+        body = [
+            dmc.Skeleton(height=40, width="100%", radius="xl", mb="lg"),
+            dmc.SimpleGrid(
+                cols={"base": 1, "md": 2},
+                spacing="md",
+                mb="lg",
+                children=[_gauge_skeleton(), _gauge_skeleton()],
+            ),
+            _section_skeleton(200),
+        ]
+    else:
+        body = [
+            dmc.SimpleGrid(
+                cols={"base": 1, "sm": 2, "lg": 3},
+                spacing="md",
+                mb="lg",
+                children=[_kpi_skeleton() for _ in range(3)],
+            ),
+            _section_skeleton(220),
+        ]
+
+    return html.Div(
+        className="dc-tab-loading-layer customer-loading-layer",
+        style={"padding": "24px 0"},
+        children=[
+            html.Div(
+                className="dc-loading-hero customer-loading-hero",
+                style={"marginBottom": "20px"},
+                children=[
+                    DashIconify(
+                        icon="solar:server-square-bold-duotone",
+                        width=40,
+                        color="#4318FF",
+                    ),
+                    dmc.Text(label, fw=600, size="md", c="#2B3674", ta="center", mt="xs"),
+                    dmc.Text(
+                        id=f"dc-tab-loading-status-{tab_key}",
+                        children=stages[0],
+                        size="sm",
+                        c="#A3AED0",
+                        ta="center",
+                    ),
+                    html.Div(
+                        className="building-reveal-dots",
+                        children=[
+                            html.Span(className="brd-dot"),
+                            html.Span(className="brd-dot"),
+                            html.Span(className="brd-dot"),
+                        ],
+                    ),
+                ],
+            ),
+            html.Div(style={"padding": "0 30px"}, children=body),
+            dmc.Text(
+                "This usually takes a few seconds on first visit.",
+                size="xs",
+                c="dimmed",
+                ta="center",
+                mt="md",
+            ),
+        ],
+    )

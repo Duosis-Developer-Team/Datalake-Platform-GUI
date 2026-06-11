@@ -572,6 +572,7 @@ def build_datacenters(time_range=None, visible_sections=None):
 
     virt_state = resolve_virt_sellable_for_dcs(dc_ids, tr, family_workers=family_workers)
     virt_tl_by_dc = virt_state["virt_tl_by_dc"]
+    loading_by_dc = virt_state.get("loading_by_dc") or {}
     total_potential_tl = float(virt_state["total_potential_tl"])
     virt_loading = bool(virt_state["loading"])
 
@@ -806,7 +807,7 @@ def build_datacenters(time_range=None, visible_sections=None):
                             or sla_by_dc.get(str(dc.get("id", "")).upper()),
                             virt_tl=virt_tl_by_dc.get(str(dc.get("id", "")), 0.0),
                             total_virt_tl=total_potential_tl,
-                            virt_loading=virt_loading,
+                            virt_loading=loading_by_dc.get(str(dc.get("id", "")), virt_loading),
                         ),
                     )
                     for i, dc in enumerate(datacenters)
@@ -895,6 +896,7 @@ def poll_virt_sellable_refresh(_n, state, time_range):
     datacenters = api.get_all_datacenters_summary(tr)
     sla_by_dc = api.get_sla_by_dc(tr)
     virt_tl_by_dc = virt_state["virt_tl_by_dc"]
+    loading_by_dc = virt_state.get("loading_by_dc") or {}
     total_potential_tl = float(virt_state["total_potential_tl"])
 
     total_hosts = sum(dc.get("host_count", 0) for dc in datacenters)
@@ -943,7 +945,7 @@ def poll_virt_sellable_refresh(_n, state, time_range):
                     or sla_by_dc.get(str(dc.get("id", "")).upper()),
                     virt_tl=virt_tl_by_dc.get(str(dc.get("id", "")), 0.0),
                     total_virt_tl=total_potential_tl,
-                    virt_loading=False,
+                    virt_loading=loading_by_dc.get(str(dc.get("id", "")), False),
                 ),
             )
             for i, dc in enumerate(datacenters)

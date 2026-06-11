@@ -39,7 +39,7 @@ from src.components.charts import (
     create_sparkline_chart,
 )
 from src.components.charts import create_horizontal_bar_chart, create_premium_horizontal_bar_chart, create_capacity_area_chart, create_grouped_bar_chart, create_storage_breakdown_chart
-from src.components.dc_loading import build_dc_loading_shell
+from src.components.dc_loading import build_dc_loading_shell, build_dc_tab_loading_shell
 from src.components.header import create_detail_header
 from src.components.s3_panel import build_dc_s3_panel
 from src.components.backup_panel import (
@@ -50,7 +50,7 @@ from src.components.backup_panel import (
 # noqa: F401 — import for side effect (registers backup-jobs callbacks)
 from src.components import backup_jobs_section  # noqa: F401
 from src.services import sla_service
-from src.utils.dc_display import format_dc_display_name
+from src.utils.dc_display import format_dc_display_name, resolve_dc_display_from_summary
 from src.components.dc_availability_panel import build_dc_availability_panel
 from src.utils.export_helpers import (
     records_to_dataframe,
@@ -4218,6 +4218,68 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict)
 _BUILD_LOG = logging.getLogger(__name__)
 
 _SUMMARY_EAGER_TABS = frozenset({"summary"})
+_LAZY_TAB_KEYS: tuple[str, ...] = ("virt", "backup", "storage", "phys-inv", "network", "avail")
+
+
+def _find_component_by_id(component, target_id: str):
+    """Depth-first search for a Dash component by string id."""
+    if component is None:
+        return None
+    cid = getattr(component, "id", None)
+    if cid == target_id:
+        return component
+    children = getattr(component, "children", None)
+    if children is None:
+        return None
+    if isinstance(children, (list, tuple)):
+        for ch in children:
+            if ch is None:
+                continue
+            hit = _find_component_by_id(ch, target_id)
+            if hit is not None:
+                return hit
+    else:
+        return _find_component_by_id(children, target_id)
+    return None
+
+
+def _resolve_outer_tab(
+    active_outer_tab: str | None,
+    tabs_order: list[tuple[str, bool]],
+    default_outer_tab: str,
+) -> str:
+    """Keep user-selected tab when valid; otherwise fall back to first available."""
+    if active_outer_tab:
+        for tab_key, ok in tabs_order:
+            if ok and tab_key == active_outer_tab:
+                return active_outer_tab
+    return default_outer_tab
+
+
+def build_dc_lazy_tab_panel(
+    dc_id: str,
+    tab: str,
+    time_range=None,
+    visible_sections=None,
+):
+    """Build inner content for a single lazy tab root (no full page rebuild)."""
+    tr = time_range or default_time_range()
+    vs = visible_sections
+    dc_display, _ = resolve_dc_display_from_summary(str(dc_id), tr)
+    page = build_dc_view(
+        dc_id,
+        tr,
+        visible_sections=vs,
+        eager_tabs=frozenset({tab}),
+    )
+    root_id = f"dc-tab-{tab}-root"
+    found = _find_component_by_id(page, root_id)
+    if found is None:
+        return build_dc_tab_loading_shell(tab, dc_display)
+    children = getattr(found, "children", None)
+    if children is None:
+        return build_dc_tab_loading_shell(tab, dc_display)
+    return children
 
 
 def _tab_eager(eager_tabs: frozenset[str] | None, tab: str) -> bool:
@@ -4226,27 +4288,11 @@ def _tab_eager(eager_tabs: frozenset[str] | None, tab: str) -> bool:
     return tab in eager_tabs
 
 
-def _tab_lazy_placeholder(tab: str, label: str | None = None) -> html.Div:
+def _tab_lazy_placeholder(tab: str, dc_display: str) -> html.Div:
     return html.Div(
         id=f"dc-tab-{tab}-root",
         style={"padding": "0 30px", "minHeight": "120px"},
-        children=dcc.Loading(
-            type="circle",
-            color="#4318FF",
-            delay_show=150,
-            children=dmc.Stack(
-                gap="sm",
-                align="center",
-                style={"padding": "48px 0"},
-                children=[
-                    dmc.Text(
-                        label or f"Loading {tab.replace('-', ' ')}…",
-                        size="sm",
-                        c="dimmed",
-                    ),
-                ],
-            ),
-        ),
+        children=build_dc_tab_loading_shell(tab, dc_display),
     )
 
 
@@ -4281,6 +4327,7 @@ def build_dc_view(
     visible_sections=None,
     *,
     eager_tabs: frozenset[str] | None = None,
+    active_outer_tab: str | None = None,
 ):
     """Build DC detail page for the given time range.
 
@@ -4308,9 +4355,6 @@ def build_dc_view(
         batch1_tasks["hyperconv_clusters"] = lambda: api.get_hyperconv_cluster_list(dc_id, tr)
     if _tab_eager(eager_tabs, "storage"):
         batch1_tasks["s3_data"] = lambda: api.get_dc_s3_pools(dc_id, tr)
-    if _tab_eager(eager_tabs, "virt"):
-        batch1_tasks["classic_hosts"] = lambda: api.get_classic_host_rows(dc_id, None, tr)
-        batch1_tasks["hyperconv_hosts"] = lambda: api.get_hyperconv_host_rows(dc_id, None, tr)
     if _tab_eager(eager_tabs, "summary"):
         batch1_tasks["sellable_summary"] = lambda: api.get_sellable_summary_light(str(dc_id))
     batch1 = parallel_execute(batch1_tasks)
@@ -4320,8 +4364,6 @@ def build_dc_view(
     s3_data = batch1.get("s3_data") or {"pools": []}
     classic_clusters = batch1.get("classic_clusters") or []
     hyperconv_clusters = batch1.get("hyperconv_clusters") or []
-    classic_hosts_data = batch1.get("classic_hosts") or {"hosts": [], "host_count": 0}
-    hyperconv_hosts_data = batch1.get("hyperconv_hosts") or {"hosts": [], "host_count": 0}
     sellable_summary = batch1.get("sellable_summary")
 
     sla_entry = sla_by_dc.get(str(dc_id).upper())
@@ -4568,6 +4610,7 @@ def build_dc_view(
         ("avail", show_avail),
     ]
     default_outer_tab = next((t for t, ok in tabs_order if ok), "summary")
+    resolved_outer_tab = _resolve_outer_tab(active_outer_tab, tabs_order, default_outer_tab)
 
     show_classic = has_classic and _sec("sub:dc_view:virt:classic")
     show_hyperconv = has_hyperconv and _sec("sub:dc_view:virt:hyperconv")
@@ -4622,7 +4665,7 @@ def build_dc_view(
             color="indigo",
             variant="pills",
             radius="md",
-            value=default_outer_tab,
+            value=resolved_outer_tab,
             children=[
                 create_detail_header(
                     title=dc_display,
@@ -4665,7 +4708,7 @@ def build_dc_view(
                 dmc.TabsPanel(
                     value="virt",
                     children=(
-                        _tab_lazy_placeholder("virt", "Loading virtualization metrics…")
+                        _tab_lazy_placeholder("virt", dc_display)
                         if not _tab_eager(eager_tabs, "virt")
                         else html.Div(
                         id="dc-tab-virt-root",
@@ -4702,7 +4745,7 @@ def build_dc_view(
                                                 ),
                                                 html.Div(id="sellable-classic-card"),
                                                 _build_hosts_panel_shell(
-                                                    "classic", "blue", initial_data=classic_hosts_data,
+                                                    "classic", "blue",
                                                 ) if show_virt_hosts else None,
                                             ],
                                         ),
@@ -4724,7 +4767,7 @@ def build_dc_view(
                                                 ),
                                                 html.Div(id="sellable-hyperconv-card"),
                                                 _build_hosts_panel_shell(
-                                                    "hyperconv", "teal", initial_data=hyperconv_hosts_data,
+                                                    "hyperconv", "teal",
                                                 ) if show_virt_hosts else None,
                                             ],
                                         ),
@@ -4757,7 +4800,7 @@ def build_dc_view(
                 dmc.TabsPanel(
                     value="backup",
                     children=(
-                        _tab_lazy_placeholder("backup", "Loading backup & replication…")
+                        _tab_lazy_placeholder("backup", dc_display)
                         if not _tab_eager(eager_tabs, "backup")
                         else html.Div(
                         id="dc-tab-backup-root",
@@ -4832,7 +4875,7 @@ def build_dc_view(
                 dmc.TabsPanel(
                     value="phys-inv",
                     children=(
-                        _tab_lazy_placeholder("phys-inv", "Loading physical inventory…")
+                        _tab_lazy_placeholder("phys-inv", dc_display)
                         if not _tab_eager(eager_tabs, "phys-inv")
                         else html.Div(
                             id="dc-tab-phys-inv-root",
@@ -4848,7 +4891,7 @@ def build_dc_view(
                 dmc.TabsPanel(
                     value="storage",
                     children=(
-                        _tab_lazy_placeholder("storage", "Loading storage metrics…")
+                        _tab_lazy_placeholder("storage", dc_display)
                         if not _tab_eager(eager_tabs, "storage")
                         else html.Div(
                             id="dc-tab-storage-root",
@@ -4881,7 +4924,7 @@ def build_dc_view(
                     value="network",
                     pt="lg",
                     children=(
-                        _tab_lazy_placeholder("network", "Loading network metrics…")
+                        _tab_lazy_placeholder("network", dc_display)
                         if not _tab_eager(eager_tabs, "network")
                         else html.Div(
                             id="dc-tab-network-root",
@@ -4901,7 +4944,7 @@ def build_dc_view(
                 dmc.TabsPanel(
                     value="avail",
                     children=(
-                        _tab_lazy_placeholder("avail", "Loading availability…")
+                        _tab_lazy_placeholder("avail", dc_display)
                         if not _tab_eager(eager_tabs, "avail")
                         else html.Div(
                             id="dc-tab-avail-root",
@@ -4931,10 +4974,17 @@ def build_dc_view(
     return page
 
 
-def render_dc_loading_page(dc_id: str, time_range, visible_sections=None) -> html.Div:
+def render_dc_loading_page(
+    dc_id: str,
+    time_range,
+    visible_sections=None,
+    *,
+    active_outer_tab: str | None = None,
+) -> html.Div:
     """Phase A: header + tabs shell with loading skeleton (no blocking API)."""
     tr = time_range or default_time_range()
-    label = str(dc_id or "Data Center").strip() or "Data Center"
+    dc_display, dc_loc = resolve_dc_display_from_summary(str(dc_id), tr)
+    label = dc_display or str(dc_id or "Data Center").strip() or "Data Center"
 
     def _sec(code: str) -> bool:
         if visible_sections is None:
@@ -4942,6 +4992,17 @@ def render_dc_loading_page(dc_id: str, time_range, visible_sections=None) -> htm
         return code in visible_sections
 
     show_summary = _sec("sec:dc_view:summary")
+    tabs_order = [
+        ("summary", show_summary),
+        ("virt", _sec("sec:dc_view:virtualization")),
+        ("storage", _sec("sec:dc_view:storage")),
+        ("backup", _sec("sec:dc_view:backup")),
+        ("phys-inv", _sec("sec:dc_view:phys_inv")),
+        ("network", _sec("sec:dc_view:network")),
+        ("avail", _sec("sec:dc_view:availability")),
+    ]
+    default_tab = "summary" if show_summary else "virt"
+    resolved_tab = _resolve_outer_tab(active_outer_tab, tabs_order, default_tab)
     tabs = [
         dmc.TabsTab("Summary", value="summary") if show_summary else None,
         dmc.TabsTab("Virtualization", value="virt") if _sec("sec:dc_view:virtualization") else None,
@@ -4951,6 +5012,27 @@ def render_dc_loading_page(dc_id: str, time_range, visible_sections=None) -> htm
         dmc.TabsTab("Network", value="network") if _sec("sec:dc_view:network") else None,
         dmc.TabsTab("Availability", value="avail") if _sec("sec:dc_view:availability") else None,
     ]
+    loc_badge = dc_loc or "Loading…"
+    shell_tab = resolved_tab if resolved_tab == "summary" else "summary"
+    panels = [
+        dmc.TabsPanel(
+            value="summary",
+            children=dmc.Stack(
+                gap="lg",
+                style={"padding": "0 30px"},
+                children=[build_dc_loading_shell(label, tab=shell_tab)],
+            ),
+        ) if show_summary else None,
+    ]
+    for tab_key, ok in tabs_order:
+        if not ok or tab_key == "summary":
+            continue
+        panels.append(
+            dmc.TabsPanel(
+                value=tab_key,
+                children=_tab_lazy_placeholder(tab_key, label),
+            )
+        )
     return html.Div(
         className="dc-page-enter customer-page-enter",
         children=[
@@ -4959,26 +5041,19 @@ def render_dc_loading_page(dc_id: str, time_range, visible_sections=None) -> htm
                 color="indigo",
                 variant="pills",
                 radius="md",
-                value="summary" if show_summary else "virt",
+                value=resolved_tab,
                 children=[
                     create_detail_header(
                         title=label,
                         back_href="/datacenters",
                         back_label="Data Centers",
-                        subtitle_badge="Loading…",
+                        subtitle_badge=loc_badge,
                         subtitle_color="indigo",
                         time_range=tr,
                         icon="solar:server-square-bold-duotone",
                         tabs=dmc.TabsList(style={"paddingTop": "8px"}, children=tabs),
                     ),
-                    dmc.TabsPanel(
-                        value="summary",
-                        children=dmc.Stack(
-                            gap="lg",
-                            style={"padding": "0 30px"},
-                            children=[build_dc_loading_shell(label)],
-                        ),
-                    ) if show_summary else None,
+                    *panels,
                 ],
             ),
         ],
@@ -4999,6 +5074,7 @@ def build_dc_view_layout_shell(dc_id, time_range=None, visible_sections=None):
             ),
             dcc.Store(id="dc-view-dc-id", data=str(dc_id)),
             dcc.Store(id="dc-view-loaded-tabs", data=["summary"]),
+            dcc.Store(id="dc-view-active-tab", data="summary"),
             dcc.Store(id="dc-view-context-store", data={}),
             html.Div(
                 id="dc-view-page-root",

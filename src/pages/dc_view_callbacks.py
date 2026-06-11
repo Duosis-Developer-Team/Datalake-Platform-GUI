@@ -5,7 +5,13 @@ import dash
 from dash import Input, Output, State, callback, ctx, html
 
 from src.components.dc_loading import LOADING_STAGE_MESSAGES
-from src.pages.dc_view import _SUMMARY_EAGER_TABS, build_dc_view
+from src.pages.dc_view import (
+    _LAZY_TAB_KEYS,
+    _SUMMARY_EAGER_TABS,
+    build_dc_lazy_tab_panel,
+    build_dc_view,
+)
+from src.utils.dc_display import resolve_dc_display_from_summary
 from src.utils.time_range import default_time_range
 
 
@@ -13,6 +19,15 @@ def _dc_id_from_path(pathname: str | None) -> str | None:
     if not pathname or not pathname.startswith("/datacenter/"):
         return None
     return pathname.replace("/datacenter/", "").strip("/") or None
+
+
+def _dc_context(dc_id: str, tr: dict) -> dict:
+    dc_display, dc_loc = resolve_dc_display_from_summary(str(dc_id), tr)
+    return {
+        "dc_id": str(dc_id),
+        "dc_display": dc_display,
+        "dc_loc": dc_loc,
+    }
 
 
 @callback(
@@ -28,36 +43,79 @@ def rotate_dc_loading_status(n_intervals):
 
 
 @callback(
+    Output("dc-view-active-tab", "data"),
+    Input("dc-main-tabs", "value"),
+    prevent_initial_call=True,
+)
+def sync_dc_active_tab(active_tab):
+    if not active_tab:
+        raise dash.exceptions.PreventUpdate
+    return active_tab
+
+
+@callback(
     Output("dc-view-page-root", "children"),
     Output("dc-view-loaded-tabs", "data"),
+    Output("dc-view-context-store", "data"),
+    Output("dc-view-active-tab", "data", allow_duplicate=True),
     Input("url", "pathname"),
     Input("app-time-range", "data"),
     State("dc-view-visible-sections", "data"),
     State("dc-view-loaded-tabs", "data"),
+    State("dc-view-active-tab", "data"),
+    State("dc-view-dc-id", "data"),
     prevent_initial_call=False,
 )
-def load_dc_view_data(pathname, time_range, visible_sections, loaded_tabs):
+def load_dc_view_data(
+    pathname,
+    time_range,
+    visible_sections,
+    loaded_tabs,
+    active_tab,
+    prev_dc_id,
+):
     dc_id = _dc_id_from_path(pathname)
     if not dc_id:
         raise dash.exceptions.PreventUpdate
     tr = time_range or default_time_range()
     vs = set(visible_sections) if visible_sections else None
     triggered = str(ctx.triggered_id or "")
-    if triggered.startswith("url"):
+
+    dc_changed = (
+        triggered.startswith("url")
+        and str(dc_id).upper() != str(prev_dc_id or "").upper()
+    )
+    if dc_changed:
         loaded = set(_SUMMARY_EAGER_TABS)
+        active = "summary"
     else:
         loaded = set(loaded_tabs or _SUMMARY_EAGER_TABS)
+        active = active_tab or "summary"
+
+    if active in _LAZY_TAB_KEYS:
+        loaded.add(active)
+
     eager = frozenset(loaded) if loaded else _SUMMARY_EAGER_TABS
-    page = build_dc_view(dc_id, tr, visible_sections=vs, eager_tabs=eager)
+    page = build_dc_view(
+        dc_id,
+        tr,
+        visible_sections=vs,
+        eager_tabs=eager,
+        active_outer_tab=active,
+    )
     wrapper = html.Div(className="dc-page-enter customer-page-enter", children=[page])
-    return wrapper, sorted(eager)
+    return wrapper, sorted(eager), _dc_context(dc_id, tr), active
 
 
 @callback(
-    Output("dc-view-page-root", "children", allow_duplicate=True),
+    Output("dc-tab-virt-root", "children", allow_duplicate=True),
+    Output("dc-tab-backup-root", "children", allow_duplicate=True),
+    Output("dc-tab-storage-root", "children", allow_duplicate=True),
+    Output("dc-tab-phys-inv-root", "children", allow_duplicate=True),
+    Output("dc-tab-network-root", "children", allow_duplicate=True),
+    Output("dc-tab-avail-root", "children", allow_duplicate=True),
     Output("dc-view-loaded-tabs", "data", allow_duplicate=True),
     Input("dc-main-tabs", "value"),
-    Input("app-time-range", "data"),
     State("url", "pathname"),
     State("dc-view-visible-sections", "data"),
     State("dc-view-loaded-tabs", "data"),
@@ -67,6 +125,9 @@ def expand_dc_view_on_tab(active_tab, time_range, pathname, visible_sections, lo
     dc_id = _dc_id_from_path(pathname)
     if not dc_id or not active_tab:
         raise dash.exceptions.PreventUpdate
+    if active_tab not in _LAZY_TAB_KEYS:
+        raise dash.exceptions.PreventUpdate
+
     tr = time_range or default_time_range()
     vs = set(visible_sections) if visible_sections else None
     loaded = set(loaded_tabs or _SUMMARY_EAGER_TABS)
@@ -74,6 +135,13 @@ def expand_dc_view_on_tab(active_tab, time_range, pathname, visible_sections, lo
     loaded.add(active_tab)
     if loaded == prev and active_tab in prev:
         raise dash.exceptions.PreventUpdate
-    page = build_dc_view(dc_id, tr, visible_sections=vs, eager_tabs=frozenset(loaded))
-    wrapper = html.Div(className="dc-page-enter customer-page-enter", children=[page])
-    return wrapper, sorted(loaded)
+
+    content = build_dc_lazy_tab_panel(dc_id, active_tab, tr, vs)
+    updates: list = [dash.no_update] * len(_LAZY_TAB_KEYS)
+    try:
+        idx = _LAZY_TAB_KEYS.index(active_tab)
+        updates[idx] = content
+    except ValueError:
+        raise dash.exceptions.PreventUpdate
+
+    return (*updates, sorted(loaded))

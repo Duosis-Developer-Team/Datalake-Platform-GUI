@@ -64,6 +64,20 @@ def collect_virt_sellable_panels(
     return panels
 
 
+def virt_tl_from_sellable_summary(summary: dict | None) -> float:
+    """Sum virt family rollups from lightweight CRM summary (rollup_only=true)."""
+    if not summary or not isinstance(summary, dict):
+        return 0.0
+    virt_fams = set(VIRT_SELLABLE_FAMILY_LABELS)
+    total = 0.0
+    for fam in summary.get("families") or []:
+        if not isinstance(fam, dict):
+            continue
+        if fam.get("family") in virt_fams:
+            total += float(fam.get("total_potential_tl") or 0.0)
+    return total
+
+
 def total_potential_tl(panels: list[dict]) -> float:
     """Sum ``potential_tl`` across panel dicts."""
     total = 0.0

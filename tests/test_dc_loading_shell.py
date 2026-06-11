@@ -21,6 +21,7 @@ def test_build_dc_view_layout_shell_has_async_roots():
     assert "dc-view-page-root" in text
     assert "dc-view-visible-sections" in text
     assert "dc-view-loaded-tabs" in text
+    assert "dc-view-active-tab" in text
 
 
 def _collect_ids(component, found=None):

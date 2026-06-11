@@ -387,6 +387,28 @@ app.clientside_callback(
 )
 
 
+app.clientside_callback(
+    """
+    function(tabValue, loadedTabs) {
+        if (!tabValue) return window.dash_clientside.no_update;
+        const loaded = loadedTabs || [];
+        if (loaded.includes(tabValue) || tabValue === 'summary') {
+            return window.dash_clientside.no_update;
+        }
+        const root = document.getElementById('dc-tab-' + tabValue + '-root');
+        if (root) {
+            root.classList.add('dc-tab-loading-pending');
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    dash.Output("export-pdf-clientside-dummy", "children", allow_duplicate=True),
+    dash.Input("dc-main-tabs", "value"),
+    dash.State("dc-view-loaded-tabs", "data"),
+    prevent_initial_call=True,
+)
+
+
 @app.callback(
     dash.Output("sidebar-nav", "children"),
     dash.Input("url", "pathname"),
