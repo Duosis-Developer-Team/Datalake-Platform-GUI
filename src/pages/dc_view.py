@@ -11,6 +11,7 @@ from dash_iconify import DashIconify
 import plotly.graph_objects as go
 
 from src.services import api_client as api
+from src.pages.dc_summary_sellable import build_summary_sellable_section
 from src.utils.api_parallel import parallel_execute
 from src.utils.time_range import default_time_range
 from src.utils.format_units import (
@@ -1698,6 +1699,21 @@ def _build_sellable_inline_kpi(
     ram = by_kind["ram"]
     stor = by_kind["storage"]
 
+    cpu_has_dual = any(
+        p.get("sellable_physical") is not None and p.get("sellable_effective") is not None
+        for p in panels
+        if (p.get("resource_kind") or "").lower() == "cpu"
+    )
+    if cpu_has_dual:
+        cpu_phys = sum(float(p.get("sellable_physical") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
+        cpu_eff = sum(float(p.get("sellable_effective") or p.get("sellable_constrained") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
+        cpu_phys_tl = sum(float(p.get("potential_tl_physical") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
+        cpu_eff_tl = sum(float(p.get("potential_tl_effective") or p.get("potential_tl") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
+        cpu["physical"] = cpu_phys
+        cpu["effective"] = cpu_eff
+        cpu["tl_phys"] = cpu_phys_tl
+        cpu["tl_eff"] = cpu_eff_tl
+
     def _kpi_with_sub(
         label: str,
         value: str,
@@ -1747,6 +1763,12 @@ def _build_sellable_inline_kpi(
         )
 
     cpu_short, cpu_full = _fmt_tl_short(cpu["tl"])
+    if cpu_has_dual:
+        cpu_short = f"{_fmt_tl_short(cpu.get('tl_phys', 0))[0]} – {_fmt_tl_short(cpu.get('tl_eff', 0))[0]}"
+        cpu_full = (
+            f"Physical: {smart_cpu(cpu.get('physical', 0))} · "
+            f"Effective: {cpu.get('effective', 0):,.0f} {cpu['unit']}"
+        )
     ram_short, ram_full = _fmt_tl_short(ram["tl"])
     stor_short, stor_full = _fmt_tl_short(stor["tl"])
     total_short, total_full = _fmt_tl_short(total_tl)
@@ -1765,12 +1787,18 @@ def _build_sellable_inline_kpi(
     else:
         stor_value = _fmt_unit(stor["constrained"], stor["unit"])
 
-    total_has_range = total_tl_max > total_tl + 1e-6
+    total_has_range = (
+        total_tl_max > total_tl + 1e-6
+        or (cpu_has_dual and abs(cpu.get("tl_phys", 0) - cpu.get("tl_eff", 0)) > 1e-6)
+    )
     if total_has_range:
-        total_max_short, total_max_full = _fmt_tl_short(total_tl_max)
-        total_value = f"{total_short} – {total_max_short}"
+        tl_lo = min(total_tl, total_tl_max, cpu.get("tl_phys", total_tl), cpu.get("tl_eff", total_tl))
+        tl_hi = max(total_tl, total_tl_max, cpu.get("tl_phys", total_tl), cpu.get("tl_eff", total_tl))
+        total_max_short, total_max_full = _fmt_tl_short(tl_hi)
+        total_min_short, _ = _fmt_tl_short(tl_lo)
+        total_value = f"{total_min_short} – {total_max_short}"
         total_tooltip = (
-            f"Min (garanti): {total_full} · Max (paylaşımlı IBM kapasitesi dahil): {total_max_full}"
+            f"Min (garanti): {total_min_short} · Max (paylaşımlı / efektif): {total_max_full}"
         )
     else:
         total_value = total_short
@@ -1779,7 +1807,11 @@ def _build_sellable_inline_kpi(
     cards = [
         _kpi_with_sub(
             "CPU Sellable",
-            _fmt_unit(cpu["constrained"], cpu["unit"]),
+            (
+                f"Phys {smart_cpu(cpu.get('physical', 0))} | Eff {_fmt_unit(cpu.get('effective', cpu['constrained']), cpu['unit'])}"
+                if cpu_has_dual
+                else _fmt_unit(cpu["constrained"], cpu["unit"])
+            ),
             cpu_short,
             cpu_full,
             _DC_ICONS["cpu"],
@@ -1868,8 +1900,15 @@ def _build_sellable_inline_kpi(
     return html.Div(**div_kwargs)
 
 
-def _build_summary_tab(data: dict, tr: dict, dc_id: str | None = None):
-    """Summary tab: combined capacity planning view."""
+def _build_summary_tab(
+    data: dict,
+    tr: dict,
+    dc_id: str | None = None,
+    *,
+    sellable_summary: dict | None = None,
+    show_sellable: bool = True,
+):
+    """Summary tab: sellable executive overview + combined capacity planning."""
     classic    = data.get("classic", {})
     hyperconv  = data.get("hyperconv", {})
     intel      = data.get("intel", {})
@@ -1895,9 +1934,26 @@ def _build_summary_tab(data: dict, tr: dict, dc_id: str | None = None):
     mem_pct  = pct_float(total_mem_used, total_mem_cap)
     stor_pct = pct_float(total_stor_used * 1024, total_stor_cap * 1024)
 
+    sellable_block = None
+    if show_sellable and dc_id:
+        sellable_block = build_summary_sellable_section(str(dc_id), sellable_summary)
+
     return dmc.Stack(
         gap="lg",
         children=[
+            *(
+                [html.Div(id="dc-summary-sellable-root", children=sellable_block.children)]
+                if sellable_block is not None
+                else []
+            ),
+            html.Div(
+                className="nexus-card",
+                style={"padding": "16px 20px"},
+                children=_section_title(
+                    "Infrastructure Capacity",
+                    "Toplam envanter ve kullanım — sellable özetinin altında bağlam",
+                ),
+            ),
             # Combined KPIs
             html.Div(
                 className="nexus-card",
@@ -3172,12 +3228,21 @@ def _host_metric_row(
 def _host_card(h: dict, color: str = "blue"):
     """Single host card: cluster badge + VM count + CPU/RAM(/Disk) bars."""
     host_name = h.get("host") or "Unknown"
+    cpu_phys = float(h.get("cpu_alloc_ghz_physical") or 0)
+    cpu_eff = float(h.get("cpu_alloc_ghz") or 0)
+    cpu_row = _host_metric_row(
+        "CPU",
+        float(h.get("cpu_used_ghz") or 0), float(h.get("cpu_cap_ghz") or 0), "GHz",
+        alloc=cpu_eff, alloc_pct=float(h.get("cpu_alloc_pct") or 0),
+    )
+    cpu_row.children.append(
+        html.Div(
+            f"Physical alloc: {cpu_phys:,.1f} GHz · Effective: {cpu_eff:,.1f} GHz (1 vCPU=1 GHz)",
+            style={"fontSize": "0.7rem", "color": "#A3AED0", "marginTop": "3px", "fontFamily": "DM Sans"},
+        )
+    )
     rows = [
-        _host_metric_row(
-            "CPU",
-            float(h.get("cpu_used_ghz") or 0), float(h.get("cpu_cap_ghz") or 0), "GHz",
-            alloc=float(h.get("cpu_alloc_ghz") or 0), alloc_pct=float(h.get("cpu_alloc_pct") or 0),
-        ),
+        cpu_row,
         _host_metric_row(
             "Memory",
             float(h.get("mem_used_gb") or 0), float(h.get("mem_cap_gb") or 0), "GB",
@@ -3245,13 +3310,20 @@ def _build_hosts_panel_content(hosts_data: dict, color: str = "blue"):
     )
 
 
-def _build_hosts_panel_shell(slug: str, color: str = "blue"):
-    """Static collapsible shell for the Hosts panel.
-
-    Content (`hosts-panel-{slug}`) and count badge (`hosts-count-{slug}`) are
-    updated by cluster-selector callbacks; the collapse state survives content
-    refreshes because the Collapse itself is never re-rendered.
-    """
+def _build_hosts_panel_shell(
+    slug: str,
+    color: str = "blue",
+    *,
+    initial_data: dict | None = None,
+):
+    """Collapsible Hosts panel shell with optional prefetched content."""
+    count = int((initial_data or {}).get("host_count") or 0)
+    count_label = f"{count} host" if count else "—"
+    initial_content = (
+        _build_hosts_panel_content(initial_data, color)
+        if initial_data and count
+        else None
+    )
     return html.Div(
         className="nexus-card",
         style={"padding": "20px"},
@@ -3268,7 +3340,7 @@ def _build_hosts_panel_shell(slug: str, color: str = "blue"):
                         children=[
                             dmc.Badge(
                                 id=f"hosts-count-{slug}",
-                                children="—",
+                                children=count_label,
                                 color=color,
                                 variant="light",
                                 size="lg",
@@ -3290,7 +3362,11 @@ def _build_hosts_panel_shell(slug: str, color: str = "blue"):
             dmc.Collapse(
                 id=f"hosts-collapse-{slug}",
                 **{"in": False},
-                children=html.Div(id=f"hosts-panel-{slug}", style={"marginTop": "16px"}),
+                children=html.Div(
+                    id=f"hosts-panel-{slug}",
+                    style={"marginTop": "16px"},
+                    children=initial_content,
+                ),
             ),
         ],
     )
@@ -4180,6 +4256,9 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
             "s3_data": lambda: api.get_dc_s3_pools(dc_id, tr),
             "classic_clusters": lambda: api.get_classic_cluster_list(dc_id, tr),
             "hyperconv_clusters": lambda: api.get_hyperconv_cluster_list(dc_id, tr),
+            "classic_hosts": lambda: api.get_classic_host_rows(dc_id, None, tr),
+            "hyperconv_hosts": lambda: api.get_hyperconv_host_rows(dc_id, None, tr),
+            "sellable_summary": lambda: api.get_sellable_summary(str(dc_id)),
         }
     )
     data = batch1["data"]
@@ -4187,6 +4266,9 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     s3_data = batch1["s3_data"]
     classic_clusters = batch1["classic_clusters"]
     hyperconv_clusters = batch1["hyperconv_clusters"]
+    classic_hosts_data = batch1.get("classic_hosts") or {"hosts": [], "host_count": 0}
+    hyperconv_hosts_data = batch1.get("hyperconv_hosts") or {"hosts": [], "host_count": 0}
+    sellable_summary = batch1.get("sellable_summary")
 
     sla_entry = sla_by_dc.get(str(dc_id).upper())
     sla_badges = []
@@ -4395,6 +4477,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     show_hyperconv = has_hyperconv and _sec("sub:dc_view:virt:hyperconv")
     show_power_inner = has_power and _sec("sub:dc_view:virt:power")
     show_virt_hosts = _sec("sub:dc_view:virt:hosts")
+    show_summary_sellable = _sec("sub:dc_view:summary:sellable")
     virt_order = [
         ("classic", show_classic),
         ("hyperconv", show_hyperconv),
@@ -4474,7 +4557,11 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                     children=dmc.Stack(
                         gap="lg",
                         style={"padding": "0 30px"},
-                        children=[_build_summary_tab(data, tr, dc_id=str(dc_id))],
+                        children=[_build_summary_tab(
+                            data, tr, dc_id=str(dc_id),
+                            sellable_summary=sellable_summary if show_summary_sellable else None,
+                            show_sellable=show_summary_sellable,
+                        )],
                     ),
                 ) if show_summary else None,
 
@@ -4526,7 +4613,9 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     color="blue",
                                                     container_id="sellable-classic-card",
                                                 ),
-                                                _build_hosts_panel_shell("classic", "blue") if show_virt_hosts else None,
+                                                _build_hosts_panel_shell(
+                                                    "classic", "blue", initial_data=classic_hosts_data,
+                                                ) if show_virt_hosts else None,
                                             ],
                                         ),
                                     ) if show_classic else None,
@@ -4552,7 +4641,9 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     color="teal",
                                                     container_id="sellable-hyperconv-card",
                                                 ),
-                                                _build_hosts_panel_shell("hyperconv", "teal") if show_virt_hosts else None,
+                                                _build_hosts_panel_shell(
+                                                    "hyperconv", "teal", initial_data=hyperconv_hosts_data,
+                                                ) if show_virt_hosts else None,
                                             ],
                                         ),
                                     ) if show_hyperconv else None,

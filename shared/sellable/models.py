@@ -84,6 +84,13 @@ class PanelResult:
     sellable_max: float | None = None
     potential_tl_min: float | None = None
     potential_tl_max: float | None = None
+    # Dual CPU sellable tracks (physical GHz vs effective sales units).
+    sellable_physical: float | None = None
+    sellable_effective: float | None = None
+    potential_tl_physical: float | None = None
+    potential_tl_effective: float | None = None
+    # host_based | cluster_fallback — how virt CPU/RAM sellable was computed.
+    computation_mode: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -98,6 +105,10 @@ class FamilyAggregate:
     total_potential_tl: float = 0.0
     total_sellable_constrained_units: dict[str, float] = field(default_factory=dict)  # by resource_kind
     constrained_loss_tl: float = 0.0       # raw potential - constrained potential
+    computation_mode: str | None = None
+    total_potential_tl_min: float | None = None
+    total_potential_tl_max: float | None = None
+    mapped_panel_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +119,10 @@ class FamilyAggregate:
             "total_potential_tl": self.total_potential_tl,
             "total_sellable_constrained_units": self.total_sellable_constrained_units,
             "constrained_loss_tl": self.constrained_loss_tl,
+            "computation_mode": self.computation_mode,
+            "total_potential_tl_min": self.total_potential_tl_min,
+            "total_potential_tl_max": self.total_potential_tl_max,
+            "mapped_panel_count": self.mapped_panel_count,
         }
 
 
@@ -119,6 +134,10 @@ class DashboardSummary:
     ytd_sales_tl: float
     unmapped_product_count: int
     families: list[FamilyAggregate] = field(default_factory=list)
+    total_potential_tl_min: float | None = None
+    total_potential_tl_max: float | None = None
+    mapped_panel_count: int = 0
+    computation_modes: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,6 +147,10 @@ class DashboardSummary:
             "ytd_sales_tl": self.ytd_sales_tl,
             "unmapped_product_count": self.unmapped_product_count,
             "families": [f.to_dict() for f in self.families],
+            "total_potential_tl_min": self.total_potential_tl_min,
+            "total_potential_tl_max": self.total_potential_tl_max,
+            "mapped_panel_count": self.mapped_panel_count,
+            "computation_modes": self.computation_modes,
         }
 
 

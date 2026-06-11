@@ -41,6 +41,7 @@ from shared.vmware.host_cpu_ghz import (
     compute_cpu_overalloc_flags,
     enrich_customer_vm_cpu_list,
     enrich_vm_cpu_sales_fields,
+    resolve_host_ghz,
     sum_cpu_real_total,
 )
 from app.services.netbox_viz_filter import (
@@ -1083,12 +1084,21 @@ LIMIT 20
         mem_cap_gb: float,
         mem_used_gb: float,
         alloc: dict | None,
+        ghz_per_core: float | None = None,
+        is_nutanix: bool = False,
     ) -> dict:
         """Normalize a single host record. Sales CPU rule: 1 vCPU = 1 GHz."""
         alloc = alloc or {}
         vcpu_total = float(alloc.get("vcpu_total") or 0)
+        default_ghz = float(ghz_per_core or DEFAULT_HOST_CPU_GHZ)
+        if is_nutanix:
+            host_ghz = 1.0
+        else:
+            host_ghz = float(ghz_per_core or default_ghz)
         cpu_alloc_ghz = vcpu_total * 1.0
+        cpu_alloc_ghz_physical = vcpu_total * host_ghz
         mem_alloc_gb = float(alloc.get("mem_alloc_gb") or 0)
+        cap_cores = (cpu_cap_ghz / host_ghz) if host_ghz > 0 else 0.0
         return {
             "host": host,
             "cluster": cluster,
@@ -1097,7 +1107,10 @@ LIMIT 20
             "cpu_used_ghz": round(cpu_used_ghz, 2),
             "cpu_used_pct": round(100.0 * cpu_used_ghz / cpu_cap_ghz, 1) if cpu_cap_ghz > 0 else 0.0,
             "cpu_alloc_ghz": round(cpu_alloc_ghz, 2),
+            "cpu_alloc_ghz_physical": round(cpu_alloc_ghz_physical, 2),
             "cpu_alloc_pct": round(100.0 * cpu_alloc_ghz / cpu_cap_ghz, 1) if cpu_cap_ghz > 0 else 0.0,
+            "ghz_per_core": round(host_ghz, 2),
+            "cpu_cap_cores": round(cap_cores, 2),
             "mem_cap_gb": round(mem_cap_gb, 2),
             "mem_used_gb": round(mem_used_gb, 2),
             "mem_used_pct": round(100.0 * mem_used_gb / mem_cap_gb, 1) if mem_cap_gb > 0 else 0.0,
@@ -1149,16 +1162,19 @@ LIMIT 20
                     alloc_rows = self._run_rows(
                         cur, vq.CLASSIC_HOST_VM_ALLOCATION, (dc_wc, clusters, clusters)
                     )
+                    host_map = self._load_host_ghz_map(cur)
         except OperationalError as exc:
             logger.error("DB unavailable for get_classic_host_rows(%s): %s", dc_code, exc)
             return {"hosts": [], "host_count": 0}
 
         alloc_map = self._host_alloc_map(alloc_rows)
+        default_ghz = self._get_default_host_cpu_ghz()
         hosts = []
         for r in host_rows or []:
             host_name = str(r[0] or "").strip()
             if not host_name:
                 continue
+            ghz, _ = resolve_host_ghz(host_name, host_map, default_ghz=default_ghz)
             hosts.append(self._host_row_payload(
                 host=host_name,
                 cluster=str(r[1] or ""),
@@ -1167,6 +1183,7 @@ LIMIT 20
                 mem_cap_gb=float(r[4] or 0),
                 mem_used_gb=float(r[5] or 0),
                 alloc=alloc_map.get(host_name.lower().split(".")[0]),
+                ghz_per_core=ghz,
             ))
         hosts.sort(key=lambda h: (h["cluster"], h["host"]))
         result = {"hosts": hosts, "host_count": len(hosts)}
@@ -1197,6 +1214,7 @@ LIMIT 20
                     alloc_rows = self._run_rows(
                         cur, nq.NUTANIX_HOST_VM_ALLOCATION, (dc_code, clusters, clusters)
                     )
+                    host_map = self._load_host_ghz_map(cur)
         except OperationalError as exc:
             logger.error("DB unavailable for get_hyperconv_host_rows(%s): %s", dc_code, exc)
             return {"hosts": [], "host_count": 0}
@@ -1204,12 +1222,14 @@ LIMIT 20
         _hz_per_ghz = 1_000_000_000
         _bytes_per_gb = 1024 ** 3
         alloc_map = self._host_alloc_map(alloc_rows)
+        default_ghz = self._get_default_host_cpu_ghz()
         hosts = []
         for r in host_rows or []:
             host_name = str(r[0] or "").strip()
             if not host_name:
                 continue
             alloc = alloc_map.get(host_name.lower().split(".")[0]) or {}
+            ghz, _ = resolve_host_ghz(host_name, host_map, default_ghz=default_ghz)
             payload = self._host_row_payload(
                 host=host_name,
                 cluster=str(r[1] or ""),
@@ -1218,6 +1238,8 @@ LIMIT 20
                 mem_cap_gb=float(r[4] or 0) / _bytes_per_gb,
                 mem_used_gb=float(r[5] or 0) / _bytes_per_gb,
                 alloc=alloc,
+                ghz_per_core=ghz,
+                is_nutanix=True,
             )
             # Nutanix exposes per-host storage capacity/usage natively (HCI).
             payload["stor_cap_gb"] = round(float(r[6] or 0) / _bytes_per_gb, 2)
@@ -5994,6 +6016,13 @@ JOIN latest l
                 "Cache warm-up complete for last 7d in %.2fs.",
                 time.perf_counter() - t0,
             )
+            # Host-level compute rows (Hosts panel + host-based sellable).
+            try:
+                for dc_code in self._dc_list:
+                    self.get_classic_host_rows(dc_code, None, tr)
+                    self.get_hyperconv_host_rows(dc_code, None, tr)
+            except Exception as exc:
+                logger.warning("Host rows cache warm-up failed: %s", exc)
         except Exception as exc:
             logger.warning("Cache warm-up failed (DB may be unavailable): %s", exc)
 

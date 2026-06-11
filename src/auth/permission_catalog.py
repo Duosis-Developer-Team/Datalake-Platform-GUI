@@ -94,6 +94,7 @@ def build_default_permission_roots() -> list[PermissionNode]:
                         sort_order=10,
                         children=[
                             _n("sub:dc_view:summary:infra", "Combined Infrastructure", "sub_section"),
+                            _n("sub:dc_view:summary:sellable", "Sellable Executive Summary", "sub_section", component_id="dc-summary-sellable-root"),
                             _n("sub:dc_view:summary:util", "Resource Utilization", "sub_section"),
                             _n("sub:dc_view:summary:cap", "Capacity Detail", "sub_section"),
                             _n("sub:dc_view:summary:power", "Power Compute IBM", "sub_section"),

@@ -188,6 +188,11 @@ _HOST_BASED_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_hypercon
 # IBM storage free space is shared between KM datastores and native Power.
 _STORAGE_RANGE_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_power"})
 
+# gui_crm_calc_config keys for dual CPU sellable tracks.
+_CALC_EFFECTIVE_GHZ_KEY = "sellable.cpu.effective_ghz_per_unit"
+_CALC_PHYSICAL_PRICE_UNIT_KEY = "sellable.cpu.physical_price_unit"
+_CALC_POWER_CORE_GHZ_KEY = "power.core_to_ghz_factor"
+
 # Maps resource_kind → (capacity_field, used_field, source_unit) in the compute response.
 _RESOURCE_KIND_TO_COMPUTE_FIELDS: dict[str, tuple[str, str, str]] = {
     "cpu":     ("cpu_cap",  "cpu_alloc_ghz_sales",  "GHz"),
@@ -206,7 +211,9 @@ from shared.sellable.computation import (
     compute_potential_tl,
     compute_storage_range,
     constrain_by_ratio,
+    constrain_by_ratio_dual_cpu_cluster,
     constrain_by_ratio_per_host,
+    constrain_by_ratio_per_host_dual,
     convert_unit,
 )
 from shared.sellable.models import (
@@ -1224,32 +1231,109 @@ SELECT _tot, _used FROM latest
     # ----------------------------------------------- host-based sellable path
 
     def _fetch_host_rows(
-        self, dc_code: str, family: str, clusters: list[str] | None
-    ) -> "list[dict] | None":
+        self,
+        dc_code: str,
+        family: str,
+        clusters: list[str] | None,
+        *,
+        preset: str = "30d",
+    ) -> tuple[list[dict] | None, str]:
         """Fetch per-host compute rows from datacenter-api /compute/{kind}/hosts.
 
-        Returns None when the host endpoint cannot serve this scope (global
-        dc_code, unknown family, missing API URL or HTTP failure) so callers
-        fall back to the legacy aggregate constrain path.
+        Returns ``(hosts, status)`` where status is ``ok`` | ``empty`` | ``unavailable``.
         """
         kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
         if not kind or not dc_code or dc_code == "*" or not self._dc_api_url:
-            return None
-        url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}/hosts"
+            return None, "unavailable"
+        params: list[str] = [f"preset={preset}"]
         cl = [c for c in (clusters or []) if c]
         if cl:
-            url += f"?clusters={','.join(cl)}"
+            params.append(f"clusters={','.join(cl)}")
+        url = (
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}/hosts"
+            f"?{'&'.join(params)}"
+        )
         try:
             resp = httpx.get(url, timeout=15.0)
             resp.raise_for_status()
             data = resp.json()
         except Exception:
             logger.warning("host rows fetch failed dc=%s family=%s url=%s", dc_code, family, url)
-            return None
+            return None, "unavailable"
         if not isinstance(data, dict):
-            return None
+            return None, "unavailable"
         hosts = data.get("hosts")
-        return hosts if isinstance(hosts, list) else None
+        if not isinstance(hosts, list):
+            return None, "unavailable"
+        if not hosts:
+            logger.info(
+                "host rows empty dc=%s family=%s clusters=%s — cluster fallback",
+                dc_code,
+                family,
+                cl or "all",
+            )
+            return [], "empty"
+        return hosts, "ok"
+
+    def _get_sellable_calc_config(self) -> dict[str, float | str]:
+        """Load dual-CPU sellable calc variables from gui_crm_calc_config."""
+        defaults: dict[str, float | str] = {
+            "effective_ghz_per_unit": 1.0,
+            "physical_price_unit": "GHz",
+            "power_core_to_ghz": 3.3,
+        }
+        if not self._webui.is_available:
+            return defaults
+        keys = (_CALC_EFFECTIVE_GHZ_KEY, _CALC_PHYSICAL_PRICE_UNIT_KEY, _CALC_POWER_CORE_GHZ_KEY)
+        try:
+            rows = self._webui.run_rows(
+                "SELECT config_key, config_value FROM gui_crm_calc_config WHERE config_key = ANY(%s)",
+                (list(keys),),
+            )
+        except Exception:
+            logger.exception("sellable calc config load failed")
+            return defaults
+        by_key = {str(r["config_key"]): r.get("config_value") for r in rows or []}
+        try:
+            defaults["effective_ghz_per_unit"] = float(
+                by_key.get(_CALC_EFFECTIVE_GHZ_KEY, defaults["effective_ghz_per_unit"])
+            )
+        except (TypeError, ValueError):
+            pass
+        defaults["physical_price_unit"] = str(
+            by_key.get(_CALC_PHYSICAL_PRICE_UNIT_KEY, defaults["physical_price_unit"]) or "GHz"
+        )
+        try:
+            defaults["power_core_to_ghz"] = float(
+                by_key.get(_CALC_POWER_CORE_GHZ_KEY, defaults["power_core_to_ghz"])
+            )
+        except (TypeError, ValueError):
+            pass
+        return defaults
+
+    def _fetch_compute_response(
+        self, dc_code: str, family: str, clusters: list[str] | None
+    ) -> dict | None:
+        """Fetch datacenter-api /compute/{kind} JSON (optional cluster filter)."""
+        kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
+        if not kind or not dc_code or dc_code == "*" or not self._dc_api_url:
+            return None
+        params = ["preset=30d"]
+        cl = [c for c in (clusters or []) if c]
+        if cl:
+            params.append(f"clusters={','.join(cl)}")
+        url = (
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
+            f"?{'&'.join(params)}"
+        )
+        try:
+            resp = httpx.get(url, timeout=15.0)
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, dict) else None
+        except Exception:
+            logger.warning("compute fetch failed dc=%s family=%s url=%s", dc_code, family, url)
+            return None
 
     def _apply_host_based_constraints(
         self,
@@ -1257,14 +1341,10 @@ SELECT _tot, _used FROM latest
         ratio: ResourceRatio,
         host_rows: "list[dict]",
         unit_lookup: dict[tuple[str, str], UnitConversion],
+        *,
+        effective_ghz_per_unit: float = 1.0,
     ) -> "list[PanelResult]":
-        """Recompute CPU/RAM panel totals + sellable from per-host rows.
-
-        Host rows arrive in GHz / GB (datacenter-api units); they are converted
-        to each panel's display_unit so the family ratio (display units) applies
-        directly. Panel total/allocated/sellable_raw are overridden with host
-        sums to keep aggregate and per-host numbers internally consistent.
-        """
+        """Recompute CPU/RAM panel totals + dual-track sellable from per-host rows."""
         by_kind = {p.resource_kind: p for p in group}
         cpu_p = by_kind.get("cpu")
         ram_p = by_kind.get("ram")
@@ -1275,39 +1355,136 @@ SELECT _tot, _used FROM latest
         ram_conv = self._lookup_conversion(unit_lookup, "GB", ram_p.display_unit)
 
         host_units: list[dict] = []
-        cpu_total = cpu_alloc = ram_total = ram_alloc = 0.0
-        cpu_raw_sum = ram_raw_sum = 0.0
+        cpu_total = cpu_alloc = cpu_total_phys = cpu_alloc_phys = 0.0
+        ram_total = ram_alloc = 0.0
+        cpu_raw_sum = cpu_raw_phys_sum = ram_raw_sum = 0.0
         for h in host_rows:
-            hc = convert_unit(float(h.get("cpu_cap_ghz") or 0.0), cpu_conv)
-            ha = convert_unit(float(h.get("cpu_alloc_ghz") or 0.0), cpu_conv)
+            ghz = float(h.get("ghz_per_core") or 1.0)
+            cap_ghz = float(h.get("cpu_cap_ghz") or 0.0)
+            alloc_sales = float(h.get("cpu_alloc_ghz") or 0.0)
+            alloc_phys = float(h.get("cpu_alloc_ghz_physical") or alloc_sales * ghz)
+            hc = convert_unit(cap_ghz, cpu_conv)
+            ha = convert_unit(alloc_sales, cpu_conv)
             mc = convert_unit(float(h.get("mem_cap_gb") or 0.0), ram_conv)
             ma = convert_unit(float(h.get("mem_alloc_gb") or 0.0), ram_conv)
-            host_units.append({"cpu_total": hc, "cpu_alloc": ha, "ram_total": mc, "ram_alloc": ma})
+            host_units.append({
+                "cpu_total": hc,
+                "cpu_alloc": ha,
+                "cpu_total_phys": cap_ghz,
+                "cpu_alloc_phys": alloc_phys,
+                "ghz_per_core": ghz,
+                "ram_total": mc,
+                "ram_alloc": ma,
+            })
             cpu_total += hc
             cpu_alloc += ha
+            cpu_total_phys += cap_ghz
+            cpu_alloc_phys += alloc_phys
             ram_total += mc
             ram_alloc += ma
             cpu_raw_sum += apply_threshold(hc, ha, cpu_p.threshold_pct)
+            cpu_raw_phys_sum += apply_threshold(cap_ghz, alloc_phys, cpu_p.threshold_pct)
             ram_raw_sum += apply_threshold(mc, ma, ram_p.threshold_pct)
 
         note = f"host-based ({len(host_units)} host)"
         rebuilt: list[PanelResult] = []
         for p in group:
             if p.resource_kind == "cpu":
-                p.total, p.allocated, p.sellable_raw = cpu_total, cpu_alloc, cpu_raw_sum
+                p.total = cpu_total
+                p.allocated = cpu_alloc
+                p.sellable_raw = cpu_raw_sum
+                p.sellable_physical = cpu_raw_phys_sum
+                p.sellable_effective = cpu_raw_sum
                 p.notes = [*p.notes, note]
+                p.computation_mode = "host_based"
             elif p.resource_kind == "ram":
-                p.total, p.allocated, p.sellable_raw = ram_total, ram_alloc, ram_raw_sum
+                p.total = ram_total
+                p.allocated = ram_alloc
+                p.sellable_raw = ram_raw_sum
                 p.notes = [*p.notes, note]
             rebuilt.append(p)
 
-        return constrain_by_ratio_per_host(
+        return constrain_by_ratio_per_host_dual(
             rebuilt,
             ratio,
             host_units,
             cpu_threshold_pct=cpu_p.threshold_pct,
             ram_threshold_pct=ram_p.threshold_pct,
+            effective_ghz_per_unit=effective_ghz_per_unit,
         )
+
+    def _apply_cluster_fallback_dual(
+        self,
+        group: "list[PanelResult]",
+        ratio: ResourceRatio,
+        dc_code: str,
+        family: str,
+        clusters: list[str] | None,
+        *,
+        host_status: str,
+        effective_ghz_per_unit: float = 1.0,
+        decouple_resource_kinds: frozenset[str] | None = None,
+    ) -> "list[PanelResult]":
+        """Cluster-level fallback with dual CPU when host rows are unavailable."""
+        cpu_p = next((p for p in group if p.resource_kind == "cpu"), None)
+        if cpu_p is None:
+            return constrain_by_ratio(group, ratio, decouple_resource_kinds=decouple_resource_kinds)
+
+        raw = self._fetch_compute_response(dc_code, family, clusters)
+        cpu_raw_phys = cpu_raw_eff = cpu_p.sellable_raw
+        if raw:
+            cap = float(raw.get("cpu_cap") or cpu_p.total or 0.0)
+            alloc_phys = float(raw.get("cpu_alloc_ghz_vm") or 0.0)
+            alloc_eff = float(raw.get("cpu_alloc_ghz_sales") or cpu_p.allocated or 0.0)
+            cpu_raw_phys = apply_threshold(cap, alloc_phys, cpu_p.threshold_pct)
+            cpu_raw_eff = apply_threshold(cap, alloc_eff, cpu_p.threshold_pct)
+            cpu_conv = None
+            if cpu_p.display_unit.lower() not in ("ghz",):
+                cpu_conv = UnitConversion("GHz", cpu_p.display_unit, 1.0, "divide", False)
+            if cpu_conv:
+                cpu_p.total = convert_unit(cap, cpu_conv)
+                cpu_p.allocated = convert_unit(alloc_eff, cpu_conv)
+            else:
+                cpu_p.total = cap
+                cpu_p.allocated = alloc_eff
+            cpu_p.sellable_raw = cpu_raw_eff
+            cpu_p.sellable_effective = cpu_raw_eff
+            cpu_p.sellable_physical = cpu_raw_phys
+
+        note = f"cluster_fallback ({host_status})"
+        for p in group:
+            if p.resource_kind == "cpu":
+                p.notes = [*p.notes, note]
+            p.computation_mode = "cluster_fallback"
+
+        return constrain_by_ratio_dual_cpu_cluster(
+            group,
+            ratio,
+            cpu_raw_physical=cpu_raw_phys,
+            cpu_raw_effective=cpu_raw_eff,
+            decouple_resource_kinds=decouple_resource_kinds,
+        )
+
+    def _apply_dual_cpu_pricing(self, panel: PanelResult, calc_cfg: dict[str, float | str]) -> None:
+        """Populate potential_tl_physical / potential_tl_effective on CPU panels."""
+        if panel.resource_kind != "cpu":
+            return
+        price_eff = panel.unit_price_tl
+        price_phys = price_eff
+        phys_unit = str(calc_cfg.get("physical_price_unit") or "GHz").upper()
+        if phys_unit == "GHZ" and panel.display_unit.upper() in ("VCPU", "CORE", "CPU"):
+            ghz_factor = float(calc_cfg.get("effective_ghz_per_unit") or 1.0)
+            if ghz_factor > 0:
+                price_phys = price_eff / ghz_factor
+        if panel.sellable_physical is not None:
+            panel.potential_tl_physical = compute_potential_tl(panel.sellable_physical, price_phys)
+        if panel.sellable_effective is not None:
+            panel.potential_tl_effective = compute_potential_tl(panel.sellable_effective, price_eff)
+        phys_tl = panel.potential_tl_physical if panel.potential_tl_physical is not None else panel.potential_tl
+        eff_tl = panel.potential_tl_effective if panel.potential_tl_effective is not None else panel.potential_tl
+        panel.potential_tl_min = min(phys_tl, eff_tl)
+        panel.potential_tl_max = max(phys_tl, eff_tl)
+        panel.potential_tl = (panel.potential_tl_min + panel.potential_tl_max) / 2.0
 
     # ------------------------------------------- architecture storage range
 
@@ -1396,6 +1573,7 @@ SELECT _tot, _used FROM latest
             lo, hi = rng["power_min"], rng["power_max"]
             note = "Power storage range: min=IBM free − KM-exposed, max=full IBM free"
         if total_gb <= 0:
+            sto_p.notes = [*sto_p.notes, "storage range skipped: no backing capacity data"]
             return
 
         sto_p.total = convert_unit(total_gb, conv)
@@ -1807,6 +1985,19 @@ SELECT _tot, _used FROM latest
             potential_tl_max=(
                 float(d["potential_tl_max"]) if d.get("potential_tl_max") is not None else None
             ),
+            sellable_physical=(
+                float(d["sellable_physical"]) if d.get("sellable_physical") is not None else None
+            ),
+            sellable_effective=(
+                float(d["sellable_effective"]) if d.get("sellable_effective") is not None else None
+            ),
+            potential_tl_physical=(
+                float(d["potential_tl_physical"]) if d.get("potential_tl_physical") is not None else None
+            ),
+            potential_tl_effective=(
+                float(d["potential_tl_effective"]) if d.get("potential_tl_effective") is not None else None
+            ),
+            computation_mode=d.get("computation_mode"),
         )
 
     def compute_all_panels(
@@ -1902,27 +2093,51 @@ SELECT _tot, _used FROM latest
             range_inputs = self._query_storage_range_inputs(dc_code)
 
         constrained: list[PanelResult] = []
-        # IBM Power: SAN-backed storage is often absent from sellable infra — do not let
-        # storage raw=0 collapse CPU/RAM constrained sellable (shared sellable math).
         virt_power_storage_decouple = frozenset({"storage"})
+        calc_cfg = self._get_sellable_calc_config()
+        effective_ghz = float(calc_cfg.get("effective_ghz_per_unit") or 1.0)
         for fam, group in by_family.items():
             ratio = ratio_lookup.get((fam, dc_code)) or ratio_lookup.get((fam, "*")) or ResourceRatio(family=fam)
 
             host_rows: list[dict] | None = None
+            host_status = "unavailable"
             if fam in _HOST_BASED_FAMILIES:
-                host_rows = self._fetch_host_rows(dc_code, fam, selected_clusters)
+                host_rows, host_status = self._fetch_host_rows(dc_code, fam, selected_clusters)
 
             if host_rows:
-                new_group = self._apply_host_based_constraints(group, ratio, host_rows, unit_lookup)
+                new_group = self._apply_host_based_constraints(
+                    group, ratio, host_rows, unit_lookup, effective_ghz_per_unit=effective_ghz
+                )
+            elif fam in _HOST_BASED_FAMILIES:
+                decouple = None
+                new_group = self._apply_cluster_fallback_dual(
+                    group,
+                    ratio,
+                    dc_code,
+                    fam,
+                    selected_clusters,
+                    host_status=host_status,
+                    effective_ghz_per_unit=effective_ghz,
+                    decouple_resource_kinds=decouple,
+                )
             else:
                 decouple = virt_power_storage_decouple if fam == "virt_power" else None
                 new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=decouple)
 
             if fam in _STORAGE_RANGE_FAMILIES and range_inputs:
                 self._apply_storage_range(new_group, fam, range_inputs, unit_lookup)
+            elif fam in _STORAGE_RANGE_FAMILIES and needs_range and range_inputs is None:
+                sto_p = next((p for p in new_group if p.resource_kind == "storage"), None)
+                if sto_p is not None:
+                    sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
 
             for new in new_group:
-                new.potential_tl = compute_potential_tl(new.sellable_constrained, new.unit_price_tl)
+                if new.resource_kind == "cpu" and (
+                    new.sellable_physical is not None or new.sellable_effective is not None
+                ):
+                    self._apply_dual_cpu_pricing(new, calc_cfg)
+                else:
+                    new.potential_tl = compute_potential_tl(new.sellable_constrained, new.unit_price_tl)
                 if new.sellable_min is not None and new.potential_tl_min is None:
                     new.potential_tl_min = compute_potential_tl(new.sellable_min, new.unit_price_tl)
                 if new.sellable_max is not None and new.potential_tl_max is None:
@@ -1965,20 +2180,48 @@ SELECT _tot, _used FROM latest
 
         family_aggs: list[FamilyAggregate] = []
         total_potential = 0.0
+        total_potential_min = 0.0
+        total_potential_max = 0.0
         constrained_loss = 0.0
+        computation_modes: dict[str, str] = {}
+        mapped_count = 0
         for family, group in by_family.items():
             label_lookup = group[0].label.split(" — ")[0] if group else family
-            agg = FamilyAggregate(family=family, label=label_lookup, dc_code=dc_code, panels=group)
+            mode = next(
+                (p.computation_mode for p in group if p.computation_mode),
+                None,
+            )
+            if mode:
+                computation_modes[family] = mode
+            agg = FamilyAggregate(
+                family=family,
+                label=label_lookup,
+                dc_code=dc_code,
+                panels=group,
+                computation_mode=mode,
+                mapped_panel_count=sum(1 for p in group if p.has_infra_source or p.has_price),
+            )
             family_potential = sum(p.potential_tl for p in group)
+            family_min = sum(
+                (p.potential_tl_min if p.potential_tl_min is not None else p.potential_tl) for p in group
+            )
+            family_max = sum(
+                (p.potential_tl_max if p.potential_tl_max is not None else p.potential_tl) for p in group
+            )
             family_raw_potential = sum(compute_potential_tl(p.sellable_raw, p.unit_price_tl) for p in group)
             agg.total_potential_tl = family_potential
+            agg.total_potential_tl_min = family_min
+            agg.total_potential_tl_max = family_max
             agg.constrained_loss_tl = max(family_raw_potential - family_potential, 0.0)
             agg.total_sellable_constrained_units = {
                 p.resource_kind: agg.total_sellable_constrained_units.get(p.resource_kind, 0.0) + p.sellable_constrained
                 for p in group
             }
+            mapped_count += agg.mapped_panel_count
             family_aggs.append(agg)
             total_potential += family_potential
+            total_potential_min += family_min
+            total_potential_max += family_max
             constrained_loss += agg.constrained_loss_tl
 
         family_aggs.sort(key=lambda a: -a.total_potential_tl)
@@ -1991,6 +2234,10 @@ SELECT _tot, _used FROM latest
             ytd_sales_tl=ytd_sales_tl,
             unmapped_product_count=unmapped_count,
             families=family_aggs,
+            total_potential_tl_min=total_potential_min,
+            total_potential_tl_max=total_potential_max,
+            mapped_panel_count=mapped_count,
+            computation_modes=computation_modes,
         )
 
     def _compute_ytd_sales_tl(self) -> float:

@@ -163,3 +163,35 @@ def test_compute_storage_range_no_ibm_means_degenerate_range():
     )
     assert rng["km_min"] == rng["km_max"] == 50.0
     assert rng["power_min"] == rng["power_max"] == 0.0
+
+
+def test_host_effective_units_physical_track_uses_ghz_per_core():
+    hosts = [{
+        "cpu_total_phys": 20.0,
+        "cpu_alloc_phys": 5.0,
+        "ghz_per_core": 2.0,
+        "ram_total": 80.0,
+        "ram_alloc": 0.0,
+    }]
+    n = host_effective_units(hosts, _ratio(), cpu_track="physical")
+    # raw cpu = 15 GHz -> 15 / (1*2) = 7.5 units
+    assert n == 7.5
+
+
+def test_constrain_by_ratio_per_host_dual_populates_tracks():
+    from shared.sellable.computation import constrain_by_ratio_per_host_dual
+
+    hosts = [{
+        "cpu_total": 20.0,
+        "cpu_alloc": 0.0,
+        "cpu_total_phys": 20.0,
+        "cpu_alloc_phys": 0.0,
+        "ghz_per_core": 2.0,
+        "ram_total": 80.0,
+        "ram_alloc": 0.0,
+    }]
+    panels = [_panel("cpu", raw=20.0), _panel("ram", raw=80.0)]
+    out = {p.resource_kind: p for p in constrain_by_ratio_per_host_dual(panels, _ratio(), hosts)}
+    assert out["cpu"].sellable_effective == 20.0
+    assert out["cpu"].sellable_physical == 10.0
+    assert out["cpu"].computation_mode == "host_based"

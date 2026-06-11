@@ -160,30 +160,165 @@ def host_effective_units(
     *,
     cpu_threshold_pct: float = 100.0,
     ram_threshold_pct: float = 100.0,
+    cpu_track: str = "effective",
+    effective_ghz_per_unit: float = 1.0,
 ) -> float:
     """Sum of per-host effective unit counts.
 
-    Each host dict must carry ``cpu_total``/``cpu_alloc`` and ``ram_total``/
-    ``ram_alloc`` in the SAME units as the family ratio (display units).
-    Per host: ``n_h = min(sellable_cpu_h / ratio.cpu, sellable_ram_h / ratio.ram)``
-    where ``sellable_*_h = max(total * threshold% - allocated, 0)``.
+    Each host dict must carry CPU/RAM total/alloc fields in display units.
+    ``cpu_track`` selects which CPU allocation basis to use:
+      - ``effective`` — ``cpu_total`` / ``cpu_alloc`` (sales GHz rule)
+      - ``physical``  — ``cpu_total_phys`` / ``cpu_alloc_phys`` (vCPU × host GHz)
     """
     if ratio.cpu_per_unit <= 0 or ratio.ram_gb_per_unit <= 0:
         return 0.0
     n_total = 0.0
     for h in hosts:
-        raw_cpu = apply_threshold(
-            float(h.get("cpu_total") or 0.0),
-            float(h.get("cpu_alloc") or 0.0),
-            cpu_threshold_pct,
-        )
+        if cpu_track == "physical":
+            cpu_total = float(h.get("cpu_total_phys") or h.get("cpu_total") or 0.0)
+            cpu_alloc = float(h.get("cpu_alloc_phys") or 0.0)
+            ghz = float(h.get("ghz_per_core") or 1.0)
+            cpu_den = ratio.cpu_per_unit * ghz if ghz > 0 else ratio.cpu_per_unit
+        else:
+            cpu_total = float(h.get("cpu_total") or 0.0)
+            cpu_alloc = float(h.get("cpu_alloc") or 0.0)
+            cpu_den = ratio.cpu_per_unit * max(effective_ghz_per_unit, 1e-9)
+        raw_cpu = apply_threshold(cpu_total, cpu_alloc, cpu_threshold_pct)
         raw_ram = apply_threshold(
             float(h.get("ram_total") or 0.0),
             float(h.get("ram_alloc") or 0.0),
             ram_threshold_pct,
         )
-        n_total += min(raw_cpu / ratio.cpu_per_unit, raw_ram / ratio.ram_gb_per_unit)
+        n_total += min(raw_cpu / cpu_den, raw_ram / ratio.ram_gb_per_unit)
     return n_total
+
+
+def constrain_by_ratio_per_host_dual(
+    panels: Iterable[PanelResult],
+    ratio: ResourceRatio,
+    hosts: "list[dict]",
+    *,
+    cpu_threshold_pct: float = 100.0,
+    ram_threshold_pct: float = 100.0,
+    effective_ghz_per_unit: float = 1.0,
+) -> list[PanelResult]:
+    """Host-based ratio constraint with physical and effective CPU tracks."""
+    panel_list = list(panels)
+    n_phys = host_effective_units(
+        hosts,
+        ratio,
+        cpu_threshold_pct=cpu_threshold_pct,
+        ram_threshold_pct=ram_threshold_pct,
+        cpu_track="physical",
+    )
+    n_eff = host_effective_units(
+        hosts,
+        ratio,
+        cpu_threshold_pct=cpu_threshold_pct,
+        ram_threshold_pct=ram_threshold_pct,
+        cpu_track="effective",
+        effective_ghz_per_unit=effective_ghz_per_unit,
+    )
+
+    out: list[PanelResult] = []
+    for p in panel_list:
+        if p.resource_kind == "cpu":
+            constrained_phys = n_phys * ratio.cpu_per_unit
+            constrained_eff = n_eff * ratio.cpu_per_unit
+            ratio_bound = (
+                constrained_eff + 1e-6 < p.sellable_raw
+                or constrained_phys + 1e-6 < (p.sellable_physical or p.sellable_raw or 0.0)
+            )
+            out.append(
+                replace(
+                    p,
+                    sellable_physical=constrained_phys,
+                    sellable_effective=constrained_eff,
+                    sellable_constrained=constrained_eff,
+                    ratio_bound=ratio_bound,
+                    computation_mode="host_based",
+                )
+            )
+        elif p.resource_kind == "ram":
+            constrained = n_eff * ratio.ram_gb_per_unit
+            ratio_bound = constrained + 1e-6 < p.sellable_raw
+            out.append(replace(p, sellable_constrained=constrained, ratio_bound=ratio_bound))
+        else:
+            out.append(replace(p, sellable_constrained=p.sellable_raw, ratio_bound=False))
+    return out
+
+
+def constrain_by_ratio_dual_cpu_cluster(
+    panels: Iterable[PanelResult],
+    ratio: ResourceRatio,
+    *,
+    cpu_raw_physical: float,
+    cpu_raw_effective: float,
+    decouple_resource_kinds: frozenset[str] | None = None,
+) -> list[PanelResult]:
+    """Cluster fallback dual CPU constraint using separate raw sellable values."""
+    decouple = frozenset() if decouple_resource_kinds is None else decouple_resource_kinds
+    panel_list = list(panels)
+    by_kind = _split_by_kind(panel_list)
+
+    cpu_p = by_kind.get("cpu")
+    ram_p = by_kind.get("ram")
+    sto_p = by_kind.get("storage")
+
+    def _n_for_cpu(raw_cpu: float) -> float:
+        effective_units: list[float] = []
+        if raw_cpu > 0 and ratio.cpu_per_unit > 0:
+            effective_units.append(raw_cpu / ratio.cpu_per_unit)
+        if ram_p is not None and ratio.ram_gb_per_unit > 0:
+            effective_units.append(ram_p.sellable_raw / ratio.ram_gb_per_unit)
+        if (
+            sto_p is not None
+            and ratio.storage_gb_per_unit > 0
+            and "storage" not in decouple
+        ):
+            effective_units.append(sto_p.sellable_raw / ratio.storage_gb_per_unit)
+        return min(effective_units) if effective_units else 0.0
+
+    n_phys = _n_for_cpu(cpu_raw_physical)
+    n_eff = _n_for_cpu(cpu_raw_effective)
+
+    out: list[PanelResult] = []
+    for p in panel_list:
+        if p.resource_kind == "cpu" and cpu_p is not None:
+            constrained_phys = n_phys * ratio.cpu_per_unit
+            constrained_eff = n_eff * ratio.cpu_per_unit
+            ratio_bound = constrained_eff + 1e-6 < cpu_p.sellable_raw
+            out.append(
+                replace(
+                    p,
+                    sellable_physical=constrained_phys,
+                    sellable_effective=constrained_eff,
+                    sellable_constrained=constrained_eff,
+                    ratio_bound=ratio_bound,
+                    computation_mode="cluster_fallback",
+                )
+            )
+        elif p.resource_kind == "ram" and ram_p is not None:
+            constrained = n_eff * ratio.ram_gb_per_unit
+            ratio_bound = constrained + 1e-6 < p.sellable_raw
+            out.append(replace(p, sellable_constrained=constrained, ratio_bound=ratio_bound))
+        elif p.resource_kind == "storage" and sto_p is not None:
+            if "storage" in decouple:
+                out.append(
+                    replace(
+                        p,
+                        sellable_raw=0.0,
+                        sellable_constrained=0.0,
+                        ratio_bound=False,
+                    )
+                )
+            else:
+                constrained = n_eff * ratio.storage_gb_per_unit
+                ratio_bound = constrained + 1e-6 < p.sellable_raw
+                out.append(replace(p, sellable_constrained=constrained, ratio_bound=ratio_bound))
+        else:
+            out.append(replace(p, sellable_constrained=p.sellable_raw, ratio_bound=False))
+    return out
 
 
 def constrain_by_ratio_per_host(

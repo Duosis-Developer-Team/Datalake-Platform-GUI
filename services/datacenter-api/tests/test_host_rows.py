@@ -22,11 +22,15 @@ def test_host_row_payload_percentages_and_sales_allocation():
         mem_used_gb=512.0,
         alloc={"vm_count": 12, "vcpu_total": 80.0, "mem_alloc_gb": 640.0,
                "stor_provisioned_gb": 4096.0, "stor_used_gb": 2048.0},
+        ghz_per_core=2.5,
     )
     assert payload["cpu_used_pct"] == 25.0
     assert payload["mem_used_pct"] == 50.0
     # Sales CPU rule: 1 vCPU = 1 GHz.
     assert payload["cpu_alloc_ghz"] == 80.0
+    assert payload["cpu_alloc_ghz_physical"] == 200.0  # 80 vCPU × 2.5 GHz
+    assert payload["ghz_per_core"] == 2.5
+    assert payload["cpu_cap_cores"] == 80.0
     assert payload["cpu_alloc_pct"] == 40.0
     assert payload["mem_alloc_pct"] == 62.5
     assert payload["vm_count"] == 12

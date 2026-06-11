@@ -120,6 +120,7 @@ from src.pages.dc_view import (
     _build_sellable_inline_kpi,
     _DC_ICONS,
 )
+from src.pages.dc_summary_sellable import build_summary_sellable_section
 from src.utils.virt_sellable_aggregate import (
     aggregate_virt_sellable_panels,
     collect_virt_sellable_panels,
@@ -861,9 +862,10 @@ def _dc_id_from_pathname(pathname: str | None) -> str | None:
 @app.callback(
     dash.Output("sellable-classic-card", "children"),
     dash.Input("virt-classic-cluster-selector", "value"),
+    dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
-def update_classic_sellable_card(selected_clusters, pathname):
+def update_classic_sellable_card(selected_clusters, time_range, pathname):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
         return dash.no_update
@@ -883,9 +885,10 @@ def update_classic_sellable_card(selected_clusters, pathname):
 @app.callback(
     dash.Output("sellable-hyperconv-card", "children"),
     dash.Input("virt-hyperconv-cluster-selector", "value"),
+    dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
-def update_hyperconv_sellable_card(selected_clusters, pathname):
+def update_hyperconv_sellable_card(selected_clusters, time_range, pathname):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
         return dash.no_update
@@ -900,6 +903,21 @@ def update_hyperconv_sellable_card(selected_clusters, pathname):
     if card is None:
         return html.Div(id="sellable-hyperconv-card")
     return card.children
+
+
+@app.callback(
+    dash.Output("dc-summary-sellable-root", "children"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_dc_summary_sellable(time_range, pathname):
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update
+    block = build_summary_sellable_section(dc_id)
+    if block is None:
+        return dash.no_update
+    return block.children
 
 
 @app.callback(
