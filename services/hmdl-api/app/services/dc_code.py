@@ -13,3 +13,8 @@ def extract_dc_code(site_or_name: str | None) -> str:
         return ""
     match = _DC_CODE_RE.search(str(site_or_name))
     return match.group(0).upper() if match else ""
+
+
+def dc_code_from_proxy_id(proxy_id: str | None) -> str:
+    """Extract site code from a proxy id such as DC18-NIFI1."""
+    return extract_dc_code(proxy_id)

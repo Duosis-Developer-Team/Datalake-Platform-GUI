@@ -7,7 +7,7 @@ from typing import Any
 from app.config import settings
 from app.db import pool
 from app.services import inclusion, sync_status
-from app.services.proxy_catalog import load_proxy_catalog, proxies_for_dc
+from app.services.proxy_catalog import find_proxy_entry, load_proxy_catalog, proxies_for_dc
 
 _SCHEMA = settings.hmdl_schema
 
@@ -64,11 +64,9 @@ def _target_stats_by_proxy() -> dict[str, dict[str, int]]:
 
 
 def _proxy_to_dc_map() -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    for dc_code, block in load_proxy_catalog().items():
-        for p in block.get("proxies") or []:
-            mapping[str(p["id"])] = dc_code
-    return mapping
+    from app.services.proxy_catalog import proxy_to_dc_map
+
+    return proxy_to_dc_map()
 
 
 def _enrich_node_environment(node: dict[str, Any], run_id: str | None) -> dict[str, Any]:
@@ -144,15 +142,8 @@ def build_sync_summary() -> dict[str, Any]:
 
 
 def get_proxy_detail(proxy_id: str) -> dict[str, Any] | None:
-    catalog = load_proxy_catalog()
-    host = None
-    dc_code = None
-    for code, block in catalog.items():
-        for p in block.get("proxies") or []:
-            if str(p["id"]) == proxy_id:
-                dc_code = code
-                host = p.get("proxy_nifi_host")
-                break
+    dc_code, proxy_entry = find_proxy_entry(proxy_id)
+    host = proxy_entry.get("proxy_nifi_host") if proxy_entry else None
 
     stats = _target_stats_by_proxy().get(proxy_id, {"total": 0, "distributed": 0})
     logs = pool.fetch_all(
