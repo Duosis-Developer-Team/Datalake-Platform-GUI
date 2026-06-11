@@ -15,3 +15,7 @@ agent-transcripts/
 terminals/
 mcps/
 
+
+# Local secret env files — never bake into images
+.env.local
+.env.*.local

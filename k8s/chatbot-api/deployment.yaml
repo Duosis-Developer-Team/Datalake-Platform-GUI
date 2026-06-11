@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bulutistan-chatbot-api
+  labels:
+    app: bulutistan-chatbot-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bulutistan-chatbot-api
+  template:
+    metadata:
+      labels:
+        app: bulutistan-chatbot-api
+    spec:
+      containers:
+        - name: bulutistan-chatbot-api
+          image: bulutistan-chatbot-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: bulutistan-chatbot-api-config
+            - secretRef:
+                name: bulutistan-llm-secret
+          env:
+            - name: API_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bulutistan-auth-secrets
+                  key: API_JWT_SECRET
+                  optional: true
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bulutistan-auth-secrets
+                  key: SECRET_KEY
+                  optional: true
+            - name: CHATBOT_DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: bulutistan-chatbot-api-secret
+                  key: CHATBOT_DB_PASS
+                  optional: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15

@@ -1,0 +1,96 @@
+{
+  "version": 2,
+  "purpose": "Compact domain/data-source catalog for the Bulutistan Datalake WebUI chatbot planner. Reconciled against the repo. No secrets.",
+  "architectures": {
+    "classic": { "aliases": ["klasik", "classic", "KM", "Klasik Mimari", "VMware"], "provider": "VMware", "cluster_tool": "get_dc_classic_clusters" },
+    "hyperconverged": { "aliases": ["hyperconverged", "HCI", "Nutanix"], "provider": "Nutanix", "cluster_tool": "get_dc_hyperconverged_clusters" },
+    "power": { "aliases": ["Power", "IBM", "LPAR"], "provider": "IBM Power", "cluster_tool": "get_datacenter_detail" }
+  },
+  "metrics": [
+    {
+      "key": "classic_host_cpu_allocation_variability",
+      "entity": "host", "architecture": "classic", "metric": "cpu_allocated",
+      "calculation": "variability", "unit": "vCPU", "analysis_profile": "cpu_allocation",
+      "aliases": ["cpu allocated değişkenliği", "atanmış cpu değişimi", "vm'lere atanmış cpu", "cpu kapasite değişimi", "allocation variability", "allocated cpu trend"],
+      "primary_tools": ["get_dc_classic_clusters", "get_dc_classic_host_cpu_allocation_variability"],
+      "fallback_tools": ["get_dc_compute_classic"],
+      "required_params": ["dc_code"], "default_params": { "days": 7, "limit": 3 },
+      "forbidden_tools": ["get_customer_resources", "get_customer_itsm_summary"],
+      "note": "Unit is vCPU (per-host sum of VM number_of_cpus). Allocated GHz is not computable here (capacity column empty)."
+    },
+    {
+      "key": "dc_vm_cpu_top",
+      "entity": "vm", "metric": "cpu_usage", "calculation": "top", "analysis_profile": "cpu_usage",
+      "aliases": ["en çok cpu kullanan vm", "vm cpu tüketimi", "vm cpu usage", "top vm cpu", "vm seviyesinde"],
+      "primary_tools": ["get_dc_vm_cpu_top"],
+      "fallback_tools": ["get_dc_vm_cpu_latest", "get_dc_vm_cpu_summary", "get_dc_host_cpu_summary"],
+      "required_params": ["dc_code"], "default_params": { "days": 7, "limit": 10 },
+      "forbidden_tools": ["get_customer_resources", "get_customer_itsm_summary"]
+    },
+    {
+      "key": "dc_host_cpu_top",
+      "entity": "host", "metric": "cpu_usage", "calculation": "top", "analysis_profile": "cpu_usage",
+      "aliases": ["host bazlı cpu", "host cpu kullanımı", "dc host cpu", "en yüksek host cpu"],
+      "primary_tools": ["get_dc_host_cpu_top"],
+      "fallback_tools": ["get_dc_host_cpu_summary", "get_dc_host_cpu_latest"],
+      "required_params": ["dc_code"]
+    },
+    {
+      "key": "classic_vs_hyperconverged_cpu",
+      "entity": "datacenter", "metric": "cpu_usage", "calculation": "comparison", "analysis_profile": "generic",
+      "aliases": ["klasik mimari ile hyperconverged", "classic vs hyperconverged", "mimari karşılaştır"],
+      "primary_tools": ["get_dc_compute_classic", "get_dc_compute_hyperconverged"],
+      "required_params": ["dc_code"]
+    },
+    {
+      "key": "dc_storage_trend",
+      "entity": "datacenter", "metric": "storage", "calculation": "trend", "analysis_profile": "storage",
+      "aliases": ["storage usage trend", "depolama trend", "disk kullanım trend", "storage capacity"],
+      "primary_tools": ["get_dc_storage_capacity"],
+      "fallback_tools": ["get_dc_zabbix_storage_trend", "get_dc_storage_performance"],
+      "required_params": ["dc_code"]
+    },
+    {
+      "key": "s3_capacity_risk",
+      "entity": "s3", "metric": "storage", "calculation": "risk", "analysis_profile": "s3",
+      "aliases": ["s3 kapasite risk", "s3 tarafında kapasite", "object storage kapasite", "s3 pool"],
+      "primary_tools": ["get_dc_s3_pools"], "required_params": ["dc_code"]
+    },
+    {
+      "key": "backup_job_failure",
+      "entity": "backup", "metric": "backup", "calculation": "risk", "analysis_profile": "backup",
+      "aliases": ["zerto job failure", "job failure oranı", "backup failure", "yedekleme hata"],
+      "primary_tools": ["get_dc_backup_jobs"], "fallback_tools": ["get_dc_backup_summary"],
+      "required_params": ["dc_code"]
+    },
+    {
+      "key": "customer_resource_change",
+      "entity": "customer", "metric": "resource", "calculation": "trend", "analysis_profile": "generic",
+      "aliases": ["kaynak değişimi", "resource change", "müşteri kaynak"],
+      "primary_tools": ["get_customer_resources"], "required_params": ["customer_name"]
+    },
+    {
+      "key": "sla_risk",
+      "entity": "sla", "metric": "availability", "calculation": "risk", "analysis_profile": "sla",
+      "aliases": ["sla", "availability", "erişilebilirlik", "downtime", "uptime"],
+      "primary_tools": ["get_sla"], "required_params": []
+    },
+    {
+      "key": "crm_sellable",
+      "entity": "crm", "metric": "sellable", "calculation": "summary", "analysis_profile": "crm",
+      "aliases": ["satılabilir", "sellable", "potansiyel", "potential", "crm", "fırsat"],
+      "primary_tools": ["get_sellable_summary"], "fallback_tools": ["get_sellable_by_panel", "get_sellable_by_family"],
+      "required_params": []
+    }
+  ],
+  "planning_rules": {
+    "user_message_overrides_frontend_context": true,
+    "stale_customer_context_ignored_for_datacenter_metrics": true,
+    "forbidden_tools_filtered_from_plan": true,
+    "tool_success_rows_guard": "If a tool has success and rows > 0, the final answer must not claim data is unavailable.",
+    "source_preference": {
+      "db_aliases": ["direkt DB", "veritabanı", "postgre", "postgresql", "SQL"],
+      "api_aliases": ["API", "endpoint", "WebUI'da görünen"]
+    }
+  }
+}
