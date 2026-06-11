@@ -50,5 +50,6 @@ Chatbot genel amaçlı internet botu değildir. Şu rolü üstlenmelidir:
 2. **Domain-aware planning:** "Klasik mimari", "KM", "allocated", "usage", "capacity", "değişkenlik" gibi kavramları doğru ayırmalıdır.
 3. **Tool-first factuality:** Sayısal cevaplar yalnızca API/DB tool sonuçlarına dayanmalıdır.
 4. **Repo/data model knowledge:** WebUI'da görünen kart/grafiklerin hangi endpointlerden ve tablolardan beslendiğini bilmelidir (ör. cluster listesi için `get_dc_classic_clusters` / `get_dc_hyperconverged_clusters`, zabbix storage trend için `get_dc_zabbix_storage_trend` gibi mevcut tool'lar dahil).
-5. **Safe DB access:** DB'ye serbest SQL yok; sadece allowlist SELECT template.
+5. **Safe DB access:** DB'ye serbest SQL yok; sadece allowlist SELECT template. API yetersizse DB fallback — bkz. [[11_api_vs_db_routing]].
 6. **Analytical answer:** Cevaplarda kısa sonuç, tablo, analiz, risk, aksiyon ve kaynak olmalıdır.
+7. **Conversation session:** X ile kapatınca history silinir; açık oturumda context korunur — bkz. [[12_conversation_session]].

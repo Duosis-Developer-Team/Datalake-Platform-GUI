@@ -124,7 +124,12 @@ class LLMClient:
 
     # -- public API --------------------------------------------------------- #
 
-    def complete(self, messages: list[dict[str, str]], model: Optional[str] = None) -> LLMResult:
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> LLMResult:
         """Run a non-streaming chat completion, with one fallback-model attempt.
 
         Raises ``LLMError`` (with a UI-safe message) on any failure.
@@ -136,28 +141,33 @@ class LLMClient:
         fallback = self.settings.chatbot_fallback_model
 
         try:
-            return self._call(primary, messages)
+            return self._call(primary, messages, max_tokens=max_tokens)
         except LLMError as exc:
             # Only retry on recoverable model/transient errors and only if a
             # *different* fallback model is configured.
             if exc.error_type in {"model_unavailable", "bad_request", "upstream", "empty"} and fallback and fallback != primary:
                 logger.warning("Primary model '%s' failed (%s); trying fallback '%s'", primary, exc.error_type, fallback)
                 try:
-                    return self._call(fallback, messages)
+                    return self._call(fallback, messages, max_tokens=max_tokens)
                 except LLMError:
                     raise
             raise
 
     # -- internals ---------------------------------------------------------- #
 
-    def _call(self, model: str, messages: list[dict[str, str]]) -> LLMResult:
+    def _call(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: Optional[int] = None,
+    ) -> LLMResult:
         client = self._get_client()
         try:
             resp = client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=self.settings.chatbot_temperature,
-                max_tokens=self.settings.chatbot_max_tokens,
+                max_tokens=max_tokens or self.settings.chatbot_max_tokens,
                 top_p=self.settings.chatbot_top_p,
                 stream=False,
             )

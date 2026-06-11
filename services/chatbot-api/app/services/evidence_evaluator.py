@@ -113,6 +113,17 @@ def _followup_args(plan: IntentPlan) -> dict[str, Any]:
     return {"dc_code": plan.dc_code, "days": plan.days, "limit": plan.limit}
 
 
+def _aggregate_only_without_rows(results: list[ToolResult]) -> bool:
+    """True when only platform/DC aggregate API tools ran (no per-entity rows)."""
+    if not results:
+        return False
+    aggregate_tools = {"get_dashboard_overview", "get_datacenters_summary", "get_dc_compute_classic"}
+    ran = {r.name for r in results if r.status in ("success", "error", "skipped")}
+    if not ran.issubset(aggregate_tools | {"get_dc_classic_clusters"}):
+        return False
+    return not any(_rows_of(r) for r in results if r.status == "success")
+
+
 def evaluate(plan: IntentPlan, results: list[ToolResult]) -> EvidenceEvaluation:
     run = {r.name for r in results}
     rows, source, primary_tool = _primary(results)
@@ -120,7 +131,41 @@ def evaluate(plan: IntentPlan, results: list[ToolResult]) -> EvidenceEvaluation:
 
     # cpu_usage profile drives the host/vm fallback + concentration follow-ups.
     cpu_usage = plan.analysis_profile == "cpu_usage"
+    memory_usage = plan.analysis_profile == "memory_usage"
     tools = _ENTITY_TOOLS.get(plan.entity_type) if cpu_usage else None
+
+    # --- cluster memory top: API aggregates are insufficient --------------- #
+    if memory_usage and plan.entity_type == "cluster" and not rows:
+        db_tool = "get_global_km_cluster_memory_top"
+        if db_tool not in run:
+            args: dict[str, Any] = {"limit": plan.limit or 5}
+            if plan.dc_code:
+                args["dc_code"] = plan.dc_code
+            ev.recommended_followup_tools = [ToolRequest(db_tool, args)]
+            ev.data_quality_warnings.append(
+                "per-cluster memory ranking is not available via API; trying read-only DB template"
+            )
+            return ev
+        ev.enough_for_answer = True
+        ev.confidence = "low"
+        for r in results:
+            if r.name == db_tool and r.error == "db_disabled":
+                ev.data_quality_warnings.append("host-level DB tools are disabled (CHATBOT_DB_ENABLED=false)")
+            elif r.name == db_tool and r.status == "error":
+                ev.data_quality_warnings.append(f"DB query failed: {r.error}")
+        if not ev.data_quality_warnings:
+            ev.data_quality_warnings.append("no rows after DB cluster memory query")
+        return ev
+
+    if not rows and _aggregate_only_without_rows(results) and memory_usage:
+        db_tool = "get_global_km_cluster_memory_top"
+        if db_tool not in run:
+            args = {"limit": plan.limit or 5}
+            if plan.dc_code:
+                args["dc_code"] = plan.dc_code
+            ev.recommended_followup_tools = [ToolRequest(db_tool, args)]
+            ev.data_quality_warnings.append("dashboard/overview lacks per-cluster memory; routing to DB")
+            return ev
 
     # --- empty result -> deterministic fallbacks (latest, then summary) ----- #
     if tools and not rows:
@@ -139,7 +184,14 @@ def evaluate(plan: IntentPlan, results: list[ToolResult]) -> EvidenceEvaluation:
         return ev
 
     if not rows:
-        # Non host/vm entity (or no data tool) — single-pass-style sufficiency.
+        # Non host/vm entity — avoid claiming sufficiency when only aggregates ran.
+        if _aggregate_only_without_rows(results) and plan.metric_key == "global_km_cluster_memory_top":
+            db_tool = "get_global_km_cluster_memory_top"
+            if db_tool not in run:
+                ev.recommended_followup_tools = [
+                    ToolRequest(db_tool, {"limit": plan.limit or 5, **({"dc_code": plan.dc_code} if plan.dc_code else {})})
+                ]
+                return ev
         ev.enough_for_answer = True
         ev.confidence = "medium"
         return ev

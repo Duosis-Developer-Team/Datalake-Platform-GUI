@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from app.catalog import data_source_catalog, domain_catalog
+from app.catalog import data_source_catalog, domain_catalog, metric_semantics
 from app.models.schemas import ChatMessage, FrontendContext
 from app.services import planner
 from app.services import tool_orchestrator as orch
@@ -113,6 +113,12 @@ def plan(message: str, ctx: Optional[FrontendContext],
         return planner.make_plan(message, ctx)
 
     dc_code = _resolve_dc(message, ctx, conversation)
+    # Global-scope questions must not inherit a stale selected_datacenter.
+    if md.key == "global_km_cluster_memory_top" or (
+        not md.required_params and metric_semantics.is_global_scope(text)
+    ):
+        if metric_semantics.is_global_scope(text):
+            dc_code = None
     # Customer is only resolved for customer metrics — a datacenter/host/cluster
     # question never picks up a (possibly stale) selected_customer.
     customer = _resolve_customer(message, ctx, conversation) if md.entity == "customer" else None

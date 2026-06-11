@@ -60,10 +60,13 @@ def make_plan(message: str, ctx: Optional[FrontendContext]) -> IntentPlan:
     text = (message or "").lower()
     dc_code = orch._extract_dc(message, ctx)
     customer = ctx.selected_customer if ctx and ctx.selected_customer else None
-    cpu_intent = "cpu" in text or orch._has(text, "compute")
+    memory_intent = orch._has(text, "memory") and not orch._has(text, "storage")
+    cpu_intent = ("cpu" in text or orch._has(text, "compute")) and not memory_intent
 
     # --- entity ---
-    if orch._has(text, "vm") and cpu_intent:
+    if orch._has(text, "cluster") and memory_intent and orch._has(text, "top"):
+        entity = "cluster"
+    elif orch._has(text, "vm") and cpu_intent:
         entity = "vm"
     elif orch._has(text, "host") and cpu_intent:
         entity = "host"
@@ -83,7 +86,9 @@ def make_plan(message: str, ctx: Optional[FrontendContext]) -> IntentPlan:
         entity = "datacenter"
 
     # --- metric ---
-    if cpu_intent:
+    if memory_intent:
+        metric = "memory"
+    elif cpu_intent:
         metric = "cpu"
     elif orch._has(text, "storage"):
         metric = "storage"
@@ -103,7 +108,12 @@ def make_plan(message: str, ctx: Optional[FrontendContext]) -> IntentPlan:
         output, sort_by = ("latest" if entity in ("vm", "host") else "summary"), "latest"
 
     source = "db" if orch._has(text, "explicit_db") else "auto"
-    profile = "cpu_usage" if (metric == "cpu" and entity in ("vm", "host")) else "generic"
+    if metric == "memory" and entity == "cluster":
+        profile = "memory_usage"
+    elif metric == "cpu" and entity in ("vm", "host"):
+        profile = "cpu_usage"
+    else:
+        profile = "generic"
 
     initial = [{"tool": s.tool, "args": s.args} for s in orch.select_tools(message, ctx)]
 

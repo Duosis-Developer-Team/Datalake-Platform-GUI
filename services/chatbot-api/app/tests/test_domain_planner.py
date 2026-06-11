@@ -94,6 +94,30 @@ def test_explicit_db_and_api_source_preference():
 # --- customer metric ------------------------------------------------------ #
 
 
+GLOBAL_MEMORY_Q = (
+    "Bana tüm datacenter'lar arasında memory kullanımı en yüksek 5 KM cluster'ı verir misin?"
+)
+
+
+def test_catalog_matches_global_km_cluster_memory_top():
+    assert metric_catalog.match(GLOBAL_MEMORY_Q).key == "global_km_cluster_memory_top"
+
+
+def test_global_memory_plan_no_dc_required():
+    plan = query_planner.plan(GLOBAL_MEMORY_Q, None, None)
+    assert plan.metric_key == "global_km_cluster_memory_top"
+    assert plan.dc_code is None
+    assert plan.limit == 5
+    assert "get_global_km_cluster_memory_top" in _tools(plan)
+    assert plan.clarification is None
+
+
+def test_global_memory_ignores_stale_dc_context():
+    ctx = FrontendContext(selected_datacenter="DC99", pathname="/datacenters")
+    plan = query_planner.plan(GLOBAL_MEMORY_Q, ctx, None)
+    assert plan.dc_code is None
+
+
 def test_customer_extracted_from_possessive():
     plan = query_planner.plan("Boyner'in son bir ayda kaynak değişimi nasıl?", None, None)
     assert plan.entity_type == "customer"

@@ -24,6 +24,8 @@ logger = logging.getLogger("chatbot-api.orchestrator")
 _DC_RE = re.compile(r"\b((?:DC|AZ|ICT|UZ|DH)\d+)\b", re.IGNORECASE)
 
 _KW = {
+    "memory": ("memory", "bellek", " ram", "ram "),
+    "cluster": ("cluster", "cluster'"),
     "backup": ("backup", "yedek", "zerto", "veeam", "netbackup"),
     "job": ("job", "iş ", "jobs"),
     "s3": ("s3", "object", "nesne", "vault", "pool", "bucket"),
@@ -186,12 +188,24 @@ def select_tools(message: str, ctx: Optional[FrontendContext]) -> list[Selection
         if not (vm_cpu or host_cpu):
             add("get_datacenter_detail")
 
+    # --- Global KM cluster memory top (no per-cluster API; DB only) -------- #
+    km_ask = "km" in text or "klasik" in text or "classic" in text
+    memory_cluster_top = (
+        (_has(text, "memory") or _has(text, "compute"))
+        and (_has(text, "cluster") or km_ask)
+        and _has(text, "top")
+    )
+    if memory_cluster_top and not _has(text, "vm") and not _has(text, "host"):
+        add("get_global_km_cluster_memory_top")
+
     # --- Global overview — only when nothing more specific matched, OR a
     #     clearly global ("en yoğun" / compare) ask without DC/customer scope.
     #     (Avoids tacking a slow global overview onto DC-scoped questions.)
     global_ask = "en yoğun" in text or "en yogun" in text or "compare" in text or "karşılaştır" in text
+    skip_dashboard = memory_cluster_top or (_has(text, "top") and (_has(text, "vm") or _has(text, "host")))
     if not picks or (global_ask and not dc_code and not customer):
-        add("get_datacenters_summary" if global_ask else "get_dashboard_overview")
+        if not skip_dashboard:
+            add("get_datacenters_summary" if global_ask else "get_dashboard_overview")
 
     return picks[: settings.max_tool_calls]
 

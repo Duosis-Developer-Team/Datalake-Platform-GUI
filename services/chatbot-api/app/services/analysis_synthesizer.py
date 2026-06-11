@@ -128,6 +128,46 @@ def _synthesize_cluster_diff(plan: IntentPlan, results: list[ToolResult], a: Ana
     return a
 
 
+def _synthesize_memory_cluster(plan: IntentPlan, rows: list[dict], a: AnalysisSummary) -> AnalysisSummary:
+    """Profile: memory_usage — top KM clusters by memory_used_gb."""
+    a.top_entities = [
+        {
+            "name": r.get("cluster_name"),
+            "host": r.get("datacenter"),
+            "source": "cluster_metrics",
+            "memory_used_gb": _num(r, "memory_used_gb"),
+            "memory_capacity_gb": _num(r, "memory_capacity_gb"),
+            "memory_pct": _num(r, "memory_pct"),
+            "unit": "GB",
+        }
+        for r in rows[: (plan.limit or 10)]
+    ]
+    for r in rows[:5]:
+        pct = _num(r, "memory_pct")
+        if pct is not None and pct >= 85:
+            a.risks.append(
+                f"{r.get('cluster_name')} ({r.get('datacenter')}): memory {pct}% "
+                f"({r.get('memory_used_gb')}/{r.get('memory_capacity_gb')} GB)"
+            )
+    top_pct = _num(rows[0], "memory_pct") if rows else None
+    if top_pct is not None and top_pct >= 90:
+        a.risk_level = "high"
+    elif top_pct is not None and top_pct >= 75:
+        a.risk_level = "medium"
+    else:
+        a.risk_level = "low"
+    a.recommended_actions = [
+        "Yüksek memory kullanımlı KM cluster'larda kapasite planlaması ve VM yerleşimini gözden geçir.",
+        "Gerekirse cluster bazında memory rezervasyon/DRS ayarlarını kontrol et.",
+    ]
+    is_stale, latest, age_h = _freshness(rows)
+    a.freshness = {"latest": latest, "age_hours": age_h, "stale": is_stale}
+    if is_stale and latest:
+        a.risks.append(f"veri güncel değil (son toplama {latest})")
+    a.confidence = "high" if rows else "low"
+    return a
+
+
 def _synthesize_allocation(plan: IntentPlan, rows: list[dict], a: AnalysisSummary) -> AnalysisSummary:
     """Profile: cpu_allocation — variability of VM-allocated vCPU per host.
 
@@ -194,6 +234,9 @@ def synthesize(
 
     if plan.analysis_profile == "cpu_allocation":
         return _synthesize_allocation(plan, rows, a)
+
+    if plan.analysis_profile == "memory_usage" and plan.entity_type == "cluster":
+        return _synthesize_memory_cluster(plan, rows, a)
 
     a.top_entities = [
         {

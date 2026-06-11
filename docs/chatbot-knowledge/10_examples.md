@@ -50,13 +50,32 @@ User: `DC13 host bazlı CPU kullanımını özetle.`
 
 Expected tools: `get_dc_host_cpu_summary`, possibly `get_dc_host_cpu_top`.
 
-## 5. Classic compute overview
+## 5. Global KM cluster memory top (DB)
+
+User: `Bana tüm datacenter'lar arasında memory kullanımı en yüksek 5 KM cluster'ı verir misin?`
+
+Expected plan:
+
+- entity: cluster
+- architecture: classic
+- metric: memory_usage
+- calculation: top
+- limit: 5
+- dc_code: none (global scope)
+- tools: `get_global_km_cluster_memory_top`
+- must not use: `get_dashboard_overview` alone
+
+Answer: table with cluster_name, datacenter, memory_used_gb, memory_capacity_gb, memory_pct, collection_time.
+
+> Note: Per-cluster memory ranking is not exposed by API (`get_dc_compute_classic` aggregates all KM clusters in a DC). Requires `CHATBOT_DB_ENABLED=true`. See [[11_api_vs_db_routing]].
+
+## 6. Classic compute overview
 
 User: `DC13 Klasik mimari CPU ve RAM durumunu özetle.`
 
 Expected tools: `get_dc_classic_clusters`, `get_dc_compute_classic`.
 
-## 6. Hyperconverged comparison
+## 7. Hyperconverged comparison
 
 User: `DC13'te Klasik mimari ile Hyperconverged CPU kullanımını karşılaştır.`
 
@@ -64,25 +83,25 @@ Expected tools: `get_dc_classic_clusters`, `get_dc_compute_classic`, `get_dc_hyp
 
 > Note: Klasik mimari = cluster adı 'KM' içerir (Klasik Mimari). Hyperconverged = Nutanix (KM olmayan cluster adları). Power = IBM/LPAR; ayrı bir `/power` cluster endpoint'i yoktur ve `get_dc_power_context` diye bir tool yoktur — Power bağlamı `get_datacenter_detail` (`/api/v1/datacenters/{dc_code}`) içinden gelir.
 
-## 7. Storage capacity risk
+## 8. Storage capacity risk
 
 User: `DC13 storage usage trendinde risk var mı?`
 
 Expected tools: `get_dc_storage_capacity`, `get_dc_zabbix_storage_trend`, possibly SAN/storage performance (`get_dc_storage_performance`).
 
-## 8. S3 pool capacity
+## 9. S3 pool capacity
 
 User: `S3 tarafında kapasite riski olan datacenter var mı?`
 
 Expected: if no DC specified, compare available DC summaries/S3 pools; may need ask if broad data unavailable.
 
-## 9. Backup failures
+## 10. Backup failures
 
 User: `Zerto job failure oranı en kötü DC hangisi?`
 
 Expected: backup jobs by DC or broad comparison if catalog supports; otherwise explain need for all-DC job tool.
 
-## 10. Customer resources
+## 11. Customer resources
 
 User: `Boyner'in son bir ayda kaynak değişimi nasıl?`
 

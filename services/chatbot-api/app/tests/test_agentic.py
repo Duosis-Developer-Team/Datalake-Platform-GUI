@@ -138,6 +138,20 @@ def test_agent_loop_runs_summary_followup(monkeypatch):
     assert out.analysis is not None and out.analysis.risk_level == "critical"
 
 
+GLOBAL_MEMORY_Q = (
+    "Bana tüm datacenter'lar arasında memory kullanımı en yüksek 5 KM cluster'ı verir misin?"
+)
+
+
+def test_global_memory_plan_does_not_use_dashboard(monkeypatch):
+    from app.services import query_planner
+
+    plan = query_planner.plan(GLOBAL_MEMORY_Q, None, None)
+    tools = [t["tool"] for t in plan.initial_tools]
+    assert "get_global_km_cluster_memory_top" in tools
+    assert "get_dashboard_overview" not in tools
+
+
 def test_agent_loop_dedup_and_caps(monkeypatch):
     seen = []
 

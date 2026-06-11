@@ -155,6 +155,28 @@ METRICS: dict[str, MetricDefinition] = {
         required_params=("dc_code",),
         explanation="Klasik (KM) cluster compute (CPU/RAM/storage) özeti.",
     ),
+    "global_km_cluster_memory_top": MetricDefinition(
+        key="global_km_cluster_memory_top",
+        aliases=(
+            "memory kullanım", "bellek kullanım", "ram kullanım", "km cluster memory",
+            "en yüksek km cluster", "en yuksek km cluster", "km cluster bellek",
+            "km cluster ram", "memory en yüksek cluster", "bellek en yüksek cluster",
+            "tüm datacenter", "tüm dc", "tum datacenter",
+        ),
+        entity="cluster", architecture="classic", metric="memory_usage",
+        calculation="top", unit="GB/%", output_type="top_list", analysis_profile="memory_usage",
+        primary_tools=("get_global_km_cluster_memory_top",),
+        fallback_tools=("get_dc_compute_classic",),
+        forbidden_tools=_CUSTOMER_FORBIDDEN,
+        required_params=(),
+        default_params={"limit": 5},
+        answer_guidance=(
+            "Cluster adı, datacenter, memory_used_gb, memory_capacity_gb ve memory_pct ver.",
+            "Sıralama memory_used_gb (GB kullanım) bazlıdır; yüzdeyi de göster.",
+            "Kaynak: cluster_metrics (KM cluster'lar). API yalnızca DC aggregate döner.",
+        ),
+        explanation="Tüm datacenter'lar arasında memory kullanımı en yüksek KM (klasik) cluster'lar.",
+    ),
     "hci_compute_summary": MetricDefinition(
         key="hci_compute_summary",
         aliases=("hyperconverged cpu", "nutanix cpu", "hci compute", "hiperkonverjant compute"),

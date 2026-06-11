@@ -22,7 +22,7 @@ import re
 from typing import Any, Optional
 
 import dash_mantine_components as dmc
-from dash import Input, Output, State, ctx, dcc, html
+from dash import Input, Output, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 from dash_iconify import DashIconify
 
@@ -198,6 +198,17 @@ def _typing_bubble() -> Any:
     )
 
 
+def reset_chatbot_session(pathname: Optional[str] = None) -> dict[str, Any]:
+    """Clear conversation state when the user closes the panel via X."""
+    return {
+        "history": [],
+        "messages": _empty_state(pathname),
+        "pending": None,
+        "status": "",
+        "input": "",
+    }
+
+
 def _render_messages(history: Optional[list], pathname: Optional[str] = None) -> Any:
     history = history or []
     if not history:
@@ -309,22 +320,42 @@ def register_chatbot_callbacks(app) -> None:
         Output("chatbot-open-store", "data"),
         Output("chatbot-panel", "className"),
         Output("chatbot-fab", "className"),
+        Output("chatbot-history-store", "data", allow_duplicate=True),
+        Output("chatbot-messages", "children", allow_duplicate=True),
+        Output("chatbot-pending-store", "data", allow_duplicate=True),
+        Output("chatbot-status", "children", allow_duplicate=True),
+        Output("chatbot-input", "value", allow_duplicate=True),
         Input("chatbot-fab", "n_clicks"),
         Input("chatbot-close-button", "n_clicks"),
         State("chatbot-open-store", "data"),
+        State("chatbot-context-store", "data"),
         prevent_initial_call=True,
     )
-    def _toggle_panel(_fab, _close, is_open):
+    def _toggle_panel(_fab, _close, is_open, context):
         trigger = ctx.triggered_id
+        pathname = (context or {}).get("pathname")
         if trigger == "chatbot-close-button":
             open_ = False
-        elif trigger == "chatbot-fab":
+            panel_cls = "chatbot-panel"
+            fab_cls = "chatbot-fab"
+            cleared = reset_chatbot_session(pathname)
+            return (
+                open_,
+                panel_cls,
+                fab_cls,
+                cleared["history"],
+                cleared["messages"],
+                cleared["pending"],
+                cleared["status"],
+                cleared["input"],
+            )
+        if trigger == "chatbot-fab":
             open_ = not bool(is_open)
         else:  # pragma: no cover - defensive
             raise PreventUpdate
         panel_cls = "chatbot-panel open" if open_ else "chatbot-panel"
         fab_cls = "chatbot-fab active" if open_ else "chatbot-fab"
-        return open_, panel_cls, fab_cls
+        return open_, panel_cls, fab_cls, no_update, no_update, no_update, no_update, no_update
 
     @app.callback(
         Output("chatbot-context-store", "data"),

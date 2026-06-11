@@ -58,6 +58,7 @@ class ToolSpec:
     db_defaults: dict[str, Any] = field(default_factory=dict)  # default days/limit for DB tools
     list_items: bool = False  # API returns list[str]; keep the full (capped) list, not a 3-sample
     allowed_roles: Optional[tuple[str, ...]] = None  # None => any authenticated user
+    db_dc_optional: bool = False  # True => dc_code not required; %(dc)s may be NULL
 
     def source_label(self, path: str) -> str:
         return f"{self.service}:{path}"
@@ -376,6 +377,15 @@ TOOLS: dict[str, ToolSpec] = {
         needs=("dc_code",),
         db_defaults={"limit": 200},
     ),
+    "get_global_km_cluster_memory_top": ToolSpec(
+        "get_global_km_cluster_memory_top",
+        "Top classic (KM) clusters by memory usage across all datacenters (read-only DB).",
+        "postgres",
+        db_query_key="db_get_global_km_cluster_memory_top",
+        needs=(),
+        db_defaults={"limit": 5},
+        db_dc_optional=True,
+    ),
 }
 
 
@@ -429,12 +439,17 @@ def _execute_db_tool(name: str, spec: ToolSpec, args: dict[str, Any]) -> ToolRes
     if not get_db().enabled:
         return ToolResult(name, "skipped", source="postgres", error="db_disabled")
     dc = args.get("dc_code")
-    if not dc:
-        return ToolResult(name, "skipped", source="postgres", error="missing:dc_code")
-
-    params: dict[str, Any] = {"dc": f"%{dc}%"}
     query = db_query_registry.DB_QUERIES.get(spec.db_query_key or "")
     tparams = query.params if query else ()
+    if spec.needs and "dc_code" in spec.needs:
+        if not dc:
+            return ToolResult(name, "skipped", source="postgres", error="missing:dc_code")
+    elif not spec.db_dc_optional and "dc" in tparams and not dc:
+        return ToolResult(name, "skipped", source="postgres", error="missing:dc_code")
+
+    params: dict[str, Any] = {}
+    if "dc" in tparams:
+        params["dc"] = f"%{dc}%" if dc else None
     defaults = spec.db_defaults or {}
     if "days" in tparams:
         try:

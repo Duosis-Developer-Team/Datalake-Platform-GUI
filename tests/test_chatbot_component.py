@@ -1,6 +1,6 @@
 """Frontend chatbot widget rendering tests."""
 
-from src.components.chatbot import build_chatbot_shell
+from src.components.chatbot import build_chatbot_shell, reset_chatbot_session
 
 _REQUIRED_IDS = [
     "chatbot-fab",
@@ -34,6 +34,14 @@ def test_shell_renders_required_ids():
     ids = _collect_ids(build_chatbot_shell())
     for needed in _REQUIRED_IDS:
         assert needed in ids, f"missing component id: {needed}"
+
+
+def test_reset_chatbot_session_clears_history():
+    cleared = reset_chatbot_session("/datacenters")
+    assert cleared["history"] == []
+    assert cleared["pending"] is None
+    assert cleared["status"] == ""
+    assert cleared["input"] == ""
 
 
 def test_shell_contains_no_api_token_or_llm_url():

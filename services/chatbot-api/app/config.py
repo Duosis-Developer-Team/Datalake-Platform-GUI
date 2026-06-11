@@ -111,6 +111,13 @@ class Settings(BaseSettings):
     chatbot_stale_hours: int = 24  # data older than this triggers a freshness note
 
     # ------------------------------------------------------------------ #
+    # Conversation history budgeting (rolling summary)
+    # ------------------------------------------------------------------ #
+    chatbot_conversation_summary_enabled: bool = True
+    chatbot_conversation_keep_recent: int = 4  # full user/assistant turn pairs kept verbatim
+    chatbot_conversation_summary_max_tokens: int = 400
+
+    # ------------------------------------------------------------------ #
     # Logging / audit
     # ------------------------------------------------------------------ #
     log_full_prompt: bool = False  # never log raw prompts by default

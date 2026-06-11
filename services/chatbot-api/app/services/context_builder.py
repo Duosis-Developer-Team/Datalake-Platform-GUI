@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from app.config import settings
 from app.models.schemas import ChatMessage, FrontendContext
+from app.services.conversation_manager import prepare_conversation
 from app.services.redaction import redact_text
 from app.services.tool_registry import ToolResult
 
@@ -78,18 +79,25 @@ def _tool_results_block(results: list[ToolResult], budget: int) -> str:
     return "\n".join(lines) if lines else "(no tool data gathered)"
 
 
-def _trim_conversation(conversation: list[ChatMessage]) -> list[ChatMessage]:
-    recent = conversation[-settings.max_history_messages :]
-    # Enforce a character budget from the most recent backwards.
-    out: list[ChatMessage] = []
-    total = 0
-    for msg in reversed(recent):
-        total += len(msg.content or "")
-        if total > settings.max_history_chars:
-            break
-        out.append(msg)
-    out.reverse()
-    return out
+def _append_conversation_messages(
+    messages: list[dict[str, str]],
+    conversation: list[ChatMessage],
+    user_message: str,
+    fixed_overhead_chars: int,
+) -> None:
+    conv_msgs, summary = prepare_conversation(conversation, user_message, fixed_overhead_chars)
+    if summary:
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "Earlier conversation summary (do not invent beyond this):\n"
+                    f"{redact_text(summary)}"
+                ),
+            }
+        )
+    for msg in conv_msgs:
+        messages.append({"role": msg.role, "content": msg.content})
 
 
 def build_messages(
@@ -126,8 +134,8 @@ def build_messages(
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "system", "content": developer},
     ]
-    for msg in _trim_conversation(conversation):
-        messages.append({"role": msg.role, "content": msg.content})
+    overhead = len(SYSTEM_PROMPT) + len(developer)
+    _append_conversation_messages(messages, conversation, user_message, overhead)
     messages.append({"role": "user", "content": user_message})
     return messages
 
@@ -202,13 +210,22 @@ def format_from_analysis(outcome) -> str:
     lines.append(f"**Kısa sonuç:** İlgili kayıtlardan{win} {n} sonuç bulundu.")
 
     if a and a.top_entities:
-        lines.append("\n| # | Ad | Host | Ort | Maks | Birim |")
-        lines.append("|---|----|------|----:|-----:|-------|")
-        for i, e in enumerate(a.top_entities, 1):
-            lines.append(
-                f"| {i} | {e.get('name', '?')} | {e.get('host') or '-'} | "
-                f"{e.get('cpu_pct_avg')} | {e.get('cpu_pct_max')} | {e.get('unit') or '-'} |"
-            )
+        if a.top_entities[0].get("memory_used_gb") is not None:
+            lines.append("\n| # | Cluster | DC | Used GB | Cap GB | % |")
+            lines.append("|---|---------|----|--------:|-------:|--:|")
+            for i, e in enumerate(a.top_entities, 1):
+                lines.append(
+                    f"| {i} | {e.get('name', '?')} | {e.get('host') or '-'} | "
+                    f"{e.get('memory_used_gb')} | {e.get('memory_capacity_gb')} | {e.get('memory_pct')} |"
+                )
+        else:
+            lines.append("\n| # | Ad | Host | Ort | Maks | Birim |")
+            lines.append("|---|----|------|----:|-----:|-------|")
+            for i, e in enumerate(a.top_entities, 1):
+                lines.append(
+                    f"| {i} | {e.get('name', '?')} | {e.get('host') or '-'} | "
+                    f"{e.get('cpu_pct_avg')} | {e.get('cpu_pct_max')} | {e.get('unit') or '-'} |"
+                )
 
     if a and a.risks:
         lines.append("\n**Analiz / Risk:**")
@@ -272,7 +289,7 @@ def build_agentic_messages(
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "system", "content": developer},
     ]
-    for msg in _trim_conversation(conversation):
-        messages.append({"role": msg.role, "content": msg.content})
+    overhead = len(SYSTEM_PROMPT) + len(developer)
+    _append_conversation_messages(messages, conversation, user_message, overhead)
     messages.append({"role": "user", "content": user_message})
     return messages
