@@ -1638,6 +1638,16 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
 
         try:
             result = cache.run_singleflight(cache_key, _fetch)
+            mapping = self.get_datastore_mapping(dc_code, tr)
+            datastores = mapping.get("datastores") or []
+            if datastores:
+                cap_bytes = sum(int(d.get("capacity_bytes") or 0) for d in datastores)
+                used_bytes = sum(int(d.get("used_bytes") or 0) for d in datastores)
+                cap_tb = cap_bytes / (1024**4)
+                used_tb = used_bytes / (1024**4)
+                if cap_tb > 0 and isinstance(result.get("classic"), dict):
+                    result["classic"]["stor_cap"] = round(cap_tb, 3)
+                    result["classic"]["stor_used"] = round(used_tb, 3)
             return result
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_details(%s): %s", dc_code, exc)
