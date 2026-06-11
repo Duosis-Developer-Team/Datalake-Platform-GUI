@@ -20,6 +20,7 @@ from app.db.queries import brocade as brq, ibm_storage as isq
 from app.db.queries import zabbix_network as znq, zabbix_storage as zsq
 from app.db.queries import discovery_rack as drq
 from app.db.queries import crm_potential as crm_q
+from app.db.queries import crm_network_pricing as net_price_q
 from app.db.queries import netbox_config as nbq
 from app.config import settings
 from app.services import cache_service as cache
@@ -4702,6 +4703,78 @@ JOIN latest l
             )
         return list(resolved.get("hosts") or []), scope_key
 
+    def get_network_dc_access_unit_price_tl(self) -> dict:
+        """Resolve TL/Mbit unit price for backbone billing (override, then catalog)."""
+        productid = net_price_q.NETWORK_DC_ACCESS_PRODUCT_ID
+        meta: dict[str, Any] = {
+            "productid": productid,
+            "product_name": net_price_q.NETWORK_DC_ACCESS_PRODUCT_NAME,
+            "resource_unit": net_price_q.NETWORK_DC_ACCESS_RESOURCE_UNIT,
+            "unit_price_tl": 0.0,
+            "has_price": False,
+            "price_source": None,
+        }
+        webui = getattr(self, "_webui", None)
+        if webui is not None and getattr(webui, "is_available", False):
+            try:
+                row = webui.run_one(
+                    net_price_q.GET_PRICE_OVERRIDE_FOR_PANEL,
+                    (net_price_q.NETWORK_DC_ACCESS_PANEL_KEY,),
+                )
+                if row and row.get("unit_price_tl") is not None:
+                    meta["unit_price_tl"] = round(float(row["unit_price_tl"]), 4)
+                    meta["has_price"] = True
+                    meta["price_source"] = "override"
+                    return meta
+            except Exception as exc:
+                logger.warning("Network DC access price override lookup failed: %s", exc)
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    catalog = self._run_row(
+                        cur,
+                        net_price_q.CATALOG_TL_PRICE_FOR_PRODUCT,
+                        (productid,),
+                    )
+            if catalog:
+                amount = float(catalog[0] or 0)
+                currency = str(catalog[1] or "TL").strip().upper()
+                if amount > 0 and ("TL" in currency or currency in ("TRY", "TURKISH LIRA")):
+                    meta["unit_price_tl"] = round(amount, 4)
+                    meta["has_price"] = True
+                    meta["price_source"] = "catalog"
+        except Exception as exc:
+            logger.warning("Network DC access catalog price lookup failed: %s", exc)
+        return meta
+
+    @staticmethod
+    def _backbone_billing_response_meta(price_meta: dict) -> dict:
+        return {
+            "enabled": True,
+            "productid": price_meta.get("productid"),
+            "product_name": price_meta.get("product_name"),
+            "resource_unit": price_meta.get("resource_unit"),
+            "unit_price_tl": price_meta.get("unit_price_tl"),
+            "price_source": price_meta.get("price_source"),
+            "has_price": bool(price_meta.get("has_price")),
+        }
+
+    @staticmethod
+    def _apply_backbone_billing(items: list[dict], price_meta: dict) -> list[dict]:
+        unit_price = float(price_meta.get("unit_price_tl") or 0)
+        has_price = bool(price_meta.get("has_price"))
+        enriched: list[dict] = []
+        for it in items or []:
+            row = dict(it)
+            p95_total = float(row.get("p95_total_bps") or 0)
+            p95_mbit = round(p95_total / 1_000_000, 3)
+            row["p95_billable_mbit"] = p95_mbit
+            row["unit_price_tl_per_mbit"] = round(unit_price, 4) if has_price else None
+            row["estimated_cost_tl"] = round(p95_mbit * unit_price, 2) if has_price else None
+            enriched.append(row)
+        return enriched
+
     @staticmethod
     def _network_p95_rows_to_items(rows: list | None, include_total: bool = False) -> tuple[list[dict], int]:
         items: list[dict] = []
@@ -4830,6 +4903,10 @@ JOIN latest l
                 "search": search_val,
                 "interface_scope": scope_key,
             }
+            if scope_key == "backbone":
+                price_meta = self.get_network_dc_access_unit_price_tl()
+                result["items"] = self._apply_backbone_billing(result["items"], price_meta)
+                result["billing"] = self._backbone_billing_response_meta(price_meta)
         except Exception as exc:
             logger.warning("get_network_interface_table failed for %s: %s", dc_target, exc)
             result = {
@@ -4915,6 +4992,10 @@ JOIN latest l
                 "interface_scope": scope_key,
                 "export_cap": max_rows,
             }
+            if scope_key == "backbone":
+                price_meta = self.get_network_dc_access_unit_price_tl()
+                result["items"] = self._apply_backbone_billing(result["items"], price_meta)
+                result["billing"] = self._backbone_billing_response_meta(price_meta)
         except Exception as exc:
             logger.warning("get_network_interface_export failed for %s: %s", dc_target, exc)
             result = {"items": [], "total": 0, "interface_scope": scope_key, "export_cap": max_rows}

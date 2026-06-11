@@ -1781,14 +1781,32 @@ def _net_scope_is_interface_panel(top_scope: str | None) -> bool:
     return (top_scope or "overview") in {"overview", "switch", "router_uplink"}
 
 
-def _net_interface_table_footer(page: int, page_size: int, total: int, row_count: int) -> str:
+def _net_interface_table_footer(
+    page: int,
+    page_size: int,
+    total: int,
+    row_count: int,
+    *,
+    interface_scope: str | None = None,
+    rows: list[dict] | None = None,
+    billing_meta: dict | None = None,
+) -> str:
     if total <= 0:
         return "No interfaces in scope"
     start = (page - 1) * page_size + 1
     end = min(page * page_size, total)
     if row_count == 0:
-        return f"No matches — {total:,} interfaces in scope"
-    return f"Showing {start:,}–{end:,} of {total:,} interfaces"
+        base = f"No matches — {total:,} interfaces in scope"
+    else:
+        base = f"Showing {start:,}–{end:,} of {total:,} interfaces"
+    if interface_scope != "backbone":
+        return base
+    if billing_meta and not billing_meta.get("has_price"):
+        return f"{base} — CRM unit price unavailable"
+    page_cost = sum(float(r.get("estimated_cost_tl") or 0) for r in (rows or []))
+    if page_cost > 0:
+        return f"{base} — Page est. cost: {page_cost:,.2f} TL"
+    return base
 
 
 def _net_interface_table_page_count(total: int, page_size: int) -> int:
@@ -1808,7 +1826,7 @@ def _net_interface_table_triggered_id() -> str | None:
     return triggered_id
 
 
-def _net_export_interfaces_csv(items: list[dict]) -> str:
+def _net_export_interfaces_csv(items: list[dict], *, interface_scope: str | None = None) -> str:
     import csv
     import io
 
@@ -1822,6 +1840,9 @@ def _net_export_interfaces_csv(items: list[dict]) -> str:
         "speed_gbps",
         "utilization_pct",
     ]
+    include_billing = interface_scope == "backbone"
+    if include_billing:
+        fields.extend(["p95_billable_mbit", "unit_price_tl_per_mbit", "estimated_cost_tl"])
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
@@ -1830,18 +1851,24 @@ def _net_export_interfaces_csv(items: list[dict]) -> str:
         rx_gbps = (float(it.get("p95_rx_bps") or 0) / 1e9) if it.get("p95_rx_bps") is not None else 0.0
         tx_gbps = (float(it.get("p95_tx_bps") or 0) / 1e9) if it.get("p95_tx_bps") is not None else 0.0
         total_gbps = (float(it.get("p95_total_bps") or 0) / 1e9) if it.get("p95_total_bps") is not None else 0.0
-        writer.writerow(
-            {
-                "host": it.get("host") or "",
-                "interface_name": it.get("interface_name") or "",
-                "interface_alias": it.get("interface_alias") or "",
-                "p95_rx_gbps": round(rx_gbps, 3),
-                "p95_tx_gbps": round(tx_gbps, 3),
-                "p95_total_gbps": round(total_gbps, 3),
-                "speed_gbps": round(speed_gbps, 3),
-                "utilization_pct": round(float(it.get("utilization_pct") or 0), 2),
-            }
-        )
+        row = {
+            "host": it.get("host") or "",
+            "interface_name": it.get("interface_name") or "",
+            "interface_alias": it.get("interface_alias") or "",
+            "p95_rx_gbps": round(rx_gbps, 3),
+            "p95_tx_gbps": round(tx_gbps, 3),
+            "p95_total_gbps": round(total_gbps, 3),
+            "speed_gbps": round(speed_gbps, 3),
+            "utilization_pct": round(float(it.get("utilization_pct") or 0), 2),
+        }
+        if include_billing:
+            p95_total_bps = float(it.get("p95_total_bps") or 0)
+            row["p95_billable_mbit"] = it.get("p95_billable_mbit")
+            if row["p95_billable_mbit"] is None:
+                row["p95_billable_mbit"] = round(p95_total_bps / 1_000_000, 3)
+            row["unit_price_tl_per_mbit"] = it.get("unit_price_tl_per_mbit")
+            row["estimated_cost_tl"] = it.get("estimated_cost_tl")
+        writer.writerow(row)
     return buf.getvalue()
 
 
@@ -2171,8 +2198,16 @@ def update_net_interface_table(
     )
     items = interface_data.get("items") or []
     total = int(interface_data.get("total") or len(items))
-    rows = dc_view._interface_table_rows(items)
-    footer = _net_interface_table_footer(page_backend, page_size_safe, total, len(rows))
+    rows = dc_view._interface_table_rows(items, interface_scope=interface_scope)
+    footer = _net_interface_table_footer(
+        page_backend,
+        page_size_safe,
+        total,
+        len(rows),
+        interface_scope=interface_scope,
+        rows=rows,
+        billing_meta=interface_data.get("billing"),
+    )
     page_count = _net_interface_table_page_count(total, page_size_safe)
 
     return rows, columns, page_size_safe, page_count, page_current_out, footer
@@ -2207,7 +2242,10 @@ def export_net_interfaces(n_clicks, top_scope, switch_role, manufacturer, device
         device_name=device_name,
         interface_scope=interface_scope,
     )
-    csv_text = _net_export_interfaces_csv(export_data.get("items") or [])
+    csv_text = _net_export_interfaces_csv(
+        export_data.get("items") or [],
+        interface_scope=interface_scope,
+    )
     scope_label = interface_scope or "overview"
     return dict(content=csv_text, filename=f"network_interfaces_{dc_id}_{scope_label}.csv")
 

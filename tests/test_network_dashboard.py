@@ -92,3 +92,48 @@ def test_network_page_flags():
     assert flags["show_donut_grid"] is False
     fw_flags = dc_view._network_page_flags("firewall", None)
     assert fw_flags["is_interface_page"] is False
+
+
+def test_backbone_interface_table_columns_include_billing():
+    cols = dc_view._network_interface_table_columns("backbone")
+    col_ids = [c["id"] for c in cols]
+    assert "p95_billable_mbit" in col_ids
+    assert "unit_price_tl_per_mbit" in col_ids
+    assert "estimated_cost_tl" in col_ids
+
+
+def test_backbone_interface_table_rows_map_billing_fields():
+    rows = dc_view._interface_table_rows(
+        [
+            {
+                "host": "sw-01",
+                "interface_name": "eth0",
+                "p95_rx_bps": 1e9,
+                "p95_tx_bps": 2e9,
+                "p95_total_bps": 3e9,
+                "speed_bps": 10e9,
+                "utilization_pct": 30.0,
+                "p95_billable_mbit": 3000.0,
+                "unit_price_tl_per_mbit": 331.12,
+                "estimated_cost_tl": 993360.0,
+            }
+        ],
+        interface_scope="backbone",
+    )
+    assert rows[0]["p95_billable_mbit"] == 3000.0
+    assert rows[0]["estimated_cost_tl"] == 993360.0
+
+
+def test_backbone_table_subtitle_includes_crm_price():
+    title, subtitle = dc_view._network_table_section_titles(
+        "backbone",
+        True,
+        {
+            "has_price": True,
+            "product_name": "Veri Merkezi Erişim ve L3 DDoS Hizmeti",
+            "unit_price_tl": 331.12,
+        },
+    )
+    assert title == "Billable Interface Table"
+    assert "331.12" in subtitle
+    assert "Veri Merkezi" in subtitle
