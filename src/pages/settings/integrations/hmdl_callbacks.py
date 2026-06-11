@@ -38,6 +38,11 @@ def hmdl_env_card_clicked(_n_clicks, ids, pathname):
     triggered = ctx.triggered_id
     if not isinstance(triggered, dict) or triggered.get("type") != "hmdl-env-select":
         return no_update, no_update, no_update
+    # Ignore spurious fires from the page being rebuilt: selecting a DC re-renders
+    # this page, which re-adds every env card with n_clicks=0. Without this guard the
+    # callback would hijack url.search and reset the selection to the first DC (AZ11).
+    if not ctx.triggered or not (ctx.triggered[0] or {}).get("value"):
+        return no_update, no_update, no_update
     dc = str(triggered.get("dc") or "").upper()
     if not dc:
         return no_update, no_update, no_update

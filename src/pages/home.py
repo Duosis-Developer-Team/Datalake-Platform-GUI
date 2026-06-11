@@ -223,8 +223,8 @@ def effective_max_pct(max_v, fallback_v) -> float:
     return round(fb, 1)
 
 
-def _pct_badge_with_max_label(value):
-    """Color-coded usage badge with a faint \"max\" label (DC Summary table)."""
+def _pct_badge(value):
+    """Color-coded live-usage badge for the DC Summary table (snapshot %)."""
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -253,68 +253,25 @@ def _pct_badge_with_max_label(value):
             "textAlign": "center",
             "textTransform": "none",
         },
-        children=dmc.Group(
-            gap=4,
-            align="center",
-            wrap="nowrap",
-            children=[
-                dmc.Text(
-                    f"{v:.1f}%",
-                    size="sm",
-                    fw=600,
-                    style={"fontVariantNumeric": "tabular-nums"},
-                ),
-                dmc.Text(
-                    "max",
-                    size="xs",
-                    c="dimmed",
-                    style={"opacity": 0.6, "fontWeight": 500, "lineHeight": 1},
-                ),
-            ],
+        children=dmc.Text(
+            f"{v:.1f}%",
+            size="sm",
+            fw=600,
+            style={"fontVariantNumeric": "tabular-nums"},
         ),
     )
 
 
 def _arch_usage_cell(usage: dict | None):
-    """Render architecture usage: peak (max) for CPU/RAM when available; faint max on each badge."""
+    """Render architecture usage as live snapshot CPU/RAM(/Disk) badges.
+
+    Values are the current capacity-weighted utilisation (Hyperconverged includes
+    Nutanix) so the table reconciles with the Datacenters cards.
+    """
     usage = usage or {}
     cpu = usage.get("cpu_pct", 0.0)
     ram = usage.get("ram_pct", 0.0)
     disk = usage.get("disk_pct", None)
-
-    if "cpu_pct_max" in usage:
-        cpu_show = effective_max_pct(usage.get("cpu_pct_max"), cpu)
-        ram_show = effective_max_pct(usage.get("ram_pct_max"), ram)
-        rows = [
-            dmc.Group(
-                gap=6,
-                align="center",
-                children=[
-                    dmc.Text("CPU", size="xs", c="dimmed"),
-                    _pct_badge_with_max_label(cpu_show),
-                ],
-            ),
-            dmc.Group(
-                gap=6,
-                align="center",
-                children=[
-                    dmc.Text("RAM", size="xs", c="dimmed"),
-                    _pct_badge_with_max_label(ram_show),
-                ],
-            ),
-        ]
-        if disk is not None:
-            rows.append(
-                dmc.Group(
-                    gap=6,
-                    align="center",
-                    children=[
-                        dmc.Text("Disk", size="xs", c="dimmed"),
-                        _pct_badge_with_max_label(disk),
-                    ],
-                )
-            )
-        return dmc.Stack(gap=4, align="flex-end", children=rows)
 
     rows = [
         dmc.Group(
@@ -322,7 +279,7 @@ def _arch_usage_cell(usage: dict | None):
             align="center",
             children=[
                 dmc.Text("CPU", size="xs", c="dimmed"),
-                _pct_badge_with_max_label(cpu),
+                _pct_badge(cpu),
             ],
         ),
         dmc.Group(
@@ -330,7 +287,7 @@ def _arch_usage_cell(usage: dict | None):
             align="center",
             children=[
                 dmc.Text("RAM", size="xs", c="dimmed"),
-                _pct_badge_with_max_label(ram),
+                _pct_badge(ram),
             ],
         ),
     ]
@@ -341,7 +298,7 @@ def _arch_usage_cell(usage: dict | None):
                 align="center",
                 children=[
                     dmc.Text("Disk", size="xs", c="dimmed"),
-                    _pct_badge_with_max_label(disk),
+                    _pct_badge(disk),
                 ],
             )
         )
@@ -761,7 +718,7 @@ def build_overview(time_range=None, visible_sections=None):
                         style={"marginBottom": "4px"},
                     ),
                     dmc.Text(
-                        "CPU & RAM: peak (max) from cluster_metrics over the report period. "
+                        "CPU & RAM: live utilization (Hyperconverged includes Nutanix). "
                         "Disk: allocated vs capacity. IBM Power: current snapshot.",
                         size="xs",
                         c="dimmed",
