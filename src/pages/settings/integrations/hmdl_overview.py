@@ -8,7 +8,12 @@ from dash_iconify import DashIconify
 
 from src.components.hmdl_topology import build_topology_graph
 from src.services import api_client as api
-from src.utils.hmdl_sync_ui import node_status_badge, proxy_config_badge, sync_status_badge
+from src.utils.hmdl_sync_ui import (
+    build_coverage_summary,
+    node_status_badge,
+    proxy_config_badge,
+    sync_status_badge,
+)
 from src.utils.ui_tokens import kpi_card, section_header, settings_page_shell
 
 
@@ -50,6 +55,22 @@ def build_layout(search: str | None = None) -> html.Div:
                 icon="solar:history-bold-duotone",
                 color="violet",
             ),
+        ],
+    )
+
+    coverage = api.get_hmdl_coverage()
+    coverage_card = dmc.Paper(
+        p="lg",
+        radius="md",
+        withBorder=True,
+        mt="lg",
+        children=[
+            section_header(
+                "Datalake Coverage",
+                "Cluster (VMware/Nutanix) ve IBM host bazında veri çekme kapsamı — detay için Datalake Sync Health sekmesi.",
+                icon="solar:checklist-minimalistic-bold-duotone",
+            ),
+            build_coverage_summary(coverage.get("summary") or {}),
         ],
     )
 
@@ -188,6 +209,7 @@ def build_layout(search: str | None = None) -> html.Div:
                     ],
                 ),
                 kpis,
+                coverage_card,
                 dmc.Space(h="lg"),
                 topo_card,
                 table,

@@ -2262,3 +2262,32 @@ def get_hmdl_locations() -> dict[str, Any]:
     except _HTTP_ERRORS as exc:
         logger.warning("hmdl-api locations unavailable: %s", exc)
         return {"items": [], "total": 0}
+
+
+_EMPTY_HMDL_COVERAGE: dict[str, Any] = {
+    "summary": {"cluster": {}, "ibm_host": {"total": 0, "collected": 0, "missing": 0, "live": 0}},
+    "clusters": [],
+    "ibm_hosts": [],
+    "locations": [],
+    "dc_filter": None,
+    "source_filter": None,
+}
+
+
+def get_hmdl_coverage(
+    dc: str | None = None,
+    *,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Datalake coverage report: cluster/host present-absent + X/Y summary + reason."""
+    params: dict[str, str] = {}
+    if dc:
+        params["dc"] = dc.strip().upper()
+    if source:
+        params["source"] = source.strip().lower()
+    try:
+        data = _get_json(_get_client_hmdl(), "/api/v1/collectors/coverage", params=params or None)
+        return data if isinstance(data, dict) else _clone(_EMPTY_HMDL_COVERAGE)
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api coverage unavailable: %s", exc)
+        return _clone(_EMPTY_HMDL_COVERAGE)

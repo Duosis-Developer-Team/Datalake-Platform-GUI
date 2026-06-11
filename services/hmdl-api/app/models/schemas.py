@@ -184,3 +184,63 @@ class TargetsResponse(BaseModel):
 
 class RunsResponse(BaseModel):
     items: list[SyncLogEntry]
+
+
+# --- Datalake coverage (cluster / IBM host present-absent) ---
+
+CoverageStatus = Literal["live", "stale", "missing", "extra", "unknown"]
+
+
+class CoverageTargetIssue(BaseModel):
+    dc_code: str | None = None
+    platform: str | None = None
+    dns: str | None = None
+    proxy: str | None = None
+    check_status: str | None = None
+    network_access: bool | None = None
+
+
+class CoverageBucket(BaseModel):
+    total: int = 0
+    collected: int = 0
+    missing: int = 0
+    live: int = 0
+
+
+class ClusterCoverageRow(BaseModel):
+    source: str
+    cluster_name: str | None = None
+    dc: str
+    collected: bool
+    expected: bool
+    is_live: bool
+    last_collected: datetime | None = None
+    status: CoverageStatus
+    reason: str
+    target_issues: list[CoverageTargetIssue] = Field(default_factory=list)
+
+
+class IbmHostCoverageRow(BaseModel):
+    servername: str | None = None
+    dc: str
+    collected: bool
+    expected: bool
+    is_live: bool
+    last_collected: datetime | None = None
+    status: CoverageStatus
+    reason: str
+    target_issues: list[CoverageTargetIssue] = Field(default_factory=list)
+
+
+class CoverageSummary(BaseModel):
+    cluster: dict[str, CoverageBucket] = Field(default_factory=dict)
+    ibm_host: CoverageBucket = Field(default_factory=CoverageBucket)
+
+
+class CoverageResponse(BaseModel):
+    summary: CoverageSummary
+    clusters: list[ClusterCoverageRow]
+    ibm_hosts: list[IbmHostCoverageRow]
+    locations: list[str] = Field(default_factory=list)
+    dc_filter: str | None = None
+    source_filter: str | None = None
