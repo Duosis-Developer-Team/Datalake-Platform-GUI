@@ -699,8 +699,20 @@ def _capacity_resource_table(rows: list[dict]):
                             [
                                 html.Th("Resource", style=header_style),
                                 html.Th("Total", style=header_style),
-                                html.Th("Physical allocation", style=header_style),
-                                html.Th("Max utilization", style=header_style),
+                                html.Th(
+                                    dmc.Tooltip(
+                                        label="Sum of VM-configured resources (latest allocation snapshot)",
+                                        children=html.Span("Physical allocation"),
+                                    ),
+                                    style=header_style,
+                                ),
+                                html.Th(
+                                    dmc.Tooltip(
+                                        label="Physical host peak usage in the selected report period",
+                                        children=html.Span("Max utilization"),
+                                    ),
+                                    style=header_style,
+                                ),
                                 html.Th("", style=header_style),
                             ]
                         )
@@ -1910,167 +1922,39 @@ def _build_summary_tab(
     sellable_summary: dict | None = None,
     show_sellable: bool = True,
 ):
-    """Summary tab: sellable executive overview + combined capacity planning."""
-    classic    = data.get("classic", {})
-    hyperconv  = data.get("hyperconv", {})
-    intel      = data.get("intel", {})
-    power      = data.get("power", {})
-    energy     = data.get("energy", {})
+    """Summary tab: Combined Infrastructure + sellable executive overview."""
+    classic = data.get("classic", {})
+    hyperconv = data.get("hyperconv", {})
+    intel = data.get("intel", {})
+    power = data.get("power", {})
 
-    # Combined totals
-    total_hosts = (classic.get("hosts", 0) + hyperconv.get("hosts", 0) + power.get("hosts", 0))
-    # intel.vms = cl_vms + nutanix_vms (cluster-level dedup: no double-count of hyperconv VMs)
-    total_vms   = intel.get("vms", 0) + power.get("lpar_count", 0)
+    total_hosts = classic.get("hosts", 0) + hyperconv.get("hosts", 0) + power.get("hosts", 0)
+    total_vms = intel.get("vms", 0) + power.get("lpar_count", 0)
+    total_cpu_cap = classic.get("cpu_cap", 0) + hyperconv.get("cpu_cap", 0)
+    total_mem_cap = classic.get("mem_cap", 0) + hyperconv.get("mem_cap", 0)
 
-    # Total CPU capacity (GHz) across all compute types
-    total_cpu_cap  = classic.get("cpu_cap", 0) + hyperconv.get("cpu_cap", 0)
-    total_cpu_used = classic.get("cpu_used", 0) + hyperconv.get("cpu_used", 0)
-    # Total Memory (GB)
-    total_mem_cap  = classic.get("mem_cap", 0) + hyperconv.get("mem_cap", 0)
-    total_mem_used = classic.get("mem_used", 0) + hyperconv.get("mem_used", 0)
-    # Total Storage (TB)
-    total_stor_cap  = classic.get("stor_cap", 0) + hyperconv.get("stor_cap", 0) + power.get("storage_cap_tb", 0)
-    total_stor_used = classic.get("stor_used", 0) + hyperconv.get("stor_used", 0) + power.get("storage_used_tb", 0)
+    summary_children: list = [
+        html.Div(
+            className="nexus-card",
+            style={"padding": "20px"},
+            children=[
+                _section_title("Combined Infrastructure", "All compute types combined"),
+                dmc.SimpleGrid(cols=4, spacing="lg", style={"marginTop": "12px"}, children=[
+                    _kpi("Total Hosts", f"{total_hosts:,}", _DC_ICONS["hosts"]),
+                    _kpi("Total VMs / LPARs", f"{total_vms:,}", _DC_ICONS["vms"]),
+                    _kpi("CPU Capacity", smart_cpu(total_cpu_cap), _DC_ICONS["cpu"], is_text=True),
+                    _kpi("RAM Capacity", smart_memory(total_mem_cap), _DC_ICONS["ram"], is_text=True),
+                ]),
+            ],
+        ),
+    ]
 
-    cpu_pct  = pct_float(total_cpu_used, total_cpu_cap)
-    mem_pct  = pct_float(total_mem_used, total_mem_cap)
-    stor_pct = pct_float(total_stor_used * 1024, total_stor_cap * 1024)
-
-    sellable_block = None
     if show_sellable and dc_id:
         sellable_block = build_summary_sellable_section(str(dc_id), sellable_summary)
+        if sellable_block is not None:
+            summary_children.append(sellable_block)
 
-    return dmc.Stack(
-        gap="lg",
-        children=[
-            *(
-                [html.Div(id="dc-summary-sellable-root", children=sellable_block.children)]
-                if sellable_block is not None
-                else []
-            ),
-            html.Div(
-                className="nexus-card",
-                style={"padding": "16px 20px"},
-                children=_section_title(
-                    "Infrastructure Capacity",
-                    "Toplam envanter ve kullanım — sellable özetinin altında bağlam",
-                ),
-            ),
-            # Combined KPIs
-            html.Div(
-                className="nexus-card",
-                style={"padding": "20px"},
-                children=[
-                    _section_title("Combined Infrastructure", "All compute types combined"),
-                    dmc.SimpleGrid(cols=4, spacing="lg", style={"marginTop": "12px"}, children=[
-                        _kpi("Total Hosts", f"{total_hosts:,}", _DC_ICONS["hosts"]),
-                        _kpi("Total VMs / LPARs", f"{total_vms:,}", _DC_ICONS["vms"]),
-                        _kpi("CPU Capacity",  smart_cpu(total_cpu_cap),  _DC_ICONS["cpu"],   is_text=True),
-                        _kpi("RAM Capacity",  smart_memory(total_mem_cap), _DC_ICONS["ram"], is_text=True),
-                    ]),
-                ],
-            ),
-            # Capacity overview charts
-            *(
-                [html.Div(
-                    className="nexus-card",
-                    style={"padding": "20px"},
-                    children=[
-                        _section_title("Resource Utilization", "Capacity vs. workload allocation (all VMware compute)"),
-                        _summary_util_grid,
-                    ],
-                )]
-                if (_summary_util_grid := _dynamic_chart_grid([
-                    (_has_value(total_cpu_cap), _gauge_wrap(
-                        create_premium_gauge_chart(cpu_pct, "", color="#4318FF"), "CPU Usage"
-                    )),
-                    (_has_value(total_mem_cap), _gauge_wrap(
-                        create_premium_gauge_chart(mem_pct, "", color="#05CD99"), "RAM Usage"
-                    )),
-                    (_has_value(total_stor_cap), _gauge_wrap(
-                        create_premium_gauge_chart(stor_pct, "", color="#FFB547"), "Storage Usage",
-                    )),
-                ])) is not None
-                else []
-            ),
-            # Detailed capacity table
-            html.Div(
-                className="nexus-card",
-                style={"padding": "20px"},
-                children=[
-                    _section_title("Capacity Detail", "Host capacity vs. allocated to VMs"),
-                    html.Div(style={"marginTop": "12px"}, children=[
-                        _capacity_metric_row("CPU (Classic)",      classic.get("cpu_cap", 0),
-                                             classic.get("cpu_used", 0),
-                                             classic.get("cpu_pct", pct_float(classic.get("cpu_used", 0), classic.get("cpu_cap", 1))),
-                                             smart_cpu),
-                        _capacity_metric_row("CPU (Hyperconv)",    hyperconv.get("cpu_cap", 0),
-                                             hyperconv.get("cpu_used", 0),
-                                             hyperconv.get("cpu_pct", pct_float(hyperconv.get("cpu_used", 0), hyperconv.get("cpu_cap", 1))),
-                                             smart_cpu),
-                        _capacity_metric_row("RAM (Classic)",      classic.get("mem_cap", 0),
-                                             classic.get("mem_used", 0),
-                                             classic.get("mem_pct", pct_float(classic.get("mem_used", 0), classic.get("mem_cap", 1))),
-                                             smart_memory),
-                        _capacity_metric_row("RAM (Hyperconv)",    hyperconv.get("mem_cap", 0),
-                                             hyperconv.get("mem_used", 0),
-                                             hyperconv.get("mem_pct", pct_float(hyperconv.get("mem_used", 0), hyperconv.get("mem_cap", 1))),
-                                             smart_memory),
-                        _capacity_metric_row("Storage (Classic)",  classic.get("stor_cap", 0) * 1024,
-                                             classic.get("stor_used", 0) * 1024,
-                                             pct_float(classic.get("stor_used", 0), classic.get("stor_cap", 1)),
-                                             smart_storage),
-                        _capacity_metric_row("Storage (Hyperconv)", hyperconv.get("stor_cap", 0) * 1024,
-                                             hyperconv.get("stor_used", 0) * 1024,
-                                             pct_float(hyperconv.get("stor_used", 0), hyperconv.get("stor_cap", 1)),
-                                             smart_storage),
-                        _capacity_metric_row("Storage (Power)",  power.get("storage_cap_tb", 0) * 1024,
-                                             power.get("storage_used_tb", 0) * 1024,
-                                             pct_float(power.get("storage_used_tb", 0), power.get("storage_cap_tb", 1)),
-                                             smart_storage) if power.get("storage_cap_tb", 0) > 0 else None,
-                    ]),
-                ],
-            ),
-            # IBM Power summary
-            html.Div(
-                className="nexus-card",
-                style={
-                    "padding": "20px",
-                    "background": "linear-gradient(135deg, rgba(139, 92, 246, 0.03) 0%, rgba(67, 24, 255, 0.03) 100%)",
-                },
-                children=[
-                    _section_title("Power Compute (IBM)", "IBM Power resource summary"),
-                    dmc.SimpleGrid(cols=4, spacing="lg", style={"marginTop": "12px"}, children=[
-                        _kpi("IBM Hosts",   f"{power.get('hosts', 0):,}",       _DC_ICONS["ibm_hosts"],  color="grape"),
-                        _kpi("LPARs",       f"{power.get('lpar_count', 0):,}",  _DC_ICONS["lpars"],      color="grape"),
-                        _kpi("RAM Assigned", smart_memory(power.get("memory_assigned", 0)),
-                             _DC_ICONS["ram_assigned"], color="grape", is_text=True),
-                        _kpi("Storage", smart_storage(power.get("storage_cap_tb", 0) * 1024),
-                             _DC_ICONS["ibm_storage"], color="grape", is_text=True) if power.get("storage_cap_tb", 0) > 0 else None,
-                    ]),
-                ],
-            ),
-            # Energy breakdown
-            html.Div(
-                className="nexus-card",
-                style={"padding": "20px"},
-                children=[
-                    _section_title("Energy Breakdown", "Daily average over report period"),
-                    dmc.SimpleGrid(cols=3, spacing="lg", style={"marginTop": "12px"}, children=[
-                        _kpi("IBM Power",  f"{energy.get('ibm_kw', 0):.1f} kW",      _DC_ICONS["ibm_power_kw"], color="orange", stagger=1),
-                        _kpi("vCenter",    f"{energy.get('vcenter_kw', 0):.1f} kW",   _DC_ICONS["vcenter_kw"],  color="orange", stagger=2),
-                        _kpi("Total",      f"{energy.get('total_kw', 0):.1f} kW",     _DC_ICONS["total_kw"],    color="orange", stagger=3),
-                    ]),
-                    dmc.Divider(style={"margin": "12px 0"}),
-                    dmc.SimpleGrid(cols=3, spacing="lg", children=[
-                        _kpi("IBM kWh",    f"{energy.get('ibm_kwh', 0):,.0f} kWh",    _DC_ICONS["ibm_kwh"],    color="yellow"),
-                        _kpi("vCenter kWh", f"{energy.get('vcenter_kwh', 0):,.0f} kWh", _DC_ICONS["vcenter_kwh"], color="yellow"),
-                        _kpi("Total kWh",  f"{energy.get('total_kwh', 0):,.0f} kWh",  _DC_ICONS["total_kwh"],  color="yellow"),
-                    ]),
-                ],
-            ),
-        ],
-    )
+    return dmc.Stack(gap="lg", children=summary_children)
 
 
 def _build_physical_inventory_dc_tab(phys_inv: dict):
@@ -2971,6 +2855,7 @@ def _build_network_zabbix_section(
 
 def _build_storage_section_with_san(
     has_intel_storage: bool,
+    has_ibm_storage: bool,
     has_power: bool,
     has_s3: bool,
     has_san: bool,
@@ -2990,32 +2875,30 @@ def _build_storage_section_with_san(
     datastore_mapping: dict | None = None,
 ) -> html.Div | None:
     check = sec_check or (lambda _code: True)
+    show_km_datastore = bool(has_datastore)
+    show_ibm = bool(has_ibm_storage or has_power)
     if not (
-        has_intel_storage
-        or has_power
+        show_km_datastore
+        or show_ibm
         or has_s3
-        or has_datastore
         or (has_san and check("sub:dc_view:storage:san"))
     ):
         return None
 
     default_tab = (
-        "intel"
-        if (has_intel_storage or has_datastore)
+        "km-datastore-outer"
+        if show_km_datastore
         else "ibm"
-        if has_power
+        if show_ibm
         else "san"
         if has_san and check("sub:dc_view:storage:san")
         else "obj-storage"
     )
 
-    # KM Datastore lives as an inner tab under "Intel Storage" (per Can: classic/KM
-    # datastores are surfaced beside Intel/x86 storage; Nutanix datastores come from
-    # Nutanix directly and are shown elsewhere).
     tab_list = []
-    if has_intel_storage or has_datastore:
-        tab_list.append(dmc.TabsTab("Intel Storage", value="intel"))
-    if has_power:
+    if show_km_datastore:
+        tab_list.append(dmc.TabsTab("KM Datastore", value="km-datastore-outer"))
+    if show_ibm:
         tab_list.append(dmc.TabsTab("IBM Storage", value="ibm"))
     if has_san and check("sub:dc_view:storage:san"):
         tab_list.append(dmc.TabsTab("SAN Switch", value="san"))
@@ -3023,42 +2906,15 @@ def _build_storage_section_with_san(
         tab_list.append(dmc.TabsTab("Object Storage - S3", value="obj-storage"))
 
     panels = []
-    if has_intel_storage or has_datastore:
-        inner_tabs = []
-        inner_panels = []
-        if has_intel_storage:
-            inner_tabs.append(dmc.TabsTab("Intel Storage", value="intel-zabbix"))
-            inner_panels.append(dmc.TabsPanel(
-                value="intel-zabbix",
-                pt="md",
-                children=_build_intel_storage_subtab(
-                    zabbix_storage_devices,
-                    zabbix_storage_capacity,
-                    zabbix_storage_trend,
-                ),
-            ))
-        if has_datastore:
-            inner_tabs.append(dmc.TabsTab("KM Datastore", value="km-datastore"))
-            inner_panels.append(dmc.TabsPanel(
-                value="km-datastore",
-                pt="md",
-                children=_build_datastore_subtab(datastore_mapping or {}),
-            ))
-        inner_default = "intel-zabbix" if has_intel_storage else "km-datastore"
+    if show_km_datastore:
         panels.append(
             dmc.TabsPanel(
-                value="intel",
+                value="km-datastore-outer",
                 pt="lg",
-                children=dmc.Tabs(
-                    color="indigo",
-                    variant="pills",
-                    radius="md",
-                    value=inner_default,
-                    children=[dmc.TabsList(children=inner_tabs), *inner_panels],
-                ),
+                children=_build_datastore_subtab(datastore_mapping or {}),
             )
         )
-    if has_power:
+    if show_ibm:
         panels.append(
             dmc.TabsPanel(
                 value="ibm",
@@ -4289,10 +4145,17 @@ def _tab_eager(eager_tabs: frozenset[str] | None, tab: str) -> bool:
 
 
 def _tab_lazy_placeholder(tab: str, dc_display: str) -> html.Div:
-    return html.Div(
-        id=f"dc-tab-{tab}-root",
-        style={"padding": "0 30px", "minHeight": "120px"},
-        children=build_dc_tab_loading_shell(tab, dc_display),
+    return dcc.Loading(
+        id=f"dc-tab-{tab}-loading",
+        type="circle",
+        color="#4318FF",
+        delay_show=250,
+        overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
+        children=html.Div(
+            id=f"dc-tab-{tab}-root",
+            style={"padding": "0 30px", "minHeight": "120px"},
+            children=build_dc_tab_loading_shell(tab, dc_display),
+        ),
     )
 
 
@@ -4538,15 +4401,18 @@ def build_dc_view(
     storage_capacity = {}
     storage_performance = {}
     san_bottleneck = {}
-    if has_power and _tab_eager(eager_tabs, "virt"):
+    _fetch_ibm_storage = _tab_eager(eager_tabs, "virt") or _tab_eager(eager_tabs, "storage")
+    if _fetch_ibm_storage:
         t_power_storage = time.perf_counter()
         storage_capacity = api.get_dc_storage_capacity(dc_id, tr)
         storage_performance = api.get_dc_storage_performance(dc_id, tr)
-        san_bottleneck = api.get_dc_san_bottleneck(dc_id, tr)
+        if _tab_eager(eager_tabs, "virt"):
+            san_bottleneck = api.get_dc_san_bottleneck(dc_id, tr)
         power_storage_ms = round((time.perf_counter() - t_power_storage) * 1000, 1)
         _log_dc_build_phase(str(dc_id), "power_storage", t_power_storage)
     else:
         power_storage_ms = 0.0
+    has_ibm_storage = bool((storage_capacity.get("systems") or []))
 
     # Intel Storage (Zabbix)
     if _tab_eager(eager_tabs, "storage"):
@@ -4568,7 +4434,7 @@ def build_dc_view(
         datastore_mapping = {}
         has_datastore = False
 
-    has_storage = bool(has_intel_storage or has_power or has_s3 or has_san or has_datastore)
+    has_storage = bool(has_intel_storage or has_ibm_storage or has_power or has_s3 or has_san or has_datastore)
 
     has_virt = has_classic or has_hyperconv or has_power
     has_summary = has_virt
@@ -4644,13 +4510,7 @@ def build_dc_view(
             ),
         )
 
-    page = dcc.Loading(
-        id="dc-view-page-loading",
-        type="circle",
-        color="#4318FF",
-        delay_show=200,
-        overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.75)"},
-        children=html.Div([
+    page = html.Div([
         dcc.Store(
             id="dc-export-store",
             data={
@@ -4897,6 +4757,7 @@ def build_dc_view(
                             id="dc-tab-storage-root",
                             children=_build_storage_section_with_san(
                         has_intel_storage,
+                        has_ibm_storage,
                         has_power,
                         has_s3,
                         has_san,
@@ -4960,8 +4821,7 @@ def build_dc_view(
                 else None,
             ],
         )
-    ]),
-    )
+    ])
     _log_dc_build_phase(
         str(dc_id),
         "total",

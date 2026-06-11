@@ -1,6 +1,7 @@
 """DC View Summary tab — categorized sellable executive overview."""
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 import dash_mantine_components as dmc
@@ -9,6 +10,7 @@ from dash_iconify import DashIconify
 
 from src.services import api_client as api
 from src.utils.format_units import smart_cpu, smart_memory, smart_storage
+from src.utils.virt_sellable_aggregate import collect_virt_sellable_panels
 
 _BRAND = "#4318FF"
 _MUTED = "#A3AED0"
@@ -121,17 +123,92 @@ def _family_panels(summary: dict, family: str) -> list[dict]:
     return []
 
 
-def _build_virt_compute_block(summary: dict) -> html.Div:
+def _group_panels_by_family(panels: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for p in panels or []:
+        if not isinstance(p, dict):
+            continue
+        fam = p.get("family") or ""
+        if fam:
+            grouped[fam].append(p)
+    return grouped
+
+
+def _resolve_virt_panels(dc_id: str, summary: dict | None) -> list[dict]:
+    """Prefer by-panel API (Virt tab parity); fall back to summary rollup."""
+    try:
+        panels = collect_virt_sellable_panels(str(dc_id), None, None)
+        if panels:
+            return panels
+    except Exception:
+        pass
+    if not summary:
+        return []
+    out: list[dict] = []
+    for fam in _VIRT_COMPUTE_FAMILIES | _VIRT_STORAGE_FAMILIES:
+        for p in _family_panels(summary, fam):
+            row = dict(p)
+            row.setdefault("family", fam)
+            out.append(row)
+    return out
+
+
+def build_sellable_executive_strip(summary: dict) -> html.Div:
+    """Executive KPI strip for Summary tab."""
+    modes = summary.get("computation_modes") or {}
+    mode_badge = ", ".join(f"{k}: {v}" for k, v in modes.items()) or "aggregate"
+    exec_strip = dmc.SimpleGrid(cols={"base": 1, "sm": 2, "lg": 4}, spacing="md", children=[
+        _exec_kpi(
+            "Total Potential",
+            _fmt_tl_range(summary.get("total_potential_tl_min"), summary.get("total_potential_tl_max")),
+            "Physical – Effective aralığı",
+            "solar:wallet-money-bold-duotone",
+            "grape",
+        ),
+        _exec_kpi(
+            "Constrained Loss",
+            _fmt_tl(summary.get("constrained_loss_tl")),
+            "Ratio-bound kayıp",
+            "solar:chart-2-bold-duotone",
+            "orange",
+        ),
+        _exec_kpi(
+            "Mapped Panels",
+            str(summary.get("mapped_panel_count") or 0),
+            f"Unmapped products: {summary.get('unmapped_product_count') or 0}",
+            "solar:checklist-bold-duotone",
+            "teal",
+        ),
+        _exec_kpi(
+            "Computation",
+            "Host-based" if any(v == "host_based" for v in modes.values()) else "Cluster",
+            mode_badge[:80],
+            "solar:server-bold-duotone",
+            "blue",
+        ),
+    ])
+    return html.Div(className="nexus-card", style={"padding": "20px"}, children=[
+        _section_title(
+            "Sellable Executive Summary",
+            "Satılabilir kapasite ve TL potansiyeli — yönetici özeti",
+        ),
+        exec_strip,
+    ])
+
+
+def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] | None = None) -> html.Div:
+    """Sanallaştırma — Compute block (host-based CPU/RAM sellable)."""
+    grouped = _group_panels_by_family(panels or []) if panels else {}
     cards = []
     for fam in ("virt_classic", "virt_hyperconverged", "virt_power", "virt_power_hana"):
-        panels = _family_panels(summary, fam)
-        if not panels:
+        fam_panels = grouped.get(fam) if panels else _family_panels(summary or {}, fam)
+        if not fam_panels:
             continue
-        cpu = _panel_by_kind(panels, "cpu")
-        ram = _panel_by_kind(panels, "ram")
+        cpu = _panel_by_kind(fam_panels, "cpu")
+        ram = _panel_by_kind(fam_panels, "ram")
         if not cpu and not ram:
             continue
-        mode = next((p.get("computation_mode") for p in panels if p.get("computation_mode")), None)
+        mode = next((p.get("computation_mode") for p in fam_panels if p.get("computation_mode")), None)
         cpu_phys = cpu.get("sellable_physical") if cpu else None
         cpu_eff = cpu.get("sellable_effective") if cpu else (cpu.get("sellable_constrained") if cpu else None)
         cpu_unit = (cpu or {}).get("display_unit") or "vCPU"
@@ -177,9 +254,11 @@ def _build_virt_compute_block(summary: dict) -> html.Div:
     ])
 
 
-def _build_virt_storage_block(summary: dict) -> html.Div:
-    km_panels = _family_panels(summary, "virt_classic")
-    pw_panels = _family_panels(summary, "virt_power")
+def build_virt_storage_block(summary: dict | None = None, *, panels: list[dict] | None = None) -> html.Div:
+    """Sanallaştırma — Storage block (KM + Power range)."""
+    grouped = _group_panels_by_family(panels or []) if panels else {}
+    km_panels = grouped.get("virt_classic") if panels else _family_panels(summary or {}, "virt_classic")
+    pw_panels = grouped.get("virt_power") if panels else _family_panels(summary or {}, "virt_power")
     km_stor = _panel_by_kind(km_panels, "storage")
     pw_stor = _panel_by_kind(pw_panels, "storage")
     if not km_stor and not pw_stor:
@@ -196,11 +275,11 @@ def _build_virt_storage_block(summary: dict) -> html.Div:
 
     return html.Div(
         className="nexus-card",
-        style={"padding": "20px", "marginTop": "16px"},
+        style={"padding": "20px"},
         children=[
             _section_title(
                 "Sanallaştırma — Storage",
-                "Compute ile ilişkili ancak bağımsız kategori — IBM kapasitesi KM ve Power arasında paylaşımlıdır",
+                "Compute ile ilişkili ancak bağımsız kategori — IBM kapasitesi KM ve Power arasında paylaşılmaktadır",
             ),
             dmc.SimpleGrid(cols={"base": 1, "md": 2}, spacing="lg", mt="md", children=[
                 html.Div(children=[
@@ -233,125 +312,28 @@ def _build_virt_storage_block(summary: dict) -> html.Div:
     )
 
 
-def _build_other_families_accordion(summary: dict) -> html.Div | None:
-    items = []
-    for fam in summary.get("families") or []:
-        fkey = fam.get("family") or ""
-        if fkey in _VIRT_COMPUTE_FAMILIES or fkey in _VIRT_STORAGE_FAMILIES:
-            continue
-        panels = _family_panels(summary, fkey)
-        if not panels:
-            potential_only = float(fam.get("total_potential_tl") or 0)
-            if potential_only <= 0:
-                continue
-            items.append(dmc.AccordionItem(
-                value=fkey,
-                children=[
-                    dmc.AccordionControl(dmc.Text(fam.get("label") or fkey, fw=600)),
-                    dmc.AccordionPanel(
-                        dmc.Text(
-                            f"Total potential: {_fmt_tl(potential_only)}",
-                            size="sm",
-                            fw=600,
-                        ),
-                    ),
-                ],
-            ))
-            continue
-        potential = float(fam.get("total_potential_tl") or 0)
-        if potential <= 0 and not any(p.get("has_infra_source") for p in panels):
-            continue
-        rows = []
-        for p in panels:
-            rows.append(dmc.Group(
-                justify="space-between",
-                children=[
-                    dmc.Text(p.get("label") or p.get("panel_key"), size="xs"),
-                    dmc.Text(
-                        f"{float(p.get('sellable_constrained') or 0):,.0f} {p.get('display_unit') or ''} · {_fmt_tl(p.get('potential_tl'))}",
-                        size="xs",
-                        fw=600,
-                    ),
-                ],
-            ))
-        items.append(dmc.AccordionItem(
-            value=fkey,
-            children=[
-                dmc.AccordionControl(dmc.Text(fam.get("label") or fkey, fw=600)),
-                dmc.AccordionPanel(dmc.Stack(gap=6, children=rows)),
-            ],
-        ))
-    if not items:
-        return None
-    return html.Div(
-        className="nexus-card",
-        style={"padding": "20px", "marginTop": "16px"},
-        children=[
-            _section_title("Diğer CRM Kategorileri", "Eşleştirilmiş tüm servis aileleri"),
-            dmc.Accordion(variant="separated", radius="md", mt="md", children=items),
-        ],
-    )
-
-
 def build_summary_sellable_section(dc_id: str, summary: dict | None = None) -> html.Div | None:
-    """Executive sellable block for DC Summary tab."""
+    """Sellable blocks for DC Summary tab (executive + virt compute/storage)."""
     if not dc_id:
         return None
     try:
         data = summary if summary is not None else api.get_sellable_summary_light(dc_code=str(dc_id))
     except Exception:
-        return dmc.Alert("Sellable özeti yüklenemedi.", color="red", radius="md")
+        return html.Div(children=[
+            dmc.Alert("Sellable özeti yüklenemedi.", color="red", radius="md"),
+        ])
 
     if not data or not isinstance(data, dict):
         return None
 
-    modes = data.get("computation_modes") or {}
-    mode_badge = ", ".join(f"{k}: {v}" for k, v in modes.items()) or "aggregate"
-
-    exec_strip = dmc.SimpleGrid(cols={"base": 1, "sm": 2, "lg": 4}, spacing="md", children=[
-        _exec_kpi(
-            "Total Potential",
-            _fmt_tl_range(data.get("total_potential_tl_min"), data.get("total_potential_tl_max")),
-            "Physical – Effective aralığı",
-            "solar:wallet-money-bold-duotone",
-            "grape",
-        ),
-        _exec_kpi(
-            "Constrained Loss",
-            _fmt_tl(data.get("constrained_loss_tl")),
-            "Ratio-bound kayıp",
-            "solar:chart-2-bold-duotone",
-            "orange",
-        ),
-        _exec_kpi(
-            "Mapped Panels",
-            str(data.get("mapped_panel_count") or 0),
-            f"Unmapped products: {data.get('unmapped_product_count') or 0}",
-            "solar:checklist-bold-duotone",
-            "teal",
-        ),
-        _exec_kpi(
-            "Computation",
-            "Host-based" if any(v == "host_based" for v in modes.values()) else "Cluster",
-            mode_badge[:80],
-            "solar:server-bold-duotone",
-            "blue",
-        ),
-    ])
+    virt_panels = _resolve_virt_panels(str(dc_id), data)
 
     return html.Div(
         id="dc-summary-sellable-root",
         children=[
-            html.Div(className="nexus-card", style={"padding": "20px"}, children=[
-                _section_title(
-                    "Sellable Executive Summary",
-                    "Satılabilir kapasite ve TL potansiyeli — yönetici özeti",
-                ),
-                exec_strip,
-            ]),
-            html.Div(style={"marginTop": "16px"}, children=_build_virt_compute_block(data)),
-            _build_virt_storage_block(data),
-            _build_other_families_accordion(data),
+            build_sellable_executive_strip(data),
+            html.Div(style={"marginTop": "16px"}, children=build_virt_compute_block(panels=virt_panels)),
+            build_virt_storage_block(panels=virt_panels),
         ],
     )
 

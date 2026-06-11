@@ -943,6 +943,27 @@ def update_hyperconv_sellable_card(selected_clusters, time_range, pathname):
 
 
 @app.callback(
+    dash.Output("sellable-power-card", "children"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_power_sellable_card(time_range, pathname):
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update
+    card = _build_sellable_inline_kpi(
+        dc_id,
+        ["virt_power", "virt_power_hana"],
+        "Power — Sellable Potential",
+        color="grape",
+        container_id="sellable-power-card",
+    )
+    if card is None:
+        return html.Div(id="sellable-power-card")
+    return card.children
+
+
+@app.callback(
     dash.Output("sellable-virt-total-card", "children"),
     dash.Input("virt-classic-cluster-selector", "value"),
     dash.Input("virt-hyperconv-cluster-selector", "value"),

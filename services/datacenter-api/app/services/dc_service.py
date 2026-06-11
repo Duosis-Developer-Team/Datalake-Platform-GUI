@@ -738,6 +738,32 @@ LIMIT 20
             cursor, dc_wc, classic_km=True, cluster_filter=cluster_filter
         )
 
+    def _km_datastore_storage_gb(
+        self,
+        cursor,
+        dc_code: str,
+        start_ts,
+        end_ts,
+    ) -> tuple[float, float]:
+        """Sum KM datastore capacity/used (GB) — canonical classic storage source."""
+        dc_target = (dc_code or "").upper()
+        rows = self._run_rows(cursor, vdq.DATASTORE_METRICS, (dc_target, start_ts, end_ts))
+        cap_bytes = sum(int(r[4] or 0) for r in (rows or []))
+        used_bytes = sum(int(r[6] or 0) for r in (rows or []))
+        _gb = 1024**3
+        return round(cap_bytes / _gb, 2), round(used_bytes / _gb, 2)
+
+    @staticmethod
+    def _patch_classic_row_storage(classic_row: tuple | None, cap_gb: float, used_gb: float) -> tuple:
+        """Replace stor_cap/stor_used slots in a classic metrics row (GB units)."""
+        row = list(classic_row or (0,) * 8)
+        while len(row) < 8:
+            row.append(0)
+        if cap_gb > 0:
+            row[6] = cap_gb
+            row[7] = used_gb
+        return tuple(row)
+
     def _run_nutanix_vm_storage(
         self,
         cursor,
@@ -939,6 +965,15 @@ LIMIT 20
 
         row = row or (0,) * 8
         avg30 = DatabaseService._normalize_avg30_row(avg30)
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(
+                        cur, dc_code, start_ts, end_ts
+                    )
+                    row = self._patch_classic_row_storage(row, ds_cap_gb, ds_used_gb)
+        except OperationalError:
+            pass
         cl_hosts = int(row[0] or 0)
         cl_vms = int(row[1] or 0)
         cl_cpu_cap = round(float(row[2] or 0), 2)
@@ -1559,6 +1594,13 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                 with conn.cursor() as cur:
                     self._ensure_dc_description_map(cur)
                     dc_wc = f"%{dc_code}%"
+                    classic_row = self.get_classic_metrics(cur, dc_wc, start_ts, end_ts)
+                    ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(
+                        cur, dc_code, start_ts, end_ts
+                    )
+                    classic_row = self._patch_classic_row_storage(
+                        classic_row, ds_cap_gb, ds_used_gb
+                    )
                     return self._aggregate_dc(
                         dc_code,
                         dc_description=self._dc_description_map.get(dc_code, ""),
@@ -1581,8 +1623,7 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                         vcenter_w=self.get_vcenter_energy(cur, dc_code, start_ts, end_ts),
                         ibm_kwh=self.get_ibm_kwh(cur, dc_wc, start_ts, end_ts),
                         vcenter_kwh=self.get_vcenter_kwh(cur, dc_code, start_ts, end_ts),
-                        # Compute-type split (Classic / Hyperconverged)
-                        classic_row=self.get_classic_metrics(cur, dc_wc, start_ts, end_ts),
+                        classic_row=classic_row,
                         classic_avg30=self.get_classic_avg30(cur, dc_wc, start_ts, end_ts),
                         hyperconv_row=self.get_hyperconv_metrics(cur, dc_wc, start_ts, end_ts),
                         hyperconv_avg30=self.get_hyperconv_avg30(cur, dc_wc, start_ts, end_ts),

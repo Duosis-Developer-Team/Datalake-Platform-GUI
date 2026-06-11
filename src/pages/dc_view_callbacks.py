@@ -149,7 +149,7 @@ def expand_dc_view_on_tab(active_tab, pathname, time_range, visible_sections, lo
     loaded = set(loaded_tabs or _SUMMARY_EAGER_TABS)
     prev = set(loaded)
     loaded.add(active_tab)
-    if loaded == prev and active_tab in prev:
+    if loaded == prev and active_tab in prev and str(ctx.triggered_id or "") == "dc-main-tabs":
         raise dash.exceptions.PreventUpdate
 
     content = build_dc_lazy_tab_panel(dc_id, active_tab, tr, vs)
