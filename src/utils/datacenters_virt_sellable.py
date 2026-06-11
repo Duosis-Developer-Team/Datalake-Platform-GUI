@@ -7,8 +7,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from src.services import api_client as api
-from src.utils.virt_sellable_aggregate import virt_tl_from_sellable_summary
+from src.utils.virt_sellable_aggregate import (
+    collect_virt_sellable_panels,
+    total_potential_tl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,20 +25,23 @@ def virt_cache_tr_key(tr: dict | None) -> str:
     return f"{tr.get('preset', '')}|{tr.get('start', '')}|{tr.get('end', '')}"
 
 
-def _virt_sellable_tl_for_dc(dc_id: str, _family_workers: int) -> float:
-    """Resolve virt sellable TL via lightweight CRM summary (rollup_only)."""
-    summary = api.get_sellable_summary_light(str(dc_id))
-    return virt_tl_from_sellable_summary(summary)
+def _virt_sellable_tl_for_dc(dc_id: str, family_workers: int) -> float:
+    """Resolve virt sellable TL via per-family by-panel (same path as DC detail Virt tab)."""
+    panels = collect_virt_sellable_panels(
+        str(dc_id),
+        None,
+        None,
+        max_family_workers=family_workers,
+    )
+    return total_potential_tl(panels)
 
 
-def _seed_from_api_cache(dc_ids: list[str]) -> dict[str, float]:
-    """Publish any DC values already warm in api_client sellable summary cache."""
+def _seed_from_api_cache(dc_ids: list[str], family_workers: int) -> dict[str, float]:
+    """Publish any DC values already warm in api_client sellable by-panel cache."""
     seeded: dict[str, float] = {}
     for dc_id in dc_ids:
         try:
-            summary = api.get_sellable_summary_light(str(dc_id))
-            if summary:
-                seeded[str(dc_id)] = virt_tl_from_sellable_summary(summary)
+            seeded[str(dc_id)] = _virt_sellable_tl_for_dc(dc_id, family_workers)
         except Exception:
             logger.debug("virt sellable seed failed dc=%s", dc_id, exc_info=True)
     return seeded
@@ -118,7 +123,7 @@ def resolve_virt_sellable_for_dcs(
     """Resolve per-DC virt sellable TL map and whether UI should show loading.
 
     Serves the last published in-process cache while a background warm runs (stale-while-refresh).
-    Seeds from api_client sellable summary cache when available.
+    Seeds from api_client sellable by-panel cache when available.
     """
     tr = tr or {}
     tr_key = virt_cache_tr_key(tr)
@@ -127,7 +132,7 @@ def resolve_virt_sellable_for_dcs(
     configured_workers = int(os.getenv("DC_OVERVIEW_VIRT_WORKERS", "4") or "4")
     mw = min(max(1, max_workers if max_workers is not None else configured_workers), max(1, len(dc_ids)))
 
-    seeded = _seed_from_api_cache(dc_ids)
+    seeded = _seed_from_api_cache(dc_ids, fw)
     if seeded:
         _publish_virt_cache(seeded, dc_ids, tr_key)
 
