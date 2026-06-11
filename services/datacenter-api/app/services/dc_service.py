@@ -1396,6 +1396,23 @@ LIMIT 20
         hc_stor_cap  = round(n_stor_cap_tb, 3)
         hc_stor_used = round(n_stor_used_tb, 3)
 
+        # Live snapshot utilisation (capacity-weighted "current usage"), used by the
+        # Overview DC Summary table so it reconciles with the Datacenters cards, which
+        # show the combined Intel snapshot (used_cpu_pct / used_ram_pct).
+        #   - Classic    = KM VMware only (matches the classic compute capacity).
+        #   - Hyperconv  = non-KM VMware + Nutanix CPU/RAM, mirroring the combined Intel
+        #     gauge (Nutanix is hyperconverged; previously it was missing here, so the
+        #     table under-reported and disagreed with the cards — most visibly on
+        #     Nutanix-heavy DCs like AZ11).
+        cl_cpu_pct_live = round(100.0 * cl_cpu_used / cl_cpu_cap, 1) if cl_cpu_cap > 0 else 0.0
+        cl_mem_pct_live = round(100.0 * cl_mem_used / cl_mem_cap, 1) if cl_mem_cap > 0 else 0.0
+        hc_cpu_cap_live  = hc_cpu_cap + n_cpu_cap_ghz
+        hc_cpu_used_live = hc_cpu_used + n_cpu_used_ghz
+        hc_mem_cap_live  = hc_mem_cap + n_mem_cap_gb
+        hc_mem_used_live = hc_mem_used + n_mem_used_gb
+        hc_cpu_pct_live = round(100.0 * hc_cpu_used_live / hc_cpu_cap_live, 1) if hc_cpu_cap_live > 0 else 0.0
+        hc_mem_pct_live = round(100.0 * hc_mem_used_live / hc_mem_cap_live, 1) if hc_mem_cap_live > 0 else 0.0
+
         desc = (dc_description or "").strip()
         _vm_alloc_defaults = {
             "stor_provisioned_gb": 0.0,
@@ -1409,11 +1426,13 @@ LIMIT 20
             "cpu_cap": cl_cpu_cap, "cpu_used": cl_cpu_used, "cpu_pct": cl_cpu_pct,
             "cpu_pct_max": cl_cpu_pct_max,
             "cpu_pct_min": cl_cpu_pct_min,
+            "cpu_pct_live": cl_cpu_pct_live,
             "cpu_util_pct": cl_cpu_pct,
             "cpu_util_pct_max": cl_cpu_pct_max,
             "mem_cap": cl_mem_cap, "mem_used": cl_mem_used, "mem_pct": cl_mem_pct,
             "mem_pct_max": cl_mem_pct_max,
             "mem_pct_min": cl_mem_pct_min,
+            "ram_pct_live": cl_mem_pct_live,
             "mem_util_pct": cl_mem_pct,
             "mem_util_pct_max": cl_mem_pct_max,
             "stor_cap": cl_stor_cap, "stor_used": cl_stor_used,
@@ -1426,11 +1445,13 @@ LIMIT 20
             "cpu_cap": hc_cpu_cap, "cpu_used": hc_cpu_used, "cpu_pct": hc_cpu_pct,
             "cpu_pct_max": hc_cpu_pct_max,
             "cpu_pct_min": hc_cpu_pct_min,
+            "cpu_pct_live": hc_cpu_pct_live,
             "cpu_util_pct": hc_cpu_pct,
             "cpu_util_pct_max": hc_cpu_pct_max,
             "mem_cap": hc_mem_cap, "mem_used": hc_mem_used, "mem_pct": hc_mem_pct,
             "mem_pct_max": hc_mem_pct_max,
             "mem_pct_min": hc_mem_pct_min,
+            "ram_pct_live": hc_mem_pct_live,
             "mem_util_pct": hc_mem_pct,
             "mem_util_pct_max": hc_mem_pct_max,
             "stor_cap": hc_stor_cap, "stor_used": hc_stor_used,
@@ -2140,15 +2161,18 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             stor_cap_gb = stor_cap * 1024
             stor_used_gb = stor_used * 1024
 
-            # Architecture-specific CPU/RAM/Storage utilisation for DC Summary
-            classic_cpu_pct = float(classic.get("cpu_pct", 0) or 0)
-            classic_ram_pct = float(classic.get("mem_pct", 0) or 0)
+            # Architecture-specific CPU/RAM/Storage utilisation for DC Summary.
+            # Use the live snapshot (capacity-weighted, Nutanix-inclusive for hyperconv)
+            # so the Overview table reconciles with the Datacenters cards. Fall back to
+            # the legacy avg field for safety if *_live is absent.
+            classic_cpu_pct = float(classic.get("cpu_pct_live", classic.get("cpu_pct", 0)) or 0)
+            classic_ram_pct = float(classic.get("ram_pct_live", classic.get("mem_pct", 0)) or 0)
             classic_stor_cap = float(classic.get("stor_cap", 0) or 0)
             classic_stor_used = float(classic.get("stor_used", 0) or 0)
             classic_stor_pct = (classic_stor_used / classic_stor_cap * 100.0) if classic_stor_cap > 0 else 0.0
 
-            hyperconv_cpu_pct = float(hyperconv.get("cpu_pct", 0) or 0)
-            hyperconv_ram_pct = float(hyperconv.get("mem_pct", 0) or 0)
+            hyperconv_cpu_pct = float(hyperconv.get("cpu_pct_live", hyperconv.get("cpu_pct", 0)) or 0)
+            hyperconv_ram_pct = float(hyperconv.get("ram_pct_live", hyperconv.get("mem_pct", 0)) or 0)
             hyperconv_stor_cap = float(hyperconv.get("stor_cap", 0) or 0)
             hyperconv_stor_used = float(hyperconv.get("stor_used", 0) or 0)
             hyperconv_stor_pct = (hyperconv_stor_used / hyperconv_stor_cap * 100.0) if hyperconv_stor_cap > 0 else 0.0
