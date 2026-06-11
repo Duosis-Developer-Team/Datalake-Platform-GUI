@@ -1582,6 +1582,7 @@ SELECT _tot, _alloc FROM latest
             "intel_cap_gb": 0.0, "intel_used_gb": 0.0,
             "ibm_ds_cap_gb": 0.0, "ibm_ds_used_gb": 0.0,
             "ibm_total_gb": 0.0, "ibm_used_gb": 0.0,
+            "ibm_physical_free_gb": 0.0,
         }
         for r in backing_rows:
             backing = (r[0] or "").strip().lower()
@@ -1598,6 +1599,7 @@ SELECT _tot, _alloc FROM latest
             phys_free = parse_storage_string_to_gb(r[3])
             out["ibm_total_gb"] += phys_cap
             out["ibm_used_gb"] += max(phys_cap - phys_free, 0.0)
+            out["ibm_physical_free_gb"] += phys_free
         return out
 
     def _apply_storage_range(
@@ -1622,13 +1624,25 @@ SELECT _tot, _alloc FROM latest
             return
 
         thr = sto_p.threshold_pct
-        def _gated_free(cap: float, used: float) -> float:
+
+        def _gated_headroom(cap: float, used: float) -> float:
             util = (100.0 * used / cap) if cap > 0 else 100.0
             return apply_utilization_gate(cap, used, util, thr)
 
-        intel_free = _gated_free(range_inputs["intel_cap_gb"], range_inputs["intel_used_gb"])
-        ibm_ds_free = _gated_free(range_inputs["ibm_ds_cap_gb"], range_inputs["ibm_ds_used_gb"])
-        ibm_free = _gated_free(range_inputs["ibm_total_gb"], range_inputs["ibm_used_gb"])
+        def _gated_physical_free(cap: float, used: float, physical_free: float) -> float:
+            util = (100.0 * used / cap) if cap > 0 else 100.0
+            alloc_pct = util
+            if max(alloc_pct, util) > thr + 1e-9:
+                return 0.0
+            return max(physical_free, 0.0)
+
+        intel_free = _gated_headroom(range_inputs["intel_cap_gb"], range_inputs["intel_used_gb"])
+        ibm_ds_free = _gated_headroom(range_inputs["ibm_ds_cap_gb"], range_inputs["ibm_ds_used_gb"])
+        ibm_free = _gated_physical_free(
+            range_inputs["ibm_total_gb"],
+            range_inputs["ibm_used_gb"],
+            range_inputs.get("ibm_physical_free_gb", 0.0),
+        )
         rng = compute_storage_range(
             intel_free=intel_free,
             ibm_backed_datastore_free=ibm_ds_free,
