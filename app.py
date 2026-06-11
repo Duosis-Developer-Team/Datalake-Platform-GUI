@@ -136,6 +136,7 @@ from src.pages.settings.integrations import netbox_visualization_callbacks  # no
 from src.pages.settings.integrations import hmdl_callbacks  # noqa: F401 — HMDL sync health filters
 from src.pages.settings import dashboard_callbacks  # noqa: F401 — Settings overview (cache refresh)
 from src.pages.settings.admin_routes import to_administration_path
+from src.components.chatbot import build_chatbot_shell, register_chatbot_callbacks
 
 _default_tr = default_time_range()
 _custom_st, _custom_en = time_range_to_bounds(_default_tr)
@@ -289,6 +290,10 @@ app.layout = dmc.MantineProvider(
         dcc.Store(id="anchor-latest-store", data=False, storage_type="local"),
         dcc.Store(id="auth-user-store", data=None),
         dcc.Store(id="auth-permissions-store", data=None),
+        dcc.Store(id="chatbot-open-store", data=False, storage_type="session"),
+        dcc.Store(id="chatbot-history-store", data=[], storage_type="session"),
+        dcc.Store(id="chatbot-context-store", data={}, storage_type="session"),
+        dcc.Store(id="chatbot-pending-store", data=None, storage_type="session"),
         html.Div(id="export-pdf-clientside-dummy", style={"display": "none"}),
         html.Div(
             [
@@ -321,8 +326,12 @@ app.layout = dmc.MantineProvider(
             ],
             style={"display": "flex", "backgroundColor": "#F4F7FE", "minHeight": "100vh"},
         ),
+        build_chatbot_shell(),
     ],
 )
+
+# Chatbot widget callbacks (toggle panel, sync page context, send message).
+register_chatbot_callbacks(app)
 
 
 app.clientside_callback(

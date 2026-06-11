@@ -110,6 +110,8 @@ services:
       QUERY_API_URL: ${QUERY_API_URL:-http://query-api:8000}
       # Admin API — when set, settings CRUD is routed through the admin-api service
       ADMIN_API_URL: ${ADMIN_API_URL:-http://admin-api:8000}
+      # Chatbot API — Dash server-side widget calls this internal service only
+      CHATBOT_API_URL: ${CHATBOT_API_URL:-http://chatbot-api:8000}
       # Auth DB still required for session/login handling (Flask auth middleware)
       AUTH_DB_HOST: ${AUTH_DB_HOST:-auth-db}
       AUTH_DB_PORT: ${AUTH_DB_PORT:-5432}
@@ -392,6 +394,74 @@ services:
       timeout: 5s
       retries: 5
       start_period: 40s
+    profiles:
+      - microservice
+
+  chatbot-api:
+    build:
+      context: ./services/chatbot-api
+      dockerfile: Dockerfile
+    container_name: bulutistan-chatbot-api
+    ports:
+      - "8080:8000"
+    env_file:
+      - .env
+      # Local-only secrets (gitignored). Holds BULUTISTAN_LLM_API_KEY so it never
+      # touches a tracked file. Optional: absent on machines that inject the key
+      # another way (shell export / k8s Secret).
+      - path: .env.local
+        required: false
+    environment:
+      # NOTE: BULUTISTAN_LLM_API_KEY is intentionally NOT set here — it comes from
+      # the env_file (.env.local) so it is never written into this tracked file.
+      BULUTISTAN_LLM_BASE_URL: ${BULUTISTAN_LLM_BASE_URL:-https://api.bulutistan.ai/v1}
+      CHATBOT_MODEL: ${CHATBOT_MODEL:-gpt-oss-120b}
+      CHATBOT_FALLBACK_MODEL: ${CHATBOT_FALLBACK_MODEL:-qwen3-next-80b-instruct}
+      CHATBOT_TEMPERATURE: ${CHATBOT_TEMPERATURE:-0.2}
+      CHATBOT_MAX_TOKENS: ${CHATBOT_MAX_TOKENS:-900}
+      CHATBOT_TIMEOUT_SECONDS: ${CHATBOT_TIMEOUT_SECONDS:-60}
+      API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-false}
+      API_JWT_SECRET: ${API_JWT_SECRET:-}
+      SECRET_KEY: ${SECRET_KEY:-change_me_secret_key}
+      DATACENTER_API_URL: ${DATACENTER_API_URL:-http://datacenter-api:8000}
+      CUSTOMER_API_URL: ${CUSTOMER_API_URL:-http://customer-api:8000}
+      QUERY_API_URL: ${QUERY_API_URL:-http://query-api:8000}
+      CRM_ENGINE_URL: ${CRM_ENGINE_URL:-http://crm-engine:8000}
+      ADMIN_API_URL: ${ADMIN_API_URL:-http://admin-api:8000}
+      # Read-only DB tools are OFF by default. Enable them from the gitignored
+      # .env.local (loaded via env_file below):  CHATBOT_DB_ENABLED=true
+      # The DB connection params are intentionally NOT pinned here — the config
+      # reads CHATBOT_DB_* first, then falls back to the main stack's DB_* (from
+      # .env, loaded via env_file) so the chatbot reuses the bulutlake credentials
+      # with a read-only session. Set CHATBOT_DB_USER/CHATBOT_DB_PASS in
+      # .env.local to use a dedicated read-only DB user instead. DB tuning
+      # (CHATBOT_DB_STATEMENT_TIMEOUT_MS / CHATBOT_DB_MAX_ROWS) is strict-namespaced
+      # and never inherits the main stack's DB_* values.
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: chatbot-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+    networks:
+      - datalake
+    depends_on:
+      datacenter-api:
+        condition: service_healthy
+      customer-api:
+        condition: service_healthy
+      query-api:
+        condition: service_healthy
+      crm-engine:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     profiles:
       - microservice
 
