@@ -112,7 +112,12 @@ def _panel_by_kind(panels: list[dict], kind: str) -> dict | None:
 def _family_panels(summary: dict, family: str) -> list[dict]:
     for fam in summary.get("families") or []:
         if fam.get("family") == family:
-            return fam.get("panels") or []
+            panels = fam.get("panels") or []
+            if panels:
+                return panels
+            summaries = fam.get("panel_summaries") or {}
+            if isinstance(summaries, dict):
+                return list(summaries.values())
     return []
 
 
@@ -234,8 +239,24 @@ def _build_other_families_accordion(summary: dict) -> html.Div | None:
         fkey = fam.get("family") or ""
         if fkey in _VIRT_COMPUTE_FAMILIES or fkey in _VIRT_STORAGE_FAMILIES:
             continue
-        panels = fam.get("panels") or []
+        panels = _family_panels(summary, fkey)
         if not panels:
+            potential_only = float(fam.get("total_potential_tl") or 0)
+            if potential_only <= 0:
+                continue
+            items.append(dmc.AccordionItem(
+                value=fkey,
+                children=[
+                    dmc.AccordionControl(dmc.Text(fam.get("label") or fkey, fw=600)),
+                    dmc.AccordionPanel(
+                        dmc.Text(
+                            f"Total potential: {_fmt_tl(potential_only)}",
+                            size="sm",
+                            fw=600,
+                        ),
+                    ),
+                ],
+            ))
             continue
         potential = float(fam.get("total_potential_tl") or 0)
         if potential <= 0 and not any(p.get("has_infra_source") for p in panels):
@@ -277,7 +298,7 @@ def build_summary_sellable_section(dc_id: str, summary: dict | None = None) -> h
     if not dc_id:
         return None
     try:
-        data = summary if summary is not None else api.get_sellable_summary(dc_code=str(dc_id))
+        data = summary if summary is not None else api.get_sellable_summary_light(dc_code=str(dc_id))
     except Exception:
         return dmc.Alert("Sellable özeti yüklenemedi.", color="red", radius="md")
 

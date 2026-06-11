@@ -123,6 +123,18 @@ def _fake_service(monkeypatch, dc_details: dict, s3_pools: dict | None = None):
         def get_hyperconv_cluster_list(self, dc_id, tr):
             return []
 
+        def get_classic_host_rows(self, dc_id, clusters, tr):
+            return {"hosts": [], "host_count": 0}
+
+        def get_hyperconv_host_rows(self, dc_id, clusters, tr):
+            return {"hosts": [], "host_count": 0}
+
+        def get_sellable_summary_light(self, dc_code):
+            return {"families": [], "total_potential_tl": 0}
+
+        def get_dc_datastore_mapping(self, dc_id, tr):
+            return {"datastore_count": 0}
+
         def get_physical_inventory_dc(self, dc_name):
             return {"total": 0, "by_role": [], "by_role_manufacturer": []}
 
@@ -231,6 +243,18 @@ def _fake_service_network(
 
         def get_hyperconv_cluster_list(self, dc_id, tr):
             return []
+
+        def get_classic_host_rows(self, dc_id, clusters, tr):
+            return {"hosts": [], "host_count": 0}
+
+        def get_hyperconv_host_rows(self, dc_id, clusters, tr):
+            return {"hosts": [], "host_count": 0}
+
+        def get_sellable_summary_light(self, dc_code):
+            return {"families": [], "total_potential_tl": 0}
+
+        def get_dc_datastore_mapping(self, dc_id, tr):
+            return {"datastore_count": 0}
 
         def get_physical_inventory_dc(self, dc_name):
             return {"total": 0, "by_role": [], "by_role_manufacturer": []}

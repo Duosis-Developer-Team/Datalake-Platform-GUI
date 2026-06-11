@@ -108,6 +108,7 @@ _log = logging.getLogger(__name__)
 _log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
 from src.pages import home, datacenters, dc_view, customer_view, customers_list, query_explorer, global_view, region_drilldown, dc_detail
 from src.pages import customer_view_callbacks  # noqa: F401 — async customer view load
+from src.pages import dc_view_callbacks  # noqa: F401 — async DC view load + tab expand
 from src.pages import availability_annual  # noqa: F401 — annual availability layout + callbacks
 from src.pages import crm_sellable_potential
 from src.pages import login as login_page_mod
@@ -120,7 +121,6 @@ from src.pages.dc_view import (
     _build_sellable_inline_kpi,
     _DC_ICONS,
 )
-from src.pages.dc_summary_sellable import build_summary_sellable_section
 from src.utils.virt_sellable_aggregate import (
     aggregate_virt_sellable_panels,
     collect_virt_sellable_panels,
@@ -463,6 +463,15 @@ def sync_auth_stores(pathname):
         return None, None
     pmap = user_effective_map(int(uid))
     u = getattr(g, "auth_user", None) or {}
+    try:
+        from src.services.app_background_warm import set_active_route, trigger_rbac_warm
+        from src.utils.time_range import default_time_range as _dtr
+
+        set_active_route(pathname)
+        if pathname and pathname != "/login":
+            trigger_rbac_warm(int(uid), _dtr())
+    except Exception:
+        pass
     return {"id": int(uid), "username": u.get("username")}, pmap
 
 
@@ -677,7 +686,13 @@ def render_main_content(pathname, time_range, search):
         return datacenters.build_datacenters(tr, visible_sections=vis)
     if pathname and pathname.startswith("/datacenter/"):
         dc_id = pathname.replace("/datacenter/", "").strip("/")
-        return dc_view.build_dc_view(dc_id, tr, visible_sections=vis)
+        try:
+            from src.services.app_background_warm import set_active_route
+
+            set_active_route(pathname)
+        except Exception:
+            pass
+        return dc_view.build_dc_view_layout_shell(dc_id, tr, visible_sections=vis)
     if pathname == "/global-view":
         return global_view.build_global_view(tr, visible_sections=vis)
     if pathname == "/availability-annual":
@@ -903,21 +918,6 @@ def update_hyperconv_sellable_card(selected_clusters, time_range, pathname):
     if card is None:
         return html.Div(id="sellable-hyperconv-card")
     return card.children
-
-
-@app.callback(
-    dash.Output("dc-summary-sellable-root", "children"),
-    dash.Input("app-time-range", "data"),
-    dash.State("url", "pathname"),
-)
-def update_dc_summary_sellable(time_range, pathname):
-    dc_id = _dc_id_from_pathname(pathname)
-    if not dc_id:
-        return dash.no_update
-    block = build_summary_sellable_section(dc_id)
-    if block is None:
-        return dash.no_update
-    return block.children
 
 
 @app.callback(

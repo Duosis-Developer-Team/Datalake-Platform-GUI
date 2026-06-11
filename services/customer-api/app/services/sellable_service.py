@@ -2159,6 +2159,31 @@ SELECT _tot, _used FROM latest
             )
         return constrained
 
+    @staticmethod
+    def _panel_summary_dict(panel: PanelResult) -> dict:
+        """Slim panel payload for rollup-only summary responses."""
+        return {
+            "panel_key": panel.panel_key,
+            "label": panel.label,
+            "resource_kind": panel.resource_kind,
+            "display_unit": panel.display_unit,
+            "total": panel.total,
+            "allocated": panel.allocated,
+            "threshold_pct": panel.threshold_pct,
+            "sellable_constrained": panel.sellable_constrained,
+            "sellable_raw": panel.sellable_raw,
+            "sellable_min": panel.sellable_min,
+            "sellable_max": panel.sellable_max,
+            "sellable_physical": panel.sellable_physical,
+            "sellable_effective": panel.sellable_effective,
+            "potential_tl": panel.potential_tl,
+            "potential_tl_min": panel.potential_tl_min,
+            "potential_tl_max": panel.potential_tl_max,
+            "computation_mode": panel.computation_mode,
+            "has_infra_source": panel.has_infra_source,
+            "has_price": panel.has_price,
+        }
+
     def compute_summary(
         self,
         dc_code: str = "*",
@@ -2166,6 +2191,7 @@ SELECT _tot, _used FROM latest
         selected_clusters: list[str] | None = None,
         family: str | None = None,
         force_recompute: bool = False,
+        include_panel_details: bool = True,
     ) -> DashboardSummary:
         panels = self.compute_all_panels(
             dc_code=dc_code,
@@ -2217,6 +2243,10 @@ SELECT _tot, _used FROM latest
                 p.resource_kind: agg.total_sellable_constrained_units.get(p.resource_kind, 0.0) + p.sellable_constrained
                 for p in group
             }
+            for p in group:
+                kind = (p.resource_kind or "other").lower()
+                if kind in {"cpu", "ram", "storage", "other"} and kind not in agg.panel_summaries:
+                    agg.panel_summaries[kind] = self._panel_summary_dict(p)
             mapped_count += agg.mapped_panel_count
             family_aggs.append(agg)
             total_potential += family_potential

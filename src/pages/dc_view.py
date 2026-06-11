@@ -2,6 +2,7 @@ from __future__ import annotations
 # DC Detail view - Capacity Planning
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup | Physical Inventory
 import json
+import logging
 import math
 import time
 import dash
@@ -38,6 +39,7 @@ from src.components.charts import (
     create_sparkline_chart,
 )
 from src.components.charts import create_horizontal_bar_chart, create_premium_horizontal_bar_chart, create_capacity_area_chart, create_grouped_bar_chart, create_storage_breakdown_chart
+from src.components.dc_loading import build_dc_loading_shell
 from src.components.header import create_detail_header
 from src.components.s3_panel import build_dc_s3_panel
 from src.components.backup_panel import (
@@ -4213,6 +4215,47 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict)
 # Main page builder
 # ---------------------------------------------------------------------------
 
+_BUILD_LOG = logging.getLogger(__name__)
+
+_SUMMARY_EAGER_TABS = frozenset({"summary"})
+
+
+def _tab_eager(eager_tabs: frozenset[str] | None, tab: str) -> bool:
+    if eager_tabs is None:
+        return True
+    return tab in eager_tabs
+
+
+def _tab_lazy_placeholder(tab: str, label: str | None = None) -> html.Div:
+    return html.Div(
+        id=f"dc-tab-{tab}-root",
+        style={"padding": "0 30px", "minHeight": "120px"},
+        children=dcc.Loading(
+            type="circle",
+            color="#4318FF",
+            delay_show=150,
+            children=dmc.Stack(
+                gap="sm",
+                align="center",
+                style={"padding": "48px 0"},
+                children=[
+                    dmc.Text(
+                        label or f"Loading {tab.replace('-', ' ')}…",
+                        size="sm",
+                        c="dimmed",
+                    ),
+                ],
+            ),
+        ),
+    )
+
+
+def _log_dc_build_phase(dc_id: str, phase: str, started: float, **extra) -> None:
+    ms = round((time.perf_counter() - started) * 1000, 1)
+    parts = " ".join(f"{k}={v}" for k, v in extra.items())
+    _BUILD_LOG.info("build_dc_view dc=%s phase=%s ms=%s %s", dc_id, phase, ms, parts)
+
+
 def compute_has_backup(dc_id: str, time_range: dict | None = None) -> bool:
     """DC için Veeam/Zerto/NetBackup'tan herhangi birinde veri var mı?
 
@@ -4232,11 +4275,18 @@ def compute_has_backup(dc_id: str, time_range: dict | None = None) -> bool:
     return bool((nb or {}).get("pools") or (zerto or {}).get("sites") or (veeam or {}).get("repos"))
 
 
-def build_dc_view(dc_id, time_range=None, visible_sections=None):
+def build_dc_view(
+    dc_id,
+    time_range=None,
+    visible_sections=None,
+    *,
+    eager_tabs: frozenset[str] | None = None,
+):
     """Build DC detail page for the given time range.
 
     visible_sections: optional set of permission codes (sec:/sub:/action:) the user may see.
     If None, all sections are shown (backward compatible).
+    eager_tabs: when set, only fetch/build content for these tab keys (summary, virt, storage, …).
     """
     if not dc_id:
         return html.Div("No Data Center ID provided", style={"padding": "20px"})
@@ -4249,23 +4299,27 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     tr = time_range or default_time_range()
     t_total = time.perf_counter()
     t_batch1 = time.perf_counter()
-    batch1 = parallel_execute(
-        {
-            "data": lambda: api.get_dc_details(dc_id, tr),
-            "sla_by_dc": lambda: api.get_sla_by_dc(tr),
-            "s3_data": lambda: api.get_dc_s3_pools(dc_id, tr),
-            "classic_clusters": lambda: api.get_classic_cluster_list(dc_id, tr),
-            "hyperconv_clusters": lambda: api.get_hyperconv_cluster_list(dc_id, tr),
-            "classic_hosts": lambda: api.get_classic_host_rows(dc_id, None, tr),
-            "hyperconv_hosts": lambda: api.get_hyperconv_host_rows(dc_id, None, tr),
-            "sellable_summary": lambda: api.get_sellable_summary(str(dc_id)),
-        }
-    )
+    batch1_tasks: dict = {
+        "data": lambda: api.get_dc_details(dc_id, tr),
+        "sla_by_dc": lambda: api.get_sla_by_dc(tr),
+    }
+    if _tab_eager(eager_tabs, "virt") or _tab_eager(eager_tabs, "summary"):
+        batch1_tasks["classic_clusters"] = lambda: api.get_classic_cluster_list(dc_id, tr)
+        batch1_tasks["hyperconv_clusters"] = lambda: api.get_hyperconv_cluster_list(dc_id, tr)
+    if _tab_eager(eager_tabs, "storage"):
+        batch1_tasks["s3_data"] = lambda: api.get_dc_s3_pools(dc_id, tr)
+    if _tab_eager(eager_tabs, "virt"):
+        batch1_tasks["classic_hosts"] = lambda: api.get_classic_host_rows(dc_id, None, tr)
+        batch1_tasks["hyperconv_hosts"] = lambda: api.get_hyperconv_host_rows(dc_id, None, tr)
+    if _tab_eager(eager_tabs, "summary"):
+        batch1_tasks["sellable_summary"] = lambda: api.get_sellable_summary_light(str(dc_id))
+    batch1 = parallel_execute(batch1_tasks)
+    _log_dc_build_phase(str(dc_id), "batch1", t_batch1, tasks=len(batch1_tasks))
     data = batch1["data"]
     sla_by_dc = batch1["sla_by_dc"]
-    s3_data = batch1["s3_data"]
-    classic_clusters = batch1["classic_clusters"]
-    hyperconv_clusters = batch1["hyperconv_clusters"]
+    s3_data = batch1.get("s3_data") or {"pools": []}
+    classic_clusters = batch1.get("classic_clusters") or []
+    hyperconv_clusters = batch1.get("hyperconv_clusters") or []
     classic_hosts_data = batch1.get("classic_hosts") or {"hosts": [], "host_count": 0}
     hyperconv_hosts_data = batch1.get("hyperconv_hosts") or {"hosts": [], "host_count": 0}
     sellable_summary = batch1.get("sellable_summary")
@@ -4319,17 +4373,27 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     dc_desc = (data.get("meta") or {}).get("description") or ""
     dc_display = format_dc_display_name(dc_name, dc_desc)
 
-    t_batch2 = time.perf_counter()
-    batch2 = parallel_execute(
-        {
-            "phys_inv": lambda: api.get_physical_inventory_dc(dc_name),
-            "san_switches": lambda: api.get_dc_san_switches(dc_id, tr),
-            "net_filters": lambda: api.get_dc_network_filters(dc_id, tr),
-            "aura_dc": lambda: api.get_dc_availability_sla_item(str(dc_id), dc_name, tr),
-        }
+    need_batch2 = (
+        _tab_eager(eager_tabs, "phys-inv")
+        or _tab_eager(eager_tabs, "network")
+        or _tab_eager(eager_tabs, "avail")
+        or _tab_eager(eager_tabs, "storage")
     )
+    t_batch2 = time.perf_counter()
+    if need_batch2:
+        batch2 = parallel_execute(
+            {
+                "phys_inv": lambda: api.get_physical_inventory_dc(dc_name),
+                "san_switches": lambda: api.get_dc_san_switches(dc_id, tr),
+                "net_filters": lambda: api.get_dc_network_filters(dc_id, tr),
+                "aura_dc": lambda: api.get_dc_availability_sla_item(str(dc_id), dc_name, tr),
+            }
+        )
+        _log_dc_build_phase(str(dc_id), "batch2", t_batch2)
+    else:
+        batch2 = {}
     aura_dc_item = batch2.get("aura_dc")
-    phys_inv = batch2["phys_inv"]
+    phys_inv = batch2.get("phys_inv") or {"total": 0}
     has_phys_inv = phys_inv.get("total", 0) > 0
 
     export_group = dmc.Group(
@@ -4346,16 +4410,22 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     if _sec("action:dc_view:export"):
         header_right_extra.append(export_group)
 
-    san_switches = batch2["san_switches"]
-    has_san = _has_san_data(san_switches)
+    san_switches = batch2.get("san_switches") or {}
+    has_san = _has_san_data(san_switches) if _tab_eager(eager_tabs, "storage") else False
     t_san = time.perf_counter()
-    san_port_usage = api.get_dc_san_port_usage(dc_id, tr) if has_san else {}
-    san_health_alerts = api.get_dc_san_health(dc_id, tr) if has_san else []
-    san_traffic_trend = api.get_dc_san_traffic_trend(dc_id, tr) if has_san else []
+    if _tab_eager(eager_tabs, "storage") and has_san:
+        san_port_usage = api.get_dc_san_port_usage(dc_id, tr)
+        san_health_alerts = api.get_dc_san_health(dc_id, tr)
+        san_traffic_trend = api.get_dc_san_traffic_trend(dc_id, tr)
+        _log_dc_build_phase(str(dc_id), "san", t_san)
+    else:
+        san_port_usage = {}
+        san_health_alerts = []
+        san_traffic_trend = []
     san_ms = round((time.perf_counter() - t_san) * 1000, 1)
 
-    net_filters = batch2["net_filters"]
-    has_network = bool((net_filters or {}).get("manufacturers"))
+    net_filters = batch2.get("net_filters") or {}
+    has_network = bool((net_filters or {}).get("manufacturers")) if _tab_eager(eager_tabs, "network") else False
     net_port_summary: dict = {}
     net_percentile: dict = {}
     net_interface_table: dict = {}
@@ -4363,7 +4433,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     net_firewall_data: dict = {}
     net_lb_data: dict = {}
     net_ms = 0.0
-    if has_network:
+    if has_network and _tab_eager(eager_tabs, "network"):
         t_net = time.perf_counter()
         net_batch = parallel_execute(
             {
@@ -4384,6 +4454,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
         net_firewall_data = net_batch["firewall"]
         net_lb_data = net_batch["load_balancer"]
         net_ms = round((time.perf_counter() - t_net) * 1000, 1)
+        _log_dc_build_phase(str(dc_id), "network", t_net)
 
     energy    = data.get("energy", {})
     classic   = data.get("classic", {})
@@ -4392,19 +4463,29 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
 
     # Backup datasets (per DC)
     t_backup = time.perf_counter()
-    nb_data = api.get_dc_netbackup_pools(dc_id, tr)
-    zerto_data = api.get_dc_zerto_sites(dc_id, tr)
-    veeam_data = api.get_dc_veeam_repos(dc_id, tr)
+    if _tab_eager(eager_tabs, "backup"):
+        nb_data = api.get_dc_netbackup_pools(dc_id, tr)
+        zerto_data = api.get_dc_zerto_sites(dc_id, tr)
+        veeam_data = api.get_dc_veeam_repos(dc_id, tr)
+        _log_dc_build_phase(str(dc_id), "backup", t_backup)
+    else:
+        nb_data = {"pools": []}
+        zerto_data = {"sites": []}
+        veeam_data = {"repos": []}
     backup_ms = round((time.perf_counter() - t_backup) * 1000, 1)
 
-    export_sheets = _build_dc_export_sheets(
-        str(dc_id),
-        data,
-        phys_inv,
-        net_interface_export or net_interface_table,
-        nb_data,
-        zerto_data,
-        veeam_data,
+    export_sheets = (
+        _build_dc_export_sheets(
+            str(dc_id),
+            data,
+            phys_inv,
+            net_interface_export or net_interface_table,
+            nb_data,
+            zerto_data,
+            veeam_data,
+        )
+        if eager_tabs is None
+        else {}
     )
 
     # Determine which sections actually have data
@@ -4415,26 +4496,35 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     storage_capacity = {}
     storage_performance = {}
     san_bottleneck = {}
-    if has_power:
+    if has_power and _tab_eager(eager_tabs, "virt"):
         t_power_storage = time.perf_counter()
         storage_capacity = api.get_dc_storage_capacity(dc_id, tr)
         storage_performance = api.get_dc_storage_performance(dc_id, tr)
         san_bottleneck = api.get_dc_san_bottleneck(dc_id, tr)
         power_storage_ms = round((time.perf_counter() - t_power_storage) * 1000, 1)
+        _log_dc_build_phase(str(dc_id), "power_storage", t_power_storage)
     else:
         power_storage_ms = 0.0
 
     # Intel Storage (Zabbix)
-    zabbix_storage_capacity = api.get_dc_zabbix_storage_capacity(dc_id, tr)
-    has_intel_storage = int(zabbix_storage_capacity.get("storage_device_count", 0) or 0) > 0
-    t_intel_storage = time.perf_counter()
-    zabbix_storage_devices = api.get_dc_zabbix_storage_devices(dc_id, tr) if has_intel_storage else []
-    zabbix_storage_trend = api.get_dc_zabbix_storage_trend(dc_id, tr) if has_intel_storage else {}
-    intel_storage_ms = round((time.perf_counter() - t_intel_storage) * 1000, 1)
-
-    # VMware Datastore mapping (klasik mimari storage eşleştirmesi)
-    datastore_mapping = api.get_dc_datastore_mapping(dc_id, tr)
-    has_datastore = int(datastore_mapping.get("datastore_count", 0) or 0) > 0
+    if _tab_eager(eager_tabs, "storage"):
+        zabbix_storage_capacity = api.get_dc_zabbix_storage_capacity(dc_id, tr)
+        has_intel_storage = int(zabbix_storage_capacity.get("storage_device_count", 0) or 0) > 0
+        t_intel_storage = time.perf_counter()
+        zabbix_storage_devices = api.get_dc_zabbix_storage_devices(dc_id, tr) if has_intel_storage else []
+        zabbix_storage_trend = api.get_dc_zabbix_storage_trend(dc_id, tr) if has_intel_storage else {}
+        intel_storage_ms = round((time.perf_counter() - t_intel_storage) * 1000, 1)
+        _log_dc_build_phase(str(dc_id), "intel_storage", t_intel_storage)
+        datastore_mapping = api.get_dc_datastore_mapping(dc_id, tr)
+        has_datastore = int(datastore_mapping.get("datastore_count", 0) or 0) > 0
+    else:
+        zabbix_storage_capacity = {}
+        has_intel_storage = False
+        zabbix_storage_devices = []
+        zabbix_storage_trend = {}
+        intel_storage_ms = 0.0
+        datastore_mapping = {}
+        has_datastore = False
 
     has_storage = bool(has_intel_storage or has_power or has_s3 or has_san or has_datastore)
 
@@ -4461,6 +4551,12 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
     show_phys = has_phys_inv and _sec("sec:dc_view:phys_inv")
     show_network = has_network and _sec("sec:dc_view:network")
     show_avail = has_avail and _sec("sec:dc_view:availability")
+    if eager_tabs is not None:
+        show_virt = _sec("sec:dc_view:virtualization")
+        show_storage = _sec("sec:dc_view:storage")
+        show_backup = _sec("sec:dc_view:backup")
+        show_phys = _sec("sec:dc_view:phys_inv")
+        show_network = _sec("sec:dc_view:network")
 
     tabs_order = [
         ("summary", show_summary),
@@ -4505,7 +4601,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
             ),
         )
 
-    return dcc.Loading(
+    page = dcc.Loading(
         id="dc-view-page-loading",
         type="circle",
         color="#4318FF",
@@ -4568,16 +4664,14 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                 # Virtualization (nested tabs)
                 dmc.TabsPanel(
                     value="virt",
-                    children=html.Div(
+                    children=(
+                        _tab_lazy_placeholder("virt", "Loading virtualization metrics…")
+                        if not _tab_eager(eager_tabs, "virt")
+                        else html.Div(
+                        id="dc-tab-virt-root",
                         style={"padding": "0 30px"},
                         children=[
-                            _build_sellable_inline_kpi(
-                                dc_id,
-                                ["virt_classic", "virt_hyperconverged", "virt_power", "virt_power_hana"],
-                                "Virtualization — Total Sellable Potential",
-                                color="violet",
-                                container_id="sellable-virt-total-card",
-                            ),
+                            html.Div(id="sellable-virt-total-card"),
                             dmc.Tabs(
                                 color="violet",
                                 variant="outline",
@@ -4606,13 +4700,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     id="classic-virt-panel",
                                                     children=_build_compute_tab(classic, "Classic Compute", color="blue", slug="classic"),
                                                 ),
-                                                _build_sellable_inline_kpi(
-                                                    dc_id,
-                                                    "virt_classic",
-                                                    "Klasik Mimari — Sellable Potential",
-                                                    color="blue",
-                                                    container_id="sellable-classic-card",
-                                                ),
+                                                html.Div(id="sellable-classic-card"),
                                                 _build_hosts_panel_shell(
                                                     "classic", "blue", initial_data=classic_hosts_data,
                                                 ) if show_virt_hosts else None,
@@ -4634,13 +4722,7 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     id="hyperconv-virt-panel",
                                                     children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv"),
                                                 ),
-                                                _build_sellable_inline_kpi(
-                                                    dc_id,
-                                                    "virt_hyperconverged",
-                                                    "Hyperconverged Mimari — Sellable Potential",
-                                                    color="teal",
-                                                    container_id="sellable-hyperconv-card",
-                                                ),
+                                                html.Div(id="sellable-hyperconv-card"),
                                                 _build_hosts_panel_shell(
                                                     "hyperconv", "teal", initial_data=hyperconv_hosts_data,
                                                 ) if show_virt_hosts else None,
@@ -4660,26 +4742,25 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                                     storage_performance,
                                                     san_bottleneck,
                                                 ),
-                                                _build_sellable_inline_kpi(
-                                                    dc_id,
-                                                    ["virt_power", "virt_power_hana"],
-                                                    "Power Mimari — Sellable Potential",
-                                                    color="grape",
-                                                    container_id="sellable-power-card",
-                                                ),
+                                                html.Div(id="sellable-power-card"),
                                             ],
                                         ),
                                     ) if show_power_inner else None,
                                 ],
                             ),
                         ],
+                    )
                     ),
                 ) if show_virt else None,
 
                 # Backup (nested tabs)
                 dmc.TabsPanel(
                     value="backup",
-                    children=html.Div(
+                    children=(
+                        _tab_lazy_placeholder("backup", "Loading backup & replication…")
+                        if not _tab_eager(eager_tabs, "backup")
+                        else html.Div(
+                        id="dc-tab-backup-root",
                         style={"padding": "0 30px"},
                         children=[
                             dmc.Tabs(
@@ -4743,22 +4824,35 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                                 ],
                             ),
                         ],
+                    )
                     ),
                 ) if show_backup else None,
 
                 # Physical Inventory
                 dmc.TabsPanel(
                     value="phys-inv",
-                    children=dmc.Stack(
-                        gap="lg",
-                        style={"padding": "0 30px"},
-                        children=[_build_physical_inventory_dc_tab(phys_inv)],
+                    children=(
+                        _tab_lazy_placeholder("phys-inv", "Loading physical inventory…")
+                        if not _tab_eager(eager_tabs, "phys-inv")
+                        else html.Div(
+                            id="dc-tab-phys-inv-root",
+                            children=dmc.Stack(
+                                gap="lg",
+                                style={"padding": "0 30px"},
+                                children=[_build_physical_inventory_dc_tab(phys_inv)],
+                            ),
+                        )
                     ),
                 ) if show_phys else None,
                 # Storage (Intel / IBM / SAN / S3)
                 dmc.TabsPanel(
                     value="storage",
-                    children=_build_storage_section_with_san(
+                    children=(
+                        _tab_lazy_placeholder("storage", "Loading storage metrics…")
+                        if not _tab_eager(eager_tabs, "storage")
+                        else html.Div(
+                            id="dc-tab-storage-root",
+                            children=_build_storage_section_with_san(
                         has_intel_storage,
                         has_power,
                         has_s3,
@@ -4777,6 +4871,8 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                         sec_check=_sec,
                         has_datastore=has_datastore,
                         datastore_mapping=datastore_mapping,
+                        ),
+                        )
                     ),
                 ) if show_storage else None,
 
@@ -4784,23 +4880,37 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
                 dmc.TabsPanel(
                     value="network",
                     pt="lg",
-                    children=_build_network_zabbix_section(
-                        net_filters,
-                        net_port_summary,
-                        net_percentile,
-                        net_interface_table,
-                        net_firewall_data,
-                        net_lb_data,
-                        sec_check=_sec,
+                    children=(
+                        _tab_lazy_placeholder("network", "Loading network metrics…")
+                        if not _tab_eager(eager_tabs, "network")
+                        else html.Div(
+                            id="dc-tab-network-root",
+                            children=_build_network_zabbix_section(
+                                net_filters,
+                                net_port_summary,
+                                net_percentile,
+                                net_interface_table,
+                                net_firewall_data,
+                                net_lb_data,
+                                sec_check=_sec,
+                            ),
+                        )
                     ),
                 ) if show_network else None,
 
                 dmc.TabsPanel(
                     value="avail",
-                    children=dmc.Stack(
-                        gap="lg",
-                        style={"padding": "0 30px"},
-                        children=[build_dc_availability_panel(aura_dc_item, dc_display)],
+                    children=(
+                        _tab_lazy_placeholder("avail", "Loading availability…")
+                        if not _tab_eager(eager_tabs, "avail")
+                        else html.Div(
+                            id="dc-tab-avail-root",
+                            children=dmc.Stack(
+                                gap="lg",
+                                style={"padding": "0 30px"},
+                                children=[build_dc_availability_panel(aura_dc_item, dc_display)],
+                            ),
+                        )
                     ),
                 )
                 if show_avail
@@ -4808,6 +4918,93 @@ def build_dc_view(dc_id, time_range=None, visible_sections=None):
             ],
         )
     ]),
+    )
+    _log_dc_build_phase(
+        str(dc_id),
+        "total",
+        t_total,
+        eager=str(eager_tabs) if eager_tabs is not None else "all",
+        san_ms=san_ms,
+        net_ms=net_ms,
+        backup_ms=backup_ms,
+    )
+    return page
+
+
+def render_dc_loading_page(dc_id: str, time_range, visible_sections=None) -> html.Div:
+    """Phase A: header + tabs shell with loading skeleton (no blocking API)."""
+    tr = time_range or default_time_range()
+    label = str(dc_id or "Data Center").strip() or "Data Center"
+
+    def _sec(code: str) -> bool:
+        if visible_sections is None:
+            return True
+        return code in visible_sections
+
+    show_summary = _sec("sec:dc_view:summary")
+    tabs = [
+        dmc.TabsTab("Summary", value="summary") if show_summary else None,
+        dmc.TabsTab("Virtualization", value="virt") if _sec("sec:dc_view:virtualization") else None,
+        dmc.TabsTab("Storage", value="storage") if _sec("sec:dc_view:storage") else None,
+        dmc.TabsTab("Backup & Replication", value="backup") if _sec("sec:dc_view:backup") else None,
+        dmc.TabsTab("Physical Inventory", value="phys-inv") if _sec("sec:dc_view:phys_inv") else None,
+        dmc.TabsTab("Network", value="network") if _sec("sec:dc_view:network") else None,
+        dmc.TabsTab("Availability", value="avail") if _sec("sec:dc_view:availability") else None,
+    ]
+    return html.Div(
+        className="dc-page-enter customer-page-enter",
+        children=[
+            dmc.Tabs(
+                id="dc-main-tabs",
+                color="indigo",
+                variant="pills",
+                radius="md",
+                value="summary" if show_summary else "virt",
+                children=[
+                    create_detail_header(
+                        title=label,
+                        back_href="/datacenters",
+                        back_label="Data Centers",
+                        subtitle_badge="Loading…",
+                        subtitle_color="indigo",
+                        time_range=tr,
+                        icon="solar:server-square-bold-duotone",
+                        tabs=dmc.TabsList(style={"paddingTop": "8px"}, children=tabs),
+                    ),
+                    dmc.TabsPanel(
+                        value="summary",
+                        children=dmc.Stack(
+                            gap="lg",
+                            style={"padding": "0 30px"},
+                            children=[build_dc_loading_shell(label)],
+                        ),
+                    ) if show_summary else None,
+                ],
+            ),
+        ],
+    )
+
+
+def build_dc_view_layout_shell(dc_id, time_range=None, visible_sections=None):
+    """Instant DC layout shell; Phase B callback fills dc-view-page-root."""
+    if not dc_id:
+        return html.Div("No Data Center ID provided", style={"padding": "20px"})
+    tr = time_range or default_time_range()
+    vs = visible_sections
+    return html.Div(
+        children=[
+            dcc.Store(
+                id="dc-view-visible-sections",
+                data=sorted(vs) if vs is not None else None,
+            ),
+            dcc.Store(id="dc-view-dc-id", data=str(dc_id)),
+            dcc.Store(id="dc-view-loaded-tabs", data=["summary"]),
+            dcc.Store(id="dc-view-context-store", data={}),
+            html.Div(
+                id="dc-view-page-root",
+                children=render_dc_loading_page(str(dc_id), tr, visible_sections=vs),
+            ),
+        ],
     )
 
 

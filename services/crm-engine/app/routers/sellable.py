@@ -105,12 +105,17 @@ def get_summary(
         description="Optional CSV of cluster names. Restricts virt_classic / virt_hyperconverged "
                     "panel scope to those clusters by reading datacenter-api compute endpoint.",
     ),
+    rollup_only: bool = Query(
+        False,
+        description="When true, omit nested panels[] and return family rollups with panel_summaries only.",
+    ),
     svc: SellableService = Depends(_sellable),
 ):
     return svc.compute_summary(
         dc_code=dc_code,
         selected_clusters=_parse_clusters(clusters),
-    ).to_dict()
+        include_panel_details=not rollup_only,
+    ).to_dict(include_panel_details=not rollup_only)
 
 
 @router.get("/crm/sellable-potential/by-panel", response_model=List[dict])

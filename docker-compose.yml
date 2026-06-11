@@ -289,7 +289,7 @@ services:
       DB_STATEMENT_TIMEOUT_MS: "0"
       # Sellable result cache TTL (seconds). compute_all_panels output is cached
       # in crm-engine Redis (DB 2); 0 disables caching.
-      SELLABLE_CACHE_TTL_SECONDS: ${SELLABLE_CACHE_TTL_SECONDS:-120}
+      SELLABLE_CACHE_TTL_SECONDS: ${SELLABLE_CACHE_TTL_SECONDS:-900}
       # Days back when constructing dc_details / global_dashboard Redis keys.
       # Must match datacenter-api default_time_range (7) so sellable hits the
       # same keys the DC view populates.

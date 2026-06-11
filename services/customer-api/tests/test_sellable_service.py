@@ -112,6 +112,17 @@ def test_compute_all_panels_potential_tl_matches_constrained_value():
     assert panels["storage"].potential_tl == 600.0
 
 
+def test_compute_summary_rollup_only_omits_nested_panels():
+    svc = _build_service()
+    summary = svc.compute_summary(dc_code="*", include_panel_details=False)
+    payload = summary.to_dict(include_panel_details=False)
+    assert payload.get("rollup_only") is True
+    assert payload["families"]
+    fam = payload["families"][0]
+    assert fam.get("panels") == []
+    assert fam.get("panel_summaries")
+
+
 def test_compute_summary_aggregates_family_total_and_loss():
     svc = _build_service()
     summary = svc.compute_summary(dc_code="*")

@@ -1818,14 +1818,23 @@ def _invalidate_netbox_viz_caches() -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_sellable_summary(dc_code: str = "*") -> dict:
+def get_sellable_summary(dc_code: str = "*", *, rollup_only: bool = False) -> dict:
     """Top-level dashboard payload (KPIs + family roll-up)."""
     def fetch() -> dict:
-        data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/summary?dc_code={quote(dc_code, safe='*')}")
+        qs = f"dc_code={quote(dc_code, safe='*')}"
+        if rollup_only:
+            qs += "&rollup_only=true"
+        data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/summary?{qs}")
         return data if isinstance(data, dict) else {}
 
-    cache_key = f"api:sellable_summary:{dc_code}"
+    suffix = ":rollup" if rollup_only else ""
+    cache_key = f"api:sellable_summary:{dc_code}{suffix}"
     return _api_cache_get_sellable_summary(cache_key, fetch, dc_code)
+
+
+def get_sellable_summary_light(dc_code: str) -> dict:
+    """Lightweight summary for DC View Summary tab (no nested panels[])."""
+    return get_sellable_summary(dc_code, rollup_only=True)
 
 
 def _normalize_clusters_arg(clusters: Optional[list]) -> Optional[list[str]]:

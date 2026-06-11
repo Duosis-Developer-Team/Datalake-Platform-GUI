@@ -109,13 +109,13 @@ class FamilyAggregate:
     total_potential_tl_min: float | None = None
     total_potential_tl_max: float | None = None
     mapped_panel_count: int = 0
+    panel_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, include_panels: bool = True) -> dict[str, Any]:
+        out: dict[str, Any] = {
             "family": self.family,
             "label": self.label,
             "dc_code": self.dc_code,
-            "panels": [p.to_dict() for p in self.panels],
             "total_potential_tl": self.total_potential_tl,
             "total_sellable_constrained_units": self.total_sellable_constrained_units,
             "constrained_loss_tl": self.constrained_loss_tl,
@@ -123,7 +123,13 @@ class FamilyAggregate:
             "total_potential_tl_min": self.total_potential_tl_min,
             "total_potential_tl_max": self.total_potential_tl_max,
             "mapped_panel_count": self.mapped_panel_count,
+            "panel_summaries": dict(self.panel_summaries),
         }
+        if include_panels:
+            out["panels"] = [p.to_dict() for p in self.panels]
+        else:
+            out["panels"] = []
+        return out
 
 
 @dataclass
@@ -139,18 +145,19 @@ class DashboardSummary:
     mapped_panel_count: int = 0
     computation_modes: dict[str, str] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, include_panel_details: bool = True) -> dict[str, Any]:
         return {
             "dc_code": self.dc_code,
             "total_potential_tl": self.total_potential_tl,
             "constrained_loss_tl": self.constrained_loss_tl,
             "ytd_sales_tl": self.ytd_sales_tl,
             "unmapped_product_count": self.unmapped_product_count,
-            "families": [f.to_dict() for f in self.families],
+            "families": [f.to_dict(include_panels=include_panel_details) for f in self.families],
             "total_potential_tl_min": self.total_potential_tl_min,
             "total_potential_tl_max": self.total_potential_tl_max,
             "mapped_panel_count": self.mapped_panel_count,
             "computation_modes": self.computation_modes,
+            "rollup_only": not include_panel_details,
         }
 
 

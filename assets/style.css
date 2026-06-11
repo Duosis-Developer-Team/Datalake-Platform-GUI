@@ -494,6 +494,14 @@ body {
     animation: customer-page-enter 0.35s ease-out both;
 }
 
+.dc-loading-layer {
+    padding-bottom: 24px;
+}
+
+.dc-page-enter {
+    animation: customer-page-enter 0.35s ease-out both;
+}
+
 .customer-loading-layer {
     padding: 8px 0 24px;
 }
