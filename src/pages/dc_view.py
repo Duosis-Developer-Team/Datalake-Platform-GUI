@@ -1734,6 +1734,27 @@ def _build_virt_total_sellable_children(
     ]
 
 
+def _cluster_header(selector_id: str, clusters: list[str], placeholder: str):
+    return html.Div(
+        style={"display": "flex", "justifyContent": "flex-end", "alignItems": "center", "marginBottom": "16px"},
+        children=dmc.MultiSelect(
+            id=selector_id,
+            data=[{"label": c, "value": c} for c in clusters],
+            value=list(clusters),
+            clearable=True,
+            searchable=True,
+            nothingFoundMessage="No clusters",
+            placeholder=placeholder,
+            size="md",
+            radius="xl",
+            style={
+                "minWidth": "260px",
+                "background": "#F8F9FC",
+            },
+        ),
+    )
+
+
 def _build_virt_subtab_stack(
     tab: str,
     *,
@@ -4762,26 +4783,6 @@ def build_dc_view(
             value=tab_key,
             pt="lg",
             children=html.Div(id=f"virt-subtab-lazy-{tab_key}"),
-        )
-
-    def _cluster_header(selector_id: str, clusters: list[str], placeholder: str):
-        return html.Div(
-            style={"display": "flex", "justifyContent": "flex-end", "alignItems": "center", "marginBottom": "16px"},
-            children=dmc.MultiSelect(
-                id=selector_id,
-                data=[{"label": c, "value": c} for c in clusters],
-                value=list(clusters),
-                clearable=True,
-                searchable=True,
-                nothingFoundMessage="No clusters",
-                placeholder=placeholder,
-                size="md",
-                radius="xl",
-                style={
-                    "minWidth": "260px",
-                    "background": "#F8F9FC",
-                },
-            ),
         )
 
     page = html.Div([

@@ -1,5 +1,21 @@
 """Verify summary-only DC build skips heavy tab fetches."""
-from unittest.mock import patch
+import sys
+import types
+from unittest.mock import MagicMock, patch
+
+if "pandas" not in sys.modules:
+    _pd = types.ModuleType("pandas")
+
+    class _FakeSeries(list):
+        pass
+
+    class _FakeIndex(list):
+        pass
+
+    _pd.DataFrame = MagicMock()
+    _pd.Series = _FakeSeries
+    _pd.Index = _FakeIndex
+    sys.modules["pandas"] = _pd
 
 
 def test_summary_eager_skips_backup_and_network_fetch():
@@ -53,8 +69,6 @@ def test_summary_eager_skips_backup_and_network_fetch():
 
 
 def test_virt_eager_skips_host_prefetch():
-    from unittest.mock import patch
-
     from src.pages.dc_view import build_dc_view
 
     calls: list[str] = []
@@ -96,8 +110,17 @@ def test_virt_eager_skips_host_prefetch():
         "get_dc_san_bottleneck": _track("get_dc_san_bottleneck"),
     }
 
+    virt_sections = {
+        "sec:dc_view:virtualization",
+        "sub:dc_view:virt:classic",
+    }
     with patch.multiple("src.pages.dc_view.api", **api_patch):
-        build_dc_view("DC13", time_range={"preset": "7d"}, eager_tabs=frozenset({"virt"}))
+        build_dc_view(
+            "DC13",
+            time_range={"preset": "7d"},
+            eager_tabs=frozenset({"virt"}),
+            visible_sections=virt_sections,
+        )
 
     assert "get_classic_host_rows" not in calls
     assert "get_hyperconv_host_rows" not in calls
@@ -154,3 +177,93 @@ def test_storage_eager_fetches_ibm_storage():
 
     assert "get_dc_storage_capacity" in calls
     assert "get_dc_san_bottleneck" not in calls
+
+
+def test_build_virt_subtab_stack_classic_no_name_error():
+    from dash import html
+
+    from src.pages.dc_view import _build_virt_subtab_stack
+
+    with patch("src.pages.dc_view._build_sellable_inline_kpi", return_value=html.Div(id="sellable-stub")), patch(
+        "src.pages.dc_view._build_compute_tab",
+        return_value=html.Div(id="compute-stub"),
+    ):
+        stack = _build_virt_subtab_stack(
+            "classic",
+            dc_id="DC13",
+            classic={"hosts": 1, "cpu_cap": 10, "cpu_used": 5, "mem_cap": 100, "mem_used": 50},
+            hyperconv={},
+            power={},
+            energy={},
+            classic_clusters=["c1"],
+            hyperconv_clusters=[],
+            storage_capacity=None,
+            storage_performance=None,
+            san_bottleneck=None,
+            show_virt_hosts=False,
+        )
+
+    assert stack
+    selector = getattr(stack[0], "children", None)
+    assert selector is not None
+    assert getattr(selector, "id", None) == "virt-classic-cluster-selector"
+
+
+def test_build_dc_lazy_tab_panel_virt_no_name_error():
+    from dash import html
+
+    from src.pages.dc_view import build_dc_lazy_tab_panel
+
+    def _track(name):
+        def _fn(*_a, **_k):
+            if name == "get_dc_details":
+                return {
+                    "meta": {"name": "DC13", "location": "Istanbul"},
+                    "classic": {
+                        "hosts": 1, "cpu_cap": 10, "cpu_used": 5,
+                        "mem_cap": 100, "mem_used": 50, "stor_cap": 1, "stor_used": 0.5,
+                    },
+                    "hyperconv": {},
+                    "power": {},
+                    "energy": {},
+                    "intel": {"vms": 0},
+                }
+            if name == "get_sla_by_dc":
+                return {}
+            if name == "get_classic_cluster_list":
+                return ["c1"]
+            if name == "get_hyperconv_cluster_list":
+                return []
+            return {}
+
+        return _fn
+
+    api_patch = {
+        "get_dc_details": _track("get_dc_details"),
+        "get_sla_by_dc": _track("get_sla_by_dc"),
+        "get_classic_cluster_list": _track("get_classic_cluster_list"),
+        "get_hyperconv_cluster_list": _track("get_hyperconv_cluster_list"),
+    }
+
+    virt_sections = {
+        "sec:dc_view:virtualization",
+        "sub:dc_view:virt:classic",
+    }
+    with patch.multiple("src.pages.dc_view.api", **api_patch), patch(
+        "src.pages.dc_view.resolve_dc_display_from_summary",
+        return_value=("DC13", "Istanbul"),
+    ), patch(
+        "src.pages.dc_view._build_virt_total_sellable_children",
+        return_value=[],
+    ), patch(
+        "src.pages.dc_view._build_compute_tab",
+        return_value=html.Div(id="compute-stub"),
+    ):
+        panel = build_dc_lazy_tab_panel(
+            "DC13",
+            "virt",
+            time_range={"preset": "7d"},
+            visible_sections=virt_sections,
+        )
+
+    assert panel is not None
