@@ -4817,27 +4817,18 @@ def build_dc_view(
             hyperconv_clusters or None,
         )
 
-    def _virt_subtab_panel(tab_key: str, enabled: bool):
+    def _virt_nested_tab_stub(tab_key: str, enabled: bool):
+        """Minimal TabsPanel stubs — body renders in virt-nested-content (dmc Tabs workaround)."""
         if not enabled:
             return None
-        if tab_key == default_virt_tab:
-            stack = _build_virt_subtab_stack(tab_key, **virt_subtab_kwargs)
-            return dmc.TabsPanel(
-                value=tab_key,
-                pt="lg",
-                children=dmc.Stack(gap="lg", children=[c for c in stack if c is not None]),
-            )
-        return dmc.TabsPanel(
-            value=tab_key,
-            pt="lg",
-            children=dcc.Loading(
-                id=f"virt-subtab-lazy-loading-{tab_key}",
-                type="circle",
-                color="#4318FF",
-                delay_show=250,
-                overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
-                children=html.Div(id=f"virt-subtab-lazy-{tab_key}"),
-            ),
+        return dmc.TabsPanel(value=tab_key, pt=0, children=html.Div(style={"display": "none"}))
+
+    default_virt_content = None
+    if show_virt and _tab_eager(eager_tabs, "virt"):
+        default_virt_stack = _build_virt_subtab_stack(default_virt_tab, **virt_subtab_kwargs)
+        default_virt_content = dmc.Stack(
+            gap="lg",
+            children=[c for c in default_virt_stack if c is not None],
         )
 
     page = html.Div([
@@ -4923,24 +4914,42 @@ def build_dc_view(
                                     "show_power": show_power_inner,
                                 },
                             ),
-                            dcc.Store(id="virt-nested-mounted", data=[default_virt_tab]),
-                            dmc.Tabs(
-                                id="virt-nested-tabs",
-                                color="violet",
-                                variant="outline",
-                                radius="md",
-                                value=default_virt_tab,
+                            dmc.Stack(
+                                gap="md",
                                 children=[
-                                    dmc.TabsList(
+                                    dmc.Tabs(
+                                        id="virt-nested-tabs",
+                                        color="violet",
+                                        variant="outline",
+                                        radius="md",
+                                        value=default_virt_tab,
                                         children=[
-                                            dmc.TabsTab("Klasik Mimari", value="classic") if show_classic else None,
-                                            dmc.TabsTab("Hyperconverged Mimari", value="hyperconv") if show_hyperconv else None,
-                                            dmc.TabsTab("Power Mimari", value="power") if show_power_inner else None,
-                                        ]
+                                            dmc.TabsList(
+                                                children=[
+                                                    dmc.TabsTab("Klasik Mimari", value="classic") if show_classic else None,
+                                                    dmc.TabsTab("Hyperconverged Mimari", value="hyperconv") if show_hyperconv else None,
+                                                    dmc.TabsTab("Power Mimari", value="power") if show_power_inner else None,
+                                                ]
+                                            ),
+                                            _virt_nested_tab_stub("classic", show_classic),
+                                            _virt_nested_tab_stub("hyperconv", show_hyperconv),
+                                            _virt_nested_tab_stub("power", show_power_inner),
+                                        ],
                                     ),
-                                    _virt_subtab_panel("classic", show_classic),
-                                    _virt_subtab_panel("hyperconv", show_hyperconv),
-                                    _virt_subtab_panel("power", show_power_inner),
+                                    dcc.Loading(
+                                        id="virt-nested-content-loading",
+                                        type="circle",
+                                        color="#4318FF",
+                                        delay_show=250,
+                                        overlay_style={
+                                            "visibility": "visible",
+                                            "backgroundColor": "rgba(244, 247, 254, 0.6)",
+                                        },
+                                        children=html.Div(
+                                            id="virt-nested-content",
+                                            children=default_virt_content,
+                                        ),
+                                    ),
                                 ],
                             ),
                         ],

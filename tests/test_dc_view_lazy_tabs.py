@@ -267,6 +267,95 @@ def test_build_dc_lazy_tab_panel_virt_no_name_error():
         )
 
     assert panel is not None
+    from src.pages.dc_view import _find_component_by_id
+
+    roots = panel if isinstance(panel, (list, tuple)) else [panel]
+    content = None
+    for root in roots:
+        content = _find_component_by_id(root, "virt-nested-content")
+        if content is not None:
+            break
+    assert content is not None
+    for root in roots:
+        assert _find_component_by_id(root, "virt-subtab-lazy-hyperconv") is None
+        assert _find_component_by_id(root, "virt-nested-mounted") is None
+
+
+def test_build_dc_view_virt_eager_uses_single_content_slot():
+    from dash import html
+
+    from src.pages.dc_view import _find_component_by_id, build_dc_view
+
+    def _track(name):
+        def _fn(*_a, **_k):
+            if name == "get_dc_details":
+                return {
+                    "meta": {"name": "DC13", "location": "Istanbul"},
+                    "classic": {
+                        "hosts": 1, "cpu_cap": 10, "cpu_used": 5,
+                        "mem_cap": 100, "mem_used": 50, "stor_cap": 1, "stor_used": 0.5,
+                    },
+                    "hyperconv": {"hosts": 2, "cpu_cap": 20, "cpu_used": 10, "mem_cap": 200, "mem_used": 100},
+                    "power": {"hosts": 1, "vios": 2, "lpar_count": 4},
+                    "energy": {},
+                    "intel": {"vms": 0},
+                }
+            if name == "get_sla_by_dc":
+                return {}
+            if name == "get_classic_cluster_list":
+                return ["c1"]
+            if name == "get_hyperconv_cluster_list":
+                return ["KM-1"]
+            if name == "get_dc_storage_capacity":
+                return {"systems": []}
+            if name == "get_dc_storage_performance":
+                return {"series": []}
+            if name == "get_dc_san_bottleneck":
+                return {"issues": []}
+            return {}
+
+        return _fn
+
+    api_patch = {
+        "get_dc_details": _track("get_dc_details"),
+        "get_sla_by_dc": _track("get_sla_by_dc"),
+        "get_classic_cluster_list": _track("get_classic_cluster_list"),
+        "get_hyperconv_cluster_list": _track("get_hyperconv_cluster_list"),
+        "get_dc_storage_capacity": _track("get_dc_storage_capacity"),
+        "get_dc_storage_performance": _track("get_dc_storage_performance"),
+        "get_dc_san_bottleneck": _track("get_dc_san_bottleneck"),
+    }
+
+    virt_sections = {
+        "sec:dc_view:virtualization",
+        "sub:dc_view:virt:classic",
+        "sub:dc_view:virt:hyperconv",
+        "sub:dc_view:virt:power",
+    }
+    with patch.multiple("src.pages.dc_view.api", **api_patch), patch(
+        "src.pages.dc_view.resolve_dc_display_from_summary",
+        return_value=("DC13", "Istanbul"),
+    ), patch(
+        "src.pages.dc_view._build_virt_total_sellable_children",
+        return_value=[],
+    ), patch(
+        "src.pages.dc_view._build_compute_tab",
+        return_value=html.Div(id="compute-stub"),
+    ), patch(
+        "src.pages.dc_view._build_power_tab",
+        return_value=html.Div(id="power-stub"),
+    ):
+        page = build_dc_view(
+            "DC13",
+            time_range={"preset": "7d"},
+            visible_sections=virt_sections,
+            eager_tabs=frozenset({"virt"}),
+        )
+
+    content = _find_component_by_id(page, "virt-nested-content")
+    assert content is not None
+    assert _find_component_by_id(page, "virt-subtab-lazy-hyperconv") is None
+    assert _find_component_by_id(page, "classic-virt-panel") is not None
 
 
 def test_build_virt_subtab_stack_hyperconv_no_name_error():

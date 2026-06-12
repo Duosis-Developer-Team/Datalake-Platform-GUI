@@ -994,41 +994,21 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
 
 
 @app.callback(
-    dash.Output("virt-subtab-lazy-classic", "children"),
-    dash.Output("virt-subtab-lazy-hyperconv", "children"),
-    dash.Output("virt-subtab-lazy-power", "children"),
-    dash.Output("virt-nested-mounted", "data"),
+    dash.Output("virt-nested-content", "children"),
     dash.Input("virt-nested-tabs", "value"),
     dash.State("virt-subtab-context", "data"),
-    dash.State("virt-nested-mounted", "data"),
     dash.State("app-time-range", "data"),
     prevent_initial_call=True,
 )
-def mount_virt_nested_subtab(active_tab, ctx, mounted_tabs, time_range):
+def render_virt_nested_content(active_tab, ctx, time_range):
+    """Render Virt nested tab body outside TabsPanel (dmc/Mantine non-first-tab workaround)."""
     if not ctx or not active_tab:
         raise dash.exceptions.PreventUpdate
-    mounted = list(mounted_tabs or [])
-    if active_tab in mounted:
-        raise dash.exceptions.PreventUpdate
-
     dc_id = str(ctx.get("dc_id") or "")
     if not dc_id:
         raise dash.exceptions.PreventUpdate
-
-    panel, mount_ok = build_virt_nested_subtab_panel(active_tab, ctx, time_range)
-    if mount_ok:
-        mounted.append(active_tab)
-
-    classic_out = dash.no_update
-    hyper_out = dash.no_update
-    power_out = dash.no_update
-    if active_tab == "classic":
-        classic_out = panel
-    elif active_tab == "hyperconv":
-        hyper_out = panel
-    elif active_tab == "power":
-        power_out = panel
-    return classic_out, hyper_out, power_out, mounted
+    panel, _mount_ok = build_virt_nested_subtab_panel(active_tab, ctx, time_range)
+    return panel
 
 
 @app.callback(
