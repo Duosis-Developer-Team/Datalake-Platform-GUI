@@ -68,6 +68,26 @@ def test_registry_is_non_empty():
     assert len(list_tool_names()) >= 10
 
 
+def test_row_count_for_detail_dict():
+    from datalake_tools_core.registry import _row_count
+
+    payload = {"meta": {"id": "DC17"}, "intel": {"cpu_cap": 100, "cpu_used": 50}}
+    assert _row_count(payload, tool_name="get_datacenter_detail") == 1
+    assert _row_count({"meta": {}}, tool_name="get_datacenter_detail") is None
+
+
+def test_empty_reason_for_detail_without_metrics():
+    from datalake_tools_core.registry import _empty_reason
+
+    reason = _empty_reason(
+        "get_datacenter_detail",
+        {"meta": {}},
+        {"dc_code": "DC17"},
+        {},
+    )
+    assert reason == "no_detail_metrics"
+
+
 # --- host-level CPU DB tools ------------------------------------------------ #
 
 

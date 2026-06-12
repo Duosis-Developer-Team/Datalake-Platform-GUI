@@ -26,7 +26,7 @@ def _isolate(monkeypatch):
 
 def _mock_llm(monkeypatch, result=None, error=None):
     class _FakeLLM:
-        def complete(self, messages, model=None):
+        def complete(self, messages, model=None, **kwargs):
             if error is not None:
                 raise error
             return result or LLMResult(

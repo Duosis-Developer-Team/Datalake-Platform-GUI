@@ -90,7 +90,14 @@ def _tool_results_block(results: list[ToolResult], budget: int) -> str:
 def tool_summary_snippet(result: ToolResult, *, max_chars: int = 4000) -> str:
     """Compact JSON snippet from a tool result for LLM / ReAct context."""
     if result.status == "success":
-        payload = json.dumps(result.summary, ensure_ascii=False, default=str)
+        summary = result.summary if isinstance(result.summary, dict) else {}
+        if summary.get("_empty_reason"):
+            payload = json.dumps(
+                {"_skipped": "empty_payload", "_empty_reason": summary["_empty_reason"]},
+                ensure_ascii=False,
+            )
+        else:
+            payload = json.dumps(result.summary, ensure_ascii=False, default=str)
     elif result.status == "error":
         payload = json.dumps({"_error": result.error}, ensure_ascii=False)
     else:
@@ -166,7 +173,7 @@ def build_messages(
 
 
 _AGENTIC_FORMAT = (
-    "Answer format (Turkish, executive operational — HUMAN NARRATIVE FIRST):\n"
+    "Answer format (Turkish, executive operational — HUMAN ASSISTANT, NOT A DATA DUMP):\n"
     "Required sections (in order):\n"
     "1. **Analiz** — min 2 sentences: what was checked (investigation_trace), findings, "
     "business/ops interpretation (sustained/spike/outlier/concentration)\n"
@@ -174,10 +181,9 @@ _AGENTIC_FORMAT = (
     "3. **Risk seviyesi:** low/medium/high (from derived_analysis)\n"
     "4. **Önerilen aksiyonlar:** bullet list (from derived_analysis)\n"
     "5. **Kaynak:** tool/source list + data freshness + _Güven: low/medium/high_\n\n"
-    "Optional appendix (only for top_list/comparison with 4+ rows):\n"
-    "6. **Destekleyici tablo** — compact markdown table AFTER Analiz/Sonuç; never table-only\n\n"
-    "Forbidden:\n"
-    "- Table-only answers or starting the reply with a markdown table\n"
+    "Forbidden in synthesis answer:\n"
+    "- Markdown tables (no | col | syntax) — embed all numbers in sentences\n"
+    "- Table-only answers or starting the reply with a table\n"
     "- Skipping **Analiz** or **Sonuç** prose sections\n"
     "- Sayısal değerleri uydurma — use ONLY derived_analysis and tool results\n"
     "- confidence 'low/medium' ise cevapta belirt\n"
@@ -187,16 +193,35 @@ _AGENTIC_FORMAT = (
 
 
 def _output_format_hint(requested_output: str) -> str:
-    """Dynamic table guidance based on planner output type."""
+    """Dynamic format guidance based on planner output type."""
     if requested_output in ("top_list", "comparison"):
         return (
-            "Output hint: Write a 2-4 sentence executive summary in **Analiz** and **Sonuç** first. "
-            "Embed top findings and key numbers in prose. Add an optional appendix table only if "
-            "4+ comparable rows exist — place it at the END, never as the whole answer.\n\n"
+            "Output hint: Write a conversational executive summary in **Analiz** and **Sonuç**. "
+            "Embed top findings and key numbers in prose sentences. "
+            "Do NOT produce markdown tables in your answer — the user wants to talk with data, "
+            "not receive a spreadsheet.\n\n"
         )
     return (
-        "Output hint: Prose only — no markdown table needed for this question type. "
+        "Output hint: Prose only — no markdown tables. "
         "Embed key metrics in sentences under **Analiz** and **Sonuç**.\n\n"
+    )
+
+
+_EXPLAIN_KEYWORDS = (
+    "neden", "niye", "açıkla", "acikla", "explain", "why", "gerekçe", "gerekce",
+    "sebep", "reason", "anlat", "detaylandır", "detaylandir",
+)
+
+
+def _intent_format_hint(user_message: str) -> str:
+    """Extra guidance for explanatory follow-up questions."""
+    msg = (user_message or "").lower()
+    if not any(k in msg for k in _EXPLAIN_KEYWORDS):
+        return ""
+    return (
+        "Explanatory mode: The user asks WHY or wants interpretation — write 3-5 sentences "
+        "of human reasoning in **Analiz** and **Sonuç**. Compare drivers (CPU vs RAM vs storage). "
+        "Do NOT use markdown tables; explain in plain Turkish prose.\n\n"
     )
 
 
@@ -472,6 +497,33 @@ def format_from_analysis(outcome, *, user_message: str = "") -> str:
     return "\n".join(lines)
 
 
+def strip_table_bias_from_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Remove ranking_table from derived analysis context before narrative retry."""
+    prefix = "Derived analysis (deterministic — use ONLY these numbers/verdicts, do not invent):\n"
+    out: list[dict[str, str]] = []
+    for msg in messages:
+        content = msg.get("content") or ""
+        if msg.get("role") == "developer" and prefix in content and "ranking_table" in content:
+            before, rest = content.split(prefix, 1)
+            json_part, _, after = rest.partition("\n\n")
+            try:
+                data = json.loads(json_part)
+                extra = dict(data.get("extra") or {})
+                dr = extra.get("datacenter_ranking")
+                if isinstance(dr, dict):
+                    dr = dict(dr)
+                    dr.pop("ranking_table", None)
+                    extra["datacenter_ranking"] = dr
+                    data["extra"] = extra
+                content = before + prefix + json.dumps(data, ensure_ascii=False, default=str)
+                if after:
+                    content += "\n\n" + after
+            except json.JSONDecodeError:
+                pass
+        out.append({**msg, "content": content})
+    return out
+
+
 def build_agentic_messages(
     user_message: str,
     conversation: list[ChatMessage],
@@ -509,6 +561,7 @@ def build_agentic_messages(
     )
     requested_output = plan_ctx.get("requested_output") or "summary"
     output_hint = _output_format_hint(str(requested_output))
+    intent_hint = _intent_format_hint(user_message)
     developer = (
         "Current WebUI context:\n"
         f"{json.dumps(fc, ensure_ascii=False, default=str)}\n\n"
@@ -517,6 +570,7 @@ def build_agentic_messages(
         "Intent plan:\n"
         f"{json.dumps(plan_ctx, ensure_ascii=False, default=str)}\n\n"
         f"{guidance_block}"
+        f"{intent_hint}"
         f"{output_hint}"
         f"Confidence: {confidence}\n\n"
         "Derived analysis (deterministic — use ONLY these numbers/verdicts, do not invent):\n"

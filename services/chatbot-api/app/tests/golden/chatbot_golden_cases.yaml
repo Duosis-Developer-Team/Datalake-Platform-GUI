@@ -20,6 +20,11 @@
     tools_contain:
       - get_datacenters_summary
 
+- id: dc_ranking_explain_followup
+  user_message: "En yoğun dc neden DC17? Açıklar mısın?"
+  expect:
+    plan_profile: datacenter_ranking
+
 - id: dashboard_overview_summary
   user_message: "Genel kapasite durumunu özetle"
   expect:

@@ -21,7 +21,7 @@ def test_system_prompt_targets_executives():
 def test_output_format_hint_top_list():
     hint = context_builder._output_format_hint("top_list")
     assert "prose" in hint.lower() or "summary" in hint.lower()
-    assert "4+" in hint or "appendix" in hint.lower()
+    assert "markdown table" in hint.lower() or "tablo" in hint.lower()
 
 
 def test_output_format_hint_summary_no_table():

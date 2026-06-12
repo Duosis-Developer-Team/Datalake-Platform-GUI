@@ -67,7 +67,15 @@ def run_detail_workers(
     workers = max(1, settings.chatbot_parallel_workers)
 
     def _fetch(dc_code: str) -> ToolResult:
-        args = {**base_args, "dc_code": dc_code}
+        code = str(dc_code or "").strip().upper()
+        if not code:
+            return ToolResult(
+                "get_datacenter_detail",
+                "error",
+                "datacenter-api",
+                error="missing_dc_code",
+            )
+        args = {**base_args, "dc_code": code}
         return execute_tool("get_datacenter_detail", args, auth_header)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -80,10 +88,22 @@ def run_detail_workers(
                 warnings.append(f"detail worker {dc} failed: {exc}")
                 continue
             extra.append(res)
-            if res.status != "success" or not isinstance(res.summary, dict):
+            if res.status != "success":
                 warnings.append(f"detail worker {dc}: {res.error or res.status}")
                 continue
-            row = datacenter_ranking.extract_ranking_row_from_detail(dc, res.summary)
-            findings.append(WorkerFinding(dc, row, res.source or res.name))
+            if not isinstance(res.summary, dict):
+                warnings.append(f"detail worker {dc}: empty_payload")
+                continue
+            empty_reason = res.summary.get("_empty_reason")
+            if empty_reason:
+                warnings.append(f"detail worker {dc}: {empty_reason}")
+                continue
+            row = datacenter_ranking.extract_ranking_row_from_detail(
+                str(dc).strip().upper(), res.summary
+            )
+            if row.get("used_cpu_pct") is None and row.get("used_ram_pct") is None:
+                warnings.append(f"detail worker {dc}: no_detail_metrics")
+                continue
+            findings.append(WorkerFinding(str(dc).strip().upper(), row, res.source or res.name))
 
     return WorkerBatchResult(findings=findings, extra_results=extra, warnings=warnings)

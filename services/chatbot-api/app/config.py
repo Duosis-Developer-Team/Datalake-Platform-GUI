@@ -42,7 +42,11 @@ class Settings(BaseSettings):
         ),
     )
     chatbot_temperature: float = 0.2
-    chatbot_max_tokens: int = 900
+    chatbot_max_tokens: int = 1800
+    chatbot_synthesis_max_tokens: int = Field(
+        default=1800,
+        validation_alias=AliasChoices("CHATBOT_SYNTHESIS_MAX_TOKENS", "CHATBOT_MAX_TOKENS"),
+    )
     chatbot_top_p: float = 1.0
     chatbot_timeout_seconds: float = 120.0
     chatbot_max_retries: int = 2

@@ -96,6 +96,11 @@ def test_synthesizer_datacenter_ranking_profile():
     assert dr["analyzed_count"] == 9
     assert dr["winner"]["id"] == "DC11"
     assert dr["metric_used"] == "cpu"
+    assert dr.get("narrative_summary", {}).get("winner_id") == "DC11"
+    ctx = analysis.as_context()
+    dr_ctx = (ctx.get("extra") or {}).get("datacenter_ranking") or {}
+    assert "ranking_table" not in dr_ctx
+    assert "narrative_summary" in dr_ctx
 
 
 def test_evaluator_datacenter_ranking_high_confidence():

@@ -131,7 +131,20 @@ def ranking_rows_from_summary(summary: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _row_count(payload: Any) -> Optional[int]:
+def _detail_dict_has_metrics(payload: dict[str, Any]) -> bool:
+    """True when a single-datacenter detail payload carries usable metrics."""
+    intel = payload.get("intel")
+    if isinstance(intel, dict):
+        for key in ("cpu_cap", "cpu_used", "ram_cap", "ram_used", "vms", "hosts"):
+            if intel.get(key) is not None:
+                return True
+    meta = payload.get("meta")
+    if isinstance(meta, dict) and meta.get("id"):
+        return True
+    return False
+
+
+def _row_count(payload: Any, *, tool_name: str | None = None) -> Optional[int]:
     if isinstance(payload, list):
         return len(payload)
     if isinstance(payload, dict):
@@ -139,6 +152,32 @@ def _row_count(payload: Any) -> Optional[int]:
             v = payload.get(key)
             if isinstance(v, list):
                 return len(v)
+        if tool_name == "get_datacenter_detail" and _detail_dict_has_metrics(payload):
+            return 1
+    return None
+
+
+def _empty_reason(
+    tool_name: str,
+    payload: Any,
+    args: dict[str, Any],
+    time_params: dict[str, str],
+) -> Optional[str]:
+    """Human-readable reason when a successful tool returns no usable rows."""
+    if tool_name == "get_datacenter_detail":
+        if not args.get("dc_code"):
+            return "missing_dc_code"
+        if isinstance(payload, dict) and not _detail_dict_has_metrics(payload):
+            return "no_detail_metrics"
+    if tool_name == "get_dc_zabbix_storage_trend":
+        if not time_params:
+            return "no_time_range"
+        if isinstance(payload, list) and len(payload) == 0:
+            return "no_zabbix_data"
+        if isinstance(payload, dict):
+            series = payload.get("items") or payload.get("data") or payload.get("points")
+            if isinstance(series, list) and len(series) == 0:
+                return "no_zabbix_data"
     return None
 
 
@@ -565,7 +604,7 @@ def execute_tool(name: str, args: dict[str, Any], auth_header: Optional[str] = N
             return ToolResult(name, "skipped", spec.service, error="bad_path")
         attempted_path = path
         payload = api_clients.get_json(spec.service, path, time_params, auth_header)
-        rows = _row_count(payload)
+        rows = _row_count(payload, tool_name=name)
         if spec.comparison_list and isinstance(payload, list):
             summary = _normalize_datacenter_summary_list(payload)
         elif spec.list_items and isinstance(payload, list):
@@ -574,6 +613,13 @@ def execute_tool(name: str, args: dict[str, Any], auth_header: Optional[str] = N
             summary = {"_count": len(payload), "items": [str(x) for x in payload[:cap]]}
         else:
             summary = _normalize(payload)
+        empty = _empty_reason(name, payload, args, time_params)
+        if empty:
+            if isinstance(summary, dict):
+                summary = dict(summary)
+                summary["_empty_reason"] = empty
+            if rows is None:
+                rows = 0
         # Defensive note when an endpoint returns more rows than we cap.
         if spec.cap_rows is not None and rows is not None and rows > spec.cap_rows:
             summary = {"_note": f"showing first {spec.cap_rows} of {rows}", "data": summary}

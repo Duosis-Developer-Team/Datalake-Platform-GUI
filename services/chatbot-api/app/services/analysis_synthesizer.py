@@ -44,7 +44,21 @@ class AnalysisSummary:
     extra: dict[str, Any] = field(default_factory=dict)  # profile-specific (e.g. cluster diff)
 
     def as_context(self) -> dict[str, Any]:
-        return asdict(self)
+        """LLM-safe context — strips large tabular payloads the model would copy."""
+        ctx = asdict(self)
+        extra = dict(ctx.get("extra") or {})
+        dr = extra.get("datacenter_ranking")
+        if isinstance(dr, dict):
+            dr = dict(dr)
+            dr.pop("ranking_table", None)
+            extra["datacenter_ranking"] = dr
+        if "db_only_rows" in extra:
+            extra = dict(extra)
+            extra.pop("db_only_rows", None)
+        ctx["extra"] = extra
+        if len(ctx.get("top_entities") or []) > 5:
+            ctx["top_entities"] = (ctx.get("top_entities") or [])[:5]
+        return ctx
 
 
 def _avg(r: dict) -> Optional[float]:
@@ -169,6 +183,49 @@ def _synthesize_memory_cluster(plan: IntentPlan, rows: list[dict], a: AnalysisSu
     return a
 
 
+def _build_ranking_narrative_summary(
+    winner: dict[str, Any],
+    ranked: list[dict[str, Any]],
+    metric: str,
+    label: str,
+    coverage: str,
+) -> dict[str, Any]:
+    """Compact prose-ready summary for synthesis — no full ranking_table."""
+    wid = winner.get("id") or winner.get("name")
+    parts: list[str] = []
+    cpu = winner.get("used_cpu_pct")
+    ram = winner.get("used_ram_pct")
+    storage = winner.get("used_storage_pct")
+    if cpu is not None:
+        parts.append(f"CPU kullanımı %{cpu}")
+    if ram is not None:
+        parts.append(f"bellek kullanımı %{ram}")
+    if storage is not None:
+        parts.append(f"depolama kullanımı %{storage}")
+    why = f"{wid} birleşik skor {winner.get('ranking_score')} ile önde"
+    if parts:
+        why += f" ({', '.join(parts)})"
+    return {
+        "winner_id": wid,
+        "winner_location": winner.get("location"),
+        "winner_score": winner.get("ranking_score"),
+        "metric": metric,
+        "metric_label": label,
+        "coverage": coverage,
+        "why_leading": why,
+        "top_3": [
+            {
+                "id": r.get("id"),
+                "score": r.get("ranking_score"),
+                "cpu_pct": r.get("used_cpu_pct"),
+                "ram_pct": r.get("used_ram_pct"),
+                "storage_pct": r.get("used_storage_pct"),
+            }
+            for r in ranked[:3]
+        ],
+    }
+
+
 def _synthesize_datacenter_ranking(
     plan: IntentPlan,
     results: list[ToolResult],
@@ -240,6 +297,9 @@ def _synthesize_datacenter_ranking(
     a.extra["datacenter_ranking"] = {
         "winner": winner,
         "ranking_table": ranked,
+        "narrative_summary": _build_ranking_narrative_summary(
+            winner, ranked, metric, label, coverage
+        ),
         "metric_used": metric,
         "metric_label": label,
         "coverage": coverage,
