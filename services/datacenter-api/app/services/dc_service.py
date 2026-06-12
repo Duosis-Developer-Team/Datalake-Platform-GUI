@@ -105,6 +105,8 @@ def _empty_compute_section() -> dict:
         "cpu_util_pct_max": 0.0,
         "mem_util_pct": 0.0,
         "mem_util_pct_max": 0.0,
+        "mem_used_gb_peak": 0.0,
+        "mem_cap_gb_at_peak": 0.0,
         # Potential sellable economics — CRM TL unit prices × capacity × overcommit
         "unit_prices": {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
         "sellable_multiplier": 3.3,
@@ -679,6 +681,77 @@ LIMIT 20
         """Return Classic cluster average utilization: cpu_avg_pct, mem_avg_pct."""
         return self._run_row(cursor, vq.CLASSIC_AVG30, (dc_wc, start_ts, end_ts))
 
+    @staticmethod
+    def _mem_peak_tuple(row: tuple | None) -> tuple[float, float, float]:
+        if not row:
+            return 0.0, 0.0, 0.0
+        used = float(row[0] or 0)
+        cap = float(row[1] or 0)
+        pct = round(float(row[2] or 0), 1)
+        return used, cap, pct
+
+    @staticmethod
+    def _apply_mem_peak_raw(section: dict, peak: tuple[float, float, float] | None) -> dict:
+        if not peak:
+            return section
+        used, cap, pct = peak
+        if used <= 0 and cap <= 0:
+            return section
+        return {
+            **section,
+            "mem_util_pct_max": pct,
+            "mem_pct_max": pct,
+            "mem_used_gb_peak": round(used, 2),
+            "mem_cap_gb_at_peak": round(cap, 2),
+        }
+
+    def get_classic_mem_peak_raw(
+        self,
+        cursor,
+        dc_wc: str,
+        start_ts,
+        end_ts,
+        *,
+        cluster_filter: list[str] | None = None,
+    ) -> tuple[float, float, float]:
+        clusters = cluster_filter or []
+        if clusters:
+            row = self._run_row(
+                cursor, vq.CLASSIC_MEM_PEAK_RAW_FILTERED, (dc_wc, clusters, start_ts, end_ts)
+            )
+        else:
+            row = self._run_row(cursor, vq.CLASSIC_MEM_PEAK_RAW, (dc_wc, start_ts, end_ts))
+        return self._mem_peak_tuple(row)
+
+    def get_hyperconv_mem_peak_raw(
+        self,
+        cursor,
+        dc_wc: str,
+        dc_code: str,
+        start_ts,
+        end_ts,
+        *,
+        cluster_filter: list[str] | None = None,
+    ) -> tuple[float, float, float]:
+        clusters = cluster_filter or []
+        vmw_row = None
+        ntx_row = None
+        if clusters:
+            vmw_row = self._run_row(
+                cursor, vq.HYPERCONV_MEM_PEAK_RAW_FILTERED, (dc_wc, clusters, start_ts, end_ts)
+            )
+            ntx_row = self._run_row(
+                cursor, nq.NUTANIX_MEM_PEAK_RAW_FILTERED, (dc_code, clusters, start_ts, end_ts)
+            )
+        else:
+            vmw_row = self._run_row(cursor, vq.HYPERCONV_MEM_PEAK_RAW, (dc_wc, start_ts, end_ts))
+            ntx_row = self._run_row(cursor, nq.NUTANIX_MEM_PEAK_RAW, (dc_code, start_ts, end_ts))
+        vmw = self._mem_peak_tuple(vmw_row)
+        ntx = self._mem_peak_tuple(ntx_row)
+        if vmw[0] >= ntx[0]:
+            return vmw
+        return ntx
+
     def get_hyperconv_metrics(self, cursor, dc_wc: str, start_ts, end_ts) -> tuple | None:
         """Return Hyperconverged (non-KM) cluster aggregate row."""
         return self._run_row(cursor, vq.HYPERCONV_METRICS, (dc_wc, start_ts, end_ts))
@@ -719,6 +792,8 @@ LIMIT 20
         self,
         cursor,
         dc_wc: str,
+        start_ts,
+        end_ts,
         *,
         classic_km: bool,
         cluster_filter: list[str] | None = None,
@@ -726,7 +801,7 @@ LIMIT 20
         """Aggregate VM-level CPU/RAM/storage allocation for KM or VMware hyperconv."""
         clusters = cluster_filter or []
         sql = vq.CLASSIC_VM_ALLOCATION_ROWS if classic_km else vq.HYPERCONV_VMWARE_VM_ALLOCATION_ROWS
-        rows = self._run_rows(cursor, sql, (dc_wc, clusters, clusters))
+        rows = self._run_rows(cursor, sql, (dc_wc, start_ts, end_ts, clusters, clusters))
         host_map = self._load_host_ghz_map(cursor)
         return aggregate_vm_allocation(rows, host_map, default_ghz=self._get_default_host_cpu_ghz())
 
@@ -734,10 +809,12 @@ LIMIT 20
         self,
         cursor,
         dc_wc: str,
+        start_ts,
+        end_ts,
         cluster_filter: list[str] | None = None,
     ) -> dict:
         return self._compute_vmware_vm_allocation(
-            cursor, dc_wc, classic_km=True, cluster_filter=cluster_filter
+            cursor, dc_wc, start_ts, end_ts, classic_km=True, cluster_filter=cluster_filter
         )
 
     def _km_datastore_storage_gb(
@@ -770,28 +847,44 @@ LIMIT 20
         self,
         cursor,
         dc_code: str,
+        start_ts,
+        end_ts,
         cluster_filter: list[str] | None = None,
     ) -> tuple:
         """Return (provisioned_gb, used_gb, vcpu_count, mem_alloc_gb) from Nutanix VM metrics."""
         clusters = cluster_filter or []
         if clusters:
-            row = self._run_row(cursor, nq.NUTANIX_VM_STORAGE_FILTERED, (dc_code, clusters))
+            row = self._run_row(
+                cursor,
+                nq.NUTANIX_VM_STORAGE_FILTERED,
+                (dc_code, clusters, start_ts, end_ts, start_ts, end_ts),
+            )
         else:
-            row = self._run_row(cursor, nq.NUTANIX_VM_STORAGE, (dc_code,))
+            row = self._run_row(
+                cursor, nq.NUTANIX_VM_STORAGE, (dc_code, start_ts, end_ts, start_ts, end_ts)
+            )
         return row or (0.0, 0.0, 0, 0.0)
 
     def _compute_nutanix_vm_allocation(
         self,
         cursor,
         dc_code: str,
+        start_ts,
+        end_ts,
         cluster_filter: list[str] | None = None,
     ) -> dict:
         """Aggregate Nutanix VM allocation with host GHz from NetBox inventory."""
         clusters = cluster_filter or []
         if clusters:
-            rows = self._run_rows(cursor, nq.NUTANIX_VM_ALLOCATION_ROWS_FILTERED, (dc_code, clusters))
+            rows = self._run_rows(
+                cursor,
+                nq.NUTANIX_VM_ALLOCATION_ROWS_FILTERED,
+                (dc_code, clusters, start_ts, end_ts, start_ts, end_ts),
+            )
         else:
-            rows = self._run_rows(cursor, nq.NUTANIX_VM_ALLOCATION_ROWS, (dc_code,))
+            rows = self._run_rows(
+                cursor, nq.NUTANIX_VM_ALLOCATION_ROWS, (dc_code, start_ts, end_ts, start_ts, end_ts)
+            )
         host_map = self._load_host_ghz_map(cursor)
         return aggregate_vm_allocation(rows, host_map, default_ghz=self._get_default_host_cpu_ghz())
 
@@ -799,13 +892,17 @@ LIMIT 20
         self,
         cursor,
         dc_code: str,
+        start_ts,
+        end_ts,
         cluster_filter: list[str] | None = None,
     ) -> dict:
         dc_wc = f"%{dc_code}%"
         vmw = self._compute_vmware_vm_allocation(
-            cursor, dc_wc, classic_km=False, cluster_filter=cluster_filter
+            cursor, dc_wc, start_ts, end_ts, classic_km=False, cluster_filter=cluster_filter
         )
-        ntx = self._compute_nutanix_vm_allocation(cursor, dc_code, cluster_filter)
+        ntx = self._compute_nutanix_vm_allocation(
+            cursor, dc_code, start_ts, end_ts, cluster_filter
+        )
         return {
             "stor_provisioned_gb": round(
                 float(vmw.get("stor_provisioned_gb") or 0) + float(ntx.get("stor_provisioned_gb") or 0), 2
@@ -961,7 +1058,12 @@ LIMIT 20
                     avg30 = self._run_row(
                         cur, vq.CLASSIC_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
                     )
-                    storage_vm = self.get_classic_storage_vm(cur, dc_wc, selected_clusters)
+                    storage_vm = self.get_classic_storage_vm(
+                        cur, dc_wc, start_ts, end_ts, selected_clusters
+                    )
+                    mem_peak = self.get_classic_mem_peak_raw(
+                        cur, dc_wc, start_ts, end_ts, cluster_filter=selected_clusters
+                    )
                     unit_prices = self.get_unit_prices_tl(cur, "klasik")
         except OperationalError as exc:
             logger.error("DB unavailable for get_classic_metrics_filtered(%s): %s", dc_code, exc)
@@ -996,7 +1098,7 @@ LIMIT 20
         cl_mem_pct_max = round(float(avg30[3] or 0), 1)
         cl_cpu_pct_min = round(float(avg30[4] or 0), 1)
         cl_mem_pct_min = round(float(avg30[5] or 0), 1)
-        return self._apply_cpu_overalloc_flags({
+        section = self._apply_cpu_overalloc_flags({
             "hosts": cl_hosts,
             "vms": cl_vms,
             "cpu_cap": cl_cpu_cap,
@@ -1019,6 +1121,7 @@ LIMIT 20
             "unit_prices": unit_prices,
             "sellable_multiplier": 3.3,
         })
+        return self._apply_mem_peak_raw(section, mem_peak)
 
     def get_hyperconv_metrics_filtered(
         self, dc_code: str, selected_clusters: list[str] | None, time_range: dict | None = None
@@ -1032,6 +1135,7 @@ LIMIT 20
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
         dc_wc = f"%{dc_code}%"
+        mem_peak = None
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
@@ -1043,7 +1147,12 @@ LIMIT 20
                     hc_avg30 = self._run_row(
                         cur, vq.HYPERCONV_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
                     )
-                    storage_vm = self.get_hyperconv_storage_vm(cur, dc_code, selected_clusters)
+                    storage_vm = self.get_hyperconv_storage_vm(
+                        cur, dc_code, start_ts, end_ts, selected_clusters
+                    )
+                    mem_peak = self.get_hyperconv_mem_peak_raw(
+                        cur, dc_wc, dc_code, start_ts, end_ts, cluster_filter=selected_clusters
+                    )
                     unit_prices = self.get_unit_prices_tl(cur, "hyperconv")
         except OperationalError as exc:
             logger.error("DB unavailable for get_hyperconv_metrics_filtered(%s): %s", dc_code, exc)
@@ -1085,7 +1194,7 @@ LIMIT 20
             hc_cpu_pct = hc_cpu_pct_cap
         if hc_mem_pct_max <= 0 and hc_mem_pct_cap > 0:
             hc_mem_pct = hc_mem_pct_cap
-        return self._apply_cpu_overalloc_flags({
+        section = self._apply_cpu_overalloc_flags({
             "hosts": hc_hosts,
             "vms": hc_vms,
             "cpu_cap": hc_cpu_cap,
@@ -1108,6 +1217,7 @@ LIMIT 20
             "unit_prices": unit_prices,
             "sellable_multiplier": 3.3,
         })
+        return self._apply_mem_peak_raw(section, mem_peak)
 
     # ------------------------------------------------------------------
     # Host-level compute rows (DC view Hosts panel + host-based sellable)
@@ -1199,7 +1309,9 @@ LIMIT 20
                         cur, vq.CLASSIC_HOST_ROWS, (dc_wc, clusters, clusters, start_ts, end_ts)
                     )
                     alloc_rows = self._run_rows(
-                        cur, vq.CLASSIC_HOST_VM_ALLOCATION, (dc_wc, clusters, clusters)
+                        cur,
+                        vq.CLASSIC_HOST_VM_ALLOCATION,
+                        (dc_wc, start_ts, end_ts, clusters, clusters),
                     )
                     host_map = self._load_host_ghz_map(cur)
         except OperationalError as exc:
@@ -1251,7 +1363,9 @@ LIMIT 20
                         cur, nq.NUTANIX_HOST_ROWS, (dc_code, clusters, clusters, start_ts, end_ts)
                     )
                     alloc_rows = self._run_rows(
-                        cur, nq.NUTANIX_HOST_VM_ALLOCATION, (dc_code, clusters, clusters)
+                        cur,
+                        nq.NUTANIX_HOST_VM_ALLOCATION,
+                        (dc_code, clusters, clusters, start_ts, end_ts, start_ts, end_ts),
                     )
                     host_map = self._load_host_ghz_map(cur)
         except OperationalError as exc:
@@ -1339,6 +1453,8 @@ LIMIT 20
         hyperconv_avg30=None,
         classic_storage_vm=None,
         hyperconv_storage_vm=None,
+        classic_mem_peak=None,
+        hyperconv_mem_peak=None,
         classic_unit_prices=None,
         hyperconv_unit_prices=None,
         power_unit_prices=None,
@@ -1479,6 +1595,7 @@ LIMIT 20
             "unit_prices": classic_unit_prices or {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
             "sellable_multiplier": sellable_multiplier,
         })
+        classic_section = DatabaseService._apply_mem_peak_raw(classic_section, classic_mem_peak)
         hyperconv_section = DatabaseService._apply_cpu_overalloc_flags({
             "hosts": hc_hosts, "vms": hc_vms,
             "cpu_cap": hc_cpu_cap, "cpu_used": hc_cpu_used, "cpu_pct": hc_cpu_pct,
@@ -1498,6 +1615,7 @@ LIMIT 20
             "unit_prices": hyperconv_unit_prices or {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0},
             "sellable_multiplier": sellable_multiplier,
         })
+        hyperconv_section = DatabaseService._apply_mem_peak_raw(hyperconv_section, hyperconv_mem_peak)
         return {
             "meta": {
                 "name": dc_code,
@@ -1675,8 +1793,16 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                         classic_avg30=self.get_classic_avg30(cur, dc_wc, start_ts, end_ts),
                         hyperconv_row=self.get_hyperconv_metrics(cur, dc_wc, start_ts, end_ts),
                         hyperconv_avg30=self.get_hyperconv_avg30(cur, dc_wc, start_ts, end_ts),
-                        classic_storage_vm=self.get_classic_storage_vm(cur, dc_wc),
-                        hyperconv_storage_vm=self.get_hyperconv_storage_vm(cur, dc_code),
+                        classic_storage_vm=self.get_classic_storage_vm(cur, dc_wc, start_ts, end_ts),
+                        hyperconv_storage_vm=self.get_hyperconv_storage_vm(
+                            cur, dc_code, start_ts, end_ts
+                        ),
+                        classic_mem_peak=self.get_classic_mem_peak_raw(
+                            cur, dc_wc, start_ts, end_ts
+                        ),
+                        hyperconv_mem_peak=self.get_hyperconv_mem_peak_raw(
+                            cur, dc_wc, dc_code, start_ts, end_ts
+                        ),
                         classic_unit_prices=self.get_unit_prices_tl(cur, "klasik"),
                         hyperconv_unit_prices=self.get_unit_prices_tl(cur, "hyperconv"),
                         power_unit_prices=self.get_unit_prices_tl(cur, "power"),
@@ -2141,12 +2267,20 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                         dc_wc = f"%{dc}%"
                         if dc not in results:
                             continue
-                        classic_vm = self.get_classic_storage_vm(cur, dc_wc)
-                        hyper_vm = self.get_hyperconv_storage_vm(cur, dc)
+                        classic_vm = self.get_classic_storage_vm(cur, dc_wc, start_ts, end_ts)
+                        hyper_vm = self.get_hyperconv_storage_vm(cur, dc, start_ts, end_ts)
+                        cl_peak = self.get_classic_mem_peak_raw(cur, dc_wc, start_ts, end_ts)
+                        hc_peak = self.get_hyperconv_mem_peak_raw(
+                            cur, dc_wc, dc, start_ts, end_ts
+                        )
                         results[dc]["classic"].update(classic_vm)
                         results[dc]["hyperconv"].update(hyper_vm)
                         results[dc]["classic"] = self._apply_cpu_overalloc_flags(results[dc]["classic"])
                         results[dc]["hyperconv"] = self._apply_cpu_overalloc_flags(results[dc]["hyperconv"])
+                        results[dc]["classic"] = self._apply_mem_peak_raw(results[dc]["classic"], cl_peak)
+                        results[dc]["hyperconv"] = self._apply_mem_peak_raw(
+                            results[dc]["hyperconv"], hc_peak
+                        )
         except OperationalError as exc:
             logger.warning("Batch VM allocation enrichment failed: %s", exc)
 

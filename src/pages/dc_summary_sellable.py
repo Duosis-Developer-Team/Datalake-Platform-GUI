@@ -9,7 +9,7 @@ from dash import html
 from dash_iconify import DashIconify
 
 from src.services import api_client as api
-from src.utils.format_units import smart_cpu, smart_memory, smart_storage
+from src.utils.format_units import fmt_tl, fmt_tl_range, smart_cpu, smart_memory, smart_storage
 from src.utils.virt_sellable_aggregate import (
     collect_virt_sellable_panels,
     merge_power_panels_for_summary,
@@ -35,23 +35,8 @@ _VIRT_FAMILY_LABELS = {
 }
 
 
-def _fmt_tl(value: float | None) -> str:
-    if value is None:
-        return "—"
-    v = float(value or 0)
-    if v >= 1_000_000:
-        return f"{v / 1_000_000:.2f} Milyon TL"
-    if v >= 1_000:
-        return f"{v / 1_000:.1f} Bin TL"
-    return f"{v:,.0f} TL"
-
-
-def _fmt_tl_range(lo: float | None, hi: float | None) -> str:
-    if lo is None and hi is None:
-        return "—"
-    if lo is not None and hi is not None and abs(hi - lo) > 1e-6:
-        return f"{_fmt_tl(lo)} – {_fmt_tl(hi)}"
-    return _fmt_tl(lo if lo is not None else hi)
+_fmt_tl = fmt_tl
+_fmt_tl_range = fmt_tl_range
 
 
 def _section_title(title: str, subtitle: str | None = None) -> html.Div:

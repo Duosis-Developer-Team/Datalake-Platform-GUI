@@ -21,6 +21,13 @@ class TestVmwareUtilStatsSql(unittest.TestCase):
     def test_vm_allocation_rows_include_cluster_filter(self):
         self.assertIn("cardinality(%s::text[])", vq.CLASSIC_VM_ALLOCATION_ROWS)
         self.assertIn("number_of_cpus", vq.CLASSIC_VM_ALLOCATION_ROWS)
+        self.assertIn("timestamp BETWEEN %s AND %s", vq.CLASSIC_VM_ALLOCATION_ROWS)
+        self.assertNotIn("INTERVAL '24 hours'", vq.CLASSIC_VM_ALLOCATION_ROWS)
+
+    def test_mem_peak_raw_aggregates_timestamp_sums(self):
+        self.assertIn("GROUP BY timestamp", vq.CLASSIC_MEM_PEAK_RAW)
+        self.assertIn("SUM(memory_used_gb)", vq.CLASSIC_MEM_PEAK_RAW)
+        self.assertIn("ORDER BY used_gb DESC", vq.CLASSIC_MEM_PEAK_RAW)
 
     def test_netbox_host_query_present(self):
         self.assertIn("discovery_netbox_inventory_device", vq.NETBOX_HOST_CPU_STRINGS)

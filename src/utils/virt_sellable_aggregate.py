@@ -58,7 +58,7 @@ def collect_virt_sellable_panels(
         return chunk if isinstance(chunk, list) else []
 
     families: tuple[str, ...] = ("virt_classic", "virt_hyperconverged", *VIRT_POWER_FAMILIES)
-    configured_family_workers = int(os.getenv("VIRT_SELLABLE_FAMILY_WORKERS", "1") or "1")
+    configured_family_workers = int(os.getenv("VIRT_SELLABLE_FAMILY_WORKERS", "4") or "4")
     workers = max_family_workers if max_family_workers is not None else configured_family_workers
     workers = min(max(1, workers), len(families))
     if workers == 1:

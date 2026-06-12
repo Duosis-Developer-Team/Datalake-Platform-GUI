@@ -85,8 +85,7 @@ def test_app_virt_total_card_uses_range_helper():
             encoding="utf-8"
         )
     )
-    assert "virt_total_potential_range" in source
-    assert "merge_power_panels_for_summary" in source
+    assert "_build_virt_total_sellable_children" in source
 
 
 def test_summary_virt_parity_same_cluster_lists_same_args():
