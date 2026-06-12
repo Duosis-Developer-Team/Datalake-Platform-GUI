@@ -25,7 +25,16 @@
   function attachAutoScroll() {
     var el = messagesEl();
     if (!el || el.__cbScroll) return;
-    var toBottom = function () { el.scrollTop = el.scrollHeight; };
+    var toBottom = function () {
+      el.scrollTop = el.scrollHeight;
+      var tables = el.querySelectorAll(".chatbot-table-scroll, .chatbot-markdown table");
+      for (var i = 0; i < tables.length; i++) {
+        var t = tables[i];
+        if (t.scrollWidth > t.clientWidth) {
+          t.scrollLeft = 0;
+        }
+      }
+    };
     var obs = new MutationObserver(toBottom);
     obs.observe(el, { childList: true, subtree: true });
     el.__cbScroll = obs;

@@ -241,13 +241,92 @@ def _format_datacenter_ranking(outcome) -> str:
     return "\n".join(lines)
 
 
-def format_from_analysis(outcome) -> str:
-    """Deterministic operational answer built straight from the analysis summary.
+def _scalar(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.1f}"
+    return str(value)
 
-    Used by the fallback guard: when tools returned rows but the model gave no
-    usable answer (denied data, or errored/empty), we build the answer ourselves
-    so we never show a generic error or deny existing data.
-    """
+
+def _unwrap_summary(summary: Any) -> dict[str, Any]:
+    if not isinstance(summary, dict):
+        return {}
+    if "data" in summary and isinstance(summary["data"], dict):
+        return summary["data"]
+    return summary
+
+
+def format_dashboard_overview(outcome) -> Optional[dict[str, Any]]:
+    """Deterministic dashboard overview answer with structured table blocks."""
+    overview_result = None
+    for r in outcome.results:
+        if r.name == "get_dashboard_overview" and r.status == "success":
+            overview_result = r
+            break
+    if overview_result is None:
+        return None
+
+    data = _unwrap_summary(overview_result.summary)
+    overview = data.get("overview") if isinstance(data.get("overview"), dict) else {}
+    platforms = data.get("platforms") if isinstance(data.get("platforms"), dict) else {}
+
+    inv = ""
+    if outcome.analysis and outcome.analysis.extra:
+        inv = outcome.analysis.extra.get("investigation_summary") or ""
+
+    analysis_lines = ["**Analiz:**"]
+    if inv:
+        analysis_lines.append(f"- {inv}")
+    analysis_lines.append("- Global dashboard overview verisi alındı.")
+    if overview:
+        analysis_lines.append(
+            f"- Toplam {overview.get('dc_count', '-')} datacenter, "
+            f"{overview.get('total_hosts', '-')} host, {overview.get('total_vms', '-')} VM."
+        )
+
+    conclusion = (
+        f"**Sonuç:** Platform genelinde {overview.get('total_vms', '-')} VM ve "
+        f"{overview.get('total_hosts', '-')} host izleniyor; platform kırılımı tabloda."
+    )
+
+    columns = ["Platform", "Host", "VM", "CPU Used", "CPU Cap", "RAM Used GB", "RAM Cap GB"]
+    rows: list[list[str]] = []
+    for name, metrics in sorted(platforms.items()):
+        if not isinstance(metrics, dict):
+            continue
+        rows.append(
+            [
+                str(name),
+                _scalar(metrics.get("host_count") or metrics.get("hosts")),
+                _scalar(metrics.get("vm_count") or metrics.get("vms")),
+                _scalar(metrics.get("cpu_used") or metrics.get("used_cpu")),
+                _scalar(metrics.get("cpu_cap") or metrics.get("cpu_capacity")),
+                _scalar(metrics.get("ram_used_gb") or metrics.get("memory_used_gb")),
+                _scalar(metrics.get("ram_cap_gb") or metrics.get("memory_cap_gb")),
+            ]
+        )
+
+    answer = "\n".join(analysis_lines + ["", conclusion])
+    blocks: list[dict[str, Any]] = [
+        {"type": "markdown", "content": answer},
+    ]
+    if rows:
+        blocks.append({"type": "table", "columns": columns, "rows": rows})
+    blocks.append(
+        {
+            "type": "markdown",
+            "content": f"**Kaynak:** {overview_result.source or 'get_dashboard_overview'}",
+        }
+    )
+    return {"answer": answer, "blocks": blocks}
+
+
+def format_from_analysis(outcome) -> str:
+    """Deterministic operational answer built straight from the analysis summary."""
+    formatted = format_dashboard_overview(outcome)
+    if formatted:
+        return formatted["answer"]
     a = outcome.analysis
     if a and getattr(a, "extra", None) and "datacenter_ranking" in (a.extra or {}):
         return _format_datacenter_ranking(outcome)

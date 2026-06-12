@@ -72,6 +72,13 @@ class ClarificationBlock(BaseModel):
     allow_free_text: bool = True
 
 
+class ResponseBlock(BaseModel):
+    type: Literal["markdown", "table", "kpi_strip"] = "markdown"
+    content: Optional[str] = None
+    columns: Optional[list[str]] = None
+    rows: Optional[list[list[str]]] = None
+
+
 class ChatResponse(BaseModel):
     answer: str
     model: str
@@ -83,6 +90,7 @@ class ChatResponse(BaseModel):
     investigation_summary: Optional[str] = None
     response_type: Literal["answer", "clarification"] = "answer"
     clarification: Optional[ClarificationBlock] = None
+    blocks: list[ResponseBlock] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #

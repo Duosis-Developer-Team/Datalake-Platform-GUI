@@ -26,9 +26,11 @@ from app.models.schemas import (
     ChatRequest,
     ChatResponse,
     ClarificationBlock,
+    ResponseBlock,
     ToolCallSummary,
 )
 from app.services import agent_loop, context_builder, log_client, scope_guard, tool_orchestrator
+from app.services import answer_reviewer
 from app.services.audit_service import AuditRecord, record
 from app.services.llm_client import LLMError, get_llm_client
 
@@ -283,15 +285,16 @@ def _handle(
             llm_failed = True
 
     inv_ran = bool(investigation_summary)
-    if outcome is not None and (
-        (_has_rows(tool_results) and (llm_failed or _denies_data(answer)))
-        or (inv_ran and _denies_data(answer) and not _has_rows(tool_results))
-    ):
-        logger.info("deterministic fallback formatter used (llm_failed=%s)", llm_failed)
-        answer = context_builder.format_from_analysis(outcome)
-        if audit.status == "llm_error":
+    blocks: list[ResponseBlock] = []
+    if outcome is not None:
+        answer, blocks = answer_reviewer.review(
+            answer,
+            outcome,
+            llm_failed=llm_failed,
+        )
+        if audit.status == "llm_error" and blocks:
             audit.status = "llm_error_fallback"
-        else:
+        elif inv_ran and _denies_data(answer) and not _has_rows(tool_results) and blocks:
             audit.error_type = "missing_data_guard"
 
     audit.latency_ms = int((time.monotonic() - started) * 1000)
@@ -305,6 +308,7 @@ def _handle(
         tool_call_count=outcome.tool_call_count if outcome else None,
         investigation_summary=investigation_summary,
         response_type="answer",
+        blocks=blocks,
     )
     return _finish(background_tasks, audit, message, req, response, outcome=outcome)
 

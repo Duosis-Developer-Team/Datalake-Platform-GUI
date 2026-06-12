@@ -174,6 +174,25 @@ def _choice_button(choice: dict) -> Any:
     )
 
 
+def _render_block(block: dict) -> Any:
+    btype = str(block.get("type") or "markdown")
+    if btype == "table":
+        cols = block.get("columns") or []
+        rows = block.get("rows") or []
+        header = html.Tr([html.Th(c) for c in cols]) if cols else None
+        body = [
+            html.Tr([html.Td(cell) for cell in row])
+            for row in rows
+            if isinstance(row, (list, tuple))
+        ]
+        table = html.Table(
+            [header, *body] if header else body,
+            className="chatbot-data-table",
+        )
+        return html.Div(table, className="chatbot-table-scroll")
+    return dcc.Markdown(str(block.get("content") or ""), className="chatbot-markdown", link_target="_blank")
+
+
 def _bubble(
     role: str,
     content: str,
@@ -181,6 +200,7 @@ def _bubble(
     error: bool = False,
     clarification: Optional[dict] = None,
     response_type: Optional[str] = None,
+    blocks: Optional[list] = None,
 ) -> Any:
     if role == "user":
         return html.Div(
@@ -188,7 +208,11 @@ def _bubble(
             className="chatbot-row chatbot-row-user",
         )
     cls = "chatbot-bubble-assistant" + (" chatbot-bubble-error" if error else "")
-    inner: list[Any] = [dcc.Markdown(content, className="chatbot-markdown", link_target="_blank")]
+    inner: list[Any] = []
+    if blocks:
+        inner.extend(_render_block(b) for b in blocks if isinstance(b, dict))
+    elif content:
+        inner.append(dcc.Markdown(content, className="chatbot-markdown", link_target="_blank"))
     if response_type == "clarification" and isinstance(clarification, dict):
         choices = clarification.get("choices") or []
         choice_nodes = [
@@ -247,6 +271,7 @@ def _render_messages(history: Optional[list], pathname: Optional[str] = None) ->
             bool(m.get("error")),
             m.get("clarification"),
             m.get("response_type"),
+            m.get("blocks"),
         )
         for m in history
     ]
@@ -291,6 +316,14 @@ def build_chatbot_shell() -> Any:
                                         ]
                                     ),
                                 ],
+                            ),
+                            html.Button(
+                                DashIconify(icon="mdi:arrow-expand", width=20),
+                                id="chatbot-expand-button",
+                                className="chatbot-expand-button",
+                                n_clicks=0,
+                                title="Genişlet",
+                                **{"aria-label": "Sohbet panelini genişlet"},
                             ),
                             html.Button(
                                 DashIconify(icon="mdi:close", width=20),
@@ -348,6 +381,7 @@ def register_chatbot_callbacks(app) -> None:
         Output("chatbot-open-store", "data"),
         Output("chatbot-panel", "className"),
         Output("chatbot-fab", "className"),
+        Output("chatbot-expanded-store", "data", allow_duplicate=True),
         Output("chatbot-history-store", "data", allow_duplicate=True),
         Output("chatbot-messages", "children", allow_duplicate=True),
         Output("chatbot-pending-store", "data", allow_duplicate=True),
@@ -371,6 +405,7 @@ def register_chatbot_callbacks(app) -> None:
                 open_,
                 panel_cls,
                 fab_cls,
+                False,
                 cleared["history"],
                 cleared["messages"],
                 cleared["pending"],
@@ -383,7 +418,22 @@ def register_chatbot_callbacks(app) -> None:
             raise PreventUpdate
         panel_cls = "chatbot-panel open" if open_ else "chatbot-panel"
         fab_cls = "chatbot-fab active" if open_ else "chatbot-fab"
-        return open_, panel_cls, fab_cls, no_update, no_update, no_update, no_update, no_update
+        return open_, panel_cls, fab_cls, no_update, no_update, no_update, no_update, no_update, no_update
+
+    @app.callback(
+        Output("chatbot-expanded-store", "data"),
+        Output("chatbot-panel", "className", allow_duplicate=True),
+        Input("chatbot-expand-button", "n_clicks"),
+        State("chatbot-expanded-store", "data"),
+        State("chatbot-open-store", "data"),
+        prevent_initial_call=True,
+    )
+    def _toggle_expand(_n, expanded, is_open):
+        expanded = not bool(expanded)
+        base = "chatbot-panel open" if is_open else "chatbot-panel"
+        if expanded and is_open:
+            base += " chatbot-panel-expanded"
+        return expanded, base
 
     @app.callback(
         Output("chatbot-context-store", "data"),
@@ -456,6 +506,8 @@ def register_chatbot_callbacks(app) -> None:
                 assistant_msg["response_type"] = "clarification"
                 if resp.get("clarification"):
                     assistant_msg["clarification"] = resp.get("clarification")
+            if resp.get("blocks"):
+                assistant_msg["blocks"] = resp.get("blocks")
             new_history = new_history + [assistant_msg]
         except Exception as exc:
             logger.warning("chatbot send failed: %s", exc)

@@ -124,6 +124,37 @@
 .chatbot-close-button:hover {
   background: rgba(255, 255, 255, 0.3);
 }
+.chatbot-expand-button {
+  background: rgba(255, 255, 255, 0.16);
+  border: none;
+  color: #ffffff;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+  flex: 0 0 auto;
+  margin-left: auto;
+  margin-right: 8px;
+}
+.chatbot-expand-button:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* ---- Expanded panel (wider drawer) ---- */
+.chatbot-panel-expanded {
+  width: min(960px, 68vw);
+  height: min(820px, 90vh);
+}
+.chatbot-panel-expanded .chatbot-bubble-assistant {
+  max-width: 100%;
+}
+.chatbot-panel-expanded .chatbot-messages {
+  overflow-x: auto;
+}
 
 /* ---- Messages (scroll container) ---- */
 .chatbot-messages {
@@ -197,6 +228,10 @@
   border-bottom-left-radius: 6px;
   box-shadow: 0 4px 14px rgba(112, 144, 176, 0.10);
 }
+.chatbot-bubble-assistant:has(table),
+.chatbot-bubble-assistant:has(.chatbot-table-scroll) {
+  max-width: 95%;
+}
 .chatbot-bubble-error {
   background: #fff5f5;
   border-color: #ffd6d6;
@@ -235,6 +270,47 @@
   border-radius: 10px;
   overflow-x: auto;
   font-size: 12.5px;
+}
+.chatbot-markdown table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+.chatbot-markdown th,
+.chatbot-markdown td {
+  white-space: nowrap;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid #e9edf7;
+}
+.chatbot-markdown th {
+  background: #f4f7fe;
+  color: #2b3674;
+  font-weight: 600;
+}
+.chatbot-table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 8px 0;
+}
+.chatbot-data-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: max-content;
+}
+.chatbot-data-table th,
+.chatbot-data-table td {
+  white-space: nowrap;
+  padding: 6px 10px;
+  border: 1px solid #e9edf7;
+  text-align: left;
+}
+.chatbot-data-table th {
+  background: #f4f7fe;
+  color: #2b3674;
+  font-weight: 600;
 }
 .chatbot-sources {
   margin-top: 8px;

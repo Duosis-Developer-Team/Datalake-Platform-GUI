@@ -166,7 +166,8 @@ def run(
         trace = react.investigation_trace
         outcome.investigation_trace = trace
         for r in outcome.results:
-            executed.add(_dedupe_key(r.name, {}))
+            dc = _dc_from_result(r)
+            executed.add(_dedupe_key(r.name, {"dc_code": dc} if dc else {}))
         total = len(trace.entries)
 
     # --- Deterministic follow-up loop ------------------------------------------

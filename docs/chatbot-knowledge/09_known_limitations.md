@@ -12,6 +12,8 @@
 - Some write endpoints exist (refresh/cache/config) but chatbot should remain read-only.
 - DB access is read-only: only allowlisted query templates run (NO LLM-generated SQL), with a row cap and statement timeout enforced.
 - There is no dedicated power-cluster endpoint or tool. `/datacenters/{dc_code}/clusters/power` does not exist and there is no `get_dc_power_context` tool. IBM Power context is part of the datacenter detail (`get_datacenter_detail` → `/api/v1/datacenters/{dc_code}`).
+- **UI table readability:** narrow panel (400px) truncates markdown tables; use the **Genişlet** drawer (~68vw) or structured `blocks` with native `html.Table` rendering. See [[15_chatbot_evaluation_harness.md]] and `format_dashboard_overview`.
+- **datalake-mcp:** tools can run in-process (`CHATBOT_TOOL_BACKEND=local`) or via optional MCP server. See [[16_datalake_mcp.md]].
 
 ## When to ask clarification
 

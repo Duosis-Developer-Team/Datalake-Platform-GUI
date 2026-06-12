@@ -292,6 +292,7 @@ app.layout = dmc.MantineProvider(
         dcc.Store(id="auth-user-store", data=None),
         dcc.Store(id="auth-permissions-store", data=None),
         dcc.Store(id="chatbot-open-store", data=False, storage_type="session"),
+        dcc.Store(id="chatbot-expanded-store", data=False, storage_type="session"),
         dcc.Store(id="chatbot-history-store", data=[], storage_type="session"),
         dcc.Store(id="chatbot-context-store", data={}, storage_type="session"),
         dcc.Store(id="chatbot-pending-store", data=None, storage_type="session"),

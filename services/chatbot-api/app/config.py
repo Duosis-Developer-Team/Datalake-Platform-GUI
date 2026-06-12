@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     chatbot_log_api_url: str = "http://chatbot-log-api:8000"
     chatbot_log_api_key: str = ""
     chatbot_log_retention_days: int = 90
+    chatbot_tool_backend: str = "local"  # local | mcp
+    datalake_mcp_url: str = "http://datalake-mcp:8010"
+    datalake_mcp_timeout_seconds: float = 30.0
 
     # CPU analysis thresholds (percent) — tunable via env.
     chatbot_cpu_avg_warning_threshold: float = 70.0
