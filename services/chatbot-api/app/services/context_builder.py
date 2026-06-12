@@ -292,20 +292,42 @@ def format_dashboard_overview(outcome) -> Optional[dict[str, Any]]:
 
     columns = ["Platform", "Host", "VM", "CPU Used", "CPU Cap", "RAM Used GB", "RAM Cap GB"]
     rows: list[list[str]] = []
-    for name, metrics in sorted(platforms.items()):
+
+    platform_rows = [
+        ("classic (KM/VMware)", data.get("classic_totals")),
+        ("hyperconverged (Nutanix)", data.get("hyperconv_totals")),
+        ("ibm", data.get("ibm_totals")),
+    ]
+    for label, metrics in platform_rows:
         if not isinstance(metrics, dict):
             continue
         rows.append(
             [
-                str(name),
-                _scalar(metrics.get("host_count") or metrics.get("hosts")),
-                _scalar(metrics.get("vm_count") or metrics.get("vms")),
-                _scalar(metrics.get("cpu_used") or metrics.get("used_cpu")),
-                _scalar(metrics.get("cpu_cap") or metrics.get("cpu_capacity")),
-                _scalar(metrics.get("ram_used_gb") or metrics.get("memory_used_gb")),
-                _scalar(metrics.get("ram_cap_gb") or metrics.get("memory_cap_gb")),
+                label,
+                "-",
+                "-",
+                _scalar(metrics.get("cpu_used")),
+                _scalar(metrics.get("cpu_cap") or metrics.get("cpu_assigned")),
+                _scalar(metrics.get("mem_used") or metrics.get("mem_assigned")),
+                _scalar(metrics.get("mem_cap") or metrics.get("mem_total")),
             ]
         )
+
+    if not rows:
+        for name, metrics in sorted(platforms.items()):
+            if not isinstance(metrics, dict) or metrics.get("_keys"):
+                continue
+            rows.append(
+                [
+                    str(name),
+                    _scalar(metrics.get("host_count") or metrics.get("hosts")),
+                    _scalar(metrics.get("vm_count") or metrics.get("vms")),
+                    _scalar(metrics.get("cpu_used") or metrics.get("used_cpu")),
+                    _scalar(metrics.get("cpu_cap") or metrics.get("cpu_capacity")),
+                    _scalar(metrics.get("ram_used_gb") or metrics.get("memory_used_gb")),
+                    _scalar(metrics.get("ram_cap_gb") or metrics.get("memory_cap_gb")),
+                ]
+            )
 
     answer = "\n".join(analysis_lines + ["", conclusion])
     blocks: list[dict[str, Any]] = [
@@ -322,16 +344,50 @@ def format_dashboard_overview(outcome) -> Optional[dict[str, Any]]:
     return {"answer": answer, "blocks": blocks}
 
 
-def format_from_analysis(outcome) -> str:
+def is_dashboard_overview_intent(outcome, user_message: str = "") -> bool:
+    """True when the user question targets global dashboard / platform breakdown."""
+    msg = (user_message or "").lower().strip()
+    if not msg:
+        return False
+    keywords = (
+        "kapasite",
+        "overview",
+        "dashboard",
+        "platform",
+        "genel",
+        "özet",
+        "ozet",
+        "dağılım",
+        "dagilim",
+        "platform-baz",
+        "platform baz",
+        "kırılım",
+        "kirilim",
+    )
+    if any(k in msg for k in keywords):
+        return True
+    plan = getattr(outcome, "plan", None)
+    if plan is None:
+        return False
+    metric_key = getattr(plan, "metric_key", None) or ""
+    return metric_key in ("global_platform_overview", "global_capacity_overview")
+
+
+def format_from_analysis(outcome, *, user_message: str = "") -> str:
     """Deterministic operational answer built straight from the analysis summary."""
-    formatted = format_dashboard_overview(outcome)
-    if formatted:
-        return formatted["answer"]
     a = outcome.analysis
     if a and getattr(a, "extra", None) and "datacenter_ranking" in (a.extra or {}):
         return _format_datacenter_ranking(outcome)
     if a and getattr(a, "extra", None) and "db_only_count" in a.extra:
         return _format_cluster_diff(outcome)
+    if is_dashboard_overview_intent(outcome, user_message):
+        formatted = format_dashboard_overview(outcome)
+        if formatted and any(
+            r.name == "get_dashboard_overview" and r.status == "success" for r in outcome.results
+        ):
+            overview_only = sum(1 for r in outcome.results if r.status == "success") <= 2
+            if overview_only:
+                return formatted["answer"]
     sources = sorted({r.source for r in outcome.results if r.status == "success" and r.source})
     lines: list[str] = []
     inv_summary = ""

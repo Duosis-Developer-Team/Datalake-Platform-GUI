@@ -291,6 +291,7 @@ def _handle(
             answer,
             outcome,
             llm_failed=llm_failed,
+            user_message=message,
         )
         if audit.status == "llm_error" and blocks:
             audit.status = "llm_error_fallback"
