@@ -121,6 +121,7 @@ from src.pages.dc_view import (
     _build_sellable_inline_kpi,
     _build_virt_subtab_stack,
     _build_virt_total_sellable_children,
+    build_virt_nested_subtab_panel,
     _sellable_card_children,
     _DC_ICONS,
 )
@@ -1014,24 +1015,9 @@ def mount_virt_nested_subtab(active_tab, ctx, mounted_tabs, time_range):
     if not dc_id:
         raise dash.exceptions.PreventUpdate
 
-    tr = time_range or default_time_range()
-    data = api.get_dc_details(dc_id, tr)
-    stack_kwargs = {
-        "dc_id": dc_id,
-        "classic": data.get("classic", {}),
-        "hyperconv": data.get("hyperconv", {}),
-        "power": data.get("power", {}),
-        "energy": data.get("energy", {}),
-        "classic_clusters": ctx.get("classic_clusters") or [],
-        "hyperconv_clusters": ctx.get("hyperconv_clusters") or [],
-        "storage_capacity": api.get_dc_storage_capacity(dc_id, tr),
-        "storage_performance": api.get_dc_storage_performance(dc_id, tr),
-        "san_bottleneck": api.get_dc_san_bottleneck(dc_id, tr),
-        "show_virt_hosts": bool(ctx.get("show_virt_hosts")),
-    }
-    stack = _build_virt_subtab_stack(active_tab, **stack_kwargs)
-    panel = dmc.Stack(gap="lg", children=[c for c in stack if c is not None])
-    mounted.append(active_tab)
+    panel, mount_ok = build_virt_nested_subtab_panel(active_tab, ctx, time_range)
+    if mount_ok:
+        mounted.append(active_tab)
 
     classic_out = dash.no_update
     hyper_out = dash.no_update

@@ -1811,6 +1811,54 @@ def _build_virt_subtab_stack(
     ]
 
 
+def _virt_mount_error_panel(active_tab: str, message: str) -> dmc.Stack:
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            dmc.Alert(
+                title=f"Failed to load virtualization tab ({active_tab})",
+                color="red",
+                children=message,
+            ),
+        ],
+    )
+
+
+def build_virt_nested_subtab_panel(
+    active_tab: str,
+    ctx: dict,
+    time_range: dict | None,
+) -> tuple[dmc.Stack, bool]:
+    """Build lazy Virt nested tab content. Returns (panel, mount_succeeded)."""
+    dc_id = str(ctx.get("dc_id") or "")
+    tr = time_range or default_time_range()
+    try:
+        data = api.get_dc_details(dc_id, tr)
+        stack_kwargs = {
+            "dc_id": dc_id,
+            "classic": data.get("classic", {}),
+            "hyperconv": data.get("hyperconv", {}),
+            "power": data.get("power", {}),
+            "energy": data.get("energy", {}),
+            "classic_clusters": ctx.get("classic_clusters") or [],
+            "hyperconv_clusters": ctx.get("hyperconv_clusters") or [],
+            "storage_capacity": api.get_dc_storage_capacity(dc_id, tr),
+            "storage_performance": api.get_dc_storage_performance(dc_id, tr),
+            "san_bottleneck": api.get_dc_san_bottleneck(dc_id, tr),
+            "show_virt_hosts": bool(ctx.get("show_virt_hosts")),
+        }
+        stack = _build_virt_subtab_stack(active_tab, **stack_kwargs)
+        panel = dmc.Stack(gap="lg", children=[c for c in stack if c is not None])
+        return panel, True
+    except Exception as exc:
+        logging.getLogger(__name__).exception(
+            "build_virt_nested_subtab_panel failed tab=%s dc=%s",
+            active_tab,
+            dc_id,
+        )
+        return _virt_mount_error_panel(active_tab, str(exc)), False
+
+
 def _build_sellable_inline_kpi(
     dc_id: str | None,
     families: list[str] | str,
@@ -4782,7 +4830,14 @@ def build_dc_view(
         return dmc.TabsPanel(
             value=tab_key,
             pt="lg",
-            children=html.Div(id=f"virt-subtab-lazy-{tab_key}"),
+            children=dcc.Loading(
+                id=f"virt-subtab-lazy-loading-{tab_key}",
+                type="circle",
+                color="#4318FF",
+                delay_show=250,
+                overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
+                children=html.Div(id=f"virt-subtab-lazy-{tab_key}"),
+            ),
         )
 
     page = html.Div([

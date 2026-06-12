@@ -267,3 +267,108 @@ def test_build_dc_lazy_tab_panel_virt_no_name_error():
         )
 
     assert panel is not None
+
+
+def test_build_virt_subtab_stack_hyperconv_no_name_error():
+    from dash import html
+
+    from src.pages.dc_view import _build_virt_subtab_stack
+
+    with patch("src.pages.dc_view._build_sellable_inline_kpi", return_value=html.Div(id="sellable-stub")), patch(
+        "src.pages.dc_view._build_compute_tab",
+        return_value=html.Div(id="compute-stub"),
+    ):
+        stack = _build_virt_subtab_stack(
+            "hyperconv",
+            dc_id="DC13",
+            classic={},
+            hyperconv={"hosts": 2, "cpu_cap": 20, "cpu_used": 10, "mem_cap": 200, "mem_used": 100},
+            power={},
+            energy={},
+            classic_clusters=[],
+            hyperconv_clusters=["KM-1", "KM-2"],
+            storage_capacity=None,
+            storage_performance=None,
+            san_bottleneck=None,
+            show_virt_hosts=False,
+        )
+
+    assert stack
+    selector = getattr(stack[0], "children", None)
+    assert getattr(selector, "id", None) == "virt-hyperconv-cluster-selector"
+
+
+def test_build_virt_subtab_stack_power_renders():
+    from dash import html
+
+    from src.pages.dc_view import _build_virt_subtab_stack
+
+    with patch("src.pages.dc_view._build_sellable_inline_kpi", return_value=html.Div(id="sellable-stub")), patch(
+        "src.pages.dc_view._build_power_tab",
+        return_value=html.Div(id="power-stub"),
+    ):
+        stack = _build_virt_subtab_stack(
+            "power",
+            dc_id="DC13",
+            classic={},
+            hyperconv={},
+            power={"hosts": 4, "vios": 8, "lpar_count": 12},
+            energy={},
+            classic_clusters=[],
+            hyperconv_clusters=[],
+            storage_capacity={"systems": []},
+            storage_performance={"series": []},
+            san_bottleneck={"issues": []},
+            show_virt_hosts=False,
+        )
+
+    assert len(stack) == 2
+    assert getattr(stack[0], "id", None) == "power-stub"
+
+
+def test_build_virt_nested_subtab_panel_success_hyperconv():
+    from dash import html
+
+    from src.pages.dc_view import build_virt_nested_subtab_panel
+
+    ctx = {
+        "dc_id": "DC13",
+        "classic_clusters": ["c1"],
+        "hyperconv_clusters": ["KM-1"],
+        "show_virt_hosts": False,
+    }
+
+    def _details(*_a, **_k):
+        return {
+            "classic": {"hosts": 1},
+            "hyperconv": {"hosts": 2, "cpu_cap": 10},
+            "power": {"hosts": 1},
+            "energy": {},
+        }
+
+    with patch("src.pages.dc_view.api.get_dc_details", side_effect=_details), patch(
+        "src.pages.dc_view.api.get_dc_storage_capacity", return_value={}
+    ), patch("src.pages.dc_view.api.get_dc_storage_performance", return_value={}), patch(
+        "src.pages.dc_view.api.get_dc_san_bottleneck", return_value={}
+    ), patch(
+        "src.pages.dc_view._build_virt_subtab_stack",
+        return_value=[html.Div(id="hyperconv-panel")],
+    ):
+        panel, mount_ok = build_virt_nested_subtab_panel("hyperconv", ctx, {"preset": "7d"})
+
+    assert mount_ok is True
+    assert panel is not None
+
+
+def test_build_virt_nested_subtab_panel_failure_returns_alert():
+    import dash_mantine_components as dmc
+
+    from src.pages.dc_view import build_virt_nested_subtab_panel
+
+    ctx = {"dc_id": "DC13", "classic_clusters": [], "hyperconv_clusters": [], "show_virt_hosts": False}
+
+    with patch("src.pages.dc_view.api.get_dc_details", side_effect=RuntimeError("boom")):
+        panel, mount_ok = build_virt_nested_subtab_panel("power", ctx, {"preset": "7d"})
+
+    assert mount_ok is False
+    assert isinstance(panel, dmc.Stack)
