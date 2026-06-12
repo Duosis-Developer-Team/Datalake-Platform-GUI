@@ -8,11 +8,18 @@ import logging
 import sys
 from typing import Any, Optional
 
+from pydantic import BaseModel, Field
+
 from datalake_tools_core.config import configure_from_env, get_settings
 from datalake_tools_core.registry import TOOLS, ToolResult, execute_tool, list_tool_names
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("datalake-mcp")
+
+
+class ToolCallBody(BaseModel):
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
 
 
 def _tool_schema(name: str) -> dict[str, Any]:
@@ -75,16 +82,11 @@ def run_stdio() -> None:
 
 
 def create_http_app():
-    from fastapi import Body, FastAPI, Header
-    from pydantic import BaseModel, Field
+    from fastapi import FastAPI, Header
 
     configure_from_env()
 
     app = FastAPI(title="datalake-mcp", version="0.1.0")
-
-    class ToolCallRequest(BaseModel):
-        name: str
-        arguments: dict[str, Any] = Field(default_factory=dict)
 
     @app.get("/health")
     def health():
@@ -96,7 +98,7 @@ def create_http_app():
 
     @app.post("/mcp/tools/call")
     def mcp_call_tool(
-        payload: ToolCallRequest = Body(...),
+        payload: ToolCallBody,
         authorization: Optional[str] = Header(default=None),
     ):
         result = execute_tool(payload.name, payload.arguments, authorization)
