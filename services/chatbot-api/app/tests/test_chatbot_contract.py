@@ -15,7 +15,11 @@ def _isolate(monkeypatch):
     from app.config import settings
     from app.services import agent_loop, tool_orchestrator
 
+    from app.services import log_client
+
     monkeypatch.setattr(settings, "chatbot_agentic_mode", False)
+    monkeypatch.setattr(settings, "chatbot_log_api_enabled", False)
+    monkeypatch.setattr(log_client, "record_turn", lambda *a, **k: None)
     monkeypatch.setattr(tool_orchestrator, "run", lambda *a, **k: [])
     monkeypatch.setattr(agent_loop, "run", lambda *a, **k: None)
 
@@ -45,6 +49,7 @@ def test_valid_payload_returns_answer(monkeypatch):
     assert body["request_id"]
     assert isinstance(body["used_tools"], list)
     assert body["usage"]["total_tokens"] == 15
+    assert body.get("response_type", "answer") == "answer"
 
 
 def test_missing_message_is_validation_error():

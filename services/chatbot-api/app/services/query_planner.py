@@ -86,11 +86,8 @@ def _resolve_customer(message: str, ctx: Optional[FrontendContext],
     return None
 
 
-def _clarify(param: str) -> str:
-    return {
-        "dc_code": "Hangi data center için bakayım? (örn. DC13)",
-        "customer_name": "Hangi müşteri için bakayım?",
-    }.get(param, f"Eksik bilgi: {param}")
+def _clarify_block(param: str):
+    return clarification_policy.build_param_clarification(param)
 
 
 def _order_by_source(tools: tuple[str, ...], pref: str) -> list[str]:
@@ -194,7 +191,9 @@ def plan(message: str, ctx: Optional[FrontendContext],
 
     if missing:
         p.missing_required_params = missing
-        p.clarification = _clarify(missing[0])
+        block = _clarify_block(missing[0])
+        p.clarification_block = block
+        p.clarification = block.prompt
         return p
 
     p.ranking_metric = clarification_policy.resolve_ranking_metric(message, conversation)
@@ -202,7 +201,8 @@ def plan(message: str, ctx: Optional[FrontendContext],
         message, md.analysis_profile, conversation
     )
     if ranking_clar:
-        p.clarification = ranking_clar
+        p.clarification_block = ranking_clar
+        p.clarification = ranking_clar.prompt
         return p
 
     base = {

@@ -25,6 +25,14 @@ Each message POST sends:
 
 The planner resolves `dc_code` / `customer_name` from message → frontend context → **conversation memory** (e.g. follow-up *"bunlardan hangisi…"* after a DC13 question).
 
+## Structured clarification (choice UI)
+
+When the API returns `response_type: "clarification"` with a `clarification` object (`prompt` + `choices[]`), the Dash widget renders **clickable choice buttons** below the assistant bubble. Clicking a choice auto-fills and sends the choice `value` (e.g. `cpu`, `memory`) — same UX pattern as coding agents.
+
+Free-text input remains available when `allow_free_text` is true (default).
+
+See [[14_chatbot_audit_logging]] for turn persistence of clarification blocks.
+
 ## Context budget and summarization
 
 Before the main LLM call, `conversation_manager.prepare_conversation()`:

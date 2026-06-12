@@ -15,15 +15,20 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 
 from app.config import settings
 from app.core.api_auth import verify_api_user
 from app.core.security import RateLimiter, classify_intent
-from app.models.schemas import ChatRequest, ChatResponse, ToolCallSummary
-from app.services import agent_loop, context_builder, scope_guard, tool_orchestrator
+from app.models.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ClarificationBlock,
+    ToolCallSummary,
+)
+from app.services import agent_loop, context_builder, log_client, scope_guard, tool_orchestrator
 from app.services.audit_service import AuditRecord, record
 from app.services.llm_client import LLMError, get_llm_client
 
@@ -33,17 +38,20 @@ router = APIRouter()
 
 _rate_limiter = RateLimiter(settings.rate_limit_per_minute, settings.rate_limit_per_hour)
 
-# Deterministic, LLM-free refusal for secret/injection asks (CTO pack 09).
 _REFUSAL = (
     "Buna yardımcı olamam; API key, şifre, token veya gizli environment "
     "değerlerini gösteremem ya da paylaşamam. İstersen chatbot servisinin "
     "secret/env yapılandırmasının nasıl güvenli şekilde doğrulanacağını anlatabilirim."
 )
-# Deterministic, LLM-free response for destructive/write-SQL intent.
 _READONLY_REFUSAL = (
     "Ben yalnızca okuma (read-only) modunda çalışıyorum; veri ekleme, silme, "
     "güncelleme veya SQL çalıştırma gibi değişiklik yapan işlemleri "
     "gerçekleştiremem. İstersen ilgili veriyi özetleyebilir veya yorumlayabilirim."
+)
+
+_DENY_PHRASES = (
+    "erişemiyorum", "erişimim yok", "veri yok", "veri bulunmuyor", "veriye ulaşamıyorum",
+    "sağlayamıyorum", "veri setinde yok", "elimde veri yok", "bilgiye sahip değilim",
 )
 
 
@@ -55,21 +63,11 @@ def _summaries(results) -> list[ToolCallSummary]:
     return out
 
 
-# Strong denial phrases the model must NOT use when tools actually returned rows.
-# Kept narrow so legitimate staleness/caveat wording isn't caught.
-_DENY_PHRASES = (
-    "erişemiyorum", "erişimim yok", "veri yok", "veri bulunmuyor", "veriye ulaşamıyorum",
-    "sağlayamıyorum", "veri setinde yok", "elimde veri yok", "bilgiye sahip değilim",
-)
-
-
 def _has_rows(results) -> bool:
     return any(r.status == "success" and (r.rows or 0) > 0 for r in results)
 
 
 def _denies_data(answer: str) -> bool:
-    # Only treat it as a denial if there's no data presented (no table) — a rich
-    # tabular answer that merely notes staleness must not be discarded.
     text = answer or ""
     if "|" in text and "---" in text:
         return False
@@ -77,7 +75,55 @@ def _denies_data(answer: str) -> bool:
     return any(p in low for p in _DENY_PHRASES)
 
 
-def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatResponse:
+def _investigation_trace(outcome) -> list[dict[str, Any]]:
+    if outcome and outcome.analysis and outcome.analysis.extra:
+        trace = outcome.analysis.extra.get("investigation_trace")
+        if isinstance(trace, list):
+            return trace
+    return []
+
+
+def _clarification_response(
+    block: ClarificationBlock,
+    model: str,
+    request_id: str,
+) -> ChatResponse:
+    return ChatResponse(
+        answer=block.prompt,
+        model=model,
+        request_id=request_id,
+        response_type="clarification",
+        clarification=block,
+    )
+
+
+def _finish(
+    background_tasks: BackgroundTasks,
+    audit: AuditRecord,
+    message: str,
+    req: ChatRequest,
+    response: ChatResponse,
+    outcome=None,
+) -> ChatResponse:
+    record(audit)
+    payload = log_client.build_turn_payload(
+        audit=audit,
+        user_message=message,
+        response=response,
+        frontend_context=req.frontend_context,
+        tools=response.used_tools,
+        investigation_trace=_investigation_trace(outcome),
+    )
+    log_client.schedule_turn_log(background_tasks, payload)
+    return response
+
+
+def _handle(
+    req: ChatRequest,
+    request: Request,
+    user_id: Optional[str],
+    background_tasks: BackgroundTasks,
+) -> ChatResponse:
     request_id = uuid.uuid4().hex
     started = time.monotonic()
     created_at = datetime.now(timezone.utc).isoformat()
@@ -95,45 +141,59 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
         message_chars=len(message),
     )
 
-    # 1) Rate limit.
     decision = _rate_limiter.check(rate_key)
     if not decision.allowed:
         audit.status = "rate_limited"
         audit.error_type = decision.reason
-        record(audit)
-        return ChatResponse(
-            answer="Çok sık istek gönderildi. Lütfen biraz bekleyip tekrar dene.",
-            model=model,
-            request_id=request_id,
+        return _finish(
+            background_tasks,
+            audit,
+            message,
+            req,
+            ChatResponse(
+                answer="Çok sık istek gönderildi. Lütfen biraz bekleyip tekrar dene.",
+                model=model,
+                request_id=request_id,
+            ),
         )
 
-    # 2) Forbidden-intent hard guard (independent of the LLM).
     flags = classify_intent(message)
     if flags.wants_secret or flags.injection:
         audit.status = "refused"
         audit.error_type = "forbidden_intent"
-        record(audit)
-        return ChatResponse(answer=_REFUSAL, model=model, request_id=request_id)
+        return _finish(
+            background_tasks,
+            audit,
+            message,
+            req,
+            ChatResponse(answer=_REFUSAL, model=model, request_id=request_id),
+        )
     if flags.wants_write:
         audit.status = "refused"
         audit.error_type = "write_intent"
-        record(audit)
-        return ChatResponse(answer=_READONLY_REFUSAL, model=model, request_id=request_id)
+        return _finish(
+            background_tasks,
+            audit,
+            message,
+            req,
+            ChatResponse(answer=_READONLY_REFUSAL, model=model, request_id=request_id),
+        )
 
-    # 2.5) Domain scope guard (before any tool/LLM). Off-topic + no domain signal
-    #      => deterministic refusal. An instruction-override on a domain question
-    #      is allowed but the prior conversation is dropped.
     scope = scope_guard.evaluate(message)
     if not scope.in_scope:
         audit.status = "out_of_scope"
         audit.error_type = scope.reason
         audit.latency_ms = int((time.monotonic() - started) * 1000)
-        record(audit)
-        return ChatResponse(answer=scope_guard.REFUSAL, model=model, request_id=request_id)
+        return _finish(
+            background_tasks,
+            audit,
+            message,
+            req,
+            ChatResponse(answer=scope_guard.REFUSAL, model=model, request_id=request_id),
+        )
     if scope.reset_conversation:
         req.conversation = []
 
-    # 3) Gather evidence — agentic multi-step loop, or legacy single pass.
     outcome = None
     try:
         if settings.chatbot_agentic_mode:
@@ -143,18 +203,29 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
             tool_results = outcome.results
         else:
             tool_results = tool_orchestrator.run(message, req.frontend_context, auth_header)
-    except Exception as exc:  # pragma: no cover - loop/orchestrator already guard
+    except Exception as exc:  # pragma: no cover
         logger.warning("Evidence gathering failed: %s", exc)
         tool_results = []
 
-    # Page-independent planner needs a required param it couldn't resolve →
-    # ask a short clarification instead of guessing or giving up.
-    if outcome is not None and outcome.plan.clarification:
+    clar_block = None
+    if outcome is not None:
+        clar_block = outcome.plan.clarification_block
+        if clar_block is None and outcome.plan.clarification:
+            clar_block = ClarificationBlock(
+                prompt=outcome.plan.clarification,
+                choices=[],
+                allow_free_text=True,
+            )
+    if clar_block is not None:
         audit.status = "clarification"
         audit.latency_ms = int((time.monotonic() - started) * 1000)
-        record(audit)
-        return ChatResponse(
-            answer=outcome.plan.clarification, model=model, request_id=request_id
+        return _finish(
+            background_tasks,
+            audit,
+            message,
+            req,
+            _clarification_response(clar_block, model, request_id),
+            outcome=outcome,
         )
 
     audit.tools = [r.name for r in tool_results if r.status in ("success", "error")]
@@ -172,7 +243,6 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
     if outcome is not None and outcome.analysis and outcome.analysis.extra:
         investigation_summary = outcome.analysis.extra.get("investigation_summary")
 
-    # 4) Build messages + 5) call LLM (skip if ReAct already produced draft_answer).
     answer = ""
     usage = None
     llm_failed = False
@@ -212,7 +282,6 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
             audit.error_type = exc.error_type
             llm_failed = True
 
-    # Deterministic fallback: rows exist OR investigation ran but model denied data.
     inv_ran = bool(investigation_summary)
     if outcome is not None and (
         (_has_rows(tool_results) and (llm_failed or _denies_data(answer)))
@@ -226,9 +295,7 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
             audit.error_type = "missing_data_guard"
 
     audit.latency_ms = int((time.monotonic() - started) * 1000)
-    record(audit)
-
-    return ChatResponse(
+    response = ChatResponse(
         answer=answer,
         model=model,
         used_tools=_summaries(tool_results),
@@ -237,23 +304,26 @@ def _handle(req: ChatRequest, request: Request, user_id: Optional[str]) -> ChatR
         llm_rounds=outcome.llm_rounds if outcome else None,
         tool_call_count=outcome.tool_call_count if outcome else None,
         investigation_summary=investigation_summary,
+        response_type="answer",
     )
+    return _finish(background_tasks, audit, message, req, response, outcome=outcome)
 
 
 @router.post("/messages", response_model=ChatResponse)
 def post_message(
     req: ChatRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     user_id: Optional[str] = Depends(verify_api_user),
 ) -> ChatResponse:
-    return _handle(req, request, user_id)
+    return _handle(req, request, user_id, background_tasks)
 
 
-# Alias kept because both /messages and /chat appear in the task brief.
 @router.post("/chat", response_model=ChatResponse, include_in_schema=False)
 def post_chat(
     req: ChatRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     user_id: Optional[str] = Depends(verify_api_user),
 ) -> ChatResponse:
-    return _handle(req, request, user_id)
+    return _handle(req, request, user_id, background_tasks)

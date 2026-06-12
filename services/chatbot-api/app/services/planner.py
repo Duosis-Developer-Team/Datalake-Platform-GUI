@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from app.models.schemas import FrontendContext
+from app.models.schemas import ClarificationBlock, FrontendContext
 from app.services import tool_orchestrator as orch
 
 
@@ -37,6 +37,7 @@ class IntentPlan:
     analysis_profile: str = "generic"  # which synthesizer profile to apply
     missing_required_params: list[str] = field(default_factory=list)
     clarification: Optional[str] = None  # set when a required param can't be resolved
+    clarification_block: Optional[ClarificationBlock] = None
     answer_guidance: list[str] = field(default_factory=list)  # metric-specific LLM guidance
     ranking_metric: Optional[str] = None  # cpu | memory | vm_count | composite (datacenter_ranking)
 

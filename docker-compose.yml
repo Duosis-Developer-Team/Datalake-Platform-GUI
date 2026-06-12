@@ -398,6 +398,57 @@ services:
     profiles:
       - microservice
 
+  mongodb:
+    image: mongo:7
+    container_name: bulutistan-chatbot-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${CHATBOT_LOG_MONGO_USER:-chatbot_log}
+      MONGO_INITDB_ROOT_PASSWORD: ${CHATBOT_LOG_MONGO_PASS:-change_me_chatbot_log}
+    volumes:
+      - mongo_chatbot_logs:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet -u $$MONGO_INITDB_ROOT_USERNAME -p $$MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase admin --eval 'db.runCommand({ ping: 1 })' || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    networks:
+      - datalake
+    profiles:
+      - microservice
+
+  chatbot-log-api:
+    build:
+      context: ./services/chatbot-log-api
+      dockerfile: Dockerfile
+    container_name: bulutistan-chatbot-log-api
+    environment:
+      MONGO_URI: mongodb://${CHATBOT_LOG_MONGO_USER:-chatbot_log}:${CHATBOT_LOG_MONGO_PASS:-change_me_chatbot_log}@mongodb:27017/chatbot_logs?authSource=admin
+      MONGO_DB: chatbot_logs
+      LOG_RETENTION_DAYS: ${CHATBOT_LOG_RETENTION_DAYS:-90}
+      INTERNAL_API_KEY: ${CHATBOT_LOG_API_KEY:-}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - datalake
+    profiles:
+      - microservice
+
   chatbot-api:
     build:
       context: ./services/chatbot-api
@@ -448,9 +499,15 @@ services:
       OTEL_SERVICE_NAME: chatbot-api
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      CHATBOT_LOG_API_ENABLED: ${CHATBOT_LOG_API_ENABLED:-true}
+      CHATBOT_LOG_API_URL: ${CHATBOT_LOG_API_URL:-http://chatbot-log-api:8000}
+      CHATBOT_LOG_API_KEY: ${CHATBOT_LOG_API_KEY:-}
+      CHATBOT_LOG_RETENTION_DAYS: ${CHATBOT_LOG_RETENTION_DAYS:-90}
     networks:
       - datalake
     depends_on:
+      chatbot-log-api:
+        condition: service_healthy
       datacenter-api:
         condition: service_healthy
       customer-api:
@@ -481,3 +538,4 @@ volumes:
   redis_data:
   auth_pgdata:
   webui_pgdata:
+  mongo_chatbot_logs:

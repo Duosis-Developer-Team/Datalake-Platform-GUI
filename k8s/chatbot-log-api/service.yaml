@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bulutistan-chatbot-log-api
+  labels:
+    app: bulutistan-chatbot-log-api
+spec:
+  selector:
+    app: bulutistan-chatbot-log-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

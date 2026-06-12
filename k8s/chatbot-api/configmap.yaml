@@ -22,3 +22,6 @@ data:
   CRM_ENGINE_URL: "http://bulutistan-crm-engine"
   ADMIN_API_URL: "http://bulutistan-admin-api"
   CHATBOT_DB_ENABLED: "false"
+  CHATBOT_LOG_API_ENABLED: "true"
+  CHATBOT_LOG_API_URL: "http://bulutistan-chatbot-log-api:8000"
+  CHATBOT_LOG_RETENTION_DAYS: "90"

@@ -60,6 +60,18 @@ class ToolCallSummary(BaseModel):
     source: Optional[str] = None
 
 
+class ClarificationChoice(BaseModel):
+    id: str
+    label: str
+    value: str
+
+
+class ClarificationBlock(BaseModel):
+    prompt: str
+    choices: list[ClarificationChoice] = Field(default_factory=list)
+    allow_free_text: bool = True
+
+
 class ChatResponse(BaseModel):
     answer: str
     model: str
@@ -69,6 +81,8 @@ class ChatResponse(BaseModel):
     llm_rounds: Optional[int] = None
     tool_call_count: Optional[int] = None
     investigation_summary: Optional[str] = None
+    response_type: Literal["answer", "clarification"] = "answer"
+    clarification: Optional[ClarificationBlock] = None
 
 
 # --------------------------------------------------------------------------- #

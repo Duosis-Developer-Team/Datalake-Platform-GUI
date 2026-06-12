@@ -165,7 +165,23 @@ def _avatar() -> Any:
     )
 
 
-def _bubble(role: str, content: str, used_tools: Optional[list] = None, error: bool = False) -> Any:
+def _choice_button(choice: dict) -> Any:
+    return html.Button(
+        choice.get("label", "?"),
+        className="chatbot-choice",
+        type="button",
+        **{"data-choice-value": str(choice.get("value") or choice.get("id") or "")},
+    )
+
+
+def _bubble(
+    role: str,
+    content: str,
+    used_tools: Optional[list] = None,
+    error: bool = False,
+    clarification: Optional[dict] = None,
+    response_type: Optional[str] = None,
+) -> Any:
     if role == "user":
         return html.Div(
             html.Div(content, className="chatbot-bubble-user"),
@@ -173,6 +189,13 @@ def _bubble(role: str, content: str, used_tools: Optional[list] = None, error: b
         )
     cls = "chatbot-bubble-assistant" + (" chatbot-bubble-error" if error else "")
     inner: list[Any] = [dcc.Markdown(content, className="chatbot-markdown", link_target="_blank")]
+    if response_type == "clarification" and isinstance(clarification, dict):
+        choices = clarification.get("choices") or []
+        choice_nodes = [
+            _choice_button(c) for c in choices if isinstance(c, dict) and c.get("label")
+        ]
+        if choice_nodes:
+            inner.append(html.Div(choice_nodes, className="chatbot-choice-row"))
     if used_tools:
         names = ", ".join(
             t.get("name", "") for t in used_tools if isinstance(t, dict) and t.get("name")
@@ -222,6 +245,8 @@ def _render_messages(history: Optional[list], pathname: Optional[str] = None) ->
             m.get("content", ""),
             m.get("used_tools"),
             bool(m.get("error")),
+            m.get("clarification"),
+            m.get("response_type"),
         )
         for m in history
     ]
@@ -422,9 +447,16 @@ def register_chatbot_callbacks(app) -> None:
         try:
             resp = send_chat_message(message, history, context)
             answer = (resp.get("answer") or "").strip() or "(boş cevap döndü)"
-            new_history = new_history + [
-                {"role": "assistant", "content": answer, "used_tools": resp.get("used_tools") or []}
-            ]
+            assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": answer,
+                "used_tools": resp.get("used_tools") or [],
+            }
+            if resp.get("response_type") == "clarification":
+                assistant_msg["response_type"] = "clarification"
+                if resp.get("clarification"):
+                    assistant_msg["clarification"] = resp.get("clarification")
+            new_history = new_history + [assistant_msg]
         except Exception as exc:
             logger.warning("chatbot send failed: %s", exc)
             new_history = new_history + [{"role": "assistant", "content": _ERR_MSG, "error": True}]

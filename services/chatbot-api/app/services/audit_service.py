@@ -1,8 +1,7 @@
 """Audit logging for chat requests (CTO pack 06).
 
-Metadata only — never the raw prompt, never secrets. MVP writes a single
-structured JSON line to the application logger; a later sprint can persist to the
-``chatbot_audit_logs`` table without changing this call site.
+Metadata-only stdout audit line (never secrets). Full turn content (redacted) is
+persisted asynchronously via ``chatbot-log-api`` → MongoDB when enabled.
 """
 
 from __future__ import annotations

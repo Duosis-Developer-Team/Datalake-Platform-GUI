@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     chatbot_map_reduce_enabled: bool = True
     chatbot_parallel_workers: int = 5
     chatbot_clarification_on_ambiguous_ranking: bool = True
+    chatbot_log_api_enabled: bool = True
+    chatbot_log_api_url: str = "http://chatbot-log-api:8000"
+    chatbot_log_api_key: str = ""
+    chatbot_log_retention_days: int = 90
 
     # CPU analysis thresholds (percent) — tunable via env.
     chatbot_cpu_avg_warning_threshold: float = 70.0

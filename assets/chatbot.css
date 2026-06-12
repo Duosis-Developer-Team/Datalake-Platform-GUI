@@ -293,6 +293,31 @@
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
 }
+.chatbot-choice-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.chatbot-choice {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #e0e5f2;
+  background: #f8faff;
+  color: #2b3674;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.chatbot-choice:hover {
+  background: #eef2ff;
+  border-color: #4318ff;
+  box-shadow: 0 4px 12px rgba(67, 24, 255, 0.12);
+}
+
 .chatbot-suggestion:hover {
   border-color: #4318ff;
   background: #f0edff;

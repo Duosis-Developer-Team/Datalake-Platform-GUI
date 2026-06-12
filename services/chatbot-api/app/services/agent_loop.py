@@ -121,7 +121,7 @@ def run(
     plan = query_planner.plan(message, ctx, conversation)
     outcome = AgentOutcome(plan=plan)
 
-    if plan.clarification:
+    if plan.clarification or plan.clarification_block:
         outcome.evaluation = evidence_evaluator.evaluate(plan, [])
         outcome.analysis = analysis_synthesizer.synthesize(plan, [], outcome.evaluation)
         return outcome

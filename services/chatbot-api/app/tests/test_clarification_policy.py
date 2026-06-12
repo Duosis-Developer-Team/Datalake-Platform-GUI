@@ -9,8 +9,17 @@ from app.services import clarification_policy, query_planner
 def test_ambiguous_ranking_asks_clarification():
     plan = query_planner.plan("En yoğun datacenter hangisi?", None, [])
     assert plan.clarification is not None
-    assert "CPU" in plan.clarification or "cpu" in plan.clarification.lower()
+    assert plan.clarification_block is not None
+    assert len(plan.clarification_block.choices) == 4
+    assert any(c.id == "cpu" for c in plan.clarification_block.choices)
     assert plan.ranking_metric is None
+
+
+def test_build_ranking_clarification_structure():
+    block = clarification_policy.build_ranking_clarification()
+    assert block.prompt
+    assert len(block.choices) == 4
+    assert block.choices[0].value
 
 
 def test_explicit_cpu_skips_clarification():

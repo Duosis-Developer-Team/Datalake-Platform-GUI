@@ -11,16 +11,12 @@ from typing import Literal, Optional
 
 from app.catalog import domain_catalog, metric_semantics
 from app.config import settings
-from app.models.schemas import ChatMessage
+from app.models.schemas import ChatMessage, ClarificationBlock, ClarificationChoice
 
 RankingMetric = Literal["cpu", "memory", "vm_count", "composite"]
 
 RANKING_METRIC_CLARIFICATION = (
-    "Yoğunluğu hangi metriğe göre değerlendireyim?\n"
-    "(1) CPU kullanım %\n"
-    "(2) Bellek kullanım %\n"
-    "(3) VM sayısı\n"
-    "(4) Hepsini birlikte (bileşik skor)"
+    "Yoğunluğu hangi metriğe göre değerlendireyim?"
 )
 
 _OPTION_MAP = {
@@ -47,6 +43,31 @@ _OPTION_MAP = {
     "birlikte": "composite",
     "composite": "composite",
 }
+
+
+def build_ranking_clarification() -> ClarificationBlock:
+    return ClarificationBlock(
+        prompt=RANKING_METRIC_CLARIFICATION,
+        choices=[
+            ClarificationChoice(id="cpu", label="CPU kullanım %", value="cpu"),
+            ClarificationChoice(id="memory", label="Bellek kullanım %", value="memory"),
+            ClarificationChoice(id="vm_count", label="VM sayısı", value="vm_count"),
+            ClarificationChoice(id="composite", label="Hepsini birlikte (bileşik skor)", value="composite"),
+        ],
+        allow_free_text=True,
+    )
+
+
+def build_param_clarification(param: str) -> ClarificationBlock:
+    prompts = {
+        "dc_code": "Hangi data center için bakayım?",
+        "customer_name": "Hangi müşteri için bakayım?",
+    }
+    return ClarificationBlock(
+        prompt=prompts.get(param, f"Eksik bilgi: {param}"),
+        choices=[],
+        allow_free_text=True,
+    )
 
 
 def _norm_reply(text: str) -> str:
@@ -107,10 +128,14 @@ def resolve_ranking_metric(
     return None
 
 
+def _assistant_had_ranking_clarification(content: str) -> bool:
+    return RANKING_METRIC_CLARIFICATION in (content or "")
+
+
 def is_ranking_followup(conversation: Optional[list[ChatMessage]]) -> bool:
     """True when the user is answering a prior datacenter-ranking clarification."""
     for msg in conversation or []:
-        if msg.role == "assistant" and "Yoğunluğu hangi metriğe" in (msg.content or ""):
+        if msg.role == "assistant" and _assistant_had_ranking_clarification(msg.content or ""):
             return True
         if msg.role == "user":
             md = domain_catalog.match(msg.content or "")
@@ -123,12 +148,12 @@ def check_ranking_clarification(
     message: str,
     analysis_profile: str,
     conversation: Optional[list[ChatMessage]] = None,
-) -> Optional[str]:
-    """Return clarification text when ranking metric is ambiguous; else None."""
+) -> Optional[ClarificationBlock]:
+    """Return clarification block when ranking metric is ambiguous; else None."""
     if analysis_profile != "datacenter_ranking":
         return None
     if not settings.chatbot_clarification_on_ambiguous_ranking:
         return None
     if resolve_ranking_metric(message, conversation):
         return None
-    return RANKING_METRIC_CLARIFICATION
+    return build_ranking_clarification()
