@@ -40,7 +40,6 @@ class AgentOutcome:
     llm_rounds: int = 0
     tool_call_count: int = 0
     investigation_trace: InvestigationTrace = field(default_factory=InvestigationTrace)
-    draft_answer: Optional[str] = None
     react_mode_used: bool = False
 
 
@@ -117,6 +116,8 @@ def run(
     ctx: Optional[FrontendContext],
     auth_header: Optional[str],
     conversation: Optional[list[ChatMessage]] = None,
+    *,
+    run_tools: bool = True,
 ) -> AgentOutcome:
     plan = query_planner.plan(message, ctx, conversation)
     outcome = AgentOutcome(plan=plan)
@@ -135,62 +136,63 @@ def run(
     total = 0
 
     # --- Seed: initial + catalog fallback tools --------------------------------
-    seed_requests = list(plan.initial_tools) + list(plan.fallback_tools)
-    total = _execute_requests(
-        seed_requests, auth_header, executed, trace, outcome.results, per_turn, per_turn, total
-    )
-    outcome.tool_call_count = total
-
-    # --- Map-reduce coordinator (full-coverage global comparisons) ---------------
-    if plan.analysis_profile in investigation_coordinator.COVERAGE_PROFILES:
-        coord = investigation_coordinator.run(
-            plan, outcome.results, auth_header, trace
-        )
-        if coord.extra_results:
-            outcome.results.extend(coord.extra_results)
-            for r in coord.extra_results:
-                executed.add(_dedupe_key(r.name, {"dc_code": _dc_from_result(r)}))
-            total = len(trace.entries)
-            outcome.tool_call_count = total
-        if coord.warnings and outcome.evaluation is None:
-            pass  # warnings flow into synthesizer via results
-
-    # --- LLM ReAct (optional) --------------------------------------------------
-    react = llm_react_loop.run(message, plan, list(outcome.results), auth_header)
-    if react.react_used:
-        outcome.react_mode_used = True
-        outcome.llm_rounds = react.llm_rounds
-        outcome.draft_answer = react.draft_answer
-        if len(react.results) >= len(outcome.results):
-            outcome.results = react.results
-        trace = react.investigation_trace
-        outcome.investigation_trace = trace
-        for r in outcome.results:
-            executed.add(_dedupe_key(r.name, {}))
-        total = len(trace.entries)
-
-    # --- Deterministic follow-up loop ------------------------------------------
-    requests: list[Any] = []
-    evaluation: Optional[EvidenceEvaluation] = None
-
-    for i in range(max_iter):
-        outcome.iterations = i + 1
-        evaluation = evidence_evaluator.evaluate(plan, outcome.results, tool_budget_exhausted=total >= per_turn)
-        if evaluation.enough_for_answer or total >= per_turn:
-            break
-        requests = list(evaluation.recommended_followup_tools)
-        if not requests:
-            break
-        batch_start = total
+    if run_tools:
+        seed_requests = list(plan.initial_tools) + list(plan.fallback_tools)
         total = _execute_requests(
-            requests, auth_header, executed, trace, outcome.results, per_iter, per_turn, total
+            seed_requests, auth_header, executed, trace, outcome.results, per_turn, per_turn, total
         )
-        if total == batch_start:
-            break
+        outcome.tool_call_count = total
+
+        # --- Map-reduce coordinator (full-coverage global comparisons) ---------------
+        if plan.analysis_profile in investigation_coordinator.COVERAGE_PROFILES:
+            coord = investigation_coordinator.run(
+                plan, outcome.results, auth_header, trace
+            )
+            if coord.extra_results:
+                outcome.results.extend(coord.extra_results)
+                for r in coord.extra_results:
+                    executed.add(_dedupe_key(r.name, {"dc_code": _dc_from_result(r)}))
+                total = len(trace.entries)
+                outcome.tool_call_count = total
+
+        # --- LLM ReAct tool rounds (optional) ----------------------------------------
+        react = llm_react_loop.run(message, plan, list(outcome.results), auth_header)
+        if react.react_used:
+            outcome.react_mode_used = True
+            outcome.llm_rounds = react.llm_rounds
+            if len(react.results) >= len(outcome.results):
+                outcome.results = react.results
+            trace = react.investigation_trace
+            outcome.investigation_trace = trace
+            for r in outcome.results:
+                dc = _dc_from_result(r)
+                executed.add(_dedupe_key(r.name, {"dc_code": dc} if dc else {}))
+            total = len(trace.entries)
+
+        # --- Deterministic follow-up loop ------------------------------------------
+        requests: list[Any] = []
+        evaluation: Optional[EvidenceEvaluation] = None
+
+        for i in range(max_iter):
+            outcome.iterations = i + 1
+            evaluation = evidence_evaluator.evaluate(plan, outcome.results, tool_budget_exhausted=total >= per_turn)
+            if evaluation.enough_for_answer or total >= per_turn:
+                break
+            requests = list(evaluation.recommended_followup_tools)
+            if not requests:
+                break
+            batch_start = total
+            total = _execute_requests(
+                requests, auth_header, executed, trace, outcome.results, per_iter, per_turn, total
+            )
+            if total == batch_start:
+                break
+    else:
+        evaluation = None
 
     if evaluation is None:
         evaluation = evidence_evaluator.evaluate(
-            plan, outcome.results, tool_budget_exhausted=total >= per_turn
+            plan, outcome.results, tool_budget_exhausted=not run_tools or total >= per_turn
         )
     outcome.evaluation = evaluation
     outcome.tool_call_count = len(trace.entries)

@@ -52,16 +52,22 @@ def run(
     expected, analyzed, missing_metrics = investigation_workers.coverage_status(results)
 
     if missing_metrics:
-        batch = investigation_workers.run_detail_workers(
-            missing_metrics[: settings.chatbot_max_tool_calls_per_iteration],
-            _base_tool_args(plan),
-            auth_header,
-        )
-        outcome.extra_results.extend(batch.extra_results)
-        outcome.findings.extend(batch.findings)
-        outcome.warnings.extend(batch.warnings)
-        for res in batch.extra_results:
-            trace.record(res)
+        batch_size = max(1, settings.chatbot_max_tool_calls_per_iteration)
+        remaining = list(missing_metrics)
+        while remaining and len(outcome.extra_results) < settings.chatbot_max_tool_calls_per_turn:
+            batch = investigation_workers.run_detail_workers(
+                remaining[:batch_size],
+                _base_tool_args(plan),
+                auth_header,
+            )
+            outcome.extra_results.extend(batch.extra_results)
+            outcome.findings.extend(batch.findings)
+            outcome.warnings.extend(batch.warnings)
+            for res in batch.extra_results:
+                trace.record(res)
+            remaining = remaining[batch_size:]
+            if not batch.extra_results:
+                break
 
     if expected and analyzed < expected:
         outcome.warnings.append(f"coverage gap: {analyzed}/{expected} datacenters in summary")

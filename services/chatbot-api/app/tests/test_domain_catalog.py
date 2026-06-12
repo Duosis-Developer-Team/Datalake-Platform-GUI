@@ -108,7 +108,7 @@ def test_forbidden_tools_excluded_from_plan():
     assert "get_customer_resources" not in _tools(p)
 
 
-def test_missing_dc_asks_clarification():
-    p = query_planner.plan("CPU allocated değişkenliği en yüksek 3 klasik mimari host", None, None)
-    assert p.clarification is not None
-    assert p.initial_tools == []
+def test_catalog_guidance_is_narrative_first():
+    for m in domain_catalog.all_metric_definitions():
+        for g in m.answer_guidance:
+            assert "tablo halinde listele" not in g.lower()

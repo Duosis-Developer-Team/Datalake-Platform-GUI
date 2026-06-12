@@ -119,12 +119,12 @@ from src.pages.dc_view import (
     _build_compute_tab,
     _build_hosts_panel_content,
     _build_sellable_inline_kpi,
+    _build_virt_subtab_stack,
+    _build_virt_total_sellable_children,
+    _sellable_card_children,
     _DC_ICONS,
 )
-from src.utils.virt_sellable_aggregate import (
-    aggregate_virt_sellable_panels,
-    collect_virt_sellable_panels,
-)
+from src.utils.time_range import default_time_range
 from src.pages.settings.iam import roles_callbacks  # noqa: F401 — registers role matrix callback
 from src.pages.settings.iam import teams_callbacks  # noqa: F401 — IAM teams panel / members
 from src.pages.settings.iam import users_callbacks  # noqa: F401 — IAM users AD import / edit
@@ -292,6 +292,7 @@ app.layout = dmc.MantineProvider(
         dcc.Store(id="auth-user-store", data=None),
         dcc.Store(id="auth-permissions-store", data=None),
         dcc.Store(id="chatbot-open-store", data=False, storage_type="session"),
+        dcc.Store(id="chatbot-expanded-store", data=False, storage_type="session"),
         dcc.Store(id="chatbot-history-store", data=[], storage_type="session"),
         dcc.Store(id="chatbot-context-store", data={}, storage_type="session"),
         dcc.Store(id="chatbot-pending-store", data=None, storage_type="session"),
@@ -801,6 +802,7 @@ def update_s3_customer_panel(selected_vaults, time_range, search):
     dash.Input("virt-classic-cluster-selector", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
 def update_classic_virt_panel(selected_clusters, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
@@ -816,6 +818,7 @@ def update_classic_virt_panel(selected_clusters, time_range, pathname):
     dash.Input("virt-hyperconv-cluster-selector", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
 def update_hyperconv_virt_panel(selected_clusters, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
@@ -911,6 +914,7 @@ def _dc_id_from_pathname(pathname: str | None) -> str | None:
     dash.Input("virt-classic-cluster-selector", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
 def update_classic_sellable_card(selected_clusters, time_range, pathname):
     dc_id = _dc_id_from_pathname(pathname)
@@ -924,9 +928,7 @@ def update_classic_sellable_card(selected_clusters, time_range, pathname):
         selected_clusters=selected_clusters or None,
         container_id="sellable-classic-card",
     )
-    if card is None:
-        return html.Div(id="sellable-classic-card")
-    return card.children
+    return _sellable_card_children(card) or html.Div(id="sellable-classic-card")
 
 
 @app.callback(
@@ -934,6 +936,7 @@ def update_classic_sellable_card(selected_clusters, time_range, pathname):
     dash.Input("virt-hyperconv-cluster-selector", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
 def update_hyperconv_sellable_card(selected_clusters, time_range, pathname):
     dc_id = _dc_id_from_pathname(pathname)
@@ -947,15 +950,14 @@ def update_hyperconv_sellable_card(selected_clusters, time_range, pathname):
         selected_clusters=selected_clusters or None,
         container_id="sellable-hyperconv-card",
     )
-    if card is None:
-        return html.Div(id="sellable-hyperconv-card")
-    return card.children
+    return _sellable_card_children(card) or html.Div(id="sellable-hyperconv-card")
 
 
 @app.callback(
     dash.Output("sellable-power-card", "children"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
 def update_power_sellable_card(time_range, pathname):
     dc_id = _dc_id_from_pathname(pathname)
@@ -968,9 +970,7 @@ def update_power_sellable_card(time_range, pathname):
         color="grape",
         container_id="sellable-power-card",
     )
-    if card is None:
-        return html.Div(id="sellable-power-card")
-    return card.children
+    return _sellable_card_children(card) or html.Div(id="sellable-power-card")
 
 
 @app.callback(
@@ -978,116 +978,71 @@ def update_power_sellable_card(time_range, pathname):
     dash.Input("virt-classic-cluster-selector", "value"),
     dash.Input("virt-hyperconv-cluster-selector", "value"),
     dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
 def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathname):
-    """Top-level "Virtualization — Total Sellable Potential" card.
-
-    Aggregates the cluster-scoped Klasik + Hyperconverged sub-cards plus the
-    DC-wide Power family so the headline number always matches the sum of the
-    sub-tab cards the operator is currently looking at.
-    """
+    """Top-level Virt sellable card — matches Summary ``virt_total_potential_range`` format."""
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
         return dash.no_update
-
-    panels = collect_virt_sellable_panels(
+    return _build_virt_total_sellable_children(
         dc_id,
         classic_clusters or None,
         hyperconv_clusters or None,
     )
-    total_tl, by_kind, has_known = aggregate_virt_sellable_panels(panels)
 
-    if not has_known and total_tl <= 0:
-        return []
 
-    def _fmt_tl_short_local(value: float) -> tuple[str, str]:
-        full = f"{value:,.0f} TL"
-        if value >= 1_000_000_000:
-            short = f"{value / 1_000_000_000:.2f}B TL"
-        elif value >= 1_000_000:
-            short = f"{value / 1_000_000:.2f}M TL"
-        elif value >= 1_000:
-            short = f"{value / 1_000:.1f}K TL"
-        else:
-            short = full
-        return short, full
+@app.callback(
+    dash.Output("virt-subtab-lazy-classic", "children"),
+    dash.Output("virt-subtab-lazy-hyperconv", "children"),
+    dash.Output("virt-subtab-lazy-power", "children"),
+    dash.Output("virt-nested-mounted", "data"),
+    dash.Input("virt-nested-tabs", "value"),
+    dash.State("virt-subtab-context", "data"),
+    dash.State("virt-nested-mounted", "data"),
+    dash.State("app-time-range", "data"),
+    prevent_initial_call=True,
+)
+def mount_virt_nested_subtab(active_tab, ctx, mounted_tabs, time_range):
+    if not ctx or not active_tab:
+        raise dash.exceptions.PreventUpdate
+    mounted = list(mounted_tabs or [])
+    if active_tab in mounted:
+        raise dash.exceptions.PreventUpdate
 
-    cpu = by_kind["cpu"]
-    ram = by_kind["ram"]
-    stor = by_kind["storage"]
+    dc_id = str(ctx.get("dc_id") or "")
+    if not dc_id:
+        raise dash.exceptions.PreventUpdate
 
-    def _kpi(label, value_str, sub_short, sub_full, icon, c="violet"):
-        card = html.Div(
-            className="nexus-card dc-kpi-card dc-stagger-1",
-            style={
-                "padding": "18px",
-                "display": "flex",
-                "alignItems": "center",
-                "justifyContent": "space-between",
-                "gap": "12px",
-                "minHeight": "140px",
-                "height": "100%",
-                "width": "100%",
-                "boxSizing": "border-box",
-            },
-            children=[
-                html.Div(
-                    style={"display": "flex", "flexDirection": "column", "minWidth": 0, "flex": "1 1 auto"},
-                    children=[
-                        html.Span(label, style={
-                            "color": "#A3AED0", "fontSize": "0.78rem", "fontWeight": 500,
-                            "letterSpacing": "0.02em", "textTransform": "uppercase",
-                        }),
-                        html.H3(value_str, style={
-                            "color": "#2B3674", "fontSize": "1.15rem", "fontWeight": 900,
-                            "margin": "6px 0 2px 0", "letterSpacing": "-0.02em",
-                        }),
-                        html.Span(sub_short, style={"color": "#4318FF", "fontSize": "0.78rem", "fontWeight": 700}),
-                    ],
-                ),
-                dmc.ThemeIcon(
-                    size=42, radius="xl", variant="light", color=c,
-                    children=DashIconify(icon=icon, width=22),
-                ),
-            ],
-        )
-        return html.Div(
-            style={"width": "100%", "height": "100%", "display": "flex", "flexDirection": "column"},
-            title=sub_full if sub_full and sub_full != sub_short else None,
-            children=card,
-        )
+    tr = time_range or default_time_range()
+    data = api.get_dc_details(dc_id, tr)
+    stack_kwargs = {
+        "dc_id": dc_id,
+        "classic": data.get("classic", {}),
+        "hyperconv": data.get("hyperconv", {}),
+        "power": data.get("power", {}),
+        "energy": data.get("energy", {}),
+        "classic_clusters": ctx.get("classic_clusters") or [],
+        "hyperconv_clusters": ctx.get("hyperconv_clusters") or [],
+        "storage_capacity": api.get_dc_storage_capacity(dc_id, tr),
+        "storage_performance": api.get_dc_storage_performance(dc_id, tr),
+        "san_bottleneck": api.get_dc_san_bottleneck(dc_id, tr),
+        "show_virt_hosts": bool(ctx.get("show_virt_hosts")),
+    }
+    stack = _build_virt_subtab_stack(active_tab, **stack_kwargs)
+    panel = dmc.Stack(gap="lg", children=[c for c in stack if c is not None])
+    mounted.append(active_tab)
 
-    cpu_short, cpu_full = _fmt_tl_short_local(float(cpu["tl"]))
-    ram_short, ram_full = _fmt_tl_short_local(float(ram["tl"]))
-    stor_short, stor_full = _fmt_tl_short_local(float(stor["tl"]))
-    total_short, total_full = _fmt_tl_short_local(total_tl)
-
-    cards = [
-        _kpi("CPU Sellable",     f"{float(cpu['constrained']):,.0f} {cpu['unit']}",   cpu_short, cpu_full,   _DC_ICONS["cpu"]),
-        _kpi("RAM Sellable",     f"{float(ram['constrained']):,.0f} {ram['unit']}",   ram_short, ram_full,   _DC_ICONS["ram"]),
-        _kpi("Storage Sellable", f"{float(stor['constrained']):,.0f} {stor['unit']}", stor_short, stor_full, _DC_ICONS["storage"]),
-        _kpi("Total Potential",  total_short, "× catalog price",   total_full or "constrained × catalog price", "solar:wallet-money-bold-duotone", c="grape"),
-    ]
-
-    return [
-        html.Div(
-            "Virtualization — Total Sellable Potential",
-            style={"fontSize": "1.1rem", "fontWeight": 700, "color": "#2B3674", "marginBottom": "4px"},
-        ),
-        html.Div(
-            "Cluster-scoped sum of Classic + Hyperconverged sub-tab cards (Power is DC-wide)",
-            style={"fontSize": "0.78rem", "color": "#A3AED0", "marginBottom": "12px"},
-        ),
-        html.Div(
-            style={
-                "display": "grid",
-                "gridTemplateColumns": "repeat(4, minmax(0, 1fr))",
-                "gap": "16px",
-                "alignItems": "stretch",
-            },
-            children=cards,
-        ),
-    ]
+    classic_out = dash.no_update
+    hyper_out = dash.no_update
+    power_out = dash.no_update
+    if active_tab == "classic":
+        classic_out = panel
+    elif active_tab == "hyperconv":
+        hyper_out = panel
+    elif active_tab == "power":
+        power_out = panel
+    return classic_out, hyper_out, power_out, mounted
 
 
 @app.callback(

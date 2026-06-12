@@ -41,9 +41,16 @@ def test_recipe_and_politics_out_of_scope():
     assert scope_guard.evaluate("Türkiye'de son seçim sonuçları ne oldu").in_scope is False
 
 
-def test_greeting_not_blocked():
-    # No domain signal but no off-topic marker either -> allowed (LLM greets).
-    assert scope_guard.evaluate("Merhaba, nasılsın?").in_scope is True
+def test_greeting_not_blocked_run_tools_false():
+    d = scope_guard.evaluate("Merhaba, nasılsın?")
+    assert d.in_scope is True
+    assert d.run_tools is False
+
+
+def test_smoking_out_of_scope():
+    d = scope_guard.evaluate("bana sigaranın neden zararlı olduğunu anlat")
+    assert d.in_scope is False
+    assert d.reason == "off_topic"
 
 
 # --- integration: refusal happens before the LLM -------------------------- #

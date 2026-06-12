@@ -121,6 +121,27 @@ def format_compact_decimal(value, decimals: int = 2) -> str:
     return f"{sign}{n:,.{decimals}f}" if decimals else f"{sign}{n:,.0f}"
 
 
+def fmt_tl(value: float | None) -> str:
+    """Format Turkish Lira for executive KPI strips (Milyon TL / Bin TL)."""
+    if value is None:
+        return "—"
+    v = float(value or 0)
+    if v >= 1_000_000:
+        return f"{v / 1_000_000:.2f} Milyon TL"
+    if v >= 1_000:
+        return f"{v / 1_000:.1f} Bin TL"
+    return f"{v:,.0f} TL"
+
+
+def fmt_tl_range(lo: float | None, hi: float | None) -> str:
+    """Format a TL range using :func:`fmt_tl` (Summary / Virt sellable cards)."""
+    if lo is None and hi is None:
+        return "—"
+    if lo is not None and hi is not None and abs(hi - lo) > 1e-6:
+        return f"{fmt_tl(lo)} – {fmt_tl(hi)}"
+    return fmt_tl(lo if lo is not None else hi)
+
+
 def format_compact_money_tl(value, decimals: int = 2) -> str:
     """Compact TL amount for UI; use format_full_decimal for export."""
     if value is None:

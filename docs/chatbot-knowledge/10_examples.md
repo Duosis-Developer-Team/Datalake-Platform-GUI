@@ -16,7 +16,7 @@ Expected plan:
 - tools: `get_dc_classic_clusters`, `get_dc_classic_host_cpu_allocation_variability`
 - must not use: `get_customer_resources`
 
-Answer: table with min/max/latest/avg allocated **vCPU**, variability (stddev/range), direction (first vs last sample), sample count, risk and action.
+Answer: narrative summary with min/max/latest/avg allocated **vCPU**, variability (stddev/range), direction (first vs last sample), sample count, risk and action. Optional appendix table if 4+ hosts.
 
 > Note: Per-host classic "allocated CPU" is reported in **vCPU** (sum of each host's VMs' `number_of_cpus`), **not GHz**. The source table `vmware_vm_performance_metrics` has `total_cpu_capacity_mhz = 0` in this dataset, so allocated GHz cannot be computed at host level without fabricating values. Cluster-level GHz (`cpu_ghz_capacity` / `cpu_ghz_used`) exists in `cluster_metrics` but only at the cluster grain.
 
@@ -35,7 +35,7 @@ Expected plan:
 - limit: 10
 - tools: `get_dc_vm_cpu_top`, optional `get_dc_vm_cpu_summary`, optional `get_dc_host_cpu_summary`
 
-Answer: top VM table + sustained/spike analysis + source breakdown + latest data time.
+Answer: narrative top-VM summary (sustained/spike analysis) + source breakdown + latest data time. Optional appendix table if 4+ VMs.
 
 ## 3. VM follow-up
 
@@ -65,7 +65,7 @@ Expected plan:
 - tools: `get_global_km_cluster_memory_top`
 - must not use: `get_dashboard_overview` alone
 
-Answer: table with cluster_name, datacenter, memory_used_gb, memory_capacity_gb, memory_pct, collection_time.
+Answer: narrative summary with cluster_name, datacenter, memory_used_gb, memory_capacity_gb, memory_pct, collection_time. Optional appendix table if 4+ clusters.
 
 > Note: Per-cluster memory ranking is not exposed by API (`get_dc_compute_classic` aggregates all KM clusters in a DC). Requires `CHATBOT_DB_ENABLED=true`. See [[11_api_vs_db_routing]].
 
@@ -168,4 +168,4 @@ Expected plan:
 - tools: `get_datacenters_summary` (full `ranking_rows`, not 3-sample truncation)
 - map-reduce coordinator may fan out `get_datacenter_detail` only when summary rows lack metrics
 
-Answer: state how many datacenters were compared (e.g. 9/9), winner by chosen metric, full ranking table, sources + confidence.
+Answer: state how many datacenters were compared (e.g. 9/9), winner by chosen metric in prose, optional full ranking appendix table, sources + confidence.

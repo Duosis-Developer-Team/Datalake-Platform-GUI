@@ -116,6 +116,10 @@ def build_detail_content(turn: dict[str, Any]) -> list:
             dmc.Text(f"Latency: {turn.get('latency_ms') or '—'} ms", size="xs"),
             dmc.Text(f"LLM rounds: {turn.get('llm_rounds') or '—'}", size="xs"),
             dmc.Text(f"Tools: {turn.get('tool_call_count') or '—'}", size="xs"),
+            dmc.Text(
+                f"Answer source: {(turn.get('post_process') or {}).get('answer_source', '—')}",
+                size="xs",
+            ),
             dmc.Text(f"Tokens: {usage_text or '—'}", size="xs", span=3),
         ],
     )
@@ -210,6 +214,71 @@ def build_detail_content(turn: dict[str, Any]) -> list:
             [
                 dmc.Text("Investigation trace", fw=600, size="sm", mb=4, mt="md"),
                 dmc.Code(json.dumps(trace, ensure_ascii=False, indent=2), block=True),
+            ]
+        )
+
+    stages = turn.get("pipeline_stages") or []
+    if stages:
+        stage_rows = [
+            html.Tr(
+                children=[
+                    html.Td(str(s.get("name") or "")),
+                    html.Td(str(s.get("duration_ms") or "—")),
+                    html.Td(json.dumps(s.get("detail") or {}, ensure_ascii=False)[:120]),
+                ]
+            )
+            for s in stages
+        ]
+        sections.extend(
+            [
+                dmc.Text("Pipeline stages", fw=600, size="sm", mb=4, mt="md"),
+                html.Table(
+                    [
+                        html.Tr([html.Th("Stage"), html.Th("ms"), html.Th("Detail")]),
+                        *stage_rows,
+                    ],
+                    style={"width": "100%", "fontSize": "12px"},
+                ),
+            ]
+        )
+
+    tool_execs = turn.get("tool_executions") or []
+    if tool_execs:
+        for t in tool_execs:
+            sections.extend(
+                [
+                    dmc.Text(f"Tool output: {t.get('name')}", fw=600, size="sm", mb=4, mt="md"),
+                    dmc.Code(
+                        json.dumps(t.get("summary") or {}, ensure_ascii=False, indent=2)[:12000],
+                        block=True,
+                    ),
+                ]
+            )
+
+    llm_calls = turn.get("llm_calls") or []
+    if llm_calls:
+        sections.extend(
+            [
+                dmc.Text("LLM calls", fw=600, size="sm", mb=4, mt="md"),
+                dmc.Code(json.dumps(llm_calls, ensure_ascii=False, indent=2), block=True),
+            ]
+        )
+
+    post = turn.get("post_process")
+    if post:
+        sections.extend(
+            [
+                dmc.Text("Post-process", fw=600, size="sm", mb=4, mt="md"),
+                dmc.Code(json.dumps(post, ensure_ascii=False, indent=2), block=True),
+            ]
+        )
+
+    scope = turn.get("scope_decision")
+    if scope:
+        sections.extend(
+            [
+                dmc.Text("Scope decision", fw=600, size="sm", mb=4, mt="md"),
+                dmc.Code(json.dumps(scope, ensure_ascii=False, indent=2), block=True),
             ]
         )
 

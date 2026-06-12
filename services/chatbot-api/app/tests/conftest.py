@@ -1,19 +1,10 @@
-"""Pytest bootstrap for chatbot-api.
+"""Pytest configuration — ensure datalake-tools-core is importable in dev/CI."""
 
-Ensures the service root (the directory containing the ``app`` package) is at the
-*front* of sys.path so ``import app...`` resolves to this service and never to the
-repo-root ``app.py`` (the Dash entrypoint), regardless of where pytest is invoked.
-"""
+from __future__ import annotations
 
-import os
 import sys
+from pathlib import Path
 
-# app/tests/conftest.py -> parents: tests -> app -> <service root>
-_SERVICE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if sys.path[:1] != [_SERVICE_ROOT]:
-    if _SERVICE_ROOT in sys.path:
-        sys.path.remove(_SERVICE_ROOT)
-    sys.path.insert(0, _SERVICE_ROOT)
-
-# Keep auth disabled for unit tests (matches sibling-service default).
-os.environ.setdefault("API_AUTH_REQUIRED", "false")
+_CORE = Path(__file__).resolve().parents[3] / "datalake-tools-core"
+if _CORE.exists() and str(_CORE) not in sys.path:
+    sys.path.insert(0, str(_CORE))

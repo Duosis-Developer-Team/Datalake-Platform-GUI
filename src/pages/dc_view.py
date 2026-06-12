@@ -13,6 +13,12 @@ import plotly.graph_objects as go
 
 from src.services import api_client as api
 from src.pages.dc_summary_sellable import build_summary_sellable_section
+from src.utils.virt_sellable_aggregate import (
+    aggregate_virt_sellable_panels,
+    collect_virt_sellable_panels,
+    merge_power_panels_for_summary,
+    virt_total_potential_range,
+)
 from src.utils.api_parallel import parallel_execute
 from src.utils.time_range import default_time_range
 from src.utils.format_units import (
@@ -27,6 +33,8 @@ from src.utils.format_units import (
     format_compact_decimal,
     format_compact_money_tl,
     format_full_decimal,
+    fmt_tl,
+    fmt_tl_range,
 )
 from src.utils.ibm_storage_capacity import (
     aggregate_ibm_storage_capacities,
@@ -704,14 +712,21 @@ def _capacity_resource_table(rows: list[dict]):
                                 html.Th("Total", style=header_style),
                                 html.Th(
                                     dmc.Tooltip(
-                                        label="Sum of VM-configured resources (latest allocation snapshot)",
+                                        label=(
+                                            "Sum of VM-configured resources (latest allocation snapshot). "
+                                            "May exceed 100% when RAM is overcommitted."
+                                        ),
                                         children=html.Span("Physical allocation"),
                                     ),
                                     style=header_style,
                                 ),
                                 html.Th(
                                     dmc.Tooltip(
-                                        label="Physical host peak usage in the selected report period",
+                                        label=(
+                                            "Cluster-level peak RAM usage in the selected report period "
+                                            "(cluster_metrics time series). Sellable gate uses "
+                                            "max(allocation%, peak%)."
+                                        ),
                                         children=html.Span("Max utilization"),
                                     ),
                                     style=header_style,
@@ -739,6 +754,7 @@ def _build_compute_capacity_rows(
     mem_alloc_pct: float,
     mem_pct_max: float,
     mem_pct: float,
+    mem_used_gb_peak: float = 0.0,
     stor_cap_gb: float,
     stor_provisioned_gb: float,
     stor_used_gb: float,
@@ -748,6 +764,9 @@ def _build_compute_capacity_rows(
     """Build three capacity planning rows for Classic/Hyperconv compute tabs."""
     cpu_max_pct = cpu_pct_max or cpu_pct
     mem_peak_pct = mem_pct_max or mem_pct
+    mem_peak_gb = mem_used_gb_peak if mem_used_gb_peak > 0 else (
+        mem_cap * mem_peak_pct / 100.0 if mem_cap else 0
+    )
     return [
         {
             "label": "CPU",
@@ -764,7 +783,7 @@ def _build_compute_capacity_rows(
             "total_str": smart_memory(mem_cap),
             "allocation": (smart_memory(mem_alloc_gb), mem_alloc_pct),
             "max_util": (
-                smart_memory(mem_cap * mem_peak_pct / 100.0 if mem_cap else 0),
+                smart_memory(mem_peak_gb),
                 mem_peak_pct,
             ),
             "bar_pct": mem_alloc_pct,
@@ -867,6 +886,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
 
     cpu_alloc_ghz = float(compute.get("cpu_alloc_ghz_vm", 0) or 0)
     mem_alloc_gb  = float(compute.get("mem_alloc_gb_vm", 0) or 0)
+    mem_used_gb_peak = float(compute.get("mem_used_gb_peak") or 0)
     cpu_alloc_pct = alloc_pct_float(cpu_alloc_ghz, cpu_cap)
     mem_alloc_pct = alloc_pct_float(mem_alloc_gb, mem_cap)
 
@@ -887,6 +907,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
         mem_alloc_pct=mem_alloc_pct,
         mem_pct_max=mem_pct_max,
         mem_pct=mem_pct,
+        mem_used_gb_peak=mem_used_gb_peak,
         stor_cap_gb=stor_cap_gb,
         stor_provisioned_gb=stor_provisioned_gb,
         stor_used_gb=stor_used_gb,
@@ -989,6 +1010,22 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
                     _section_title("Capacity Planning", "Physical capacity vs. utilization and VM allocation"),
                     html.Div(style={"marginTop": "12px"}, children=[
                         _capacity_resource_table(capacity_rows),
+                        html.P(
+                            (
+                                "Memory: Physical allocation sums VM-configured RAM within the selected "
+                                "time window; max utilization is cluster-level peak RAM usage (sum of "
+                                "used GB at peak timestamp). Allocation % can exceed utilization % under "
+                                "overcommit. Progress bars reflect allocation only. CRM sellable applies "
+                                f"max(allocation%, peak%) against the threshold "
+                                f"({max(mem_alloc_pct, mem_pct_max or mem_pct):.1f}% gate for this scope)."
+                            ),
+                            style={
+                                "margin": "10px 0 0",
+                                "color": "#A3AED0",
+                                "fontSize": "0.75rem",
+                                "lineHeight": 1.45,
+                            },
+                        ),
                     ]),
                 ],
             ),
@@ -1590,6 +1627,169 @@ def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
     )
 
 
+def _sellable_card_children(card: html.Div | None) -> list:
+    if card is None:
+        return []
+    children = getattr(card, "children", None)
+    return list(children) if children else []
+
+
+def _build_virt_total_sellable_children(
+    dc_id: str,
+    classic_clusters: list[str] | None,
+    hyperconv_clusters: list[str] | None,
+) -> list:
+    """Top-level Virt sellable KPI grid (server-side initial render + callback)."""
+    panels = merge_power_panels_for_summary(
+        collect_virt_sellable_panels(
+            dc_id,
+            classic_clusters or None,
+            hyperconv_clusters or None,
+        )
+    )
+    total_tl, by_kind, has_known = aggregate_virt_sellable_panels(panels)
+    _, tl_min, tl_max = virt_total_potential_range(panels)
+    if not has_known and total_tl <= 0:
+        return []
+
+    cpu = by_kind["cpu"]
+    ram = by_kind["ram"]
+    stor = by_kind["storage"]
+
+    def _kpi(label, value_str, sub_short, sub_full, icon, c="violet"):
+        card = html.Div(
+            className="nexus-card dc-kpi-card dc-stagger-1",
+            style={
+                "padding": "18px",
+                "display": "flex",
+                "alignItems": "center",
+                "justifyContent": "space-between",
+                "gap": "12px",
+                "minHeight": "140px",
+                "height": "100%",
+                "width": "100%",
+                "boxSizing": "border-box",
+            },
+            children=[
+                html.Div(
+                    style={"display": "flex", "flexDirection": "column", "minWidth": 0, "flex": "1 1 auto"},
+                    children=[
+                        html.Span(label, style={
+                            "color": "#A3AED0", "fontSize": "0.78rem", "fontWeight": 500,
+                            "letterSpacing": "0.02em", "textTransform": "uppercase",
+                        }),
+                        html.H3(value_str, style={
+                            "color": "#2B3674", "fontSize": "1.15rem", "fontWeight": 900,
+                            "margin": "6px 0 2px 0", "letterSpacing": "-0.02em",
+                        }),
+                        html.Span(sub_short, style={"color": "#4318FF", "fontSize": "0.78rem", "fontWeight": 700}),
+                    ],
+                ),
+                dmc.ThemeIcon(
+                    size=42, radius="xl", variant="light", color=c,
+                    children=DashIconify(icon=icon, width=22),
+                ),
+            ],
+        )
+        return html.Div(
+            style={"width": "100%", "height": "100%", "display": "flex", "flexDirection": "column"},
+            title=sub_full if sub_full and sub_full != sub_short else None,
+            children=card,
+        )
+
+    cpu_short, cpu_full = _fmt_tl_short(float(cpu["tl"]))
+    ram_short, ram_full = _fmt_tl_short(float(ram["tl"]))
+    stor_short, stor_full = _fmt_tl_short(float(stor["tl"]))
+    if abs(tl_max - tl_min) > 1e-6:
+        total_short = fmt_tl_range(tl_min, tl_max)
+        total_full = f"{tl_min:,.0f} – {tl_max:,.0f} TL"
+    else:
+        total_short = fmt_tl(tl_min)
+        total_full = f"{tl_min:,.0f} TL"
+
+    cards = [
+        _kpi("CPU Sellable", f"{float(cpu['constrained']):,.0f} {cpu['unit']}", cpu_short, cpu_full, _DC_ICONS["cpu"]),
+        _kpi("RAM Sellable", f"{float(ram['constrained']):,.0f} {ram['unit']}", ram_short, ram_full, _DC_ICONS["ram"]),
+        _kpi("Storage Sellable", f"{float(stor['constrained']):,.0f} {stor['unit']}", stor_short, stor_full, _DC_ICONS["storage"]),
+        _kpi("Total Potential", total_short, "× catalog price", total_full or "constrained × catalog price", "solar:wallet-money-bold-duotone", c="grape"),
+    ]
+    return [
+        html.Div(
+            "Virtualization — Total Sellable Potential",
+            style={"fontSize": "1.1rem", "fontWeight": 700, "color": "#2B3674", "marginBottom": "4px"},
+        ),
+        html.Div(
+            "Cluster-scoped sum of Classic + Hyperconverged sub-tab cards (Power is DC-wide)",
+            style={"fontSize": "0.78rem", "color": "#A3AED0", "marginBottom": "12px"},
+        ),
+        html.Div(
+            style={
+                "display": "grid",
+                "gridTemplateColumns": "repeat(4, minmax(0, 1fr))",
+                "gap": "16px",
+                "alignItems": "stretch",
+            },
+            children=cards,
+        ),
+    ]
+
+
+def _build_virt_subtab_stack(
+    tab: str,
+    *,
+    dc_id: str,
+    classic: dict,
+    hyperconv: dict,
+    power: dict,
+    energy: dict,
+    classic_clusters: list,
+    hyperconv_clusters: list,
+    storage_capacity,
+    storage_performance,
+    san_bottleneck,
+    show_virt_hosts: bool,
+) -> list:
+    """Build one Virt nested tab stack (compute + sellable + optional hosts)."""
+    if tab == "classic":
+        card = _build_sellable_inline_kpi(
+            dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
+            color="blue", selected_clusters=classic_clusters or None,
+            container_id="sellable-classic-card",
+        )
+        return [
+            _cluster_header("virt-classic-cluster-selector", classic_clusters or [], "Select Classic clusters"),
+            html.Div(
+                id="classic-virt-panel",
+                children=_build_compute_tab(classic, "Classic Compute", color="blue", slug="classic"),
+            ),
+            html.Div(id="sellable-classic-card", children=_sellable_card_children(card)),
+            _build_hosts_panel_shell("classic", "blue") if show_virt_hosts else None,
+        ]
+    if tab == "hyperconv":
+        card = _build_sellable_inline_kpi(
+            dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
+            color="teal", selected_clusters=hyperconv_clusters or None,
+            container_id="sellable-hyperconv-card",
+        )
+        return [
+            _cluster_header("virt-hyperconv-cluster-selector", hyperconv_clusters or [], "Select Hyperconverged clusters"),
+            html.Div(
+                id="hyperconv-virt-panel",
+                children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv"),
+            ),
+            html.Div(id="sellable-hyperconv-card", children=_sellable_card_children(card)),
+            _build_hosts_panel_shell("hyperconv", "teal") if show_virt_hosts else None,
+        ]
+    card = _build_sellable_inline_kpi(
+        dc_id, ["virt_power", "virt_power_hana"], "Power — Sellable Potential",
+        color="grape", container_id="sellable-power-card",
+    )
+    return [
+        _build_power_tab(power, energy, storage_capacity, storage_performance, san_bottleneck),
+        html.Div(id="sellable-power-card", children=_sellable_card_children(card)),
+    ]
+
+
 def _build_sellable_inline_kpi(
     dc_id: str | None,
     families: list[str] | str,
@@ -1634,6 +1834,9 @@ def _build_sellable_inline_kpi(
                 panels.extend(chunk)
         except Exception:
             continue
+
+    if set(families) & {"virt_power", "virt_power_hana"}:
+        panels = merge_power_panels_for_summary(panels)
 
     if not panels:
         if container_id:
@@ -1788,8 +1991,6 @@ def _build_sellable_inline_kpi(
         )
     ram_short, ram_full = _fmt_tl_short(ram["tl"])
     stor_short, stor_full = _fmt_tl_short(stor["tl"])
-    total_short, total_full = _fmt_tl_short(total_tl)
-
     # Storage range display: "X – Y" when IBM-shared capacity yields a range.
     stor_has_range = bool(stor.get("has_range")) and stor["max"] > stor["min"] + 1e-6
     if stor_has_range:
@@ -1804,22 +2005,13 @@ def _build_sellable_inline_kpi(
     else:
         stor_value = _fmt_unit(stor["constrained"], stor["unit"])
 
-    total_has_range = (
-        total_tl_max > total_tl + 1e-6
-        or (cpu_has_dual and abs(cpu.get("tl_phys", 0) - cpu.get("tl_eff", 0)) > 1e-6)
-    )
-    if total_has_range:
-        tl_lo = min(total_tl, total_tl_max, cpu.get("tl_phys", total_tl), cpu.get("tl_eff", total_tl))
-        tl_hi = max(total_tl, total_tl_max, cpu.get("tl_phys", total_tl), cpu.get("tl_eff", total_tl))
-        total_max_short, total_max_full = _fmt_tl_short(tl_hi)
-        total_min_short, _ = _fmt_tl_short(tl_lo)
-        total_value = f"{total_min_short} – {total_max_short}"
-        total_tooltip = (
-            f"Min (garanti): {total_min_short} · Max (paylaşımlı / efektif): {total_max_full}"
-        )
+    _, tl_min, tl_max = virt_total_potential_range(panels)
+    if abs(tl_max - tl_min) > 1e-6:
+        total_value = fmt_tl_range(tl_min, tl_max)
+        total_tooltip = f"{tl_min:,.0f} – {tl_max:,.0f} TL"
     else:
-        total_value = total_short
-        total_tooltip = total_full or "constrained × catalog price"
+        total_value = fmt_tl(tl_min)
+        total_tooltip = f"{tl_min:,.0f} TL" if tl_min else "constrained × catalog price"
 
     cards = [
         _kpi_with_sub(
@@ -1924,6 +2116,8 @@ def _build_summary_tab(
     *,
     sellable_summary: dict | None = None,
     show_sellable: bool = True,
+    classic_clusters: list[str] | None = None,
+    hyperconv_clusters: list[str] | None = None,
 ):
     """Summary tab: Combined Infrastructure + sellable executive overview."""
     classic = data.get("classic", {})
@@ -1953,7 +2147,12 @@ def _build_summary_tab(
     ]
 
     if show_sellable and dc_id:
-        sellable_block = build_summary_sellable_section(str(dc_id), sellable_summary)
+        sellable_block = build_summary_sellable_section(
+            str(dc_id),
+            sellable_summary,
+            classic_clusters=classic_clusters,
+            hyperconv_clusters=hyperconv_clusters,
+        )
         if sellable_block is not None:
             summary_children.append(sellable_block)
 
@@ -4528,6 +4727,43 @@ def build_dc_view(
     ]
     default_virt_tab = next((t for t, ok in virt_order if ok), "classic")
 
+    virt_subtab_kwargs = {
+        "dc_id": str(dc_id),
+        "classic": classic,
+        "hyperconv": hyperconv,
+        "power": power,
+        "energy": energy,
+        "classic_clusters": classic_clusters or [],
+        "hyperconv_clusters": hyperconv_clusters or [],
+        "storage_capacity": storage_capacity,
+        "storage_performance": storage_performance,
+        "san_bottleneck": san_bottleneck,
+        "show_virt_hosts": show_virt_hosts,
+    }
+    virt_total_children: list = []
+    if _tab_eager(eager_tabs, "virt"):
+        virt_total_children = _build_virt_total_sellable_children(
+            str(dc_id),
+            classic_clusters or None,
+            hyperconv_clusters or None,
+        )
+
+    def _virt_subtab_panel(tab_key: str, enabled: bool):
+        if not enabled:
+            return None
+        if tab_key == default_virt_tab:
+            stack = _build_virt_subtab_stack(tab_key, **virt_subtab_kwargs)
+            return dmc.TabsPanel(
+                value=tab_key,
+                pt="lg",
+                children=dmc.Stack(gap="lg", children=[c for c in stack if c is not None]),
+            )
+        return dmc.TabsPanel(
+            value=tab_key,
+            pt="lg",
+            children=html.Div(id=f"virt-subtab-lazy-{tab_key}"),
+        )
+
     def _cluster_header(selector_id: str, clusters: list[str], placeholder: str):
         return html.Div(
             style={"display": "flex", "justifyContent": "flex-end", "alignItems": "center", "marginBottom": "16px"},
@@ -4598,6 +4834,8 @@ def build_dc_view(
                             data, tr, dc_id=str(dc_id),
                             sellable_summary=sellable_summary if show_summary_sellable else None,
                             show_sellable=show_summary_sellable,
+                            classic_clusters=classic_clusters or None,
+                            hyperconv_clusters=hyperconv_clusters or None,
                         )],
                     ),
                 ) if show_summary else None,
@@ -4612,8 +4850,26 @@ def build_dc_view(
                         id="dc-tab-virt-root",
                         style={"padding": "0 30px"},
                         children=[
-                            html.Div(id="sellable-virt-total-card"),
+                            html.Div(
+                                id="sellable-virt-total-card",
+                                children=virt_total_children,
+                            ),
+                            dcc.Store(
+                                id="virt-subtab-context",
+                                data={
+                                    "dc_id": str(dc_id),
+                                    "default_tab": default_virt_tab,
+                                    "classic_clusters": classic_clusters or [],
+                                    "hyperconv_clusters": hyperconv_clusters or [],
+                                    "show_virt_hosts": show_virt_hosts,
+                                    "show_classic": show_classic,
+                                    "show_hyperconv": show_hyperconv,
+                                    "show_power": show_power_inner,
+                                },
+                            ),
+                            dcc.Store(id="virt-nested-mounted", data=[default_virt_tab]),
                             dmc.Tabs(
+                                id="virt-nested-tabs",
                                 color="violet",
                                 variant="outline",
                                 radius="md",
@@ -4626,67 +4882,9 @@ def build_dc_view(
                                             dmc.TabsTab("Power Mimari", value="power") if show_power_inner else None,
                                         ]
                                     ),
-                                    dmc.TabsPanel(
-                                        value="classic",
-                                        pt="lg",
-                                        children=dmc.Stack(
-                                            gap="lg",
-                                            children=[
-                                                _cluster_header(
-                                                    "virt-classic-cluster-selector",
-                                                    classic_clusters or [],
-                                                    "Select Classic clusters",
-                                                ),
-                                                html.Div(
-                                                    id="classic-virt-panel",
-                                                    children=_build_compute_tab(classic, "Classic Compute", color="blue", slug="classic"),
-                                                ),
-                                                html.Div(id="sellable-classic-card"),
-                                                _build_hosts_panel_shell(
-                                                    "classic", "blue",
-                                                ) if show_virt_hosts else None,
-                                            ],
-                                        ),
-                                    ) if show_classic else None,
-                                    dmc.TabsPanel(
-                                        value="hyperconv",
-                                        pt="lg",
-                                        children=dmc.Stack(
-                                            gap="lg",
-                                            children=[
-                                                _cluster_header(
-                                                    "virt-hyperconv-cluster-selector",
-                                                    hyperconv_clusters or [],
-                                                    "Select Hyperconverged clusters",
-                                                ),
-                                                html.Div(
-                                                    id="hyperconv-virt-panel",
-                                                    children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv"),
-                                                ),
-                                                html.Div(id="sellable-hyperconv-card"),
-                                                _build_hosts_panel_shell(
-                                                    "hyperconv", "teal",
-                                                ) if show_virt_hosts else None,
-                                            ],
-                                        ),
-                                    ) if show_hyperconv else None,
-                                    dmc.TabsPanel(
-                                        value="power",
-                                        pt="lg",
-                                        children=dmc.Stack(
-                                            gap="lg",
-                                            children=[
-                                                _build_power_tab(
-                                                    power,
-                                                    energy,
-                                                    storage_capacity,
-                                                    storage_performance,
-                                                    san_bottleneck,
-                                                ),
-                                                html.Div(id="sellable-power-card"),
-                                            ],
-                                        ),
-                                    ) if show_power_inner else None,
+                                    _virt_subtab_panel("classic", show_classic),
+                                    _virt_subtab_panel("hyperconv", show_hyperconv),
+                                    _virt_subtab_panel("power", show_power_inner),
                                 ],
                             ),
                         ],

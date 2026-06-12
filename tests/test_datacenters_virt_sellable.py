@@ -71,18 +71,26 @@ def test_publish_virt_cache_merges_partial_warm():
 
 
 def test_virt_sellable_tl_for_dc_uses_by_panel_path():
-    """List page virt TL must match DC detail Virt tab (by-panel, not summary rollup)."""
+    """List page virt TL must match DC detail Virt tab (by-panel, cluster-scoped)."""
     panels = [
         {"potential_tl": 1_000_000.0},
         {"potential_tl": 750_000.0},
     ]
     with patch(
+        "src.utils.datacenters_virt_sellable.api.get_classic_cluster_list",
+        return_value=["KM-1"],
+    ), patch(
+        "src.utils.datacenters_virt_sellable.api.get_hyperconv_cluster_list",
+        return_value=["HC-1"],
+    ), patch(
         "src.utils.datacenters_virt_sellable.collect_virt_sellable_panels",
         return_value=panels,
     ) as mock_collect:
-        tl = dvs._virt_sellable_tl_for_dc("DC11", family_workers=2)
+        tl = dvs._virt_sellable_tl_for_dc("DC11", family_workers=2, tr={"preset": "30d"})
     assert tl == 1_750_000.0
-    mock_collect.assert_called_once_with("DC11", None, None, max_family_workers=2)
+    mock_collect.assert_called_once_with(
+        "DC11", ["KM-1"], ["HC-1"], max_family_workers=2
+    )
 
 
 def test_virt_sellable_tl_for_dc_does_not_use_summary_light():

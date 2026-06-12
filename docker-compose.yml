@@ -453,8 +453,8 @@ services:
 
   chatbot-api:
     build:
-      context: ./services/chatbot-api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./services/chatbot-api/Dockerfile
     container_name: bulutistan-chatbot-api
     ports:
       - "8080:8000"
@@ -505,6 +505,8 @@ services:
       CHATBOT_LOG_API_URL: ${CHATBOT_LOG_API_URL:-http://chatbot-log-api:8000}
       CHATBOT_LOG_API_KEY: ${CHATBOT_LOG_API_KEY:-}
       CHATBOT_LOG_RETENTION_DAYS: ${CHATBOT_LOG_RETENTION_DAYS:-90}
+      CHATBOT_TOOL_BACKEND: ${CHATBOT_TOOL_BACKEND:-local}
+      DATALAKE_MCP_URL: ${DATALAKE_MCP_URL:-http://datalake-mcp:8010}
     networks:
       - datalake
     depends_on:
@@ -530,6 +532,48 @@ services:
       start_period: 30s
     profiles:
       - microservice
+
+  datalake-mcp:
+    build:
+      context: .
+      dockerfile: ./services/datalake-mcp/Dockerfile
+    container_name: bulutistan-datalake-mcp
+    ports:
+      - "8010:8010"
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
+    environment:
+      DATACENTER_API_URL: ${DATACENTER_API_URL:-http://datacenter-api:8000}
+      CUSTOMER_API_URL: ${CUSTOMER_API_URL:-http://customer-api:8000}
+      QUERY_API_URL: ${QUERY_API_URL:-http://query-api:8000}
+      CRM_ENGINE_URL: ${CRM_ENGINE_URL:-http://crm-engine:8000}
+      CHATBOT_DB_ENABLED: ${CHATBOT_DB_ENABLED:-false}
+    networks:
+      - datalake
+    depends_on:
+      datacenter-api:
+        condition: service_healthy
+      customer-api:
+        condition: service_healthy
+      query-api:
+        condition: service_healthy
+      crm-engine:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    profiles:
+      - microservice
+      - ai-mcp
 
 networks:
   datalake:

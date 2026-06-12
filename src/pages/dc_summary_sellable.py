@@ -9,11 +9,12 @@ from dash import html
 from dash_iconify import DashIconify
 
 from src.services import api_client as api
-from src.utils.format_units import smart_cpu, smart_memory, smart_storage
+from src.utils.format_units import fmt_tl, fmt_tl_range, smart_cpu, smart_memory, smart_storage
 from src.utils.virt_sellable_aggregate import (
     collect_virt_sellable_panels,
     merge_power_panels_for_summary,
     virt_constrained_loss_tl,
+    virt_tab_cluster_scope,
     virt_total_potential_range,
 )
 
@@ -34,23 +35,8 @@ _VIRT_FAMILY_LABELS = {
 }
 
 
-def _fmt_tl(value: float | None) -> str:
-    if value is None:
-        return "—"
-    v = float(value or 0)
-    if v >= 1_000_000:
-        return f"{v / 1_000_000:.2f} Milyon TL"
-    if v >= 1_000:
-        return f"{v / 1_000:.1f} Bin TL"
-    return f"{v:,.0f} TL"
-
-
-def _fmt_tl_range(lo: float | None, hi: float | None) -> str:
-    if lo is None and hi is None:
-        return "—"
-    if lo is not None and hi is not None and abs(hi - lo) > 1e-6:
-        return f"{_fmt_tl(lo)} – {_fmt_tl(hi)}"
-    return _fmt_tl(lo if lo is not None else hi)
+_fmt_tl = fmt_tl
+_fmt_tl_range = fmt_tl_range
 
 
 def _section_title(title: str, subtitle: str | None = None) -> html.Div:
@@ -139,10 +125,17 @@ def _group_panels_by_family(panels: list[dict]) -> dict[str, list[dict]]:
     return grouped
 
 
-def _resolve_virt_panels(dc_id: str, summary: dict | None) -> list[dict]:
+def _resolve_virt_panels(
+    dc_id: str,
+    summary: dict | None,
+    *,
+    classic_clusters: list[str] | None = None,
+    hyperconv_clusters: list[str] | None = None,
+) -> list[dict]:
     """Prefer by-panel API (Virt tab parity); fall back to summary rollup."""
+    classic, hyperconv = virt_tab_cluster_scope(classic_clusters, hyperconv_clusters)
     try:
-        panels = collect_virt_sellable_panels(str(dc_id), None, None)
+        panels = collect_virt_sellable_panels(str(dc_id), classic, hyperconv)
         if panels:
             return panels
     except Exception:
@@ -334,7 +327,13 @@ def build_virt_storage_block(summary: dict | None = None, *, panels: list[dict] 
     )
 
 
-def build_summary_sellable_section(dc_id: str, summary: dict | None = None) -> html.Div | None:
+def build_summary_sellable_section(
+    dc_id: str,
+    summary: dict | None = None,
+    *,
+    classic_clusters: list[str] | None = None,
+    hyperconv_clusters: list[str] | None = None,
+) -> html.Div | None:
     """Sellable blocks for DC Summary tab (executive + virt compute/storage)."""
     if not dc_id:
         return None
@@ -349,7 +348,12 @@ def build_summary_sellable_section(dc_id: str, summary: dict | None = None) -> h
         return None
 
     virt_panels = merge_power_panels_for_summary(
-        _resolve_virt_panels(str(dc_id), data)
+        _resolve_virt_panels(
+            str(dc_id),
+            data,
+            classic_clusters=classic_clusters,
+            hyperconv_clusters=hyperconv_clusters,
+        )
     )
 
     return html.Div(
@@ -362,9 +366,20 @@ def build_summary_sellable_section(dc_id: str, summary: dict | None = None) -> h
     )
 
 
-def build_summary_sellable_children(dc_id: str, summary: dict | None = None) -> list:
+def build_summary_sellable_children(
+    dc_id: str,
+    summary: dict | None = None,
+    *,
+    classic_clusters: list[str] | None = None,
+    hyperconv_clusters: list[str] | None = None,
+) -> list:
     """Return sellable section children for Dash callback updates."""
-    block = build_summary_sellable_section(dc_id, summary)
+    block = build_summary_sellable_section(
+        dc_id,
+        summary,
+        classic_clusters=classic_clusters,
+        hyperconv_clusters=hyperconv_clusters,
+    )
     if block is None:
         return [dmc.Alert("Sellable verisi yok.", color="gray", radius="md")]
     return block.children if hasattr(block, "children") else [block]

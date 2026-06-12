@@ -38,6 +38,10 @@ class ChatRequest(BaseModel):
     message: str = Field(..., description="Current user message")
     conversation: list[ChatMessage] = Field(default_factory=list)
     frontend_context: Optional[FrontendContext] = None
+    include_debug: bool = Field(
+        default=False,
+        description="When true, response includes pipeline debug summary (RBAC on GUI side).",
+    )
 
     @field_validator("message")
     @classmethod
@@ -72,6 +76,25 @@ class ClarificationBlock(BaseModel):
     allow_free_text: bool = True
 
 
+class ResponseBlock(BaseModel):
+    type: Literal["markdown", "table", "kpi_strip"] = "markdown"
+    content: Optional[str] = None
+    columns: Optional[list[str]] = None
+    rows: Optional[list[list[str]]] = None
+
+
+class TurnDebugSummary(BaseModel):
+    request_id: str
+    latency_ms: int = 0
+    tool_call_count: int = 0
+    llm_rounds: int = 0
+    llm_calls: list[dict[str, Any]] = Field(default_factory=list)
+    pipeline_stages: list[dict[str, Any]] = Field(default_factory=list)
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    post_process: Optional[dict[str, Any]] = None
+    scope_in_scope: bool = True
+
+
 class ChatResponse(BaseModel):
     answer: str
     model: str
@@ -83,6 +106,8 @@ class ChatResponse(BaseModel):
     investigation_summary: Optional[str] = None
     response_type: Literal["answer", "clarification"] = "answer"
     clarification: Optional[ClarificationBlock] = None
+    blocks: list[ResponseBlock] = Field(default_factory=list)
+    debug: Optional[TurnDebugSummary] = None
 
 
 # --------------------------------------------------------------------------- #

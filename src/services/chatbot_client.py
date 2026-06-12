@@ -35,6 +35,8 @@ def send_chat_message(
     conversation: list[dict[str, str]] | None,
     frontend_context: dict[str, Any] | None,
     timeout: float | None = None,
+    *,
+    include_debug: bool = False,
 ) -> dict[str, Any]:
     """POST a chat message to chatbot-api and return the parsed response.
 
@@ -52,6 +54,7 @@ def send_chat_message(
         "message": message,
         "conversation": clean_history,
         "frontend_context": frontend_context or {},
+        "include_debug": include_debug,
     }
     resp = httpx.post(
         url,

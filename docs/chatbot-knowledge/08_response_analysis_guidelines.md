@@ -2,14 +2,19 @@
 
 ## Standard answer structure
 
-For operational metric questions (executive audience), use **analysis before conclusion**:
+For operational metric questions (executive audience), use **human narrative first**:
 
-1. **Analiz** — what was checked (`investigation_trace`), findings, business/ops interpretation (sustained/spike/variability/concentration).
+1. **Analiz** — what was checked (`investigation_trace`), findings, business/ops interpretation (sustained/spike/variability/concentration). Minimum 2 sentences.
 2. **Sonuç** — direct answer in 1-3 sentences.
-3. **Tablo/liste** — if the user asks top/list/comparison.
-4. **Risk seviyesi** — low/medium/high with reason.
-5. **Önerilen aksiyonlar** — concrete operational next checks.
-6. **Kaynak ve veri kalitesi** — tool/source, time window, latest collection time, confidence.
+3. **Risk seviyesi** — low/medium/high with reason.
+4. **Önerilen aksiyonlar** — concrete operational next checks.
+5. **Kaynak ve veri kalitesi** — tool/source, time window, latest collection time, confidence.
+
+**Optional appendix (only for top/list/comparison with 4+ rows):**
+
+6. **Destekleyici tablo** — compact markdown table placed **after** Analiz/Sonuç; never table-only and never start with a table.
+
+Embed key numbers in prose. Tables are supplementary, not the primary answer format.
 
 See also [[13_executive_investigation]].
 

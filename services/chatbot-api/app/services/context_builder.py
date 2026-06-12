@@ -21,8 +21,10 @@ You help leaders understand datacenter, customer, SLA, backup, S3, CRM sellable 
 
 Audience and tone:
 - Datacenter and company executives: operational clarity, capacity risk, priority actions.
-- Lead with analysis and interpretation; put the direct answer after the analysis section.
-- Technical detail belongs in tables; the narrative should explain what it means for operations.
+- Write like a senior datacenter advisor: warm, clear Turkish prose.
+- Lead with interpretation and business impact; embed key numbers in sentences.
+- A markdown table is an optional appendix only when the user asked for ranking/list/comparison
+  with 4+ comparable rows — never the whole answer and never start with a table.
 
 Rules:
 - Answer in Turkish unless the user explicitly asks another language.
@@ -54,19 +56,21 @@ def _frontend_context_dict(ctx: Optional[FrontendContext]) -> dict[str, Any]:
 
 def _tool_results_block(results: list[ToolResult], budget: int) -> str:
     """Render tool results as a compact, character-bounded text block."""
+    if not results:
+        return "(no tool data gathered)"
+    per_tool = max(800, budget // max(1, len(results)))
     lines: list[str] = []
     used = 0
     for i, r in enumerate(results, start=1):
         if r.status == "success":
-            payload = json.dumps(r.summary, ensure_ascii=False, default=str)
+            payload = tool_summary_snippet(r, max_chars=per_tool - 120)
         elif r.status == "error":
             payload = json.dumps({"_error": r.error}, ensure_ascii=False)
         elif r.status == "skipped" and (
             (r.source or "").startswith("postgres") or r.error == "db_disabled"
         ):
-            # Surface DB-tool skips so the model can explain *why* (e.g. disabled).
             payload = json.dumps({"_skipped": r.error}, ensure_ascii=False)
-        else:  # other skipped tools — omit (noise)
+        else:
             continue
         block = (
             f"{i}. {r.name}\n"
@@ -81,6 +85,20 @@ def _tool_results_block(results: list[ToolResult], budget: int) -> str:
         lines.append(block)
         used += len(block)
     return "\n".join(lines) if lines else "(no tool data gathered)"
+
+
+def tool_summary_snippet(result: ToolResult, *, max_chars: int = 4000) -> str:
+    """Compact JSON snippet from a tool result for LLM / ReAct context."""
+    if result.status == "success":
+        payload = json.dumps(result.summary, ensure_ascii=False, default=str)
+    elif result.status == "error":
+        payload = json.dumps({"_error": result.error}, ensure_ascii=False)
+    else:
+        payload = json.dumps({"_status": result.status, "_error": result.error}, ensure_ascii=False)
+    payload = redact_text(payload)
+    if len(payload) > max_chars:
+        return payload[: max_chars - 1] + "…"
+    return payload
 
 
 def _append_conversation_messages(
@@ -127,11 +145,14 @@ def build_messages(
         "Answer style:\n"
         "- Turkish\n"
         "- Operational / CTO-level clarity\n"
+        "- Human narrative first: **Analiz** then **Sonuç**; embed numbers in prose\n"
+        "- No table-only answers; optional appendix table only for 4+ row lists\n"
         "- No hallucinated numbers\n"
         "- Mention data source briefly when helpful\n"
         "- Data from a 'postgres:...' source is host-level read-only DB data; cite the\n"
         "  collection_time. If a postgres tool is '_skipped: db_disabled', say the\n"
         "  host-level DB tool is disabled rather than claiming the data does not exist.\n"
+        f"\n{_AGENTIC_FORMAT}"
     )
 
     messages: list[dict[str, str]] = [
@@ -145,22 +166,38 @@ def build_messages(
 
 
 _AGENTIC_FORMAT = (
-    "Answer format (Turkish, executive operational — ANALYSIS BEFORE CONCLUSION):\n"
-    "1. **Analiz** — ne kontrol edildi (investigation_trace), bulgular, iş etkisi/yorum "
-    "(sürekli yüksek mi, spike mi, outlier, kaynak dağılımı, host yoğunlaşması)\n"
-    "2. **Sonuç** — doğrudan cevap (1-3 cümle)\n"
-    "3. Tablo/liste — yalnızca top_list çıktısında, tool satırlarından\n"
-    "4. Risk seviyesi — derived_analysis.risk_level\n"
-    "5. Önerilen aksiyonlar — derived_analysis.recommended_actions\n"
-    "6. Kaynak + veri kalitesi — tool/source, zaman aralığı, son toplama, confidence\n\n"
-    "Rules:\n"
-    "- Sayısal değerleri SADECE derived_analysis ve tool sonuçlarından al; uydurma.\n"
-    "- confidence 'low/medium' ise cevapta belirt.\n"
-    "- Veri eski (stale) ise son toplama tarihini ve güncel olmadığını söyle.\n"
-    "- Hiç veri yoksa 'erişemiyorum' deme; investigation_trace'teki araçları ve "
-    "sonucun neden boş geldiğini açıkla.\n"
-    "- Ham SQL, bağlantı dizesi veya secret gösterme.\n"
+    "Answer format (Turkish, executive operational — HUMAN NARRATIVE FIRST):\n"
+    "Required sections (in order):\n"
+    "1. **Analiz** — min 2 sentences: what was checked (investigation_trace), findings, "
+    "business/ops interpretation (sustained/spike/outlier/concentration)\n"
+    "2. **Sonuç** — min 1 sentence: direct answer to the user\n"
+    "3. **Risk seviyesi:** low/medium/high (from derived_analysis)\n"
+    "4. **Önerilen aksiyonlar:** bullet list (from derived_analysis)\n"
+    "5. **Kaynak:** tool/source list + data freshness + _Güven: low/medium/high_\n\n"
+    "Optional appendix (only for top_list/comparison with 4+ rows):\n"
+    "6. **Destekleyici tablo** — compact markdown table AFTER Analiz/Sonuç; never table-only\n\n"
+    "Forbidden:\n"
+    "- Table-only answers or starting the reply with a markdown table\n"
+    "- Skipping **Analiz** or **Sonuç** prose sections\n"
+    "- Sayısal değerleri uydurma — use ONLY derived_analysis and tool results\n"
+    "- confidence 'low/medium' ise cevapta belirt\n"
+    "- Veri eski (stale) ise son toplama tarihini belirt\n"
+    "- Hiç veri yoksa hangi araçların denendiğini açıkla\n"
 )
+
+
+def _output_format_hint(requested_output: str) -> str:
+    """Dynamic table guidance based on planner output type."""
+    if requested_output in ("top_list", "comparison"):
+        return (
+            "Output hint: Write a 2-4 sentence executive summary in **Analiz** and **Sonuç** first. "
+            "Embed top findings and key numbers in prose. Add an optional appendix table only if "
+            "4+ comparable rows exist — place it at the END, never as the whole answer.\n\n"
+        )
+    return (
+        "Output hint: Prose only — no markdown table needed for this question type. "
+        "Embed key metrics in sentences under **Analiz** and **Sonuç**.\n\n"
+    )
 
 
 def _format_cluster_diff(outcome) -> str:
@@ -241,18 +278,153 @@ def _format_datacenter_ranking(outcome) -> str:
     return "\n".join(lines)
 
 
-def format_from_analysis(outcome) -> str:
-    """Deterministic operational answer built straight from the analysis summary.
+def _scalar(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.1f}"
+    return str(value)
 
-    Used by the fallback guard: when tools returned rows but the model gave no
-    usable answer (denied data, or errored/empty), we build the answer ourselves
-    so we never show a generic error or deny existing data.
-    """
+
+def _unwrap_summary(summary: Any) -> dict[str, Any]:
+    if not isinstance(summary, dict):
+        return {}
+    if "data" in summary and isinstance(summary["data"], dict):
+        return summary["data"]
+    return summary
+
+
+def format_dashboard_overview(outcome) -> Optional[dict[str, Any]]:
+    """Deterministic dashboard overview answer with structured table blocks."""
+    overview_result = None
+    for r in outcome.results:
+        if r.name == "get_dashboard_overview" and r.status == "success":
+            overview_result = r
+            break
+    if overview_result is None:
+        return None
+
+    data = _unwrap_summary(overview_result.summary)
+    overview = data.get("overview") if isinstance(data.get("overview"), dict) else {}
+    platforms = data.get("platforms") if isinstance(data.get("platforms"), dict) else {}
+
+    inv = ""
+    if outcome.analysis and outcome.analysis.extra:
+        inv = outcome.analysis.extra.get("investigation_summary") or ""
+
+    analysis_lines = ["**Analiz:**"]
+    if inv:
+        analysis_lines.append(f"- {inv}")
+    analysis_lines.append("- Global dashboard overview verisi alındı.")
+    if overview:
+        analysis_lines.append(
+            f"- Toplam {overview.get('dc_count', '-')} datacenter, "
+            f"{overview.get('total_hosts', '-')} host, {overview.get('total_vms', '-')} VM."
+        )
+
+    conclusion = (
+        f"**Sonuç:** Platform genelinde {overview.get('total_vms', '-')} VM ve "
+        f"{overview.get('total_hosts', '-')} host izleniyor; platform kırılımı tabloda."
+    )
+
+    columns = ["Platform", "Host", "VM", "CPU Used", "CPU Cap", "RAM Used GB", "RAM Cap GB"]
+    rows: list[list[str]] = []
+
+    platform_rows = [
+        ("classic (KM/VMware)", data.get("classic_totals")),
+        ("hyperconverged (Nutanix)", data.get("hyperconv_totals")),
+        ("ibm", data.get("ibm_totals")),
+    ]
+    for label, metrics in platform_rows:
+        if not isinstance(metrics, dict):
+            continue
+        rows.append(
+            [
+                label,
+                "-",
+                "-",
+                _scalar(metrics.get("cpu_used")),
+                _scalar(metrics.get("cpu_cap") or metrics.get("cpu_assigned")),
+                _scalar(metrics.get("mem_used") or metrics.get("mem_assigned")),
+                _scalar(metrics.get("mem_cap") or metrics.get("mem_total")),
+            ]
+        )
+
+    if not rows:
+        for name, metrics in sorted(platforms.items()):
+            if not isinstance(metrics, dict) or metrics.get("_keys"):
+                continue
+            rows.append(
+                [
+                    str(name),
+                    _scalar(metrics.get("host_count") or metrics.get("hosts")),
+                    _scalar(metrics.get("vm_count") or metrics.get("vms")),
+                    _scalar(metrics.get("cpu_used") or metrics.get("used_cpu")),
+                    _scalar(metrics.get("cpu_cap") or metrics.get("cpu_capacity")),
+                    _scalar(metrics.get("ram_used_gb") or metrics.get("memory_used_gb")),
+                    _scalar(metrics.get("ram_cap_gb") or metrics.get("memory_cap_gb")),
+                ]
+            )
+
+    answer = "\n".join(analysis_lines + ["", conclusion])
+    blocks: list[dict[str, Any]] = [
+        {"type": "markdown", "content": answer},
+    ]
+    if rows:
+        blocks.append({"type": "table", "columns": columns, "rows": rows})
+    blocks.append(
+        {
+            "type": "markdown",
+            "content": f"**Kaynak:** {overview_result.source or 'get_dashboard_overview'}",
+        }
+    )
+    return {"answer": answer, "blocks": blocks}
+
+
+def is_dashboard_overview_intent(outcome, user_message: str = "") -> bool:
+    """True when the user question targets global dashboard / platform breakdown."""
+    msg = (user_message or "").lower().strip()
+    if not msg:
+        return False
+    keywords = (
+        "kapasite",
+        "overview",
+        "dashboard",
+        "platform",
+        "genel",
+        "özet",
+        "ozet",
+        "dağılım",
+        "dagilim",
+        "platform-baz",
+        "platform baz",
+        "kırılım",
+        "kirilim",
+    )
+    if any(k in msg for k in keywords):
+        return True
+    plan = getattr(outcome, "plan", None)
+    if plan is None:
+        return False
+    metric_key = getattr(plan, "metric_key", None) or ""
+    return metric_key in ("global_platform_overview", "global_capacity_overview")
+
+
+def format_from_analysis(outcome, *, user_message: str = "") -> str:
+    """Deterministic operational answer built straight from the analysis summary."""
     a = outcome.analysis
     if a and getattr(a, "extra", None) and "datacenter_ranking" in (a.extra or {}):
         return _format_datacenter_ranking(outcome)
     if a and getattr(a, "extra", None) and "db_only_count" in a.extra:
         return _format_cluster_diff(outcome)
+    if is_dashboard_overview_intent(outcome, user_message):
+        formatted = format_dashboard_overview(outcome)
+        if formatted and any(
+            r.name == "get_dashboard_overview" and r.status == "success" for r in outcome.results
+        ):
+            overview_only = sum(1 for r in outcome.results if r.status == "success") <= 2
+            if overview_only:
+                return formatted["answer"]
     sources = sorted({r.source for r in outcome.results if r.status == "success" and r.source})
     lines: list[str] = []
     inv_summary = ""
@@ -335,6 +507,8 @@ def build_agentic_messages(
         "Metric-specific guidance (follow these):\n"
         f"{json.dumps(guidance, ensure_ascii=False)}\n\n" if guidance else ""
     )
+    requested_output = plan_ctx.get("requested_output") or "summary"
+    output_hint = _output_format_hint(str(requested_output))
     developer = (
         "Current WebUI context:\n"
         f"{json.dumps(fc, ensure_ascii=False, default=str)}\n\n"
@@ -343,6 +517,7 @@ def build_agentic_messages(
         "Intent plan:\n"
         f"{json.dumps(plan_ctx, ensure_ascii=False, default=str)}\n\n"
         f"{guidance_block}"
+        f"{output_hint}"
         f"Confidence: {confidence}\n\n"
         "Derived analysis (deterministic — use ONLY these numbers/verdicts, do not invent):\n"
         f"{redact_text(json.dumps(analysis_ctx, ensure_ascii=False, default=str))}\n\n"

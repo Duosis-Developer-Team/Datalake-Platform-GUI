@@ -1,0 +1,14 @@
+{
+  "dashboard_format_smoke": {
+    "exit_code": 0,
+    "output": "tools_ok 3\nblocks 3\nhas_table True\nReAct LLM round failed: empty"
+  },
+  "mcp_tool_count": {
+    "exit_code": 0,
+    "output": "34"
+  },
+  "log_api_sample": {
+    "exit_code": 0,
+    "output": "200 5"
+  }
+}
