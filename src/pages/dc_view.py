@@ -1834,6 +1834,13 @@ def build_virt_nested_subtab_panel(
     tr = time_range or default_time_range()
     try:
         data = api.get_dc_details(dc_id, tr)
+        storage_capacity: dict = {}
+        storage_performance: dict = {}
+        san_bottleneck: dict = {}
+        if active_tab == "power":
+            storage_capacity = api.get_dc_storage_capacity(dc_id, tr)
+            storage_performance = api.get_dc_storage_performance(dc_id, tr)
+            san_bottleneck = api.get_dc_san_bottleneck(dc_id, tr)
         stack_kwargs = {
             "dc_id": dc_id,
             "classic": data.get("classic", {}),
@@ -1842,9 +1849,9 @@ def build_virt_nested_subtab_panel(
             "energy": data.get("energy", {}),
             "classic_clusters": ctx.get("classic_clusters") or [],
             "hyperconv_clusters": ctx.get("hyperconv_clusters") or [],
-            "storage_capacity": api.get_dc_storage_capacity(dc_id, tr),
-            "storage_performance": api.get_dc_storage_performance(dc_id, tr),
-            "san_bottleneck": api.get_dc_san_bottleneck(dc_id, tr),
+            "storage_capacity": storage_capacity,
+            "storage_performance": storage_performance,
+            "san_bottleneck": san_bottleneck,
             "show_virt_hosts": bool(ctx.get("show_virt_hosts")),
         }
         stack = _build_virt_subtab_stack(active_tab, **stack_kwargs)
@@ -4936,19 +4943,9 @@ def build_dc_view(
                                             _virt_nested_tab_stub("power", show_power_inner),
                                         ],
                                     ),
-                                    dcc.Loading(
-                                        id="virt-nested-content-loading",
-                                        type="circle",
-                                        color="#4318FF",
-                                        delay_show=250,
-                                        overlay_style={
-                                            "visibility": "visible",
-                                            "backgroundColor": "rgba(244, 247, 254, 0.6)",
-                                        },
-                                        children=html.Div(
-                                            id="virt-nested-content",
-                                            children=default_virt_content,
-                                        ),
+                                    html.Div(
+                                        id="virt-nested-content",
+                                        children=default_virt_content,
                                     ),
                                 ],
                             ),

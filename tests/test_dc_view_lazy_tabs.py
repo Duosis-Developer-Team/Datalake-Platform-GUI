@@ -415,7 +415,7 @@ def test_build_virt_subtab_stack_power_renders():
     assert getattr(stack[0], "id", None) == "power-stub"
 
 
-def test_build_virt_nested_subtab_panel_success_hyperconv():
+def test_build_virt_nested_subtab_panel_hyperconv_skips_storage_apis():
     from dash import html
 
     from src.pages.dc_view import build_virt_nested_subtab_panel
@@ -436,17 +436,53 @@ def test_build_virt_nested_subtab_panel_success_hyperconv():
         }
 
     with patch("src.pages.dc_view.api.get_dc_details", side_effect=_details), patch(
-        "src.pages.dc_view.api.get_dc_storage_capacity", return_value={}
-    ), patch("src.pages.dc_view.api.get_dc_storage_performance", return_value={}), patch(
-        "src.pages.dc_view.api.get_dc_san_bottleneck", return_value={}
-    ), patch(
+        "src.pages.dc_view.api.get_dc_storage_capacity"
+    ) as mock_cap, patch("src.pages.dc_view.api.get_dc_storage_performance") as mock_perf, patch(
+        "src.pages.dc_view.api.get_dc_san_bottleneck"
+    ) as mock_san, patch(
         "src.pages.dc_view._build_virt_subtab_stack",
         return_value=[html.Div(id="hyperconv-panel")],
-    ):
+    ) as mock_stack:
         panel, mount_ok = build_virt_nested_subtab_panel("hyperconv", ctx, {"preset": "7d"})
 
     assert mount_ok is True
     assert panel is not None
+    mock_cap.assert_not_called()
+    mock_perf.assert_not_called()
+    mock_san.assert_not_called()
+    assert mock_stack.call_args.kwargs["storage_capacity"] == {}
+    assert mock_stack.call_args.kwargs["storage_performance"] == {}
+    assert mock_stack.call_args.kwargs["san_bottleneck"] == {}
+
+
+def test_build_virt_nested_subtab_panel_power_fetches_storage_apis():
+    from dash import html
+
+    from src.pages.dc_view import build_virt_nested_subtab_panel
+
+    ctx = {"dc_id": "DC13", "classic_clusters": [], "hyperconv_clusters": [], "show_virt_hosts": False}
+    cap_data = {"systems": [{"name": "IBM"}]}
+    perf_data = {"series": []}
+    san_data = {"issues": []}
+
+    with patch(
+        "src.pages.dc_view.api.get_dc_details",
+        return_value={"classic": {}, "hyperconv": {}, "power": {"hosts": 1}, "energy": {}},
+    ), patch("src.pages.dc_view.api.get_dc_storage_capacity", return_value=cap_data) as mock_cap, patch(
+        "src.pages.dc_view.api.get_dc_storage_performance", return_value=perf_data
+    ) as mock_perf, patch("src.pages.dc_view.api.get_dc_san_bottleneck", return_value=san_data) as mock_san, patch(
+        "src.pages.dc_view._build_virt_subtab_stack",
+        return_value=[html.Div(id="power-panel")],
+    ) as mock_stack:
+        panel, mount_ok = build_virt_nested_subtab_panel("power", ctx, {"preset": "7d"})
+
+    assert mount_ok is True
+    mock_cap.assert_called_once()
+    mock_perf.assert_called_once()
+    mock_san.assert_called_once()
+    assert mock_stack.call_args.kwargs["storage_capacity"] == cap_data
+    assert mock_stack.call_args.kwargs["storage_performance"] == perf_data
+    assert mock_stack.call_args.kwargs["san_bottleneck"] == san_data
 
 
 def test_build_virt_nested_subtab_panel_failure_returns_alert():
