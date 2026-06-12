@@ -55,33 +55,31 @@ def test_classic_cpu_pct_live_is_snapshot_ratio_not_period_average():
     assert classic["ram_pct_live"] == 40.0  # 80/200
 
 
-def test_hyperconv_live_folds_in_nutanix_cpu_and_ram_when_no_vmware():
-    # AZ11-like: no non-KM VMware (hyperconv_row all zero), but Nutanix present.
-    # Nutanix CPU (cap,used) GHz = (200, 50) -> 25%.
-    # Nutanix mem (cap,used) where mem_gb = value*1024 -> (10,5) => 10240/5120 = 50%.
+def test_hyperconv_live_uses_merged_row_when_nutanix_fallback_applied():
+    # AZ11-like: merge query fills hyperconv_row from Nutanix when VMware is empty.
+    # CPU 50/200 = 25%; RAM 5120/10240 = 50%.
     result = _agg(
         nutanix_host_count=9,
         nutanix_cpu=(200.0, 50.0),
         nutanix_mem=(10.0, 5.0),
+        hyperconv_row=(0, 0, 200.0, 50.0, 10240.0, 5120.0, 0.0, 0.0),
     )
     hyperconv = result["hyperconv"]
+    assert hyperconv["cpu_cap"] == 200.0
     assert hyperconv["cpu_pct_live"] == 25.0
     assert hyperconv["ram_pct_live"] == 50.0
 
 
-def test_hyperconv_live_capacity_weights_vmware_plus_nutanix():
-    # non-KM VMware snapshot: cpu cap 100 used 20 ; mem cap 400 used 100
-    # Nutanix: cpu (100,80) GHz ; mem (10,5) -> 10240/5120 GB
-    # Combined cpu = (20+80)/(100+100) = 50%
-    # Combined mem = (100+5120)/(400+10240) = 5220/10640 = 49.06 -> 49.1
+def test_hyperconv_live_uses_merged_row_without_dc_wide_nutanix_double_count():
+    # Per-cluster merge already folded Nutanix into hyperconv_row; intel nutanix_* must not be added again.
     result = _agg(
         hyperconv_row=(3, 50, 100.0, 20.0, 400.0, 100.0, 0.0, 0.0),
         nutanix_cpu=(100.0, 80.0),
         nutanix_mem=(10.0, 5.0),
     )
     hyperconv = result["hyperconv"]
-    assert hyperconv["cpu_pct_live"] == 50.0
-    assert hyperconv["ram_pct_live"] == 49.1
+    assert hyperconv["cpu_pct_live"] == 20.0
+    assert hyperconv["ram_pct_live"] == 25.0
 
 
 def test_live_fields_are_zero_when_no_capacity():

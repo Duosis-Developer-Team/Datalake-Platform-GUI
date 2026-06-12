@@ -13,7 +13,7 @@ from psycopg2 import pool as pg_pool
 from psycopg2 import OperationalError
 from psycopg2.pool import PoolError
 
-from app.db.queries import nutanix as nq, vmware as vq, ibm as iq, energy as eq
+from app.db.queries import nutanix as nq, vmware as vq, virt_compute as vcq, ibm as iq, energy as eq
 from app.db.queries import vmware_datastore as vdq
 from app.db.queries import loki as lq, customer as cq, s3 as s3q, backup as bq
 from app.db.queries import brocade as brq, ibm_storage as isq
@@ -673,13 +673,23 @@ LIMIT 20
     # cluster_metrics — Classic / Hyperconverged split
     # dc_wc is the full ILIKE wildcard string e.g. '%DC13%'
 
-    def get_classic_metrics(self, cursor, dc_wc: str, start_ts, end_ts) -> tuple | None:
-        """Return Classic (KM) cluster aggregate row: hosts, vms, cpu_cap, cpu_used, mem_cap, mem_used, stor_cap, stor_used."""
-        return self._run_row(cursor, vq.CLASSIC_METRICS, (dc_wc, start_ts, end_ts))
+    def get_classic_metrics(
+        self, cursor, dc_wc: str, start_ts, end_ts, *, dc_code: str | None = None
+    ) -> tuple | None:
+        """Return Classic (KM) cluster aggregate row with Nutanix CPU/RAM fallback."""
+        dc_param = dc_code or dc_wc.strip("%")
+        return self._run_row(
+            cursor, vcq.CLASSIC_CPU_MEM_MERGED, (dc_wc, start_ts, end_ts, dc_param, start_ts, end_ts)
+        )
 
-    def get_classic_avg30(self, cursor, dc_wc: str, start_ts, end_ts) -> tuple | None:
-        """Return Classic cluster average utilization: cpu_avg_pct, mem_avg_pct."""
-        return self._run_row(cursor, vq.CLASSIC_AVG30, (dc_wc, start_ts, end_ts))
+    def get_classic_avg30(
+        self, cursor, dc_wc: str, start_ts, end_ts, *, dc_code: str | None = None
+    ) -> tuple | None:
+        """Return Classic cluster utilization (merged VMware + Nutanix fallback)."""
+        dc_param = dc_code or dc_wc.strip("%")
+        return self._run_row(
+            cursor, vcq.CLASSIC_AVG30_MERGED, (dc_wc, start_ts, end_ts, dc_param, start_ts, end_ts)
+        )
 
     @staticmethod
     def _mem_peak_tuple(row: tuple | None) -> tuple[float, float, float]:
@@ -752,13 +762,23 @@ LIMIT 20
             return vmw
         return ntx
 
-    def get_hyperconv_metrics(self, cursor, dc_wc: str, start_ts, end_ts) -> tuple | None:
-        """Return Hyperconverged (non-KM) cluster aggregate row."""
-        return self._run_row(cursor, vq.HYPERCONV_METRICS, (dc_wc, start_ts, end_ts))
+    def get_hyperconv_metrics(
+        self, cursor, dc_wc: str, start_ts, end_ts, *, dc_code: str | None = None
+    ) -> tuple | None:
+        """Return Hyperconverged cluster aggregate row with Nutanix CPU/RAM fallback."""
+        dc_param = dc_code or dc_wc.strip("%")
+        return self._run_row(
+            cursor, vcq.HYPERCONV_CPU_MEM_MERGED, (dc_wc, start_ts, end_ts, dc_param, start_ts, end_ts)
+        )
 
-    def get_hyperconv_avg30(self, cursor, dc_wc: str, start_ts, end_ts) -> tuple | None:
-        """Return Hyperconverged cluster average utilization: cpu_avg_pct, mem_avg_pct."""
-        return self._run_row(cursor, vq.HYPERCONV_AVG30, (dc_wc, start_ts, end_ts))
+    def get_hyperconv_avg30(
+        self, cursor, dc_wc: str, start_ts, end_ts, *, dc_code: str | None = None
+    ) -> tuple | None:
+        """Return Hyperconverged cluster utilization (merged VMware + Nutanix fallback)."""
+        dc_param = dc_code or dc_wc.strip("%")
+        return self._run_row(
+            cursor, vcq.HYPERCONV_AVG30_MERGED, (dc_wc, start_ts, end_ts, dc_param, start_ts, end_ts)
+        )
 
     # VM-level allocation: storage (provisioned/used) + CPU/RAM allocated via NetBox host GHz
     _VMWARE_DEFAULT_GHZ_KEY = "vmware.default_host_cpu_ghz"
@@ -1053,10 +1073,34 @@ LIMIT 20
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     row = self._run_row(
-                        cur, vq.CLASSIC_METRICS_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
+                        cur,
+                        vcq.CLASSIC_CPU_MEM_MERGED_FILTERED,
+                        (
+                            dc_wc,
+                            selected_clusters,
+                            start_ts,
+                            end_ts,
+                            dc_code,
+                            selected_clusters,
+                            start_ts,
+                            end_ts,
+                            selected_clusters,
+                        ),
                     )
                     avg30 = self._run_row(
-                        cur, vq.CLASSIC_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
+                        cur,
+                        vcq.CLASSIC_AVG30_MERGED_FILTERED,
+                        (
+                            dc_wc,
+                            selected_clusters,
+                            start_ts,
+                            end_ts,
+                            dc_code,
+                            selected_clusters,
+                            start_ts,
+                            end_ts,
+                            selected_clusters,
+                        ),
                     )
                     storage_vm = self.get_classic_storage_vm(
                         cur, dc_wc, start_ts, end_ts, selected_clusters
@@ -1139,13 +1183,41 @@ LIMIT 20
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    n_host = self._run_value(cur, nq.HOST_COUNT_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
-                    n_vm = self._run_value(cur, nq.VM_COUNT_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
-                    n_mem = self._run_row(cur, nq.MEMORY_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
-                    n_cpu = self._run_row(cur, nq.CPU_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
-                    n_stor = self._run_row(cur, nq.STORAGE_FILTERED, (dc_code, selected_clusters, start_ts, end_ts))
+                    row = self._run_row(
+                        cur,
+                        vcq.HYPERCONV_CPU_MEM_MERGED_FILTERED,
+                        (
+                            dc_wc,
+                            selected_clusters,
+                            start_ts,
+                            end_ts,
+                            dc_code,
+                            selected_clusters,
+                            start_ts,
+                            end_ts,
+                            selected_clusters,
+                        ),
+                    )
                     hc_avg30 = self._run_row(
-                        cur, vq.HYPERCONV_AVG30_FILTERED, (dc_wc, selected_clusters, start_ts, end_ts)
+                        cur,
+                        vcq.HYPERCONV_AVG30_MERGED_FILTERED,
+                        (
+                            dc_wc,
+                            selected_clusters,
+                            start_ts,
+                            end_ts,
+                            dc_code,
+                            selected_clusters,
+                            start_ts,
+                            end_ts,
+                            selected_clusters,
+                        ),
+                    )
+                    n_host = self._run_value(
+                        cur, nq.HOST_COUNT_FILTERED, (dc_code, selected_clusters, start_ts, end_ts)
+                    )
+                    n_stor = self._run_row(
+                        cur, nq.STORAGE_FILTERED, (dc_code, selected_clusters, start_ts, end_ts)
                     )
                     storage_vm = self.get_hyperconv_storage_vm(
                         cur, dc_code, start_ts, end_ts, selected_clusters
@@ -1158,27 +1230,17 @@ LIMIT 20
             logger.error("DB unavailable for get_hyperconv_metrics_filtered(%s): %s", dc_code, exc)
             return _empty_compute_section()
 
-        n_mem = n_mem or (0, 0)
-        n_cpu = n_cpu or (0, 0)
+        row = row or (0,) * 8
         n_stor = n_stor or (0, 0)
-        # nutanix_cluster_metrics.total_memory_capacity is int8 (bytes per schema); convert to GB
-        _bytes_per_gb = 1024**3
-        mem_cap_gb = float(n_mem[0] or 0) / _bytes_per_gb
-        mem_used_gb = float(n_mem[1] or 0) / _bytes_per_gb
-        # nutanix_cluster_metrics.total_cpu_capacity is in Hz; convert to GHz (match VMware)
-        _hz_per_ghz = 1_000_000_000
-        cpu_cap_ghz = float(n_cpu[0] or 0) / _hz_per_ghz
-        cpu_used_ghz = float(n_cpu[1] or 0) / _hz_per_ghz
-        # nutanix_cluster_metrics.storage_capacity/usage are int8 (bytes); convert to TB (match BATCH_STORAGE)
         _bytes_per_tb = 1024**4
         stor_cap_tb = float(n_stor[0] or 0) / _bytes_per_tb
         stor_used_tb = float(n_stor[1] or 0) / _bytes_per_tb
         hc_hosts = int(n_host or 0)
-        hc_vms = int(n_vm or 0)
-        hc_cpu_cap = round(cpu_cap_ghz, 2)
-        hc_cpu_used = round(cpu_used_ghz, 2)
-        hc_mem_cap = round(mem_cap_gb, 2)
-        hc_mem_used = round(mem_used_gb, 2)
+        hc_vms = int(row[1] or 0)
+        hc_cpu_cap = round(float(row[2] or 0), 2)
+        hc_cpu_used = round(float(row[3] or 0), 2)
+        hc_mem_cap = round(float(row[4] or 0), 2)
+        hc_mem_used = round(float(row[5] or 0), 2)
         hc_stor_cap = round(stor_cap_tb, 3)
         hc_stor_used = round(stor_used_tb, 3)
         hc_cpu_pct_cap = round(100.0 * hc_cpu_used / hc_cpu_cap, 1) if hc_cpu_cap else 0.0
@@ -1555,18 +1617,13 @@ LIMIT 20
         # Overview DC Summary table so it reconciles with the Datacenters cards, which
         # show the combined Intel snapshot (used_cpu_pct / used_ram_pct).
         #   - Classic    = KM VMware only (matches the classic compute capacity).
-        #   - Hyperconv  = non-KM VMware + Nutanix CPU/RAM, mirroring the combined Intel
-        #     gauge (Nutanix is hyperconverged; previously it was missing here, so the
-        #     table under-reported and disagreed with the cards — most visibly on
-        #     Nutanix-heavy DCs like AZ11).
+        #   - Hyperconv  = merged non-KM VMware + per-cluster Nutanix CPU/RAM fallback
+        #     (hyperconv_row already includes Nutanix-only clusters; no DC-wide double-count).
         cl_cpu_pct_live = round(100.0 * cl_cpu_used / cl_cpu_cap, 1) if cl_cpu_cap > 0 else 0.0
         cl_mem_pct_live = round(100.0 * cl_mem_used / cl_mem_cap, 1) if cl_mem_cap > 0 else 0.0
-        hc_cpu_cap_live  = hc_cpu_cap + n_cpu_cap_ghz
-        hc_cpu_used_live = hc_cpu_used + n_cpu_used_ghz
-        hc_mem_cap_live  = hc_mem_cap + n_mem_cap_gb
-        hc_mem_used_live = hc_mem_used + n_mem_used_gb
-        hc_cpu_pct_live = round(100.0 * hc_cpu_used_live / hc_cpu_cap_live, 1) if hc_cpu_cap_live > 0 else 0.0
-        hc_mem_pct_live = round(100.0 * hc_mem_used_live / hc_mem_cap_live, 1) if hc_mem_cap_live > 0 else 0.0
+        # hyperconv_row already includes per-cluster Nutanix CPU/RAM fallback — do not add DC-wide Nutanix again.
+        hc_cpu_pct_live = round(100.0 * hc_cpu_used / hc_cpu_cap, 1) if hc_cpu_cap > 0 else 0.0
+        hc_mem_pct_live = round(100.0 * hc_mem_used / hc_mem_cap, 1) if hc_mem_cap > 0 else 0.0
 
         desc = (dc_description or "").strip()
         _vm_alloc_defaults = {
@@ -1760,7 +1817,9 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                 with conn.cursor() as cur:
                     self._ensure_dc_description_map(cur)
                     dc_wc = f"%{dc_code}%"
-                    classic_row = self.get_classic_metrics(cur, dc_wc, start_ts, end_ts)
+                    classic_row = self.get_classic_metrics(
+                        cur, dc_wc, start_ts, end_ts, dc_code=dc_code
+                    )
                     ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(
                         cur, dc_code, start_ts, end_ts
                     )
@@ -1790,9 +1849,15 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                         ibm_kwh=self.get_ibm_kwh(cur, dc_wc, start_ts, end_ts),
                         vcenter_kwh=self.get_vcenter_kwh(cur, dc_code, start_ts, end_ts),
                         classic_row=classic_row,
-                        classic_avg30=self.get_classic_avg30(cur, dc_wc, start_ts, end_ts),
-                        hyperconv_row=self.get_hyperconv_metrics(cur, dc_wc, start_ts, end_ts),
-                        hyperconv_avg30=self.get_hyperconv_avg30(cur, dc_wc, start_ts, end_ts),
+                        classic_avg30=self.get_classic_avg30(
+                            cur, dc_wc, start_ts, end_ts, dc_code=dc_code
+                        ),
+                        hyperconv_row=self.get_hyperconv_metrics(
+                            cur, dc_wc, start_ts, end_ts, dc_code=dc_code
+                        ),
+                        hyperconv_avg30=self.get_hyperconv_avg30(
+                            cur, dc_wc, start_ts, end_ts, dc_code=dc_code
+                        ),
                         classic_storage_vm=self.get_classic_storage_vm(cur, dc_wc, start_ts, end_ts),
                         hyperconv_storage_vm=self.get_hyperconv_storage_vm(
                             cur, dc_code, start_ts, end_ts
@@ -1848,6 +1913,16 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
 
         nutanix_params = (dc_list, pattern_list, start_ts, end_ts)
         vmware_params  = (dc_list, pattern_list, start_ts, end_ts)
+        virt_compute_batch_params = (
+            dc_list,
+            pattern_list,
+            start_ts,
+            end_ts,
+            dc_list,
+            pattern_list,
+            start_ts,
+            end_ts,
+        )
         ibm_ts_params  = (start_ts, end_ts)
 
         nutanix_queries = [
@@ -1865,10 +1940,10 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
             ("v_cpu",      vq.BATCH_CPU,              vmware_params),
             ("v_platform", vq.BATCH_PLATFORM_COUNT,   vmware_params),
             # Compute-type split queries (Classic KM / Hyperconverged non-KM)
-            ("v_classic",       vq.BATCH_CLASSIC_METRICS,  vmware_params),
-            ("v_classic_avg",   vq.BATCH_CLASSIC_AVG30,    vmware_params),
-            ("v_hyperconv",     vq.BATCH_HYPERCONV_METRICS, vmware_params),
-            ("v_hyperconv_avg", vq.BATCH_HYPERCONV_AVG30,   vmware_params),
+            ("v_classic",       vcq.BATCH_CLASSIC_CPU_MEM_MERGED, virt_compute_batch_params),
+            ("v_classic_avg",   vcq.BATCH_CLASSIC_AVG30_MERGED,  virt_compute_batch_params),
+            ("v_hyperconv",     vcq.BATCH_HYPERCONV_CPU_MEM_MERGED, virt_compute_batch_params),
+            ("v_hyperconv_avg", vcq.BATCH_HYPERCONV_AVG30_MERGED,   virt_compute_batch_params),
         ]
         ibm_queries = [
             ("ibm_host_raw",   iq.BATCH_RAW_HOST,   ibm_ts_params),
