@@ -662,6 +662,14 @@ def test_compute_all_panels_calls_each_bulk_loader_once():
     assert calls == {"infra": 1, "thresh": 1, "price": 1}
 
 
+def test_compute_all_panels_survives_none_infra_lookup():
+    """When bulk infra load fails, compute_all_panels must not raise AttributeError."""
+    svc = _build_service()
+    svc._bulk_load_infra_sources = lambda dc: None  # type: ignore[assignment]
+    panels = svc.compute_all_panels(dc_code="*")
+    assert len(panels) == len(HC_PANELS)
+
+
 def test_compute_all_panels_family_filter_skips_unrelated_panels():
     """compute_all_panels(family=...) must filter BEFORE per-panel work runs."""
     svc = _build_service()

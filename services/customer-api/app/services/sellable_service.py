@@ -2157,7 +2157,8 @@ SELECT _tot, _alloc FROM latest
         # 5. Pre-fetch datacenter-api Redis payload once (totals + allocated).
         needs_redis_payload = any(
             self._infra_uses_dc_redis_payload(
-                infra_lookup.get(d.panel_key) or InfraSource(panel_key=d.panel_key, dc_code=dc_code)
+                (infra_lookup or {}).get(d.panel_key)
+                or InfraSource(panel_key=d.panel_key, dc_code=dc_code)
             )
             for d in defs
         )

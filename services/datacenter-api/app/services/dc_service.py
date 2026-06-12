@@ -774,8 +774,8 @@ LIMIT 20
                 "SELECT config_value FROM gui_crm_calc_config WHERE config_key = %s",
                 (self._VMWARE_DEFAULT_GHZ_KEY,),
             )
-            if row and row[0] is not None:
-                parsed = float(row[0])
+            if row and row.get("config_value") is not None:
+                parsed = float(row["config_value"])
                 if parsed > 0:
                     return parsed
         except Exception as exc:
