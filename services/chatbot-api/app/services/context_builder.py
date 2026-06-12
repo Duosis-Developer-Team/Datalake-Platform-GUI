@@ -21,8 +21,10 @@ You help leaders understand datacenter, customer, SLA, backup, S3, CRM sellable 
 
 Audience and tone:
 - Datacenter and company executives: operational clarity, capacity risk, priority actions.
-- Lead with analysis and interpretation; put the direct answer after the analysis section.
-- Technical detail belongs in tables; the narrative should explain what it means for operations.
+- Write like a senior datacenter advisor: warm, clear Turkish prose.
+- Lead with interpretation and business impact; embed key numbers in sentences.
+- A markdown table is an optional appendix only when the user asked for ranking/list/comparison
+  with 4+ comparable rows — never the whole answer and never start with a table.
 
 Rules:
 - Answer in Turkish unless the user explicitly asks another language.
@@ -143,11 +145,14 @@ def build_messages(
         "Answer style:\n"
         "- Turkish\n"
         "- Operational / CTO-level clarity\n"
+        "- Human narrative first: **Analiz** then **Sonuç**; embed numbers in prose\n"
+        "- No table-only answers; optional appendix table only for 4+ row lists\n"
         "- No hallucinated numbers\n"
         "- Mention data source briefly when helpful\n"
         "- Data from a 'postgres:...' source is host-level read-only DB data; cite the\n"
         "  collection_time. If a postgres tool is '_skipped: db_disabled', say the\n"
         "  host-level DB tool is disabled rather than claiming the data does not exist.\n"
+        f"\n{_AGENTIC_FORMAT}"
     )
 
     messages: list[dict[str, str]] = [
@@ -161,19 +166,38 @@ def build_messages(
 
 
 _AGENTIC_FORMAT = (
-    "Answer format (Turkish, executive operational — ANALYSIS BEFORE CONCLUSION):\n"
-    "1. **Analiz** — ne kontrol edildi (investigation_trace), bulgular, iş etkisi/yorum\n"
-    "2. **Sonuç** — doğrudan cevap (1-3 cümle)\n"
-    "3. Tablo gerekiyorsa markdown tablo (| col | col | + --- separator)\n"
-    "4. **Risk seviyesi:** low/medium/high\n"
-    "5. **Önerilen aksiyonlar:** madde listesi\n"
-    "6. **Kaynak:** tool/source listesi + _Güven: low/medium/high_\n\n"
-    "Rules:\n"
-    "- Sayısal değerleri SADECE derived_analysis ve tool sonuçlarından al; uydurma.\n"
-    "- Kapsam dışı genel bilgi sorularında tool verisi kullanma; kibarca reddet.\n"
-    "- Selamlama / test mesajlarında kısa karşılama; gereksiz infra verisi dökme.\n"
-    "- Hiç veri yoksa hangi araçların denendiğini açıkla.\n"
+    "Answer format (Turkish, executive operational — HUMAN NARRATIVE FIRST):\n"
+    "Required sections (in order):\n"
+    "1. **Analiz** — min 2 sentences: what was checked (investigation_trace), findings, "
+    "business/ops interpretation (sustained/spike/outlier/concentration)\n"
+    "2. **Sonuç** — min 1 sentence: direct answer to the user\n"
+    "3. **Risk seviyesi:** low/medium/high (from derived_analysis)\n"
+    "4. **Önerilen aksiyonlar:** bullet list (from derived_analysis)\n"
+    "5. **Kaynak:** tool/source list + data freshness + _Güven: low/medium/high_\n\n"
+    "Optional appendix (only for top_list/comparison with 4+ rows):\n"
+    "6. **Destekleyici tablo** — compact markdown table AFTER Analiz/Sonuç; never table-only\n\n"
+    "Forbidden:\n"
+    "- Table-only answers or starting the reply with a markdown table\n"
+    "- Skipping **Analiz** or **Sonuç** prose sections\n"
+    "- Sayısal değerleri uydurma — use ONLY derived_analysis and tool results\n"
+    "- confidence 'low/medium' ise cevapta belirt\n"
+    "- Veri eski (stale) ise son toplama tarihini belirt\n"
+    "- Hiç veri yoksa hangi araçların denendiğini açıkla\n"
 )
+
+
+def _output_format_hint(requested_output: str) -> str:
+    """Dynamic table guidance based on planner output type."""
+    if requested_output in ("top_list", "comparison"):
+        return (
+            "Output hint: Write a 2-4 sentence executive summary in **Analiz** and **Sonuç** first. "
+            "Embed top findings and key numbers in prose. Add an optional appendix table only if "
+            "4+ comparable rows exist — place it at the END, never as the whole answer.\n\n"
+        )
+    return (
+        "Output hint: Prose only — no markdown table needed for this question type. "
+        "Embed key metrics in sentences under **Analiz** and **Sonuç**.\n\n"
+    )
 
 
 def _format_cluster_diff(outcome) -> str:
@@ -483,6 +507,8 @@ def build_agentic_messages(
         "Metric-specific guidance (follow these):\n"
         f"{json.dumps(guidance, ensure_ascii=False)}\n\n" if guidance else ""
     )
+    requested_output = plan_ctx.get("requested_output") or "summary"
+    output_hint = _output_format_hint(str(requested_output))
     developer = (
         "Current WebUI context:\n"
         f"{json.dumps(fc, ensure_ascii=False, default=str)}\n\n"
@@ -491,6 +517,7 @@ def build_agentic_messages(
         "Intent plan:\n"
         f"{json.dumps(plan_ctx, ensure_ascii=False, default=str)}\n\n"
         f"{guidance_block}"
+        f"{output_hint}"
         f"Confidence: {confidence}\n\n"
         "Derived analysis (deterministic — use ONLY these numbers/verdicts, do not invent):\n"
         f"{redact_text(json.dumps(analysis_ctx, ensure_ascii=False, default=str))}\n\n"

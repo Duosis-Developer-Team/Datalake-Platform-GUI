@@ -58,6 +58,8 @@ class PostProcessLogEntry(BaseModel):
     llm_failed: bool = False
     blocks_parsed: int = 0
     answer_source: str = "llm"
+    narrative_retry: bool = False
+    narrative_retry_failed: bool = False
 
 
 class ChatTurnLog(BaseModel):

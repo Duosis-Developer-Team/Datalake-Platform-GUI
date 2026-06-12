@@ -46,6 +46,8 @@ class PostProcessLog:
     llm_failed: bool = False
     blocks_parsed: int = 0
     answer_source: Literal["llm", "llm_error_message"] = "llm"
+    narrative_retry: bool = False
+    narrative_retry_failed: bool = False
 
 
 @dataclass
@@ -131,6 +133,8 @@ class TurnPipelineRecorder:
             llm_failed=bool(meta.get("llm_failed")),
             blocks_parsed=int(meta.get("blocks_parsed") or 0),
             answer_source=src,
+            narrative_retry=bool(meta.get("narrative_retry")),
+            narrative_retry_failed=bool(meta.get("narrative_retry_failed")),
         )
 
     def set_plan(self, plan) -> None:
@@ -196,6 +200,8 @@ class TurnPipelineRecorder:
                     "llm_failed": self.post_process.llm_failed,
                     "blocks_parsed": self.post_process.blocks_parsed,
                     "answer_source": self.post_process.answer_source,
+                    "narrative_retry": self.post_process.narrative_retry,
+                    "narrative_retry_failed": self.post_process.narrative_retry_failed,
                 }
                 if self.post_process
                 else None
@@ -238,6 +244,8 @@ class TurnPipelineRecorder:
                     "llm_failed": self.post_process.llm_failed,
                     "blocks_parsed": self.post_process.blocks_parsed,
                     "answer_source": self.post_process.answer_source,
+                    "narrative_retry": self.post_process.narrative_retry,
+                    "narrative_retry_failed": self.post_process.narrative_retry_failed,
                 }
                 if self.post_process
                 else None

@@ -32,6 +32,7 @@ from app.models.schemas import (
 )
 from app.services import agent_loop, context_builder, log_client, scope_guard, tool_orchestrator
 from app.services import answer_reviewer
+from app.services.answer_quality import NARRATIVE_RETRY_PROMPT, is_narrative_incomplete
 from app.services.audit_service import AuditRecord, record
 from app.services.llm_client import LLMError, get_llm_client
 from app.services.pipeline_recorder import TurnPipelineRecorder
@@ -259,7 +260,13 @@ def _handle(
     answer = ""
     usage = None
     llm_failed = False
-    post_meta: dict = {"answer_source": "llm", "blocks_parsed": 0, "llm_failed": False}
+    post_meta: dict = {
+        "answer_source": "llm",
+        "blocks_parsed": 0,
+        "llm_failed": False,
+        "narrative_retry": False,
+        "narrative_retry_failed": False,
+    }
     if outcome is not None:
         messages = context_builder.build_agentic_messages(
             user_message=message,
@@ -297,6 +304,36 @@ def _handle(
         llm_failed = True
         recorder.record_llm("synthesis", model=model, skipped=True, skip_reason=exc.error_type)
     recorder.finish()
+
+    if not llm_failed and is_narrative_incomplete(answer):
+        recorder.start_stage("narrative_retry")
+        retry_messages = list(messages) + [
+            {"role": "assistant", "content": answer},
+            {"role": "user", "content": NARRATIVE_RETRY_PROMPT},
+        ]
+        post_meta["narrative_retry"] = True
+        try:
+            retry_result = llm.complete(retry_messages)
+            retry_answer = (retry_result.answer or "").strip()
+            if retry_answer:
+                answer = retry_answer
+                model = retry_result.model or model
+                if retry_result.usage:
+                    usage = retry_result.usage
+                    audit.prompt_tokens = (audit.prompt_tokens or 0) + (
+                        retry_result.usage.get("prompt_tokens") or 0
+                    )
+                    audit.completion_tokens = (audit.completion_tokens or 0) + (
+                        retry_result.usage.get("completion_tokens") or 0
+                    )
+                if outcome is not None:
+                    outcome.llm_rounds = (outcome.llm_rounds or 0) + 1
+                recorder.record_llm("synthesis", model=model, usage=retry_result.usage)
+            post_meta["narrative_retry_failed"] = is_narrative_incomplete(answer)
+        except LLMError as exc:
+            logger.warning("Narrative retry LLM error [%s]: %s", exc.error_type, exc.detail)
+            post_meta["narrative_retry_failed"] = True
+        recorder.finish()
 
     recorder.start_stage("blocks_parse")
     blocks: list[ResponseBlock] = []
