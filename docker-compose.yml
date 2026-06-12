@@ -113,6 +113,8 @@ services:
       # Chatbot API — Dash server-side widget calls this internal service only
       CHATBOT_API_URL: ${CHATBOT_API_URL:-http://chatbot-api:8000}
       CHATBOT_CLIENT_TIMEOUT: ${CHATBOT_CLIENT_TIMEOUT:-600}
+      CHATBOT_LOG_API_URL: ${CHATBOT_LOG_API_URL:-http://chatbot-log-api:8000}
+      CHATBOT_LOG_API_KEY: ${CHATBOT_LOG_API_KEY:-}
       # Auth DB still required for session/login handling (Flask auth middleware)
       AUTH_DB_HOST: ${AUTH_DB_HOST:-auth-db}
       AUTH_DB_PORT: ${AUTH_DB_PORT:-5432}

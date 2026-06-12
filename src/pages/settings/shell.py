@@ -32,6 +32,7 @@ from src.pages.settings.integrations import crm_unit_conversions as crm_unit_con
 from src.pages.settings.integrations import netbox_visualization as netbox_visualization_page
 from src.pages.settings.integrations import hmdl_overview as hmdl_overview_page
 from src.pages.settings.integrations import hmdl_sync_health as hmdl_sync_health_page
+from src.pages.settings.integrations import chatbot_logs as chatbot_logs_page
 from src.pages.settings import crm_service_mapping as crm_service_mapping_page
 
 _A = ADMIN_PREFIX
@@ -53,6 +54,7 @@ INT_TABS: list[tuple[str, str, str]] = [
     (f"{_A}/integrations/netbox/visualization", "NetBox / Loki", "page:settings_netbox_visualization"),
     (f"{_A}/integrations/ldap", "LDAP", "page:settings_ldap"),
     (f"{_A}/integrations/auranotify", "AuraNotify", "page:settings_auranotify"),
+    (f"{_A}/integrations/chatbot/logs", "AI Assistant", "page:settings_chatbot_logs"),
 ]
 
 HMDL_TABS: list[tuple[str, str, str]] = [
@@ -124,6 +126,7 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
         "page:settings_netbox_visualization",
         netbox_visualization_page.build_layout,
     ),
+    f"{_A}/integrations/chatbot/logs": ("page:settings_chatbot_logs", chatbot_logs_page.build_layout),
 }
 
 

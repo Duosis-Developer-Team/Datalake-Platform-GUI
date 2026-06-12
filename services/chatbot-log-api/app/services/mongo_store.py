@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -72,3 +72,74 @@ async def insert_turn(turn: ChatTurnLog) -> dict[str, Any]:
     coll = get_db()[settings.mongo_collection]
     await coll.insert_one(doc)
     return {"request_id": turn.request_id, "stored": True}
+
+
+def _build_turn_filter(
+    *,
+    user_id: Optional[str] = None,
+    username: Optional[str] = None,
+    status: Optional[str] = None,
+    response_type: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> dict[str, Any]:
+    filt: dict[str, Any] = {}
+    if user_id:
+        filt["user_id"] = user_id.strip()
+    if username:
+        filt["username"] = {"$regex": username.strip(), "$options": "i"}
+    if status:
+        filt["status"] = status.strip()
+    if response_type:
+        filt["response_type"] = response_type.strip()
+    if date_from or date_to:
+        created: dict[str, Any] = {}
+        if date_from:
+            created["$gte"] = datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc)
+        if date_to:
+            end = datetime.combine(date_to, datetime.max.time(), tzinfo=timezone.utc)
+            created["$lte"] = end
+        filt["created_at"] = created
+    return filt
+
+
+def _serialize_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    out = dict(doc)
+    out.pop("_id", None)
+    return out
+
+
+async def list_turns(
+    *,
+    skip: int = 0,
+    limit: int = 50,
+    user_id: Optional[str] = None,
+    username: Optional[str] = None,
+    status: Optional[str] = None,
+    response_type: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> tuple[list[dict[str, Any]], int]:
+    await ensure_indexes()
+    filt = _build_turn_filter(
+        user_id=user_id,
+        username=username,
+        status=status,
+        response_type=response_type,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    coll = get_db()[settings.mongo_collection]
+    total = await coll.count_documents(filt)
+    cursor = coll.find(filt).sort("created_at", -1).skip(max(0, skip)).limit(max(1, limit))
+    items = [_serialize_doc(doc) async for doc in cursor]
+    return items, total
+
+
+async def get_turn_by_request_id(request_id: str) -> Optional[dict[str, Any]]:
+    await ensure_indexes()
+    coll = get_db()[settings.mongo_collection]
+    doc = await coll.find_one({"request_id": request_id.strip()})
+    if not doc:
+        return None
+    return _serialize_doc(doc)

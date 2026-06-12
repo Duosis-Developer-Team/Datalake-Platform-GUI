@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -51,6 +52,20 @@ class ChatTurnLog(BaseModel):
 class ChatTurnLogResponse(BaseModel):
     request_id: str
     stored: bool = True
+
+
+class ChatTurnStored(ChatTurnLog):
+    """Document as persisted in MongoDB (includes server timestamps)."""
+
+    created_at: datetime
+    expires_at: datetime
+
+
+class ChatTurnListResponse(BaseModel):
+    items: list[ChatTurnStored]
+    total: int
+    skip: int
+    limit: int
 
 
 class HealthResponse(BaseModel):
