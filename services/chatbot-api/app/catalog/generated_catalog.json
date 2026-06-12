@@ -36,6 +36,15 @@
       "required_params": ["dc_code"]
     },
     {
+      "key": "global_datacenter_utilization",
+      "entity": "datacenter", "metric": "utilization", "calculation": "comparison",
+      "analysis_profile": "datacenter_ranking",
+      "aliases": ["en yoğun datacenter", "en yogun dc", "hangi datacenter en yoğun", "busiest datacenter", "dc yoğunluk"],
+      "primary_tools": ["get_datacenters_summary"],
+      "required_params": [],
+      "answer_guidance": ["Tüm datacenter'ları karşılaştır; kaç DC incelendiğini belirt.", "Sıralama kullanıcının seçtiği metriğe göre yapılır."]
+    },
+    {
       "key": "classic_vs_hyperconverged_cpu",
       "entity": "datacenter", "metric": "cpu_usage", "calculation": "comparison", "analysis_profile": "generic",
       "aliases": ["klasik mimari ile hyperconverged", "classic vs hyperconverged", "mimari karşılaştır"],

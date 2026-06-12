@@ -16,6 +16,7 @@ from app.models.schemas import ChatMessage, FrontendContext
 from app.services import (
     analysis_synthesizer,
     evidence_evaluator,
+    investigation_coordinator,
     llm_react_loop,
     query_planner,
     tool_registry,
@@ -57,6 +58,14 @@ def _dedupe_key(tool: str, args: dict[str, Any]) -> tuple:
         args.get("days"),
         args.get("limit"),
     )
+
+
+def _dc_from_result(result: ToolResult) -> Optional[str]:
+    source = result.source or ""
+    if "/datacenters/" in source:
+        part = source.rsplit("/datacenters/", 1)[-1].split("?")[0].strip("/")
+        return part.upper() if part else None
+    return None
 
 
 def _run_tool(
@@ -131,6 +140,20 @@ def run(
         seed_requests, auth_header, executed, trace, outcome.results, per_turn, per_turn, total
     )
     outcome.tool_call_count = total
+
+    # --- Map-reduce coordinator (full-coverage global comparisons) ---------------
+    if plan.analysis_profile in investigation_coordinator.COVERAGE_PROFILES:
+        coord = investigation_coordinator.run(
+            plan, outcome.results, auth_header, trace
+        )
+        if coord.extra_results:
+            outcome.results.extend(coord.extra_results)
+            for r in coord.extra_results:
+                executed.add(_dedupe_key(r.name, {"dc_code": _dc_from_result(r)}))
+            total = len(trace.entries)
+            outcome.tool_call_count = total
+        if coord.warnings and outcome.evaluation is None:
+            pass  # warnings flow into synthesizer via results
 
     # --- LLM ReAct (optional) --------------------------------------------------
     react = llm_react_loop.run(message, plan, list(outcome.results), auth_header)

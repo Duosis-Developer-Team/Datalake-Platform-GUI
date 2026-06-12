@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     chatbot_max_tool_calls_per_iteration: int = 10
     chatbot_max_llm_rounds: int = 150
     chatbot_analysis_mode: str = "operational"
+    chatbot_map_reduce_enabled: bool = True
+    chatbot_parallel_workers: int = 5
+    chatbot_clarification_on_ambiguous_ranking: bool = True
 
     # CPU analysis thresholds (percent) — tunable via env.
     chatbot_cpu_avg_warning_threshold: float = 70.0

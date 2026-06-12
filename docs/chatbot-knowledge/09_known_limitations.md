@@ -2,6 +2,8 @@
 
 ## Known limitations
 
+- `get_datacenters_summary` is normalized to compact `ranking_rows` for every datacenter (not a 3-item `_sample`). Global busiest-DC answers must use this full list or map-reduce detail workers — never rank from a truncated sample alone.
+- Ambiguous "en yoğun datacenter" questions without a metric should trigger clarification (CPU / memory / VM / composite) before ranking.
 - Some data is delayed; anchor time windows to latest available source data when UI semantics require it.
 - VMware VM CPU percent may be unavailable if denominator/capacity is zero/missing. Report MHz or exclude from percent ranking rather than inventing `%`.
 - Per-host classic (KM) **allocated CPU** is reported in **vCPU** (sum of VMs' `number_of_cpus` per host), NOT GHz. The allocated-GHz value cannot be computed in this dataset because `vmware_vm_performance_metrics.total_cpu_capacity_mhz` is `0`, so a GHz figure would have to be fabricated. (`cluster_metrics.cpu_ghz_capacity` / `cpu_ghz_used` do exist, but only at the **cluster** level — not per host.) The `get_dc_classic_host_cpu_allocation_variability` tool therefore returns `unit = 'vCPU'`.

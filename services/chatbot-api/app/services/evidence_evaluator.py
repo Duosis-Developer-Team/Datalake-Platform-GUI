@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 from app.catalog import domain_catalog
 from app.config import settings
+from app.services import datacenter_ranking
 from app.services.planner import IntentPlan
 from app.services.tool_registry import ToolResult, get_tool
 
@@ -149,6 +150,41 @@ def evaluate(
     run = {r.name for r in results}
     rows, source, primary_tool = _primary(results)
     ev = EvidenceEvaluation(primary_rows=rows, primary_source=source)
+
+    if plan.analysis_profile == "datacenter_ranking":
+        ranking_rows, expected = datacenter_ranking.collect_ranking_rows(results)
+        if ranking_rows:
+            ev.primary_rows = ranking_rows
+            ev.enough_for_answer = True
+            analyzed = len(ranking_rows)
+            if expected and analyzed >= expected:
+                ev.confidence = "high"
+            elif expected and analyzed < expected:
+                ev.confidence = "medium"
+                ev.data_quality_warnings.append(
+                    f"partial datacenter coverage: {analyzed}/{expected}"
+                )
+            else:
+                ev.confidence = "high"
+            missing_metrics = datacenter_ranking.rows_missing_metrics(ranking_rows)
+            if missing_metrics and "get_datacenter_detail" not in run:
+                ev.recommended_followup_tools = [
+                    ToolRequest(
+                        "get_datacenter_detail",
+                        {"dc_code": dc, "days": plan.days, "limit": plan.limit},
+                    )
+                    for dc in missing_metrics[: settings.chatbot_max_tool_calls_per_iteration]
+                ]
+                ev.enough_for_answer = False
+            return ev
+        if "get_datacenters_summary" not in run and not tool_budget_exhausted:
+            ev.recommended_followup_tools = [ToolRequest("get_datacenters_summary", {})]
+            ev.data_quality_warnings.append("datacenter ranking requires summary list")
+            return ev
+        ev.enough_for_answer = bool(results)
+        ev.confidence = "low"
+        ev.data_quality_warnings.append("no datacenter ranking rows after tools")
+        return ev
 
     # cpu_usage profile drives the host/vm fallback + concentration follow-ups.
     cpu_usage = plan.analysis_profile == "cpu_usage"

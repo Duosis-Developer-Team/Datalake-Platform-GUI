@@ -57,6 +57,7 @@ class ToolSpec:
     db_query_key: Optional[str] = None  # set => read-only DB tool (source=postgres)
     db_defaults: dict[str, Any] = field(default_factory=dict)  # default days/limit for DB tools
     list_items: bool = False  # API returns list[str]; keep the full (capped) list, not a 3-sample
+    comparison_list: bool = False  # API returns list[dict]; keep compact ranking rows for all items
     allowed_roles: Optional[tuple[str, ...]] = None  # None => any authenticated user
     db_dc_optional: bool = False  # True => dc_code not required; %(dc)s may be NULL
 
@@ -89,6 +90,45 @@ def _normalize(value: Any, _depth: int = 0) -> Any:
     return str(value)[:300]
 
 
+def extract_datacenter_ranking_row(dc: dict[str, Any]) -> dict[str, Any]:
+    """Compact per-DC metrics for global comparison / ranking."""
+    stats = dc.get("stats") if isinstance(dc.get("stats"), dict) else {}
+    return {
+        "id": dc.get("id"),
+        "name": dc.get("name"),
+        "location": dc.get("location"),
+        "used_cpu_pct": stats.get("used_cpu_pct"),
+        "used_ram_pct": stats.get("used_ram_pct"),
+        "used_storage_pct": stats.get("used_storage_pct"),
+        "vm_count": dc.get("vm_count"),
+        "host_count": dc.get("host_count"),
+    }
+
+
+def _normalize_datacenter_summary_list(payload: list[Any]) -> dict[str, Any]:
+    """Keep full compact ranking rows — do not truncate to 3 samples."""
+    rows = [
+        extract_datacenter_ranking_row(dc)
+        for dc in payload
+        if isinstance(dc, dict)
+    ]
+    return {"_count": len(payload), "ranking_rows": rows}
+
+
+def ranking_rows_from_summary(summary: Any) -> list[dict[str, Any]]:
+    """Read ranking_rows from a normalized get_datacenters_summary payload."""
+    if not isinstance(summary, dict):
+        return []
+    rows = summary.get("ranking_rows")
+    if isinstance(rows, list):
+        return [r for r in rows if isinstance(r, dict)]
+    # Legacy _sample fallback (pre-fix tool results).
+    sample = summary.get("_sample")
+    if isinstance(sample, list):
+        return [r for r in sample if isinstance(r, dict)]
+    return []
+
+
 def _row_count(payload: Any) -> Optional[int]:
     if isinstance(payload, list):
         return len(payload)
@@ -119,6 +159,7 @@ TOOLS: dict[str, ToolSpec] = {
         "datacenter-api",
         path="/api/v1/datacenters/summary",
         use_time=True,
+        comparison_list=True,
     ),
     "get_sla": ToolSpec(
         "get_sla",
@@ -523,7 +564,9 @@ def execute_tool(name: str, args: dict[str, Any], auth_header: Optional[str] = N
         attempted_path = path
         payload = api_clients.get_json(spec.service, path, time_params, auth_header)
         rows = _row_count(payload)
-        if spec.list_items and isinstance(payload, list):
+        if spec.comparison_list and isinstance(payload, list):
+            summary = _normalize_datacenter_summary_list(payload)
+        elif spec.list_items and isinstance(payload, list):
             # Keep the full (capped) list — needed for set comparisons.
             cap = spec.cap_rows or 200
             summary = {"_count": len(payload), "items": [str(x) for x in payload[:cap]]}

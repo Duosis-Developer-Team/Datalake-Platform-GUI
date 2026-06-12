@@ -23,13 +23,24 @@ Never respond with a bare "I don't have this information" without listing attemp
 ## Hybrid investigation pipeline
 
 ```text
-query_planner (catalog)
+query_planner (catalog + clarification_policy for ambiguous ranking)
   → seed tools (primary + fallback)
+  → map-reduce investigation_coordinator (global comparison profiles)
   → LLM ReAct loop (function-calling, optional)
   → deterministic evidence follow-ups
-  → analysis_synthesizer
+  → analysis_synthesizer (incl. datacenter_ranking)
   → final answer (ReAct draft or synthesis LLM call)
 ```
+
+### Map-reduce coordinator
+
+For `datacenter_ranking` (global busiest-DC style questions):
+
+- `get_datacenters_summary` returns compact `ranking_rows` for **all** datacenters.
+- `investigation_workers` may run parallel `get_datacenter_detail` when summary rows lack CPU/RAM metrics.
+- Numbers in the answer come from `analysis_synthesizer` / `datacenter_ranking` — not from LLM invention.
+
+Env: `CHATBOT_MAP_REDUCE_ENABLED` (default true), `CHATBOT_PARALLEL_WORKERS` (default 5), `CHATBOT_CLARIFICATION_ON_AMBIGUOUS_RANKING` (default true).
 
 All tools remain allowlisted via `tool_registry`; no free-form SQL.
 

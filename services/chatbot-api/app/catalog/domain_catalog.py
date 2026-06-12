@@ -155,6 +155,27 @@ METRICS: dict[str, MetricDefinition] = {
         required_params=("dc_code",),
         explanation="Klasik (KM) cluster compute (CPU/RAM/storage) özeti.",
     ),
+    "global_datacenter_utilization": MetricDefinition(
+        key="global_datacenter_utilization",
+        aliases=(
+            "en yoğun datacenter", "en yogun datacenter", "en yoğun dc", "en yogun dc",
+            "hangi datacenter en yoğun", "hangi dc en yoğun", "busiest datacenter",
+            "busiest dc", "datacenter karşılaştır", "datacenter karsilastir",
+            "dc yoğunluk", "dc yogunluk", "datacenter yoğunluk", "datacenter yogunluk",
+            "en yoğun veri merkezi", "en yogun veri merkezi",
+        ),
+        entity="datacenter", metric="utilization", calculation="comparison",
+        unit="mixed", output_type="comparison", analysis_profile="datacenter_ranking",
+        primary_tools=("get_datacenters_summary",),
+        forbidden_tools=_CUSTOMER_FORBIDDEN,
+        required_params=(),
+        answer_guidance=(
+            "Tüm datacenter'ları karşılaştır; kaç DC incelendiğini açıkça belirt.",
+            "Eksik DC varsa belirt; yalnızca örneklem üzerinden global sonuç çıkarma.",
+            "Sıralama kullanıcının seçtiği metriğe göre yapılır (CPU, bellek, VM veya bileşik).",
+        ),
+        explanation="Tüm datacenter'lar arasında kullanım yoğunluğu karşılaştırması.",
+    ),
     "global_km_cluster_memory_top": MetricDefinition(
         key="global_km_cluster_memory_top",
         aliases=(

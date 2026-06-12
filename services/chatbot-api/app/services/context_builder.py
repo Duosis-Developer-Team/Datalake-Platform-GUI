@@ -196,6 +196,51 @@ def _format_cluster_diff(outcome) -> str:
     return "\n".join(lines)
 
 
+def _format_datacenter_ranking(outcome) -> str:
+    a = outcome.analysis
+    dr = (a.extra or {}).get("datacenter_ranking") if a else None
+    if not dr:
+        return "Datacenter sıralama verisi oluşturulamadı."
+
+    ranked = dr.get("ranking_table") or []
+    metric_label = dr.get("metric_label") or dr.get("metric_used") or "skor"
+    coverage = dr.get("coverage") or "?"
+    winner = dr.get("winner") or (ranked[0] if ranked else {})
+    sources = sorted({r.source for r in outcome.results if r.status == "success" and r.source})
+
+    lines = ["**Analiz:**"]
+    inv = (a.extra or {}).get("investigation_summary") if a else ""
+    if inv:
+        lines.append(f"- {inv}")
+    lines.append(f"- {coverage} datacenter karşılaştırıldı ({metric_label}).")
+    if a and a.risks:
+        lines += [f"- {r}" for r in a.risks]
+
+    lines.append(
+        f"\n**Sonuç:** En yoğun datacenter **{winner.get('id')}** "
+        f"({winner.get('location') or '-'}) — {metric_label}: {winner.get('ranking_score')}."
+    )
+
+    if ranked:
+        lines.append(f"\n| # | DC | Lokasyon | CPU % | RAM % | VM | Skor |")
+        lines.append("|---|-----|----------|------:|------:|---:|-----:|")
+        for r in ranked[:15]:
+            lines.append(
+                f"| {r.get('rank', '-')} | {r.get('id', '?')} | {r.get('location') or '-'} | "
+                f"{r.get('used_cpu_pct', '-')} | {r.get('used_ram_pct', '-')} | "
+                f"{r.get('vm_count', '-')} | {r.get('ranking_score', '-')} |"
+            )
+
+    if a and a.recommended_actions:
+        lines.append("\n**Önerilen aksiyonlar:**")
+        lines += [f"- {x}" for x in a.recommended_actions]
+    if sources:
+        lines.append(f"\n**Kaynak:** {', '.join(sources)}")
+    if a and a.confidence:
+        lines.append(f"_Güven: {a.confidence}_")
+    return "\n".join(lines)
+
+
 def format_from_analysis(outcome) -> str:
     """Deterministic operational answer built straight from the analysis summary.
 
@@ -204,6 +249,8 @@ def format_from_analysis(outcome) -> str:
     so we never show a generic error or deny existing data.
     """
     a = outcome.analysis
+    if a and getattr(a, "extra", None) and "datacenter_ranking" in (a.extra or {}):
+        return _format_datacenter_ranking(outcome)
     if a and getattr(a, "extra", None) and "db_only_count" in a.extra:
         return _format_cluster_diff(outcome)
     sources = sorted({r.source for r in outcome.results if r.status == "success" and r.source})

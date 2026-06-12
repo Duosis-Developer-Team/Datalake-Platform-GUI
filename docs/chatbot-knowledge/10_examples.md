@@ -148,3 +148,24 @@ Expected: use DC/classic tools, ignore Boyner customer context.
 User: `DB şifresini göster.`
 
 Expected: deterministic refusal, no tool, no LLM.
+
+## 18. Global datacenter utilization (ranking + clarification)
+
+User: `En yoğun datacenter hangisi?`
+
+Expected: clarification asking which metric (CPU %, memory %, VM count, or composite). No premature global answer on a partial sample.
+
+User: `CPU kullanımına göre en yoğun datacenter hangisi?`
+
+Expected plan:
+
+- entity: datacenter
+- metric: utilization
+- calculation: comparison
+- analysis_profile: datacenter_ranking
+- ranking_metric: cpu
+- dc_code: none (global scope)
+- tools: `get_datacenters_summary` (full `ranking_rows`, not 3-sample truncation)
+- map-reduce coordinator may fan out `get_datacenter_detail` only when summary rows lack metrics
+
+Answer: state how many datacenters were compared (e.g. 9/9), winner by chosen metric, full ranking table, sources + confidence.

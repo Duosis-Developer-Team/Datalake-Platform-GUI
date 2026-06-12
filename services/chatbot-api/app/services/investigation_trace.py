@@ -45,3 +45,7 @@ class InvestigationTrace:
 
     def tool_names(self) -> list[str]:
         return [e.tool for e in self.entries]
+
+    def merge(self, other: InvestigationTrace) -> None:
+        """Append entries from another trace (map-reduce workers)."""
+        self.entries.extend(other.entries)

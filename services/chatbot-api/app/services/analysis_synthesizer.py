@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
 from app.config import settings
+from app.services import datacenter_ranking
 from app.services.evidence_evaluator import (
     EvidenceEvaluation,
     _concentrated,
@@ -168,6 +169,86 @@ def _synthesize_memory_cluster(plan: IntentPlan, rows: list[dict], a: AnalysisSu
     return a
 
 
+def _synthesize_datacenter_ranking(
+    plan: IntentPlan,
+    results: list[ToolResult],
+    evaluation: EvidenceEvaluation,
+    a: AnalysisSummary,
+) -> AnalysisSummary:
+    """Profile: datacenter_ranking — global DC utilization comparison."""
+    raw_rows, expected = datacenter_ranking.collect_ranking_rows(results)
+    metric = plan.ranking_metric or "composite"
+    ranked = datacenter_ranking.rank_datacenters(raw_rows, metric)
+    analyzed = len(ranked)
+    coverage = f"{analyzed}/{expected}" if expected else str(analyzed)
+
+    a.confidence = evaluation.confidence or "medium"
+    a.data_quality_warnings = list(evaluation.data_quality_warnings)
+
+    if not ranked:
+        a.risk_level = "low"
+        a.risks = ["Datacenter özet verisi alınamadı veya boş döndü."]
+        a.recommended_actions = ["get_datacenters_summary kaynağını ve zaman aralığını kontrol et."]
+        return a
+
+    winner = ranked[0]
+    a.top_entities = [
+        {
+            "name": r.get("id") or r.get("name"),
+            "host": r.get("location"),
+            "cpu_pct_avg": r.get("used_cpu_pct"),
+            "cpu_pct_max": r.get("used_ram_pct"),
+            "unit": datacenter_ranking.metric_label(metric),
+            "vm_count": r.get("vm_count"),
+            "rank": r.get("rank"),
+            "ranking_score": r.get("ranking_score"),
+        }
+        for r in ranked[: (plan.limit or 10)]
+    ]
+
+    label = datacenter_ranking.metric_label(metric)
+    a.risks.append(
+        f"{coverage} datacenter incelendi; en yüksek {label}: "
+        f"{winner.get('id')} ({winner.get('location') or '-'}) "
+        f"skor {winner.get('ranking_score')}."
+    )
+    if expected and analyzed < expected:
+        a.data_quality_warnings.append(f"Kısmi kapsam: {analyzed}/{expected} datacenter")
+        a.confidence = "medium"
+
+    top_cpu = max(ranked, key=lambda r: float(r.get("used_cpu_pct") or 0))
+    top_mem = max(ranked, key=lambda r: float(r.get("used_ram_pct") or 0))
+    top_vm = max(ranked, key=lambda r: float(r.get("vm_count") or 0))
+    if metric == "composite":
+        a.recommended_actions.append(
+            f"CPU lideri: {top_cpu.get('id')} (%{top_cpu.get('used_cpu_pct')}); "
+            f"bellek lideri: {top_mem.get('id')} (%{top_mem.get('used_ram_pct')}); "
+            f"VM lideri: {top_vm.get('id')} ({top_vm.get('vm_count')} VM)."
+        )
+
+    crit_cpu = settings.chatbot_cpu_avg_critical_threshold
+    if float(winner.get("used_cpu_pct") or 0) >= crit_cpu:
+        a.risk_level = "high"
+    elif float(winner.get("used_cpu_pct") or 0) >= settings.chatbot_cpu_avg_warning_threshold:
+        a.risk_level = "medium"
+    else:
+        a.risk_level = "low"
+
+    a.recommended_actions.append(
+        "Yoğun datacenter'da kapasite planlaması ve VM/host dağılımını gözden geçir."
+    )
+    a.extra["datacenter_ranking"] = {
+        "winner": winner,
+        "ranking_table": ranked,
+        "metric_used": metric,
+        "metric_label": label,
+        "coverage": coverage,
+        "analyzed_count": analyzed,
+        "expected_count": expected,
+    }
+    return a
+
+
 def _synthesize_allocation(plan: IntentPlan, rows: list[dict], a: AnalysisSummary) -> AnalysisSummary:
     """Profile: cpu_allocation — variability of VM-allocated vCPU per host.
 
@@ -225,6 +306,9 @@ def synthesize(
     # cluster_diff works off both tool results (API list + DB rows), not primary_rows.
     if plan.analysis_profile == "cluster_diff":
         return _synthesize_cluster_diff(plan, results, a)
+
+    if plan.analysis_profile == "datacenter_ranking":
+        return _synthesize_datacenter_ranking(plan, results, evaluation, a)
 
     if not rows:
         a.risk_level = "low"

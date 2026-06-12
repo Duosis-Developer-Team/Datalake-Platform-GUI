@@ -38,6 +38,7 @@ class IntentPlan:
     missing_required_params: list[str] = field(default_factory=list)
     clarification: Optional[str] = None  # set when a required param can't be resolved
     answer_guidance: list[str] = field(default_factory=list)  # metric-specific LLM guidance
+    ranking_metric: Optional[str] = None  # cpu | memory | vm_count | composite (datacenter_ranking)
 
     def as_context(self) -> dict[str, Any]:
         """Compact, LLM-safe view of the plan (no internals/secrets)."""
@@ -54,6 +55,7 @@ class IntentPlan:
             "requested_output": self.requested_output,
             "limit": self.limit,
             "sort_by": self.sort_by,
+            "ranking_metric": self.ranking_metric,
         }
 
 

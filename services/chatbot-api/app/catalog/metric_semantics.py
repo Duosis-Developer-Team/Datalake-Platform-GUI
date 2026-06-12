@@ -18,6 +18,8 @@ MEMORY_USAGE_ALIASES = (
 GLOBAL_SCOPE_ALIASES = (
     "tüm datacenter", "tüm dc", "tum datacenter", "tum dc", "all datacenter",
     "all dc", "aralarında", "aralarinda", "genel olarak", "platform geneli",
+    "en yoğun", "en yogun", "hangi datacenter", "hangi dc", "busiest datacenter",
+    "busiest dc", "datacenter karşılaştır", "datacenter karsilastir", "dc karşılaştır",
 )
 CPU_ALLOCATED_ALIASES = (
     "allocated", "atanmış", "atanmis", "tahsis", "vm'lere atanmış", "cpu kapasite değişim",
