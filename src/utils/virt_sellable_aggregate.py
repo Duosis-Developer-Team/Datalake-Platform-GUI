@@ -21,6 +21,20 @@ VIRT_SELLABLE_FAMILY_LABELS: tuple[str, ...] = (
 )
 
 
+def virt_tab_cluster_scope(
+    classic_clusters: list[str] | None,
+    hyperconv_clusters: list[str] | None,
+) -> tuple[list[str] | None, list[str] | None]:
+    """Mirror Virt tab cluster selector defaults: explicit full lists when known.
+
+    Empty lists are treated as ``None`` (DC-wide datalake path), matching
+    ``selected_clusters or None`` in Dash callbacks.
+    """
+    classic = list(classic_clusters) if classic_clusters else None
+    hyperconv = list(hyperconv_clusters) if hyperconv_clusters else None
+    return classic, hyperconv
+
+
 def collect_virt_sellable_panels(
     dc_id: str,
     classic_clusters: list[str] | None = None,
@@ -117,6 +131,11 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
             out.append(p)
     for kind, group in power_by_kind.items():
         if not group:
+            continue
+        if len(group) == 1:
+            single = dict(group[0])
+            single["family"] = "virt_power"
+            out.append(single)
             continue
         merged = dict(group[0])
         merged["family"] = "virt_power"

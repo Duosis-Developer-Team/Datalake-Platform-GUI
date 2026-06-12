@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from dash import html
 
 from src.pages.dc_view import (
@@ -45,6 +47,14 @@ class TestBuildComputeCapacityRows:
 
 
 class TestCapacityResourceTable:
+    def test_memory_capacity_planning_copy_documents_alloc_vs_util(self):
+        source = Path(__file__).resolve().parents[1].joinpath("src", "pages", "dc_view.py").read_text(
+            encoding="utf-8"
+        )
+        assert "cluster-level peak RAM usage" in source.lower()
+        assert "max(allocation%, peak%)" in source
+        assert "overcommit" in source.lower()
+
     def test_renders_three_body_rows(self):
         rows = _build_compute_capacity_rows(
             cpu_cap=100.0,

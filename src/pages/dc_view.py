@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 
 from src.services import api_client as api
 from src.pages.dc_summary_sellable import build_summary_sellable_section
+from src.utils.virt_sellable_aggregate import merge_power_panels_for_summary
 from src.utils.api_parallel import parallel_execute
 from src.utils.time_range import default_time_range
 from src.utils.format_units import (
@@ -704,14 +705,21 @@ def _capacity_resource_table(rows: list[dict]):
                                 html.Th("Total", style=header_style),
                                 html.Th(
                                     dmc.Tooltip(
-                                        label="Sum of VM-configured resources (latest allocation snapshot)",
+                                        label=(
+                                            "Sum of VM-configured resources (latest allocation snapshot). "
+                                            "May exceed 100% when RAM is overcommitted."
+                                        ),
                                         children=html.Span("Physical allocation"),
                                     ),
                                     style=header_style,
                                 ),
                                 html.Th(
                                     dmc.Tooltip(
-                                        label="Physical host peak usage in the selected report period",
+                                        label=(
+                                            "Cluster-level peak RAM usage in the selected report period "
+                                            "(cluster_metrics time series). Sellable gate uses "
+                                            "max(allocation%, peak%)."
+                                        ),
                                         children=html.Span("Max utilization"),
                                     ),
                                     style=header_style,
@@ -989,6 +997,21 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
                     _section_title("Capacity Planning", "Physical capacity vs. utilization and VM allocation"),
                     html.Div(style={"marginTop": "12px"}, children=[
                         _capacity_resource_table(capacity_rows),
+                        html.P(
+                            (
+                                "Memory: Physical allocation sums VM-configured RAM; max utilization is "
+                                "cluster peak host usage. Allocation % can exceed utilization % under "
+                                "overcommit. Progress bars reflect allocation only. CRM sellable applies "
+                                f"max(allocation%, peak%) against the threshold "
+                                f"({max(mem_alloc_pct, mem_pct_max or mem_pct):.1f}% gate for this scope)."
+                            ),
+                            style={
+                                "margin": "10px 0 0",
+                                "color": "#A3AED0",
+                                "fontSize": "0.75rem",
+                                "lineHeight": 1.45,
+                            },
+                        ),
                     ]),
                 ],
             ),
@@ -1635,6 +1658,9 @@ def _build_sellable_inline_kpi(
         except Exception:
             continue
 
+    if set(families) & {"virt_power", "virt_power_hana"}:
+        panels = merge_power_panels_for_summary(panels)
+
     if not panels:
         if container_id:
             return html.Div(id=container_id)
@@ -1924,6 +1950,8 @@ def _build_summary_tab(
     *,
     sellable_summary: dict | None = None,
     show_sellable: bool = True,
+    classic_clusters: list[str] | None = None,
+    hyperconv_clusters: list[str] | None = None,
 ):
     """Summary tab: Combined Infrastructure + sellable executive overview."""
     classic = data.get("classic", {})
@@ -1953,7 +1981,12 @@ def _build_summary_tab(
     ]
 
     if show_sellable and dc_id:
-        sellable_block = build_summary_sellable_section(str(dc_id), sellable_summary)
+        sellable_block = build_summary_sellable_section(
+            str(dc_id),
+            sellable_summary,
+            classic_clusters=classic_clusters,
+            hyperconv_clusters=hyperconv_clusters,
+        )
         if sellable_block is not None:
             summary_children.append(sellable_block)
 
@@ -4598,6 +4631,8 @@ def build_dc_view(
                             data, tr, dc_id=str(dc_id),
                             sellable_summary=sellable_summary if show_summary_sellable else None,
                             show_sellable=show_summary_sellable,
+                            classic_clusters=classic_clusters or None,
+                            hyperconv_clusters=hyperconv_clusters or None,
                         )],
                     ),
                 ) if show_summary else None,

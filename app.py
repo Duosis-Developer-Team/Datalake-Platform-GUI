@@ -124,6 +124,8 @@ from src.pages.dc_view import (
 from src.utils.virt_sellable_aggregate import (
     aggregate_virt_sellable_panels,
     collect_virt_sellable_panels,
+    merge_power_panels_for_summary,
+    virt_total_potential_range,
 )
 from src.pages.settings.iam import roles_callbacks  # noqa: F401 — registers role matrix callback
 from src.pages.settings.iam import teams_callbacks  # noqa: F401 — IAM teams panel / members
@@ -991,12 +993,15 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
     if not dc_id:
         return dash.no_update
 
-    panels = collect_virt_sellable_panels(
-        dc_id,
-        classic_clusters or None,
-        hyperconv_clusters or None,
+    panels = merge_power_panels_for_summary(
+        collect_virt_sellable_panels(
+            dc_id,
+            classic_clusters or None,
+            hyperconv_clusters or None,
+        )
     )
     total_tl, by_kind, has_known = aggregate_virt_sellable_panels(panels)
+    _, tl_min, tl_max = virt_total_potential_range(panels)
 
     if not has_known and total_tl <= 0:
         return []
@@ -1061,7 +1066,11 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
     cpu_short, cpu_full = _fmt_tl_short_local(float(cpu["tl"]))
     ram_short, ram_full = _fmt_tl_short_local(float(ram["tl"]))
     stor_short, stor_full = _fmt_tl_short_local(float(stor["tl"]))
-    total_short, total_full = _fmt_tl_short_local(total_tl)
+    if abs(tl_max - tl_min) > 1e-6:
+        total_short = f"{_fmt_tl_short_local(tl_min)[0]} – {_fmt_tl_short_local(tl_max)[0]}"
+        total_full = f"{tl_min:,.0f} – {tl_max:,.0f} TL"
+    else:
+        total_short, total_full = _fmt_tl_short_local(total_tl)
 
     cards = [
         _kpi("CPU Sellable",     f"{float(cpu['constrained']):,.0f} {cpu['unit']}",   cpu_short, cpu_full,   _DC_ICONS["cpu"]),
