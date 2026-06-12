@@ -226,6 +226,8 @@ def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] 
         mode = next((p.get("computation_mode") for p in fam_panels if p.get("computation_mode")), None)
         cpu_phys = cpu.get("sellable_physical") if cpu else None
         cpu_eff = cpu.get("sellable_effective") if cpu else (cpu.get("sellable_constrained") if cpu else None)
+        ram_phys = ram.get("sellable_physical") if ram else None
+        ram_peak = ram.get("sellable_effective") if ram else (ram.get("sellable_constrained") if ram else None)
         cpu_unit = (cpu or {}).get("display_unit") or "vCPU"
         cards.append(html.Div(
             className="nexus-card",
@@ -245,7 +247,11 @@ def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] 
                         size="xs",
                     ),
                     dmc.Text(
-                        f"RAM Sellable: {smart_memory((ram or {}).get('sellable_constrained'))}",
+                        (
+                            f"RAM Physical: {smart_memory(ram_phys)} · Peak: {smart_memory(ram_peak)}"
+                            if ram_phys is not None and ram_peak is not None
+                            else f"RAM Sellable: {smart_memory((ram or {}).get('sellable_constrained'))}"
+                        ),
                         size="xs",
                     ),
                 ]),
@@ -337,24 +343,33 @@ def build_summary_sellable_section(
     """Sellable blocks for DC Summary tab (executive + virt compute/storage)."""
     if not dc_id:
         return None
-    try:
-        data = summary if summary is not None else api.get_sellable_summary_light(dc_code=str(dc_id))
-    except Exception:
-        return html.Div(children=[
-            dmc.Alert("Sellable özeti yüklenemedi.", color="red", radius="md"),
-        ])
-
-    if not data or not isinstance(data, dict):
-        return None
-
+    data: dict = summary if isinstance(summary, dict) else {}
     virt_panels = merge_power_panels_for_summary(
         _resolve_virt_panels(
             str(dc_id),
-            data,
+            data or None,
             classic_clusters=classic_clusters,
             hyperconv_clusters=hyperconv_clusters,
         )
     )
+    if not virt_panels and not data:
+        try:
+            data = api.get_sellable_summary_light(dc_code=str(dc_id)) or {}
+        except Exception:
+            return html.Div(children=[
+                dmc.Alert("Sellable özeti yüklenemedi.", color="red", radius="md"),
+            ])
+        virt_panels = merge_power_panels_for_summary(
+            _resolve_virt_panels(
+                str(dc_id),
+                data,
+                classic_clusters=classic_clusters,
+                hyperconv_clusters=hyperconv_clusters,
+            )
+        )
+
+    if not virt_panels and not data:
+        return None
 
     return html.Div(
         id="dc-summary-sellable-root",

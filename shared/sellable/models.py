@@ -75,6 +75,7 @@ class PanelResult:
     unit_price_tl: float = 0.0
     potential_tl: float = 0.0
     ratio_bound: bool = False              # True if constrained < raw
+    gate_blocked: bool = False             # True if utilization gate zeroed sellable
     has_infra_source: bool = False
     has_price: bool = False
     notes: list[str] = field(default_factory=list)

@@ -230,6 +230,7 @@ from shared.sellable.computation import (
     constrain_by_ratio_per_host,
     constrain_by_ratio_per_host_dual,
     convert_unit,
+    utilization_gate_blocked,
 )
 from shared.sellable.models import (
     DashboardSummary,
@@ -1386,6 +1387,9 @@ SELECT _tot, _alloc FROM latest
         host_rows: "list[dict]",
         unit_lookup: dict[tuple[str, str], UnitConversion],
         *,
+        dc_code: str = "",
+        family: str = "",
+        clusters: list[str] | None = None,
         effective_ghz_per_unit: float = 1.0,
     ) -> "list[PanelResult]":
         """Recompute CPU/RAM panel totals + dual-track sellable from per-host rows."""
@@ -1401,7 +1405,7 @@ SELECT _tot, _alloc FROM latest
         host_units: list[dict] = []
         cpu_total = cpu_alloc = cpu_total_phys = cpu_alloc_phys = 0.0
         ram_total = ram_alloc = 0.0
-        cpu_raw_sum = cpu_raw_phys_sum = ram_raw_sum = 0.0
+        cpu_raw_sum = cpu_raw_phys_sum = ram_raw_phys_sum = ram_raw_peak_sum = 0.0
         for h in host_rows:
             ghz = float(h.get("ghz_per_core") or 1.0)
             cap_ghz = float(h.get("cpu_cap_ghz") or 0.0)
@@ -1434,7 +1438,29 @@ SELECT _tot, _alloc FROM latest
             cpu_raw_phys_sum += apply_utilization_gate(
                 cap_ghz, alloc_phys, cpu_util, cpu_p.threshold_pct
             )
-            ram_raw_sum += apply_utilization_gate(mc, ma, ram_util, ram_p.threshold_pct)
+            ram_raw_phys_sum += apply_utilization_gate(mc, ma, ram_util, ram_p.threshold_pct)
+
+        raw = (
+            self._fetch_compute_response(dc_code, family, clusters)
+            if dc_code and family
+            else None
+        )
+        peak_util = 0.0
+        if raw:
+            peak_cap_gb = float(raw.get("mem_cap_gb_at_peak") or raw.get("mem_cap") or 0.0)
+            peak_used_gb = float(raw.get("mem_used_gb_peak") or 0.0)
+            peak_util = float(self._extract_utilization_pct(raw, "ram") or 0.0)
+            peak_cap = convert_unit(peak_cap_gb, ram_conv)
+            peak_used = convert_unit(peak_used_gb, ram_conv)
+            ram_raw_peak_sum = apply_utilization_gate(
+                peak_cap, peak_used, peak_util, ram_p.threshold_pct
+            )
+            total_mem_cap_raw = sum(float(h.get("mem_cap_gb") or 0.0) for h in host_rows) or 1.0
+            for i, h in enumerate(host_rows):
+                share = float(h.get("mem_cap_gb") or 0.0) / total_mem_cap_raw
+                host_units[i]["ram_peak_total"] = peak_cap * share
+                host_units[i]["ram_peak_used"] = peak_used * share
+                host_units[i]["ram_peak_util_pct"] = peak_util
 
         note = f"host-based ({len(host_units)} host)"
         rebuilt: list[PanelResult] = []
@@ -1445,12 +1471,24 @@ SELECT _tot, _alloc FROM latest
                 p.sellable_raw = cpu_raw_sum
                 p.sellable_physical = cpu_raw_phys_sum
                 p.sellable_effective = cpu_raw_sum
+                p.gate_blocked = utilization_gate_blocked(
+                    cpu_total, cpu_alloc,
+                    max((float(h.get("cpu_util_pct") or 0.0) for h in host_units), default=0.0),
+                    cpu_p.threshold_pct,
+                ) and cpu_raw_sum <= 0
                 p.notes = [*p.notes, note]
                 p.computation_mode = "host_based"
             elif p.resource_kind == "ram":
                 p.total = ram_total
                 p.allocated = ram_alloc
-                p.sellable_raw = ram_raw_sum
+                p.sellable_raw = ram_raw_phys_sum
+                p.sellable_physical = ram_raw_phys_sum
+                p.sellable_effective = ram_raw_peak_sum
+                p.gate_blocked = utilization_gate_blocked(
+                    ram_total, ram_alloc,
+                    max((float(h.get("ram_util_pct") or 0.0) for h in host_units), default=0.0),
+                    ram_p.threshold_pct,
+                ) and ram_raw_phys_sum <= 0
                 p.notes = [*p.notes, note]
             rebuilt.append(p)
 
@@ -1461,6 +1499,8 @@ SELECT _tot, _alloc FROM latest
             cpu_threshold_pct=cpu_p.threshold_pct,
             ram_threshold_pct=ram_p.threshold_pct,
             effective_ghz_per_unit=effective_ghz_per_unit,
+            ram_raw_physical=ram_raw_phys_sum,
+            ram_raw_peak=ram_raw_peak_sum,
         )
 
     def _apply_cluster_fallback_dual(
@@ -1482,6 +1522,8 @@ SELECT _tot, _alloc FROM latest
 
         raw = self._fetch_compute_response(dc_code, family, clusters)
         cpu_raw_phys = cpu_raw_eff = cpu_p.sellable_raw
+        ram_raw_phys: float | None = None
+        ram_raw_peak: float | None = None
         if raw:
             cap = float(raw.get("cpu_cap") or cpu_p.total or 0.0)
             alloc_phys = float(raw.get("cpu_alloc_ghz_vm") or 0.0)
@@ -1516,35 +1558,64 @@ SELECT _tot, _alloc FROM latest
                 )
                 ram_p.total = convert_unit(mem_cap, ram_conv)
                 ram_p.allocated = convert_unit(mem_alloc, ram_conv)
-                ram_p.sellable_raw = apply_utilization_gate(
+                ram_raw_phys = apply_utilization_gate(
                     ram_p.total, ram_p.allocated, mem_util, ram_p.threshold_pct
                 )
+                peak_cap_gb = float(raw.get("mem_cap_gb_at_peak") or mem_cap)
+                peak_used_gb = float(raw.get("mem_used_gb_peak") or 0.0)
+                peak_cap = convert_unit(peak_cap_gb, ram_conv)
+                peak_used = convert_unit(peak_used_gb, ram_conv)
+                ram_raw_peak = apply_utilization_gate(
+                    peak_cap, peak_used, mem_util, ram_p.threshold_pct
+                )
+                ram_p.sellable_raw = ram_raw_phys
+                ram_p.sellable_physical = ram_raw_phys
+                ram_p.sellable_effective = ram_raw_peak
+                ram_p.gate_blocked = utilization_gate_blocked(
+                    ram_p.total, ram_p.allocated, mem_util, ram_p.threshold_pct
+                ) and ram_raw_phys <= 0
 
         note = f"cluster_fallback ({host_status})"
         for p in group:
             if p.resource_kind == "cpu":
                 p.notes = [*p.notes, note]
+                p.gate_blocked = utilization_gate_blocked(
+                    cpu_p.total, cpu_p.allocated,
+                    self._extract_utilization_pct(raw, "cpu") if raw else None,
+                    cpu_p.threshold_pct,
+                ) and cpu_raw_eff <= 0
+            elif p.resource_kind == "ram" and raw:
+                p.notes = [*p.notes, note]
             p.computation_mode = "cluster_fallback"
+
+        ram_p = next((p for p in group if p.resource_kind == "ram"), None)
+        if ram_p is not None and ram_raw_phys is None:
+            ram_raw_phys = ram_p.sellable_physical if ram_p.sellable_physical is not None else ram_p.sellable_raw
+            ram_raw_peak = ram_p.sellable_effective if ram_p.sellable_effective is not None else ram_p.sellable_raw
 
         return constrain_by_ratio_dual_cpu_cluster(
             group,
             ratio,
             cpu_raw_physical=cpu_raw_phys,
             cpu_raw_effective=cpu_raw_eff,
+            ram_raw_physical=ram_raw_phys,
+            ram_raw_peak=ram_raw_peak,
             decouple_resource_kinds=decouple_resource_kinds,
         )
 
-    def _apply_dual_cpu_pricing(self, panel: PanelResult, calc_cfg: dict[str, float | str]) -> None:
-        """Populate potential_tl_physical / potential_tl_effective on CPU panels."""
-        if panel.resource_kind != "cpu":
+    def _apply_dual_track_pricing(self, panel: PanelResult, calc_cfg: dict[str, float | str]) -> None:
+        """Populate potential_tl_physical / potential_tl_effective for dual-track panels."""
+        if panel.sellable_physical is None and panel.sellable_effective is None:
+            panel.potential_tl = compute_potential_tl(panel.sellable_constrained, panel.unit_price_tl)
             return
         price_eff = panel.unit_price_tl
         price_phys = price_eff
-        phys_unit = str(calc_cfg.get("physical_price_unit") or "GHz").upper()
-        if phys_unit == "GHZ" and panel.display_unit.upper() in ("VCPU", "CORE", "CPU"):
-            ghz_factor = float(calc_cfg.get("effective_ghz_per_unit") or 1.0)
-            if ghz_factor > 0:
-                price_phys = price_eff / ghz_factor
+        if panel.resource_kind == "cpu":
+            phys_unit = str(calc_cfg.get("physical_price_unit") or "GHz").upper()
+            if phys_unit == "GHZ" and panel.display_unit.upper() in ("VCPU", "CORE", "CPU"):
+                ghz_factor = float(calc_cfg.get("effective_ghz_per_unit") or 1.0)
+                if ghz_factor > 0:
+                    price_phys = price_eff / ghz_factor
         if panel.sellable_physical is not None:
             panel.potential_tl_physical = compute_potential_tl(panel.sellable_physical, price_phys)
         if panel.sellable_effective is not None:
@@ -2214,7 +2285,14 @@ SELECT _tot, _alloc FROM latest
 
             if host_rows:
                 new_group = self._apply_host_based_constraints(
-                    group, ratio, host_rows, unit_lookup, effective_ghz_per_unit=effective_ghz
+                    group,
+                    ratio,
+                    host_rows,
+                    unit_lookup,
+                    dc_code=dc_code,
+                    family=fam,
+                    clusters=selected_clusters,
+                    effective_ghz_per_unit=effective_ghz,
                 )
             elif fam in _HOST_BASED_FAMILIES:
                 decouple = None
@@ -2244,10 +2322,8 @@ SELECT _tot, _alloc FROM latest
                     sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
 
             for new in new_group:
-                if new.resource_kind == "cpu" and (
-                    new.sellable_physical is not None or new.sellable_effective is not None
-                ):
-                    self._apply_dual_cpu_pricing(new, calc_cfg)
+                if new.sellable_physical is not None or new.sellable_effective is not None:
+                    self._apply_dual_track_pricing(new, calc_cfg)
                 else:
                     new.potential_tl = compute_potential_tl(new.sellable_constrained, new.unit_price_tl)
                 if new.sellable_min is not None and new.potential_tl_min is None:
@@ -2476,27 +2552,50 @@ SELECT _tot, _alloc FROM latest
         logger.info("_fetch_datacenter_codes: resolved %d DC(s) from summary API", len(out))
         return out
 
-    def _prewarm_dc_virt_snapshots(self) -> int:
-        """Compute and persist per-DC virt family snapshots for the DC list page.
+    def _fetch_virt_cluster_lists(
+        self, dc_code: str
+    ) -> tuple[list[str] | None, list[str] | None]:
+        """Return (classic_clusters, hyperconverged_clusters) from datacenter-api."""
+        if not dc_code or dc_code == "*" or not self._dc_api_url:
+            return None, None
+        classic: list[str] | None = None
+        hyperconv: list[str] | None = None
+        for kind, attr in (("classic", "classic"), ("hyperconverged", "hyperconv")):
+            url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/clusters/{kind}"
+            try:
+                resp = httpx.get(url, timeout=10.0)
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, list) and data:
+                    names = [str(c) for c in data if c]
+                    if attr == "classic":
+                        classic = names
+                    else:
+                        hyperconv = names
+            except Exception:
+                logger.debug("cluster list fetch failed dc=%s kind=%s", dc_code, kind)
+        return classic, hyperconv
 
-        Matches ``datacenters._virt_sellable_tl_for_dc`` which passes ``clusters=None``
-        (dc-wide datalake + Redis path, not cluster-scoped compute).
-        """
+    def _prewarm_dc_virt_snapshots(self) -> int:
+        """Compute and persist per-DC virt family snapshots with explicit cluster scope."""
         dc_codes = self._fetch_datacenter_codes()
         if not dc_codes:
             return 0
         warmed = 0
         for dc in dc_codes:
-            for family in (
-                "virt_classic",
-                "virt_hyperconverged",
-                "virt_power",
-                "virt_power_hana",
-            ):
+            classic_clusters, hc_clusters = self._fetch_virt_cluster_lists(dc)
+            scopes: list[tuple[str, list[str] | None]] = [
+                ("virt_classic", classic_clusters),
+                ("virt_hyperconverged", hc_clusters),
+                ("virt_power", None),
+                ("virt_power_hana", None),
+            ]
+            for family, clusters in scopes:
                 try:
                     self.compute_all_panels(
                         dc_code=dc,
                         family=family,
+                        selected_clusters=clusters,
                         force_recompute=True,
                     )
                     warmed += 1

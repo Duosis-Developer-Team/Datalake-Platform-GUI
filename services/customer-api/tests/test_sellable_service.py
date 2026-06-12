@@ -1114,10 +1114,13 @@ def test_compute_summary_passes_force_recompute_to_panel_compute():
 def test_prewarm_uses_force_recompute_for_each_scope():
     svc = _build_service()
     svc._fetch_datacenter_codes = lambda: ["DC1"]  # type: ignore[method-assign]
-    seen: list[tuple[str, str, bool]] = []
+    svc._fetch_virt_cluster_lists = lambda dc: (["CL-A"], ["HC-1"])  # type: ignore[method-assign]
+    seen: list[tuple[str, str, bool, list[str] | None]] = []
 
-    def fake_compute_all_panels(*, dc_code="*", family=None, force_recompute=False, **_kwargs):
-        seen.append((dc_code, family, force_recompute))
+    def fake_compute_all_panels(
+        *, dc_code="*", family=None, force_recompute=False, selected_clusters=None, **_kwargs
+    ):
+        seen.append((dc_code, family, force_recompute, selected_clusters))
         return []
 
     svc.compute_all_panels = fake_compute_all_panels  # type: ignore[method-assign]
@@ -1129,6 +1132,10 @@ def test_prewarm_uses_force_recompute_for_each_scope():
         "virt_power",
         "virt_power_hana",
     }
+    classic = next(item for item in seen if item[1] == "virt_classic")
+    hyper = next(item for item in seen if item[1] == "virt_hyperconverged")
+    assert classic[3] == ["CL-A"]
+    assert hyper[3] == ["HC-1"]
 
 
 def test_manual_override_bypasses_datalake():
@@ -1417,3 +1424,52 @@ def test_count_unmapped_products_two_step_cross_db():
     sql_arg = customer._run_value.call_args[0][1]
     assert "discovery_crm_products" in sql_arg
     assert "gui_crm_service_mapping_seed" not in sql_arg
+
+
+# ------------------------------------------------ screenshot regression (SS1–SS3)
+
+
+def test_ss1_gate_blocked_cpu_ram_zero_storage_ratio_bound():
+    """SS1: CPU/RAM gate-blocked (sellable 0); storage may remain ratio-bound."""
+    from shared.sellable.computation import apply_utilization_gate
+
+    cpu_raw = apply_utilization_gate(100.0, 95.0, 90.0, 80.0)
+    ram_raw = apply_utilization_gate(100.0, 92.0, 85.0, 80.0)
+    sto_raw = apply_utilization_gate(1000.0, 200.0, 50.0, 85.0)
+    assert cpu_raw == 0.0
+    assert ram_raw == 0.0
+    assert sto_raw > 0.0
+
+
+def test_ss2_storage_only_total_when_cpu_ram_gated():
+    """SS2: CPU/RAM constrained 0 but storage TL can still contribute."""
+    from shared.sellable.models import PanelResult
+    from shared.sellable.computation import compute_potential_tl
+
+    sto = PanelResult(
+        panel_key="virt_hyperconverged_storage",
+        label="Storage",
+        family="virt_hyperconverged",
+        resource_kind="storage",
+        display_unit="GB",
+        sellable_constrained=53209.0,
+        unit_price_tl=1.84,
+    )
+    sto.potential_tl = compute_potential_tl(sto.sellable_constrained, sto.unit_price_tl)
+    assert sto.potential_tl > 90000.0
+
+
+def test_ss3_host_based_can_sell_when_aggregate_cap_high():
+    """SS3: per-host headroom can remain positive under high cluster aggregate util."""
+    from shared.sellable.computation import host_effective_units
+    from shared.sellable.models import ResourceRatio
+
+    hosts = [
+        {"cpu_total": 50.0, "cpu_alloc": 40.0, "ram_total": 200.0, "ram_alloc": 150.0,
+         "cpu_util_pct": 88.0, "ram_util_pct": 70.0},
+        {"cpu_total": 50.0, "cpu_alloc": 10.0, "ram_total": 200.0, "ram_alloc": 20.0,
+         "cpu_util_pct": 30.0, "ram_util_pct": 25.0},
+    ]
+    ratio = ResourceRatio(family="virt_classic", cpu_per_unit=1.0, ram_gb_per_unit=8.0)
+    n = host_effective_units(hosts, ratio, cpu_threshold_pct=80.0, ram_threshold_pct=80.0)
+    assert n > 0.0

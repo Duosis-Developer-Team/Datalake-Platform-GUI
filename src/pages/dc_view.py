@@ -1055,12 +1055,7 @@ def _build_power_tab(
     cpu_allocated_pu = max(cpu_total_pu - cpu_avail_pu, 0.0)
     cpu_allocated_cores = max(cpu_total_cores - cpu_avail_cores, 0.0)
 
-    # Potential Sellable revenue — Power: 1 core = 3.3 GHz eşdeğeri,
-    # CRM CPU fiyatı (SAP Power HANA CPU) 1 GHz/vCPU üzerinden tutulduğu için
-    # cores × 3.3 × cpu_unit_price formülü uygulanır.
-    power_unit_prices = power.get("unit_prices", {}) or {}
-    power_multiplier  = float(power.get("sellable_multiplier", 3.3) or 3.3)
-    cpu_potential_tl  = cpu_total_cores * power_multiplier * float(power_unit_prices.get("cpu_vcpu", 0) or 0)
+    power_multiplier = float(power.get("sellable_multiplier", 3.3) or 3.3)
 
     storage_capacity = storage_capacity or {}
     storage_performance = storage_performance or {}
@@ -1133,7 +1128,6 @@ def _build_power_tab(
                             cpu_allocated_cores * power_multiplier,
                             pct_float(cpu_allocated_cores, cpu_total_cores),
                             smart_cpu,
-                            potential_tl=cpu_potential_tl,
                         ),
                         _capacity_metric_row(
                             "Memory",
@@ -1586,18 +1580,27 @@ def _build_backup_subtab(name: str):
 
 
 def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
-    """CRM realized sales + sellable headroom KPIs (no sold-% gauges)."""
-    v2 = api.get_dc_sales_potential_v2(dc_id)
-    if not isinstance(v2, dict):
+    """CRM sellable KPIs from crm-engine (replaces legacy sales-potential/v2)."""
+    from src.utils.virt_sellable_aggregate import (
+        collect_virt_sellable_panels,
+        merge_power_panels_for_summary,
+        virt_total_potential_range,
+    )
+
+    try:
+        panels = merge_power_panels_for_summary(collect_virt_sellable_panels(str(dc_id)))
+        summary = api.get_sellable_summary_light(str(dc_id)) or {}
+    except Exception:
         return html.Div()
-    summ = v2.get("dc_customer_summary") or {}
-    ytd = float(summ.get("total_billed_ytd") or 0)
-    cust = int(summ.get("customer_count") or 0)
-    rem = float(v2.get("general_remaining_pct") or 0)
-    pot = float(v2.get("potential_revenue_tl") or 0)
+
+    _, tl_min, tl_max = virt_total_potential_range(panels)
+    ytd = float(summary.get("ytd_sales_tl") or 0)
+    unmapped = int(summary.get("unmapped_product_count") or 0)
+    mapped = sum(1 for p in panels if p.get("has_infra_source") or p.get("has_price"))
 
     ytd_short, ytd_full = _fmt_tl_short(ytd)
-    pot_short, pot_full = _fmt_tl_short(pot)
+    pot_short = fmt_tl_range(tl_min, tl_max)
+    pot_full = f"{tl_min:,.0f} – {tl_max:,.0f} TL (crm-engine virt panels)"
 
     return html.Div(
         className="nexus-card",
@@ -1605,7 +1608,7 @@ def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
         children=[
             _section_title(
                 "Sellable potential (CRM)",
-                "Sellable headroom on Nutanix CPU/RAM proxy — threshold-bound ceiling (ADR-0014)",
+                "Virt sellable from crm-engine — host-based CPU/RAM dual-track (ADR-0018)",
             ),
             dmc.SimpleGrid(
                 cols={"base": 2, "md": 4},
@@ -1613,14 +1616,14 @@ def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
                 style={"marginTop": "12px"},
                 children=[
                     _kpi_with_tooltip("YTD Realized", ytd_short, ytd_full, "solar:money-bag-bold-duotone"),
-                    _kpi("Sellable Remaining %", f"{rem:.1f}", "solar:chart-square-bold-duotone"),
+                    _kpi("Mapped Panels", f"{mapped:,}", "solar:chart-square-bold-duotone"),
                     _kpi_with_tooltip(
-                        "Potential Revenue",
+                        "Virt Potential",
                         pot_short,
                         pot_full,
                         "solar:wallet-money-bold-duotone",
                     ),
-                    _kpi("VM-Mapped Customers", f"{cust:,}", "solar:users-group-rounded-bold-duotone"),
+                    _kpi("Unmapped Products", f"{unmapped:,}", "solar:users-group-rounded-bold-duotone"),
                 ],
             ),
         ],
@@ -1924,16 +1927,19 @@ def _build_sellable_inline_kpi(
             "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "vCPU",
             "total": 0.0, "allocated": 0.0, "threshold_pct": 80.0,
             "min": 0.0, "max": 0.0, "tl_min": 0.0, "tl_max": 0.0, "has_range": 0.0,
+            "gate_blocked": False,
         },
         "ram":     {
             "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB",
             "total": 0.0, "allocated": 0.0, "threshold_pct": 80.0,
             "min": 0.0, "max": 0.0, "tl_min": 0.0, "tl_max": 0.0, "has_range": 0.0,
+            "gate_blocked": False,
         },
         "storage": {
             "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB",
             "total": 0.0, "allocated": 0.0, "threshold_pct": 85.0,
             "min": 0.0, "max": 0.0, "tl_min": 0.0, "tl_max": 0.0, "has_range": 0.0,
+            "gate_blocked": False,
         },
     }
     total_tl = 0.0
@@ -1978,6 +1984,8 @@ def _build_sellable_inline_kpi(
         unit = p.get("display_unit")
         if unit:
             by_kind[kind]["unit"] = unit
+        if p.get("gate_blocked"):
+            by_kind[kind]["gate_blocked"] = True
         total_tl += tl
         has_data = True
 
@@ -1995,20 +2003,33 @@ def _build_sellable_inline_kpi(
     ram = by_kind["ram"]
     stor = by_kind["storage"]
 
-    cpu_has_dual = any(
-        p.get("sellable_physical") is not None and p.get("sellable_effective") is not None
-        for p in panels
-        if (p.get("resource_kind") or "").lower() == "cpu"
-    )
+    def _dual_track_sums(kind: str) -> dict[str, float | bool]:
+        rows = [p for p in panels if (p.get("resource_kind") or "").lower() == kind]
+        return {
+            "phys": sum(float(p.get("sellable_physical") or 0) for p in rows),
+            "eff": sum(float(p.get("sellable_effective") or p.get("sellable_constrained") or 0) for p in rows),
+            "tl_phys": sum(float(p.get("potential_tl_physical") or 0) for p in rows),
+            "tl_eff": sum(float(p.get("potential_tl_effective") or p.get("potential_tl") or 0) for p in rows),
+            "has_dual": any(
+                p.get("sellable_physical") is not None and p.get("sellable_effective") is not None
+                for p in rows
+            ),
+        }
+
+    cpu_dual = _dual_track_sums("cpu")
+    ram_dual = _dual_track_sums("ram")
+    cpu_has_dual = bool(cpu_dual["has_dual"])
+    ram_has_dual = bool(ram_dual["has_dual"])
     if cpu_has_dual:
-        cpu_phys = sum(float(p.get("sellable_physical") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
-        cpu_eff = sum(float(p.get("sellable_effective") or p.get("sellable_constrained") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
-        cpu_phys_tl = sum(float(p.get("potential_tl_physical") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
-        cpu_eff_tl = sum(float(p.get("potential_tl_effective") or p.get("potential_tl") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
-        cpu["physical"] = cpu_phys
-        cpu["effective"] = cpu_eff
-        cpu["tl_phys"] = cpu_phys_tl
-        cpu["tl_eff"] = cpu_eff_tl
+        cpu["physical"] = float(cpu_dual["phys"])
+        cpu["effective"] = float(cpu_dual["eff"])
+        cpu["tl_phys"] = float(cpu_dual["tl_phys"])
+        cpu["tl_eff"] = float(cpu_dual["tl_eff"])
+    if ram_has_dual:
+        ram["physical"] = float(ram_dual["phys"])
+        ram["effective"] = float(ram_dual["eff"])
+        ram["tl_phys"] = float(ram_dual["tl_phys"])
+        ram["tl_eff"] = float(ram_dual["tl_eff"])
 
     def _kpi_with_sub(
         label: str,
@@ -2066,6 +2087,12 @@ def _build_sellable_inline_kpi(
             f"Effective: {cpu.get('effective', 0):,.0f} {cpu['unit']}"
         )
     ram_short, ram_full = _fmt_tl_short(ram["tl"])
+    if ram_has_dual:
+        ram_short = f"{_fmt_tl_short(ram.get('tl_phys', 0))[0]} – {_fmt_tl_short(ram.get('tl_eff', 0))[0]}"
+        ram_full = (
+            f"Physical: {ram.get('physical', 0):,.0f} {ram['unit']} · "
+            f"Peak: {ram.get('effective', 0):,.0f} {ram['unit']}"
+        )
     stor_short, stor_full = _fmt_tl_short(stor["tl"])
     # Storage range display: "X – Y" when IBM-shared capacity yields a range.
     stor_has_range = bool(stor.get("has_range")) and stor["max"] > stor["min"] + 1e-6
@@ -2103,7 +2130,11 @@ def _build_sellable_inline_kpi(
         ),
         _kpi_with_sub(
             "RAM Sellable",
-            _fmt_unit(ram["constrained"], ram["unit"]),
+            (
+                f"Phys {_fmt_unit(ram.get('physical', 0), ram['unit'])} | Peak {_fmt_unit(ram.get('effective', ram['constrained']), ram['unit'])}"
+                if ram_has_dual
+                else _fmt_unit(ram["constrained"], ram["unit"])
+            ),
             ram_short,
             ram_full,
             _DC_ICONS["ram"],
@@ -2136,7 +2167,16 @@ def _build_sellable_inline_kpi(
             )
         )
     for kind_label, k in (("CPU", cpu), ("RAM", ram), ("Storage", stor)):
-        if k["raw"] > 0 and k["constrained"] < k["raw"] - 1e-6:
+        if k.get("gate_blocked"):
+            sub_lines.append(
+                dmc.Badge(
+                    f"{kind_label} gate-blocked: threshold exceeded",
+                    color="red",
+                    variant="light",
+                    size="sm",
+                )
+            )
+        elif k["raw"] > 0 and k["constrained"] < k["raw"] - 1e-6:
             sub_lines.append(
                 dmc.Badge(
                     f"{kind_label} ratio-bound: {_fmt_unit(k['raw'] - k['constrained'], k['unit'])} lost",
@@ -2145,6 +2185,21 @@ def _build_sellable_inline_kpi(
                     size="sm",
                 )
             )
+
+    if (
+        cpu["constrained"] < 1e-6
+        and ram["constrained"] < 1e-6
+        and stor["constrained"] > 1e-6
+        and tl_min > 1e-6
+    ):
+        sub_lines.append(
+            dmc.Badge(
+                "Total potential driven by storage-only contribution",
+                color="gray",
+                variant="light",
+                size="sm",
+            )
+        )
 
     from src.utils.sellable_power_hints import power_sellable_constraint_hints
 

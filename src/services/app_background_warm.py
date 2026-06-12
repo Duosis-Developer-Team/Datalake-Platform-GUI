@@ -37,14 +37,14 @@ def _should_pause() -> bool:
 
 
 def _warm_sellable_for_dcs(dc_codes: list[str], tr: dict) -> int:
-    from src.services import api_client as api
+    from src.utils.virt_sellable_aggregate import collect_virt_sellable_panels
 
     warmed = 0
     for dc in dc_codes:
         if _should_pause():
             break
         try:
-            api.get_sellable_summary_light(str(dc))
+            collect_virt_sellable_panels(str(dc))
             warmed += 1
         except Exception:
             logger.debug("background warm sellable failed dc=%s", dc, exc_info=True)

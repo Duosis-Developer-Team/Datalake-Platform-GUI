@@ -113,6 +113,8 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
         "sellable_physical",
         "sellable_effective",
         "potential_tl",
+        "potential_tl_physical",
+        "potential_tl_effective",
         "potential_tl_min",
         "potential_tl_max",
         "sellable_min",

@@ -148,13 +148,23 @@ def _panel_table(panels: list[dict[str, Any]]) -> dmc.ScrollArea:
             dmc.Badge("ratio-bound", color="orange", variant="light", size="xs")
             if p.get("ratio_bound") else None
         )
+        gate_badge = (
+            dmc.Badge("gate-blocked", color="red", variant="light", size="xs")
+            if p.get("gate_blocked") else None
+        )
         cpu_kind = (p.get("resource_kind") or "").lower() == "cpu"
+        ram_kind = (p.get("resource_kind") or "").lower() == "ram"
         stor_kind = (p.get("resource_kind") or "").lower() == "storage"
         sellable_cell = _fmt_unit(p.get("sellable_constrained"), unit)
         if cpu_kind and p.get("sellable_physical") is not None:
             sellable_cell = (
                 f"P:{_fmt_unit(p.get('sellable_physical'), 'GHz')} | "
                 f"E:{_fmt_unit(p.get('sellable_effective'), unit)}"
+            )
+        elif ram_kind and p.get("sellable_physical") is not None and p.get("sellable_effective") is not None:
+            sellable_cell = (
+                f"Phys:{_fmt_unit(p.get('sellable_physical'), unit)} | "
+                f"Peak:{_fmt_unit(p.get('sellable_effective'), unit)}"
             )
         elif stor_kind and p.get("sellable_min") is not None and p.get("sellable_max") is not None:
             sellable_cell = (
@@ -175,7 +185,7 @@ def _panel_table(panels: list[dict[str, Any]]) -> dmc.ScrollArea:
                 html.Td(_fmt_unit(p.get("allocated"), unit)),
                 html.Td(f"{float(p.get('threshold_pct') or 0):.0f}%"),
                 html.Td(_fmt_unit(p.get("sellable_raw"), unit)),
-                html.Td([sellable_cell, " ", ratio_badge or ""]),
+                html.Td([sellable_cell, " ", gate_badge or "", " ", ratio_badge or ""]),
                 html.Td(f"{float(p.get('unit_price_tl') or 0):,.2f}"),
                 html.Td(potential_cell),
             ])
