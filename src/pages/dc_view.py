@@ -3275,6 +3275,65 @@ def _build_storage_section_with_san(
     )
 
 
+def _storage_tab_content_or_empty(
+    has_intel_storage: bool,
+    has_ibm_storage: bool,
+    has_power: bool,
+    has_s3: bool,
+    has_san: bool,
+    zabbix_storage_devices: list,
+    zabbix_storage_capacity: dict,
+    zabbix_storage_trend: dict,
+    storage_capacity: dict,
+    storage_performance: dict,
+    dc_name: str,
+    s3_data: dict,
+    tr: dict,
+    san_port_usage: dict,
+    san_health_alerts: list,
+    san_traffic_trend: list,
+    sec_check=None,
+    has_datastore: bool = False,
+    datastore_mapping: dict | None = None,
+) -> html.Div:
+    """Return storage tab body or a visible empty-state (avoids infinite loading shell)."""
+    panel = _build_storage_section_with_san(
+        has_intel_storage,
+        has_ibm_storage,
+        has_power,
+        has_s3,
+        has_san,
+        zabbix_storage_devices,
+        zabbix_storage_capacity,
+        zabbix_storage_trend,
+        storage_capacity,
+        storage_performance,
+        dc_name,
+        s3_data,
+        tr,
+        san_port_usage,
+        san_health_alerts,
+        san_traffic_trend,
+        sec_check=sec_check,
+        has_datastore=has_datastore,
+        datastore_mapping=datastore_mapping,
+    )
+    if panel is not None:
+        return panel
+    return html.Div(
+        style={"padding": "0 30px"},
+        children=dmc.Alert(
+            title="No storage metrics available",
+            color="gray",
+            variant="light",
+            children=(
+                "This data center has no KM Datastore, IBM Storage, SAN, or "
+                "Object Storage sections for the selected time range."
+            ),
+        ),
+    )
+
+
 _DS_GiB = 1024 ** 3
 
 
@@ -5067,7 +5126,7 @@ def build_dc_view(
                         if not _tab_eager(eager_tabs, "storage")
                         else html.Div(
                             id="dc-tab-storage-root",
-                            children=_build_storage_section_with_san(
+                            children=_storage_tab_content_or_empty(
                         has_intel_storage,
                         has_ibm_storage,
                         has_power,

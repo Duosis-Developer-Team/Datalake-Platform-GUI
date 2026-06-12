@@ -498,3 +498,30 @@ def test_build_virt_nested_subtab_panel_failure_returns_alert():
 
     assert mount_ok is False
     assert isinstance(panel, dmc.Stack)
+
+
+def test_storage_tab_empty_state_returns_alert():
+    import dash_mantine_components as dmc
+
+    from src.pages.dc_view import _storage_tab_content_or_empty
+
+    panel = _storage_tab_content_or_empty(
+        has_intel_storage=False,
+        has_ibm_storage=False,
+        has_power=False,
+        has_s3=False,
+        has_san=False,
+        zabbix_storage_devices=[],
+        zabbix_storage_capacity={},
+        zabbix_storage_trend={},
+        storage_capacity={},
+        storage_performance={},
+        dc_name="AZ11",
+        s3_data={"pools": []},
+        tr={"preset": "7d"},
+        san_port_usage={},
+        san_health_alerts=[],
+        san_traffic_trend=[],
+    )
+    assert panel is not None
+    assert "No storage metrics available" in str(panel)
