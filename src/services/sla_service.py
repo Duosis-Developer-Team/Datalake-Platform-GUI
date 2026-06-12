@@ -63,7 +63,7 @@ def _fetch_sla_raw(tr: dict) -> dict:
         return {}
     params = {
         "start_date": f"{tr.get('start','')}T00:00:00",
-        "end_date": f"{tr.get('end','')}T00:00:00",
+        "end_date": f"{tr.get('end','')}T23:59:59",
     }
     headers = {"X-API-Key": SLA_API_KEY}
     resp = requests.get(SLA_API_URL, headers=headers, params=params, timeout=20)

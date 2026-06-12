@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from dash import html
 import dash_mantine_components as dmc
 
 from src.services import product_catalog as product_catalog_service
+
+AvailabilityDataState = Literal["loading", "ok", "no_match", "fetch_failed"]
 
 
 def _aura_notify_raw_categories_table(categories: list) -> html.Table:
@@ -142,6 +146,7 @@ def build_dc_availability_panel(
     dc_display_name: str,
     *,
     period_label: str | None = None,
+    data_state: AvailabilityDataState = "ok",
 ):
     """
     AuraNotify datacenter-services SLA plus full product-catalog service tree.
@@ -149,16 +154,54 @@ def build_dc_availability_panel(
     Every Excel service is listed under its hierarchy; availability comes from the
     best-matching AuraNotify category, or 100%% when there is no match/outage data.
     """
+    if data_state == "loading":
+        return dmc.Stack(
+            gap="lg",
+            children=[
+                dmc.Text(f"DC: {dc_display_name}", size="sm", c="dimmed"),
+                dmc.Alert(
+                    "Loading availability data from AuraNotify…",
+                    color="blue",
+                    variant="light",
+                    title="Please wait",
+                ),
+                dmc.SimpleGrid(
+                    cols=3,
+                    spacing="lg",
+                    children=[dmc.Skeleton(height=96, radius="md") for _ in range(3)],
+                ),
+                dmc.Skeleton(height=220, radius="md"),
+            ],
+        )
+
     hierarchy = product_catalog_service.load_service_hierarchy()
     tree = product_catalog_service.nest_service_catalog(hierarchy)
     categories = (item.get("categories") or []) if item else []
 
     alerts = []
-    if not item:
+    if data_state == "fetch_failed":
+        alerts.append(
+            dmc.Alert(
+                "SLA data is temporarily unavailable. The service will retry automatically.",
+                color="orange",
+                variant="light",
+                title="Unable to load availability",
+            )
+        )
+    elif data_state == "no_match":
         alerts.append(
             dmc.Alert(
                 "No matching AuraNotify datacenter group for this DC. "
-                "Set AURANOTIFY_API_KEY or ANOTIFY_API_KEY and ensure `group_name` matches the DC name or code. "
+                "Ensure AuraNotify `group_name` matches the DC name or code. "
+                "Services below show 100% until a match exists.",
+                color="yellow",
+            )
+        )
+    elif not item:
+        alerts.append(
+            dmc.Alert(
+                "No matching AuraNotify datacenter group for this DC. "
+                "Ensure AuraNotify `group_name` matches the DC name or code. "
                 "Services below show 100% until a match exists.",
                 color="yellow",
             )
@@ -301,6 +344,10 @@ def build_dc_availability_panel(
     ]
     if period_label:
         stack_children.append(dmc.Text(period_label, size="xs", c="dimmed"))
+    if data_state == "fetch_failed":
+        stack_children.extend(alerts)
+        return dmc.Stack(gap="lg", children=stack_children)
+
     stack_children.extend(alerts)
     stack_children.append(
         dmc.SimpleGrid(

@@ -4,7 +4,7 @@ import os
 import threading
 import time
 from copy import deepcopy
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional, TypedDict
 from urllib.parse import quote
 
 import httpx
@@ -1349,21 +1349,34 @@ def get_dc_availability_sla_item(dc_code: str, dc_display_name: str, tr: Optiona
         return deepcopy(hit) if isinstance(hit, dict) else None
 
 
+class DcAvailabilitySlaBatchResult(TypedDict):
+    status: Literal["ok", "empty", "error"]
+    items_map: dict[str, Optional[dict[str, Any]]]
+    raw_count: int
+
+
 def get_dc_availability_sla_items_for_dcs(
     dc_rows: list[dict[str, Any]],
     tr: Optional[dict],
-) -> dict[str, Optional[dict[str, Any]]]:
+    *,
+    force_refresh: bool = False,
+) -> DcAvailabilitySlaBatchResult:
     """
     Fetch datacenter-services SLA items via datacenter-api and match each DC row by id.
 
-    Returns map ``dc_id`` (str) -> matched SLA item or None.
+    Returns status plus map ``dc_id`` (str) -> matched SLA item or None.
+    On transport errors, reuses the last successful cached items list when available.
     """
     import re
     from src.utils.dc_display import format_dc_display_name
 
-    out: dict[str, Optional[dict[str, Any]]] = {}
+    empty_result: DcAvailabilitySlaBatchResult = {
+        "status": "empty",
+        "items_map": {},
+        "raw_count": 0,
+    }
     if not dc_rows:
-        return out
+        return empty_result
 
     ck = f"api:dc_svc_sla_items:{_serialize_tr_params(tr)}"
 
@@ -1373,16 +1386,41 @@ def get_dc_availability_sla_items_for_dcs(
             return data.get("items") or []
         return []
 
+    status: Literal["ok", "empty", "error"] = "ok"
+    items: list = []
+    prev_cached = _api_response_cache.get(ck)
     try:
-        cached = _api_response_cache.get(ck)
-        if cached is not None and isinstance(cached, list):
-            items = cached
+        if force_refresh:
+            _api_response_cache.delete(ck)
+        stale = _api_response_cache.get(ck)
+        if stale is not None and isinstance(stale, list) and not force_refresh:
+            items = stale
         else:
             items = fetch()
             if items:
                 _api_response_cache.set(ck, items)
-    except Exception:
-        items = []
+        if not items:
+            status = "empty"
+    except _HTTP_ERRORS as exc:
+        logger.warning("get_dc_availability_sla_items_for_dcs fetch failed: %s", exc)
+        hit = _api_response_cache.get(ck)
+        if hit is None and isinstance(prev_cached, list):
+            hit = prev_cached
+        if hit is not None and isinstance(hit, list) and hit:
+            items = hit
+            status = "ok"
+        else:
+            status = "error"
+    except Exception as exc:
+        logger.warning("get_dc_availability_sla_items_for_dcs unexpected error: %s", exc)
+        hit = _api_response_cache.get(ck)
+        if hit is None and isinstance(prev_cached, list):
+            hit = prev_cached
+        if hit is not None and isinstance(hit, list) and hit:
+            items = hit
+            status = "ok"
+        else:
+            status = "error"
 
     _dc_code_re = re.compile(r"\b(dc\d+|ict\d+|az\d+|uz\d+)\b", re.IGNORECASE)
 
@@ -1405,6 +1443,7 @@ def get_dc_availability_sla_items_for_dcs(
                     return it
         return None
 
+    out: dict[str, Optional[dict[str, Any]]] = {}
     for row in dc_rows:
         rid = row.get("id")
         if rid is None:
@@ -1418,7 +1457,12 @@ def get_dc_availability_sla_items_for_dcs(
                 matched = m
                 break
         out[sid] = deepcopy(matched) if matched is not None else None
-    return out
+
+    return {
+        "status": status,
+        "items_map": out,
+        "raw_count": len(items),
+    }
 
 
 # ---------------------------------------------------------------------------
