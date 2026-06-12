@@ -243,3 +243,27 @@ def test_constrain_by_ratio_per_host_dual_ram_physical_vs_peak():
     assert out["ram"].sellable_physical > 0
     assert out["ram"].sellable_effective == 0.0
     assert out["ram"].ratio_bound is True
+
+
+def test_constrain_by_ratio_dual_cpu_cluster_storage_uses_effective_n():
+    from shared.sellable.computation import constrain_by_ratio_dual_cpu_cluster
+
+    panels = [
+        _panel("cpu", raw=100.0),
+        _panel("ram", raw=400.0),
+        _panel("storage", raw=80000.0),
+    ]
+    out = {
+        p.resource_kind: p
+        for p in constrain_by_ratio_dual_cpu_cluster(
+            panels,
+            _ratio(cpu=1.0, ram=4.0, storage=100.0),
+            cpu_raw_physical=100.0,
+            cpu_raw_effective=100.0,
+            ram_raw_physical=400.0,
+            ram_raw_peak=400.0,
+        )
+    }
+    # n = min(100, 100, 800) = 100 -> storage constrained = 100 * 100
+    assert out["storage"].sellable_constrained == 10000.0
+    assert out["storage"].ratio_bound is True

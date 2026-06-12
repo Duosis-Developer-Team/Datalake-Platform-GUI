@@ -429,7 +429,8 @@ def constrain_by_ratio_dual_cpu_cluster(
                     )
                 )
             else:
-                constrained = n_eff * ratio.storage_gb_per_unit
+                # Effective-track n already min()s CPU, RAM, and storage raw units.
+                constrained = n_cpu_eff * ratio.storage_gb_per_unit
                 ratio_bound = constrained + 1e-6 < p.sellable_raw
                 out.append(replace(p, sellable_constrained=constrained, ratio_bound=ratio_bound))
         else:

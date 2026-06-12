@@ -1259,10 +1259,20 @@ SELECT _tot, _alloc FROM latest
             f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
             f"?clusters={csv}"
         )
+        timeout = self._dc_api_timeout(clusters)
         try:
-            resp = httpx.get(url, timeout=15.0)
+            resp = httpx.get(url, timeout=timeout)
             resp.raise_for_status()
             data = resp.json()
+        except httpx.TimeoutException:
+            logger.warning(
+                "datacenter-api compute fetch timed out (dc=%s family=%s clusters=%d url=%s)",
+                dc_code,
+                family,
+                len([c for c in clusters if c]),
+                url,
+            )
+            return None
         except Exception:  # noqa: BLE001
             logger.exception(
                 "datacenter-api compute fetch failed (dc=%s family=%s url=%s)",
@@ -1299,9 +1309,18 @@ SELECT _tot, _alloc FROM latest
             f"?{'&'.join(params)}"
         )
         try:
-            resp = httpx.get(url, timeout=15.0)
+            resp = httpx.get(url, timeout=self._dc_api_timeout(clusters))
             resp.raise_for_status()
             data = resp.json()
+        except httpx.TimeoutException:
+            logger.warning(
+                "host rows fetch timed out dc=%s family=%s clusters=%d url=%s",
+                dc_code,
+                family,
+                len(cl),
+                url,
+            )
+            return None, "unavailable"
         except Exception:
             logger.warning("host rows fetch failed dc=%s family=%s url=%s", dc_code, family, url)
             return None, "unavailable"
@@ -1356,6 +1375,14 @@ SELECT _tot, _alloc FROM latest
             pass
         return defaults
 
+    @staticmethod
+    def _dc_api_timeout(clusters: list[str] | None, *, base: float = 20.0) -> float:
+        """Scale datacenter-api HTTP timeout for multi-cluster compute queries."""
+        count = len([c for c in (clusters or []) if c])
+        if count <= 1:
+            return base
+        return min(120.0, base + count * 8.0)
+
     def _fetch_compute_response(
         self, dc_code: str, family: str, clusters: list[str] | None
     ) -> dict | None:
@@ -1372,10 +1399,19 @@ SELECT _tot, _alloc FROM latest
             f"?{'&'.join(params)}"
         )
         try:
-            resp = httpx.get(url, timeout=15.0)
+            resp = httpx.get(url, timeout=self._dc_api_timeout(clusters))
             resp.raise_for_status()
             data = resp.json()
             return data if isinstance(data, dict) else None
+        except httpx.TimeoutException:
+            logger.warning(
+                "compute fetch timed out dc=%s family=%s clusters=%d url=%s",
+                dc_code,
+                family,
+                len([c for c in (clusters or []) if c]),
+                url,
+            )
+            return None
         except Exception:
             logger.warning("compute fetch failed dc=%s family=%s url=%s", dc_code, family, url)
             return None
