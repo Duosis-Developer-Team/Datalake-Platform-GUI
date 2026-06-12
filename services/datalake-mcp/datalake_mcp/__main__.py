@@ -75,8 +75,8 @@ def run_stdio() -> None:
 
 
 def create_http_app():
-    from fastapi import FastAPI, Header
-    from pydantic import BaseModel
+    from fastapi import Body, FastAPI, Header
+    from pydantic import BaseModel, Field
 
     configure_from_env()
 
@@ -84,7 +84,7 @@ def create_http_app():
 
     class ToolCallRequest(BaseModel):
         name: str
-        arguments: dict[str, Any] = {}
+        arguments: dict[str, Any] = Field(default_factory=dict)
 
     @app.get("/health")
     def health():
@@ -95,11 +95,11 @@ def create_http_app():
         return {"tools": [_tool_schema(n) for n in list_tool_names()]}
 
     @app.post("/mcp/tools/call")
-    def call_tool(
-        req: ToolCallRequest,
+    def mcp_call_tool(
+        payload: ToolCallRequest = Body(...),
         authorization: Optional[str] = Header(default=None),
     ):
-        result = execute_tool(req.name, req.arguments, authorization)
+        result = execute_tool(payload.name, payload.arguments, authorization)
         return _result_payload(result)
 
     return app
