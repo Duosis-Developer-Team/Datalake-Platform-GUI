@@ -1,83 +1,65 @@
-"""Lightweight answer critique pass — catches numeric denial when tools returned data."""
+"""Post-process LLM answers — optional markdown table extraction into blocks.
+
+Does NOT replace LLM text with deterministic templates. The user-facing answer
+always comes from the synthesis LLM (or llm_client error message when LLM fails).
+"""
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import re
+from typing import Optional
 
 from app.models.schemas import ResponseBlock
-from app.services import context_builder
-from app.services.tool_registry import ToolResult
 
-_DENY_PHRASES = (
-    "erişemiyorum",
-    "erişimim yok",
-    "veri yok",
-    "veri bulunmuyor",
-    "veriye ulaşamıyorum",
-    "sağlayamıyorum",
-    "elimde veri yok",
-    "bilgiye sahip değilim",
-)
+_TABLE_ROW_RE = re.compile(r"^\|(.+)\|\s*$")
+_TABLE_SEP_RE = re.compile(r"^\|[\s\-:|]+\|\s*$")
 
 
-def _has_rows(results: list[ToolResult]) -> bool:
-    return any(r.status == "success" and (r.rows or 0) > 0 for r in results)
-
-
-def _denies_data(answer: str) -> bool:
-    text = answer or ""
-    if "|" in text and "---" in text:
-        return False
-    low = text.lower()
-    return any(p in low for p in _DENY_PHRASES)
-
-
-def _dashboard_tool_used(results: list[ToolResult]) -> bool:
-    return any(r.name == "get_dashboard_overview" and r.status == "success" for r in results)
-
-
-def _is_dashboard_overview_intent(outcome, user_message: str = "") -> bool:
-    return context_builder.is_dashboard_overview_intent(outcome, user_message)
+def _parse_markdown_tables(answer: str) -> list[ResponseBlock]:
+    """Extract markdown tables from LLM answer into native table blocks."""
+    if not answer or "|" not in answer:
+        return []
+    lines = answer.splitlines()
+    blocks: list[ResponseBlock] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not _TABLE_ROW_RE.match(line.strip()):
+            i += 1
+            continue
+        header_cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        i += 1
+        if i >= len(lines) or not _TABLE_SEP_RE.match(lines[i].strip()):
+            continue
+        i += 1
+        rows: list[list[str]] = []
+        while i < len(lines) and _TABLE_ROW_RE.match(lines[i].strip()):
+            if _TABLE_SEP_RE.match(lines[i].strip()):
+                i += 1
+                continue
+            cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+            rows.append(cells)
+            i += 1
+        if header_cells and rows:
+            blocks.append(
+                ResponseBlock(type="table", columns=header_cells, rows=rows)
+            )
+    return blocks
 
 
 def review(
     answer: str,
-    outcome,
+    outcome=None,
     *,
     llm_failed: bool = False,
     user_message: str = "",
-) -> tuple[str, list[ResponseBlock]]:
-    """Return possibly revised answer and structured blocks."""
-    blocks: list[ResponseBlock] = []
-    if outcome is None:
-        return answer, blocks
-
-    tool_results = outcome.results or []
-    inv_summary = None
-    if outcome.analysis and outcome.analysis.extra:
-        inv_summary = outcome.analysis.extra.get("investigation_summary")
-
-    dashboard_intent = _is_dashboard_overview_intent(outcome, user_message)
-
-    needs_fallback = (
-        (_has_rows(tool_results) and (llm_failed or _denies_data(answer)))
-        or (inv_summary and _denies_data(answer) and not _has_rows(tool_results))
-    )
-    if needs_fallback:
-        answer = context_builder.format_from_analysis(outcome, user_message=user_message)
-
-    if dashboard_intent and _dashboard_tool_used(tool_results) and (llm_failed or needs_fallback or not (answer or "").strip()):
-        formatted = context_builder.format_dashboard_overview(outcome)
-        if formatted:
-            answer = formatted.get("answer") or answer
-            for block in formatted.get("blocks") or []:
-                blocks.append(ResponseBlock(**block))
-    elif dashboard_intent and _dashboard_tool_used(tool_results) and blocks == []:
-        # LLM succeeded — append structured table without replacing narrative answer.
-        formatted = context_builder.format_dashboard_overview(outcome)
-        if formatted:
-            for block in formatted.get("blocks") or []:
-                if block.get("type") == "table":
-                    blocks.append(ResponseBlock(**block))
-
-    return answer, blocks
+) -> tuple[str, list[ResponseBlock], dict]:
+    """Return LLM answer unchanged plus optional parsed table blocks."""
+    _ = outcome, user_message  # reserved for future metadata-only hooks
+    blocks = [] if llm_failed else _parse_markdown_tables(answer or "")
+    meta = {
+        "llm_failed": llm_failed,
+        "blocks_parsed": len(blocks),
+        "answer_source": "llm_error_message" if llm_failed else "llm",
+    }
+    return answer, blocks, meta

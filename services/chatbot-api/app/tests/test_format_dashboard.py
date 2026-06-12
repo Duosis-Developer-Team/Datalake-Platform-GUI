@@ -1,4 +1,4 @@
-"""Tests for format_dashboard_overview and structured blocks."""
+"""Tests for format_dashboard_overview and answer_reviewer post-process."""
 
 from __future__ import annotations
 
@@ -40,21 +40,20 @@ def test_format_dashboard_overview_builds_table_block():
     assert len(table_blocks[0]["rows"]) >= 1
 
 
-def test_answer_reviewer_adds_blocks_for_dashboard():
-    outcome = _outcome_with_overview({"ibm": {"host_count": 5, "vm_count": 20}})
-    answer, blocks = review(
-        "Platform özeti aşağıda.",
-        outcome,
-        user_message="Genel kapasite durumunu özetle",
+def test_answer_reviewer_keeps_llm_answer_and_parses_table():
+    llm_answer = (
+        "**Analiz:**\nVeriler incelendi.\n\n"
+        "| Platform | CPU |\n|---|---|\n| classic | 100 |\n"
     )
+    reviewed, blocks, meta = review(llm_answer, _outcome_with_overview({}), user_message="test")
+    assert reviewed == llm_answer
+    assert meta["answer_source"] == "llm"
     assert any(b.type == "table" for b in blocks)
 
 
-def test_answer_reviewer_skips_dashboard_template_for_generic_test():
-    outcome = _outcome_with_overview({"ibm": {"host_count": 5, "vm_count": 20}})
-    llm_answer = "Merhaba! Size datacenter kapasitesi, müşteri kaynakları ve SLA konularında yardımcı olabilirim."
-    reviewed, blocks = review(llm_answer, outcome, user_message="test")
-    assert reviewed == llm_answer
+def test_answer_reviewer_llm_failed_source():
+    reviewed, blocks, meta = review("", None, llm_failed=True)
+    assert meta["answer_source"] == "llm_error_message"
     assert blocks == []
 
 

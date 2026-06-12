@@ -203,9 +203,18 @@ def select_tools(message: str, ctx: Optional[FrontendContext]) -> list[Selection
     #     (Avoids tacking a slow global overview onto DC-scoped questions.)
     global_ask = "en yoğun" in text or "en yogun" in text or "compare" in text or "karşılaştır" in text
     skip_dashboard = memory_cluster_top or (_has(text, "top") and (_has(text, "vm") or _has(text, "host")))
-    if not picks or (global_ask and not dc_code and not customer):
+    overview_intent = any(
+        k in text
+        for k in (
+            "kapasite", "overview", "dashboard", "platform", "genel", "özet", "ozet",
+            "dağılım", "dagilim", "kırılım", "kirilim",
+        )
+    )
+    if global_ask and not dc_code and not customer:
         if not skip_dashboard:
-            add("get_datacenters_summary" if global_ask else "get_dashboard_overview")
+            add("get_datacenters_summary")
+    elif overview_intent and not picks and not skip_dashboard:
+        add("get_dashboard_overview")
 
     return picks[: settings.max_tool_calls]
 

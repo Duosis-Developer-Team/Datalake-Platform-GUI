@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from app.config import settings
 from app.services import llm_tool_schemas, tool_registry
+from app.services.context_builder import tool_summary_snippet
 from app.services.investigation_trace import InvestigationTrace
 from app.services.llm_client import LLMError, get_llm_client
 from app.services.planner import IntentPlan
@@ -16,18 +17,13 @@ from app.services.tool_registry import ToolResult
 
 logger = logging.getLogger("chatbot-api.react")
 
-REACT_SYSTEM = """You are Bulutistan Datalake Platform analyst for datacenter and company executives.
-Investigate the user's question using the provided tools before answering.
+REACT_SYSTEM = """You are Bulutistan Datalake Platform data investigator.
+Your ONLY job in this phase is to call read-only tools to gather evidence for the user's question.
 Rules:
-- Call tools until you can answer OR you have confirmed data is unavailable in accessible sources.
+- Call tools until you have enough data OR you have confirmed data is unavailable in accessible sources.
 - Never invent metrics; use only tool outputs.
-- When finished (no more tools needed), respond in Turkish with this structure:
-  1. **Analiz** — what you checked, findings, business/risk interpretation
-  2. **Sonuç** — direct answer (1-3 sentences)
-  3. Table/list if applicable
-  4. Risk level + recommended actions
-  5. Sources + data quality notes
-- Do NOT claim data is missing without listing which tools were tried.
+- Do NOT write the final user-facing answer here — a separate synthesis step will produce it.
+- When no more tools are needed, respond with a brief internal note (one line) such as "investigation complete".
 - Read-only; never suggest destructive actions.
 """
 
@@ -38,7 +34,6 @@ class ReactOutcome:
     llm_rounds: int = 0
     tool_call_count: int = 0
     investigation_trace: InvestigationTrace = field(default_factory=InvestigationTrace)
-    draft_answer: Optional[str] = None
     model: Optional[str] = None
     usage: Optional[dict[str, Any]] = None
     react_used: bool = False
@@ -141,10 +136,13 @@ def run(
 
     # Inject compact seed summaries so the model knows what was already tried.
     if seed_results:
-        seed_block = "\n".join(
-            f"- {r.name}: status={r.status}, rows={r.rows}, error={r.error}"
-            for r in seed_results[:30]
-        )
+        seed_lines = []
+        for r in seed_results[:30]:
+            snippet = tool_summary_snippet(r, max_chars=1200)
+            seed_lines.append(
+                f"- {r.name}: status={r.status}, rows={r.rows}, error={r.error}\n  summary={snippet}"
+            )
+        seed_block = "\n".join(seed_lines)
         messages.append(
             {
                 "role": "system",
@@ -205,9 +203,7 @@ def run(
                 )
             continue
 
-        # No tool calls — model produced a final answer.
-        if result.content and result.content.strip():
-            outcome.draft_answer = result.content.strip()
+        # No tool calls — investigation phase complete; synthesis LLM produces the answer.
         break
 
     return outcome

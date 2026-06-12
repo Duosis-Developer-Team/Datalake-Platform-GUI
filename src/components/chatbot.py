@@ -193,6 +193,63 @@ def _render_block(block: dict) -> Any:
     return dcc.Markdown(str(block.get("content") or ""), className="chatbot-markdown", link_target="_blank")
 
 
+def _render_debug_panel(debug: dict) -> Any:
+    if not isinstance(debug, dict):
+        return None
+    stages = debug.get("pipeline_stages") or []
+    tools = debug.get("tools") or []
+    llm_calls = debug.get("llm_calls") or []
+    post = debug.get("post_process") or {}
+    summary = (
+        f"{debug.get('tool_call_count', 0)} tools · "
+        f"{debug.get('llm_rounds', 0)} LLM · "
+        f"{debug.get('latency_ms', 0)} ms · "
+        f"{post.get('answer_source', 'llm')}"
+    )
+    stage_lines = [
+        html.Li(f"{s.get('name')}: {s.get('duration_ms', 0)} ms")
+        for s in stages
+        if isinstance(s, dict)
+    ]
+    tool_rows = [
+        html.Tr(
+            children=[
+                html.Td(str(t.get("name") or "")),
+                html.Td(str(t.get("status") or "")),
+                html.Td(str(t.get("rows") or "—")),
+            ]
+        )
+        for t in tools
+        if isinstance(t, dict)
+    ]
+    llm_lines = [
+        html.Li(
+            f"{c.get('phase')}: {c.get('model') or '—'} "
+            f"({c.get('prompt_tokens', '—')}/{c.get('completion_tokens', '—')} tok)"
+        )
+        for c in llm_calls
+        if isinstance(c, dict)
+    ]
+    return html.Details(
+        [
+            html.Summary(f"Investigation — {summary}", className="chatbot-debug-summary"),
+            html.Ul(stage_lines, className="chatbot-debug-stages") if stage_lines else None,
+            html.Table(
+                [
+                    html.Tr([html.Th("Tool"), html.Th("Status"), html.Th("Rows")]),
+                    *tool_rows,
+                ],
+                className="chatbot-debug-tools",
+            )
+            if tool_rows
+            else None,
+            html.Ul(llm_lines, className="chatbot-debug-llm") if llm_lines else None,
+        ],
+        className="chatbot-debug-panel",
+        open=False,
+    )
+
+
 def _bubble(
     role: str,
     content: str,
@@ -201,6 +258,7 @@ def _bubble(
     clarification: Optional[dict] = None,
     response_type: Optional[str] = None,
     blocks: Optional[list] = None,
+    debug: Optional[dict] = None,
 ) -> Any:
     if role == "user":
         return html.Div(
@@ -226,6 +284,9 @@ def _bubble(
         )
         if names:
             inner.append(html.Div(f"Kaynak: {names}", className="chatbot-sources"))
+    debug_panel = _render_debug_panel(debug) if debug else None
+    if debug_panel is not None:
+        inner.append(debug_panel)
     return html.Div(
         [_avatar(), html.Div(inner, className=cls)],
         className="chatbot-row chatbot-row-assistant",
@@ -272,6 +333,7 @@ def _render_messages(history: Optional[list], pathname: Optional[str] = None) ->
             m.get("clarification"),
             m.get("response_type"),
             m.get("blocks"),
+            m.get("debug"),
         )
         for m in history
     ]
@@ -484,9 +546,10 @@ def register_chatbot_callbacks(app) -> None:
         Output("chatbot-status", "children", allow_duplicate=True),
         Output("chatbot-pending-store", "data", allow_duplicate=True),
         Input("chatbot-pending-store", "data"),
+        State("auth-permissions-store", "data"),
         prevent_initial_call=True,
     )
-    def _on_pending(pending):
+    def _on_pending(pending, permissions):
         if not pending:
             raise PreventUpdate
         message = pending.get("message", "")
@@ -494,8 +557,14 @@ def register_chatbot_callbacks(app) -> None:
         context = pending.get("context") or {}
         new_history = history + [{"role": "user", "content": message}]
         status = ""
+        include_debug = False
+        if permissions is None:
+            include_debug = True
+        elif isinstance(permissions, dict):
+            perm = permissions.get("action:chatbot:audit:read") or {}
+            include_debug = bool(perm.get("view"))
         try:
-            resp = send_chat_message(message, history, context)
+            resp = send_chat_message(message, history, context, include_debug=include_debug)
             answer = (resp.get("answer") or "").strip() or "(boş cevap döndü)"
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
@@ -508,6 +577,8 @@ def register_chatbot_callbacks(app) -> None:
                     assistant_msg["clarification"] = resp.get("clarification")
             if resp.get("blocks"):
                 assistant_msg["blocks"] = resp.get("blocks")
+            if resp.get("debug"):
+                assistant_msg["debug"] = resp.get("debug")
             new_history = new_history + [assistant_msg]
         except Exception as exc:
             logger.warning("chatbot send failed: %s", exc)

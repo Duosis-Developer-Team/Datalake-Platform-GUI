@@ -29,12 +29,13 @@ def build_turn_payload(
     tools: Optional[list[ToolCallSummary]] = None,
     investigation_trace: Optional[list[dict[str, Any]]] = None,
     retention_days: Optional[int] = None,
+    pipeline_extra: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     clarification = None
     if response.clarification is not None:
         clarification = response.clarification.model_dump(mode="json")
     fc = frontend_context.model_dump(exclude_none=True) if frontend_context else None
-    return {
+    payload: dict[str, Any] = {
         "request_id": audit.request_id,
         "user_id": audit.user_id,
         "username": audit.username,
@@ -53,7 +54,14 @@ def build_turn_payload(
         "latency_ms": audit.latency_ms,
         "usage": response.usage,
         "retention_days": retention_days or settings.chatbot_log_retention_days,
+        "blocks": [b.model_dump(mode="json") for b in (response.blocks or [])],
+        "react_mode_used": getattr(audit, "react_mode_used", None),
+        "iterations": getattr(audit, "iterations", None),
+        "error_type": audit.error_type,
     }
+    if pipeline_extra:
+        payload.update(pipeline_extra)
+    return payload
 
 
 def record_turn(payload: dict[str, Any]) -> None:

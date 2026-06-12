@@ -125,14 +125,14 @@ def test_customer_extracted_from_possessive():
     assert "get_customer_resources" in _tools(plan)
 
 
-# --- missing-data guard helpers ------------------------------------------- #
+# --- answer reviewer (LLM-only post-process) -------------------------------- #
 
 
-def test_missing_data_guard_helpers():
-    from app.routers.chatbot import _denies_data, _has_rows
-    from app.services.tool_registry import ToolResult
+def test_answer_reviewer_parses_tables_only():
+    from app.services.answer_reviewer import review
 
-    assert _denies_data("Maalesef bu veri setinde yok.") is True
-    assert _denies_data("İşte sonuçlar:") is False
-    assert _has_rows([ToolResult("t", "success", "postgres:x", summary={"rows": [1]}, rows=2)]) is True
-    assert _has_rows([ToolResult("t", "success", "x", summary={}, rows=0)]) is False
+    answer = "| A | B |\n|---|---|\n| 1 | 2 |"
+    reviewed, blocks, meta = review(answer)
+    assert reviewed == answer
+    assert meta["answer_source"] == "llm"
+    assert len(blocks) == 1

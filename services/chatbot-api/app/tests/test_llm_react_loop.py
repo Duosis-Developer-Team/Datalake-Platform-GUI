@@ -60,7 +60,7 @@ def test_react_loop_executes_tool_calls(monkeypatch):
 
     assert out.react_used is True
     assert out.llm_rounds == 2
-    assert out.draft_answer and "Sonuç" in out.draft_answer
+    assert not hasattr(out, "draft_answer") or getattr(out, "draft_answer", None) is None
     assert any(c[0] == "get_datacenters_summary" for c in calls)
 
 

@@ -54,19 +54,21 @@ def _frontend_context_dict(ctx: Optional[FrontendContext]) -> dict[str, Any]:
 
 def _tool_results_block(results: list[ToolResult], budget: int) -> str:
     """Render tool results as a compact, character-bounded text block."""
+    if not results:
+        return "(no tool data gathered)"
+    per_tool = max(800, budget // max(1, len(results)))
     lines: list[str] = []
     used = 0
     for i, r in enumerate(results, start=1):
         if r.status == "success":
-            payload = json.dumps(r.summary, ensure_ascii=False, default=str)
+            payload = tool_summary_snippet(r, max_chars=per_tool - 120)
         elif r.status == "error":
             payload = json.dumps({"_error": r.error}, ensure_ascii=False)
         elif r.status == "skipped" and (
             (r.source or "").startswith("postgres") or r.error == "db_disabled"
         ):
-            # Surface DB-tool skips so the model can explain *why* (e.g. disabled).
             payload = json.dumps({"_skipped": r.error}, ensure_ascii=False)
-        else:  # other skipped tools — omit (noise)
+        else:
             continue
         block = (
             f"{i}. {r.name}\n"
@@ -81,6 +83,20 @@ def _tool_results_block(results: list[ToolResult], budget: int) -> str:
         lines.append(block)
         used += len(block)
     return "\n".join(lines) if lines else "(no tool data gathered)"
+
+
+def tool_summary_snippet(result: ToolResult, *, max_chars: int = 4000) -> str:
+    """Compact JSON snippet from a tool result for LLM / ReAct context."""
+    if result.status == "success":
+        payload = json.dumps(result.summary, ensure_ascii=False, default=str)
+    elif result.status == "error":
+        payload = json.dumps({"_error": result.error}, ensure_ascii=False)
+    else:
+        payload = json.dumps({"_status": result.status, "_error": result.error}, ensure_ascii=False)
+    payload = redact_text(payload)
+    if len(payload) > max_chars:
+        return payload[: max_chars - 1] + "…"
+    return payload
 
 
 def _append_conversation_messages(
@@ -146,20 +162,17 @@ def build_messages(
 
 _AGENTIC_FORMAT = (
     "Answer format (Turkish, executive operational — ANALYSIS BEFORE CONCLUSION):\n"
-    "1. **Analiz** — ne kontrol edildi (investigation_trace), bulgular, iş etkisi/yorum "
-    "(sürekli yüksek mi, spike mi, outlier, kaynak dağılımı, host yoğunlaşması)\n"
+    "1. **Analiz** — ne kontrol edildi (investigation_trace), bulgular, iş etkisi/yorum\n"
     "2. **Sonuç** — doğrudan cevap (1-3 cümle)\n"
-    "3. Tablo/liste — yalnızca top_list çıktısında, tool satırlarından\n"
-    "4. Risk seviyesi — derived_analysis.risk_level\n"
-    "5. Önerilen aksiyonlar — derived_analysis.recommended_actions\n"
-    "6. Kaynak + veri kalitesi — tool/source, zaman aralığı, son toplama, confidence\n\n"
+    "3. Tablo gerekiyorsa markdown tablo (| col | col | + --- separator)\n"
+    "4. **Risk seviyesi:** low/medium/high\n"
+    "5. **Önerilen aksiyonlar:** madde listesi\n"
+    "6. **Kaynak:** tool/source listesi + _Güven: low/medium/high_\n\n"
     "Rules:\n"
     "- Sayısal değerleri SADECE derived_analysis ve tool sonuçlarından al; uydurma.\n"
-    "- confidence 'low/medium' ise cevapta belirt.\n"
-    "- Veri eski (stale) ise son toplama tarihini ve güncel olmadığını söyle.\n"
-    "- Hiç veri yoksa 'erişemiyorum' deme; investigation_trace'teki araçları ve "
-    "sonucun neden boş geldiğini açıkla.\n"
-    "- Ham SQL, bağlantı dizesi veya secret gösterme.\n"
+    "- Kapsam dışı genel bilgi sorularında tool verisi kullanma; kibarca reddet.\n"
+    "- Selamlama / test mesajlarında kısa karşılama; gereksiz infra verisi dökme.\n"
+    "- Hiç veri yoksa hangi araçların denendiğini açıkla.\n"
 )
 
 

@@ -45,6 +45,10 @@ Server-side client: `src/services/chatbot_log_client.py`. Page: `src/pages/setti
 
 Each turn stores: `request_id`, `user_id`, `status`, redacted `user_message` / `assistant_answer`, `response_type`, optional `clarification` block, `frontend_context`, `tools`, `investigation_trace`, token usage, latency.
 
+Extended fields (2026-06): `pipeline_stages`, `tool_executions` (with redacted `summary` JSON), `llm_calls` (react_tools + synthesis), `post_process` (`answer_source`: `llm` | `llm_error_message`), `plan_snapshot`, `scope_decision`, `blocks`, `react_mode_used`, `iterations`, `error_type`.
+
+Chatbot API returns optional `debug` (TurnDebugSummary) when `include_debug=true` on the request (GUI sets this for users with `action:chatbot:audit:read`).
+
 ## Security
 
 - Never log raw secrets; `redact_text` runs before POST.

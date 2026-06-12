@@ -31,8 +31,12 @@ def test_crm_intent_selects_sellable_tool():
     assert "get_sellable_by_panel" in names or "get_sellable_summary" in names
 
 
-def test_unknown_request_falls_back_to_overview():
-    assert "get_dashboard_overview" in _names("Merhaba, nasıl yardımcı olursun?", None)
+def test_unknown_request_no_dashboard_fallback():
+    assert "get_dashboard_overview" not in _names("Merhaba, nasıl yardımcı olursun?", None)
+
+
+def test_overview_intent_selects_dashboard():
+    assert "get_dashboard_overview" in _names("Genel kapasite durumunu özetle", None)
 
 
 def test_tool_call_cap_enforced():
