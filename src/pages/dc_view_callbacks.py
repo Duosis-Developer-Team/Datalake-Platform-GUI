@@ -1,7 +1,11 @@
 """DC View async data load and progressive tab expansion callbacks."""
 from __future__ import annotations
 
+import logging
+import time
+
 import dash
+import dash_mantine_components as dmc
 from dash import Input, Output, State, callback, ctx, html
 
 from src.components.dc_loading import LOADING_STAGE_MESSAGES
@@ -13,6 +17,8 @@ from src.pages.dc_view import (
 )
 from src.utils.dc_display import resolve_dc_display_from_summary
 from src.utils.time_range import default_time_range
+
+_EXPAND_LOG = logging.getLogger(__name__)
 
 
 def _dc_id_from_path(pathname: str | None) -> str | None:
@@ -152,7 +158,32 @@ def expand_dc_view_on_tab(active_tab, pathname, time_range, visible_sections, lo
     if loaded == prev and active_tab in prev and str(ctx.triggered_id or "") == "dc-main-tabs":
         raise dash.exceptions.PreventUpdate
 
-    content = build_dc_lazy_tab_panel(dc_id, active_tab, tr, vs)
+    t_expand = time.perf_counter()
+    root_found = True
+    try:
+        content = build_dc_lazy_tab_panel(dc_id, active_tab, tr, vs)
+    except Exception as exc:
+        _EXPAND_LOG.exception(
+            "expand_dc_tab_failed dc=%s tab=%s trigger=%s",
+            dc_id,
+            active_tab,
+            ctx.triggered_id,
+        )
+        content = dmc.Alert(
+            title=f"Failed to load {active_tab} tab",
+            color="red",
+            children=str(exc),
+        )
+        root_found = False
+    expand_ms = round((time.perf_counter() - t_expand) * 1000, 1)
+    _EXPAND_LOG.info(
+        "expand_dc_tab dc=%s tab=%s trigger=%s expand_ms=%s root_found=%s",
+        dc_id,
+        active_tab,
+        ctx.triggered_id,
+        expand_ms,
+        root_found,
+    )
     updates: list = [dash.no_update] * len(_LAZY_TAB_KEYS)
     try:
         idx = _LAZY_TAB_KEYS.index(active_tab)

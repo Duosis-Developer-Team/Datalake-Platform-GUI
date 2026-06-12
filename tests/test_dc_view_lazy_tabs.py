@@ -270,18 +270,17 @@ def test_build_dc_lazy_tab_panel_virt_no_name_error():
     from src.pages.dc_view import _find_component_by_id
 
     roots = panel if isinstance(panel, (list, tuple)) else [panel]
-    content = None
+    classic_selector = None
     for root in roots:
-        content = _find_component_by_id(root, "virt-nested-content")
-        if content is not None:
+        classic_selector = _find_component_by_id(root, "virt-classic-cluster-selector")
+        if classic_selector is not None:
             break
-    assert content is not None
+    assert classic_selector is not None
     for root in roots:
-        assert _find_component_by_id(root, "virt-subtab-lazy-hyperconv") is None
-        assert _find_component_by_id(root, "virt-nested-mounted") is None
+        assert _find_component_by_id(root, "virt-nested-content") is None
 
 
-def test_build_dc_view_virt_eager_uses_single_content_slot():
+def test_virt_nested_tabs_eager_all_panels_present():
     from dash import html
 
     from src.pages.dc_view import _find_component_by_id, build_dc_view
@@ -352,10 +351,12 @@ def test_build_dc_view_virt_eager_uses_single_content_slot():
             eager_tabs=frozenset({"virt"}),
         )
 
-    content = _find_component_by_id(page, "virt-nested-content")
-    assert content is not None
-    assert _find_component_by_id(page, "virt-subtab-lazy-hyperconv") is None
+    assert _find_component_by_id(page, "virt-nested-content") is None
+    assert _find_component_by_id(page, "virt-classic-cluster-selector") is not None
+    assert _find_component_by_id(page, "virt-hyperconv-cluster-selector") is not None
     assert _find_component_by_id(page, "classic-virt-panel") is not None
+    assert _find_component_by_id(page, "hyperconv-virt-panel") is not None
+    assert _find_component_by_id(page, "power-stub") is not None
 
 
 def test_build_virt_subtab_stack_hyperconv_no_name_error():

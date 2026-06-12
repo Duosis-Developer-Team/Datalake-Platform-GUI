@@ -121,7 +121,6 @@ from src.pages.dc_view import (
     _build_sellable_inline_kpi,
     _build_virt_subtab_stack,
     _build_virt_total_sellable_children,
-    build_virt_nested_subtab_panel,
     _sellable_card_children,
     _DC_ICONS,
 )
@@ -991,24 +990,6 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
         classic_clusters or None,
         hyperconv_clusters or None,
     )
-
-
-@app.callback(
-    dash.Output("virt-nested-content", "children"),
-    dash.Input("virt-nested-tabs", "value"),
-    dash.State("virt-subtab-context", "data"),
-    dash.State("app-time-range", "data"),
-    prevent_initial_call=True,
-)
-def render_virt_nested_content(active_tab, ctx, time_range):
-    """Render Virt nested tab body outside TabsPanel (dmc/Mantine non-first-tab workaround)."""
-    if not ctx or not active_tab:
-        raise dash.exceptions.PreventUpdate
-    dc_id = str(ctx.get("dc_id") or "")
-    if not dc_id:
-        raise dash.exceptions.PreventUpdate
-    panel, _mount_ok = build_virt_nested_subtab_panel(active_tab, ctx, time_range)
-    return panel
 
 
 @app.callback(

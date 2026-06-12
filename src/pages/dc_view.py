@@ -4435,6 +4435,7 @@ def build_dc_lazy_tab_panel(
     tr = time_range or default_time_range()
     vs = visible_sections
     dc_display, _ = resolve_dc_display_from_summary(str(dc_id), tr)
+    t_build = time.perf_counter()
     page = build_dc_view(
         dc_id,
         tr,
@@ -4443,11 +4444,30 @@ def build_dc_lazy_tab_panel(
     )
     root_id = f"dc-tab-{tab}-root"
     found = _find_component_by_id(page, root_id)
+    build_ms = round((time.perf_counter() - t_build) * 1000, 1)
     if found is None:
+        _BUILD_LOG.warning(
+            "lazy_tab_root_missing dc=%s tab=%s build_ms=%s",
+            dc_id,
+            tab,
+            build_ms,
+        )
         return build_dc_tab_loading_shell(tab, dc_display)
     children = getattr(found, "children", None)
     if children is None:
+        _BUILD_LOG.warning(
+            "lazy_tab_root_empty dc=%s tab=%s build_ms=%s",
+            dc_id,
+            tab,
+            build_ms,
+        )
         return build_dc_tab_loading_shell(tab, dc_display)
+    _BUILD_LOG.info(
+        "lazy_tab_panel_ready dc=%s tab=%s build_ms=%s",
+        dc_id,
+        tab,
+        build_ms,
+    )
     return children
 
 
@@ -4714,37 +4734,53 @@ def build_dc_view(
     storage_capacity = {}
     storage_performance = {}
     san_bottleneck = {}
+    zabbix_storage_capacity = {}
+    zabbix_storage_devices = []
+    zabbix_storage_trend = {}
+    datastore_mapping = {}
     _fetch_ibm_storage = _tab_eager(eager_tabs, "virt") or _tab_eager(eager_tabs, "storage")
-    if _fetch_ibm_storage:
-        t_power_storage = time.perf_counter()
-        storage_capacity = api.get_dc_storage_capacity(dc_id, tr)
-        storage_performance = api.get_dc_storage_performance(dc_id, tr)
+    _fetch_storage_tab = _tab_eager(eager_tabs, "storage")
+    if _fetch_ibm_storage or _fetch_storage_tab:
+        t_storage_batch = time.perf_counter()
+        storage_tasks: dict = {}
+        if _fetch_ibm_storage:
+            storage_tasks["capacity"] = lambda: api.get_dc_storage_capacity(dc_id, tr)
+            storage_tasks["performance"] = lambda: api.get_dc_storage_performance(dc_id, tr)
         if _tab_eager(eager_tabs, "virt"):
-            san_bottleneck = api.get_dc_san_bottleneck(dc_id, tr)
-        power_storage_ms = round((time.perf_counter() - t_power_storage) * 1000, 1)
-        _log_dc_build_phase(str(dc_id), "power_storage", t_power_storage)
-    else:
-        power_storage_ms = 0.0
+            storage_tasks["san_bottleneck"] = lambda: api.get_dc_san_bottleneck(dc_id, tr)
+        if _fetch_storage_tab:
+            storage_tasks["zabbix_cap"] = lambda: api.get_dc_zabbix_storage_capacity(dc_id, tr)
+            storage_tasks["datastore"] = lambda: api.get_dc_datastore_mapping(dc_id, tr)
+        if storage_tasks:
+            storage_batch = parallel_execute(storage_tasks)
+            storage_capacity = storage_batch.get("capacity") or {}
+            storage_performance = storage_batch.get("performance") or {}
+            san_bottleneck = storage_batch.get("san_bottleneck") or {}
+            zabbix_storage_capacity = storage_batch.get("zabbix_cap") or {}
+            datastore_mapping = storage_batch.get("datastore") or {}
+        _log_dc_build_phase(str(dc_id), "storage_batch", t_storage_batch, tasks=len(storage_tasks))
     has_ibm_storage = bool((storage_capacity.get("systems") or []))
 
-    # Intel Storage (Zabbix)
-    if _tab_eager(eager_tabs, "storage"):
-        zabbix_storage_capacity = api.get_dc_zabbix_storage_capacity(dc_id, tr)
+    if _fetch_storage_tab:
         has_intel_storage = int(zabbix_storage_capacity.get("storage_device_count", 0) or 0) > 0
-        t_intel_storage = time.perf_counter()
-        zabbix_storage_devices = api.get_dc_zabbix_storage_devices(dc_id, tr) if has_intel_storage else []
-        zabbix_storage_trend = api.get_dc_zabbix_storage_trend(dc_id, tr) if has_intel_storage else {}
-        intel_storage_ms = round((time.perf_counter() - t_intel_storage) * 1000, 1)
-        _log_dc_build_phase(str(dc_id), "intel_storage", t_intel_storage)
-        datastore_mapping = api.get_dc_datastore_mapping(dc_id, tr)
+        if has_intel_storage:
+            t_intel_follow = time.perf_counter()
+            intel_batch = parallel_execute({
+                "devices": lambda: api.get_dc_zabbix_storage_devices(dc_id, tr),
+                "trend": lambda: api.get_dc_zabbix_storage_trend(dc_id, tr),
+            })
+            zabbix_storage_devices = intel_batch.get("devices") or []
+            zabbix_storage_trend = intel_batch.get("trend") or {}
+            _log_dc_build_phase(str(dc_id), "intel_storage_follow", t_intel_follow)
+        else:
+            has_intel_storage = False
+            zabbix_storage_devices = []
+            zabbix_storage_trend = {}
         has_datastore = int(datastore_mapping.get("datastore_count", 0) or 0) > 0
     else:
-        zabbix_storage_capacity = {}
         has_intel_storage = False
         zabbix_storage_devices = []
         zabbix_storage_trend = {}
-        intel_storage_ms = 0.0
-        datastore_mapping = {}
         has_datastore = False
 
     has_storage = bool(has_intel_storage or has_ibm_storage or has_power or has_s3 or has_san or has_datastore)
@@ -4824,18 +4860,18 @@ def build_dc_view(
             hyperconv_clusters or None,
         )
 
-    def _virt_nested_tab_stub(tab_key: str, enabled: bool):
-        """Minimal TabsPanel stubs — body renders in virt-nested-content (dmc Tabs workaround)."""
-        if not enabled:
+    def _virt_nested_tab_panel(tab_key: str, enabled: bool):
+        """Eager Virt nested tab body inside TabsPanel (backup-tab pattern)."""
+        if not enabled or not _tab_eager(eager_tabs, "virt"):
             return None
-        return dmc.TabsPanel(value=tab_key, pt=0, children=html.Div(style={"display": "none"}))
-
-    default_virt_content = None
-    if show_virt and _tab_eager(eager_tabs, "virt"):
-        default_virt_stack = _build_virt_subtab_stack(default_virt_tab, **virt_subtab_kwargs)
-        default_virt_content = dmc.Stack(
-            gap="lg",
-            children=[c for c in default_virt_stack if c is not None],
+        stack = _build_virt_subtab_stack(tab_key, **virt_subtab_kwargs)
+        return dmc.TabsPanel(
+            value=tab_key,
+            pt="lg",
+            children=dmc.Stack(
+                gap="lg",
+                children=[c for c in stack if c is not None],
+            ),
         )
 
     page = html.Div([
@@ -4908,45 +4944,23 @@ def build_dc_view(
                                 id="sellable-virt-total-card",
                                 children=virt_total_children,
                             ),
-                            dcc.Store(
-                                id="virt-subtab-context",
-                                data={
-                                    "dc_id": str(dc_id),
-                                    "default_tab": default_virt_tab,
-                                    "classic_clusters": classic_clusters or [],
-                                    "hyperconv_clusters": hyperconv_clusters or [],
-                                    "show_virt_hosts": show_virt_hosts,
-                                    "show_classic": show_classic,
-                                    "show_hyperconv": show_hyperconv,
-                                    "show_power": show_power_inner,
-                                },
-                            ),
-                            dmc.Stack(
-                                gap="md",
+                            dmc.Tabs(
+                                id="virt-nested-tabs",
+                                color="violet",
+                                variant="outline",
+                                radius="md",
+                                value=default_virt_tab,
                                 children=[
-                                    dmc.Tabs(
-                                        id="virt-nested-tabs",
-                                        color="violet",
-                                        variant="outline",
-                                        radius="md",
-                                        value=default_virt_tab,
+                                    dmc.TabsList(
                                         children=[
-                                            dmc.TabsList(
-                                                children=[
-                                                    dmc.TabsTab("Klasik Mimari", value="classic") if show_classic else None,
-                                                    dmc.TabsTab("Hyperconverged Mimari", value="hyperconv") if show_hyperconv else None,
-                                                    dmc.TabsTab("Power Mimari", value="power") if show_power_inner else None,
-                                                ]
-                                            ),
-                                            _virt_nested_tab_stub("classic", show_classic),
-                                            _virt_nested_tab_stub("hyperconv", show_hyperconv),
-                                            _virt_nested_tab_stub("power", show_power_inner),
-                                        ],
+                                            dmc.TabsTab("Klasik Mimari", value="classic") if show_classic else None,
+                                            dmc.TabsTab("Hyperconverged Mimari", value="hyperconv") if show_hyperconv else None,
+                                            dmc.TabsTab("Power Mimari", value="power") if show_power_inner else None,
+                                        ]
                                     ),
-                                    html.Div(
-                                        id="virt-nested-content",
-                                        children=default_virt_content,
-                                    ),
+                                    _virt_nested_tab_panel("classic", show_classic),
+                                    _virt_nested_tab_panel("hyperconv", show_hyperconv),
+                                    _virt_nested_tab_panel("power", show_power_inner),
                                 ],
                             ),
                         ],
