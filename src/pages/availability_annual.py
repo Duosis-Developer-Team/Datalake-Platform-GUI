@@ -3,25 +3,28 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Optional
 
 import dash_mantine_components as dmc
-import plotly.graph_objects as go
-from dash import ALL, Input, Output, State, callback, ctx, html, no_update
+from dash import ALL, Input, Output, State, callback, ctx, dcc, html, no_update
 
-from src.components.dc_availability_panel import build_dc_availability_panel
+from src.components.dc_availability_panel import AvailabilityDataState, build_dc_availability_panel
 from src.components.header import create_detail_header
 from src.services import api_client as api
 from src.utils.dc_display import format_dc_display_name
 from src.utils.time_range import MIN_REPORT_YEAR, calendar_year_range, default_time_range
 
+_MAX_SLA_RETRIES = 3
+_SLA_POLL_INTERVAL_MS = 2000
 
-def _overall_availability_pct(item: dict | None) -> float:
+
+def _overall_availability_pct(item: dict | None) -> Optional[float]:
     if not item:
-        return 0.0
+        return None
     try:
         return float(item.get("availability_pct") or 0.0)
     except (TypeError, ValueError):
-        return 0.0
+        return None
 
 
 def _bar_color_for_pct(pct: float) -> str:
@@ -41,33 +44,6 @@ def _sla_tier(pct: float) -> tuple[str, str, str, str]:
     return "#F04438", "#B42318", "rgba(240,68,56,0.07)", "linear-gradient(90deg,#FDA29B,#F04438)"
 
 
-def _mini_horizontal_bar_figure(pct: float) -> go.Figure:
-    pct = max(0.0, min(100.0, pct))
-    color = _bar_color_for_pct(pct)
-    fig = go.Figure(
-        data=[
-            go.Bar(
-                x=[pct],
-                y=[""],
-                orientation="h",
-                marker=dict(color=color),
-                hovertemplate="%{x:.4f}%<extra></extra>",
-            )
-        ]
-    )
-    fig.update_layout(
-        height=40,
-        margin=dict(l=0, r=0, t=0, b=0),
-        xaxis=dict(range=[0, 100], visible=False, fixedrange=True),
-        yaxis=dict(visible=False, fixedrange=True),
-        showlegend=False,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="#EEF2F6",
-        bargap=0.35,
-    )
-    return fig
-
-
 def _truncate_label(text: str, max_len: int = 22) -> str:
     t = (text or "").strip()
     if len(t) <= max_len:
@@ -75,8 +51,145 @@ def _truncate_label(text: str, max_len: int = 22) -> str:
     return t[: max_len - 1] + "…"
 
 
+def _overview_loading_skeleton() -> html.Div:
+    return dmc.SimpleGrid(
+        cols={"base": 2, "md": 3, "lg": 4},
+        spacing="sm",
+        verticalSpacing="sm",
+        children=[dmc.Skeleton(height=88, radius="md") for _ in range(8)],
+    )
+
+
+def _build_overview_cards(
+    rows: list[dict],
+    items_map: dict[str, dict | None],
+    sel: str,
+    *,
+    sla_pending: bool,
+) -> html.Div:
+    overview_cards: list = []
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: (
+            format_dc_display_name(r.get("name"), r.get("description"))
+            or str(r.get("name") or str(r.get("id")))
+        ).lower(),
+    )
+    for row in sorted_rows:
+        sid = str(row.get("id"))
+        display = format_dc_display_name(row.get("name"), row.get("description")) or str(
+            row.get("name") or sid
+        )
+        short = _truncate_label(display, 26)
+        pct_val = _overall_availability_pct(items_map.get(sid))
+        highlighted = bool(sel and sid == sel)
+
+        if sla_pending or pct_val is None:
+            pct_label = "—"
+            bar_width = "0%"
+            accent_color, text_color, bar_gradient = "#A3AED0", "#A3AED0", "linear-gradient(90deg,#E4E7EC,#CBD5E1)"
+        else:
+            pct = pct_val
+            pct_label = f"{pct:.4f}%"
+            bar_width = f"{max(0.0, min(100.0, pct)):.4f}%"
+            accent_color, text_color, _bg_color, bar_gradient = _sla_tier(pct)
+
+        overview_cards.append(
+            html.Div(
+                id={"type": "availability-annual-card", "dc": sid},
+                n_clicks=0,
+                style={"cursor": "pointer"},
+                children=dmc.Paper(
+                    withBorder=False,
+                    p="md",
+                    radius="md",
+                    style={
+                        "border": "1.5px solid rgba(67,24,255,0.12)",
+                        "borderLeft": f"4px solid {accent_color}",
+                        "background": "rgba(237,233,254,0.45)" if highlighted else "rgba(255,255,255,0.95)",
+                        "boxShadow": (
+                            "0 0 0 2px #4318FF, 0 4px 16px rgba(67,24,255,0.13)"
+                            if highlighted
+                            else "0 1px 4px rgba(0,0,0,0.04)"
+                        ),
+                        "cursor": "pointer",
+                        "transition": "box-shadow 0.2s ease",
+                    },
+                    children=[
+                        dmc.Group(
+                            justify="space-between",
+                            align="flex-start",
+                            mb=8,
+                            children=[
+                                dmc.Text(
+                                    short,
+                                    size="xs",
+                                    fw=700,
+                                    c="#2B3674",
+                                    lineClamp=1,
+                                    style={"flex": 1, "minWidth": 0},
+                                ),
+                                dmc.Text(
+                                    pct_label,
+                                    size="sm",
+                                    fw=900,
+                                    c=text_color,
+                                    style={
+                                        "fontVariantNumeric": "tabular-nums",
+                                        "letterSpacing": "-0.02em",
+                                        "flexShrink": 0,
+                                        "marginLeft": "8px",
+                                    },
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            style={
+                                "height": "7px",
+                                "background": "rgba(67,24,255,0.07)",
+                                "borderRadius": "99px",
+                                "overflow": "hidden",
+                            },
+                            children=[
+                                html.Div(
+                                    style={
+                                        "height": "100%",
+                                        "width": bar_width,
+                                        "background": bar_gradient,
+                                        "borderRadius": "99px",
+                                    }
+                                )
+                            ],
+                        ),
+                    ],
+                ),
+            )
+        )
+
+    return dmc.SimpleGrid(
+        cols={"base": 2, "md": 3, "lg": 4},
+        spacing="sm",
+        verticalSpacing="sm",
+        children=overview_cards,
+    )
+
+
+def _resolve_panel_state(
+    sla_status: str,
+    item: dict | None,
+    raw_count: int,
+) -> AvailabilityDataState:
+    if sla_status in ("error", "empty") and raw_count == 0:
+        return "fetch_failed"
+    if item:
+        return "ok"
+    if raw_count > 0:
+        return "no_match"
+    return "fetch_failed"
+
+
 def build_availability_annual_layout(visible_sections: set[str] | None = None) -> html.Div:
-    """Annual Availability sayfası: sticky header + tam genişlik DC grid + alt filtreler + detay."""
+    """Annual Availability: non-blocking shell; data loaded via callbacks."""
 
     def _sec(code: str) -> bool:
         if visible_sections is None:
@@ -93,37 +206,12 @@ def build_availability_annual_layout(visible_sections: set[str] | None = None) -
             style={"padding": "24px"},
         )
 
-    tr_list = default_time_range()
-    datacenters = api.get_all_datacenters_summary(tr_list)
     current_year = datetime.now(timezone.utc).year
     year_options = [
         {"value": str(y), "label": str(y)}
         for y in range(MIN_REPORT_YEAR, current_year + 1)
     ]
-    dc_options: list[dict] = []
-    default_dc_id: str | None = None
-    for dc in datacenters:
-        cid = dc.get("id")
-        if cid is None:
-            continue
-        sid = str(cid)
-        label = (
-            format_dc_display_name(dc.get("name"), dc.get("description"))
-            or str(dc.get("name") or sid)
-        )
-        dc_options.append({"value": sid, "label": label})
-        if default_dc_id is None:
-            default_dc_id = sid
 
-    if not dc_options:
-        return html.Div(
-            dmc.Alert("No data centers available for this environment.", color="gray", variant="light"),
-            style={"padding": "24px 32px"},
-        )
-
-    dc_count = len(dc_options)
-
-    # ── Header: Year select sağ tarafa (right_extra), diğer sayfalarla uyumlu yükseklik ──
     year_select_inline = dmc.Select(
         id="availability-annual-year",
         data=year_options,
@@ -139,7 +227,7 @@ def build_availability_annual_layout(visible_sections: set[str] | None = None) -
         title="Annual Availability",
         back_href="/",
         back_label="Overview",
-        subtitle_badge=f"{dc_count} Data Centers",
+        subtitle_badge="Loading data centers…",
         subtitle_color="indigo",
         icon="solar:calendar-bold-duotone",
         time_range=None,
@@ -150,7 +238,6 @@ def build_availability_annual_layout(visible_sections: set[str] | None = None) -
         ],
     )
 
-    # ── Overview Grid ────────────────────────────────────────────────────
     overview_section = html.Div(
         style={"padding": "0 32px", "marginBottom": "16px"},
         children=[
@@ -167,20 +254,23 @@ def build_availability_annual_layout(visible_sections: set[str] | None = None) -
                 c="dimmed",
                 mb="sm",
             ),
-            html.Div(id="availability-annual-overview"),
+            dcc.Loading(
+                id="availability-annual-overview-loading",
+                type="circle",
+                color="#4318FF",
+                delay_show=200,
+                children=html.Div(id="availability-annual-overview"),
+            ),
         ],
     )
 
-    # Hidden DC selector — driven by clicking overview cards.
-    # Kept as a Select (instead of dcc.Store) so existing callbacks that read its
-    # `.value` and write to it via the card-click callback keep working unchanged.
     filter_row = html.Div(
         style={"display": "none"},
         children=[
             dmc.Select(
                 id="availability-annual-dc",
-                data=dc_options,
-                value=default_dc_id,
+                data=[],
+                value=None,
                 clearable=False,
             ),
         ],
@@ -190,7 +280,20 @@ def build_availability_annual_layout(visible_sections: set[str] | None = None) -
         page_header,
         overview_section,
         filter_row,
-        html.Div(id="availability-annual-body"),
+        dcc.Store(id="availability-annual-sla-retry-store", data={"attempts": 0, "year": str(current_year)}),
+        dcc.Interval(
+            id="availability-annual-sla-poll",
+            interval=_SLA_POLL_INTERVAL_MS,
+            n_intervals=0,
+            disabled=True,
+        ),
+        dcc.Loading(
+            id="availability-annual-body-loading",
+            type="circle",
+            color="#4318FF",
+            delay_show=200,
+            children=html.Div(id="availability-annual-body"),
+        ),
     ])
 
 
@@ -198,10 +301,16 @@ def build_availability_annual_layout(visible_sections: set[str] | None = None) -
     Output("availability-annual-overview", "children"),
     Output("availability-annual-body", "children"),
     Output("availability-annual-date-badge", "children"),
+    Output("availability-annual-dc", "data"),
+    Output("availability-annual-dc", "value"),
+    Output("availability-annual-sla-poll", "disabled"),
+    Output("availability-annual-sla-retry-store", "data"),
     Input("availability-annual-year", "value"),
     Input("availability-annual-dc", "value"),
+    Input("availability-annual-sla-poll", "n_intervals"),
+    State("availability-annual-sla-retry-store", "data"),
 )
-def _render_availability_annual(year, dc_id):
+def _render_availability_annual(year, dc_id, _poll_n, retry_store):
     current_year = datetime.now(timezone.utc).year
     try:
         y = int(year) if year is not None and str(year).strip() != "" else current_year
@@ -209,7 +318,16 @@ def _render_availability_annual(year, dc_id):
         y = current_year
 
     tr = calendar_year_range(y)
+    year_key = str(y)
     sel = str(dc_id).strip() if dc_id not in (None, "") else ""
+
+    retry_data = retry_store if isinstance(retry_store, dict) else {}
+    attempts = int(retry_data.get("attempts") or 0)
+    if retry_data.get("year") != year_key:
+        attempts = 0
+
+    triggered = ctx.triggered_id
+    force_refresh = triggered == "availability-annual-sla-poll"
 
     date_badge = dmc.Badge(
         children=dmc.Group(
@@ -229,133 +347,69 @@ def _render_availability_annual(year, dc_id):
     tr_list = default_time_range()
     all_dcs = api.get_all_datacenters_summary(tr_list)
     rows = [r for r in all_dcs if r.get("id") is not None]
-    items_map = api.get_dc_availability_sla_items_for_dcs(rows, tr) if rows else {}
 
-    # --- Overview: premium kart per DC (sorted by display name)
-    overview_cards: list = []
-    sorted_rows = sorted(
-        rows,
-        key=lambda r: (
-            format_dc_display_name(r.get("name"), r.get("description"))
-            or str(r.get("name") or str(r.get("id")))
-        ).lower(),
-    )
-    for row in sorted_rows:
-        sid = str(row.get("id"))
-        display = format_dc_display_name(row.get("name"), row.get("description")) or str(
-            row.get("name") or sid
-        )
-        short = _truncate_label(display, 26)
-        pct = _overall_availability_pct(items_map.get(sid))
-        highlighted = bool(sel and sid == sel)
-        accent_color, text_color, bg_color, bar_gradient = _sla_tier(pct)
+    dc_options: list[dict] = []
+    first_dc_id: str | None = None
+    for dc in rows:
+        sid = str(dc.get("id"))
+        label = format_dc_display_name(dc.get("name"), dc.get("description")) or str(dc.get("name") or sid)
+        dc_options.append({"value": sid, "label": label})
+        if first_dc_id is None:
+            first_dc_id = sid
 
-        overview_cards.append(
-            html.Div(
-                id={"type": "availability-annual-card", "dc": sid},
-                n_clicks=0,
-                style={"cursor": "pointer"},
-                children=dmc.Paper(
-                    withBorder=False,
-                    p="md",
-                    radius="md",
-                    style={
-                        "border": f"1.5px solid rgba(67,24,255,0.12)",
-                        "borderLeft": f"4px solid {accent_color}",
-                        "background": "rgba(237,233,254,0.45)" if highlighted else "rgba(255,255,255,0.95)",
-                        "boxShadow": (
-                            "0 0 0 2px #4318FF, 0 4px 16px rgba(67,24,255,0.13)"
-                            if highlighted
-                            else "0 1px 4px rgba(0,0,0,0.04)"
-                        ),
-                        "cursor": "pointer",
-                        "transition": "box-shadow 0.2s ease",
-                    },
-                    children=[
-                        # İsim + büyük yüzde yan yana
-                        dmc.Group(
-                            justify="space-between",
-                            align="flex-start",
-                            mb=8,
-                            children=[
-                                dmc.Text(
-                                    short,
-                                    size="xs",
-                                    fw=700,
-                                    c="#2B3674",
-                                    lineClamp=1,
-                                    style={"flex": 1, "minWidth": 0},
-                                ),
-                                dmc.Text(
-                                    f"{pct:.4f}%",
-                                    size="sm",
-                                    fw=900,
-                                    c=text_color,
-                                    style={
-                                        "fontVariantNumeric": "tabular-nums",
-                                        "letterSpacing": "-0.02em",
-                                        "flexShrink": 0,
-                                        "marginLeft": "8px",
-                                    },
-                                ),
-                            ],
-                        ),
-                        # Premium CSS progress bar
-                        html.Div(
-                            style={
-                                "height": "7px",
-                                "background": "rgba(67,24,255,0.07)",
-                                "borderRadius": "99px",
-                                "overflow": "hidden",
-                            },
-                            children=[
-                                html.Div(
-                                    style={
-                                        "height": "100%",
-                                        "width": f"{pct:.4f}%",
-                                        "background": bar_gradient,
-                                        "borderRadius": "99px",
-                                    }
-                                )
-                            ],
-                        ),
-                    ],
-                ),
-            )
+    dc_value_out = no_update
+    if not sel and first_dc_id:
+        sel = first_dc_id
+        dc_value_out = first_dc_id
+
+    if not rows:
+        empty_alert = dmc.Alert("No data centers available for this environment.", color="gray", variant="light")
+        return (
+            empty_alert,
+            html.Div(style={"padding": "0 32px"}, children=[empty_alert]),
+            date_badge,
+            [],
+            None,
+            True,
+            {"attempts": 0, "year": year_key},
         )
 
-    overview_content = (
-        dmc.SimpleGrid(
-            cols={"base": 2, "md": 3, "lg": 4},
-            spacing="sm",
-            verticalSpacing="sm",
-            children=overview_cards,
-        )
-        if overview_cards
-        else dmc.Text("No data centers.", size="sm", c="dimmed")
-    )
+    sla_batch = api.get_dc_availability_sla_items_for_dcs(rows, tr, force_refresh=force_refresh)
+    sla_status = sla_batch.get("status", "error")
+    items_map = sla_batch.get("items_map") or {}
+    raw_count = int(sla_batch.get("raw_count") or 0)
+
+    sla_pending = sla_status in ("error", "empty") and raw_count == 0
+    should_retry = sla_pending and attempts < _MAX_SLA_RETRIES
+    poll_disabled = not should_retry
+    if not sla_pending:
+        next_attempts = 0
+    elif triggered == "availability-annual-sla-poll":
+        next_attempts = attempts + 1
+    else:
+        next_attempts = attempts
+    retry_out = {"attempts": next_attempts, "year": year_key}
+
+    if sla_pending:
+        overview_content = _overview_loading_skeleton()
+    else:
+        overview_content = _build_overview_cards(rows, items_map, sel, sla_pending=False)
 
     if not sel:
         body = html.Div(
             style={"padding": "0 32px"},
-            children=[
-                dmc.Alert(
-                    "Select a data center.",
-                    color="gray",
-                    variant="light",
-                ),
-            ],
+            children=[dmc.Alert("Select a data center.", color="gray", variant="light")],
         )
-        return overview_content, body, date_badge
+        return overview_content, body, date_badge, dc_options, dc_value_out, poll_disabled, retry_out
 
-    row_by_id = {str(r.get("id")): r for r in all_dcs if r.get("id") is not None}
+    row_by_id = {str(r.get("id")): r for r in rows}
     row = row_by_id.get(sel)
     if not row:
         body = html.Div(
             style={"padding": "0 32px"},
             children=[dmc.Alert("No matching data center found.", color="orange", variant="light")],
         )
-        return overview_content, body, date_badge
+        return overview_content, body, date_badge, dc_options, dc_value_out, poll_disabled, retry_out
 
     intro = dmc.Text(
         f"Report period (UTC): {tr['start']} — {tr['end']}",
@@ -367,6 +421,7 @@ def _render_availability_annual(year, dc_id):
     sid = str(row.get("id"))
     display = format_dc_display_name(row.get("name"), row.get("description")) or str(row.get("name") or sid)
     item = items_map.get(sid)
+    panel_state: AvailabilityDataState = "loading" if sla_pending else _resolve_panel_state(sla_status, item, raw_count)
 
     body = html.Div(
         style={"padding": "0 32px 32px"},
@@ -375,15 +430,15 @@ def _render_availability_annual(year, dc_id):
             html.Div(
                 className="nexus-card",
                 style={"padding": "8px 0 24px"},
-                children=[build_dc_availability_panel(item, display)],
+                children=[build_dc_availability_panel(item, display, data_state=panel_state)],
             ),
         ],
     )
-    return overview_content, body, date_badge
+    return overview_content, body, date_badge, dc_options, dc_value_out, poll_disabled, retry_out
 
 
 @callback(
-    Output("availability-annual-dc", "value"),
+    Output("availability-annual-dc", "value", allow_duplicate=True),
     Input({"type": "availability-annual-card", "dc": ALL}, "n_clicks"),
     State("availability-annual-dc", "value"),
     prevent_initial_call=True,

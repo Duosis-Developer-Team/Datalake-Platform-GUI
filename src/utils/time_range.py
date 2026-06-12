@@ -84,10 +84,10 @@ def previous_month_range():
 
 def calendar_year_range(year: int) -> dict:
     """
-    Time range for calendar year `year` (UTC dates): Jan 1 … Dec 31, capped by today.
+    Time range for calendar year `year` (UTC dates): Jan 1 … Dec 31 (full calendar year).
 
-    - If `year` is the current year, `end` is today (inclusive of partial-year data).
-    - Clamps `year` to [MIN_REPORT_YEAR, current calendar year].
+    Annual availability always queries the complete year, including the current year.
+    Clamps `year` to [MIN_REPORT_YEAR, current calendar year].
     """
     today = _today_utc()
     cy = int(today.year)
@@ -97,8 +97,7 @@ def calendar_year_range(year: int) -> dict:
     if y > cy:
         y = cy
     start_d = date(y, 1, 1)
-    end_dec = date(y, 12, 31)
-    end_d = min(end_dec, today)
+    end_d = date(y, 12, 31)
     return {
         "start": start_d.isoformat(),
         "end": end_d.isoformat(),

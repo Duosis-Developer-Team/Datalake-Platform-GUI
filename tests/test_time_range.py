@@ -37,8 +37,8 @@ def test_time_range_to_bounds_iso_respects_time():
     assert end_ts.minute == 30
 
 
-def test_calendar_year_range_full_past_year_and_partial_current(monkeypatch):
-    """Past years end Dec 31; current year ends on today's date (UTC)."""
+def test_calendar_year_range_full_calendar_year_including_current(monkeypatch):
+    """Every year uses Jan 1 through Dec 31 (full calendar year)."""
     from datetime import date
 
     monkeypatch.setattr(tr, "_today_utc", lambda: date(2026, 5, 5))
@@ -48,7 +48,7 @@ def test_calendar_year_range_full_past_year_and_partial_current(monkeypatch):
     assert past["preset"] == "year_2024"
     cur = tr.calendar_year_range(2026)
     assert cur["start"] == "2026-01-01"
-    assert cur["end"] == "2026-05-05"
+    assert cur["end"] == "2026-12-31"
 
 
 def test_calendar_year_range_clamps_year_to_min_and_max(monkeypatch):

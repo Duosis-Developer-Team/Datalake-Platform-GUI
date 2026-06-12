@@ -60,7 +60,7 @@ def _minutes_to_hours(mins: Any) -> float:
 def _fetch_sla_raw(tr: dict) -> dict:
     params = {
         "start_date": f"{tr.get('start','')}T00:00:00",
-        "end_date": f"{tr.get('end','')}T00:00:00",
+        "end_date": f"{tr.get('end','')}T23:59:59",
     }
     headers = {"X-API-Key": SLA_API_KEY}
     resp = requests.get(SLA_API_URL, headers=headers, params=params, timeout=20)
@@ -172,7 +172,7 @@ def get_dc_services_availability(tr: dict) -> list[dict[str, Any]]:
     try:
         params: dict[str, str] = {"start_date": f"{start}T00:00:00"}
         if end:
-            params["end_date"] = f"{end}T00:00:00"
+            params["end_date"] = f"{end}T23:59:59"
         headers = {"X-API-Key": SLA_API_KEY}
         resp = requests.get(SLA_DC_SERVICES_URL, headers=headers, params=params, timeout=20)
         resp.raise_for_status()
