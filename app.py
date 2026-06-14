@@ -717,7 +717,9 @@ def render_main_content(pathname, time_range, search):
     if pathname in ("/", ""):
         return home.build_overview(tr, visible_sections=vis)
     if pathname == "/datacenters":
-        return datacenters.build_datacenters(tr, visible_sections=vis)
+        # Two-phase: return the skeleton shell instantly; `_fill_datacenters_content`
+        # builds the real content off the render path so a cold backend never blanks the page.
+        return datacenters.build_datacenters_shell(visible_sections=vis)
     if pathname and pathname.startswith("/datacenter/"):
         dc_id = pathname.replace("/datacenter/", "").strip("/")
         try:
