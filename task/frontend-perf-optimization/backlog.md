@@ -102,6 +102,14 @@
 
 ---
 
+## G. Deferred — Sprint 3 SONRASI (bizden bağımsız mevcut borç)
+
+> Bu maddeler bizim perf çalışmamızdan **bağımsız**; `origin/main`'de de kırıklar. Sprint 3 bitince ayrı, küçük bir temizlik olarak ele alınacak (perf PR'larına karıştırılmadı).
+
+- [ ] **G1 — Pre-existing test borcu düzelt.** `tests/test_dc_view_capacity_table.py` + `tests/test_network_eager_load.py` `origin/main`'de patlıyor: stale `FakeApi` test double'ında `get_sellable_summary_light` metodu eksik + network eager assertion'ları eskimiş. Çözüm: `FakeApi`'ye eksik metodu ekle, network eager assertion'larını güncel davranışa hizala. **Efor: Küçük.** (Collection error'lar — `psycopg2`/`openpyxl` ModuleNotFound — sadece local venv eksiği, repo/CI sorunu DEĞİL; aksiyon gerekmez.)
+
+---
+
 ## F. SAKIN YAPMA (tuzaklar)
 
 - ❌ Aggregate metrik endpoint'lerini client-side slice etme (avg/min/max SQL'de hesaplanıyor → yanlış sayı, overview-vs-cards mismatch).
