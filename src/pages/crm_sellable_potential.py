@@ -274,6 +274,35 @@ def _family_namespace(family: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def build_layout_shell(visible_sections=None) -> html.Div:
+    """Phase A: instant skeleton shell; `_fill_crm_sellable_content` builds the real
+    content off the render path so a cold sellable backend never blanks the page."""
+    return html.Div([
+        dcc.Store(
+            id="crm-sellable-visible-sections",
+            data=list(visible_sections) if visible_sections else None,
+        ),
+        dcc.Loading(
+            id="crm-sellable-content-loading",
+            type="circle", color="#4318FF", delay_show=150,
+            children=html.Div(id="crm-sellable-page-root", style={"minHeight": "60vh", "padding": "0 8px"}),
+        ),
+    ])
+
+
+@callback(
+    Output("crm-sellable-page-root", "children"),
+    Input("url", "pathname"),
+    Input("app-time-range", "data"),
+    State("crm-sellable-visible-sections", "data"),
+)
+def _fill_crm_sellable_content(pathname, time_range, visible_sections):
+    """Phase B: build the real Sellable Potential content off the initial render path."""
+    if pathname != "/crm/sellable-potential":
+        return dash.no_update
+    return build_layout(visible_sections=visible_sections)
+
+
 def build_layout(visible_sections=None) -> html.Div:  # noqa: ARG001 - kept for sig parity
     summary = api.get_sellable_summary("*")
     families = summary.get("families") or []

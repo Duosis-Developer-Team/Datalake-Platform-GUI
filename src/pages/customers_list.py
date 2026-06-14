@@ -440,6 +440,36 @@ def _build_static_accordion_shell(
     )
 
 
+def build_customers_list_shell(visible_sections=None):
+    """Phase A: instant skeleton shell; `_fill_customers_list_content` builds the real
+    content off the render path so a cold backend never leaves the page blank."""
+    return html.Div([
+        dcc.Store(
+            id="customers-list-visible-sections",
+            data=list(visible_sections) if visible_sections else None,
+        ),
+        dcc.Loading(
+            id="customers-list-content-loading",
+            type="circle", color="#4318FF", delay_show=150,
+            children=html.Div(id="customers-list-page-root", style={"minHeight": "60vh", "padding": "0 8px"}),
+        ),
+    ])
+
+
+@callback(
+    Output("customers-list-page-root", "children"),
+    Input("url", "pathname"),
+    Input("app-time-range", "data"),
+    State("customers-list-visible-sections", "data"),
+)
+def _fill_customers_list_content(pathname, time_range, visible_sections):
+    """Phase B: build the real Customers list content off the initial render path."""
+    if pathname != "/customers":
+        return no_update
+    tr = time_range or default_time_range()
+    return build_customers_list(tr, visible_sections=visible_sections)
+
+
 def build_customers_list(time_range=None, visible_sections=None):
     _ = visible_sections
     tr = time_range or default_time_range()

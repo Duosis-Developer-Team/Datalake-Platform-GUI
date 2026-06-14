@@ -2341,6 +2341,39 @@ def render_customer_page(chosen: str, time_range, content: dict, visible_section
     )
 
 
+def build_customer_layout_shell(visible_sections=None):
+    """Phase A: instant skeleton shell; `_fill_customer_view_content` builds the real
+    content off the render path so a cold backend never leaves the page blank."""
+    return html.Div([
+        dcc.Store(
+            id="customer-view-visible-sections",
+            data=list(visible_sections) if visible_sections else None,
+        ),
+        dcc.Loading(
+            id="customer-view-content-loading",
+            type="circle", color="#4318FF", delay_show=150,
+            children=html.Div(id="customer-view-page-root", style={"minHeight": "60vh", "padding": "0 8px"}),
+        ),
+    ])
+
+
+@callback(
+    Output("customer-view-page-root", "children"),
+    Input("url", "pathname"),
+    Input("url", "search"),
+    Input("app-time-range", "data"),
+    State("customer-view-visible-sections", "data"),
+)
+def _fill_customer_view_content(pathname, search, time_range, visible_sections):
+    """Phase B: build the real Customer View content off the initial render path."""
+    if pathname != "/customer-view":
+        return dash.no_update
+    from urllib.parse import parse_qs
+    chosen = (parse_qs((search or "").lstrip("?")).get("customer", [""])[0] or "").strip()
+    tr = time_range or default_time_range()
+    return build_customer_layout(tr, chosen, visible_sections=visible_sections)
+
+
 def build_customer_layout(time_range=None, selected_customer=None, visible_sections=None):
     tr = time_range or default_time_range()
     chosen = (selected_customer or "").strip()
