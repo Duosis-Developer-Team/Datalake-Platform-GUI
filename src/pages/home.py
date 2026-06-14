@@ -340,6 +340,42 @@ def _dc_link(name, dc_id):
     )
 
 
+def build_overview_shell(visible_sections=None):
+    """Phase A: instant skeleton shell. `_fill_overview_content` builds the real
+    Overview content off the render path, so a cold /dashboard/overview fetch
+    (which can take ~80s) shows a spinner instead of a blank page."""
+    return html.Div([
+        dcc.Store(
+            id="overview-visible-sections",
+            data=list(visible_sections) if visible_sections else None,
+        ),
+        dcc.Loading(
+            id="overview-content-loading",
+            type="circle",
+            color="#4318FF",
+            delay_show=150,
+            children=html.Div(
+                id="overview-page-root",
+                style={"minHeight": "60vh", "padding": "0 8px"},
+            ),
+        ),
+    ])
+
+
+@callback(
+    Output("overview-page-root", "children"),
+    Input("url", "pathname"),
+    Input("app-time-range", "data"),
+    State("overview-visible-sections", "data"),
+)
+def _fill_overview_content(pathname, time_range, visible_sections):
+    """Phase B: build the real Overview content off the initial render path."""
+    if pathname not in ("/", ""):
+        return dash.no_update
+    tr = time_range or default_time_range()
+    return build_overview(tr, visible_sections=visible_sections)
+
+
 def build_overview(time_range=None, visible_sections=None):
     """Build Overview page content for the given time range (used by app callback)."""
 

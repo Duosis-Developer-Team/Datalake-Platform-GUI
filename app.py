@@ -715,7 +715,9 @@ def render_main_content(pathname, time_range, search):
         return build_access_denied()
 
     if pathname in ("/", ""):
-        return home.build_overview(tr, visible_sections=vis)
+        # Two-phase: instant skeleton shell; `_fill_overview_content` builds the real
+        # content off the render path so a cold overview fetch never blanks the page.
+        return home.build_overview_shell(visible_sections=vis)
     if pathname == "/datacenters":
         # Two-phase: return the skeleton shell instantly; `_fill_datacenters_content`
         # builds the real content off the render path so a cold backend never blanks the page.
