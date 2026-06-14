@@ -736,15 +736,14 @@ def render_main_content(pathname, time_range, search):
     if pathname == "/availability-annual":
         return availability_annual.build_availability_annual_layout(visible_sections=vis)
     if pathname == "/customers":
-        return customers_list.build_customers_list(tr, visible_sections=vis)
+        return customers_list.build_customers_list_shell(visible_sections=vis)
     if pathname == "/customer-view":
-        params = parse_qs((search or "").lstrip("?"))
-        chosen_customer = (params.get("customer", [""])[0] or "").strip()
-        return customer_view.build_customer_layout(tr, chosen_customer, visible_sections=vis)
+        # Two-phase: shell instant; `_fill_customer_view_content` reads the ?customer= param.
+        return customer_view.build_customer_layout_shell(visible_sections=vis)
     if pathname == "/query-explorer":
         return query_explorer.layout(visible_sections=vis)
     if pathname == "/crm/sellable-potential":
-        return crm_sellable_potential.build_layout(visible_sections=vis)
+        return crm_sellable_potential.build_layout_shell(visible_sections=vis)
     if pathname and pathname.startswith("/dc-detail/"):
         dc_id = pathname.replace("/dc-detail/", "").strip("/")
         return dc_detail.build_dc_detail(dc_id, tr, visible_sections=vis)
