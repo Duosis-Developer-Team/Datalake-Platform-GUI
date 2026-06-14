@@ -143,8 +143,15 @@ def _new_http_transport() -> httpx.HTTPTransport:
     return httpx.HTTPTransport(retries=3)
 
 
-# Interactive callbacks must fail fast (UI stays alive); warm/admin paths pass their own per-request timeout.
-_INTERACTIVE_TIMEOUT = httpx.Timeout(8.0, connect=3.0, read=8.0, write=8.0, pool=3.0)
+# Read timeout sized to let genuinely-slow cold queries (filtered compute is 15-39s
+# over the remote VPN DB) COMPLETE and populate the cache, instead of timing out at
+# 8s and returning empty — which never caches, so warm==cold and the UI shows zeros.
+# Connect stays short so a truly-unreachable backend still fails fast. Tunable via env.
+_INTERACTIVE_READ_TIMEOUT = float(os.getenv("API_INTERACTIVE_READ_TIMEOUT", "45") or "45")
+_INTERACTIVE_TIMEOUT = httpx.Timeout(
+    _INTERACTIVE_READ_TIMEOUT, connect=5.0, read=_INTERACTIVE_READ_TIMEOUT,
+    write=_INTERACTIVE_READ_TIMEOUT, pool=5.0,
+)
 
 
 def _get_client_dc() -> httpx.Client:
