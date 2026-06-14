@@ -30,5 +30,5 @@ EXPOSE 8050
 # Higher timeout avoids false WORKER TIMEOUT on slow first loads / many API calls.
 # max-requests: recycle worker to limit long-lived memory growth (mitigate OOM).
 # worker-tmp-dir: use shared memory for heartbeat files (Linux).
-CMD ["gunicorn", "app:server", "--bind", "0.0.0.0:8050", "--worker-class", "gthread", "--workers", "1", "--threads", "4", "--timeout", "300", "--graceful-timeout", "120", "--keep-alive", "5", "--max-requests", "2000", "--max-requests-jitter", "200", "--worker-tmp-dir", "/dev/shm"]
+CMD ["gunicorn", "app:server", "--bind", "0.0.0.0:8050", "--worker-class", "gthread", "--workers", "1", "--threads", "8", "--timeout", "300", "--graceful-timeout", "120", "--keep-alive", "5", "--max-requests", "2000", "--max-requests-jitter", "200", "--worker-tmp-dir", "/dev/shm"]
 
