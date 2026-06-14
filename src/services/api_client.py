@@ -3,6 +3,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any, Callable, Literal, Optional, TypedDict
 from urllib.parse import quote
@@ -119,6 +120,20 @@ _EMPTY_CUSTOMERS: list[str] = []
 _EMPTY_SLA_BY_DC: dict[str, dict] = {}
 
 _HTTP_TLS = threading.local()
+
+# Single-flight coalescing: concurrent cache misses for the SAME key share one fetch.
+# The lock is held ONLY for the tiny dict operations, never while fetch_normalized() runs.
+_inflight_lock = threading.Lock()
+_inflight: dict[str, threading.Event] = {}
+
+# Stale-while-revalidate (SWR): timestamps tracked ONLY for entries fetched by the leader
+# path below. Warm-job entries (written directly via cache_service.set) have NO entry here
+# and are therefore NEVER auto-refreshed (avoids conflict with warm jobs).
+_SWR_TTL_SECONDS = float(os.getenv("API_CACHE_SWR_TTL", "300") or "300")
+_fetched_at: dict[str, float] = {}
+_swr_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="api-swr")
+_swr_refreshing_lock = threading.Lock()
+_swr_refreshing: set[str] = set()
 
 # httpx.Client is not safe to share across threads; background prefetch uses thread pools.
 # One client (+ transport pool) per thread avoids cross-thread contention and 30s read timeouts.
@@ -378,24 +393,75 @@ def _serialize_tr_params(tr: Optional[dict]) -> str:
     return json.dumps(sorted(p.items()), separators=(",", ":"), ensure_ascii=False)
 
 
+def _swr_age(cache_key: str) -> Optional[float]:
+    """Return age (seconds) of this key's last leader-fetch, or None if no timestamp exists."""
+    ts = _fetched_at.get(cache_key)
+    return None if ts is None else (time.monotonic() - ts)
+
+
+def _schedule_swr_refresh(cache_key: str, fetch_normalized: Callable[[], Any]) -> None:
+    """Background single-flight refresh of a stale entry. Errors swallowed (keep serving stale)."""
+    with _swr_refreshing_lock:
+        if cache_key in _swr_refreshing:
+            return
+        _swr_refreshing.add(cache_key)
+
+    def _refresh() -> None:
+        try:
+            out = fetch_normalized()
+            _api_response_cache.set(cache_key, out)
+            _fetched_at[cache_key] = time.monotonic()
+        except _HTTP_ERRORS:
+            pass
+        finally:
+            with _swr_refreshing_lock:
+                _swr_refreshing.discard(cache_key)
+
+    _swr_executor.submit(_refresh)
+
+
 def _api_cache_get_with_stale(
     cache_key: str,
     fetch_normalized: Callable[[], Any],
     empty_fallback: Any,
 ) -> Any:
-    """Return cached payload when present. Otherwise fetch and store; on HTTP/transport errors return last good payload."""
+    """Cached payload if present; else single-flight fetch (concurrent callers share one fetch).
+    On cache HIT, if the entry is older than _SWR_TTL_SECONDS, a background refresh is scheduled
+    (stale-while-revalidate) — the caller always receives the cached value immediately without
+    blocking. On HTTP/transport errors return last-good payload."""
     stale = _api_response_cache.get(cache_key)
     if stale is not None:
+        if _SWR_TTL_SECONDS > 0:
+            age = _swr_age(cache_key)
+            if age is not None and age > _SWR_TTL_SECONDS:
+                _schedule_swr_refresh(cache_key, fetch_normalized)
         return _clone(stale)
+
+    with _inflight_lock:
+        ev = _inflight.get(cache_key)
+        leader = ev is None
+        if leader:
+            ev = threading.Event()
+            _inflight[cache_key] = ev
+    if not leader:
+        ev.wait(timeout=15)
+        hit = _api_response_cache.get(cache_key)
+        return _clone(hit) if hit is not None else _clone(empty_fallback)
+
     try:
         out = fetch_normalized()
         _api_response_cache.set(cache_key, out)
+        _fetched_at[cache_key] = time.monotonic()
         return out
-    except _HTTP_ERRORS as exc:
+    except _HTTP_ERRORS:
         hit = _api_response_cache.get(cache_key)
         if hit is not None:
             return _clone(hit)
         return _clone(empty_fallback)
+    finally:
+        with _inflight_lock:
+            _inflight.pop(cache_key, None)
+        ev.set()
 
 
 def get_global_dashboard(tr: Optional[dict]) -> dict:
