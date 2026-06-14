@@ -42,3 +42,24 @@ def test_api_cache_get_sellable_panels_returns_stale_on_empty_refresh(monkeypatc
         out = api._api_cache_get_sellable_panels("k-stale", fetch, "DC13", "virt_classic", None)
     assert out == stale_row
     assert cache_service.get("k-stale") == stale_row
+
+
+def test_meta_not_called_when_panels_have_data(monkeypatch):
+    """P2a: when fetch returns infra-backed data, snapshot meta must NOT be fetched."""
+    from src.services import api_client as api
+    from src.services import cache_service
+    cache_service.clear()
+    meta_calls = {"n": 0}
+
+    def fake_meta(*args, **kwargs):
+        meta_calls["n"] += 1
+        return {"computed_at": None}
+
+    def fetch():
+        return [{"panel_key": "dc_cpu", "potential_tl": 1200.0, "has_infra_source": True}]
+
+    monkeypatch.setattr(api, "get_sellable_snapshot_meta", fake_meta)
+    out = api._api_cache_get_sellable_panels("k-data", fetch, "DC13", "virt_classic", None)
+    assert out == [{"panel_key": "dc_cpu", "potential_tl": 1200.0, "has_infra_source": True}]
+    assert meta_calls["n"] == 0
+    assert cache_service.get("k-data") == out

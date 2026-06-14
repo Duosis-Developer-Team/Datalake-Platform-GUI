@@ -309,8 +309,13 @@ def _api_cache_get_sellable_panels(
         return _clone(stale)
     try:
         out = fetch_normalized()
+        # Fast path: data present -> cache & return without the extra meta round-trip.
+        if _sellable_panels_have_data(out):
+            _api_response_cache.set(cache_key, out)
+            return out
+        # Empty payload: meta.computed_at is the tiebreak (real-but-zero vs transient miss).
         meta = get_sellable_snapshot_meta(dc_code=dc_code, family=family, clusters=clusters)
-        if meta.get("computed_at") or _sellable_panels_have_data(out):
+        if meta.get("computed_at"):
             _api_response_cache.set(cache_key, out)
             return out
         hit = _api_response_cache.get(cache_key)
