@@ -1772,44 +1772,59 @@ def _build_virt_subtab_stack(
     storage_performance,
     san_bottleneck,
     show_virt_hosts: bool,
+    content_mode: str = "full",
 ) -> list:
-    """Build one Virt nested tab stack (compute + sellable + optional hosts)."""
+    """Build one Virt nested tab stack (compute + sellable + optional hosts).
+
+    content_mode="full"  — build heavy children (gauges, sellable) immediately.
+    content_mode="shell" — render the selector + empty panel/sellable shells only;
+                           heavy content is deferred to the populate_virt_nested_tab
+                           callback on first tab switch.  Power is always full.
+    """
     if tab == "classic":
-        card = _build_sellable_inline_kpi(
-            dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
-            color="blue", selected_clusters=classic_clusters or None,
-            container_id="sellable-classic-card",
+        panel_children = (
+            _build_compute_tab(classic, "Classic Compute", color="blue", slug="classic")
+            if content_mode == "full" else None
         )
+        sellable_children = None
+        if content_mode == "full":
+            card = _build_sellable_inline_kpi(
+                dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
+                color="blue", selected_clusters=classic_clusters or None,
+                container_id="sellable-classic-card",
+            )
+            sellable_children = _sellable_card_children(card)
         return [
             _cluster_header("virt-classic-cluster-selector", classic_clusters or [], "Select Classic clusters"),
             dcc.Loading(
                 type="circle", color="#4318FF", delay_show=250,
                 overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
-                children=html.Div(
-                    id="classic-virt-panel",
-                    children=_build_compute_tab(classic, "Classic Compute", color="blue", slug="classic"),
-                ),
+                children=html.Div(id="classic-virt-panel", children=panel_children),
             ),
-            html.Div(id="sellable-classic-card", children=_sellable_card_children(card)),
+            html.Div(id="sellable-classic-card", children=sellable_children),
             _build_hosts_panel_shell("classic", "blue") if show_virt_hosts else None,
         ]
     if tab == "hyperconv":
-        card = _build_sellable_inline_kpi(
-            dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
-            color="teal", selected_clusters=hyperconv_clusters or None,
-            container_id="sellable-hyperconv-card",
+        panel_children = (
+            _build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv")
+            if content_mode == "full" else None
         )
+        sellable_children = None
+        if content_mode == "full":
+            card = _build_sellable_inline_kpi(
+                dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
+                color="teal", selected_clusters=hyperconv_clusters or None,
+                container_id="sellable-hyperconv-card",
+            )
+            sellable_children = _sellable_card_children(card)
         return [
             _cluster_header("virt-hyperconv-cluster-selector", hyperconv_clusters or [], "Select Hyperconverged clusters"),
             dcc.Loading(
                 type="circle", color="#4318FF", delay_show=250,
                 overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
-                children=html.Div(
-                    id="hyperconv-virt-panel",
-                    children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv"),
-                ),
+                children=html.Div(id="hyperconv-virt-panel", children=panel_children),
             ),
-            html.Div(id="sellable-hyperconv-card", children=_sellable_card_children(card)),
+            html.Div(id="sellable-hyperconv-card", children=sellable_children),
             _build_hosts_panel_shell("hyperconv", "teal") if show_virt_hosts else None,
         ]
     card = _build_sellable_inline_kpi(
@@ -5000,7 +5015,11 @@ def build_dc_view(
         """Eager Virt nested tab body inside TabsPanel (backup-tab pattern)."""
         if not enabled or not _tab_eager(eager_tabs, "virt"):
             return None
-        stack = _build_virt_subtab_stack(tab_key, **virt_subtab_kwargs)
+        if tab_key == "power":
+            mode = "full"
+        else:
+            mode = "full" if tab_key == default_virt_tab else "shell"
+        stack = _build_virt_subtab_stack(tab_key, content_mode=mode, **virt_subtab_kwargs)
         return dmc.TabsPanel(
             value=tab_key,
             pt="lg",
