@@ -149,10 +149,10 @@ def resolve_virt_sellable_for_dcs(
     configured_workers = int(os.getenv("DC_OVERVIEW_VIRT_WORKERS", "4") or "4")
     mw = min(max(1, max_workers if max_workers is not None else configured_workers), max(1, len(dc_ids)))
 
-    seeded = _seed_from_api_cache(dc_ids, fw, tr)
-    if seeded:
-        _publish_virt_cache(seeded, dc_ids, tr_key)
-
+    # NOTE: do NOT seed synchronously here — `_seed_from_api_cache` calls the slow
+    # per-DC crm-engine sellable fetch (15-80s each cold) and would block the page
+    # render, leaving /datacenters blank for minutes. The background warm below does
+    # the same fetch off-thread; the Interval poll fills the values once it completes.
     with _VIRT_CACHE_LOCK:
         cache_snapshot = dict(_VIRT_TL_CACHE)
         cache_key = _VIRT_CACHE_TR_KEY
