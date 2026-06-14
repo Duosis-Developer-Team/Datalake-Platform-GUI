@@ -120,6 +120,11 @@ _EMPTY_SLA_BY_DC: dict[str, dict] = {}
 
 _HTTP_TLS = threading.local()
 
+# Single-flight coalescing: concurrent cache misses for the SAME key share one fetch.
+# The lock is held ONLY for the tiny dict operations, never while fetch_normalized() runs.
+_inflight_lock = threading.Lock()
+_inflight: dict[str, threading.Event] = {}
+
 # httpx.Client is not safe to share across threads; background prefetch uses thread pools.
 # One client (+ transport pool) per thread avoids cross-thread contention and 30s read timeouts.
 
@@ -383,19 +388,36 @@ def _api_cache_get_with_stale(
     fetch_normalized: Callable[[], Any],
     empty_fallback: Any,
 ) -> Any:
-    """Return cached payload when present. Otherwise fetch and store; on HTTP/transport errors return last good payload."""
+    """Cached payload if present; else single-flight fetch (concurrent callers share one fetch).
+    On HTTP/transport errors return last-good payload."""
     stale = _api_response_cache.get(cache_key)
     if stale is not None:
         return _clone(stale)
+
+    with _inflight_lock:
+        ev = _inflight.get(cache_key)
+        leader = ev is None
+        if leader:
+            ev = threading.Event()
+            _inflight[cache_key] = ev
+    if not leader:
+        ev.wait(timeout=15)
+        hit = _api_response_cache.get(cache_key)
+        return _clone(hit) if hit is not None else _clone(empty_fallback)
+
     try:
         out = fetch_normalized()
         _api_response_cache.set(cache_key, out)
         return out
-    except _HTTP_ERRORS as exc:
+    except _HTTP_ERRORS:
         hit = _api_response_cache.get(cache_key)
         if hit is not None:
             return _clone(hit)
         return _clone(empty_fallback)
+    finally:
+        with _inflight_lock:
+            _inflight.pop(cache_key, None)
+        ev.set()
 
 
 def get_global_dashboard(tr: Optional[dict]) -> dict:
