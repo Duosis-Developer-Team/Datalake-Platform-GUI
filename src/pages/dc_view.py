@@ -4746,7 +4746,10 @@ def build_dc_view(
     dc_name = data["meta"]["name"]
     dc_loc = data["meta"]["location"]
     dc_desc = (data.get("meta") or {}).get("description") or ""
-    dc_display = format_dc_display_name(dc_name, dc_desc)
+    # Fallback so the header title never goes blank when the summary/detail fetch
+    # times out on a slow/cold load (empty meta.name) — independent of time range.
+    # Mirrors render_dc_loading_page's bare-id fallback.
+    dc_display = format_dc_display_name(dc_name, dc_desc) or str(dc_id or "").strip() or "Data Center"
 
     need_batch2 = (
         _tab_eager(eager_tabs, "phys-inv")

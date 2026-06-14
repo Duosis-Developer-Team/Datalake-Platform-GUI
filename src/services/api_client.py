@@ -143,8 +143,15 @@ def _new_http_transport() -> httpx.HTTPTransport:
     return httpx.HTTPTransport(retries=3)
 
 
-# Interactive callbacks must fail fast (UI stays alive); warm/admin paths pass their own per-request timeout.
-_INTERACTIVE_TIMEOUT = httpx.Timeout(8.0, connect=3.0, read=8.0, write=8.0, pool=3.0)
+# Read timeout sized to let genuinely-slow cold queries (filtered compute is 15-39s
+# over the remote VPN DB) COMPLETE and populate the cache, instead of timing out at
+# 8s and returning empty — which never caches, so warm==cold and the UI shows zeros.
+# Connect stays short so a truly-unreachable backend still fails fast. Tunable via env.
+_INTERACTIVE_READ_TIMEOUT = float(os.getenv("API_INTERACTIVE_READ_TIMEOUT", "20") or "20")
+_INTERACTIVE_TIMEOUT = httpx.Timeout(
+    _INTERACTIVE_READ_TIMEOUT, connect=5.0, read=_INTERACTIVE_READ_TIMEOUT,
+    write=_INTERACTIVE_READ_TIMEOUT, pool=5.0,
+)
 
 
 def _get_client_dc() -> httpx.Client:
@@ -327,23 +334,20 @@ def _api_cache_get_sellable_panels(
     family: Optional[str],
     clusters: Optional[list[str]],
 ) -> list:
+    """Cache sellable panels (even empty) with stale-while-revalidate, so DCs without a
+    snapshot don't re-pay the CRM round-trip on every build. Transient empties self-heal
+    via the SWR background refresh after _SWR_TTL_SECONDS."""
     stale = _api_response_cache.get(cache_key)
     if stale is not None:
+        if _SWR_TTL_SECONDS > 0:
+            age = _swr_age(cache_key)
+            if age is not None and age > _SWR_TTL_SECONDS:
+                _schedule_swr_refresh(cache_key, fetch_normalized)
         return _clone(stale)
     try:
         out = fetch_normalized()
-        # Fast path: data present -> cache & return without the extra meta round-trip.
-        if _sellable_panels_have_data(out):
-            _api_response_cache.set(cache_key, out)
-            return out
-        # Empty payload: meta.computed_at is the tiebreak (real-but-zero vs transient miss).
-        meta = get_sellable_snapshot_meta(dc_code=dc_code, family=family, clusters=clusters)
-        if meta.get("computed_at"):
-            _api_response_cache.set(cache_key, out)
-            return out
-        hit = _api_response_cache.get(cache_key)
-        if hit is not None:
-            return _clone(hit)
+        _api_response_cache.set(cache_key, out)
+        _fetched_at[cache_key] = time.monotonic()
         return out
     except _HTTP_ERRORS:
         hit = _api_response_cache.get(cache_key)
@@ -357,18 +361,20 @@ def _api_cache_get_sellable_summary(
     fetch_normalized: Callable[[], dict],
     dc_code: str,
 ) -> dict:
+    """Cache sellable summary (even empty) with stale-while-revalidate, so DCs without a
+    snapshot don't re-pay the CRM round-trip on every build. Transient empties self-heal
+    via the SWR background refresh after _SWR_TTL_SECONDS."""
     stale = _api_response_cache.get(cache_key)
     if stale is not None:
+        if _SWR_TTL_SECONDS > 0:
+            age = _swr_age(cache_key)
+            if age is not None and age > _SWR_TTL_SECONDS:
+                _schedule_swr_refresh(cache_key, fetch_normalized)
         return _clone(stale)
     try:
         out = fetch_normalized()
-        meta = get_sellable_snapshot_meta(dc_code=dc_code)
-        if meta.get("computed_at") or _sellable_summary_has_data(out):
-            _api_response_cache.set(cache_key, out)
-            return out
-        hit = _api_response_cache.get(cache_key)
-        if hit is not None:
-            return _clone(hit)
+        _api_response_cache.set(cache_key, out)
+        _fetched_at[cache_key] = time.monotonic()
         return out
     except _HTTP_ERRORS:
         hit = _api_response_cache.get(cache_key)
