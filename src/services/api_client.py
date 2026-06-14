@@ -168,10 +168,14 @@ def _get_client_hmdl() -> httpx.Client:
     return c
 
 
-# CRM routes are not in the global-view prefetch path; keep single client.
-_client_crm = httpx.Client(
-    base_url=CRM_ENGINE_URL, timeout=30.0, transport=_new_http_transport()
-)
+def _get_client_crm() -> httpx.Client:
+    c = getattr(_HTTP_TLS, "crm", None)
+    if c is None:
+        _HTTP_TLS.crm = httpx.Client(
+            base_url=CRM_ENGINE_URL, timeout=30.0, transport=_new_http_transport()
+        )
+        c = _HTTP_TLS.crm
+    return c
 
 
 def _clone(value: Any) -> Any:
@@ -284,7 +288,7 @@ def get_sellable_snapshot_meta(
         qs += f"&clusters={quote(','.join(cl), safe=',')}"
 
     def fetch() -> dict[str, Any]:
-        data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/snapshot-meta?{qs}")
+        data = _get_json(_get_client_crm(), f"/api/v1/crm/sellable-potential/snapshot-meta?{qs}")
         return data if isinstance(data, dict) else {}
 
     cache_key = f"api:sellable_snapshot_meta:{dc_code}:{family or '*'}:{','.join(cl) if cl else '*'}"
@@ -292,7 +296,7 @@ def get_sellable_snapshot_meta(
 
 
 def refresh_sellable_potential() -> dict[str, Any]:
-    out = _post_json(_client_crm, "/api/v1/crm/sellable-potential/refresh")
+    out = _post_json(_get_client_crm(), "/api/v1/crm/sellable-potential/refresh")
     _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
 
@@ -1706,7 +1710,7 @@ def delete_crm_alias(crm_accountid: str) -> dict[str, Any]:
 
 def get_crm_discovery_counts() -> list:
     def fetch() -> list:
-        data = _get_json(_client_crm, "/api/v1/crm/config/discovery-counts")
+        data = _get_json(_get_client_crm(), "/api/v1/crm/config/discovery-counts")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_discovery_counts", fetch, [])
@@ -1714,7 +1718,7 @@ def get_crm_discovery_counts() -> list:
 
 def get_crm_config_thresholds() -> list:
     def fetch() -> list:
-        data = _get_json(_client_crm, "/api/v1/crm/config/thresholds")
+        data = _get_json(_get_client_crm(), "/api/v1/crm/config/thresholds")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_config_thresholds", fetch, [])
@@ -1735,14 +1739,14 @@ def put_crm_config_threshold(
         "notes": notes,
         "panel_key": panel_key or None,
     }
-    out = _put_json(_client_crm, "/api/v1/crm/config/thresholds", body)
+    out = _put_json(_get_client_crm(), "/api/v1/crm/config/thresholds", body)
     _api_response_cache.delete("api:crm_config_thresholds")
     _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
 
 
 def delete_crm_config_threshold(threshold_id: int) -> dict[str, Any]:
-    out = _delete_json(_client_crm, f"/api/v1/crm/config/thresholds/{threshold_id}")
+    out = _delete_json(_get_client_crm(), f"/api/v1/crm/config/thresholds/{threshold_id}")
     _api_response_cache.delete("api:crm_config_thresholds")
     _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
@@ -1750,7 +1754,7 @@ def delete_crm_config_threshold(threshold_id: int) -> dict[str, Any]:
 
 def get_crm_price_overrides() -> list:
     def fetch() -> list:
-        data = _get_json(_client_crm, "/api/v1/crm/config/price-overrides")
+        data = _get_json(_get_client_crm(), "/api/v1/crm/config/price-overrides")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_price_overrides", fetch, [])
@@ -1773,7 +1777,7 @@ def put_crm_price_override(
         "currency": currency,
         "notes": notes,
     }
-    out = _put_json(_client_crm, f"/api/v1/crm/config/price-overrides/{enc}", body)
+    out = _put_json(_get_client_crm(), f"/api/v1/crm/config/price-overrides/{enc}", body)
     _api_response_cache.delete("api:crm_price_overrides")
     _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
@@ -1781,7 +1785,7 @@ def put_crm_price_override(
 
 def delete_crm_price_override(productid: str) -> dict[str, Any]:
     enc = quote(productid, safe="")
-    out = _delete_json(_client_crm, f"/api/v1/crm/config/price-overrides/{enc}")
+    out = _delete_json(_get_client_crm(), f"/api/v1/crm/config/price-overrides/{enc}")
     _api_response_cache.delete("api:crm_price_overrides")
     _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
@@ -1789,7 +1793,7 @@ def delete_crm_price_override(productid: str) -> dict[str, Any]:
 
 def get_crm_calc_config() -> list:
     def fetch() -> list:
-        data = _get_json(_client_crm, "/api/v1/crm/config/variables")
+        data = _get_json(_get_client_crm(), "/api/v1/crm/config/variables")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_calc_config", fetch, [])
@@ -1873,7 +1877,7 @@ def get_sellable_summary(dc_code: str = "*", *, rollup_only: bool = False) -> di
         qs = f"dc_code={quote(dc_code, safe='*')}"
         if rollup_only:
             qs += "&rollup_only=true"
-        data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/summary?{qs}")
+        data = _get_json(_get_client_crm(), f"/api/v1/crm/sellable-potential/summary?{qs}")
         return data if isinstance(data, dict) else {}
 
     suffix = ":rollup" if rollup_only else ""
@@ -1924,7 +1928,7 @@ def get_sellable_by_panel(
         qs += f"&clusters={quote(','.join(cl), safe=',')}"
 
     def fetch() -> list:
-        data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/by-panel?{qs}")
+        data = _get_json(_get_client_crm(), f"/api/v1/crm/sellable-potential/by-panel?{qs}")
         return data if isinstance(data, list) else []
 
     cluster_key = ",".join(cl) if cl else "*"
@@ -1942,7 +1946,7 @@ def get_sellable_by_family(
         qs += f"&clusters={quote(','.join(cl), safe=',')}"
 
     def fetch() -> list:
-        data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/by-family?{qs}")
+        data = _get_json(_get_client_crm(), f"/api/v1/crm/sellable-potential/by-family?{qs}")
         return data if isinstance(data, list) else []
 
     cluster_key = ",".join(cl) if cl else "*"
@@ -1956,7 +1960,7 @@ def get_metric_tags(prefix: Optional[str] = None, scope_type: str = "global", sc
         qs_parts.append(f"prefix={quote(prefix, safe='')}")
 
     def fetch() -> list:
-        data = _get_json(_client_crm, "/api/v1/crm/metric-tags?" + "&".join(qs_parts))
+        data = _get_json(_get_client_crm(), "/api/v1/crm/metric-tags?" + "&".join(qs_parts))
         return data if isinstance(data, list) else []
 
     cache_key = "api:metric_tags:" + ":".join(qs_parts)
@@ -1971,7 +1975,7 @@ def get_metric_snapshots(metric_key: str, hours: int = 720, scope_id: str = "*")
             f"&scope_id={quote(scope_id, safe='*')}"
             f"&hours={int(hours)}"
         )
-        data = _get_json(_client_crm, url)
+        data = _get_json(_get_client_crm(), url)
         return data if isinstance(data, list) else []
 
     cache_key = f"api:metric_snapshots:{metric_key}:{scope_id}:{hours}"
@@ -1985,7 +1989,7 @@ def get_metric_snapshots(metric_key: str, hours: int = 720, scope_id: str = "*")
 
 def get_panel_definitions() -> list:
     def fetch() -> list:
-        data = _get_json(_client_crm, "/api/v1/crm/panels")
+        data = _get_json(_get_client_crm(), "/api/v1/crm/panels")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_panels", fetch, [])
@@ -2012,7 +2016,7 @@ def put_panel_definition(
         "enabled": enabled,
         "notes": notes,
     }
-    out = _put_json(_client_crm, f"/api/v1/crm/panels/{enc}", body)
+    out = _put_json(_get_client_crm(), f"/api/v1/crm/panels/{enc}", body)
     _api_response_cache.delete("api:crm_panels")
     _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
@@ -2022,7 +2026,7 @@ def get_panel_infra_source(panel_key: str, dc_code: str = "*") -> dict[str, Any]
     enc = quote(panel_key, safe="")
 
     def fetch() -> dict[str, Any]:
-        data = _get_json(_client_crm, f"/api/v1/crm/panels/{enc}/infra-source?dc_code={quote(dc_code, safe='*')}")
+        data = _get_json(_get_client_crm(), f"/api/v1/crm/panels/{enc}/infra-source?dc_code={quote(dc_code, safe='*')}")
         return data if isinstance(data, dict) else {}
 
     cache_key = f"api:crm_panel_infra_source:{panel_key}:{dc_code}"
@@ -2058,7 +2062,7 @@ def put_panel_infra_source(
         "manual_allocated": manual_allocated,
         "notes": notes,
     }
-    out = _put_json(_client_crm, f"/api/v1/crm/panels/{enc}/infra-source", body)
+    out = _put_json(_get_client_crm(), f"/api/v1/crm/panels/{enc}/infra-source", body)
     _api_response_cache.delete_prefix(f"api:crm_panel_infra_source:{panel_key}:")
     _api_response_cache.delete_prefix("api:sellable_snapshot_meta:")
     _invalidate_sellable_caches()
@@ -2067,7 +2071,7 @@ def put_panel_infra_source(
 
 def get_resource_ratios() -> list:
     def fetch() -> list:
-        data = _get_json(_client_crm, "/api/v1/crm/resource-ratios")
+        data = _get_json(_get_client_crm(), "/api/v1/crm/resource-ratios")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_resource_ratios", fetch, [])
@@ -2090,7 +2094,7 @@ def put_resource_ratio(
         "storage_gb_per_unit": storage_gb_per_unit,
         "notes": notes,
     }
-    out = _put_json(_client_crm, f"/api/v1/crm/resource-ratios/{enc}", body)
+    out = _put_json(_get_client_crm(), f"/api/v1/crm/resource-ratios/{enc}", body)
     _api_response_cache.delete("api:crm_resource_ratios")
     _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
@@ -2098,7 +2102,7 @@ def put_resource_ratio(
 
 def get_unit_conversions() -> list:
     def fetch() -> list:
-        data = _get_json(_client_crm, "/api/v1/crm/unit-conversions")
+        data = _get_json(_get_client_crm(), "/api/v1/crm/unit-conversions")
         return data if isinstance(data, list) else []
 
     return _api_cache_get_with_stale("api:crm_unit_conversions", fetch, [])
@@ -2120,7 +2124,7 @@ def put_unit_conversion(
         "notes": notes,
     }
     out = _put_json(
-        _client_crm,
+        _get_client_crm(),
         f"/api/v1/crm/unit-conversions/{quote(from_unit, safe='')}/{quote(to_unit, safe='')}",
         body,
     )
@@ -2131,7 +2135,7 @@ def put_unit_conversion(
 
 def delete_unit_conversion(from_unit: str, to_unit: str) -> dict[str, Any]:
     out = _delete_json(
-        _client_crm,
+        _get_client_crm(),
         f"/api/v1/crm/unit-conversions/{quote(from_unit, safe='')}/{quote(to_unit, safe='')}",
     )
     _api_response_cache.delete("api:crm_unit_conversions")
@@ -2166,7 +2170,7 @@ def put_crm_calc_config(
         body["value_type"] = value_type
     if description is not None:
         body["description"] = description
-    out = _put_json(_client_crm, f"/api/v1/crm/config/variables/{enc}", body)
+    out = _put_json(_get_client_crm(), f"/api/v1/crm/config/variables/{enc}", body)
     _api_response_cache.delete("api:crm_calc_config")
     return out if isinstance(out, dict) else {}
 
@@ -2193,7 +2197,7 @@ def refresh_platform_redis_caches() -> dict[str, Any]:
     targets: list[tuple[str, Callable[[], httpx.Client]]] = [
         ("datacenter_api", _get_client_dc),
         ("customer_api", _get_client_cust),
-        ("crm_engine", lambda: _client_crm),
+        ("crm_engine", _get_client_crm),
     ]
     for name, client_getter in targets:
         client = client_getter()
