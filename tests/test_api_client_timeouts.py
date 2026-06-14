@@ -15,8 +15,9 @@ def test_interactive_clients_read_timeout_allows_slow_cold_queries():
                    api._get_client_hmdl, api._get_client_crm):
         client = getter()
         assert isinstance(client.timeout, httpx.Timeout)
-        # Long enough to let a slow cold query finish and cache (>= 30s).
-        assert client.timeout.read is not None and client.timeout.read >= 30.0
+        # Long enough to let a moderately-slow query finish and cache, but not a
+        # multi-minute freeze on a degraded backend (~15-30s window).
+        assert client.timeout.read is not None and 15.0 <= client.timeout.read <= 30.0
         # Still fail fast when the host is unreachable.
         assert client.timeout.connect is not None and client.timeout.connect <= 5.0
 
@@ -24,4 +25,4 @@ def test_interactive_clients_read_timeout_allows_slow_cold_queries():
 def test_interactive_read_timeout_is_env_tunable(monkeypatch):
     # The ceiling is configurable so ops can tune it per environment.
     assert hasattr(api, "_INTERACTIVE_READ_TIMEOUT")
-    assert api._INTERACTIVE_READ_TIMEOUT >= 30.0
+    assert api._INTERACTIVE_READ_TIMEOUT >= 15.0

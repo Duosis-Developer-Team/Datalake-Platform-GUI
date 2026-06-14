@@ -147,7 +147,7 @@ def _new_http_transport() -> httpx.HTTPTransport:
 # over the remote VPN DB) COMPLETE and populate the cache, instead of timing out at
 # 8s and returning empty — which never caches, so warm==cold and the UI shows zeros.
 # Connect stays short so a truly-unreachable backend still fails fast. Tunable via env.
-_INTERACTIVE_READ_TIMEOUT = float(os.getenv("API_INTERACTIVE_READ_TIMEOUT", "45") or "45")
+_INTERACTIVE_READ_TIMEOUT = float(os.getenv("API_INTERACTIVE_READ_TIMEOUT", "20") or "20")
 _INTERACTIVE_TIMEOUT = httpx.Timeout(
     _INTERACTIVE_READ_TIMEOUT, connect=5.0, read=_INTERACTIVE_READ_TIMEOUT,
     write=_INTERACTIVE_READ_TIMEOUT, pool=5.0,
