@@ -271,6 +271,10 @@ app.layout = dmc.MantineProvider(
     },
     children=[
         dcc.Location(id="url", refresh=False),
+        # Periodic backend cache warm: keeps overview/summary hot so cold-load freezes
+        # (build_overview 4 min cold vs ~20s warm) stay rare regardless of navigation.
+        dcc.Interval(id="app-warm-interval", interval=300_000, n_intervals=0),
+        dcc.Store(id="app-warm-tick"),
         html.Div(
             APP_BUILD_ID,
             id="app-deploy-revision",
@@ -507,6 +511,30 @@ def sync_auth_stores(pathname):
     except Exception:
         pass
     return {"id": int(uid), "username": u.get("username")}, pmap
+
+
+@app.callback(
+    dash.Output("app-warm-tick", "data"),
+    dash.Input("app-warm-interval", "n_intervals"),
+    prevent_initial_call=True,
+)
+def _periodic_backend_warm(n_intervals):
+    """Re-warm the RBAC-scoped backend caches every ~5 min so overview/summary stay hot."""
+    from flask import g, has_request_context
+
+    if not has_request_context():
+        return dash.no_update
+    uid = getattr(g, "auth_user_id", None)
+    if not uid:
+        return dash.no_update
+    try:
+        from src.services.app_background_warm import trigger_rbac_warm
+        from src.utils.time_range import default_time_range as _dtr
+
+        trigger_rbac_warm(int(uid), _dtr())
+    except Exception:
+        pass
+    return n_intervals
 
 
 def _normalize_custom_iso(v: str | None) -> str | None:

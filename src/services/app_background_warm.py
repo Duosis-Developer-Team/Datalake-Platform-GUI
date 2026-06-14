@@ -6,13 +6,16 @@ for pages/DCs the user may access. Active-route requests always take priority.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time as _time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_WARM_INTERVAL_SECONDS = 900
+# Re-warm throttle. Lowered so the periodic `app-warm-interval` (every ~5 min) keeps the
+# backend overview/summary caches hot, instead of only re-warming on navigation every 15 min.
+_WARM_INTERVAL_SECONDS = int(os.getenv("APP_WARM_INTERVAL_SECONDS", "240") or "240")
 _MAX_DC_WORKERS = 2
 
 _lock = threading.Lock()
