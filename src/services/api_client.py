@@ -773,34 +773,48 @@ def get_hyperconv_metrics_filtered(
     return _api_cache_get_with_stale(ck, fetch, {})
 
 
+def _slice_host_rows(full: dict, selected_clusters: Optional[list[str]]) -> dict:
+    """Filter host rows to selected clusters (None/empty => all). Rows are self-contained."""
+    hosts = (full or {}).get("hosts") or []
+    if not selected_clusters:
+        return {"hosts": list(hosts), "host_count": len(hosts)}
+    wanted = set(selected_clusters)
+    filtered = [h for h in hosts if h.get("cluster") in wanted]
+    return {"hosts": filtered, "host_count": len(filtered)}
+
+
 def get_classic_host_rows(
     dc_code: str, selected_clusters: Optional[list[str]], tr: Optional[dict]
 ) -> dict:
-    """Per-host compute rows (capacity/usage/allocation) for Classic (KM) clusters."""
+    """Per-host compute rows for Classic (KM). Full DC list fetched once (cached);
+    cluster subset is sliced in-process so toggling clusters is a cache hit."""
     enc = quote(dc_code, safe="")
-    params = {**_build_time_params(tr), **_clusters_param(selected_clusters)}
-    ck = f"api:classic_hosts:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
+    params = _build_time_params(tr)  # NO clusters -> one cache entry per dc/time
+    ck = f"api:classic_hosts_all:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/compute/classic/hosts", params=params)
-        return data if isinstance(data, dict) else {}
+        return data if isinstance(data, dict) else {"hosts": [], "host_count": 0}
 
-    return _api_cache_get_with_stale(ck, fetch, {"hosts": [], "host_count": 0})
+    full = _api_cache_get_with_stale(ck, fetch, {"hosts": [], "host_count": 0})
+    return _slice_host_rows(full, selected_clusters)
 
 
 def get_hyperconv_host_rows(
     dc_code: str, selected_clusters: Optional[list[str]], tr: Optional[dict]
 ) -> dict:
-    """Per-host compute rows (capacity/usage/allocation) for Hyperconverged (Nutanix) clusters."""
+    """Per-host compute rows for Hyperconverged (Nutanix). Full DC list fetched once (cached);
+    cluster subset is sliced in-process so toggling clusters is a cache hit."""
     enc = quote(dc_code, safe="")
-    params = {**_build_time_params(tr), **_clusters_param(selected_clusters)}
-    ck = f"api:hyperconv_hosts:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
+    params = _build_time_params(tr)  # NO clusters -> one cache entry per dc/time
+    ck = f"api:hyperconv_hosts_all:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/compute/hyperconverged/hosts", params=params)
-        return data if isinstance(data, dict) else {}
+        return data if isinstance(data, dict) else {"hosts": [], "host_count": 0}
 
-    return _api_cache_get_with_stale(ck, fetch, {"hosts": [], "host_count": 0})
+    full = _api_cache_get_with_stale(ck, fetch, {"hosts": [], "host_count": 0})
+    return _slice_host_rows(full, selected_clusters)
 
 
 def get_physical_inventory_dc(dc_name: str) -> dict:

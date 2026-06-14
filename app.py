@@ -45,6 +45,7 @@ from src.utils.time_range import (
     time_range_to_bounds,
 )
 from src.utils.format_units import pct_float, smart_storage
+from src.utils.api_parallel import parallel_execute
 from src.components.s3_panel import build_dc_s3_panel, build_customer_s3_panel
 from src.pages.home import _phys_inv_bar_figure
 
@@ -799,34 +800,95 @@ def update_s3_customer_panel(selected_vaults, time_range, search):
 
 @app.callback(
     dash.Output("classic-virt-panel", "children"),
+    dash.Output("sellable-classic-card", "children"),
     dash.Input("virt-classic-cluster-selector", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
     prevent_initial_call=True,
 )
-def update_classic_virt_panel(selected_clusters, time_range, pathname):
-    if not pathname or not pathname.startswith("/datacenter/"):
-        return dash.no_update
-    dc_id = pathname.replace("/datacenter/", "").strip("/")
+def update_classic_virt_block(selected_clusters, time_range, pathname):
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update, dash.no_update
     tr = time_range or default_time_range()
-    classic = api.get_classic_metrics_filtered(dc_id, selected_clusters, tr)
-    return _build_compute_tab(classic, "Classic Compute", color="blue")
+    batch = parallel_execute({
+        "metrics": lambda: api.get_classic_metrics_filtered(dc_id, selected_clusters, tr),
+        "card": lambda: _build_sellable_inline_kpi(
+            dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
+            color="blue", selected_clusters=selected_clusters or None,
+            container_id="sellable-classic-card",
+        ),
+    })
+    panel = _build_compute_tab(batch["metrics"], "Classic Compute", color="blue")
+    sellable = _sellable_card_children(batch["card"]) or html.Div(id="sellable-classic-card")
+    return panel, sellable
 
 
 @app.callback(
     dash.Output("hyperconv-virt-panel", "children"),
+    dash.Output("sellable-hyperconv-card", "children"),
     dash.Input("virt-hyperconv-cluster-selector", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
     prevent_initial_call=True,
 )
-def update_hyperconv_virt_panel(selected_clusters, time_range, pathname):
-    if not pathname or not pathname.startswith("/datacenter/"):
-        return dash.no_update
-    dc_id = pathname.replace("/datacenter/", "").strip("/")
+def update_hyperconv_virt_block(selected_clusters, time_range, pathname):
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update, dash.no_update
     tr = time_range or default_time_range()
-    hyperconv = api.get_hyperconv_metrics_filtered(dc_id, selected_clusters, tr)
-    return _build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal")
+    batch = parallel_execute({
+        "metrics": lambda: api.get_hyperconv_metrics_filtered(dc_id, selected_clusters, tr),
+        "card": lambda: _build_sellable_inline_kpi(
+            dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
+            color="teal", selected_clusters=selected_clusters or None,
+            container_id="sellable-hyperconv-card",
+        ),
+    })
+    panel = _build_compute_tab(batch["metrics"], "Hyperconverged Compute", color="teal")
+    sellable = _sellable_card_children(batch["card"]) or html.Div(id="sellable-hyperconv-card")
+    return panel, sellable
+
+
+@app.callback(
+    dash.Output("classic-virt-panel", "children", allow_duplicate=True),
+    dash.Output("sellable-classic-card", "children", allow_duplicate=True),
+    dash.Output("hyperconv-virt-panel", "children", allow_duplicate=True),
+    dash.Output("sellable-hyperconv-card", "children", allow_duplicate=True),
+    dash.Input("virt-nested-tabs", "value"),
+    dash.State("virt-classic-cluster-selector", "value"),
+    dash.State("virt-hyperconv-cluster-selector", "value"),
+    dash.State("app-time-range", "data"),
+    dash.State("url", "pathname"),
+    dash.State("classic-virt-panel", "children"),
+    dash.State("hyperconv-virt-panel", "children"),
+    prevent_initial_call=True,
+)
+def populate_virt_nested_tab(active, classic_sel, hyperconv_sel, time_range, pathname,
+                             classic_built, hyperconv_built):
+    """Lazy-build the activated Virt sub-tab's heavy content the first time it is shown."""
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    tr = time_range or default_time_range()
+    no = dash.no_update
+    if active == "classic" and not classic_built:
+        metrics = api.get_classic_metrics_filtered(dc_id, classic_sel, tr)
+        card = _build_sellable_inline_kpi(
+            dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
+            color="blue", selected_clusters=classic_sel or None, container_id="sellable-classic-card",
+        )
+        return (_build_compute_tab(metrics, "Classic Compute", color="blue"),
+                _sellable_card_children(card) or html.Div(id="sellable-classic-card"), no, no)
+    if active == "hyperconv" and not hyperconv_built:
+        metrics = api.get_hyperconv_metrics_filtered(dc_id, hyperconv_sel, tr)
+        card = _build_sellable_inline_kpi(
+            dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
+            color="teal", selected_clusters=hyperconv_sel or None, container_id="sellable-hyperconv-card",
+        )
+        return (no, no, _build_compute_tab(metrics, "Hyperconverged Compute", color="teal"),
+                _sellable_card_children(card) or html.Div(id="sellable-hyperconv-card"))
+    return no, no, no, no
 
 
 # ---- Hosts panel (DC view: Klasik / Hyperconverged) ------------------------
@@ -909,48 +971,6 @@ def _dc_id_from_pathname(pathname: str | None) -> str | None:
     return pathname.replace("/datacenter/", "").strip("/") or None
 
 
-@app.callback(
-    dash.Output("sellable-classic-card", "children"),
-    dash.Input("virt-classic-cluster-selector", "value"),
-    dash.Input("app-time-range", "data"),
-    dash.State("url", "pathname"),
-    prevent_initial_call=True,
-)
-def update_classic_sellable_card(selected_clusters, time_range, pathname):
-    dc_id = _dc_id_from_pathname(pathname)
-    if not dc_id:
-        return dash.no_update
-    card = _build_sellable_inline_kpi(
-        dc_id,
-        "virt_classic",
-        "Klasik Mimari — Sellable Potential",
-        color="blue",
-        selected_clusters=selected_clusters or None,
-        container_id="sellable-classic-card",
-    )
-    return _sellable_card_children(card) or html.Div(id="sellable-classic-card")
-
-
-@app.callback(
-    dash.Output("sellable-hyperconv-card", "children"),
-    dash.Input("virt-hyperconv-cluster-selector", "value"),
-    dash.Input("app-time-range", "data"),
-    dash.State("url", "pathname"),
-    prevent_initial_call=True,
-)
-def update_hyperconv_sellable_card(selected_clusters, time_range, pathname):
-    dc_id = _dc_id_from_pathname(pathname)
-    if not dc_id:
-        return dash.no_update
-    card = _build_sellable_inline_kpi(
-        dc_id,
-        "virt_hyperconverged",
-        "Hyperconverged Mimari — Sellable Potential",
-        color="teal",
-        selected_clusters=selected_clusters or None,
-        container_id="sellable-hyperconv-card",
-    )
-    return _sellable_card_children(card) or html.Div(id="sellable-hyperconv-card")
 
 
 @app.callback(
