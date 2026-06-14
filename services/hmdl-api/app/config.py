@@ -25,7 +25,10 @@ class Settings(BaseSettings):
     db_pass: str = _env("HMDL_DB_PASSWORD", "DB_PASS", default="")
     hmdl_schema: str = _env("HMDL_SCHEMA", default="hmdl")
     db_pool_minconn: int = 1
-    db_pool_maxconn: int = 8
+    # Headroom for concurrent topology/coverage requests + the 5s health probe.
+    # The pool is non-blocking (getconn raises when full), so this is the hard
+    # burst ceiling; keep above the expected simultaneous request count.
+    db_pool_maxconn: int = 16
     db_statement_timeout_ms: int = 30000
 
     hub_dc_code: str = _env("HMDL_HUB_DC", default="DC13")
