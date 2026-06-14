@@ -1782,9 +1782,13 @@ def _build_virt_subtab_stack(
         )
         return [
             _cluster_header("virt-classic-cluster-selector", classic_clusters or [], "Select Classic clusters"),
-            html.Div(
-                id="classic-virt-panel",
-                children=_build_compute_tab(classic, "Classic Compute", color="blue", slug="classic"),
+            dcc.Loading(
+                type="circle", color="#4318FF", delay_show=250,
+                overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
+                children=html.Div(
+                    id="classic-virt-panel",
+                    children=_build_compute_tab(classic, "Classic Compute", color="blue", slug="classic"),
+                ),
             ),
             html.Div(id="sellable-classic-card", children=_sellable_card_children(card)),
             _build_hosts_panel_shell("classic", "blue") if show_virt_hosts else None,
@@ -1797,9 +1801,13 @@ def _build_virt_subtab_stack(
         )
         return [
             _cluster_header("virt-hyperconv-cluster-selector", hyperconv_clusters or [], "Select Hyperconverged clusters"),
-            html.Div(
-                id="hyperconv-virt-panel",
-                children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv"),
+            dcc.Loading(
+                type="circle", color="#4318FF", delay_show=250,
+                overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
+                children=html.Div(
+                    id="hyperconv-virt-panel",
+                    children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv"),
+                ),
             ),
             html.Div(id="sellable-hyperconv-card", children=_sellable_card_children(card)),
             _build_hosts_panel_shell("hyperconv", "teal") if show_virt_hosts else None,
@@ -4766,9 +4774,16 @@ def build_dc_view(
     has_san = _has_san_data(san_switches) if _tab_eager(eager_tabs, "storage") else False
     t_san = time.perf_counter()
     if _tab_eager(eager_tabs, "storage") and has_san:
-        san_port_usage = api.get_dc_san_port_usage(dc_id, tr)
-        san_health_alerts = api.get_dc_san_health(dc_id, tr)
-        san_traffic_trend = api.get_dc_san_traffic_trend(dc_id, tr)
+        san_batch = parallel_execute(
+            {
+                "port_usage": lambda: api.get_dc_san_port_usage(dc_id, tr),
+                "health": lambda: api.get_dc_san_health(dc_id, tr),
+                "traffic": lambda: api.get_dc_san_traffic_trend(dc_id, tr),
+            }
+        )
+        san_port_usage = san_batch["port_usage"]
+        san_health_alerts = san_batch["health"]
+        san_traffic_trend = san_batch["traffic"]
         _log_dc_build_phase(str(dc_id), "san", t_san)
     else:
         san_port_usage = {}
@@ -4816,9 +4831,16 @@ def build_dc_view(
     # Backup datasets (per DC)
     t_backup = time.perf_counter()
     if _tab_eager(eager_tabs, "backup"):
-        nb_data = api.get_dc_netbackup_pools(dc_id, tr)
-        zerto_data = api.get_dc_zerto_sites(dc_id, tr)
-        veeam_data = api.get_dc_veeam_repos(dc_id, tr)
+        backup_batch = parallel_execute(
+            {
+                "nb": lambda: api.get_dc_netbackup_pools(dc_id, tr),
+                "zerto": lambda: api.get_dc_zerto_sites(dc_id, tr),
+                "veeam": lambda: api.get_dc_veeam_repos(dc_id, tr),
+            }
+        )
+        nb_data = backup_batch["nb"]
+        zerto_data = backup_batch["zerto"]
+        veeam_data = backup_batch["veeam"]
         _log_dc_build_phase(str(dc_id), "backup", t_backup)
     else:
         nb_data = {"pools": []}
