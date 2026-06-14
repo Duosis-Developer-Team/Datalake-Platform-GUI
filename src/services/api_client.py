@@ -128,11 +128,15 @@ def _new_http_transport() -> httpx.HTTPTransport:
     return httpx.HTTPTransport(retries=3)
 
 
+# Interactive callbacks must fail fast (UI stays alive); warm/admin paths pass their own per-request timeout.
+_INTERACTIVE_TIMEOUT = httpx.Timeout(8.0, connect=3.0, read=8.0, write=8.0, pool=3.0)
+
+
 def _get_client_dc() -> httpx.Client:
     c = getattr(_HTTP_TLS, "dc", None)
     if c is None:
         _HTTP_TLS.dc = httpx.Client(
-            base_url=DATACENTER_API_URL, timeout=30.0, transport=_new_http_transport()
+            base_url=DATACENTER_API_URL, timeout=_INTERACTIVE_TIMEOUT, transport=_new_http_transport()
         )
         c = _HTTP_TLS.dc
     return c
@@ -142,7 +146,7 @@ def _get_client_cust() -> httpx.Client:
     c = getattr(_HTTP_TLS, "cust", None)
     if c is None:
         _HTTP_TLS.cust = httpx.Client(
-            base_url=CUSTOMER_API_URL, timeout=30.0, transport=_new_http_transport()
+            base_url=CUSTOMER_API_URL, timeout=_INTERACTIVE_TIMEOUT, transport=_new_http_transport()
         )
         c = _HTTP_TLS.cust
     return c
@@ -152,7 +156,7 @@ def _get_client_query() -> httpx.Client:
     c = getattr(_HTTP_TLS, "query", None)
     if c is None:
         _HTTP_TLS.query = httpx.Client(
-            base_url=QUERY_API_URL, timeout=30.0, transport=_new_http_transport()
+            base_url=QUERY_API_URL, timeout=_INTERACTIVE_TIMEOUT, transport=_new_http_transport()
         )
         c = _HTTP_TLS.query
     return c
@@ -162,7 +166,7 @@ def _get_client_hmdl() -> httpx.Client:
     c = getattr(_HTTP_TLS, "hmdl", None)
     if c is None:
         _HTTP_TLS.hmdl = httpx.Client(
-            base_url=HMDL_API_URL, timeout=30.0, transport=_new_http_transport()
+            base_url=HMDL_API_URL, timeout=_INTERACTIVE_TIMEOUT, transport=_new_http_transport()
         )
         c = _HTTP_TLS.hmdl
     return c
@@ -172,7 +176,7 @@ def _get_client_crm() -> httpx.Client:
     c = getattr(_HTTP_TLS, "crm", None)
     if c is None:
         _HTTP_TLS.crm = httpx.Client(
-            base_url=CRM_ENGINE_URL, timeout=30.0, transport=_new_http_transport()
+            base_url=CRM_ENGINE_URL, timeout=_INTERACTIVE_TIMEOUT, transport=_new_http_transport()
         )
         c = _HTTP_TLS.crm
     return c
