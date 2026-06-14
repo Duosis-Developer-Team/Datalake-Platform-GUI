@@ -334,23 +334,20 @@ def _api_cache_get_sellable_panels(
     family: Optional[str],
     clusters: Optional[list[str]],
 ) -> list:
+    """Cache sellable panels (even empty) with stale-while-revalidate, so DCs without a
+    snapshot don't re-pay the CRM round-trip on every build. Transient empties self-heal
+    via the SWR background refresh after _SWR_TTL_SECONDS."""
     stale = _api_response_cache.get(cache_key)
     if stale is not None:
+        if _SWR_TTL_SECONDS > 0:
+            age = _swr_age(cache_key)
+            if age is not None and age > _SWR_TTL_SECONDS:
+                _schedule_swr_refresh(cache_key, fetch_normalized)
         return _clone(stale)
     try:
         out = fetch_normalized()
-        # Fast path: data present -> cache & return without the extra meta round-trip.
-        if _sellable_panels_have_data(out):
-            _api_response_cache.set(cache_key, out)
-            return out
-        # Empty payload: meta.computed_at is the tiebreak (real-but-zero vs transient miss).
-        meta = get_sellable_snapshot_meta(dc_code=dc_code, family=family, clusters=clusters)
-        if meta.get("computed_at"):
-            _api_response_cache.set(cache_key, out)
-            return out
-        hit = _api_response_cache.get(cache_key)
-        if hit is not None:
-            return _clone(hit)
+        _api_response_cache.set(cache_key, out)
+        _fetched_at[cache_key] = time.monotonic()
         return out
     except _HTTP_ERRORS:
         hit = _api_response_cache.get(cache_key)
@@ -364,18 +361,20 @@ def _api_cache_get_sellable_summary(
     fetch_normalized: Callable[[], dict],
     dc_code: str,
 ) -> dict:
+    """Cache sellable summary (even empty) with stale-while-revalidate, so DCs without a
+    snapshot don't re-pay the CRM round-trip on every build. Transient empties self-heal
+    via the SWR background refresh after _SWR_TTL_SECONDS."""
     stale = _api_response_cache.get(cache_key)
     if stale is not None:
+        if _SWR_TTL_SECONDS > 0:
+            age = _swr_age(cache_key)
+            if age is not None and age > _SWR_TTL_SECONDS:
+                _schedule_swr_refresh(cache_key, fetch_normalized)
         return _clone(stale)
     try:
         out = fetch_normalized()
-        meta = get_sellable_snapshot_meta(dc_code=dc_code)
-        if meta.get("computed_at") or _sellable_summary_has_data(out):
-            _api_response_cache.set(cache_key, out)
-            return out
-        hit = _api_response_cache.get(cache_key)
-        if hit is not None:
-            return _clone(hit)
+        _api_response_cache.set(cache_key, out)
+        _fetched_at[cache_key] = time.monotonic()
         return out
     except _HTTP_ERRORS:
         hit = _api_response_cache.get(cache_key)
