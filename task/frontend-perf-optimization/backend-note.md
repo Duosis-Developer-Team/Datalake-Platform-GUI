@@ -12,6 +12,10 @@ GUI'deki "her şey çok yavaş / donuyor" şikayetinin **baskın sebebi frontend
 
 ## Ölçülen darboğazlar (öncelik sırası)
 
+### 0. ⚠️ EN KRİTİK: `GET /api/v1/dashboard/overview` = **83 saniye** (cold, 7d)
+- Ölçüldü (2026-06-15): overview endpoint'i **83.1s** dönüyor, `/datacenters/summary` ise 0.0s (cache'li). Yani Executive Dashboard / ana sayfa her cold yüklemede 83s bekliyor → GUI timeout'a düşüp **0 gösteriyor.** Hiçbir makul interactive timeout 83s'yi kurtaramaz.
+- **Yapılması gereken:** overview'i server-side cache'le (summary gibi) ve/veya altındaki ağır aggregate sorgularını optimize et. Bu tek endpoint ana sayfa deneyimini öldürüyor.
+
 ### 1. Heavy compute endpoint'leri server-side cache'lenmiyor → her çağrıda yeniden hesap
 - `GET /compute/hyperconverged` (özet panel): **her çağrıda ~23s** (warm dahil) — cache yok, üstelik `SELECT DISTINCT CLUSTER_UUID` sorgusunu **istek başına 4 kez** çalıştırıyor.
 - `GET /compute/classic?clusters=...` (cluster-filtreli): **15-39s cold**, aynısı tekrar istenince yine 15s — sonuç cache'lenmiyor.
