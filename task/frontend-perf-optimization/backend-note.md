@@ -5,6 +5,11 @@
 ## Özet
 GUI'deki "her şey çok yavaş / donuyor" şikayetinin **baskın sebebi frontend değil — datacenter-api + remote DB.** Ölçüldü: ağır endpoint'ler **7d penceresinde bile 20-60s**, 30d'de daha kötü. GUI render maliyeti toplam sürenin **<%1'i (~30-50ms)**. Yani sayfa yavaş çünkü bu çağrıları bekliyor. GUI tarafında yapılabilecekleri yaptık (paralel çağrı, GUI-cache, lazy-mount, boş-veri/isim fix'leri); kalan yavaşlık **backend'de çözülmeli.**
 
+## crm-engine — 2 platform bug'ı (2026-06-15 bulundu/düzeltildi, ops kalıcı çözüm gerek)
+
+1. **crm-engine `depends_on: datacenter-api (healthy)` zamanlama tuzağı:** datacenter-api'nin açılış warm'ı uzun sürünce (dakikalar) crm-engine "Created" kalıp hiç başlamıyor → tüm sellable kapalı. Compose'da `condition: service_healthy` + uzun warm = kırılgan. Öneri: datacenter-api healthcheck'ini warm'dan ayır (server bind olunca healthy), ya da crm-engine dependency condition'ını `service_started` yap.
+2. **webui-db'ye migration'lar otomatik uygulanmıyor:** init script'leri (`/docker-entrypoint-initdb.d`) yalnız BOŞ volume'da çalışır. Mevcut webui-db volume'u **012'de takılıydı**; 013-021 hiç uygulanmamıştı → `gui_panel_infra_source.manual_total` kolonu yoktu → her sellable çağrısı **500 (UndefinedColumn)**. Elle 013-021 uyguladım (idempotent). **Kalıcı çözüm:** startup'ta bir migration-runner (mevcut volume'lara da uygulayan) ekleyin, sadece init-on-empty'ye güvenmeyin.
+
 ## Ölçülen darboğazlar (öncelik sırası)
 
 ### 1. Heavy compute endpoint'leri server-side cache'lenmiyor → her çağrıda yeniden hesap
