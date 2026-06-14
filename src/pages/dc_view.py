@@ -1782,9 +1782,13 @@ def _build_virt_subtab_stack(
         )
         return [
             _cluster_header("virt-classic-cluster-selector", classic_clusters or [], "Select Classic clusters"),
-            html.Div(
-                id="classic-virt-panel",
-                children=_build_compute_tab(classic, "Classic Compute", color="blue", slug="classic"),
+            dcc.Loading(
+                type="circle", color="#4318FF", delay_show=250,
+                overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
+                children=html.Div(
+                    id="classic-virt-panel",
+                    children=_build_compute_tab(classic, "Classic Compute", color="blue", slug="classic"),
+                ),
             ),
             html.Div(id="sellable-classic-card", children=_sellable_card_children(card)),
             _build_hosts_panel_shell("classic", "blue") if show_virt_hosts else None,
@@ -1797,9 +1801,13 @@ def _build_virt_subtab_stack(
         )
         return [
             _cluster_header("virt-hyperconv-cluster-selector", hyperconv_clusters or [], "Select Hyperconverged clusters"),
-            html.Div(
-                id="hyperconv-virt-panel",
-                children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv"),
+            dcc.Loading(
+                type="circle", color="#4318FF", delay_show=250,
+                overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
+                children=html.Div(
+                    id="hyperconv-virt-panel",
+                    children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv"),
+                ),
             ),
             html.Div(id="sellable-hyperconv-card", children=_sellable_card_children(card)),
             _build_hosts_panel_shell("hyperconv", "teal") if show_virt_hosts else None,
