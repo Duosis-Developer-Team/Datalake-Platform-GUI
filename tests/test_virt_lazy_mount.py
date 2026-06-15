@@ -35,7 +35,7 @@ _KW = dict(dc_id="DC13", classic={"hosts": 1, "cpu_cap": 10.0, "cpu_used": 5.0, 
 
 def test_shell_mode_renders_selector_but_empty_panel():
     stack = dc_view._build_virt_subtab_stack("classic", content_mode="shell", **_KW)
-    assert "virt-classic-cluster-selector" in repr(stack)
+    assert "virt-classic-cluster-draft" in repr(stack)
     assert _panel_children_count(stack, "classic-virt-panel") == 0
 
 

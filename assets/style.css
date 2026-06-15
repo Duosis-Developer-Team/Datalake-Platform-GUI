@@ -150,6 +150,28 @@ body {
         0px 8px 20px rgba(112, 144, 176, 0.08) !important;
 }
 
+/* Virt cluster filter — compact toolbar + popover checklist */
+.virt-cluster-filter.nexus-card {
+    padding: 12px 16px !important;
+}
+
+.virt-cluster-filter.nexus-card:hover {
+    transform: none;
+}
+
+.virt-cluster-filter-panel .virt-cluster-checkbox-item {
+    padding: 4px 2px;
+}
+
+.virt-cluster-filter-panel .virt-cluster-checkbox-item + .virt-cluster-checkbox-item {
+    border-top: 1px solid #F4F7FE;
+}
+
+.virt-cluster-filter-panel .mantine-ScrollArea-viewport {
+    padding-right: 4px;
+}
+
+
 /* --- 3. GLASSMORPHISM HEADER --- */
 .nexus-glass {
     background: rgba(255, 255, 255, 0.65) !important;

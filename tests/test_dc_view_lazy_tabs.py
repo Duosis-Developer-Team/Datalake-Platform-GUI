@@ -204,9 +204,11 @@ def test_build_virt_subtab_stack_classic_no_name_error():
         )
 
     assert stack
-    selector = getattr(stack[0], "children", None)
-    assert selector is not None
-    assert getattr(selector, "id", None) == "virt-classic-cluster-selector"
+    assert stack[0].id == "virt-classic-cluster-draft"
+    from src.pages.dc_view import _find_component_by_id
+
+    assert _find_component_by_id(stack[0], "virt-classic-cluster-draft") is not None
+    assert _find_component_by_id(stack[4], "virt-classic-cluster-popover") is not None
 
 
 def test_build_dc_lazy_tab_panel_virt_no_name_error():
@@ -272,7 +274,7 @@ def test_build_dc_lazy_tab_panel_virt_no_name_error():
     roots = panel if isinstance(panel, (list, tuple)) else [panel]
     classic_selector = None
     for root in roots:
-        classic_selector = _find_component_by_id(root, "virt-classic-cluster-selector")
+        classic_selector = _find_component_by_id(root, "virt-classic-cluster-draft")
         if classic_selector is not None:
             break
     assert classic_selector is not None
@@ -352,8 +354,8 @@ def test_virt_nested_tabs_eager_all_panels_present():
         )
 
     assert _find_component_by_id(page, "virt-nested-content") is None
-    assert _find_component_by_id(page, "virt-classic-cluster-selector") is not None
-    assert _find_component_by_id(page, "virt-hyperconv-cluster-selector") is not None
+    assert _find_component_by_id(page, "virt-classic-cluster-draft") is not None
+    assert _find_component_by_id(page, "virt-hyperconv-cluster-draft") is not None
     assert _find_component_by_id(page, "classic-virt-panel") is not None
     assert _find_component_by_id(page, "hyperconv-virt-panel") is not None
     assert _find_component_by_id(page, "power-stub") is not None
@@ -384,8 +386,10 @@ def test_build_virt_subtab_stack_hyperconv_no_name_error():
         )
 
     assert stack
-    selector = getattr(stack[0], "children", None)
-    assert getattr(selector, "id", None) == "virt-hyperconv-cluster-selector"
+    assert stack[0].id == "virt-hyperconv-cluster-draft"
+    from src.pages.dc_view import _find_component_by_id
+
+    assert _find_component_by_id(stack[4], "virt-hyperconv-cluster-checklist") is not None
 
 
 def test_build_virt_subtab_stack_power_renders():

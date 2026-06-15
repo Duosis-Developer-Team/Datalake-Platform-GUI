@@ -835,112 +835,95 @@ def _dc_id_from_pathname(pathname: str | None) -> str | None:
     return pathname.replace("/datacenter/", "").strip("/") or None
 
 
-@app.callback(
-    dash.Output("virt-classic-cluster-debounce", "disabled"),
-    dash.Input("virt-classic-cluster-selector", "value"),
-    prevent_initial_call=True,
-)
-def enable_classic_cluster_debounce(_draft):
-    return False
+def _register_virt_cluster_filter_callbacks(prefix: str) -> None:
+    """Register staged filter callbacks for classic or hyperconv virt tabs."""
+    from src.components.virt_cluster_filter import (
+        checklist_value_from_draft,
+        cluster_selection_summary,
+        draft_from_checklist,
+        virt_cluster_filter_ids,
+    )
+
+    ids = virt_cluster_filter_ids(prefix)
+
+    @app.callback(
+        dash.Output(ids["debounce"], "disabled"),
+        dash.Input(ids["draft"], "data"),
+        prevent_initial_call=True,
+    )
+    def _enable_cluster_debounce(_draft):
+        return False
+
+    @app.callback(
+        dash.Output(ids["applied"], "data"),
+        dash.Input(ids["debounce"], "n_intervals"),
+        dash.State(ids["draft"], "data"),
+        dash.State(ids["applied"], "data"),
+        prevent_initial_call=True,
+    )
+    def _debounce_apply_clusters(_n, draft, applied):
+        if (draft or []) == (applied or []):
+            return dash.no_update
+        return draft
+
+    @app.callback(
+        dash.Output(ids["applied"], "data", allow_duplicate=True),
+        dash.Output(ids["debounce"], "disabled", allow_duplicate=True),
+        dash.Output(ids["popover"], "opened", allow_duplicate=True),
+        dash.Input(ids["apply"], "n_clicks"),
+        dash.State(ids["draft"], "data"),
+        prevent_initial_call=True,
+    )
+    def _apply_clusters(_n, draft):
+        return draft, True, False
+
+    @app.callback(
+        dash.Output(ids["draft"], "data", allow_duplicate=True),
+        dash.Output(ids["checklist"], "value"),
+        dash.Output(ids["debounce"], "disabled", allow_duplicate=True),
+        dash.Input(ids["select_all"], "n_clicks"),
+        dash.State(ids["all_clusters"], "data"),
+        prevent_initial_call=True,
+    )
+    def _select_all_clusters(_n, all_clusters):
+        all_list = list(all_clusters or [])
+        return [], checklist_value_from_draft([], all_list), False
+
+    @app.callback(
+        dash.Output(ids["draft"], "data"),
+        dash.Input(ids["checklist"], "value"),
+        dash.State(ids["all_clusters"], "data"),
+        prevent_initial_call=True,
+    )
+    def _update_draft_from_checklist(selected, all_clusters):
+        return draft_from_checklist(selected, list(all_clusters or []))
+
+    @app.callback(
+        dash.Output(ids["summary_badge"], "children"),
+        dash.Output(ids["summary_badge"], "color"),
+        dash.Input(ids["draft"], "data"),
+        dash.Input(ids["applied"], "data"),
+        dash.State(ids["all_clusters"], "data"),
+    )
+    def _update_summary_badge(draft, applied, all_clusters):
+        total = len(all_clusters or [])
+        summary = cluster_selection_summary(draft, total)
+        unapplied = (draft or []) != (applied or [])
+        color = "orange" if unapplied else "indigo"
+        return summary, color
+
+    @app.callback(
+        dash.Output(ids["popover"], "opened"),
+        dash.Input(ids["trigger"], "n_clicks"),
+        dash.State(ids["popover"], "opened"),
+        prevent_initial_call=True,
+    )
+    def _toggle_cluster_popover(_n, opened):
+        return not bool(opened)
 
 
-@app.callback(
-    dash.Output("virt-hyperconv-cluster-debounce", "disabled"),
-    dash.Input("virt-hyperconv-cluster-selector", "value"),
-    prevent_initial_call=True,
-)
-def enable_hyperconv_cluster_debounce(_draft):
-    return False
-
-
-@app.callback(
-    dash.Output("virt-classic-cluster-applied", "data"),
-    dash.Input("virt-classic-cluster-debounce", "n_intervals"),
-    dash.State("virt-classic-cluster-selector", "value"),
-    dash.State("virt-classic-cluster-applied", "data"),
-    prevent_initial_call=True,
-)
-def debounce_apply_classic_clusters(_n, draft, applied):
-    if draft == applied:
-        return dash.no_update
-    return draft
-
-
-@app.callback(
-    dash.Output("virt-hyperconv-cluster-applied", "data"),
-    dash.Input("virt-hyperconv-cluster-debounce", "n_intervals"),
-    dash.State("virt-hyperconv-cluster-selector", "value"),
-    dash.State("virt-hyperconv-cluster-applied", "data"),
-    prevent_initial_call=True,
-)
-def debounce_apply_hyperconv_clusters(_n, draft, applied):
-    if draft == applied:
-        return dash.no_update
-    return draft
-
-
-@app.callback(
-    dash.Output("virt-classic-cluster-applied", "data", allow_duplicate=True),
-    dash.Output("virt-classic-cluster-debounce", "disabled", allow_duplicate=True),
-    dash.Input("virt-classic-cluster-apply", "n_clicks"),
-    dash.State("virt-classic-cluster-selector", "value"),
-    prevent_initial_call=True,
-)
-def apply_classic_clusters(_n, draft):
-    return draft, True
-
-
-@app.callback(
-    dash.Output("virt-hyperconv-cluster-applied", "data", allow_duplicate=True),
-    dash.Output("virt-hyperconv-cluster-debounce", "disabled", allow_duplicate=True),
-    dash.Input("virt-hyperconv-cluster-apply", "n_clicks"),
-    dash.State("virt-hyperconv-cluster-selector", "value"),
-    prevent_initial_call=True,
-)
-def apply_hyperconv_clusters(_n, draft):
-    return draft, True
-
-
-@app.callback(
-    dash.Output("virt-classic-cluster-selector", "value"),
-    dash.Output("virt-classic-cluster-debounce", "disabled", allow_duplicate=True),
-    dash.Input("virt-classic-cluster-select-all", "n_clicks"),
-    dash.State("virt-classic-cluster-all", "data"),
-    prevent_initial_call=True,
-)
-def select_all_classic_clusters(_n, all_clusters):
-    return list(all_clusters or []), False
-
-
-@app.callback(
-    dash.Output("virt-hyperconv-cluster-selector", "value"),
-    dash.Output("virt-hyperconv-cluster-debounce", "disabled", allow_duplicate=True),
-    dash.Input("virt-hyperconv-cluster-select-all", "n_clicks"),
-    dash.State("virt-hyperconv-cluster-all", "data"),
-    prevent_initial_call=True,
-)
-def select_all_hyperconv_clusters(_n, all_clusters):
-    return list(all_clusters or []), False
-
-
-@app.callback(
-    dash.Output("virt-classic-cluster-selector", "value", allow_duplicate=True),
-    dash.Output("virt-classic-cluster-debounce", "disabled", allow_duplicate=True),
-    dash.Input("virt-classic-cluster-clear", "n_clicks"),
-    prevent_initial_call=True,
-)
-def clear_classic_clusters(_n):
-    return [], False
-
-
-@app.callback(
-    dash.Output("virt-hyperconv-cluster-selector", "value", allow_duplicate=True),
-    dash.Output("virt-hyperconv-cluster-debounce", "disabled", allow_duplicate=True),
-    dash.Input("virt-hyperconv-cluster-clear", "n_clicks"),
-    prevent_initial_call=True,
-)
-def clear_hyperconv_clusters(_n):
-    return [], False
+for _virt_cluster_prefix in ("classic", "hyperconv"):
+    _register_virt_cluster_filter_callbacks(_virt_cluster_prefix)
 
 
 @app.callback(
