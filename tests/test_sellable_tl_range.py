@@ -79,9 +79,9 @@ def test_inline_kpi_total_potential_shows_range(mock_fetch, dc_view_module):
     assert "–" in rendered
 
 
-@patch("src.pages.dc_view.collect_virt_sellable_panels")
-def test_virt_total_card_uses_fmt_tl_range(mock_collect, dc_view_module):
-    mock_collect.return_value = [
+@patch("src.pages.dc_view.api.get_virt_sellable_panels")
+def test_virt_total_card_uses_fmt_tl_range(mock_fetch, dc_view_module):
+    mock_fetch.return_value = [
         {
             "resource_kind": "cpu",
             "sellable_constrained": 1.0,

@@ -2041,7 +2041,7 @@ def get_virt_sellable_panels(
         qs += f"&hyperconv_clusters={quote(','.join(cl_hyper), safe=',')}"
 
     def fetch() -> list:
-        data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/virt-total?{qs}")
+        data = _get_json(_get_client_crm(), f"/api/v1/crm/sellable-potential/virt-total?{qs}")
         return data if isinstance(data, list) else []
 
     cache_key = (
