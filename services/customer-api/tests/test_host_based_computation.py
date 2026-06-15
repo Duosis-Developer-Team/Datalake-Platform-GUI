@@ -8,6 +8,7 @@ datastores and native Power storage, so storage sellables are ranges.
 from __future__ import annotations
 
 from shared.sellable.computation import (
+    apply_storage_ratio_cap,
     apply_utilization_gate,
     compute_storage_range,
     constrain_by_ratio_per_host,
@@ -105,14 +106,24 @@ def test_constrain_by_ratio_per_host_sets_cpu_ram_from_units():
     assert out["ram"].ratio_bound is True
 
 
-def test_constrain_by_ratio_per_host_storage_passthrough():
-    """Storage is excluded from the per-host min(); the architecture-aware
-    storage range model fills it separately."""
+def test_constrain_by_ratio_per_host_storage_capped_by_compute_bottleneck():
+    """Storage passthrough from per-host step is capped by compute bottleneck."""
     hosts = [_host(10.0, 0.0, 80.0, 0.0)]
     panels = [_panel("cpu"), _panel("ram"), _panel("storage", raw=500.0)]
-    out = {p.resource_kind: p for p in constrain_by_ratio_per_host(panels, _ratio(), hosts)}
-    assert out["storage"].sellable_constrained == 500.0
+    interim = constrain_by_ratio_per_host(panels, _ratio(), hosts)
+    out = {p.resource_kind: p for p in apply_storage_ratio_cap(interim, _ratio())}
+    assert out["storage"].sellable_constrained == 500.0  # 10 units * 100 GB cap
     assert out["storage"].ratio_bound is False
+
+    cpu = _panel("cpu", raw=10.0)
+    cpu.sellable_constrained = 0.0
+    ram = _panel("ram", raw=40.0)
+    ram.sellable_constrained = 0.0
+    sto = _panel("storage", raw=500.0)
+    capped = apply_storage_ratio_cap([cpu, ram, sto], _ratio())
+    sto_out = next(p for p in capped if p.resource_kind == "storage")
+    assert sto_out.sellable_constrained == 0.0
+    assert sto_out.constraint_reason == "compute_bottleneck"
 
 
 def test_constrain_by_ratio_per_host_empty_hosts_zero_units():

@@ -9,6 +9,11 @@ from dash import html
 from dash_iconify import DashIconify
 
 from src.services import api_client as api
+from src.components.sellable_constraint_viz import (
+    constraint_breakdown_text,
+    sellable_constraint_badges,
+    sellable_constraint_bar,
+)
 from src.utils.format_units import fmt_tl, fmt_tl_range, smart_cpu, smart_memory, smart_storage
 from src.utils.virt_sellable_aggregate import (
     collect_virt_sellable_panels,
@@ -172,11 +177,12 @@ def build_sellable_executive_strip(
         modes = summary.get("computation_modes") or {}
     mode_badge = ", ".join(f"{k}: {v}" for k, v in modes.items()) or "aggregate"
     unmapped = (summary or {}).get("unmapped_product_count") or 0
+    breakdown = constraint_breakdown_text(panels)
     exec_strip = dmc.SimpleGrid(cols={"base": 1, "sm": 2, "lg": 4}, spacing="md", children=[
         _exec_kpi(
             "Total Potential",
             _fmt_tl_range(tl_min, tl_max),
-            "Classic + Hyperconverged + Power (Virt tab parity)",
+            breakdown or "Classic + Hyperconverged + Power (Virt tab parity)",
             "solar:wallet-money-bold-duotone",
             "grape",
         ),
@@ -229,6 +235,9 @@ def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] 
         ram_phys = ram.get("sellable_physical") if ram else None
         ram_peak = ram.get("sellable_effective") if ram else (ram.get("sellable_constrained") if ram else None)
         cpu_unit = (cpu or {}).get("display_unit") or "vCPU"
+        badge_children: list = []
+        for kind_label, panel in (("CPU", cpu), ("RAM", ram)):
+            badge_children.extend(sellable_constraint_badges(panel, kind_label=kind_label))
         cards.append(html.Div(
             className="nexus-card",
             style={"padding": "16px", "background": "#FBFCFE"},
@@ -238,30 +247,39 @@ def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] 
                     dmc.Badge(mode or "aggregate", variant="light", size="xs", color="blue" if mode == "host_based" else "gray"),
                 ]),
                 dmc.Stack(gap=4, children=[
+                    dmc.Text("CPU", fw=600, size="xs"),
                     dmc.Text(
-                        f"CPU Physical: {smart_cpu(cpu_phys) if cpu_phys is not None else '—'}",
+                        f"Physical: {smart_cpu(cpu_phys) if cpu_phys is not None else '—'} · "
+                        f"Effective: {cpu_eff:,.0f} {cpu_unit}" if cpu_eff is not None else "Effective: —",
                         size="xs",
                     ),
-                    dmc.Text(
-                        f"CPU Effective: {cpu_eff:,.0f} {cpu_unit}" if cpu_eff is not None else "CPU Effective: —",
-                        size="xs",
-                    ),
+                    sellable_constraint_bar(
+                        float((cpu or {}).get("total") or 0),
+                        float((cpu or {}).get("allocated") or 0),
+                        float(cpu_eff or 0),
+                        sellable_raw=float((cpu or {}).get("sellable_raw") or 0),
+                        threshold_pct=float((cpu or {}).get("threshold_pct") or 80),
+                        color=_BRAND,
+                    ) if cpu else None,
+                    dmc.Text("RAM", fw=600, size="xs", mt="xs"),
                     dmc.Text(
                         (
-                            f"RAM Physical: {smart_memory(ram_phys)} · Peak: {smart_memory(ram_peak)}"
+                            f"Physical: {smart_memory(ram_phys)} · Peak: {smart_memory(ram_peak)}"
                             if ram_phys is not None and ram_peak is not None
-                            else f"RAM Sellable: {smart_memory((ram or {}).get('sellable_constrained'))}"
+                            else f"Sellable: {smart_memory((ram or {}).get('sellable_constrained'))}"
                         ),
                         size="xs",
                     ),
+                    sellable_constraint_bar(
+                        float((ram or {}).get("total") or 0),
+                        float((ram or {}).get("allocated") or 0),
+                        float(ram_peak or (ram or {}).get("sellable_constrained") or 0),
+                        sellable_raw=float((ram or {}).get("sellable_raw") or 0),
+                        threshold_pct=float((ram or {}).get("threshold_pct") or 80),
+                        color="#7551FF",
+                    ) if ram else None,
                 ]),
-                _gradient_bar(
-                    float((cpu or {}).get("total") or 0),
-                    float((cpu or {}).get("allocated") or 0),
-                    float(cpu_eff or 0),
-                    float((cpu or {}).get("threshold_pct") or 80),
-                    _BRAND,
-                ) if cpu else None,
+                dmc.Group(gap="xs", mt="sm", children=badge_children) if badge_children else None,
             ],
         ))
     if not cards:
@@ -300,24 +318,36 @@ def build_virt_storage_block(summary: dict | None = None, *, panels: list[dict] 
         children=[
             _section_title(
                 "Sanallaştırma — Storage",
-                "Compute ile ilişkili ancak bağımsız kategori — IBM kapasitesi KM ve Power arasında paylaşılmaktadır",
+                "CPU/RAM compute bottleneck ile oran sınırlı — IBM kapasitesi KM ve Power arasında paylaşımlı",
             ),
             dmc.SimpleGrid(cols={"base": 1, "md": 2}, spacing="lg", mt="md", children=[
                 html.Div(children=[
                     dmc.Text("KM (Classic) Storage Sellable", fw=600, size="sm"),
                     dmc.Text(_range_text(km_stor), size="lg", fw=800, c="blue"),
-                    dmc.Text(_fmt_tl_range(
-                        (km_stor or {}).get("potential_tl_min"),
-                        (km_stor or {}).get("potential_tl_max"),
-                    ), size="xs", c="dimmed"),
+                    dmc.Text(
+                        _fmt_tl_range(
+                            (km_stor or {}).get("potential_tl_min"),
+                            (km_stor or {}).get("potential_tl_max"),
+                        )
+                        if float((km_stor or {}).get("sellable_constrained") or 0) > 1e-6
+                        else "—",
+                        size="xs", c="dimmed",
+                    ),
+                    dmc.Group(gap="xs", mt="xs", children=sellable_constraint_badges(km_stor, kind_label="KM")),
                 ]),
                 html.Div(children=[
                     dmc.Text("Power Storage Sellable", fw=600, size="sm"),
                     dmc.Text(_range_text(pw_stor), size="lg", fw=800, c="grape"),
-                    dmc.Text(_fmt_tl_range(
-                        (pw_stor or {}).get("potential_tl_min"),
-                        (pw_stor or {}).get("potential_tl_max"),
-                    ), size="xs", c="dimmed"),
+                    dmc.Text(
+                        _fmt_tl_range(
+                            (pw_stor or {}).get("potential_tl_min"),
+                            (pw_stor or {}).get("potential_tl_max"),
+                        )
+                        if float((pw_stor or {}).get("sellable_constrained") or 0) > 1e-6
+                        else "—",
+                        size="xs", c="dimmed",
+                    ),
+                    dmc.Group(gap="xs", mt="xs", children=sellable_constraint_badges(pw_stor, kind_label="Power")),
                 ]),
             ]),
             dmc.Alert(

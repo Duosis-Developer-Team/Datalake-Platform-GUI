@@ -174,6 +174,106 @@ def compute_potential_tl(sellable_constrained: float, unit_price_tl: float) -> f
     return max(sellable_constrained, 0.0) * max(unit_price_tl, 0.0)
 
 
+def compute_effective_bottleneck_units(
+    panels: Iterable[PanelResult],
+    ratio: ResourceRatio,
+) -> tuple[float, str | None]:
+    """Effective ratio units from constrained CPU/RAM (sales/effective track)."""
+    by_kind = _split_by_kind(panels)
+    cpu_p = by_kind.get("cpu")
+    ram_p = by_kind.get("ram")
+    candidates: list[tuple[float, str]] = []
+    if cpu_p is not None and ratio.cpu_per_unit > 0:
+        cpu_constrained = max(float(cpu_p.sellable_constrained or 0.0), 0.0)
+        candidates.append((cpu_constrained / ratio.cpu_per_unit, "cpu"))
+    if ram_p is not None and ratio.ram_gb_per_unit > 0:
+        ram_constrained = max(float(ram_p.sellable_constrained or 0.0), 0.0)
+        candidates.append((ram_constrained / ratio.ram_gb_per_unit, "ram"))
+    if not candidates:
+        return 0.0, None
+    n_eff = min(c[0] for c in candidates)
+    bottleneck = min(candidates, key=lambda c: (c[0], 0 if c[1] == "cpu" else 1))[1]
+    return max(n_eff, 0.0), bottleneck
+
+
+def apply_storage_ratio_cap(
+    panels: Iterable[PanelResult],
+    ratio: ResourceRatio,
+) -> list[PanelResult]:
+    """Cap storage sellable by compute effective bottleneck (never increases values)."""
+    panel_list = list(panels)
+    by_kind = _split_by_kind(panel_list)
+    sto_p = by_kind.get("storage")
+    if sto_p is None or ratio.storage_gb_per_unit <= 0:
+        return panel_list
+
+    n_eff, bottleneck_kind = compute_effective_bottleneck_units(panel_list, ratio)
+    storage_cap = max(n_eff * ratio.storage_gb_per_unit, 0.0)
+
+    out: list[PanelResult] = []
+    for p in panel_list:
+        if p.resource_kind != "storage":
+            out.append(p)
+            continue
+
+        raw_max = float(p.sellable_max if p.sellable_max is not None else p.sellable_raw)
+        raw_min = float(p.sellable_min if p.sellable_min is not None else p.sellable_constrained)
+        prev_constrained = float(p.sellable_constrained)
+
+        new_min = min(raw_min, storage_cap)
+        new_max = min(raw_max, storage_cap)
+        if p.sellable_max is not None:
+            new_constrained = new_min
+        else:
+            new_constrained = min(prev_constrained, storage_cap)
+
+        capped = (
+            new_constrained + 1e-6 < prev_constrained
+            or new_max + 1e-6 < raw_max
+            or new_min + 1e-6 < raw_min
+        )
+        constraint_reason = p.constraint_reason if p.constraint_reason != "none" else "none"
+        if p.gate_blocked:
+            constraint_reason = "gate_blocked"
+        elif n_eff <= 1e-9 and raw_max > 1e-6:
+            constraint_reason = "compute_bottleneck"
+        elif capped:
+            constraint_reason = "ratio_bound" if constraint_reason == "none" else constraint_reason
+
+        out.append(
+            replace(
+                p,
+                sellable_constrained=new_constrained,
+                sellable_min=new_min if p.sellable_min is not None else None,
+                sellable_max=new_max if p.sellable_max is not None else None,
+                ratio_bound=p.ratio_bound or capped,
+                constraint_reason=constraint_reason,
+                bottleneck_kind=bottleneck_kind if capped else p.bottleneck_kind,
+                bottleneck_units=n_eff if capped else p.bottleneck_units,
+            )
+        )
+    return out
+
+
+def annotate_panel_constraint_metadata(panels: Iterable[PanelResult]) -> list[PanelResult]:
+    """Populate constraint_reason on CPU/RAM panels for UI badges."""
+    out: list[PanelResult] = []
+    for p in panels:
+        if p.resource_kind == "storage" and p.constraint_reason not in ("none", ""):
+            out.append(p)
+            continue
+        reason = "none"
+        if p.gate_blocked:
+            reason = "gate_blocked"
+        elif p.ratio_bound:
+            reason = "ratio_bound"
+        if reason == p.constraint_reason:
+            out.append(p)
+        else:
+            out.append(replace(p, constraint_reason=reason))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Host-based computation (ADR: host-based CRM calculation)
 #
@@ -181,8 +281,8 @@ def compute_potential_tl(sellable_constrained: float, unit_price_tl: float) -> f
 # per-host fragmentation: a DC with 10 hosts each having 1 free unit cannot
 # host a 10-unit VM. Each host is evaluated on its own (CPU + RAM coupled by
 # the family ratio); the family unit count is the SUM of per-host unit counts.
-# Storage is intentionally excluded from the per-host min() — it is computed
-# separately per architecture (KM datastores vs HCI/Power own storage).
+# Storage is excluded from the per-host CPU/RAM min(); a post-step
+# (:func:`apply_storage_ratio_cap`) caps storage by the compute bottleneck.
 # ---------------------------------------------------------------------------
 
 

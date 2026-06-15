@@ -152,6 +152,14 @@ def _panel_table(panels: list[dict[str, Any]]) -> dmc.ScrollArea:
             dmc.Badge("gate-blocked", color="red", variant="light", size="xs")
             if p.get("gate_blocked") else None
         )
+        reason = (p.get("constraint_reason") or "none").lower()
+        constraint_badge = None
+        if reason == "compute_bottleneck":
+            constraint_badge = dmc.Badge(
+                "compute-bottleneck", color="orange", variant="filled", size="xs",
+            )
+        elif reason == "ratio_bound" and not ratio_badge:
+            constraint_badge = dmc.Badge("ratio-bound", color="orange", variant="light", size="xs")
         cpu_kind = (p.get("resource_kind") or "").lower() == "cpu"
         ram_kind = (p.get("resource_kind") or "").lower() == "ram"
         stor_kind = (p.get("resource_kind") or "").lower() == "storage"
@@ -185,7 +193,7 @@ def _panel_table(panels: list[dict[str, Any]]) -> dmc.ScrollArea:
                 html.Td(_fmt_unit(p.get("allocated"), unit)),
                 html.Td(f"{float(p.get('threshold_pct') or 0):.0f}%"),
                 html.Td(_fmt_unit(p.get("sellable_raw"), unit)),
-                html.Td([sellable_cell, " ", gate_badge or "", " ", ratio_badge or ""]),
+                html.Td([sellable_cell, " ", gate_badge or "", " ", ratio_badge or "", " ", constraint_badge or ""]),
                 html.Td(f"{float(p.get('unit_price_tl') or 0):,.2f}"),
                 html.Td(potential_cell),
             ])

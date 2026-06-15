@@ -221,6 +221,8 @@ from app.services.customer_service import CustomerService
 from app.services.tagging_service import TaggingService, build_metric_key
 from app.services.webui_db import WebuiPool
 from shared.sellable.computation import (
+    annotate_panel_constraint_metadata,
+    apply_storage_ratio_cap,
     apply_threshold,
     apply_utilization_gate,
     compute_potential_tl,
@@ -1656,11 +1658,15 @@ SELECT _tot, _alloc FROM latest
             panel.potential_tl_physical = compute_potential_tl(panel.sellable_physical, price_phys)
         if panel.sellable_effective is not None:
             panel.potential_tl_effective = compute_potential_tl(panel.sellable_effective, price_eff)
-        phys_tl = panel.potential_tl_physical if panel.potential_tl_physical is not None else panel.potential_tl
-        eff_tl = panel.potential_tl_effective if panel.potential_tl_effective is not None else panel.potential_tl
+        phys_tl = panel.potential_tl_physical if panel.potential_tl_physical is not None else 0.0
+        eff_tl = panel.potential_tl_effective if panel.potential_tl_effective is not None else 0.0
         panel.potential_tl_min = min(phys_tl, eff_tl)
         panel.potential_tl_max = max(phys_tl, eff_tl)
-        panel.potential_tl = (panel.potential_tl_min + panel.potential_tl_max) / 2.0
+        # Headline TL follows effective/constrained track (ADR-0018).
+        if panel.sellable_constrained <= 1e-9:
+            panel.potential_tl = 0.0
+        else:
+            panel.potential_tl = eff_tl
 
     # ------------------------------------------- architecture storage range
 
@@ -1778,7 +1784,6 @@ SELECT _tot, _alloc FROM latest
         sto_p.sellable_max = convert_unit(hi, conv)
         sto_p.sellable_raw = sto_p.sellable_max
         sto_p.sellable_constrained = sto_p.sellable_min
-        sto_p.ratio_bound = False
         sto_p.has_infra_source = True
         sto_p.potential_tl_min = compute_potential_tl(sto_p.sellable_min, sto_p.unit_price_tl)
         sto_p.potential_tl_max = compute_potential_tl(sto_p.sellable_max, sto_p.unit_price_tl)
@@ -2308,7 +2313,6 @@ SELECT _tot, _alloc FROM latest
             range_inputs = self._query_storage_range_inputs(dc_code)
 
         constrained: list[PanelResult] = []
-        virt_power_storage_decouple = frozenset({"storage"})
         calc_cfg = self._get_sellable_calc_config()
         effective_ghz = float(calc_cfg.get("effective_ghz_per_unit") or 1.0)
         for fam, group in by_family.items():
@@ -2331,7 +2335,6 @@ SELECT _tot, _alloc FROM latest
                     effective_ghz_per_unit=effective_ghz,
                 )
             elif fam in _HOST_BASED_FAMILIES:
-                decouple = None
                 new_group = self._apply_cluster_fallback_dual(
                     group,
                     ratio,
@@ -2340,15 +2343,10 @@ SELECT _tot, _alloc FROM latest
                     selected_clusters,
                     host_status=host_status,
                     effective_ghz_per_unit=effective_ghz,
-                    decouple_resource_kinds=decouple,
+                    decouple_resource_kinds=None,
                 )
             else:
-                decouple = (
-                    virt_power_storage_decouple
-                    if fam in ("virt_power", "virt_power_hana")
-                    else None
-                )
-                new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=decouple)
+                new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=None)
 
             if fam in _STORAGE_RANGE_FAMILIES and range_inputs:
                 self._apply_storage_range(new_group, fam, range_inputs, unit_lookup)
@@ -2357,15 +2355,20 @@ SELECT _tot, _alloc FROM latest
                 if sto_p is not None:
                     sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
 
+            new_group = apply_storage_ratio_cap(new_group, ratio)
+            new_group = annotate_panel_constraint_metadata(new_group)
+
             for new in new_group:
                 if new.sellable_physical is not None or new.sellable_effective is not None:
                     self._apply_dual_track_pricing(new, calc_cfg)
                 else:
                     new.potential_tl = compute_potential_tl(new.sellable_constrained, new.unit_price_tl)
-                if new.sellable_min is not None and new.potential_tl_min is None:
+                if new.sellable_min is not None:
                     new.potential_tl_min = compute_potential_tl(new.sellable_min, new.unit_price_tl)
-                if new.sellable_max is not None and new.potential_tl_max is None:
+                if new.sellable_max is not None:
                     new.potential_tl_max = compute_potential_tl(new.sellable_max, new.unit_price_tl)
+                if new.sellable_max is not None and new.sellable_min is not None:
+                    new.potential_tl = new.potential_tl_min or 0.0
                 constrained.append(new)
         constrained.sort(key=lambda p: (p.family, p.resource_kind, p.panel_key))
 
@@ -2406,6 +2409,11 @@ SELECT _tot, _alloc FROM latest
             "computation_mode": panel.computation_mode,
             "has_infra_source": panel.has_infra_source,
             "has_price": panel.has_price,
+            "ratio_bound": panel.ratio_bound,
+            "gate_blocked": panel.gate_blocked,
+            "constraint_reason": panel.constraint_reason,
+            "bottleneck_kind": panel.bottleneck_kind,
+            "bottleneck_units": panel.bottleneck_units,
         }
 
     def compute_summary(

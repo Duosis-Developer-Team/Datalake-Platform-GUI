@@ -1429,9 +1429,10 @@ def test_count_unmapped_products_two_step_cross_db():
 # ------------------------------------------------ screenshot regression (SS1–SS3)
 
 
-def test_ss1_gate_blocked_cpu_ram_zero_storage_ratio_bound():
-    """SS1: CPU/RAM gate-blocked (sellable 0); storage may remain ratio-bound."""
-    from shared.sellable.computation import apply_utilization_gate
+def test_ss1_gate_blocked_cpu_ram_zero_storage_capped():
+    """SS1: CPU/RAM gate-blocked; storage raw positive but capped to zero."""
+    from shared.sellable.computation import apply_storage_ratio_cap, apply_utilization_gate
+    from shared.sellable.models import PanelResult, ResourceRatio
 
     cpu_raw = apply_utilization_gate(100.0, 95.0, 90.0, 80.0)
     ram_raw = apply_utilization_gate(100.0, 92.0, 85.0, 80.0)
@@ -1440,23 +1441,68 @@ def test_ss1_gate_blocked_cpu_ram_zero_storage_ratio_bound():
     assert ram_raw == 0.0
     assert sto_raw > 0.0
 
-
-def test_ss2_storage_only_total_when_cpu_ram_gated():
-    """SS2: CPU/RAM constrained 0 but storage TL can still contribute."""
-    from shared.sellable.models import PanelResult
-    from shared.sellable.computation import compute_potential_tl
-
-    sto = PanelResult(
-        panel_key="virt_hyperconverged_storage",
-        label="Storage",
-        family="virt_hyperconverged",
-        resource_kind="storage",
-        display_unit="GB",
-        sellable_constrained=53209.0,
-        unit_price_tl=1.84,
+    ratio = ResourceRatio(
+        family="virt_classic",
+        cpu_per_unit=1.0,
+        ram_gb_per_unit=4.0,
+        storage_gb_per_unit=100.0,
     )
+    panels = [
+        PanelResult(
+            panel_key="c", label="CPU", family="virt_classic", resource_kind="cpu",
+            display_unit="vCPU", sellable_raw=cpu_raw, sellable_constrained=cpu_raw,
+        ),
+        PanelResult(
+            panel_key="r", label="RAM", family="virt_classic", resource_kind="ram",
+            display_unit="GB", sellable_raw=ram_raw, sellable_constrained=ram_raw,
+        ),
+        PanelResult(
+            panel_key="s", label="Storage", family="virt_classic", resource_kind="storage",
+            display_unit="GB", sellable_raw=sto_raw, sellable_constrained=sto_raw,
+        ),
+    ]
+    capped = apply_storage_ratio_cap(panels, ratio)
+    sto = next(p for p in capped if p.resource_kind == "storage")
+    assert sto.sellable_constrained == 0.0
+    assert sto.constraint_reason == "compute_bottleneck"
+
+
+def test_ss2_storage_capped_when_cpu_ram_gated():
+    """SS2: storage TL is zero when compute bottleneck units are zero."""
+    from shared.sellable.computation import apply_storage_ratio_cap, compute_potential_tl
+    from shared.sellable.models import PanelResult, ResourceRatio
+
+    ratio = ResourceRatio(
+        family="virt_hyperconverged",
+        cpu_per_unit=1.0,
+        ram_gb_per_unit=8.0,
+        storage_gb_per_unit=100.0,
+    )
+    panels = [
+        PanelResult(
+            panel_key="c", label="CPU", family="virt_hyperconverged", resource_kind="cpu",
+            display_unit="vCPU", sellable_raw=0.0, sellable_constrained=0.0,
+        ),
+        PanelResult(
+            panel_key="r", label="RAM", family="virt_hyperconverged", resource_kind="ram",
+            display_unit="GB", sellable_raw=0.0, sellable_constrained=0.0,
+        ),
+        PanelResult(
+            panel_key="virt_hyperconverged_storage",
+            label="Storage",
+            family="virt_hyperconverged",
+            resource_kind="storage",
+            display_unit="GB",
+            sellable_raw=53209.0,
+            sellable_constrained=53209.0,
+            unit_price_tl=1.84,
+        ),
+    ]
+    capped = apply_storage_ratio_cap(panels, ratio)
+    sto = next(p for p in capped if p.resource_kind == "storage")
     sto.potential_tl = compute_potential_tl(sto.sellable_constrained, sto.unit_price_tl)
-    assert sto.potential_tl > 90000.0
+    assert sto.sellable_constrained == 0.0
+    assert sto.potential_tl == 0.0
 
 
 def test_ss3_host_based_can_sell_when_aggregate_cap_high():

@@ -92,6 +92,10 @@ class PanelResult:
     potential_tl_effective: float | None = None
     # host_based | cluster_fallback — how virt CPU/RAM sellable was computed.
     computation_mode: str | None = None
+    # Constraint metadata for UI badges (additive API fields).
+    constraint_reason: str = "none"  # gate_blocked | ratio_bound | compute_bottleneck | none
+    bottleneck_kind: str | None = None  # cpu | ram | storage
+    bottleneck_units: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

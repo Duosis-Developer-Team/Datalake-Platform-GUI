@@ -198,11 +198,14 @@ def aggregate_virt_sellable_panels(
         if not isinstance(p, dict):
             continue
         kind = (p.get("resource_kind") or "other").lower()
+        constrained = float(p.get("sellable_constrained") or 0.0)
         tl = float(p.get("potential_tl") or 0.0)
+        if constrained <= 1e-9:
+            tl = 0.0
         total_tl += tl
         if kind not in by_kind:
             continue
-        by_kind[kind]["constrained"] = float(by_kind[kind]["constrained"]) + float(p.get("sellable_constrained") or 0.0)
+        by_kind[kind]["constrained"] = float(by_kind[kind]["constrained"]) + constrained
         by_kind[kind]["tl"] = float(by_kind[kind]["tl"]) + tl
         unit = p.get("display_unit")
         if unit:

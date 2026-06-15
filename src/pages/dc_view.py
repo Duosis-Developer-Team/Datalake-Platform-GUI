@@ -51,6 +51,10 @@ from src.components.charts import (
 )
 from src.components.charts import create_horizontal_bar_chart, create_premium_horizontal_bar_chart, create_capacity_area_chart, create_grouped_bar_chart, create_storage_breakdown_chart
 from src.components.dc_loading import build_dc_loading_shell, build_dc_tab_loading_shell
+from src.components.sellable_constraint_viz import (
+    fmt_tl_for_card,
+    sellable_constraint_badges,
+)
 from src.components.header import create_detail_header
 from src.components.s3_panel import build_dc_s3_panel
 from src.components.backup_panel import (
@@ -1698,9 +1702,9 @@ def _build_virt_total_sellable_children(
             children=card,
         )
 
-    cpu_short, cpu_full = _fmt_tl_short(float(cpu["tl"]))
-    ram_short, ram_full = _fmt_tl_short(float(ram["tl"]))
-    stor_short, stor_full = _fmt_tl_short(float(stor["tl"]))
+    cpu_short, cpu_full = fmt_tl_for_card(float(cpu["tl"]), constrained=float(cpu["constrained"]))
+    ram_short, ram_full = fmt_tl_for_card(float(ram["tl"]), constrained=float(ram["constrained"]))
+    stor_short, stor_full = fmt_tl_for_card(float(stor["tl"]), constrained=float(stor["constrained"]))
     if abs(tl_max - tl_min) > 1e-6:
         total_short = fmt_tl_range(tl_min, tl_max)
         total_full = f"{tl_min:,.0f} – {tl_max:,.0f} TL"
@@ -2088,28 +2092,38 @@ def _build_sellable_inline_kpi(
             children=card,
         )
 
-    cpu_short, cpu_full = _fmt_tl_short(cpu["tl"])
+    cpu_short, cpu_full = fmt_tl_for_card(cpu["tl"], constrained=cpu.get("effective", cpu["constrained"]))
     if cpu_has_dual:
-        cpu_short = f"{_fmt_tl_short(cpu.get('tl_phys', 0))[0]} – {_fmt_tl_short(cpu.get('tl_eff', 0))[0]}"
+        phys_s, _ = fmt_tl_for_card(cpu.get("tl_phys", 0), constrained=cpu.get("physical", 0))
+        eff_s, _ = fmt_tl_for_card(cpu.get("tl_eff", 0), constrained=cpu.get("effective", cpu["constrained"]))
+        if phys_s != "—" or eff_s != "—":
+            cpu_short = f"{phys_s} – {eff_s}" if phys_s != eff_s else eff_s
         cpu_full = (
             f"Physical: {smart_cpu(cpu.get('physical', 0))} · "
             f"Effective: {cpu.get('effective', 0):,.0f} {cpu['unit']}"
         )
-    ram_short, ram_full = _fmt_tl_short(ram["tl"])
+    ram_short, ram_full = fmt_tl_for_card(ram["tl"], constrained=ram.get("effective", ram["constrained"]))
     if ram_has_dual:
-        ram_short = f"{_fmt_tl_short(ram.get('tl_phys', 0))[0]} – {_fmt_tl_short(ram.get('tl_eff', 0))[0]}"
+        phys_s, _ = fmt_tl_for_card(ram.get("tl_phys", 0), constrained=ram.get("physical", 0))
+        eff_s, _ = fmt_tl_for_card(ram.get("tl_eff", 0), constrained=ram.get("effective", ram["constrained"]))
+        if phys_s != "—" or eff_s != "—":
+            ram_short = f"{phys_s} – {eff_s}" if phys_s != eff_s else eff_s
         ram_full = (
             f"Physical: {ram.get('physical', 0):,.0f} {ram['unit']} · "
             f"Peak: {ram.get('effective', 0):,.0f} {ram['unit']}"
         )
-    stor_short, stor_full = _fmt_tl_short(stor["tl"])
+    stor_short, stor_full = fmt_tl_for_card(stor["tl"], constrained=stor["constrained"])
     # Storage range display: "X – Y" when IBM-shared capacity yields a range.
     stor_has_range = bool(stor.get("has_range")) and stor["max"] > stor["min"] + 1e-6
     if stor_has_range:
         stor_value = f"{stor['min']:,.0f} – {stor['max']:,.0f} {stor['unit']}"
-        stor_tl_min_short, _ = _fmt_tl_short(stor["tl_min"])
-        stor_tl_max_short, _ = _fmt_tl_short(stor["tl_max"])
-        stor_short = f"{stor_tl_min_short} – {stor_tl_max_short}"
+        stor_tl_min_short, _ = fmt_tl_for_card(stor["tl_min"], constrained=stor["min"])
+        stor_tl_max_short, _ = fmt_tl_for_card(stor["tl_max"], constrained=stor["max"])
+        stor_short = (
+            f"{stor_tl_min_short} – {stor_tl_max_short}"
+            if stor_tl_min_short != "—" or stor_tl_max_short != "—"
+            else "—"
+        )
         stor_full = (
             "IBM storage alanı hem KM datastore hem Power olarak satılabildiğinden aralık verilir. "
             f"Min (garanti): {stor['min']:,.0f} {stor['unit']} · Max (paylaşımlı dahil): {stor['max']:,.0f} {stor['unit']}"
@@ -2175,40 +2189,12 @@ def _build_sellable_inline_kpi(
                 size="sm",
             )
         )
-    for kind_label, k in (("CPU", cpu), ("RAM", ram), ("Storage", stor)):
-        if k.get("gate_blocked"):
-            sub_lines.append(
-                dmc.Badge(
-                    f"{kind_label} gate-blocked: threshold exceeded",
-                    color="red",
-                    variant="light",
-                    size="sm",
-                )
-            )
-        elif k["raw"] > 0 and k["constrained"] < k["raw"] - 1e-6:
-            sub_lines.append(
-                dmc.Badge(
-                    f"{kind_label} ratio-bound: {_fmt_unit(k['raw'] - k['constrained'], k['unit'])} lost",
-                    color="orange",
-                    variant="light",
-                    size="sm",
-                )
-            )
-
-    if (
-        cpu["constrained"] < 1e-6
-        and ram["constrained"] < 1e-6
-        and stor["constrained"] > 1e-6
-        and tl_min > 1e-6
-    ):
-        sub_lines.append(
-            dmc.Badge(
-                "Total potential driven by storage-only contribution",
-                color="gray",
-                variant="light",
-                size="sm",
-            )
+    for kind in ("cpu", "ram", "storage"):
+        panel_row = next(
+            (p for p in panels if (p.get("resource_kind") or "").lower() == kind),
+            None,
         )
+        sub_lines.extend(sellable_constraint_badges(panel_row, kind_label=kind.upper()))
 
     from src.utils.sellable_power_hints import power_sellable_constraint_hints
 

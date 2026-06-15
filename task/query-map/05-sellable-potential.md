@@ -524,14 +524,23 @@ Gerçek kod adım adım:
     `sellable_constrained = sellable_raw`, `ratio_bound = False`.
   - `ratio_bound = constrained + 1e-6 < p.sellable_raw`.
 
-**Storage decouple (virt_power):** `compute_all_panels` içinde:
+**Storage compute coupling (2026-06, ADR-0019):** After CPU/RAM ratio and IBM
+storage range, `apply_storage_ratio_cap` caps storage by effective compute
+bottleneck. `virt_power` storage decouple removed. Pipeline:
+
+```
+host/cluster ratio (CPU/RAM) → _apply_storage_range (classic/power)
+→ apply_storage_ratio_cap → annotate_panel_constraint_metadata → pricing
+```
+
+`constraint_reason` / `bottleneck_kind` / `bottleneck_units` on panel JSON.
+
+**Storage decouple (virt_power) — REMOVED 2026-06:** Previously:
 ```python
 virt_power_storage_decouple = frozenset({"storage"})
 decouple = virt_power_storage_decouple if fam == "virt_power" else None
-new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=decouple)
 ```
-Gerekçe: IBM Power'da SAN-tabanlı storage çoğu zaman sellable infra'da yoktur;
-`storage raw=0`'ın CPU/RAM constrained sellable'ı sıfıra çökertmesi engellenir.
+Storage now participates in ratio min() like other virt families.
 
 ### 4) `compute_potential_tl(sellable_constrained, unit_price_tl)`
 

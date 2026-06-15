@@ -118,6 +118,42 @@ def test_constrain_by_ratio_picks_scarce_resource_as_n():
     assert out["storage"].ratio_bound is True
 
 
+def test_apply_storage_ratio_cap_respects_positive_compute():
+    from shared.sellable.computation import apply_storage_ratio_cap
+
+    cpu = _panel("cpu", 10.0, family="virt_classic")
+    cpu.sellable_constrained = 10.0
+    ram = _panel("ram", 40.0, family="virt_classic")
+    ram.sellable_constrained = 40.0
+    sto = _panel("storage", 5000.0, family="virt_classic")
+    sto.sellable_constrained = 5000.0
+    ratio = ResourceRatio(
+        family="virt_classic", cpu_per_unit=1.0, ram_gb_per_unit=4.0, storage_gb_per_unit=100.0,
+    )
+    out = {p.resource_kind: p for p in apply_storage_ratio_cap([cpu, ram, sto], ratio)}
+    # n_eff = min(10/1, 40/4) = 10 → storage cap 1000 GB
+    assert out["storage"].sellable_constrained == 1000.0
+    assert out["storage"].ratio_bound is True
+    assert out["storage"].bottleneck_kind == "cpu"
+
+
+def test_apply_storage_ratio_cap_zero_when_compute_zero():
+    from shared.sellable.computation import apply_storage_ratio_cap
+
+    cpu = _panel("cpu", 0.0, family="virt_classic")
+    cpu.sellable_constrained = 0.0
+    ram = _panel("ram", 0.0, family="virt_classic")
+    ram.sellable_constrained = 0.0
+    sto = _panel("storage", 500.0, family="virt_classic")
+    sto.sellable_constrained = 500.0
+    ratio = ResourceRatio(
+        family="virt_classic", cpu_per_unit=1.0, ram_gb_per_unit=4.0, storage_gb_per_unit=100.0,
+    )
+    out = {p.resource_kind: p for p in apply_storage_ratio_cap([cpu, ram, sto], ratio)}
+    assert out["storage"].sellable_constrained == 0.0
+    assert out["storage"].constraint_reason == "compute_bottleneck"
+
+
 def test_constrain_by_ratio_zero_when_any_resource_is_zero():
     panels = [_panel("cpu", 4.0), _panel("ram", 0.0), _panel("storage", 500.0)]
     ratio = ResourceRatio(family="virt_hyperconverged", cpu_per_unit=1.0, ram_gb_per_unit=8.0, storage_gb_per_unit=100.0)

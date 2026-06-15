@@ -142,6 +142,13 @@ def fmt_tl_range(lo: float | None, hi: float | None) -> str:
     return fmt_tl(lo if lo is not None else hi)
 
 
+def fmt_tl_short(value: float | None) -> tuple[str, str]:
+    """Alias for card TL display; delegates to sellable_constraint_viz."""
+    from src.components.sellable_constraint_viz import fmt_tl_for_card
+
+    return fmt_tl_for_card(value)
+
+
 def format_compact_money_tl(value, decimals: int = 2) -> str:
     """Compact TL amount for UI; use format_full_decimal for export."""
     if value is None:
