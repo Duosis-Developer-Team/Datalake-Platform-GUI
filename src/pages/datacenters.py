@@ -23,6 +23,7 @@ from src.utils.datacenters_virt_sellable import (
     refresh_virt_sellable_cache,
     resolve_virt_sellable_for_dcs,
 )
+from src.utils.format_units import fmt_tl_range
 from src.utils.virt_sellable_aggregate import VIRT_SELLABLE_FAMILY_LABELS
 
 _LOG = logging.getLogger(__name__)
@@ -108,7 +109,34 @@ def _fmt_tl_short(value: float | int | None) -> tuple[str, str]:
     return full, full
 
 
-def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo", tooltip: str | None = None) -> html.Div:
+def _potential_sales_display(
+    tl_min: float,
+    tl_max: float,
+    *,
+    loading: bool = False,
+) -> tuple[str, str]:
+    """Format Potential Sales headline + tooltip (min–max TL range)."""
+    if loading:
+        return "Hesaplanıyor…", "—"
+    lo = float(tl_min or 0.0)
+    hi = float(tl_max or 0.0)
+    short = fmt_tl_range(lo, hi)
+    if abs(hi - lo) > 1e-6:
+        full = f"{lo:,.0f} – {hi:,.0f} TL"
+    else:
+        full = f"{lo:,.0f} TL"
+    return short, full
+
+
+def _summary_kpi(
+    icon: str,
+    label: str,
+    value: str,
+    color: str = "indigo",
+    tooltip: str | None = None,
+    *,
+    allow_wrap: bool = False,
+) -> html.Div:
     """Single KPI card for the summary strip."""
     label_row = [
         html.Div(label, style={
@@ -166,13 +194,13 @@ def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo", toolt
                 children=[
                     html.Div(style={"display": "flex", "alignItems": "center"}, children=label_row),
                     html.Div(str(value), style={
-                        "fontSize": "1.45rem",
+                        "fontSize": "1.15rem" if allow_wrap else "1.45rem",
                         "fontWeight": 900,
                         "color": "#2B3674",
                         "letterSpacing": "-0.02em",
-                        "lineHeight": 1.1,
+                        "lineHeight": 1.2,
                         "fontVariantNumeric": "tabular-nums",
-                        "whiteSpace": "nowrap",
+                        "whiteSpace": "normal" if allow_wrap else "nowrap",
                     }),
                 ],
             ),
@@ -183,6 +211,8 @@ def _summary_kpi(icon: str, label: str, value: str, color: str = "indigo", toolt
 def _dc_sellable_ribbon(
     virt_tl: float,
     *,
+    virt_tl_min: float | None = None,
+    virt_tl_max: float | None = None,
     total_portfolio_tl: float,
     loading: bool = False,
 ) -> html.Div:
@@ -190,7 +220,14 @@ def _dc_sellable_ribbon(
     if loading:
         pot_short, pot_full = "…", "Hesaplanıyor"
     else:
-        pot_short, pot_full = _fmt_tl_short(virt_tl)
+        lo = float(virt_tl_min if virt_tl_min is not None else virt_tl)
+        hi = float(virt_tl_max if virt_tl_max is not None else virt_tl)
+        pot_short = fmt_tl_range(lo, hi)
+        pot_full = (
+            f"{lo:,.0f} – {hi:,.0f} TL"
+            if abs(hi - lo) > 1e-6
+            else f"{lo:,.0f} TL"
+        )
     tot = float(total_portfolio_tl or 0.0)
     pct = (
         min(100.0, max(0.0, (virt_tl / tot) * 100.0))
@@ -217,7 +254,13 @@ def _dc_sellable_ribbon(
                     mb=4,
                     children=[
                         dmc.Text("Potential Sales (Virtualization)", size="xs", fw=600, c="#A3AED0"),
-                        dmc.Text(pot_short, size="xs", fw=800, c="#4318FF"),
+                        dmc.Text(
+                            pot_short,
+                            size="xs",
+                            fw=800,
+                            c="#4318FF",
+                            style={"textAlign": "right", "lineHeight": 1.2, "maxWidth": "55%"},
+                        ),
                     ],
                 ),
                 dmc.Progress(value=pct, color="indigo", size="sm", radius="xl"),
@@ -231,6 +274,8 @@ def _dc_vault_card(
     sla_entry=None,
     *,
     virt_tl: float = 0.0,
+    virt_tl_min: float | None = None,
+    virt_tl_max: float | None = None,
     total_virt_tl: float = 0.0,
     virt_loading: bool = False,
 ):
@@ -548,6 +593,8 @@ def _dc_vault_card(
             resource_footer,
             _dc_sellable_ribbon(
                 virt_tl,
+                virt_tl_min=virt_tl_min,
+                virt_tl_max=virt_tl_max,
                 total_portfolio_tl=total_virt_tl,
                 loading=virt_loading,
             ),
@@ -572,8 +619,12 @@ def build_datacenters(time_range=None, visible_sections=None):
 
     virt_state = resolve_virt_sellable_for_dcs(dc_ids, tr, family_workers=family_workers)
     virt_tl_by_dc = virt_state["virt_tl_by_dc"]
+    virt_tl_min_by_dc = virt_state.get("virt_tl_min_by_dc") or {}
+    virt_tl_max_by_dc = virt_state.get("virt_tl_max_by_dc") or {}
     loading_by_dc = virt_state.get("loading_by_dc") or {}
     total_potential_tl = float(virt_state["total_potential_tl"])
+    total_potential_tl_min = float(virt_state.get("total_potential_tl_min") or 0.0)
+    total_potential_tl_max = float(virt_state.get("total_potential_tl_max") or 0.0)
     virt_loading = bool(virt_state["loading"])
 
     # ── Export rows ──
@@ -623,14 +674,19 @@ def build_datacenters(time_range=None, visible_sections=None):
             (lambda short, full: _summary_kpi(
                 "solar:money-bag-bold-duotone",
                 "Potential Sales (Virtualization)",
-                "Hesaplanıyor…" if virt_loading else short,
+                short,
                 "indigo",
                 tooltip=(
                     f"Total potential (all DCs): {full if not virt_loading else '—'}\n"
                     "Sum of crm-engine sellable potential_tl for virtualization families: "
                     f"{', '.join(VIRT_SELLABLE_FAMILY_LABELS)}."
                 ),
-            ))(*_fmt_tl_short(total_potential_tl)),
+                allow_wrap=True,
+            ))(*_potential_sales_display(
+                total_potential_tl_min,
+                total_potential_tl_max,
+                loading=virt_loading,
+            )),
         ],
         )]
     )
@@ -806,6 +862,8 @@ def build_datacenters(time_range=None, visible_sections=None):
                             sla_by_dc.get(dc.get("id"))
                             or sla_by_dc.get(str(dc.get("id", "")).upper()),
                             virt_tl=virt_tl_by_dc.get(str(dc.get("id", "")), 0.0),
+                            virt_tl_min=virt_tl_min_by_dc.get(str(dc.get("id", ""))),
+                            virt_tl_max=virt_tl_max_by_dc.get(str(dc.get("id", ""))),
                             total_virt_tl=total_potential_tl,
                             virt_loading=loading_by_dc.get(str(dc.get("id", "")), virt_loading),
                         ),
@@ -932,8 +990,12 @@ def poll_virt_sellable_refresh(_n, state, time_range):
     datacenters = api.get_all_datacenters_summary(tr)
     sla_by_dc = api.get_sla_by_dc(tr)
     virt_tl_by_dc = virt_state["virt_tl_by_dc"]
+    virt_tl_min_by_dc = virt_state.get("virt_tl_min_by_dc") or {}
+    virt_tl_max_by_dc = virt_state.get("virt_tl_max_by_dc") or {}
     loading_by_dc = virt_state.get("loading_by_dc") or {}
     total_potential_tl = float(virt_state["total_potential_tl"])
+    total_potential_tl_min = float(virt_state.get("total_potential_tl_min") or 0.0)
+    total_potential_tl_max = float(virt_state.get("total_potential_tl_max") or 0.0)
 
     total_hosts = sum(dc.get("host_count", 0) for dc in datacenters)
     total_vms = sum(dc.get("vm_count", 0) for dc in datacenters)
@@ -963,7 +1025,8 @@ def poll_virt_sellable_refresh(_n, state, time_range):
                     "Sum of crm-engine sellable potential_tl for virtualization families: "
                     f"{', '.join(VIRT_SELLABLE_FAMILY_LABELS)}."
                 ),
-            ))(*_fmt_tl_short(total_potential_tl)),
+                allow_wrap=True,
+            ))(*_potential_sales_display(total_potential_tl_min, total_potential_tl_max)),
         ],
     )
 
@@ -980,6 +1043,8 @@ def poll_virt_sellable_refresh(_n, state, time_range):
                     sla_by_dc.get(dc.get("id"))
                     or sla_by_dc.get(str(dc.get("id", "")).upper()),
                     virt_tl=virt_tl_by_dc.get(str(dc.get("id", "")), 0.0),
+                    virt_tl_min=virt_tl_min_by_dc.get(str(dc.get("id", ""))),
+                    virt_tl_max=virt_tl_max_by_dc.get(str(dc.get("id", ""))),
                     total_virt_tl=total_potential_tl,
                     virt_loading=loading_by_dc.get(str(dc.get("id", "")), False),
                 ),

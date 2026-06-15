@@ -5,18 +5,25 @@ import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from typing import Any, TypedDict
 
 from src.services import api_client as api
 from src.utils.virt_sellable_aggregate import (
     collect_virt_sellable_panels,
-    total_potential_tl,
     virt_tab_cluster_scope,
+    virt_total_potential_range,
 )
 
 logger = logging.getLogger(__name__)
 
-_VIRT_TL_CACHE: dict[str, float] = {}
+
+class VirtTlEntry(TypedDict):
+    tl: float
+    tl_min: float
+    tl_max: float
+
+
+_VIRT_TL_CACHE: dict[str, VirtTlEntry] = {}
 _VIRT_CACHE_WARMING = False
 _VIRT_CACHE_TR_KEY = ""
 _VIRT_CACHE_LOCK = threading.Lock()
@@ -27,11 +34,24 @@ def virt_cache_tr_key(tr: dict | None) -> str:
     return f"{tr.get('preset', '')}|{tr.get('start', '')}|{tr.get('end', '')}"
 
 
+def _entry_from_legacy(val: float | VirtTlEntry | dict[str, Any]) -> VirtTlEntry:
+    """Normalize cache values (supports legacy float entries in tests)."""
+    if isinstance(val, dict):
+        tl = float(val.get("tl") or 0.0)
+        return {
+            "tl": tl,
+            "tl_min": float(val.get("tl_min") if val.get("tl_min") is not None else tl),
+            "tl_max": float(val.get("tl_max") if val.get("tl_max") is not None else tl),
+        }
+    tl = float(val or 0.0)
+    return {"tl": tl, "tl_min": tl, "tl_max": tl}
+
+
 def _virt_sellable_tl_for_dc(
     dc_id: str,
     family_workers: int,
     tr: dict | None = None,
-) -> float:
+) -> VirtTlEntry:
     """Resolve virt sellable TL via per-family by-panel (same path as DC detail Virt tab)."""
     tr = tr or {}
     try:
@@ -46,16 +66,17 @@ def _virt_sellable_tl_for_dc(
         hyperconv,
         max_family_workers=family_workers,
     )
-    return total_potential_tl(panels)
+    total, lo, hi = virt_total_potential_range(panels)
+    return {"tl": total, "tl_min": lo, "tl_max": hi}
 
 
 def _seed_from_api_cache(
     dc_ids: list[str],
     family_workers: int,
     tr: dict | None = None,
-) -> dict[str, float]:
+) -> dict[str, VirtTlEntry]:
     """Publish any DC values already warm in api_client sellable by-panel cache."""
-    seeded: dict[str, float] = {}
+    seeded: dict[str, VirtTlEntry] = {}
     for dc_id in dc_ids:
         try:
             seeded[str(dc_id)] = _virt_sellable_tl_for_dc(dc_id, family_workers, tr)
@@ -65,7 +86,7 @@ def _seed_from_api_cache(
 
 
 def _publish_virt_cache(
-    local_vals: dict[str, float],
+    local_vals: dict[str, VirtTlEntry],
     dc_ids: list[str],
     tr_key: str,
 ) -> None:
@@ -85,6 +106,45 @@ def _publish_virt_cache(
             _VIRT_CACHE_TR_KEY = tr_key
 
 
+def _build_resolve_result(
+    dc_ids: list[str],
+    cache_snapshot: dict[str, VirtTlEntry],
+    *,
+    loading_by_dc: dict[str, bool],
+    cache_complete: bool,
+    tr_key: str,
+    loading: bool,
+) -> dict[str, Any]:
+    virt_tl_by_dc: dict[str, float] = {}
+    virt_tl_min_by_dc: dict[str, float] = {}
+    virt_tl_max_by_dc: dict[str, float] = {}
+    total = 0.0
+    total_min = 0.0
+    total_max = 0.0
+    for dc_id in dc_ids:
+        has_stale_val = dc_id in cache_snapshot
+        entry = _entry_from_legacy(cache_snapshot[dc_id]) if has_stale_val else _entry_from_legacy(0.0)
+        virt_tl_by_dc[dc_id] = entry["tl"]
+        virt_tl_min_by_dc[dc_id] = entry["tl_min"]
+        virt_tl_max_by_dc[dc_id] = entry["tl_max"]
+        if has_stale_val:
+            total += entry["tl"]
+            total_min += entry["tl_min"]
+            total_max += entry["tl_max"]
+    return {
+        "virt_tl_by_dc": virt_tl_by_dc,
+        "virt_tl_min_by_dc": virt_tl_min_by_dc,
+        "virt_tl_max_by_dc": virt_tl_max_by_dc,
+        "loading_by_dc": loading_by_dc,
+        "total_potential_tl": total,
+        "total_potential_tl_min": total_min,
+        "total_potential_tl_max": total_max,
+        "loading": loading,
+        "cache_complete": cache_complete,
+        "tr_key": tr_key,
+    }
+
+
 def start_virt_cache_warm(
     dc_ids: list[str],
     tr: dict,
@@ -101,10 +161,10 @@ def start_virt_cache_warm(
 
     def _run() -> None:
         global _VIRT_CACHE_WARMING
-        local_vals: dict[str, float] = {}
+        local_vals: dict[str, VirtTlEntry] = {}
         try:
 
-            def _compute(dc_id: str) -> tuple[str, float]:
+            def _compute(dc_id: str) -> tuple[str, VirtTlEntry]:
                 return dc_id, _virt_sellable_tl_for_dc(dc_id, family_workers, tr)
 
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -171,28 +231,25 @@ def resolve_virt_sellable_for_dcs(
             cache_snapshot = dict(_VIRT_TL_CACHE)
             cache_key = _VIRT_CACHE_TR_KEY
 
-    virt_tl_by_dc: dict[str, float] = {}
     loading_by_dc: dict[str, bool] = {}
     total = 0.0
     for dc_id in dc_ids:
         has_stale_val = dc_id in cache_snapshot
         in_cache_for_tr = has_stale_val and cache_key == tr_key
-        dc_virt = float(cache_snapshot.get(dc_id, 0.0) or 0.0) if has_stale_val else 0.0
-        virt_tl_by_dc[dc_id] = dc_virt
         loading_by_dc[dc_id] = (warming or not in_cache_for_tr) and not has_stale_val
-        total += dc_virt
+        if has_stale_val:
+            total += _entry_from_legacy(cache_snapshot[dc_id])["tl"]
 
-    any_resolved = any(not loading_by_dc.get(dc_id, True) for dc_id in dc_ids)
     has_stale = any(dc_id in cache_snapshot for dc_id in dc_ids)
     loading = (warming or not cache_complete) and not (has_stale and total > 0.0)
-    return {
-        "virt_tl_by_dc": virt_tl_by_dc,
-        "loading_by_dc": loading_by_dc,
-        "total_potential_tl": total,
-        "loading": loading,
-        "cache_complete": cache_complete,
-        "tr_key": tr_key,
-    }
+    return _build_resolve_result(
+        dc_ids,
+        cache_snapshot,
+        loading_by_dc=loading_by_dc,
+        cache_complete=cache_complete,
+        tr_key=tr_key,
+        loading=loading,
+    )
 
 
 def refresh_virt_sellable_cache(
@@ -205,9 +262,9 @@ def refresh_virt_sellable_cache(
     global _VIRT_CACHE_WARMING
     fw = max(1, int(family_workers or os.getenv("DC_OVERVIEW_VIRT_FAMILY_WORKERS", "1") or "1"))
     tr_key = virt_cache_tr_key(tr)
-    local_vals: dict[str, float] = {}
+    local_vals: dict[str, VirtTlEntry] = {}
 
-    def _compute(dc_id: str) -> tuple[str, float]:
+    def _compute(dc_id: str) -> tuple[str, VirtTlEntry]:
         return dc_id, _virt_sellable_tl_for_dc(dc_id, fw, tr)
 
     mw = min(max(1, int(os.getenv("DC_OVERVIEW_VIRT_WORKERS", "4") or "4")), max(1, len(dc_ids)))
@@ -226,15 +283,13 @@ def refresh_virt_sellable_cache(
         _VIRT_CACHE_WARMING = False
         snapshot = dict(_VIRT_TL_CACHE)
 
-    virt_tl_by_dc = {dc_id: float(snapshot.get(dc_id, 0.0) or 0.0) for dc_id in dc_ids}
     loading_by_dc = {dc_id: False for dc_id in dc_ids}
-    total = sum(virt_tl_by_dc.values())
     cache_complete = set(dc_ids).issubset(snapshot.keys()) and len(dc_ids) > 0
-    return {
-        "virt_tl_by_dc": virt_tl_by_dc,
-        "loading_by_dc": loading_by_dc,
-        "total_potential_tl": total,
-        "loading": False,
-        "cache_complete": cache_complete,
-        "tr_key": tr_key,
-    }
+    return _build_resolve_result(
+        dc_ids,
+        snapshot,
+        loading_by_dc=loading_by_dc,
+        cache_complete=cache_complete,
+        tr_key=tr_key,
+        loading=False,
+    )

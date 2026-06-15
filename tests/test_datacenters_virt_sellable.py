@@ -6,6 +6,14 @@ from unittest.mock import patch
 from src.utils import datacenters_virt_sellable as dvs
 
 
+def _entry(tl: float, tl_min: float | None = None, tl_max: float | None = None) -> dict:
+    return {
+        "tl": tl,
+        "tl_min": tl if tl_min is None else tl_min,
+        "tl_max": tl if tl_max is None else tl_max,
+    }
+
+
 def test_resolve_virt_sellable_loading_when_cache_empty(monkeypatch):
     monkeypatch.setattr(dvs, "_VIRT_TL_CACHE", {})
     monkeypatch.setattr(dvs, "_VIRT_CACHE_TR_KEY", "")
@@ -17,10 +25,12 @@ def test_resolve_virt_sellable_loading_when_cache_empty(monkeypatch):
         state = dvs.resolve_virt_sellable_for_dcs(["DC1", "DC2"], {"preset": "30d"})
     assert state["loading"] is True
     assert state["virt_tl_by_dc"]["DC1"] == 0.0
+    assert state["virt_tl_min_by_dc"]["DC1"] == 0.0
+    assert state["virt_tl_max_by_dc"]["DC1"] == 0.0
 
 
 def test_resolve_virt_sellable_per_dc_loading(monkeypatch):
-    monkeypatch.setattr(dvs, "_VIRT_TL_CACHE", {"DC1": 100.0})
+    monkeypatch.setattr(dvs, "_VIRT_TL_CACHE", {"DC1": _entry(100.0, 90.0, 110.0)})
     monkeypatch.setattr(dvs, "_VIRT_CACHE_TR_KEY", "30d||")
     monkeypatch.setattr(dvs, "_VIRT_CACHE_WARMING", True)
 
@@ -28,10 +38,16 @@ def test_resolve_virt_sellable_per_dc_loading(monkeypatch):
         state = dvs.resolve_virt_sellable_for_dcs(["DC1", "DC2"], {"preset": "30d"})
     assert state["loading_by_dc"]["DC1"] is False
     assert state["loading_by_dc"]["DC2"] is True
+    assert state["virt_tl_min_by_dc"]["DC1"] == 90.0
+    assert state["virt_tl_max_by_dc"]["DC1"] == 110.0
 
 
 def test_resolve_virt_sellable_complete_when_cache_warm(monkeypatch):
-    monkeypatch.setattr(dvs, "_VIRT_TL_CACHE", {"DC1": 100.0, "DC2": 200.0})
+    monkeypatch.setattr(
+        dvs,
+        "_VIRT_TL_CACHE",
+        {"DC1": _entry(100.0, 80.0, 120.0), "DC2": _entry(200.0, 150.0, 250.0)},
+    )
     monkeypatch.setattr(dvs, "_VIRT_CACHE_TR_KEY", "30d||")
     monkeypatch.setattr(dvs, "_VIRT_CACHE_WARMING", False)
 
@@ -39,11 +55,17 @@ def test_resolve_virt_sellable_complete_when_cache_warm(monkeypatch):
         state = dvs.resolve_virt_sellable_for_dcs(["DC1", "DC2"], {"preset": "30d"})
     assert state["loading"] is False
     assert state["total_potential_tl"] == 300.0
+    assert state["total_potential_tl_min"] == 230.0
+    assert state["total_potential_tl_max"] == 370.0
 
 
 def test_resolve_virt_sellable_serves_stale_while_warming(monkeypatch):
     """While background warm runs, last published values stay visible (not zeroed)."""
-    monkeypatch.setattr(dvs, "_VIRT_TL_CACHE", {"DC1": 150.0, "DC2": 250.0})
+    monkeypatch.setattr(
+        dvs,
+        "_VIRT_TL_CACHE",
+        {"DC1": _entry(150.0, 140.0, 160.0), "DC2": _entry(250.0, 200.0, 300.0)},
+    )
     monkeypatch.setattr(dvs, "_VIRT_CACHE_TR_KEY", "old_range||")
     monkeypatch.setattr(dvs, "_VIRT_CACHE_WARMING", True)
 
@@ -51,22 +73,24 @@ def test_resolve_virt_sellable_serves_stale_while_warming(monkeypatch):
         state = dvs.resolve_virt_sellable_for_dcs(["DC1", "DC2"], {"preset": "7d"})
     assert state["loading"] is False
     assert state["total_potential_tl"] == 400.0
+    assert state["total_potential_tl_min"] == 340.0
+    assert state["total_potential_tl_max"] == 460.0
     assert state["virt_tl_by_dc"]["DC1"] == 150.0
 
 
 def test_publish_virt_cache_does_not_replace_on_empty():
     dvs._VIRT_TL_CACHE.clear()
-    dvs._VIRT_TL_CACHE["DC1"] = 99.0
+    dvs._VIRT_TL_CACHE["DC1"] = _entry(99.0)
     dvs._publish_virt_cache({}, ["DC1", "DC2"], "new||")
-    assert dvs._VIRT_TL_CACHE == {"DC1": 99.0}
+    assert dvs._VIRT_TL_CACHE == {"DC1": _entry(99.0)}
 
 
 def test_publish_virt_cache_merges_partial_warm():
     dvs._VIRT_TL_CACHE.clear()
-    dvs._VIRT_TL_CACHE["DC1"] = 50.0
-    dvs._publish_virt_cache({"DC2": 80.0}, ["DC1", "DC2"], "tr||")
-    assert dvs._VIRT_TL_CACHE["DC1"] == 50.0
-    assert dvs._VIRT_TL_CACHE["DC2"] == 80.0
+    dvs._VIRT_TL_CACHE["DC1"] = _entry(50.0)
+    dvs._publish_virt_cache({"DC2": _entry(80.0, 70.0, 90.0)}, ["DC1", "DC2"], "tr||")
+    assert dvs._VIRT_TL_CACHE["DC1"] == _entry(50.0)
+    assert dvs._VIRT_TL_CACHE["DC2"] == _entry(80.0, 70.0, 90.0)
     assert dvs._VIRT_CACHE_TR_KEY != "tr||"  # incomplete — tr_key not advanced
 
 
@@ -86,11 +110,30 @@ def test_virt_sellable_tl_for_dc_uses_by_panel_path():
         "src.utils.datacenters_virt_sellable.collect_virt_sellable_panels",
         return_value=panels,
     ) as mock_collect:
-        tl = dvs._virt_sellable_tl_for_dc("DC11", family_workers=2, tr={"preset": "30d"})
-    assert tl == 1_750_000.0
+        entry = dvs._virt_sellable_tl_for_dc("DC11", family_workers=2, tr={"preset": "30d"})
+    assert entry == {"tl": 1_750_000.0, "tl_min": 1_750_000.0, "tl_max": 1_750_000.0}
     mock_collect.assert_called_once_with(
         "DC11", ["KM-1"], ["HC-1"], max_family_workers=2
     )
+
+
+def test_virt_sellable_tl_for_dc_returns_range_when_storage_has_bounds():
+    panels = [
+        {"potential_tl": 500_000.0},
+        {
+            "potential_tl": 1_000_000.0,
+            "potential_tl_min": 800_000.0,
+            "potential_tl_max": 1_200_000.0,
+        },
+    ]
+    with patch(
+        "src.utils.datacenters_virt_sellable.collect_virt_sellable_panels",
+        return_value=panels,
+    ):
+        entry = dvs._virt_sellable_tl_for_dc("DC13", family_workers=1)
+    assert entry["tl"] == 1_500_000.0
+    assert entry["tl_min"] == 1_300_000.0
+    assert entry["tl_max"] == 1_700_000.0
 
 
 def test_virt_sellable_tl_for_dc_does_not_use_summary_light():
@@ -106,7 +149,14 @@ def test_virt_sellable_tl_for_dc_does_not_use_summary_light():
 
 
 def test_seed_from_api_cache_uses_by_panel_path():
-    with patch.object(dvs, "_virt_sellable_tl_for_dc", side_effect=[100.0, 200.0]) as mock_compute:
+    with patch.object(
+        dvs,
+        "_virt_sellable_tl_for_dc",
+        side_effect=[_entry(100.0), _entry(200.0, 180.0, 220.0)],
+    ) as mock_compute:
         seeded = dvs._seed_from_api_cache(["DC1", "DC2"], family_workers=1)
-    assert seeded == {"DC1": 100.0, "DC2": 200.0}
+    assert seeded == {
+        "DC1": _entry(100.0),
+        "DC2": _entry(200.0, 180.0, 220.0),
+    }
     assert mock_compute.call_count == 2
