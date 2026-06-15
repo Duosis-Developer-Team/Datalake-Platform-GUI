@@ -1,6 +1,28 @@
 # Backend Performans Notu — datacenter-api / DB
 
-**Kime:** Can (backend) · **Tarih:** 2026-06-14 · **Kaynak:** 7-agent canlı performans ölçümü (GUI + backend, gerçek sayılar)
+**Kime:** Can (backend) · **Tarih:** 2026-06-14/15 · **Kaynak:** 7-agent canlı performans ölçümü + datacenter-api'nin kendi SQL log'ları
+
+## 🔴 KESİN KANIT — yavaş SQL sorguları (datacenter-api'nin KENDİ instrumentation'ından)
+"DB sorguları sorunsuz" denmiş olabilir ama datacenter-api'nin kendi `SQL row(s) (Nms, R rows)` log'ları aksini gösteriyor — bu süreler datacenter-api'nin DB çağrısının ETRAFINDA ölçtüğü gerçek sürelerdir:
+
+| Ölçülen süre | Satır | Sorgu | Tablo |
+|---|---|---|---|
+| **94.6 s** | **8.337.491** | `SELECT LPAR...` | `public.ibm_lpar_general` |
+| **78 / 75 / 73 s** | 6366 | `SELECT DISTINCT CLUSTER_UUID` | `nutanix_cluster_metrics` / `nutanix_vm_metrics` |
+| 62-69 s | 3634-5704 | `SELECT DISTINCT CLUSTER...` | nutanix |
+| 52 s | 5464 | `SELECT DISTINCT ON (...)` | vmware/nutanix |
+| onlarca | — | 22-38 s | çeşitli |
+
+**Yorum:** `ibm_lpar_general` üzerinde 8.3M satır full-scan = 94s. `DISTINCT CLUSTER_UUID` yalnız 6366 distinct değer için 75s = altındaki devasa tablonun tam taraması. Bunlar **index eksikliği / time-window filtresi eksikliği / aggregation eksikliği** işaretleri.
+
+**Aksiyon (öncelik):**
+1. `ibm_lpar_general`: time-window (`timestamp/collection_time`) + `(server, timestamp)` index; SELECT'i son snapshot'a indir (8.3M satır taranmasın).
+2. `nutanix_cluster_metrics` / `nutanix_vm_metrics`: `DISTINCT CLUSTER_UUID`/`DISTINCT ON (VMNAME)` için `(cluster_uuid, timestamp)` / `(vmname, timestamp)` index; veya materialized view.
+3. Bu sorguları besleyen endpoint'leri (overview/summary/compute) server-side cache'le (aşağıda).
+
+---
+
+**Eski özet (endpoint-seviye ölçüm):**
 
 ## Özet
 GUI'deki "her şey çok yavaş / donuyor" şikayetinin **baskın sebebi frontend değil — datacenter-api + remote DB.** Ölçüldü: ağır endpoint'ler **7d penceresinde bile 20-60s**, 30d'de daha kötü. GUI render maliyeti toplam sürenin **<%1'i (~30-50ms)**. Yani sayfa yavaş çünkü bu çağrıları bekliyor. GUI tarafında yapılabilecekleri yaptık (paralel çağrı, GUI-cache, lazy-mount, boş-veri/isim fix'leri); kalan yavaşlık **backend'de çözülmeli.**
