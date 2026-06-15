@@ -120,6 +120,7 @@ from src.pages.dc_view import (
     _bps_to_gbps,
     _build_compute_tab,
     _build_hosts_panel_content,
+    _build_power_tab,
     _hosts_panel_loader,
     _build_sellable_inline_kpi,
     _build_virt_subtab_stack,
@@ -933,32 +934,39 @@ for _virt_cluster_prefix in ("classic", "hyperconv"):
     dash.Output("sellable-classic-card", "children", allow_duplicate=True),
     dash.Output("hyperconv-virt-panel", "children", allow_duplicate=True),
     dash.Output("sellable-hyperconv-card", "children", allow_duplicate=True),
+    dash.Output("power-virt-panel", "children", allow_duplicate=True),
     dash.Input("virt-nested-tabs", "value"),
     dash.State("virt-classic-cluster-applied", "data"),
     dash.State("virt-hyperconv-cluster-applied", "data"),
+    dash.State("virt-classic-cluster-all", "data"),
+    dash.State("virt-hyperconv-cluster-all", "data"),
     dash.State("app-time-range", "data"),
     dash.State("url", "pathname"),
     dash.State("classic-virt-panel", "children"),
     dash.State("hyperconv-virt-panel", "children"),
+    dash.State("power-virt-panel", "children"),
     prevent_initial_call=True,
 )
 def populate_virt_nested_tab(
     active,
     classic_applied,
     hyperconv_applied,
+    all_classic,
+    all_hyperconv,
     time_range,
     pathname,
     classic_built,
     hyperconv_built,
+    power_built,
 ):
     """Lazy-build Virt sub-tab heavy content on first tab switch (applied cluster scope)."""
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return (dash.no_update,) * 5
     tr = time_range or default_time_range()
     no = dash.no_update
     if active == "classic" and not classic_built:
-        scope = classic_applied or None
+        scope = normalize_virt_cluster_scope(classic_applied, all_classic)
         batch = parallel_execute({
             "metrics": lambda: merge_host_summary_into_compute(
                 api.get_classic_metrics_filtered(dc_id, scope, tr),
@@ -974,9 +982,10 @@ def populate_virt_nested_tab(
             _sellable_card_children(batch["card"]) or html.Div(id="sellable-classic-card"),
             no,
             no,
+            no,
         )
     if active == "hyperconv" and not hyperconv_built:
-        scope = hyperconv_applied or None
+        scope = normalize_virt_cluster_scope(hyperconv_applied, all_hyperconv)
         batch = parallel_execute({
             "metrics": lambda: merge_host_summary_into_compute(
                 api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
@@ -992,8 +1001,27 @@ def populate_virt_nested_tab(
             no,
             _build_compute_tab(batch["metrics"], "Hyperconverged Compute", color="teal"),
             _sellable_card_children(batch["card"]) or html.Div(id="sellable-hyperconv-card"),
+            no,
         )
-    return no, no, no, no
+    if active == "power" and not power_built:
+        data = api.get_dc_details(dc_id, tr)
+        storage_capacity = api.get_dc_storage_capacity(dc_id, tr)
+        storage_performance = api.get_dc_storage_performance(dc_id, tr)
+        san_bottleneck = api.get_dc_san_bottleneck(dc_id, tr)
+        return (
+            no,
+            no,
+            no,
+            no,
+            _build_power_tab(
+                data.get("power", {}),
+                data.get("energy", {}),
+                storage_capacity,
+                storage_performance,
+                san_bottleneck,
+            ),
+        )
+    return no, no, no, no, no
 
 
 def _virt_callback_trigger_id() -> str:
@@ -1010,17 +1038,28 @@ def _virt_callback_trigger_id() -> str:
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
     dash.State("virt-classic-cluster-all", "data"),
+    dash.State("virt-nested-tabs", "value"),
     dash.State("classic-virt-panel", "children"),
     prevent_initial_call=True,
 )
-def update_classic_virt_block(applied_clusters, time_range, pathname, all_clusters, panel_children):
+def update_classic_virt_block(
+    applied_clusters, time_range, pathname, all_clusters, nested_tab, panel_children
+):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
         return dash.no_update, dash.no_update
     tr = time_range or default_time_range()
     scope = normalize_virt_cluster_scope(applied_clusters, all_clusters)
+    trigger = _virt_callback_trigger_id()
     if (
-        _virt_callback_trigger_id() == "virt-classic-cluster-applied"
+        trigger == "virt-classic-cluster-applied"
+        and nested_tab not in (None, "classic")
+        and scope is None
+        and not panel_children
+    ):
+        return dash.no_update, dash.no_update
+    if (
+        trigger == "virt-classic-cluster-applied"
         and scope is None
         and panel_children
     ):
@@ -1050,17 +1089,28 @@ def update_classic_virt_block(applied_clusters, time_range, pathname, all_cluste
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
     dash.State("virt-hyperconv-cluster-all", "data"),
+    dash.State("virt-nested-tabs", "value"),
     dash.State("hyperconv-virt-panel", "children"),
     prevent_initial_call=True,
 )
-def update_hyperconv_virt_block(applied_clusters, time_range, pathname, all_clusters, panel_children):
+def update_hyperconv_virt_block(
+    applied_clusters, time_range, pathname, all_clusters, nested_tab, panel_children
+):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
         return dash.no_update, dash.no_update
     tr = time_range or default_time_range()
     scope = normalize_virt_cluster_scope(applied_clusters, all_clusters)
+    trigger = _virt_callback_trigger_id()
     if (
-        _virt_callback_trigger_id() == "virt-hyperconv-cluster-applied"
+        trigger == "virt-hyperconv-cluster-applied"
+        and nested_tab != "hyperconv"
+        and scope is None
+        and not panel_children
+    ):
+        return dash.no_update, dash.no_update
+    if (
+        trigger == "virt-hyperconv-cluster-applied"
         and scope is None
         and panel_children
     ):

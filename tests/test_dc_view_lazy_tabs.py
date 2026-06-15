@@ -358,7 +358,7 @@ def test_virt_nested_tabs_eager_all_panels_present():
     assert _find_component_by_id(page, "virt-hyperconv-cluster-draft") is not None
     assert _find_component_by_id(page, "classic-virt-panel") is not None
     assert _find_component_by_id(page, "hyperconv-virt-panel") is not None
-    assert _find_component_by_id(page, "power-stub") is not None
+    assert _find_component_by_id(page, "power-virt-panel") is not None
 
 
 def test_build_virt_subtab_stack_hyperconv_no_name_error():
@@ -417,7 +417,9 @@ def test_build_virt_subtab_stack_power_renders():
         )
 
     assert len(stack) == 2
-    assert getattr(stack[0], "id", None) == "power-stub"
+    assert getattr(stack[0], "id", None) == "power-virt-panel"
+    assert getattr(stack[0], "children", None) is not None
+    assert getattr(stack[0].children, "id", None) == "power-stub"
 
 
 def test_build_virt_nested_subtab_panel_hyperconv_skips_storage_apis():

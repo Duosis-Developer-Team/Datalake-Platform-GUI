@@ -1817,12 +1817,22 @@ def _build_virt_subtab_stack(
             html.Div(id="sellable-hyperconv-card", children=sellable_children),
             _build_hosts_panel_shell("hyperconv", "teal") if show_virt_hosts else None,
         ]
+    if content_mode == "shell":
+        return [
+            html.Div(id="power-virt-panel"),
+            html.Div(id="sellable-power-card"),
+        ]
     card = _build_sellable_inline_kpi(
         dc_id, ["virt_power", "virt_power_hana"], "Power — Sellable Potential",
         color="grape", container_id="sellable-power-card",
     )
     return [
-        _build_power_tab(power, energy, storage_capacity, storage_performance, san_bottleneck),
+        html.Div(
+            id="power-virt-panel",
+            children=_build_power_tab(
+                power, energy, storage_capacity, storage_performance, san_bottleneck
+            ),
+        ),
         html.Div(id="sellable-power-card", children=_sellable_card_children(card)),
     ]
 
@@ -4632,6 +4642,7 @@ def build_dc_lazy_tab_panel(
         tr,
         visible_sections=vs,
         eager_tabs=frozenset({tab}),
+        virt_lazy_mount=(tab == "virt"),
     )
     root_id = f"dc-tab-{tab}-root"
     found = _find_component_by_id(page, root_id)
@@ -4715,12 +4726,15 @@ def build_dc_view(
     *,
     eager_tabs: frozenset[str] | None = None,
     active_outer_tab: str | None = None,
+    virt_lazy_mount: bool = False,
 ):
     """Build DC detail page for the given time range.
 
     visible_sections: optional set of permission codes (sec:/sub:/action:) the user may see.
     If None, all sections are shown (backward compatible).
     eager_tabs: when set, only fetch/build content for these tab keys (summary, virt, storage, …).
+    virt_lazy_mount: when True (outer virt tab opened lazily), render selector shells only and
+        defer heavy gauge/sellable builds to Dash callbacks (avoids OOM on large DCs).
     """
     if not dc_id:
         return html.Div("No Data Center ID provided", style={"padding": "20px"})
@@ -4946,7 +4960,10 @@ def build_dc_view(
     zabbix_storage_devices = []
     zabbix_storage_trend = {}
     datastore_mapping = {}
-    _fetch_ibm_storage = _tab_eager(eager_tabs, "virt") or _tab_eager(eager_tabs, "storage")
+    _fetch_ibm_storage = (
+        (_tab_eager(eager_tabs, "virt") and not virt_lazy_mount)
+        or _tab_eager(eager_tabs, "storage")
+    )
     _fetch_storage_tab = _tab_eager(eager_tabs, "storage")
     if _fetch_ibm_storage or _fetch_storage_tab:
         t_storage_batch = time.perf_counter()
@@ -4954,7 +4971,7 @@ def build_dc_view(
         if _fetch_ibm_storage:
             storage_tasks["capacity"] = lambda: api.get_dc_storage_capacity(dc_id, tr)
             storage_tasks["performance"] = lambda: api.get_dc_storage_performance(dc_id, tr)
-        if _tab_eager(eager_tabs, "virt"):
+        if _tab_eager(eager_tabs, "virt") and not virt_lazy_mount:
             storage_tasks["san_bottleneck"] = lambda: api.get_dc_san_bottleneck(dc_id, tr)
         if _fetch_storage_tab:
             storage_tasks["zabbix_cap"] = lambda: api.get_dc_zabbix_storage_capacity(dc_id, tr)
@@ -5061,7 +5078,7 @@ def build_dc_view(
         "show_virt_hosts": show_virt_hosts,
     }
     virt_total_children: list = []
-    if _tab_eager(eager_tabs, "virt"):
+    if _tab_eager(eager_tabs, "virt") and not virt_lazy_mount:
         virt_total_children = _build_virt_total_sellable_children(
             str(dc_id),
             None,
@@ -5072,8 +5089,10 @@ def build_dc_view(
         """Eager Virt nested tab body inside TabsPanel (backup-tab pattern)."""
         if not enabled or not _tab_eager(eager_tabs, "virt"):
             return None
-        if tab_key == "power":
-            mode = "full"
+        if virt_lazy_mount:
+            mode = "shell"
+        elif tab_key == "power":
+            mode = "full" if tab_key == default_virt_tab else "shell"
         else:
             mode = "full" if tab_key == default_virt_tab else "shell"
         stack = _build_virt_subtab_stack(tab_key, content_mode=mode, **virt_subtab_kwargs)
