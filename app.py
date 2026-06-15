@@ -125,6 +125,7 @@ from src.pages.dc_view import (
     _build_virt_subtab_stack,
     _build_virt_total_sellable_children,
     _sellable_card_children,
+    merge_host_summary_into_compute,
     _DC_ICONS,
 )
 from src.pages.settings.iam import roles_callbacks  # noqa: F401 — registers role matrix callback
@@ -959,7 +960,10 @@ def populate_virt_nested_tab(
     if active == "classic" and not classic_built:
         scope = classic_applied or None
         batch = parallel_execute({
-            "metrics": lambda: api.get_classic_metrics_filtered(dc_id, scope, tr),
+            "metrics": lambda: merge_host_summary_into_compute(
+                api.get_classic_metrics_filtered(dc_id, scope, tr),
+                api.get_classic_host_rows(dc_id, scope, tr),
+            ),
             "card": lambda: _build_sellable_inline_kpi(
                 dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
                 color="blue", selected_clusters=scope, container_id="sellable-classic-card",
@@ -974,7 +978,10 @@ def populate_virt_nested_tab(
     if active == "hyperconv" and not hyperconv_built:
         scope = hyperconv_applied or None
         batch = parallel_execute({
-            "metrics": lambda: api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
+            "metrics": lambda: merge_host_summary_into_compute(
+                api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
+                api.get_hyperconv_host_rows(dc_id, scope, tr),
+            ),
             "card": lambda: _build_sellable_inline_kpi(
                 dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
                 color="teal", selected_clusters=scope, container_id="sellable-hyperconv-card",
@@ -1019,7 +1026,10 @@ def update_classic_virt_block(applied_clusters, time_range, pathname, all_cluste
     ):
         return dash.no_update, dash.no_update
     batch = parallel_execute({
-        "metrics": lambda: api.get_classic_metrics_filtered(dc_id, scope, tr),
+        "metrics": lambda: merge_host_summary_into_compute(
+            api.get_classic_metrics_filtered(dc_id, scope, tr),
+            api.get_classic_host_rows(dc_id, scope, tr),
+        ),
         "card": lambda: _build_sellable_inline_kpi(
             dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
             color="blue", selected_clusters=scope,
@@ -1056,7 +1066,10 @@ def update_hyperconv_virt_block(applied_clusters, time_range, pathname, all_clus
     ):
         return dash.no_update, dash.no_update
     batch = parallel_execute({
-        "metrics": lambda: api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
+        "metrics": lambda: merge_host_summary_into_compute(
+            api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
+            api.get_hyperconv_host_rows(dc_id, scope, tr),
+        ),
         "card": lambda: _build_sellable_inline_kpi(
             dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
             color="teal", selected_clusters=scope,

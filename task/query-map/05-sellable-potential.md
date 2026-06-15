@@ -98,9 +98,31 @@ VIRT_SELLABLE_FAMILY_LABELS = ("virt_classic", "virt_hyperconverged", "virt_powe
 6. Aile başına `/compute` yanıt cache'i (aynı ailenin cpu/ram/storage panelleri
    tek HTTP çağrısını paylaşır).
 7. Her panel için `compute_panel` çağır.
-8. Aile bazında `constrain_by_ratio` uygula; her panel için `potential_tl`'i
-   `sellable_constrained` üzerinden yeniden hesapla.
-9. Sonucu Tier-1 + Tier-2'ye yaz.
+8. Aile bazında ratio uygula:
+   - **`virt_classic` / `virt_hyperconverged`:** host rows varsa
+     `constrain_by_ratio_per_host_triple_dual` (triple min CPU+RAM+Storage,
+     dual CPU/RAM track, storage `[min,max]` + IBM merge) — bkz.
+     [[ADR-0020-host-storage-triple-min-and-shared-dedupe]]
+   - Yoksa cluster fallback (`computation_mode=cluster_fallback`)
+   - Diğer aileler: `constrain_by_ratio`
+9. `virt_classic` host pipeline varken DC-total `_apply_storage_range` atlanır;
+   `apply_storage_ratio_cap` host satırları varken atlanır (triple-min zaten storage'ı bağlar).
+10. Her panel için `potential_tl`; **`SELLABLE_PAYLOAD_VERSION = 3`**.
+11. Sonucu Tier-1 + Tier-2'ye yaz.
+
+### Host triple-min örneği (ratio 1:4:50, tek host)
+
+| Kaynak | Boş (gate sonrası) | Birim limiti |
+|--------|-------------------|--------------|
+| CPU | 4 GHz | 4 |
+| RAM | 56 GB | 14 |
+| Storage | 800 GB (exclusive) | 16 |
+
+→ `n = 4` → satılabilir **4 CPU · 16 GB RAM · 200 GB**; ratio-bound waste
+**40 GB RAM · 600 GB storage** (`constraint_tags` on host cards).
+
+Kaynak: `shared/sellable/host_sellable.py`, datacenter-api `/compute/*/hosts`
+(`datastore_mounts`, `storage_pools`, `summary`).
 
 ### `compute_summary` akışı
 

@@ -826,6 +826,30 @@ WHERE datacenter ILIKE %s
 ORDER BY vmhost, "timestamp" DESC
 """
 
+# Per-host RAM peak (timestamp with max used_gb per vmhost).
+# Params: (dc_pattern, cluster_filter[], cluster_filter[], start_ts, end_ts)
+CLASSIC_HOST_MEM_PEAK = """
+WITH ts_agg AS (
+    SELECT vmhost,
+           "timestamp",
+           COALESCE(memory_used_gb, 0)     AS used_gb,
+           COALESCE(memory_capacity_gb, 0) AS cap_gb
+    FROM public.vmhost_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster ILIKE '%%KM%%'
+      AND (cardinality(%s::text[]) = 0 OR cluster = ANY(%s::text[]))
+      AND "timestamp" BETWEEN %s AND %s
+)
+SELECT DISTINCT ON (vmhost)
+    vmhost,
+    used_gb,
+    cap_gb,
+    COALESCE(100.0 * used_gb / NULLIF(cap_gb, 0), 0) AS util_pct
+FROM ts_agg
+WHERE cap_gb > 0
+ORDER BY vmhost, used_gb DESC, (used_gb / NULLIF(cap_gb, 0)) DESC
+"""
+
 # Per-host VM allocation aggregate (vCPU / RAM / storage provisioned by VMs on
 # each host). Sales CPU rule: 1 vCPU = 1 GHz (applied in Python).
 # Params: (dc_pattern, start_ts, end_ts, cluster_filter[], cluster_filter[])

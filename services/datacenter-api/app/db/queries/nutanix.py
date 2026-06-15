@@ -498,3 +498,35 @@ WHERE cap_bytes > 0
 ORDER BY used_bytes DESC, (used_bytes / NULLIF(cap_bytes, 0)) DESC
 LIMIT 1
 """
+
+# Per-host RAM peak from nutanix_host_metrics (hyperconverged scope).
+# Params: (dc_code, cluster_filter[], cluster_filter[], start_ts, end_ts)
+NUTANIX_HOST_MEM_PEAK = """
+WITH dc_clusters AS (
+    SELECT DISTINCT ON (cluster_uuid)
+        cluster_uuid::text AS cluster_uuid,
+        cluster_name
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND (cardinality(%s::text[]) = 0 OR cluster_name = ANY(%s::text[]))
+      AND collection_time >= NOW() - INTERVAL '7 days'
+    ORDER BY cluster_uuid, collection_time DESC
+),
+ts_agg AS (
+    SELECT h.host_name,
+           h.collection_time,
+           COALESCE(h.memory_usage_avg, 0)      AS used_bytes,
+           COALESCE(h.total_memory_capacity, 0) AS cap_bytes
+    FROM public.nutanix_host_metrics h
+    INNER JOIN dc_clusters c ON h.cluster_uuid::text = c.cluster_uuid
+    WHERE h.collection_time BETWEEN %s AND %s
+)
+SELECT DISTINCT ON (host_name)
+    host_name,
+    COALESCE(used_bytes / 1073741824.0, 0),
+    COALESCE(cap_bytes / 1073741824.0, 0),
+    COALESCE(100.0 * used_bytes / NULLIF(cap_bytes, 0), 0)
+FROM ts_agg
+WHERE cap_bytes > 0
+ORDER BY host_name, used_bytes DESC, (used_bytes / NULLIF(cap_bytes, 0)) DESC
+"""

@@ -13,9 +13,11 @@ from shared.sellable.computation import (
     compute_storage_range,
     constrain_by_ratio_per_host,
     constrain_by_ratio_per_host_dual,
+    constrain_by_ratio_per_host_triple_dual,
     host_effective_units,
     utilization_gate_blocked,
 )
+from shared.sellable.host_sellable import compute_host_sellable_units
 from shared.sellable.models import PanelResult, ResourceRatio
 
 
@@ -278,3 +280,72 @@ def test_constrain_by_ratio_dual_cpu_cluster_storage_uses_effective_n():
     # n = min(100, 100, 800) = 100 -> storage constrained = 100 * 100
     assert out["storage"].sellable_constrained == 10000.0
     assert out["storage"].ratio_bound is True
+
+
+def test_triple_min_user_scenario_4_56_800():
+    """Operator scenario: 4 GHz / 56 GB / 800 GB free → 4 units at 1:4:50."""
+    host = {
+        "cpu_cap_ghz": 100.0,
+        "cpu_alloc_ghz": 96.0,
+        "cpu_used_pct": 50.0,
+        "mem_cap_gb": 100.0,
+        "mem_alloc_gb": 44.0,
+        "mem_used_pct": 44.0,
+        "stor_cap_gb": 1000.0,
+        "stor_provisioned_gb": 200.0,
+        "stor_used_pct": 20.0,
+        "stor_exclusive_free_gb": 800.0,
+        "ghz_per_core": 1.0,
+    }
+    ratio = _ratio(cpu=1.0, ram=4.0, storage=50.0)
+    result = compute_host_sellable_units(
+        host,
+        ratio,
+        cpu_threshold_pct=100.0,
+        ram_threshold_pct=100.0,
+        storage_threshold_pct=100.0,
+    )
+    assert result.n_units_min == 4.0
+    assert result.cpu_constrained == 4.0
+    assert result.ram_constrained == 16.0
+    assert result.stor_constrained_min == 200.0
+    assert abs(result.waste_ram - 40.0) < 1e-6
+    assert abs(result.waste_stor_min - 600.0) < 1e-6
+    assert any("RAM" in t for t in result.constraint_tags)
+    assert any("storage" in t for t in result.constraint_tags)
+
+
+def test_shared_datastore_not_double_counted_in_family_range():
+    """Two hosts mounting the same shared pool → family max uses pool once."""
+    from shared.sellable.host_sellable import aggregate_family_storage_range
+
+    ratio = _ratio(cpu=1.0, ram=4.0, storage=100.0)
+    mount = {"shared": True, "free_gb": 500.0}
+    host_a = {
+        "cpu_cap_ghz": 100.0, "cpu_alloc_ghz": 0.0, "cpu_used_pct": 10.0,
+        "mem_cap_gb": 400.0, "mem_alloc_gb": 0.0, "mem_used_pct": 10.0,
+        "stor_cap_gb": 1000.0, "stor_provisioned_gb": 0.0, "stor_used_pct": 10.0,
+        "stor_exclusive_free_gb": 0.0, "datastore_mounts": [mount],
+    }
+    host_b = dict(host_a)
+    shared_pools = [{"shared": True, "free_gb": 500.0}]
+    r_a_min = compute_host_sellable_units(
+        host_a, ratio, cpu_threshold_pct=100.0, ram_threshold_pct=100.0,
+        storage_threshold_pct=100.0, storage_include_shared=False,
+    )
+    r_b_min = compute_host_sellable_units(
+        host_b, ratio, cpu_threshold_pct=100.0, ram_threshold_pct=100.0,
+        storage_threshold_pct=100.0, storage_include_shared=False,
+    )
+    r_a_max = compute_host_sellable_units(
+        host_a, ratio, cpu_threshold_pct=100.0, ram_threshold_pct=100.0,
+        storage_threshold_pct=100.0, storage_include_shared=True,
+    )
+    r_b_max = compute_host_sellable_units(
+        host_b, ratio, cpu_threshold_pct=100.0, ram_threshold_pct=100.0,
+        storage_threshold_pct=100.0, storage_include_shared=True,
+    )
+    lo, _ = aggregate_family_storage_range([r_a_min, r_b_min], shared_pools, ratio)
+    _, hi = aggregate_family_storage_range([r_a_max, r_b_max], shared_pools, ratio)
+    assert lo == 0.0
+    assert hi <= 500.0 + 1e-6

@@ -496,8 +496,7 @@ def test_fetch_compute_metrics_swallows_http_error():
 
 
 def test_compute_panel_uses_dc_api_when_clusters_passed():
-    """compute_panel with selected_clusters → uses /compute/{kind} for both
-    total and allocated, bypassing datalake DB and Redis entirely."""
+    """Host-based virt panels skip cluster /compute for cpu/ram/storage."""
     svc = _build_service()
     panel = HC_PANELS[0]  # virt_hyperconverged_cpu
 
@@ -518,17 +517,10 @@ def test_compute_panel_uses_dc_api_when_clusters_passed():
         selected_clusters=["HC-1", "HC-2"],
     )
 
-    assert captured == {
-        "dc_code": "IST1",
-        "family": "virt_hyperconverged",
-        "resource_kind": "cpu",
-        "clusters": ["HC-1", "HC-2"],
-    }
-    # cap=200, used=50, threshold=80% → raw = 200*0.8 - 50 = 110
-    assert result.total == 200.0
-    assert result.allocated == 50.0
-    assert result.sellable_raw == 160.0 - 50.0
-    assert any("cluster-scoped" in n for n in result.notes)
+    assert captured == {}
+    assert result.total == 10.0
+    assert result.allocated == 4.0
+    assert not any("cluster-scoped" in n for n in result.notes)
 
 
 def test_compute_panel_falls_back_to_db_when_no_clusters():
@@ -554,15 +546,31 @@ def test_compute_summary_passes_clusters_per_family():
     svc = _build_service()
     seen: list[dict] = []
 
-    def fake_compute(*, dc_code, family, resource_kind, clusters):
-        seen.append({"family": family, "kind": resource_kind, "clusters": list(clusters)})
-        return (100.0, 20.0, "GB" if resource_kind == "ram" else "vCPU" if resource_kind == "cpu" else "GB")
+    def fake_hosts(dc, fam, clusters):
+        seen.append({"family": fam, "clusters": list(clusters or [])})
+        return ([{
+            "host": "hv1",
+            "cpu_cap_ghz": 100.0,
+            "cpu_alloc_ghz": 20.0,
+            "cpu_alloc_ghz_physical": 100.0,
+            "cpu_used_pct": 20.0,
+            "mem_cap_gb": 400.0,
+            "mem_alloc_gb": 80.0,
+            "mem_used_pct": 20.0,
+            "mem_used_gb_peak": 80.0,
+            "mem_cap_gb_at_peak": 400.0,
+            "mem_peak_util_pct": 20.0,
+            "stor_cap_gb": 1000.0,
+            "stor_provisioned_gb": 100.0,
+            "stor_used_pct": 10.0,
+            "stor_exclusive_free_gb": 500.0,
+            "ghz_per_core": 1.0,
+        }], "ok", [])
 
-    svc._fetch_compute_metrics_for_clusters = fake_compute  # type: ignore[assignment]
+    svc._fetch_host_rows = fake_hosts  # type: ignore[assignment]
 
     summary = svc.compute_summary(dc_code="IST1", selected_clusters=["A", "B"])
 
-    # Every panel in the (mocked) HC_PANELS family should have hit the compute path
     families_seen = {entry["family"] for entry in seen}
     assert families_seen == {"virt_hyperconverged"}
     assert all(entry["clusters"] == ["A", "B"] for entry in seen)
@@ -721,14 +729,26 @@ def test_compute_all_panels_dedups_compute_http_per_family(monkeypatch):
     svc._query_storage_range_inputs = lambda dc: None  # type: ignore[assignment]
     svc._fetch_host_rows = lambda dc, fam, clusters: ([  # type: ignore[assignment]
         {
-            "cpu_total": 100.0,
-            "cpu_alloc": 50.0,
-            "ram_total": 200.0,
-            "ram_alloc": 75.0,
-            "cpu_util_pct": 50.0,
-            "ram_util_pct": 37.5,
+            "host": "hv1",
+            "cluster": "KM-1",
+            "cpu_cap_ghz": 100.0,
+            "cpu_alloc_ghz": 50.0,
+            "cpu_alloc_ghz_physical": 100.0,
+            "cpu_used_pct": 50.0,
+            "mem_cap_gb": 200.0,
+            "mem_alloc_gb": 75.0,
+            "mem_used_pct": 37.5,
+            "mem_used_gb_peak": 80.0,
+            "mem_cap_gb_at_peak": 200.0,
+            "mem_peak_util_pct": 40.0,
+            "stor_cap_gb": 1000.0,
+            "stor_provisioned_gb": 100.0,
+            "stor_exclusive_free_gb": 500.0,
+            "stor_free_gb": 500.0,
+            "stor_used_pct": 50.0,
+            "ghz_per_core": 1.0,
         },
-    ], "ok")
+    ], "ok", [])
     svc._fetch_compute_response = lambda *a, **kw: None  # type: ignore[assignment]
 
     call_count = {"compute": 0, "hosts": 0}
@@ -750,9 +770,8 @@ def test_compute_all_panels_dedups_compute_http_per_family(monkeypatch):
     monkeypatch.setattr("app.services.sellable_service.httpx.get", counting_get)
     out = svc.compute_all_panels(dc_code="IST1", selected_clusters=["KM-1", "KM-2"])
 
-    # 3 panels × 1 family / 1 cluster set → ONE HTTP call to /compute/classic
-    # plus at most one host-rows call for the host-based constrain path.
-    assert call_count["compute"] == 1
+    # Host-based pipeline: no cluster /compute when host rows are available.
+    assert call_count["compute"] == 0
     assert call_count["hosts"] <= 1
     assert {p.panel_key for p in out} == {p.panel_key for p in panels}
 
@@ -1636,7 +1655,7 @@ def _build_power_pipeline_service(*, cpu_raw: float = 10.0, ram_raw: float = 80.
 def test_hyperconv_storage_capped_in_pipeline():
     """Hyperconverged storage raw >> compute ratio cap after full pipeline."""
     svc = _build_service()
-    svc._fetch_host_rows = lambda dc, fam, clusters: (None, "unavailable")  # type: ignore[method-assign]
+    svc._fetch_host_rows = lambda dc, fam, clusters: (None, "unavailable", [])  # type: ignore[method-assign]
     INFRA["virt_hyperconverged_storage"] = (
         INFRA["virt_hyperconverged_storage"][0],
         (100_000.0, 10_000.0),

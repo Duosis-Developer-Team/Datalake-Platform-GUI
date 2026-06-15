@@ -578,6 +578,143 @@ def constrain_by_ratio_per_host(
     return out
 
 
+def constrain_by_ratio_per_host_triple_dual(
+    panels: Iterable[PanelResult],
+    ratio: ResourceRatio,
+    hosts: list[dict],
+    *,
+    cpu_threshold_pct: float = 100.0,
+    ram_threshold_pct: float = 100.0,
+    storage_threshold_pct: float = 100.0,
+    effective_ghz_per_unit: float = 1.0,
+    ram_raw_physical: float | None = None,
+    ram_raw_peak: float | None = None,
+    shared_pools: list[dict] | None = None,
+    unit_price_tl: float = 0.0,
+    ibm_storage_range: tuple[float, float] | None = None,
+) -> list[PanelResult]:
+    """Host-based triple min(CPU, RAM, Storage) with dual CPU/RAM tracks."""
+    from .host_sellable import (
+        HostSellableResult,
+        aggregate_family_storage_range,
+        compute_host_sellable_units,
+    )
+
+    panel_list = list(panels)
+    if not hosts:
+        return constrain_by_ratio_per_host_dual(
+            panel_list,
+            ratio,
+            hosts,
+            cpu_threshold_pct=cpu_threshold_pct,
+            ram_threshold_pct=ram_threshold_pct,
+            effective_ghz_per_unit=effective_ghz_per_unit,
+            ram_raw_physical=ram_raw_physical,
+            ram_raw_peak=ram_raw_peak,
+        )
+
+    def _accumulate(
+        cpu_track: str,
+        ram_track: str,
+        storage_shared: bool,
+    ) -> tuple[float, list[HostSellableResult]]:
+        n_sum = 0.0
+        results: list[HostSellableResult] = []
+        for h in hosts:
+            result = compute_host_sellable_units(
+                h,
+                ratio,
+                cpu_threshold_pct=cpu_threshold_pct,
+                ram_threshold_pct=ram_threshold_pct,
+                storage_threshold_pct=storage_threshold_pct,
+                cpu_track=cpu_track,
+                ram_track=ram_track,
+                effective_ghz_per_unit=effective_ghz_per_unit,
+                storage_include_shared=storage_shared,
+                unit_price_tl=unit_price_tl,
+            )
+            n_sum += result.n_units_max if storage_shared else result.n_units_min
+            results.append(result)
+        return n_sum, results
+
+    n_phys, _ = _accumulate("physical", "physical", False)
+    n_cpu_eff, _ = _accumulate("effective", "physical", False)
+    n_ram_peak, host_stor_min = _accumulate("effective", "peak", False)
+    _, host_stor_max = _accumulate("effective", "peak", True)
+
+    stor_lo, stor_hi = aggregate_family_storage_range(
+        host_stor_max,
+        shared_pools or [],
+        ratio,
+    )
+    stor_constrained = sum(r.stor_constrained_min for r in host_stor_min)
+
+    if ibm_storage_range is not None:
+        ibm_lo, ibm_hi = ibm_storage_range
+        stor_lo = max(stor_lo, ibm_lo)
+        if ibm_hi > 0:
+            stor_hi = min(stor_hi, ibm_hi) if stor_hi > 0 else ibm_hi
+        stor_constrained = max(stor_constrained, stor_lo)
+        if stor_hi > 0:
+            stor_constrained = min(stor_constrained, stor_hi)
+
+    cpu_phys_val = n_phys * ratio.cpu_per_unit
+    cpu_eff_val = n_cpu_eff * ratio.cpu_per_unit
+    ram_phys_val = n_phys * ratio.ram_gb_per_unit
+    ram_peak_val = n_ram_peak * ratio.ram_gb_per_unit
+
+    out: list[PanelResult] = []
+    for p in panel_list:
+        if p.resource_kind == "cpu":
+            ratio_bound = (
+                cpu_eff_val + 1e-6 < p.sellable_raw
+                or cpu_phys_val + 1e-6 < (p.sellable_physical or p.sellable_raw or 0.0)
+            )
+            out.append(
+                replace(
+                    p,
+                    sellable_physical=cpu_phys_val,
+                    sellable_effective=cpu_eff_val,
+                    sellable_constrained=cpu_eff_val,
+                    ratio_bound=ratio_bound,
+                    computation_mode="host_based",
+                )
+            )
+        elif p.resource_kind == "ram":
+            raw_phys = ram_raw_physical if ram_raw_physical is not None else p.sellable_raw
+            raw_peak = ram_raw_peak if ram_raw_peak is not None else p.sellable_raw
+            ratio_bound = (
+                ram_phys_val + 1e-6 < raw_phys
+                or ram_peak_val + 1e-6 < raw_peak
+            )
+            out.append(
+                replace(
+                    p,
+                    sellable_physical=ram_phys_val,
+                    sellable_effective=ram_peak_val,
+                    sellable_constrained=ram_peak_val,
+                    ratio_bound=ratio_bound,
+                    computation_mode="host_based",
+                )
+            )
+        elif p.resource_kind == "storage":
+            ratio_bound = stor_constrained + 1e-6 < p.sellable_raw
+            out.append(
+                replace(
+                    p,
+                    sellable_constrained=stor_constrained,
+                    sellable_min=stor_lo,
+                    sellable_max=stor_hi if stor_hi > stor_lo + 1e-6 else None,
+                    ratio_bound=ratio_bound,
+                    computation_mode="host_based",
+                    constraint_reason="ratio_bound" if ratio_bound else "",
+                )
+            )
+        else:
+            out.append(replace(p, sellable_constrained=p.sellable_raw, ratio_bound=False))
+    return out
+
+
 def compute_storage_range(
     *,
     intel_free: float,

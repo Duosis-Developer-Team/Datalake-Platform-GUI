@@ -109,11 +109,11 @@ def test_host_card_shows_pct_and_numeric_values():
 
 def test_host_card_hci_storage_row_only_when_present():
     no_disk = _texts(dc_view._host_card(_SAMPLE_HOST, "teal"))
-    assert "Disk" not in no_disk
+    assert "Storage" not in no_disk
 
     hci_host = {**_SAMPLE_HOST, "stor_cap_gb": 40960.0, "stor_used_host_gb": 10240.0}
     with_disk = _texts(dc_view._host_card(hci_host, "teal"))
-    assert "Disk" in with_disk
+    assert "Storage" in with_disk
 
 
 # --------------------------------------------------------- backing badge

@@ -63,6 +63,44 @@ def test_host_alloc_map_normalizes_hostnames():
     assert out["hv2dc13"]["vm_count"] == 3
 
 
+def test_classic_host_mem_peak_sql_groups_by_host():
+    assert "DISTINCT ON (vmhost)" in vq.CLASSIC_HOST_MEM_PEAK
+    assert "vmhost_metrics" in vq.CLASSIC_HOST_MEM_PEAK
+
+
+def test_nutanix_host_mem_peak_sql_groups_by_host():
+    assert "DISTINCT ON (host_name)" in nq.NUTANIX_HOST_MEM_PEAK
+    assert "nutanix_host_metrics" in nq.NUTANIX_HOST_MEM_PEAK
+
+
+def test_host_row_payload_includes_peak_when_applied():
+    payload = DatabaseService._apply_host_mem_peak(
+        {"host": "hv1"},
+        (80.0, 256.0, 31.2),
+    )
+    assert payload["mem_used_gb_peak"] == 80.0
+    assert payload["mem_cap_gb_at_peak"] == 256.0
+    assert payload["mem_peak_util_pct"] == 31.2
+
+
+def test_apply_km_storage_mounts_exclusive_and_shared():
+    ctx = {
+        "host_mounts": {
+            "hv1": [
+                {"datastore_moid": "ds1", "name": "INTEL_OS1", "backing": "intel",
+                 "cap_gb": 1000.0, "free_gb": 400.0, "used_gb": 600.0, "used_pct": 60.0, "shared": False},
+                {"datastore_moid": "ds2", "name": "SHARED_KM", "backing": "intel",
+                 "cap_gb": 2000.0, "free_gb": 500.0, "used_gb": 1500.0, "used_pct": 75.0, "shared": True},
+            ],
+        },
+    }
+    out = DatabaseService._apply_km_storage_to_host({"host": "hv1.dc.local"}, ctx)
+    assert out["stor_cap_gb"] == 3000.0
+    assert out["stor_exclusive_free_gb"] == 400.0
+    assert out["stor_free_gb"] == 900.0
+    assert len(out["datastore_mounts"]) == 2
+
+
 # ------------------------------------------------------------- SQL contracts
 
 

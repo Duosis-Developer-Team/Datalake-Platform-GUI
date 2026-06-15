@@ -46,6 +46,7 @@ from shared.vmware.host_cpu_ghz import (
     resolve_host_ghz,
     sum_cpu_real_total,
 )
+from shared.sellable.host_aggregate import finalize_host_payload
 from app.services.netbox_viz_filter import (
     filter_devices_by_role_exclusion,
     is_role_excluded,
@@ -1459,6 +1460,85 @@ LIMIT 20
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _host_mem_peak_map(rows) -> dict[str, tuple[float, float, float]]:
+        """Index per-host RAM peak rows by short hostname."""
+        out: dict[str, tuple[float, float, float]] = {}
+        for r in rows or []:
+            if not r or not r[0]:
+                continue
+            key = str(r[0]).strip().lower().split(".")[0]
+            out[key] = (float(r[1] or 0), float(r[2] or 0), float(r[3] or 0))
+        return out
+
+    _BYTES_PER_GB = 1024 ** 3
+
+    def _build_km_storage_context(self, dc_code: str, time_range: dict) -> dict[str, Any]:
+        """Build host → datastore mount index from get_datastore_mapping."""
+        mapping = self.get_datastore_mapping(dc_code, time_range)
+        host_mounts: dict[str, list[dict[str, Any]]] = {}
+        for ds in mapping.get("datastores") or []:
+            moid = str(ds.get("datastore_moid") or "")
+            if not moid:
+                continue
+            free_gb = float(ds.get("free_bytes") or 0) / self._BYTES_PER_GB
+            cap_gb = float(ds.get("capacity_bytes") or 0) / self._BYTES_PER_GB
+            used_gb = float(ds.get("used_bytes") or 0) / self._BYTES_PER_GB
+            shared = bool(ds.get("multiple_host_access")) or int(ds.get("host_count") or 0) > 1
+            backing = ds.get("backing") or (
+                "ibm" if "ibm" in str(ds.get("datastore_name") or "").lower() else "intel"
+            )
+            mount_info = {
+                "datastore_moid": moid,
+                "moid": moid,
+                "name": ds.get("datastore_name") or moid,
+                "backing": backing,
+                "cap_gb": round(cap_gb, 2),
+                "free_gb": round(free_gb, 2),
+                "used_gb": round(used_gb, 2),
+                "used_pct": float(ds.get("used_percent") or 0.0),
+                "shared": shared,
+            }
+            for host_entry in ds.get("hosts") or []:
+                hname = str(host_entry.get("host_name") or "").strip().lower().split(".")[0]
+                if hname:
+                    host_mounts.setdefault(hname, []).append(dict(mount_info))
+        return {"host_mounts": host_mounts}
+
+    @staticmethod
+    def _apply_km_storage_to_host(payload: dict, ctx: dict[str, Any]) -> dict:
+        """Attach KM datastore mount storage fields to a host row."""
+        key = str(payload.get("host") or "").strip().lower().split(".")[0]
+        mounts = (ctx.get("host_mounts") or {}).get(key) or []
+        if not mounts:
+            return payload
+        cap = sum(float(m.get("cap_gb") or 0) for m in mounts)
+        used = sum(float(m.get("used_gb") or 0) for m in mounts)
+        exclusive_free = sum(float(m.get("free_gb") or 0) for m in mounts if not m.get("shared"))
+        total_free = sum(float(m.get("free_gb") or 0) for m in mounts)
+        used_pct = max((float(m.get("used_pct") or 0.0) for m in mounts), default=0.0)
+        out = dict(payload)
+        out["datastore_mounts"] = mounts
+        out["stor_cap_gb"] = round(cap, 2)
+        out["stor_used_gb"] = round(used, 2)
+        out["stor_free_gb"] = round(total_free, 2)
+        out["stor_exclusive_free_gb"] = round(exclusive_free, 2)
+        out["stor_used_pct"] = round(used_pct, 1)
+        return out
+
+    @staticmethod
+    def _apply_host_mem_peak(payload: dict, peak: tuple[float, float, float] | None) -> dict:
+        if not peak:
+            return payload
+        used, cap, pct = peak
+        if used <= 0 and cap <= 0:
+            return payload
+        out = dict(payload)
+        out["mem_used_gb_peak"] = round(used, 2)
+        out["mem_cap_gb_at_peak"] = round(cap, 2)
+        out["mem_peak_util_pct"] = round(pct, 1)
+        return out
+
+    @staticmethod
     def _host_row_payload(
         *,
         host: str,
@@ -1526,10 +1606,10 @@ LIMIT 20
         """Filter a full-DC host payload to selected clusters (in-process, no SQL)."""
         hosts = (full or {}).get("hosts") or []
         if not selected_clusters:
-            return {"hosts": list(hosts), "host_count": len(hosts)}
+            return finalize_host_payload({"hosts": list(hosts), "host_count": len(hosts)})
         wanted = set(selected_clusters)
         filtered = [h for h in hosts if h.get("cluster") in wanted]
-        return {"hosts": filtered, "host_count": len(filtered)}
+        return finalize_host_payload({"hosts": filtered, "host_count": len(filtered)})
 
     def _fetch_classic_host_rows_all(self, dc_code: str, time_range: dict) -> dict:
         """Load all Classic (KM) hosts for a DC/time range (no cluster SQL filter)."""
@@ -1549,12 +1629,19 @@ LIMIT 20
                         vq.CLASSIC_HOST_VM_ALLOCATION,
                         (dc_wc, start_ts, end_ts, empty_clusters, empty_clusters),
                     )
+                    peak_rows = self._run_rows(
+                        cur,
+                        vq.CLASSIC_HOST_MEM_PEAK,
+                        (dc_wc, empty_clusters, empty_clusters, start_ts, end_ts),
+                    )
                     host_map = self._load_host_ghz_map(cur)
         except OperationalError as exc:
             logger.error("DB unavailable for get_classic_host_rows(%s): %s", dc_code, exc)
-            return {"hosts": [], "host_count": 0}
+            return finalize_host_payload({"hosts": [], "host_count": 0})
 
         alloc_map = self._host_alloc_map(alloc_rows)
+        peak_map = self._host_mem_peak_map(peak_rows)
+        storage_ctx = self._build_km_storage_context(dc_code, time_range)
         default_ghz = self._get_default_host_cpu_ghz()
         hosts = []
         for r in host_rows or []:
@@ -1562,18 +1649,22 @@ LIMIT 20
             if not host_name:
                 continue
             ghz, _ = resolve_host_ghz(host_name, host_map, default_ghz=default_ghz)
-            hosts.append(self._host_row_payload(
+            key = host_name.lower().split(".")[0]
+            payload = self._host_row_payload(
                 host=host_name,
                 cluster=str(r[1] or ""),
                 cpu_cap_ghz=float(r[2] or 0),
                 cpu_used_ghz=float(r[3] or 0),
                 mem_cap_gb=float(r[4] or 0),
                 mem_used_gb=float(r[5] or 0),
-                alloc=alloc_map.get(host_name.lower().split(".")[0]),
+                alloc=alloc_map.get(key),
                 ghz_per_core=ghz,
-            ))
+            )
+            payload = self._apply_host_mem_peak(payload, peak_map.get(key))
+            payload = self._apply_km_storage_to_host(payload, storage_ctx)
+            hosts.append(payload)
         hosts.sort(key=lambda h: (h["cluster"], h["host"]))
-        return {"hosts": hosts, "host_count": len(hosts)}
+        return finalize_host_payload({"hosts": hosts, "host_count": len(hosts)})
 
     def get_classic_host_rows(
         self, dc_code: str, selected_clusters: list[str] | None = None, time_range: dict | None = None
@@ -1611,14 +1702,20 @@ LIMIT 20
                         nq.NUTANIX_HOST_VM_ALLOCATION,
                         (dc_code, empty_clusters, empty_clusters, start_ts, end_ts, start_ts, end_ts),
                     )
+                    peak_rows = self._run_rows(
+                        cur,
+                        nq.NUTANIX_HOST_MEM_PEAK,
+                        (dc_code, empty_clusters, empty_clusters, start_ts, end_ts),
+                    )
                     host_map = self._load_host_ghz_map(cur)
         except OperationalError as exc:
             logger.error("DB unavailable for get_hyperconv_host_rows(%s): %s", dc_code, exc)
-            return {"hosts": [], "host_count": 0}
+            return finalize_host_payload({"hosts": [], "host_count": 0})
 
         _hz_per_ghz = 1_000_000_000
         _bytes_per_gb = 1024 ** 3
         alloc_map = self._host_alloc_map(alloc_rows)
+        peak_map = self._host_mem_peak_map(peak_rows)
         default_ghz = self._get_default_host_cpu_ghz()
         hosts = []
         for r in host_rows or []:
@@ -1627,6 +1724,7 @@ LIMIT 20
                 continue
             alloc = alloc_map.get(host_name.lower().split(".")[0]) or {}
             ghz, _ = resolve_host_ghz(host_name, host_map, default_ghz=default_ghz)
+            key = host_name.lower().split(".")[0]
             payload = self._host_row_payload(
                 host=host_name,
                 cluster=str(r[1] or ""),
@@ -1642,9 +1740,15 @@ LIMIT 20
             payload["stor_used_host_gb"] = round(float(r[7] or 0) / _bytes_per_gb, 2)
             if payload["vm_count"] == 0:
                 payload["vm_count"] = int(r[8] or 0)
+            payload = self._apply_host_mem_peak(payload, peak_map.get(key))
+            stor_cap = float(payload.get("stor_cap_gb") or 0)
+            stor_used = float(payload.get("stor_used_host_gb") or 0)
+            if stor_cap > 0:
+                payload["stor_used_pct"] = round(100.0 * stor_used / stor_cap, 1)
+                payload["stor_free_gb"] = round(max(stor_cap - stor_used, 0.0), 2)
             hosts.append(payload)
         hosts.sort(key=lambda h: (h["cluster"], h["host"]))
-        return {"hosts": hosts, "host_count": len(hosts)}
+        return finalize_host_payload({"hosts": hosts, "host_count": len(hosts)})
 
     def get_hyperconv_host_rows(
         self, dc_code: str, selected_clusters: list[str] | None = None, time_range: dict | None = None
