@@ -125,7 +125,7 @@ class TestDcServiceWiring(unittest.TestCase):
              patch.object(svc, "get_unit_prices_tl", return_value={}):
             cur = MagicMock()
             conn_ctx.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = cur
-            with patch.object(svc, "_run_row", side_effect=[fake_row, fake_avg, (0, 0)]) as run_row, \
+            with patch.object(svc, "_run_row", side_effect=[fake_row, fake_avg, (0, 0), (50.0,)]) as run_row, \
                  patch.object(svc, "_run_value", return_value=3):
                 section = svc.get_hyperconv_metrics_filtered(
                     "AZ11", ["AZ11-HCI"], {"start": "2026-01-01", "end": "2026-01-31"}

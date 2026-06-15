@@ -1079,24 +1079,6 @@ LIMIT 20
         pct = round(float(avg_pct), 1)
         return {**section, "mem_util_pct": pct, "mem_pct": pct}
 
-    def get_classic_mem_peak_raw(
-        self,
-        cursor,
-        dc_wc: str,
-        start_ts,
-        end_ts,
-        *,
-        cluster_filter: list[str] | None = None,
-    ) -> tuple[float, float, float]:
-        clusters = cluster_filter or []
-        if clusters:
-            row = self._run_row(
-                cursor, vq.CLASSIC_MEM_PEAK_RAW_FILTERED, (dc_wc, clusters, start_ts, end_ts)
-            )
-        else:
-            row = self._run_row(cursor, vq.CLASSIC_MEM_PEAK_RAW, (dc_wc, start_ts, end_ts))
-        return self._mem_peak_tuple(row)
-
     def get_classic_mem_avg_ts_raw(
         self,
         cursor,
@@ -1114,24 +1096,6 @@ LIMIT 20
         else:
             row = self._run_row(cursor, vq.CLASSIC_MEM_AVG_TS_RAW, (dc_wc, start_ts, end_ts))
         return round(float((row or (0,))[0] or 0), 1)
-
-    def get_hyperconv_mem_peak_raw(
-        self,
-        cursor,
-        dc_wc: str,
-        start_ts,
-        end_ts,
-        *,
-        cluster_filter: list[str] | None = None,
-    ) -> tuple[float, float, float]:
-        clusters = cluster_filter or []
-        if clusters:
-            row = self._run_row(
-                cursor, vq.HYPERCONV_MEM_PEAK_RAW_FILTERED, (dc_wc, clusters, start_ts, end_ts)
-            )
-        else:
-            row = self._run_row(cursor, vq.HYPERCONV_MEM_PEAK_RAW, (dc_wc, start_ts, end_ts))
-        return self._mem_peak_tuple(row)
 
     def get_hyperconv_mem_avg_ts_raw(
         self,
@@ -1175,13 +1139,14 @@ LIMIT 20
         section: dict,
         cursor,
         dc_wc: str,
+        dc_code: str,
         start_ts,
         end_ts,
         *,
         cluster_filter: list[str] | None = None,
     ) -> dict:
         peak = self.get_hyperconv_mem_peak_raw(
-            cursor, dc_wc, start_ts, end_ts, cluster_filter=cluster_filter
+            cursor, dc_wc, dc_code, start_ts, end_ts, cluster_filter=cluster_filter
         )
         avg_ts = self.get_hyperconv_mem_avg_ts_raw(
             cursor, dc_wc, start_ts, end_ts, cluster_filter=cluster_filter
@@ -1481,7 +1446,8 @@ LIMIT 20
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     section = self._apply_hyperconv_mem_stats(
-                        section, cur, dc_wc, start_ts, end_ts, cluster_filter=selected_clusters
+                        section, cur, dc_wc, dc_code, start_ts, end_ts,
+                        cluster_filter=selected_clusters,
                     )
         except OperationalError:
             pass
@@ -2091,6 +2057,7 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                         dict(result.get("hyperconv") or {}),
                         cur,
                         dc_wc,
+                        dc_code,
                         start_ts,
                         end_ts,
                     )
