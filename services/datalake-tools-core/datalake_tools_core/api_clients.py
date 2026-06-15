@@ -60,10 +60,16 @@ def _client_for(service: str) -> httpx.Client:
     base = SERVICE_BASE_URLS.get(service)
     if not base:
         raise InternalAPIError(service, "", "unknown service")
+    timeout = httpx.Timeout(
+        connect=min(10.0, settings.internal_api_timeout_seconds),
+        read=settings.internal_api_timeout_seconds,
+        write=min(20.0, settings.internal_api_timeout_seconds),
+        pool=min(10.0, settings.internal_api_timeout_seconds),
+    )
     with _clients_lock:
         c = _clients.get(service)
         if c is None:
-            c = httpx.Client(base_url=base, timeout=settings.internal_api_timeout_seconds)
+            c = httpx.Client(base_url=base, timeout=timeout)
             _clients[service] = c
         return c
 

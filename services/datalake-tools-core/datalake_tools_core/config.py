@@ -15,7 +15,7 @@ class ToolRuntimeSettings:
     query_api_url: str = "http://query-api:8000"
     crm_engine_url: str = "http://crm-engine:8000"
     admin_api_url: str = "http://admin-api:8000"
-    internal_api_timeout_seconds: float = 20.0
+    internal_api_timeout_seconds: float = 45.0
     chatbot_db_enabled: bool = False
     db_host: str = ""
     db_port: str = "5000"

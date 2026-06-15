@@ -471,7 +471,7 @@ def zabbix_storage_disk_health(dc_code: str, tf: TimeFilter = Depends(), db: Dat
     return db.get_zabbix_disk_health(dc_code, tf.to_dict())
 
 
-@router.get("/datacenters/{dc_code}/sales-potential", response_model=dict[str, Any])
+@router.get("/datacenters/{dc_code}/sales-potential", response_model=dict[str, Any], deprecated=True)
 def dc_sales_potential(
     dc_code: str,
     db: DatabaseService = Depends(get_db),
@@ -508,7 +508,7 @@ def dc_sales_potential(
     }
 
 
-@router.get("/datacenters/{dc_code}/sales-potential/v2", response_model=dict[str, Any])
+@router.get("/datacenters/{dc_code}/sales-potential/v2", response_model=dict[str, Any], deprecated=True)
 def dc_sales_potential_v2(
     dc_code: str,
     db: DatabaseService = Depends(get_db),

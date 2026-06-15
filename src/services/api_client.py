@@ -1623,50 +1623,6 @@ def get_customer_sales_service_breakdown(name: str) -> list:
     return _api_cache_get_with_stale(ck, fetch, [])
 
 
-def get_customer_sales_efficiency(name: str) -> list:
-    enc = quote(name, safe="")
-
-    def fetch() -> list:
-        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/efficiency")
-        return data if isinstance(data, list) else []
-
-    ck = f"api:crm_sales_efficiency:{enc}"
-    return _api_cache_get_with_stale(ck, fetch, [])
-
-
-def get_customer_catalog_valuation(name: str) -> list:
-    enc = quote(name, safe="")
-
-    def fetch() -> list:
-        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/catalog-valuation")
-        return data if isinstance(data, list) else []
-
-    ck = f"api:crm_catalog_valuation:{enc}"
-    return _api_cache_get_with_stale(ck, fetch, [])
-
-
-def get_dc_sales_potential(dc_code: str) -> dict:
-    enc = quote(dc_code, safe="")
-
-    def fetch() -> dict:
-        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/sales-potential")
-        return data if isinstance(data, dict) else {}
-
-    ck = f"api:dc_sales_potential:{enc}"
-    return _api_cache_get_with_stale(ck, fetch, {})
-
-
-def get_dc_sales_potential_v2(dc_code: str) -> dict:
-    enc = quote(dc_code, safe="")
-
-    def fetch() -> dict:
-        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/sales-potential/v2")
-        return data if isinstance(data, dict) else {}
-
-    ck = f"api:dc_sales_potential_v2:{enc}"
-    return _api_cache_get_with_stale(ck, fetch, {})
-
-
 def get_customer_efficiency_by_category(name: str, tr: Optional[dict] = None) -> list:
     enc = quote(name, safe="")
 
@@ -1749,24 +1705,6 @@ def get_crm_aliases() -> list:
     return _api_cache_get_with_stale("api:crm_aliases", fetch, [])
 
 
-def put_crm_alias(
-    crm_accountid: str,
-    *,
-    canonical_customer_key: Optional[str] = None,
-    netbox_musteri_value: Optional[str] = None,
-    notes: Optional[str] = None,
-) -> dict[str, Any]:
-    enc = quote(crm_accountid, safe="")
-    body = {
-        "canonical_customer_key": canonical_customer_key,
-        "netbox_musteri_value": netbox_musteri_value,
-        "notes": notes,
-    }
-    out = _put_json(_get_client_cust(), f"/api/v1/crm/aliases/{enc}", body)
-    _api_response_cache.delete("api:crm_aliases")
-    return out if isinstance(out, dict) else {}
-
-
 def put_crm_source_mappings(
     crm_accountid: str,
     *,
@@ -1787,13 +1725,6 @@ def put_crm_source_mappings(
 
 def seed_boyner_source_mappings() -> dict[str, Any]:
     out = _post_json(_get_client_cust(), "/api/v1/crm/aliases/seed-boyner", {})
-    _api_response_cache.delete("api:crm_aliases")
-    return out if isinstance(out, dict) else {}
-
-
-def delete_crm_alias(crm_accountid: str) -> dict[str, Any]:
-    enc = quote(crm_accountid, safe="")
-    out = _delete_json(_get_client_cust(), f"/api/v1/crm/aliases/{enc}")
     _api_response_cache.delete("api:crm_aliases")
     return out if isinstance(out, dict) else {}
 
@@ -1868,14 +1799,6 @@ def put_crm_price_override(
         "notes": notes,
     }
     out = _put_json(_get_client_crm(), f"/api/v1/crm/config/price-overrides/{enc}", body)
-    _api_response_cache.delete("api:crm_price_overrides")
-    _invalidate_sellable_caches()
-    return out if isinstance(out, dict) else {}
-
-
-def delete_crm_price_override(productid: str) -> dict[str, Any]:
-    enc = quote(productid, safe="")
-    out = _delete_json(_get_client_crm(), f"/api/v1/crm/config/price-overrides/{enc}")
     _api_response_cache.delete("api:crm_price_overrides")
     _invalidate_sellable_caches()
     return out if isinstance(out, dict) else {}
@@ -2066,19 +1989,6 @@ def get_sellable_by_family(
 
     cluster_key = ",".join(cl) if cl else "*"
     cache_key = f"api:sellable_by_family:{dc_code}:{cluster_key}"
-    return _api_cache_get_with_stale(cache_key, fetch, [])
-
-
-def get_metric_tags(prefix: Optional[str] = None, scope_type: str = "global", scope_id: str = "*") -> list:
-    qs_parts = [f"scope_type={quote(scope_type, safe='')}", f"scope_id={quote(scope_id, safe='*')}"]
-    if prefix:
-        qs_parts.append(f"prefix={quote(prefix, safe='')}")
-
-    def fetch() -> list:
-        data = _get_json(_get_client_crm(), "/api/v1/crm/metric-tags?" + "&".join(qs_parts))
-        return data if isinstance(data, list) else []
-
-    cache_key = "api:metric_tags:" + ":".join(qs_parts)
     return _api_cache_get_with_stale(cache_key, fetch, [])
 
 

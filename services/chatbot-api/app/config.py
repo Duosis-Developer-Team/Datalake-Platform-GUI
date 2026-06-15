@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     query_api_url: str = "http://query-api:8000"
     crm_engine_url: str = "http://crm-engine:8000"
     admin_api_url: str = "http://admin-api:8000"
-    internal_api_timeout_seconds: float = 20.0
+    internal_api_timeout_seconds: float = 45.0
 
     # ------------------------------------------------------------------ #
     # Read-only DB tooling (disabled by default — opt-in only)

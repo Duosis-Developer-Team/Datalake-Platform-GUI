@@ -1,0 +1,116 @@
+{
+  "source": "root@10.134.52.250",
+  "generated_at": "2026-06-15T22:23:04.108427+00:00",
+  "days": 90,
+  "focus": [
+    "all"
+  ],
+  "total_turns": 41,
+  "status_counts": {
+    "success": 34,
+    "clarification": 7
+  },
+  "response_type_counts": {
+    "answer": 34,
+    "clarification": 7
+  },
+  "tool_counts": {
+    "get_datacenters_summary": 42,
+    "get_dashboard_overview": 33,
+    "get_dc_compute_classic": 6,
+    "get_datacenter_detail": 3,
+    "get_dc_vm_cpu_summary": 2,
+    "get_dc_compute_hyperconverged": 2,
+    "get_dc_vm_cpu_top": 1,
+    "get_global_km_cluster_memory_top": 1,
+    "get_sellable_summary": 1,
+    "get_sellable_by_panel": 1,
+    "get_sellable_by_family": 1
+  },
+  "tool_error_counts": {
+    "get_datacenters_summary": 4,
+    "get_dc_compute_classic": 3,
+    "get_dashboard_overview": 1,
+    "get_datacenter_detail": 1,
+    "get_dc_compute_hyperconverged": 1
+  },
+  "avg_latency_ms": 9578.8,
+  "avg_tool_calls": 2.79,
+  "avg_llm_rounds": 2.82,
+  "customer_related_messages": 1,
+  "crm_related_messages": 0,
+  "bad_answer_count": 5,
+  "zero_tool_success_count": 3,
+  "customer_tool_turns": 0,
+  "crm_tool_turns": 1,
+  "bad_samples": [
+    {
+      "request_id": "e01a778eb03d471e9f598be9b58a4eff",
+      "user_message": "vm_count",
+      "status": "success",
+      "tools": [
+        "get_datacenters_summary",
+        "get_dashboard_overview",
+        "get_datacenter_detail",
+        "get_dc_compute_classic",
+        "get_dc_vm_cpu_top",
+        "get_dc_compute_classic",
+        "get_dc_vm_cpu_summary",
+        "get_dc_vm_cpu_summary"
+      ],
+      "snippet": "**Analiz**  \n“En yoğun datacenter” sorusunu **vm_count** (sanallaştırılmış makine sayısı) üzerinden yanıtlamak için datacenter‑bazlı VM sayısı raporları aranmıştır. Sorgulama zincirinde aşağıdaki araçlar denendi:\n\n- `get_datacenters_summary"
+    },
+    {
+      "request_id": "6a30afa53eec43d48b1203904e1bda27",
+      "user_message": "test",
+      "status": "success",
+      "tools": [],
+      "snippet": "**Analiz**  \nTalebinizde “en yoğun datacenter” sorulmuş, ancak sistemde bu soruya yanıt verecek herhangi bir veri çekilmedi. Sorgulama sırasında hiçbir araç çalıştırılamadı ve dolayısıyla veri kaynağına ulaşamadık; bu yüzden mevcut metrikle"
+    },
+    {
+      "request_id": "b8a700f090b64160bf69863343e77967",
+      "user_message": "En yoğun datacenter hangisi?",
+      "status": "success",
+      "tools": [
+        "get_datacenters_summary",
+        "get_datacenters_summary",
+        "get_global_km_cluster_memory_top",
+        "get_dc_compute_classic",
+        "get_dc_compute_hyperconverged"
+      ],
+      "snippet": "**Analiz**  \n- **Denenen veri kaynakları:**  \n  1. `get_datacenters_summary` (datacenter‑api:/api/v1/datacenters/summary) – **bağlantı hatası (ConnectError)**, bu yüzden CPU, RAM, depolama ve VM/host sayıları gibi bütün‑datacenter özet veri"
+    },
+    {
+      "request_id": "ae4175fe18814d889c4653d5df2cac5a",
+      "user_message": "test",
+      "status": "success",
+      "tools": [],
+      "snippet": "**Analiz**  \nŞu anda sorunuzun içeriği net olmadığı için, hangi veri seti veya metrik hakkında bilgi istediğinizi belirleyemedim. Mevcut oturumda herhangi bir araç çalıştırılmadı; bu yüzden henüz bir veri çekimi ya da analiz yapılmadı.\n\n**S"
+    },
+    {
+      "request_id": "2d110bd486654619a01b18c2e8079b18",
+      "user_message": "test",
+      "status": "success",
+      "tools": [],
+      "snippet": "**Analiz**  \nBu istek bir test mesajı olduğu için sistemdeki veri toplama araçları çalıştırılmadı; dolayısıyla incelenecek bir altyapı metriği bulunmadı.\n\n**Sonuç**  \nMerhaba! Sistemimiz çalışıyor ve sorularınızı yanıtlamaya hazır. Veri oda"
+    }
+  ],
+  "customer_samples": [
+    {
+      "request_id": "3390c085adce4eca8e0a6b42d24a96ed",
+      "user_message": "daha verimli satış yapabilmek için hangi datacenter'lara hangi mimarilerde yatırım yapmalıyım?",
+      "tools": [
+        "get_datacenters_summary",
+        "get_sellable_summary",
+        "get_sellable_by_panel",
+        "get_sellable_by_family",
+        "get_datacenters_summary",
+        "get_dc_compute_classic",
+        "get_dc_compute_hyperconverged",
+        "get_dc_compute_classic"
+      ],
+      "status": "success"
+    }
+  ],
+  "crm_samples": []
+}

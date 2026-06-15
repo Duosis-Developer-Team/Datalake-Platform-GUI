@@ -33,6 +33,7 @@ _KW = {
     "panel": ("panel",),
     "family": ("family", "aile"),
     "itsm": ("itsm", "ticket", "çağrı", "cagri", "talep", "incident"),
+    "sales": ("satış", "satis", "sales", "sipariş", "siparis", "order", "revenue", "gelir", "verimlilik", "efficiency", "compliance", "uyum"),
     "customer": ("müşteri", "musteri", "customer"),
     "sla": ("sla", "availability", "erişilebilir", "uptime"),
     "overview": ("genel", "overview", "toplam", "en yoğun", "en yogun", "kapasite", "özet", "ozet"),
@@ -96,11 +97,20 @@ def _base_args(ctx: Optional[FrontendContext], dc_code: Optional[str], customer:
     }
 
 
+def _extract_customer(message: str, ctx: Optional[FrontendContext]) -> Optional[str]:
+    from app.services import customer_resolver
+
+    return customer_resolver.resolve_customer_name(
+        message,
+        selected_customer=(ctx.selected_customer if ctx else None),
+    )
+
+
 def select_tools(message: str, ctx: Optional[FrontendContext]) -> list[Selection]:
     """Pick up to ``max_tool_calls`` tools by keyword heuristics."""
     text = (message or "").lower()
     dc_code = _extract_dc(message, ctx)
-    customer = (ctx.selected_customer if ctx and ctx.selected_customer else None)
+    customer = _extract_customer(message, ctx)
     base = _base_args(ctx, dc_code, customer)
     base["days"] = _extract_days(text)  # DB-tool lookback (None => tool default)
     base["limit"] = _extract_limit(text)  # "top 10 / 10 tane" (None => tool default)
@@ -141,9 +151,20 @@ def select_tools(message: str, ctx: Optional[FrontendContext]) -> list[Selection
         add("get_sellable_summary")
 
     # --- Customer ------------------------------------------------------ #
+    if _has(text, "customer") and not customer and not dc_code:
+        add("get_customer_catalog")
     if customer or _has(text, "customer"):
         if _has(text, "itsm"):
             add("get_customer_itsm_summary")
+            if _has(text, "ticket"):
+                add("get_customer_itsm_tickets")
+        elif _has(text, "sales"):
+            if any(k in text for k in ("sipariş", "siparis", "order", "aktif")):
+                add("get_customer_sales_active_orders")
+            if any(k in text for k in ("verimlilik", "efficiency", "uyum", "compliance")):
+                add("get_customer_efficiency_by_category")
+                add("get_customer_resource_compliance")
+            add("get_customer_sales_summary")
         else:
             add("get_customer_resources")
 

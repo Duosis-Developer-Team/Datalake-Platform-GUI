@@ -15,6 +15,7 @@ from app.config import settings
 from app.models.schemas import ChatMessage, FrontendContext
 from app.services import (
     analysis_synthesizer,
+    customer_resolver,
     evidence_evaluator,
     investigation_coordinator,
     llm_react_loop,
@@ -111,6 +112,33 @@ def _execute_requests(
     return total
 
 
+def _conversation_user_messages(conversation: Optional[list[ChatMessage]]) -> list[str]:
+    return [msg.content or "" for msg in (conversation or []) if msg.role == "user"]
+
+
+def _try_catalog_customer_resolution(
+    plan: IntentPlan,
+    message: str,
+    ctx: Optional[FrontendContext],
+    conversation: Optional[list[ChatMessage]],
+    auth_header: Optional[str],
+) -> IntentPlan:
+    if plan.customer_name or "customer_name" not in (plan.missing_required_params or []):
+        return plan
+    catalog_result = tool_registry.execute_tool("get_customer_catalog", {}, auth_header)
+    if catalog_result.status != "success":
+        return plan
+    resolved = customer_resolver.resolve_customer_name(
+        message,
+        selected_customer=(ctx.selected_customer if ctx else None),
+        conversation_messages=_conversation_user_messages(conversation),
+        catalog_payload=catalog_result.summary,
+    )
+    if not resolved:
+        return plan
+    return query_planner.plan(message, ctx, conversation, forced_customer=resolved)
+
+
 def run(
     message: str,
     ctx: Optional[FrontendContext],
@@ -120,6 +148,7 @@ def run(
     run_tools: bool = True,
 ) -> AgentOutcome:
     plan = query_planner.plan(message, ctx, conversation)
+    plan = _try_catalog_customer_resolution(plan, message, ctx, conversation, auth_header)
     outcome = AgentOutcome(plan=plan)
 
     if plan.clarification or plan.clarification_block:

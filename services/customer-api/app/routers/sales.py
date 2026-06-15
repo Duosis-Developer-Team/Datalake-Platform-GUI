@@ -87,7 +87,7 @@ def sales_active_items(
     return svc.get_active_sales_items(customer_name)
 
 
-@router.get("/customers/{customer_name}/sales/efficiency", response_model=List[SalesEfficiencyRow])
+@router.get("/customers/{customer_name}/sales/efficiency", response_model=List[SalesEfficiencyRow], deprecated=True)
 def sales_efficiency(
     customer_name: str,
     svc: SalesService = Depends(get_sales_service),
@@ -123,7 +123,7 @@ def sales_resource_compliance(
     return svc.get_resource_compliance(customer_name, scope=scope, time_range=tf.to_dict())
 
 
-@router.get("/customers/{customer_name}/sales/catalog-valuation", response_model=List[CatalogValuationRow])
+@router.get("/customers/{customer_name}/sales/catalog-valuation", response_model=List[CatalogValuationRow], deprecated=True)
 def catalog_valuation(
     customer_name: str,
     svc: SalesService = Depends(get_sales_service),
@@ -176,7 +176,7 @@ def seed_boyner_mappings(svc: SalesService = Depends(get_sales_service)):
     return svc.seed_boyner_source_mappings()
 
 
-@router.put("/crm/aliases/{crm_accountid}", response_model=dict)
+@router.put("/crm/aliases/{crm_accountid}", response_model=dict, deprecated=True)
 def update_alias(
     crm_accountid: str,
     body: CustomerAliasUpdate,
@@ -193,7 +193,7 @@ def update_alias(
     return {"status": "ok", "crm_accountid": crm_accountid}
 
 
-@router.delete("/crm/aliases/{crm_accountid}", response_model=dict)
+@router.delete("/crm/aliases/{crm_accountid}", response_model=dict, deprecated=True)
 def delete_alias(
     crm_accountid: str,
     svc: SalesService = Depends(get_sales_service),

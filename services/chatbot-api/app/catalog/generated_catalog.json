@@ -79,6 +79,30 @@
       "primary_tools": ["get_customer_resources"], "required_params": ["customer_name"]
     },
     {
+      "key": "customer_sales_summary",
+      "entity": "customer", "metric": "sales", "calculation": "summary", "analysis_profile": "generic",
+      "aliases": ["satış özeti", "sales summary", "aktif sipariş", "active order", "crm satış"],
+      "primary_tools": ["get_customer_sales_summary"],
+      "fallback_tools": ["get_customer_sales_active_orders", "get_customer_efficiency_by_category"],
+      "required_params": ["customer_name"]
+    },
+    {
+      "key": "customer_itsm_risk",
+      "entity": "customer", "metric": "itsm", "calculation": "risk", "analysis_profile": "generic",
+      "aliases": ["itsm", "ticket özeti", "müşteri ticket", "destek talebi"],
+      "primary_tools": ["get_customer_itsm_summary"],
+      "fallback_tools": ["get_customer_itsm_extremes", "get_customer_itsm_tickets"],
+      "required_params": ["customer_name"]
+    },
+    {
+      "key": "customer_compliance",
+      "entity": "customer", "metric": "compliance", "calculation": "comparison", "analysis_profile": "generic",
+      "aliases": ["resource compliance", "uyum", "verimlilik kategori", "sold vs used"],
+      "primary_tools": ["get_customer_resource_compliance"],
+      "fallback_tools": ["get_customer_efficiency_by_category"],
+      "required_params": ["customer_name"]
+    },
+    {
       "key": "sla_risk",
       "entity": "sla", "metric": "availability", "calculation": "risk", "analysis_profile": "sla",
       "aliases": ["sla", "availability", "erişilebilirlik", "downtime", "uptime"],

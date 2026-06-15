@@ -127,7 +127,7 @@ def upsert_price_override(
     return {"status": "ok", "productid": productid}
 
 
-@router.delete("/crm/config/price-overrides/{productid}", response_model=dict)
+@router.delete("/crm/config/price-overrides/{productid}", response_model=dict, deprecated=True)
 def delete_price_override(productid: str, request: Request, cfg: CrmConfigService = Depends(_config)):
     n = cfg.delete_price_override(productid)
     sellable = getattr(request.app.state, "sellable", None)

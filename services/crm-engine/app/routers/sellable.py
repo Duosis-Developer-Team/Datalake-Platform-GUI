@@ -180,7 +180,7 @@ def get_virt_sellable_total(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/crm/metric-tags", response_model=List[MetricValueRow])
+@router.get("/crm/metric-tags", response_model=List[MetricValueRow], deprecated=True)
 def get_metric_tags(
     prefix: Optional[str] = None,
     scope_type: str = "global",
