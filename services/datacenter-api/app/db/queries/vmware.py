@@ -550,6 +550,148 @@ WHERE datacenter ILIKE %s
   AND timestamp BETWEEN %s AND %s
 """
 
+# Time-series memory peak: SUM(used)/SUM(cap) per timestamp, then peak moment.
+CLASSIC_MEM_PEAK_RAW = """
+WITH ts_agg AS (
+    SELECT timestamp,
+           SUM(memory_used_gb) AS used_gb,
+           SUM(memory_capacity_gb) AS cap_gb
+    FROM public.cluster_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster ILIKE '%%KM%%'
+      AND timestamp BETWEEN %s AND %s
+    GROUP BY timestamp
+)
+SELECT COALESCE(used_gb, 0), COALESCE(cap_gb, 0),
+       COALESCE(100.0 * used_gb / NULLIF(cap_gb, 0), 0)
+FROM ts_agg
+WHERE cap_gb > 0
+ORDER BY used_gb DESC, (used_gb / NULLIF(cap_gb, 0)) DESC
+LIMIT 1
+"""
+
+CLASSIC_MEM_PEAK_RAW_FILTERED = """
+WITH ts_agg AS (
+    SELECT timestamp,
+           SUM(memory_used_gb) AS used_gb,
+           SUM(memory_capacity_gb) AS cap_gb
+    FROM public.cluster_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster = ANY(%s::text[])
+      AND timestamp BETWEEN %s AND %s
+    GROUP BY timestamp
+)
+SELECT COALESCE(used_gb, 0), COALESCE(cap_gb, 0),
+       COALESCE(100.0 * used_gb / NULLIF(cap_gb, 0), 0)
+FROM ts_agg
+WHERE cap_gb > 0
+ORDER BY used_gb DESC, (used_gb / NULLIF(cap_gb, 0)) DESC
+LIMIT 1
+"""
+
+# Time-series memory average: same ts_agg as peak, AVG(used/cap) across timestamps.
+CLASSIC_MEM_AVG_TS_RAW = """
+WITH ts_agg AS (
+    SELECT timestamp,
+           SUM(memory_used_gb) AS used_gb,
+           SUM(memory_capacity_gb) AS cap_gb
+    FROM public.cluster_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster ILIKE '%%KM%%'
+      AND timestamp BETWEEN %s AND %s
+    GROUP BY timestamp
+)
+SELECT COALESCE(AVG(100.0 * used_gb / NULLIF(cap_gb, 0)), 0)
+FROM ts_agg
+WHERE cap_gb > 0
+"""
+
+CLASSIC_MEM_AVG_TS_RAW_FILTERED = """
+WITH ts_agg AS (
+    SELECT timestamp,
+           SUM(memory_used_gb) AS used_gb,
+           SUM(memory_capacity_gb) AS cap_gb
+    FROM public.cluster_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster = ANY(%s::text[])
+      AND timestamp BETWEEN %s AND %s
+    GROUP BY timestamp
+)
+SELECT COALESCE(AVG(100.0 * used_gb / NULLIF(cap_gb, 0)), 0)
+FROM ts_agg
+WHERE cap_gb > 0
+"""
+
+HYPERCONV_MEM_PEAK_RAW = """
+WITH ts_agg AS (
+    SELECT timestamp,
+           SUM(memory_used_gb) AS used_gb,
+           SUM(memory_capacity_gb) AS cap_gb
+    FROM public.cluster_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster NOT ILIKE '%%KM%%'
+      AND timestamp BETWEEN %s AND %s
+    GROUP BY timestamp
+)
+SELECT COALESCE(used_gb, 0), COALESCE(cap_gb, 0),
+       COALESCE(100.0 * used_gb / NULLIF(cap_gb, 0), 0)
+FROM ts_agg
+WHERE cap_gb > 0
+ORDER BY used_gb DESC, (used_gb / NULLIF(cap_gb, 0)) DESC
+LIMIT 1
+"""
+
+HYPERCONV_MEM_PEAK_RAW_FILTERED = """
+WITH ts_agg AS (
+    SELECT timestamp,
+           SUM(memory_used_gb) AS used_gb,
+           SUM(memory_capacity_gb) AS cap_gb
+    FROM public.cluster_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster = ANY(%s::text[])
+      AND timestamp BETWEEN %s AND %s
+    GROUP BY timestamp
+)
+SELECT COALESCE(used_gb, 0), COALESCE(cap_gb, 0),
+       COALESCE(100.0 * used_gb / NULLIF(cap_gb, 0), 0)
+FROM ts_agg
+WHERE cap_gb > 0
+ORDER BY used_gb DESC, (used_gb / NULLIF(cap_gb, 0)) DESC
+LIMIT 1
+"""
+
+HYPERCONV_MEM_AVG_TS_RAW = """
+WITH ts_agg AS (
+    SELECT timestamp,
+           SUM(memory_used_gb) AS used_gb,
+           SUM(memory_capacity_gb) AS cap_gb
+    FROM public.cluster_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster NOT ILIKE '%%KM%%'
+      AND timestamp BETWEEN %s AND %s
+    GROUP BY timestamp
+)
+SELECT COALESCE(AVG(100.0 * used_gb / NULLIF(cap_gb, 0)), 0)
+FROM ts_agg
+WHERE cap_gb > 0
+"""
+
+HYPERCONV_MEM_AVG_TS_RAW_FILTERED = """
+WITH ts_agg AS (
+    SELECT timestamp,
+           SUM(memory_used_gb) AS used_gb,
+           SUM(memory_capacity_gb) AS cap_gb
+    FROM public.cluster_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster = ANY(%s::text[])
+      AND timestamp BETWEEN %s AND %s
+    GROUP BY timestamp
+)
+SELECT COALESCE(AVG(100.0 * used_gb / NULLIF(cap_gb, 0)), 0)
+FROM ts_agg
+WHERE cap_gb > 0
+"""
+
 # =============================================================================
 # VM-level storage breakdown (thin-provisioned vs actually used)
 # Params: (dc_pattern,)

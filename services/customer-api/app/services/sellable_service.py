@@ -2552,6 +2552,31 @@ SELECT _tot, _alloc FROM latest
         )
         return len(metrics)
 
+    # ------------------------------------------------------------------ virt total (DC view)
+
+    def compute_virt_sellable_panels(
+        self,
+        dc_code: str,
+        *,
+        classic_clusters: list[str] | None = None,
+        hyperconv_clusters: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Single round-trip aggregation for DC view virt-total card."""
+        panels: list[dict[str, Any]] = []
+        for family, clusters in (
+            ("virt_classic", classic_clusters),
+            ("virt_hyperconverged", hyperconv_clusters),
+            ("virt_power", None),
+            ("virt_power_hana", None),
+        ):
+            chunk = self.compute_all_panels(
+                dc_code=dc_code,
+                selected_clusters=clusters,
+                family=family,
+            )
+            panels.extend(p.to_dict() for p in chunk)
+        return panels
+
     # ------------------------------------------------------------------ tags API
 
     def get_metric_dict(

@@ -121,10 +121,8 @@ from src.pages.dc_view import (
     _build_sellable_inline_kpi,
     _DC_ICONS,
 )
-from src.utils.virt_sellable_aggregate import (
-    aggregate_virt_sellable_panels,
-    collect_virt_sellable_panels,
-)
+from src.utils.virt_sellable_aggregate import aggregate_virt_sellable_panels
+from src.utils.api_parallel import parallel_execute
 from src.pages.settings.iam import roles_callbacks  # noqa: F401 — registers role matrix callback
 from src.pages.settings.iam import teams_callbacks  # noqa: F401 — IAM teams panel / members
 from src.pages.settings.iam import users_callbacks  # noqa: F401 — IAM users AD import / edit
@@ -795,110 +793,6 @@ def update_s3_customer_panel(selected_vaults, time_range, search):
     return build_customer_s3_panel(name, s3_data, tr, selected)
 
 
-@app.callback(
-    dash.Output("classic-virt-panel", "children"),
-    dash.Input("virt-classic-cluster-selector", "value"),
-    dash.Input("app-time-range", "data"),
-    dash.State("url", "pathname"),
-)
-def update_classic_virt_panel(selected_clusters, time_range, pathname):
-    if not pathname or not pathname.startswith("/datacenter/"):
-        return dash.no_update
-    dc_id = pathname.replace("/datacenter/", "").strip("/")
-    tr = time_range or default_time_range()
-    classic = api.get_classic_metrics_filtered(dc_id, selected_clusters, tr)
-    return _build_compute_tab(classic, "Classic Compute", color="blue")
-
-
-@app.callback(
-    dash.Output("hyperconv-virt-panel", "children"),
-    dash.Input("virt-hyperconv-cluster-selector", "value"),
-    dash.Input("app-time-range", "data"),
-    dash.State("url", "pathname"),
-)
-def update_hyperconv_virt_panel(selected_clusters, time_range, pathname):
-    if not pathname or not pathname.startswith("/datacenter/"):
-        return dash.no_update
-    dc_id = pathname.replace("/datacenter/", "").strip("/")
-    tr = time_range or default_time_range()
-    hyperconv = api.get_hyperconv_metrics_filtered(dc_id, selected_clusters, tr)
-    return _build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal")
-
-
-# ---- Hosts panel (DC view: Klasik / Hyperconverged) ------------------------
-#
-# The collapsible Hosts panel at the bottom of the virtualization tabs follows
-# the same cluster selectors as Capacity Planning. Content + count badge are
-# refreshed on selection change; the Collapse shell itself is static so the
-# open/closed state survives refreshes.
-
-
-@app.callback(
-    dash.Output("hosts-panel-classic", "children"),
-    dash.Output("hosts-count-classic", "children"),
-    dash.Input("virt-classic-cluster-selector", "value"),
-    dash.Input("app-time-range", "data"),
-    dash.State("url", "pathname"),
-)
-def update_classic_hosts_panel(selected_clusters, time_range, pathname):
-    if not pathname or not pathname.startswith("/datacenter/"):
-        return dash.no_update, dash.no_update
-    dc_id = pathname.replace("/datacenter/", "").strip("/")
-    tr = time_range or default_time_range()
-    data = api.get_classic_host_rows(dc_id, selected_clusters, tr)
-    count = int(data.get("host_count") or 0)
-    return _build_hosts_panel_content(data, color="blue"), f"{count} host"
-
-
-@app.callback(
-    dash.Output("hosts-panel-hyperconv", "children"),
-    dash.Output("hosts-count-hyperconv", "children"),
-    dash.Input("virt-hyperconv-cluster-selector", "value"),
-    dash.Input("app-time-range", "data"),
-    dash.State("url", "pathname"),
-)
-def update_hyperconv_hosts_panel(selected_clusters, time_range, pathname):
-    if not pathname or not pathname.startswith("/datacenter/"):
-        return dash.no_update, dash.no_update
-    dc_id = pathname.replace("/datacenter/", "").strip("/")
-    tr = time_range or default_time_range()
-    data = api.get_hyperconv_host_rows(dc_id, selected_clusters, tr)
-    count = int(data.get("host_count") or 0)
-    return _build_hosts_panel_content(data, color="teal"), f"{count} host"
-
-
-@app.callback(
-    dash.Output("hosts-collapse-classic", "in"),
-    dash.Output("hosts-toggle-classic", "children"),
-    dash.Input("hosts-toggle-classic", "n_clicks"),
-    dash.State("hosts-collapse-classic", "in"),
-    prevent_initial_call=True,
-)
-def toggle_classic_hosts_panel(n_clicks, opened):
-    now_open = not bool(opened)
-    return now_open, ("Gizle" if now_open else "Göster")
-
-
-@app.callback(
-    dash.Output("hosts-collapse-hyperconv", "in"),
-    dash.Output("hosts-toggle-hyperconv", "children"),
-    dash.Input("hosts-toggle-hyperconv", "n_clicks"),
-    dash.State("hosts-collapse-hyperconv", "in"),
-    prevent_initial_call=True,
-)
-def toggle_hyperconv_hosts_panel(n_clicks, opened):
-    now_open = not bool(opened)
-    return now_open, ("Gizle" if now_open else "Göster")
-
-
-# ---- Cluster-aware Sellable Potential cards (DC view) ----------------------
-#
-# These callbacks make the per-tab Sellable cards listen to the same cluster
-# chip selectors as Capacity Planning, so the values stay in lock-step with
-# the /compute/{kind} cards above them. The crm-engine receives the cluster
-# CSV and reads total + allocated from datacenter-api /compute, bypassing
-# datalake DB + Redis for the cluster-scoped path.
-
 def _dc_id_from_pathname(pathname: str | None) -> str | None:
     if not pathname or not pathname.startswith("/datacenter/"):
         return None
@@ -906,90 +800,121 @@ def _dc_id_from_pathname(pathname: str | None) -> str | None:
 
 
 @app.callback(
-    dash.Output("sellable-classic-card", "children"),
+    dash.Output("virt-classic-cluster-debounce", "disabled"),
     dash.Input("virt-classic-cluster-selector", "value"),
-    dash.Input("app-time-range", "data"),
-    dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
-def update_classic_sellable_card(selected_clusters, time_range, pathname):
-    dc_id = _dc_id_from_pathname(pathname)
-    if not dc_id:
-        return dash.no_update
-    card = _build_sellable_inline_kpi(
-        dc_id,
-        "virt_classic",
-        "Klasik Mimari — Sellable Potential",
-        color="blue",
-        selected_clusters=selected_clusters or None,
-        container_id="sellable-classic-card",
-    )
-    if card is None:
-        return html.Div(id="sellable-classic-card")
-    return card.children
+def enable_classic_cluster_debounce(_draft):
+    return False
 
 
 @app.callback(
-    dash.Output("sellable-hyperconv-card", "children"),
+    dash.Output("virt-hyperconv-cluster-debounce", "disabled"),
     dash.Input("virt-hyperconv-cluster-selector", "value"),
-    dash.Input("app-time-range", "data"),
-    dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
-def update_hyperconv_sellable_card(selected_clusters, time_range, pathname):
-    dc_id = _dc_id_from_pathname(pathname)
-    if not dc_id:
-        return dash.no_update
-    card = _build_sellable_inline_kpi(
-        dc_id,
-        "virt_hyperconverged",
-        "Hyperconverged Mimari — Sellable Potential",
-        color="teal",
-        selected_clusters=selected_clusters or None,
-        container_id="sellable-hyperconv-card",
-    )
-    if card is None:
-        return html.Div(id="sellable-hyperconv-card")
-    return card.children
+def enable_hyperconv_cluster_debounce(_draft):
+    return False
 
 
 @app.callback(
-    dash.Output("sellable-power-card", "children"),
-    dash.Input("app-time-range", "data"),
-    dash.State("url", "pathname"),
+    dash.Output("virt-classic-cluster-applied", "data"),
+    dash.Input("virt-classic-cluster-debounce", "n_intervals"),
+    dash.State("virt-classic-cluster-selector", "value"),
+    dash.State("virt-classic-cluster-applied", "data"),
+    prevent_initial_call=True,
 )
-def update_power_sellable_card(time_range, pathname):
-    dc_id = _dc_id_from_pathname(pathname)
-    if not dc_id:
+def debounce_apply_classic_clusters(_n, draft, applied):
+    if draft == applied:
         return dash.no_update
-    card = _build_sellable_inline_kpi(
-        dc_id,
-        ["virt_power", "virt_power_hana"],
-        "Power — Sellable Potential",
-        color="grape",
-        container_id="sellable-power-card",
-    )
-    if card is None:
-        return html.Div(id="sellable-power-card")
-    return card.children
+    return draft
 
 
 @app.callback(
-    dash.Output("sellable-virt-total-card", "children"),
-    dash.Input("virt-classic-cluster-selector", "value"),
-    dash.Input("virt-hyperconv-cluster-selector", "value"),
-    dash.State("url", "pathname"),
+    dash.Output("virt-hyperconv-cluster-applied", "data"),
+    dash.Input("virt-hyperconv-cluster-debounce", "n_intervals"),
+    dash.State("virt-hyperconv-cluster-selector", "value"),
+    dash.State("virt-hyperconv-cluster-applied", "data"),
+    prevent_initial_call=True,
 )
-def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathname):
-    """Top-level "Virtualization — Total Sellable Potential" card.
-
-    Aggregates the cluster-scoped Klasik + Hyperconverged sub-cards plus the
-    DC-wide Power family so the headline number always matches the sum of the
-    sub-tab cards the operator is currently looking at.
-    """
-    dc_id = _dc_id_from_pathname(pathname)
-    if not dc_id:
+def debounce_apply_hyperconv_clusters(_n, draft, applied):
+    if draft == applied:
         return dash.no_update
+    return draft
 
-    panels = collect_virt_sellable_panels(
+
+@app.callback(
+    dash.Output("virt-classic-cluster-applied", "data", allow_duplicate=True),
+    dash.Output("virt-classic-cluster-debounce", "disabled", allow_duplicate=True),
+    dash.Input("virt-classic-cluster-apply", "n_clicks"),
+    dash.State("virt-classic-cluster-selector", "value"),
+    prevent_initial_call=True,
+)
+def apply_classic_clusters(_n, draft):
+    return draft, True
+
+
+@app.callback(
+    dash.Output("virt-hyperconv-cluster-applied", "data", allow_duplicate=True),
+    dash.Output("virt-hyperconv-cluster-debounce", "disabled", allow_duplicate=True),
+    dash.Input("virt-hyperconv-cluster-apply", "n_clicks"),
+    dash.State("virt-hyperconv-cluster-selector", "value"),
+    prevent_initial_call=True,
+)
+def apply_hyperconv_clusters(_n, draft):
+    return draft, True
+
+
+@app.callback(
+    dash.Output("virt-classic-cluster-selector", "value"),
+    dash.Output("virt-classic-cluster-debounce", "disabled", allow_duplicate=True),
+    dash.Input("virt-classic-cluster-select-all", "n_clicks"),
+    dash.State("virt-classic-cluster-all", "data"),
+    prevent_initial_call=True,
+)
+def select_all_classic_clusters(_n, all_clusters):
+    return list(all_clusters or []), False
+
+
+@app.callback(
+    dash.Output("virt-hyperconv-cluster-selector", "value"),
+    dash.Output("virt-hyperconv-cluster-debounce", "disabled", allow_duplicate=True),
+    dash.Input("virt-hyperconv-cluster-select-all", "n_clicks"),
+    dash.State("virt-hyperconv-cluster-all", "data"),
+    prevent_initial_call=True,
+)
+def select_all_hyperconv_clusters(_n, all_clusters):
+    return list(all_clusters or []), False
+
+
+@app.callback(
+    dash.Output("virt-classic-cluster-selector", "value", allow_duplicate=True),
+    dash.Output("virt-classic-cluster-debounce", "disabled", allow_duplicate=True),
+    dash.Input("virt-classic-cluster-clear", "n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_classic_clusters(_n):
+    return [], False
+
+
+@app.callback(
+    dash.Output("virt-hyperconv-cluster-selector", "value", allow_duplicate=True),
+    dash.Output("virt-hyperconv-cluster-debounce", "disabled", allow_duplicate=True),
+    dash.Input("virt-hyperconv-cluster-clear", "n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_hyperconv_clusters(_n):
+    return [], False
+
+
+def _sellable_card_children(card):
+    if card is None:
+        return dash.no_update
+    return card.children
+
+
+def _build_virt_total_sellable_children(dc_id: str, classic_clusters, hyperconv_clusters):
+    panels = api.get_virt_sellable_panels(
         dc_id,
         classic_clusters or None,
         hyperconv_clusters or None,
@@ -1087,6 +1012,139 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
             children=cards,
         ),
     ]
+
+
+@app.callback(
+    dash.Output("classic-virt-panel", "children"),
+    dash.Output("sellable-classic-card", "children"),
+    dash.Output("hosts-panel-classic", "children"),
+    dash.Output("hosts-count-classic", "children"),
+    dash.Input("virt-classic-cluster-applied", "data"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+    prevent_initial_call=True,
+)
+def update_classic_virt_block(applied_clusters, time_range, pathname):
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    tr = time_range or default_time_range()
+    scope = applied_clusters or None
+    batch = parallel_execute({
+        "metrics": lambda: api.get_classic_metrics_filtered(dc_id, scope, tr),
+        "hosts": lambda: api.get_classic_host_rows(dc_id, scope, tr),
+        "card": lambda: _build_sellable_inline_kpi(
+            dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
+            color="blue", selected_clusters=scope,
+            container_id="sellable-classic-card",
+        ),
+    })
+    panel = _build_compute_tab(batch["metrics"], "Classic Compute", color="blue")
+    sellable = _sellable_card_children(batch["card"])
+    if sellable is dash.no_update:
+        sellable = html.Div(id="sellable-classic-card")
+    hosts_data = batch["hosts"] or {}
+    count = int(hosts_data.get("host_count") or 0)
+    return panel, sellable, _build_hosts_panel_content(hosts_data, color="blue"), f"{count} host"
+
+
+@app.callback(
+    dash.Output("hyperconv-virt-panel", "children"),
+    dash.Output("sellable-hyperconv-card", "children"),
+    dash.Output("hosts-panel-hyperconv", "children"),
+    dash.Output("hosts-count-hyperconv", "children"),
+    dash.Input("virt-hyperconv-cluster-applied", "data"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+    prevent_initial_call=True,
+)
+def update_hyperconv_virt_block(applied_clusters, time_range, pathname):
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    tr = time_range or default_time_range()
+    scope = applied_clusters or None
+    batch = parallel_execute({
+        "metrics": lambda: api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
+        "hosts": lambda: api.get_hyperconv_host_rows(dc_id, scope, tr),
+        "card": lambda: _build_sellable_inline_kpi(
+            dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
+            color="teal", selected_clusters=scope,
+            container_id="sellable-hyperconv-card",
+        ),
+    })
+    panel = _build_compute_tab(batch["metrics"], "Hyperconverged Compute", color="teal")
+    sellable = _sellable_card_children(batch["card"])
+    if sellable is dash.no_update:
+        sellable = html.Div(id="sellable-hyperconv-card")
+    hosts_data = batch["hosts"] or {}
+    count = int(hosts_data.get("host_count") or 0)
+    return panel, sellable, _build_hosts_panel_content(hosts_data, color="teal"), f"{count} host"
+
+
+# ---- Hosts panel toggle (DC view) --------------------------------------------
+
+
+@app.callback(
+    dash.Output("hosts-collapse-classic", "in"),
+    dash.Output("hosts-toggle-classic", "children"),
+    dash.Input("hosts-toggle-classic", "n_clicks"),
+    dash.State("hosts-collapse-classic", "in"),
+    prevent_initial_call=True,
+)
+def toggle_classic_hosts_panel(n_clicks, opened):
+    now_open = not bool(opened)
+    return now_open, ("Gizle" if now_open else "Göster")
+
+
+@app.callback(
+    dash.Output("hosts-collapse-hyperconv", "in"),
+    dash.Output("hosts-toggle-hyperconv", "children"),
+    dash.Input("hosts-toggle-hyperconv", "n_clicks"),
+    dash.State("hosts-collapse-hyperconv", "in"),
+    prevent_initial_call=True,
+)
+def toggle_hyperconv_hosts_panel(n_clicks, opened):
+    now_open = not bool(opened)
+    return now_open, ("Gizle" if now_open else "Göster")
+
+
+# ---- Sellable Potential cards (DC view) --------------------------------------
+
+
+@app.callback(
+    dash.Output("sellable-power-card", "children"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_power_sellable_card(time_range, pathname):
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update
+    card = _build_sellable_inline_kpi(
+        dc_id,
+        ["virt_power", "virt_power_hana"],
+        "Power — Sellable Potential",
+        color="grape",
+        container_id="sellable-power-card",
+    )
+    if card is None:
+        return html.Div(id="sellable-power-card")
+    return card.children
+
+
+@app.callback(
+    dash.Output("sellable-virt-total-card", "children"),
+    dash.Input("virt-classic-cluster-applied", "data"),
+    dash.Input("virt-hyperconv-cluster-applied", "data"),
+    dash.State("url", "pathname"),
+    prevent_initial_call=True,
+)
+def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathname):
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update
+    return _build_virt_total_sellable_children(dc_id, classic_clusters, hyperconv_clusters)
 
 
 @app.callback(

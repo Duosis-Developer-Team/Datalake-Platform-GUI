@@ -1927,6 +1927,31 @@ def get_sellable_by_panel(
     return _api_cache_get_sellable_panels(cache_key, fetch, dc_code, family, cl)
 
 
+def get_virt_sellable_panels(
+    dc_code: str,
+    classic_clusters: Optional[list[str]] = None,
+    hyperconv_clusters: Optional[list[str]] = None,
+) -> list:
+    """All virt sellable panels in one CRM round-trip (classic + hyperconv + power)."""
+    qs = f"dc_code={quote(dc_code, safe='*')}"
+    cl_classic = _normalize_clusters_arg(classic_clusters)
+    cl_hyper = _normalize_clusters_arg(hyperconv_clusters)
+    if cl_classic:
+        qs += f"&classic_clusters={quote(','.join(cl_classic), safe=',')}"
+    if cl_hyper:
+        qs += f"&hyperconv_clusters={quote(','.join(cl_hyper), safe=',')}"
+
+    def fetch() -> list:
+        data = _get_json(_client_crm, f"/api/v1/crm/sellable-potential/virt-total?{qs}")
+        return data if isinstance(data, list) else []
+
+    cache_key = (
+        f"api:virt_sellable_total:{dc_code}:"
+        f"{','.join(cl_classic or [])}:{','.join(cl_hyper or [])}"
+    )
+    return _api_cache_get_sellable_panels(cache_key, fetch, dc_code, "virt_total", cl_classic)
+
+
 def get_sellable_by_family(
     dc_code: str = "*",
     clusters: Optional[list[str]] = None,

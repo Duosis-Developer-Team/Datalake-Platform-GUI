@@ -154,6 +154,27 @@ def get_by_family(
     return [f.to_dict() for f in summary.families]
 
 
+@router.get("/crm/sellable-potential/virt-total", response_model=List[dict])
+def get_virt_sellable_total(
+    dc_code: str,
+    classic_clusters: Optional[str] = Query(
+        None,
+        description="CSV of classic (KM) cluster names for virt_classic panel scope.",
+    ),
+    hyperconv_clusters: Optional[str] = Query(
+        None,
+        description="CSV of hyperconverged cluster names for virt_hyperconverged panel scope.",
+    ),
+    svc: SellableService = Depends(_sellable),
+):
+    """All virt sellable panels (classic + hyperconv + power) in one CRM call."""
+    return svc.compute_virt_sellable_panels(
+        dc_code=dc_code,
+        classic_clusters=_parse_clusters(classic_clusters),
+        hyperconv_clusters=_parse_clusters(hyperconv_clusters),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Metric tags
 # ---------------------------------------------------------------------------

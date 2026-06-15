@@ -4529,24 +4529,10 @@ def build_dc_view(
     default_virt_tab = next((t for t, ok in virt_order if ok), "classic")
 
     def _cluster_header(selector_id: str, clusters: list[str], placeholder: str):
-        return html.Div(
-            style={"display": "flex", "justifyContent": "flex-end", "alignItems": "center", "marginBottom": "16px"},
-            children=dmc.MultiSelect(
-                id=selector_id,
-                data=[{"label": c, "value": c} for c in clusters],
-                value=list(clusters),
-                clearable=True,
-                searchable=True,
-                nothingFoundMessage="No clusters",
-                placeholder=placeholder,
-                size="md",
-                radius="xl",
-                style={
-                    "minWidth": "260px",
-                    "background": "#F8F9FC",
-                },
-            ),
-        )
+        from src.components.virt_cluster_filter import build_virt_cluster_filter_bar
+
+        prefix = "classic" if "classic" in selector_id else "hyperconv"
+        return build_virt_cluster_filter_bar(prefix, clusters or [], placeholder)
 
     page = html.Div([
         dcc.Store(

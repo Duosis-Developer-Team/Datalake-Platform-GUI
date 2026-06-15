@@ -26,6 +26,10 @@ class TestVmwareUtilStatsSql(unittest.TestCase):
         self.assertIn("discovery_netbox_inventory_device", vq.NETBOX_HOST_CPU_STRINGS)
         self.assertIn("custom_fields", vq.NETBOX_HOST_CPU_STRINGS)
 
+    def test_classic_mem_peak_and_avg_ts_queries(self):
+        self.assertIn("GROUP BY timestamp", vq.CLASSIC_MEM_PEAK_RAW)
+        self.assertIn("AVG(100.0 * used_gb", vq.CLASSIC_MEM_AVG_TS_RAW)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -899,6 +899,179 @@ LIMIT 20
     # Cluster list and filtered metrics (for DC view cluster selector)
     # ------------------------------------------------------------------
 
+    _COMPUTE_CACHE_FRESH_TTL = 600
+    _COMPUTE_CACHE_STALE_TTL = 1800
+
+    @staticmethod
+    def _compute_cache_key(kind: str, dc_code: str, tr: dict, clusters: list[str]) -> str:
+        cluster_part = ",".join(sorted(clusters))
+        return f"compute:{kind}:{dc_code}:{tr.get('start', '')}:{tr.get('end', '')}:{cluster_part}"
+
+    def _get_compute_cached(self, key: str) -> dict | None:
+        val, _stale = cache.get_with_stale(key)
+        return val if isinstance(val, dict) else None
+
+    def _set_compute_cached(self, key: str, value: dict) -> None:
+        cache.set_with_stale(key, value, fresh_ttl=self._COMPUTE_CACHE_FRESH_TTL, stale_ttl=self._COMPUTE_CACHE_STALE_TTL)
+
+    def _is_full_cluster_selection(
+        self,
+        dc_code: str,
+        selected_clusters: list[str],
+        kind: str,
+        time_range: dict,
+    ) -> bool:
+        if not selected_clusters:
+            return True
+        if kind == "classic":
+            all_clusters = self.get_classic_cluster_list(dc_code, time_range)
+        else:
+            all_clusters = self.get_hyperconv_cluster_list(dc_code, time_range)
+        if not all_clusters:
+            return False
+        return set(selected_clusters) == set(all_clusters)
+
+    @staticmethod
+    def _mem_peak_tuple(row: tuple | None) -> tuple[float, float, float]:
+        if not row:
+            return 0.0, 0.0, 0.0
+        used = float(row[0] or 0)
+        cap = float(row[1] or 0)
+        pct = round(float(row[2] or 0), 1)
+        return used, cap, pct
+
+    @staticmethod
+    def _apply_mem_peak_raw(section: dict, peak: tuple[float, float, float] | None) -> dict:
+        if not peak:
+            return section
+        used, cap, pct = peak
+        if used <= 0 and cap <= 0:
+            return section
+        return {
+            **section,
+            "mem_util_pct_max": pct,
+            "mem_pct_max": pct,
+            "mem_used_gb_peak": round(used, 2),
+            "mem_cap_gb_at_peak": round(cap, 2),
+        }
+
+    @staticmethod
+    def _apply_mem_avg_ts(section: dict, avg_pct: float | None) -> dict:
+        if avg_pct is None or avg_pct <= 0:
+            return section
+        pct = round(float(avg_pct), 1)
+        return {**section, "mem_util_pct": pct, "mem_pct": pct}
+
+    def get_classic_mem_peak_raw(
+        self,
+        cursor,
+        dc_wc: str,
+        start_ts,
+        end_ts,
+        *,
+        cluster_filter: list[str] | None = None,
+    ) -> tuple[float, float, float]:
+        clusters = cluster_filter or []
+        if clusters:
+            row = self._run_row(
+                cursor, vq.CLASSIC_MEM_PEAK_RAW_FILTERED, (dc_wc, clusters, start_ts, end_ts)
+            )
+        else:
+            row = self._run_row(cursor, vq.CLASSIC_MEM_PEAK_RAW, (dc_wc, start_ts, end_ts))
+        return self._mem_peak_tuple(row)
+
+    def get_classic_mem_avg_ts_raw(
+        self,
+        cursor,
+        dc_wc: str,
+        start_ts,
+        end_ts,
+        *,
+        cluster_filter: list[str] | None = None,
+    ) -> float:
+        clusters = cluster_filter or []
+        if clusters:
+            row = self._run_row(
+                cursor, vq.CLASSIC_MEM_AVG_TS_RAW_FILTERED, (dc_wc, clusters, start_ts, end_ts)
+            )
+        else:
+            row = self._run_row(cursor, vq.CLASSIC_MEM_AVG_TS_RAW, (dc_wc, start_ts, end_ts))
+        return round(float((row or (0,))[0] or 0), 1)
+
+    def get_hyperconv_mem_peak_raw(
+        self,
+        cursor,
+        dc_wc: str,
+        start_ts,
+        end_ts,
+        *,
+        cluster_filter: list[str] | None = None,
+    ) -> tuple[float, float, float]:
+        clusters = cluster_filter or []
+        if clusters:
+            row = self._run_row(
+                cursor, vq.HYPERCONV_MEM_PEAK_RAW_FILTERED, (dc_wc, clusters, start_ts, end_ts)
+            )
+        else:
+            row = self._run_row(cursor, vq.HYPERCONV_MEM_PEAK_RAW, (dc_wc, start_ts, end_ts))
+        return self._mem_peak_tuple(row)
+
+    def get_hyperconv_mem_avg_ts_raw(
+        self,
+        cursor,
+        dc_wc: str,
+        start_ts,
+        end_ts,
+        *,
+        cluster_filter: list[str] | None = None,
+    ) -> float:
+        clusters = cluster_filter or []
+        if clusters:
+            row = self._run_row(
+                cursor, vq.HYPERCONV_MEM_AVG_TS_RAW_FILTERED, (dc_wc, clusters, start_ts, end_ts)
+            )
+        else:
+            row = self._run_row(cursor, vq.HYPERCONV_MEM_AVG_TS_RAW, (dc_wc, start_ts, end_ts))
+        return round(float((row or (0,))[0] or 0), 1)
+
+    def _apply_classic_mem_stats(
+        self,
+        section: dict,
+        cursor,
+        dc_wc: str,
+        start_ts,
+        end_ts,
+        *,
+        cluster_filter: list[str] | None = None,
+    ) -> dict:
+        peak = self.get_classic_mem_peak_raw(
+            cursor, dc_wc, start_ts, end_ts, cluster_filter=cluster_filter
+        )
+        avg_ts = self.get_classic_mem_avg_ts_raw(
+            cursor, dc_wc, start_ts, end_ts, cluster_filter=cluster_filter
+        )
+        section = self._apply_mem_peak_raw(section, peak)
+        return self._apply_mem_avg_ts(section, avg_ts)
+
+    def _apply_hyperconv_mem_stats(
+        self,
+        section: dict,
+        cursor,
+        dc_wc: str,
+        start_ts,
+        end_ts,
+        *,
+        cluster_filter: list[str] | None = None,
+    ) -> dict:
+        peak = self.get_hyperconv_mem_peak_raw(
+            cursor, dc_wc, start_ts, end_ts, cluster_filter=cluster_filter
+        )
+        avg_ts = self.get_hyperconv_mem_avg_ts_raw(
+            cursor, dc_wc, start_ts, end_ts, cluster_filter=cluster_filter
+        )
+        section = self._apply_mem_peak_raw(section, peak)
+        return self._apply_mem_avg_ts(section, avg_ts)
+
     def get_classic_cluster_list(self, dc_code: str, time_range: dict | None = None) -> list[str]:
         """Return list of Classic (KM) cluster names for the given DC and time range (cached)."""
         tr = time_range or default_time_range()
@@ -927,11 +1100,14 @@ LIMIT 20
         if cached_val is not None:
             return cached_val
         start_ts, end_ts = time_range_to_bounds(tr)
+        dc_wc = f"%{dc_code}%"
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    rows = self._run_rows(cur, nq.CLUSTER_LIST, (dc_code, start_ts, end_ts))
-            result = [r[0] for r in (rows or []) if r and r[0]]
+                    rows_n = self._run_rows(cur, nq.CLUSTER_LIST, (dc_code, start_ts, end_ts))
+                    rows_v = self._run_rows(cur, vq.HYPERCONV_CLUSTER_LIST, (dc_wc, start_ts, end_ts))
+            names = {r[0] for r in (rows_n or []) + (rows_v or []) if r and r[0]}
+            result = sorted(names)
             cache.set(cache_key, result)
             return result
         except OperationalError as exc:
@@ -948,6 +1124,15 @@ LIMIT 20
             return full.get("classic", _empty_compute_section())
 
         tr = time_range or default_time_range()
+        if self._is_full_cluster_selection(dc_code, selected_clusters, "classic", tr):
+            full = self.get_dc_details(dc_code, tr)
+            return full.get("classic", _empty_compute_section())
+
+        cache_key = self._compute_cache_key("classic", dc_code, tr, selected_clusters)
+        cached = self._get_compute_cached(cache_key)
+        if cached is not None:
+            return cached
+
         if tr.get("anchor_latest"):
             tr = self._smart_1h_tr(tr)
         start_ts, end_ts = time_range_to_bounds(tr)
@@ -963,21 +1148,16 @@ LIMIT 20
                     )
                     storage_vm = self.get_classic_storage_vm(cur, dc_wc, selected_clusters)
                     unit_prices = self.get_unit_prices_tl(cur, "klasik")
+                    ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(
+                        cur, dc_code, start_ts, end_ts
+                    )
+                    row = self._patch_classic_row_storage(row, ds_cap_gb, ds_used_gb)
         except OperationalError as exc:
             logger.error("DB unavailable for get_classic_metrics_filtered(%s): %s", dc_code, exc)
             return _empty_compute_section()
 
         row = row or (0,) * 8
         avg30 = DatabaseService._normalize_avg30_row(avg30)
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(
-                        cur, dc_code, start_ts, end_ts
-                    )
-                    row = self._patch_classic_row_storage(row, ds_cap_gb, ds_used_gb)
-        except OperationalError:
-            pass
         cl_hosts = int(row[0] or 0)
         cl_vms = int(row[1] or 0)
         cl_cpu_cap = round(float(row[2] or 0), 2)
@@ -996,7 +1176,7 @@ LIMIT 20
         cl_mem_pct_max = round(float(avg30[3] or 0), 1)
         cl_cpu_pct_min = round(float(avg30[4] or 0), 1)
         cl_mem_pct_min = round(float(avg30[5] or 0), 1)
-        return self._apply_cpu_overalloc_flags({
+        section = self._apply_cpu_overalloc_flags({
             "hosts": cl_hosts,
             "vms": cl_vms,
             "cpu_cap": cl_cpu_cap,
@@ -1019,6 +1199,16 @@ LIMIT 20
             "unit_prices": unit_prices,
             "sellable_multiplier": 3.3,
         })
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    section = self._apply_classic_mem_stats(
+                        section, cur, dc_wc, start_ts, end_ts, cluster_filter=selected_clusters
+                    )
+        except OperationalError:
+            pass
+        self._set_compute_cached(cache_key, section)
+        return section
 
     def get_hyperconv_metrics_filtered(
         self, dc_code: str, selected_clusters: list[str] | None, time_range: dict | None = None
@@ -1030,6 +1220,15 @@ LIMIT 20
             return full.get("hyperconv", _empty_compute_section())
 
         tr = time_range or default_time_range()
+        if self._is_full_cluster_selection(dc_code, selected_clusters, "hyperconv", tr):
+            full = self.get_dc_details(dc_code, tr)
+            return full.get("hyperconv", _empty_compute_section())
+
+        cache_key = self._compute_cache_key("hyperconv", dc_code, tr, selected_clusters)
+        cached = self._get_compute_cached(cache_key)
+        if cached is not None:
+            return cached
+
         start_ts, end_ts = time_range_to_bounds(tr)
         dc_wc = f"%{dc_code}%"
         try:
@@ -1085,7 +1284,7 @@ LIMIT 20
             hc_cpu_pct = hc_cpu_pct_cap
         if hc_mem_pct_max <= 0 and hc_mem_pct_cap > 0:
             hc_mem_pct = hc_mem_pct_cap
-        return self._apply_cpu_overalloc_flags({
+        section = self._apply_cpu_overalloc_flags({
             "hosts": hc_hosts,
             "vms": hc_vms,
             "cpu_cap": hc_cpu_cap,
@@ -1108,6 +1307,16 @@ LIMIT 20
             "unit_prices": unit_prices,
             "sellable_multiplier": 3.3,
         })
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    section = self._apply_hyperconv_mem_stats(
+                        section, cur, dc_wc, start_ts, end_ts, cluster_filter=selected_clusters
+                    )
+        except OperationalError:
+            pass
+        self._set_compute_cached(cache_key, section)
+        return section
 
     # ------------------------------------------------------------------
     # Host-level compute rows (DC view Hosts panel + host-based sellable)
@@ -1649,7 +1858,7 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                     classic_row = self._patch_classic_row_storage(
                         classic_row, ds_cap_gb, ds_used_gb
                     )
-                    return self._aggregate_dc(
+                    result = self._aggregate_dc(
                         dc_code,
                         dc_description=self._dc_description_map.get(dc_code, ""),
                         nutanix_host_count=self.get_nutanix_host_count(cur, dc_code, start_ts, end_ts),
@@ -1681,6 +1890,24 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
                         hyperconv_unit_prices=self.get_unit_prices_tl(cur, "hyperconv"),
                         power_unit_prices=self.get_unit_prices_tl(cur, "power"),
                     )
+                    result = dict(result)
+                    classic = self._apply_classic_mem_stats(
+                        dict(result.get("classic") or {}),
+                        cur,
+                        dc_wc,
+                        start_ts,
+                        end_ts,
+                    )
+                    hyperconv = self._apply_hyperconv_mem_stats(
+                        dict(result.get("hyperconv") or {}),
+                        cur,
+                        dc_wc,
+                        start_ts,
+                        end_ts,
+                    )
+                    result["classic"] = classic
+                    result["hyperconv"] = hyperconv
+                    return result
 
         try:
             result = cache.run_singleflight(cache_key, _fetch)
