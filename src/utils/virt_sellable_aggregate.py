@@ -51,10 +51,11 @@ def virt_tab_cluster_scope(
     classic_clusters: list[str] | None,
     hyperconv_clusters: list[str] | None,
 ) -> tuple[list[str] | None, list[str] | None]:
-    """Mirror Virt tab cluster selector defaults: explicit full lists when known.
+    """Coerce cluster scope lists for sellable/compute API calls.
 
-    Empty lists are treated as ``None`` (DC-wide datalake path), matching
-    ``selected_clusters or None`` in Dash callbacks.
+    Empty lists map to ``None`` (all clusters). Non-empty lists are passed
+    through unchanged — callers with the full DC inventory should normalize
+    via ``normalize_virt_cluster_scope`` at the call site (see datacenters).
     """
     classic = list(classic_clusters) if classic_clusters else None
     hyperconv = list(hyperconv_clusters) if hyperconv_clusters else None

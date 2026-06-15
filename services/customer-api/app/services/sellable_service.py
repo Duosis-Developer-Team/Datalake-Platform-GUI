@@ -85,7 +85,7 @@ _SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT",
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 2
+SELLABLE_PAYLOAD_VERSION: int = 3
 
 # Maps allocated_table → Redis section key for per-DC (dc_details) response.
 _VM_TABLE_DC_SECTION: dict[str, str] = {
@@ -234,6 +234,7 @@ from shared.sellable.computation import (
     constrain_by_ratio_dual_cpu_cluster,
     constrain_by_ratio_per_host,
     constrain_by_ratio_per_host_dual,
+    constrain_by_ratio_per_host_triple_dual,
     convert_unit,
     utilization_gate_blocked,
 )
@@ -277,6 +278,7 @@ class SellableService:
         self._dc_redis = datacenter_redis
         self._dc_api_url = (datacenter_api_url or "").rstrip("/")
         self._crm_redis = crm_redis  # crm-engine's own Redis (DB 2) for result caching
+        self._virt_cluster_list_cache: dict[str, tuple[list[str] | None, list[str] | None]] = {}
 
     # ----------------------------------------------------------------- helpers
 
@@ -1297,14 +1299,15 @@ SELECT _tot, _alloc FROM latest
         clusters: list[str] | None,
         *,
         preset: str = "30d",
-    ) -> tuple[list[dict] | None, str]:
+    ) -> tuple[list[dict] | None, str, list[dict]]:
         """Fetch per-host compute rows from datacenter-api /compute/{kind}/hosts.
 
-        Returns ``(hosts, status)`` where status is ``ok`` | ``empty`` | ``unavailable``.
+        Returns ``(hosts, status, storage_pools)`` where status is
+        ``ok`` | ``empty`` | ``unavailable``.
         """
         kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
         if not kind or not dc_code or dc_code == "*" or not self._dc_api_url:
-            return None, "unavailable"
+            return None, "unavailable", []
         params: list[str] = [f"preset={preset}"]
         cl = [c for c in (clusters or []) if c]
         if cl:
@@ -1325,24 +1328,26 @@ SELECT _tot, _alloc FROM latest
                 len(cl),
                 url,
             )
-            return None, "unavailable"
+            return None, "unavailable", []
         except Exception:
             logger.warning("host rows fetch failed dc=%s family=%s url=%s", dc_code, family, url)
-            return None, "unavailable"
+            return None, "unavailable", []
         if not isinstance(data, dict):
-            return None, "unavailable"
+            return None, "unavailable", []
         hosts = data.get("hosts")
         if not isinstance(hosts, list):
-            return None, "unavailable"
+            return None, "unavailable", []
+        pools = data.get("storage_pools")
+        storage_pools = pools if isinstance(pools, list) else []
         if not hosts:
             logger.info(
-                "host rows empty dc=%s family=%s clusters=%s — cluster fallback",
+                "host rows empty dc=%s family=%s clusters=%s",
                 dc_code,
                 family,
                 cl or "all",
             )
-            return [], "empty"
-        return hosts, "ok"
+            return [], "empty", storage_pools
+        return hosts, "ok", storage_pools
 
     def _get_sellable_calc_config(self) -> dict[str, float | str]:
         """Load dual-CPU sellable calc variables from gui_crm_calc_config."""
@@ -1985,6 +1990,35 @@ SELECT _tot, _alloc FROM latest
             return ""
         return ",".join(sorted(c for c in selected_clusters if c))
 
+    def _cached_virt_cluster_lists(
+        self, dc_code: str
+    ) -> tuple[list[str] | None, list[str] | None]:
+        if dc_code not in self._virt_cluster_list_cache:
+            self._virt_cluster_list_cache[dc_code] = self._fetch_virt_cluster_lists(dc_code)
+        return self._virt_cluster_list_cache[dc_code]
+
+    def _normalize_clusters_for_cache(
+        self,
+        dc_code: str,
+        selected_clusters: list[str] | None,
+        family: str | None,
+    ) -> list[str] | None:
+        """Map explicit full-cluster selection to None for stable Redis cache keys."""
+        if not selected_clusters:
+            return None
+        if not dc_code or dc_code == "*":
+            return list(selected_clusters)
+        fam = family or ""
+        if fam == "virt_classic":
+            all_clusters, _ = self._cached_virt_cluster_lists(dc_code)
+        elif fam == "virt_hyperconverged":
+            _, all_clusters = self._cached_virt_cluster_lists(dc_code)
+        else:
+            return list(selected_clusters)
+        if all_clusters and set(selected_clusters) >= set(all_clusters):
+            return None
+        return list(selected_clusters)
+
     @staticmethod
     def _snapshot_family_key(family: str | None) -> str:
         return family if family else "*"
@@ -2268,6 +2302,9 @@ SELECT _tot, _alloc FROM latest
         force_recompute: bool = False,
     ) -> list[PanelResult]:
         fam_key = self._snapshot_family_key(family)
+        selected_clusters = self._normalize_clusters_for_cache(
+            dc_code, selected_clusters, family
+        )
         clusters_csv = self._clusters_csv(selected_clusters)
 
         # 1. Tier-1 Redis result cache lookup.
@@ -2360,11 +2397,14 @@ SELECT _tot, _alloc FROM latest
 
             host_rows: list[dict] | None = None
             host_status = "unavailable"
+            storage_pools: list[dict] = []
             if fam in _HOST_BASED_FAMILIES:
-                host_rows, host_status = self._fetch_host_rows(dc_code, fam, selected_clusters)
+                host_rows, host_status, storage_pools = self._fetch_host_rows(
+                    dc_code, fam, selected_clusters
+                )
 
             if host_rows:
-                new_group = self._apply_host_based_constraints(
+                new_group, _host_meta = self._apply_host_based_constraints(
                     group,
                     ratio,
                     host_rows,
@@ -2373,8 +2413,9 @@ SELECT _tot, _alloc FROM latest
                     family=fam,
                     clusters=selected_clusters,
                     effective_ghz_per_unit=effective_ghz,
+                    storage_pools=storage_pools,
                 )
-            elif fam in _HOST_BASED_FAMILIES:
+            elif fam in _HOST_BASED_FAMILIES and host_status == "unavailable":
                 new_group = self._apply_cluster_fallback_dual(
                     group,
                     ratio,
@@ -2385,17 +2426,24 @@ SELECT _tot, _alloc FROM latest
                     effective_ghz_per_unit=effective_ghz,
                     decouple_resource_kinds=None,
                 )
+            elif fam in _HOST_BASED_FAMILIES:
+                new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=None)
+                for p in new_group:
+                    p.computation_mode = "host_based"
+                    p.notes = [*p.notes, f"host-based (0 host, status={host_status})"]
             else:
                 new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=None)
 
-            if fam in _STORAGE_RANGE_FAMILIES and range_inputs:
+            if fam in _STORAGE_RANGE_FAMILIES and range_inputs and fam not in _HOST_BASED_FAMILIES:
                 self._apply_storage_range(new_group, fam, range_inputs, unit_lookup)
             elif fam in _STORAGE_RANGE_FAMILIES and needs_range and range_inputs is None:
                 sto_p = next((p for p in new_group if p.resource_kind == "storage"), None)
                 if sto_p is not None:
                     sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
 
-            new_group = apply_storage_ratio_cap(new_group, ratio)
+            skip_storage_cap = fam in _HOST_BASED_FAMILIES and bool(host_rows)
+            if not skip_storage_cap:
+                new_group = apply_storage_ratio_cap(new_group, ratio)
             new_group = annotate_panel_constraint_metadata(new_group)
 
             for new in new_group:

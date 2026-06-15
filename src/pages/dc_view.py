@@ -1778,7 +1778,7 @@ def _build_virt_subtab_stack(
         if content_mode == "full":
             card = _build_sellable_inline_kpi(
                 dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
-                color="blue", selected_clusters=classic_clusters or None,
+                color="blue", selected_clusters=None,
                 container_id="sellable-classic-card",
             )
             sellable_children = _sellable_card_children(card)
@@ -1802,7 +1802,7 @@ def _build_virt_subtab_stack(
         if content_mode == "full":
             card = _build_sellable_inline_kpi(
                 dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
-                color="teal", selected_clusters=hyperconv_clusters or None,
+                color="teal", selected_clusters=None,
                 container_id="sellable-hyperconv-card",
             )
             sellable_children = _sellable_card_children(card)
@@ -4990,8 +4990,8 @@ def build_dc_view(
     if _tab_eager(eager_tabs, "virt"):
         virt_total_children = _build_virt_total_sellable_children(
             str(dc_id),
-            classic_clusters or None,
-            hyperconv_clusters or None,
+            None,
+            None,
         )
 
     def _virt_nested_tab_panel(tab_key: str, enabled: bool):

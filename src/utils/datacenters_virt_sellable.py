@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, TypedDict
 
 from src.services import api_client as api
+from src.components.virt_cluster_filter import normalize_virt_cluster_scope
 from src.utils.virt_sellable_aggregate import (
     collect_virt_sellable_panels,
     virt_tab_cluster_scope,
@@ -59,7 +60,10 @@ def _virt_sellable_tl_for_dc(
         hyperconv_raw = api.get_hyperconv_cluster_list(str(dc_id), tr) or []
     except Exception:
         classic_raw, hyperconv_raw = [], []
-    classic, hyperconv = virt_tab_cluster_scope(classic_raw, hyperconv_raw)
+    classic, hyperconv = (
+        normalize_virt_cluster_scope(classic_raw, classic_raw),
+        normalize_virt_cluster_scope(hyperconv_raw, hyperconv_raw),
+    )
     panels = collect_virt_sellable_panels(
         str(dc_id),
         classic,

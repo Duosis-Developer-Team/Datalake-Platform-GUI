@@ -89,6 +89,26 @@ def draft_from_checklist(selected: list[str] | None, all_clusters: list[str]) ->
     return picked
 
 
+def normalize_virt_cluster_scope(
+    selected: list[str] | None,
+    all_clusters: list[str] | None,
+) -> list[str] | None:
+    """Return None for 'all clusters' so CRM/GUI cache keys stay consistent.
+
+    Empty selection ([]) and explicit full-list selection are equivalent for
+    backend fast paths but must share the same cache key suffix (* / empty).
+    When the full cluster inventory is unknown, keep the explicit selection.
+    """
+    if not selected:
+        return None
+    all_set = set(all_clusters or [])
+    if not all_set:
+        return list(selected)
+    if set(selected) >= all_set:
+        return None
+    return list(selected)
+
+
 def _cluster_checkbox_items(clusters: list[str], dc_prefix: str) -> list:
     items: list = []
     for cluster in clusters:

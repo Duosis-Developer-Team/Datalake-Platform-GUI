@@ -11,12 +11,26 @@ from src.components.virt_cluster_filter import (
     checklist_value_from_draft,
     cluster_selection_summary,
     draft_from_checklist,
+    normalize_virt_cluster_scope,
     short_cluster_label,
     virt_cluster_filter_ids,
 )
 
 
 class TestVirtClusterFilterHelpers(unittest.TestCase):
+    def test_normalize_empty_and_full_list_are_none(self):
+        all_c = ["A", "B", "C"]
+        self.assertIsNone(normalize_virt_cluster_scope([], all_c))
+        self.assertIsNone(normalize_virt_cluster_scope(None, all_c))
+        self.assertIsNone(normalize_virt_cluster_scope(["A", "B", "C"], all_c))
+
+    def test_normalize_partial_selection(self):
+        all_c = ["A", "B", "C"]
+        self.assertEqual(normalize_virt_cluster_scope(["A"], all_c), ["A"])
+
+    def test_normalize_unknown_inventory_keeps_explicit(self):
+        self.assertEqual(normalize_virt_cluster_scope(["A", "B"], None), ["A", "B"])
+
     def test_short_cluster_label_strips_dc_prefix(self):
         self.assertEqual(
             short_cluster_label("DC13-FC1-HYBRID", "DC13-"),

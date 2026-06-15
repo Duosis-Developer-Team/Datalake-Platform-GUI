@@ -39,22 +39,14 @@ def test_resolve_virt_panels_uses_virt_tab_cluster_scope():
     mock_collect.assert_called_once_with("DC11", ["KM-1"], ["HC-1"])
 
 
-def test_none_vs_explicit_cluster_scope_changes_api_path():
-    """Document that None and explicit full lists are different backend paths."""
-    calls: list[tuple] = []
+def test_none_vs_explicit_cluster_scope_normalized_for_full_inventory():
+    """Full DC inventory lists normalize to None for cache key parity."""
+    from src.components.virt_cluster_filter import normalize_virt_cluster_scope
 
-    def fake_by_panel(**kwargs):
-        calls.append((kwargs.get("clusters"), kwargs.get("family")))
-        return [{"potential_tl": 1.0, "family": kwargs.get("family"), "resource_kind": "cpu"}]
-
-    with patch("src.utils.virt_sellable_aggregate.api.get_sellable_by_panel", side_effect=fake_by_panel):
-        collect_virt_sellable_panels("DC11", None, None, max_family_workers=1)
-        collect_virt_sellable_panels("DC11", ["KM-1", "KM-2"], None, max_family_workers=1)
-
-    classic_none = [c for c in calls if c[1] == "virt_classic" and c[0] is None]
-    classic_explicit = [c for c in calls if c[1] == "virt_classic" and c[0] == ["KM-1", "KM-2"]]
-    assert classic_none
-    assert classic_explicit
+    all_c = ["KM-1", "KM-2"]
+    assert normalize_virt_cluster_scope(None, all_c) is None
+    assert normalize_virt_cluster_scope(all_c, all_c) is None
+    assert normalize_virt_cluster_scope(["KM-1"], all_c) == ["KM-1"]
 
 
 def test_summary_and_virt_total_use_same_range_helper():

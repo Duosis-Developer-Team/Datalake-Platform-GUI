@@ -1969,7 +1969,8 @@ def get_virt_sellable_panels(
 
     cache_key = (
         f"api:virt_sellable_total:{dc_code}:"
-        f"{','.join(cl_classic or [])}:{','.join(cl_hyper or [])}"
+        f"{','.join(cl_classic) if cl_classic else '*'}:"
+        f"{','.join(cl_hyper) if cl_hyper else '*'}"
     )
     return _api_cache_get_sellable_panels(cache_key, fetch, dc_code, "virt_total", cl_classic)
 
