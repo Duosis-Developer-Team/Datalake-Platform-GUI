@@ -1,8 +1,9 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from psycopg2 import OperationalError
 
 from app.services.dc_service import DatabaseService, DC_LOCATIONS, _DC_CODE_RE, _EMPTY_DC
+from shared.vmware.host_cpu_ghz import DEFAULT_HOST_CPU_GHZ
 
 
 def test_empty_dc_returns_meta_with_name_and_location():
@@ -183,3 +184,36 @@ def test_get_rack_devices_cache_miss_uses_singleflight_with_6h_ttl():
     assert sf.call_count == 1
     _, _, kwargs = sf.call_args[0][0], sf.call_args[0][1], sf.call_args[1]
     assert kwargs.get("ttl") == 21600
+
+
+def test_get_default_host_cpu_ghz_reads_config_value_dict():
+    with patch("app.services.dc_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = DatabaseService()
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_one.return_value = {"config_value": "2.5"}
+    svc._webui = webui
+
+    assert svc._get_default_host_cpu_ghz() == 2.5
+
+
+def test_get_default_host_cpu_ghz_falls_back_when_config_missing():
+    with patch("app.services.dc_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = DatabaseService()
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_one.return_value = None
+    svc._webui = webui
+
+    assert svc._get_default_host_cpu_ghz() == DEFAULT_HOST_CPU_GHZ
+
+
+def test_get_default_host_cpu_ghz_falls_back_when_config_zero():
+    with patch("app.services.dc_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = DatabaseService()
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_one.return_value = {"config_value": "0"}
+    svc._webui = webui
+
+    assert svc._get_default_host_cpu_ghz() == DEFAULT_HOST_CPU_GHZ

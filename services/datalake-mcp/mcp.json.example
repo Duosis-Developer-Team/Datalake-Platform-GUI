@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "datalake": {
+      "command": "python",
+      "args": ["-m", "datalake_mcp", "--transport", "stdio"],
+      "env": {
+        "DATACENTER_API_URL": "http://localhost:8001",
+        "CUSTOMER_API_URL": "http://localhost:8002",
+        "QUERY_API_URL": "http://localhost:8003",
+        "CRM_ENGINE_URL": "http://localhost:8004",
+        "CHATBOT_DB_ENABLED": "false"
+      }
+    }
+  }
+}

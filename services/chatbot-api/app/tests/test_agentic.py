@@ -1,4 +1,7 @@
-from app.services import agent_loop, planner, tool_registry
+from unittest.mock import patch
+
+from app.services import agent_loop, planner, query_planner, tool_registry
+from app.services.tool_registry import _normalize_datacenter_summary_list
 from app.services.analysis_synthesizer import synthesize
 from app.services.evidence_evaluator import evaluate
 from app.services.planner import IntentPlan
@@ -138,6 +141,20 @@ def test_agent_loop_runs_summary_followup(monkeypatch):
     assert out.analysis is not None and out.analysis.risk_level == "critical"
 
 
+GLOBAL_MEMORY_Q = (
+    "Bana tüm datacenter'lar arasında memory kullanımı en yüksek 5 KM cluster'ı verir misin?"
+)
+
+
+def test_global_memory_plan_does_not_use_dashboard(monkeypatch):
+    from app.services import query_planner
+
+    plan = query_planner.plan(GLOBAL_MEMORY_Q, None, None)
+    tools = [t["tool"] for t in plan.initial_tools]
+    assert "get_global_km_cluster_memory_top" in tools
+    assert "get_dashboard_overview" not in tools
+
+
 def test_agent_loop_dedup_and_caps(monkeypatch):
     seen = []
 
@@ -154,3 +171,40 @@ def test_agent_loop_dedup_and_caps(monkeypatch):
     from app.config import settings
 
     assert len(seen) <= settings.chatbot_max_tool_calls_per_turn
+
+
+def test_agent_loop_global_dc_cpu_ranking(monkeypatch):
+    payload = [
+        {"id": "AZ11", "name": "AZ11", "location": "A", "vm_count": 131, "host_count": 5,
+         "stats": {"used_cpu_pct": 4.9, "used_ram_pct": 1.3}},
+        {"id": "DC11", "name": "DC11", "location": "Istanbul", "vm_count": 1458, "host_count": 50,
+         "stats": {"used_cpu_pct": 51.8, "used_ram_pct": 74.5}},
+        {"id": "DC12", "name": "DC12", "location": "B", "vm_count": 158, "host_count": 8,
+         "stats": {"used_cpu_pct": 26.1, "used_ram_pct": 34.6}},
+    ]
+    summary = _normalize_datacenter_summary_list(payload)
+
+    def fake_exec(name, args, auth):
+        if name == "get_datacenters_summary":
+            return ToolResult(
+                name, "success", "datacenter-api:/api/v1/datacenters/summary",
+                summary=summary, rows=3,
+            )
+        return ToolResult(name, "skipped", name, error="not_needed")
+
+    monkeypatch.setattr(tool_registry, "execute_tool", fake_exec)
+    with patch("app.services.llm_react_loop.run", return_value=type("R", (), {
+        "react_used": False, "llm_rounds": 0, "draft_answer": None,
+        "results": [], "investigation_trace": __import__(
+            "app.services.investigation_trace", fromlist=["InvestigationTrace"]
+        ).InvestigationTrace(),
+    })()):
+        outcome = agent_loop.run(
+            "CPU kullanımına göre en yoğun datacenter hangisi?", None, None
+        )
+    assert outcome.plan.clarification is None
+    assert outcome.plan.ranking_metric == "cpu"
+    dr = outcome.analysis.extra.get("datacenter_ranking") if outcome.analysis else None
+    assert dr is not None
+    assert dr["winner"]["id"] == "DC11"
+    assert dr["analyzed_count"] == 3

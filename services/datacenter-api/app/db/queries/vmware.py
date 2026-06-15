@@ -550,7 +550,7 @@ WHERE datacenter ILIKE %s
   AND timestamp BETWEEN %s AND %s
 """
 
-# Time-series memory peak: SUM(used)/SUM(cap) per timestamp, then peak moment.
+# --- Memory peak from raw GB sums per timestamp (Capacity Planning max column) ---
 CLASSIC_MEM_PEAK_RAW = """
 WITH ts_agg AS (
     SELECT timestamp,
@@ -706,7 +706,7 @@ WITH latest AS (
     FROM public.vm_metrics
     WHERE datacenter ILIKE %s
       AND cluster ILIKE '%%KM%%'
-      AND timestamp >= NOW() - INTERVAL '24 hours'
+      AND timestamp BETWEEN %s AND %s
     ORDER BY vmname, timestamp DESC
 )
 SELECT
@@ -725,7 +725,7 @@ WITH latest AS (
     FROM public.vm_metrics
     WHERE datacenter ILIKE %s
       AND cluster NOT ILIKE '%%KM%%'
-      AND timestamp >= NOW() - INTERVAL '24 hours'
+      AND timestamp BETWEEN %s AND %s
     ORDER BY vmname, timestamp DESC
 )
 SELECT
@@ -750,7 +750,7 @@ WHERE status_value = 'active'
 ORDER BY name, collection_time DESC NULLS LAST
 """
 
-# Params: (dc_pattern, cluster_filter[], cluster_filter[])
+# Params: (dc_pattern, start_ts, end_ts, cluster_filter[], cluster_filter[])
 # Empty cluster_filter[] = all clusters in scope.
 CLASSIC_VM_ALLOCATION_ROWS = """
 WITH latest AS (
@@ -764,7 +764,7 @@ WITH latest AS (
     WHERE datacenter ILIKE %s
       AND cluster ILIKE '%%KM%%'
       AND LEFT(vmname, 1) <> '_'
-      AND timestamp >= NOW() - INTERVAL '24 hours'
+      AND timestamp BETWEEN %s AND %s
       AND (cardinality(%s::text[]) = 0 OR cluster = ANY(%s::text[]))
     ORDER BY vmname, timestamp DESC
 )
@@ -789,7 +789,7 @@ WITH latest AS (
     WHERE datacenter ILIKE %s
       AND cluster NOT ILIKE '%%KM%%'
       AND LEFT(vmname, 1) <> '_'
-      AND timestamp >= NOW() - INTERVAL '24 hours'
+      AND timestamp BETWEEN %s AND %s
       AND (cardinality(%s::text[]) = 0 OR cluster = ANY(%s::text[]))
     ORDER BY vmname, timestamp DESC
 )
@@ -828,7 +828,7 @@ ORDER BY vmhost, "timestamp" DESC
 
 # Per-host VM allocation aggregate (vCPU / RAM / storage provisioned by VMs on
 # each host). Sales CPU rule: 1 vCPU = 1 GHz (applied in Python).
-# Params: (dc_pattern, cluster_filter[], cluster_filter[])
+# Params: (dc_pattern, start_ts, end_ts, cluster_filter[], cluster_filter[])
 CLASSIC_HOST_VM_ALLOCATION = """
 WITH latest AS (
     SELECT DISTINCT ON (vmname)
@@ -841,7 +841,7 @@ WITH latest AS (
     WHERE datacenter ILIKE %s
       AND cluster ILIKE '%%KM%%'
       AND LEFT(vmname, 1) <> '_'
-      AND timestamp >= NOW() - INTERVAL '24 hours'
+      AND timestamp BETWEEN %s AND %s
       AND (cardinality(%s::text[]) = 0 OR cluster = ANY(%s::text[]))
     ORDER BY vmname, timestamp DESC
 )

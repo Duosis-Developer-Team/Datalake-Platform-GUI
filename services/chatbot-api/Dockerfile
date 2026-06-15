@@ -10,9 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY services/datalake-tools-core /build/datalake-tools-core
+COPY services/chatbot-api/requirements.txt .
 
 RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir --prefix=/install /build/datalake-tools-core \
     && pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 FROM python:3.11-slim AS runtime
@@ -27,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install /usr/local
-COPY app/ ./app/
+COPY services/chatbot-api/app/ ./app/
 
 EXPOSE 8000
 

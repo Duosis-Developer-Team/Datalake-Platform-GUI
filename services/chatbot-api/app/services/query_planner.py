@@ -20,9 +20,9 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from app.catalog import data_source_catalog, domain_catalog
+from app.catalog import data_source_catalog, domain_catalog, metric_semantics
 from app.models.schemas import ChatMessage, FrontendContext
-from app.services import planner
+from app.services import clarification_policy, planner
 from app.services import tool_orchestrator as orch
 from app.services.planner import IntentPlan
 
@@ -86,11 +86,8 @@ def _resolve_customer(message: str, ctx: Optional[FrontendContext],
     return None
 
 
-def _clarify(param: str) -> str:
-    return {
-        "dc_code": "Hangi data center için bakayım? (örn. DC13)",
-        "customer_name": "Hangi müşteri için bakayım?",
-    }.get(param, f"Eksik bilgi: {param}")
+def _clarify_block(param: str):
+    return clarification_policy.build_param_clarification(param)
 
 
 def _order_by_source(tools: tuple[str, ...], pref: str) -> list[str]:
@@ -103,16 +100,66 @@ def _order_by_source(tools: tuple[str, ...], pref: str) -> list[str]:
     return list(tools)
 
 
+def _plan_datacenter_ranking(
+    message: str,
+    ctx: Optional[FrontendContext],
+    conversation: Optional[list[ChatMessage]],
+    ranking_metric: str,
+) -> IntentPlan:
+    """Build a plan for global datacenter ranking (catalog metric or follow-up)."""
+    md = domain_catalog.get_by_key("global_datacenter_utilization")
+    text = (message or "").lower()
+    base = {
+        "dc_code": None,
+        "customer_name": None,
+        "days": orch._extract_days(text) or (md.default_params.get("days") if md else None),
+        "limit": orch._extract_limit(text) or (md.default_params.get("limit") if md else None),
+        "time_range": (ctx.time_range if ctx else None),
+    }
+    tools = list(md.primary_tools) if md else ["get_datacenters_summary"]
+    return IntentPlan(
+        entity_type="datacenter",
+        metric="utilization",
+        metric_key="global_datacenter_utilization",
+        calculation="comparison",
+        analysis_profile="datacenter_ranking",
+        ranking_metric=ranking_metric,
+        dc_code=None,
+        days=base["days"],
+        limit=base["limit"],
+        requested_output="comparison",
+        needs_analysis=True,
+        answer_guidance=list(md.answer_guidance) if md else [],
+        initial_tools=[{"tool": t, "args": dict(base)} for t in tools],
+        fallback_tools=[],
+    )
+
+
 def plan(message: str, ctx: Optional[FrontendContext],
          conversation: Optional[list[ChatMessage]] = None) -> IntentPlan:
     text = (message or "").lower()
     md = domain_catalog.match(message)
+
+    # Ranking metric follow-up (user answered clarification with "1", "cpu", etc.).
+    if md is None and clarification_policy.is_ranking_followup(conversation):
+        metric = clarification_policy.resolve_ranking_metric(message, conversation)
+        if metric:
+            return _plan_datacenter_ranking(message, ctx, conversation, metric)
 
     # No catalog hit -> legacy keyword planner (keeps prior behaviour).
     if md is None:
         return planner.make_plan(message, ctx)
 
     dc_code = _resolve_dc(message, ctx, conversation)
+    # Global-scope questions must not inherit a stale selected_datacenter.
+    global_metric = md.key in (
+        "global_km_cluster_memory_top",
+        "global_datacenter_utilization",
+    ) or md.analysis_profile == "datacenter_ranking"
+    if global_metric or (not md.required_params and metric_semantics.is_global_scope(text)):
+        explicit_dc = bool(orch._DC_RE.search(message or ""))
+        if metric_semantics.is_global_scope(text) or (global_metric and not explicit_dc):
+            dc_code = None
     # Customer is only resolved for customer metrics — a datacenter/host/cluster
     # question never picks up a (possibly stale) selected_customer.
     customer = _resolve_customer(message, ctx, conversation) if md.entity == "customer" else None
@@ -144,7 +191,18 @@ def plan(message: str, ctx: Optional[FrontendContext],
 
     if missing:
         p.missing_required_params = missing
-        p.clarification = _clarify(missing[0])
+        block = _clarify_block(missing[0])
+        p.clarification_block = block
+        p.clarification = block.prompt
+        return p
+
+    p.ranking_metric = clarification_policy.resolve_ranking_metric(message, conversation)
+    ranking_clar = clarification_policy.check_ranking_clarification(
+        message, md.analysis_profile, conversation
+    )
+    if ranking_clar:
+        p.clarification_block = ranking_clar
+        p.clarification = ranking_clar.prompt
         return p
 
     base = {
@@ -159,5 +217,7 @@ def plan(message: str, ctx: Optional[FrontendContext],
     # explicitly excluded — never bypassing the registry allowlist.
     forbidden = set(md.forbidden_tools)
     tools = [t for t in _order_by_source(md.primary_tools, source_pref) if t not in forbidden]
+    fallbacks = [t for t in _order_by_source(md.fallback_tools, source_pref) if t not in forbidden]
     p.initial_tools = [{"tool": t, "args": dict(base)} for t in tools]
+    p.fallback_tools = [{"tool": t, "args": dict(base)} for t in fallbacks]
     return p

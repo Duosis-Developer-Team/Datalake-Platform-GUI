@@ -7,9 +7,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from src.services import api_client as api
 from src.utils.virt_sellable_aggregate import (
     collect_virt_sellable_panels,
     total_potential_tl,
+    virt_tab_cluster_scope,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,23 +27,38 @@ def virt_cache_tr_key(tr: dict | None) -> str:
     return f"{tr.get('preset', '')}|{tr.get('start', '')}|{tr.get('end', '')}"
 
 
-def _virt_sellable_tl_for_dc(dc_id: str, family_workers: int) -> float:
+def _virt_sellable_tl_for_dc(
+    dc_id: str,
+    family_workers: int,
+    tr: dict | None = None,
+) -> float:
     """Resolve virt sellable TL via per-family by-panel (same path as DC detail Virt tab)."""
+    tr = tr or {}
+    try:
+        classic_raw = api.get_classic_cluster_list(str(dc_id), tr) or []
+        hyperconv_raw = api.get_hyperconv_cluster_list(str(dc_id), tr) or []
+    except Exception:
+        classic_raw, hyperconv_raw = [], []
+    classic, hyperconv = virt_tab_cluster_scope(classic_raw, hyperconv_raw)
     panels = collect_virt_sellable_panels(
         str(dc_id),
-        None,
-        None,
+        classic,
+        hyperconv,
         max_family_workers=family_workers,
     )
     return total_potential_tl(panels)
 
 
-def _seed_from_api_cache(dc_ids: list[str], family_workers: int) -> dict[str, float]:
+def _seed_from_api_cache(
+    dc_ids: list[str],
+    family_workers: int,
+    tr: dict | None = None,
+) -> dict[str, float]:
     """Publish any DC values already warm in api_client sellable by-panel cache."""
     seeded: dict[str, float] = {}
     for dc_id in dc_ids:
         try:
-            seeded[str(dc_id)] = _virt_sellable_tl_for_dc(dc_id, family_workers)
+            seeded[str(dc_id)] = _virt_sellable_tl_for_dc(dc_id, family_workers, tr)
         except Exception:
             logger.debug("virt sellable seed failed dc=%s", dc_id, exc_info=True)
     return seeded
@@ -88,7 +105,7 @@ def start_virt_cache_warm(
         try:
 
             def _compute(dc_id: str) -> tuple[str, float]:
-                return dc_id, _virt_sellable_tl_for_dc(dc_id, family_workers)
+                return dc_id, _virt_sellable_tl_for_dc(dc_id, family_workers, tr)
 
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = [pool.submit(_compute, dc_id) for dc_id in dc_ids]
@@ -132,10 +149,10 @@ def resolve_virt_sellable_for_dcs(
     configured_workers = int(os.getenv("DC_OVERVIEW_VIRT_WORKERS", "4") or "4")
     mw = min(max(1, max_workers if max_workers is not None else configured_workers), max(1, len(dc_ids)))
 
-    seeded = _seed_from_api_cache(dc_ids, fw)
-    if seeded:
-        _publish_virt_cache(seeded, dc_ids, tr_key)
-
+    # NOTE: do NOT seed synchronously here — `_seed_from_api_cache` calls the slow
+    # per-DC crm-engine sellable fetch (15-80s each cold) and would block the page
+    # render, leaving /datacenters blank for minutes. The background warm below does
+    # the same fetch off-thread; the Interval poll fills the values once it completes.
     with _VIRT_CACHE_LOCK:
         cache_snapshot = dict(_VIRT_TL_CACHE)
         cache_key = _VIRT_CACHE_TR_KEY
@@ -191,7 +208,7 @@ def refresh_virt_sellable_cache(
     local_vals: dict[str, float] = {}
 
     def _compute(dc_id: str) -> tuple[str, float]:
-        return dc_id, _virt_sellable_tl_for_dc(dc_id, fw)
+        return dc_id, _virt_sellable_tl_for_dc(dc_id, fw, tr)
 
     mw = min(max(1, int(os.getenv("DC_OVERVIEW_VIRT_WORKERS", "4") or "4")), max(1, len(dc_ids)))
     with ThreadPoolExecutor(max_workers=mw) as pool:

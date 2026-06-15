@@ -13,6 +13,12 @@ import plotly.graph_objects as go
 
 from src.services import api_client as api
 from src.pages.dc_summary_sellable import build_summary_sellable_section
+from src.utils.virt_sellable_aggregate import (
+    aggregate_virt_sellable_panels,
+    collect_virt_sellable_panels,
+    merge_power_panels_for_summary,
+    virt_total_potential_range,
+)
 from src.utils.api_parallel import parallel_execute
 from src.utils.time_range import default_time_range
 from src.utils.format_units import (
@@ -27,6 +33,8 @@ from src.utils.format_units import (
     format_compact_decimal,
     format_compact_money_tl,
     format_full_decimal,
+    fmt_tl,
+    fmt_tl_range,
 )
 from src.utils.ibm_storage_capacity import (
     aggregate_ibm_storage_capacities,
@@ -704,14 +712,21 @@ def _capacity_resource_table(rows: list[dict]):
                                 html.Th("Total", style=header_style),
                                 html.Th(
                                     dmc.Tooltip(
-                                        label="Sum of VM-configured resources (latest allocation snapshot)",
+                                        label=(
+                                            "Sum of VM-configured resources (latest allocation snapshot). "
+                                            "May exceed 100% when RAM is overcommitted."
+                                        ),
                                         children=html.Span("Physical allocation"),
                                     ),
                                     style=header_style,
                                 ),
                                 html.Th(
                                     dmc.Tooltip(
-                                        label="Physical host peak usage in the selected report period",
+                                        label=(
+                                            "Cluster-level peak RAM usage in the selected report period "
+                                            "(cluster_metrics time series). Sellable gate uses "
+                                            "max(allocation%, peak%)."
+                                        ),
                                         children=html.Span("Max utilization"),
                                     ),
                                     style=header_style,
@@ -739,6 +754,7 @@ def _build_compute_capacity_rows(
     mem_alloc_pct: float,
     mem_pct_max: float,
     mem_pct: float,
+    mem_used_gb_peak: float = 0.0,
     stor_cap_gb: float,
     stor_provisioned_gb: float,
     stor_used_gb: float,
@@ -748,6 +764,9 @@ def _build_compute_capacity_rows(
     """Build three capacity planning rows for Classic/Hyperconv compute tabs."""
     cpu_max_pct = cpu_pct_max or cpu_pct
     mem_peak_pct = mem_pct_max or mem_pct
+    mem_peak_gb = mem_used_gb_peak if mem_used_gb_peak > 0 else (
+        mem_cap * mem_peak_pct / 100.0 if mem_cap else 0
+    )
     return [
         {
             "label": "CPU",
@@ -764,7 +783,7 @@ def _build_compute_capacity_rows(
             "total_str": smart_memory(mem_cap),
             "allocation": (smart_memory(mem_alloc_gb), mem_alloc_pct),
             "max_util": (
-                smart_memory(mem_cap * mem_peak_pct / 100.0 if mem_cap else 0),
+                smart_memory(mem_peak_gb),
                 mem_peak_pct,
             ),
             "bar_pct": mem_alloc_pct,
@@ -867,6 +886,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
 
     cpu_alloc_ghz = float(compute.get("cpu_alloc_ghz_vm", 0) or 0)
     mem_alloc_gb  = float(compute.get("mem_alloc_gb_vm", 0) or 0)
+    mem_used_gb_peak = float(compute.get("mem_used_gb_peak") or 0)
     cpu_alloc_pct = alloc_pct_float(cpu_alloc_ghz, cpu_cap)
     mem_alloc_pct = alloc_pct_float(mem_alloc_gb, mem_cap)
 
@@ -887,6 +907,7 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
         mem_alloc_pct=mem_alloc_pct,
         mem_pct_max=mem_pct_max,
         mem_pct=mem_pct,
+        mem_used_gb_peak=mem_used_gb_peak,
         stor_cap_gb=stor_cap_gb,
         stor_provisioned_gb=stor_provisioned_gb,
         stor_used_gb=stor_used_gb,
@@ -989,6 +1010,22 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
                     _section_title("Capacity Planning", "Physical capacity vs. utilization and VM allocation"),
                     html.Div(style={"marginTop": "12px"}, children=[
                         _capacity_resource_table(capacity_rows),
+                        html.P(
+                            (
+                                "Memory: Physical allocation sums VM-configured RAM within the selected "
+                                "time window; max utilization is cluster-level peak RAM usage (sum of "
+                                "used GB at peak timestamp). Allocation % can exceed utilization % under "
+                                "overcommit. Progress bars reflect allocation only. CRM sellable applies "
+                                f"max(allocation%, peak%) against the threshold "
+                                f"({max(mem_alloc_pct, mem_pct_max or mem_pct):.1f}% gate for this scope)."
+                            ),
+                            style={
+                                "margin": "10px 0 0",
+                                "color": "#A3AED0",
+                                "fontSize": "0.75rem",
+                                "lineHeight": 1.45,
+                            },
+                        ),
                     ]),
                 ],
             ),
@@ -1018,12 +1055,7 @@ def _build_power_tab(
     cpu_allocated_pu = max(cpu_total_pu - cpu_avail_pu, 0.0)
     cpu_allocated_cores = max(cpu_total_cores - cpu_avail_cores, 0.0)
 
-    # Potential Sellable revenue — Power: 1 core = 3.3 GHz eşdeğeri,
-    # CRM CPU fiyatı (SAP Power HANA CPU) 1 GHz/vCPU üzerinden tutulduğu için
-    # cores × 3.3 × cpu_unit_price formülü uygulanır.
-    power_unit_prices = power.get("unit_prices", {}) or {}
-    power_multiplier  = float(power.get("sellable_multiplier", 3.3) or 3.3)
-    cpu_potential_tl  = cpu_total_cores * power_multiplier * float(power_unit_prices.get("cpu_vcpu", 0) or 0)
+    power_multiplier = float(power.get("sellable_multiplier", 3.3) or 3.3)
 
     storage_capacity = storage_capacity or {}
     storage_performance = storage_performance or {}
@@ -1096,7 +1128,6 @@ def _build_power_tab(
                             cpu_allocated_cores * power_multiplier,
                             pct_float(cpu_allocated_cores, cpu_total_cores),
                             smart_cpu,
-                            potential_tl=cpu_potential_tl,
                         ),
                         _capacity_metric_row(
                             "Memory",
@@ -1549,18 +1580,27 @@ def _build_backup_subtab(name: str):
 
 
 def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
-    """CRM realized sales + sellable headroom KPIs (no sold-% gauges)."""
-    v2 = api.get_dc_sales_potential_v2(dc_id)
-    if not isinstance(v2, dict):
+    """CRM sellable KPIs from crm-engine (replaces legacy sales-potential/v2)."""
+    from src.utils.virt_sellable_aggregate import (
+        collect_virt_sellable_panels,
+        merge_power_panels_for_summary,
+        virt_total_potential_range,
+    )
+
+    try:
+        panels = merge_power_panels_for_summary(collect_virt_sellable_panels(str(dc_id)))
+        summary = api.get_sellable_summary_light(str(dc_id)) or {}
+    except Exception:
         return html.Div()
-    summ = v2.get("dc_customer_summary") or {}
-    ytd = float(summ.get("total_billed_ytd") or 0)
-    cust = int(summ.get("customer_count") or 0)
-    rem = float(v2.get("general_remaining_pct") or 0)
-    pot = float(v2.get("potential_revenue_tl") or 0)
+
+    _, tl_min, tl_max = virt_total_potential_range(panels)
+    ytd = float(summary.get("ytd_sales_tl") or 0)
+    unmapped = int(summary.get("unmapped_product_count") or 0)
+    mapped = sum(1 for p in panels if p.get("has_infra_source") or p.get("has_price"))
 
     ytd_short, ytd_full = _fmt_tl_short(ytd)
-    pot_short, pot_full = _fmt_tl_short(pot)
+    pot_short = fmt_tl_range(tl_min, tl_max)
+    pot_full = f"{tl_min:,.0f} – {tl_max:,.0f} TL (crm-engine virt panels)"
 
     return html.Div(
         className="nexus-card",
@@ -1568,7 +1608,7 @@ def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
         children=[
             _section_title(
                 "Sellable potential (CRM)",
-                "Sellable headroom on Nutanix CPU/RAM proxy — threshold-bound ceiling (ADR-0014)",
+                "Virt sellable from crm-engine — host-based CPU/RAM dual-track (ADR-0018)",
             ),
             dmc.SimpleGrid(
                 cols={"base": 2, "md": 4},
@@ -1576,18 +1616,264 @@ def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
                 style={"marginTop": "12px"},
                 children=[
                     _kpi_with_tooltip("YTD Realized", ytd_short, ytd_full, "solar:money-bag-bold-duotone"),
-                    _kpi("Sellable Remaining %", f"{rem:.1f}", "solar:chart-square-bold-duotone"),
+                    _kpi("Mapped Panels", f"{mapped:,}", "solar:chart-square-bold-duotone"),
                     _kpi_with_tooltip(
-                        "Potential Revenue",
+                        "Virt Potential",
                         pot_short,
                         pot_full,
                         "solar:wallet-money-bold-duotone",
                     ),
-                    _kpi("VM-Mapped Customers", f"{cust:,}", "solar:users-group-rounded-bold-duotone"),
+                    _kpi("Unmapped Products", f"{unmapped:,}", "solar:users-group-rounded-bold-duotone"),
                 ],
             ),
         ],
     )
+
+
+def _sellable_card_children(card: html.Div | None) -> list:
+    if card is None:
+        return []
+    children = getattr(card, "children", None)
+    return list(children) if children else []
+
+
+def _build_virt_total_sellable_children(
+    dc_id: str,
+    classic_clusters: list[str] | None,
+    hyperconv_clusters: list[str] | None,
+) -> list:
+    """Top-level Virt sellable KPI grid (server-side initial render + callback)."""
+    panels = api.get_virt_sellable_panels(
+        dc_id,
+        classic_clusters or None,
+        hyperconv_clusters or None,
+    )
+    total_tl, by_kind, has_known = aggregate_virt_sellable_panels(panels)
+    _, tl_min, tl_max = virt_total_potential_range(panels)
+    if not has_known and total_tl <= 0:
+        return []
+
+    cpu = by_kind["cpu"]
+    ram = by_kind["ram"]
+    stor = by_kind["storage"]
+
+    def _kpi(label, value_str, sub_short, sub_full, icon, c="violet"):
+        card = html.Div(
+            className="nexus-card dc-kpi-card dc-stagger-1",
+            style={
+                "padding": "18px",
+                "display": "flex",
+                "alignItems": "center",
+                "justifyContent": "space-between",
+                "gap": "12px",
+                "minHeight": "140px",
+                "height": "100%",
+                "width": "100%",
+                "boxSizing": "border-box",
+            },
+            children=[
+                html.Div(
+                    style={"display": "flex", "flexDirection": "column", "minWidth": 0, "flex": "1 1 auto"},
+                    children=[
+                        html.Span(label, style={
+                            "color": "#A3AED0", "fontSize": "0.78rem", "fontWeight": 500,
+                            "letterSpacing": "0.02em", "textTransform": "uppercase",
+                        }),
+                        html.H3(value_str, style={
+                            "color": "#2B3674", "fontSize": "1.15rem", "fontWeight": 900,
+                            "margin": "6px 0 2px 0", "letterSpacing": "-0.02em",
+                        }),
+                        html.Span(sub_short, style={"color": "#4318FF", "fontSize": "0.78rem", "fontWeight": 700}),
+                    ],
+                ),
+                dmc.ThemeIcon(
+                    size=42, radius="xl", variant="light", color=c,
+                    children=DashIconify(icon=icon, width=22),
+                ),
+            ],
+        )
+        return html.Div(
+            style={"width": "100%", "height": "100%", "display": "flex", "flexDirection": "column"},
+            title=sub_full if sub_full and sub_full != sub_short else None,
+            children=card,
+        )
+
+    cpu_short, cpu_full = _fmt_tl_short(float(cpu["tl"]))
+    ram_short, ram_full = _fmt_tl_short(float(ram["tl"]))
+    stor_short, stor_full = _fmt_tl_short(float(stor["tl"]))
+    if abs(tl_max - tl_min) > 1e-6:
+        total_short = fmt_tl_range(tl_min, tl_max)
+        total_full = f"{tl_min:,.0f} – {tl_max:,.0f} TL"
+    else:
+        total_short = fmt_tl(tl_min)
+        total_full = f"{tl_min:,.0f} TL"
+
+    cards = [
+        _kpi("CPU Sellable", f"{float(cpu['constrained']):,.0f} {cpu['unit']}", cpu_short, cpu_full, _DC_ICONS["cpu"]),
+        _kpi("RAM Sellable", f"{float(ram['constrained']):,.0f} {ram['unit']}", ram_short, ram_full, _DC_ICONS["ram"]),
+        _kpi("Storage Sellable", f"{float(stor['constrained']):,.0f} {stor['unit']}", stor_short, stor_full, _DC_ICONS["storage"]),
+        _kpi("Total Potential", total_short, "× catalog price", total_full or "constrained × catalog price", "solar:wallet-money-bold-duotone", c="grape"),
+    ]
+    return [
+        html.Div(
+            "Virtualization — Total Sellable Potential",
+            style={"fontSize": "1.1rem", "fontWeight": 700, "color": "#2B3674", "marginBottom": "4px"},
+        ),
+        html.Div(
+            "Cluster-scoped sum of Classic + Hyperconverged sub-tab cards (Power is DC-wide)",
+            style={"fontSize": "0.78rem", "color": "#A3AED0", "marginBottom": "12px"},
+        ),
+        html.Div(
+            style={
+                "display": "grid",
+                "gridTemplateColumns": "repeat(4, minmax(0, 1fr))",
+                "gap": "16px",
+                "alignItems": "stretch",
+            },
+            children=cards,
+        ),
+    ]
+
+
+def _cluster_header(selector_id: str, clusters: list[str], placeholder: str):
+    from src.components.virt_cluster_filter import build_virt_cluster_filter_bar
+
+    prefix = "classic" if "classic" in selector_id else "hyperconv"
+    return build_virt_cluster_filter_bar(prefix, clusters or [], placeholder)
+
+
+def _build_virt_subtab_stack(
+    tab: str,
+    *,
+    dc_id: str,
+    classic: dict,
+    hyperconv: dict,
+    power: dict,
+    energy: dict,
+    classic_clusters: list,
+    hyperconv_clusters: list,
+    storage_capacity,
+    storage_performance,
+    san_bottleneck,
+    show_virt_hosts: bool,
+    content_mode: str = "full",
+) -> list:
+    """Build one Virt nested tab stack (compute + sellable + optional hosts).
+
+    content_mode="full"  — build heavy children (gauges, sellable) immediately.
+    content_mode="shell" — render the selector + empty panel/sellable shells only;
+                           heavy content is deferred to the populate_virt_nested_tab
+                           callback on first tab switch.  Power is always full.
+    """
+    if tab == "classic":
+        panel_children = (
+            _build_compute_tab(classic, "Classic Compute", color="blue", slug="classic")
+            if content_mode == "full" else None
+        )
+        sellable_children = None
+        if content_mode == "full":
+            card = _build_sellable_inline_kpi(
+                dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
+                color="blue", selected_clusters=classic_clusters or None,
+                container_id="sellable-classic-card",
+            )
+            sellable_children = _sellable_card_children(card)
+        return [
+            *_cluster_header("virt-classic-cluster-selector", classic_clusters or [], "Select Classic clusters"),
+            dcc.Loading(
+                type="circle", color="#4318FF", delay_show=250,
+                overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
+                children=html.Div(id="classic-virt-panel", children=panel_children),
+            ),
+            html.Div(id="sellable-classic-card", children=sellable_children),
+            _build_hosts_panel_shell("classic", "blue") if show_virt_hosts else None,
+        ]
+    if tab == "hyperconv":
+        panel_children = (
+            _build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv")
+            if content_mode == "full" else None
+        )
+        sellable_children = None
+        if content_mode == "full":
+            card = _build_sellable_inline_kpi(
+                dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
+                color="teal", selected_clusters=hyperconv_clusters or None,
+                container_id="sellable-hyperconv-card",
+            )
+            sellable_children = _sellable_card_children(card)
+        return [
+            *_cluster_header("virt-hyperconv-cluster-selector", hyperconv_clusters or [], "Select Hyperconverged clusters"),
+            dcc.Loading(
+                type="circle", color="#4318FF", delay_show=250,
+                overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
+                children=html.Div(id="hyperconv-virt-panel", children=panel_children),
+            ),
+            html.Div(id="sellable-hyperconv-card", children=sellable_children),
+            _build_hosts_panel_shell("hyperconv", "teal") if show_virt_hosts else None,
+        ]
+    card = _build_sellable_inline_kpi(
+        dc_id, ["virt_power", "virt_power_hana"], "Power — Sellable Potential",
+        color="grape", container_id="sellable-power-card",
+    )
+    return [
+        _build_power_tab(power, energy, storage_capacity, storage_performance, san_bottleneck),
+        html.Div(id="sellable-power-card", children=_sellable_card_children(card)),
+    ]
+
+
+def _virt_mount_error_panel(active_tab: str, message: str) -> dmc.Stack:
+    return dmc.Stack(
+        gap="lg",
+        children=[
+            dmc.Alert(
+                title=f"Failed to load virtualization tab ({active_tab})",
+                color="red",
+                children=message,
+            ),
+        ],
+    )
+
+
+def build_virt_nested_subtab_panel(
+    active_tab: str,
+    ctx: dict,
+    time_range: dict | None,
+) -> tuple[dmc.Stack, bool]:
+    """Build lazy Virt nested tab content. Returns (panel, mount_succeeded)."""
+    dc_id = str(ctx.get("dc_id") or "")
+    tr = time_range or default_time_range()
+    try:
+        data = api.get_dc_details(dc_id, tr)
+        storage_capacity: dict = {}
+        storage_performance: dict = {}
+        san_bottleneck: dict = {}
+        if active_tab == "power":
+            storage_capacity = api.get_dc_storage_capacity(dc_id, tr)
+            storage_performance = api.get_dc_storage_performance(dc_id, tr)
+            san_bottleneck = api.get_dc_san_bottleneck(dc_id, tr)
+        stack_kwargs = {
+            "dc_id": dc_id,
+            "classic": data.get("classic", {}),
+            "hyperconv": data.get("hyperconv", {}),
+            "power": data.get("power", {}),
+            "energy": data.get("energy", {}),
+            "classic_clusters": ctx.get("classic_clusters") or [],
+            "hyperconv_clusters": ctx.get("hyperconv_clusters") or [],
+            "storage_capacity": storage_capacity,
+            "storage_performance": storage_performance,
+            "san_bottleneck": san_bottleneck,
+            "show_virt_hosts": bool(ctx.get("show_virt_hosts")),
+        }
+        stack = _build_virt_subtab_stack(active_tab, **stack_kwargs)
+        panel = dmc.Stack(gap="lg", children=[c for c in stack if c is not None])
+        return panel, True
+    except Exception as exc:
+        logging.getLogger(__name__).exception(
+            "build_virt_nested_subtab_panel failed tab=%s dc=%s",
+            active_tab,
+            dc_id,
+        )
+        return _virt_mount_error_panel(active_tab, str(exc)), False
 
 
 def _build_sellable_inline_kpi(
@@ -1635,6 +1921,9 @@ def _build_sellable_inline_kpi(
         except Exception:
             continue
 
+    if set(families) & {"virt_power", "virt_power_hana"}:
+        panels = merge_power_panels_for_summary(panels)
+
     if not panels:
         if container_id:
             return html.Div(id=container_id)
@@ -1645,16 +1934,19 @@ def _build_sellable_inline_kpi(
             "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "vCPU",
             "total": 0.0, "allocated": 0.0, "threshold_pct": 80.0,
             "min": 0.0, "max": 0.0, "tl_min": 0.0, "tl_max": 0.0, "has_range": 0.0,
+            "gate_blocked": False,
         },
         "ram":     {
             "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB",
             "total": 0.0, "allocated": 0.0, "threshold_pct": 80.0,
             "min": 0.0, "max": 0.0, "tl_min": 0.0, "tl_max": 0.0, "has_range": 0.0,
+            "gate_blocked": False,
         },
         "storage": {
             "constrained": 0.0, "raw": 0.0, "tl": 0.0, "unit": "GB",
             "total": 0.0, "allocated": 0.0, "threshold_pct": 85.0,
             "min": 0.0, "max": 0.0, "tl_min": 0.0, "tl_max": 0.0, "has_range": 0.0,
+            "gate_blocked": False,
         },
     }
     total_tl = 0.0
@@ -1699,6 +1991,8 @@ def _build_sellable_inline_kpi(
         unit = p.get("display_unit")
         if unit:
             by_kind[kind]["unit"] = unit
+        if p.get("gate_blocked"):
+            by_kind[kind]["gate_blocked"] = True
         total_tl += tl
         has_data = True
 
@@ -1716,20 +2010,33 @@ def _build_sellable_inline_kpi(
     ram = by_kind["ram"]
     stor = by_kind["storage"]
 
-    cpu_has_dual = any(
-        p.get("sellable_physical") is not None and p.get("sellable_effective") is not None
-        for p in panels
-        if (p.get("resource_kind") or "").lower() == "cpu"
-    )
+    def _dual_track_sums(kind: str) -> dict[str, float | bool]:
+        rows = [p for p in panels if (p.get("resource_kind") or "").lower() == kind]
+        return {
+            "phys": sum(float(p.get("sellable_physical") or 0) for p in rows),
+            "eff": sum(float(p.get("sellable_effective") or p.get("sellable_constrained") or 0) for p in rows),
+            "tl_phys": sum(float(p.get("potential_tl_physical") or 0) for p in rows),
+            "tl_eff": sum(float(p.get("potential_tl_effective") or p.get("potential_tl") or 0) for p in rows),
+            "has_dual": any(
+                p.get("sellable_physical") is not None and p.get("sellable_effective") is not None
+                for p in rows
+            ),
+        }
+
+    cpu_dual = _dual_track_sums("cpu")
+    ram_dual = _dual_track_sums("ram")
+    cpu_has_dual = bool(cpu_dual["has_dual"])
+    ram_has_dual = bool(ram_dual["has_dual"])
     if cpu_has_dual:
-        cpu_phys = sum(float(p.get("sellable_physical") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
-        cpu_eff = sum(float(p.get("sellable_effective") or p.get("sellable_constrained") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
-        cpu_phys_tl = sum(float(p.get("potential_tl_physical") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
-        cpu_eff_tl = sum(float(p.get("potential_tl_effective") or p.get("potential_tl") or 0) for p in panels if (p.get("resource_kind") or "").lower() == "cpu")
-        cpu["physical"] = cpu_phys
-        cpu["effective"] = cpu_eff
-        cpu["tl_phys"] = cpu_phys_tl
-        cpu["tl_eff"] = cpu_eff_tl
+        cpu["physical"] = float(cpu_dual["phys"])
+        cpu["effective"] = float(cpu_dual["eff"])
+        cpu["tl_phys"] = float(cpu_dual["tl_phys"])
+        cpu["tl_eff"] = float(cpu_dual["tl_eff"])
+    if ram_has_dual:
+        ram["physical"] = float(ram_dual["phys"])
+        ram["effective"] = float(ram_dual["eff"])
+        ram["tl_phys"] = float(ram_dual["tl_phys"])
+        ram["tl_eff"] = float(ram_dual["tl_eff"])
 
     def _kpi_with_sub(
         label: str,
@@ -1787,9 +2094,13 @@ def _build_sellable_inline_kpi(
             f"Effective: {cpu.get('effective', 0):,.0f} {cpu['unit']}"
         )
     ram_short, ram_full = _fmt_tl_short(ram["tl"])
+    if ram_has_dual:
+        ram_short = f"{_fmt_tl_short(ram.get('tl_phys', 0))[0]} – {_fmt_tl_short(ram.get('tl_eff', 0))[0]}"
+        ram_full = (
+            f"Physical: {ram.get('physical', 0):,.0f} {ram['unit']} · "
+            f"Peak: {ram.get('effective', 0):,.0f} {ram['unit']}"
+        )
     stor_short, stor_full = _fmt_tl_short(stor["tl"])
-    total_short, total_full = _fmt_tl_short(total_tl)
-
     # Storage range display: "X – Y" when IBM-shared capacity yields a range.
     stor_has_range = bool(stor.get("has_range")) and stor["max"] > stor["min"] + 1e-6
     if stor_has_range:
@@ -1804,22 +2115,13 @@ def _build_sellable_inline_kpi(
     else:
         stor_value = _fmt_unit(stor["constrained"], stor["unit"])
 
-    total_has_range = (
-        total_tl_max > total_tl + 1e-6
-        or (cpu_has_dual and abs(cpu.get("tl_phys", 0) - cpu.get("tl_eff", 0)) > 1e-6)
-    )
-    if total_has_range:
-        tl_lo = min(total_tl, total_tl_max, cpu.get("tl_phys", total_tl), cpu.get("tl_eff", total_tl))
-        tl_hi = max(total_tl, total_tl_max, cpu.get("tl_phys", total_tl), cpu.get("tl_eff", total_tl))
-        total_max_short, total_max_full = _fmt_tl_short(tl_hi)
-        total_min_short, _ = _fmt_tl_short(tl_lo)
-        total_value = f"{total_min_short} – {total_max_short}"
-        total_tooltip = (
-            f"Min (garanti): {total_min_short} · Max (paylaşımlı / efektif): {total_max_full}"
-        )
+    _, tl_min, tl_max = virt_total_potential_range(panels)
+    if abs(tl_max - tl_min) > 1e-6:
+        total_value = fmt_tl_range(tl_min, tl_max)
+        total_tooltip = f"{tl_min:,.0f} – {tl_max:,.0f} TL"
     else:
-        total_value = total_short
-        total_tooltip = total_full or "constrained × catalog price"
+        total_value = fmt_tl(tl_min)
+        total_tooltip = f"{tl_min:,.0f} TL" if tl_min else "constrained × catalog price"
 
     cards = [
         _kpi_with_sub(
@@ -1835,7 +2137,11 @@ def _build_sellable_inline_kpi(
         ),
         _kpi_with_sub(
             "RAM Sellable",
-            _fmt_unit(ram["constrained"], ram["unit"]),
+            (
+                f"Phys {_fmt_unit(ram.get('physical', 0), ram['unit'])} | Peak {_fmt_unit(ram.get('effective', ram['constrained']), ram['unit'])}"
+                if ram_has_dual
+                else _fmt_unit(ram["constrained"], ram["unit"])
+            ),
             ram_short,
             ram_full,
             _DC_ICONS["ram"],
@@ -1868,7 +2174,16 @@ def _build_sellable_inline_kpi(
             )
         )
     for kind_label, k in (("CPU", cpu), ("RAM", ram), ("Storage", stor)):
-        if k["raw"] > 0 and k["constrained"] < k["raw"] - 1e-6:
+        if k.get("gate_blocked"):
+            sub_lines.append(
+                dmc.Badge(
+                    f"{kind_label} gate-blocked: threshold exceeded",
+                    color="red",
+                    variant="light",
+                    size="sm",
+                )
+            )
+        elif k["raw"] > 0 and k["constrained"] < k["raw"] - 1e-6:
             sub_lines.append(
                 dmc.Badge(
                     f"{kind_label} ratio-bound: {_fmt_unit(k['raw'] - k['constrained'], k['unit'])} lost",
@@ -1877,6 +2192,21 @@ def _build_sellable_inline_kpi(
                     size="sm",
                 )
             )
+
+    if (
+        cpu["constrained"] < 1e-6
+        and ram["constrained"] < 1e-6
+        and stor["constrained"] > 1e-6
+        and tl_min > 1e-6
+    ):
+        sub_lines.append(
+            dmc.Badge(
+                "Total potential driven by storage-only contribution",
+                color="gray",
+                variant="light",
+                size="sm",
+            )
+        )
 
     from src.utils.sellable_power_hints import power_sellable_constraint_hints
 
@@ -1924,6 +2254,8 @@ def _build_summary_tab(
     *,
     sellable_summary: dict | None = None,
     show_sellable: bool = True,
+    classic_clusters: list[str] | None = None,
+    hyperconv_clusters: list[str] | None = None,
 ):
     """Summary tab: Combined Infrastructure + sellable executive overview."""
     classic = data.get("classic", {})
@@ -1953,7 +2285,12 @@ def _build_summary_tab(
     ]
 
     if show_sellable and dc_id:
-        sellable_block = build_summary_sellable_section(str(dc_id), sellable_summary)
+        sellable_block = build_summary_sellable_section(
+            str(dc_id),
+            sellable_summary,
+            classic_clusters=classic_clusters,
+            hyperconv_clusters=hyperconv_clusters,
+        )
         if sellable_block is not None:
             summary_children.append(sellable_block)
 
@@ -2997,6 +3334,65 @@ def _build_storage_section_with_san(
                 children=[dmc.TabsList(children=tab_list), *panels],
             )
         ],
+    )
+
+
+def _storage_tab_content_or_empty(
+    has_intel_storage: bool,
+    has_ibm_storage: bool,
+    has_power: bool,
+    has_s3: bool,
+    has_san: bool,
+    zabbix_storage_devices: list,
+    zabbix_storage_capacity: dict,
+    zabbix_storage_trend: dict,
+    storage_capacity: dict,
+    storage_performance: dict,
+    dc_name: str,
+    s3_data: dict,
+    tr: dict,
+    san_port_usage: dict,
+    san_health_alerts: list,
+    san_traffic_trend: list,
+    sec_check=None,
+    has_datastore: bool = False,
+    datastore_mapping: dict | None = None,
+) -> html.Div:
+    """Return storage tab body or a visible empty-state (avoids infinite loading shell)."""
+    panel = _build_storage_section_with_san(
+        has_intel_storage,
+        has_ibm_storage,
+        has_power,
+        has_s3,
+        has_san,
+        zabbix_storage_devices,
+        zabbix_storage_capacity,
+        zabbix_storage_trend,
+        storage_capacity,
+        storage_performance,
+        dc_name,
+        s3_data,
+        tr,
+        san_port_usage,
+        san_health_alerts,
+        san_traffic_trend,
+        sec_check=sec_check,
+        has_datastore=has_datastore,
+        datastore_mapping=datastore_mapping,
+    )
+    if panel is not None:
+        return panel
+    return html.Div(
+        style={"padding": "0 30px"},
+        children=dmc.Alert(
+            title="No storage metrics available",
+            color="gray",
+            variant="light",
+            children=(
+                "This data center has no KM Datastore, IBM Storage, SAN, or "
+                "Object Storage sections for the selected time range."
+            ),
+        ),
     )
 
 
@@ -4160,6 +4556,7 @@ def build_dc_lazy_tab_panel(
     tr = time_range or default_time_range()
     vs = visible_sections
     dc_display, _ = resolve_dc_display_from_summary(str(dc_id), tr)
+    t_build = time.perf_counter()
     page = build_dc_view(
         dc_id,
         tr,
@@ -4168,11 +4565,30 @@ def build_dc_lazy_tab_panel(
     )
     root_id = f"dc-tab-{tab}-root"
     found = _find_component_by_id(page, root_id)
+    build_ms = round((time.perf_counter() - t_build) * 1000, 1)
     if found is None:
+        _BUILD_LOG.warning(
+            "lazy_tab_root_missing dc=%s tab=%s build_ms=%s",
+            dc_id,
+            tab,
+            build_ms,
+        )
         return build_dc_tab_loading_shell(tab, dc_display)
     children = getattr(found, "children", None)
     if children is None:
+        _BUILD_LOG.warning(
+            "lazy_tab_root_empty dc=%s tab=%s build_ms=%s",
+            dc_id,
+            tab,
+            build_ms,
+        )
         return build_dc_tab_loading_shell(tab, dc_display)
+    _BUILD_LOG.info(
+        "lazy_tab_panel_ready dc=%s tab=%s build_ms=%s",
+        dc_id,
+        tab,
+        build_ms,
+    )
     return children
 
 
@@ -4314,7 +4730,10 @@ def build_dc_view(
     dc_name = data["meta"]["name"]
     dc_loc = data["meta"]["location"]
     dc_desc = (data.get("meta") or {}).get("description") or ""
-    dc_display = format_dc_display_name(dc_name, dc_desc)
+    # Fallback so the header title never goes blank when the summary/detail fetch
+    # times out on a slow/cold load (empty meta.name) — independent of time range.
+    # Mirrors render_dc_loading_page's bare-id fallback.
+    dc_display = format_dc_display_name(dc_name, dc_desc) or str(dc_id or "").strip() or "Data Center"
 
     need_batch2 = (
         _tab_eager(eager_tabs, "phys-inv")
@@ -4357,9 +4776,16 @@ def build_dc_view(
     has_san = _has_san_data(san_switches) if _tab_eager(eager_tabs, "storage") else False
     t_san = time.perf_counter()
     if _tab_eager(eager_tabs, "storage") and has_san:
-        san_port_usage = api.get_dc_san_port_usage(dc_id, tr)
-        san_health_alerts = api.get_dc_san_health(dc_id, tr)
-        san_traffic_trend = api.get_dc_san_traffic_trend(dc_id, tr)
+        san_batch = parallel_execute(
+            {
+                "port_usage": lambda: api.get_dc_san_port_usage(dc_id, tr),
+                "health": lambda: api.get_dc_san_health(dc_id, tr),
+                "traffic": lambda: api.get_dc_san_traffic_trend(dc_id, tr),
+            }
+        )
+        san_port_usage = san_batch["port_usage"]
+        san_health_alerts = san_batch["health"]
+        san_traffic_trend = san_batch["traffic"]
         _log_dc_build_phase(str(dc_id), "san", t_san)
     else:
         san_port_usage = {}
@@ -4407,9 +4833,16 @@ def build_dc_view(
     # Backup datasets (per DC)
     t_backup = time.perf_counter()
     if _tab_eager(eager_tabs, "backup"):
-        nb_data = api.get_dc_netbackup_pools(dc_id, tr)
-        zerto_data = api.get_dc_zerto_sites(dc_id, tr)
-        veeam_data = api.get_dc_veeam_repos(dc_id, tr)
+        backup_batch = parallel_execute(
+            {
+                "nb": lambda: api.get_dc_netbackup_pools(dc_id, tr),
+                "zerto": lambda: api.get_dc_zerto_sites(dc_id, tr),
+                "veeam": lambda: api.get_dc_veeam_repos(dc_id, tr),
+            }
+        )
+        nb_data = backup_batch["nb"]
+        zerto_data = backup_batch["zerto"]
+        veeam_data = backup_batch["veeam"]
         _log_dc_build_phase(str(dc_id), "backup", t_backup)
     else:
         nb_data = {"pools": []}
@@ -4439,37 +4872,53 @@ def build_dc_view(
     storage_capacity = {}
     storage_performance = {}
     san_bottleneck = {}
+    zabbix_storage_capacity = {}
+    zabbix_storage_devices = []
+    zabbix_storage_trend = {}
+    datastore_mapping = {}
     _fetch_ibm_storage = _tab_eager(eager_tabs, "virt") or _tab_eager(eager_tabs, "storage")
-    if _fetch_ibm_storage:
-        t_power_storage = time.perf_counter()
-        storage_capacity = api.get_dc_storage_capacity(dc_id, tr)
-        storage_performance = api.get_dc_storage_performance(dc_id, tr)
+    _fetch_storage_tab = _tab_eager(eager_tabs, "storage")
+    if _fetch_ibm_storage or _fetch_storage_tab:
+        t_storage_batch = time.perf_counter()
+        storage_tasks: dict = {}
+        if _fetch_ibm_storage:
+            storage_tasks["capacity"] = lambda: api.get_dc_storage_capacity(dc_id, tr)
+            storage_tasks["performance"] = lambda: api.get_dc_storage_performance(dc_id, tr)
         if _tab_eager(eager_tabs, "virt"):
-            san_bottleneck = api.get_dc_san_bottleneck(dc_id, tr)
-        power_storage_ms = round((time.perf_counter() - t_power_storage) * 1000, 1)
-        _log_dc_build_phase(str(dc_id), "power_storage", t_power_storage)
-    else:
-        power_storage_ms = 0.0
+            storage_tasks["san_bottleneck"] = lambda: api.get_dc_san_bottleneck(dc_id, tr)
+        if _fetch_storage_tab:
+            storage_tasks["zabbix_cap"] = lambda: api.get_dc_zabbix_storage_capacity(dc_id, tr)
+            storage_tasks["datastore"] = lambda: api.get_dc_datastore_mapping(dc_id, tr)
+        if storage_tasks:
+            storage_batch = parallel_execute(storage_tasks)
+            storage_capacity = storage_batch.get("capacity") or {}
+            storage_performance = storage_batch.get("performance") or {}
+            san_bottleneck = storage_batch.get("san_bottleneck") or {}
+            zabbix_storage_capacity = storage_batch.get("zabbix_cap") or {}
+            datastore_mapping = storage_batch.get("datastore") or {}
+        _log_dc_build_phase(str(dc_id), "storage_batch", t_storage_batch, tasks=len(storage_tasks))
     has_ibm_storage = bool((storage_capacity.get("systems") or []))
 
-    # Intel Storage (Zabbix)
-    if _tab_eager(eager_tabs, "storage"):
-        zabbix_storage_capacity = api.get_dc_zabbix_storage_capacity(dc_id, tr)
+    if _fetch_storage_tab:
         has_intel_storage = int(zabbix_storage_capacity.get("storage_device_count", 0) or 0) > 0
-        t_intel_storage = time.perf_counter()
-        zabbix_storage_devices = api.get_dc_zabbix_storage_devices(dc_id, tr) if has_intel_storage else []
-        zabbix_storage_trend = api.get_dc_zabbix_storage_trend(dc_id, tr) if has_intel_storage else {}
-        intel_storage_ms = round((time.perf_counter() - t_intel_storage) * 1000, 1)
-        _log_dc_build_phase(str(dc_id), "intel_storage", t_intel_storage)
-        datastore_mapping = api.get_dc_datastore_mapping(dc_id, tr)
+        if has_intel_storage:
+            t_intel_follow = time.perf_counter()
+            intel_batch = parallel_execute({
+                "devices": lambda: api.get_dc_zabbix_storage_devices(dc_id, tr),
+                "trend": lambda: api.get_dc_zabbix_storage_trend(dc_id, tr),
+            })
+            zabbix_storage_devices = intel_batch.get("devices") or []
+            zabbix_storage_trend = intel_batch.get("trend") or {}
+            _log_dc_build_phase(str(dc_id), "intel_storage_follow", t_intel_follow)
+        else:
+            has_intel_storage = False
+            zabbix_storage_devices = []
+            zabbix_storage_trend = {}
         has_datastore = int(datastore_mapping.get("datastore_count", 0) or 0) > 0
     else:
-        zabbix_storage_capacity = {}
         has_intel_storage = False
         zabbix_storage_devices = []
         zabbix_storage_trend = {}
-        intel_storage_ms = 0.0
-        datastore_mapping = {}
         has_datastore = False
 
     has_storage = bool(has_intel_storage or has_ibm_storage or has_power or has_s3 or has_san or has_datastore)
@@ -4528,11 +4977,44 @@ def build_dc_view(
     ]
     default_virt_tab = next((t for t, ok in virt_order if ok), "classic")
 
-    def _cluster_header(selector_id: str, clusters: list[str], placeholder: str):
-        from src.components.virt_cluster_filter import build_virt_cluster_filter_bar
+    virt_subtab_kwargs = {
+        "dc_id": str(dc_id),
+        "classic": classic,
+        "hyperconv": hyperconv,
+        "power": power,
+        "energy": energy,
+        "classic_clusters": classic_clusters or [],
+        "hyperconv_clusters": hyperconv_clusters or [],
+        "storage_capacity": storage_capacity,
+        "storage_performance": storage_performance,
+        "san_bottleneck": san_bottleneck,
+        "show_virt_hosts": show_virt_hosts,
+    }
+    virt_total_children: list = []
+    if _tab_eager(eager_tabs, "virt"):
+        virt_total_children = _build_virt_total_sellable_children(
+            str(dc_id),
+            classic_clusters or None,
+            hyperconv_clusters or None,
+        )
 
-        prefix = "classic" if "classic" in selector_id else "hyperconv"
-        return build_virt_cluster_filter_bar(prefix, clusters or [], placeholder)
+    def _virt_nested_tab_panel(tab_key: str, enabled: bool):
+        """Eager Virt nested tab body inside TabsPanel (backup-tab pattern)."""
+        if not enabled or not _tab_eager(eager_tabs, "virt"):
+            return None
+        if tab_key == "power":
+            mode = "full"
+        else:
+            mode = "full" if tab_key == default_virt_tab else "shell"
+        stack = _build_virt_subtab_stack(tab_key, content_mode=mode, **virt_subtab_kwargs)
+        return dmc.TabsPanel(
+            value=tab_key,
+            pt="lg",
+            children=dmc.Stack(
+                gap="lg",
+                children=[c for c in stack if c is not None],
+            ),
+        )
 
     page = html.Div([
         dcc.Store(
@@ -4584,6 +5066,8 @@ def build_dc_view(
                             data, tr, dc_id=str(dc_id),
                             sellable_summary=sellable_summary if show_summary_sellable else None,
                             show_sellable=show_summary_sellable,
+                            classic_clusters=classic_clusters or None,
+                            hyperconv_clusters=hyperconv_clusters or None,
                         )],
                     ),
                 ) if show_summary else None,
@@ -4598,8 +5082,12 @@ def build_dc_view(
                         id="dc-tab-virt-root",
                         style={"padding": "0 30px"},
                         children=[
-                            html.Div(id="sellable-virt-total-card"),
+                            html.Div(
+                                id="sellable-virt-total-card",
+                                children=virt_total_children,
+                            ),
                             dmc.Tabs(
+                                id="virt-nested-tabs",
                                 color="violet",
                                 variant="outline",
                                 radius="md",
@@ -4612,67 +5100,9 @@ def build_dc_view(
                                             dmc.TabsTab("Power Mimari", value="power") if show_power_inner else None,
                                         ]
                                     ),
-                                    dmc.TabsPanel(
-                                        value="classic",
-                                        pt="lg",
-                                        children=dmc.Stack(
-                                            gap="lg",
-                                            children=[
-                                                _cluster_header(
-                                                    "virt-classic-cluster-selector",
-                                                    classic_clusters or [],
-                                                    "Select Classic clusters",
-                                                ),
-                                                html.Div(
-                                                    id="classic-virt-panel",
-                                                    children=_build_compute_tab(classic, "Classic Compute", color="blue", slug="classic"),
-                                                ),
-                                                html.Div(id="sellable-classic-card"),
-                                                _build_hosts_panel_shell(
-                                                    "classic", "blue",
-                                                ) if show_virt_hosts else None,
-                                            ],
-                                        ),
-                                    ) if show_classic else None,
-                                    dmc.TabsPanel(
-                                        value="hyperconv",
-                                        pt="lg",
-                                        children=dmc.Stack(
-                                            gap="lg",
-                                            children=[
-                                                _cluster_header(
-                                                    "virt-hyperconv-cluster-selector",
-                                                    hyperconv_clusters or [],
-                                                    "Select Hyperconverged clusters",
-                                                ),
-                                                html.Div(
-                                                    id="hyperconv-virt-panel",
-                                                    children=_build_compute_tab(hyperconv, "Hyperconverged Compute", color="teal", slug="hyperconv"),
-                                                ),
-                                                html.Div(id="sellable-hyperconv-card"),
-                                                _build_hosts_panel_shell(
-                                                    "hyperconv", "teal",
-                                                ) if show_virt_hosts else None,
-                                            ],
-                                        ),
-                                    ) if show_hyperconv else None,
-                                    dmc.TabsPanel(
-                                        value="power",
-                                        pt="lg",
-                                        children=dmc.Stack(
-                                            gap="lg",
-                                            children=[
-                                                _build_power_tab(
-                                                    power,
-                                                    energy,
-                                                    storage_capacity,
-                                                    storage_performance,
-                                                    san_bottleneck,
-                                                ),
-                                                html.Div(id="sellable-power-card"),
-                                            ],
-                                        ),
-                                    ) if show_power_inner else None,
+                                    _virt_nested_tab_panel("classic", show_classic),
+                                    _virt_nested_tab_panel("hyperconv", show_hyperconv),
+                                    _virt_nested_tab_panel("power", show_power_inner),
                                 ],
                             ),
                         ],
@@ -4779,7 +5209,7 @@ def build_dc_view(
                         if not _tab_eager(eager_tabs, "storage")
                         else html.Div(
                             id="dc-tab-storage-root",
-                            children=_build_storage_section_with_san(
+                            children=_storage_tab_content_or_empty(
                         has_intel_storage,
                         has_ibm_storage,
                         has_power,

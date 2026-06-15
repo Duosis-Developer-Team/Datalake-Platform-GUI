@@ -19,3 +19,7 @@ def test_resolve_settings():
 
 def test_resolve_login_none():
     assert resolve_pathname_to_page_code("/login") is None
+
+
+def test_resolve_chatbot_logs():
+    assert resolve_pathname_to_page_code("/administration/integrations/chatbot/logs") == "page:settings_chatbot_logs"

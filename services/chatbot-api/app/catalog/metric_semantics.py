@@ -11,6 +11,16 @@ from typing import Optional
 CPU_USAGE_ALIASES = (
     "cpu kullanım", "cpu usage", "cpu tüketim", "utilization", "tüketen", "kullanan",
 )
+MEMORY_USAGE_ALIASES = (
+    "memory kullanım", "memory usage", "bellek kullanım", "ram kullanım", "ram usage",
+    "bellek tüketim", "memory tüketim", "bellek", " memory", " ram",
+)
+GLOBAL_SCOPE_ALIASES = (
+    "tüm datacenter", "tüm dc", "tum datacenter", "tum dc", "all datacenter",
+    "all dc", "aralarında", "aralarinda", "genel olarak", "platform geneli",
+    "en yoğun", "en yogun", "hangi datacenter", "hangi dc", "busiest datacenter",
+    "busiest dc", "datacenter karşılaştır", "datacenter karsilastir", "dc karşılaştır",
+)
 CPU_ALLOCATED_ALIASES = (
     "allocated", "atanmış", "atanmis", "tahsis", "vm'lere atanmış", "cpu kapasite değişim",
     "allocation",
@@ -36,6 +46,16 @@ def classify_cpu_metric(text: str) -> Optional[str]:
     if "cpu" in (text or "").casefold():
         return "cpu"
     return None
+
+
+def classify_memory_metric(text: str) -> Optional[str]:
+    if has_any(text, MEMORY_USAGE_ALIASES):
+        return "memory_usage"
+    return None
+
+
+def is_global_scope(text: str) -> bool:
+    return has_any(text, GLOBAL_SCOPE_ALIASES)
 
 
 def classify_calculation(text: str) -> Optional[str]:

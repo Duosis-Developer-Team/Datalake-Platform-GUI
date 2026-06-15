@@ -69,7 +69,9 @@ def _proxy_to_dc_map() -> dict[str, str]:
     return proxy_to_dc_map()
 
 
-def _enrich_node_environment(node: dict[str, Any], run_id: str | None) -> dict[str, Any]:
+def _enrich_node_environment(
+    node: dict[str, Any], counts_by_dc: dict[str, dict[str, int]]
+) -> dict[str, Any]:
     from app.services import environment_status as env
 
     proxy_config = str(node.get("proxy_config_status") or "")
@@ -80,7 +82,7 @@ def _enrich_node_environment(node: dict[str, Any], run_id: str | None) -> dict[s
             "environment_status": "no_configured_proxy",
             "connectivity_issue_count": 0,
         }
-    counts = _category_counts_for_dc(str(dc_code).upper(), run_id)
+    counts = counts_by_dc.get(str(dc_code).upper(), {})
     status = env.resolve_environment_status(proxy_config, counts)
     return {
         **node,
@@ -93,7 +95,13 @@ def _enrich_topology_payload(payload: dict[str, Any]) -> dict[str, Any]:
     from app.services import environment_status as env
 
     run_id = payload.get("last_prod_run_id")
-    nodes = [_enrich_node_environment(n, run_id) for n in payload.get("nodes") or []]
+    # Compute category counts for ALL DCs in a single bulk pass. Calling
+    # _category_counts_for_dc per node issued ~4 queries each (one targets
+    # fetch + three identical run-level lookups), so ~80 DCs meant ~320
+    # queries per topology build and exhausted the connection pool under
+    # concurrent load. See _category_counts_by_dc.
+    counts_by_dc = _category_counts_by_dc(run_id)
+    nodes = [_enrich_node_environment(n, counts_by_dc) for n in payload.get("nodes") or []]
     payload["nodes"] = nodes
     connected, connectivity, _no_proxy = env.count_environments(nodes)
     payload["connected_environment_count"] = connected
@@ -255,6 +263,70 @@ def get_dc_summary(dc_code: str) -> dict[str, Any] | None:
     }
 
 
+def _removed_ip_keys(last_run_id: str | None) -> set[str]:
+    """`ip|proxy_id` keys removed in the given run (run-scoped, not per-DC)."""
+    if not last_run_id:
+        return set()
+    removed = pool.fetch_all(
+        f"""
+        SELECT DISTINCT host(ip)::text AS ip, proxy_id
+        FROM {_SCHEMA}.collector_diff_log
+        WHERE run_id = %s AND action = 'removed'
+        """,
+        (last_run_id,),
+    )
+    return {f"{r['ip']}|{r['proxy_id']}" for r in removed}
+
+
+def _connectivity_fail_keys(last_run_id: str | None) -> set[str]:
+    """`ip|proxy_id` keys that failed post-reconcile checks (run-scoped)."""
+    if not last_run_id:
+        return set()
+    fails = pool.fetch_all(
+        f"""
+        SELECT DISTINCT host(ip)::text AS ip, proxy_id
+        FROM {_SCHEMA}.collector_check_log
+        WHERE run_id = %s
+          AND check_phase = 'post_reconcile'
+          AND status NOT IN ('ok', 'success', 'passed')
+        """,
+        (last_run_id,),
+    )
+    return {f"{r['ip']}|{r['proxy_id']}" for r in fails}
+
+
+def _last_run_finished_at(last_run_id: str | None) -> Any:
+    """Finish time of the given run (run-scoped); None if unknown."""
+    if not last_run_id:
+        return None
+    lr = pool.fetch_one(
+        f"""
+        SELECT MAX(finished_at) AS finished_at
+        FROM {_SCHEMA}.collector_sync_log
+        WHERE run_id = %s AND dry_run = FALSE
+        """,
+        (last_run_id,),
+    )
+    return lr.get("finished_at") if lr else None
+
+
+def _classify_row(
+    row: dict[str, Any],
+    *,
+    removed_ips: set[str],
+    conn_fails: set[str],
+    last_run_finished: Any,
+) -> str:
+    key = f"{row['ip']}|{row['proxy_id']}"
+    pending = row.get("last_distributed_at") is None and last_run_finished is not None
+    return inclusion.classify_target(
+        extra=row.get("extra"),
+        has_connectivity_fail=key in conn_fails,
+        removed_in_last_run=key in removed_ips,
+        pending_distribution=pending,
+    )
+
+
 def _category_counts_for_dc(dc_code: str, last_run_id: str | None) -> dict[str, int]:
     targets = _fetch_dc_targets(dc_code, last_run_id, category_filter=None)
     counts: dict[str, int] = {c: 0 for c in inclusion.INCLUSION_CATEGORIES}
@@ -262,6 +334,50 @@ def _category_counts_for_dc(dc_code: str, last_run_id: str | None) -> dict[str, 
         cat = t["inclusion_category"]
         counts[cat] = counts.get(cat, 0) + 1
     return counts
+
+
+def _category_counts_by_dc(last_run_id: str | None) -> dict[str, dict[str, int]]:
+    """Category counts keyed by upper-cased dc_code for ALL DCs in one pass.
+
+    Replaces per-node _category_counts_for_dc calls during topology
+    enrichment: the run-level lookups (removed / connectivity-fail / run
+    finish time) are computed once, and every active target is fetched in a
+    single query, so the query count is constant regardless of DC count.
+    """
+    removed_ips = _removed_ip_keys(last_run_id)
+    conn_fails = _connectivity_fail_keys(last_run_id)
+    last_run_finished = _last_run_finished_at(last_run_id)
+
+    rows = pool.fetch_all(
+        f"""
+        SELECT
+            t.dc_code,
+            host(t.ip)::text AS ip,
+            t.proxy_id,
+            t.extra,
+            t.last_distributed_at
+        FROM {_SCHEMA}.collector_target t
+        WHERE t.status = 'active'
+        """
+    )
+
+    counts_by_dc: dict[str, dict[str, int]] = {}
+    for r in rows:
+        dc = str(r.get("dc_code") or "").upper()
+        if not dc:
+            continue
+        cat = _classify_row(
+            r,
+            removed_ips=removed_ips,
+            conn_fails=conn_fails,
+            last_run_finished=last_run_finished,
+        )
+        bucket = counts_by_dc.get(dc)
+        if bucket is None:
+            bucket = {c: 0 for c in inclusion.INCLUSION_CATEGORIES}
+            counts_by_dc[dc] = bucket
+        bucket[cat] = bucket.get(cat, 0) + 1
+    return counts_by_dc
 
 
 def _fetch_dc_targets(
@@ -303,58 +419,20 @@ def _fetch_dc_targets(
         tuple(params),
     )
 
-    removed_ips: set[str] = set()
-    if last_run_id:
-        removed = pool.fetch_all(
-            f"""
-            SELECT DISTINCT host(ip)::text AS ip, proxy_id
-            FROM {_SCHEMA}.collector_diff_log
-            WHERE run_id = %s AND action = 'removed'
-            """,
-            (last_run_id,),
-        )
-        removed_ips = {f"{r['ip']}|{r['proxy_id']}" for r in removed}
-
-    conn_fails: set[str] = set()
-    if last_run_id:
-        fails = pool.fetch_all(
-            f"""
-            SELECT DISTINCT host(ip)::text AS ip, proxy_id
-            FROM {_SCHEMA}.collector_check_log
-            WHERE run_id = %s
-              AND check_phase = 'post_reconcile'
-              AND status NOT IN ('ok', 'success', 'passed')
-            """,
-            (last_run_id,),
-        )
-        conn_fails = {f"{r['ip']}|{r['proxy_id']}" for r in fails}
-
-    last_run_finished = None
-    if last_run_id:
-        lr = pool.fetch_one(
-            f"""
-            SELECT MAX(finished_at) AS finished_at
-            FROM {_SCHEMA}.collector_sync_log
-            WHERE run_id = %s AND dry_run = FALSE
-            """,
-            (last_run_id,),
-        )
-        last_run_finished = lr.get("finished_at") if lr else None
+    removed_ips = _removed_ip_keys(last_run_id)
+    conn_fails = _connectivity_fail_keys(last_run_id)
+    last_run_finished = _last_run_finished_at(last_run_id)
 
     out: list[dict[str, Any]] = []
     for r in rows:
         ip_s = str(r["ip"])
         pid = str(r["proxy_id"])
-        key = f"{ip_s}|{pid}"
-        pending = (
-            r.get("last_distributed_at") is None
-            and last_run_finished is not None
-        )
-        cat = inclusion.classify_target(
-            extra=r.get("extra"),
-            has_connectivity_fail=key in conn_fails,
-            removed_in_last_run=key in removed_ips,
-            pending_distribution=pending,
+        cat = _classify_row(
+            {"ip": ip_s, "proxy_id": pid, "extra": r.get("extra"),
+             "last_distributed_at": r.get("last_distributed_at")},
+            removed_ips=removed_ips,
+            conn_fails=conn_fails,
+            last_run_finished=last_run_finished,
         )
         if category_filter and cat != category_filter:
             continue

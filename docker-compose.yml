@@ -112,6 +112,9 @@ services:
       ADMIN_API_URL: ${ADMIN_API_URL:-http://admin-api:8000}
       # Chatbot API — Dash server-side widget calls this internal service only
       CHATBOT_API_URL: ${CHATBOT_API_URL:-http://chatbot-api:8000}
+      CHATBOT_CLIENT_TIMEOUT: ${CHATBOT_CLIENT_TIMEOUT:-600}
+      CHATBOT_LOG_API_URL: ${CHATBOT_LOG_API_URL:-http://chatbot-log-api:8000}
+      CHATBOT_LOG_API_KEY: ${CHATBOT_LOG_API_KEY:-}
       # Auth DB still required for session/login handling (Flask auth middleware)
       AUTH_DB_HOST: ${AUTH_DB_HOST:-auth-db}
       AUTH_DB_PORT: ${AUTH_DB_PORT:-5432}
@@ -397,10 +400,61 @@ services:
     profiles:
       - microservice
 
+  mongodb:
+    image: mongo:7
+    container_name: bulutistan-chatbot-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${CHATBOT_LOG_MONGO_USER:-chatbot_log}
+      MONGO_INITDB_ROOT_PASSWORD: ${CHATBOT_LOG_MONGO_PASS:-change_me_chatbot_log}
+    volumes:
+      - mongo_chatbot_logs:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet -u $$MONGO_INITDB_ROOT_USERNAME -p $$MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase admin --eval 'db.runCommand({ ping: 1 })' || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    networks:
+      - datalake
+    profiles:
+      - microservice
+
+  chatbot-log-api:
+    build:
+      context: ./services/chatbot-log-api
+      dockerfile: Dockerfile
+    container_name: bulutistan-chatbot-log-api
+    environment:
+      MONGO_URI: mongodb://${CHATBOT_LOG_MONGO_USER:-chatbot_log}:${CHATBOT_LOG_MONGO_PASS:-change_me_chatbot_log}@mongodb:27017/chatbot_logs?authSource=admin
+      MONGO_DB: chatbot_logs
+      LOG_RETENTION_DAYS: ${CHATBOT_LOG_RETENTION_DAYS:-90}
+      INTERNAL_API_KEY: ${CHATBOT_LOG_API_KEY:-}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - datalake
+    profiles:
+      - microservice
+
   chatbot-api:
     build:
-      context: ./services/chatbot-api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./services/chatbot-api/Dockerfile
     container_name: bulutistan-chatbot-api
     ports:
       - "8080:8000"
@@ -418,8 +472,14 @@ services:
       CHATBOT_MODEL: ${CHATBOT_MODEL:-gpt-oss-120b}
       CHATBOT_FALLBACK_MODEL: ${CHATBOT_FALLBACK_MODEL:-qwen3-next-80b-instruct}
       CHATBOT_TEMPERATURE: ${CHATBOT_TEMPERATURE:-0.2}
-      CHATBOT_MAX_TOKENS: ${CHATBOT_MAX_TOKENS:-900}
-      CHATBOT_TIMEOUT_SECONDS: ${CHATBOT_TIMEOUT_SECONDS:-60}
+      CHATBOT_MAX_TOKENS: ${CHATBOT_MAX_TOKENS:-1800}
+      CHATBOT_TIMEOUT_SECONDS: ${CHATBOT_TIMEOUT_SECONDS:-120}
+      CHATBOT_REQUEST_TIMEOUT_SECONDS: ${CHATBOT_REQUEST_TIMEOUT_SECONDS:-600}
+      CHATBOT_LLM_REACT_MODE: ${CHATBOT_LLM_REACT_MODE:-true}
+      CHATBOT_MAX_TOOL_CALLS_PER_TURN: ${CHATBOT_MAX_TOOL_CALLS_PER_TURN:-150}
+      CHATBOT_MAX_LLM_ROUNDS: ${CHATBOT_MAX_LLM_ROUNDS:-150}
+      CHATBOT_MAX_TOOL_ITERATIONS: ${CHATBOT_MAX_TOOL_ITERATIONS:-50}
+      CHATBOT_MAX_TOOL_CALLS_PER_ITERATION: ${CHATBOT_MAX_TOOL_CALLS_PER_ITERATION:-10}
       API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-false}
       API_JWT_SECRET: ${API_JWT_SECRET:-}
       SECRET_KEY: ${SECRET_KEY:-change_me_secret_key}
@@ -441,9 +501,17 @@ services:
       OTEL_SERVICE_NAME: chatbot-api
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      CHATBOT_LOG_API_ENABLED: ${CHATBOT_LOG_API_ENABLED:-true}
+      CHATBOT_LOG_API_URL: ${CHATBOT_LOG_API_URL:-http://chatbot-log-api:8000}
+      CHATBOT_LOG_API_KEY: ${CHATBOT_LOG_API_KEY:-}
+      CHATBOT_LOG_RETENTION_DAYS: ${CHATBOT_LOG_RETENTION_DAYS:-90}
+      CHATBOT_TOOL_BACKEND: ${CHATBOT_TOOL_BACKEND:-local}
+      DATALAKE_MCP_URL: ${DATALAKE_MCP_URL:-http://datalake-mcp:8010}
     networks:
       - datalake
     depends_on:
+      chatbot-log-api:
+        condition: service_healthy
       datacenter-api:
         condition: service_healthy
       customer-api:
@@ -465,6 +533,48 @@ services:
     profiles:
       - microservice
 
+  datalake-mcp:
+    build:
+      context: .
+      dockerfile: ./services/datalake-mcp/Dockerfile
+    container_name: bulutistan-datalake-mcp
+    ports:
+      - "8010:8010"
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
+    environment:
+      DATACENTER_API_URL: ${DATACENTER_API_URL:-http://datacenter-api:8000}
+      CUSTOMER_API_URL: ${CUSTOMER_API_URL:-http://customer-api:8000}
+      QUERY_API_URL: ${QUERY_API_URL:-http://query-api:8000}
+      CRM_ENGINE_URL: ${CRM_ENGINE_URL:-http://crm-engine:8000}
+      CHATBOT_DB_ENABLED: ${CHATBOT_DB_ENABLED:-false}
+    networks:
+      - datalake
+    depends_on:
+      datacenter-api:
+        condition: service_healthy
+      customer-api:
+        condition: service_healthy
+      query-api:
+        condition: service_healthy
+      crm-engine:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    profiles:
+      - microservice
+      - ai-mcp
+
 networks:
   datalake:
     driver: bridge
@@ -474,3 +584,4 @@ volumes:
   redis_data:
   auth_pgdata:
   webui_pgdata:
+  mongo_chatbot_logs:

@@ -17,7 +17,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 CHATBOT_API_URL = os.getenv("CHATBOT_API_URL", "http://chatbot-api:8000").rstrip("/")
-CHATBOT_TIMEOUT_SECONDS = float(os.getenv("CHATBOT_CLIENT_TIMEOUT", "75"))
+CHATBOT_TIMEOUT_SECONDS = float(os.getenv("CHATBOT_CLIENT_TIMEOUT", "600"))
 
 
 def _headers() -> dict[str, str]:
@@ -35,6 +35,8 @@ def send_chat_message(
     conversation: list[dict[str, str]] | None,
     frontend_context: dict[str, Any] | None,
     timeout: float | None = None,
+    *,
+    include_debug: bool = False,
 ) -> dict[str, Any]:
     """POST a chat message to chatbot-api and return the parsed response.
 
@@ -52,6 +54,7 @@ def send_chat_message(
         "message": message,
         "conversation": clean_history,
         "frontend_context": frontend_context or {},
+        "include_debug": include_debug,
     }
     resp = httpx.post(
         url,

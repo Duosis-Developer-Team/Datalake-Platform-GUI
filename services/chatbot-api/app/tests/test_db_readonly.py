@@ -112,6 +112,12 @@ def test_vm_cpu_templates_enabled_and_read_only():
         assert ";" not in sql
 
 
+def test_global_km_cluster_memory_top_sql_is_read_only():
+    from app.services.db_query_registry import DB_QUERIES
+
+    assert_read_only(DB_QUERIES["db_get_global_km_cluster_memory_top"].sql)
+
+
 def test_vm_cpu_top_has_days_and_limit_params():
     from app.services.db_query_registry import DB_QUERIES
 

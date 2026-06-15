@@ -11,3 +11,5 @@ def test_flatten_non_empty():
     codes = {r["code"] for r in flat}
     assert "grp:settings" in codes
     assert "page:settings_users" in codes
+    assert "page:settings_chatbot_logs" in codes
+    assert "action:chatbot:audit:read" in codes

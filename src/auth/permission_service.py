@@ -124,6 +124,8 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
             return "page:settings_ldap"
         if admin_p.startswith("/administration/integrations/auranotify"):
             return "page:settings_auranotify"
+        if admin_p.startswith("/administration/integrations/chatbot/logs"):
+            return "page:settings_chatbot_logs"
         if admin_p.startswith("/administration/integrations/netbox/visualization"):
             return "page:settings_netbox_visualization"
         if admin_p.startswith("/administration/integrations/hmdl/sync-health"):

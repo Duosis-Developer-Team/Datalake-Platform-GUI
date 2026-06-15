@@ -1,0 +1,18 @@
+{
+  "mcp_dashboard": {
+    "exit_code": 0,
+    "body": "{\"name\":\"get_dashboard_overview\",\"status\":\"success\",\"source\":\"datacenter-api:/api/v1/dashboard/overview\",\"summary\":{\"overview\":{\"dc_count\":12,\"total_hosts\":354,\"total_vms\":16896,\"total_platforms\":58,\"total_energy_kw\":12.51,\"total_cpu_cap\":32283088036053.85,\"total_cpu_used\":16725892385109.48,\"total_ram_cap\":4.3140297692717e+17,\"total_ram_used\":2.6456388875827907e+17,\"total_storage_cap\":31774989818165.61,\"total_storage_used\":7182202307062.48},\"platforms\":{\"nutanix\":{\"_keys\":[\"hosts\",\"vms\"]},\"vmware\":{\"_keys\":[\"clusters\",\"hosts\",\"vms\"]},\"ibm\":{\"_keys\":[\"hosts\",\"vios\",\"lpars\"]}},\"energy_breakdown\":{\"ibm_kw\":7.96,\"vcenter_kw\":4.54},\"classic_totals\":{\"cpu_cap\":10097.1,\"cpu_used\":4320.83,\"mem_cap\":194025.67,\"mem_used\":80725.93,\"stor_cap\":11068.72,\"stor_used\":1664.06},\"hyperconv_totals\":{\"cpu_cap\":25956.74,\"cpu_used\":15978.95,\"mem_cap\":324634.23,\"mem_used\":215052.83,\"stor_cap\":8501.62,\"stor_used\":4598.48},\"ibm_totals\":{\"mem_total\":339840.0,\"mem_assigned\":263528.5,\"cpu_used\":47.71,\"cpu_assigned\":211.13,\"stor_cap\":6848.3,\"stor_used\":2788.37}},\"rows\":null,\"error\":null}"
+  },
+  "chatbot_via_mcp": {
+    "exit_code": 0,
+    "body": "success datacenter-api:/api/v1/dashboard/overview None ['overview', 'platforms', 'energy_breakdown', 'classic_totals', 'hyperconv_totals']"
+  },
+  "agent_smoke": {
+    "exit_code": 0,
+    "body": "[('get_dashboard_overview', 'success', 'datacenter-api:/api/v1/dashboard/overvie'), ('get_dashboard_overview', 'success', 'datacenter-api:/api/v1/dashboard/overvie'), ('get_datacenters_summary', 'success', 'datacenter-api:/api/v1/datacenters/summa')]"
+  },
+  "pytest": {
+    "exit_code": 0,
+    "body": "............                                                             [100%]\n12 passed in 35.82s"
+  }
+}

@@ -148,13 +148,23 @@ def _panel_table(panels: list[dict[str, Any]]) -> dmc.ScrollArea:
             dmc.Badge("ratio-bound", color="orange", variant="light", size="xs")
             if p.get("ratio_bound") else None
         )
+        gate_badge = (
+            dmc.Badge("gate-blocked", color="red", variant="light", size="xs")
+            if p.get("gate_blocked") else None
+        )
         cpu_kind = (p.get("resource_kind") or "").lower() == "cpu"
+        ram_kind = (p.get("resource_kind") or "").lower() == "ram"
         stor_kind = (p.get("resource_kind") or "").lower() == "storage"
         sellable_cell = _fmt_unit(p.get("sellable_constrained"), unit)
         if cpu_kind and p.get("sellable_physical") is not None:
             sellable_cell = (
                 f"P:{_fmt_unit(p.get('sellable_physical'), 'GHz')} | "
                 f"E:{_fmt_unit(p.get('sellable_effective'), unit)}"
+            )
+        elif ram_kind and p.get("sellable_physical") is not None and p.get("sellable_effective") is not None:
+            sellable_cell = (
+                f"Phys:{_fmt_unit(p.get('sellable_physical'), unit)} | "
+                f"Peak:{_fmt_unit(p.get('sellable_effective'), unit)}"
             )
         elif stor_kind and p.get("sellable_min") is not None and p.get("sellable_max") is not None:
             sellable_cell = (
@@ -175,7 +185,7 @@ def _panel_table(panels: list[dict[str, Any]]) -> dmc.ScrollArea:
                 html.Td(_fmt_unit(p.get("allocated"), unit)),
                 html.Td(f"{float(p.get('threshold_pct') or 0):.0f}%"),
                 html.Td(_fmt_unit(p.get("sellable_raw"), unit)),
-                html.Td([sellable_cell, " ", ratio_badge or ""]),
+                html.Td([sellable_cell, " ", gate_badge or "", " ", ratio_badge or ""]),
                 html.Td(f"{float(p.get('unit_price_tl') or 0):,.2f}"),
                 html.Td(potential_cell),
             ])
@@ -262,6 +272,35 @@ def _family_namespace(family: str) -> str:
 # ---------------------------------------------------------------------------
 # Public entry — routed from app.py
 # ---------------------------------------------------------------------------
+
+
+def build_layout_shell(visible_sections=None) -> html.Div:
+    """Phase A: instant skeleton shell; `_fill_crm_sellable_content` builds the real
+    content off the render path so a cold sellable backend never blanks the page."""
+    return html.Div([
+        dcc.Store(
+            id="crm-sellable-visible-sections",
+            data=list(visible_sections) if visible_sections else None,
+        ),
+        dcc.Loading(
+            id="crm-sellable-content-loading",
+            type="circle", color="#4318FF", delay_show=150,
+            children=html.Div(id="crm-sellable-page-root", style={"minHeight": "60vh", "padding": "0 8px"}),
+        ),
+    ])
+
+
+@callback(
+    Output("crm-sellable-page-root", "children"),
+    Input("url", "pathname"),
+    Input("app-time-range", "data"),
+    State("crm-sellable-visible-sections", "data"),
+)
+def _fill_crm_sellable_content(pathname, time_range, visible_sections):
+    """Phase B: build the real Sellable Potential content off the initial render path."""
+    if pathname != "/crm/sellable-potential":
+        return dash.no_update
+    return build_layout(visible_sections=visible_sections)
 
 
 def build_layout(visible_sections=None) -> html.Div:  # noqa: ARG001 - kept for sig parity

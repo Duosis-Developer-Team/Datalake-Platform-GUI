@@ -8,9 +8,12 @@ datastores and native Power storage, so storage sellables are ranges.
 from __future__ import annotations
 
 from shared.sellable.computation import (
+    apply_utilization_gate,
     compute_storage_range,
     constrain_by_ratio_per_host,
+    constrain_by_ratio_per_host_dual,
     host_effective_units,
+    utilization_gate_blocked,
 )
 from shared.sellable.models import PanelResult, ResourceRatio
 
@@ -179,8 +182,6 @@ def test_host_effective_units_physical_track_uses_ghz_per_core():
 
 
 def test_constrain_by_ratio_per_host_dual_populates_tracks():
-    from shared.sellable.computation import constrain_by_ratio_per_host_dual
-
     hosts = [{
         "cpu_total": 20.0,
         "cpu_alloc": 0.0,
@@ -195,3 +196,74 @@ def test_constrain_by_ratio_per_host_dual_populates_tracks():
     assert out["cpu"].sellable_effective == 20.0
     assert out["cpu"].sellable_physical == 10.0
     assert out["cpu"].computation_mode == "host_based"
+
+
+def test_utilization_gate_blocked_when_allocation_exceeds_threshold():
+    assert utilization_gate_blocked(100.0, 90.0, 50.0, 80.0) is True
+    assert apply_utilization_gate(100.0, 90.0, 50.0, 80.0) == 0.0
+
+
+def test_host_effective_units_ram_peak_track_uses_cluster_peak_fields():
+    hosts = [{
+        "cpu_total": 10.0,
+        "cpu_alloc": 0.0,
+        "ram_peak_total": 100.0,
+        "ram_peak_used": 20.0,
+        "ram_peak_util_pct": 25.0,
+    }]
+    n = host_effective_units(
+        hosts, _ratio(ram=10.0), ram_track="peak", ram_threshold_pct=80.0
+    )
+    assert n == 6.0
+
+
+def test_constrain_by_ratio_per_host_dual_ram_physical_vs_peak():
+    hosts = [{
+        "cpu_total": 100.0,
+        "cpu_alloc": 0.0,
+        "cpu_total_phys": 100.0,
+        "cpu_alloc_phys": 0.0,
+        "ghz_per_core": 1.0,
+        "ram_total": 80.0,
+        "ram_alloc": 0.0,
+        "ram_peak_total": 100.0,
+        "ram_peak_used": 90.0,
+        "ram_peak_util_pct": 95.0,
+    }]
+    panels = [_panel("cpu", raw=100.0), _panel("ram", raw=80.0)]
+    out = {p.resource_kind: p for p in constrain_by_ratio_per_host_dual(
+        panels,
+        _ratio(),
+        hosts,
+        cpu_threshold_pct=80.0,
+        ram_threshold_pct=80.0,
+        ram_raw_physical=80.0,
+        ram_raw_peak=0.0,
+    )}
+    assert out["ram"].sellable_physical > 0
+    assert out["ram"].sellable_effective == 0.0
+    assert out["ram"].ratio_bound is True
+
+
+def test_constrain_by_ratio_dual_cpu_cluster_storage_uses_effective_n():
+    from shared.sellable.computation import constrain_by_ratio_dual_cpu_cluster
+
+    panels = [
+        _panel("cpu", raw=100.0),
+        _panel("ram", raw=400.0),
+        _panel("storage", raw=80000.0),
+    ]
+    out = {
+        p.resource_kind: p
+        for p in constrain_by_ratio_dual_cpu_cluster(
+            panels,
+            _ratio(cpu=1.0, ram=4.0, storage=100.0),
+            cpu_raw_physical=100.0,
+            cpu_raw_effective=100.0,
+            ram_raw_physical=400.0,
+            ram_raw_peak=400.0,
+        )
+    }
+    # n = min(100, 100, 800) = 100 -> storage constrained = 100 * 100
+    assert out["storage"].sellable_constrained == 10000.0
+    assert out["storage"].ratio_bound is True

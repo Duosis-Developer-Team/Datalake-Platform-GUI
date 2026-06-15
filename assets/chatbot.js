@@ -25,7 +25,16 @@
   function attachAutoScroll() {
     var el = messagesEl();
     if (!el || el.__cbScroll) return;
-    var toBottom = function () { el.scrollTop = el.scrollHeight; };
+    var toBottom = function () {
+      el.scrollTop = el.scrollHeight;
+      var tables = el.querySelectorAll(".chatbot-table-scroll, .chatbot-markdown table");
+      for (var i = 0; i < tables.length; i++) {
+        var t = tables[i];
+        if (t.scrollWidth > t.clientWidth) {
+          t.scrollLeft = 0;
+        }
+      }
+    };
     var obs = new MutationObserver(toBottom);
     obs.observe(el, { childList: true, subtree: true });
     el.__cbScroll = obs;
@@ -41,8 +50,20 @@
     if (btn) btn.click();
   }, true);
 
-  // 3) Clicking a suggestion chip fills the input (user reviews, then sends).
+  // 3) Clarification choices auto-send; empty-state suggestions only fill input.
   document.addEventListener("click", function (e) {
+    var choice = e.target && e.target.closest ? e.target.closest(".chatbot-choice") : null;
+    if (choice) {
+      e.preventDefault();
+      var value = choice.getAttribute("data-choice-value") || choice.textContent || "";
+      var taChoice = inputEl();
+      if (taChoice) {
+        setReactValue(taChoice, value.trim());
+        var send = sendBtn();
+        if (send) send.click();
+      }
+      return;
+    }
     var chip = e.target && e.target.closest ? e.target.closest(".chatbot-suggestion") : null;
     if (!chip) return;
     var text = chip.getAttribute("data-suggestion") || chip.textContent || "";

@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
 from app.config import settings
+from app.services import datacenter_ranking
 from app.services.evidence_evaluator import (
     EvidenceEvaluation,
     _concentrated,
@@ -43,7 +44,21 @@ class AnalysisSummary:
     extra: dict[str, Any] = field(default_factory=dict)  # profile-specific (e.g. cluster diff)
 
     def as_context(self) -> dict[str, Any]:
-        return asdict(self)
+        """LLM-safe context — strips large tabular payloads the model would copy."""
+        ctx = asdict(self)
+        extra = dict(ctx.get("extra") or {})
+        dr = extra.get("datacenter_ranking")
+        if isinstance(dr, dict):
+            dr = dict(dr)
+            dr.pop("ranking_table", None)
+            extra["datacenter_ranking"] = dr
+        if "db_only_rows" in extra:
+            extra = dict(extra)
+            extra.pop("db_only_rows", None)
+        ctx["extra"] = extra
+        if len(ctx.get("top_entities") or []) > 5:
+            ctx["top_entities"] = (ctx.get("top_entities") or [])[:5]
+        return ctx
 
 
 def _avg(r: dict) -> Optional[float]:
@@ -128,6 +143,172 @@ def _synthesize_cluster_diff(plan: IntentPlan, results: list[ToolResult], a: Ana
     return a
 
 
+def _synthesize_memory_cluster(plan: IntentPlan, rows: list[dict], a: AnalysisSummary) -> AnalysisSummary:
+    """Profile: memory_usage — top KM clusters by memory_used_gb."""
+    a.top_entities = [
+        {
+            "name": r.get("cluster_name"),
+            "host": r.get("datacenter"),
+            "source": "cluster_metrics",
+            "memory_used_gb": _num(r, "memory_used_gb"),
+            "memory_capacity_gb": _num(r, "memory_capacity_gb"),
+            "memory_pct": _num(r, "memory_pct"),
+            "unit": "GB",
+        }
+        for r in rows[: (plan.limit or 10)]
+    ]
+    for r in rows[:5]:
+        pct = _num(r, "memory_pct")
+        if pct is not None and pct >= 85:
+            a.risks.append(
+                f"{r.get('cluster_name')} ({r.get('datacenter')}): memory {pct}% "
+                f"({r.get('memory_used_gb')}/{r.get('memory_capacity_gb')} GB)"
+            )
+    top_pct = _num(rows[0], "memory_pct") if rows else None
+    if top_pct is not None and top_pct >= 90:
+        a.risk_level = "high"
+    elif top_pct is not None and top_pct >= 75:
+        a.risk_level = "medium"
+    else:
+        a.risk_level = "low"
+    a.recommended_actions = [
+        "Yüksek memory kullanımlı KM cluster'larda kapasite planlaması ve VM yerleşimini gözden geçir.",
+        "Gerekirse cluster bazında memory rezervasyon/DRS ayarlarını kontrol et.",
+    ]
+    is_stale, latest, age_h = _freshness(rows)
+    a.freshness = {"latest": latest, "age_hours": age_h, "stale": is_stale}
+    if is_stale and latest:
+        a.risks.append(f"veri güncel değil (son toplama {latest})")
+    a.confidence = "high" if rows else "low"
+    return a
+
+
+def _build_ranking_narrative_summary(
+    winner: dict[str, Any],
+    ranked: list[dict[str, Any]],
+    metric: str,
+    label: str,
+    coverage: str,
+) -> dict[str, Any]:
+    """Compact prose-ready summary for synthesis — no full ranking_table."""
+    wid = winner.get("id") or winner.get("name")
+    parts: list[str] = []
+    cpu = winner.get("used_cpu_pct")
+    ram = winner.get("used_ram_pct")
+    storage = winner.get("used_storage_pct")
+    if cpu is not None:
+        parts.append(f"CPU kullanımı %{cpu}")
+    if ram is not None:
+        parts.append(f"bellek kullanımı %{ram}")
+    if storage is not None:
+        parts.append(f"depolama kullanımı %{storage}")
+    why = f"{wid} birleşik skor {winner.get('ranking_score')} ile önde"
+    if parts:
+        why += f" ({', '.join(parts)})"
+    return {
+        "winner_id": wid,
+        "winner_location": winner.get("location"),
+        "winner_score": winner.get("ranking_score"),
+        "metric": metric,
+        "metric_label": label,
+        "coverage": coverage,
+        "why_leading": why,
+        "top_3": [
+            {
+                "id": r.get("id"),
+                "score": r.get("ranking_score"),
+                "cpu_pct": r.get("used_cpu_pct"),
+                "ram_pct": r.get("used_ram_pct"),
+                "storage_pct": r.get("used_storage_pct"),
+            }
+            for r in ranked[:3]
+        ],
+    }
+
+
+def _synthesize_datacenter_ranking(
+    plan: IntentPlan,
+    results: list[ToolResult],
+    evaluation: EvidenceEvaluation,
+    a: AnalysisSummary,
+) -> AnalysisSummary:
+    """Profile: datacenter_ranking — global DC utilization comparison."""
+    raw_rows, expected = datacenter_ranking.collect_ranking_rows(results)
+    metric = plan.ranking_metric or "composite"
+    ranked = datacenter_ranking.rank_datacenters(raw_rows, metric)
+    analyzed = len(ranked)
+    coverage = f"{analyzed}/{expected}" if expected else str(analyzed)
+
+    a.confidence = evaluation.confidence or "medium"
+    a.data_quality_warnings = list(evaluation.data_quality_warnings)
+
+    if not ranked:
+        a.risk_level = "low"
+        a.risks = ["Datacenter özet verisi alınamadı veya boş döndü."]
+        a.recommended_actions = ["get_datacenters_summary kaynağını ve zaman aralığını kontrol et."]
+        return a
+
+    winner = ranked[0]
+    a.top_entities = [
+        {
+            "name": r.get("id") or r.get("name"),
+            "host": r.get("location"),
+            "cpu_pct_avg": r.get("used_cpu_pct"),
+            "cpu_pct_max": r.get("used_ram_pct"),
+            "unit": datacenter_ranking.metric_label(metric),
+            "vm_count": r.get("vm_count"),
+            "rank": r.get("rank"),
+            "ranking_score": r.get("ranking_score"),
+        }
+        for r in ranked[: (plan.limit or 10)]
+    ]
+
+    label = datacenter_ranking.metric_label(metric)
+    a.risks.append(
+        f"{coverage} datacenter incelendi; en yüksek {label}: "
+        f"{winner.get('id')} ({winner.get('location') or '-'}) "
+        f"skor {winner.get('ranking_score')}."
+    )
+    if expected and analyzed < expected:
+        a.data_quality_warnings.append(f"Kısmi kapsam: {analyzed}/{expected} datacenter")
+        a.confidence = "medium"
+
+    top_cpu = max(ranked, key=lambda r: float(r.get("used_cpu_pct") or 0))
+    top_mem = max(ranked, key=lambda r: float(r.get("used_ram_pct") or 0))
+    top_vm = max(ranked, key=lambda r: float(r.get("vm_count") or 0))
+    if metric == "composite":
+        a.recommended_actions.append(
+            f"CPU lideri: {top_cpu.get('id')} (%{top_cpu.get('used_cpu_pct')}); "
+            f"bellek lideri: {top_mem.get('id')} (%{top_mem.get('used_ram_pct')}); "
+            f"VM lideri: {top_vm.get('id')} ({top_vm.get('vm_count')} VM)."
+        )
+
+    crit_cpu = settings.chatbot_cpu_avg_critical_threshold
+    if float(winner.get("used_cpu_pct") or 0) >= crit_cpu:
+        a.risk_level = "high"
+    elif float(winner.get("used_cpu_pct") or 0) >= settings.chatbot_cpu_avg_warning_threshold:
+        a.risk_level = "medium"
+    else:
+        a.risk_level = "low"
+
+    a.recommended_actions.append(
+        "Yoğun datacenter'da kapasite planlaması ve VM/host dağılımını gözden geçir."
+    )
+    a.extra["datacenter_ranking"] = {
+        "winner": winner,
+        "ranking_table": ranked,
+        "narrative_summary": _build_ranking_narrative_summary(
+            winner, ranked, metric, label, coverage
+        ),
+        "metric_used": metric,
+        "metric_label": label,
+        "coverage": coverage,
+        "analyzed_count": analyzed,
+        "expected_count": expected,
+    }
+    return a
+
+
 def _synthesize_allocation(plan: IntentPlan, rows: list[dict], a: AnalysisSummary) -> AnalysisSummary:
     """Profile: cpu_allocation — variability of VM-allocated vCPU per host.
 
@@ -186,6 +367,9 @@ def synthesize(
     if plan.analysis_profile == "cluster_diff":
         return _synthesize_cluster_diff(plan, results, a)
 
+    if plan.analysis_profile == "datacenter_ranking":
+        return _synthesize_datacenter_ranking(plan, results, evaluation, a)
+
     if not rows:
         a.risk_level = "low"
         a.risks = list(evaluation.data_quality_warnings)
@@ -194,6 +378,9 @@ def synthesize(
 
     if plan.analysis_profile == "cpu_allocation":
         return _synthesize_allocation(plan, rows, a)
+
+    if plan.analysis_profile == "memory_usage" and plan.entity_type == "cluster":
+        return _synthesize_memory_cluster(plan, rows, a)
 
     a.top_entities = [
         {

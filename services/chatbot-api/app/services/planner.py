@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from app.models.schemas import FrontendContext
+from app.models.schemas import ClarificationBlock, FrontendContext
 from app.services import tool_orchestrator as orch
 
 
@@ -29,6 +29,7 @@ class IntentPlan:
     sort_by: str = "avg"  # avg | max | latest
     needs_analysis: bool = True
     initial_tools: list[dict[str, Any]] = field(default_factory=list)
+    fallback_tools: list[dict[str, Any]] = field(default_factory=list)
     # --- domain-catalog enrichment (query_planner) ---
     architecture: Optional[str] = None  # classic | hyperconverged
     calculation: Optional[str] = None  # top | summary | variability | trend | comparison | risk
@@ -36,7 +37,9 @@ class IntentPlan:
     analysis_profile: str = "generic"  # which synthesizer profile to apply
     missing_required_params: list[str] = field(default_factory=list)
     clarification: Optional[str] = None  # set when a required param can't be resolved
+    clarification_block: Optional[ClarificationBlock] = None
     answer_guidance: list[str] = field(default_factory=list)  # metric-specific LLM guidance
+    ranking_metric: Optional[str] = None  # cpu | memory | vm_count | composite (datacenter_ranking)
 
     def as_context(self) -> dict[str, Any]:
         """Compact, LLM-safe view of the plan (no internals/secrets)."""
@@ -53,6 +56,7 @@ class IntentPlan:
             "requested_output": self.requested_output,
             "limit": self.limit,
             "sort_by": self.sort_by,
+            "ranking_metric": self.ranking_metric,
         }
 
 
@@ -60,10 +64,13 @@ def make_plan(message: str, ctx: Optional[FrontendContext]) -> IntentPlan:
     text = (message or "").lower()
     dc_code = orch._extract_dc(message, ctx)
     customer = ctx.selected_customer if ctx and ctx.selected_customer else None
-    cpu_intent = "cpu" in text or orch._has(text, "compute")
+    memory_intent = orch._has(text, "memory") and not orch._has(text, "storage")
+    cpu_intent = ("cpu" in text or orch._has(text, "compute")) and not memory_intent
 
     # --- entity ---
-    if orch._has(text, "vm") and cpu_intent:
+    if orch._has(text, "cluster") and memory_intent and orch._has(text, "top"):
+        entity = "cluster"
+    elif orch._has(text, "vm") and cpu_intent:
         entity = "vm"
     elif orch._has(text, "host") and cpu_intent:
         entity = "host"
@@ -83,7 +90,9 @@ def make_plan(message: str, ctx: Optional[FrontendContext]) -> IntentPlan:
         entity = "datacenter"
 
     # --- metric ---
-    if cpu_intent:
+    if memory_intent:
+        metric = "memory"
+    elif cpu_intent:
         metric = "cpu"
     elif orch._has(text, "storage"):
         metric = "storage"
@@ -103,7 +112,12 @@ def make_plan(message: str, ctx: Optional[FrontendContext]) -> IntentPlan:
         output, sort_by = ("latest" if entity in ("vm", "host") else "summary"), "latest"
 
     source = "db" if orch._has(text, "explicit_db") else "auto"
-    profile = "cpu_usage" if (metric == "cpu" and entity in ("vm", "host")) else "generic"
+    if metric == "memory" and entity == "cluster":
+        profile = "memory_usage"
+    elif metric == "cpu" and entity in ("vm", "host"):
+        profile = "cpu_usage"
+    else:
+        profile = "generic"
 
     initial = [{"tool": s.tool, "args": s.args} for s in orch.select_tools(message, ctx)]
 

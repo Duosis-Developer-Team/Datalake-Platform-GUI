@@ -31,8 +31,12 @@ def test_crm_intent_selects_sellable_tool():
     assert "get_sellable_by_panel" in names or "get_sellable_summary" in names
 
 
-def test_unknown_request_falls_back_to_overview():
-    assert "get_dashboard_overview" in _names("Merhaba, nasıl yardımcı olursun?", None)
+def test_unknown_request_no_dashboard_fallback():
+    assert "get_dashboard_overview" not in _names("Merhaba, nasıl yardımcı olursun?", None)
+
+
+def test_overview_intent_selects_dashboard():
+    assert "get_dashboard_overview" in _names("Genel kapasite durumunu özetle", None)
 
 
 def test_tool_call_cap_enforced():
@@ -62,6 +66,26 @@ def test_unknown_tool_is_skipped():
 
 def test_registry_is_non_empty():
     assert len(list_tool_names()) >= 10
+
+
+def test_row_count_for_detail_dict():
+    from datalake_tools_core.registry import _row_count
+
+    payload = {"meta": {"id": "DC17"}, "intel": {"cpu_cap": 100, "cpu_used": 50}}
+    assert _row_count(payload, tool_name="get_datacenter_detail") == 1
+    assert _row_count({"meta": {}}, tool_name="get_datacenter_detail") is None
+
+
+def test_empty_reason_for_detail_without_metrics():
+    from datalake_tools_core.registry import _empty_reason
+
+    reason = _empty_reason(
+        "get_datacenter_detail",
+        {"meta": {}},
+        {"dc_code": "DC17"},
+        {},
+    )
+    assert reason == "no_detail_metrics"
 
 
 # --- host-level CPU DB tools ------------------------------------------------ #

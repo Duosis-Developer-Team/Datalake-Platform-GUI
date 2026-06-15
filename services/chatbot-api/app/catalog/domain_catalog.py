@@ -71,7 +71,8 @@ METRICS: dict[str, MetricDefinition] = {
         required_params=("dc_code",), default_params={"limit": 200},
         answer_guidance=(
             "API cluster sayısı, DB cluster sayısı, ortak ve endpointte olmayan (db_only) sayısını ver.",
-            "db_only cluster'ları tablo halinde listele (host/vm count + son toplama zamanı).",
+            "Önce API vs DB farkını 2-3 cümleyle özetle; db_only cluster sayısını ve en kritik 3 örneği prose içinde ver.",
+            "5+ db_only satır varsa sona destekleyici tablo ekle; asla yalnızca tablo döndürme.",
             "Endpoint'in zaman filtreli/aktif-cluster filtreli olabileceğini, DB envanterinin daha geniş olabileceğini yorumla.",
             "Aksiyon: endpoint filtering/cluster visibility kuralı ve cluster_metrics↔API mapping kontrolü.",
         ),
@@ -94,10 +95,11 @@ METRICS: dict[str, MetricDefinition] = {
         forbidden_tools=_CUSTOMER_FORBIDDEN,
         required_params=("dc_code",), default_params={"days": 7, "limit": 3},
         answer_guidance=(
-            "Min/max/avg/last atanmış vCPU değerlerini ve değişkenliği (stddev/range) belirt.",
+            "Min/max/avg/last atanmış vCPU değerlerini ve değişkenliği (stddev/range) prose içinde özetle.",
             "Değişim yönünü artış/azalış/karışık olarak belirt.",
             "Kapasite planlama, VM placement/vMotion ve overcommit riskini yorumla.",
             "Birim vCPU'dur (GHz kapasite kolonu bu veri setinde boş — GHz uydurma).",
+            "Top 3 host'u cümle içinde sırala; 4+ satır varsa sona opsiyonel tablo ekle.",
         ),
         explanation="KM (klasik) cluster host'larında VM'lere atanmış vCPU toplamının N günlük değişkenliği.",
     ),
@@ -115,8 +117,9 @@ METRICS: dict[str, MetricDefinition] = {
         forbidden_tools=_CUSTOMER_FORBIDDEN,
         required_params=("dc_code",), default_params={"days": 7, "limit": 10},
         answer_guidance=(
-            "Avg vs max CPU ayrımını yap (sustained high vs spike).",
+            "Avg vs max CPU ayrımını yap (sustained high vs spike) — prose özet önce.",
             "Kaynak/birimleri açıkla; VMware VM yüzdesi yoksa uydurma.",
+            "En yüksek VM'leri cümle içinde sırala; 4+ satır varsa sona opsiyonel tablo ekle.",
         ),
         explanation="Datacenter'da son N günde en yüksek CPU'lu VM'ler (Nutanix + IBM).",
     ),
@@ -154,6 +157,51 @@ METRICS: dict[str, MetricDefinition] = {
         forbidden_tools=_CUSTOMER_FORBIDDEN,
         required_params=("dc_code",),
         explanation="Klasik (KM) cluster compute (CPU/RAM/storage) özeti.",
+    ),
+    "global_datacenter_utilization": MetricDefinition(
+        key="global_datacenter_utilization",
+        aliases=(
+            "en yoğun datacenter", "en yogun datacenter", "en yoğun dc", "en yogun dc",
+            "hangi datacenter en yoğun", "hangi dc en yoğun", "busiest datacenter",
+            "busiest dc", "datacenter karşılaştır", "datacenter karsilastir",
+            "dc yoğunluk", "dc yogunluk", "datacenter yoğunluk", "datacenter yogunluk",
+            "en yoğun veri merkezi", "en yogun veri merkezi",
+        ),
+        entity="datacenter", metric="utilization", calculation="comparison",
+        unit="mixed", output_type="comparison", analysis_profile="datacenter_ranking",
+        primary_tools=("get_datacenters_summary",),
+        forbidden_tools=_CUSTOMER_FORBIDDEN,
+        required_params=(),
+        answer_guidance=(
+            "Tüm datacenter'ları karşılaştır; kaç DC incelendiğini açıkça belirt — prose özet önce.",
+            "Eksik DC varsa belirt; yalnızca örneklem üzerinden global sonuç çıkarma.",
+            "Sıralama kullanıcının seçtiği metriğe göre yapılır (CPU, bellek, VM veya bileşik).",
+            "Kazanan DC ve skorunu cümle içinde ver; 4+ satır varsa sona opsiyonel tablo ekle.",
+        ),
+        explanation="Tüm datacenter'lar arasında kullanım yoğunluğu karşılaştırması.",
+    ),
+    "global_km_cluster_memory_top": MetricDefinition(
+        key="global_km_cluster_memory_top",
+        aliases=(
+            "memory kullanım", "bellek kullanım", "ram kullanım", "km cluster memory",
+            "en yüksek km cluster", "en yuksek km cluster", "km cluster bellek",
+            "km cluster ram", "memory en yüksek cluster", "bellek en yüksek cluster",
+            "tüm datacenter", "tüm dc", "tum datacenter",
+        ),
+        entity="cluster", architecture="classic", metric="memory_usage",
+        calculation="top", unit="GB/%", output_type="top_list", analysis_profile="memory_usage",
+        primary_tools=("get_global_km_cluster_memory_top",),
+        fallback_tools=("get_dc_compute_classic",),
+        forbidden_tools=_CUSTOMER_FORBIDDEN,
+        required_params=(),
+        default_params={"limit": 5},
+        answer_guidance=(
+            "Cluster adı, datacenter, memory_used_gb, memory_capacity_gb ve memory_pct değerlerini prose içinde özetle.",
+            "Sıralama memory_used_gb (GB kullanım) bazlıdır; yüzdeyi de göster.",
+            "Kaynak: cluster_metrics (KM cluster'lar). API yalnızca DC aggregate döner.",
+            "Top bulguları cümle içinde ver; 4+ satır varsa sona opsiyonel tablo ekle.",
+        ),
+        explanation="Tüm datacenter'lar arasında memory kullanımı en yüksek KM (klasik) cluster'lar.",
     ),
     "hci_compute_summary": MetricDefinition(
         key="hci_compute_summary",
@@ -269,3 +317,7 @@ def find_metric_candidates(text: str) -> list[MetricDefinition]:
 def match(text: str) -> Optional[MetricDefinition]:
     cands = find_metric_candidates(text)
     return cands[0] if cands else None
+
+
+def get_by_key(key: str) -> Optional[MetricDefinition]:
+    return METRICS.get(key)

@@ -61,13 +61,17 @@ If LLM final response contradicts successful tool evidence, use deterministic fa
 
 ## Agentic loop limits
 
-The chatbot-api enforces conservative code defaults (so worst-case latency stays under the frontend timeout). Env vars can raise these toward the documented upper bounds.
+Per-question investigation budget (executive deep-dive). See [[13_executive_investigation]].
 
-| Env var | Code default | Upper bound (env can raise toward) |
-|---|---|---|
-| `CHATBOT_AGENTIC_MODE` | `true` | — |
-| `CHATBOT_MAX_TOOL_ITERATIONS` | `3` | `10` |
-| `CHATBOT_MAX_TOOL_CALLS_PER_TURN` | `6` | `20` |
-| `CHATBOT_MAX_TOOL_CALLS_PER_ITERATION` | `3` | `3` |
+| Env var | Default |
+|---|---|
+| `CHATBOT_AGENTIC_MODE` | `true` |
+| `CHATBOT_LLM_REACT_MODE` | `true` |
+| `CHATBOT_MAX_TOOL_CALLS_PER_TURN` | `150` |
+| `CHATBOT_MAX_LLM_ROUNDS` | `150` |
+| `CHATBOT_MAX_TOOL_ITERATIONS` | `50` |
+| `CHATBOT_MAX_TOOL_CALLS_PER_ITERATION` | `10` |
+| `CHATBOT_REQUEST_TIMEOUT_SECONDS` | `600` |
+| `CHATBOT_CLIENT_TIMEOUT` (GUI) | `600` |
 
 Always early-stop when evidence is sufficient. Never repeat same tool with same params.

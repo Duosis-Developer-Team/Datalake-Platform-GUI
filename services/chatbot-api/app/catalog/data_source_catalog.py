@@ -36,6 +36,8 @@ DB_TOOL_TO_QUERY_KEY = {
     "get_dc_vm_cpu_latest": "db_get_dc_vm_cpu_latest",
     "get_dc_vm_cpu_summary": "db_get_dc_vm_cpu_summary",
     "get_dc_classic_host_cpu_allocation_variability": "db_get_dc_classic_host_cpu_allocation_variability",
+    "get_dc_vmware_clusters_from_db": "db_get_dc_vmware_clusters",
+    "get_global_km_cluster_memory_top": "db_get_global_km_cluster_memory_top",
 }
 
 # Tables verified to exist in the DB. (vmware_cluster_metrics does NOT exist —

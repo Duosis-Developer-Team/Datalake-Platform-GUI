@@ -311,6 +311,16 @@ def build_default_permission_roots() -> list[PermissionNode]:
             _n("page:settings_integrations", "Integrations Overview", "config", route_pattern="/administration/integrations", sort_order=55),
             _n("page:settings_auranotify", "AuraNotify Integration", "config", route_pattern="/administration/integrations/auranotify", sort_order=58),
             _n(
+                "page:settings_chatbot_logs",
+                "AI Assistant Logs",
+                "config",
+                route_pattern="/administration/integrations/chatbot/logs",
+                sort_order=59,
+                children=[
+                    _n("action:chatbot:audit:read", "View chatbot turn logs", "action"),
+                ],
+            ),
+            _n(
                 "page:settings_netbox_visualization",
                 "NetBox / Loki visualization filters",
                 "config",

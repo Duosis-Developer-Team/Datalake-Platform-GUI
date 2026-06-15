@@ -94,6 +94,30 @@ def test_explicit_db_and_api_source_preference():
 # --- customer metric ------------------------------------------------------ #
 
 
+GLOBAL_MEMORY_Q = (
+    "Bana tüm datacenter'lar arasında memory kullanımı en yüksek 5 KM cluster'ı verir misin?"
+)
+
+
+def test_catalog_matches_global_km_cluster_memory_top():
+    assert metric_catalog.match(GLOBAL_MEMORY_Q).key == "global_km_cluster_memory_top"
+
+
+def test_global_memory_plan_no_dc_required():
+    plan = query_planner.plan(GLOBAL_MEMORY_Q, None, None)
+    assert plan.metric_key == "global_km_cluster_memory_top"
+    assert plan.dc_code is None
+    assert plan.limit == 5
+    assert "get_global_km_cluster_memory_top" in _tools(plan)
+    assert plan.clarification is None
+
+
+def test_global_memory_ignores_stale_dc_context():
+    ctx = FrontendContext(selected_datacenter="DC99", pathname="/datacenters")
+    plan = query_planner.plan(GLOBAL_MEMORY_Q, ctx, None)
+    assert plan.dc_code is None
+
+
 def test_customer_extracted_from_possessive():
     plan = query_planner.plan("Boyner'in son bir ayda kaynak değişimi nasıl?", None, None)
     assert plan.entity_type == "customer"
@@ -101,14 +125,14 @@ def test_customer_extracted_from_possessive():
     assert "get_customer_resources" in _tools(plan)
 
 
-# --- missing-data guard helpers ------------------------------------------- #
+# --- answer reviewer (LLM-only post-process) -------------------------------- #
 
 
-def test_missing_data_guard_helpers():
-    from app.routers.chatbot import _denies_data, _has_rows
-    from app.services.tool_registry import ToolResult
+def test_answer_reviewer_parses_tables_only():
+    from app.services.answer_reviewer import review
 
-    assert _denies_data("Maalesef bu veri setinde yok.") is True
-    assert _denies_data("İşte sonuçlar:") is False
-    assert _has_rows([ToolResult("t", "success", "postgres:x", summary={"rows": [1]}, rows=2)]) is True
-    assert _has_rows([ToolResult("t", "success", "x", summary={}, rows=0)]) is False
+    answer = "| A | B |\n|---|---|\n| 1 | 2 |"
+    reviewed, blocks, meta = review(answer)
+    assert reviewed == answer
+    assert meta["answer_source"] == "llm"
+    assert len(blocks) == 1

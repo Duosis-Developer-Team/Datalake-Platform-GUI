@@ -152,6 +152,15 @@ def test_merge_power_panels_collapses_hana_into_power():
     assert power_cpu[0]["allocated"] == 324
 
 
+def test_merge_power_single_panel_preserves_optional_tl_fields():
+    """Single virt_power row must not get potential_tl_min/max zeroed by merge."""
+    merged = merge_power_panels_for_summary([
+        {"family": "virt_power", "resource_kind": "cpu", "potential_tl": 100.0},
+    ])
+    assert len(merged) == 1
+    assert "potential_tl_min" not in merged[0] or merged[0].get("potential_tl_min") is None
+
+
 def test_merge_power_infra_fields_use_max_not_sum():
     """virt_power_hana aliases same IBM Power infra — Cap/Alloc must not double-count."""
     merged = merge_power_panels_for_summary([

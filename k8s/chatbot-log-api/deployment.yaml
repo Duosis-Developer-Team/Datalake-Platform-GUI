@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bulutistan-chatbot-log-api
+  labels:
+    app: bulutistan-chatbot-log-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bulutistan-chatbot-log-api
+  template:
+    metadata:
+      labels:
+        app: bulutistan-chatbot-log-api
+    spec:
+      containers:
+        - name: bulutistan-chatbot-log-api
+          image: bulutistan-chatbot-log-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: bulutistan-chatbot-log-api-config
+          env:
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: bulutistan-chatbot-log-secret
+                  key: MONGO_URI
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bulutistan-chatbot-log-secret
+                  key: INTERNAL_API_KEY
+                  optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15

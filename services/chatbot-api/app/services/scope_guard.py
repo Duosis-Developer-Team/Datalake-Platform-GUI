@@ -1,12 +1,4 @@
-"""Domain scope guard — deterministic out-of-scope / instruction-override handling.
-
-Runs before the planner and the LLM. The chatbot is a Bulutistan Datalake WebUI
-domain assistant, not a general chatbot. A message that is clearly off-topic and
-carries no domain signal is refused deterministically (no LLM, no tools). A pure
-instruction-override ("forget everything") on an in-domain question is allowed,
-but the prior conversation is dropped — the system/developer instructions are
-never overridden.
-"""
+"""Domain scope guard — deterministic out-of-scope / instruction-override handling."""
 
 from __future__ import annotations
 
@@ -15,7 +7,6 @@ from dataclasses import dataclass
 
 _DC_RE = re.compile(r"\b(?:DC|AZ|ICT|UZ|DH)\d+\b", re.IGNORECASE)
 
-# In-domain vocabulary (allowlist). Any hit => the message is on-topic enough.
 _DOMAIN = (
     "datacenter", "data center", "veri merkezi", " dc", "customer", "müşteri", "musteri",
     "vm", "host", "cluster", "sunucu", "node", "vmware", "classic", "klasik", " km", "nutanix",
@@ -29,7 +20,6 @@ _DOMAIN = (
     "inventory", "envanter", "rack", "kabinet",
 )
 
-# Clearly out-of-domain markers.
 _OFFTOPIC = (
     "aşk hayat", "ask hayat", "aşk yaşam", "magazin", "ünlü", "unlu", "şarkıcı", "sarkici",
     "oyuncu", "sanatçı", "sanatci", "biyografi", "kimin sevgili", "kiminle evli", "siyaset",
@@ -37,9 +27,15 @@ _OFFTOPIC = (
     "spor müsabaka", "yemek tarif", "tarifi ver", "şiir yaz", "siir yaz", "film öner", "dizi öner",
     "burç", "astroloji", "hava durumu", "ajda pekkan", "şarkı söz", "hikaye yaz", "masal anlat",
     "fıkra anlat", "espri yap", "şaka yap",
+    "sigara", "tütün", "tutun", "içki", "alkol", "sağlık", "saglik", "zararlı", "zararli",
+    "kanser", "nikotin", "beslenme", "diyet",
 )
 
-# Instruction-override / prompt-injection markers.
+_GREETING = (
+    "merhaba", "selam", "hey", "hi", "hello", "günaydın", "gunaydin", "iyi günler",
+    "nasılsın", "nasilsin", "test",
+)
+
 _INJECTION = (
     "söylediğim her şeyi unut", "soyledigim her seyi unut", "her şeyi unut", "herseyi unut",
     "ignore previous", "forget everything", "forget all previous", "önceki talimatları unut",
@@ -59,6 +55,7 @@ REFUSAL = (
 class ScopeDecision:
     in_scope: bool
     reset_conversation: bool = False
+    run_tools: bool = True
     reason: str = ""
 
 
@@ -71,17 +68,30 @@ def has_domain_signal(message: str) -> bool:
     return _has(text, _DOMAIN) or bool(_DC_RE.search(message or ""))
 
 
+def is_greeting_only(message: str) -> bool:
+    text = (message or "").lower().strip()
+    if has_domain_signal(message):
+        return False
+    if len(text) > 40:
+        return False
+    return _has(text, _GREETING) or text in ("test", "deneme", "ok")
+
+
 def evaluate(message: str) -> ScopeDecision:
     text = (message or "").lower()
     has_domain = has_domain_signal(message)
     has_offtopic = _has(text, _OFFTOPIC)
     has_injection = _has(text, _INJECTION)
 
-    # Off-topic with no domain signal -> refuse (also covers injection+off-topic).
     if has_offtopic and not has_domain:
         reason = "injection_offtopic" if has_injection else "off_topic"
-        return ScopeDecision(in_scope=False, reason=reason)
+        return ScopeDecision(in_scope=False, run_tools=False, reason=reason)
 
-    # In scope. An instruction-override on a domain question drops prior
-    # conversation (treated as a fresh query); system prompt is never overridden.
-    return ScopeDecision(in_scope=True, reset_conversation=has_injection)
+    run_tools = not is_greeting_only(message)
+
+    return ScopeDecision(
+        in_scope=True,
+        reset_conversation=has_injection,
+        run_tools=run_tools,
+        reason="greeting_no_tools" if not run_tools else "",
+    )

@@ -45,6 +45,7 @@ from src.utils.time_range import (
     time_range_to_bounds,
 )
 from src.utils.format_units import pct_float, smart_storage
+from src.utils.api_parallel import parallel_execute
 from src.components.s3_panel import build_dc_s3_panel, build_customer_s3_panel
 from src.pages.home import _phys_inv_bar_figure
 
@@ -119,10 +120,11 @@ from src.pages.dc_view import (
     _build_compute_tab,
     _build_hosts_panel_content,
     _build_sellable_inline_kpi,
+    _build_virt_subtab_stack,
+    _build_virt_total_sellable_children,
+    _sellable_card_children,
     _DC_ICONS,
 )
-from src.utils.virt_sellable_aggregate import aggregate_virt_sellable_panels
-from src.utils.api_parallel import parallel_execute
 from src.pages.settings.iam import roles_callbacks  # noqa: F401 — registers role matrix callback
 from src.pages.settings.iam import teams_callbacks  # noqa: F401 — IAM teams panel / members
 from src.pages.settings.iam import users_callbacks  # noqa: F401 — IAM users AD import / edit
@@ -132,6 +134,7 @@ from src.pages.settings.integrations import crm_aliases  # noqa: F401 — CRM cu
 from src.pages.settings.integrations import crm_aliases_callbacks  # noqa: F401 — CRM customer aliases callbacks
 from src.pages.settings.integrations import netbox_visualization_callbacks  # noqa: F401 — NetBox viz exclusions
 from src.pages.settings.integrations import hmdl_callbacks  # noqa: F401 — HMDL sync health filters
+from src.pages.settings.integrations import chatbot_logs_callbacks  # noqa: F401 — AI Assistant log viewer
 from src.pages.settings import dashboard_callbacks  # noqa: F401 — Settings overview (cache refresh)
 from src.pages.settings.admin_routes import to_administration_path
 from src.components.chatbot import build_chatbot_shell, register_chatbot_callbacks
@@ -267,6 +270,10 @@ app.layout = dmc.MantineProvider(
     },
     children=[
         dcc.Location(id="url", refresh=False),
+        # Periodic backend cache warm: keeps overview/summary hot so cold-load freezes
+        # (build_overview 4 min cold vs ~20s warm) stay rare regardless of navigation.
+        dcc.Interval(id="app-warm-interval", interval=300_000, n_intervals=0),
+        dcc.Store(id="app-warm-tick"),
         html.Div(
             APP_BUILD_ID,
             id="app-deploy-revision",
@@ -289,6 +296,7 @@ app.layout = dmc.MantineProvider(
         dcc.Store(id="auth-user-store", data=None),
         dcc.Store(id="auth-permissions-store", data=None),
         dcc.Store(id="chatbot-open-store", data=False, storage_type="session"),
+        dcc.Store(id="chatbot-expanded-store", data=False, storage_type="session"),
         dcc.Store(id="chatbot-history-store", data=[], storage_type="session"),
         dcc.Store(id="chatbot-context-store", data={}, storage_type="session"),
         dcc.Store(id="chatbot-pending-store", data=None, storage_type="session"),
@@ -504,6 +512,30 @@ def sync_auth_stores(pathname):
     return {"id": int(uid), "username": u.get("username")}, pmap
 
 
+@app.callback(
+    dash.Output("app-warm-tick", "data"),
+    dash.Input("app-warm-interval", "n_intervals"),
+    prevent_initial_call=True,
+)
+def _periodic_backend_warm(n_intervals):
+    """Re-warm the RBAC-scoped backend caches every ~5 min so overview/summary stay hot."""
+    from flask import g, has_request_context
+
+    if not has_request_context():
+        return dash.no_update
+    uid = getattr(g, "auth_user_id", None)
+    if not uid:
+        return dash.no_update
+    try:
+        from src.services.app_background_warm import trigger_rbac_warm
+        from src.utils.time_range import default_time_range as _dtr
+
+        trigger_rbac_warm(int(uid), _dtr())
+    except Exception:
+        pass
+    return n_intervals
+
+
 def _normalize_custom_iso(v: str | None) -> str | None:
     if not v:
         return None
@@ -710,9 +742,13 @@ def render_main_content(pathname, time_range, search):
         return build_access_denied()
 
     if pathname in ("/", ""):
-        return home.build_overview(tr, visible_sections=vis)
+        # Two-phase: instant skeleton shell; `_fill_overview_content` builds the real
+        # content off the render path so a cold overview fetch never blanks the page.
+        return home.build_overview_shell(visible_sections=vis)
     if pathname == "/datacenters":
-        return datacenters.build_datacenters(tr, visible_sections=vis)
+        # Two-phase: return the skeleton shell instantly; `_fill_datacenters_content`
+        # builds the real content off the render path so a cold backend never blanks the page.
+        return datacenters.build_datacenters_shell(visible_sections=vis)
     if pathname and pathname.startswith("/datacenter/"):
         dc_id = pathname.replace("/datacenter/", "").strip("/")
         try:
@@ -727,15 +763,14 @@ def render_main_content(pathname, time_range, search):
     if pathname == "/availability-annual":
         return availability_annual.build_availability_annual_layout(visible_sections=vis)
     if pathname == "/customers":
-        return customers_list.build_customers_list(tr, visible_sections=vis)
+        return customers_list.build_customers_list_shell(visible_sections=vis)
     if pathname == "/customer-view":
-        params = parse_qs((search or "").lstrip("?"))
-        chosen_customer = (params.get("customer", [""])[0] or "").strip()
-        return customer_view.build_customer_layout(tr, chosen_customer, visible_sections=vis)
+        # Two-phase: shell instant; `_fill_customer_view_content` reads the ?customer= param.
+        return customer_view.build_customer_layout_shell(visible_sections=vis)
     if pathname == "/query-explorer":
         return query_explorer.layout(visible_sections=vis)
     if pathname == "/crm/sellable-potential":
-        return crm_sellable_potential.build_layout(visible_sections=vis)
+        return crm_sellable_potential.build_layout_shell(visible_sections=vis)
     if pathname and pathname.startswith("/dc-detail/"):
         dc_id = pathname.replace("/dc-detail/", "").strip("/")
         return dc_detail.build_dc_detail(dc_id, tr, visible_sections=vis)
@@ -907,111 +942,66 @@ def clear_hyperconv_clusters(_n):
     return [], False
 
 
-def _sellable_card_children(card):
-    if card is None:
-        return dash.no_update
-    return card.children
-
-
-def _build_virt_total_sellable_children(dc_id: str, classic_clusters, hyperconv_clusters):
-    panels = api.get_virt_sellable_panels(
-        dc_id,
-        classic_clusters or None,
-        hyperconv_clusters or None,
-    )
-    total_tl, by_kind, has_known = aggregate_virt_sellable_panels(panels)
-
-    if not has_known and total_tl <= 0:
-        return []
-
-    def _fmt_tl_short_local(value: float) -> tuple[str, str]:
-        full = f"{value:,.0f} TL"
-        if value >= 1_000_000_000:
-            short = f"{value / 1_000_000_000:.2f}B TL"
-        elif value >= 1_000_000:
-            short = f"{value / 1_000_000:.2f}M TL"
-        elif value >= 1_000:
-            short = f"{value / 1_000:.1f}K TL"
-        else:
-            short = full
-        return short, full
-
-    cpu = by_kind["cpu"]
-    ram = by_kind["ram"]
-    stor = by_kind["storage"]
-
-    def _kpi(label, value_str, sub_short, sub_full, icon, c="violet"):
-        card = html.Div(
-            className="nexus-card dc-kpi-card dc-stagger-1",
-            style={
-                "padding": "18px",
-                "display": "flex",
-                "alignItems": "center",
-                "justifyContent": "space-between",
-                "gap": "12px",
-                "minHeight": "140px",
-                "height": "100%",
-                "width": "100%",
-                "boxSizing": "border-box",
-            },
-            children=[
-                html.Div(
-                    style={"display": "flex", "flexDirection": "column", "minWidth": 0, "flex": "1 1 auto"},
-                    children=[
-                        html.Span(label, style={
-                            "color": "#A3AED0", "fontSize": "0.78rem", "fontWeight": 500,
-                            "letterSpacing": "0.02em", "textTransform": "uppercase",
-                        }),
-                        html.H3(value_str, style={
-                            "color": "#2B3674", "fontSize": "1.15rem", "fontWeight": 900,
-                            "margin": "6px 0 2px 0", "letterSpacing": "-0.02em",
-                        }),
-                        html.Span(sub_short, style={"color": "#4318FF", "fontSize": "0.78rem", "fontWeight": 700}),
-                    ],
-                ),
-                dmc.ThemeIcon(
-                    size=42, radius="xl", variant="light", color=c,
-                    children=DashIconify(icon=icon, width=22),
-                ),
-            ],
+@app.callback(
+    dash.Output("classic-virt-panel", "children", allow_duplicate=True),
+    dash.Output("sellable-classic-card", "children", allow_duplicate=True),
+    dash.Output("hyperconv-virt-panel", "children", allow_duplicate=True),
+    dash.Output("sellable-hyperconv-card", "children", allow_duplicate=True),
+    dash.Input("virt-nested-tabs", "value"),
+    dash.State("virt-classic-cluster-applied", "data"),
+    dash.State("virt-hyperconv-cluster-applied", "data"),
+    dash.State("app-time-range", "data"),
+    dash.State("url", "pathname"),
+    dash.State("classic-virt-panel", "children"),
+    dash.State("hyperconv-virt-panel", "children"),
+    prevent_initial_call=True,
+)
+def populate_virt_nested_tab(
+    active,
+    classic_applied,
+    hyperconv_applied,
+    time_range,
+    pathname,
+    classic_built,
+    hyperconv_built,
+):
+    """Lazy-build Virt sub-tab heavy content on first tab switch (applied cluster scope)."""
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    tr = time_range or default_time_range()
+    no = dash.no_update
+    if active == "classic" and not classic_built:
+        scope = classic_applied or None
+        batch = parallel_execute({
+            "metrics": lambda: api.get_classic_metrics_filtered(dc_id, scope, tr),
+            "card": lambda: _build_sellable_inline_kpi(
+                dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
+                color="blue", selected_clusters=scope, container_id="sellable-classic-card",
+            ),
+        })
+        return (
+            _build_compute_tab(batch["metrics"], "Classic Compute", color="blue"),
+            _sellable_card_children(batch["card"]) or html.Div(id="sellable-classic-card"),
+            no,
+            no,
         )
-        return html.Div(
-            style={"width": "100%", "height": "100%", "display": "flex", "flexDirection": "column"},
-            title=sub_full if sub_full and sub_full != sub_short else None,
-            children=card,
+    if active == "hyperconv" and not hyperconv_built:
+        scope = hyperconv_applied or None
+        batch = parallel_execute({
+            "metrics": lambda: api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
+            "card": lambda: _build_sellable_inline_kpi(
+                dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
+                color="teal", selected_clusters=scope, container_id="sellable-hyperconv-card",
+            ),
+        })
+        return (
+            no,
+            no,
+            _build_compute_tab(batch["metrics"], "Hyperconverged Compute", color="teal"),
+            _sellable_card_children(batch["card"]) or html.Div(id="sellable-hyperconv-card"),
         )
-
-    cpu_short, cpu_full = _fmt_tl_short_local(float(cpu["tl"]))
-    ram_short, ram_full = _fmt_tl_short_local(float(ram["tl"]))
-    stor_short, stor_full = _fmt_tl_short_local(float(stor["tl"]))
-    total_short, total_full = _fmt_tl_short_local(total_tl)
-
-    cards = [
-        _kpi("CPU Sellable",     f"{float(cpu['constrained']):,.0f} {cpu['unit']}",   cpu_short, cpu_full,   _DC_ICONS["cpu"]),
-        _kpi("RAM Sellable",     f"{float(ram['constrained']):,.0f} {ram['unit']}",   ram_short, ram_full,   _DC_ICONS["ram"]),
-        _kpi("Storage Sellable", f"{float(stor['constrained']):,.0f} {stor['unit']}", stor_short, stor_full, _DC_ICONS["storage"]),
-        _kpi("Total Potential",  total_short, "× catalog price",   total_full or "constrained × catalog price", "solar:wallet-money-bold-duotone", c="grape"),
-    ]
-
-    return [
-        html.Div(
-            "Virtualization — Total Sellable Potential",
-            style={"fontSize": "1.1rem", "fontWeight": 700, "color": "#2B3674", "marginBottom": "4px"},
-        ),
-        html.Div(
-            "Cluster-scoped sum of Classic + Hyperconverged sub-tab cards (Power is DC-wide)",
-            style={"fontSize": "0.78rem", "color": "#A3AED0", "marginBottom": "12px"},
-        ),
-        html.Div(
-            style={
-                "display": "grid",
-                "gridTemplateColumns": "repeat(4, minmax(0, 1fr))",
-                "gap": "16px",
-                "alignItems": "stretch",
-            },
-            children=cards,
-        ),
-    ]
+    return no, no, no, no
 
 
 @app.callback(

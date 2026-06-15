@@ -260,6 +260,34 @@ DB_QUERIES: dict[str, DBQuery] = {
         params=("dc", "limit"),
         enabled=True,
     ),
+    # ----- Global KM cluster memory ranking (per-cluster, all DCs) -------- #
+    "db_get_global_km_cluster_memory_top": DBQuery(
+        key="db_get_global_km_cluster_memory_top",
+        description="Top classic (KM) clusters by memory_used_gb across all datacenters (optional DC filter).",
+        sql=(
+            "WITH latest AS ("
+            "  SELECT DISTINCT ON (cluster)"
+            "    datacenter,"
+            "    cluster AS cluster_name,"
+            "    round(memory_used_gb::numeric, 1) AS memory_used_gb,"
+            "    round(memory_capacity_gb::numeric, 1) AS memory_capacity_gb,"
+            "    CASE WHEN memory_capacity_gb > 0"
+            "      THEN round(100.0 * memory_used_gb / memory_capacity_gb, 1)"
+            "      ELSE NULL END AS memory_pct,"
+            "    to_char(timestamp::timestamptz, 'YYYY-MM-DD HH24:MI') AS collection_time"
+            "  FROM cluster_metrics"
+            "  WHERE cluster ILIKE '%%KM%%'"
+            "    AND (%(dc)s IS NULL OR datacenter ILIKE %(dc)s)"
+            "  ORDER BY cluster, timestamp DESC"
+            ") "
+            "SELECT datacenter, cluster_name, memory_used_gb, memory_capacity_gb, memory_pct, collection_time"
+            " FROM latest"
+            " ORDER BY memory_used_gb DESC NULLS LAST, memory_pct DESC NULLS LAST"
+            " LIMIT %(limit)s"
+        ),
+        params=("dc", "limit"),
+        enabled=True,
+    ),
     # ----- Generic examples (disabled by default) ------------------------- #
     "db_list_recent_collection_times": DBQuery(
         key="db_list_recent_collection_times",

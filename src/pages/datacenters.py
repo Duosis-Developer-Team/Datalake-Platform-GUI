@@ -839,6 +839,42 @@ def build_datacenters(time_range=None, visible_sections=None):
     )
 
 
+def build_datacenters_shell(visible_sections=None):
+    """Phase A: instant skeleton shell. The real content (build_datacenters) is filled
+    by `_fill_datacenters_content`, so a cold backend summary fetch (which can take
+    minutes) never leaves the page blank — the user sees a spinner immediately."""
+    return html.Div([
+        dcc.Store(
+            id="datacenters-visible-sections",
+            data=list(visible_sections) if visible_sections else None,
+        ),
+        dcc.Loading(
+            id="datacenters-content-loading",
+            type="circle",
+            color="#4318FF",
+            delay_show=150,
+            children=html.Div(
+                id="datacenters-page-root",
+                style={"minHeight": "60vh", "padding": "0 8px"},
+            ),
+        ),
+    ])
+
+
+@callback(
+    Output("datacenters-page-root", "children"),
+    Input("url", "pathname"),
+    Input("app-time-range", "data"),
+    State("datacenters-visible-sections", "data"),
+)
+def _fill_datacenters_content(pathname, time_range, visible_sections):
+    """Phase B: build the real Data Centers content off the initial render path."""
+    if pathname != "/datacenters":
+        return dash.no_update
+    tr = time_range or default_time_range()
+    return build_datacenters(tr, visible_sections=visible_sections)
+
+
 def layout():
     return build_datacenters(default_time_range())
 

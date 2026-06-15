@@ -325,14 +325,14 @@ ORDER BY h.host_uuid, h.collectiontime DESC
 
 # Per-host VM allocation aggregate (vCPU / RAM provisioned by Nutanix VMs on
 # each host). Sales CPU rule: 1 vCPU = 1 GHz (applied in Python).
-# Params: (dc_code, cluster_filter[], cluster_filter[])
+# Params: (dc_code, cluster_filter[], cluster_filter[], start_ts, end_ts)
 NUTANIX_HOST_VM_ALLOCATION = """
 WITH dc_clusters AS (
     SELECT DISTINCT cluster_uuid::text AS cluster_uuid
     FROM public.nutanix_cluster_metrics
     WHERE cluster_name LIKE ('%%' || %s || '%%')
       AND (cardinality(%s::text[]) = 0 OR cluster_name = ANY(%s::text[]))
-      AND collection_time >= NOW() - INTERVAL '7 days'
+      AND collection_time BETWEEN %s AND %s
 ),
 latest AS (
     SELECT DISTINCT ON (vm_name)
@@ -343,7 +343,7 @@ latest AS (
         used_storage
     FROM public.nutanix_vm_metrics
     WHERE cluster_uuid::text IN (SELECT cluster_uuid FROM dc_clusters)
-      AND collection_time >= NOW() - INTERVAL '24 hours'
+      AND collection_time BETWEEN %s AND %s
     ORDER BY vm_name, collection_time DESC
 )
 SELECT
@@ -362,14 +362,14 @@ WITH dc_clusters AS (
     SELECT DISTINCT cluster_uuid::text AS cluster_uuid
     FROM public.nutanix_cluster_metrics
     WHERE cluster_name LIKE ('%%' || %s || '%%')
-      AND collection_time >= NOW() - INTERVAL '24 hours'
+      AND collection_time BETWEEN %s AND %s
 ),
 latest AS (
     SELECT DISTINCT ON (vm_name)
         vm_name, disk_capacity, used_storage, cpu_count, memory_capacity
     FROM public.nutanix_vm_metrics
     WHERE cluster_uuid::text IN (SELECT cluster_uuid FROM dc_clusters)
-      AND collection_time >= NOW() - INTERVAL '24 hours'
+      AND collection_time BETWEEN %s AND %s
     ORDER BY vm_name, collection_time DESC
 )
 SELECT
@@ -386,14 +386,14 @@ WITH dc_clusters AS (
     FROM public.nutanix_cluster_metrics
     WHERE cluster_name LIKE ('%%' || %s || '%%')
       AND cluster_name = ANY(%s::text[])
-      AND collection_time >= NOW() - INTERVAL '24 hours'
+      AND collection_time BETWEEN %s AND %s
 ),
 latest AS (
     SELECT DISTINCT ON (vm_name)
         vm_name, disk_capacity, used_storage, cpu_count, memory_capacity
     FROM public.nutanix_vm_metrics
     WHERE cluster_uuid::text IN (SELECT cluster_uuid FROM dc_clusters)
-      AND collection_time >= NOW() - INTERVAL '24 hours'
+      AND collection_time BETWEEN %s AND %s
     ORDER BY vm_name, collection_time DESC
 )
 SELECT
@@ -415,14 +415,14 @@ WITH dc_clusters AS (
     SELECT DISTINCT cluster_uuid::text AS cluster_uuid
     FROM public.nutanix_cluster_metrics
     WHERE cluster_name LIKE ('%%' || %s || '%%')
-      AND collection_time >= NOW() - INTERVAL '24 hours'
+      AND collection_time BETWEEN %s AND %s
 ),
 latest AS (
     SELECT DISTINCT ON (vm_name)
         vm_name, host_name, disk_capacity, used_storage, cpu_count, memory_capacity
     FROM public.nutanix_vm_metrics
     WHERE cluster_uuid::text IN (SELECT cluster_uuid FROM dc_clusters)
-      AND collection_time >= NOW() - INTERVAL '24 hours'
+      AND collection_time BETWEEN %s AND %s
     ORDER BY vm_name, collection_time DESC
 )
 SELECT
@@ -440,14 +440,14 @@ WITH dc_clusters AS (
     FROM public.nutanix_cluster_metrics
     WHERE cluster_name LIKE ('%%' || %s || '%%')
       AND cluster_name = ANY(%s::text[])
-      AND collection_time >= NOW() - INTERVAL '24 hours'
+      AND collection_time BETWEEN %s AND %s
 ),
 latest AS (
     SELECT DISTINCT ON (vm_name)
         vm_name, host_name, disk_capacity, used_storage, cpu_count, memory_capacity
     FROM public.nutanix_vm_metrics
     WHERE cluster_uuid::text IN (SELECT cluster_uuid FROM dc_clusters)
-      AND collection_time >= NOW() - INTERVAL '24 hours'
+      AND collection_time BETWEEN %s AND %s
     ORDER BY vm_name, collection_time DESC
 )
 SELECT
@@ -457,4 +457,44 @@ SELECT
     COALESCE(disk_capacity / 1073741824.0, 0),
     COALESCE(used_storage / 1073741824.0, 0)
 FROM latest
+"""
+
+# Memory peak from Nutanix cluster timestamp aggregates (hyperconverged scope).
+NUTANIX_MEM_PEAK_RAW = """
+WITH ts_agg AS (
+    SELECT collection_time AS ts,
+           SUM(COALESCE(memory_usage_avg, 0)) AS used_bytes,
+           SUM(COALESCE(total_memory_capacity, 0)) AS cap_bytes
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND collection_time BETWEEN %s AND %s
+    GROUP BY collection_time
+)
+SELECT COALESCE(used_bytes / 1073741824.0, 0),
+       COALESCE(cap_bytes / 1073741824.0, 0),
+       COALESCE(100.0 * used_bytes / NULLIF(cap_bytes, 0), 0)
+FROM ts_agg
+WHERE cap_bytes > 0
+ORDER BY used_bytes DESC, (used_bytes / NULLIF(cap_bytes, 0)) DESC
+LIMIT 1
+"""
+
+NUTANIX_MEM_PEAK_RAW_FILTERED = """
+WITH ts_agg AS (
+    SELECT collection_time AS ts,
+           SUM(COALESCE(memory_usage_avg, 0)) AS used_bytes,
+           SUM(COALESCE(total_memory_capacity, 0)) AS cap_bytes
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND cluster_name = ANY(%s::text[])
+      AND collection_time BETWEEN %s AND %s
+    GROUP BY collection_time
+)
+SELECT COALESCE(used_bytes / 1073741824.0, 0),
+       COALESCE(cap_bytes / 1073741824.0, 0),
+       COALESCE(100.0 * used_bytes / NULLIF(cap_bytes, 0), 0)
+FROM ts_agg
+WHERE cap_bytes > 0
+ORDER BY used_bytes DESC, (used_bytes / NULLIF(cap_bytes, 0)) DESC
+LIMIT 1
 """

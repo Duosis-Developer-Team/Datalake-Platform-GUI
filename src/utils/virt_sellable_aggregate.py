@@ -21,6 +21,20 @@ VIRT_SELLABLE_FAMILY_LABELS: tuple[str, ...] = (
 )
 
 
+def virt_tab_cluster_scope(
+    classic_clusters: list[str] | None,
+    hyperconv_clusters: list[str] | None,
+) -> tuple[list[str] | None, list[str] | None]:
+    """Mirror Virt tab cluster selector defaults: explicit full lists when known.
+
+    Empty lists are treated as ``None`` (DC-wide datalake path), matching
+    ``selected_clusters or None`` in Dash callbacks.
+    """
+    classic = list(classic_clusters) if classic_clusters else None
+    hyperconv = list(hyperconv_clusters) if hyperconv_clusters else None
+    return classic, hyperconv
+
+
 def collect_virt_sellable_panels(
     dc_id: str,
     classic_clusters: list[str] | None = None,
@@ -44,7 +58,7 @@ def collect_virt_sellable_panels(
         return chunk if isinstance(chunk, list) else []
 
     families: tuple[str, ...] = ("virt_classic", "virt_hyperconverged", *VIRT_POWER_FAMILIES)
-    configured_family_workers = int(os.getenv("VIRT_SELLABLE_FAMILY_WORKERS", "1") or "1")
+    configured_family_workers = int(os.getenv("VIRT_SELLABLE_FAMILY_WORKERS", "4") or "4")
     workers = max_family_workers if max_family_workers is not None else configured_family_workers
     workers = min(max(1, workers), len(families))
     if workers == 1:
@@ -99,6 +113,8 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
         "sellable_physical",
         "sellable_effective",
         "potential_tl",
+        "potential_tl_physical",
+        "potential_tl_effective",
         "potential_tl_min",
         "potential_tl_max",
         "sellable_min",
@@ -117,6 +133,11 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
             out.append(p)
     for kind, group in power_by_kind.items():
         if not group:
+            continue
+        if len(group) == 1:
+            single = dict(group[0])
+            single["family"] = "virt_power"
+            out.append(single)
             continue
         merged = dict(group[0])
         merged["family"] = "virt_power"
