@@ -103,3 +103,28 @@ def test_virt_total_card_uses_fmt_tl_range(mock_fetch, dc_view_module):
     text = str(children)
     assert "Milyon TL" in text
     assert "Total Potential" in text
+
+
+@patch("src.pages.dc_view.api.get_sellable_by_panel")
+def test_inline_kpi_hides_storage_tl_when_compute_bottleneck(mock_fetch, dc_view_module):
+    mock_fetch.return_value = [
+        {
+            "resource_kind": "storage",
+            "sellable_constrained": 0.0,
+            "sellable_raw": 53209.0,
+            "potential_tl": 97_904.0,
+            "constraint_reason": "compute_bottleneck",
+            "bottleneck_kind": "cpu",
+            "display_unit": "GB",
+        },
+    ]
+    card = dc_view_module._build_sellable_inline_kpi(
+        "DC13",
+        "virt_hyperconverged",
+        "Hyperconverged",
+        color="teal",
+    )
+    assert card is not None
+    text = str(card)
+    assert "—" in text
+    assert "compute darboğazı" in text.lower() or "darboğaz" in text.lower()

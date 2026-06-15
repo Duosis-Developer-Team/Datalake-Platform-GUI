@@ -20,6 +20,32 @@ VIRT_SELLABLE_FAMILY_LABELS: tuple[str, ...] = (
     *VIRT_POWER_FAMILIES,
 )
 
+_CONSTRAINT_REASON_PRIORITY: tuple[str, ...] = (
+    "compute_bottleneck",
+    "gate_blocked",
+    "ratio_bound",
+    "none",
+)
+
+
+def _merge_constraint_reason(group: list[dict]) -> str:
+    reasons = {(p.get("constraint_reason") or "none").lower() for p in group}
+    for reason in _CONSTRAINT_REASON_PRIORITY:
+        if reason in reasons:
+            return reason
+    return "none"
+
+
+def _bottleneck_panel(group: list[dict]) -> dict | None:
+    """Pick panel with smallest bottleneck_units (tightest compute cap)."""
+    candidates = [
+        p for p in group
+        if p.get("bottleneck_units") is not None
+    ]
+    if not candidates:
+        return group[0] if group else None
+    return min(candidates, key=lambda p: float(p.get("bottleneck_units") or 0.0))
+
 
 def virt_tab_cluster_scope(
     classic_clusters: list[str] | None,
@@ -145,6 +171,13 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
             merged[field] = sum(float(g.get(field) or 0.0) for g in group)
         for field in infra_fields:
             merged[field] = max(float(g.get(field) or 0.0) for g in group)
+        merged["ratio_bound"] = any(bool(g.get("ratio_bound")) for g in group)
+        merged["gate_blocked"] = any(bool(g.get("gate_blocked")) for g in group)
+        merged["constraint_reason"] = _merge_constraint_reason(group)
+        bottleneck_src = _bottleneck_panel(group)
+        if bottleneck_src is not None:
+            merged["bottleneck_kind"] = bottleneck_src.get("bottleneck_kind")
+            merged["bottleneck_units"] = bottleneck_src.get("bottleneck_units")
         out.append(merged)
     return out
 

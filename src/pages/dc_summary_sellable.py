@@ -10,6 +10,7 @@ from dash_iconify import DashIconify
 
 from src.services import api_client as api
 from src.components.sellable_constraint_viz import (
+    build_storage_family_tile,
     constraint_breakdown_text,
     sellable_constraint_badges,
     sellable_constraint_bar,
@@ -31,7 +32,7 @@ _TEXT = "#2B3674"
 _VIRT_COMPUTE_FAMILIES = frozenset({
     "virt_classic", "virt_hyperconverged", "virt_power", "virt_power_hana",
 })
-_VIRT_STORAGE_FAMILIES = frozenset({"virt_classic", "virt_power"})
+_VIRT_STORAGE_FAMILIES = frozenset({"virt_classic", "virt_hyperconverged", "virt_power"})
 _VIRT_FAMILY_LABELS = {
     "virt_classic": "Klasik Mimari",
     "virt_hyperconverged": "Hyperconverged",
@@ -294,23 +295,27 @@ def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] 
 
 
 def build_virt_storage_block(summary: dict | None = None, *, panels: list[dict] | None = None) -> html.Div:
-    """Sanallaştırma — Storage block (KM + Power range)."""
+    """Sanallaştırma — Storage block (KM, Hyperconverged, Power)."""
     grouped = _group_panels_by_family(panels or []) if panels else {}
     km_panels = grouped.get("virt_classic") if panels else _family_panels(summary or {}, "virt_classic")
+    hc_panels = grouped.get("virt_hyperconverged") if panels else _family_panels(summary or {}, "virt_hyperconverged")
     pw_panels = grouped.get("virt_power") if panels else _family_panels(summary or {}, "virt_power")
     km_stor = _panel_by_kind(km_panels, "storage")
+    hc_stor = _panel_by_kind(hc_panels, "storage")
     pw_stor = _panel_by_kind(pw_panels, "storage")
-    if not km_stor and not pw_stor:
+    if not km_stor and not hc_stor and not pw_stor:
         return html.Div()
 
-    def _range_text(p: dict | None) -> str:
-        if not p:
-            return "—"
-        lo, hi = p.get("sellable_min"), p.get("sellable_max")
-        unit = p.get("display_unit") or "GB"
-        if lo is not None and hi is not None and abs(float(hi) - float(lo)) > 1e-6:
-            return f"{float(lo):,.0f} – {float(hi):,.0f} {unit}"
-        return f"{float(p.get('sellable_constrained') or 0):,.0f} {unit}"
+    tiles = [
+        build_storage_family_tile(km_stor, label="KM (Classic) Storage Sellable", color="blue", kind_label="KM"),
+        build_storage_family_tile(
+            hc_stor,
+            label="Hyperconverged Storage Sellable",
+            color="teal",
+            kind_label="Hyperconverged",
+        ),
+        build_storage_family_tile(pw_stor, label="Power Storage Sellable", color="grape", kind_label="Power"),
+    ]
 
     return html.Div(
         className="nexus-card",
@@ -318,38 +323,9 @@ def build_virt_storage_block(summary: dict | None = None, *, panels: list[dict] 
         children=[
             _section_title(
                 "Sanallaştırma — Storage",
-                "CPU/RAM compute bottleneck ile oran sınırlı — IBM kapasitesi KM ve Power arasında paylaşımlı",
+                "Tüm mimarilerde storage, CPU/RAM compute bottleneck ile oran sınırlı",
             ),
-            dmc.SimpleGrid(cols={"base": 1, "md": 2}, spacing="lg", mt="md", children=[
-                html.Div(children=[
-                    dmc.Text("KM (Classic) Storage Sellable", fw=600, size="sm"),
-                    dmc.Text(_range_text(km_stor), size="lg", fw=800, c="blue"),
-                    dmc.Text(
-                        _fmt_tl_range(
-                            (km_stor or {}).get("potential_tl_min"),
-                            (km_stor or {}).get("potential_tl_max"),
-                        )
-                        if float((km_stor or {}).get("sellable_constrained") or 0) > 1e-6
-                        else "—",
-                        size="xs", c="dimmed",
-                    ),
-                    dmc.Group(gap="xs", mt="xs", children=sellable_constraint_badges(km_stor, kind_label="KM")),
-                ]),
-                html.Div(children=[
-                    dmc.Text("Power Storage Sellable", fw=600, size="sm"),
-                    dmc.Text(_range_text(pw_stor), size="lg", fw=800, c="grape"),
-                    dmc.Text(
-                        _fmt_tl_range(
-                            (pw_stor or {}).get("potential_tl_min"),
-                            (pw_stor or {}).get("potential_tl_max"),
-                        )
-                        if float((pw_stor or {}).get("sellable_constrained") or 0) > 1e-6
-                        else "—",
-                        size="xs", c="dimmed",
-                    ),
-                    dmc.Group(gap="xs", mt="xs", children=sellable_constraint_badges(pw_stor, kind_label="Power")),
-                ]),
-            ]),
+            dmc.SimpleGrid(cols={"base": 1, "md": 3}, spacing="lg", mt="md", children=tiles),
             dmc.Alert(
                 "IBM storage alanı hem KM datastore hem Power mimarisi tarafından kullanılabilir. "
                 "Detay için Virtualization sekmesindeki Storage alt sekmesine gidin.",
@@ -358,6 +334,15 @@ def build_virt_storage_block(summary: dict | None = None, *, panels: list[dict] 
                 radius="md",
                 mt="md",
                 icon=DashIconify(icon="solar:link-round-bold", width=18),
+            ),
+            dmc.Alert(
+                "Hyperconverged storage Nutanix pool kapasitesinden gelir; satılabilir değer compute "
+                "darboğazına göre oran ile sınırlanır (IBM aralığı yok).",
+                color="teal",
+                variant="light",
+                radius="md",
+                mt="sm",
+                icon=DashIconify(icon="solar:server-square-bold", width=18),
             ),
         ],
     )

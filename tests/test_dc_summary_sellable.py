@@ -7,6 +7,7 @@ from src.pages.dc_summary_sellable import (
     build_sellable_executive_strip,
     build_summary_sellable_section,
     build_virt_compute_block,
+    build_virt_storage_block,
     _fmt_tl_range,
 )
 from src.utils.virt_sellable_aggregate import merge_power_panels_for_summary
@@ -184,3 +185,79 @@ def test_virt_compute_block_has_no_power_hana_card():
     text = str(block)
     assert "Power HANA" not in text
     assert "Power" in text
+
+
+def test_storage_block_renders_three_architectures():
+    panels = merge_power_panels_for_summary([
+        {
+            "family": "virt_classic",
+            "resource_kind": "storage",
+            "sellable_constrained": 100.0,
+            "potential_tl": 500.0,
+            "display_unit": "GB",
+        },
+        {
+            "family": "virt_hyperconverged",
+            "resource_kind": "storage",
+            "sellable_constrained": 12400.0,
+            "potential_tl": 22_800.0,
+            "display_unit": "GB",
+        },
+        {
+            "family": "virt_power",
+            "resource_kind": "storage",
+            "sellable_min": 50.0,
+            "sellable_max": 150.0,
+            "sellable_constrained": 50.0,
+            "potential_tl_min": 100.0,
+            "potential_tl_max": 300.0,
+            "display_unit": "GB",
+        },
+    ])
+    block = build_virt_storage_block(panels=panels)
+    text = str(block)
+    assert "Hyperconverged Storage Sellable" in text
+    assert "KM (Classic) Storage Sellable" in text
+    assert "Power Storage Sellable" in text
+    assert "Nutanix pool" in text
+
+
+def test_storage_block_hides_tl_when_constrained_zero():
+    block = build_virt_storage_block(panels=[
+        {
+            "family": "virt_hyperconverged",
+            "resource_kind": "storage",
+            "sellable_constrained": 0.0,
+            "potential_tl": 50_000.0,
+            "constraint_reason": "compute_bottleneck",
+            "display_unit": "GB",
+        },
+    ])
+    text = str(block)
+    assert "Hyperconverged Storage Sellable" in text
+    assert "—" in text
+
+
+def test_merge_power_constraint_metadata_prefers_compute_bottleneck():
+    merged = merge_power_panels_for_summary([
+        {
+            "family": "virt_power",
+            "resource_kind": "storage",
+            "sellable_constrained": 0.0,
+            "constraint_reason": "none",
+            "ratio_bound": False,
+        },
+        {
+            "family": "virt_power_hana",
+            "resource_kind": "storage",
+            "sellable_constrained": 0.0,
+            "constraint_reason": "compute_bottleneck",
+            "ratio_bound": True,
+            "bottleneck_kind": "cpu",
+            "bottleneck_units": 0.0,
+        },
+    ])
+    sto = merged[0]
+    assert sto["constraint_reason"] == "compute_bottleneck"
+    assert sto["ratio_bound"] is True
+    assert sto["bottleneck_kind"] == "cpu"

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from src.components.sellable_constraint_viz import (
+    build_storage_family_tile,
     constraint_breakdown_text,
     count_constraint_breakdown,
     fmt_tl_for_card,
+    storage_capacity_text,
 )
 
 
@@ -33,3 +35,31 @@ def test_constraint_breakdown_counts():
     text = constraint_breakdown_text(panels)
     assert text is not None
     assert "compute darboğazı" in text
+
+
+def test_storage_capacity_text_range_and_single():
+    assert "–" in storage_capacity_text({
+        "sellable_min": 100.0,
+        "sellable_max": 200.0,
+        "display_unit": "GB",
+    })
+    assert storage_capacity_text({
+        "sellable_constrained": 50.0,
+        "display_unit": "GB",
+    }) == "50 GB"
+
+
+def test_build_storage_family_tile_hides_tl_when_zero():
+    tile = build_storage_family_tile(
+        {
+            "sellable_constrained": 0.0,
+            "potential_tl": 999.0,
+            "constraint_reason": "compute_bottleneck",
+            "bottleneck_kind": "cpu",
+        },
+        label="Hyperconverged Storage Sellable",
+        kind_label="Hyperconverged",
+    )
+    text = str(tile)
+    assert "Hyperconverged Storage Sellable" in text
+    assert "—" in text

@@ -84,6 +84,9 @@ _SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT",
 # 0 disables caching. Override with SELLABLE_CACHE_TTL_SECONDS.
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
+# Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
+SELLABLE_PAYLOAD_VERSION: int = 2
+
 # Maps allocated_table → Redis section key for per-DC (dc_details) response.
 _VM_TABLE_DC_SECTION: dict[str, str] = {
     "vm_metrics":         "classic",
@@ -1986,6 +1989,29 @@ SELECT _tot, _alloc FROM latest
     def _snapshot_family_key(family: str | None) -> str:
         return family if family else "*"
 
+    @staticmethod
+    def _snapshot_wrap_payload(results: "list[PanelResult]") -> str:
+        return json.dumps({
+            "payload_version": SELLABLE_PAYLOAD_VERSION,
+            "panels": [r.to_dict() for r in results],
+        })
+
+    @staticmethod
+    def _snapshot_decode_panel_list(payload: object) -> list[dict] | None:
+        """Return panel dict list when payload version matches; else cache miss."""
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if isinstance(payload, list):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if int(payload.get("payload_version") or 0) != SELLABLE_PAYLOAD_VERSION:
+            return None
+        panels = payload.get("panels")
+        if not isinstance(panels, list):
+            return None
+        return panels
+
     def _snapshot_db_get(
         self,
         dc_code: str,
@@ -2004,13 +2030,17 @@ SELECT _tot, _alloc FROM latest
             return None
         if not row or not row.get("payload"):
             return None
-        payload = row["payload"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        if not isinstance(payload, list):
+        panel_dicts = self._snapshot_decode_panel_list(row["payload"])
+        if panel_dicts is None:
+            logger.info(
+                "Sellable cache miss tier=tier2 (stale payload version) dc=%s family=%s clusters=%s",
+                dc_code,
+                family,
+                clusters_csv,
+            )
             return None
         try:
-            results = [self._panel_result_from_dict(d) for d in payload]
+            results = [self._panel_result_from_dict(d) for d in panel_dicts]
         except Exception:
             logger.warning("_snapshot_db_get decode failed dc=%s family=%s", dc_code, family)
             return None
@@ -2034,7 +2064,7 @@ SELECT _tot, _alloc FROM latest
         if not self._webui.is_available or not results:
             return
         try:
-            payload = json.dumps([r.to_dict() for r in results])
+            payload = self._snapshot_wrap_payload(results)
             self._webui.execute(
                 sq.UPSERT_PANEL_RESULT_SNAPSHOT,
                 (dc_code or "*", family, clusters_csv, payload),
@@ -2126,7 +2156,11 @@ SELECT _tot, _alloc FROM latest
             return None
         try:
             payload = json.loads(raw)
-            results = [self._panel_result_from_dict(d) for d in payload]
+            panel_dicts = self._snapshot_decode_panel_list(payload)
+            if panel_dicts is None:
+                logger.info("Sellable cache miss tier=redis (stale payload version) key=%s", key)
+                return None
+            results = [self._panel_result_from_dict(d) for d in panel_dicts]
         except Exception:
             logger.warning("Sellable cache key=%s decode failed — ignoring", key)
             return None
@@ -2142,7 +2176,7 @@ SELECT _tot, _alloc FROM latest
         if self._crm_redis is None or _SELLABLE_CACHE_TTL <= 0:
             return
         try:
-            payload = json.dumps([r.to_dict() for r in results])
+            payload = self._snapshot_wrap_payload(results)
             self._crm_redis.setex(key, _SELLABLE_CACHE_TTL, payload)
         except Exception:
             logger.exception("crm Redis SETEX failed key=%s", key)
@@ -2217,6 +2251,12 @@ SELECT _tot, _alloc FROM latest
                 float(d["potential_tl_effective"]) if d.get("potential_tl_effective") is not None else None
             ),
             computation_mode=d.get("computation_mode"),
+            constraint_reason=str(d.get("constraint_reason") or "none"),
+            bottleneck_kind=d.get("bottleneck_kind"),
+            bottleneck_units=(
+                float(d["bottleneck_units"]) if d.get("bottleneck_units") is not None else None
+            ),
+            gate_blocked=bool(d.get("gate_blocked", False)),
         )
 
     def compute_all_panels(

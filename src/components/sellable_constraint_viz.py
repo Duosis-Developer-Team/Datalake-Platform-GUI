@@ -162,6 +162,71 @@ def sellable_constraint_badges(panel: dict[str, Any] | None, *, kind_label: str 
     return badges
 
 
+def storage_capacity_text(panel: dict[str, Any] | None) -> str:
+    """Format storage sellable as range or single constrained value."""
+    if not panel:
+        return "—"
+    lo, hi = panel.get("sellable_min"), panel.get("sellable_max")
+    unit = panel.get("display_unit") or "GB"
+    if lo is not None and hi is not None and abs(float(hi) - float(lo)) > 1e-6:
+        return f"{float(lo):,.0f} – {float(hi):,.0f} {unit}"
+    return f"{float(panel.get('sellable_constrained') or 0):,.0f} {unit}"
+
+
+def _storage_bottleneck_tooltip(panel: dict[str, Any] | None) -> str:
+    if not panel:
+        return ""
+    units = panel.get("bottleneck_units")
+    constrained = float(panel.get("sellable_constrained") or 0)
+    if units is None or constrained <= 1e-9:
+        return ""
+    bk = _BOTTLENECK_LABELS.get(panel.get("bottleneck_kind") or "", "Compute")
+    return f"{float(units):,.0f} effective {bk} unit(s) — storage capped at {constrained:,.0f} GB"
+
+
+def build_storage_family_tile(
+    panel: dict[str, Any] | None,
+    *,
+    label: str,
+    color: str = "blue",
+    kind_label: str = "",
+) -> html.Div:
+    """Summary storage tile: capacity, TL range, constraint badges, optional tooltip."""
+    constrained = float((panel or {}).get("sellable_constrained") or 0)
+    tl_min = (panel or {}).get("potential_tl_min")
+    tl_max = (panel or {}).get("potential_tl_max")
+    tl_value = (panel or {}).get("potential_tl")
+
+    if tl_min is not None and tl_max is not None and abs(float(tl_max) - float(tl_min)) > 1e-6:
+        if constrained <= 1e-9:
+            tl_short, tl_full = "—", "Satılabilir kapasite sıfır — TL potansiyeli yok"
+        else:
+            tl_short = fmt_tl_range(float(tl_min), float(tl_max))
+            tl_full = f"{float(tl_min):,.0f} – {float(tl_max):,.0f} TL"
+    else:
+        tl_short, tl_full = fmt_tl_for_card(
+            float(tl_value) if tl_value is not None else None,
+            constrained=constrained,
+        )
+
+    tooltip = _storage_bottleneck_tooltip(panel) or tl_full
+    badge_label = kind_label or label
+
+    return html.Div(
+        title=tooltip if tooltip and tooltip != tl_short else None,
+        children=[
+            dmc.Text(label, fw=600, size="sm"),
+            dmc.Text(storage_capacity_text(panel), size="lg", fw=800, c=color),
+            dmc.Text(tl_short, size="xs", c="dimmed"),
+            dmc.Group(
+                gap="xs",
+                mt="xs",
+                children=sellable_constraint_badges(panel, kind_label=badge_label),
+            ),
+        ],
+    )
+
+
 def sellable_resource_card(
     label: str,
     capacity_text: str,

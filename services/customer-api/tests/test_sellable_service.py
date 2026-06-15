@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 
 from app.services.sellable_service import (
     SellableService,
+    SELLABLE_PAYLOAD_VERSION,
     _VM_COLUMN_TO_REDIS_FIELD,
     _VM_TABLE_DC_SECTION,
     _VM_TABLE_GLOBAL_SECTION,
@@ -700,6 +701,7 @@ def test_compute_all_panels_dedups_compute_http_per_family(monkeypatch):
     customer = MagicMock()
     customer._pool = MagicMock()
     webui = MagicMock(); webui.is_available = True
+    webui.run_one.return_value = None
     svc = SellableService(
         customer_service=customer, webui=webui,
         config_service=MagicMock(), currency_service=MagicMock(), tagging_service=MagicMock(),
@@ -716,6 +718,18 @@ def test_compute_all_panels_dedups_compute_http_per_family(monkeypatch):
     svc._bulk_load_infra_sources = lambda dc: {}      # type: ignore[assignment]
     svc._bulk_load_thresholds    = lambda dc: {"_by_panel_key": {}, "_by_resource_type": {}}  # type: ignore[assignment]
     svc._bulk_load_price_overrides = lambda: {}       # type: ignore[assignment]
+    svc._query_storage_range_inputs = lambda dc: None  # type: ignore[assignment]
+    svc._fetch_host_rows = lambda dc, fam, clusters: ([  # type: ignore[assignment]
+        {
+            "cpu_total": 100.0,
+            "cpu_alloc": 50.0,
+            "ram_total": 200.0,
+            "ram_alloc": 75.0,
+            "cpu_util_pct": 50.0,
+            "ram_util_pct": 37.5,
+        },
+    ], "ok")
+    svc._fetch_compute_response = lambda *a, **kw: None  # type: ignore[assignment]
 
     call_count = {"compute": 0, "hosts": 0}
     mock_resp = MagicMock()
@@ -746,15 +760,21 @@ def test_compute_all_panels_dedups_compute_http_per_family(monkeypatch):
 def test_result_cache_hit_skips_computation():
     """When a cached payload exists, compute_all_panels must not touch DB at all."""
     crm_redis = MagicMock()
-    cached_payload = json.dumps([
-        {
-            "panel_key": "virt_classic_cpu", "label": "C CPU",
-            "family": "virt_classic", "resource_kind": "cpu", "display_unit": "vCPU",
-            "dc_code": "IST1", "total": 100.0, "allocated": 30.0,
-            "threshold_pct": 80.0, "sellable_raw": 50.0, "sellable_constrained": 50.0,
-            "unit_price_tl": 0.0, "potential_tl": 0.0,
-            "ratio_bound": False, "has_infra_source": True, "has_price": False, "notes": [],
-        },
+    cached_payload = SellableService._snapshot_wrap_payload([
+        PanelResult(
+            panel_key="virt_classic_cpu",
+            label="C CPU",
+            family="virt_classic",
+            resource_kind="cpu",
+            display_unit="vCPU",
+            dc_code="IST1",
+            total=100.0,
+            allocated=30.0,
+            threshold_pct=80.0,
+            sellable_raw=50.0,
+            sellable_constrained=50.0,
+            has_infra_source=True,
+        ),
     ])
     crm_redis.get.return_value = cached_payload
 
@@ -792,7 +812,8 @@ def test_result_cache_set_writes_setex():
     assert key.startswith("sellable:panels:*:")
     assert isinstance(ttl, int) and ttl > 0
     decoded = json.loads(payload)
-    assert isinstance(decoded, list) and len(decoded) == 3
+    assert decoded.get("payload_version") == SELLABLE_PAYLOAD_VERSION
+    assert isinstance(decoded.get("panels"), list) and len(decoded["panels"]) == 3
 
 
 def test_invalidate_result_cache_uses_scan_iter():
@@ -988,7 +1009,10 @@ def _in_memory_webui():
                     return None
                 import json
 
-                return {"payload": json.dumps([p.to_dict() for p in payload]), "computed_at": "2026-05-31T00:00:00+00:00"}
+                return {
+                    "payload": SellableService._snapshot_wrap_payload(payload),
+                    "computed_at": "2026-05-31T00:00:00+00:00",
+                }
             if "GET_LATEST_SNAPSHOT_META" in sql or "gui_panel_result_snapshot" in sql and "computed_at DESC" in sql:
                 if not store:
                     return None
@@ -1003,7 +1027,9 @@ def _in_memory_webui():
                 import json
 
                 dc, fam, clusters_csv, payload_json = params
-                payload = json.loads(payload_json)
+                panel_dicts = SellableService._snapshot_decode_panel_list(payload_json)
+                if panel_dicts is None:
+                    return 0
                 from shared.sellable.models import PanelResult
 
                 store[(dc, fam, clusters_csv)] = [
@@ -1026,7 +1052,7 @@ def _in_memory_webui():
                         has_price=bool(d.get("has_price", False)),
                         notes=list(d.get("notes") or []),
                     )
-                    for d in payload
+                    for d in panel_dicts
                 ]
                 return 1
             if "DELETE FROM gui_panel_result_snapshot" in sql:
@@ -1519,3 +1545,157 @@ def test_ss3_host_based_can_sell_when_aggregate_cap_high():
     ratio = ResourceRatio(family="virt_classic", cpu_per_unit=1.0, ram_gb_per_unit=8.0)
     n = host_effective_units(hosts, ratio, cpu_threshold_pct=80.0, ram_threshold_pct=80.0)
     assert n > 0.0
+
+
+# ------------------------------------------------ HC / Power storage parity (ADR-0019)
+
+
+POWER_PANELS = [
+    PanelDefinition("virt_power_cpu", "Power CPU", "virt_power", "cpu", "Core"),
+    PanelDefinition("virt_power_ram", "Power RAM", "virt_power", "ram", "GB"),
+    PanelDefinition("virt_power_storage", "Power Storage", "virt_power", "storage", "GB"),
+]
+
+
+def _build_power_pipeline_service(*, cpu_raw: float = 10.0, ram_raw: float = 80.0) -> SellableService:
+    svc = SellableService(
+        customer_service=MagicMock(_pool=MagicMock()),
+        webui=MagicMock(is_available=True),
+        config_service=MagicMock(),
+        currency_service=MagicMock(),
+        tagging_service=MagicMock(),
+    )
+    ratio = ResourceRatio(
+        family="virt_power",
+        cpu_per_unit=1.0,
+        ram_gb_per_unit=8.0,
+        storage_gb_per_unit=50.0,
+    )
+    svc.list_panel_defs = lambda: POWER_PANELS  # type: ignore[method-assign]
+    svc.list_ratios = lambda: [ratio]  # type: ignore[method-assign]
+    svc.list_unit_conversions = lambda: [UnitConversion("GB", "GB", 1.0)]  # type: ignore[method-assign]
+    svc._build_unit_lookup = lambda: {("gb", "gb"): UnitConversion("GB", "GB", 1.0)}  # type: ignore[method-assign]
+    svc.get_threshold = lambda pk, kind, dc: 80.0  # type: ignore[method-assign]
+    svc.get_unit_price_tl = lambda pk: 2.0  # type: ignore[method-assign]
+    svc._compute_ytd_sales_tl = lambda: 0.0  # type: ignore[method-assign]
+    svc._count_unmapped_products = lambda: 0  # type: ignore[method-assign]
+    svc._bulk_load_infra_sources = lambda dc: {}  # type: ignore[method-assign]
+    svc._bulk_load_thresholds = lambda dc: None  # type: ignore[method-assign]
+    svc._bulk_load_price_overrides = lambda: {}  # type: ignore[method-assign]
+    svc._get_sellable_calc_config = lambda: {}  # type: ignore[method-assign]
+
+    def fake_compute_panel(d, **kwargs):
+        base = dict(
+            panel_key=d.panel_key,
+            label=d.label,
+            family=d.family,
+            resource_kind=d.resource_kind,
+            display_unit=d.display_unit,
+            dc_code=kwargs.get("dc_code") or "DC13",
+            threshold_pct=80.0,
+            unit_price_tl=2.0,
+            has_infra_source=True,
+        )
+        if d.resource_kind == "cpu":
+            return PanelResult(
+                **base,
+                total=100.0,
+                allocated=50.0,
+                sellable_raw=cpu_raw,
+                sellable_constrained=cpu_raw,
+            )
+        if d.resource_kind == "ram":
+            return PanelResult(
+                **base,
+                total=1000.0,
+                allocated=500.0,
+                sellable_raw=ram_raw,
+                sellable_constrained=ram_raw,
+            )
+        return PanelResult(
+            **base,
+            total=5000.0,
+            allocated=1000.0,
+            sellable_raw=5000.0,
+            sellable_constrained=5000.0,
+        )
+
+    svc.compute_panel = fake_compute_panel  # type: ignore[method-assign]
+    svc._query_storage_range_inputs = lambda dc: {  # type: ignore[method-assign]
+        "intel_cap_gb": 1000.0,
+        "intel_used_gb": 200.0,
+        "ibm_ds_cap_gb": 500.0,
+        "ibm_ds_used_gb": 100.0,
+        "ibm_total_gb": 2000.0,
+        "ibm_used_gb": 500.0,
+        "ibm_physical_free_gb": 1500.0,
+    }
+    return svc
+
+
+def test_hyperconv_storage_capped_in_pipeline():
+    """Hyperconverged storage raw >> compute ratio cap after full pipeline."""
+    svc = _build_service()
+    svc._fetch_host_rows = lambda dc, fam, clusters: (None, "unavailable")  # type: ignore[method-assign]
+    INFRA["virt_hyperconverged_storage"] = (
+        INFRA["virt_hyperconverged_storage"][0],
+        (100_000.0, 10_000.0),
+    )
+    try:
+        panels = svc.compute_all_panels(
+            dc_code="DC1",
+            family="virt_hyperconverged",
+            force_recompute=True,
+        )
+        sto = next(p for p in panels if p.resource_kind == "storage")
+        cpu = next(p for p in panels if p.resource_kind == "cpu")
+        cap = cpu.sellable_constrained * RATIO.storage_gb_per_unit
+        assert sto.sellable_raw > cap + 1e-6
+        assert sto.sellable_constrained <= cap + 1e-6
+        assert sto.ratio_bound or sto.constraint_reason in ("compute_bottleneck", "ratio_bound")
+    finally:
+        INFRA["virt_hyperconverged_storage"] = (
+            INFRA["virt_hyperconverged_storage"][0],
+            (1000.0, 300.0),
+        )
+
+
+def test_power_storage_capped_after_ibm_range():
+    """Power IBM storage max is capped by compute bottleneck after ratio coupling."""
+    svc = _build_power_pipeline_service(cpu_raw=4.0, ram_raw=80.0)
+    panels = svc.compute_all_panels(dc_code="DC13", family="virt_power", force_recompute=True)
+    sto = next(p for p in panels if p.resource_kind == "storage")
+    cpu = next(p for p in panels if p.resource_kind == "cpu")
+    storage_cap = cpu.sellable_constrained * 50.0
+    assert sto.sellable_max is not None
+    assert sto.sellable_max <= storage_cap + 1e-6
+    assert sto.sellable_max + 1e-6 < 1500.0
+
+
+def test_power_storage_zero_when_compute_zero():
+    """Power storage is zero when CPU/RAM compute bottleneck units are zero."""
+    svc = _build_power_pipeline_service(cpu_raw=0.0, ram_raw=0.0)
+    panels = svc.compute_all_panels(dc_code="DC13", family="virt_power", force_recompute=True)
+    sto = next(p for p in panels if p.resource_kind == "storage")
+    assert sto.sellable_constrained == 0.0
+    assert sto.constraint_reason == "compute_bottleneck"
+    assert sto.potential_tl == 0.0
+
+
+def test_snapshot_stale_payload_version_is_cache_miss():
+    svc = _build_service()
+    legacy = json.dumps([{"panel_key": "x", "label": "X", "family": "virt_classic",
+                          "resource_kind": "cpu", "display_unit": "vCPU"}])
+    assert svc._snapshot_decode_panel_list(legacy) is None
+    wrapped = svc._snapshot_wrap_payload([
+        PanelResult(
+            panel_key="virt_hyperconverged_cpu",
+            label="HC CPU",
+            family="virt_hyperconverged",
+            resource_kind="cpu",
+            display_unit="vCPU",
+        ),
+    ])
+    decoded = svc._snapshot_decode_panel_list(wrapped)
+    assert decoded is not None
+    assert decoded[0]["panel_key"] == "virt_hyperconverged_cpu"
