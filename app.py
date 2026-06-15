@@ -119,6 +119,7 @@ from src.pages.dc_view import (
     _bps_to_gbps,
     _build_compute_tab,
     _build_hosts_panel_content,
+    _hosts_panel_loader,
     _build_sellable_inline_kpi,
     _build_virt_subtab_stack,
     _build_virt_total_sellable_children,
@@ -1007,8 +1008,6 @@ def populate_virt_nested_tab(
 @app.callback(
     dash.Output("classic-virt-panel", "children"),
     dash.Output("sellable-classic-card", "children"),
-    dash.Output("hosts-panel-classic", "children"),
-    dash.Output("hosts-count-classic", "children"),
     dash.Input("virt-classic-cluster-applied", "data"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
@@ -1017,12 +1016,11 @@ def populate_virt_nested_tab(
 def update_classic_virt_block(applied_clusters, time_range, pathname):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update
     tr = time_range or default_time_range()
     scope = applied_clusters or None
     batch = parallel_execute({
         "metrics": lambda: api.get_classic_metrics_filtered(dc_id, scope, tr),
-        "hosts": lambda: api.get_classic_host_rows(dc_id, scope, tr),
         "card": lambda: _build_sellable_inline_kpi(
             dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
             color="blue", selected_clusters=scope,
@@ -1033,16 +1031,12 @@ def update_classic_virt_block(applied_clusters, time_range, pathname):
     sellable = _sellable_card_children(batch["card"])
     if sellable is dash.no_update:
         sellable = html.Div(id="sellable-classic-card")
-    hosts_data = batch["hosts"] or {}
-    count = int(hosts_data.get("host_count") or 0)
-    return panel, sellable, _build_hosts_panel_content(hosts_data, color="blue"), f"{count} host"
+    return panel, sellable
 
 
 @app.callback(
     dash.Output("hyperconv-virt-panel", "children"),
     dash.Output("sellable-hyperconv-card", "children"),
-    dash.Output("hosts-panel-hyperconv", "children"),
-    dash.Output("hosts-count-hyperconv", "children"),
     dash.Input("virt-hyperconv-cluster-applied", "data"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
@@ -1051,12 +1045,11 @@ def update_classic_virt_block(applied_clusters, time_range, pathname):
 def update_hyperconv_virt_block(applied_clusters, time_range, pathname):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update
     tr = time_range or default_time_range()
     scope = applied_clusters or None
     batch = parallel_execute({
         "metrics": lambda: api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
-        "hosts": lambda: api.get_hyperconv_host_rows(dc_id, scope, tr),
         "card": lambda: _build_sellable_inline_kpi(
             dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
             color="teal", selected_clusters=scope,
@@ -1067,9 +1060,85 @@ def update_hyperconv_virt_block(applied_clusters, time_range, pathname):
     sellable = _sellable_card_children(batch["card"])
     if sellable is dash.no_update:
         sellable = html.Div(id="sellable-hyperconv-card")
-    hosts_data = batch["hosts"] or {}
+    return panel, sellable
+
+
+@app.callback(
+    dash.Output("hosts-data-classic", "data"),
+    dash.Output("hosts-count-classic", "children"),
+    dash.Input("virt-classic-cluster-applied", "data"),
+    dash.Input("app-time-range", "data"),
+    dash.Input("virt-nested-tabs", "value"),
+    dash.State("url", "pathname"),
+    prevent_initial_call=False,
+)
+def prefetch_classic_hosts(applied_clusters, time_range, nested_tab, pathname):
+    """Background host-row prefetch — updates Store + badge only (no card DOM rebuild)."""
+    if nested_tab not in (None, "classic"):
+        return dash.no_update, dash.no_update
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update, dash.no_update
+    tr = time_range or default_time_range()
+    scope = applied_clusters or None
+    hosts_data = api.get_classic_host_rows(dc_id, scope, tr) or {}
     count = int(hosts_data.get("host_count") or 0)
-    return panel, sellable, _build_hosts_panel_content(hosts_data, color="teal"), f"{count} host"
+    label = f"{count} host" if count else "—"
+    return hosts_data, label
+
+
+@app.callback(
+    dash.Output("hosts-data-hyperconv", "data"),
+    dash.Output("hosts-count-hyperconv", "children"),
+    dash.Input("virt-hyperconv-cluster-applied", "data"),
+    dash.Input("app-time-range", "data"),
+    dash.Input("virt-nested-tabs", "value"),
+    dash.State("url", "pathname"),
+    prevent_initial_call=False,
+)
+def prefetch_hyperconv_hosts(applied_clusters, time_range, nested_tab, pathname):
+    """Background host-row prefetch — updates Store + badge only (no card DOM rebuild)."""
+    if nested_tab != "hyperconv":
+        return dash.no_update, dash.no_update
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update, dash.no_update
+    tr = time_range or default_time_range()
+    scope = applied_clusters or None
+    hosts_data = api.get_hyperconv_host_rows(dc_id, scope, tr) or {}
+    count = int(hosts_data.get("host_count") or 0)
+    label = f"{count} host" if count else "—"
+    return hosts_data, label
+
+
+@app.callback(
+    dash.Output("hosts-panel-classic", "children"),
+    dash.Input("hosts-collapse-classic", "in"),
+    dash.Input("hosts-data-classic", "data"),
+    prevent_initial_call=True,
+)
+def render_classic_hosts_panel(collapsed_in, hosts_data):
+    """Render host cards only when the collapsible panel is open."""
+    if not collapsed_in:
+        return dash.no_update
+    if not hosts_data:
+        return _hosts_panel_loader("blue")
+    return _build_hosts_panel_content(hosts_data, color="blue")
+
+
+@app.callback(
+    dash.Output("hosts-panel-hyperconv", "children"),
+    dash.Input("hosts-collapse-hyperconv", "in"),
+    dash.Input("hosts-data-hyperconv", "data"),
+    prevent_initial_call=True,
+)
+def render_hyperconv_hosts_panel(collapsed_in, hosts_data):
+    """Render host cards only when the collapsible panel is open."""
+    if not collapsed_in:
+        return dash.no_update
+    if not hosts_data:
+        return _hosts_panel_loader("teal")
+    return _build_hosts_panel_content(hosts_data, color="teal")
 
 
 # ---- Hosts panel toggle (DC view) --------------------------------------------

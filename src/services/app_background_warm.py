@@ -78,6 +78,23 @@ def _warm_global_phase1(tr: dict) -> None:
         logger.debug("background warm global-view failed", exc_info=True)
 
 
+def _warm_host_rows_for_dcs(dc_codes: list[str], tr: dict) -> int:
+    """Prefetch full-DC host rows into GUI cache (L2) for sellable + hosts panel."""
+    from src.services import api_client as api
+
+    warmed = 0
+    for dc in dc_codes:
+        if _should_pause():
+            break
+        try:
+            api.get_classic_host_rows(str(dc), None, tr)
+            api.get_hyperconv_host_rows(str(dc), None, tr)
+            warmed += 1
+        except Exception:
+            logger.debug("background warm host rows failed dc=%s", dc, exc_info=True)
+    return warmed
+
+
 def warm_rbac_scope(
     user_id: int,
     time_range: dict | None,
@@ -90,7 +107,7 @@ def warm_rbac_scope(
     from src.utils.time_range import default_time_range
 
     tr = time_range or default_time_range()
-    stats = {"sellable_dcs": 0, "home": False, "global": False}
+    stats = {"sellable_dcs": 0, "host_rows_dcs": 0, "home": False, "global": False}
 
     if can_view(user_id, "page:datacenters") or can_view(user_id, "page:dc_view"):
         try:
@@ -105,6 +122,8 @@ def warm_rbac_scope(
             dc_codes = []
         if dc_codes:
             stats["sellable_dcs"] = _warm_sellable_for_dcs(dc_codes[:12], tr)
+            if can_view(user_id, "page:dc_view"):
+                stats["host_rows_dcs"] = _warm_host_rows_for_dcs(dc_codes[:6], tr)
 
     if can_view(user_id, "page:overview"):
         _warm_home_bundle(tr)

@@ -1521,32 +1521,33 @@ LIMIT 20
             }
         return out
 
-    def get_classic_host_rows(
-        self, dc_code: str, selected_clusters: list[str] | None = None, time_range: dict | None = None
-    ) -> dict:
-        """Per-host compute capacity/usage/allocation for Classic (KM) clusters.
+    @staticmethod
+    def _slice_host_rows_payload(full: dict | None, selected_clusters: list[str] | None) -> dict:
+        """Filter a full-DC host payload to selected clusters (in-process, no SQL)."""
+        hosts = (full or {}).get("hosts") or []
+        if not selected_clusters:
+            return {"hosts": list(hosts), "host_count": len(hosts)}
+        wanted = set(selected_clusters)
+        filtered = [h for h in hosts if h.get("cluster") in wanted]
+        return {"hosts": filtered, "host_count": len(filtered)}
 
-        Source: vmhost_metrics (capacity/usage) + vm_metrics grouped by vmhost
-        (sales allocation, 1 vCPU = 1 GHz). Cached per DC + cluster filter.
-        """
-        tr = time_range or default_time_range()
-        clusters = sorted(c for c in (selected_clusters or []) if c)
-        cache_key = f"classic_hosts:{dc_code}:{','.join(clusters)}:{tr.get('start','')}:{tr.get('end','')}"
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
-        start_ts, end_ts = time_range_to_bounds(tr)
+    def _fetch_classic_host_rows_all(self, dc_code: str, time_range: dict) -> dict:
+        """Load all Classic (KM) hosts for a DC/time range (no cluster SQL filter)."""
+        start_ts, end_ts = time_range_to_bounds(time_range)
         dc_wc = f"%{dc_code}%"
+        empty_clusters: list[str] = []
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     host_rows = self._run_rows(
-                        cur, vq.CLASSIC_HOST_ROWS, (dc_wc, clusters, clusters, start_ts, end_ts)
+                        cur,
+                        vq.CLASSIC_HOST_ROWS,
+                        (dc_wc, empty_clusters, empty_clusters, start_ts, end_ts),
                     )
                     alloc_rows = self._run_rows(
                         cur,
                         vq.CLASSIC_HOST_VM_ALLOCATION,
-                        (dc_wc, start_ts, end_ts, clusters, clusters),
+                        (dc_wc, start_ts, end_ts, empty_clusters, empty_clusters),
                     )
                     host_map = self._load_host_ghz_map(cur)
         except OperationalError as exc:
@@ -1572,35 +1573,43 @@ LIMIT 20
                 ghz_per_core=ghz,
             ))
         hosts.sort(key=lambda h: (h["cluster"], h["host"]))
-        result = {"hosts": hosts, "host_count": len(hosts)}
-        cache.set(cache_key, result)
-        return result
+        return {"hosts": hosts, "host_count": len(hosts)}
 
-    def get_hyperconv_host_rows(
+    def get_classic_host_rows(
         self, dc_code: str, selected_clusters: list[str] | None = None, time_range: dict | None = None
     ) -> dict:
-        """Per-host compute capacity/usage/allocation for Hyperconverged (Nutanix) clusters.
+        """Per-host compute capacity/usage/allocation for Classic (KM) clusters.
 
-        Source: nutanix_host_metrics (capacity/usage, Hz/bytes converted here)
-        + nutanix_vm_metrics grouped by host_name (sales allocation, 1 vCPU = 1 GHz).
+        Source: vmhost_metrics (capacity/usage) + vm_metrics grouped by vmhost
+        (sales allocation, 1 vCPU = 1 GHz). Full DC list cached once per dc/time;
+        cluster subset is sliced in-process (P8 mirror).
         """
         tr = time_range or default_time_range()
-        clusters = sorted(c for c in (selected_clusters or []) if c)
-        cache_key = f"hyperconv_hosts:{dc_code}:{','.join(clusters)}:{tr.get('start','')}:{tr.get('end','')}"
+        cache_key = f"classic_hosts_all:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
         cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
-        start_ts, end_ts = time_range_to_bounds(tr)
+        if cached_val is None:
+            cached_val = cache.run_singleflight(
+                cache_key, lambda: self._fetch_classic_host_rows_all(dc_code, tr)
+            )
+        clusters = sorted(c for c in (selected_clusters or []) if c)
+        return self._slice_host_rows_payload(cached_val, clusters or None)
+
+    def _fetch_hyperconv_host_rows_all(self, dc_code: str, time_range: dict) -> dict:
+        """Load all Hyperconverged hosts for a DC/time range (no cluster SQL filter)."""
+        start_ts, end_ts = time_range_to_bounds(time_range)
+        empty_clusters: list[str] = []
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     host_rows = self._run_rows(
-                        cur, nq.NUTANIX_HOST_ROWS, (dc_code, clusters, clusters, start_ts, end_ts)
+                        cur,
+                        nq.NUTANIX_HOST_ROWS,
+                        (dc_code, empty_clusters, empty_clusters, start_ts, end_ts),
                     )
                     alloc_rows = self._run_rows(
                         cur,
                         nq.NUTANIX_HOST_VM_ALLOCATION,
-                        (dc_code, clusters, clusters, start_ts, end_ts, start_ts, end_ts),
+                        (dc_code, empty_clusters, empty_clusters, start_ts, end_ts, start_ts, end_ts),
                     )
                     host_map = self._load_host_ghz_map(cur)
         except OperationalError as exc:
@@ -1629,17 +1638,32 @@ LIMIT 20
                 ghz_per_core=ghz,
                 is_nutanix=True,
             )
-            # Nutanix exposes per-host storage capacity/usage natively (HCI).
             payload["stor_cap_gb"] = round(float(r[6] or 0) / _bytes_per_gb, 2)
             payload["stor_used_host_gb"] = round(float(r[7] or 0) / _bytes_per_gb, 2)
-            # Prefer the Prism host VM count when the allocation join found none.
             if payload["vm_count"] == 0:
                 payload["vm_count"] = int(r[8] or 0)
             hosts.append(payload)
         hosts.sort(key=lambda h: (h["cluster"], h["host"]))
-        result = {"hosts": hosts, "host_count": len(hosts)}
-        cache.set(cache_key, result)
-        return result
+        return {"hosts": hosts, "host_count": len(hosts)}
+
+    def get_hyperconv_host_rows(
+        self, dc_code: str, selected_clusters: list[str] | None = None, time_range: dict | None = None
+    ) -> dict:
+        """Per-host compute capacity/usage/allocation for Hyperconverged (Nutanix) clusters.
+
+        Source: nutanix_host_metrics (capacity/usage, Hz/bytes converted here)
+        + nutanix_vm_metrics grouped by host_name (sales allocation, 1 vCPU = 1 GHz).
+        Full DC list cached once per dc/time; cluster subset sliced in-process (P8 mirror).
+        """
+        tr = time_range or default_time_range()
+        cache_key = f"hyperconv_hosts_all:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is None:
+            cached_val = cache.run_singleflight(
+                cache_key, lambda: self._fetch_hyperconv_host_rows_all(dc_code, tr)
+            )
+        clusters = sorted(c for c in (selected_clusters or []) if c)
+        return self._slice_host_rows_payload(cached_val, clusters or None)
 
     # ------------------------------------------------------------------
     # Unit normalization & aggregation (shared by single + batch paths)

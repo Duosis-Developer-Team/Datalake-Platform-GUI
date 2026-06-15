@@ -1780,6 +1780,7 @@ def _build_virt_subtab_stack(
             sellable_children = _sellable_card_children(card)
         return [
             *_cluster_header("virt-classic-cluster-selector", classic_clusters or [], "Select Classic clusters"),
+            *([dcc.Store(id="hosts-data-classic", data=None)] if show_virt_hosts else []),
             dcc.Loading(
                 type="circle", color="#4318FF", delay_show=250,
                 overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
@@ -1803,6 +1804,7 @@ def _build_virt_subtab_stack(
             sellable_children = _sellable_card_children(card)
         return [
             *_cluster_header("virt-hyperconv-cluster-selector", hyperconv_clusters or [], "Select Hyperconverged clusters"),
+            *([dcc.Store(id="hosts-data-hyperconv", data=None)] if show_virt_hosts else []),
             dcc.Loading(
                 type="circle", color="#4318FF", delay_show=250,
                 overlay_style={"visibility": "visible", "backgroundColor": "rgba(244, 247, 254, 0.6)"},
@@ -3582,6 +3584,14 @@ def _host_card(h: dict, color: str = "blue"):
             ),
             *rows,
         ],
+    )
+
+
+def _hosts_panel_loader(color: str = "blue"):
+    """Placeholder while host rows are prefetching."""
+    return dmc.Center(
+        dmc.Loader(color=color, size="md"),
+        style={"minHeight": "120px", "marginTop": "8px"},
     )
 
 

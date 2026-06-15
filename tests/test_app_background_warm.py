@@ -18,4 +18,5 @@ def test_warm_rbac_scope_respects_can_view():
     with patch("src.auth.permission_service.can_view", return_value=False):
         stats = warm.warm_rbac_scope(1, {"preset": "7d"})
     assert stats["sellable_dcs"] == 0
+    assert stats.get("host_rows_dcs", 0) == 0
     assert stats["home"] is False
