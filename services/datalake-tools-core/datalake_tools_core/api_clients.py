@@ -56,14 +56,21 @@ _clients: dict[str, httpx.Client] = {}
 _clients_lock = threading.Lock()
 
 
+def _timeout_for(service: str) -> float:
+    if service == "customer-api":
+        return float(settings.customer_api_timeout_seconds)
+    return float(settings.internal_api_timeout_seconds)
+
+
 def _client_for(service: str) -> httpx.Client:
     base = SERVICE_BASE_URLS.get(service)
     if not base:
         raise InternalAPIError(service, "", "unknown service")
+    timeout = _timeout_for(service)
     with _clients_lock:
         c = _clients.get(service)
         if c is None:
-            c = httpx.Client(base_url=base, timeout=settings.internal_api_timeout_seconds)
+            c = httpx.Client(base_url=base, timeout=timeout)
             _clients[service] = c
         return c
 

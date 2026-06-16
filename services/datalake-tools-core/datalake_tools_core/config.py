@@ -16,6 +16,7 @@ class ToolRuntimeSettings:
     crm_engine_url: str = "http://crm-engine:8000"
     admin_api_url: str = "http://admin-api:8000"
     internal_api_timeout_seconds: float = 20.0
+    customer_api_timeout_seconds: float = 45.0
     chatbot_db_enabled: bool = False
     db_host: str = ""
     db_port: str = "5000"
@@ -37,6 +38,9 @@ def configure(settings_obj: Any) -> None:
         admin_api_url=getattr(settings_obj, "admin_api_url", "http://admin-api:8000"),
         internal_api_timeout_seconds=float(
             getattr(settings_obj, "internal_api_timeout_seconds", 20.0)
+        ),
+        customer_api_timeout_seconds=float(
+            getattr(settings_obj, "customer_api_timeout_seconds", 45.0)
         ),
         chatbot_db_enabled=bool(getattr(settings_obj, "chatbot_db_enabled", False)),
         db_host=str(getattr(settings_obj, "db_host", "")),
@@ -64,6 +68,9 @@ def configure_from_env() -> None:
                 "admin_api_url": os.getenv("ADMIN_API_URL", "http://admin-api:8000"),
                 "internal_api_timeout_seconds": float(
                     os.getenv("INTERNAL_API_TIMEOUT_SECONDS", "20")
+                ),
+                "customer_api_timeout_seconds": float(
+                    os.getenv("CHATBOT_CUSTOMER_API_TIMEOUT_SECONDS", "45")
                 ),
                 "chatbot_db_enabled": os.getenv("CHATBOT_DB_ENABLED", "false").lower() == "true",
                 "db_host": os.getenv("CHATBOT_DB_HOST", os.getenv("DB_HOST", "")),

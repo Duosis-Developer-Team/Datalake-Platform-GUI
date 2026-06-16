@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from app.config import settings
+from app.catalog import domain_catalog
 from app.services import llm_tool_schemas, tool_registry
 from app.services.context_builder import tool_summary_snippet
 from app.services.investigation_trace import InvestigationTrace
@@ -73,6 +74,31 @@ def _merge_plan_args(plan: IntentPlan, args: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _allowed_tools_for_plan(plan: IntentPlan) -> Optional[frozenset[str]]:
+    """Restrict ReAct to catalog seed tools for customer/CRM metrics."""
+    key = plan.metric_key
+    if key in (
+        "customer_overview",
+        "customer_sales_summary",
+        "customer_itsm_risk",
+        "customer_compliance",
+        "customer_resource_change",
+    ):
+        md = domain_catalog.get_by_key(key) if key else None
+        allowed: set[str] = {"get_customer_catalog", "list_customers"}
+        if md:
+            allowed.update(md.primary_tools)
+            allowed.update(md.fallback_tools)
+        return frozenset(allowed)
+    if key == "crm_sellable":
+        return frozenset({
+            "get_sellable_summary",
+            "get_sellable_by_panel",
+            "get_sellable_by_family",
+        })
+    return None
+
+
 def _execute_tool(
     tool: str,
     args: dict[str, Any],
@@ -80,8 +106,19 @@ def _execute_tool(
     executed: set[tuple],
     trace: InvestigationTrace,
     results: list[ToolResult],
+    *,
+    allowed_tools: Optional[frozenset[str]] = None,
 ) -> bool:
     """Run one tool if not deduped. Returns True if executed."""
+    if allowed_tools is not None and tool not in allowed_tools:
+        key = _dedupe_key(tool, args)
+        if key in executed:
+            return False
+        executed.add(key)
+        res = ToolResult(tool, "skipped", source=tool, error="tool_not_in_plan")
+        results.append(res)
+        trace.record(res)
+        return True
     key = _dedupe_key(tool, args)
     if key in executed:
         return False
@@ -151,6 +188,7 @@ def run(
         )
 
     tools = llm_tool_schemas.build_openai_tools()
+    allowed_tools = _allowed_tools_for_plan(plan)
     outcome.react_used = True
 
     for _ in range(max_llm):
@@ -189,7 +227,11 @@ def run(
                 if outcome.tool_call_count >= max_tools:
                     break
                 args = _merge_plan_args(plan, _parse_tool_args(tc.arguments))
-                if _execute_tool(tc.name, args, auth_header, executed, outcome.investigation_trace, outcome.results):
+                if _execute_tool(
+                    tc.name, args, auth_header, executed,
+                    outcome.investigation_trace, outcome.results,
+                    allowed_tools=allowed_tools,
+                ):
                     outcome.tool_call_count += 1
                 messages.append(
                     {

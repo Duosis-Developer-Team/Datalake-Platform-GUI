@@ -25,7 +25,15 @@ API_TOOL_TO_ENDPOINT = {
     "get_dc_s3_pools": "datacenter-api:/api/v1/datacenters/{dc_code}/s3/pools",
     "get_customer_resources": "customer-api:/api/v1/customers/{customer_name}/resources",
     "get_customer_s3_vaults": "customer-api:/api/v1/customers/{customer_name}/s3/vaults",
-    "get_sellable_summary": "crm-engine:/api/v1/crm/sellable-potential/summary",
+    "get_customer_catalog": "customer-api:/api/v1/customers/catalog",
+    "get_customer_itsm_summary": "customer-api:/api/v1/customers/{customer_name}/itsm/summary",
+    "get_customer_sales_summary": "customer-api:/api/v1/customers/{customer_name}/sales/summary",
+    "get_customer_sales_active_orders": "customer-api:/api/v1/customers/{customer_name}/sales/active-orders",
+    "get_customer_efficiency_by_category": "customer-api:/api/v1/customers/{customer_name}/sales/efficiency-by-category",
+    "get_customer_resource_compliance": "customer-api:/api/v1/customers/{customer_name}/sales/resource-compliance",
+    "get_sellable_summary": "crm-engine:/api/v1/crm/sellable-potential/summary?dc_code={dc_code}",
+    "get_sellable_by_panel": "crm-engine:/api/v1/crm/sellable-potential/by-panel?dc_code={dc_code}",
+    "get_sellable_by_family": "crm-engine:/api/v1/crm/sellable-potential/by-family?dc_code={dc_code}",
 }
 
 DB_TOOL_TO_QUERY_KEY = {

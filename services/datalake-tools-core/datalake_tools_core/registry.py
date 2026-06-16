@@ -60,6 +60,7 @@ class ToolSpec:
     db_defaults: dict[str, Any] = field(default_factory=dict)  # default days/limit for DB tools
     list_items: bool = False  # API returns list[str]; keep the full (capped) list, not a 3-sample
     comparison_list: bool = False  # API returns list[dict]; keep compact ranking rows for all items
+    row_list: bool = False  # API returns list[dict]; keep compact rows (generic, not DC ranking)
     allowed_roles: Optional[tuple[str, ...]] = None  # None => any authenticated user
     db_dc_optional: bool = False  # True => dc_code not required; %(dc)s may be NULL
 
@@ -105,6 +106,69 @@ def extract_datacenter_ranking_row(dc: dict[str, Any]) -> dict[str, Any]:
         "vm_count": dc.get("vm_count"),
         "host_count": dc.get("host_count"),
     }
+
+
+def _compact_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {k: _normalize(v, 1) for k, v in list(row.items())[:24]}
+
+
+def _normalize_row_list(payload: list[Any], *, cap: int = 40) -> dict[str, Any]:
+    rows = [_compact_row(r) for r in payload[:cap] if isinstance(r, dict)]
+    return {"_count": len(payload), "rows": rows}
+
+
+def _normalize_customer_catalog(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return _normalize(payload)
+    customers = payload.get("customers")
+    if not isinstance(customers, list):
+        return _normalize(payload)
+    rows = []
+    for row in customers[:120]:
+        if not isinstance(row, dict):
+            continue
+        rows.append({
+            "display_name": row.get("display_name"),
+            "crm_account_name": row.get("crm_account_name"),
+            "is_vip": row.get("is_vip"),
+            "mapped": row.get("mapped"),
+            "ytd_revenue": row.get("ytd_revenue"),
+            "active_order_count": row.get("active_order_count"),
+            "active_order_value": row.get("active_order_value"),
+        })
+    return {"_count": len(customers), "rows": rows, "generated_at": payload.get("generated_at")}
+
+
+def _normalize_sellable_summary(payload: Any, *, dc_code: Optional[str] = None) -> Any:
+    if not isinstance(payload, dict):
+        return _normalize(payload)
+    skip_lists = {"families", "panels", "by_family", "by_panel", "items", "rows"}
+    out: dict[str, Any] = {}
+    if dc_code:
+        out["dc_code"] = dc_code
+    for key, value in list(payload.items())[:40]:
+        if key in skip_lists and isinstance(value, list):
+            out[key] = _normalize_row_list(value, cap=30)
+        else:
+            out[key] = _normalize(value, 1)
+    return out
+
+
+def _tool_summary(name: str, spec: ToolSpec, payload: Any, args: dict[str, Any]) -> Any:
+    if name == "get_customer_catalog":
+        return _normalize_customer_catalog(payload)
+    if name == "get_sellable_summary":
+        dc = args.get("dc_code") or "*"
+        return _normalize_sellable_summary(payload, dc_code=str(dc))
+    if spec.comparison_list and isinstance(payload, list):
+        return _normalize_datacenter_summary_list(payload)
+    if spec.row_list and isinstance(payload, list):
+        cap = spec.cap_rows or 40
+        return _normalize_row_list(payload, cap=cap)
+    if spec.list_items and isinstance(payload, list):
+        cap = spec.cap_rows or 200
+        return {"_count": len(payload), "items": [str(x) for x in payload[:cap]]}
+    return _normalize(payload)
 
 
 def _normalize_datacenter_summary_list(payload: list[Any]) -> dict[str, Any]:
@@ -330,10 +394,17 @@ TOOLS: dict[str, ToolSpec] = {
     # ---- Customer --------------------------------------------------------- #
     "list_customers": ToolSpec(
         "list_customers",
-        "List of customers.",
+        "List of customer display names (legacy; prefer get_customer_catalog).",
         "customer-api",
         path="/api/v1/customers",
         cap_rows=200,
+        list_items=True,
+    ),
+    "get_customer_catalog": ToolSpec(
+        "get_customer_catalog",
+        "CRM customer catalog with revenue and active-order KPIs.",
+        "customer-api",
+        path="/api/v1/customers/catalog",
     ),
     "get_customer_resources": ToolSpec(
         "get_customer_resources",
@@ -368,6 +439,40 @@ TOOLS: dict[str, ToolSpec] = {
         use_time=True,
         cap_rows=25,
     ),
+    "get_customer_sales_summary": ToolSpec(
+        "get_customer_sales_summary",
+        "CRM sales summary (YTD revenue, order counts) for a customer.",
+        "customer-api",
+        path="/api/v1/customers/{customer_name}/sales/summary",
+        needs=("customer_name",),
+    ),
+    "get_customer_sales_active_orders": ToolSpec(
+        "get_customer_sales_active_orders",
+        "Open/active CRM sales orders for a customer.",
+        "customer-api",
+        path="/api/v1/customers/{customer_name}/sales/active-orders",
+        needs=("customer_name",),
+        cap_rows=25,
+        row_list=True,
+    ),
+    "get_customer_efficiency_by_category": ToolSpec(
+        "get_customer_efficiency_by_category",
+        "Sold vs used efficiency by product category for a customer.",
+        "customer-api",
+        path="/api/v1/customers/{customer_name}/sales/efficiency-by-category",
+        needs=("customer_name",),
+        use_time=True,
+        cap_rows=20,
+        row_list=True,
+    ),
+    "get_customer_resource_compliance": ToolSpec(
+        "get_customer_resource_compliance",
+        "CRM entitlement vs infrastructure usage compliance for a customer.",
+        "customer-api",
+        path="/api/v1/customers/{customer_name}/sales/resource-compliance?scope=virtualization",
+        needs=("customer_name",),
+        use_time=True,
+    ),
     # ---- CRM / sellable potential ---------------------------------------- #
     "get_sellable_summary": ToolSpec(
         "get_sellable_summary",
@@ -380,12 +485,16 @@ TOOLS: dict[str, ToolSpec] = {
         "Sellable potential grouped by panel.",
         "crm-engine",
         path="/api/v1/crm/sellable-potential/by-panel",
+        row_list=True,
+        cap_rows=30,
     ),
     "get_sellable_by_family": ToolSpec(
         "get_sellable_by_family",
         "Sellable potential grouped by family.",
         "crm-engine",
         path="/api/v1/crm/sellable-potential/by-family",
+        row_list=True,
+        cap_rows=30,
     ),
     # ---- Query API passthrough (locked) ---------------------------------- #
     "run_registered_query": ToolSpec(
@@ -484,6 +593,28 @@ def list_tool_names() -> list[str]:
 # --------------------------------------------------------------------------- #
 
 
+def _build_api_query_params(
+    spec: ToolSpec,
+    tool_name: str,
+    args: dict[str, Any],
+    time_params: dict[str, str],
+) -> dict[str, str]:
+    """Merge time-range params with service-specific query params."""
+    params = dict(time_params)
+    if spec.service == "crm-engine":
+        dc = args.get("dc_code")
+        params["dc_code"] = str(dc) if dc else "*"
+        family = args.get("family")
+        if family:
+            params["family"] = str(family)
+        clusters = args.get("clusters")
+        if clusters:
+            params["clusters"] = str(clusters)
+        if tool_name == "get_sellable_summary" and args.get("rollup_only"):
+            params["rollup_only"] = "true"
+    return params
+
+
 def _fill_path(template: str, args: dict[str, Any]) -> Optional[str]:
     try:
         # Only allow whitelisted placeholders.
@@ -578,6 +709,7 @@ def execute_tool(name: str, args: dict[str, Any], auth_header: Optional[str] = N
             return ToolResult(name, "skipped", source=spec.service, error="query_key_not_allowed")
 
     time_params = api_clients.build_time_params(args.get("time_range")) if spec.use_time else {}
+    query_params = _build_api_query_params(spec, name, args, time_params)
 
     attempted_path = spec.service  # used for the source label, incl. on error
     try:
@@ -590,7 +722,7 @@ def execute_tool(name: str, args: dict[str, Any], auth_header: Optional[str] = N
                     continue
                 first_path = first_path or path
                 try:
-                    payload = api_clients.get_json(spec.service, path, time_params, auth_header)
+                    payload = api_clients.get_json(spec.service, path, query_params, auth_header)
                     merged[label] = _normalize(payload)
                 except InternalAPIError as exc:
                     merged[label] = {"_error": exc.detail}
@@ -603,17 +735,10 @@ def execute_tool(name: str, args: dict[str, Any], auth_header: Optional[str] = N
         if not path:
             return ToolResult(name, "skipped", spec.service, error="bad_path")
         attempted_path = path
-        payload = api_clients.get_json(spec.service, path, time_params, auth_header)
+        payload = api_clients.get_json(spec.service, path, query_params, auth_header)
         rows = _row_count(payload, tool_name=name)
-        if spec.comparison_list and isinstance(payload, list):
-            summary = _normalize_datacenter_summary_list(payload)
-        elif spec.list_items and isinstance(payload, list):
-            # Keep the full (capped) list — needed for set comparisons.
-            cap = spec.cap_rows or 200
-            summary = {"_count": len(payload), "items": [str(x) for x in payload[:cap]]}
-        else:
-            summary = _normalize(payload)
-        empty = _empty_reason(name, payload, args, time_params)
+        summary = _tool_summary(name, spec, payload, args)
+        empty = _empty_reason(name, payload, args, query_params)
         if empty:
             if isinstance(summary, dict):
                 summary = dict(summary)

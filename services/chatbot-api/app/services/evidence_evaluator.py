@@ -112,7 +112,45 @@ def _concentrated(rows: list[dict], top_n: int = 5) -> Optional[str]:
 
 
 def _followup_args(plan: IntentPlan) -> dict[str, Any]:
-    return {"dc_code": plan.dc_code, "days": plan.days, "limit": plan.limit}
+    return {
+        "dc_code": plan.dc_code,
+        "customer_name": plan.customer_name,
+        "days": plan.days,
+        "limit": plan.limit,
+    }
+
+
+_CUSTOMER_CRM_TOOLS = frozenset({
+    "get_customer_catalog",
+    "get_customer_sales_summary",
+    "get_customer_sales_active_orders",
+    "get_customer_itsm_summary",
+    "get_customer_itsm_extremes",
+    "get_customer_itsm_tickets",
+    "get_customer_resource_compliance",
+    "get_customer_efficiency_by_category",
+})
+
+
+def _customer_crm_has_data(result: ToolResult) -> bool:
+    if result.status != "success":
+        return False
+    summ = result.summary if isinstance(result.summary, dict) else {}
+    if result.rows and result.rows > 0:
+        return True
+    if summ.get("_count", 0) > 0:
+        return True
+    rows = summ.get("rows")
+    if isinstance(rows, list) and rows:
+        return True
+    for key in ("ytd_revenue", "active_order_count", "total_orders", "open_tickets"):
+        if summ.get(key) is not None:
+            return True
+    return False
+
+
+def _customer_overview_has_crm_evidence(results: list[ToolResult]) -> bool:
+    return any(r.name in _CUSTOMER_CRM_TOOLS and _customer_crm_has_data(r) for r in results)
 
 
 def _pending_fallbacks(plan: IntentPlan, run: set[str]) -> list[ToolRequest]:
@@ -184,6 +222,51 @@ def evaluate(
         ev.enough_for_answer = bool(results)
         ev.confidence = "low"
         ev.data_quality_warnings.append("no datacenter ranking rows after tools")
+        return ev
+
+    if plan.metric_key in (
+        "customer_overview",
+        "customer_sales_summary",
+        "customer_itsm_risk",
+        "customer_compliance",
+    ) or plan.analysis_profile == "customer_overview":
+        if _customer_overview_has_crm_evidence(results) or any(
+            r.name == "get_customer_resources" and r.status == "success" for r in results
+        ):
+            ev.enough_for_answer = True
+            ev.confidence = "medium"
+            if any(
+                r.name == "get_customer_resources"
+                and r.error
+                and "Timeout" in str(r.error)
+                for r in results
+            ):
+                ev.data_quality_warnings.append(
+                    "infrastructure resources endpoint timed out; CRM/commercial data still available"
+                )
+            return ev
+        fallbacks = _pending_fallbacks(plan, run)
+        if fallbacks and not tool_budget_exhausted:
+            ev.recommended_followup_tools = fallbacks[: settings.chatbot_max_tool_calls_per_iteration]
+            return ev
+        ev.enough_for_answer = bool(results)
+        ev.confidence = "low"
+        return ev
+
+    if plan.metric_key == "crm_sellable":
+        sellable_ok = any(
+            r.name.startswith("get_sellable") and r.status == "success" for r in results
+        )
+        if sellable_ok:
+            ev.enough_for_answer = True
+            ev.confidence = "medium" if plan.dc_code else "high"
+            return ev
+        fallbacks = _pending_fallbacks(plan, run)
+        if fallbacks and not tool_budget_exhausted:
+            ev.recommended_followup_tools = fallbacks[: settings.chatbot_max_tool_calls_per_iteration]
+            return ev
+        ev.enough_for_answer = bool(results)
+        ev.confidence = "low"
         return ev
 
     # cpu_usage profile drives the host/vm fallback + concentration follow-ups.

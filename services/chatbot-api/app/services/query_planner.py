@@ -23,11 +23,12 @@ from typing import Any, Optional
 from app.catalog import data_source_catalog, domain_catalog, metric_semantics
 from app.models.schemas import ChatMessage, FrontendContext
 from app.services import clarification_policy, planner
+from app.services import customer_resolver
 from app.services import tool_orchestrator as orch
 from app.services.planner import IntentPlan
 
-# "Boyner'in", "Akbank'ın", "X'nin" -> capture the proper noun before the suffix.
-_POSSESSIVE_RE = re.compile(r"\b([A-ZÇĞİÖŞÜ][\wÇĞİÖŞÜçğıöşü]{2,})['’](?:in|ın|nin|nın|un|ün|nun|nün|nin)\b")
+# Legacy possessive regex kept for backward-compatible tests.
+_POSSESSIVE_RE = customer_resolver._POSSESSIVE_RE
 _API_PREF_RE = ("endpoint", "api ", "api'", "webui'da", "web ui", "panelde", "ekranda")
 
 
@@ -56,8 +57,21 @@ def _dc_from_conversation(conversation: Optional[list[ChatMessage]]) -> Optional
 
 
 def _customer_from_message(text_raw: str) -> Optional[str]:
-    m = _POSSESSIVE_RE.search(text_raw or "")
-    return m.group(1) if m else None
+    candidates = customer_resolver.extract_customer_candidates(text_raw)
+    return candidates[0] if candidates else None
+
+
+def _conversation_user_messages(conversation: Optional[list[ChatMessage]]) -> list[str]:
+    return [msg.content or "" for msg in (conversation or []) if msg.role == "user"]
+
+
+def _resolve_customer(message: str, ctx: Optional[FrontendContext],
+                      conversation: Optional[list[ChatMessage]]) -> Optional[str]:
+    return customer_resolver.resolve_customer_name(
+        message,
+        selected_customer=(ctx.selected_customer if ctx else None),
+        conversation_messages=_conversation_user_messages(conversation),
+    )
 
 
 def _resolve_dc(message: str, ctx: Optional[FrontendContext],
@@ -69,21 +83,6 @@ def _resolve_dc(message: str, ctx: Optional[FrontendContext],
     if ctx and ctx.selected_datacenter:
         return ctx.selected_datacenter.upper()
     return _dc_from_conversation(conversation)
-
-
-def _resolve_customer(message: str, ctx: Optional[FrontendContext],
-                      conversation: Optional[list[ChatMessage]]) -> Optional[str]:
-    cust = _customer_from_message(message)
-    if cust:
-        return cust
-    if ctx and ctx.selected_customer:
-        return ctx.selected_customer
-    for msg in reversed(conversation or []):
-        if msg.role == "user":
-            c = _customer_from_message(msg.content or "")
-            if c:
-                return c
-    return None
 
 
 def _clarify_block(param: str):
@@ -136,7 +135,8 @@ def _plan_datacenter_ranking(
 
 
 def plan(message: str, ctx: Optional[FrontendContext],
-         conversation: Optional[list[ChatMessage]] = None) -> IntentPlan:
+         conversation: Optional[list[ChatMessage]] = None,
+         forced_customer: Optional[str] = None) -> IntentPlan:
     text = (message or "").lower()
     md = domain_catalog.match(message)
 
@@ -160,9 +160,10 @@ def plan(message: str, ctx: Optional[FrontendContext],
         explicit_dc = bool(orch._DC_RE.search(message or ""))
         if metric_semantics.is_global_scope(text) or (global_metric and not explicit_dc):
             dc_code = None
-    # Customer is only resolved for customer metrics — a datacenter/host/cluster
-    # question never picks up a (possibly stale) selected_customer.
-    customer = _resolve_customer(message, ctx, conversation) if md.entity == "customer" else None
+    # Customer is resolved for customer metrics; overview allows catalog fallback.
+    customer = forced_customer or (
+        _resolve_customer(message, ctx, conversation) if md.entity == "customer" else None
+    )
     days = orch._extract_days(text) or md.default_params.get("days")
     limit = orch._extract_limit(text) or md.default_params.get("limit")
     architecture = _arch(text) or md.architecture

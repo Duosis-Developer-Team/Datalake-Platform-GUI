@@ -125,6 +125,37 @@ def test_customer_extracted_from_possessive():
     assert "get_customer_resources" in _tools(plan)
 
 
+def test_customer_overview_plan():
+    plan = query_planner.plan("boyner müşterisi hakkında genel bilgi verir misin?", None, None)
+    assert plan.metric_key == "customer_overview"
+    assert plan.analysis_profile == "customer_overview"
+    assert "get_customer_catalog" in _tools(plan)
+    assert "get_customer_sales_summary" in _tools(plan)
+
+
+def test_customer_sales_active_orders_plan():
+    plan = query_planner.plan("Boyner'in aktif siparişleri neler?", None, None)
+    assert plan.metric_key == "customer_sales_summary"
+    assert plan.customer_name == "Boyner"
+    assert "get_customer_sales_summary" in _tools(plan)
+
+
+def test_customer_itsm_plan():
+    plan = query_planner.plan("Boyner müşterisi ITSM ticket özeti", None, None)
+    assert plan.metric_key == "customer_itsm_risk"
+    assert "get_customer_itsm_summary" in _tools(plan)
+
+
+def test_crm_sellable_dc13_plan():
+    plan = query_planner.plan("DC13 CRM sellable potansiyel özeti", None, None)
+    assert plan.metric_key == "crm_sellable"
+    assert plan.dc_code == "DC13"
+    tools = _tools(plan)
+    assert "get_sellable_summary" in tools
+    args = plan.initial_tools[0]["args"]
+    assert args.get("dc_code") == "DC13"
+
+
 # --- answer reviewer (LLM-only post-process) -------------------------------- #
 
 

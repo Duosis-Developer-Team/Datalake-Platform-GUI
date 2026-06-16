@@ -174,3 +174,39 @@ def test_vm_db_tool_skipped_when_disabled(monkeypatch):
     res = execute_tool("get_dc_vm_cpu_top", {"dc_code": "DC13"}, None)
     assert res.status == "skipped"
     assert res.error == "db_disabled"
+
+
+def test_sellable_summary_passes_dc_code_query_param(monkeypatch):
+    captured: dict = {}
+
+    def fake_get_json(service, path, params=None, auth_header=None):
+        captured["service"] = service
+        captured["path"] = path
+        captured["params"] = dict(params or {})
+        return {"total_potential_tl": 100.0, "dc_code": params.get("dc_code")}
+
+    monkeypatch.setattr(
+        "datalake_tools_core.registry.api_clients.get_json",
+        fake_get_json,
+    )
+    res = execute_tool("get_sellable_summary", {"dc_code": "DC13"}, None)
+    assert res.status == "success"
+    assert captured["service"] == "crm-engine"
+    assert captured["params"].get("dc_code") == "DC13"
+    assert res.summary.get("dc_code") == "DC13"
+
+
+def test_sellable_summary_defaults_global_dc_code(monkeypatch):
+    captured: dict = {}
+
+    def fake_get_json(service, path, params=None, auth_header=None):
+        captured["params"] = dict(params or {})
+        return {"total_potential_tl": 0.0}
+
+    monkeypatch.setattr(
+        "datalake_tools_core.registry.api_clients.get_json",
+        fake_get_json,
+    )
+    res = execute_tool("get_sellable_summary", {}, None)
+    assert res.status == "success"
+    assert captured["params"].get("dc_code") == "*"

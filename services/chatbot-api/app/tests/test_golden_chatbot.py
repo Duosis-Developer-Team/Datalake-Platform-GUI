@@ -83,6 +83,13 @@ def test_adversarial_cases(case: dict[str, Any]) -> None:
     test_golden_cases(case)
 
 
+@pytest.mark.parametrize(
+    "case", _load_cases("chatbot_crm_customer_cases.yaml"), ids=lambda c: c["id"]
+)
+def test_crm_customer_golden_cases(case: dict[str, Any]) -> None:
+    test_golden_cases(case)
+
+
 def test_tool_registry_snapshot_size():
     from app.services.tool_registry import list_tool_names
 

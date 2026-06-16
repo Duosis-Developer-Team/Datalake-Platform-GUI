@@ -1,0 +1,38 @@
+- id: customer_overview_boyner
+  user_message: "boyner müşterisi hakkında genel bilgi verir misin?"
+  expect:
+    plan_profile: customer_overview
+    plan_tools_contain:
+      - get_customer_catalog
+      - get_customer_sales_summary
+
+- id: customer_active_orders
+  user_message: "Boyner'in aktif siparişleri neler?"
+  expect:
+    plan_tools_contain:
+      - get_customer_sales_summary
+      - get_customer_sales_active_orders
+
+- id: customer_itsm_summary
+  user_message: "Boyner müşterisi ITSM ticket özeti"
+  expect:
+    plan_tools_contain:
+      - get_customer_itsm_summary
+
+- id: crm_sellable_dc13
+  user_message: "DC13 CRM sellable potansiyel özeti"
+  expect:
+    plan_tools_contain:
+      - get_sellable_summary
+
+- id: customer_compliance
+  user_message: "Boyner'in resource compliance durumu"
+  expect:
+    plan_tools_contain:
+      - get_customer_resource_compliance
+
+- id: global_sellable
+  user_message: "satılabilir kapasite ne durumda"
+  expect:
+    plan_tools_contain:
+      - get_sellable_summary

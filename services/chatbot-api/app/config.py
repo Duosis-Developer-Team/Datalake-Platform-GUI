@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     crm_engine_url: str = "http://crm-engine:8000"
     admin_api_url: str = "http://admin-api:8000"
     internal_api_timeout_seconds: float = 20.0
+    customer_api_timeout_seconds: float = Field(
+        default=45.0,
+        validation_alias=AliasChoices(
+            "CHATBOT_CUSTOMER_API_TIMEOUT_SECONDS", "CUSTOMER_API_TIMEOUT_SECONDS"
+        ),
+    )
 
     # ------------------------------------------------------------------ #
     # Read-only DB tooling (disabled by default — opt-in only)
