@@ -85,7 +85,7 @@ _SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT",
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 4
+SELLABLE_PAYLOAD_VERSION: int = 5
 
 # Maps allocated_table → Redis section key for per-DC (dc_details) response.
 _VM_TABLE_DC_SECTION: dict[str, str] = {
@@ -186,6 +186,9 @@ _FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
 # excluded from the per-host min() and handled by the architecture-aware
 # storage range model below.
 _HOST_BASED_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_hyperconverged"})
+
+# Power families: allocation track only (no max/utilization dual track except CPU util gate).
+_ALLOCATION_ONLY_FAMILIES: frozenset[str] = frozenset({"virt_power", "virt_power_hana"})
 
 # Families whose storage panel carries a [min, max] sellable range because
 # IBM storage free space is shared between KM datastores and native Power.
@@ -1723,6 +1726,31 @@ SELECT _tot, _alloc FROM latest
             decouple_resource_kinds=decouple_resource_kinds,
         )
 
+    @staticmethod
+    def _apply_allocation_only_pricing(panel: PanelResult) -> None:
+        """Power families: single allocation track (payload v5)."""
+        panel.computation_mode = "power_allocation_only"
+        panel.sellable_max_util = None
+        panel.sellable_physical = None
+        panel.sellable_effective = None
+        panel.potential_tl_physical = None
+        price = panel.unit_price_tl
+        if panel.resource_kind == "storage" and panel.sellable_min is not None:
+            panel.sellable_allocation = panel.sellable_min
+            panel.potential_tl_min = compute_potential_tl(panel.sellable_min, price)
+            hi_qty = panel.sellable_max if panel.sellable_max is not None else panel.sellable_min
+            panel.potential_tl_max = compute_potential_tl(hi_qty, price)
+            panel.potential_tl = panel.potential_tl_min or 0.0
+            panel.potential_tl_effective = panel.potential_tl_min
+        else:
+            qty = panel.sellable_constrained
+            panel.sellable_allocation = qty
+            tl = compute_potential_tl(qty, price)
+            panel.potential_tl = tl
+            panel.potential_tl_min = tl
+            panel.potential_tl_max = tl
+            panel.potential_tl_effective = tl
+
     def _apply_dual_track_pricing(self, panel: PanelResult, calc_cfg: dict[str, float | str]) -> None:
         """Populate allocation vs max-utilization TL tracks (payload v4)."""
         _ = calc_cfg
@@ -2028,6 +2056,9 @@ SELECT _tot, _alloc FROM latest
                 )
             total_disp = convert_unit(total_raw, total_conv)
             alloc_disp = convert_unit(alloc_raw, alloc_conv)
+
+        if panel.family in _ALLOCATION_ONLY_FAMILIES and panel.resource_kind in ("ram", "storage"):
+            util_pct = None
 
         sellable_raw = apply_utilization_gate(
             total_disp, alloc_disp, util_pct, threshold_pct
@@ -2490,23 +2521,32 @@ SELECT _tot, _alloc FROM latest
             new_group = annotate_panel_constraint_metadata(new_group)
 
             for new in new_group:
-                has_tracks = (
-                    new.sellable_allocation is not None
-                    or new.sellable_max_util is not None
-                    or new.sellable_physical is not None
-                    or new.sellable_effective is not None
-                )
-                if has_tracks:
-                    self._apply_dual_track_pricing(new, calc_cfg)
+                if fam in _ALLOCATION_ONLY_FAMILIES:
+                    self._apply_allocation_only_pricing(new)
                 else:
-                    new.potential_tl = compute_potential_tl(new.sellable_constrained, new.unit_price_tl)
-                if new.resource_kind == "storage" and new.sellable_min is not None:
-                    new.potential_tl_min = compute_potential_tl(new.sellable_min, new.unit_price_tl)
-                    if new.sellable_max is not None:
-                        new.potential_tl_max = compute_potential_tl(new.sellable_max, new.unit_price_tl)
+                    has_tracks = (
+                        new.sellable_allocation is not None
+                        or new.sellable_max_util is not None
+                        or new.sellable_physical is not None
+                        or new.sellable_effective is not None
+                    )
+                    if has_tracks:
+                        self._apply_dual_track_pricing(new, calc_cfg)
                     else:
-                        new.potential_tl_max = new.potential_tl_min
-                    new.potential_tl = new.potential_tl_min or 0.0
+                        new.potential_tl = compute_potential_tl(
+                            new.sellable_constrained, new.unit_price_tl,
+                        )
+                    if new.resource_kind == "storage" and new.sellable_min is not None:
+                        new.potential_tl_min = compute_potential_tl(
+                            new.sellable_min, new.unit_price_tl,
+                        )
+                        if new.sellable_max is not None:
+                            new.potential_tl_max = compute_potential_tl(
+                                new.sellable_max, new.unit_price_tl,
+                            )
+                        else:
+                            new.potential_tl_max = new.potential_tl_min
+                        new.potential_tl = new.potential_tl_min or 0.0
                 constrained.append(new)
         constrained.sort(key=lambda p: (p.family, p.resource_kind, p.panel_key))
 

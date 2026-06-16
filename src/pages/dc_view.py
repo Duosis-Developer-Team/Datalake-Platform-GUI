@@ -17,7 +17,9 @@ from src.utils.virt_sellable_aggregate import (
     aggregate_virt_sellable_panels,
     collect_virt_sellable_panels,
     merge_power_panels_for_summary,
+    virt_tab_cluster_scope,
     virt_total_potential_range,
+    VIRT_POWER_FAMILIES,
 )
 from src.utils.api_parallel import parallel_execute
 from src.utils.time_range import default_time_range
@@ -1592,7 +1594,7 @@ def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
     )
 
     try:
-        panels = merge_power_panels_for_summary(collect_virt_sellable_panels(str(dc_id)))
+        panels = collect_virt_sellable_panels(str(dc_id))
         summary = api.get_sellable_summary_light(str(dc_id)) or {}
     except Exception:
         return html.Div()
@@ -1647,10 +1649,11 @@ def _build_virt_total_sellable_children(
     hyperconv_clusters: list[str] | None,
 ) -> list:
     """Top-level Virt sellable KPI grid (server-side initial render + callback)."""
-    panels = api.get_virt_sellable_panels(
-        dc_id,
-        classic_clusters or None,
-        hyperconv_clusters or None,
+    classic, hyperconv = virt_tab_cluster_scope(classic_clusters, hyperconv_clusters)
+    panels = collect_virt_sellable_panels(
+        str(dc_id),
+        classic,
+        hyperconv,
     )
     total_tl, by_kind, has_known = aggregate_virt_sellable_panels(panels)
     _, tl_min, tl_max = virt_total_potential_range(panels)
@@ -1927,8 +1930,10 @@ def _build_sellable_inline_kpi(
         except Exception:
             continue
 
-    if set(families) & {"virt_power", "virt_power_hana"}:
+    if set(families) & set(VIRT_POWER_FAMILIES):
         panels = merge_power_panels_for_summary(panels)
+
+    power_allocation_only = set(families).issubset(set(VIRT_POWER_FAMILIES))
 
     if not panels:
         if container_id:
@@ -2051,8 +2056,8 @@ def _build_sellable_inline_kpi(
 
     cpu_dual = _dual_track_sums("cpu")
     ram_dual = _dual_track_sums("ram")
-    cpu_has_dual = bool(cpu_dual["has_dual"])
-    ram_has_dual = bool(ram_dual["has_dual"])
+    cpu_has_dual = bool(cpu_dual["has_dual"]) and not power_allocation_only
+    ram_has_dual = bool(ram_dual["has_dual"]) and not power_allocation_only
     if cpu_has_dual:
         cpu["allocation"] = float(cpu_dual["alloc"])
         cpu["max_util"] = float(cpu_dual["max"])

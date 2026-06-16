@@ -534,7 +534,7 @@ host/cluster ratio (CPU/RAM) → _apply_storage_range (classic/power)
 ```
 
 For `virt_classic` / `virt_hyperconverged` with host rows present (ADR-0020,
-`SELLABLE_PAYLOAD_VERSION = 4`), storage participates in **per-host triple-min**
+`SELLABLE_PAYLOAD_VERSION = 5`), storage participates in **per-host triple-min**
 with **independent allocation vs max tracks** (ADR-0021):
 
 ```
@@ -545,6 +545,13 @@ per-host gates → triple-min per track:
 → potential_tl_min = allocation TL sum, potential_tl_max = max TL sum
 → deduped storage_pools min/max band per track → pricing
 ```
+
+**Power allocation-only (ADR-0022, payload v5):** `virt_power` / `virt_power_hana`
+use a single allocation track — no `sellable_max_util`. CPU gate uses procunit
+utilization; RAM/storage use allocation/provisioned only. Storage IBM range
+(min/max GB) is shared-capacity band, not a utilization track. UI: single
+sellable line (no Alloc | Max). Virt total aggregation uses
+`prepare_virt_sellable_panels()` + IBM storage max dedup (`max(km_max, power_max)`).
 
 CPU sellable quantity is always **vCPU** (1 GHz = 1 vCPU); no separate Phys GHz
 display or GHz-based pricing on CPU panels.

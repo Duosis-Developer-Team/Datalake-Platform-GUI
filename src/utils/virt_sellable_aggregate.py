@@ -93,7 +93,7 @@ def collect_virt_sellable_panels(
                 panels.extend(_fetch_family(fam))
             except Exception:
                 continue
-        return panels
+        return prepare_virt_sellable_panels(panels)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_fetch_family, fam) for fam in families]
         for fut in as_completed(futures):
@@ -101,7 +101,7 @@ def collect_virt_sellable_panels(
                 panels.extend(fut.result())
             except Exception:
                 continue
-    return panels
+    return prepare_virt_sellable_panels(panels)
 
 
 def virt_tl_from_sellable_summary(summary: dict | None) -> float:
@@ -138,6 +138,7 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
         "sellable_raw",
         "sellable_physical",
         "sellable_effective",
+        "sellable_allocation",
         "potential_tl",
         "potential_tl_physical",
         "potential_tl_effective",
@@ -163,6 +164,7 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
         if len(group) == 1:
             single = dict(group[0])
             single["family"] = "virt_power"
+            single["sellable_max_util"] = None
             out.append(single)
             continue
         merged = dict(group[0])
@@ -171,6 +173,7 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
             merged[field] = sum(float(g.get(field) or 0.0) for g in group)
         for field in infra_fields:
             merged[field] = max(float(g.get(field) or 0.0) for g in group)
+        merged["sellable_max_util"] = None
         merged["ratio_bound"] = any(bool(g.get("ratio_bound")) for g in group)
         merged["gate_blocked"] = any(bool(g.get("gate_blocked")) for g in group)
         merged["constraint_reason"] = _merge_constraint_reason(group)
@@ -182,22 +185,71 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
     return out
 
 
+def prepare_virt_sellable_panels(
+    panels: list[dict],
+    *,
+    merge_power: bool = True,
+) -> list[dict]:
+    """Normalize virt panel rows for Summary, DC list, and Virt tab (merge Power+HANA)."""
+    out = [p for p in panels if isinstance(p, dict)]
+    if merge_power:
+        out = merge_power_panels_for_summary(out)
+    return out
+
+
+def _panel_tl_bounds(panel: dict) -> tuple[float, float, float]:
+    tl = float(panel.get("potential_tl") or 0.0)
+    lo = float(panel.get("potential_tl_min") if panel.get("potential_tl_min") is not None else tl)
+    hi = float(panel.get("potential_tl_max") if panel.get("potential_tl_max") is not None else tl)
+    return tl, lo, hi
+
+
+def _ibm_shared_storage_dedup_tl(panels: list[dict]) -> tuple[float | None, float | None]:
+    """Dedupe classic KM + Power storage max TL when IBM pool is shared."""
+    classic = next(
+        (
+            p for p in panels
+            if p.get("family") == "virt_classic" and (p.get("resource_kind") or "").lower() == "storage"
+        ),
+        None,
+    )
+    power = next(
+        (
+            p for p in panels
+            if p.get("family") == "virt_power" and (p.get("resource_kind") or "").lower() == "storage"
+        ),
+        None,
+    )
+    if not classic or not power:
+        return None, None
+    _, lo_c, hi_c = _panel_tl_bounds(classic)
+    _, lo_p, hi_p = _panel_tl_bounds(power)
+    dedup_lo = lo_c + lo_p
+    dedup_hi = max(hi_c, hi_p)
+    return dedup_lo, dedup_hi
+
+
 def virt_total_potential_range(panels: list[dict]) -> tuple[float, float, float]:
     """Return (total_tl, min_tl, max_tl) across virt panel dicts."""
+    dedup_lo, dedup_hi = _ibm_shared_storage_dedup_tl(panels)
+    has_dedup = dedup_lo is not None and dedup_hi is not None
     total = 0.0
     lo = 0.0
     hi = 0.0
     for p in panels:
         if not isinstance(p, dict):
             continue
-        tl = float(p.get("potential_tl") or 0.0)
+        fam = p.get("family") or ""
+        kind = (p.get("resource_kind") or "other").lower()
+        if has_dedup and kind == "storage" and fam in ("virt_classic", "virt_power"):
+            continue
+        tl, p_lo, p_hi = _panel_tl_bounds(p)
         total += tl
-        lo += float(
-            p.get("potential_tl_min") if p.get("potential_tl_min") is not None else tl
-        )
-        hi += float(
-            p.get("potential_tl_max") if p.get("potential_tl_max") is not None else tl
-        )
+        lo += p_lo
+        hi += p_hi
+    if has_dedup:
+        lo += float(dedup_lo)
+        hi += float(dedup_hi)
     return total, lo, hi
 
 

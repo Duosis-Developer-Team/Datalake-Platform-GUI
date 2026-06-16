@@ -1681,6 +1681,24 @@ def test_power_storage_zero_when_compute_zero():
     assert sto.potential_tl == 0.0
 
 
+def test_power_allocation_only_single_track():
+    """Power panels use allocation-only track (no sellable_max_util dual track)."""
+    svc = _build_power_pipeline_service(cpu_raw=4.0, ram_raw=80.0)
+    panels = svc.compute_all_panels(dc_code="DC13", family="virt_power", force_recompute=True)
+    for p in panels:
+        assert p.computation_mode == "power_allocation_only"
+        assert p.sellable_max_util is None
+    cpu = next(p for p in panels if p.resource_kind == "cpu")
+    ram = next(p for p in panels if p.resource_kind == "ram")
+    assert cpu.potential_tl_min == cpu.potential_tl_max
+    assert ram.potential_tl_min == ram.potential_tl_max
+    assert cpu.sellable_allocation == cpu.sellable_constrained
+    sto = next(p for p in panels if p.resource_kind == "storage")
+    assert sto.potential_tl_min is not None
+    assert sto.potential_tl_max is not None
+    assert sto.potential_tl_min <= sto.potential_tl_max
+
+
 def test_snapshot_stale_payload_version_is_cache_miss():
     svc = _build_service()
     legacy = json.dumps([{"panel_key": "x", "label": "X", "family": "virt_classic",
