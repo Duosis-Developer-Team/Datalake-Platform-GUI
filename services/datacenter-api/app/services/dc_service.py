@@ -864,6 +864,20 @@ LIMIT 20
             row[7] = used_gb
         return tuple(row)
 
+    @staticmethod
+    def _apply_classic_datastore_storage_section(
+        classic: dict,
+        cap_gb: float,
+        used_gb: float,
+    ) -> dict:
+        """Patch classic section stor_* from KM datastore totals (TB, same as _aggregate_dc)."""
+        if cap_gb <= 0 or not isinstance(classic, dict):
+            return classic
+        out = dict(classic)
+        out["stor_cap"] = round(cap_gb / 1024.0, 3)
+        out["stor_used"] = round(used_gb / 1024.0, 3)
+        return out
+
     def _run_nutanix_vm_storage(
         self,
         cursor,
@@ -2097,9 +2111,11 @@ WHERE UPPER(s.name) LIKE UPPER(%s) OR UPPER(s.location) LIKE UPPER(%s)
         if cap_tb > 0 and isinstance(result.get("classic"), dict):
             result = dict(result)
             classic = dict(result["classic"])
-            classic["stor_cap"] = round(cap_tb, 3)
-            classic["stor_used"] = round(used_tb, 3)
-            result["classic"] = classic
+            cap_gb = cap_tb * 1024.0
+            used_gb = used_tb * 1024.0
+            result["classic"] = self._apply_classic_datastore_storage_section(
+                classic, cap_gb, used_gb
+            )
         return result
 
     def get_dc_details(self, dc_code: str, time_range: dict | None = None) -> dict:
@@ -2670,6 +2686,12 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                         )
                         results[dc]["classic"].update(classic_vm)
                         results[dc]["hyperconv"].update(hyper_vm)
+                        ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(
+                            cur, dc, start_ts, end_ts
+                        )
+                        results[dc]["classic"] = self._apply_classic_datastore_storage_section(
+                            results[dc]["classic"], ds_cap_gb, ds_used_gb
+                        )
                         results[dc]["classic"] = self._apply_cpu_overalloc_flags(results[dc]["classic"])
                         results[dc]["hyperconv"] = self._apply_cpu_overalloc_flags(results[dc]["hyperconv"])
                         results[dc]["classic"] = self._apply_mem_peak_raw(results[dc]["classic"], cl_peak)

@@ -71,5 +71,19 @@ class TestResourceUsagePercentages(unittest.TestCase):
         self.assertEqual(_pct(0, 0), 0.0)
 
 
+class TestCapacityWeightedPct(unittest.TestCase):
+
+    def test_capacity_weighted_pct_example(self):
+        from src.pages.home import capacity_weighted_pct
+        # classic 40% @ cap 100, hyperconv 60% @ cap 50, ibm 20% @ cap 200
+        # weighted = (40*100 + 60*50 + 20*200) / (100+50+200) = 11000/350 ≈ 31.4
+        result = capacity_weighted_pct([40.0, 60.0, 20.0], [100.0, 50.0, 200.0])
+        self.assertEqual(result, 31.4)
+
+    def test_capacity_weighted_pct_zero_weights(self):
+        from src.pages.home import capacity_weighted_pct
+        self.assertEqual(capacity_weighted_pct([50.0, 30.0], [0.0, 0.0]), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

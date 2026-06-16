@@ -38,6 +38,17 @@ _PHYS_INV_LEGEND = dict(
 )
 
 
+def capacity_weighted_pct(pcts: list[float], weights: list[float]) -> float:
+    """Capacity-weighted average of architecture utilisation percentages."""
+    w_sum = sum(float(w or 0) for w in weights)
+    if w_sum <= 0:
+        return 0.0
+    return round(
+        sum(float(p or 0) * float(w or 0) for p, w in zip(pcts, weights)) / w_sum,
+        1,
+    )
+
+
 def _phys_inv_bar_figure(labels, counts, color="#4318FF", height=None):
     """Horizontal bar chart for Physical Inventory (Overview drill-down). Labels are title-cased."""
     labels = labels or ["No data"]
@@ -426,6 +437,31 @@ def build_overview(time_range=None, visible_sections=None):
     ibm_cpu_pct = _pct(ibm_totals.get("cpu_used", 0) or 0, ibm_totals.get("cpu_assigned", 0) or 1)
     ibm_stor_pct = _pct(ibm_totals.get("stor_used", 0) or 0, ibm_totals.get("stor_cap", 0) or 1)
 
+    all_cpu_pct = capacity_weighted_pct(
+        [classic_cpu_pct, hyperconv_cpu_pct, ibm_cpu_pct],
+        [
+            classic_totals.get("cpu_cap", 0) or 0,
+            hyperconv_totals.get("cpu_cap", 0) or 0,
+            ibm_totals.get("cpu_assigned", 0) or 0,
+        ],
+    )
+    all_ram_pct = capacity_weighted_pct(
+        [classic_ram_pct, hyperconv_ram_pct, ibm_mem_pct],
+        [
+            classic_totals.get("mem_cap", 0) or 0,
+            hyperconv_totals.get("mem_cap", 0) or 0,
+            ibm_totals.get("mem_total", 0) or 0,
+        ],
+    )
+    all_stor_pct = capacity_weighted_pct(
+        [classic_stor_pct, hyperconv_stor_pct, ibm_stor_pct],
+        [
+            classic_totals.get("stor_cap", 0) or 0,
+            hyperconv_totals.get("stor_cap", 0) or 0,
+            ibm_totals.get("stor_cap", 0) or 0,
+        ],
+    )
+
     # Energy breakdown (IBM Power + vCenter only; Loki/racks not used)
     eb_labels = ["IBM Power", "vCenter"]
     eb_values = [
@@ -638,7 +674,12 @@ def build_overview(time_range=None, visible_sections=None):
                     html.Div(
                         [
                             dmc.Text("Resource Usage", fw=700, size="lg", c="#2B3674", style={"marginBottom": "4px"}),
-                            dmc.Text("By architecture \u2014 daily average over report period", size="xs", c="dimmed", style={"marginBottom": "16px"}),
+                            dmc.Text(
+                                "By architecture \u2014 capacity-weighted All tab; daily average over report period",
+                                size="xs",
+                                c="dimmed",
+                                style={"marginBottom": "16px"},
+                            ),
                             dmc.Tabs(
                                 value="classic",
                                 variant="outline",
@@ -646,10 +687,26 @@ def build_overview(time_range=None, visible_sections=None):
                                 style={"flex": "1", "display": "flex", "flexDirection": "column"},
                                 children=[
                                     dmc.TabsList(children=[
+                                        dmc.TabsTab("All", value="all"),
                                         dmc.TabsTab("Klasik Mimari", value="classic"),
                                         dmc.TabsTab("Hyperconverged Mimari", value="hyperconv"),
                                         dmc.TabsTab("IBM Power", value="ibm"),
                                     ]),
+                                    dmc.TabsPanel(
+                                        value="all",
+                                        pt="xl",
+                                        style={"flex": "1", "display": "flex", "alignItems": "center"},
+                                        children=dmc.SimpleGrid(
+                                            cols=3,
+                                            spacing="xl",
+                                            style={"width": "100%"},
+                                            children=[
+                                                _ring_stat(all_cpu_pct, "CPU", "#4318FF"),
+                                                _ring_stat(all_ram_pct, "RAM", "#05CD99"),
+                                                _ring_stat(all_stor_pct, "Storage", "#FFB547"),
+                                            ],
+                                        ),
+                                    ),
                                     dmc.TabsPanel(
                                         value="classic",
                                         pt="xl",
