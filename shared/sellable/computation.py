@@ -304,7 +304,7 @@ def host_effective_units(
       - ``physical``  — ``cpu_total_phys`` / ``cpu_alloc_phys`` (vCPU × host GHz)
     ``ram_track`` selects RAM basis:
       - ``physical`` — per-host VM-configured RAM allocation
-      - ``peak``     — per-host peak RAM (``mem_cap_gb_at_peak`` / ``mem_used_gb_peak``)
+      - ``max``      — per-host max RAM (``mem_cap_gb_at_peak`` / ``mem_used_gb_peak``)
     """
     if ratio.cpu_per_unit <= 0 or ratio.ram_gb_per_unit <= 0:
         return 0.0
@@ -325,7 +325,7 @@ def host_effective_units(
             float(h.get("cpu_util_pct") or 0.0),
             cpu_threshold_pct,
         )
-        if ram_track == "peak":
+        if ram_track in ("max", "peak"):
             ram_total = float(
                 h.get("mem_cap_gb_at_peak") or h.get("ram_peak_total") or 0.0
             )
@@ -356,16 +356,8 @@ def constrain_by_ratio_per_host_dual(
     ram_raw_physical: float | None = None,
     ram_raw_peak: float | None = None,
 ) -> list[PanelResult]:
-    """Host-based ratio constraint with physical/effective CPU and RAM tracks."""
+    """Host-based ratio constraint with allocation/max CPU and RAM tracks."""
     panel_list = list(panels)
-    n_cpu_phys = host_effective_units(
-        hosts,
-        ratio,
-        cpu_threshold_pct=cpu_threshold_pct,
-        ram_threshold_pct=ram_threshold_pct,
-        cpu_track="physical",
-        ram_track="physical",
-    )
     n_cpu_eff = host_effective_units(
         hosts,
         ratio,
@@ -373,6 +365,15 @@ def constrain_by_ratio_per_host_dual(
         ram_threshold_pct=ram_threshold_pct,
         cpu_track="effective",
         ram_track="physical",
+        effective_ghz_per_unit=effective_ghz_per_unit,
+    )
+    n_cpu_max = host_effective_units(
+        hosts,
+        ratio,
+        cpu_threshold_pct=cpu_threshold_pct,
+        ram_threshold_pct=ram_threshold_pct,
+        cpu_track="max",
+        ram_track="max",
         effective_ghz_per_unit=effective_ghz_per_unit,
     )
     n_ram_phys = host_effective_units(
@@ -383,30 +384,29 @@ def constrain_by_ratio_per_host_dual(
         cpu_track="physical",
         ram_track="physical",
     )
-    n_ram_peak = host_effective_units(
+    n_ram_max = host_effective_units(
         hosts,
         ratio,
         cpu_threshold_pct=cpu_threshold_pct,
         ram_threshold_pct=ram_threshold_pct,
-        cpu_track="effective",
-        ram_track="peak",
+        cpu_track="max",
+        ram_track="max",
         effective_ghz_per_unit=effective_ghz_per_unit,
     )
 
     out: list[PanelResult] = []
     for p in panel_list:
         if p.resource_kind == "cpu":
-            constrained_phys = n_cpu_phys * ratio.cpu_per_unit
             constrained_eff = n_cpu_eff * ratio.cpu_per_unit
-            ratio_bound = (
-                constrained_eff + 1e-6 < p.sellable_raw
-                or constrained_phys + 1e-6 < (p.sellable_physical or p.sellable_raw or 0.0)
-            )
+            constrained_max = n_cpu_max * ratio.cpu_per_unit
+            ratio_bound = constrained_eff + 1e-6 < p.sellable_raw
             out.append(
                 replace(
                     p,
-                    sellable_physical=constrained_phys,
+                    sellable_allocation=constrained_eff,
+                    sellable_max_util=constrained_max,
                     sellable_effective=constrained_eff,
+                    sellable_physical=None,
                     sellable_constrained=constrained_eff,
                     ratio_bound=ratio_bound,
                     computation_mode="host_based",
@@ -414,19 +414,21 @@ def constrain_by_ratio_per_host_dual(
             )
         elif p.resource_kind == "ram":
             constrained_phys = n_ram_phys * ratio.ram_gb_per_unit
-            constrained_peak = n_ram_peak * ratio.ram_gb_per_unit
+            constrained_max = n_ram_max * ratio.ram_gb_per_unit
             raw_phys = ram_raw_physical if ram_raw_physical is not None else p.sellable_raw
-            raw_peak = ram_raw_peak if ram_raw_peak is not None else p.sellable_raw
+            raw_max = ram_raw_peak if ram_raw_peak is not None else p.sellable_raw
             ratio_bound = (
                 constrained_phys + 1e-6 < raw_phys
-                or constrained_peak + 1e-6 < raw_peak
+                or constrained_max + 1e-6 < raw_max
             )
             out.append(
                 replace(
                     p,
                     sellable_physical=constrained_phys,
-                    sellable_effective=constrained_peak,
-                    sellable_constrained=constrained_peak,
+                    sellable_effective=constrained_max,
+                    sellable_allocation=constrained_phys,
+                    sellable_max_util=constrained_max,
+                    sellable_constrained=constrained_phys,
                     ratio_bound=ratio_bound,
                     computation_mode="host_based",
                 )
@@ -497,81 +499,112 @@ def constrain_by_ratio_per_host_triple_dual(
             results.append(result)
         return n_sum, results
 
-    n_phys, _ = _accumulate("physical", "physical", False)
-    n_cpu_eff, _ = _accumulate("effective", "physical", False)
-    n_ram_peak, host_stor_min = _accumulate("effective", "peak", False)
-    _, host_stor_max = _accumulate("effective", "peak", True)
+    n_phys, _ = _accumulate("effective", "physical", False)
+    n_cpu_alloc, _ = _accumulate("effective", "physical", False)
+    n_ram_alloc, host_stor_alloc = _accumulate("effective", "physical", False)
+    _, host_stor_alloc_shared = _accumulate("effective", "physical", True)
 
-    stor_lo, stor_hi = aggregate_family_storage_range(
-        host_stor_min,
+    n_cpu_max, _ = _accumulate("max", "max", False)
+    n_ram_max, host_stor_max = _accumulate("max", "max", False)
+    _, host_stor_max_shared = _accumulate("max", "max", True)
+
+    stor_lo_alloc, stor_hi_alloc = aggregate_family_storage_range(
+        host_stor_alloc,
         shared_pools or [],
         ratio,
     )
-    stor_constrained = sum(r.stor_constrained_min for r in host_stor_min)
+    stor_lo_max, stor_hi_max = aggregate_family_storage_range(
+        host_stor_max,
+        shared_pools or [],
+        ratio,
+    )
+    stor_constrained_alloc = sum(r.stor_constrained_min for r in host_stor_alloc)
+    stor_constrained_max = sum(r.stor_constrained_min for r in host_stor_max)
 
     if cluster_storage_raw_gb is not None:
-        n_bottleneck = min(n_cpu_eff, n_ram_peak) if n_ram_peak > 0 else n_cpu_eff
-        stor_cap_by_ratio = max(n_bottleneck, 0.0) * ratio.storage_gb_per_unit
-        stor_constrained = min(max(cluster_storage_raw_gb, 0.0), stor_cap_by_ratio)
-        stor_lo = stor_constrained
-        stor_hi = min(max(cluster_storage_raw_gb, 0.0), max(n_cpu_eff, n_ram_peak) * ratio.storage_gb_per_unit)
+        n_bn_alloc = min(n_cpu_alloc, n_ram_alloc) if n_ram_alloc > 0 else n_cpu_alloc
+        n_bn_max = min(n_cpu_max, n_ram_max) if n_ram_max > 0 else n_cpu_max
+        stor_cap_alloc = max(n_bn_alloc, 0.0) * ratio.storage_gb_per_unit
+        stor_cap_max = max(n_bn_max, 0.0) * ratio.storage_gb_per_unit
+        stor_constrained_alloc = min(max(cluster_storage_raw_gb, 0.0), stor_cap_alloc)
+        stor_constrained_max = min(max(cluster_storage_raw_gb, 0.0), stor_cap_max)
+        stor_lo_alloc = stor_constrained_alloc
+        stor_lo_max = stor_constrained_max
+        stor_hi_alloc = min(
+            max(cluster_storage_raw_gb, 0.0),
+            max(n_cpu_alloc, n_ram_alloc) * ratio.storage_gb_per_unit,
+        )
+        stor_hi_max = min(
+            max(cluster_storage_raw_gb, 0.0),
+            max(n_cpu_max, n_ram_max) * ratio.storage_gb_per_unit,
+        )
 
     if ibm_storage_range is not None:
         ibm_lo, ibm_hi = ibm_storage_range
-        stor_lo = max(stor_lo, ibm_lo)
+        stor_lo_alloc = max(stor_lo_alloc, ibm_lo)
+        stor_lo_max = max(stor_lo_max, ibm_lo)
         if ibm_hi > 0:
-            stor_hi = min(stor_hi, ibm_hi) if stor_hi > 0 else ibm_hi
-        stor_constrained = max(stor_constrained, stor_lo)
-        if stor_hi > 0:
-            stor_constrained = min(stor_constrained, stor_hi)
+            stor_hi_alloc = min(stor_hi_alloc, ibm_hi) if stor_hi_alloc > 0 else ibm_hi
+            stor_hi_max = min(stor_hi_max, ibm_hi) if stor_hi_max > 0 else ibm_hi
+        stor_constrained_alloc = max(stor_constrained_alloc, stor_lo_alloc)
+        stor_constrained_max = max(stor_constrained_max, stor_lo_max)
+        if stor_hi_alloc > 0:
+            stor_constrained_alloc = min(stor_constrained_alloc, stor_hi_alloc)
+        if stor_hi_max > 0:
+            stor_constrained_max = min(stor_constrained_max, stor_hi_max)
 
-    cpu_phys_val = n_phys * ratio.cpu_per_unit
-    cpu_eff_val = n_cpu_eff * ratio.cpu_per_unit
-    ram_phys_val = n_phys * ratio.ram_gb_per_unit
-    ram_peak_val = n_ram_peak * ratio.ram_gb_per_unit
+    cpu_alloc_val = n_cpu_alloc * ratio.cpu_per_unit
+    cpu_max_val = n_cpu_max * ratio.cpu_per_unit
+    ram_alloc_val = n_ram_alloc * ratio.ram_gb_per_unit
+    ram_max_val = n_ram_max * ratio.ram_gb_per_unit
+    _ = n_phys, host_stor_alloc_shared, host_stor_max_shared
 
     out: list[PanelResult] = []
     for p in panel_list:
         if p.resource_kind == "cpu":
-            ratio_bound = (
-                cpu_eff_val + 1e-6 < p.sellable_raw
-                or cpu_phys_val + 1e-6 < (p.sellable_physical or p.sellable_raw or 0.0)
-            )
+            ratio_bound = cpu_alloc_val + 1e-6 < p.sellable_raw
             out.append(
                 replace(
                     p,
-                    sellable_physical=cpu_phys_val,
-                    sellable_effective=cpu_eff_val,
-                    sellable_constrained=cpu_eff_val,
+                    sellable_allocation=cpu_alloc_val,
+                    sellable_max_util=cpu_max_val,
+                    sellable_effective=cpu_alloc_val,
+                    sellable_physical=None,
+                    sellable_constrained=cpu_alloc_val,
                     ratio_bound=ratio_bound,
                     computation_mode="host_based",
                 )
             )
         elif p.resource_kind == "ram":
             raw_phys = ram_raw_physical if ram_raw_physical is not None else p.sellable_raw
-            raw_peak = ram_raw_peak if ram_raw_peak is not None else p.sellable_raw
+            raw_max = ram_raw_peak if ram_raw_peak is not None else p.sellable_raw
             ratio_bound = (
-                ram_phys_val + 1e-6 < raw_phys
-                or ram_peak_val + 1e-6 < raw_peak
+                ram_alloc_val + 1e-6 < raw_phys
+                or ram_max_val + 1e-6 < raw_max
             )
             out.append(
                 replace(
                     p,
-                    sellable_physical=ram_phys_val,
-                    sellable_effective=ram_peak_val,
-                    sellable_constrained=ram_peak_val,
+                    sellable_physical=ram_alloc_val,
+                    sellable_allocation=ram_alloc_val,
+                    sellable_max_util=ram_max_val,
+                    sellable_effective=ram_max_val,
+                    sellable_constrained=ram_alloc_val,
                     ratio_bound=ratio_bound,
                     computation_mode="host_based",
                 )
             )
         elif p.resource_kind == "storage":
-            ratio_bound = stor_constrained + 1e-6 < p.sellable_raw
+            ratio_bound = stor_constrained_alloc + 1e-6 < p.sellable_raw
+            stor_hi_out = stor_hi_max if stor_hi_max > stor_lo_alloc + 1e-6 else None
             out.append(
                 replace(
                     p,
-                    sellable_constrained=stor_constrained,
-                    sellable_min=stor_lo,
-                    sellable_max=stor_hi if stor_hi > stor_lo + 1e-6 else None,
+                    sellable_constrained=stor_constrained_alloc,
+                    sellable_min=stor_lo_alloc,
+                    sellable_max=stor_hi_out,
+                    sellable_allocation=stor_constrained_alloc,
+                    sellable_max_util=stor_constrained_max,
                     ratio_bound=ratio_bound,
                     computation_mode="host_based",
                     constraint_reason="ratio_bound" if ratio_bound else "none",
@@ -588,6 +621,7 @@ def constrain_by_ratio_dual_cpu_cluster(
     *,
     cpu_raw_physical: float,
     cpu_raw_effective: float,
+    cpu_raw_max: float | None = None,
     ram_raw_physical: float | None = None,
     ram_raw_peak: float | None = None,
     decouple_resource_kinds: frozenset[str] | None = None,
@@ -619,49 +653,73 @@ def constrain_by_ratio_dual_cpu_cluster(
         return min(effective_units) if effective_units else 0.0
 
     ram_phys = ram_raw_physical
-    ram_peak = ram_raw_peak
+    ram_max = ram_raw_peak
     if ram_p is not None:
         if ram_phys is None:
-            ram_phys = ram_p.sellable_physical if ram_p.sellable_physical is not None else ram_p.sellable_raw
-        if ram_peak is None:
-            ram_peak = ram_p.sellable_effective if ram_p.sellable_effective is not None else ram_p.sellable_raw
+            ram_phys = (
+                ram_p.sellable_allocation
+                if ram_p.sellable_allocation is not None
+                else (
+                    ram_p.sellable_physical
+                    if ram_p.sellable_physical is not None
+                    else ram_p.sellable_raw
+                )
+            )
+        if ram_max is None:
+            ram_max = (
+                ram_p.sellable_max_util
+                if ram_p.sellable_max_util is not None
+                else (
+                    ram_p.sellable_effective
+                    if ram_p.sellable_effective is not None
+                    else ram_p.sellable_raw
+                )
+            )
 
-    n_cpu_phys = _n_for_cpu(cpu_raw_physical, ram_phys)
-    n_cpu_eff = _n_for_cpu(cpu_raw_effective, ram_phys)
-    n_ram_phys = _n_for_cpu(cpu_raw_physical, ram_phys)
-    n_ram_peak = _n_for_cpu(cpu_raw_effective, ram_peak)
+    cpu_raw_max_val = cpu_raw_max if cpu_raw_max is not None else cpu_raw_effective
+
+    n_cpu_alloc = _n_for_cpu(cpu_raw_effective, ram_phys)
+    n_cpu_max = _n_for_cpu(cpu_raw_max_val, ram_max)
+    n_ram_alloc = _n_for_cpu(cpu_raw_effective, ram_phys)
+    n_ram_max = _n_for_cpu(cpu_raw_max_val, ram_max)
+    n_stor_alloc = n_cpu_alloc
+    n_stor_max = n_cpu_max
 
     out: list[PanelResult] = []
     for p in panel_list:
         if p.resource_kind == "cpu" and cpu_p is not None:
-            constrained_phys = n_cpu_phys * ratio.cpu_per_unit
-            constrained_eff = n_cpu_eff * ratio.cpu_per_unit
-            ratio_bound = constrained_eff + 1e-6 < cpu_p.sellable_raw
+            constrained_alloc = n_cpu_alloc * ratio.cpu_per_unit
+            constrained_max = n_cpu_max * ratio.cpu_per_unit
+            ratio_bound = constrained_alloc + 1e-6 < cpu_p.sellable_raw
             out.append(
                 replace(
                     p,
-                    sellable_physical=constrained_phys,
-                    sellable_effective=constrained_eff,
-                    sellable_constrained=constrained_eff,
+                    sellable_allocation=constrained_alloc,
+                    sellable_max_util=constrained_max,
+                    sellable_effective=constrained_alloc,
+                    sellable_physical=None,
+                    sellable_constrained=constrained_alloc,
                     ratio_bound=ratio_bound,
                     computation_mode="cluster_fallback",
                 )
             )
         elif p.resource_kind == "ram" and ram_p is not None:
-            constrained_phys = n_ram_phys * ratio.ram_gb_per_unit
-            constrained_peak = n_ram_peak * ratio.ram_gb_per_unit
+            constrained_alloc = n_ram_alloc * ratio.ram_gb_per_unit
+            constrained_max = n_ram_max * ratio.ram_gb_per_unit
             raw_phys = ram_phys if ram_phys is not None else ram_p.sellable_raw
-            raw_peak = ram_peak if ram_peak is not None else ram_p.sellable_raw
+            raw_max = ram_max if ram_max is not None else ram_p.sellable_raw
             ratio_bound = (
-                constrained_phys + 1e-6 < raw_phys
-                or constrained_peak + 1e-6 < raw_peak
+                constrained_alloc + 1e-6 < raw_phys
+                or constrained_max + 1e-6 < raw_max
             )
             out.append(
                 replace(
                     p,
-                    sellable_physical=constrained_phys,
-                    sellable_effective=constrained_peak,
-                    sellable_constrained=constrained_peak,
+                    sellable_physical=constrained_alloc,
+                    sellable_allocation=constrained_alloc,
+                    sellable_max_util=constrained_max,
+                    sellable_effective=constrained_max,
+                    sellable_constrained=constrained_alloc,
                     ratio_bound=ratio_bound,
                     computation_mode="cluster_fallback",
                 )
@@ -677,10 +735,20 @@ def constrain_by_ratio_dual_cpu_cluster(
                     )
                 )
             else:
-                # Effective-track n already min()s CPU, RAM, and storage raw units.
-                constrained = n_cpu_eff * ratio.storage_gb_per_unit
-                ratio_bound = constrained + 1e-6 < p.sellable_raw
-                out.append(replace(p, sellable_constrained=constrained, ratio_bound=ratio_bound))
+                constrained_alloc = n_stor_alloc * ratio.storage_gb_per_unit
+                constrained_max = n_stor_max * ratio.storage_gb_per_unit
+                ratio_bound = constrained_alloc + 1e-6 < p.sellable_raw
+                out.append(
+                    replace(
+                        p,
+                        sellable_constrained=constrained_alloc,
+                        sellable_min=constrained_alloc,
+                        sellable_max=constrained_max if constrained_max > constrained_alloc + 1e-6 else None,
+                        sellable_allocation=constrained_alloc,
+                        sellable_max_util=constrained_max,
+                        ratio_bound=ratio_bound,
+                    )
+                )
         else:
             out.append(replace(p, sellable_constrained=p.sellable_raw, ratio_bound=False))
     return out

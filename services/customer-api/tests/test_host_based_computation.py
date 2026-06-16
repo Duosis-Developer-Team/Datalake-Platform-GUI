@@ -196,16 +196,22 @@ def test_constrain_by_ratio_per_host_dual_populates_tracks():
     hosts = [{
         "cpu_total": 20.0,
         "cpu_alloc": 0.0,
+        "cpu_used_ghz": 5.0,
+        "cpu_used_pct": 25.0,
         "cpu_total_phys": 20.0,
         "cpu_alloc_phys": 0.0,
         "ghz_per_core": 2.0,
         "ram_total": 80.0,
         "ram_alloc": 0.0,
+        "mem_cap_gb_at_peak": 80.0,
+        "mem_used_gb_peak": 10.0,
+        "mem_peak_util_pct": 12.5,
     }]
     panels = [_panel("cpu", raw=20.0), _panel("ram", raw=80.0)]
     out = {p.resource_kind: p for p in constrain_by_ratio_per_host_dual(panels, _ratio(), hosts)}
-    assert out["cpu"].sellable_effective == 20.0
-    assert out["cpu"].sellable_physical == 10.0
+    assert out["cpu"].sellable_allocation == 20.0
+    assert out["cpu"].sellable_max_util > 0.0
+    assert out["cpu"].sellable_physical is None
     assert out["cpu"].computation_mode == "host_based"
 
 
@@ -214,7 +220,7 @@ def test_utilization_gate_blocked_when_allocation_exceeds_threshold():
     assert apply_utilization_gate(100.0, 90.0, 50.0, 80.0) == 0.0
 
 
-def test_host_effective_units_ram_peak_track_uses_cluster_peak_fields():
+def test_host_effective_units_ram_max_track_uses_cluster_peak_fields():
     hosts = [{
         "cpu_total": 10.0,
         "cpu_alloc": 0.0,
@@ -223,15 +229,17 @@ def test_host_effective_units_ram_peak_track_uses_cluster_peak_fields():
         "ram_peak_util_pct": 25.0,
     }]
     n = host_effective_units(
-        hosts, _ratio(ram=10.0), ram_track="peak", ram_threshold_pct=80.0
+        hosts, _ratio(ram=10.0), ram_track="max", ram_threshold_pct=80.0
     )
     assert n == 6.0
 
 
-def test_constrain_by_ratio_per_host_dual_ram_physical_vs_peak():
+def test_constrain_by_ratio_per_host_dual_ram_allocation_vs_max():
     hosts = [{
         "cpu_total": 100.0,
         "cpu_alloc": 0.0,
+        "cpu_used_ghz": 50.0,
+        "cpu_used_pct": 50.0,
         "cpu_total_phys": 100.0,
         "cpu_alloc_phys": 0.0,
         "ghz_per_core": 1.0,
@@ -251,8 +259,9 @@ def test_constrain_by_ratio_per_host_dual_ram_physical_vs_peak():
         ram_raw_physical=80.0,
         ram_raw_peak=0.0,
     )}
-    assert out["ram"].sellable_physical > 0
-    assert out["ram"].sellable_effective == 0.0
+    assert out["ram"].sellable_allocation > 0
+    assert out["ram"].sellable_max_util == 0.0
+    assert out["ram"].sellable_constrained == out["ram"].sellable_allocation
     assert out["ram"].ratio_bound is True
 
 
@@ -278,3 +287,77 @@ def test_constrain_by_ratio_dual_cpu_cluster_storage_uses_effective_n():
     # n = min(100, 100, 800) = 100 -> storage constrained = 100 * 100
     assert out["storage"].sellable_constrained == 10000.0
     assert out["storage"].ratio_bound is True
+
+
+def test_dc11_like_allocation_gated_max_has_headroom():
+    """Allocation track gate-blocked by CPU overcommit; max track stays independent."""
+    from shared.sellable.computation import constrain_by_ratio_per_host_triple_dual
+
+    hosts = [{
+        "cpu_cap_ghz": 100.0,
+        "cpu_alloc_ghz": 474.0,
+        "cpu_used_ghz": 62.0,
+        "cpu_used_pct": 62.0,
+        "mem_cap_gb": 1536.0,
+        "mem_alloc_gb": 1274.0,
+        "mem_used_pct": 48.0,
+        "mem_cap_gb_at_peak": 1536.0,
+        "mem_used_gb_peak": 735.0,
+        "mem_peak_util_pct": 48.0,
+        "stor_cap_gb": 40000.0,
+        "stor_provisioned_gb": 28000.0,
+        "stor_used_pct": 43.0,
+        "stor_exclusive_free_gb": 5000.0,
+    }]
+    panels = [_panel("cpu", raw=0.0), _panel("ram", raw=100.0), _panel("storage", raw=5000.0)]
+    out = {
+        p.resource_kind: p
+        for p in constrain_by_ratio_per_host_triple_dual(
+            panels,
+            _ratio(cpu=1.0, ram=4.0, storage=100.0),
+            hosts,
+            cpu_threshold_pct=80.0,
+            ram_threshold_pct=80.0,
+            storage_threshold_pct=85.0,
+        )
+    }
+    assert out["cpu"].sellable_allocation == 0.0
+    assert out["cpu"].sellable_max_util > 0.0
+    assert out["ram"].sellable_allocation == 0.0
+    assert out["ram"].sellable_max_util > 0.0
+
+
+def test_tracks_independent_storage_max_when_allocation_gated():
+    from shared.sellable.computation import constrain_by_ratio_per_host_triple_dual
+
+    hosts = [{
+        "cpu_cap_ghz": 100.0,
+        "cpu_alloc_ghz": 200.0,
+        "cpu_used_ghz": 50.0,
+        "cpu_used_pct": 50.0,
+        "mem_cap_gb": 100.0,
+        "mem_alloc_gb": 99.0,
+        "mem_used_pct": 50.0,
+        "mem_cap_gb_at_peak": 100.0,
+        "mem_used_gb_peak": 40.0,
+        "mem_peak_util_pct": 40.0,
+        "stor_cap_gb": 10000.0,
+        "stor_provisioned_gb": 2000.0,
+        "stor_used_pct": 20.0,
+        "stor_exclusive_free_gb": 8000.0,
+    }]
+    panels = [_panel("cpu", raw=0.0), _panel("ram", raw=0.0), _panel("storage", raw=8000.0)]
+    out = {
+        p.resource_kind: p
+        for p in constrain_by_ratio_per_host_triple_dual(
+            panels,
+            _ratio(cpu=1.0, ram=4.0, storage=100.0),
+            hosts,
+            cpu_threshold_pct=80.0,
+            ram_threshold_pct=80.0,
+            storage_threshold_pct=85.0,
+        )
+    }
+    assert out["cpu"].sellable_allocation == 0.0
+    assert out["storage"].sellable_constrained == 0.0
+    assert (out["storage"].sellable_max_util or 0.0) > 0.0

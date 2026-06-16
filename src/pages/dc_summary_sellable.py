@@ -233,10 +233,16 @@ def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] 
         if not cpu and not ram:
             continue
         mode = next((p.get("computation_mode") for p in fam_panels if p.get("computation_mode")), None)
-        cpu_phys = cpu.get("sellable_physical") if cpu else None
-        cpu_eff = cpu.get("sellable_effective") if cpu else (cpu.get("sellable_constrained") if cpu else None)
-        ram_phys = ram.get("sellable_physical") if ram else None
-        ram_peak = ram.get("sellable_effective") if ram else (ram.get("sellable_constrained") if ram else None)
+        cpu_alloc = cpu.get("sellable_allocation") if cpu else None
+        if cpu_alloc is None and cpu:
+            cpu_alloc = cpu.get("sellable_effective") or cpu.get("sellable_constrained")
+        cpu_max = cpu.get("sellable_max_util") if cpu else None
+        ram_alloc = ram.get("sellable_allocation") if ram else None
+        if ram_alloc is None and ram:
+            ram_alloc = ram.get("sellable_physical") or ram.get("sellable_constrained")
+        ram_max = ram.get("sellable_max_util") if ram else None
+        if ram_max is None and ram:
+            ram_max = ram.get("sellable_effective")
         cpu_unit = (cpu or {}).get("display_unit") or "vCPU"
         badge_children: list = []
         for kind_label, panel in (("CPU", cpu), ("RAM", ram)):
@@ -252,14 +258,16 @@ def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] 
                 dmc.Stack(gap=4, children=[
                     dmc.Text("CPU", fw=600, size="xs"),
                     dmc.Text(
-                        f"Physical: {smart_cpu(cpu_phys) if cpu_phys is not None else '—'} · "
-                        f"Effective: {cpu_eff:,.0f} {cpu_unit}" if cpu_eff is not None else "Effective: —",
+                        f"Allocation: {cpu_alloc:,.0f} {cpu_unit} · "
+                        f"Max: {cpu_max:,.0f} {cpu_unit}"
+                        if cpu_alloc is not None and cpu_max is not None
+                        else f"Sellable: {(cpu or {}).get('sellable_constrained', '—')}",
                         size="xs",
                     ),
                     sellable_constraint_bar(
                         float((cpu or {}).get("total") or 0),
                         float((cpu or {}).get("allocated") or 0),
-                        float(cpu_eff or 0),
+                        float(cpu_alloc or 0),
                         sellable_raw=float((cpu or {}).get("sellable_raw") or 0),
                         threshold_pct=float((cpu or {}).get("threshold_pct") or 80),
                         color=_BRAND,
@@ -267,8 +275,8 @@ def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] 
                     dmc.Text("RAM", fw=600, size="xs", mt="xs"),
                     dmc.Text(
                         (
-                            f"Physical: {smart_memory(ram_phys)} · Peak: {smart_memory(ram_peak)}"
-                            if ram_phys is not None and ram_peak is not None
+                            f"Allocation: {smart_memory(ram_alloc)} · Max: {smart_memory(ram_max)}"
+                            if ram_alloc is not None and ram_max is not None
                             else f"Sellable: {smart_memory((ram or {}).get('sellable_constrained'))}"
                         ),
                         size="xs",
@@ -276,7 +284,7 @@ def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] 
                     sellable_constraint_bar(
                         float((ram or {}).get("total") or 0),
                         float((ram or {}).get("allocated") or 0),
-                        float(ram_peak or (ram or {}).get("sellable_constrained") or 0),
+                        float(ram_max or (ram or {}).get("sellable_constrained") or 0),
                         sellable_raw=float((ram or {}).get("sellable_raw") or 0),
                         threshold_pct=float((ram or {}).get("threshold_pct") or 80),
                         color="#7551FF",
@@ -290,7 +298,7 @@ def build_virt_compute_block(summary: dict | None = None, *, panels: list[dict] 
     return html.Div([
         _section_title(
             "Sanallaştırma — Compute",
-            "Host bazlı CPU/RAM satılabilirlik (Physical vs Effective)",
+            "Host-based CPU/RAM sellable (Allocation vs Max, vCPU for CPU)",
         ),
         dmc.SimpleGrid(cols={"base": 1, "md": 2, "xl": 4}, spacing="md", mt="md", children=cards),
     ])

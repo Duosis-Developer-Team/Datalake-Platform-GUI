@@ -73,6 +73,16 @@ def host_storage_free_gb(host: dict, *, include_shared: bool) -> float:
     return max(exclusive + shared, 0.0)
 
 
+def _normalize_cpu_track(cpu_track: str) -> str:
+    """Map legacy ``peak`` track name to ``max``."""
+    return "max" if cpu_track == "peak" else cpu_track
+
+
+def _normalize_ram_track(ram_track: str) -> str:
+    """Map legacy ``peak`` track name to ``max``."""
+    return "max" if ram_track == "peak" else ram_track
+
+
 def host_raw_headroom(
     host: dict,
     *,
@@ -84,11 +94,13 @@ def host_raw_headroom(
 ) -> float:
     """Gated raw sellable headroom for one resource on one host."""
     _ = effective_ghz_per_unit
+    cpu_track = _normalize_cpu_track(cpu_track)
+    ram_track = _normalize_ram_track(ram_track)
     if resource == "cpu":
         cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
         if cpu_track == "physical":
             alloc = float(host.get("cpu_alloc_ghz_physical") or host.get("cpu_alloc_phys") or 0.0)
-        elif cpu_track == "peak":
+        elif cpu_track == "max":
             alloc = float(host.get("cpu_used_ghz") or 0.0)
         else:
             alloc = float(host.get("cpu_alloc_ghz") or host.get("cpu_alloc") or 0.0)
@@ -96,7 +108,7 @@ def host_raw_headroom(
         return apply_utilization_gate(cap, alloc, util, threshold_pct)
 
     if resource == "ram":
-        if ram_track == "peak":
+        if ram_track == "max":
             cap = float(
                 host.get("mem_cap_gb_at_peak")
                 or host.get("mem_peak_total")
@@ -143,6 +155,8 @@ def compute_host_sellable_units(
 ) -> HostSellableResult:
     """Compute min/max sellable units for one host with triple ratio coupling."""
     _ = effective_ghz_per_unit
+    cpu_track = _normalize_cpu_track(cpu_track)
+    ram_track = _normalize_ram_track(ram_track)
     cpu_cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
     mem_cap = float(host.get("mem_cap_gb") or host.get("ram_total") or 0.0)
     raw_cpu = host_raw_headroom(

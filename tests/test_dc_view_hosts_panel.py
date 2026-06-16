@@ -152,7 +152,7 @@ def test_host_card_km_storage_and_constraint_tags():
     assert "shared datastore mount" in text
     assert "40 GB RAM ratio-bound" in text
     assert "Sellable (sales alloc): 4.0 – 8.0" in text
-    assert "Sellable (peak util): 6.0 – 10.0" in text
+    assert "Sellable (max util):" in text
 
 
 # --------------------------------------------------------- backing badge

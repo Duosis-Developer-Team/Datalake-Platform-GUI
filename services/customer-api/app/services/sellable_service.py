@@ -85,7 +85,7 @@ _SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT",
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 3
+SELLABLE_PAYLOAD_VERSION: int = 4
 
 # Maps allocated_table → Redis section key for per-DC (dc_details) response.
 _VM_TABLE_DC_SECTION: dict[str, str] = {
@@ -1570,8 +1570,9 @@ SELECT _tot, _alloc FROM latest
                 p.total = cpu_total
                 p.allocated = cpu_alloc
                 p.sellable_raw = cpu_raw_sum
-                p.sellable_physical = cpu_raw_phys_sum
+                p.sellable_physical = None
                 p.sellable_effective = cpu_raw_sum
+                p.sellable_allocation = cpu_raw_sum
                 p.gate_blocked = utilization_gate_blocked(
                     cpu_total, cpu_alloc,
                     max((float(h.get("cpu_used_pct") or 0.0) for h in host_units), default=0.0),
@@ -1637,18 +1638,19 @@ SELECT _tot, _alloc FROM latest
 
         raw = self._fetch_compute_response(dc_code, family, clusters)
         cpu_raw_phys = cpu_raw_eff = cpu_p.sellable_raw
+        cpu_raw_max: float | None = None
         ram_raw_phys: float | None = None
         ram_raw_peak: float | None = None
         if raw:
             cap = float(raw.get("cpu_cap") or cpu_p.total or 0.0)
-            alloc_phys = float(raw.get("cpu_alloc_ghz_vm") or 0.0)
             alloc_eff = float(raw.get("cpu_alloc_ghz_sales") or cpu_p.allocated or 0.0)
             cpu_util = self._extract_utilization_pct(raw, "cpu")
-            cpu_raw_phys = apply_utilization_gate(
-                cap, alloc_phys, cpu_util, cpu_p.threshold_pct
-            )
             cpu_raw_eff = apply_utilization_gate(
                 cap, alloc_eff, cpu_util, cpu_p.threshold_pct
+            )
+            cpu_used_max = cap * (cpu_util / 100.0) if cap > 0 and cpu_util else 0.0
+            cpu_raw_max = apply_utilization_gate(
+                cap, cpu_used_max, cpu_util, cpu_p.threshold_pct
             )
             cpu_conv = None
             if cpu_p.display_unit.lower() not in ("ghz",):
@@ -1661,7 +1663,9 @@ SELECT _tot, _alloc FROM latest
                 cpu_p.allocated = alloc_eff
             cpu_p.sellable_raw = cpu_raw_eff
             cpu_p.sellable_effective = cpu_raw_eff
-            cpu_p.sellable_physical = cpu_raw_phys
+            cpu_p.sellable_allocation = cpu_raw_eff
+            cpu_p.sellable_physical = None
+            _ = cpu_raw_phys
 
             ram_p = next((p for p in group if p.resource_kind == "ram"), None)
             if ram_p is not None:
@@ -1711,39 +1715,38 @@ SELECT _tot, _alloc FROM latest
         return constrain_by_ratio_dual_cpu_cluster(
             group,
             ratio,
-            cpu_raw_physical=cpu_raw_phys,
+            cpu_raw_physical=cpu_raw_eff,
             cpu_raw_effective=cpu_raw_eff,
+            cpu_raw_max=cpu_raw_max,
             ram_raw_physical=ram_raw_phys,
             ram_raw_peak=ram_raw_peak,
             decouple_resource_kinds=decouple_resource_kinds,
         )
 
     def _apply_dual_track_pricing(self, panel: PanelResult, calc_cfg: dict[str, float | str]) -> None:
-        """Populate potential_tl_physical / potential_tl_effective for dual-track panels."""
-        if panel.sellable_physical is None and panel.sellable_effective is None:
-            panel.potential_tl = compute_potential_tl(panel.sellable_constrained, panel.unit_price_tl)
-            return
-        price_eff = panel.unit_price_tl
-        price_phys = price_eff
-        if panel.resource_kind == "cpu":
-            phys_unit = str(calc_cfg.get("physical_price_unit") or "GHz").upper()
-            if phys_unit == "GHZ" and panel.display_unit.upper() in ("VCPU", "CORE", "CPU"):
-                ghz_factor = float(calc_cfg.get("effective_ghz_per_unit") or 1.0)
-                if ghz_factor > 0:
-                    price_phys = price_eff / ghz_factor
-        if panel.sellable_physical is not None:
-            panel.potential_tl_physical = compute_potential_tl(panel.sellable_physical, price_phys)
-        if panel.sellable_effective is not None:
-            panel.potential_tl_effective = compute_potential_tl(panel.sellable_effective, price_eff)
-        phys_tl = panel.potential_tl_physical if panel.potential_tl_physical is not None else 0.0
-        eff_tl = panel.potential_tl_effective if panel.potential_tl_effective is not None else 0.0
-        panel.potential_tl_min = min(phys_tl, eff_tl)
-        panel.potential_tl_max = max(phys_tl, eff_tl)
-        # Headline TL follows effective/constrained track (ADR-0018).
-        if panel.sellable_constrained <= 1e-9:
-            panel.potential_tl = 0.0
-        else:
-            panel.potential_tl = eff_tl
+        """Populate allocation vs max-utilization TL tracks (payload v4)."""
+        _ = calc_cfg
+        alloc_qty = panel.sellable_allocation
+        max_qty = panel.sellable_max_util
+        if alloc_qty is None and panel.sellable_effective is not None:
+            alloc_qty = panel.sellable_effective
+        if max_qty is None and panel.resource_kind == "ram" and panel.sellable_effective is not None:
+            max_qty = panel.sellable_effective
+        if alloc_qty is None and max_qty is None:
+            if panel.sellable_physical is None and panel.sellable_effective is None:
+                panel.potential_tl = compute_potential_tl(panel.sellable_constrained, panel.unit_price_tl)
+                return
+            alloc_qty = panel.sellable_physical if panel.resource_kind == "ram" else panel.sellable_effective
+            max_qty = panel.sellable_effective if panel.resource_kind == "ram" else None
+
+        price = panel.unit_price_tl
+        alloc_tl = compute_potential_tl(alloc_qty, price) if alloc_qty is not None else 0.0
+        max_tl = compute_potential_tl(max_qty, price) if max_qty is not None else alloc_tl
+        panel.potential_tl_min = alloc_tl
+        panel.potential_tl_max = max_tl
+        panel.potential_tl_effective = alloc_tl
+        panel.potential_tl_physical = max_tl if panel.resource_kind == "ram" else None
+        panel.potential_tl = alloc_tl if panel.sellable_constrained <= 1e-9 else alloc_tl
 
     # ------------------------------------------- architecture storage range
 
@@ -2312,6 +2315,12 @@ SELECT _tot, _alloc FROM latest
             potential_tl_max=(
                 float(d["potential_tl_max"]) if d.get("potential_tl_max") is not None else None
             ),
+            sellable_allocation=(
+                float(d["sellable_allocation"]) if d.get("sellable_allocation") is not None else None
+            ),
+            sellable_max_util=(
+                float(d["sellable_max_util"]) if d.get("sellable_max_util") is not None else None
+            ),
             sellable_physical=(
                 float(d["sellable_physical"]) if d.get("sellable_physical") is not None else None
             ),
@@ -2481,15 +2490,22 @@ SELECT _tot, _alloc FROM latest
             new_group = annotate_panel_constraint_metadata(new_group)
 
             for new in new_group:
-                if new.sellable_physical is not None or new.sellable_effective is not None:
+                has_tracks = (
+                    new.sellable_allocation is not None
+                    or new.sellable_max_util is not None
+                    or new.sellable_physical is not None
+                    or new.sellable_effective is not None
+                )
+                if has_tracks:
                     self._apply_dual_track_pricing(new, calc_cfg)
                 else:
                     new.potential_tl = compute_potential_tl(new.sellable_constrained, new.unit_price_tl)
-                if new.sellable_min is not None:
+                if new.resource_kind == "storage" and new.sellable_min is not None:
                     new.potential_tl_min = compute_potential_tl(new.sellable_min, new.unit_price_tl)
-                if new.sellable_max is not None:
-                    new.potential_tl_max = compute_potential_tl(new.sellable_max, new.unit_price_tl)
-                if new.sellable_max is not None and new.sellable_min is not None:
+                    if new.sellable_max is not None:
+                        new.potential_tl_max = compute_potential_tl(new.sellable_max, new.unit_price_tl)
+                    else:
+                        new.potential_tl_max = new.potential_tl_min
                     new.potential_tl = new.potential_tl_min or 0.0
                 constrained.append(new)
         constrained.sort(key=lambda p: (p.family, p.resource_kind, p.panel_key))
@@ -2523,6 +2539,8 @@ SELECT _tot, _alloc FROM latest
             "sellable_raw": panel.sellable_raw,
             "sellable_min": panel.sellable_min,
             "sellable_max": panel.sellable_max,
+            "sellable_allocation": panel.sellable_allocation,
+            "sellable_max_util": panel.sellable_max_util,
             "sellable_physical": panel.sellable_physical,
             "sellable_effective": panel.sellable_effective,
             "potential_tl": panel.potential_tl,

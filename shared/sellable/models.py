@@ -85,7 +85,10 @@ class PanelResult:
     sellable_max: float | None = None
     potential_tl_min: float | None = None
     potential_tl_max: float | None = None
-    # Dual CPU sellable tracks (physical GHz vs effective sales units).
+    # Allocation vs max-utilization sellable tracks (payload v4+).
+    sellable_allocation: float | None = None
+    sellable_max_util: float | None = None
+    # Legacy dual-track aliases (CPU: effective=allocation; RAM: physical=allocation, effective=max).
     sellable_physical: float | None = None
     sellable_effective: float | None = None
     potential_tl_physical: float | None = None

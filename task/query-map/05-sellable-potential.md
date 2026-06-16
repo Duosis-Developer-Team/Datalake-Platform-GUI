@@ -534,13 +534,20 @@ host/cluster ratio (CPU/RAM) → _apply_storage_range (classic/power)
 ```
 
 For `virt_classic` / `virt_hyperconverged` with host rows present (ADR-0020,
-`SELLABLE_PAYLOAD_VERSION = 3`), storage participates in **per-host triple-min**
-instead of post-hoc cap:
+`SELLABLE_PAYLOAD_VERSION = 4`), storage participates in **per-host triple-min**
+with **independent allocation vs max tracks** (ADR-0021):
 
 ```
-per-host gates → triple-min (CPU, RAM, Storage) → Σ host n_units (family rollup)
-→ deduped storage_pools min/max band → pricing
+per-host gates → triple-min per track:
+  allocation: (cpu=effective, ram=physical, storage=alloc)
+  max:        (cpu=max, ram=max, storage=max)
+→ Σ host n_units per track → family KPI Alloc | Max
+→ potential_tl_min = allocation TL sum, potential_tl_max = max TL sum
+→ deduped storage_pools min/max band per track → pricing
 ```
+
+CPU sellable quantity is always **vCPU** (1 GHz = 1 vCPU); no separate Phys GHz
+display or GHz-based pricing on CPU panels.
 
 Skip `_apply_storage_range` DC aggregate and `apply_storage_ratio_cap` when
 `host_based_ok` is true.

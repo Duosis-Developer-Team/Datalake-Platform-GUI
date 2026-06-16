@@ -2018,15 +2018,35 @@ def _build_sellable_inline_kpi(
 
     def _dual_track_sums(kind: str) -> dict[str, float | bool]:
         rows = [p for p in panels if (p.get("resource_kind") or "").lower() == kind]
+        alloc_key = "sellable_allocation"
+        max_key = "sellable_max_util"
+        alloc_sum = sum(
+            float(p.get(alloc_key) or p.get("sellable_effective") or p.get("sellable_physical") or 0)
+            for p in rows
+        )
+        max_sum = sum(
+            float(p.get(max_key) or p.get("sellable_effective") or p.get("sellable_constrained") or 0)
+            for p in rows
+        )
+        tl_alloc = sum(
+            float(p.get("potential_tl_min") if p.get("potential_tl_min") is not None else p.get("potential_tl") or 0)
+            for p in rows
+        )
+        tl_max = sum(
+            float(p.get("potential_tl_max") if p.get("potential_tl_max") is not None else p.get("potential_tl") or 0)
+            for p in rows
+        )
+        has_dual = any(
+            (p.get(alloc_key) is not None or p.get("sellable_effective") is not None)
+            and (p.get(max_key) is not None or p.get("sellable_effective") is not None)
+            for p in rows
+        )
         return {
-            "phys": sum(float(p.get("sellable_physical") or 0) for p in rows),
-            "eff": sum(float(p.get("sellable_effective") or p.get("sellable_constrained") or 0) for p in rows),
-            "tl_phys": sum(float(p.get("potential_tl_physical") or 0) for p in rows),
-            "tl_eff": sum(float(p.get("potential_tl_effective") or p.get("potential_tl") or 0) for p in rows),
-            "has_dual": any(
-                p.get("sellable_physical") is not None and p.get("sellable_effective") is not None
-                for p in rows
-            ),
+            "alloc": alloc_sum,
+            "max": max_sum,
+            "tl_alloc": tl_alloc,
+            "tl_max": tl_max,
+            "has_dual": has_dual,
         }
 
     cpu_dual = _dual_track_sums("cpu")
@@ -2034,15 +2054,15 @@ def _build_sellable_inline_kpi(
     cpu_has_dual = bool(cpu_dual["has_dual"])
     ram_has_dual = bool(ram_dual["has_dual"])
     if cpu_has_dual:
-        cpu["physical"] = float(cpu_dual["phys"])
-        cpu["effective"] = float(cpu_dual["eff"])
-        cpu["tl_phys"] = float(cpu_dual["tl_phys"])
-        cpu["tl_eff"] = float(cpu_dual["tl_eff"])
+        cpu["allocation"] = float(cpu_dual["alloc"])
+        cpu["max_util"] = float(cpu_dual["max"])
+        cpu["tl_alloc"] = float(cpu_dual["tl_alloc"])
+        cpu["tl_max"] = float(cpu_dual["tl_max"])
     if ram_has_dual:
-        ram["physical"] = float(ram_dual["phys"])
-        ram["effective"] = float(ram_dual["eff"])
-        ram["tl_phys"] = float(ram_dual["tl_phys"])
-        ram["tl_eff"] = float(ram_dual["tl_eff"])
+        ram["allocation"] = float(ram_dual["alloc"])
+        ram["max_util"] = float(ram_dual["max"])
+        ram["tl_alloc"] = float(ram_dual["tl_alloc"])
+        ram["tl_max"] = float(ram_dual["tl_max"])
 
     def _kpi_with_sub(
         label: str,
@@ -2092,25 +2112,25 @@ def _build_sellable_inline_kpi(
             children=card,
         )
 
-    cpu_short, cpu_full = fmt_tl_for_card(cpu["tl"], constrained=cpu.get("effective", cpu["constrained"]))
+    cpu_short, cpu_full = fmt_tl_for_card(cpu["tl"], constrained=cpu.get("allocation", cpu["constrained"]))
     if cpu_has_dual:
-        phys_s, _ = fmt_tl_for_card(cpu.get("tl_phys", 0), constrained=cpu.get("physical", 0))
-        eff_s, _ = fmt_tl_for_card(cpu.get("tl_eff", 0), constrained=cpu.get("effective", cpu["constrained"]))
-        if phys_s != "—" or eff_s != "—":
-            cpu_short = f"{phys_s} – {eff_s}" if phys_s != eff_s else eff_s
+        alloc_s, _ = fmt_tl_for_card(cpu.get("tl_alloc", 0), constrained=cpu.get("allocation", 0))
+        max_s, _ = fmt_tl_for_card(cpu.get("tl_max", 0), constrained=cpu.get("max_util", 0))
+        if alloc_s != "—" or max_s != "—":
+            cpu_short = f"{alloc_s} – {max_s}" if alloc_s != max_s else alloc_s
         cpu_full = (
-            f"Physical: {smart_cpu(cpu.get('physical', 0))} · "
-            f"Effective: {cpu.get('effective', 0):,.0f} {cpu['unit']}"
+            f"Allocation: {_fmt_unit(cpu.get('allocation', 0), cpu['unit'])} · "
+            f"Max: {_fmt_unit(cpu.get('max_util', 0), cpu['unit'])}"
         )
-    ram_short, ram_full = fmt_tl_for_card(ram["tl"], constrained=ram.get("effective", ram["constrained"]))
+    ram_short, ram_full = fmt_tl_for_card(ram["tl"], constrained=ram.get("allocation", ram["constrained"]))
     if ram_has_dual:
-        phys_s, _ = fmt_tl_for_card(ram.get("tl_phys", 0), constrained=ram.get("physical", 0))
-        eff_s, _ = fmt_tl_for_card(ram.get("tl_eff", 0), constrained=ram.get("effective", ram["constrained"]))
-        if phys_s != "—" or eff_s != "—":
-            ram_short = f"{phys_s} – {eff_s}" if phys_s != eff_s else eff_s
+        alloc_s, _ = fmt_tl_for_card(ram.get("tl_alloc", 0), constrained=ram.get("allocation", 0))
+        max_s, _ = fmt_tl_for_card(ram.get("tl_max", 0), constrained=ram.get("max_util", 0))
+        if alloc_s != "—" or max_s != "—":
+            ram_short = f"{alloc_s} – {max_s}" if alloc_s != max_s else alloc_s
         ram_full = (
-            f"Physical: {ram.get('physical', 0):,.0f} {ram['unit']} · "
-            f"Peak: {ram.get('effective', 0):,.0f} {ram['unit']}"
+            f"Allocation: {_fmt_unit(ram.get('allocation', 0), ram['unit'])} · "
+            f"Max: {_fmt_unit(ram.get('max_util', 0), ram['unit'])}"
         )
     stor_short, stor_full = fmt_tl_for_card(stor["tl"], constrained=stor["constrained"])
     # Storage range display: "X – Y" when IBM-shared capacity yields a range.
@@ -2143,7 +2163,7 @@ def _build_sellable_inline_kpi(
         _kpi_with_sub(
             "CPU Sellable",
             (
-                f"Phys {smart_cpu(cpu.get('physical', 0))} | Eff {_fmt_unit(cpu.get('effective', cpu['constrained']), cpu['unit'])}"
+                f"Alloc {_fmt_unit(cpu.get('allocation', 0), cpu['unit'])} | Max {_fmt_unit(cpu.get('max_util', 0), cpu['unit'])}"
                 if cpu_has_dual
                 else _fmt_unit(cpu["constrained"], cpu["unit"])
             ),
@@ -2154,7 +2174,7 @@ def _build_sellable_inline_kpi(
         _kpi_with_sub(
             "RAM Sellable",
             (
-                f"Phys {_fmt_unit(ram.get('physical', 0), ram['unit'])} | Peak {_fmt_unit(ram.get('effective', ram['constrained']), ram['unit'])}"
+                f"Alloc {_fmt_unit(ram.get('allocation', 0), ram['unit'])} | Max {_fmt_unit(ram.get('max_util', 0), ram['unit'])}"
                 if ram_has_dual
                 else _fmt_unit(ram["constrained"], ram["unit"])
             ),
@@ -3608,22 +3628,22 @@ def _host_sellable_gate_tags(host: dict, thresholds: dict[str, float], *, track:
         cpu_used = float(host.get("cpu_used_ghz") or 0.0)
         cpu_util = float(host.get("cpu_used_pct") or 0.0)
         if utilization_gate_blocked(cpu_cap, cpu_used, cpu_util, thresholds["cpu"]):
-            tags.append("Peak threshold blocked (CPU utilization)")
-        peak_cap = float(host.get("mem_cap_gb_at_peak") or host.get("mem_cap_gb") or 0.0)
-        peak_used = float(host.get("mem_used_gb_peak") or 0.0)
-        peak_util = float(host.get("mem_peak_util_pct") or host.get("mem_used_pct") or 0.0)
-        if utilization_gate_blocked(peak_cap, peak_used, peak_util, thresholds["ram"]):
-            tags.append("Peak threshold blocked (RAM utilization)")
+            tags.append("Max threshold blocked (CPU utilization)")
+        max_cap = float(host.get("mem_cap_gb_at_peak") or host.get("mem_cap_gb") or 0.0)
+        max_used = float(host.get("mem_used_gb_peak") or 0.0)
+        max_util = float(host.get("mem_peak_util_pct") or host.get("mem_used_pct") or 0.0)
+        if utilization_gate_blocked(max_cap, max_used, max_util, thresholds["ram"]):
+            tags.append("Max threshold blocked (RAM utilization)")
         stor_cap = float(host.get("stor_cap_gb") or 0.0)
         stor_prov = float(host.get("stor_provisioned_gb") or 0.0)
         stor_util = float(host.get("stor_used_pct") or 0.0)
         if stor_cap > 0 and utilization_gate_blocked(stor_cap, stor_prov, stor_util, thresholds["storage"]):
-            tags.append("Peak threshold blocked (Storage utilization)")
+            tags.append("Max threshold blocked (Storage utilization)")
     return tags
 
 
 def _enrich_hosts_for_display(hosts: list[dict], *, family: str = "virt_classic") -> None:
-    """Attach dual-track sellable units (sales allocation vs peak utilization)."""
+    """Attach dual-track sellable units (sales allocation vs max utilization)."""
     from shared.sellable.host_sellable import compute_host_sellable_units
 
     ratio = _resolve_host_sellable_ratio(family)
@@ -3644,33 +3664,35 @@ def _enrich_hosts_for_display(hosts: list[dict], *, family: str = "virt_classic"
             cpu_track="effective", ram_track="physical",
             storage_include_shared=True,
         )
-        peak = compute_host_sellable_units(
+        max_track = compute_host_sellable_units(
             h, ratio,
             cpu_threshold_pct=cpu_t, ram_threshold_pct=ram_t, storage_threshold_pct=stor_t,
-            cpu_track="peak", ram_track="peak",
+            cpu_track="max", ram_track="max",
         )
-        peak_max = compute_host_sellable_units(
+        max_track_shared = compute_host_sellable_units(
             h, ratio,
             cpu_threshold_pct=cpu_t, ram_threshold_pct=ram_t, storage_threshold_pct=stor_t,
-            cpu_track="peak", ram_track="peak",
+            cpu_track="max", ram_track="max",
             storage_include_shared=True,
         )
         h["sellable_sales_n_min"] = round(sales.n_units_min, 2)
         h["sellable_sales_n_max"] = round(sales_max.n_units_max, 2)
-        h["sellable_peak_n_min"] = round(peak.n_units_min, 2)
-        h["sellable_peak_n_max"] = round(peak_max.n_units_max, 2)
+        h["sellable_max_n_min"] = round(max_track.n_units_min, 2)
+        h["sellable_max_n_max"] = round(max_track_shared.n_units_max, 2)
+        h["sellable_peak_n_min"] = h["sellable_max_n_min"]
+        h["sellable_peak_n_max"] = h["sellable_max_n_max"]
         h["sellable_n_min"] = h["sellable_sales_n_min"]
         h["sellable_n_max"] = h["sellable_sales_n_max"]
         merged_tags: list[str] = []
-        for tag in sales.constraint_tags + peak.constraint_tags:
+        for tag in sales.constraint_tags + max_track.constraint_tags:
             if tag not in merged_tags:
                 merged_tags.append(tag)
         h["constraint_tags"] = merged_tags[:6]
         gate_tags: list[str] = []
         if sales.n_units_min <= 1e-9:
             gate_tags.extend(_host_sellable_gate_tags(h, thresholds, track="sales"))
-        if peak.n_units_min <= 1e-9:
-            gate_tags.extend(_host_sellable_gate_tags(h, thresholds, track="peak"))
+        if max_track.n_units_min <= 1e-9:
+            gate_tags.extend(_host_sellable_gate_tags(h, thresholds, track="max"))
         h["sellable_gate_tags"] = gate_tags[:4]
 
 
@@ -3706,7 +3728,6 @@ def merge_host_summary_into_compute(
 def _host_card(h: dict, color: str = "blue"):
     """Single host card: cluster badge + VM count + CPU/RAM(/Disk) bars."""
     host_name = h.get("host") or "Unknown"
-    cpu_phys = float(h.get("cpu_alloc_ghz_physical") or 0)
     cpu_eff = float(h.get("cpu_alloc_ghz") or 0)
     cpu_row = _host_metric_row(
         "CPU",
@@ -3715,7 +3736,7 @@ def _host_card(h: dict, color: str = "blue"):
     )
     cpu_row.children.append(
         html.Div(
-            f"Physical alloc: {cpu_phys:,.1f} GHz · Effective: {cpu_eff:,.1f} GHz (1 vCPU=1 GHz)",
+            f"Allocation: {cpu_eff:,.1f} vCPU · Max util headroom uses {float(h.get('cpu_used_ghz') or 0):,.1f} GHz used",
             style={"fontSize": "0.7rem", "color": "#A3AED0", "marginTop": "3px", "fontFamily": "DM Sans"},
         )
     )
@@ -3780,8 +3801,8 @@ def _host_card(h: dict, color: str = "blue"):
     elif h.get("sellable_sales_n_min") is not None:
         sales_min = float(h.get("sellable_sales_n_min") or 0)
         sales_max = float(h.get("sellable_sales_n_max") or sales_min)
-        peak_min = float(h.get("sellable_peak_n_min") or 0)
-        peak_max = float(h.get("sellable_peak_n_max") or peak_min)
+        max_min = float(h.get("sellable_max_n_min") or h.get("sellable_peak_n_min") or 0)
+        max_max = float(h.get("sellable_max_n_max") or h.get("sellable_peak_n_max") or max_min)
         sellable_footer.append(
             html.Div(
                 "Sellable (sales alloc): "
@@ -3793,9 +3814,9 @@ def _host_card(h: dict, color: str = "blue"):
         )
         sellable_footer.append(
             html.Div(
-                "Sellable (peak util): "
-                + f"{peak_min:,.1f}"
-                + (f" – {peak_max:,.1f}" if abs(peak_max - peak_min) > 1e-6 else "")
+                "Sellable (max util): "
+                + f"{max_min:,.1f}"
+                + (f" – {max_max:,.1f}" if abs(max_max - max_min) > 1e-6 else "")
                 + " units",
                 style={"fontSize": "0.72rem", "color": "#1B9E77", "fontWeight": 700, "marginTop": "4px"},
             )
@@ -3902,7 +3923,7 @@ def _sellable_unit_tooltip(family: str) -> str:
         f"{ratio.storage_gb_per_unit:g} GB storage. "
         f"Sales track uses allocation gates (CPU/RAM/storage thresholds "
         f"{thresholds['cpu']:.0f}% / {thresholds['ram']:.0f}% / {thresholds['storage']:.0f}%). "
-        "Peak track uses utilization gates. Zero when any resource exceeds its threshold "
+        "Max track uses utilization gates. Zero when any resource exceeds its threshold "
         "or ratio coupling binds a resource."
     )
 
