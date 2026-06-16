@@ -3464,6 +3464,45 @@ def _ds_backing_badge(backing: str | None):
 # ---------------------------------------------------------------------------
 
 
+def _host_capacity_bar(alloc_pct: float, util_pct: float, height: str = "10px"):
+    """Dual-layer bar: allocation (purple) with utilization overlay (teal)."""
+    alloc_pct = max(0.0, min(100.0, float(alloc_pct or 0.0)))
+    util_pct = max(0.0, min(100.0, float(util_pct or 0.0)))
+    return html.Div(
+        style={
+            "position": "relative",
+            "borderRadius": "8px",
+            "overflow": "hidden",
+            "height": height,
+            "background": "#EAF0F7",
+        },
+        children=[
+            html.Div(
+                style={
+                    "position": "absolute",
+                    "left": 0,
+                    "top": 0,
+                    "height": "100%",
+                    "width": f"{alloc_pct}%",
+                    "background": "linear-gradient(90deg, #868CFF, #4318FF)",
+                    "opacity": 0.45,
+                },
+            ),
+            html.Div(
+                style={
+                    "position": "absolute",
+                    "left": 0,
+                    "top": 0,
+                    "height": "100%",
+                    "width": f"{util_pct}%",
+                    "background": "linear-gradient(90deg, #5AD8A6, #1B9E77)",
+                    "opacity": 0.95,
+                },
+            ),
+        ],
+    )
+
+
 def _host_metric_row(
     label: str,
     used: float,
@@ -3472,9 +3511,9 @@ def _host_metric_row(
     alloc: float | None = None,
     alloc_pct: float | None = None,
 ):
-    """Single resource row inside a host card: % + numeric capacity-usage."""
-    pct = (100.0 * used / cap) if cap > 0 else 0.0
-    _, solid = _ds_usage_palette(pct)
+    """Single resource row inside a host card: utilization % + alloc/usage bars."""
+    util_pct = (100.0 * used / cap) if cap > 0 else 0.0
+    _, solid = _ds_usage_palette(util_pct)
     children = [
         html.Div(
             style={"display": "flex", "justifyContent": "space-between", "alignItems": "baseline", "marginBottom": "4px"},
@@ -3486,15 +3525,18 @@ def _host_metric_row(
                 ),
                 html.Span(
                     children=[
-                        html.Span(f"%{pct:.1f}", style={"fontWeight": 800, "color": solid, "marginRight": "6px"}),
+                        html.Span(f"Util %{util_pct:.1f}", style={"fontWeight": 800, "color": solid, "marginRight": "6px"}),
                         html.Span(f"{used:,.1f} / {cap:,.1f} {unit}", style={"color": "#2B3674", "fontWeight": 600}),
                     ],
                     style={"fontSize": "0.78rem", "fontFamily": "DM Sans", "whiteSpace": "nowrap"},
                 ),
             ],
         ),
-        _ds_usage_bar(pct, height="10px", show_label=False),
     ]
+    if alloc is not None and alloc_pct is not None:
+        children.append(_host_capacity_bar(alloc_pct, util_pct, height="10px"))
+    else:
+        children.append(_ds_usage_bar(util_pct, height="10px", show_label=False))
     if alloc is not None:
         children.append(
             html.Div(
@@ -3505,6 +3547,116 @@ def _host_metric_row(
     return html.Div(style={"marginBottom": "10px"}, children=children)
 
 
+def _resolve_host_sellable_ratio(family: str):
+    """Load CRM resource ratio for host-card sellable display."""
+    from shared.sellable.models import ResourceRatio
+
+    default = ResourceRatio(family=family, cpu_per_unit=1.0, ram_gb_per_unit=4.0, storage_gb_per_unit=50.0)
+    try:
+        rows = api.get_resource_ratios() or []
+    except Exception:
+        return default
+    for row in rows:
+        if (row.get("family") or "") == family:
+            return ResourceRatio(
+                family=family,
+                cpu_per_unit=float(row.get("cpu_per_unit") or 1.0),
+                ram_gb_per_unit=float(row.get("ram_gb_per_unit") or 4.0),
+                storage_gb_per_unit=float(row.get("storage_gb_per_unit") or 50.0),
+            )
+    return default
+
+
+def _resolve_host_sellable_thresholds() -> dict[str, float]:
+    """Default CRM thresholds for host-card sellable (cpu/ram/storage)."""
+    out = {"cpu": 80.0, "ram": 80.0, "storage": 85.0}
+    try:
+        rows = api.get_crm_config_thresholds() or []
+    except Exception:
+        return out
+    for row in rows:
+        rt = (row.get("resource_type") or "").lower()
+        pct = float(row.get("sellable_limit_pct") or 0.0)
+        if rt in out and pct > 0:
+            out[rt] = pct
+    return out
+
+
+def _host_sellable_gate_tags(host: dict, thresholds: dict[str, float], *, track: str) -> list[str]:
+    """Short badges when sellable units are zero due to threshold gates."""
+    tags: list[str] = []
+    if track == "sales":
+        if float(host.get("cpu_alloc_pct") or 0.0) > thresholds["cpu"]:
+            tags.append("Sales threshold blocked (CPU allocation)")
+        if float(host.get("mem_alloc_pct") or 0.0) > thresholds["ram"]:
+            tags.append("Sales threshold blocked (RAM allocation)")
+        stor_cap = float(host.get("stor_cap_gb") or 0.0)
+        stor_prov = float(host.get("stor_provisioned_gb") or 0.0)
+        if stor_cap > 0 and 100.0 * stor_prov / stor_cap > thresholds["storage"]:
+            tags.append("Sales threshold blocked (Storage provisioned)")
+    else:
+        if float(host.get("cpu_used_pct") or 0.0) > thresholds["cpu"]:
+            tags.append("Peak threshold blocked (CPU utilization)")
+        peak_util = float(host.get("mem_peak_util_pct") or host.get("mem_used_pct") or 0.0)
+        if peak_util > thresholds["ram"]:
+            tags.append("Peak threshold blocked (RAM utilization)")
+        if float(host.get("stor_used_pct") or 0.0) > thresholds["storage"]:
+            tags.append("Peak threshold blocked (Storage utilization)")
+    return tags
+
+
+def _enrich_hosts_for_display(hosts: list[dict], *, family: str = "virt_classic") -> None:
+    """Attach dual-track sellable units (sales allocation vs peak utilization)."""
+    from shared.sellable.host_sellable import compute_host_sellable_units
+
+    ratio = _resolve_host_sellable_ratio(family)
+    thresholds = _resolve_host_sellable_thresholds()
+    cpu_t = thresholds["cpu"]
+    ram_t = thresholds["ram"]
+    stor_t = thresholds["storage"]
+
+    for h in hosts:
+        sales = compute_host_sellable_units(
+            h, ratio,
+            cpu_threshold_pct=cpu_t, ram_threshold_pct=ram_t, storage_threshold_pct=stor_t,
+            cpu_track="effective", ram_track="physical",
+        )
+        sales_max = compute_host_sellable_units(
+            h, ratio,
+            cpu_threshold_pct=cpu_t, ram_threshold_pct=ram_t, storage_threshold_pct=stor_t,
+            cpu_track="effective", ram_track="physical",
+            storage_include_shared=True,
+        )
+        peak = compute_host_sellable_units(
+            h, ratio,
+            cpu_threshold_pct=cpu_t, ram_threshold_pct=ram_t, storage_threshold_pct=stor_t,
+            cpu_track="peak", ram_track="peak",
+        )
+        peak_max = compute_host_sellable_units(
+            h, ratio,
+            cpu_threshold_pct=cpu_t, ram_threshold_pct=ram_t, storage_threshold_pct=stor_t,
+            cpu_track="peak", ram_track="peak",
+            storage_include_shared=True,
+        )
+        h["sellable_sales_n_min"] = round(sales.n_units_min, 2)
+        h["sellable_sales_n_max"] = round(sales_max.n_units_max, 2)
+        h["sellable_peak_n_min"] = round(peak.n_units_min, 2)
+        h["sellable_peak_n_max"] = round(peak_max.n_units_max, 2)
+        h["sellable_n_min"] = h["sellable_sales_n_min"]
+        h["sellable_n_max"] = h["sellable_sales_n_max"]
+        merged_tags: list[str] = []
+        for tag in sales.constraint_tags + peak.constraint_tags:
+            if tag not in merged_tags:
+                merged_tags.append(tag)
+        h["constraint_tags"] = merged_tags[:6]
+        gate_tags: list[str] = []
+        if sales.n_units_min <= 1e-9:
+            gate_tags.extend(_host_sellable_gate_tags(h, thresholds, track="sales"))
+        if peak.n_units_min <= 1e-9:
+            gate_tags.extend(_host_sellable_gate_tags(h, thresholds, track="peak"))
+        h["sellable_gate_tags"] = gate_tags[:4]
+
+
 def merge_host_summary_into_compute(compute: dict | None, hosts_data: dict | None) -> dict:
     """Overlay host-aggregated capacity onto cluster compute metrics for Capacity Planning."""
     merged = dict(compute or {})
@@ -3512,27 +3664,6 @@ def merge_host_summary_into_compute(compute: dict | None, hosts_data: dict | Non
     if isinstance(summary, dict) and summary:
         merged.update(summary)
     return merged
-
-
-def _enrich_hosts_for_display(hosts: list[dict], *, family: str = "virt_classic") -> None:
-    """Attach sellable constraint tags when not already present (display-only fallback)."""
-    from shared.sellable.host_sellable import compute_host_sellable_units
-    from shared.sellable.models import ResourceRatio
-
-    ratio = ResourceRatio(family=family, cpu_per_unit=1.0, ram_gb_per_unit=4.0, storage_gb_per_unit=50.0)
-    for h in hosts:
-        if h.get("constraint_tags"):
-            continue
-        eff = compute_host_sellable_units(
-            h, ratio, cpu_threshold_pct=80.0, ram_threshold_pct=80.0, storage_threshold_pct=85.0,
-        )
-        eff_max = compute_host_sellable_units(
-            h, ratio, cpu_threshold_pct=80.0, ram_threshold_pct=80.0, storage_threshold_pct=85.0,
-            storage_include_shared=True,
-        )
-        h["constraint_tags"] = eff.constraint_tags
-        h["sellable_n_min"] = eff.n_units_min
-        h["sellable_n_max"] = eff_max.n_units_max
 
 
 def _host_card(h: dict, color: str = "blue"):
@@ -3570,7 +3701,16 @@ def _host_card(h: dict, color: str = "blue"):
             stor_cap / 1024.0 if stor_cap > 1024 else stor_cap,
             "TB" if stor_cap > 1024 else "GB",
             alloc=float(h.get("stor_provisioned_gb") or 0),
+            alloc_pct=(100.0 * float(h.get("stor_provisioned_gb") or 0) / stor_cap) if stor_cap > 0 else 0.0,
         )
+        stor_prov = float(h.get("stor_provisioned_gb") or 0.0)
+        if stor_cap > 0 and stor_prov > stor_cap:
+            stor_row.children.append(
+                html.Div(
+                    "Provisioned sum may exceed visible capacity on shared datastores",
+                    style={"fontSize": "0.68rem", "color": "#E8A317", "marginTop": "3px", "fontFamily": "DM Sans"},
+                )
+            )
         if shared_mounts:
             stor_row.children.append(
                 html.Div(
@@ -3590,6 +3730,29 @@ def _host_card(h: dict, color: str = "blue"):
                 style={"fontSize": "0.72rem", "color": "#4318FF", "fontWeight": 700, "marginTop": "8px"},
             )
         )
+    elif h.get("sellable_sales_n_min") is not None:
+        sales_min = float(h.get("sellable_sales_n_min") or 0)
+        sales_max = float(h.get("sellable_sales_n_max") or sales_min)
+        peak_min = float(h.get("sellable_peak_n_min") or 0)
+        peak_max = float(h.get("sellable_peak_n_max") or peak_min)
+        sellable_footer.append(
+            html.Div(
+                "Sellable (sales alloc): "
+                + f"{sales_min:,.1f}"
+                + (f" – {sales_max:,.1f}" if abs(sales_max - sales_min) > 1e-6 else "")
+                + " units",
+                style={"fontSize": "0.72rem", "color": "#4318FF", "fontWeight": 700, "marginTop": "8px"},
+            )
+        )
+        sellable_footer.append(
+            html.Div(
+                "Sellable (peak util): "
+                + f"{peak_min:,.1f}"
+                + (f" – {peak_max:,.1f}" if abs(peak_max - peak_min) > 1e-6 else "")
+                + " units",
+                style={"fontSize": "0.72rem", "color": "#1B9E77", "fontWeight": 700, "marginTop": "4px"},
+            )
+        )
     elif h.get("sellable_n_min") is not None:
         n_min = float(h.get("sellable_n_min") or 0)
         n_max = float(h.get("sellable_n_max") or n_min)
@@ -3600,6 +3763,17 @@ def _host_card(h: dict, color: str = "blue"):
             )
         )
     tags = h.get("constraint_tags") or []
+    gate_tags = h.get("sellable_gate_tags") or []
+    if gate_tags:
+        sellable_footer.append(
+            html.Div(
+                style={"display": "flex", "flexWrap": "wrap", "gap": "4px", "marginTop": "6px"},
+                children=[
+                    dmc.Badge(tag, color="red", variant="light", size="xs")
+                    for tag in gate_tags[:4]
+                ],
+            )
+        )
     if tags:
         sellable_footer.append(
             html.Div(

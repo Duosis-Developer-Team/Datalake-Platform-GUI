@@ -4,6 +4,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from src.utils import datacenters_virt_sellable as dvs
+from src.utils.virt_sellable_aggregate import panel_constrained_loss_tl, virt_constrained_loss_tl
 
 
 def _entry(tl: float, tl_min: float | None = None, tl_max: float | None = None) -> dict:
@@ -160,3 +161,23 @@ def test_seed_from_api_cache_uses_by_panel_path():
         "DC2": _entry(200.0, 180.0, 220.0),
     }
     assert mock_compute.call_count == 2
+
+
+def test_virt_constrained_loss_zero_when_gate_blocked_or_unconstrained():
+    panels = [
+        {
+            "sellable_raw": 100_000.0,
+            "sellable_constrained": 0.0,
+            "unit_price_tl": 5000.0,
+            "gate_blocked": True,
+        },
+        {
+            "sellable_raw": 50.0,
+            "sellable_constrained": 10.0,
+            "unit_price_tl": 100.0,
+            "gate_blocked": False,
+        },
+    ]
+    assert panel_constrained_loss_tl(panels[0]) == 0.0
+    assert panel_constrained_loss_tl(panels[1]) == 4000.0
+    assert virt_constrained_loss_tl(panels) == 4000.0

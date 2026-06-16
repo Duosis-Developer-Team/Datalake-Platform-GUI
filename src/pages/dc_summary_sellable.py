@@ -166,6 +166,8 @@ def build_sellable_executive_strip(
     panels = virt_panels or []
     _, tl_min, tl_max = virt_total_potential_range(panels)
     constrained_loss = virt_constrained_loss_tl(panels)
+    if tl_max <= 1e-6 and tl_min <= 1e-6:
+        constrained_loss = 0.0
     mapped_count = sum(
         1 for p in panels if p.get("has_infra_source") or p.get("has_price")
     )

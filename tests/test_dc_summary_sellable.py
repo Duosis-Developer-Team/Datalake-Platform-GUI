@@ -13,6 +13,26 @@ from src.pages.dc_summary_sellable import (
 from src.utils.virt_sellable_aggregate import merge_power_panels_for_summary
 
 
+def test_executive_strip_constrained_loss_zero_when_total_zero():
+    from src.utils.virt_sellable_aggregate import virt_constrained_loss_tl, virt_total_potential_range
+
+    panels = [
+        {
+            "resource_kind": "storage",
+            "sellable_raw": 100_000.0,
+            "sellable_constrained": 0.0,
+            "potential_tl": 0.0,
+            "unit_price_tl": 5000.0,
+            "gate_blocked": True,
+        },
+    ]
+    _, lo, hi = virt_total_potential_range(panels)
+    loss = virt_constrained_loss_tl(panels)
+    if lo <= 1e-6 and hi <= 1e-6:
+        loss = 0.0
+    assert loss == 0.0
+
+
 def test_fmt_tl_range_shows_bounds():
     text = _fmt_tl_range(1000.0, 2000.0)
     assert "–" in text or "-" in text

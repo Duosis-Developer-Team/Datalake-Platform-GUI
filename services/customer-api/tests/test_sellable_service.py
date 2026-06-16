@@ -154,8 +154,7 @@ def test_compute_summary_drops_to_zero_when_one_resource_unsold():
         for p in fam.panels:
             assert p.sellable_constrained == 0.0
         assert summary.total_potential_tl == 0.0
-        # Raw potential for cpu/storage still exists -> constrained loss > 0
-        assert fam.constrained_loss_tl > 0
+        assert fam.constrained_loss_tl == 0.0
     finally:
         # Restore for any subsequent tests in the file.
         INFRA["virt_hyperconverged_ram"] = (

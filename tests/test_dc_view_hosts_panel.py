@@ -101,7 +101,7 @@ def test_hosts_panel_content_empty_shows_alert():
 def test_host_card_shows_pct_and_numeric_values():
     card = dc_view._host_card(_SAMPLE_HOST, "blue")
     text = _texts(card)
-    assert "%21.4" in text          # CPU used pct
+    assert "Util %21.4" in text          # CPU used pct
     assert "48.0 / 224.0 GHz" in text
     assert "%36.2" in text          # RAM used pct
     assert "Tahsis" in text         # sales allocation line
@@ -126,14 +126,17 @@ def test_host_card_km_storage_and_constraint_tags():
         "stor_exclusive_free_gb": 400.0,
         "datastore_mounts": [{"shared": True, "free_gb": 800.0}],
         "constraint_tags": ["40 GB RAM ratio-bound", "600 GB Storage ratio-bound"],
-        "sellable_n_min": 4.0,
-        "sellable_n_max": 8.0,
+        "sellable_sales_n_min": 4.0,
+        "sellable_sales_n_max": 8.0,
+        "sellable_peak_n_min": 6.0,
+        "sellable_peak_n_max": 10.0,
     }
     text = _texts(dc_view._host_card(km_host, "blue"))
     assert "Storage" in text
     assert "shared datastore mount" in text
     assert "40 GB RAM ratio-bound" in text
-    assert "Sellable units: 4.0 – 8.0" in text
+    assert "Sellable (sales alloc): 4.0 – 8.0" in text
+    assert "Sellable (peak util): 6.0 – 10.0" in text
 
 
 # --------------------------------------------------------- backing badge

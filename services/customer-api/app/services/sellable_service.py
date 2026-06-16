@@ -2564,11 +2564,18 @@ SELECT _tot, _alloc FROM latest
             family_max = sum(
                 (p.potential_tl_max if p.potential_tl_max is not None else p.potential_tl) for p in group
             )
-            family_raw_potential = sum(compute_potential_tl(p.sellable_raw, p.unit_price_tl) for p in group)
+            family_loss = 0.0
+            for p in group:
+                if p.gate_blocked or p.sellable_constrained <= 1e-9:
+                    continue
+                family_loss += max(
+                    compute_potential_tl(p.sellable_raw, p.unit_price_tl) - p.potential_tl,
+                    0.0,
+                )
             agg.total_potential_tl = family_potential
             agg.total_potential_tl_min = family_min
             agg.total_potential_tl_max = family_max
-            agg.constrained_loss_tl = max(family_raw_potential - family_potential, 0.0)
+            agg.constrained_loss_tl = family_loss
             agg.total_sellable_constrained_units = {
                 p.resource_kind: agg.total_sellable_constrained_units.get(p.resource_kind, 0.0) + p.sellable_constrained
                 for p in group

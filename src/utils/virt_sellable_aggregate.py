@@ -201,19 +201,25 @@ def virt_total_potential_range(panels: list[dict]) -> tuple[float, float, float]
     return total, lo, hi
 
 
+def panel_constrained_loss_tl(panel: dict) -> float:
+    """TL loss from ratio binding for one panel (zero when gated or unconstrained)."""
+    if not isinstance(panel, dict):
+        return 0.0
+    if panel.get("gate_blocked"):
+        return 0.0
+    constrained = float(panel.get("sellable_constrained") or 0.0)
+    if constrained <= 1e-9:
+        return 0.0
+    price = float(panel.get("unit_price_tl") or 0.0)
+    if price <= 0:
+        return 0.0
+    raw = float(panel.get("sellable_raw") or 0.0)
+    return max((raw - constrained) * price, 0.0)
+
+
 def virt_constrained_loss_tl(panels: list[dict]) -> float:
     """Ratio-bound TL loss across virt panels (raw potential minus constrained)."""
-    loss = 0.0
-    for p in panels:
-        if not isinstance(p, dict):
-            continue
-        price = float(p.get("unit_price_tl") or 0.0)
-        if price <= 0:
-            continue
-        raw = float(p.get("sellable_raw") or 0.0)
-        constrained = float(p.get("sellable_constrained") or 0.0)
-        loss += max((raw - constrained) * price, 0.0)
-    return loss
+    return sum(panel_constrained_loss_tl(p) for p in panels if isinstance(p, dict))
 
 
 def aggregate_virt_sellable_panels(

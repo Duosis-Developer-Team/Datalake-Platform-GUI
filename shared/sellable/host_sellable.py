@@ -78,6 +78,8 @@ def host_raw_headroom(
         cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
         if cpu_track == "physical":
             alloc = float(host.get("cpu_alloc_ghz_physical") or host.get("cpu_alloc_phys") or 0.0)
+        elif cpu_track == "peak":
+            alloc = float(host.get("cpu_used_ghz") or 0.0)
         else:
             alloc = float(host.get("cpu_alloc_ghz") or host.get("cpu_alloc") or 0.0)
         util = float(host.get("cpu_used_pct") or host.get("cpu_util_pct") or 0.0)
@@ -103,6 +105,8 @@ def host_raw_headroom(
     if resource == "storage":
         cap = float(host.get("stor_cap_gb") or 0.0)
         prov = float(host.get("stor_provisioned_gb") or 0.0)
+        if cap > 0 and prov > cap:
+            prov = cap
         util = float(host.get("stor_used_pct") or 0.0)
         if cap <= 0:
             return 0.0
@@ -144,6 +148,8 @@ def compute_host_sellable_units(
     stor_free_max = host_storage_free_gb(host, include_shared=True)
     cap = float(host.get("stor_cap_gb") or 0.0)
     prov = float(host.get("stor_provisioned_gb") or 0.0)
+    if cap > 0 and prov > cap:
+        prov = cap
     util = float(host.get("stor_used_pct") or 0.0)
     if cap > 0:
         raw_stor_gate = apply_utilization_gate(cap, prov, util, storage_threshold_pct)
