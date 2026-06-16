@@ -14,6 +14,26 @@ from app.core.redis_client import get_redis_client
 logger = logging.getLogger(__name__)
 _tracer = trace.get_tracer(__name__)
 
+_VIRT_CACHE_PREFIXES = (
+    "dc_details:",
+    "classic_hosts_all:",
+    "hyperconv_hosts_all:",
+    "compute:classic:",
+    "compute:hyperconv:",
+    "classic_clusters:",
+    "hyperconv_clusters:",
+    "dc_datastore_mapping:",
+)
+
+
+def _is_virt_cache_key(key: str) -> bool:
+    return bool(key) and any(key.startswith(prefix) for prefix in _VIRT_CACHE_PREFIXES)
+
+
+def _log_virt_cache_access(key: str, hit: bool, backend: str) -> None:
+    if _is_virt_cache_key(key):
+        logger.info("virt_cache.%s backend=%s key=%s", "hit" if hit else "miss", backend, key[:160])
+
 _memory_lock = threading.RLock()
 
 _memory_cache: TTLCache = TTLCache(
@@ -53,6 +73,7 @@ def cache_get(key: str) -> Any:
                 if isinstance(raw, (str, bytes, bytearray)):
                     span.set_attribute("cache.hit", True)
                     span.set_attribute("cache.backend", "redis")
+                    _log_virt_cache_access(key, True, "redis")
                     return json.loads(raw)
             except Exception as exc:
                 logger.warning("Redis GET error: %s", exc)
@@ -75,10 +96,12 @@ def cache_get(key: str) -> Any:
                     logger.warning("Redis backfill error: %s", exc)
             span.set_attribute("cache.hit", True)
             span.set_attribute("cache.backend", "memory")
+            _log_virt_cache_access(key, True, "memory")
             return value
 
         span.set_attribute("cache.hit", False)
         span.set_attribute("cache.backend", "miss")
+        _log_virt_cache_access(key, False, "miss")
         return None
 
 

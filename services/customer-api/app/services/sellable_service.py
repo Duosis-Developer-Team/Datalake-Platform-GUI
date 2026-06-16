@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from app.utils.time_range import default_time_range, preset_to_range
 from app.utils.storage_capacity_parse import parse_storage_string_to_gb
 
 if TYPE_CHECKING:
@@ -83,6 +84,7 @@ _SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT",
 # TTL (seconds) for compute_all_panels result in crm-engine Redis (DB 2).
 # 0 disables caching. Override with SELLABLE_CACHE_TTL_SECONDS.
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
+_CALC_CONFIG_TTL_SEC: int = int(os.getenv("SELLABLE_CALC_CONFIG_TTL_SECONDS", "300") or "300")
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
 SELLABLE_PAYLOAD_VERSION: int = 3
@@ -279,8 +281,47 @@ class SellableService:
         self._dc_api_url = (datacenter_api_url or "").rstrip("/")
         self._crm_redis = crm_redis  # crm-engine's own Redis (DB 2) for result caching
         self._virt_cluster_list_cache: dict[str, tuple[list[str] | None, list[str] | None]] = {}
+        self._calc_config_cache: tuple[float, dict[str, float | str]] | None = None
 
     # ----------------------------------------------------------------- helpers
+
+    @staticmethod
+    def _normalize_time_range(time_range: dict | None) -> dict:
+        if not time_range:
+            return default_time_range()
+        tr = dict(time_range)
+        preset = tr.get("preset")
+        if preset in ("1h", "1d", "7d", "30d") and not (tr.get("start") and tr.get("end")):
+            return preset_to_range(str(preset))
+        return tr
+
+    @staticmethod
+    def _time_range_cache_part(time_range: dict | None) -> str:
+        tr = SellableService._normalize_time_range(time_range)
+        preset = tr.get("preset")
+        if preset in ("1h", "1d", "7d", "30d", "previous_month"):
+            return str(preset)
+        start = tr.get("start", "")
+        end = tr.get("end", "")
+        if start and end:
+            return f"{start}:{end}"
+        return "7d"
+
+    @staticmethod
+    def _time_range_query_params(time_range: dict | None) -> list[str]:
+        tr = SellableService._normalize_time_range(time_range)
+        params: list[str] = []
+        preset = tr.get("preset")
+        if preset in ("1h", "1d", "7d", "30d") and not (tr.get("start") and tr.get("end")):
+            params.append(f"preset={preset}")
+        elif tr.get("start") and tr.get("end"):
+            params.append(f"start={tr['start']}")
+            params.append(f"end={tr['end']}")
+        else:
+            params.append("preset=7d")
+        if tr.get("anchor_latest"):
+            params.append("anchor_latest=true")
+        return params
 
     @property
     def is_available(self) -> bool:
@@ -1032,15 +1073,32 @@ SELECT _tot, _alloc FROM latest
             else "",
         )
 
-    def _dc_redis_key(self, dc_code: str) -> tuple[str, str]:
-        """Primary Redis key aligned with datacenter-api default 7d window (UTC, inclusive)."""
-        days = max(_DC_DETAILS_WINDOW_DAYS, 1)
-        return self._dc_redis_keys_for_span(dc_code, days)
+    def _dc_redis_key(self, dc_code: str, time_range: dict | None = None) -> tuple[str, str]:
+        """Primary Redis key aligned with datacenter-api window for the given time range."""
+        tr = self._normalize_time_range(time_range)
+        start = tr.get("start", "")
+        end = tr.get("end", "")
+        is_global = not dc_code or dc_code == "*"
+        query = "&".join(self._time_range_query_params(tr))
+        if is_global:
+            return (
+                f"global_dashboard:{start}:{end}",
+                f"{self._dc_api_url}/api/v1/dashboard/overview?{query}"
+                if self._dc_api_url
+                else "",
+            )
+        return (
+            f"dc_details:{dc_code}:{start}:{end}",
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}?{query}"
+            if self._dc_api_url
+            else "",
+        )
 
-    def _dc_redis_key_alternates(self, dc_code: str) -> list[str]:
+    def _dc_redis_key_alternates(self, dc_code: str, time_range: dict | None = None) -> list[str]:
         """Extra Redis keys (legacy off-by-one span, neighbors) before HTTP fallback."""
+        tr = self._normalize_time_range(time_range)
+        primary, _ = self._dc_redis_key(dc_code, tr)
         days = max(_DC_DETAILS_WINDOW_DAYS, 1)
-        primary, _ = self._dc_redis_key(dc_code)
         out: list[str] = []
         for span in (days + 1, days - 1):
             if span < 1:
@@ -1067,15 +1125,15 @@ SELECT _tot, _alloc FROM latest
             logger.warning("Redis key %s: JSON decode failed", redis_key)
             return None
 
-    def _load_dc_redis_payload(self, dc_code: str) -> dict:
+    def _load_dc_redis_payload(self, dc_code: str, time_range: dict | None = None) -> dict:
         """Fetch the full datacenter payload from Redis once (or via HTTP fallback).
 
         Called once per ``compute_all_panels`` invocation so that all panels
         sharing the same dc_code reuse the single JSON blob rather than issuing
         one Redis GET (or HTTP call) per panel.
         """
-        redis_key, fallback_url = self._dc_redis_key(dc_code)
-        keys_to_try = [redis_key, *self._dc_redis_key_alternates(dc_code)]
+        redis_key, fallback_url = self._dc_redis_key(dc_code, time_range)
+        keys_to_try = [redis_key, *self._dc_redis_key_alternates(dc_code, time_range)]
 
         for key in keys_to_try:
             payload = self._redis_get_json(key)
@@ -1175,7 +1233,12 @@ SELECT _tot, _alloc FROM latest
         return self._extract_allocated_from_payload(payload, src, dc_code)
 
     def _fetch_raw_compute_response(
-        self, dc_code: str, family: str, clusters: list[str]
+        self,
+        dc_code: str,
+        family: str,
+        clusters: list[str],
+        *,
+        time_range: dict | None = None,
     ) -> "dict | None":
         """Fetch the raw /compute/{kind}?clusters=... JSON once per family.
 
@@ -1186,8 +1249,13 @@ SELECT _tot, _alloc FROM latest
         kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
         if not kind or not clusters or not dc_code or dc_code == "*" or not self._dc_api_url:
             return None
+        params = list(self._time_range_query_params(time_range))
         csv = ",".join(c for c in clusters if c)
-        url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}?clusters={csv}"
+        params.append(f"clusters={csv}")
+        url = (
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
+            f"?{'&'.join(params)}"
+        )
         try:
             resp = httpx.get(url, timeout=15.0)
             resp.raise_for_status()
@@ -1236,6 +1304,7 @@ SELECT _tot, _alloc FROM latest
         family: str,
         resource_kind: str,
         clusters: list[str],
+        time_range: dict | None = None,
     ) -> tuple[float, float, str] | None:
         """Read total_capacity + allocated for a virt panel from datacenter-api
         ``/compute/{kind}?clusters=…`` (the same source the DC view's
@@ -1261,10 +1330,12 @@ SELECT _tot, _alloc FROM latest
             return None
 
         cap_field, used_field, source_unit = fields
+        params = list(self._time_range_query_params(time_range))
         csv = ",".join(c for c in clusters if c)
+        params.append(f"clusters={csv}")
         url = (
             f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
-            f"?clusters={csv}"
+            f"?{'&'.join(params)}"
         )
         timeout = self._dc_api_timeout(clusters)
         try:
@@ -1298,7 +1369,7 @@ SELECT _tot, _alloc FROM latest
         family: str,
         clusters: list[str] | None,
         *,
-        preset: str = "7d",
+        time_range: dict | None = None,
     ) -> tuple[list[dict] | None, str, list[dict]]:
         """Fetch per-host compute rows from datacenter-api /compute/{kind}/hosts.
 
@@ -1308,7 +1379,7 @@ SELECT _tot, _alloc FROM latest
         kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
         if not kind or not dc_code or dc_code == "*" or not self._dc_api_url:
             return None, "unavailable", []
-        params: list[str] = [f"preset={preset}"]
+        params: list[str] = list(self._time_range_query_params(time_range))
         cl = [c for c in (clusters or []) if c]
         if cl:
             params.append(f"clusters={','.join(cl)}")
@@ -1352,6 +1423,11 @@ SELECT _tot, _alloc FROM latest
 
     def _get_sellable_calc_config(self) -> dict[str, float | str]:
         """Load dual-CPU sellable calc variables from gui_crm_calc_config."""
+        import time as _time
+
+        now = _time.monotonic()
+        if self._calc_config_cache and (now - self._calc_config_cache[0]) < _CALC_CONFIG_TTL_SEC:
+            return dict(self._calc_config_cache[1])
         defaults: dict[str, float | str] = {
             "effective_ghz_per_unit": 1.0,
             "physical_price_unit": "GHz",
@@ -1384,6 +1460,7 @@ SELECT _tot, _alloc FROM latest
             )
         except (TypeError, ValueError):
             pass
+        self._calc_config_cache = (now, dict(defaults))
         return defaults
 
     @staticmethod
@@ -1399,13 +1476,18 @@ SELECT _tot, _alloc FROM latest
         return min(120.0, base + count * 8.0)
 
     def _fetch_compute_response(
-        self, dc_code: str, family: str, clusters: list[str] | None
+        self,
+        dc_code: str,
+        family: str,
+        clusters: list[str] | None,
+        *,
+        time_range: dict | None = None,
     ) -> dict | None:
         """Fetch datacenter-api /compute/{kind} JSON (optional cluster filter)."""
         kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
         if not kind or not dc_code or dc_code == "*" or not self._dc_api_url:
             return None
-        params = ["preset=30d"]
+        params = list(self._time_range_query_params(time_range))
         cl = [c for c in (clusters or []) if c]
         if cl:
             params.append(f"clusters={','.join(cl)}")
@@ -1613,13 +1695,14 @@ SELECT _tot, _alloc FROM latest
         host_status: str,
         effective_ghz_per_unit: float = 1.0,
         decouple_resource_kinds: frozenset[str] | None = None,
+        time_range: dict | None = None,
     ) -> "list[PanelResult]":
         """Cluster-level fallback with dual CPU when host rows are unavailable."""
         cpu_p = next((p for p in group if p.resource_kind == "cpu"), None)
         if cpu_p is None:
             return constrain_by_ratio(group, ratio, decouple_resource_kinds=decouple_resource_kinds)
 
-        raw = self._fetch_compute_response(dc_code, family, clusters)
+        raw = self._fetch_compute_response(dc_code, family, clusters, time_range=time_range)
         cpu_raw_phys = cpu_raw_eff = cpu_p.sellable_raw
         ram_raw_phys: float | None = None
         ram_raw_peak: float | None = None
@@ -1895,6 +1978,7 @@ SELECT _tot, _alloc FROM latest
         price_overrides: "dict[str, float] | None" = None,
         compute_response_cache: "dict[tuple, dict | None] | None" = None,
         dc_payload: "dict | None" = None,
+        time_range: dict | None = None,
     ) -> PanelResult:
         unit_lookup = unit_lookup if unit_lookup is not None else self._build_unit_lookup()
         notes: list[str] = []
@@ -1946,11 +2030,18 @@ SELECT _tot, _alloc FROM latest
             # Reuse a per-family raw response when compute_all_panels pre-fetched it.
             raw: dict | None = None
             if compute_response_cache is not None:
-                key = (dc_code, panel.family, tuple(c for c in selected_clusters if c))
+                key = (
+                    dc_code,
+                    panel.family,
+                    tuple(c for c in selected_clusters if c),
+                    self._time_range_cache_part(time_range),
+                )
                 if key in compute_response_cache:
                     raw = compute_response_cache[key]
                 else:
-                    raw = self._fetch_raw_compute_response(dc_code, panel.family, list(selected_clusters))
+                    raw = self._fetch_raw_compute_response(
+                        dc_code, panel.family, list(selected_clusters), time_range=time_range
+                    )
                     compute_response_cache[key] = raw
                 if raw is not None:
                     compute_metrics = self._extract_compute_metrics(raw, panel.resource_kind)
@@ -1959,7 +2050,8 @@ SELECT _tot, _alloc FROM latest
                     dc_code=dc_code,
                     family=panel.family,
                     resource_kind=panel.resource_kind,
-                    clusters=selected_clusters,
+                    clusters=list(selected_clusters),
+                    time_range=time_range,
                 )
 
         if compute_metrics is not None:
@@ -2229,11 +2321,13 @@ SELECT _tot, _alloc FROM latest
         dc_code: str,
         selected_clusters: list[str] | None,
         family: str | None,
+        time_range: dict | None = None,
     ) -> str:
         clusters_part = ""
         if selected_clusters:
             clusters_part = ",".join(sorted(c for c in selected_clusters if c))
-        return f"sellable:panels:{dc_code or '*'}:{family or '*'}:{clusters_part}"
+        tr_part = SellableService._time_range_cache_part(time_range)
+        return f"sellable:panels:{dc_code or '*'}:{family or '*'}:{clusters_part}:{tr_part}"
 
     @staticmethod
     def _panel_results_total_tl(results: "list[PanelResult]") -> float:
@@ -2361,6 +2455,7 @@ SELECT _tot, _alloc FROM latest
         selected_clusters: list[str] | None = None,
         family: str | None = None,
         force_recompute: bool = False,
+        time_range: dict | None = None,
     ) -> list[PanelResult]:
         fam_key = self._snapshot_family_key(family)
         selected_clusters = self._normalize_clusters_for_cache(
@@ -2369,7 +2464,7 @@ SELECT _tot, _alloc FROM latest
         clusters_csv = self._clusters_csv(selected_clusters)
 
         # 1. Tier-1 Redis result cache lookup.
-        cache_key = self._result_cache_key(dc_code, selected_clusters, family)
+        cache_key = self._result_cache_key(dc_code, selected_clusters, family, time_range)
         if force_recompute:
             logger.info(
                 "compute_all_panels: force_recompute=True dc=%s family=%s clusters=%s",
@@ -2412,7 +2507,7 @@ SELECT _tot, _alloc FROM latest
             )
             for d in defs
         )
-        dc_payload = self._load_dc_redis_payload(dc_code) if needs_redis_payload else None
+        dc_payload = self._load_dc_redis_payload(dc_code, time_range) if needs_redis_payload else None
 
         # 6. Per-family /compute response cache — 3 cpu/ram/storage panels of
         #    the same family share a single HTTP call when clusters are set.
@@ -2429,6 +2524,7 @@ SELECT _tot, _alloc FROM latest
                 price_overrides=price_overrides,
                 compute_response_cache=compute_response_cache,
                 dc_payload=dc_payload,
+                time_range=time_range,
             )
             for d in defs
         ]
@@ -2461,7 +2557,7 @@ SELECT _tot, _alloc FROM latest
             storage_pools: list[dict] = []
             if fam in _HOST_BASED_FAMILIES:
                 host_rows, host_status, storage_pools = self._fetch_host_rows(
-                    dc_code, fam, selected_clusters
+                    dc_code, fam, selected_clusters, time_range=time_range
                 )
 
             if host_rows:
@@ -2487,6 +2583,7 @@ SELECT _tot, _alloc FROM latest
                     host_status=host_status,
                     effective_ghz_per_unit=effective_ghz,
                     decouple_resource_kinds=None,
+                    time_range=time_range,
                 )
             else:
                 new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=None)
@@ -2852,6 +2949,7 @@ SELECT _tot, _alloc FROM latest
         *,
         classic_clusters: list[str] | None = None,
         hyperconv_clusters: list[str] | None = None,
+        time_range: dict | None = None,
     ) -> list[dict[str, Any]]:
         """Single round-trip aggregation for DC view virt-total card."""
         panels: list[dict[str, Any]] = []
@@ -2865,6 +2963,7 @@ SELECT _tot, _alloc FROM latest
                 dc_code=dc_code,
                 selected_clusters=clusters,
                 family=family,
+                time_range=time_range,
             )
             panels.extend(p.to_dict() for p in chunk)
         return panels

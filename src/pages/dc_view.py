@@ -1645,12 +1645,14 @@ def _build_virt_total_sellable_children(
     dc_id: str,
     classic_clusters: list[str] | None,
     hyperconv_clusters: list[str] | None,
+    time_range: dict | None = None,
 ) -> list:
     """Top-level Virt sellable KPI grid (server-side initial render + callback)."""
     panels = api.get_virt_sellable_panels(
         dc_id,
         classic_clusters or None,
         hyperconv_clusters or None,
+        tr=time_range,
     )
     total_tl, by_kind, has_known = aggregate_virt_sellable_panels(panels)
     _, tl_min, tl_max = virt_total_potential_range(panels)
@@ -1900,6 +1902,7 @@ def _build_sellable_inline_kpi(
     color: str = "violet",
     selected_clusters: list[str] | None = None,
     container_id: str | None = None,
+    time_range: dict | None = None,
 ) -> html.Div | None:
     """Inline 'Sellable Potential' card for a sub-tab (Faz 6).
 
@@ -1931,6 +1934,7 @@ def _build_sellable_inline_kpi(
                 dc_code=str(dc_id),
                 family=fam,
                 clusters=selected_clusters if fam in ("virt_classic", "virt_hyperconverged") else None,
+                tr=time_range,
             ) or []
             if isinstance(chunk, list):
                 panels.extend(chunk)

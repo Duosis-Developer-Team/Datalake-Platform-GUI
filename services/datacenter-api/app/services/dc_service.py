@@ -57,6 +57,9 @@ _DC_CODE_RE = re.compile(r'(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)', re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 
+_UNIT_PRICES_CACHE: dict[str, tuple[float, dict]] = {}
+_UNIT_PRICES_TTL_SEC = 300
+
 # Fallback DC list used when loki_locations is unreachable.
 _FALLBACK_DC_LIST = [
     "AZ11", "DC11", "DC12", "DC13", "DC14", "DC15", "DC16", "DC17", "ICT11"
@@ -987,7 +990,12 @@ LIMIT 20
     def get_unit_prices_tl(self, cursor, mimari: str) -> dict:
         """Return {cpu_vcpu, ram_gb, storage_gb} TL unit prices for given architecture.
         Power mapping yalnızca CPU içerir; eksik anahtarlar 0.0 döner."""
-        mapping = self._SELLABLE_PRODUCT_MAP.get(mimari.lower())
+        mim_key = mimari.lower()
+        now = time.monotonic()
+        cached = _UNIT_PRICES_CACHE.get(mim_key)
+        if cached and (now - cached[0]) < _UNIT_PRICES_TTL_SEC:
+            return cached[1]
+        mapping = self._SELLABLE_PRODUCT_MAP.get(mim_key)
         zero = {"cpu_vcpu": 0.0, "ram_gb": 0.0, "storage_gb": 0.0}
         if not mapping:
             return zero
@@ -1007,11 +1015,13 @@ LIMIT 20
             logger.warning("get_unit_prices_tl(%s) failed: %s", mimari, exc)
             return zero
         name_to_price = {r[0]: float(r[1] or 0) for r in (rows or [])}
-        return {
+        result = {
             "cpu_vcpu":   round(name_to_price.get(mapping.get("cpu") or "", 0.0), 4),
             "ram_gb":     round(name_to_price.get(mapping.get("ram") or "", 0.0), 4),
             "storage_gb": round(name_to_price.get(mapping.get("storage") or "", 0.0), 4),
         }
+        _UNIT_PRICES_CACHE[mim_key] = (now, result)
+        return result
 
     # ------------------------------------------------------------------
     # Cluster list and filtered metrics (for DC view cluster selector)
@@ -6788,6 +6798,32 @@ JOIN latest l
         except Exception as exc:
             logger.warning("S3 cache warm-up failed: %s", exc)
 
+    def refresh_virt_compute_cache(self) -> None:
+        """Refresh host-rows and cluster-list caches for standard reporting ranges."""
+        logger.info("Virt compute cache refresh started (host-rows + cluster lists).")
+        t0 = time.perf_counter()
+        try:
+            for tr in cache_time_ranges()[:2]:
+                for dc_code in self._dc_list:
+                    try:
+                        self.get_classic_cluster_list(dc_code, tr)
+                        self.get_hyperconv_cluster_list(dc_code, tr)
+                        self.get_classic_host_rows(dc_code, None, tr)
+                        self.get_hyperconv_host_rows(dc_code, None, tr)
+                    except Exception as exc:
+                        logger.warning(
+                            "Virt compute refresh failed dc=%s tr=%s: %s",
+                            dc_code,
+                            tr.get("preset") or f"{tr.get('start')}..{tr.get('end')}",
+                            exc,
+                        )
+            logger.info(
+                "Virt compute cache refresh complete in %.2fs.",
+                time.perf_counter() - t0,
+            )
+        except Exception as exc:
+            logger.warning("Virt compute cache refresh failed: %s", exc)
+
     def refresh_all_data(self) -> None:
         """
         Called by the background scheduler every 15 minutes.
@@ -6799,6 +6835,7 @@ JOIN latest l
             for tr in cache_time_ranges():
                 self.get_all_datacenters_summary(tr)
                 self.get_global_overview(tr)
+            self.refresh_virt_compute_cache()
             logger.info("Background cache refresh complete.")
         except Exception as exc:
             logger.error("Background cache refresh failed: %s", exc)

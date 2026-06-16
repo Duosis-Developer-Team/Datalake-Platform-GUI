@@ -1,4 +1,4 @@
-"""Progressive host loading: virt block decoupled from hosts; prefetch + collapse render."""
+"""Progressive host loading: virt block merged fetch; prefetch skips when Store warm."""
 import ast
 import re
 from pathlib import Path
@@ -23,19 +23,28 @@ def _callback_outputs(func_name: str) -> list[str]:
     raise AssertionError(f"{func_name} not found")
 
 
-def test_virt_block_callbacks_do_not_fetch_hosts():
+def test_virt_block_uses_merged_fetch_not_direct_host_api():
     for fn in ("update_classic_virt_block", "update_hyperconv_virt_block"):
         body = _function_source(fn)
+        assert "_fetch_virt_compute_merged" in body
         assert "get_classic_host_rows" not in body and "get_hyperconv_host_rows" not in body
-        assert '"hosts"' not in body
 
 
-def test_virt_block_owns_panel_and_sellable_only():
-    for fn in ("update_classic_virt_block", "update_hyperconv_virt_block"):
-        outs = _callback_outputs(fn)
-        assert len(outs) == 2
-        assert "hosts-panel" not in "".join(outs)
-        assert "hosts-count" not in "".join(outs)
+def test_virt_block_owns_panel_sellable_and_hosts_store():
+    classic_outs = _callback_outputs("update_classic_virt_block")
+    assert "classic-virt-panel" in classic_outs
+    assert "sellable-classic-card" in classic_outs
+    assert "hosts-data-classic" in classic_outs
+    assert "hosts-count-classic" in classic_outs
+    hyper_outs = _callback_outputs("update_hyperconv_virt_block")
+    assert "hosts-data-hyperconv" in hyper_outs
+
+
+def test_prefetch_skips_when_store_populated():
+    for fn in ("prefetch_classic_hosts", "prefetch_hyperconv_hosts"):
+        body = _function_source(fn)
+        assert "existing_hosts" in body
+        assert "host_count" in body
 
 
 def test_prefetch_callbacks_exist():

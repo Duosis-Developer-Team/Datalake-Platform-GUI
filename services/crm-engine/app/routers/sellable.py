@@ -73,6 +73,22 @@ def _parse_clusters(raw: Optional[str]) -> Optional[list[str]]:
     return items or None
 
 
+def _parse_time_range(
+    preset: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    anchor_latest: Optional[bool] = None,
+) -> Optional[dict]:
+    if preset in {"1h", "1d", "7d", "30d"}:
+        return {"preset": preset, "anchor_latest": bool(anchor_latest)}
+    if start and end:
+        out: dict = {"start": start, "end": end, "preset": "custom"}
+        if anchor_latest:
+            out["anchor_latest"] = True
+        return out
+    return None
+
+
 @router.get("/crm/sellable-potential/snapshot-meta", response_model=dict)
 def get_snapshot_meta(
     dc_code: str = "*",
@@ -128,6 +144,10 @@ def get_by_panel(
                     "panels read total + allocated from datacenter-api /compute/{kind}?clusters=... "
                     "instead of the dc-wide datalake + Redis path.",
     ),
+    preset: Optional[str] = Query(None, description="Time preset: 1h, 1d, 7d, 30d"),
+    start: Optional[str] = Query(None, description="Custom range start (ISO date)"),
+    end: Optional[str] = Query(None, description="Custom range end (ISO date)"),
+    anchor_latest: Optional[bool] = Query(None),
     svc: SellableService = Depends(_sellable),
 ):
     # Forward family to compute_all_panels so unrelated panels are not even
@@ -137,6 +157,7 @@ def get_by_panel(
         dc_code=dc_code,
         selected_clusters=_parse_clusters(clusters),
         family=family,
+        time_range=_parse_time_range(preset, start, end, anchor_latest),
     )
     return [p.to_dict() for p in panels]
 
@@ -165,6 +186,10 @@ def get_virt_sellable_total(
         None,
         description="CSV of hyperconverged cluster names for virt_hyperconverged panel scope.",
     ),
+    preset: Optional[str] = Query(None),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    anchor_latest: Optional[bool] = Query(None),
     svc: SellableService = Depends(_sellable),
 ):
     """All virt sellable panels (classic + hyperconv + power) in one CRM call."""
@@ -172,6 +197,7 @@ def get_virt_sellable_total(
         dc_code=dc_code,
         classic_clusters=_parse_clusters(classic_clusters),
         hyperconv_clusters=_parse_clusters(hyperconv_clusters),
+        time_range=_parse_time_range(preset, start, end, anchor_latest),
     )
 
 

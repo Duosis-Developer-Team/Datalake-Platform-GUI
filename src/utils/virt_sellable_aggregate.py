@@ -67,6 +67,7 @@ def collect_virt_sellable_panels(
     classic_clusters: list[str] | None = None,
     hyperconv_clusters: list[str] | None = None,
     max_family_workers: int | None = None,
+    time_range: dict | None = None,
 ) -> list[dict]:
     """Fetch virt classic + hyperconv + power panel rows.
 
@@ -76,7 +77,7 @@ def collect_virt_sellable_panels(
     panels: list[dict] = []
 
     def _fetch_family(family: str) -> list[dict]:
-        kwargs: dict[str, Any] = {"dc_code": str(dc_id), "family": family}
+        kwargs: dict[str, Any] = {"dc_code": str(dc_id), "family": family, "tr": time_range}
         if family == "virt_classic":
             kwargs["clusters"] = classic_clusters
         elif family == "virt_hyperconverged":

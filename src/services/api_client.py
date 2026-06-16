@@ -130,6 +130,8 @@ _inflight: dict[str, threading.Event] = {}
 # path below. Warm-job entries (written directly via cache_service.set) have NO entry here
 # and are therefore NEVER auto-refreshed (avoids conflict with warm jobs).
 _SWR_TTL_SECONDS = float(os.getenv("API_CACHE_SWR_TTL", "300") or "300")
+_HOST_ROWS_CUSTOM_SWR_TTL = float(os.getenv("API_HOST_ROWS_CUSTOM_SWR_TTL", "900") or "900")
+_VIRT_CACHE_LOG = os.getenv("API_VIRT_CACHE_LOG", "true").lower() in {"1", "true", "yes"}
 _fetched_at: dict[str, float] = {}
 _swr_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="api-swr")
 _swr_refreshing_lock = threading.Lock()
@@ -404,6 +406,39 @@ def _serialize_tr_params(tr: Optional[dict]) -> str:
     return json.dumps(sorted(p.items()), separators=(",", ":"), ensure_ascii=False)
 
 
+def _is_custom_time_range(tr: Optional[dict]) -> bool:
+    if not tr:
+        return False
+    preset = tr.get("preset")
+    if preset in {"1h", "1d", "7d", "30d"}:
+        return False
+    return bool(tr.get("start") and tr.get("end"))
+
+
+def _swr_ttl_for_tr(tr: Optional[dict], *, host_rows: bool = False) -> float:
+    if host_rows and _is_custom_time_range(tr):
+        return _HOST_ROWS_CUSTOM_SWR_TTL
+    return _SWR_TTL_SECONDS
+
+
+def _log_virt_api_cache(cache_key: str, hit: bool) -> None:
+    if not _VIRT_CACHE_LOG:
+        return
+    prefixes = (
+        "api:dc_details:",
+        "api:classic_hosts_all:",
+        "api:hyperconv_hosts_all:",
+        "api:classic_metrics:",
+        "api:hyperconv_metrics:",
+        "api:classic_clusters:",
+        "api:hyperconv_clusters:",
+        "api:sellable_by_panel:",
+        "api:virt_sellable_total:",
+    )
+    if any(cache_key.startswith(p) for p in prefixes):
+        logger.info("virt_api_cache.%s key=%s", "hit" if hit else "miss", cache_key[:180])
+
+
 def _swr_age(cache_key: str) -> Optional[float]:
     """Return age (seconds) of this key's last leader-fetch, or None if no timestamp exists."""
     ts = _fetched_at.get(cache_key)
@@ -435,19 +470,24 @@ def _api_cache_get_with_stale(
     cache_key: str,
     fetch_normalized: Callable[[], Any],
     empty_fallback: Any,
+    *,
+    swr_ttl: Optional[float] = None,
 ) -> Any:
     """Cached payload if present; else single-flight fetch (concurrent callers share one fetch).
-    On cache HIT, if the entry is older than _SWR_TTL_SECONDS, a background refresh is scheduled
+    On cache HIT, if the entry is older than swr_ttl (default _SWR_TTL_SECONDS), a background refresh is scheduled
     (stale-while-revalidate) — the caller always receives the cached value immediately without
     blocking. On HTTP/transport errors return last-good payload."""
+    effective_swr = _SWR_TTL_SECONDS if swr_ttl is None else swr_ttl
     stale = _api_response_cache.get(cache_key)
     if stale is not None:
-        if _SWR_TTL_SECONDS > 0:
+        _log_virt_api_cache(cache_key, True)
+        if effective_swr > 0:
             age = _swr_age(cache_key)
-            if age is not None and age > _SWR_TTL_SECONDS:
+            if age is not None and age > effective_swr:
                 _schedule_swr_refresh(cache_key, fetch_normalized)
         return _clone(stale)
 
+    _log_virt_api_cache(cache_key, False)
     with _inflight_lock:
         ev = _inflight.get(cache_key)
         leader = ev is None
@@ -878,7 +918,9 @@ def get_classic_host_rows(
             )
         return data if isinstance(data, dict) else {"hosts": [], "host_count": 0}
 
-    full = _api_cache_get_with_stale(ck, fetch, {"hosts": [], "host_count": 0})
+    full = _api_cache_get_with_stale(
+        ck, fetch, {"hosts": [], "host_count": 0}, swr_ttl=_swr_ttl_for_tr(tr, host_rows=True)
+    )
     return _slice_host_rows(full, selected_clusters)
 
 
@@ -900,7 +942,9 @@ def get_hyperconv_host_rows(
             )
         return data if isinstance(data, dict) else {"hosts": [], "host_count": 0}
 
-    full = _api_cache_get_with_stale(ck, fetch, {"hosts": [], "host_count": 0})
+    full = _api_cache_get_with_stale(
+        ck, fetch, {"hosts": [], "host_count": 0}, swr_ttl=_swr_ttl_for_tr(tr, host_rows=True)
+    )
     return _slice_host_rows(full, selected_clusters)
 
 
@@ -1936,10 +1980,27 @@ def _normalize_clusters_arg(clusters: Optional[list]) -> Optional[list[str]]:
     return cleaned or None
 
 
+def _sellable_time_qs(tr: Optional[dict]) -> str:
+    params = _build_time_params(tr)
+    if not params:
+        return ""
+    parts = []
+    if params.get("preset"):
+        parts.append(f"preset={quote(params['preset'], safe='')}")
+    if params.get("start"):
+        parts.append(f"start={quote(params['start'], safe='')}")
+    if params.get("end"):
+        parts.append(f"end={quote(params['end'], safe='')}")
+    if params.get("anchor_latest"):
+        parts.append("anchor_latest=true")
+    return "&" + "&".join(parts) if parts else ""
+
+
 def get_sellable_by_panel(
     dc_code: str = "*",
     family: Optional[str] = None,
     clusters: Optional[list[str]] = None,
+    tr: Optional[dict] = None,
 ) -> list:
     """Panel-level computation list. Optional family + cluster filter.
 
@@ -1954,13 +2015,17 @@ def get_sellable_by_panel(
     cl = _normalize_clusters_arg(clusters)
     if cl:
         qs += f"&clusters={quote(','.join(cl), safe=',')}"
+    qs += _sellable_time_qs(tr)
 
     def fetch() -> list:
         data = _get_json(_get_client_crm(), f"/api/v1/crm/sellable-potential/by-panel?{qs}")
         return data if isinstance(data, list) else []
 
     cluster_key = ",".join(cl) if cl else "*"
-    cache_key = f"api:sellable_by_panel:{dc_code}:{family or '*'}:{cluster_key}"
+    cache_key = (
+        f"api:sellable_by_panel:{dc_code}:{family or '*'}:{cluster_key}:"
+        f"{_serialize_tr_params(tr)}"
+    )
     return _api_cache_get_sellable_panels(cache_key, fetch, dc_code, family, cl)
 
 
@@ -1968,26 +2033,27 @@ def get_virt_sellable_panels(
     dc_code: str,
     classic_clusters: Optional[list[str]] = None,
     hyperconv_clusters: Optional[list[str]] = None,
+    tr: Optional[dict] = None,
 ) -> list:
-    """All virt sellable panels in one CRM round-trip (classic + hyperconv + power)."""
-    qs = f"dc_code={quote(dc_code, safe='*')}"
+    """Virt sellable panels via cached by-panel calls (single CRM cache layer)."""
+    panels: list = []
     cl_classic = _normalize_clusters_arg(classic_clusters)
     cl_hyper = _normalize_clusters_arg(hyperconv_clusters)
-    if cl_classic:
-        qs += f"&classic_clusters={quote(','.join(cl_classic), safe=',')}"
-    if cl_hyper:
-        qs += f"&hyperconv_clusters={quote(','.join(cl_hyper), safe=',')}"
-
-    def fetch() -> list:
-        data = _get_json(_get_client_crm(), f"/api/v1/crm/sellable-potential/virt-total?{qs}")
-        return data if isinstance(data, list) else []
-
-    cache_key = (
-        f"api:virt_sellable_total:{dc_code}:"
-        f"{','.join(cl_classic) if cl_classic else '*'}:"
-        f"{','.join(cl_hyper) if cl_hyper else '*'}"
-    )
-    return _api_cache_get_sellable_panels(cache_key, fetch, dc_code, "virt_total", cl_classic)
+    for family, clusters in (
+        ("virt_classic", cl_classic),
+        ("virt_hyperconverged", cl_hyper),
+        ("virt_power", None),
+        ("virt_power_hana", None),
+    ):
+        chunk = get_sellable_by_panel(
+            dc_code=dc_code,
+            family=family,
+            clusters=clusters,
+            tr=tr,
+        ) or []
+        if isinstance(chunk, list):
+            panels.extend(chunk)
+    return panels
 
 
 def get_sellable_by_family(
@@ -2192,6 +2258,7 @@ def _invalidate_sellable_caches() -> None:
     """
     _api_response_cache.delete_prefix("api:sellable_summary:")
     _api_response_cache.delete_prefix("api:sellable_by_panel:")
+    _api_response_cache.delete_prefix("api:virt_sellable_total:")
     _api_response_cache.delete_prefix("api:sellable_by_family:")
     _api_response_cache.delete_prefix("api:sellable_snapshot_meta:")
     _api_response_cache.delete_prefix("api:metric_tags:")

@@ -143,9 +143,17 @@ def get_with_stale(key: str) -> tuple[Optional[Any], bool]:
     try:
         raw_fresh = rc.get(key)
         if isinstance(raw_fresh, (str, bytes, bytearray)):
+            from app.core.cache_backend import _is_virt_cache_key
+
+            if _is_virt_cache_key(key):
+                logger.info("virt_cache.hit backend=redis_stale_fresh key=%s", key[:160])
             return _json.loads(raw_fresh), False
         raw_stale = rc.get(f"{_STALE_PREFIX}{key}")
         if isinstance(raw_stale, (str, bytes, bytearray)):
+            from app.core.cache_backend import _is_virt_cache_key
+
+            if _is_virt_cache_key(key):
+                logger.info("virt_cache.hit backend=redis_stale_snapshot key=%s", key[:160])
             return _json.loads(raw_stale), True
     except Exception as exc:
         logger.warning("get_with_stale Redis error for %s: %s", key, exc)
