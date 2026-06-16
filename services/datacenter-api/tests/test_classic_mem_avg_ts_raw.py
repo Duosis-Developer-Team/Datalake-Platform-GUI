@@ -10,7 +10,7 @@ class TestMemTsSql(unittest.TestCase):
     def test_classic_mem_peak_uses_timestamp_agg(self):
         self.assertIn("GROUP BY timestamp", vq.CLASSIC_MEM_PEAK_RAW)
         self.assertIn("SUM(memory_used_gb)", vq.CLASSIC_MEM_PEAK_RAW)
-        self.assertIn("ORDER BY used_gb DESC", vq.CLASSIC_MEM_PEAK_RAW)
+        self.assertIn("ORDER BY (used_gb / NULLIF(cap_gb, 0)) DESC", vq.CLASSIC_MEM_PEAK_RAW)
 
     def test_classic_mem_avg_ts_uses_same_cte_pattern(self):
         self.assertIn("GROUP BY timestamp", vq.CLASSIC_MEM_AVG_TS_RAW)

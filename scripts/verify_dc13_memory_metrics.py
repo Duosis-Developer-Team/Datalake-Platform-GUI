@@ -61,7 +61,7 @@ def main() -> None:
         SELECT ROUND(used_gb::numeric, 2), ROUND(cap_gb::numeric, 2),
                ROUND((100.0 * used_gb / NULLIF(cap_gb, 0))::numeric, 1)
         FROM ts_agg WHERE cap_gb > 0
-        ORDER BY used_gb DESC, (used_gb / NULLIF(cap_gb, 0)) DESC
+        ORDER BY (used_gb / NULLIF(cap_gb, 0)) DESC, used_gb DESC
         LIMIT 1
         """,
         (t0, t1),

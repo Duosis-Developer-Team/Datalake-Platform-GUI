@@ -111,7 +111,28 @@ def test_apply_km_storage_to_host_sets_mount_fields():
     assert out["stor_cap_gb"] == 1500.0
     assert out["stor_exclusive_free_gb"] == 400.0
     assert out["stor_free_gb"] == 1000.0
+    assert out["stor_used_pct"] == round(100.0 * 500.0 / 1500.0, 1)
+    assert out["km_shared_storage"] is False
     assert len(out["datastore_mounts"]) == 2
+
+
+def test_apply_km_storage_aggregate_used_pct_not_max_mount():
+    """One nearly-full small LUN must not gate the host when aggregate util is low."""
+    ctx = {
+        "host_mounts": {
+            "hv1": [
+                {"cap_gb": 100.0, "used_gb": 95.0, "free_gb": 5.0, "used_pct": 95.0, "shared": True},
+                {"cap_gb": 10000.0, "used_gb": 6400.0, "free_gb": 3600.0, "used_pct": 64.0, "shared": True},
+            ],
+        },
+    }
+    out = DatabaseService._apply_km_storage_to_host({"host": "hv1"}, ctx)
+    assert out["stor_used_pct"] == round(100.0 * 6495.0 / 10100.0, 1)
+    assert out["km_shared_storage"] is True
+
+
+def test_classic_host_mem_peak_orders_by_util_pct():
+    assert "ORDER BY vmhost, (used_gb / NULLIF(cap_gb, 0)) DESC" in vq.CLASSIC_HOST_MEM_PEAK
 
 
 def test_apply_host_mem_peak_attaches_peak_fields():

@@ -1529,14 +1529,16 @@ LIMIT 20
         used = sum(float(m.get("used_gb") or 0) for m in mounts)
         exclusive_free = sum(float(m.get("free_gb") or 0) for m in mounts if not m.get("shared"))
         total_free = sum(float(m.get("free_gb") or 0) for m in mounts)
-        used_pct = max((float(m.get("used_pct") or 0.0) for m in mounts), default=0.0)
+        used_pct = round(100.0 * used / cap, 1) if cap > 0 else 0.0
+        km_shared_storage = bool(mounts) and all(m.get("shared") for m in mounts)
         out = dict(payload)
         out["datastore_mounts"] = mounts
         out["stor_cap_gb"] = round(cap, 2)
         out["stor_used_gb"] = round(used, 2)
         out["stor_free_gb"] = round(total_free, 2)
         out["stor_exclusive_free_gb"] = round(exclusive_free, 2)
-        out["stor_used_pct"] = round(used_pct, 1)
+        out["stor_used_pct"] = used_pct
+        out["km_shared_storage"] = km_shared_storage
         return out
 
     @staticmethod

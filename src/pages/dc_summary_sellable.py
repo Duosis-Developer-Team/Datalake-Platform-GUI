@@ -323,6 +323,18 @@ def build_virt_storage_block(summary: dict | None = None, *, panels: list[dict] 
     if not km_stor and not hc_stor and not pw_stor:
         return html.Div()
 
+    km_cpu = _panel_by_kind(km_panels, "cpu") if km_panels else None
+    km_ram = _panel_by_kind(km_panels, "ram") if km_panels else None
+    compute_zero = (
+        km_stor is not None
+        and float((km_cpu or {}).get("sellable_constrained") or 0) <= 1e-9
+        and float((km_ram or {}).get("sellable_constrained") or 0) <= 1e-9
+        and (
+            float(km_stor.get("sellable_min") or km_stor.get("sellable_constrained") or 0) > 1e-9
+            or float(km_stor.get("sellable_max") or 0) > 1e-9
+        )
+    )
+
     tiles = [
         build_storage_family_tile(km_stor, label="KM (Classic) Storage Sellable", color="blue", kind_label="KM"),
         build_storage_family_tile(
@@ -343,6 +355,16 @@ def build_virt_storage_block(summary: dict | None = None, *, panels: list[dict] 
                 "Tüm mimarilerde storage, CPU/RAM compute bottleneck ile oran sınırlı",
             ),
             dmc.SimpleGrid(cols={"base": 1, "md": 3}, spacing="lg", mt="md", children=tiles),
+            dmc.Alert(
+                "KM storage aralığı ham pool kapasitesini gösterir; headline sellable compute "
+                "(CPU/RAM) darboğazı ile sınırlıdır — CPU/RAM sıfırken storage TL bandı "
+                "planlama aralığıdır, satılabilir bundle değildir.",
+                color="orange",
+                variant="light",
+                radius="md",
+                mt="md",
+                icon=DashIconify(icon="solar:danger-triangle-bold", width=18),
+            ) if compute_zero else None,
             dmc.Alert(
                 "IBM storage alanı hem KM datastore hem Power mimarisi tarafından kullanılabilir. "
                 "Detay için Virtualization sekmesindeki Storage alt sekmesine gidin.",

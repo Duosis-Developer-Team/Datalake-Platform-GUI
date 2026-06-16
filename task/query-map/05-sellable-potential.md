@@ -534,7 +534,7 @@ host/cluster ratio (CPU/RAM) → _apply_storage_range (classic/power)
 ```
 
 For `virt_classic` / `virt_hyperconverged` with host rows present (ADR-0020,
-`SELLABLE_PAYLOAD_VERSION = 5`), storage participates in **per-host triple-min**
+`SELLABLE_PAYLOAD_VERSION = 6`), storage participates in **per-host triple-min**
 with **independent allocation vs max tracks** (ADR-0021):
 
 ```

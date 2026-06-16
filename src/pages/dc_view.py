@@ -3607,6 +3607,11 @@ def _resolve_host_sellable_thresholds() -> dict[str, float]:
     return out
 
 
+def _host_sellable_storage_in_triple(host: dict) -> bool:
+    from shared.sellable.host_sellable import host_storage_in_triple
+    return host_storage_in_triple(host)
+
+
 def _host_sellable_gate_tags(host: dict, thresholds: dict[str, float], *, track: str) -> list[str]:
     """Short badges when sellable units are zero due to threshold gates."""
     from shared.sellable.computation import utilization_gate_blocked
@@ -3626,8 +3631,12 @@ def _host_sellable_gate_tags(host: dict, thresholds: dict[str, float], *, track:
         stor_cap = float(host.get("stor_cap_gb") or 0.0)
         stor_prov = float(host.get("stor_provisioned_gb") or 0.0)
         stor_util = float(host.get("stor_used_pct") or 0.0)
-        if stor_cap > 0 and utilization_gate_blocked(stor_cap, stor_prov, stor_util, thresholds["storage"]):
-            tags.append("Sales threshold blocked (Storage provisioned)")
+        if stor_cap > 0:
+            alloc_pct = 100.0 * stor_prov / stor_cap
+            if alloc_pct > thresholds["storage"] + 1e-9:
+                tags.append("Sales threshold blocked (Storage provisioned)")
+            elif stor_util > thresholds["storage"] + 1e-9:
+                tags.append("Sales threshold blocked (Storage utilization)")
     else:
         cpu_cap = float(host.get("cpu_cap_ghz") or 0.0)
         cpu_used = float(host.get("cpu_used_ghz") or 0.0)
@@ -3642,14 +3651,18 @@ def _host_sellable_gate_tags(host: dict, thresholds: dict[str, float], *, track:
         stor_cap = float(host.get("stor_cap_gb") or 0.0)
         stor_prov = float(host.get("stor_provisioned_gb") or 0.0)
         stor_util = float(host.get("stor_used_pct") or 0.0)
-        if stor_cap > 0 and utilization_gate_blocked(stor_cap, stor_prov, stor_util, thresholds["storage"]):
-            tags.append("Max threshold blocked (Storage utilization)")
+        if stor_cap > 0:
+            alloc_pct = 100.0 * stor_prov / stor_cap
+            if alloc_pct > thresholds["storage"] + 1e-9:
+                tags.append("Max threshold blocked (Storage provisioned)")
+            elif stor_util > thresholds["storage"] + 1e-9:
+                tags.append("Max threshold blocked (Storage utilization)")
     return tags
 
 
 def _enrich_hosts_for_display(hosts: list[dict], *, family: str = "virt_classic") -> None:
     """Attach dual-track sellable units (sales allocation vs max utilization)."""
-    from shared.sellable.host_sellable import compute_host_sellable_units
+    from shared.sellable.host_sellable import compute_host_sellable_units, host_raw_headroom
 
     ratio = _resolve_host_sellable_ratio(family)
     thresholds = _resolve_host_sellable_thresholds()
@@ -3658,27 +3671,32 @@ def _enrich_hosts_for_display(hosts: list[dict], *, family: str = "virt_classic"
     stor_t = thresholds["storage"]
 
     for h in hosts:
+        storage_in_triple = _host_sellable_storage_in_triple(h)
         sales = compute_host_sellable_units(
             h, ratio,
             cpu_threshold_pct=cpu_t, ram_threshold_pct=ram_t, storage_threshold_pct=stor_t,
             cpu_track="effective", ram_track="physical",
+            storage_in_triple=storage_in_triple,
         )
         sales_max = compute_host_sellable_units(
             h, ratio,
             cpu_threshold_pct=cpu_t, ram_threshold_pct=ram_t, storage_threshold_pct=stor_t,
             cpu_track="effective", ram_track="physical",
             storage_include_shared=True,
+            storage_in_triple=storage_in_triple,
         )
         max_track = compute_host_sellable_units(
             h, ratio,
             cpu_threshold_pct=cpu_t, ram_threshold_pct=ram_t, storage_threshold_pct=stor_t,
             cpu_track="max", ram_track="max",
+            storage_in_triple=storage_in_triple,
         )
         max_track_shared = compute_host_sellable_units(
             h, ratio,
             cpu_threshold_pct=cpu_t, ram_threshold_pct=ram_t, storage_threshold_pct=stor_t,
             cpu_track="max", ram_track="max",
             storage_include_shared=True,
+            storage_in_triple=storage_in_triple,
         )
         h["sellable_sales_n_min"] = round(sales.n_units_min, 2)
         h["sellable_sales_n_max"] = round(sales_max.n_units_max, 2)
@@ -3699,6 +3717,18 @@ def _enrich_hosts_for_display(hosts: list[dict], *, family: str = "virt_classic"
         if max_track.n_units_min <= 1e-9:
             gate_tags.extend(_host_sellable_gate_tags(h, thresholds, track="max"))
         h["sellable_gate_tags"] = gate_tags[:4]
+        h["headroom_cpu_sales_ghz"] = round(
+            host_raw_headroom(h, resource="cpu", threshold_pct=cpu_t, cpu_track="effective"), 1
+        )
+        h["headroom_ram_sales_gb"] = round(
+            host_raw_headroom(h, resource="ram", threshold_pct=ram_t, ram_track="physical"), 1
+        )
+        h["headroom_cpu_max_ghz"] = round(
+            host_raw_headroom(h, resource="cpu", threshold_pct=cpu_t, cpu_track="max"), 1
+        )
+        h["headroom_ram_max_gb"] = round(
+            host_raw_headroom(h, resource="ram", threshold_pct=ram_t, ram_track="max"), 1
+        )
 
 
 _HOST_SUMMARY_STORAGE_KEYS = frozenset({
@@ -3791,6 +3821,13 @@ def _host_card(h: dict, color: str = "blue"):
                     style={"fontSize": "0.68rem", "color": "#E8A317", "marginTop": "3px", "fontFamily": "DM Sans"},
                 )
             )
+        elif h.get("km_shared_storage"):
+            stor_row.children.append(
+                html.Div(
+                    "Shared LUN storage — sellable units use CPU/RAM only; storage at family pool",
+                    style={"fontSize": "0.68rem", "color": "#E8A317", "marginTop": "3px", "fontFamily": "DM Sans"},
+                )
+            )
         rows.append(stor_row)
 
     sellable_footer: list = []
@@ -3826,6 +3863,23 @@ def _host_card(h: dict, color: str = "blue"):
                 style={"fontSize": "0.72rem", "color": "#1B9E77", "fontWeight": 700, "marginTop": "4px"},
             )
         )
+        headroom_bits: list[str] = []
+        if max_min <= 1e-9:
+            cpu_h = float(h.get("headroom_cpu_max_ghz") or 0)
+            ram_h = float(h.get("headroom_ram_max_gb") or 0)
+            if cpu_h > 0:
+                headroom_bits.append(f"{cpu_h:,.0f} GHz CPU")
+            if ram_h > 0:
+                headroom_bits.append(f"{ram_h:,.0f} GB RAM")
+        if sales_min <= 1e-9 and max_min > 1e-9:
+            headroom_bits.append("max-util track has headroom")
+        if headroom_bits:
+            sellable_footer.append(
+                html.Div(
+                    "Pre-ratio headroom (max util): " + " · ".join(headroom_bits),
+                    style={"fontSize": "0.68rem", "color": "#A3AED0", "marginTop": "4px"},
+                )
+            )
     elif h.get("sellable_n_min") is not None:
         n_min = float(h.get("sellable_n_min") or 0)
         n_max = float(h.get("sellable_n_max") or n_min)
@@ -3928,8 +3982,9 @@ def _sellable_unit_tooltip(family: str) -> str:
         f"{ratio.storage_gb_per_unit:g} GB storage. "
         f"Sales track uses allocation gates (CPU/RAM/storage thresholds "
         f"{thresholds['cpu']:.0f}% / {thresholds['ram']:.0f}% / {thresholds['storage']:.0f}%). "
-        "Max track uses utilization gates. Zero when any resource exceeds its threshold "
-        "or ratio coupling binds a resource."
+        "Max track uses utilization gates. KM shared LUN hosts couple CPU/RAM only; "
+        "storage is pooled at family level. Zero units when any in-triple resource "
+        "exceeds its threshold or ratio coupling binds a resource."
     )
 
 

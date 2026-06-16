@@ -5,6 +5,7 @@ from shared.sellable.host_sellable import (
     aggregate_family_storage_range,
     compute_host_sellable_units,
     host_storage_free_gb,
+    host_storage_in_triple,
 )
 from shared.sellable.models import ResourceRatio
 
@@ -145,3 +146,41 @@ def test_aggregate_family_storage_range_uses_host_results():
     lo, hi = aggregate_family_storage_range(results, [], RATIO)
     assert lo == 150.0
     assert hi >= 150.0
+
+
+def test_host_storage_in_triple_false_for_km_shared_lun():
+    host = {"km_shared_storage": True, "stor_cap_gb": 1000.0}
+    assert host_storage_in_triple(host) is False
+
+
+def test_km_shared_storage_host_cpu_ram_units_without_storage_triple():
+    """DC13-like: storage gate blocked on mount max pct but CPU/RAM headroom remains."""
+    host = {
+        "cpu_cap_ghz": 229.8,
+        "cpu_alloc_ghz": 180.0,
+        "cpu_used_ghz": 67.8,
+        "cpu_used_pct": 29.5,
+        "mem_cap_gb": 6143.7,
+        "mem_alloc_gb": 4300.0,
+        "mem_used_pct": 70.5,
+        "mem_cap_gb_at_peak": 6143.7,
+        "mem_used_gb_peak": 4329.5,
+        "mem_peak_util_pct": 70.5,
+        "stor_cap_gb": 318873.6,
+        "stor_provisioned_gb": 29360.0,
+        "stor_used_pct": 95.0,
+        "stor_exclusive_free_gb": 0.0,
+        "km_shared_storage": True,
+        "datastore_mounts": [{"shared": True, "free_gb": 110379.0}],
+    }
+    blocked = compute_host_sellable_units(
+        host, RATIO, cpu_threshold_pct=80.0, ram_threshold_pct=80.0, storage_threshold_pct=85.0,
+    )
+    assert blocked.n_units_min == 0.0
+    decoupled = compute_host_sellable_units(
+        host, RATIO,
+        cpu_threshold_pct=80.0, ram_threshold_pct=80.0, storage_threshold_pct=85.0,
+        cpu_track="max", ram_track="max",
+        storage_in_triple=False,
+    )
+    assert decoupled.n_units_min > 0.0

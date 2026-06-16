@@ -274,6 +274,15 @@ def aggregate_family_storage_range(
     return max(lo, 0.0), max(hi, lo)
 
 
+def host_storage_in_triple(host: dict) -> bool:
+    """Return False when host storage is pooled (HCI cluster or KM shared LUN)."""
+    if host.get("storage_cluster_pool"):
+        return False
+    if host.get("km_shared_storage"):
+        return False
+    return True
+
+
 def enrich_host_display_fields(host: dict, sellable: HostSellableResult) -> dict:
     """Attach sellable display fields to a host dict."""
     out = dict(host)

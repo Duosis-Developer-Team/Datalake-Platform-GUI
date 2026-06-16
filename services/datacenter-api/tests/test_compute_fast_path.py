@@ -23,6 +23,27 @@ class TestComputeFastPath(unittest.TestCase):
         self.assertEqual(out["mem_util_pct"], 72.5)
         self.assertEqual(out["mem_pct"], 72.5)
 
+    def test_apply_mem_peak_raw_sets_max_util_fields(self):
+        out = DatabaseService._apply_mem_peak_raw(
+            {"mem_util_pct_max": 50.0, "mem_pct_max": 50.0},
+            (800.0, 1000.0, 80.0),
+        )
+        self.assertEqual(out["mem_util_pct_max"], 80.0)
+        self.assertEqual(out["mem_used_gb_peak"], 800.0)
+
+    def test_mem_peak_pct_should_exceed_or_match_avg_invariant(self):
+        """Peak util% (max ratio) must be >= time-series average util%."""
+        ts_points = [
+            (1000.0, 2000.0),  # 50% — highest used_gb but not highest util
+            (700.0, 1000.0),   # 70% — peak util
+            (650.0, 1000.0),   # 65%
+        ]
+        avg_pct = sum(100.0 * u / c for u, c in ts_points) / len(ts_points)
+        peak_pct = max(100.0 * u / c for u, c in ts_points)
+        self.assertGreaterEqual(peak_pct, avg_pct)
+        self.assertAlmostEqual(peak_pct, 70.0)
+        self.assertAlmostEqual(avg_pct, 61.666, places=2)
+
     def test_get_classic_metrics_filtered_uses_unfiltered_when_all_selected(self):
         svc = DatabaseService.__new__(DatabaseService)
         full = {"classic": {"hosts": 9, "mem_util_pct": 61.0}}

@@ -507,7 +507,7 @@ SELECT COALESCE(used_bytes / 1073741824.0, 0),
        COALESCE(100.0 * used_bytes / NULLIF(cap_bytes, 0), 0)
 FROM ts_agg
 WHERE cap_bytes > 0
-ORDER BY used_bytes DESC, (used_bytes / NULLIF(cap_bytes, 0)) DESC
+ORDER BY (used_bytes / NULLIF(cap_bytes, 0)) DESC, used_bytes DESC
 LIMIT 1
 """
 
@@ -527,6 +527,6 @@ SELECT COALESCE(used_bytes / 1073741824.0, 0),
        COALESCE(100.0 * used_bytes / NULLIF(cap_bytes, 0), 0)
 FROM ts_agg
 WHERE cap_bytes > 0
-ORDER BY used_bytes DESC, (used_bytes / NULLIF(cap_bytes, 0)) DESC
+ORDER BY (used_bytes / NULLIF(cap_bytes, 0)) DESC, used_bytes DESC
 LIMIT 1
 """

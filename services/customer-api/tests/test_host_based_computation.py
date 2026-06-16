@@ -361,3 +361,41 @@ def test_tracks_independent_storage_max_when_allocation_gated():
     assert out["cpu"].sellable_allocation == 0.0
     assert out["storage"].sellable_constrained == 0.0
     assert (out["storage"].sellable_max_util or 0.0) > 0.0
+
+
+def test_ibm_storage_range_headline_zero_when_compute_gated():
+    from shared.sellable.computation import constrain_by_ratio_per_host_triple_dual
+
+    hosts = [{
+        "cpu_cap_ghz": 100.0,
+        "cpu_alloc_ghz": 200.0,
+        "cpu_used_ghz": 50.0,
+        "cpu_used_pct": 50.0,
+        "mem_cap_gb": 100.0,
+        "mem_alloc_gb": 99.0,
+        "mem_used_pct": 50.0,
+        "mem_cap_gb_at_peak": 100.0,
+        "mem_used_gb_peak": 40.0,
+        "mem_peak_util_pct": 40.0,
+        "stor_cap_gb": 10000.0,
+        "stor_provisioned_gb": 2000.0,
+        "stor_used_pct": 20.0,
+        "stor_exclusive_free_gb": 8000.0,
+        "km_shared_storage": True,
+    }]
+    panels = [_panel("cpu", raw=0.0), _panel("ram", raw=0.0), _panel("storage", raw=8000.0)]
+    out = {
+        p.resource_kind: p
+        for p in constrain_by_ratio_per_host_triple_dual(
+            panels,
+            _ratio(cpu=1.0, ram=4.0, storage=100.0),
+            hosts,
+            cpu_threshold_pct=80.0,
+            ram_threshold_pct=80.0,
+            storage_threshold_pct=85.0,
+            ibm_storage_range=(108000.0, 447000.0),
+        )
+    }
+    assert out["storage"].sellable_constrained == 0.0
+    assert out["storage"].sellable_min >= 108000.0
+    assert (out["storage"].sellable_max or 0.0) > 0.0

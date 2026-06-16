@@ -85,7 +85,7 @@ _SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT",
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 5
+SELLABLE_PAYLOAD_VERSION: int = 6
 
 # Maps allocated_table → Redis section key for per-DC (dc_details) response.
 _VM_TABLE_DC_SECTION: dict[str, str] = {

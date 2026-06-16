@@ -566,7 +566,7 @@ SELECT COALESCE(used_gb, 0), COALESCE(cap_gb, 0),
        COALESCE(100.0 * used_gb / NULLIF(cap_gb, 0), 0)
 FROM ts_agg
 WHERE cap_gb > 0
-ORDER BY used_gb DESC, (used_gb / NULLIF(cap_gb, 0)) DESC
+ORDER BY (used_gb / NULLIF(cap_gb, 0)) DESC, used_gb DESC
 LIMIT 1
 """
 
@@ -585,7 +585,7 @@ SELECT COALESCE(used_gb, 0), COALESCE(cap_gb, 0),
        COALESCE(100.0 * used_gb / NULLIF(cap_gb, 0), 0)
 FROM ts_agg
 WHERE cap_gb > 0
-ORDER BY used_gb DESC, (used_gb / NULLIF(cap_gb, 0)) DESC
+ORDER BY (used_gb / NULLIF(cap_gb, 0)) DESC, used_gb DESC
 LIMIT 1
 """
 
@@ -637,7 +637,7 @@ SELECT COALESCE(used_gb, 0), COALESCE(cap_gb, 0),
        COALESCE(100.0 * used_gb / NULLIF(cap_gb, 0), 0)
 FROM ts_agg
 WHERE cap_gb > 0
-ORDER BY used_gb DESC, (used_gb / NULLIF(cap_gb, 0)) DESC
+ORDER BY (used_gb / NULLIF(cap_gb, 0)) DESC, used_gb DESC
 LIMIT 1
 """
 
@@ -656,7 +656,7 @@ SELECT COALESCE(used_gb, 0), COALESCE(cap_gb, 0),
        COALESCE(100.0 * used_gb / NULLIF(cap_gb, 0), 0)
 FROM ts_agg
 WHERE cap_gb > 0
-ORDER BY used_gb DESC, (used_gb / NULLIF(cap_gb, 0)) DESC
+ORDER BY (used_gb / NULLIF(cap_gb, 0)) DESC, used_gb DESC
 LIMIT 1
 """
 
@@ -847,7 +847,7 @@ SELECT DISTINCT ON (vmhost)
     COALESCE(100.0 * used_gb / NULLIF(cap_gb, 0), 0) AS util_pct
 FROM ts_agg
 WHERE cap_gb > 0
-ORDER BY vmhost, used_gb DESC, (used_gb / NULLIF(cap_gb, 0)) DESC
+ORDER BY vmhost, (used_gb / NULLIF(cap_gb, 0)) DESC, used_gb DESC
 """
 
 # Per-host VM allocation aggregate (vCPU / RAM / storage provisioned by VMs on

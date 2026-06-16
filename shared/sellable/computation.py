@@ -459,6 +459,7 @@ def constrain_by_ratio_per_host_triple_dual(
         HostSellableResult,
         aggregate_family_storage_range,
         compute_host_sellable_units,
+        host_storage_in_triple,
     )
 
     panel_list = list(panels)
@@ -492,7 +493,10 @@ def constrain_by_ratio_per_host_triple_dual(
                 ram_track=ram_track,
                 effective_ghz_per_unit=effective_ghz_per_unit,
                 storage_include_shared=storage_shared,
-                storage_in_triple=cluster_storage_raw_gb is None and not h.get("storage_cluster_pool"),
+                storage_in_triple=(
+                    cluster_storage_raw_gb is None
+                    and host_storage_in_triple(h)
+                ),
                 unit_price_tl=unit_price_tl,
             )
             n_sum += result.n_units_max if storage_shared else result.n_units_min
@@ -541,17 +545,28 @@ def constrain_by_ratio_per_host_triple_dual(
 
     if ibm_storage_range is not None:
         ibm_lo, ibm_hi = ibm_storage_range
-        stor_lo_alloc = max(stor_lo_alloc, ibm_lo)
-        stor_lo_max = max(stor_lo_max, ibm_lo)
-        if ibm_hi > 0:
-            stor_hi_alloc = min(stor_hi_alloc, ibm_hi) if stor_hi_alloc > 0 else ibm_hi
-            stor_hi_max = min(stor_hi_max, ibm_hi) if stor_hi_max > 0 else ibm_hi
-        stor_constrained_alloc = max(stor_constrained_alloc, stor_lo_alloc)
-        stor_constrained_max = max(stor_constrained_max, stor_lo_max)
-        if stor_hi_alloc > 0:
-            stor_constrained_alloc = min(stor_constrained_alloc, stor_hi_alloc)
-        if stor_hi_max > 0:
-            stor_constrained_max = min(stor_constrained_max, stor_hi_max)
+        n_bn_alloc = min(n_cpu_alloc, n_ram_alloc) if n_ram_alloc > 0 else n_cpu_alloc
+        n_bn_max = min(n_cpu_max, n_ram_max) if n_ram_max > 0 else n_cpu_max
+        compute_cap_alloc = max(n_bn_alloc, 0.0) * ratio.storage_gb_per_unit
+        compute_cap_max = max(n_bn_max, 0.0) * ratio.storage_gb_per_unit
+        pool_alloc = stor_constrained_alloc
+        pool_max = stor_constrained_max
+        stor_lo_alloc = ibm_lo
+        stor_lo_max = ibm_lo
+        if ibm_hi > ibm_lo + 1e-6:
+            stor_hi_alloc = ibm_hi
+            stor_hi_max = ibm_hi
+        else:
+            stor_hi_alloc = ibm_lo
+            stor_hi_max = ibm_lo
+        if compute_cap_alloc > 0:
+            stor_constrained_alloc = min(max(pool_alloc, 0.0), compute_cap_alloc)
+        else:
+            stor_constrained_alloc = 0.0
+        if compute_cap_max > 0:
+            stor_constrained_max = min(max(pool_max, 0.0), compute_cap_max)
+        else:
+            stor_constrained_max = 0.0
 
     cpu_alloc_val = n_cpu_alloc * ratio.cpu_per_unit
     cpu_max_val = n_cpu_max * ratio.cpu_per_unit
