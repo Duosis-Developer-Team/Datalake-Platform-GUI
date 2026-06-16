@@ -845,14 +845,17 @@ def get_hyperconv_metrics_filtered(
     return _api_cache_get_with_stale(ck, fetch, {})
 
 
+from shared.sellable.host_aggregate import finalize_host_payload
+
+
 def _slice_host_rows(full: dict, selected_clusters: Optional[list[str]]) -> dict:
     """Filter host rows to selected clusters (None/empty => all). Rows are self-contained."""
     hosts = (full or {}).get("hosts") or []
     if not selected_clusters:
-        return {"hosts": list(hosts), "host_count": len(hosts)}
+        return finalize_host_payload({"hosts": list(hosts), "host_count": len(hosts)})
     wanted = set(selected_clusters)
     filtered = [h for h in hosts if h.get("cluster") in wanted]
-    return {"hosts": filtered, "host_count": len(filtered)}
+    return finalize_host_payload({"hosts": filtered, "host_count": len(filtered)})
 
 
 def get_classic_host_rows(

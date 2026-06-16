@@ -98,3 +98,18 @@ def build_virt_cluster_filter_bar(
 
 def virt_cluster_filter_ids(prefix: str) -> dict[str, str]:
     return _ids(prefix)
+
+
+def normalize_virt_cluster_scope(
+    selected: list[str] | None,
+    all_clusters: list[str] | None,
+) -> list[str] | None:
+    """Return None for 'all clusters' so CRM/GUI cache keys stay consistent."""
+    if not selected:
+        return None
+    all_set = set(all_clusters or [])
+    if not all_set:
+        return list(selected)
+    if set(selected) >= all_set:
+        return None
+    return list(selected)

@@ -85,7 +85,7 @@ _SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT",
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 2
+SELLABLE_PAYLOAD_VERSION: int = 3
 
 # Maps allocated_table → Redis section key for per-DC (dc_details) response.
 _VM_TABLE_DC_SECTION: dict[str, str] = {
@@ -234,6 +234,7 @@ from shared.sellable.computation import (
     constrain_by_ratio_dual_cpu_cluster,
     constrain_by_ratio_per_host,
     constrain_by_ratio_per_host_dual,
+    constrain_by_ratio_per_host_triple_dual,
     convert_unit,
     utilization_gate_blocked,
 )
@@ -1297,14 +1298,15 @@ SELECT _tot, _alloc FROM latest
         clusters: list[str] | None,
         *,
         preset: str = "30d",
-    ) -> tuple[list[dict] | None, str]:
+    ) -> tuple[list[dict] | None, str, list[dict]]:
         """Fetch per-host compute rows from datacenter-api /compute/{kind}/hosts.
 
-        Returns ``(hosts, status)`` where status is ``ok`` | ``empty`` | ``unavailable``.
+        Returns ``(hosts, status, storage_pools)`` where status is
+        ``ok`` | ``empty`` | ``unavailable``.
         """
         kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
         if not kind or not dc_code or dc_code == "*" or not self._dc_api_url:
-            return None, "unavailable"
+            return None, "unavailable", []
         params: list[str] = [f"preset={preset}"]
         cl = [c for c in (clusters or []) if c]
         if cl:
@@ -1325,15 +1327,18 @@ SELECT _tot, _alloc FROM latest
                 len(cl),
                 url,
             )
-            return None, "unavailable"
+            return None, "unavailable", []
         except Exception:
             logger.warning("host rows fetch failed dc=%s family=%s url=%s", dc_code, family, url)
-            return None, "unavailable"
+            return None, "unavailable", []
         if not isinstance(data, dict):
-            return None, "unavailable"
+            return None, "unavailable", []
         hosts = data.get("hosts")
+        storage_pools = data.get("storage_pools")
+        if not isinstance(storage_pools, list):
+            storage_pools = []
         if not isinstance(hosts, list):
-            return None, "unavailable"
+            return None, "unavailable", []
         if not hosts:
             logger.info(
                 "host rows empty dc=%s family=%s clusters=%s — cluster fallback",
@@ -1341,8 +1346,8 @@ SELECT _tot, _alloc FROM latest
                 family,
                 cl or "all",
             )
-            return [], "empty"
-        return hosts, "ok"
+            return [], "empty", storage_pools
+        return hosts, "ok", storage_pools
 
     def _get_sellable_calc_config(self) -> dict[str, float | str]:
         """Load dual-CPU sellable calc variables from gui_crm_calc_config."""
@@ -1432,21 +1437,29 @@ SELECT _tot, _alloc FROM latest
         family: str = "",
         clusters: list[str] | None = None,
         effective_ghz_per_unit: float = 1.0,
+        storage_pools: list[dict] | None = None,
+        range_inputs: dict | None = None,
     ) -> "list[PanelResult]":
-        """Recompute CPU/RAM panel totals + dual-track sellable from per-host rows."""
+        """Recompute CPU/RAM/Storage from per-host rows (triple min + dual tracks)."""
+        _ = dc_code, clusters
         by_kind = {p.resource_kind: p for p in group}
         cpu_p = by_kind.get("cpu")
         ram_p = by_kind.get("ram")
+        sto_p = by_kind.get("storage")
         if cpu_p is None or ram_p is None:
             return constrain_by_ratio(group, ratio)
 
         cpu_conv = self._lookup_conversion(unit_lookup, "GHz", cpu_p.display_unit)
         ram_conv = self._lookup_conversion(unit_lookup, "GB", ram_p.display_unit)
+        sto_conv = self._lookup_conversion(unit_lookup, "GB", sto_p.display_unit) if sto_p else None
 
         host_units: list[dict] = []
-        cpu_total = cpu_alloc = cpu_total_phys = cpu_alloc_phys = 0.0
+        cpu_total = cpu_alloc = 0.0
         ram_total = ram_alloc = 0.0
-        cpu_raw_sum = cpu_raw_phys_sum = ram_raw_phys_sum = ram_raw_peak_sum = 0.0
+        stor_total = stor_prov = 0.0
+        cpu_raw_sum = cpu_raw_phys_sum = ram_raw_phys_sum = ram_raw_peak_sum = stor_raw_sum = 0.0
+        sto_threshold = sto_p.threshold_pct if sto_p is not None else 85.0
+
         for h in host_rows:
             ghz = float(h.get("ghz_per_core") or 1.0)
             cap_ghz = float(h.get("cpu_cap_ghz") or 0.0)
@@ -1458,7 +1471,18 @@ SELECT _tot, _alloc FROM latest
             ma = convert_unit(float(h.get("mem_alloc_gb") or 0.0), ram_conv)
             cpu_util = float(h.get("cpu_used_pct") or 0.0)
             ram_util = float(h.get("mem_used_pct") or 0.0)
+            peak_used = convert_unit(float(h.get("mem_used_gb_peak") or 0.0), ram_conv)
+            peak_cap = convert_unit(
+                float(h.get("mem_cap_gb_at_peak") or h.get("mem_cap_gb") or 0.0),
+                ram_conv,
+            )
+            peak_util = float(h.get("mem_peak_util_pct") or ram_util)
+            stor_cap = convert_unit(float(h.get("stor_cap_gb") or 0.0), sto_conv)
+            stor_alloc = convert_unit(float(h.get("stor_provisioned_gb") or 0.0), sto_conv)
+            stor_util = float(h.get("stor_used_pct") or 0.0)
+
             host_units.append({
+                **h,
                 "cpu_total": hc,
                 "cpu_alloc": ha,
                 "cpu_total_phys": cap_ghz,
@@ -1466,44 +1490,60 @@ SELECT _tot, _alloc FROM latest
                 "ghz_per_core": ghz,
                 "ram_total": mc,
                 "ram_alloc": ma,
-                "cpu_util_pct": cpu_util,
-                "ram_util_pct": ram_util,
+                "cpu_used_pct": cpu_util,
+                "mem_used_pct": ram_util,
+                "mem_used_gb_peak": peak_used,
+                "mem_cap_gb_at_peak": peak_cap,
+                "mem_peak_util_pct": peak_util,
+                "stor_cap_gb": stor_cap,
+                "stor_provisioned_gb": stor_alloc,
+                "stor_used_pct": stor_util,
             })
             cpu_total += hc
             cpu_alloc += ha
-            cpu_total_phys += cap_ghz
-            cpu_alloc_phys += alloc_phys
             ram_total += mc
             ram_alloc += ma
+            stor_total += stor_cap
+            stor_prov += stor_alloc
             cpu_raw_sum += apply_utilization_gate(hc, ha, cpu_util, cpu_p.threshold_pct)
             cpu_raw_phys_sum += apply_utilization_gate(
                 cap_ghz, alloc_phys, cpu_util, cpu_p.threshold_pct
             )
             ram_raw_phys_sum += apply_utilization_gate(mc, ma, ram_util, ram_p.threshold_pct)
-
-        raw = (
-            self._fetch_compute_response(dc_code, family, clusters)
-            if dc_code and family
-            else None
-        )
-        peak_util = 0.0
-        if raw:
-            peak_cap_gb = float(raw.get("mem_cap_gb_at_peak") or raw.get("mem_cap") or 0.0)
-            peak_used_gb = float(raw.get("mem_used_gb_peak") or 0.0)
-            peak_util = float(self._extract_utilization_pct(raw, "ram") or 0.0)
-            peak_cap = convert_unit(peak_cap_gb, ram_conv)
-            peak_used = convert_unit(peak_used_gb, ram_conv)
-            ram_raw_peak_sum = apply_utilization_gate(
+            ram_raw_peak_sum += apply_utilization_gate(
                 peak_cap, peak_used, peak_util, ram_p.threshold_pct
             )
-            total_mem_cap_raw = sum(float(h.get("mem_cap_gb") or 0.0) for h in host_rows) or 1.0
-            for i, h in enumerate(host_rows):
-                share = float(h.get("mem_cap_gb") or 0.0) / total_mem_cap_raw
-                host_units[i]["ram_peak_total"] = peak_cap * share
-                host_units[i]["ram_peak_used"] = peak_used * share
-                host_units[i]["ram_peak_util_pct"] = peak_util
+            stor_raw_sum += apply_utilization_gate(
+                stor_cap, stor_alloc, stor_util, sto_threshold
+            )
 
-        note = f"host-based ({len(host_units)} host)"
+        ibm_range: tuple[float, float] | None = None
+        if family == "virt_classic" and range_inputs:
+            intel_free = apply_utilization_gate(
+                range_inputs["intel_cap_gb"],
+                range_inputs["intel_used_gb"],
+                (100.0 * range_inputs["intel_used_gb"] / range_inputs["intel_cap_gb"])
+                if range_inputs["intel_cap_gb"] > 0
+                else 100.0,
+                sto_threshold,
+            )
+            ibm_ds_free = apply_utilization_gate(
+                range_inputs["ibm_ds_cap_gb"],
+                range_inputs["ibm_ds_used_gb"],
+                (100.0 * range_inputs["ibm_ds_used_gb"] / range_inputs["ibm_ds_cap_gb"])
+                if range_inputs["ibm_ds_cap_gb"] > 0
+                else 100.0,
+                sto_threshold,
+            )
+            ibm_free = max(float(range_inputs.get("ibm_physical_free_gb") or 0.0), 0.0)
+            rng = compute_storage_range(
+                intel_free=intel_free,
+                ibm_backed_datastore_free=ibm_ds_free,
+                ibm_storage_free=ibm_free,
+            )
+            ibm_range = (rng["km_min"], rng["km_max"])
+
+        note = f"host-based triple-min ({len(host_units)} host)"
         rebuilt: list[PanelResult] = []
         for p in group:
             if p.resource_kind == "cpu":
@@ -1514,7 +1554,7 @@ SELECT _tot, _alloc FROM latest
                 p.sellable_effective = cpu_raw_sum
                 p.gate_blocked = utilization_gate_blocked(
                     cpu_total, cpu_alloc,
-                    max((float(h.get("cpu_util_pct") or 0.0) for h in host_units), default=0.0),
+                    max((float(h.get("cpu_used_pct") or 0.0) for h in host_units), default=0.0),
                     cpu_p.threshold_pct,
                 ) and cpu_raw_sum <= 0
                 p.notes = [*p.notes, note]
@@ -1527,21 +1567,31 @@ SELECT _tot, _alloc FROM latest
                 p.sellable_effective = ram_raw_peak_sum
                 p.gate_blocked = utilization_gate_blocked(
                     ram_total, ram_alloc,
-                    max((float(h.get("ram_util_pct") or 0.0) for h in host_units), default=0.0),
+                    max((float(h.get("mem_used_pct") or 0.0) for h in host_units), default=0.0),
                     ram_p.threshold_pct,
                 ) and ram_raw_phys_sum <= 0
                 p.notes = [*p.notes, note]
+            elif p.resource_kind == "storage" and sto_p is not None:
+                p.total = stor_total
+                p.allocated = stor_prov
+                p.sellable_raw = stor_raw_sum
+                p.notes = [*p.notes, note, "host storage: exclusive min / shared max range"]
             rebuilt.append(p)
 
-        return constrain_by_ratio_per_host_dual(
+        unit_price = float(cpu_p.unit_price_tl or ram_p.unit_price_tl or 0.0)
+        return constrain_by_ratio_per_host_triple_dual(
             rebuilt,
             ratio,
             host_units,
             cpu_threshold_pct=cpu_p.threshold_pct,
             ram_threshold_pct=ram_p.threshold_pct,
+            storage_threshold_pct=sto_threshold,
             effective_ghz_per_unit=effective_ghz_per_unit,
             ram_raw_physical=ram_raw_phys_sum,
             ram_raw_peak=ram_raw_peak_sum,
+            shared_pools=storage_pools or [],
+            unit_price_tl=unit_price,
+            ibm_storage_range=ibm_range,
         )
 
     def _apply_cluster_fallback_dual(
@@ -2360,10 +2410,15 @@ SELECT _tot, _alloc FROM latest
 
             host_rows: list[dict] | None = None
             host_status = "unavailable"
+            storage_pools: list[dict] = []
+            host_based_ok = False
             if fam in _HOST_BASED_FAMILIES:
-                host_rows, host_status = self._fetch_host_rows(dc_code, fam, selected_clusters)
+                host_rows, host_status, storage_pools = self._fetch_host_rows(
+                    dc_code, fam, selected_clusters
+                )
 
             if host_rows:
+                host_based_ok = True
                 new_group = self._apply_host_based_constraints(
                     group,
                     ratio,
@@ -2373,6 +2428,8 @@ SELECT _tot, _alloc FROM latest
                     family=fam,
                     clusters=selected_clusters,
                     effective_ghz_per_unit=effective_ghz,
+                    storage_pools=storage_pools,
+                    range_inputs=range_inputs if fam == "virt_classic" else None,
                 )
             elif fam in _HOST_BASED_FAMILIES:
                 new_group = self._apply_cluster_fallback_dual(
@@ -2388,14 +2445,15 @@ SELECT _tot, _alloc FROM latest
             else:
                 new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=None)
 
-            if fam in _STORAGE_RANGE_FAMILIES and range_inputs:
+            if fam in _STORAGE_RANGE_FAMILIES and range_inputs and not host_based_ok:
                 self._apply_storage_range(new_group, fam, range_inputs, unit_lookup)
-            elif fam in _STORAGE_RANGE_FAMILIES and needs_range and range_inputs is None:
+            elif fam in _STORAGE_RANGE_FAMILIES and needs_range and range_inputs is None and not host_based_ok:
                 sto_p = next((p for p in new_group if p.resource_kind == "storage"), None)
                 if sto_p is not None:
                     sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
 
-            new_group = apply_storage_ratio_cap(new_group, ratio)
+            if not host_based_ok:
+                new_group = apply_storage_ratio_cap(new_group, ratio)
             new_group = annotate_panel_constraint_metadata(new_group)
 
             for new in new_group:

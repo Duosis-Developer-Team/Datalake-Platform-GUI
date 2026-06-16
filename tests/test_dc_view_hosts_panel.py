@@ -109,11 +109,31 @@ def test_host_card_shows_pct_and_numeric_values():
 
 def test_host_card_hci_storage_row_only_when_present():
     no_disk = _texts(dc_view._host_card(_SAMPLE_HOST, "teal"))
-    assert "Disk" not in no_disk
+    assert "Storage" not in no_disk
 
     hci_host = {**_SAMPLE_HOST, "stor_cap_gb": 40960.0, "stor_used_host_gb": 10240.0}
     with_disk = _texts(dc_view._host_card(hci_host, "teal"))
-    assert "Disk" in with_disk
+    assert "Storage" in with_disk
+
+
+def test_host_card_km_storage_and_constraint_tags():
+    km_host = {
+        **_SAMPLE_HOST,
+        "stor_cap_gb": 2048.0,
+        "stor_used_gb": 512.0,
+        "stor_provisioned_gb": 800.0,
+        "stor_free_gb": 1200.0,
+        "stor_exclusive_free_gb": 400.0,
+        "datastore_mounts": [{"shared": True, "free_gb": 800.0}],
+        "constraint_tags": ["40 GB RAM ratio-bound", "600 GB Storage ratio-bound"],
+        "sellable_n_min": 4.0,
+        "sellable_n_max": 8.0,
+    }
+    text = _texts(dc_view._host_card(km_host, "blue"))
+    assert "Storage" in text
+    assert "shared datastore mount" in text
+    assert "40 GB RAM ratio-bound" in text
+    assert "Sellable units: 4.0 – 8.0" in text
 
 
 # --------------------------------------------------------- backing badge

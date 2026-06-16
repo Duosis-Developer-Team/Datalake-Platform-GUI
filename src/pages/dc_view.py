@@ -3505,6 +3505,36 @@ def _host_metric_row(
     return html.Div(style={"marginBottom": "10px"}, children=children)
 
 
+def merge_host_summary_into_compute(compute: dict | None, hosts_data: dict | None) -> dict:
+    """Overlay host-aggregated capacity onto cluster compute metrics for Capacity Planning."""
+    merged = dict(compute or {})
+    summary = (hosts_data or {}).get("summary")
+    if isinstance(summary, dict) and summary:
+        merged.update(summary)
+    return merged
+
+
+def _enrich_hosts_for_display(hosts: list[dict], *, family: str = "virt_classic") -> None:
+    """Attach sellable constraint tags when not already present (display-only fallback)."""
+    from shared.sellable.host_sellable import compute_host_sellable_units
+    from shared.sellable.models import ResourceRatio
+
+    ratio = ResourceRatio(family=family, cpu_per_unit=1.0, ram_gb_per_unit=4.0, storage_gb_per_unit=50.0)
+    for h in hosts:
+        if h.get("constraint_tags"):
+            continue
+        eff = compute_host_sellable_units(
+            h, ratio, cpu_threshold_pct=80.0, ram_threshold_pct=80.0, storage_threshold_pct=85.0,
+        )
+        eff_max = compute_host_sellable_units(
+            h, ratio, cpu_threshold_pct=80.0, ram_threshold_pct=80.0, storage_threshold_pct=85.0,
+            storage_include_shared=True,
+        )
+        h["constraint_tags"] = eff.constraint_tags
+        h["sellable_n_min"] = eff.n_units_min
+        h["sellable_n_max"] = eff_max.n_units_max
+
+
 def _host_card(h: dict, color: str = "blue"):
     """Single host card: cluster badge + VM count + CPU/RAM(/Disk) bars."""
     host_name = h.get("host") or "Unknown"
@@ -3529,14 +3559,55 @@ def _host_card(h: dict, color: str = "blue"):
             alloc=float(h.get("mem_alloc_gb") or 0), alloc_pct=float(h.get("mem_alloc_pct") or 0),
         ),
     ]
-    # HCI hosts expose their own per-host storage (Nutanix); show when present.
-    if float(h.get("stor_cap_gb") or 0) > 0:
-        rows.append(
-            _host_metric_row(
-                "Disk",
-                float(h.get("stor_used_host_gb") or 0) / 1024.0,
-                float(h.get("stor_cap_gb") or 0) / 1024.0,
-                "TB",
+    # Per-host storage (KM datastores or Hyperconverged local disk).
+    stor_cap = float(h.get("stor_cap_gb") or 0)
+    if stor_cap > 0:
+        stor_used = float(h.get("stor_used_host_gb") or h.get("stor_used_gb") or 0)
+        shared_mounts = [m for m in (h.get("datastore_mounts") or []) if m.get("shared")]
+        stor_row = _host_metric_row(
+            "Storage",
+            stor_used / 1024.0 if stor_used > 1024 else stor_used,
+            stor_cap / 1024.0 if stor_cap > 1024 else stor_cap,
+            "TB" if stor_cap > 1024 else "GB",
+            alloc=float(h.get("stor_provisioned_gb") or 0),
+        )
+        if shared_mounts:
+            stor_row.children.append(
+                html.Div(
+                    f"{len(shared_mounts)} shared datastore mount(s) — free {float(h.get('stor_free_gb') or 0):,.0f} GB",
+                    style={"fontSize": "0.7rem", "color": "#A3AED0", "marginTop": "3px", "fontFamily": "DM Sans"},
+                )
+            )
+        rows.append(stor_row)
+
+    sellable_footer: list = []
+    tl_min = h.get("sellable_tl_min")
+    tl_max = h.get("sellable_tl_max")
+    if tl_min is not None or tl_max is not None:
+        sellable_footer.append(
+            html.Div(
+                f"Sellable TL: {fmt_tl_range(float(tl_min or 0), float(tl_max or tl_min or 0))}",
+                style={"fontSize": "0.72rem", "color": "#4318FF", "fontWeight": 700, "marginTop": "8px"},
+            )
+        )
+    elif h.get("sellable_n_min") is not None:
+        n_min = float(h.get("sellable_n_min") or 0)
+        n_max = float(h.get("sellable_n_max") or n_min)
+        sellable_footer.append(
+            html.Div(
+                f"Sellable units: {n_min:,.1f}" + (f" – {n_max:,.1f}" if abs(n_max - n_min) > 1e-6 else ""),
+                style={"fontSize": "0.72rem", "color": "#4318FF", "fontWeight": 700, "marginTop": "8px"},
+            )
+        )
+    tags = h.get("constraint_tags") or []
+    if tags:
+        sellable_footer.append(
+            html.Div(
+                style={"display": "flex", "flexWrap": "wrap", "gap": "4px", "marginTop": "6px"},
+                children=[
+                    dmc.Badge(tag, color="orange", variant="light", size="xs")
+                    for tag in tags[:4]
+                ],
             )
         )
     return html.Div(
@@ -3569,6 +3640,7 @@ def _host_card(h: dict, color: str = "blue"):
                 ],
             ),
             *rows,
+            *sellable_footer,
         ],
     )
 
@@ -3591,6 +3663,8 @@ def _build_hosts_panel_content(hosts_data: dict, color: str = "blue"):
             color="gray",
             radius="md",
         )
+    family = "virt_hyperconverged" if color == "teal" else "virt_classic"
+    _enrich_hosts_for_display(hosts, family=family)
     return dmc.SimpleGrid(
         cols={"base": 1, "md": 2, "xl": 3},
         spacing="md",

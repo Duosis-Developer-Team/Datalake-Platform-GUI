@@ -728,7 +728,7 @@ def test_compute_all_panels_dedups_compute_http_per_family(monkeypatch):
             "cpu_util_pct": 50.0,
             "ram_util_pct": 37.5,
         },
-    ], "ok")
+    ], "ok", [])
     svc._fetch_compute_response = lambda *a, **kw: None  # type: ignore[assignment]
 
     call_count = {"compute": 0, "hosts": 0}
@@ -1636,7 +1636,7 @@ def _build_power_pipeline_service(*, cpu_raw: float = 10.0, ram_raw: float = 80.
 def test_hyperconv_storage_capped_in_pipeline():
     """Hyperconverged storage raw >> compute ratio cap after full pipeline."""
     svc = _build_service()
-    svc._fetch_host_rows = lambda dc, fam, clusters: (None, "unavailable")  # type: ignore[method-assign]
+    svc._fetch_host_rows = lambda dc, fam, clusters: (None, "unavailable", [])  # type: ignore[method-assign]
     INFRA["virt_hyperconverged_storage"] = (
         INFRA["virt_hyperconverged_storage"][0],
         (100_000.0, 10_000.0),

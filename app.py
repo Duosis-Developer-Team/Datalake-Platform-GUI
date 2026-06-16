@@ -115,6 +115,7 @@ from src.pages import crm_sellable_potential
 from src.pages import login as login_page_mod
 from src.pages.settings import shell as settings_shell
 from src.components.access_denied import build_access_denied
+from src.components.virt_cluster_filter import normalize_virt_cluster_scope
 from src.pages.dc_view import (
     _bps_to_gbps,
     _build_compute_tab,
@@ -124,6 +125,7 @@ from src.pages.dc_view import (
     _build_virt_subtab_stack,
     _build_virt_total_sellable_children,
     _sellable_card_children,
+    merge_host_summary_into_compute,
     _DC_ICONS,
 )
 from src.pages.settings.iam import roles_callbacks  # noqa: F401 — registers role matrix callback
@@ -975,7 +977,10 @@ def populate_virt_nested_tab(
     if active == "classic" and not classic_built:
         scope = classic_applied or None
         batch = parallel_execute({
-            "metrics": lambda: api.get_classic_metrics_filtered(dc_id, scope, tr),
+            "metrics": lambda: merge_host_summary_into_compute(
+                api.get_classic_metrics_filtered(dc_id, scope, tr),
+                api.get_classic_host_rows(dc_id, scope, tr),
+            ),
             "card": lambda: _build_sellable_inline_kpi(
                 dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
                 color="blue", selected_clusters=scope, container_id="sellable-classic-card",
@@ -990,7 +995,10 @@ def populate_virt_nested_tab(
     if active == "hyperconv" and not hyperconv_built:
         scope = hyperconv_applied or None
         batch = parallel_execute({
-            "metrics": lambda: api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
+            "metrics": lambda: merge_host_summary_into_compute(
+                api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
+                api.get_hyperconv_host_rows(dc_id, scope, tr),
+            ),
             "card": lambda: _build_sellable_inline_kpi(
                 dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
                 color="teal", selected_clusters=scope, container_id="sellable-hyperconv-card",
@@ -1005,22 +1013,40 @@ def populate_virt_nested_tab(
     return no, no, no, no
 
 
+def _virt_callback_trigger_id() -> str:
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return ""
+    return ctx.triggered[0]["prop_id"].split(".")[0]
+
+
 @app.callback(
     dash.Output("classic-virt-panel", "children"),
     dash.Output("sellable-classic-card", "children"),
     dash.Input("virt-classic-cluster-applied", "data"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
+    dash.State("virt-classic-cluster-all", "data"),
+    dash.State("classic-virt-panel", "children"),
     prevent_initial_call=True,
 )
-def update_classic_virt_block(applied_clusters, time_range, pathname):
+def update_classic_virt_block(applied_clusters, time_range, pathname, all_clusters, panel_children):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
         return dash.no_update, dash.no_update
     tr = time_range or default_time_range()
-    scope = applied_clusters or None
+    scope = normalize_virt_cluster_scope(applied_clusters, all_clusters)
+    if (
+        _virt_callback_trigger_id() == "virt-classic-cluster-applied"
+        and scope is None
+        and panel_children
+    ):
+        return dash.no_update, dash.no_update
     batch = parallel_execute({
-        "metrics": lambda: api.get_classic_metrics_filtered(dc_id, scope, tr),
+        "metrics": lambda: merge_host_summary_into_compute(
+            api.get_classic_metrics_filtered(dc_id, scope, tr),
+            api.get_classic_host_rows(dc_id, scope, tr),
+        ),
         "card": lambda: _build_sellable_inline_kpi(
             dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
             color="blue", selected_clusters=scope,
@@ -1040,16 +1066,27 @@ def update_classic_virt_block(applied_clusters, time_range, pathname):
     dash.Input("virt-hyperconv-cluster-applied", "data"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
+    dash.State("virt-hyperconv-cluster-all", "data"),
+    dash.State("hyperconv-virt-panel", "children"),
     prevent_initial_call=True,
 )
-def update_hyperconv_virt_block(applied_clusters, time_range, pathname):
+def update_hyperconv_virt_block(applied_clusters, time_range, pathname, all_clusters, panel_children):
     dc_id = _dc_id_from_pathname(pathname)
     if not dc_id:
         return dash.no_update, dash.no_update
     tr = time_range or default_time_range()
-    scope = applied_clusters or None
+    scope = normalize_virt_cluster_scope(applied_clusters, all_clusters)
+    if (
+        _virt_callback_trigger_id() == "virt-hyperconv-cluster-applied"
+        and scope is None
+        and panel_children
+    ):
+        return dash.no_update, dash.no_update
     batch = parallel_execute({
-        "metrics": lambda: api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
+        "metrics": lambda: merge_host_summary_into_compute(
+            api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
+            api.get_hyperconv_host_rows(dc_id, scope, tr),
+        ),
         "card": lambda: _build_sellable_inline_kpi(
             dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
             color="teal", selected_clusters=scope,
@@ -1069,10 +1106,12 @@ def update_hyperconv_virt_block(applied_clusters, time_range, pathname):
     dash.Input("virt-classic-cluster-applied", "data"),
     dash.Input("app-time-range", "data"),
     dash.Input("virt-nested-tabs", "value"),
+    dash.Input("hosts-collapse-classic", "in"),
     dash.State("url", "pathname"),
-    prevent_initial_call=False,
+    dash.State("virt-classic-cluster-all", "data"),
+    prevent_initial_call=True,
 )
-def prefetch_classic_hosts(applied_clusters, time_range, nested_tab, pathname):
+def prefetch_classic_hosts(applied_clusters, time_range, nested_tab, collapse_in, pathname, all_clusters):
     """Background host-row prefetch — updates Store + badge only (no card DOM rebuild)."""
     if nested_tab not in (None, "classic"):
         return dash.no_update, dash.no_update
@@ -1080,7 +1119,12 @@ def prefetch_classic_hosts(applied_clusters, time_range, nested_tab, pathname):
     if not dc_id:
         return dash.no_update, dash.no_update
     tr = time_range or default_time_range()
-    scope = applied_clusters or None
+    scope = normalize_virt_cluster_scope(applied_clusters, all_clusters)
+    trigger = _virt_callback_trigger_id()
+    if trigger == "virt-classic-cluster-applied" and scope is None:
+        return dash.no_update, dash.no_update
+    if trigger == "hosts-collapse-classic" and not collapse_in:
+        return dash.no_update, dash.no_update
     hosts_data = api.get_classic_host_rows(dc_id, scope, tr) or {}
     count = int(hosts_data.get("host_count") or 0)
     label = f"{count} host" if count else "—"
@@ -1093,10 +1137,12 @@ def prefetch_classic_hosts(applied_clusters, time_range, nested_tab, pathname):
     dash.Input("virt-hyperconv-cluster-applied", "data"),
     dash.Input("app-time-range", "data"),
     dash.Input("virt-nested-tabs", "value"),
+    dash.Input("hosts-collapse-hyperconv", "in"),
     dash.State("url", "pathname"),
-    prevent_initial_call=False,
+    dash.State("virt-hyperconv-cluster-all", "data"),
+    prevent_initial_call=True,
 )
-def prefetch_hyperconv_hosts(applied_clusters, time_range, nested_tab, pathname):
+def prefetch_hyperconv_hosts(applied_clusters, time_range, nested_tab, collapse_in, pathname, all_clusters):
     """Background host-row prefetch — updates Store + badge only (no card DOM rebuild)."""
     if nested_tab != "hyperconv":
         return dash.no_update, dash.no_update
@@ -1104,7 +1150,12 @@ def prefetch_hyperconv_hosts(applied_clusters, time_range, nested_tab, pathname)
     if not dc_id:
         return dash.no_update, dash.no_update
     tr = time_range or default_time_range()
-    scope = applied_clusters or None
+    scope = normalize_virt_cluster_scope(applied_clusters, all_clusters)
+    trigger = _virt_callback_trigger_id()
+    if trigger == "virt-hyperconv-cluster-applied" and scope is None:
+        return dash.no_update, dash.no_update
+    if trigger == "hosts-collapse-hyperconv" and not collapse_in:
+        return dash.no_update, dash.no_update
     hosts_data = api.get_hyperconv_host_rows(dc_id, scope, tr) or {}
     count = int(hosts_data.get("host_count") or 0)
     label = f"{count} host" if count else "—"

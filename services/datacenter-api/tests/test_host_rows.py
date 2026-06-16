@@ -72,6 +72,56 @@ def test_classic_host_rows_sql_scopes_km_clusters():
     assert "cardinality(%s::text[])" in vq.CLASSIC_HOST_ROWS
 
 
+def test_classic_host_mem_peak_sql_exists():
+    assert "memory_used_gb" in vq.CLASSIC_HOST_MEM_PEAK
+    assert "vmhost_metrics" in vq.CLASSIC_HOST_MEM_PEAK
+
+
+def test_nutanix_host_mem_peak_sql_exists():
+    assert "nutanix_host_metrics" in nq.NUTANIX_HOST_MEM_PEAK
+
+
+def test_apply_km_storage_to_host_sets_mount_fields():
+    ctx = {
+        "host_mounts": {
+            "hv1": [
+                {
+                    "datastore_moid": "ds-1",
+                    "name": "DS1",
+                    "cap_gb": 1000.0,
+                    "used_gb": 400.0,
+                    "free_gb": 600.0,
+                    "used_pct": 40.0,
+                    "shared": True,
+                },
+                {
+                    "datastore_moid": "ds-2",
+                    "name": "DS2",
+                    "cap_gb": 500.0,
+                    "used_gb": 100.0,
+                    "free_gb": 400.0,
+                    "used_pct": 20.0,
+                    "shared": False,
+                },
+            ],
+        },
+    }
+    payload = {"host": "hv1.dc.example"}
+    out = DatabaseService._apply_km_storage_to_host(payload, ctx)
+    assert out["stor_cap_gb"] == 1500.0
+    assert out["stor_exclusive_free_gb"] == 400.0
+    assert out["stor_free_gb"] == 1000.0
+    assert len(out["datastore_mounts"]) == 2
+
+
+def test_apply_host_mem_peak_attaches_peak_fields():
+    payload = {"host": "hv1", "mem_cap_gb": 512.0}
+    out = DatabaseService._apply_host_mem_peak(payload, (256.0, 512.0, 50.0))
+    assert out["mem_used_gb_peak"] == 256.0
+    assert out["mem_cap_gb_at_peak"] == 512.0
+    assert out["mem_peak_util_pct"] == 50.0
+
+
 def test_classic_host_vm_allocation_groups_by_host():
     assert "GROUP BY vmhost" in vq.CLASSIC_HOST_VM_ALLOCATION
     assert "cluster ILIKE '%%KM%%'" in vq.CLASSIC_HOST_VM_ALLOCATION

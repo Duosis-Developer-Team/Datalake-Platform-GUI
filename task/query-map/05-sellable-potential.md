@@ -533,6 +533,18 @@ host/cluster ratio (CPU/RAM) → _apply_storage_range (classic/power)
 → apply_storage_ratio_cap → annotate_panel_constraint_metadata → pricing
 ```
 
+For `virt_classic` / `virt_hyperconverged` with host rows present (ADR-0020,
+`SELLABLE_PAYLOAD_VERSION = 3`), storage participates in **per-host triple-min**
+instead of post-hoc cap:
+
+```
+per-host gates → triple-min (CPU, RAM, Storage) → Σ host n_units (family rollup)
+→ deduped storage_pools min/max band → pricing
+```
+
+Skip `_apply_storage_range` DC aggregate and `apply_storage_ratio_cap` when
+`host_based_ok` is true.
+
 `constraint_reason` / `bottleneck_kind` / `bottleneck_units` on panel JSON.
 
 **Storage decouple (virt_power) — REMOVED 2026-06:** Previously:
@@ -541,6 +553,32 @@ virt_power_storage_decouple = frozenset({"storage"})
 decouple = virt_power_storage_decouple if fam == "virt_power" else None
 ```
 Storage now participates in ratio min() like other virt families.
+
+### 5) Host-level triple-min (`host_sellable.py`, ADR-0020)
+
+`virt_classic` and `virt_hyperconverged` with host rows use per-host triple-min
+before family SUM rollup. Ratio defaults from `gui_panel_resource_ratio` (e.g.
+1 vCPU : 4 GB RAM : 50 GB Storage per sellable unit).
+
+**Operator example** (gates passed, headroom after threshold):
+
+| Resource | Headroom |
+|----------|----------|
+| CPU | 4 GHz |
+| RAM | 56 GB |
+| Storage | 800 GB |
+
+```
+n_cpu  = 4 / 1  = 4
+n_ram  = 56 / 4 = 14
+n_stor = 800 / 50 = 16
+n_units = min(4, 14, 16) = 4
+sellable: 4 GHz CPU, 16 GB RAM, 200 GB storage
+waste tags: "40 GB RAM ratio-bound", "600 GB Storage ratio-bound"
+```
+
+KM shared LUN: min band uses `stor_exclusive_free_gb`; max band adds shared mount
+free. Family `storage_pools` dedupes by `datastore_moid`.
 
 ### 4) `compute_potential_tl(sellable_constrained, unit_price_tl)`
 

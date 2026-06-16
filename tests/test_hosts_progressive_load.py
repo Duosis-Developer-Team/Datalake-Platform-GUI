@@ -23,11 +23,13 @@ def _callback_outputs(func_name: str) -> list[str]:
     raise AssertionError(f"{func_name} not found")
 
 
-def test_virt_block_callbacks_do_not_fetch_hosts():
+def test_virt_block_merges_host_summary_for_capacity_planning():
+    """Virt panel callbacks merge host rollup into gauges; host cards stay in prefetch path."""
     for fn in ("update_classic_virt_block", "update_hyperconv_virt_block"):
         body = _function_source(fn)
-        assert "get_classic_host_rows" not in body and "get_hyperconv_host_rows" not in body
-        assert '"hosts"' not in body
+        assert "merge_host_summary_into_compute" in body
+        assert "hosts-panel" not in body
+        assert "hosts-count" not in body
 
 
 def test_virt_block_owns_panel_and_sellable_only():
