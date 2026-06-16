@@ -116,6 +116,7 @@ from src.pages import login as login_page_mod
 from src.pages.settings import shell as settings_shell
 from src.components.access_denied import build_access_denied
 from src.components.virt_cluster_filter import normalize_virt_cluster_scope
+from shared.sellable.config import host_based_sellable_enabled
 from src.pages.dc_view import (
     _bps_to_gbps,
     _build_compute_tab,
@@ -950,13 +951,16 @@ def _virt_metrics_from_cache(
 def _fetch_virt_compute_merged(
     dc_id: str, scope: list[str] | None, tr: dict, *, classic: bool
 ) -> dict:
-    """Fetch cluster metrics and host rows in parallel, then merge for Capacity Planning."""
+    """Fetch cluster metrics and optionally host rows for Capacity Planning."""
+    metrics = _virt_metrics_from_cache(dc_id, scope, tr, classic=classic)
+    if not host_based_sellable_enabled():
+        return {"merged": metrics, "hosts": {}}
     if classic:
         hosts_fn = lambda: api.get_classic_host_rows(dc_id, scope, tr)
     else:
         hosts_fn = lambda: api.get_hyperconv_host_rows(dc_id, scope, tr)
     batch = parallel_execute({
-        "metrics": lambda: _virt_metrics_from_cache(dc_id, scope, tr, classic=classic),
+        "metrics": lambda: metrics,
         "hosts": hosts_fn,
     })
     hosts = batch["hosts"] if isinstance(batch.get("hosts"), dict) else {}
@@ -1100,7 +1104,9 @@ def update_classic_virt_block(
         sellable = html.Div(id="sellable-classic-card")
     count = int(hosts_data.get("host_count") or 0)
     label = f"{count} host" if count else "—"
-    return panel, sellable, hosts_data, label
+    if host_based_sellable_enabled():
+        return panel, sellable, hosts_data, label
+    return panel, sellable, dash.no_update, dash.no_update
 
 
 @app.callback(
@@ -1151,7 +1157,9 @@ def update_hyperconv_virt_block(
         sellable = html.Div(id="sellable-hyperconv-card")
     count = int(hosts_data.get("host_count") or 0)
     label = f"{count} host" if count else "—"
-    return panel, sellable, hosts_data, label
+    if host_based_sellable_enabled():
+        return panel, sellable, hosts_data, label
+    return panel, sellable, dash.no_update, dash.no_update
 
 
 @app.callback(

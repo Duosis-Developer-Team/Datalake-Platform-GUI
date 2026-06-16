@@ -21,6 +21,7 @@ from src.utils.virt_sellable_aggregate import (
 )
 from src.utils.api_parallel import parallel_execute
 from src.utils.time_range import default_time_range
+from shared.sellable.config import host_based_sellable_enabled
 from src.utils.format_units import (
     smart_storage,
     smart_memory,
@@ -1612,7 +1613,11 @@ def _build_crm_sales_potential_panel(dc_id: str) -> html.Div:
         children=[
             _section_title(
                 "Sellable potential (CRM)",
-                "Virt sellable from crm-engine — host-based CPU/RAM dual-track (ADR-0018)",
+                (
+                    "Virt sellable from crm-engine — host-based CPU/RAM dual-track (ADR-0018)"
+                    if host_based_sellable_enabled()
+                    else "Virt sellable from crm-engine — cluster-based CPU/RAM dual-track"
+                ),
             ),
             dmc.SimpleGrid(
                 cols={"base": 2, "md": 4},
@@ -3529,7 +3534,9 @@ def merge_host_summary_into_compute(compute: dict | None, hosts_data: dict | Non
 
 
 def _enrich_hosts_for_display(hosts: list[dict], *, family: str = "virt_classic") -> None:
-    """Attach sellable constraint tags when not already present (display-only fallback)."""
+    """Attach sellable constraint tags when host-based sellable is enabled."""
+    if not host_based_sellable_enabled():
+        return
     from shared.sellable.host_sellable import compute_host_sellable_units
     from shared.sellable.models import ResourceRatio
 

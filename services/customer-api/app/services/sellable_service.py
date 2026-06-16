@@ -87,7 +87,7 @@ _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 _CALC_CONFIG_TTL_SEC: int = int(os.getenv("SELLABLE_CALC_CONFIG_TTL_SECONDS", "300") or "300")
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 3
+SELLABLE_PAYLOAD_VERSION: int = 4
 
 # Maps allocated_table → Redis section key for per-DC (dc_details) response.
 _VM_TABLE_DC_SECTION: dict[str, str] = {
@@ -225,6 +225,7 @@ from app.services.currency_service import CurrencyService
 from app.services.customer_service import CustomerService
 from app.services.tagging_service import TaggingService, build_metric_key
 from app.services.webui_db import WebuiPool
+from shared.sellable.config import host_based_sellable_enabled
 from shared.sellable.computation import (
     annotate_panel_constraint_metadata,
     apply_storage_ratio_cap,
@@ -2019,7 +2020,8 @@ SELECT _tot, _alloc FROM latest
         compute_metrics = None
         util_pct: float | None = None
         skip_cluster_compute = (
-            panel.family in _HOST_BASED_FAMILIES
+            host_based_sellable_enabled()
+            and panel.family in _HOST_BASED_FAMILIES
             and panel.resource_kind in frozenset({"cpu", "ram", "storage"})
         )
         if (
@@ -2555,7 +2557,7 @@ SELECT _tot, _alloc FROM latest
             host_rows: list[dict] | None = None
             host_status = "unavailable"
             storage_pools: list[dict] = []
-            if fam in _HOST_BASED_FAMILIES:
+            if fam in _HOST_BASED_FAMILIES and host_based_sellable_enabled():
                 host_rows, host_status, storage_pools = self._fetch_host_rows(
                     dc_code, fam, selected_clusters, time_range=time_range
                 )

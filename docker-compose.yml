@@ -131,6 +131,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
       OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
+      SELLABLE_HOST_BASED_ENABLED: ${SELLABLE_HOST_BASED_ENABLED:-false}
     volumes:
       - ./data:/app/data
     networks:
@@ -299,6 +300,7 @@ services:
       # Must match datacenter-api default_time_range (7) so sellable hits the
       # same keys the DC view populates.
       SELLABLE_REDIS_WINDOW_DAYS: ${SELLABLE_REDIS_WINDOW_DAYS:-7}
+      SELLABLE_HOST_BASED_ENABLED: ${SELLABLE_HOST_BASED_ENABLED:-false}
       WEBUI_DB_HOST: ${WEBUI_DB_HOST:-webui-db}
       WEBUI_DB_PORT: ${WEBUI_DB_PORT:-5432}
       WEBUI_DB_NAME: ${WEBUI_DB_NAME:-bulutwebui}

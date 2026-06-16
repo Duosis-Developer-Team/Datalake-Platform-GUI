@@ -116,6 +116,44 @@ def test_host_card_hci_storage_row_only_when_present():
     assert "Storage" in with_disk
 
 
+def test_enrich_hosts_skips_sellable_tags_when_flag_disabled(monkeypatch):
+    monkeypatch.setenv("SELLABLE_HOST_BASED_ENABLED", "false")
+    hosts = [{
+        **_SAMPLE_HOST,
+        "stor_cap_gb": 1024.0,
+        "stor_provisioned_gb": 400.0,
+        "stor_used_pct": 40.0,
+    }]
+    dc_view._enrich_hosts_for_display(hosts, family="virt_classic")
+    assert "constraint_tags" not in hosts[0]
+    assert "sellable_n_min" not in hosts[0]
+
+    card = dc_view._host_card(hosts[0], "blue")
+    text = _texts(card)
+    assert "Sellable" not in text
+
+
+def test_enrich_hosts_adds_sellable_tags_when_flag_enabled(monkeypatch):
+    monkeypatch.setenv("SELLABLE_HOST_BASED_ENABLED", "true")
+    hosts = [{
+        **_SAMPLE_HOST,
+        "cpu_cap_ghz": 100.0,
+        "cpu_alloc_ghz": 10.0,
+        "cpu_used_pct": 10.0,
+        "mem_cap_gb": 400.0,
+        "mem_alloc_gb": 40.0,
+        "mem_used_pct": 10.0,
+        "stor_cap_gb": 1000.0,
+        "stor_provisioned_gb": 100.0,
+        "stor_used_pct": 10.0,
+        "stor_exclusive_free_gb": 500.0,
+        "stor_free_gb": 500.0,
+    }]
+    dc_view._enrich_hosts_for_display(hosts, family="virt_classic")
+    assert hosts[0].get("constraint_tags") is not None
+    assert hosts[0].get("sellable_n_min") is not None
+
+
 # --------------------------------------------------------- backing badge
 
 
@@ -159,7 +197,7 @@ def _sellable_panels_with_range():
 def test_sellable_inline_kpi_renders_storage_range(monkeypatch):
     class FakeApi:
         @staticmethod
-        def get_sellable_by_panel(dc_code="*", family=None, clusters=None):
+        def get_sellable_by_panel(dc_code="*", family=None, clusters=None, **kwargs):
             return _sellable_panels_with_range()
 
     monkeypatch.setattr(dc_view, "api", FakeApi())
@@ -180,7 +218,7 @@ def test_sellable_inline_kpi_single_value_without_range(monkeypatch):
 
     class FakeApi:
         @staticmethod
-        def get_sellable_by_panel(dc_code="*", family=None, clusters=None):
+        def get_sellable_by_panel(dc_code="*", family=None, clusters=None, **kwargs):
             return panels
 
     monkeypatch.setattr(dc_view, "api", FakeApi())

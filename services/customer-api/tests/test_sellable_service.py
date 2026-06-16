@@ -542,11 +542,12 @@ def test_compute_panel_falls_back_to_db_when_no_clusters():
     assert result.allocated == 4.0
 
 
-def test_compute_summary_passes_clusters_per_family():
+def test_compute_summary_passes_clusters_per_family(monkeypatch):
+    monkeypatch.setenv("SELLABLE_HOST_BASED_ENABLED", "true")
     svc = _build_service()
     seen: list[dict] = []
 
-    def fake_hosts(dc, fam, clusters):
+    def fake_hosts(dc, fam, clusters, **kwargs):
         seen.append({"family": fam, "clusters": list(clusters or [])})
         return ([{
             "host": "hv1",
@@ -700,7 +701,8 @@ def test_compute_all_panels_family_filter_skips_unrelated_panels():
 
 
 def test_compute_all_panels_dedups_compute_http_per_family(monkeypatch):
-    """clusters set + family with 3 resource_kind panels → exactly ONE HTTP call."""
+    """clusters set + family with 3 resource_kind panels → host path when enabled."""
+    monkeypatch.setenv("SELLABLE_HOST_BASED_ENABLED", "true")
     panels = [
         PanelDefinition("virt_classic_cpu",     "C CPU",     "virt_classic", "cpu",     "vCPU"),
         PanelDefinition("virt_classic_ram",     "C RAM",     "virt_classic", "ram",     "GB"),
@@ -727,7 +729,7 @@ def test_compute_all_panels_dedups_compute_http_per_family(monkeypatch):
     svc._bulk_load_thresholds    = lambda dc: {"_by_panel_key": {}, "_by_resource_type": {}}  # type: ignore[assignment]
     svc._bulk_load_price_overrides = lambda: {}       # type: ignore[assignment]
     svc._query_storage_range_inputs = lambda dc: None  # type: ignore[assignment]
-    svc._fetch_host_rows = lambda dc, fam, clusters: ([  # type: ignore[assignment]
+    svc._fetch_host_rows = lambda dc, fam, clusters, **kwargs: ([  # type: ignore[assignment]
         {
             "host": "hv1",
             "cluster": "KM-1",
@@ -1718,3 +1720,34 @@ def test_snapshot_stale_payload_version_is_cache_miss():
     decoded = svc._snapshot_decode_panel_list(wrapped)
     assert decoded is not None
     assert decoded[0]["panel_key"] == "virt_hyperconverged_cpu"
+
+
+def test_compute_all_panels_skips_host_fetch_when_flag_disabled(monkeypatch):
+    """Default flag off → cluster fallback, no datacenter-api /hosts round-trip."""
+    monkeypatch.delenv("SELLABLE_HOST_BASED_ENABLED", raising=False)
+    svc = _build_service()
+    host_calls: list[tuple] = []
+
+    def track_hosts(dc, fam, clusters, **kwargs):
+        host_calls.append((dc, fam, list(clusters or [])))
+        raise AssertionError("host rows must not be fetched when flag is disabled")
+
+    svc._fetch_host_rows = track_hosts  # type: ignore[assignment]
+    svc._apply_cluster_fallback_dual = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda group, *a, **kw: group
+    )
+
+    panels = svc.compute_all_panels(
+        dc_code="IST1",
+        family="virt_hyperconverged",
+        selected_clusters=["KM-1"],
+        force_recompute=True,
+    )
+
+    assert host_calls == []
+    assert svc._apply_cluster_fallback_dual.call_count >= 1
+    assert panels
+
+
+def test_sellable_payload_version_is_four():
+    assert SELLABLE_PAYLOAD_VERSION == 4
