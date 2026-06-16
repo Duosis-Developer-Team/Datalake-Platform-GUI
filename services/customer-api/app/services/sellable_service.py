@@ -1316,7 +1316,7 @@ SELECT _tot, _alloc FROM latest
             f"?{'&'.join(params)}"
         )
         try:
-            resp = httpx.get(url, timeout=self._dc_api_timeout(clusters))
+            resp = httpx.get(url, timeout=self._dc_api_hosts_timeout(clusters))
             resp.raise_for_status()
             data = resp.json()
         except httpx.TimeoutException:
@@ -1392,6 +1392,11 @@ SELECT _tot, _alloc FROM latest
         if count <= 1:
             return base
         return min(120.0, base + count * 8.0)
+
+    @staticmethod
+    def _dc_api_hosts_timeout(clusters: list[str] | None) -> float:
+        """Per-host compute rows are heavier than cluster aggregates; allow more headroom."""
+        return max(SellableService._dc_api_timeout(clusters), 60.0)
 
     def _fetch_compute_response(
         self, dc_code: str, family: str, clusters: list[str] | None

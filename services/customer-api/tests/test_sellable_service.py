@@ -1698,3 +1698,10 @@ def test_snapshot_stale_payload_version_is_cache_miss():
     decoded = svc._snapshot_decode_panel_list(wrapped)
     assert decoded is not None
     assert decoded[0]["panel_key"] == "virt_hyperconverged_cpu"
+
+
+def test_dc_api_hosts_timeout_floor_for_full_dc_queries():
+    """Full-DC host rows can exceed the default 20s cluster timeout (e.g. DC13 ~24s)."""
+    assert SellableService._dc_api_hosts_timeout(None) >= 60.0
+    assert SellableService._dc_api_hosts_timeout([]) >= 60.0
+    assert SellableService._dc_api_hosts_timeout(["c1", "c2", "c3"]) >= 60.0
