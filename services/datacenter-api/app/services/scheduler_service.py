@@ -85,6 +85,19 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
 
     try:
         scheduler.add_job(
+            func=db_service.warm_host_rows_cache,
+            trigger=DateTrigger(run_date=initial_run_time),
+            id="host_rows_initial_warm",
+            name="Initial host-rows cache warm-up (default 7d)",
+            replace_existing=True,
+            misfire_grace_time=120,
+        )
+        logger.info("Scheduled initial host-rows cache warm-up.")
+    except Exception as exc:
+        logger.warning("Failed to schedule initial host-rows warm-up: %s", exc)
+
+    try:
+        scheduler.add_job(
             func=db_service.warm_network_cache,
             trigger=DateTrigger(run_date=initial_run_time),
             id="network_initial_warm",

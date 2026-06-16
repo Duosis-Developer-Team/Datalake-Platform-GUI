@@ -304,7 +304,7 @@ WITH dc_clusters AS (
     FROM public.nutanix_cluster_metrics
     WHERE cluster_name LIKE ('%%' || %s || '%%')
       AND (cardinality(%s::text[]) = 0 OR cluster_name = ANY(%s::text[]))
-      AND collection_time >= NOW() - INTERVAL '7 days'
+      AND collection_time BETWEEN %s AND %s
     ORDER BY cluster_uuid, collection_time DESC
 )
 SELECT DISTINCT ON (h.host_uuid)
@@ -500,7 +500,7 @@ LIMIT 1
 """
 
 # Per-host RAM peak from nutanix_host_metrics (hyperconverged scope).
-# Params: (dc_code, cluster_filter[], cluster_filter[], start_ts, end_ts)
+# Params: (dc_code, cluster_filter[], cluster_filter[], cluster_start, cluster_end, host_start, host_end)
 NUTANIX_HOST_MEM_PEAK = """
 WITH dc_clusters AS (
     SELECT DISTINCT ON (cluster_uuid)
@@ -509,17 +509,17 @@ WITH dc_clusters AS (
     FROM public.nutanix_cluster_metrics
     WHERE cluster_name LIKE ('%%' || %s || '%%')
       AND (cardinality(%s::text[]) = 0 OR cluster_name = ANY(%s::text[]))
-      AND collection_time >= NOW() - INTERVAL '7 days'
+      AND collection_time BETWEEN %s AND %s
     ORDER BY cluster_uuid, collection_time DESC
 ),
 ts_agg AS (
     SELECT h.host_name,
-           h.collection_time,
+           h.collectiontime,
            COALESCE(h.memory_usage_avg, 0)      AS used_bytes,
            COALESCE(h.total_memory_capacity, 0) AS cap_bytes
     FROM public.nutanix_host_metrics h
     INNER JOIN dc_clusters c ON h.cluster_uuid::text = c.cluster_uuid
-    WHERE h.collection_time BETWEEN %s AND %s
+    WHERE h.collectiontime BETWEEN %s AND %s
 )
 SELECT DISTINCT ON (host_name)
     host_name,

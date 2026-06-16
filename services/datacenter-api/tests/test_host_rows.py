@@ -71,6 +71,8 @@ def test_classic_host_mem_peak_sql_groups_by_host():
 def test_nutanix_host_mem_peak_sql_groups_by_host():
     assert "DISTINCT ON (host_name)" in nq.NUTANIX_HOST_MEM_PEAK
     assert "nutanix_host_metrics" in nq.NUTANIX_HOST_MEM_PEAK
+    assert "h.collectiontime" in nq.NUTANIX_HOST_MEM_PEAK
+    assert "h.collection_time" not in nq.NUTANIX_HOST_MEM_PEAK
 
 
 def test_host_row_payload_includes_peak_when_applied():
@@ -119,6 +121,8 @@ def test_nutanix_host_rows_joins_cluster_names():
     assert "nutanix_host_metrics" in nq.NUTANIX_HOST_ROWS
     assert "nutanix_cluster_metrics" in nq.NUTANIX_HOST_ROWS
     assert "cluster_name = ANY(%s::text[])" in nq.NUTANIX_HOST_ROWS
+    assert "h.collectiontime" in nq.NUTANIX_HOST_ROWS
+    assert "collection_time BETWEEN %s AND %s" in nq.NUTANIX_HOST_ROWS
 
 
 def test_nutanix_host_vm_allocation_groups_by_host():

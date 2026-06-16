@@ -147,10 +147,15 @@ def _new_http_transport() -> httpx.HTTPTransport:
 # over the remote VPN DB) COMPLETE and populate the cache, instead of timing out at
 # 8s and returning empty — which never caches, so warm==cold and the UI shows zeros.
 # Connect stays short so a truly-unreachable backend still fails fast. Tunable via env.
-_INTERACTIVE_READ_TIMEOUT = float(os.getenv("API_INTERACTIVE_READ_TIMEOUT", "20") or "20")
+_INTERACTIVE_READ_TIMEOUT = float(os.getenv("API_INTERACTIVE_READ_TIMEOUT", "35") or "35")
 _INTERACTIVE_TIMEOUT = httpx.Timeout(
     _INTERACTIVE_READ_TIMEOUT, connect=5.0, read=_INTERACTIVE_READ_TIMEOUT,
     write=_INTERACTIVE_READ_TIMEOUT, pool=5.0,
+)
+_HOST_ROWS_READ_TIMEOUT = float(os.getenv("API_HOST_ROWS_READ_TIMEOUT", "45") or "45")
+_HOST_ROWS_TIMEOUT = httpx.Timeout(
+    _HOST_ROWS_READ_TIMEOUT, connect=5.0, read=_HOST_ROWS_READ_TIMEOUT,
+    write=_HOST_ROWS_READ_TIMEOUT, pool=5.0,
 )
 
 
@@ -865,7 +870,12 @@ def get_classic_host_rows(
     ck = f"api:classic_hosts_all:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
 
     def fetch() -> dict:
-        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/compute/classic/hosts", params=params)
+        with httpx.Client(
+            base_url=DATACENTER_API_URL, timeout=_HOST_ROWS_TIMEOUT, transport=_new_http_transport()
+        ) as client:
+            data = _get_json(
+                client, f"/api/v1/datacenters/{enc}/compute/classic/hosts", params=params
+            )
         return data if isinstance(data, dict) else {"hosts": [], "host_count": 0}
 
     full = _api_cache_get_with_stale(ck, fetch, {"hosts": [], "host_count": 0})
@@ -882,7 +892,12 @@ def get_hyperconv_host_rows(
     ck = f"api:hyperconv_hosts_all:{enc}:{json.dumps(sorted(params.items()), separators=(',', ':'))}"
 
     def fetch() -> dict:
-        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/compute/hyperconverged/hosts", params=params)
+        with httpx.Client(
+            base_url=DATACENTER_API_URL, timeout=_HOST_ROWS_TIMEOUT, transport=_new_http_transport()
+        ) as client:
+            data = _get_json(
+                client, f"/api/v1/datacenters/{enc}/compute/hyperconverged/hosts", params=params
+            )
         return data if isinstance(data, dict) else {"hosts": [], "host_count": 0}
 
     full = _api_cache_get_with_stale(ck, fetch, {"hosts": [], "host_count": 0})

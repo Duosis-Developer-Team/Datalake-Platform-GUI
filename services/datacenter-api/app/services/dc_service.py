@@ -1695,7 +1695,7 @@ LIMIT 20
                     host_rows = self._run_rows(
                         cur,
                         nq.NUTANIX_HOST_ROWS,
-                        (dc_code, empty_clusters, empty_clusters, start_ts, end_ts),
+                        (dc_code, empty_clusters, empty_clusters, start_ts, end_ts, start_ts, end_ts),
                     )
                     alloc_rows = self._run_rows(
                         cur,
@@ -1705,7 +1705,7 @@ LIMIT 20
                     peak_rows = self._run_rows(
                         cur,
                         nq.NUTANIX_HOST_MEM_PEAK,
-                        (dc_code, empty_clusters, empty_clusters, start_ts, end_ts),
+                        (dc_code, empty_clusters, empty_clusters, start_ts, end_ts, start_ts, end_ts),
                     )
                     host_map = self._load_host_ghz_map(cur)
         except OperationalError as exc:
@@ -6722,15 +6722,24 @@ JOIN latest l
                 "Cache warm-up complete for last 7d in %.2fs.",
                 time.perf_counter() - t0,
             )
-            # Host-level compute rows (Hosts panel + host-based sellable).
-            try:
-                for dc_code in self._dc_list:
-                    self.get_classic_host_rows(dc_code, None, tr)
-                    self.get_hyperconv_host_rows(dc_code, None, tr)
-            except Exception as exc:
-                logger.warning("Host rows cache warm-up failed: %s", exc)
         except Exception as exc:
             logger.warning("Cache warm-up failed (DB may be unavailable): %s", exc)
+
+    def warm_host_rows_cache(self) -> None:
+        """Background warm for per-host compute rows (Hosts panel + host-based sellable)."""
+        logger.info("Warming host-rows cache for all DCs (default 7d range)…")
+        t0 = time.perf_counter()
+        tr = default_time_range()
+        try:
+            for dc_code in self._dc_list:
+                try:
+                    self.get_classic_host_rows(dc_code, None, tr)
+                    self.get_hyperconv_host_rows(dc_code, None, tr)
+                except Exception as exc:
+                    logger.warning("Host rows warm failed for DC %s: %s", dc_code, exc)
+            logger.info("Host-rows cache warm complete in %.2fs.", time.perf_counter() - t0)
+        except Exception as exc:
+            logger.warning("Host-rows cache warm-up failed: %s", exc)
 
     def warm_additional_ranges(self) -> None:
         """

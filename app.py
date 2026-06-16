@@ -929,6 +929,39 @@ for _virt_cluster_prefix in ("classic", "hyperconv"):
     _register_virt_cluster_filter_callbacks(_virt_cluster_prefix)
 
 
+def _virt_metrics_from_cache(
+    dc_id: str, scope: list[str] | None, tr: dict, *, classic: bool
+) -> dict:
+    """Cluster-level compute metrics without waiting for host-rows SQL.
+
+    When all clusters are selected (scope is None), reuse cached dc_details slice
+    instead of calling metrics_filtered (which re-fetches dc_details internally).
+    """
+    if scope:
+        if classic:
+            return api.get_classic_metrics_filtered(dc_id, scope, tr)
+        return api.get_hyperconv_metrics_filtered(dc_id, scope, tr)
+    details = api.get_dc_details(dc_id, tr)
+    key = "classic" if classic else "hyperconv"
+    section = details.get(key) or {}
+    return section if isinstance(section, dict) else {}
+
+
+def _fetch_virt_compute_merged(
+    dc_id: str, scope: list[str] | None, tr: dict, *, classic: bool
+) -> dict:
+    """Fetch cluster metrics and host rows in parallel, then merge for Capacity Planning."""
+    if classic:
+        hosts_fn = lambda: api.get_classic_host_rows(dc_id, scope, tr)
+    else:
+        hosts_fn = lambda: api.get_hyperconv_host_rows(dc_id, scope, tr)
+    batch = parallel_execute({
+        "metrics": lambda: _virt_metrics_from_cache(dc_id, scope, tr, classic=classic),
+        "hosts": hosts_fn,
+    })
+    return merge_host_summary_into_compute(batch["metrics"], batch["hosts"])
+
+
 @app.callback(
     dash.Output("classic-virt-panel", "children", allow_duplicate=True),
     dash.Output("sellable-classic-card", "children", allow_duplicate=True),
@@ -968,10 +1001,7 @@ def populate_virt_nested_tab(
     if active == "classic" and not classic_built:
         scope = normalize_virt_cluster_scope(classic_applied, all_classic)
         batch = parallel_execute({
-            "metrics": lambda: merge_host_summary_into_compute(
-                api.get_classic_metrics_filtered(dc_id, scope, tr),
-                api.get_classic_host_rows(dc_id, scope, tr),
-            ),
+            "metrics": lambda: _virt_metrics_from_cache(dc_id, scope, tr, classic=True),
             "card": lambda: _build_sellable_inline_kpi(
                 dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
                 color="blue", selected_clusters=scope, container_id="sellable-classic-card",
@@ -987,10 +1017,7 @@ def populate_virt_nested_tab(
     if active == "hyperconv" and not hyperconv_built:
         scope = normalize_virt_cluster_scope(hyperconv_applied, all_hyperconv)
         batch = parallel_execute({
-            "metrics": lambda: merge_host_summary_into_compute(
-                api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
-                api.get_hyperconv_host_rows(dc_id, scope, tr),
-            ),
+            "metrics": lambda: _virt_metrics_from_cache(dc_id, scope, tr, classic=False),
             "card": lambda: _build_sellable_inline_kpi(
                 dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
                 color="teal", selected_clusters=scope, container_id="sellable-hyperconv-card",
@@ -1065,10 +1092,7 @@ def update_classic_virt_block(
     ):
         return dash.no_update, dash.no_update
     batch = parallel_execute({
-        "metrics": lambda: merge_host_summary_into_compute(
-            api.get_classic_metrics_filtered(dc_id, scope, tr),
-            api.get_classic_host_rows(dc_id, scope, tr),
-        ),
+        "metrics": lambda: _fetch_virt_compute_merged(dc_id, scope, tr, classic=True),
         "card": lambda: _build_sellable_inline_kpi(
             dc_id, "virt_classic", "Klasik Mimari — Sellable Potential",
             color="blue", selected_clusters=scope,
@@ -1116,10 +1140,7 @@ def update_hyperconv_virt_block(
     ):
         return dash.no_update, dash.no_update
     batch = parallel_execute({
-        "metrics": lambda: merge_host_summary_into_compute(
-            api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
-            api.get_hyperconv_host_rows(dc_id, scope, tr),
-        ),
+        "metrics": lambda: _fetch_virt_compute_merged(dc_id, scope, tr, classic=False),
         "card": lambda: _build_sellable_inline_kpi(
             dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
             color="teal", selected_clusters=scope,
@@ -1223,6 +1244,58 @@ def render_hyperconv_hosts_panel(collapsed_in, hosts_data):
     if not hosts_data:
         return _hosts_panel_loader("teal")
     return _build_hosts_panel_content(hosts_data, color="teal")
+
+
+@app.callback(
+    dash.Output("classic-virt-panel", "children", allow_duplicate=True),
+    dash.Input("hosts-data-classic", "data"),
+    dash.State("virt-classic-cluster-applied", "data"),
+    dash.State("virt-classic-cluster-all", "data"),
+    dash.State("app-time-range", "data"),
+    dash.State("url", "pathname"),
+    dash.State("virt-nested-tabs", "value"),
+    prevent_initial_call=True,
+)
+def overlay_classic_host_summary(
+    hosts_data, applied_clusters, all_clusters, time_range, pathname, nested_tab
+):
+    """Merge prefetched host summary into gauges when host-rows Store is populated."""
+    if nested_tab not in (None, "classic") or not hosts_data:
+        return dash.no_update
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update
+    tr = time_range or default_time_range()
+    scope = normalize_virt_cluster_scope(applied_clusters, all_clusters)
+    metrics = _virt_metrics_from_cache(dc_id, scope, tr, classic=True)
+    merged = merge_host_summary_into_compute(metrics, hosts_data)
+    return _build_compute_tab(merged, "Classic Compute", color="blue")
+
+
+@app.callback(
+    dash.Output("hyperconv-virt-panel", "children", allow_duplicate=True),
+    dash.Input("hosts-data-hyperconv", "data"),
+    dash.State("virt-hyperconv-cluster-applied", "data"),
+    dash.State("virt-hyperconv-cluster-all", "data"),
+    dash.State("app-time-range", "data"),
+    dash.State("url", "pathname"),
+    dash.State("virt-nested-tabs", "value"),
+    prevent_initial_call=True,
+)
+def overlay_hyperconv_host_summary(
+    hosts_data, applied_clusters, all_clusters, time_range, pathname, nested_tab
+):
+    """Merge prefetched host summary into gauges when host-rows Store is populated."""
+    if nested_tab != "hyperconv" or not hosts_data:
+        return dash.no_update
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return dash.no_update
+    tr = time_range or default_time_range()
+    scope = normalize_virt_cluster_scope(applied_clusters, all_clusters)
+    metrics = _virt_metrics_from_cache(dc_id, scope, tr, classic=False)
+    merged = merge_host_summary_into_compute(metrics, hosts_data)
+    return _build_compute_tab(merged, "Hyperconverged Compute", color="teal")
 
 
 # ---- Hosts panel toggle (DC view) --------------------------------------------

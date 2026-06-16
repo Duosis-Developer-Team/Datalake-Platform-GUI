@@ -1298,7 +1298,7 @@ SELECT _tot, _alloc FROM latest
         family: str,
         clusters: list[str] | None,
         *,
-        preset: str = "30d",
+        preset: str = "7d",
     ) -> tuple[list[dict] | None, str, list[dict]]:
         """Fetch per-host compute rows from datacenter-api /compute/{kind}/hosts.
 
@@ -1317,7 +1317,7 @@ SELECT _tot, _alloc FROM latest
             f"?{'&'.join(params)}"
         )
         try:
-            resp = httpx.get(url, timeout=self._dc_api_timeout(clusters))
+            resp = httpx.get(url, timeout=self._dc_api_timeout(clusters, host_rows=True))
             resp.raise_for_status()
             data = resp.json()
         except httpx.TimeoutException:
@@ -1387,8 +1387,12 @@ SELECT _tot, _alloc FROM latest
         return defaults
 
     @staticmethod
-    def _dc_api_timeout(clusters: list[str] | None, *, base: float = 20.0) -> float:
+    def _dc_api_timeout(
+        clusters: list[str] | None, *, base: float = 20.0, host_rows: bool = False
+    ) -> float:
         """Scale datacenter-api HTTP timeout for multi-cluster compute queries."""
+        if host_rows and not [c for c in (clusters or []) if c]:
+            base = max(base, 45.0)
         count = len([c for c in (clusters or []) if c])
         if count <= 1:
             return base
