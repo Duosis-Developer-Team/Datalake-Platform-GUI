@@ -450,6 +450,7 @@ def constrain_by_ratio_per_host_triple_dual(
     shared_pools: list[dict] | None = None,
     unit_price_tl: float = 0.0,
     ibm_storage_range: tuple[float, float] | None = None,
+    cluster_storage_raw_gb: float | None = None,
 ) -> list[PanelResult]:
     """Host-based triple min(CPU, RAM, Storage) with dual CPU/RAM tracks."""
     from .host_sellable import (
@@ -489,6 +490,7 @@ def constrain_by_ratio_per_host_triple_dual(
                 ram_track=ram_track,
                 effective_ghz_per_unit=effective_ghz_per_unit,
                 storage_include_shared=storage_shared,
+                storage_in_triple=cluster_storage_raw_gb is None and not h.get("storage_cluster_pool"),
                 unit_price_tl=unit_price_tl,
             )
             n_sum += result.n_units_max if storage_shared else result.n_units_min
@@ -506,6 +508,13 @@ def constrain_by_ratio_per_host_triple_dual(
         ratio,
     )
     stor_constrained = sum(r.stor_constrained_min for r in host_stor_min)
+
+    if cluster_storage_raw_gb is not None:
+        n_bottleneck = min(n_cpu_eff, n_ram_peak) if n_ram_peak > 0 else n_cpu_eff
+        stor_cap_by_ratio = max(n_bottleneck, 0.0) * ratio.storage_gb_per_unit
+        stor_constrained = min(max(cluster_storage_raw_gb, 0.0), stor_cap_by_ratio)
+        stor_lo = stor_constrained
+        stor_hi = min(max(cluster_storage_raw_gb, 0.0), max(n_cpu_eff, n_ram_peak) * ratio.storage_gb_per_unit)
 
     if ibm_storage_range is not None:
         ibm_lo, ibm_hi = ibm_storage_range

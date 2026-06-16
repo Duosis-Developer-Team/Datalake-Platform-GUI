@@ -1739,12 +1739,16 @@ LIMIT 20
             payload["stor_cap_gb"] = round(float(r[6] or 0) / _bytes_per_gb, 2)
             payload["stor_used_host_gb"] = round(float(r[7] or 0) / _bytes_per_gb, 2)
             payload["stor_free_gb"] = round(max(payload["stor_cap_gb"] - payload["stor_used_host_gb"], 0.0), 2)
+            payload["storage_cluster_pool"] = True
             if payload["vm_count"] == 0:
                 payload["vm_count"] = int(r[8] or 0)
             payload = self._apply_host_mem_peak(payload, peak_map.get(key))
             hosts.append(payload)
         hosts.sort(key=lambda h: (h["cluster"], h["host"]))
-        return finalize_host_payload({"hosts": hosts, "host_count": len(hosts)})
+        return finalize_host_payload(
+            {"hosts": hosts, "host_count": len(hosts)},
+            dedupe_cluster_storage=True,
+        )
 
     def get_hyperconv_host_rows(
         self, dc_code: str, selected_clusters: list[str] | None = None, time_range: dict | None = None

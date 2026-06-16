@@ -8,7 +8,23 @@ def _sum_field(hosts: list[dict], key: str, default: float = 0.0) -> float:
     return sum(float(h.get(key) or default) for h in hosts)
 
 
-def aggregate_hosts_compute(hosts: list[dict]) -> dict[str, Any]:
+def _sum_storage_dedupe_by_cluster(hosts: list[dict]) -> tuple[float, float, float, float]:
+    """Sum storage metrics once per cluster (Nutanix cluster pool, not per-node sum)."""
+    seen: set[str] = set()
+    cap = prov = used = free = 0.0
+    for h in hosts:
+        cluster = str(h.get("cluster") or "")
+        if cluster in seen:
+            continue
+        seen.add(cluster)
+        cap += float(h.get("stor_cap_gb") or 0.0)
+        prov += float(h.get("stor_provisioned_gb") or 0.0)
+        used += float(h.get("stor_used_host_gb") or h.get("stor_used_gb") or 0.0)
+        free += float(h.get("stor_free_gb") or 0.0)
+    return cap, prov, used, free
+
+
+def aggregate_hosts_compute(hosts: list[dict], *, dedupe_cluster_storage: bool = False) -> dict[str, Any]:
     """Sum per-host capacity/allocation fields into a compute summary dict.
 
     Used by datacenter-api /hosts responses and DC view Capacity Planning when
@@ -48,6 +64,8 @@ def aggregate_hosts_compute(hosts: list[dict]) -> dict[str, Any]:
     stor_prov = _sum_field(hosts, "stor_provisioned_gb")
     stor_used = _sum_field(hosts, "stor_used_gb") or _sum_field(hosts, "stor_used_host_gb")
     stor_free = _sum_field(hosts, "stor_free_gb")
+    if dedupe_cluster_storage:
+        stor_cap, stor_prov, stor_used, stor_free = _sum_storage_dedupe_by_cluster(hosts)
 
     cpu_alloc = _sum_field(hosts, "cpu_alloc_ghz")
     cpu_alloc_phys = _sum_field(hosts, "cpu_alloc_ghz_physical")
@@ -99,10 +117,14 @@ def build_deduped_storage_pools(hosts: list[dict]) -> list[dict[str, Any]]:
     return sorted(seen.values(), key=lambda p: p.get("free_gb", 0.0), reverse=True)
 
 
-def finalize_host_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def finalize_host_payload(
+    payload: dict[str, Any],
+    *,
+    dedupe_cluster_storage: bool = False,
+) -> dict[str, Any]:
     """Attach summary and deduped storage_pools to a hosts API payload."""
     hosts = list(payload.get("hosts") or [])
     out = dict(payload)
-    out["summary"] = aggregate_hosts_compute(hosts)
+    out["summary"] = aggregate_hosts_compute(hosts, dedupe_cluster_storage=dedupe_cluster_storage)
     out["storage_pools"] = build_deduped_storage_pools(hosts)
     return out

@@ -998,6 +998,7 @@ def populate_virt_nested_tab(
             "metrics": lambda: merge_host_summary_into_compute(
                 api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
                 api.get_hyperconv_host_rows(dc_id, scope, tr),
+                preserve_cluster_storage=True,
             ),
             "card": lambda: _build_sellable_inline_kpi(
                 dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",
@@ -1086,6 +1087,7 @@ def update_hyperconv_virt_block(applied_clusters, time_range, pathname, all_clus
         "metrics": lambda: merge_host_summary_into_compute(
             api.get_hyperconv_metrics_filtered(dc_id, scope, tr),
             api.get_hyperconv_host_rows(dc_id, scope, tr),
+            preserve_cluster_storage=True,
         ),
         "card": lambda: _build_sellable_inline_kpi(
             dc_id, "virt_hyperconverged", "Hyperconverged Mimari — Sellable Potential",

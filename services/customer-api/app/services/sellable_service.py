@@ -1464,6 +1464,8 @@ SELECT _tot, _alloc FROM latest
         stor_total = stor_prov = 0.0
         cpu_raw_sum = cpu_raw_phys_sum = ram_raw_phys_sum = ram_raw_peak_sum = stor_raw_sum = 0.0
         sto_threshold = sto_p.threshold_pct if sto_p is not None else 85.0
+        hc_clusters_seen: set[str] = set()
+        cluster_storage_raw_gb: float | None = None
 
         for h in host_rows:
             ghz = float(h.get("ghz_per_core") or 1.0)
@@ -1508,8 +1510,21 @@ SELECT _tot, _alloc FROM latest
             cpu_alloc += ha
             ram_total += mc
             ram_alloc += ma
-            stor_total += stor_cap
-            stor_prov += stor_alloc
+            if family == "virt_hyperconverged":
+                cluster_key = str(h.get("cluster") or "")
+                if cluster_key not in hc_clusters_seen:
+                    hc_clusters_seen.add(cluster_key)
+                    stor_total += stor_cap
+                    stor_prov += stor_alloc
+                    stor_raw_sum += apply_utilization_gate(
+                        stor_cap, stor_alloc, stor_util, sto_threshold
+                    )
+            else:
+                stor_total += stor_cap
+                stor_prov += stor_alloc
+                stor_raw_sum += apply_utilization_gate(
+                    stor_cap, stor_alloc, stor_util, sto_threshold
+                )
             cpu_raw_sum += apply_utilization_gate(hc, ha, cpu_util, cpu_p.threshold_pct)
             cpu_raw_phys_sum += apply_utilization_gate(
                 cap_ghz, alloc_phys, cpu_util, cpu_p.threshold_pct
@@ -1518,9 +1533,9 @@ SELECT _tot, _alloc FROM latest
             ram_raw_peak_sum += apply_utilization_gate(
                 peak_cap, peak_used, peak_util, ram_p.threshold_pct
             )
-            stor_raw_sum += apply_utilization_gate(
-                stor_cap, stor_alloc, stor_util, sto_threshold
-            )
+
+        if family == "virt_hyperconverged":
+            cluster_storage_raw_gb = stor_raw_sum
 
         ibm_range: tuple[float, float] | None = None
         if family == "virt_classic" and range_inputs:
@@ -1580,7 +1595,10 @@ SELECT _tot, _alloc FROM latest
                 p.total = stor_total
                 p.allocated = stor_prov
                 p.sellable_raw = stor_raw_sum
-                p.notes = [*p.notes, note, "host storage: exclusive min / shared max range"]
+                if family == "virt_hyperconverged":
+                    p.notes = [*p.notes, note, "Nutanix cluster pool (deduped per cluster)"]
+                else:
+                    p.notes = [*p.notes, note, "host storage: exclusive min / shared max range"]
             rebuilt.append(p)
 
         unit_price = float(cpu_p.unit_price_tl or ram_p.unit_price_tl or 0.0)
@@ -1597,6 +1615,7 @@ SELECT _tot, _alloc FROM latest
             shared_pools=storage_pools or [],
             unit_price_tl=unit_price,
             ibm_storage_range=ibm_range,
+            cluster_storage_raw_gb=cluster_storage_raw_gb,
         )
 
     def _apply_cluster_fallback_dual(

@@ -60,6 +60,22 @@ def test_hosts_panel_shell_contains_expected_ids():
     assert "hosts-panel-classic" in ids
     assert "hosts-count-classic" in ids
     assert "hosts-toggle-classic" in ids
+    tooltips = [c for c in _walk(shell) if c.__class__.__name__ == "Tooltip"]
+    assert tooltips
+    assert "Sellable unit" in str(getattr(tooltips[0], "label", ""))
+
+
+def test_host_card_storage_tb_alloc_uses_consistent_units():
+    km_host = {
+        **_SAMPLE_HOST,
+        "stor_cap_gb": 445756.0,
+        "stor_used_host_gb": 341000.0,
+        "stor_provisioned_gb": 92639.8,
+        "stor_used_pct": 78.3,
+    }
+    text = _texts(dc_view._host_card(km_host, "blue"))
+    assert "90.5 TB" in text
+    assert "92,639.8 TB" not in text
 
 
 def test_hosts_panel_shell_collapse_starts_closed():

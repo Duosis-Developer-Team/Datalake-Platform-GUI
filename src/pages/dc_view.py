@@ -3584,23 +3584,40 @@ def _resolve_host_sellable_thresholds() -> dict[str, float]:
 
 def _host_sellable_gate_tags(host: dict, thresholds: dict[str, float], *, track: str) -> list[str]:
     """Short badges when sellable units are zero due to threshold gates."""
+    from shared.sellable.computation import utilization_gate_blocked
+
     tags: list[str] = []
     if track == "sales":
-        if float(host.get("cpu_alloc_pct") or 0.0) > thresholds["cpu"]:
+        cpu_cap = float(host.get("cpu_cap_ghz") or 0.0)
+        cpu_alloc = float(host.get("cpu_alloc_ghz") or 0.0)
+        cpu_util = float(host.get("cpu_used_pct") or 0.0)
+        if utilization_gate_blocked(cpu_cap, cpu_alloc, cpu_util, thresholds["cpu"]):
             tags.append("Sales threshold blocked (CPU allocation)")
-        if float(host.get("mem_alloc_pct") or 0.0) > thresholds["ram"]:
+        mem_cap = float(host.get("mem_cap_gb") or 0.0)
+        mem_alloc = float(host.get("mem_alloc_gb") or 0.0)
+        mem_util = float(host.get("mem_used_pct") or 0.0)
+        if utilization_gate_blocked(mem_cap, mem_alloc, mem_util, thresholds["ram"]):
             tags.append("Sales threshold blocked (RAM allocation)")
         stor_cap = float(host.get("stor_cap_gb") or 0.0)
         stor_prov = float(host.get("stor_provisioned_gb") or 0.0)
-        if stor_cap > 0 and 100.0 * stor_prov / stor_cap > thresholds["storage"]:
+        stor_util = float(host.get("stor_used_pct") or 0.0)
+        if stor_cap > 0 and utilization_gate_blocked(stor_cap, stor_prov, stor_util, thresholds["storage"]):
             tags.append("Sales threshold blocked (Storage provisioned)")
     else:
-        if float(host.get("cpu_used_pct") or 0.0) > thresholds["cpu"]:
+        cpu_cap = float(host.get("cpu_cap_ghz") or 0.0)
+        cpu_used = float(host.get("cpu_used_ghz") or 0.0)
+        cpu_util = float(host.get("cpu_used_pct") or 0.0)
+        if utilization_gate_blocked(cpu_cap, cpu_used, cpu_util, thresholds["cpu"]):
             tags.append("Peak threshold blocked (CPU utilization)")
+        peak_cap = float(host.get("mem_cap_gb_at_peak") or host.get("mem_cap_gb") or 0.0)
+        peak_used = float(host.get("mem_used_gb_peak") or 0.0)
         peak_util = float(host.get("mem_peak_util_pct") or host.get("mem_used_pct") or 0.0)
-        if peak_util > thresholds["ram"]:
+        if utilization_gate_blocked(peak_cap, peak_used, peak_util, thresholds["ram"]):
             tags.append("Peak threshold blocked (RAM utilization)")
-        if float(host.get("stor_used_pct") or 0.0) > thresholds["storage"]:
+        stor_cap = float(host.get("stor_cap_gb") or 0.0)
+        stor_prov = float(host.get("stor_provisioned_gb") or 0.0)
+        stor_util = float(host.get("stor_used_pct") or 0.0)
+        if stor_cap > 0 and utilization_gate_blocked(stor_cap, stor_prov, stor_util, thresholds["storage"]):
             tags.append("Peak threshold blocked (Storage utilization)")
     return tags
 
@@ -3657,12 +3674,32 @@ def _enrich_hosts_for_display(hosts: list[dict], *, family: str = "virt_classic"
         h["sellable_gate_tags"] = gate_tags[:4]
 
 
-def merge_host_summary_into_compute(compute: dict | None, hosts_data: dict | None) -> dict:
+_HOST_SUMMARY_STORAGE_KEYS = frozenset({
+    "stor_cap",
+    "stor_used",
+    "stor_cap_gb",
+    "stor_used_gb",
+    "stor_provisioned_gb",
+    "stor_free_gb",
+})
+
+
+def merge_host_summary_into_compute(
+    compute: dict | None,
+    hosts_data: dict | None,
+    *,
+    preserve_cluster_storage: bool = False,
+) -> dict:
     """Overlay host-aggregated capacity onto cluster compute metrics for Capacity Planning."""
     merged = dict(compute or {})
     summary = (hosts_data or {}).get("summary")
     if isinstance(summary, dict) and summary:
-        merged.update(summary)
+        if preserve_cluster_storage:
+            cluster_storage = {k: merged[k] for k in _HOST_SUMMARY_STORAGE_KEYS if k in merged}
+            merged.update(summary)
+            merged.update(cluster_storage)
+        else:
+            merged.update(summary)
     return merged
 
 
@@ -3695,15 +3732,18 @@ def _host_card(h: dict, color: str = "blue"):
     if stor_cap > 0:
         stor_used = float(h.get("stor_used_host_gb") or h.get("stor_used_gb") or 0)
         shared_mounts = [m for m in (h.get("datastore_mounts") or []) if m.get("shared")]
+        stor_unit = "TB" if stor_cap > 1024 else "GB"
+        stor_div = 1024.0 if stor_unit == "TB" else 1.0
+        stor_prov_gb = float(h.get("stor_provisioned_gb") or 0.0)
         stor_row = _host_metric_row(
             "Storage",
-            stor_used / 1024.0 if stor_used > 1024 else stor_used,
-            stor_cap / 1024.0 if stor_cap > 1024 else stor_cap,
-            "TB" if stor_cap > 1024 else "GB",
-            alloc=float(h.get("stor_provisioned_gb") or 0),
-            alloc_pct=(100.0 * float(h.get("stor_provisioned_gb") or 0) / stor_cap) if stor_cap > 0 else 0.0,
+            stor_used / stor_div,
+            stor_cap / stor_div,
+            stor_unit,
+            alloc=stor_prov_gb / stor_div,
+            alloc_pct=(100.0 * stor_prov_gb / stor_cap) if stor_cap > 0 else 0.0,
         )
-        stor_prov = float(h.get("stor_provisioned_gb") or 0.0)
+        stor_prov = stor_prov_gb
         if stor_cap > 0 and stor_prov > stor_cap:
             stor_row.children.append(
                 html.Div(
@@ -3716,6 +3756,13 @@ def _host_card(h: dict, color: str = "blue"):
                 html.Div(
                     f"{len(shared_mounts)} shared datastore mount(s) — free {float(h.get('stor_free_gb') or 0):,.0f} GB",
                     style={"fontSize": "0.7rem", "color": "#A3AED0", "marginTop": "3px", "fontFamily": "DM Sans"},
+                )
+            )
+        if h.get("storage_cluster_pool"):
+            stor_row.children.append(
+                html.Div(
+                    "Cluster pool capacity (deduped across nodes — not per-node sum)",
+                    style={"fontSize": "0.68rem", "color": "#E8A317", "marginTop": "3px", "fontFamily": "DM Sans"},
                 )
             )
         rows.append(stor_row)
@@ -3846,6 +3893,20 @@ def _build_hosts_panel_content(hosts_data: dict, color: str = "blue"):
     )
 
 
+def _sellable_unit_tooltip(family: str) -> str:
+    ratio = _resolve_host_sellable_ratio(family)
+    thresholds = _resolve_host_sellable_thresholds()
+    return (
+        "Sellable unit = ratio-coupled bundle for this family: "
+        f"1 unit = {ratio.cpu_per_unit:g} CPU + {ratio.ram_gb_per_unit:g} GB RAM + "
+        f"{ratio.storage_gb_per_unit:g} GB storage. "
+        f"Sales track uses allocation gates (CPU/RAM/storage thresholds "
+        f"{thresholds['cpu']:.0f}% / {thresholds['ram']:.0f}% / {thresholds['storage']:.0f}%). "
+        "Peak track uses utilization gates. Zero when any resource exceeds its threshold "
+        "or ratio coupling binds a resource."
+    )
+
+
 def _build_hosts_panel_shell(
     slug: str,
     color: str = "blue",
@@ -3853,12 +3914,34 @@ def _build_hosts_panel_shell(
     initial_data: dict | None = None,
 ):
     """Collapsible Hosts panel shell with optional prefetched content."""
+    family = "virt_hyperconverged" if slug == "hyperconv" else "virt_classic"
     count = int((initial_data or {}).get("host_count") or 0)
     count_label = f"{count} host" if count else "—"
     initial_content = (
         _build_hosts_panel_content(initial_data, color)
         if initial_data and count
         else None
+    )
+    title_row = html.Div(
+        style={"display": "flex", "alignItems": "center", "gap": "6px"},
+        children=[
+            _section_title(
+                "Host Detayları",
+                "Seçili cluster'ların hostları — CPU / RAM kapasite, kullanım ve satış tahsisi",
+            ),
+            dmc.Tooltip(
+                label=_sellable_unit_tooltip(family),
+                position="top",
+                withArrow=True,
+                multiline=True,
+                w=320,
+                children=DashIconify(
+                    icon="solar:question-circle-bold-duotone",
+                    width=16,
+                    style={"color": "#A3AED0", "cursor": "pointer", "flexShrink": 0, "marginTop": "2px"},
+                ),
+            ),
+        ],
     )
     return html.Div(
         className="nexus-card",
@@ -3867,10 +3950,7 @@ def _build_hosts_panel_shell(
             html.Div(
                 style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "gap": "12px"},
                 children=[
-                    _section_title(
-                        "Host Detayları",
-                        "Seçili cluster'ların hostları — CPU / RAM kapasite, kullanım ve satış tahsisi",
-                    ),
+                    title_row,
                     html.Div(
                         style={"display": "flex", "alignItems": "center", "gap": "8px", "flexShrink": 0},
                         children=[

@@ -100,6 +100,28 @@ def test_build_deduped_storage_pools_dedupes_by_moid():
     assert ds1["name"] == "DS1"
 
 
+def test_aggregate_hosts_compute_dedupes_nutanix_cluster_storage():
+    pool_host = {
+        "cluster": "HC-CLS",
+        "cpu_cap_ghz": 100.0,
+        "cpu_used_ghz": 10.0,
+        "cpu_alloc_ghz": 20.0,
+        "mem_cap_gb": 512.0,
+        "mem_used_gb": 100.0,
+        "mem_alloc_gb": 200.0,
+        "stor_cap_gb": 5000.0,
+        "stor_provisioned_gb": 1000.0,
+        "stor_used_gb": 2000.0,
+        "stor_free_gb": 3000.0,
+    }
+    hosts = [pool_host, {**pool_host, "host": "hv2"}]
+    summed = aggregate_hosts_compute(hosts)
+    deduped = aggregate_hosts_compute(hosts, dedupe_cluster_storage=True)
+    assert summed["stor_cap_gb"] == 10000.0
+    assert deduped["stor_cap_gb"] == 5000.0
+    assert deduped["cpu_cap"] == 200.0
+
+
 def test_finalize_host_payload_attaches_summary_and_pools():
     payload = finalize_host_payload({"hosts": [_sample_host()], "host_count": 1})
     assert "summary" in payload

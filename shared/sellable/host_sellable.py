@@ -26,13 +26,23 @@ class HostSellableResult:
     sellable_tl_max: float = 0.0
 
 
-def _unit_limits(raw_cpu: float, raw_ram: float, raw_stor: float, ratio: ResourceRatio) -> float:
+def _unit_limits(
+    raw_cpu: float,
+    raw_ram: float,
+    raw_stor: float,
+    ratio: ResourceRatio,
+    *,
+    cpu_cap: float = 0.0,
+    mem_cap: float = 0.0,
+    stor_cap: float = 0.0,
+) -> float:
+    """Triple-min unit count; gated resources (raw=0) must pull the minimum to zero."""
     limits: list[float] = []
-    if ratio.cpu_per_unit > 0 and raw_cpu > 0:
+    if cpu_cap > 0 and ratio.cpu_per_unit > 0:
         limits.append(raw_cpu / ratio.cpu_per_unit)
-    if ratio.ram_gb_per_unit > 0 and raw_ram > 0:
+    if mem_cap > 0 and ratio.ram_gb_per_unit > 0:
         limits.append(raw_ram / ratio.ram_gb_per_unit)
-    if ratio.storage_gb_per_unit > 0 and raw_stor > 0:
+    if stor_cap > 0 and ratio.storage_gb_per_unit > 0:
         limits.append(raw_stor / ratio.storage_gb_per_unit)
     return min(limits) if limits else 0.0
 
@@ -128,10 +138,13 @@ def compute_host_sellable_units(
     ram_track: str = "physical",
     effective_ghz_per_unit: float = 1.0,
     storage_include_shared: bool = False,
+    storage_in_triple: bool = True,
     unit_price_tl: float = 0.0,
 ) -> HostSellableResult:
     """Compute min/max sellable units for one host with triple ratio coupling."""
     _ = effective_ghz_per_unit
+    cpu_cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
+    mem_cap = float(host.get("mem_cap_gb") or host.get("ram_total") or 0.0)
     raw_cpu = host_raw_headroom(
         host,
         resource="cpu",
@@ -159,11 +172,28 @@ def compute_host_sellable_units(
         raw_stor = stor_free_min
         raw_stor_max = stor_free_max
 
-    if cap > 0 and raw_stor <= 0 and stor_free_min <= 0:
+    stor_cap_for_triple = cap if storage_in_triple else 0.0
+    if cap > 0 and raw_stor <= 0 and stor_free_min <= 0 and storage_in_triple:
         n_min = 0.0
     else:
-        n_min = _unit_limits(raw_cpu, raw_ram, raw_stor, ratio)
-    n_max = _unit_limits(raw_cpu, raw_ram, raw_stor_max, ratio)
+        n_min = _unit_limits(
+            raw_cpu,
+            raw_ram,
+            raw_stor,
+            ratio,
+            cpu_cap=cpu_cap,
+            mem_cap=mem_cap,
+            stor_cap=stor_cap_for_triple,
+        )
+    n_max = _unit_limits(
+        raw_cpu,
+        raw_ram,
+        raw_stor_max,
+        ratio,
+        cpu_cap=cpu_cap,
+        mem_cap=mem_cap,
+        stor_cap=stor_cap_for_triple,
+    )
     if storage_include_shared:
         n_min = n_max
 

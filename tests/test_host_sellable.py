@@ -82,6 +82,45 @@ def test_gate_blocked_yields_zero_units():
     assert result.constraint_tags == []
 
 
+def test_cpu_gate_blocked_zeros_units_despite_storage_headroom():
+    """Overallocated CPU must zero triple-min even when storage headroom is large."""
+    host = {
+        "cpu_cap_ghz": 143.6,
+        "cpu_alloc_ghz": 258.0,
+        "cpu_used_pct": 89.6,
+        "mem_cap_gb": 1535.7,
+        "mem_alloc_gb": 622.9,
+        "mem_used_pct": 40.6,
+        "stor_cap_gb": 445756.0,
+        "stor_provisioned_gb": 1000.0,
+        "stor_used_pct": 10.0,
+        "stor_exclusive_free_gb": 400000.0,
+    }
+    result = compute_host_sellable_units(
+        host, RATIO, cpu_threshold_pct=80.0, ram_threshold_pct=80.0, storage_threshold_pct=85.0,
+    )
+    assert result.n_units_min == 0.0
+
+
+def test_ram_gate_blocked_zeros_units_despite_storage_headroom():
+    host = {
+        "cpu_cap_ghz": 100.0,
+        "cpu_alloc_ghz": 20.0,
+        "cpu_used_pct": 10.0,
+        "mem_cap_gb": 100.0,
+        "mem_alloc_gb": 95.0,
+        "mem_used_pct": 95.0,
+        "stor_cap_gb": 10000.0,
+        "stor_provisioned_gb": 100.0,
+        "stor_used_pct": 5.0,
+        "stor_exclusive_free_gb": 9000.0,
+    }
+    result = compute_host_sellable_units(
+        host, RATIO, cpu_threshold_pct=80.0, ram_threshold_pct=80.0, storage_threshold_pct=85.0,
+    )
+    assert result.n_units_min == 0.0
+
+
 def test_shared_pool_max_band_can_exceed_min():
     host = _operator_example_host()
     host["datastore_mounts"] = [{"shared": True, "free_gb": 2000.0}]
