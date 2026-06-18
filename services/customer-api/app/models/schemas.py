@@ -354,6 +354,9 @@ class CustomerCatalogResponse(BaseModel):
     customers: list[CustomerCatalogRow]
     groups: CustomerCatalogGroups
     generated_at: Optional[str] = None
+    degraded: Optional[bool] = None
+    prj_query_failed: Optional[bool] = None
+    webui_unavailable: Optional[bool] = None
 
 
 class CustomerServiceSalesSlice(BaseModel):
@@ -376,6 +379,7 @@ class CustomerOverviewResponse(BaseModel):
     overuse_customer_count: int = 0
     overuse_pending_count: int = 0
     overuse_status: str = "pending"
+    catalog: Optional[CustomerCatalogResponse] = None
 
 
 class CustomerVipUpdate(BaseModel):
