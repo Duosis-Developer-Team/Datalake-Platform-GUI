@@ -25,6 +25,12 @@ _memory_cache: TTLCache = TTLCache(
 _inflight_events: dict[str, threading.Event] = {}
 _inflight_master_lock = threading.Lock()
 
+LAST_GOOD_SUFFIX = ":last_good"
+
+
+def last_good_key(key: str) -> str:
+    return f"{key}{LAST_GOOD_SUFFIX}"
+
 
 class _CustomEncoder(json.JSONEncoder):
     def default(self, o):
@@ -82,29 +88,62 @@ def cache_get(key: str) -> Any:
         return None
 
 
-def cache_set(key: str, value: Any, ttl: Optional[int] = None) -> None:
-    effective_ttl = ttl if ttl is not None else settings.cache_ttl_seconds
+def _read_redis_json(redis_client, key: str) -> Any | None:
+    try:
+        raw = redis_client.get(key)
+        if isinstance(raw, (str, bytes, bytearray)):
+            return json.loads(raw)
+    except Exception as exc:
+        logger.warning("Redis GET error for %s: %s", key, exc)
+    return None
+
+
+def cache_get_last_good(key: str) -> Any:
+    """Return shadow last_good payload when the primary key expired or is missing."""
+    lg_key = last_good_key(key)
     redis_client = get_redis_client()
     if redis_client:
+        hit = _read_redis_json(redis_client, lg_key)
+        if hit is not None:
+            return hit
+    with _memory_lock:
+        return _memory_cache.get(lg_key)
+
+
+def cache_get_stale(key: str) -> Any:
+    """Primary cache hit, else last_good shadow key (ADR-0007 stale-serve fallback)."""
+    hit = cache_get(key)
+    if hit is not None:
+        return hit
+    return cache_get_last_good(key)
+
+
+def cache_set(key: str, value: Any, ttl: Optional[int] = None) -> None:
+    effective_ttl = ttl if ttl is not None else settings.cache_ttl_seconds
+    last_good_ttl = max(effective_ttl * 2, effective_ttl)
+    redis_client = get_redis_client()
+    serialized = _serialize(value)
+    if redis_client and serialized:
         try:
-            serialized = _serialize(value)
-            if serialized:
-                redis_client.setex(key, effective_ttl, serialized)
+            redis_client.setex(key, effective_ttl, serialized)
+            redis_client.setex(last_good_key(key), last_good_ttl, serialized)
         except Exception as exc:
             logger.warning("Redis SET error: %s", exc)
     with _memory_lock:
         _memory_cache[key] = value
+        _memory_cache[last_good_key(key)] = value
 
 
 def cache_delete(key: str) -> None:
     redis_client = get_redis_client()
     if redis_client:
         try:
-            redis_client.delete(key)
+            redis_client.delete(key, last_good_key(key))
         except Exception as exc:
             logger.warning("Redis DELETE error: %s", exc)
     with _memory_lock:
         _memory_cache.pop(key, None)
+        _memory_cache.pop(last_good_key(key), None)
 
 
 def cache_delete_prefix(prefix: str) -> None:

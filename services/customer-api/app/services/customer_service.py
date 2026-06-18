@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -48,16 +49,17 @@ from app.services.crm_config_service import CrmConfigService
 
 logger = logging.getLogger(__name__)
 
-# Aligned with datacenter scheduler (15m): avoid long stale windows and key TTL mismatch.
-CLUSTER_ARCH_MAP_TTL_SECONDS = 900
-CUSTOMER_DATA_CACHE_TTL_HOT = 900
+# Hot/cold TTL = 4x the 15-minute scheduler interval (ADR-0007); warm tier stays 6h.
+CLUSTER_ARCH_MAP_TTL_SECONDS = 3600
+CUSTOMER_DATA_CACHE_TTL_HOT = 3600
 CUSTOMER_DATA_CACHE_TTL_WARM = 21600
-CUSTOMER_DATA_CACHE_TTL_COLD = 900
+CUSTOMER_DATA_CACHE_TTL_COLD = 3600
 # Backward-compatible alias for tests and legacy imports.
 CUSTOMER_DATA_CACHE_TTL_SECONDS = CUSTOMER_DATA_CACHE_TTL_COLD
 
 BATCH_WARM_STATUS_KEY = "customer_warm_batch:status"
 BATCH_WARM_COMPLETED_KEY = "customer_warm_batch:last_completed_at"
+HOT_WARM_STATUS_KEY = "customer_warm_hot:status"
 
 
 class QueryTimeoutError(Exception):
@@ -423,7 +425,7 @@ class CustomerService:
                 cache_key,
                 exc,
             )
-            stale = cache.get(cache_key)
+            stale = self._stale_customer_resources(cache_key, customer_name)
             if stale is not None:
                 return stale
             raise HTTPException(status_code=503, detail="Data temporarily unavailable") from exc
@@ -433,7 +435,24 @@ class CustomerService:
                 cache_key,
                 exc,
             )
+            stale = self._stale_customer_resources(cache_key, customer_name)
+            if stale is not None:
+                return stale
             raise HTTPException(status_code=503, detail="Database temporarily unavailable") from exc
+
+    @staticmethod
+    def _stale_customer_resources(cache_key: str, customer_name: str) -> dict | None:
+        """Primary cache, then last_good shadow key (ADR-0007)."""
+        stale = cache.get_stale(cache_key)
+        if stale is not None:
+            if cache.get(cache_key) is None and cache.get_last_good(cache_key) is not None:
+                logger.warning(
+                    "Serving last_good stale customer resources for %s key=%s",
+                    customer_name,
+                    cache_key,
+                )
+            return stale
+        return None
 
     def _load_customer_names_from_db(self) -> list[str]:
         """Distinct tenant names from NetBox inventory (active devices)."""
@@ -617,26 +636,40 @@ class CustomerService:
         customer_name: str,
         *,
         cache_ttl: int | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "customer": customer_name,
+            "ok": 0,
+            "failed": 0,
+            "errors": [],
+        }
         for tr in cache_time_ranges():
+            preset = str(tr.get("preset") or "")
             try:
                 self.get_customer_resources(customer_name, tr, cache_ttl=cache_ttl)
+                summary["ok"] += 1
             except Exception as exc:
+                summary["failed"] += 1
+                summary["errors"].append({"preset": preset, "target": "resources", "error": str(exc)})
                 logger.warning(
                     "Customer cache rebuild failed for customer=%s preset=%s: %s",
                     customer_name,
-                    tr.get("preset", ""),
+                    preset,
                     exc,
                 )
             try:
                 self.get_customer_s3_vaults(customer_name, tr, cache_ttl=cache_ttl)
+                summary["ok"] += 1
             except Exception as exc:
+                summary["failed"] += 1
+                summary["errors"].append({"preset": preset, "target": "s3", "error": str(exc)})
                 logger.warning(
                     "Customer S3 cache rebuild failed for customer=%s preset=%s: %s",
                     customer_name,
-                    tr.get("preset", ""),
+                    preset,
                     exc,
                 )
+        return summary
 
     def _batch_warm_already_running(self) -> bool:
         try:
@@ -978,12 +1011,37 @@ class CustomerService:
             smq.UPSERT_PROFILE_VIP,
             (account_id, bool(is_vip), cache_pinned, updated_by),
         )
-        return {
+        result = {
             "status": "ok",
             "crm_accountid": account_id,
             "is_vip": bool(is_vip),
             "cache_pinned": cache_pinned,
         }
+        if is_vip:
+            display_name = self._display_name_for_account(account_id)
+            if display_name:
+                threading.Thread(
+                    target=self._rebuild_customer_caches_for_customer,
+                    kwargs={
+                        "customer_name": display_name,
+                        "cache_ttl": CUSTOMER_DATA_CACHE_TTL_HOT,
+                    },
+                    name=f"vip-warm-{account_id}",
+                    daemon=True,
+                ).start()
+        return result
+
+    def _display_name_for_account(self, crm_accountid: str) -> str | None:
+        if self._pool is None:
+            return None
+        try:
+            for row in load_project_customer_rows(self._run_query, self._run_one):
+                if str(row.get("crm_accountid") or "").strip() == crm_accountid:
+                    name = str(row.get("crm_account_name") or "").strip()
+                    return name or None
+        except Exception as exc:
+            logger.warning("Display name lookup failed for account=%s: %s", crm_accountid, exc)
+        return None
 
     def _fetch_customer_s3_vaults(self, customer_name: str, start_ts, end_ts) -> dict:
         """Fetch S3 vault metrics for a customer (same logic as datacenter-api DatabaseService)."""
@@ -1090,10 +1148,48 @@ class CustomerService:
     def _rebuild_customer_caches_for_warmed_customers(self) -> None:
         """Populate Redis/memory cache for VIP / cache-pinned customers (hot tier)."""
         customers = self._customers_for_cache_rebuild()
+        total = len(customers)
+        started_at = datetime.now(timezone.utc).isoformat()
+        cache.set(
+            HOT_WARM_STATUS_KEY,
+            {"status": "running", "total": total, "completed": 0, "started_at": started_at},
+            ttl=86400,
+        )
+        customer_summaries: list[dict[str, Any]] = []
+        ok_total = 0
+        failed_total = 0
         for customer_name in customers:
-            self._rebuild_customer_caches_for_customer(
+            row = self._rebuild_customer_caches_for_customer(
                 customer_name,
                 cache_ttl=CUSTOMER_DATA_CACHE_TTL_HOT,
+            )
+            customer_summaries.append(row)
+            ok_total += int(row.get("ok") or 0)
+            failed_total += int(row.get("failed") or 0)
+        completed_at = datetime.now(timezone.utc).isoformat()
+        status_payload = {
+            "status": "idle",
+            "total": total,
+            "completed": total,
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "ok_total": ok_total,
+            "failed_total": failed_total,
+            "customers": customer_summaries,
+        }
+        cache.set(HOT_WARM_STATUS_KEY, status_payload, ttl=86400)
+        if failed_total:
+            logger.error(
+                "VIP hot-tier cache refresh completed with failures: customers=%d ok_ops=%d failed_ops=%d",
+                total,
+                ok_total,
+                failed_total,
+            )
+        else:
+            logger.info(
+                "VIP hot-tier cache refresh complete: customers=%d ok_ops=%d",
+                total,
+                ok_total,
             )
 
     def refresh_warm_tier_caches(self) -> None:
@@ -1132,11 +1228,11 @@ class CustomerService:
     def refresh_all_data(self) -> None:
         """
         Called by the background scheduler every 15 minutes.
-        Rebuilds hot and warm tier caches without clearing keys first (stale until overwrite).
+        Rebuilds VIP/pinned hot-tier caches only (mapped warm tier uses the 6h batch job).
         """
-        logger.info("Customer API background cache refresh started.")
+        logger.info("Customer API background hot-tier cache refresh started.")
         try:
-            self.refresh_all_tier_caches()
-            logger.info("Customer API background cache refresh complete.")
+            self._rebuild_customer_caches_for_warmed_customers()
+            logger.info("Customer API background hot-tier cache refresh complete.")
         except Exception as exc:
-            logger.error("Customer API background cache refresh failed: %s", exc)
+            logger.error("Customer API background hot-tier cache refresh failed: %s", exc)

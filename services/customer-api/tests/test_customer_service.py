@@ -5,7 +5,12 @@ from fastapi import HTTPException
 from psycopg2 import OperationalError
 
 from app.db.queries import customer as cq
-from app.services.customer_service import CustomerService
+from app.services.customer_service import (
+    CUSTOMER_DATA_CACHE_TTL_COLD,
+    CUSTOMER_DATA_CACHE_TTL_HOT,
+    CLUSTER_ARCH_MAP_TTL_SECONDS,
+    CustomerService,
+)
 
 
 def test_get_customer_list_empty_without_db_and_no_env(monkeypatch):
@@ -110,21 +115,24 @@ def test_mapped_non_vip_customers_for_warm_excludes_vip_and_unmapped(monkeypatch
     assert names == ("Boyner Holding",)
 
 
-def test_refresh_all_data_rebuilds_hot_and_warm_tiers(monkeypatch):
+def test_refresh_all_data_rebuilds_hot_tier_only(monkeypatch):
     with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
         svc = CustomerService()
     svc._pool = object()
     calls: list[str] = []
 
-    def _hot() -> None:
-        calls.append("hot")
-
-    def _warm() -> None:
-        calls.append("warm")
-
-    monkeypatch.setattr(svc, "refresh_all_tier_caches", lambda: calls.extend(["hot", "warm"]))
+    monkeypatch.setattr(
+        svc,
+        "_rebuild_customer_caches_for_warmed_customers",
+        lambda: calls.append("hot"),
+    )
+    monkeypatch.setattr(
+        svc,
+        "refresh_warm_tier_caches",
+        lambda: calls.append("warm"),
+    )
     svc.refresh_all_data()
-    assert calls == ["hot", "warm"]
+    assert calls == ["hot"]
 
 
 def test_warm_mapped_non_vip_batch_skips_when_already_running(monkeypatch):
@@ -155,6 +163,66 @@ def test_warm_mapped_non_vip_batch_calls_customers_sequentially(monkeypatch):
     monkeypatch.setattr("app.services.customer_service.cache.set", lambda *_a, **_k: None)
     svc.warm_mapped_non_vip_batch()
     assert order == ["Alpha", "Beta"]
+
+
+def test_customer_cache_ttl_constants_match_adr():
+    assert CUSTOMER_DATA_CACHE_TTL_HOT == 3600
+    assert CUSTOMER_DATA_CACHE_TTL_COLD == 3600
+    assert CLUSTER_ARCH_MAP_TTL_SECONDS == 3600
+
+
+def test_get_customer_resources_returns_last_good_on_db_error():
+    mock_pool = MagicMock()
+    stale_payload = {"totals": {"vm": 1}, "assets": {}}
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", return_value=mock_pool):
+        svc = CustomerService()
+    with patch("app.services.customer_service.cache.run_singleflight", side_effect=OperationalError("ssl eof")), \
+         patch("app.services.customer_service.cache.get_stale", return_value=stale_payload), \
+         patch("app.services.customer_service.cache.get", return_value=None), \
+         patch("app.services.customer_service.cache.get_last_good", return_value=stale_payload):
+        out = svc.get_customer_resources("Boyner")
+    assert out == stale_payload
+
+
+def test_set_customer_vip_starts_background_warm_when_display_name_known(monkeypatch):
+    webui = MagicMock()
+    webui.is_available = True
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    svc.attach_webui_pool(webui)
+    started: list[str] = []
+
+    class _Thread:
+        def __init__(self, target=None, kwargs=None, name=None, daemon=None):
+            self._target = target
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            started.append(self._kwargs.get("customer_name", ""))
+
+    monkeypatch.setattr("app.services.customer_service.threading.Thread", _Thread)
+    monkeypatch.setattr(svc, "_display_name_for_account", lambda _aid: "VIP Corp")
+    svc.set_customer_vip("acc-1", is_vip=True, updated_by="tester")
+    assert started == ["VIP Corp"]
+
+
+def test_rebuild_customer_caches_for_customer_tracks_failures(monkeypatch):
+    with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", side_effect=OperationalError("no db")):
+        svc = CustomerService()
+    monkeypatch.setattr(
+        "app.services.customer_service.cache_time_ranges",
+        lambda: [{"preset": "7d", "start": "a", "end": "b"}],
+    )
+
+    def _boom_resources(*_a, **_k):
+        raise RuntimeError("timeout")
+
+    monkeypatch.setattr(svc, "get_customer_resources", _boom_resources)
+    monkeypatch.setattr(svc, "get_customer_s3_vaults", lambda *_a, **_k: None)
+    summary = svc._rebuild_customer_caches_for_customer("VIP Corp", cache_ttl=3600)
+    assert summary["failed"] == 1
+    assert summary["ok"] == 1
+    assert summary["errors"][0]["target"] == "resources"
 
 
 def test_set_customer_vip_upserts_profile_flags():
@@ -305,7 +373,8 @@ def test_get_customer_resources_raises_503_when_db_error_not_cached():
     mock_pool = MagicMock()
     with patch("app.services.customer_service.pg_pool.ThreadedConnectionPool", return_value=mock_pool):
         svc = CustomerService()
-    with patch("app.services.customer_service.cache.run_singleflight", side_effect=OperationalError("ssl eof")):
+    with patch("app.services.customer_service.cache.run_singleflight", side_effect=OperationalError("ssl eof")), \
+         patch("app.services.customer_service.cache.get_stale", return_value=None):
         with pytest.raises(HTTPException) as exc_info:
             svc.get_customer_resources("Boyner")
     assert exc_info.value.status_code == 503

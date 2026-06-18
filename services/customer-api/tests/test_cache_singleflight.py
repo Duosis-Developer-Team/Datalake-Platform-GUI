@@ -6,7 +6,24 @@ from unittest.mock import patch
 
 import pytest
 
-from app.core.cache_backend import cache_delete, cache_run_singleflight
+from app.core.cache_backend import (
+    cache_delete,
+    cache_get_last_good,
+    cache_get_stale,
+    cache_run_singleflight,
+    cache_set,
+    last_good_key,
+)
+
+
+def test_cache_set_writes_last_good_shadow_key():
+    key = f"sf:test:lastgood:{uuid.uuid4().hex}"
+    cache_delete(key)
+    with patch("app.core.cache_backend.get_redis_client", return_value=None):
+        cache_set(key, {"v": 1}, ttl=100)
+        assert cache_get_stale(key) == {"v": 1}
+        assert cache_get_last_good(key) == {"v": 1}
+        assert last_good_key(key).endswith(":last_good")
 
 
 def test_singleflight_runs_factory_once_for_concurrent_misses():

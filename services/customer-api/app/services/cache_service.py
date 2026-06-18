@@ -3,6 +3,8 @@ from typing import Any, Callable, Optional
 
 from app.core.cache_backend import (
     cache_get,
+    cache_get_last_good,
+    cache_get_stale,
     cache_set,
     cache_delete,
     cache_delete_prefix,
@@ -16,6 +18,14 @@ logger = logging.getLogger(__name__)
 
 def get(key: str) -> Optional[Any]:
     return cache_get(key)
+
+
+def get_last_good(key: str) -> Optional[Any]:
+    return cache_get_last_good(key)
+
+
+def get_stale(key: str) -> Optional[Any]:
+    return cache_get_stale(key)
 
 
 def set(key: str, value: Any, ttl: Optional[int] = None) -> None:

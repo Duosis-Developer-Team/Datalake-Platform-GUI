@@ -131,6 +131,8 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
       OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
+      # Cold customer-api queries can exceed 20s; allow cache population before empty fallback.
+      API_INTERACTIVE_READ_TIMEOUT: ${API_INTERACTIVE_READ_TIMEOUT:-45}
     volumes:
       - ./data:/app/data
     networks:
