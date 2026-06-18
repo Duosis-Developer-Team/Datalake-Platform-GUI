@@ -55,6 +55,30 @@ def test_get_all_aliases_merges_project_customers_and_mappings():
     assert rows[0]["source_mappings"][0]["match_value"] == "Acme"
 
 
+def test_get_all_aliases_skips_snapshot_cache_when_prj_degraded():
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.return_value = []
+
+    svc = _service_with_webui(webui)
+
+    def _fail_prj(sql, params=None):
+        if sql == cq.CRM_PROJECT_CUSTOMER_ROWS:
+            raise RuntimeError("timeout")
+        return []
+
+    with patch.object(svc, "_run_query", side_effect=_fail_prj), patch.object(
+        svc,
+        "_run_one",
+        return_value={"crm_accountid": "b1", "crm_account_name": "Boyner Holding"},
+    ), patch("app.services.sales_service.cache") as mock_cache:
+        mock_cache.get.return_value = None
+        rows = svc.get_all_aliases()
+
+    assert len(rows) == 1
+    mock_cache.set.assert_not_called()
+
+
 def test_save_source_mappings_replaces_account_rows():
     webui = MagicMock()
     webui.is_available = True

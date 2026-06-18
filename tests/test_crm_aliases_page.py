@@ -334,15 +334,19 @@ def test_visible_table_rows_applies_filter_and_page(monkeypatch):
     assert rows[0]["crm_account_name"] == "Beta"
 
 
-def test_build_layout_includes_slide_panel_and_edit_buttons(monkeypatch):
+def test_build_layout_returns_loading_shell():
     from src.pages.settings.integrations import crm_aliases as page_mod
 
-    monkeypatch.setattr(
-        page_mod.api,
-        "get_crm_aliases",
-        lambda: [{"crm_accountid": "acc-1", "crm_account_name": "Alpha", "source_mappings": []}],
-    )
     layout = page_mod.build_layout()
+    assert getattr(layout, "id", None) == "alias-page-root"
+
+
+def test_build_aliases_content_includes_slide_panel_and_edit_buttons():
+    from src.pages.settings.integrations import crm_aliases as page_mod
+
+    layout = page_mod.build_aliases_content(
+        [{"crm_accountid": "acc-1", "crm_account_name": "Alpha", "source_mappings": []}],
+    )
     assert layout is not None
 
     def _walk(obj):

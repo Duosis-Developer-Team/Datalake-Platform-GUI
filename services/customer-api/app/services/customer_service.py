@@ -23,6 +23,8 @@ from app.services import cache_service as cache
 from app.services.crm_account_resolver import make_datalake_account_lookup, resolve_crm_account_ids
 from app.services.crm_customer_list import build_crm_project_customer_list, resolve_infra_search_name
 from app.services.customer_catalog import (
+    CATALOG_SNAPSHOT_KEY,
+    CATALOG_SNAPSHOT_TTL_SECONDS,
     build_catalog_row,
     build_overview_payload,
     group_catalog_rows,
@@ -599,7 +601,7 @@ class CustomerService:
         if self._pool is None:
             return ()
         try:
-            project_rows = load_project_customer_rows(self._run_query, self._run_one)
+            project_rows = load_project_customer_rows(self._run_query, self._run_one).rows
             flags = self._load_profile_flags_index()
             mapping_index = self._load_source_mapping_index()
             names: list[str] = []
@@ -785,7 +787,7 @@ class CustomerService:
         if self._pool is None:
             return ()
         try:
-            project_rows = load_project_customer_rows(self._run_query, self._run_one)
+            project_rows = load_project_customer_rows(self._run_query, self._run_one).rows
             flags = self._load_profile_flags_index()
             names: list[str] = []
             for row in project_rows:
@@ -858,8 +860,25 @@ class CustomerService:
             return None
         return None
 
-    def get_customer_catalog(self) -> dict[str, Any]:
-        project_rows = load_project_customer_rows(self._run_query, self._run_one)
+    def get_customer_catalog(self, *, use_snapshot_cache: bool = True) -> dict[str, Any]:
+        if use_snapshot_cache:
+            try:
+                cached = cache.get(CATALOG_SNAPSHOT_KEY)
+                if isinstance(cached, dict) and isinstance(cached.get("customers"), list):
+                    return cached
+            except Exception:  # noqa: BLE001
+                pass
+        result = self._build_customer_catalog()
+        if use_snapshot_cache and not result.get("degraded"):
+            try:
+                cache.set(CATALOG_SNAPSHOT_KEY, result, ttl=CATALOG_SNAPSHOT_TTL_SECONDS)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to cache customer catalog snapshot: %s", exc)
+        return result
+
+    def _build_customer_catalog(self) -> dict[str, Any]:
+        project_load = load_project_customer_rows(self._run_query, self._run_one)
+        project_rows = project_load.rows
         flags = self._load_profile_flags_index()
         mapping_index = self._load_source_mapping_index()
         account_ids = [str(r.get("crm_accountid")) for r in project_rows if r.get("crm_accountid")]
@@ -961,10 +980,14 @@ class CustomerService:
             )
 
         groups = group_catalog_rows(catalog_rows)
+        webui_degraded = self._webui is None or not getattr(self._webui, "is_available", False)
         return {
             "customers": catalog_rows,
             "groups": groups,
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "degraded": bool(project_load.degraded or webui_degraded),
+            "prj_query_failed": project_load.prj_query_failed,
+            "webui_unavailable": webui_degraded,
         }
 
     def get_customer_overview(self) -> dict[str, Any]:
@@ -993,11 +1016,20 @@ class CustomerService:
                 logger.warning("Overview product mapping load failed: %s", exc)
 
         service_sales = map_service_sales_lines(raw_lines, product_mapping)
-        return build_overview_payload(
+        overview = build_overview_payload(
             catalog_rows=catalog_rows,
             sales_total=sales_total or {},
             service_sales=service_sales,
         )
+        overview["catalog"] = {
+            "customers": catalog.get("customers") or [],
+            "groups": catalog.get("groups") or {},
+            "generated_at": catalog.get("generated_at"),
+            "degraded": catalog.get("degraded"),
+            "prj_query_failed": catalog.get("prj_query_failed"),
+            "webui_unavailable": catalog.get("webui_unavailable"),
+        }
+        return overview
 
     def set_customer_vip(self, crm_accountid: str, *, is_vip: bool, updated_by: str | None = None) -> dict[str, Any]:
         webui = self._webui
@@ -1011,6 +1043,10 @@ class CustomerService:
             smq.UPSERT_PROFILE_VIP,
             (account_id, bool(is_vip), cache_pinned, updated_by),
         )
+        try:
+            cache.delete(CATALOG_SNAPSHOT_KEY)
+        except Exception:  # noqa: BLE001
+            pass
         result = {
             "status": "ok",
             "crm_accountid": account_id,
@@ -1035,7 +1071,7 @@ class CustomerService:
         if self._pool is None:
             return None
         try:
-            for row in load_project_customer_rows(self._run_query, self._run_one):
+            for row in load_project_customer_rows(self._run_query, self._run_one).rows:
                 if str(row.get("crm_accountid") or "").strip() == crm_accountid:
                     name = str(row.get("crm_account_name") or "").strip()
                     return name or None

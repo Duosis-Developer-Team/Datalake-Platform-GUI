@@ -20,9 +20,16 @@ from typing import Any, Dict, List, Optional
 from app.db.queries import crm_sales as sq
 from app.db.queries import customer as cq
 from app.db.queries import service_mapping as smq
+from app.services import cache_service as cache
 from app.services.crm_account_resolver import (
     make_datalake_account_lookup,
     resolve_crm_account_ids,
+)
+from app.services.customer_catalog import (
+    ALIASES_SNAPSHOT_KEY,
+    ALIASES_SNAPSHOT_TTL_SECONDS,
+    CATALOG_SNAPSHOT_KEY,
+    load_project_customer_rows,
 )
 from app.utils.service_sales_mapping import map_service_sales_lines
 from app.services.customer_mapping_resolver import (
@@ -37,7 +44,6 @@ from app.utils.usage_comparison import (
     build_virtualization_compliance,
     catalog_product_names_for_compliance,
 )
-from app.services import cache_service as cache
 from app.services.crm_config_service import CrmConfigService
 from app.services.webui_db import WebuiPool
 from app.utils.time_range import default_time_range
@@ -528,19 +534,7 @@ class SalesService:
     # ------------------------------------------------------------------
 
     def _load_crm_project_customer_rows(self) -> list[dict[str, Any]]:
-        try:
-            rows = self._run_query(cq.CRM_PROJECT_CUSTOMER_ROWS, ())
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to load CRM project customer rows: %s", exc)
-            rows = []
-        boyner = self._run_one(cq.CRM_BOYNER_ACCOUNT, ())
-        if boyner and boyner.get("crm_accountid"):
-            account_id = str(boyner["crm_accountid"])
-            account_name = str(boyner.get("crm_account_name") or "").strip()
-            if account_name and not any(str(r.get("crm_accountid")) == account_id for r in rows):
-                rows.append({"crm_accountid": account_id, "crm_account_name": account_name})
-        rows.sort(key=lambda r: str(r.get("crm_account_name") or "").casefold())
-        return rows
+        return load_project_customer_rows(self._run_query, self._run_one).rows
 
     def _load_legacy_alias_index(self) -> dict[str, dict[str, Any]]:
         if not self._webui or not self._webui.is_available:
@@ -555,7 +549,22 @@ class SalesService:
         return group_mappings_by_account(rows)
 
     def get_all_aliases(self) -> List[Dict[str, Any]]:
-        """CRM project customers merged with legacy alias fields and source mappings."""
+        try:
+            cached = cache.get(ALIASES_SNAPSHOT_KEY)
+            if isinstance(cached, list) and cached:
+                return cached
+        except Exception:  # noqa: BLE001
+            pass
+        project_load = load_project_customer_rows(self._run_query, self._run_one)
+        out = self._build_all_aliases()
+        if out and not project_load.degraded:
+            try:
+                cache.set(ALIASES_SNAPSHOT_KEY, out, ttl=ALIASES_SNAPSHOT_TTL_SECONDS)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to cache CRM aliases snapshot: %s", exc)
+        return out
+
+    def _build_all_aliases(self) -> list[dict[str, Any]]:
         project_rows = self._load_crm_project_customer_rows()
         legacy_index = self._load_legacy_alias_index()
         mapping_index = self._load_source_mapping_index()
@@ -648,6 +657,11 @@ class SalesService:
                     "manual",
                 ),
             )
+        try:
+            cache.delete(ALIASES_SNAPSHOT_KEY)
+            cache.delete(CATALOG_SNAPSHOT_KEY)
+        except Exception:  # noqa: BLE001
+            pass
         return self.list_source_mappings_for_account(crm_accountid)
 
     def seed_boyner_source_mappings(self) -> dict[str, Any]:
@@ -677,6 +691,11 @@ class SalesService:
                 ),
             )
             inserted += 1
+        try:
+            cache.delete(ALIASES_SNAPSHOT_KEY)
+            cache.delete(CATALOG_SNAPSHOT_KEY)
+        except Exception:  # noqa: BLE001
+            pass
         return {
             "status": "ok",
             "crm_accountid": account_id,

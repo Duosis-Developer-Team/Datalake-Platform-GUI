@@ -89,11 +89,11 @@ def test_mapped_non_vip_customers_for_warm_excludes_vip_and_unmapped(monkeypatch
     svc._pool = object()
     monkeypatch.setattr(
         "app.services.customer_service.load_project_customer_rows",
-        lambda *_a, **_k: [
+        lambda *_a, **_k: type("R", (), {"rows": [
             {"crm_accountid": "a1", "crm_account_name": "Boyner Holding"},
             {"crm_accountid": "a2", "crm_account_name": "Alpha Corp"},
             {"crm_accountid": "a3", "crm_account_name": "VIP Corp"},
-        ],
+        ]})(),
     )
     monkeypatch.setattr(
         svc,

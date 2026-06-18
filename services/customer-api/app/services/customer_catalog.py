@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from app.db.queries import crm_sales as sq
@@ -13,6 +14,23 @@ from app.utils.time_range import default_time_range
 from shared.customer.cache_keys import customer_assets_cache_key
 
 logger = logging.getLogger(__name__)
+
+CATALOG_SNAPSHOT_KEY = "customer_catalog:snapshot"
+CATALOG_SNAPSHOT_TTL_SECONDS = 120
+ALIASES_SNAPSHOT_KEY = "crm_aliases:snapshot"
+ALIASES_SNAPSHOT_TTL_SECONDS = 120
+
+
+@dataclass
+class ProjectCustomerLoadResult:
+    rows: list[dict[str, Any]]
+    prj_query_failed: bool = False
+    boyner_pinned: bool = False
+
+    @property
+    def degraded(self) -> bool:
+        """True when PRJ query failed and only Boyner fallback may be present."""
+        return self.prj_query_failed and len(self.rows) <= 1
 
 
 def _enabled_mapping_count(source_mappings: list[dict[str, Any]] | None) -> int:
@@ -151,17 +169,28 @@ def build_overview_payload(
     }
 
 
-def load_project_customer_rows(run_query, run_one) -> list[dict[str, Any]]:
+def load_project_customer_rows(run_query, run_one) -> ProjectCustomerLoadResult:
+    prj_query_failed = False
     try:
         rows = run_query(cq.CRM_PROJECT_CUSTOMER_ROWS, ())
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to load CRM project customer rows: %s", exc)
         rows = []
-    boyner = run_one(cq.CRM_BOYNER_ACCOUNT, ())
-    if boyner and boyner.get("crm_accountid"):
-        account_id = str(boyner["crm_accountid"])
-        account_name = str(boyner.get("crm_account_name") or "").strip()
-        if account_name and not any(str(r.get("crm_accountid")) == account_id for r in rows):
-            rows.append({"crm_accountid": account_id, "crm_account_name": account_name})
+        prj_query_failed = True
+    boyner_pinned = False
+    try:
+        boyner = run_one(cq.CRM_BOYNER_ACCOUNT, ())
+        if boyner and boyner.get("crm_accountid"):
+            account_id = str(boyner["crm_accountid"])
+            account_name = str(boyner.get("crm_account_name") or "").strip()
+            if account_name and not any(str(r.get("crm_accountid")) == account_id for r in rows):
+                rows.append({"crm_accountid": account_id, "crm_account_name": account_name})
+                boyner_pinned = True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to load Boyner CRM account for customer list: %s", exc)
     rows.sort(key=lambda r: str(r.get("crm_account_name") or "").casefold())
-    return rows
+    return ProjectCustomerLoadResult(
+        rows=rows,
+        prj_query_failed=prj_query_failed,
+        boyner_pinned=boyner_pinned,
+    )

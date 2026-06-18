@@ -174,3 +174,30 @@ def test_map_service_sales_lines_aggregates_by_category():
     out = map_service_sales_lines(lines, product_mapping)
     assert out[0]["service_code"] == "virt"
     assert out[0]["amount_tl"] == 150.0
+
+
+def test_load_project_customer_rows_marks_degraded_when_prj_fails():
+    def _fail_query(_sql, _params):
+        raise RuntimeError("timeout")
+
+    def _boyner_one(_sql, _params):
+        return {"crm_accountid": "b1", "crm_account_name": "Boyner Holding"}
+
+    result = cc.load_project_customer_rows(_fail_query, _boyner_one)
+    assert result.prj_query_failed is True
+    assert result.boyner_pinned is True
+    assert result.degraded is True
+    assert len(result.rows) == 1
+
+
+def test_load_project_customer_rows_survives_boyner_lookup_failure():
+    def _ok_query(_sql, _params):
+        return [{"crm_accountid": "a1", "crm_account_name": "Alpha Corp"}]
+
+    def _fail_boyner(_sql, _params):
+        raise RuntimeError("boyner down")
+
+    result = cc.load_project_customer_rows(_ok_query, _fail_boyner)
+    assert result.prj_query_failed is False
+    assert len(result.rows) == 1
+    assert result.rows[0]["crm_account_name"] == "Alpha Corp"

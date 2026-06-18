@@ -117,7 +117,17 @@ _EMPTY_CUSTOMER = {"totals": {}, "assets": {}}
 _EMPTY_QUERY = {"error": "API unreachable"}
 _EMPTY_DATACENTERS: list[dict[str, Any]] = []
 _EMPTY_CUSTOMERS: list[str] = []
+_EMPTY_CATALOG_GROUPS: dict[str, list] = {"vip": [], "mapped": [], "unmapped": []}
 _EMPTY_SLA_BY_DC: dict[str, dict] = {}
+
+
+def _empty_catalog(*, load_error: bool = False) -> dict[str, Any]:
+    return {
+        "customers": [],
+        "groups": deepcopy(_EMPTY_CATALOG_GROUPS),
+        "degraded": load_error,
+        "_load_error": load_error,
+    }
 
 _HTTP_TLS = threading.local()
 
@@ -148,6 +158,9 @@ def _new_http_transport() -> httpx.HTTPTransport:
 # 8s and returning empty — which never caches, so warm==cold and the UI shows zeros.
 # Connect stays short so a truly-unreachable backend still fails fast. Tunable via env.
 _INTERACTIVE_READ_TIMEOUT = float(os.getenv("API_INTERACTIVE_READ_TIMEOUT", "20") or "20")
+_INFLIGHT_WAIT_SECONDS = float(os.getenv("API_INFLIGHT_WAIT_SECONDS", "0") or "0")
+if _INFLIGHT_WAIT_SECONDS <= 0:
+    _INFLIGHT_WAIT_SECONDS = max(25.0, _INTERACTIVE_READ_TIMEOUT + 5.0)
 _INTERACTIVE_TIMEOUT = httpx.Timeout(
     _INTERACTIVE_READ_TIMEOUT, connect=5.0, read=_INTERACTIVE_READ_TIMEOUT,
     write=_INTERACTIVE_READ_TIMEOUT, pool=5.0,
@@ -450,7 +463,7 @@ def _api_cache_get_with_stale(
             ev = threading.Event()
             _inflight[cache_key] = ev
     if not leader:
-        ev.wait(timeout=15)
+        ev.wait(timeout=_INFLIGHT_WAIT_SECONDS)
         hit = _api_response_cache.get(cache_key)
         return _clone(hit) if hit is not None else _clone(empty_fallback)
 
@@ -459,7 +472,8 @@ def _api_cache_get_with_stale(
         _api_response_cache.set(cache_key, out)
         _fetched_at[cache_key] = time.monotonic()
         return out
-    except _HTTP_ERRORS:
+    except _HTTP_ERRORS as exc:
+        logger.warning("API cache fetch failed for key=%s: %s", cache_key, exc)
         hit = _api_response_cache.get(cache_key)
         if hit is not None:
             return _clone(hit)
@@ -517,9 +531,9 @@ def get_customer_catalog() -> dict[str, Any]:
 
     def fetch() -> dict[str, Any]:
         data = _get_json(_get_client_cust(), "/api/v1/customers/catalog")
-        return data if isinstance(data, dict) else {}
+        return data if isinstance(data, dict) else _empty_catalog()
 
-    return _api_cache_get_with_stale(ck, fetch, {})
+    return _api_cache_get_with_stale(ck, fetch, _empty_catalog())
 
 
 def get_customer_overview() -> dict[str, Any]:
@@ -530,6 +544,43 @@ def get_customer_overview() -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
 
     return _api_cache_get_with_stale(ck, fetch, {})
+
+
+def get_customers_page_data() -> dict[str, Any]:
+    """Single overview fetch; catalog is embedded by customer-api to avoid duplicate builds."""
+    overview = get_customer_overview() or {}
+    catalog = overview.get("catalog") if isinstance(overview.get("catalog"), dict) else {}
+    if not catalog.get("customers"):
+        catalog = get_customer_catalog() or _empty_catalog()
+    customers = catalog.get("customers") if isinstance(catalog.get("customers"), list) else []
+    groups = catalog.get("groups") if isinstance(catalog.get("groups"), dict) else deepcopy(_EMPTY_CATALOG_GROUPS)
+    if not groups and customers:
+        groups = deepcopy(_EMPTY_CATALOG_GROUPS)
+        for row in customers:
+            group = str(row.get("list_group") or "unmapped")
+            groups.setdefault(group, []).append(row)
+    load_error = bool(
+        catalog.get("_load_error")
+        or (not customers and not overview.get("total_customers"))
+    )
+    degraded = bool(catalog.get("degraded") or catalog.get("prj_query_failed"))
+    return {
+        "customers": customers,
+        "groups": groups,
+        "overview": overview if isinstance(overview, dict) else {},
+        "load_error": load_error,
+        "degraded": degraded,
+    }
+
+
+def _crm_aliases_response_cacheable(rows: list) -> bool:
+    if not rows:
+        return False
+    if len(rows) == 1:
+        name = str((rows[0] or {}).get("crm_account_name") or "").lower()
+        if "boyner" in name:
+            return False
+    return True
 
 
 def set_customer_vip(crm_accountid: str, *, is_vip: bool) -> dict[str, Any]:
@@ -1745,11 +1796,47 @@ def delete_crm_service_mapping_override(productid: str) -> dict[str, Any]:
 
 
 def get_crm_aliases() -> list:
+    ck = "api:crm_aliases"
+
     def fetch() -> list:
         data = _get_json(_get_client_cust(), "/api/v1/crm/aliases")
         return data if isinstance(data, list) else []
 
-    return _api_cache_get_with_stale("api:crm_aliases", fetch, [])
+    stale = _api_response_cache.get(ck)
+    if stale is not None:
+        if _SWR_TTL_SECONDS > 0:
+            age = _swr_age(ck)
+            if age is not None and age > _SWR_TTL_SECONDS:
+                _schedule_swr_refresh(ck, fetch)
+        return _clone(stale)
+
+    with _inflight_lock:
+        ev = _inflight.get(ck)
+        leader = ev is None
+        if leader:
+            ev = threading.Event()
+            _inflight[ck] = ev
+    if not leader:
+        ev.wait(timeout=_INFLIGHT_WAIT_SECONDS)
+        hit = _api_response_cache.get(ck)
+        return _clone(hit) if hit is not None else []
+
+    try:
+        out = fetch()
+        if _crm_aliases_response_cacheable(out):
+            _api_response_cache.set(ck, out)
+            _fetched_at[ck] = time.monotonic()
+        return out
+    except _HTTP_ERRORS as exc:
+        logger.warning("CRM aliases fetch failed: %s", exc)
+        hit = _api_response_cache.get(ck)
+        if hit is not None:
+            return _clone(hit)
+        return []
+    finally:
+        with _inflight_lock:
+            _inflight.pop(ck, None)
+        ev.set()
 
 
 def put_crm_alias(

@@ -40,23 +40,15 @@ _CARDS_TRANSITION_STYLE = {
 
 def _load_page_data() -> dict:
     try:
-        catalog = api.get_customer_catalog() or {}
-        overview = api.get_customer_overview() or {}
+        return api.get_customers_page_data()
     except Exception:
-        catalog = {}
-        overview = {}
-    customers = catalog.get("customers") if isinstance(catalog.get("customers"), list) else []
-    groups = catalog.get("groups") if isinstance(catalog.get("groups"), dict) else {}
-    if not groups and customers:
-        groups = {"vip": [], "mapped": [], "unmapped": []}
-        for row in customers:
-            group = str(row.get("list_group") or "unmapped")
-            groups.setdefault(group, []).append(row)
-    return {
-        "customers": customers,
-        "groups": groups,
-        "overview": overview if isinstance(overview, dict) else {},
-    }
+        return {
+            "customers": [],
+            "groups": {"vip": [], "mapped": [], "unmapped": []},
+            "overview": {},
+            "load_error": True,
+            "degraded": True,
+        }
 
 
 def _can_manage_vip(permissions: dict | None) -> bool:
@@ -476,6 +468,23 @@ def build_customers_list(time_range=None, visible_sections=None):
     store_data = _load_page_data()
     overview = store_data.get("overview") or {}
     initial_pages = {"vip": 0, "mapped": 0, "unmapped": 0}
+    load_alerts: list = []
+    if store_data.get("load_error"):
+        load_alerts.append(
+            dmc.Alert(
+                color="red",
+                title="Customer catalog unavailable",
+                children="Could not load CRM project customers from customer-api. Check service health and retry.",
+            )
+        )
+    elif store_data.get("degraded"):
+        load_alerts.append(
+            dmc.Alert(
+                color="yellow",
+                title="Partial customer catalog",
+                children="CRM project customer query may have failed; only fallback data is shown. Verify datalake connectivity.",
+            )
+        )
 
     return html.Div(
         className="customer-page-enter",
@@ -547,6 +556,7 @@ def build_customers_list(time_range=None, visible_sections=None):
                                     ],
                                 ),
                                 html.Div(id="customer-vip-alert"),
+                                *load_alerts,
                                 html.Div(id="customer-overview-strip", children=_overview_strip(overview)),
                                 dmc.SimpleGrid(
                                     cols={"base": 1, "lg": 2},

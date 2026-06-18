@@ -7,6 +7,7 @@ from dash.exceptions import PreventUpdate
 
 from src.pages.settings.integrations.crm_aliases import (
     TABLE_PAGE_SIZE,
+    build_aliases_content,
     build_editor_shell,
     build_table_body_rows,
     section_refresh_outputs,
@@ -416,3 +417,22 @@ def seed_boyner_cb(_n_clicks, query):
         )
     except Exception as exc:  # noqa: BLE001
         return (dmc.Alert(color="red", title="Seed failed", children=str(exc)),) + (no_update,) * 11
+
+
+@callback(
+    Output("alias-page-root", "children"),
+    Input("url", "pathname"),
+)
+def load_aliases_page(pathname):
+    path = pathname or ""
+    if "/integrations/crm/aliases" not in path and "/settings/integrations/crm/aliases" not in path:
+        raise PreventUpdate
+    try:
+        aliases = api.get_crm_aliases()
+    except Exception:
+        return build_aliases_content([], load_error=True)
+    degraded = (
+        len(aliases) == 1
+        and "boyner" in str((aliases[0] or {}).get("crm_account_name") or "").lower()
+    )
+    return build_aliases_content(aliases, degraded=degraded)

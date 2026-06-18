@@ -8,7 +8,6 @@ import dash_mantine_components as dmc
 from dash import dcc, html
 from dash_iconify import DashIconify
 
-from src.services import api_client as api
 from src.utils.crm_source_mapping_ui import (
     DEFAULT_ALIAS_TABLE_PAGE_SIZE,
     MATCH_METHOD_OPTIONS,
@@ -286,7 +285,31 @@ def _th():
 
 def build_layout(search: str | None = None) -> html.Div:
     _ = search
-    aliases = api.get_crm_aliases()
+    return html.Div(
+        id="alias-page-root",
+        style={"padding": "30px"},
+        children=[
+            dcc.Loading(
+                type="circle",
+                children=dmc.Stack(
+                    gap="md",
+                    children=[
+                        dmc.Skeleton(height=32, width="45%"),
+                        dmc.Skeleton(height=18, width="70%"),
+                        dmc.Skeleton(height=240),
+                    ],
+                ),
+            ),
+        ],
+    )
+
+
+def build_aliases_content(
+    aliases: list[dict],
+    *,
+    load_error: bool = False,
+    degraded: bool = False,
+) -> html.Div:
     initial_rows, initial_pages = visible_table_rows(aliases, "", 0)
     all_count = len(aliases_to_table_rows(aliases))
     initial_label = (
@@ -295,11 +318,23 @@ def build_layout(search: str | None = None) -> html.Div:
         else "No matches"
     )
 
-    if not aliases:
+    if load_error:
+        empty_block = dmc.Alert(
+            color="red",
+            title="CRM aliases unavailable",
+            children="Could not load customer list from customer-api. Verify service health and datalake connectivity.",
+        )
+    elif not aliases:
         empty_block = dmc.Alert(
             color="yellow",
             title="No CRM project customers",
             children="Customer list comes from CRM PRJ-* sales orders. Verify customer-api connectivity.",
+        )
+    elif degraded:
+        empty_block = dmc.Alert(
+            color="yellow",
+            title="Partial customer list",
+            children="Only fallback customers are shown (CRM PRJ query may have failed). Retry or check datalake logs.",
         )
     else:
         empty_block = dmc.Text(
