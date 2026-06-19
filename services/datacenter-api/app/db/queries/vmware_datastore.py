@@ -8,15 +8,24 @@
 # DC scoping: the metrics table carries `datacenter_name` (vSphere Datacenter name),
 # matched with the same convention as the other VMware queries:
 #   datacenter_name ILIKE '%<DC_CODE>%'
-# KM-only: classic (Klasik Mimari) datastores only — `datacenter_name ILIKE '%KM%'`.
-# Hyperconverged (Nutanix) datastore data is sourced from Nutanix directly and shown
-# elsewhere, so it is excluded here.
+# Classic-only (Klasik Mimari): we want classic VMware datastores, excluding
+# hyperconverged Nutanix storage (sourced from Nutanix directly and shown elsewhere).
+# Originally this was a whitelist on the DC13 naming convention
+# (`datacenter_name ILIKE '%KM%'`), but after the datastore collection was rolled out
+# to all DCs (except DC17) into this single table via the DC13 main NiFi flow, the
+# other DCs name their classic vDCs differently — e.g. DC14-Intel-vDC, DC16-Mixed-vDC,
+# LONDON-ICT21, UZ11-DC — none of which contain "KM". So the whitelist hid their
+# classic datastores entirely. We now use a BLACKLIST instead, excluding Nutanix two
+# ways so it also handles "Mixed" vDCs where classic and Nutanix datastores share one
+# datacenter_name (e.g. DC16-Mixed-vDC):
+#   - datacenter_name NOT ILIKE '%Nutanix%'  → drops dedicated *-Nutanix-vDC datacenters
+#   - datastore_name  NOT ILIKE '%NTNX%'      → drops NTNX-* datastores (local-ds, SVM)
+#       inside Mixed vDCs. This subsumes the old NTNX-SVM exclusion.
+# Verified DC13/AZ11/DC18 are unchanged (90/7/22), while DC14/DC16/ICT21/UZ11 newly
+# surface their classic datastores; DC11/DC12/DC15 stay empty because they are fully
+# hyperconverged (only Nutanix datastores exist).
 # Backup-only datastores (name containing NBU or Veeam) are excluded from
 # visualization and sellable computations.
-# Nutanix SVM (controller-VM) datastores leak into the KM scope because their
-# vDC name contains "KM" (e.g. DC13-Retail-NTNX-SVM under DC13-KM-vDC). They are
-# hyperconverged Nutanix storage sourced elsewhere, so they're excluded here too
-# (name containing 'NTNX-SVM') — otherwise they're double-counted in KM totals.
 # Backing classification (service layer): datastore_name containing 'IBM' =
 # IBM-backed storage (capacity shared with the Power architecture), else Intel.
 # The mount/inventory tables have no datacenter column, so they are scoped via the
@@ -47,10 +56,10 @@ SELECT DISTINCT ON (datastore_moid)
     vm_count
 FROM public.raw_vmware_datastore_metrics_agg
 WHERE datacenter_name ILIKE ('%%' || %s || '%%')
-  AND datacenter_name ILIKE '%%KM%%'
+  AND datacenter_name NOT ILIKE '%%Nutanix%%'
+  AND datastore_name NOT ILIKE '%%NTNX%%'
   AND datastore_name NOT ILIKE '%%NBU%%'
   AND datastore_name NOT ILIKE '%%veeam%%'
-  AND datastore_name NOT ILIKE '%%NTNX-SVM%%'
   AND collection_timestamp::timestamptz BETWEEN %s AND %s
 ORDER BY datastore_moid, collection_timestamp::timestamptz DESC
 """
@@ -73,10 +82,10 @@ WHERE hm.collection_timestamp::timestamptz BETWEEN %s AND %s
       SELECT datastore_moid
       FROM public.raw_vmware_datastore_metrics_agg
       WHERE datacenter_name ILIKE ('%%' || %s || '%%')
-        AND datacenter_name ILIKE '%%KM%%'
+        AND datacenter_name NOT ILIKE '%%Nutanix%%'
+        AND datastore_name NOT ILIKE '%%NTNX%%'
         AND datastore_name NOT ILIKE '%%NBU%%'
         AND datastore_name NOT ILIKE '%%veeam%%'
-        AND datastore_name NOT ILIKE '%%NTNX-SVM%%'
         AND collection_timestamp::timestamptz BETWEEN %s AND %s
   )
 ORDER BY hm.datastore_moid, hm.host_moid, hm.collection_timestamp::timestamptz DESC
