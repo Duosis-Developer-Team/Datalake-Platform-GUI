@@ -176,6 +176,12 @@ def seed_boyner_mappings(svc: SalesService = Depends(get_sales_service)):
     return svc.seed_boyner_source_mappings()
 
 
+@router.post("/crm/aliases/resync-from-datalake", response_model=dict)
+def resync_aliases_from_datalake(svc: SalesService = Depends(get_sales_service)):
+    """Reconcile WebUI CRM aliases and orphan mappings with datalake discovery tables."""
+    return svc.resync_aliases_from_datalake()
+
+
 @router.put("/crm/aliases/{crm_accountid}", response_model=dict)
 def update_alias(
     crm_accountid: str,

@@ -50,9 +50,9 @@ logger = logging.getLogger(__name__)
 
 # Aligned with datacenter scheduler (15m): avoid long stale windows and key TTL mismatch.
 CLUSTER_ARCH_MAP_TTL_SECONDS = 900
-CUSTOMER_DATA_CACHE_TTL_HOT = 900
+CUSTOMER_DATA_CACHE_TTL_HOT = 3600
 CUSTOMER_DATA_CACHE_TTL_WARM = 21600
-CUSTOMER_DATA_CACHE_TTL_COLD = 900
+CUSTOMER_DATA_CACHE_TTL_COLD = 3600
 # Backward-compatible alias for tests and legacy imports.
 CUSTOMER_DATA_CACHE_TTL_SECONDS = CUSTOMER_DATA_CACHE_TTL_COLD
 

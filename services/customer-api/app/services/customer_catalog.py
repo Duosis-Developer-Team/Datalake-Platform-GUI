@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Optional
-
-from app.db.queries import crm_sales as sq
 from app.db.queries import customer as cq
 from app.db.queries import service_mapping as smq
 from app.services import cache_service as cache
@@ -40,11 +38,24 @@ def _is_mapped(source_mappings: list[dict[str, Any]] | None) -> bool:
     return _enabled_mapping_count(source_mappings) > 0
 
 
+def _infra_bundle_has_data(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    totals = payload.get("totals") or {}
+    assets = payload.get("assets") or {}
+    if totals:
+        return True
+    if assets:
+        return True
+    return False
+
+
 def _real_data_cached(display_name: str) -> bool:
     tr = default_time_range()
     cache_key = customer_assets_cache_key(display_name, tr.get("start", ""), tr.get("end", ""))
     try:
-        return cache.get(cache_key) is not None
+        hit = cache.get(cache_key)
+        return _infra_bundle_has_data(hit)
     except Exception:
         return False
 

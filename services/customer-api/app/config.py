@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     redis_db: int = 1
     redis_password: str = ""
     redis_socket_timeout: int = 5
-    cache_ttl_seconds: int = 900
+    cache_ttl_seconds: int = 3600
     cache_max_memory_items: int = 200
     mapped_batch_warm_interval_hours: int = 6
     mapped_cache_ttl_seconds: int = 21600

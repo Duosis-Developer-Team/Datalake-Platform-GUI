@@ -103,6 +103,46 @@ DELETE_ALIAS = """
 DELETE FROM gui_crm_customer_alias WHERE crm_accountid = %s;
 """
 
+UPSERT_ALIAS_AUTO = """
+INSERT INTO gui_crm_customer_alias
+    (crm_accountid, crm_account_name, canonical_customer_key, netbox_musteri_value, notes, source, created_at, updated_at)
+VALUES (%s, %s, %s, NULL, NULL, 'auto', now(), now())
+ON CONFLICT (crm_accountid) DO UPDATE
+    SET crm_account_name = CASE
+            WHEN gui_crm_customer_alias.source = 'manual' THEN gui_crm_customer_alias.crm_account_name
+            ELSE EXCLUDED.crm_account_name
+        END,
+        canonical_customer_key = CASE
+            WHEN gui_crm_customer_alias.source = 'manual' THEN gui_crm_customer_alias.canonical_customer_key
+            ELSE COALESCE(gui_crm_customer_alias.canonical_customer_key, EXCLUDED.canonical_customer_key)
+        END,
+        updated_at = CASE
+            WHEN gui_crm_customer_alias.source = 'manual' THEN gui_crm_customer_alias.updated_at
+            ELSE now()
+        END;
+"""
+
+LIST_ORPHAN_SOURCE_MAPPINGS = """
+SELECT m.id,
+       m.crm_accountid,
+       m.crm_account_name,
+       m.data_source,
+       m.match_method,
+       m.match_value
+FROM   gui_crm_customer_source_mapping m
+LEFT JOIN gui_crm_customer_alias a ON a.crm_accountid = m.crm_accountid
+WHERE  a.crm_accountid IS NULL
+ORDER BY m.crm_account_name, m.id;
+"""
+
+UPDATE_SOURCE_MAPPING_ACCOUNT = """
+UPDATE gui_crm_customer_source_mapping
+SET crm_accountid = %s,
+    crm_account_name = %s,
+    updated_at = now()
+WHERE id = %s;
+"""
+
 # ---------------------------------------------------------------------------
 # Customer source mappings (gui_crm_customer_source_mapping)
 # ---------------------------------------------------------------------------

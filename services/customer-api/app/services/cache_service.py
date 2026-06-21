@@ -3,6 +3,7 @@ from typing import Any, Callable, Optional
 
 from app.core.cache_backend import (
     cache_get,
+    cache_get_last_good,
     cache_set,
     cache_delete,
     cache_delete_prefix,
@@ -12,6 +13,10 @@ from app.core.cache_backend import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def get_last_good(key: str) -> Optional[Any]:
+    return cache_get_last_good(key)
 
 
 def get(key: str) -> Optional[Any]:
