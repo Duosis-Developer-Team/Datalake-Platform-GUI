@@ -32,6 +32,7 @@ from src.pages.settings.integrations import crm_unit_conversions as crm_unit_con
 from src.pages.settings.integrations import netbox_visualization as netbox_visualization_page
 from src.pages.settings.integrations import hmdl_overview as hmdl_overview_page
 from src.pages.settings.integrations import hmdl_sync_health as hmdl_sync_health_page
+from src.pages.settings.integrations import hmdl_coverage as hmdl_coverage_page
 from src.pages.settings.integrations import chatbot_logs as chatbot_logs_page
 from src.pages.settings import crm_service_mapping as crm_service_mapping_page
 
@@ -60,6 +61,7 @@ INT_TABS: list[tuple[str, str, str]] = [
 HMDL_TABS: list[tuple[str, str, str]] = [
     (f"{_A}/integrations/hmdl", "Overview", "page:settings_hmdl_overview"),
     (f"{_A}/integrations/hmdl/sync-health", "Datalake Sync Health", "page:settings_hmdl_sync_health"),
+    (f"{_A}/integrations/hmdl/coverage", "Datalake Coverage", "page:settings_hmdl_coverage"),
 ]
 
 CRM_INT_TABS: list[tuple[str, str, str]] = [
@@ -110,6 +112,7 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
     f"{_A}/integrations": ("page:settings_integrations", integrations_overview_page.build_layout),
     f"{_A}/integrations/hmdl": ("page:settings_hmdl_overview", hmdl_overview_page.build_layout),
     f"{_A}/integrations/hmdl/sync-health": ("page:settings_hmdl_sync_health", hmdl_sync_health_page.build_layout),
+    f"{_A}/integrations/hmdl/coverage": ("page:settings_hmdl_coverage", hmdl_coverage_page.build_layout),
     f"{_A}/integrations/crm": ("page:settings_crm_overview", crm_overview_page.build_layout),
     f"{_A}/integrations/crm/service-mapping": ("page:settings_service_mapping", crm_service_mapping_page.build_layout),
     f"{_A}/integrations/crm/aliases": ("page:settings_crm_aliases", crm_aliases_page.build_layout),

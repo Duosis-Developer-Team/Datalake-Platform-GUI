@@ -342,6 +342,13 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 sort_order=57,
             ),
             _n(
+                "page:settings_hmdl_coverage",
+                "HMDL Datalake Coverage",
+                "config",
+                route_pattern="/administration/integrations/hmdl/coverage",
+                sort_order=58,
+            ),
+            _n(
                 "page:settings_crm_overview",
                 "CRM Dynamics 365 overview",
                 "config",
