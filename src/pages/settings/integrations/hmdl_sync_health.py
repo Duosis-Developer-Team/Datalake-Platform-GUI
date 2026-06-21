@@ -7,10 +7,10 @@ from urllib.parse import parse_qs
 import dash_mantine_components as dmc
 from dash import dcc, html
 
+from src.pages.settings.admin_routes import ADMIN_PREFIX
 from src.services import api_client as api
 from src.utils.hmdl_sync_ui import (
     CATEGORY_LABELS,
-    build_coverage_section,
     build_diff_panel,
     build_environment_health_grid,
     build_targets_table,
@@ -207,56 +207,28 @@ def build_layout(search: str | None = None) -> html.Div:
         ],
     )
 
-    coverage = api.get_hmdl_coverage()
-    cov_loc_options = [{"label": "Tüm Location", "value": ""}] + [
-        {"label": loc, "value": loc} for loc in (coverage.get("locations") or [])
-    ]
-    coverage_section = dmc.Paper(
-        p="lg",
+    coverage_link = dmc.Paper(
+        p="md",
         withBorder=True,
         radius="md",
         mb="lg",
         children=[
-            section_header(
-                "Datalake Coverage",
-                "Cluster (VMware/Nutanix) ve IBM host bazında veri çekilebiliyor mu (var/yok) — ve çekilemiyorsa neden.",
-                icon="solar:checklist-minimalistic-bold-duotone",
-            ),
-            dmc.Grid(
-                gutter="md",
-                mb="md",
+            dmc.Group(
+                justify="space-between",
                 children=[
-                    dmc.GridCol(
-                        span={"base": 12, "md": 4},
-                        children=dmc.Select(
-                            id="hmdl-coverage-dc",
-                            label="Location",
-                            data=cov_loc_options,
-                            value="",
-                            clearable=True,
-                            searchable=True,
-                            size="sm",
-                        ),
+                    dmc.Text(
+                        "Cluster and IBM host coverage is on the dedicated Datalake Coverage page.",
+                        size="sm",
                     ),
-                    dmc.GridCol(
-                        span={"base": 12, "md": 4},
-                        children=dmc.Select(
-                            id="hmdl-coverage-source",
-                            label="Kaynak",
-                            data=[
-                                {"label": "Tümü", "value": ""},
-                                {"label": "VMware cluster", "value": "vmware"},
-                                {"label": "Nutanix cluster", "value": "nutanix"},
-                                {"label": "IBM host", "value": "ibm"},
-                            ],
-                            value="",
-                            clearable=True,
-                            size="sm",
-                        ),
+                    dmc.Button(
+                        "Open Datalake Coverage",
+                        component="a",
+                        href=f"{ADMIN_PREFIX}/integrations/hmdl/coverage?dc={selected_dc}",
+                        variant="light",
+                        size="sm",
                     ),
                 ],
             ),
-            html.Div(id="hmdl-coverage-content", children=build_coverage_section(coverage)),
         ],
     )
 
@@ -286,8 +258,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 filters,
                 inventory_section,
                 build_diff_panel(dc_summary.get("recent_diffs") or []) if not no_proxy_dc else html.Div(),
-                dmc.Divider(my="md", label="Datalake Coverage"),
-                coverage_section,
+                coverage_link,
                 dcc.Store(id="hmdl-sync-dc-store", data=selected_dc),
             ]
         )

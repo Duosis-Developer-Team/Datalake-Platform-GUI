@@ -16,6 +16,7 @@ from typing import Any
 
 from app.config import settings
 from app.db import pool
+from app.db.queries import collectors as coll_q
 from app.services import coverage as cov
 
 _SCHEMA = settings.hmdl_schema
@@ -117,8 +118,13 @@ def build_coverage(*, dc: str | None = None, source: str | None = None) -> dict[
     clusters = [_build_cluster_row(r, issues) for r in _fetch_clusters()]
     hosts = [_build_host_row(r, issues) for r in _fetch_ibm_hosts()]
 
-    # distinct Locations across both data sets (for the UI dropdown) — before filtering.
-    locations = sorted({row["dc"] for row in clusters} | {row["dc"] for row in hosts})
+    coverage_dcs = {row["dc"] for row in clusters} | {row["dc"] for row in hosts}
+    loki_dcs = {
+        str(loc.get("dc_code") or "").strip().upper()
+        for loc in coll_q.list_root_locations()
+        if loc.get("dc_code")
+    }
+    locations = sorted(loki_dcs | coverage_dcs | {"Diğer"})
 
     dc_norm = (dc or "").strip().upper() or None
     src_norm = (source or "").strip().lower() or None

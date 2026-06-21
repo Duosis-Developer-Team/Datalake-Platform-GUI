@@ -7,6 +7,7 @@ from dash import dcc, html
 from dash_iconify import DashIconify
 
 from src.components.hmdl_topology import build_topology_graph
+from src.pages.settings.admin_routes import ADMIN_PREFIX
 from src.services import api_client as api
 from src.utils.hmdl_sync_ui import (
     build_coverage_summary,
@@ -67,10 +68,18 @@ def build_layout(search: str | None = None) -> html.Div:
         children=[
             section_header(
                 "Datalake Coverage",
-                "Cluster (VMware/Nutanix) ve IBM host bazında veri çekme kapsamı — detay için Datalake Sync Health sekmesi.",
+                "Cluster (VMware/Nutanix) and IBM host collection scope — see Datalake Coverage tab for detail.",
                 icon="solar:checklist-minimalistic-bold-duotone",
             ),
             build_coverage_summary(coverage.get("summary") or {}),
+            dmc.Button(
+                "View full coverage report",
+                component="a",
+                href=f"{ADMIN_PREFIX}/integrations/hmdl/coverage",
+                variant="light",
+                size="xs",
+                mt="sm",
+            ),
         ],
     )
 

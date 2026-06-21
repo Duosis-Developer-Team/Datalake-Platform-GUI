@@ -96,3 +96,16 @@ def refresh_hmdl_targets(dc_code, category, entity_name):
 def refresh_hmdl_coverage(dc, source):
     data = api.get_hmdl_coverage(dc or None, source=source or None)
     return build_coverage_section(data)
+
+
+@callback(
+    Output("url", "search", allow_duplicate=True),
+    Input("hmdl-coverage-dc", "value"),
+    State("url", "pathname"),
+    prevent_initial_call=True,
+)
+def hmdl_coverage_dc_changed(dc_code, pathname):
+    if not pathname or not str(pathname).startswith(f"{ADMIN_PREFIX}/integrations/hmdl/coverage"):
+        return no_update
+    dc = (dc_code or "").strip().upper()
+    return f"?dc={dc}" if dc else ""
