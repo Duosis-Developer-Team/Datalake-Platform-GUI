@@ -31,10 +31,13 @@ class _FakeWebui:
 
 def test_resync_aliases_from_datalake_remaps_orphans():
     webui = _FakeWebui()
+    project_rows = [
+        {"crm_accountid": "new-guid", "crm_account_name": "BOYNER BUYUK MAGAZACILIK A.S."},
+    ]
 
     def run_rows(sql, params=()):
-        if "PRJ-" in sql:
-            return [{"crm_accountid": "new-guid", "crm_account_name": "BOYNER BUYUK MAGAZACILIK A.S."}]
+        if "PRJ-" in sql or "crm_accountid" in sql.lower():
+            return project_rows
         return webui.run_rows(sql, params)
 
     svc = SalesService(
@@ -43,6 +46,7 @@ def test_resync_aliases_from_datalake_remaps_orphans():
         run_rows=run_rows,
         webui=webui,
     )
+    svc._load_crm_project_customer_rows = lambda: project_rows
     svc.seed_boyner_source_mappings = lambda: {"status": "ok", "rows_upserted": 1}
 
     result = svc.resync_aliases_from_datalake()

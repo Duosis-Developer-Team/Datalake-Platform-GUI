@@ -708,7 +708,7 @@ class SalesService:
         if not self._webui:
             raise RuntimeError("WebUI pool not configured")
 
-        project_rows = self._run_rows(cq.CRM_PROJECT_CUSTOMER_ROWS, ())
+        project_rows = self._load_crm_project_customer_rows()
         name_to_ids: dict[str, set[str]] = {}
         for row in project_rows or []:
             if isinstance(row, dict):
@@ -769,7 +769,7 @@ class SalesService:
                 continue
             new_account_id = name_to_id.get(account_name.casefold())
             if not new_account_id:
-                resolved = self._run_row(
+                resolved = self._run_one(
                     cq.CRM_ACCOUNT_BY_DISPLAY_NAME,
                     (account_name, account_name),
                 )

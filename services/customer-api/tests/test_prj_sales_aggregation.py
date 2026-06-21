@@ -74,6 +74,7 @@ def test_resync_skips_name_collision():
         run_rows=run_rows,
         webui=webui,
     )
+    svc._load_crm_project_customer_rows = lambda: project_rows
     svc.seed_boyner_source_mappings = lambda: {"status": "ok", "rows_upserted": 0}
 
     result = svc.resync_aliases_from_datalake()
