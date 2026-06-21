@@ -220,12 +220,10 @@ def build_layout(search: str | None = None) -> html.Div:
                         "Cluster and IBM host coverage is on the dedicated Datalake Coverage page.",
                         size="sm",
                     ),
-                    dmc.Button(
-                        "Open Datalake Coverage",
-                        component="a",
+                    dmc.Anchor(
+                        dmc.Button("Open Datalake Coverage", variant="light", size="sm"),
                         href=f"{ADMIN_PREFIX}/integrations/hmdl/coverage?dc={selected_dc}",
-                        variant="light",
-                        size="sm",
+                        underline=False,
                     ),
                 ],
             ),

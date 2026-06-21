@@ -72,13 +72,10 @@ def build_layout(search: str | None = None) -> html.Div:
                 icon="solar:checklist-minimalistic-bold-duotone",
             ),
             build_coverage_summary(coverage.get("summary") or {}),
-            dmc.Button(
-                "View full coverage report",
-                component="a",
+            dmc.Anchor(
+                dmc.Button("View full coverage report", variant="light", size="xs", mt="sm"),
                 href=f"{ADMIN_PREFIX}/integrations/hmdl/coverage",
-                variant="light",
-                size="xs",
-                mt="sm",
+                underline=False,
             ),
         ],
     )
