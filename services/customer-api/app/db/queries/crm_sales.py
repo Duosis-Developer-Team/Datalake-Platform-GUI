@@ -3,12 +3,15 @@
 # resolved in the service layer; queries here accept already-resolved CRM
 # accountid lists (parameterised as text[]).
 # Scope: realized sales orders only (statecode 3 Fulfilled, 4 Invoiced) — see ADR-0010.
+# Customer metrics aggregate PRJ-* project orders only (same scope as CRM_PROJECT_CUSTOMER_ROWS).
+
+_PRJ_ORDER_FILTER = "AND  so.ordernumber LIKE 'PRJ-%%'"
 
 # ---------------------------------------------------------------------------
 # /customers/{name}/sales/summary
 # ---------------------------------------------------------------------------
 
-SALES_SUMMARY = """
+SALES_SUMMARY = f"""
 WITH ytd_realized AS (
     SELECT COALESCE(SUM(so.totalamount), 0) AS ytd_revenue_total,
            COALESCE(COUNT(DISTINCT so.salesorderid), 0) AS ytd_order_count,
@@ -16,6 +19,7 @@ WITH ytd_realized AS (
     FROM   discovery_crm_salesorders so
     WHERE  so.customerid = ANY(%s)
       AND  so.statecode IN (3, 4)
+      {_PRJ_ORDER_FILTER}
       AND  EXTRACT(YEAR FROM COALESCE(so.fulfilldate, so.submitdate, so.modifiedon::date))
            = EXTRACT(YEAR FROM CURRENT_DATE)
 ),
@@ -25,6 +29,7 @@ lifetime_realized AS (
     FROM   discovery_crm_salesorders so
     WHERE  so.customerid = ANY(%s)
       AND  so.statecode IN (3, 4)
+      {_PRJ_ORDER_FILTER}
 ),
 in_progress_orders AS (
     SELECT COALESCE(COUNT(*), 0) AS active_order_count,
@@ -32,6 +37,7 @@ in_progress_orders AS (
     FROM   discovery_crm_salesorders so
     WHERE  so.customerid = ANY(%s)
       AND  so.statecode IN (0, 1)
+      {_PRJ_ORDER_FILTER}
 )
 SELECT
     ytd_realized.ytd_revenue_total,
@@ -50,7 +56,7 @@ FROM ytd_realized, lifetime_realized, in_progress_orders;
 """
 
 # Per-customer realized sales lines aggregated by product (service layer maps to categories).
-SALES_LINES_BY_PRODUCT_FOR_CUSTOMER = """
+SALES_LINES_BY_PRODUCT_FOR_CUSTOMER = f"""
 SELECT d.productid,
        d.product_name,
        SUM(d.extendedamount)::double precision AS amount_tl
@@ -58,6 +64,7 @@ FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (3, 4)
+  {_PRJ_ORDER_FILTER}
 GROUP BY d.productid, d.product_name
 ORDER BY amount_tl DESC NULLS LAST;
 """
@@ -90,6 +97,7 @@ JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
 LEFT JOIN discovery_crm_products p ON p.productid = d.productid
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN ({statecodes})
+  AND  so.ordernumber LIKE 'PRJ-%%'
 ORDER BY {order_by};
 """
 
@@ -122,6 +130,7 @@ FROM   discovery_crm_salesorders so
 LEFT JOIN discovery_crm_salesorderdetails d ON d.salesorderid = so.salesorderid
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (0, 1)
+  AND  so.ordernumber LIKE 'PRJ-%%'
 GROUP BY so.salesorderid, so.ordernumber, so.submitdate, so.createdon, so.modifiedon,
          so.statecode_text, so.totalamount, so.transactioncurrency_text
 ORDER BY so.modifiedon DESC NULLS LAST;
@@ -145,6 +154,7 @@ FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
 GROUP BY d.productid, d.product_name, d.uomid_name
 ORDER BY total_billed_amount DESC NULLS LAST;
 """
@@ -180,6 +190,7 @@ FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
 GROUP BY d.productid, d.product_name, COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet')
 ORDER BY sold_amount_tl DESC NULLS LAST;
 """
@@ -200,6 +211,7 @@ FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (0, 1, 3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
 GROUP BY d.productid, d.product_name, COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet')
 ORDER BY entitled_amount_tl DESC NULLS LAST;
 """
@@ -216,6 +228,7 @@ FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (0, 1, 3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
   AND  d.priceperunit IS NOT NULL
   AND  d.quantity IS NOT NULL
   AND  d.quantity > 0
@@ -234,6 +247,7 @@ FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (0, 1, 3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
 GROUP BY so.customerid, d.productid, d.product_name,
          COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet');
 """
@@ -251,6 +265,7 @@ FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (0, 1, 3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
   AND  d.priceperunit IS NOT NULL
   AND  d.quantity IS NOT NULL
   AND  d.quantity > 0
@@ -303,22 +318,24 @@ SELECT COALESCE(SUM(so.totalamount), 0)::double precision AS total_revenue,
        MIN(so.transactioncurrency_text) AS currency
 FROM   discovery_crm_salesorders so
 WHERE  so.customerid IN (SELECT accountid FROM project_accounts)
-  AND  so.statecode IN (3, 4);
+  AND  so.statecode IN (3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%';
 """
 
-CRM_PROJECT_SALES_BY_CUSTOMER_YTD = """
+CRM_PROJECT_SALES_BY_CUSTOMER_YTD = f"""
 SELECT so.customerid AS crm_accountid,
        COALESCE(SUM(so.totalamount), 0)::double precision AS ytd_revenue,
        MIN(so.transactioncurrency_text) AS currency
 FROM   discovery_crm_salesorders so
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (3, 4)
+  {_PRJ_ORDER_FILTER}
   AND  EXTRACT(YEAR FROM COALESCE(so.fulfilldate, so.submitdate, so.modifiedon::date))
        = EXTRACT(YEAR FROM CURRENT_DATE)
 GROUP BY so.customerid;
 """
 
-CRM_PROJECT_ACTIVE_ORDERS_BY_CUSTOMER = """
+CRM_PROJECT_ACTIVE_ORDERS_BY_CUSTOMER = f"""
 SELECT so.customerid AS crm_accountid,
        COALESCE(SUM(so.totalamount), 0)::double precision AS active_order_value,
        COALESCE(COUNT(DISTINCT so.salesorderid), 0)::bigint AS active_order_count,
@@ -326,6 +343,7 @@ SELECT so.customerid AS crm_accountid,
 FROM   discovery_crm_salesorders so
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (0, 1)
+  {_PRJ_ORDER_FILTER}
 GROUP BY so.customerid;
 """
 
@@ -343,6 +361,7 @@ FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
 WHERE  so.customerid IN (SELECT accountid FROM project_accounts)
   AND  so.statecode IN (3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
 GROUP BY d.productid, d.product_name
 ORDER BY amount_tl DESC NULLS LAST;
 """

@@ -16,12 +16,12 @@ from app.core.cache_backend import (
 logger = logging.getLogger(__name__)
 
 
-def get(key: str) -> Optional[Any]:
-    return cache_get(key)
-
-
 def get_last_good(key: str) -> Optional[Any]:
     return cache_get_last_good(key)
+
+
+def get(key: str) -> Optional[Any]:
+    return cache_get(key)
 
 
 def get_stale(key: str) -> Optional[Any]:

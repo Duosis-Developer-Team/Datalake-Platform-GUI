@@ -439,6 +439,35 @@ def _schedule_swr_refresh(cache_key: str, fetch_normalized: Callable[[], Any]) -
     _swr_executor.submit(_refresh)
 
 
+def _serialize_tr_cache_key(tr: Optional[dict]) -> str:
+    """Cache keys include resolved start/end so rolling presets invalidate correctly."""
+    if not tr:
+        return "noparams"
+    parts: list[tuple[str, str]] = []
+    for key in ("start", "end", "preset"):
+        val = tr.get(key)
+        if val not in (None, ""):
+            parts.append((key, str(val)))
+    if tr.get("anchor_latest"):
+        parts.append(("anchor_latest", "true"))
+    if not parts:
+        return "noparams"
+    return json.dumps(sorted(parts), separators=(",", ":"), ensure_ascii=False)
+
+
+def _should_persist_api_cache(value: Any, empty_fallback: Any) -> bool:
+    if value == empty_fallback:
+        return False
+    if isinstance(value, dict) and not value:
+        return False
+    if isinstance(value, dict) and value.get("totals") == {} and value.get("assets") == {}:
+        return False
+    if isinstance(value, list) and not value:
+        return False
+    return True
+
+
+
 def _api_cache_get_with_stale(
     cache_key: str,
     fetch_normalized: Callable[[], Any],
@@ -469,8 +498,9 @@ def _api_cache_get_with_stale(
 
     try:
         out = fetch_normalized()
-        _api_response_cache.set(cache_key, out)
-        _fetched_at[cache_key] = time.monotonic()
+        if _should_persist_api_cache(out, empty_fallback):
+            _api_response_cache.set(cache_key, out)
+            _fetched_at[cache_key] = time.monotonic()
         return out
     except _HTTP_ERRORS as exc:
         logger.warning("API cache fetch failed for key=%s: %s", cache_key, exc)
@@ -485,7 +515,7 @@ def _api_cache_get_with_stale(
 
 
 def get_global_dashboard(tr: Optional[dict]) -> dict:
-    ck = f"api:global_dashboard:{_serialize_tr_params(tr)}"
+    ck = f"api:global_dashboard:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), "/api/v1/dashboard/overview", params=_build_time_params(tr))
@@ -495,7 +525,7 @@ def get_global_dashboard(tr: Optional[dict]) -> dict:
 
 
 def get_all_datacenters_summary(tr: Optional[dict]) -> list[dict]:
-    ck = f"api:datacenters_summary:{_serialize_tr_params(tr)}"
+    ck = f"api:datacenters_summary:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> list[dict]:
         params = _build_time_params(tr)
@@ -507,7 +537,7 @@ def get_all_datacenters_summary(tr: Optional[dict]) -> list[dict]:
 
 def get_dc_details(dc_id: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_id, safe="")
-    ck = f"api:dc_details:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_details:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}", params=_build_time_params(tr))
@@ -597,7 +627,7 @@ def set_customer_vip(crm_accountid: str, *, is_vip: bool) -> dict[str, Any]:
 
 def get_customer_resources(name: str, tr: Optional[dict]) -> dict:
     enc = quote(name, safe="")
-    ck = f"api:customer_resources:cpu-usage-v3:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:customer_resources:cpu-usage-v3:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(
@@ -623,7 +653,7 @@ def execute_registered_query(key: str, params: str) -> dict:
 
 def get_sla_by_dc(tr: Optional[dict]) -> dict[str, dict]:
     """Return SLA entries keyed by DC code (uppercase)."""
-    ck = f"api:sla_by_dc:{_serialize_tr_params(tr)}"
+    ck = f"api:sla_by_dc:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict[str, dict]:
         data = _get_json(_get_client_dc(), "/api/v1/sla", params=_build_time_params(tr))
@@ -636,7 +666,7 @@ def get_sla_by_dc(tr: Optional[dict]) -> dict[str, dict]:
 def get_dc_s3_pools(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     empty = {"pools": [], "latest": {}, "growth": {}}
-    ck = f"api:dc_s3_pools:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_s3_pools:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/s3/pools", params=_build_time_params(tr))
@@ -648,7 +678,7 @@ def get_dc_s3_pools(dc_code: str, tr: Optional[dict]) -> dict:
 def get_customer_s3_vaults(customer_name: str, tr: Optional[dict]) -> dict:
     enc = quote(customer_name, safe="")
     empty = {"vaults": [], "latest": {}, "growth": {}}
-    ck = f"api:customer_s3_vaults:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:customer_s3_vaults:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/s3/vaults", params=_build_time_params(tr))
@@ -675,7 +705,7 @@ _EMPTY_ITSM_EXTREMES: dict = {"long_tail": [], "sla_breach": []}
 
 def get_customer_itsm_summary(customer_name: str, tr: Optional[dict]) -> dict:
     enc = quote(customer_name, safe="")
-    ck = f"api:customer_itsm_summary:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:customer_itsm_summary:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/itsm/summary", params=_build_time_params(tr))
@@ -686,7 +716,7 @@ def get_customer_itsm_summary(customer_name: str, tr: Optional[dict]) -> dict:
 
 def get_customer_itsm_extremes(customer_name: str, tr: Optional[dict]) -> dict:
     enc = quote(customer_name, safe="")
-    ck = f"api:customer_itsm_extremes:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:customer_itsm_extremes:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/itsm/extremes", params=_build_time_params(tr))
@@ -697,7 +727,7 @@ def get_customer_itsm_extremes(customer_name: str, tr: Optional[dict]) -> dict:
 
 def get_customer_itsm_tickets(customer_name: str, tr: Optional[dict]) -> list:
     enc = quote(customer_name, safe="")
-    ck = f"api:customer_itsm_tickets:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:customer_itsm_tickets:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> list:
         data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/itsm/tickets", params=_build_time_params(tr))
@@ -709,7 +739,7 @@ def get_customer_itsm_tickets(customer_name: str, tr: Optional[dict]) -> list:
 def get_dc_netbackup_pools(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     empty = {"pools": [], "rows": []}
-    ck = f"api:dc_netbackup:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_netbackup:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/netbackup", params=_build_time_params(tr))
@@ -721,7 +751,7 @@ def get_dc_netbackup_pools(dc_code: str, tr: Optional[dict]) -> dict:
 def get_dc_zerto_sites(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     empty = {"sites": [], "rows": []}
-    ck = f"api:dc_zerto:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_zerto:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/zerto", params=_build_time_params(tr))
@@ -733,7 +763,7 @@ def get_dc_zerto_sites(dc_code: str, tr: Optional[dict]) -> dict:
 def get_dc_veeam_repos(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     empty = {"repos": [], "rows": []}
-    ck = f"api:dc_veeam:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_veeam:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/veeam", params=_build_time_params(tr))
@@ -758,7 +788,7 @@ def _empty_job_stats(vendor: str, granularity: str) -> dict:
 def get_dc_veeam_jobs(dc_code: str, tr: Optional[dict], granularity: str = "day") -> dict:
     enc = quote(dc_code, safe="")
     empty = _empty_job_stats("veeam", granularity)
-    ck = f"api:dc_veeam_jobs:{enc}:{_serialize_tr_params(tr)}:{granularity}"
+    ck = f"api:dc_veeam_jobs:{enc}:{_serialize_tr_cache_key(tr)}:{granularity}"
 
     def fetch() -> dict:
         params = {**_build_time_params(tr), "granularity": granularity}
@@ -771,7 +801,7 @@ def get_dc_veeam_jobs(dc_code: str, tr: Optional[dict], granularity: str = "day"
 def get_dc_zerto_jobs(dc_code: str, tr: Optional[dict], granularity: str = "day") -> dict:
     enc = quote(dc_code, safe="")
     empty = _empty_job_stats("zerto", granularity)
-    ck = f"api:dc_zerto_jobs:{enc}:{_serialize_tr_params(tr)}:{granularity}"
+    ck = f"api:dc_zerto_jobs:{enc}:{_serialize_tr_cache_key(tr)}:{granularity}"
 
     def fetch() -> dict:
         params = {**_build_time_params(tr), "granularity": granularity}
@@ -784,7 +814,7 @@ def get_dc_zerto_jobs(dc_code: str, tr: Optional[dict], granularity: str = "day"
 def get_dc_netbackup_jobs(dc_code: str, tr: Optional[dict], granularity: str = "day") -> dict:
     enc = quote(dc_code, safe="")
     empty = _empty_job_stats("netbackup", granularity)
-    ck = f"api:dc_netbackup_jobs:{enc}:{_serialize_tr_params(tr)}:{granularity}"
+    ck = f"api:dc_netbackup_jobs:{enc}:{_serialize_tr_cache_key(tr)}:{granularity}"
 
     def fetch() -> dict:
         params = {**_build_time_params(tr), "granularity": granularity}
@@ -838,7 +868,7 @@ def refresh_dc_backup_jobs_cache(dc_code: str, vendor: str = "all") -> dict:
 
 def get_classic_cluster_list(dc_code: str, tr: Optional[dict]) -> list[str]:
     enc = quote(dc_code, safe="")
-    ck = f"api:classic_clusters:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:classic_clusters:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> list[str]:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/clusters/classic", params=_build_time_params(tr))
@@ -849,7 +879,7 @@ def get_classic_cluster_list(dc_code: str, tr: Optional[dict]) -> list[str]:
 
 def get_hyperconv_cluster_list(dc_code: str, tr: Optional[dict]) -> list[str]:
     enc = quote(dc_code, safe="")
-    ck = f"api:hyperconv_clusters:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:hyperconv_clusters:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> list[str]:
         data = _get_json(
@@ -1015,7 +1045,7 @@ def get_physical_inventory_customer(customer_name: str | None = None) -> list[di
 def get_dc_san_switches(dc_code: str, tr: Optional[dict]) -> list[str]:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_san_switches:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_san_switches:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> list[str]:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/san/switches", params=params)
@@ -1027,7 +1057,7 @@ def get_dc_san_switches(dc_code: str, tr: Optional[dict]) -> list[str]:
 def get_dc_san_port_usage(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_san_port_usage:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_san_port_usage:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/san/port-usage", params=params)
@@ -1039,7 +1069,7 @@ def get_dc_san_port_usage(dc_code: str, tr: Optional[dict]) -> dict:
 def get_dc_san_health(dc_code: str, tr: Optional[dict]) -> list[dict]:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_san_health:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_san_health:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> list[dict]:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/san/health", params=params)
@@ -1051,7 +1081,7 @@ def get_dc_san_health(dc_code: str, tr: Optional[dict]) -> list[dict]:
 def get_dc_san_traffic_trend(dc_code: str, tr: Optional[dict]) -> list[dict]:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_san_traffic_trend:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_san_traffic_trend:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> list[dict]:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/san/traffic-trend", params=params)
@@ -1063,7 +1093,7 @@ def get_dc_san_traffic_trend(dc_code: str, tr: Optional[dict]) -> list[dict]:
 def get_dc_san_bottleneck(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_san_bottleneck:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_san_bottleneck:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/san/bottleneck", params=params)
@@ -1075,7 +1105,7 @@ def get_dc_san_bottleneck(dc_code: str, tr: Optional[dict]) -> dict:
 def get_dc_storage_capacity(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_storage_cap:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_storage_cap:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/storage/capacity", params=params)
@@ -1087,7 +1117,7 @@ def get_dc_storage_capacity(dc_code: str, tr: Optional[dict]) -> dict:
 def get_dc_datastore_mapping(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_datastore_mapping:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_datastore_mapping:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/storage/datastores", params=params)
@@ -1099,7 +1129,7 @@ def get_dc_datastore_mapping(dc_code: str, tr: Optional[dict]) -> dict:
 def get_dc_storage_performance(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_storage_perf:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_storage_perf:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/storage/performance", params=params)
@@ -1129,7 +1159,7 @@ def get_dc_network_filters(
     enc = quote(dc_code, safe="")
     params = _build_optional_params(_build_time_params(tr), interface_scope=interface_scope)
     scope_key = interface_scope or "overview"
-    ck = f"api:dc_net_filters:{enc}:scope={scope_key}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_net_filters:{enc}:scope={scope_key}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/network/filters", params=params)
@@ -1266,7 +1296,7 @@ def get_dc_network_interface_export(
 def get_dc_network_firewall_summary(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_net_fw:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_net_fw:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(
@@ -1282,7 +1312,7 @@ def get_dc_network_firewall_summary(dc_code: str, tr: Optional[dict]) -> dict:
 def get_dc_network_load_balancer_summary(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_net_lb:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_net_lb:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(
@@ -1322,7 +1352,7 @@ def get_dc_zabbix_storage_trend(dc_code: str, tr: Optional[dict], host: Optional
 def get_dc_zabbix_storage_devices(dc_code: str, tr: Optional[dict]) -> list[dict]:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_zbx_devices:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_zbx_devices:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> list[dict]:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/zabbix-storage/devices", params=params)
@@ -1369,7 +1399,7 @@ def get_dc_zabbix_disk_trend(
 def get_dc_zabbix_disk_health(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     params = _build_time_params(tr)
-    ck = f"api:dc_zbx_disk_health:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_zbx_disk_health:{enc}:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/zabbix-storage/disk-health", params=params)
@@ -1480,7 +1510,7 @@ def get_customer_availability_bundle(
 
 def get_dc_availability_sla_item(dc_code: str, dc_display_name: str, tr: Optional[dict]) -> Optional[dict[str, Any]]:
     """AuraNotify: one datacenter-services item matched to this DC (by name or code)."""
-    ck = f"api:dc_avail_sla_item:{quote(dc_code or '', safe='')}:{quote(dc_display_name or '', safe='')}:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_avail_sla_item:{quote(dc_code or '', safe='')}:{quote(dc_display_name or '', safe='')}:{_serialize_tr_cache_key(tr)}"
     try:
         from src.services import auranotify_client as aura
 
@@ -1531,7 +1561,7 @@ def get_dc_availability_sla_items_for_dcs(
     if not dc_rows:
         return empty_result
 
-    ck = f"api:dc_svc_sla_items:{_serialize_tr_params(tr)}"
+    ck = f"api:dc_svc_sla_items:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> list:
         data = _get_json(_get_client_dc(), "/api/v1/sla/datacenter-services", params=_build_time_params(tr))
@@ -1622,15 +1652,40 @@ def get_dc_availability_sla_items_for_dcs(
 # CRM Sales API functions
 # ---------------------------------------------------------------------------
 
+_CRM_SALES_CACHE: dict[str, tuple[float, Any]] = {}
+CRM_SALES_CACHE_TTL_SECONDS = 900
+CRM_SALES_CACHE_VERSION = "prod-v1"
+
+
+def _crm_sales_cache_get(
+    cache_key: str,
+    fetch_normalized: Callable[[], Any],
+    empty_fallback: Any,
+) -> Any:
+    now = time.time()
+    prev = _CRM_SALES_CACHE.get(cache_key)
+    if prev is not None and (now - prev[0]) < CRM_SALES_CACHE_TTL_SECONDS:
+        return _clone(prev[1])
+    try:
+        out = fetch_normalized()
+        if _should_persist_api_cache(out, empty_fallback):
+            _CRM_SALES_CACHE[cache_key] = (now, out)
+        return out
+    except _HTTP_ERRORS:
+        if prev is not None:
+            return _clone(prev[1])
+        return _clone(empty_fallback)
+
+
 def get_customer_sales_summary(name: str) -> dict:
     enc = quote(name, safe="")
-    ck = f"api:crm_sales_summary:{enc}"
+    ck = f"api:crm_sales_summary:{CRM_SALES_CACHE_VERSION}:{enc}"
 
     def fetch() -> dict:
         data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/summary")
         return data if isinstance(data, dict) else {}
 
-    return _api_cache_get_with_stale(ck, fetch, {})
+    return _crm_sales_cache_get(ck, fetch, {})
 
 
 def get_customer_sales_items(name: str) -> list:
@@ -1640,8 +1695,8 @@ def get_customer_sales_items(name: str) -> list:
         data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/items")
         return data if isinstance(data, list) else []
 
-    ck = f"api:crm_sales_items:{enc}"
-    return _api_cache_get_with_stale(ck, fetch, [])
+    ck = f"api:crm_sales_items:{CRM_SALES_CACHE_VERSION}:{enc}"
+    return _crm_sales_cache_get(ck, fetch, [])
 
 
 def get_customer_sales_active_orders(name: str) -> list:
@@ -1651,8 +1706,8 @@ def get_customer_sales_active_orders(name: str) -> list:
         data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/active-orders")
         return data if isinstance(data, list) else []
 
-    ck = f"api:crm_sales_active_orders:{enc}"
-    return _api_cache_get_with_stale(ck, fetch, [])
+    ck = f"api:crm_sales_active_orders:{CRM_SALES_CACHE_VERSION}:{enc}"
+    return _crm_sales_cache_get(ck, fetch, [])
 
 
 def get_customer_sales_active_items(name: str) -> list:
@@ -1662,8 +1717,8 @@ def get_customer_sales_active_items(name: str) -> list:
         data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/active-items")
         return data if isinstance(data, list) else []
 
-    ck = f"api:crm_sales_active_items:{enc}"
-    return _api_cache_get_with_stale(ck, fetch, [])
+    ck = f"api:crm_sales_active_items:{CRM_SALES_CACHE_VERSION}:{enc}"
+    return _crm_sales_cache_get(ck, fetch, [])
 
 
 def get_customer_sales_service_breakdown(name: str) -> list:
@@ -1673,8 +1728,8 @@ def get_customer_sales_service_breakdown(name: str) -> list:
         data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/service-breakdown")
         return data if isinstance(data, list) else []
 
-    ck = f"api:crm_sales_service_breakdown:{enc}"
-    return _api_cache_get_with_stale(ck, fetch, [])
+    ck = f"api:crm_sales_service_breakdown:{CRM_SALES_CACHE_VERSION}:{enc}"
+    return _crm_sales_cache_get(ck, fetch, [])
 
 
 def get_customer_sales_efficiency(name: str) -> list:
@@ -1684,8 +1739,8 @@ def get_customer_sales_efficiency(name: str) -> list:
         data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/efficiency")
         return data if isinstance(data, list) else []
 
-    ck = f"api:crm_sales_efficiency:{enc}"
-    return _api_cache_get_with_stale(ck, fetch, [])
+    ck = f"api:crm_sales_efficiency:{CRM_SALES_CACHE_VERSION}:{enc}"
+    return _crm_sales_cache_get(ck, fetch, [])
 
 
 def get_customer_catalog_valuation(name: str) -> list:
@@ -1695,8 +1750,8 @@ def get_customer_catalog_valuation(name: str) -> list:
         data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/sales/catalog-valuation")
         return data if isinstance(data, list) else []
 
-    ck = f"api:crm_catalog_valuation:{enc}"
-    return _api_cache_get_with_stale(ck, fetch, [])
+    ck = f"api:crm_catalog_valuation:{CRM_SALES_CACHE_VERSION}:{enc}"
+    return _crm_sales_cache_get(ck, fetch, [])
 
 
 def get_dc_sales_potential(dc_code: str) -> dict:
@@ -1732,7 +1787,7 @@ def get_customer_efficiency_by_category(name: str, tr: Optional[dict] = None) ->
         )
         return data if isinstance(data, list) else []
 
-    ck = f"api:crm_efficiency_by_cat:{enc}:{_serialize_tr_params(tr)}"
+    ck = f"api:crm_efficiency_by_cat:{enc}:{_serialize_tr_cache_key(tr)}"
     return _api_cache_get_with_stale(ck, fetch, [])
 
 
@@ -1753,7 +1808,7 @@ def get_customer_resource_compliance(
         )
         return data if isinstance(data, dict) else {}
 
-    ck = f"api:crm_resource_compliance:{enc}:{scope_q}:{_serialize_tr_params(tr)}"
+    ck = f"api:crm_resource_compliance:{enc}:{scope_q}:{_serialize_tr_cache_key(tr)}"
     return _api_cache_get_with_stale(ck, fetch, {})
 
 
@@ -2423,6 +2478,7 @@ def refresh_platform_redis_caches() -> dict[str, Any]:
             out["services"][name] = {"ok": False, "error": str(exc)}
     try:
         _api_response_cache.clear()
+        _CRM_SALES_CACHE.clear()
         out["gui_cache_cleared"] = True
     except Exception as exc:
         out["gui_cache_error"] = str(exc)

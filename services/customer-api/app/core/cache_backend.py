@@ -21,15 +21,26 @@ _memory_cache: TTLCache = TTLCache(
     ttl=settings.cache_ttl_seconds,
 )
 
-# Single-flight: only one concurrent compute per cache key (reduces cache stampede).
+# Shadow key suffix — serves stale data when primary TTL expires (ADR-0007).
+LAST_GOOD_SUFFIX = ":last_good"
+LAST_GOOD_TTL_SECONDS = 86400
+
 _inflight_events: dict[str, threading.Event] = {}
 _inflight_master_lock = threading.Lock()
-
-LAST_GOOD_SUFFIX = ":last_good"
 
 
 def last_good_key(key: str) -> str:
     return f"{key}{LAST_GOOD_SUFFIX}"
+
+
+def _read_last_good(redis_client, key: str) -> Any:
+    try:
+        raw = redis_client.get(last_good_key(key))
+        if isinstance(raw, (str, bytes, bytearray)):
+            return json.loads(raw)
+    except Exception as exc:
+        logger.warning("Redis last_good GET error: %s", exc)
+    return None
 
 
 class _CustomEncoder(json.JSONEncoder):
@@ -47,6 +58,16 @@ def _serialize(value: Any) -> Optional[str]:
     except TypeError as exc:
         logger.warning("Cache serialize error: %s", exc)
         return None
+
+
+def _read_redis_json(redis_client, key: str) -> Any | None:
+    try:
+        raw = redis_client.get(key)
+        if isinstance(raw, (str, bytes, bytearray)):
+            return json.loads(raw)
+    except Exception as exc:
+        logger.warning("Redis GET error for %s: %s", key, exc)
+    return None
 
 
 def cache_get(key: str) -> Any:
@@ -83,19 +104,16 @@ def cache_get(key: str) -> Any:
             span.set_attribute("cache.backend", "memory")
             return value
 
+        if redis_client:
+            last_good = _read_last_good(redis_client, key)
+            if last_good is not None:
+                span.set_attribute("cache.hit", True)
+                span.set_attribute("cache.backend", "redis_last_good")
+                return last_good
+
         span.set_attribute("cache.hit", False)
         span.set_attribute("cache.backend", "miss")
         return None
-
-
-def _read_redis_json(redis_client, key: str) -> Any | None:
-    try:
-        raw = redis_client.get(key)
-        if isinstance(raw, (str, bytes, bytearray)):
-            return json.loads(raw)
-    except Exception as exc:
-        logger.warning("Redis GET error for %s: %s", key, exc)
-    return None
 
 
 def cache_get_last_good(key: str) -> Any:
@@ -120,7 +138,7 @@ def cache_get_stale(key: str) -> Any:
 
 def cache_set(key: str, value: Any, ttl: Optional[int] = None) -> None:
     effective_ttl = ttl if ttl is not None else settings.cache_ttl_seconds
-    last_good_ttl = max(effective_ttl * 2, effective_ttl)
+    last_good_ttl = max(effective_ttl * 2, LAST_GOOD_TTL_SECONDS)
     redis_client = get_redis_client()
     serialized = _serialize(value)
     if redis_client and serialized:

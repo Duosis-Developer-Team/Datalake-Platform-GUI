@@ -703,6 +703,111 @@ class SalesService:
             "rows_upserted": inserted,
         }
 
+    def resync_aliases_from_datalake(self) -> dict[str, Any]:
+        """Reconcile WebUI aliases and orphan source mappings with datalake CRM accounts."""
+        if not self._webui:
+            raise RuntimeError("WebUI pool not configured")
+
+        project_rows = self._run_rows(cq.CRM_PROJECT_CUSTOMER_ROWS, ())
+        name_to_ids: dict[str, set[str]] = {}
+        for row in project_rows or []:
+            if isinstance(row, dict):
+                account_id = str(row.get("crm_accountid") or "").strip()
+                account_name = str(row.get("crm_account_name") or "").strip()
+            else:
+                account_id = str(row[0]).strip()
+                account_name = str(row[1]).strip()
+            if not account_id or not account_name:
+                continue
+            name_to_ids.setdefault(account_name.casefold(), set()).add(account_id)
+
+        collision_names = {name for name, ids in name_to_ids.items() if len(ids) > 1}
+        name_to_id = {
+            name: next(iter(ids))
+            for name, ids in name_to_ids.items()
+            if len(ids) == 1
+        }
+        if collision_names:
+            logger.warning(
+                "CRM alias resync skipped %d display-name collision(s): %s",
+                len(collision_names),
+                sorted(collision_names)[:10],
+            )
+
+        aliases_upserted = 0
+        for row in project_rows or []:
+            if isinstance(row, dict):
+                account_id = str(row.get("crm_accountid") or "").strip()
+                account_name = str(row.get("crm_account_name") or "").strip()
+            else:
+                account_id = str(row[0]).strip()
+                account_name = str(row[1]).strip()
+            if not account_id or not account_name:
+                continue
+            if account_name.casefold() in collision_names:
+                continue
+            self._webui.execute(
+                smq.UPSERT_ALIAS_AUTO,
+                (account_id, account_name, account_name),
+            )
+            aliases_upserted += 1
+
+        orphans = self._webui.run_rows(smq.LIST_ORPHAN_SOURCE_MAPPINGS, ())
+        mappings_remapped = 0
+        seen_names: set[str] = set()
+        for row in orphans or []:
+            mapping_id = row.get("id")
+            old_account_id = str(row.get("crm_accountid") or "").strip()
+            account_name = str(row.get("crm_account_name") or "").strip()
+            if mapping_id is None or not account_name:
+                continue
+            if account_name.casefold() in collision_names:
+                logger.warning(
+                    "Skipping orphan remap for ambiguous display name: %s",
+                    account_name,
+                )
+                continue
+            new_account_id = name_to_id.get(account_name.casefold())
+            if not new_account_id:
+                resolved = self._run_row(
+                    cq.CRM_ACCOUNT_BY_DISPLAY_NAME,
+                    (account_name, account_name),
+                )
+                if resolved:
+                    if isinstance(resolved, dict):
+                        new_account_id = str(resolved.get("crm_accountid") or "").strip()
+                    else:
+                        new_account_id = str(resolved[0]).strip()
+            if not new_account_id or new_account_id == old_account_id:
+                continue
+            self._webui.execute(
+                smq.UPDATE_SOURCE_MAPPING_ACCOUNT,
+                (new_account_id, account_name, mapping_id),
+            )
+            mappings_remapped += 1
+            if account_name.casefold() not in seen_names:
+                self._webui.execute(
+                    smq.UPSERT_ALIAS_AUTO,
+                    (new_account_id, account_name, account_name),
+                )
+                seen_names.add(account_name.casefold())
+
+        self._account_ids_cache.clear()
+        boyner_result: dict[str, Any] | None = None
+        try:
+            boyner_result = self.seed_boyner_source_mappings()
+        except Exception as exc:
+            logger.warning("Boyner seed during CRM resync failed: %s", exc)
+
+        return {
+            "status": "ok",
+            "aliases_upserted": aliases_upserted,
+            "mappings_remapped": mappings_remapped,
+            "orphan_mappings_remaining": max(0, len(orphans or []) - mappings_remapped),
+            "name_collisions": sorted(collision_names),
+            "boyner_seed": boyner_result,
+        }
+
     def upsert_alias(
         self,
         crm_accountid: str,
