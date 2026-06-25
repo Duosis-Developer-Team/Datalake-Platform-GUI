@@ -85,7 +85,7 @@ _SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT",
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 6
+SELLABLE_PAYLOAD_VERSION: int = 7
 
 # Maps allocated_table → Redis section key for per-DC (dc_details) response.
 _VM_TABLE_DC_SECTION: dict[str, str] = {
@@ -501,6 +501,37 @@ class SellableService:
                 return conv
         return None
 
+    @staticmethod
+    def site_filter_pattern(panel_key: str) -> str | None:
+        """Fixed ILIKE pattern for site-scoped panels (not derived from infra DC code)."""
+        if panel_key.startswith("storage_s3_"):
+            site = panel_key[len("storage_s3_") :].strip().lower()
+            if site:
+                return f"%{site}%"
+        return None
+
+    @staticmethod
+    def _to_display_unit(
+        raw: float,
+        from_unit: str | None,
+        display_unit: str,
+        unit_lookup: dict[tuple[str, str], UnitConversion],
+        *,
+        panel_key: str,
+        side: str,
+        notes: list[str],
+    ) -> float:
+        """Convert raw datalake value to display_unit; fail-closed when conversion is missing."""
+        conv = SellableService._lookup_conversion(unit_lookup, from_unit, display_unit)
+        fu = (from_unit or "").strip().lower()
+        du = (display_unit or "").strip().lower()
+        if conv is None and fu and du and fu != du:
+            note = f"unit_conversion_missing: {from_unit}->{display_unit} ({side})"
+            notes.append(note)
+            logger.warning("SellableService: %s panel=%s", note, panel_key)
+            return 0.0
+        return convert_unit(raw, conv)
+
     def get_threshold(self, panel_key: str, resource_kind: str, dc_code: str = "*") -> float:
         if not self._webui.is_available:
             return DEFAULT_THRESHOLD_PCT
@@ -833,6 +864,7 @@ SELECT _tot, _alloc FROM latest
         dc_code: str,
         *,
         preloaded_dc_payload: "dict | None" = None,
+        filter_pattern_override: str | None = None,
     ) -> tuple[float, float]:
         """Return (total_raw, allocated_raw) in the InfraSource declared units.
 
@@ -844,6 +876,7 @@ SELECT _tot, _alloc FROM latest
         WebUI-aligned latest snapshot per (dc, datacenter) / (cluster, datacenter)
         — not a blind SUM over all history rows.
         """
+        filter_pattern = filter_pattern_override or self._dc_pattern(dc_code)
         if not src.source_table or not src.total_column:
             return 0.0, 0.0
         if src.manual_total is not None:
@@ -882,11 +915,11 @@ SELECT _tot, _alloc FROM latest
         where_alloc = ""
         total_table_bare = self._bare_table_name(src.source_table)
         if total_table_bare in ("ibm_server_general", "ibm_lpar_general"):
-            params = [self._dc_pattern(dc_code)]
+            params = [filter_pattern]
         elif src.filter_clause:
             cleaned = self._escape_filter_clause(src.filter_clause)
             where_total = f" WHERE {cleaned}"
-            params.append(self._dc_pattern(dc_code))
+            params.append(filter_pattern)
         try:
             total_sql, total_params = self._sum_sql(
                 column=src.total_column,
@@ -906,13 +939,15 @@ SELECT _tot, _alloc FROM latest
         alloc_table_bare = self._bare_table_name(src.allocated_table)
         alloc_from_redis = alloc_table_bare in _VM_TABLE_DC_SECTION
 
-        if src.allocated_table and src.allocated_column and not alloc_from_redis:
+        if src.allocated_table and src.allocated_column:
+            where_alloc = ""
+            alloc_params = []
             if alloc_table_bare in ("ibm_server_general", "ibm_lpar_general"):
-                alloc_params = [self._dc_pattern(dc_code)]
+                alloc_params = [filter_pattern]
             elif src.filter_clause:
                 cleaned = self._escape_filter_clause(src.filter_clause)
                 where_alloc = f" WHERE {cleaned}"
-                alloc_params.append(self._dc_pattern(dc_code))
+                alloc_params.append(filter_pattern)
             try:
                 alloc_sql, alloc_params = self._sum_sql(
                     column=src.allocated_column,
@@ -925,7 +960,7 @@ SELECT _tot, _alloc FROM latest
                     "SellableService: bad allocated_column for panel=%s",
                     src.panel_key,
                 )
-                return 0.0, 0.0
+                alloc_sql = None
 
         try:
             with self._svc._get_connection() as conn:
@@ -943,6 +978,21 @@ SELECT _tot, _alloc FROM latest
                 alloc_val = self._extract_allocated_from_payload(payload, src, dc_code)
             else:
                 alloc_val = self._fetch_allocated_from_redis(src, dc_code)
+            if alloc_val <= 0.0 and alloc_sql is not None:
+                try:
+                    with self._svc._get_connection() as conn:
+                        with conn.cursor() as cur:
+                            alloc_val = float(
+                                self._svc._run_value(cur, alloc_sql, tuple(alloc_params)) or 0.0
+                            )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "SellableService: datalake allocated SQL fallback failed "
+                        "(panel=%s, dc=%s, table=%s)",
+                        src.panel_key,
+                        dc_code,
+                        src.allocated_table,
+                    )
         elif alloc_sql is not None:
             try:
                 with self._svc._get_connection() as conn:
@@ -1499,6 +1549,13 @@ SELECT _tot, _alloc FROM latest
                     range_inputs=range_inputs if fam == "virt_classic" else None,
                 )
             elif fam in _HOST_BASED_FAMILIES and dc_code == "*":
+                logger.warning(
+                    "global inventory: host_rows unavailable for family=%s "
+                    "dc_codes=%s status=%s — aggregated fallback (dual-track qty may be empty)",
+                    fam,
+                    global_host_dcs,
+                    host_status,
+                )
                 refreshed = self._refresh_group_sellable_from_totals(
                     group, computation_mode="aggregated",
                 )
@@ -2186,6 +2243,7 @@ SELECT _tot, _alloc FROM latest
         price_overrides: "dict[str, float] | None" = None,
         compute_response_cache: "dict[tuple, dict | None] | None" = None,
         dc_payload: "dict | None" = None,
+        filter_pattern_override: str | None = None,
     ) -> PanelResult:
         unit_lookup = unit_lookup if unit_lookup is not None else self._build_unit_lookup()
         notes: list[str] = []
@@ -2247,16 +2305,14 @@ SELECT _tot, _alloc FROM latest
 
         if compute_metrics is not None:
             cap, used, source_unit = compute_metrics
-            conv = self._lookup_conversion(unit_lookup, source_unit, panel.display_unit)
-            du = (panel.display_unit or "").strip().lower()
-            if conv is None and source_unit.strip().lower() != du:
-                logger.warning(
-                    "SellableService: no gui_unit_conversion %r -> %r for panel=%s "
-                    "(cluster-aware path)",
-                    source_unit, panel.display_unit, panel.panel_key,
-                )
-            total_disp = convert_unit(cap, conv)
-            alloc_disp = convert_unit(used, conv)
+            total_disp = self._to_display_unit(
+                cap, source_unit, panel.display_unit, unit_lookup,
+                panel_key=panel.panel_key, side="total", notes=notes,
+            )
+            alloc_disp = self._to_display_unit(
+                used, source_unit, panel.display_unit, unit_lookup,
+                panel_key=panel.panel_key, side="allocated", notes=notes,
+            )
             has_infra = True
             util_pct = self._extract_utilization_pct(raw, panel.resource_kind)
             notes.append(
@@ -2272,34 +2328,27 @@ SELECT _tot, _alloc FROM latest
             # data so the legacy 2-arg signature stays backward-compatible
             # (an empty dict means "Redis cold AND HTTP fallback failed" — at
             # that point the per-panel path returns 0 anyway).
+            qa_kwargs: dict[str, Any] = {}
             if dc_payload:
+                qa_kwargs["preloaded_dc_payload"] = dc_payload
+            if filter_pattern_override is not None:
+                qa_kwargs["filter_pattern_override"] = filter_pattern_override
+            if qa_kwargs:
                 total_raw, alloc_raw = self._query_total_allocated(
-                    src, dc_code, preloaded_dc_payload=dc_payload,
+                    src, dc_code, **qa_kwargs,
                 )
             else:
                 total_raw, alloc_raw = self._query_total_allocated(src, dc_code)
             total_from = src.total_unit or panel.display_unit
             alloc_from = src.allocated_unit or src.total_unit or panel.display_unit
-            total_conv = self._lookup_conversion(unit_lookup, total_from, panel.display_unit)
-            alloc_conv = self._lookup_conversion(unit_lookup, alloc_from, panel.display_unit)
-            du = (panel.display_unit or "").strip().lower()
-            if total_conv is None and (total_from or "").strip().lower() != du:
-                logger.warning(
-                    "SellableService: no gui_unit_conversion %r -> %r for panel=%s — "
-                    "total stays in raw datalake units (sellable can be absurdly large vs UI capacity)",
-                    total_from,
-                    panel.display_unit,
-                    panel.panel_key,
-                )
-            if alloc_conv is None and (alloc_from or "").strip().lower() != du:
-                logger.warning(
-                    "SellableService: no gui_unit_conversion %r -> %r for panel=%s (allocated side)",
-                    alloc_from,
-                    panel.display_unit,
-                    panel.panel_key,
-                )
-            total_disp = convert_unit(total_raw, total_conv)
-            alloc_disp = convert_unit(alloc_raw, alloc_conv)
+            total_disp = self._to_display_unit(
+                total_raw, total_from, panel.display_unit, unit_lookup,
+                panel_key=panel.panel_key, side="total", notes=notes,
+            )
+            alloc_disp = self._to_display_unit(
+                alloc_raw, alloc_from, panel.display_unit, unit_lookup,
+                panel_key=panel.panel_key, side="allocated", notes=notes,
+            )
 
         if panel.family in _ALLOCATION_ONLY_FAMILIES and panel.resource_kind in ("ram", "storage"):
             util_pct = None
@@ -2615,6 +2664,57 @@ SELECT _tot, _alloc FROM latest
                 float(d["bottleneck_units"]) if d.get("bottleneck_units") is not None else None
             ),
             gate_blocked=bool(d.get("gate_blocked", False)),
+        )
+
+    def compute_site_scoped_panels(
+        self,
+        panel_keys: list[str] | None = None,
+        *,
+        force_recompute: bool = False,
+    ) -> list[PanelResult]:
+        """Compute site-scoped panels once with a fixed site filter (not per-infra-DC SUM)."""
+        if panel_keys is None:
+            if not self._webui or not self._webui.is_available:
+                panel_keys = []
+            else:
+                rows = self._webui.run_rows(sq.LIST_SITE_SCOPED_PANEL_KEYS)
+                panel_keys = [
+                    str(r["panel_key"]).strip()
+                    for r in rows
+                    if r.get("panel_key")
+                ]
+        if not panel_keys:
+            return []
+
+        defs_by_key = {d.panel_key: d for d in self.list_panel_defs()}
+        unit_lookup = self._build_unit_lookup()
+        infra_lookup = self._bulk_load_infra_sources("*")
+        threshold_lookup = self._bulk_load_thresholds("*")
+        price_overrides = self._bulk_load_price_overrides()
+
+        results: list[PanelResult] = []
+        for key in panel_keys:
+            panel_def = defs_by_key.get(key)
+            pattern = self.site_filter_pattern(key)
+            if not panel_def or not pattern:
+                continue
+            results.append(
+                self.compute_panel(
+                    panel_def,
+                    dc_code="*",
+                    unit_lookup=unit_lookup,
+                    infra_lookup=infra_lookup,
+                    threshold_lookup=threshold_lookup,
+                    price_overrides=price_overrides,
+                    filter_pattern_override=pattern,
+                )
+            )
+        if not results:
+            return []
+        return self._apply_family_constraints_to_results(
+            results,
+            "*",
+            skip_storage_range=True,
         )
 
     def compute_all_panels(

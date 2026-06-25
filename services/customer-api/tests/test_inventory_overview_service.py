@@ -442,3 +442,103 @@ def test_global_only_panel_not_summed_across_dcs():
     nb = next(p for p in payload["panels"] if p["panel_key"] == "backup_netbackup_storage")
     assert nb["total"] == 5000.0
     assert nb["used_qty"] == 1000.0
+
+
+def test_site_scoped_panels_not_summed_across_dcs():
+    """S3 site panels must be computed once via compute_site_scoped_panels, not N× per DC."""
+    sellable = MagicMock()
+    sellable.is_available = True
+
+    ank_site = _panel(
+        panel_key="storage_s3_ankara",
+        label="IBM ICOS S3 — Ankara",
+        family="storage_s3",
+        resource_kind="storage",
+        display_unit="TB",
+        total=100.0,
+        allocated=40.0,
+        sellable_constrained=50.0,
+        potential_tl=5000.0,
+        unit_price_tl=100.0,
+        computation_mode="aggregated",
+    )
+    ist_site = _panel(
+        panel_key="storage_s3_istanbul",
+        label="IBM ICOS S3 — Istanbul",
+        family="storage_s3",
+        resource_kind="storage",
+        display_unit="TB",
+        total=200.0,
+        allocated=80.0,
+        sellable_constrained=100.0,
+        potential_tl=10000.0,
+        unit_price_tl=100.0,
+        computation_mode="aggregated",
+    )
+
+    def _compute(dc_code="*", **kwargs):
+        if dc_code in ("ANK", "IST"):
+            return [
+                replace(ank_site, total=1000.0, allocated=400.0),
+                replace(ist_site, total=2000.0, allocated=800.0),
+            ]
+        return []
+
+    sellable.compute_all_panels.side_effect = _compute
+    sellable.compute_site_scoped_panels.return_value = [ank_site, ist_site]
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._count_unmapped_products.return_value = 0
+
+    sales = MagicMock()
+    sales._run_query.return_value = []
+
+    def _webui_rows_multi(sql: str):
+        if "FROM   gui_panel_infra_source" in sql and "DISTINCT dc_code" in sql:
+            return [{"dc_code": "ANK"}, {"dc_code": "IST"}]
+        if "NOT EXISTS" in sql and "filter_clause IS NULL" in sql:
+            return [{"panel_key": "backup_netbackup_storage"}]
+        if "storage_s3_%" in sql:
+            return [
+                {"panel_key": "storage_s3_ankara"},
+                {"panel_key": "storage_s3_istanbul"},
+            ]
+        return _webui_rows(sql)
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = _webui_rows_multi
+
+    config = MagicMock()
+    config.get_calc_dict.return_value = {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=webui,
+        config=config,
+        crm_redis=None,
+    )
+    payload = svc.compute_inventory_overview("*")
+    ank = next(p for p in payload["panels"] if p["panel_key"] == "storage_s3_ankara")
+    ist = next(p for p in payload["panels"] if p["panel_key"] == "storage_s3_istanbul")
+    assert ank["total"] == 100.0
+    assert ist["total"] == 200.0
+    assert ank["total"] != ist["total"]
+    sellable.compute_site_scoped_panels.assert_called_once()
+
+
+def test_assess_data_quality_flags_unit_conversion_missing():
+    from app.services.inventory_overview_service import _assess_data_quality
+
+    panel = PanelResult(
+        panel_key="virt_hyperconverged_cpu",
+        label="CPU",
+        family="virt_hyperconverged",
+        resource_kind="cpu",
+        display_unit="vCPU",
+        total=0.0,
+        allocated=0.0,
+        has_infra_source=True,
+        notes=["unit_conversion_missing: Hz->vCPU (total)"],
+    )
+    assert _assess_data_quality(panel, crm_sold=10.0) == "suspect"

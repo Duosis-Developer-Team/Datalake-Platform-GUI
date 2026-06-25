@@ -113,13 +113,13 @@ VALUES
     ('storage_s3_ankara', '*',
         'raw_s3icos_pool_metrics', 'total_capacity_bytes', 'bytes',
         'raw_s3icos_pool_metrics', 'used_capacity_bytes',  'bytes',
-        'site_name ILIKE :dc_pattern',
-        'Filter expects site=Ankara.', 'seed'),
+        'pool_name ILIKE :dc_pattern',
+        'Filter expects pool_name matching Ankara site.', 'seed'),
     ('storage_s3_istanbul', '*',
         'raw_s3icos_pool_metrics', 'total_capacity_bytes', 'bytes',
         'raw_s3icos_pool_metrics', 'used_capacity_bytes',  'bytes',
-        'site_name ILIKE :dc_pattern',
-        'Filter expects site=Istanbul.', 'seed')
+        'pool_name ILIKE :dc_pattern',
+        'Filter expects pool_name matching Istanbul site.', 'seed')
 ON CONFLICT (panel_key, dc_code) DO UPDATE SET
     source_table     = EXCLUDED.source_table,
     total_column     = EXCLUDED.total_column,

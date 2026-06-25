@@ -937,7 +937,9 @@ def test_dc_wide_compute_reads_total_from_redis_payload():
         "classic": {"cpu_cap": 500.0, "cpu_used": 200.0, "mem_cap": 1000.0, "mem_used": 400.0},
     }
     svc.list_panel_defs = lambda: [panel]  # type: ignore[method-assign]
-    svc.list_unit_conversions = lambda: [UnitConversion("GHz", "GHz", 1.0)]  # type: ignore[method-assign]
+    svc.list_unit_conversions = lambda: [  # type: ignore[method-assign]
+        UnitConversion("GHz", "vCPU", 8.0, "divide", True),
+    ]
     svc.list_ratios = lambda: [ResourceRatio(family="virt_classic", cpu_per_unit=1.0, ram_gb_per_unit=8.0, storage_gb_per_unit=100.0)]  # type: ignore[method-assign]
     svc.get_threshold = lambda *a, **kw: 80.0  # type: ignore[method-assign]
     svc.get_unit_price_tl = lambda pk: (100.0, True)  # type: ignore[method-assign]
@@ -948,7 +950,7 @@ def test_dc_wide_compute_reads_total_from_redis_payload():
     customer._get_connection = MagicMock()
     results = svc.compute_all_panels(dc_code="DC13", family="virt_classic")
     assert results
-    assert results[0].total == 500.0
+    assert results[0].total == 63.0  # 500 GHz -> vCPU (ceil 500/8)
     customer._get_connection.assert_not_called()
 
 
@@ -1723,3 +1725,44 @@ def test_dc_api_hosts_timeout_floor_for_full_dc_queries():
     assert SellableService._dc_api_hosts_timeout(None) >= 120.0
     assert SellableService._dc_api_hosts_timeout([]) >= 120.0
     assert SellableService._dc_api_hosts_timeout(["c1", "c2", "c3"]) >= 120.0
+
+
+def test_to_display_unit_fail_closed_without_conversion():
+    notes: list[str] = []
+    out = SellableService._to_display_unit(
+        5_684_291_000_000.0,
+        "Hz",
+        "vCPU",
+        {},
+        panel_key="virt_hyperconverged_cpu",
+        side="total",
+        notes=notes,
+    )
+    assert out == 0.0
+    assert any("unit_conversion_missing" in n for n in notes)
+
+
+def test_to_display_unit_applies_hz_to_vcpu():
+    notes: list[str] = []
+    lookup = {("Hz", "vCPU"): UnitConversion("Hz", "vCPU", 8.0e9, "divide", True)}
+    out = SellableService._to_display_unit(
+        8.0e9,
+        "Hz",
+        "vCPU",
+        lookup,
+        panel_key="virt_hyperconverged_cpu",
+        side="total",
+        notes=notes,
+    )
+    assert out == 1.0
+    assert not notes
+
+
+def test_site_filter_pattern_for_s3_panels():
+    assert SellableService.site_filter_pattern("storage_s3_ankara") == "%ankara%"
+    assert SellableService.site_filter_pattern("storage_s3_istanbul") == "%istanbul%"
+    assert SellableService.site_filter_pattern("virt_classic_cpu") is None
+
+
+def test_sellable_payload_version_bumped_for_data_accuracy():
+    assert SELLABLE_PAYLOAD_VERSION >= 7

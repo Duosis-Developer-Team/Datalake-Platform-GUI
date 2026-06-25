@@ -342,6 +342,16 @@ WHERE  s.dc_code = '*'
 ORDER BY s.panel_key;
 """
 
+# Site-specific panels (e.g. storage_s3_ankara) — must not be SUM-merged across infra DCs.
+LIST_SITE_SCOPED_PANEL_KEYS = """
+SELECT DISTINCT panel_key
+FROM   gui_panel_infra_source
+WHERE  filter_clause IS NOT NULL
+  AND  TRIM(filter_clause) != ''
+  AND  panel_key LIKE 'storage_s3_%'
+ORDER BY panel_key;
+"""
+
 # Best-matching infra source per panel_key for a given dc_code.
 # dc_code-specific rows win over wildcard ('*') rows (ORDER BY ... (dc_code='*') ASC → False < True).
 BULK_INFRA_SOURCES_FOR_DC = """

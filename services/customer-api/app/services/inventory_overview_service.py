@@ -152,6 +152,8 @@ def _assess_data_quality(
     """Return 'suspect' when merged infra numbers look inconsistent."""
     if not panel.has_infra_source:
         return None
+    if any("unit_conversion_missing" in (note or "") for note in (panel.notes or [])):
+        return "suspect"
     total = float(panel.total or 0.0)
     allocated = float(panel.allocated or 0.0)
     crm = max(float(crm_sold or 0.0), 1.0)
@@ -299,6 +301,17 @@ class InventoryOverviewService:
             if r.get("panel_key")
         )
 
+    def _load_site_scoped_panel_keys(self) -> frozenset[str]:
+        """Panels tied to a fixed site (e.g. storage_s3_ankara) — never SUM-merged per infra DC."""
+        if not self._webui or not self._webui.is_available:
+            return frozenset()
+        rows = self._webui.run_rows(sellable_sq.LIST_SITE_SCOPED_PANEL_KEYS)
+        return frozenset(
+            str(r["panel_key"]).strip()
+            for r in rows
+            if r.get("panel_key")
+        )
+
     def _load_sellable_panels(
         self,
         dc_code: str,
@@ -315,6 +328,7 @@ class InventoryOverviewService:
 
         dc_codes = self._list_infra_dc_codes()
         global_only_keys = self._load_global_only_panel_keys()
+        site_scoped_keys = self._load_site_scoped_panel_keys()
         if not dc_codes:
             return self._sellable.compute_all_panels(
                 dc_code="*",
@@ -333,6 +347,8 @@ class InventoryOverviewService:
                     continue
                 if panel.panel_key in global_only_keys:
                     continue
+                if panel.panel_key in site_scoped_keys:
+                    continue
                 merged[panel.panel_key] = _merge_panel_results(
                     merged.get(panel.panel_key),
                     panel,
@@ -350,10 +366,18 @@ class InventoryOverviewService:
                 elif key not in merged:
                     merged[key] = panel
                 continue
+            if key in site_scoped_keys:
+                continue
             if key not in merged:
                 merged[key] = panel
             elif panel.has_infra_source and not merged[key].has_infra_source:
                 merged[key] = _merge_panel_results(merged.get(key), panel)
+
+        for panel in self._sellable.compute_site_scoped_panels(
+            panel_keys=sorted(site_scoped_keys),
+            force_recompute=force_recompute,
+        ):
+            merged[panel.panel_key] = panel
 
         merged_list = list(merged.values())
         recomputed = self._sellable.recompute_family_constraints(
