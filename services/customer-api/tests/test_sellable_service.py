@@ -267,7 +267,7 @@ def test_sum_sql_netbackup_latest_per_pool_id():
         where_sql="",
         params=[],
     )
-    assert "DISTINCT ON (id)" in sql
+    assert "DISTINCT ON (netbackup_host, name)" in sql
     assert "_infra_nb.usablesizebytes" in sql
 
 
@@ -1817,4 +1817,51 @@ def test_site_filter_pattern_for_s3_panels():
 
 
 def test_sellable_payload_version_bumped_for_data_accuracy():
-    assert SELLABLE_PAYLOAD_VERSION >= 8
+    assert SELLABLE_PAYLOAD_VERSION >= 9
+
+
+def test_query_netbackup_storage_totals_pool_capacity_and_jobs_used():
+    svc_inner = MagicMock()
+    svc_inner._run_value.side_effect = [5_000_000_000_000.0, 128.0]
+    conn = MagicMock()
+    svc_inner._get_connection.return_value.__enter__ = MagicMock(return_value=conn)
+    svc_inner._get_connection.return_value.__exit__ = MagicMock(return_value=False)
+
+    sellable = SellableService.__new__(SellableService)
+    sellable._svc = svc_inner
+    src = InfraSource(
+        "backup_netbackup_storage",
+        "*",
+        "raw_netbackup_disk_pools_metrics",
+        "usablesizebytes",
+        "bytes",
+        "raw_netbackup_disk_pools_metrics",
+        "usedcapacitybytes",
+        "bytes",
+    )
+    total, used = sellable._query_netbackup_storage_totals(src, "*")
+    assert total == 5_000_000_000_000.0
+    assert used == 128.0 * (1024.0 ** 3)
+
+
+def test_netbackup_bytes_to_tb_magnitude_under_ceiling():
+    lookup = {
+        ("bytes", "TB"): UnitConversion(
+            "bytes", "TB", 1099511627776.0, "divide", False,
+        ),
+    }
+    notes: list[str] = []
+    # ~50 PiB raw pool capacity — should display well under 10^5 TB after grain fix scale
+    raw_bytes = 50.0 * 1099511627776.0
+    out = SellableService._to_display_unit(
+        raw_bytes,
+        "bytes",
+        "TB",
+        lookup,
+        panel_key="backup_netbackup_storage",
+        side="total",
+        notes=notes,
+    )
+    assert out < 100_000.0
+    assert out == pytest.approx(50.0)
+    assert not notes

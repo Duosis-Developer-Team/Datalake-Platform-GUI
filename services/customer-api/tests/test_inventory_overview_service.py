@@ -12,6 +12,7 @@ from app.services.inventory_overview_service import (
 )
 from app.utils.usage_comparison import (
     aggregate_entitled_by_panel_key,
+    merge_entitled_for_inventory_panel,
     normalize_entitled_qty,
     panel_inventory_status,
     panel_inventory_status_virt,
@@ -600,3 +601,248 @@ def test_inventory_uses_datacenter_codes_when_infra_bindings_wildcard_only():
     assert cpu["used_qty"] is None
     assert cpu["free_qty"] == 150.0
     sellable._fetch_datacenter_codes.assert_called_once()
+
+
+def test_merge_entitled_for_inventory_panel_classic_and_km():
+    entitled = {
+        "virt_classic_cpu": {
+            "panel_key": "virt_classic_cpu",
+            "entitled_qty": 100.0,
+            "entitled_amount_tl": 1000.0,
+            "product_ids": ["p1"],
+            "product_names": ["Classic CPU"],
+        },
+        "virt_km_cpu": {
+            "panel_key": "virt_km_cpu",
+            "entitled_qty": 20.0,
+            "entitled_amount_tl": 200.0,
+            "product_ids": ["p2"],
+            "product_names": ["KM CPU"],
+        },
+    }
+    merged = merge_entitled_for_inventory_panel(
+        "virt_classic_cpu",
+        entitled,
+        sub_panel_key="virt_km_cpu",
+        sub_bucket_name="km",
+    )
+    assert merged is not None
+    assert merged["entitled_qty"] == 120.0
+    assert merged["crm_sold_qty_general"] == 100.0
+    assert merged["crm_sold_qty_km"] == 20.0
+
+
+def test_inventory_merged_families_skip_km_infra_and_merge_crm():
+    sellable = MagicMock()
+    sellable.is_available = True
+
+    classic_cpu = _panel(
+        panel_key="virt_classic_cpu",
+        label="Classic CPU",
+        family="virt_classic",
+        total=500.0,
+        allocated=100.0,
+        sellable_constrained=200.0,
+        computation_mode="host_based",
+    )
+    km_cpu = _panel(
+        panel_key="virt_km_cpu",
+        label="KM CPU",
+        family="virt_km",
+        total=80.0,
+        allocated=20.0,
+        sellable_constrained=40.0,
+        computation_mode="aggregated",
+    )
+
+    sellable.compute_all_panels.return_value = [classic_cpu, km_cpu]
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._count_unmapped_products.return_value = 0
+
+    sales = MagicMock()
+    sales._run_query.return_value = [
+        {
+            "productid": "p-classic",
+            "product_name": "Classic CPU",
+            "entitled_qty": 100,
+            "entitled_amount_tl": 1000,
+            "resource_unit": "vCPU",
+        },
+        {
+            "productid": "p-km",
+            "product_name": "KM CPU",
+            "entitled_qty": 15,
+            "entitled_amount_tl": 150,
+            "resource_unit": "vCPU",
+        },
+    ]
+
+    def _webui_rows_merge(sql: str):
+        if "FROM   gui_panel_definition" in sql:
+            return [
+                {
+                    "panel_key": "virt_classic_cpu",
+                    "label": "Classic CPU",
+                    "family": "virt_classic",
+                    "resource_kind": "cpu",
+                    "display_unit": "vCPU",
+                },
+                {
+                    "panel_key": "virt_km_cpu",
+                    "label": "KM CPU",
+                    "family": "virt_km",
+                    "resource_kind": "cpu",
+                    "display_unit": "vCPU",
+                },
+            ]
+        if "gui_crm_service_mapping_seed" in sql:
+            return [
+                {
+                    "productid": "p-classic",
+                    "category_code": "virt_classic_cpu",
+                    "category_label": "Classic CPU",
+                    "resource_unit": "vCPU",
+                    "source": "yaml",
+                },
+                {
+                    "productid": "p-km",
+                    "category_code": "virt_km_cpu",
+                    "category_label": "KM CPU",
+                    "resource_unit": "vCPU",
+                    "source": "yaml",
+                },
+            ]
+        return _webui_rows(sql)
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = _webui_rows_merge
+
+    config = MagicMock()
+    config.get_calc_dict.return_value = {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=webui,
+        config=config,
+        crm_redis=None,
+    )
+    payload = svc.compute_inventory_overview("*")
+    panel_keys = [p["panel_key"] for p in payload["panels"]]
+    assert "virt_km_cpu" not in panel_keys
+    cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
+    assert cpu["crm_sold_qty"] == 115.0
+    assert cpu["crm_sold_qty_general"] == 100.0
+    assert cpu["crm_sold_qty_km"] == 15.0
+    family_keys = [f["family"] for f in payload["families"]]
+    assert "virt_km" not in family_keys
+    assert "virt_classic" in family_keys
+
+
+def test_inventory_merged_power_hana_crm_sub_bucket():
+    sellable = MagicMock()
+    sellable.is_available = True
+
+    power_cpu = _panel(
+        panel_key="virt_power_cpu",
+        label="Power CPU",
+        family="virt_power",
+        resource_kind="cpu",
+        display_unit="Core",
+        total=200.0,
+        allocated=50.0,
+        sellable_constrained=80.0,
+        computation_mode="aggregated",
+    )
+    hana_cpu = _panel(
+        panel_key="virt_power_hana_cpu",
+        label="Power HANA CPU",
+        family="virt_power_hana",
+        resource_kind="cpu",
+        display_unit="Core",
+        total=200.0,
+        allocated=50.0,
+        sellable_constrained=80.0,
+        computation_mode="aggregated",
+    )
+
+    sellable.compute_all_panels.return_value = [power_cpu, hana_cpu]
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._count_unmapped_products.return_value = 0
+
+    sales = MagicMock()
+    sales._run_query.return_value = [
+        {
+            "productid": "p-power",
+            "product_name": "Power CPU",
+            "entitled_qty": 40,
+            "entitled_amount_tl": 400,
+            "resource_unit": "Core",
+        },
+        {
+            "productid": "p-hana",
+            "product_name": "HANA CPU",
+            "entitled_qty": 10,
+            "entitled_amount_tl": 100,
+            "resource_unit": "Core",
+        },
+    ]
+
+    def _webui_rows_power(sql: str):
+        if "FROM   gui_panel_definition" in sql:
+            return [
+                {
+                    "panel_key": "virt_power_cpu",
+                    "label": "Power CPU",
+                    "family": "virt_power",
+                    "resource_kind": "cpu",
+                    "display_unit": "Core",
+                },
+                {
+                    "panel_key": "virt_power_hana_cpu",
+                    "label": "Power HANA CPU",
+                    "family": "virt_power_hana",
+                    "resource_kind": "cpu",
+                    "display_unit": "Core",
+                },
+            ]
+        if "gui_crm_service_mapping_seed" in sql:
+            return [
+                {
+                    "productid": "p-power",
+                    "category_code": "virt_power_cpu",
+                    "category_label": "Power CPU",
+                    "resource_unit": "Core",
+                    "source": "yaml",
+                },
+                {
+                    "productid": "p-hana",
+                    "category_code": "virt_power_hana_cpu",
+                    "category_label": "Power HANA CPU",
+                    "resource_unit": "Core",
+                    "source": "yaml",
+                },
+            ]
+        return _webui_rows(sql)
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = _webui_rows_power
+
+    config = MagicMock()
+    config.get_calc_dict.return_value = {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=webui,
+        config=config,
+        crm_redis=None,
+    )
+    payload = svc.compute_inventory_overview("*")
+    assert "virt_power_hana_cpu" not in [p["panel_key"] for p in payload["panels"]]
+    power = next(p for p in payload["panels"] if p["panel_key"] == "virt_power_cpu")
+    assert power["crm_sold_qty"] == 50.0
+    assert power["crm_sold_qty_hana"] == 10.0
+    assert "virt_power_hana" not in [f["family"] for f in payload["families"]]

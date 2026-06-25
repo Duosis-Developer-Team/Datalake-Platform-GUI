@@ -79,10 +79,10 @@ _SUBQUERY_S3_POOL_LATEST = """(
 ) AS _infra_s3"""
 
 _SUBQUERY_NETBACKUP_POOL_LATEST = """(
-    SELECT DISTINCT ON (id)
+    SELECT DISTINCT ON (netbackup_host, name)
         *
     FROM raw_netbackup_disk_pools_metrics
-    ORDER BY id, collection_timestamp DESC
+    ORDER BY netbackup_host, name, collection_timestamp DESC
 ) AS _infra_nb"""
 
 _SUBQUERY_VEEAM_REPO_LATEST = """(
@@ -120,7 +120,7 @@ _SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT",
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 8
+SELLABLE_PAYLOAD_VERSION: int = 9
 
 # Site-scoped S3 panels map to datalake pool_name prefixes (not city substrings).
 _SITE_SCOPED_PANEL_PATTERNS: dict[str, str] = {
@@ -934,6 +934,36 @@ SELECT _tot, _alloc FROM latest
                 used_gb += second
         return total_gb, used_gb
 
+    def _query_netbackup_storage_totals(
+        self,
+        src: InfraSource,
+        dc_code: str,
+    ) -> tuple[float, float]:
+        """NetBackup inventory totals aligned with Customer View backup semantics.
+
+        Total: sum of latest pool ``usablesizebytes`` per (netbackup_host, name).
+        Used: global post-dedup backup workload from jobs metrics (returned as bytes
+        so existing ``allocated_unit=bytes`` binding and TB display conversion apply).
+        """
+        del src, dc_code  # global panel; DC-scoped inventory uses wildcard merge only
+        _gib = 1024.0 ** 3
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    total_bytes = float(
+                        self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USABLE_BYTES, ()) or 0.0
+                    )
+                    used_gib = float(
+                        self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_JOBS_POST_DEDUP_GIB, ()) or 0.0
+                    )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "SellableService: NetBackup inventory aggregate failed (panel=%s)",
+                "backup_netbackup_storage",
+            )
+            return 0.0, 0.0
+        return total_bytes, used_gib * _gib
+
     def _query_total_allocated(
         self,
         src: InfraSource,
@@ -959,6 +989,8 @@ SELECT _tot, _alloc FROM latest
             return float(src.manual_total or 0.0), float(src.manual_allocated or 0.0)
         if self._bare_table_name(src.source_table) == "raw_ibm_storage_system":
             return self._query_ibm_storage_string_totals(src, dc_code)
+        if src.panel_key == "backup_netbackup_storage":
+            return self._query_netbackup_storage_totals(src, dc_code)
 
         payload = preloaded_dc_payload
         if payload is None and self._infra_uses_dc_redis_payload(src):

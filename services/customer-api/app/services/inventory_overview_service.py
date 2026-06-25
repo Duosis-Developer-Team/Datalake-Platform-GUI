@@ -18,6 +18,7 @@ from app.services.sellable_service import SellableService
 from app.services.webui_db import WebuiPool
 from app.utils.usage_comparison import (
     aggregate_entitled_by_panel_key,
+    merge_entitled_for_inventory_panel,
     panel_inventory_status,
     panel_inventory_status_virt,
 )
@@ -35,10 +36,27 @@ _ALLOC_ONLY_FAMILIES: frozenset[str] = frozenset({"virt_power", "virt_power_hana
 _INVENTORY_VIRT_FAMILIES: frozenset[str] = frozenset({
     "virt_classic",
     "virt_hyperconverged",
-    "virt_km",
     "virt_power",
-    "virt_power_hana",
 })
+
+# Sub-families merged into canonical inventory accordions (infra hidden; CRM sub-lines).
+_INVENTORY_SKIP_INFRA_PANEL_KEYS: frozenset[str] = frozenset({
+    "virt_km_cpu",
+    "virt_km_ram",
+    "virt_km_storage",
+    "virt_power_hana_cpu",
+    "virt_power_hana_ram",
+    "virt_power_hana_storage",
+})
+
+_INVENTORY_MERGED_CRM_SUB: dict[str, tuple[str, str]] = {
+    "virt_classic_cpu": ("virt_km_cpu", "km"),
+    "virt_classic_ram": ("virt_km_ram", "km"),
+    "virt_classic_storage": ("virt_km_storage", "km"),
+    "virt_power_cpu": ("virt_power_hana_cpu", "hana"),
+    "virt_power_ram": ("virt_power_hana_ram", "hana"),
+    "virt_power_storage": ("virt_power_hana_storage", "hana"),
+}
 
 _VIRT_FAMILY_LABELS: dict[str, str] = {
     "virt_classic": "Klasik Mimari",
@@ -604,6 +622,19 @@ class InventoryOverviewService:
                 else None
             )
         sellable_out = sellable if panel.has_infra_source else None
+        crm_fields: dict[str, Any] = {}
+        if entitled:
+            for key in (
+                "crm_sold_qty_general",
+                "crm_sold_qty_km",
+                "crm_sold_qty_hana",
+                "crm_sold_tl_general",
+                "crm_sold_tl_km",
+                "crm_sold_tl_hana",
+                "crm_sub_bucket",
+            ):
+                if key in entitled:
+                    crm_fields[key] = entitled[key]
         base = {
             "panel_key": panel.panel_key,
             "label": service_label,
@@ -626,6 +657,7 @@ class InventoryOverviewService:
             "inventory_hide_used": hide_used,
             "data_quality": _assess_data_quality(panel, crm_sold=crm_sold),
             **_sellable_track_fields(panel, has_infra=panel.has_infra_source, hide_used=hide_used),
+            **crm_fields,
         }
         return self._enrich_row(
             base,
@@ -723,10 +755,23 @@ class InventoryOverviewService:
         seen_panels: set[str] = set()
 
         for panel in panels:
+            if panel.panel_key in _INVENTORY_SKIP_INFRA_PANEL_KEYS:
+                continue
             seen_panels.add(panel.panel_key)
+            merge_cfg = _INVENTORY_MERGED_CRM_SUB.get(panel.panel_key)
+            if merge_cfg:
+                sub_key, sub_name = merge_cfg
+                entitled = merge_entitled_for_inventory_panel(
+                    panel.panel_key,
+                    entitled_by_panel,
+                    sub_panel_key=sub_key,
+                    sub_bucket_name=sub_name,
+                )
+            else:
+                entitled = entitled_by_panel.get(panel.panel_key)
             row = self._build_panel_row(
                 panel,
-                entitled_by_panel.get(panel.panel_key),
+                entitled,
                 panel_defs=panel_defs,
                 service_pages=service_pages,
                 under_pct=under_pct,
@@ -738,6 +783,10 @@ class InventoryOverviewService:
 
         for panel_key, bucket in entitled_by_panel.items():
             if panel_key in seen_panels:
+                continue
+            if panel_key in _INVENTORY_SKIP_INFRA_PANEL_KEYS:
+                continue
+            if panel_key in {pair[0] for pair in _INVENTORY_MERGED_CRM_SUB.values()}:
                 continue
             row = self._build_entitled_only_row(
                 panel_key,
@@ -754,7 +803,10 @@ class InventoryOverviewService:
         for row in panel_rows:
             if row.get("infra_binding") == "crm_only":
                 continue
-            families_map[str(row.get("family") or "other")].append(row)
+            family_key = str(row.get("family") or "other")
+            if family_key in ("virt_km", "virt_power_hana"):
+                continue
+            families_map[family_key].append(row)
 
         families_out: list[dict[str, Any]] = []
         for family_key, rows in families_map.items():

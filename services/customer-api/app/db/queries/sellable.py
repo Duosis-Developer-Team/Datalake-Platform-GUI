@@ -414,6 +414,28 @@ DELETE FROM gui_panel_result_snapshot
 WHERE  (%s IS NULL OR dc_code = %s);
 """
 
+# NetBackup inventory — pool capacity (latest per host+name) and jobs post-dedup used (GiB).
+GLOBAL_NETBACKUP_POOL_USABLE_BYTES = """
+SELECT COALESCE(SUM(usablesizebytes), 0)
+FROM (
+    SELECT DISTINCT ON (netbackup_host, name)
+        usablesizebytes
+    FROM public.raw_netbackup_disk_pools_metrics
+    ORDER BY netbackup_host, name, collection_timestamp DESC
+) AS latest_pools
+"""
+
+GLOBAL_NETBACKUP_JOBS_POST_DEDUP_GIB = """
+SELECT COALESCE(
+    SUM(kilobytestransferred / NULLIF(dedupratio, 0))
+    / 1024.0 / 1024.0 / 1024.0,
+    0
+)
+FROM public.raw_netbackup_jobs_metrics
+WHERE jobtype = 'BACKUP'
+  AND percentcomplete = 100
+"""
+
 GET_LATEST_SNAPSHOT_META = """
 SELECT dc_code, family, clusters_csv, computed_at
 FROM   gui_panel_result_snapshot

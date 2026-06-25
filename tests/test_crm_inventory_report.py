@@ -116,3 +116,30 @@ def test_build_report_body_family_sections():
     }
     body = build_report_body(payload, filter_mode="all")
     assert len(body) >= 1
+
+
+def test_prepare_service_row_crm_sub_line_km():
+    row = prepare_service_row(_sample_row(
+        crm_sold_qty=440.0,
+        crm_sold_qty_general=440.0,
+        crm_sold_qty_km=12.0,
+        crm_sold_tl=660000.0,
+        inventory_hide_used=True,
+    ))
+    assert "440 vCPU" in row["crm_sold_fmt"]
+    assert "(KM: 12 vCPU)" in row["crm_sold_fmt"]
+    assert "660,000 TL" in row["crm_sold_fmt"]
+
+
+def test_prepare_service_row_crm_sub_line_hana():
+    row = prepare_service_row(_sample_row(
+        family="virt_power",
+        display_unit="Core",
+        crm_sold_qty=80.0,
+        crm_sold_qty_general=50.0,
+        crm_sold_qty_hana=30.0,
+        crm_sold_tl=120000.0,
+        sellable_profile="allocation_only",
+        inventory_hide_used=True,
+    ))
+    assert "(HANA: 30 Core)" in row["crm_sold_fmt"]

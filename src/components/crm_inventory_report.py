@@ -30,9 +30,7 @@ _VIRT_BASE_COLUMNS = [
 _INVENTORY_VIRT_FAMILIES = frozenset({
     "virt_classic",
     "virt_hyperconverged",
-    "virt_km",
     "virt_power",
-    "virt_power_hana",
 })
 
 _DUAL_TRACK_COLUMNS = [
@@ -108,6 +106,22 @@ def _fmt_qty(value: Any, unit: str) -> str:
         return "—"
 
 
+def _fmt_crm_sold_block(row: dict[str, Any], unit: str, crm_sold_tl: Any) -> str:
+    """Format CRM Sold with optional KM/HANA sub-product line."""
+    sub_qty_km = row.get("crm_sold_qty_km")
+    sub_qty_hana = row.get("crm_sold_qty_hana")
+    if sub_qty_km is None and sub_qty_hana is None:
+        return shared.fmt_qty_tl_block(
+            row.get("crm_sold_qty"), unit, crm_sold_tl,
+        )
+    sub_label = "KM" if sub_qty_km is not None else "HANA"
+    sub_qty = sub_qty_km if sub_qty_km is not None else sub_qty_hana
+    qty_line = shared.fmt_unit(row.get("crm_sold_qty"), unit)
+    sub_line = f"({sub_label}: {shared.fmt_unit(sub_qty, unit)})"
+    tl_line = shared.fmt_tl(crm_sold_tl) if crm_sold_tl is not None else "—"
+    return f"{qty_line}\n{sub_line}\n{tl_line}"
+
+
 def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
     unit = str(row.get("display_unit") or "")
     status = str(row.get("status") or "no_usage")
@@ -136,9 +150,7 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "family_label": row.get("family_label") or row.get("family") or "",
         "display_unit": unit,
         "total_fmt": _fmt_qty(row.get("total"), unit) if has_infra else "—",
-        "crm_sold_fmt": shared.fmt_qty_tl_block(
-            row.get("crm_sold_qty"), unit, crm_sold_tl,
-        ),
+        "crm_sold_fmt": _fmt_crm_sold_block(row, unit, crm_sold_tl),
         "used_fmt": (
             "—\n—"
             if hide_used

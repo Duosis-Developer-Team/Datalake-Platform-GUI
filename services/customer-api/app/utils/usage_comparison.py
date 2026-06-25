@@ -191,6 +191,46 @@ def aggregate_entitled_by_panel_key(
     return agg
 
 
+def merge_entitled_for_inventory_panel(
+    canonical_panel_key: str,
+    entitled_by_panel: dict[str, dict[str, Any]],
+    *,
+    sub_panel_key: str | None,
+    sub_bucket_name: str,
+) -> dict[str, Any] | None:
+    """Merge canonical + sub-family CRM buckets for merged inventory accordions."""
+    main = entitled_by_panel.get(canonical_panel_key)
+    sub = entitled_by_panel.get(sub_panel_key) if sub_panel_key else None
+    if not main and not sub:
+        return None
+
+    general_qty = float((main or {}).get("entitled_qty") or 0.0)
+    sub_qty = float((sub or {}).get("entitled_qty") or 0.0)
+    general_tl = float((main or {}).get("entitled_amount_tl") or 0.0)
+    sub_tl = float((sub or {}).get("entitled_amount_tl") or 0.0)
+
+    product_ids: set[str] = set()
+    product_names: set[str] = set()
+    for bucket in (main, sub):
+        if not bucket:
+            continue
+        product_ids.update(str(pid) for pid in (bucket.get("product_ids") or []) if pid)
+        product_names.update(str(n) for n in (bucket.get("product_names") or []) if n)
+
+    base = dict(main or sub or {})
+    base["panel_key"] = canonical_panel_key
+    base["entitled_qty"] = general_qty + sub_qty
+    base["entitled_amount_tl"] = general_tl + sub_tl
+    base["crm_sold_qty_general"] = general_qty
+    base[f"crm_sold_qty_{sub_bucket_name}"] = sub_qty
+    base["crm_sold_tl_general"] = general_tl
+    base[f"crm_sold_tl_{sub_bucket_name}"] = sub_tl
+    base["crm_sub_bucket"] = sub_bucket_name
+    base["product_ids"] = sorted(product_ids)
+    base["product_names"] = sorted(product_names)
+    return base
+
+
 def resolve_unit_price_tl(
     *,
     category_code: str,
