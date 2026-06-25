@@ -219,7 +219,14 @@ JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
 LEFT JOIN discovery_crm_products p ON p.productid = d.productid
 WHERE  so.statecode IN (0, 1, 3, 4)
   AND  d.productid != ALL(%s::text[])
-GROUP BY d.productid, product_name, resource_unit
+GROUP BY
+    d.productid,
+    COALESCE(
+        NULLIF(TRIM(d.product_name), ''),
+        NULLIF(TRIM(p.name), ''),
+        d.productid
+    ),
+    COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet')
 HAVING SUM(d.quantity) > 0
 ORDER BY entitled_amount_tl DESC NULLS LAST;
 """
