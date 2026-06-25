@@ -174,15 +174,20 @@ def aggregate_entitled_by_panel_key(
                 "entitled_qty": 0.0,
                 "entitled_amount_tl": 0.0,
                 "product_ids": set(),
+                "product_names": set(),
             },
         )
         bucket["entitled_qty"] += norm_qty
         bucket["entitled_amount_tl"] += float(row.get("entitled_amount_tl") or 0)
         if pid:
             bucket["product_ids"].add(pid)
+        pname = str(row.get("product_name") or "").strip()
+        if pname:
+            bucket["product_names"].add(pname)
 
     for bucket in agg.values():
         bucket["product_ids"] = list(bucket["product_ids"])
+        bucket["product_names"] = sorted(bucket["product_names"])
     return agg
 
 

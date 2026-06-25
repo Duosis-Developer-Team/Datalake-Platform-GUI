@@ -8,6 +8,7 @@ from collections import defaultdict
 from typing import Any
 
 from app.db.queries import crm_sales as sq
+from app.db.queries import sellable as sellable_sq
 from app.db.queries import service_mapping as smq
 from app.services.crm_config_service import CrmConfigService
 from app.services.sales_service import SalesService
@@ -23,6 +24,58 @@ logger = logging.getLogger(__name__)
 
 _INVENTORY_CACHE_TTL_SEC = 300.0
 _INVENTORY_REDIS_PREFIX = "crm:inventory_overview:"
+
+_VIRT_FAMILY_LABELS: dict[str, str] = {
+    "virt_classic": "Klasik Mimari",
+    "virt_hyperconverged": "Hyperconverged",
+    "virt_power": "Power",
+    "virt_power_hana": "Power HANA",
+    "virt_intel_hana": "Intel HANA",
+}
+
+_RESOURCE_SUFFIXES = ("_cpu", "_ram", "_storage")
+
+
+def _humanize_token(value: str) -> str:
+    return (value or "").replace("_", " ").replace(".", " ").strip().title()
+
+
+def _infer_family_key(panel_key: str, panel_defs: dict[str, dict[str, Any]]) -> str:
+    if panel_key in panel_defs:
+        return str(panel_defs[panel_key].get("family") or panel_key)
+    for suffix in _RESOURCE_SUFFIXES:
+        if panel_key.endswith(suffix):
+            return panel_key[: -len(suffix)]
+    return panel_key
+
+
+def _family_label(
+    family_key: str,
+    *,
+    service_label: str,
+    gui_tab_binding: str | None,
+) -> str:
+    if family_key in _VIRT_FAMILY_LABELS:
+        return _VIRT_FAMILY_LABELS[family_key]
+    if " — " in service_label:
+        return service_label.split(" — ", 1)[0].strip()
+    if gui_tab_binding:
+        parts = [p for p in gui_tab_binding.split(".") if p]
+        if len(parts) >= 2:
+            return _humanize_token(parts[-1])
+        if parts:
+            return _humanize_token(parts[0])
+    return _humanize_token(family_key)
+
+
+def _crm_product_names_summary(names: list[str] | None, limit: int = 3) -> str:
+    items = [n for n in (names or []) if n]
+    if not items:
+        return ""
+    if len(items) <= limit:
+        return ", ".join(items)
+    rest = len(items) - limit
+    return f"{', '.join(items[:limit])} (+{rest} more)"
 
 
 class InventoryOverviewService:
@@ -43,6 +96,8 @@ class InventoryOverviewService:
         self._config = config or CrmConfigService(webui)
         self._crm_redis = crm_redis
         self._mapping_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
+        self._pages_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
+        self._panel_defs_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
 
     def is_available(self) -> bool:
         return self._sellable.is_available
@@ -58,6 +113,28 @@ class InventoryOverviewService:
         self._mapping_cache = (now, mapping)
         return mapping
 
+    def _load_service_pages(self) -> dict[str, dict[str, Any]]:
+        now = time.perf_counter()
+        if self._pages_cache and (now - self._pages_cache[0]) < 120.0:
+            return self._pages_cache[1]
+        if not self._webui or not self._webui.is_available:
+            return {}
+        rows = self._webui.run_rows(smq.LIST_SERVICE_PAGES)
+        pages = {str(r["page_key"]): r for r in rows if r.get("page_key")}
+        self._pages_cache = (now, pages)
+        return pages
+
+    def _load_panel_defs(self) -> dict[str, dict[str, Any]]:
+        now = time.perf_counter()
+        if self._panel_defs_cache and (now - self._panel_defs_cache[0]) < 120.0:
+            return self._panel_defs_cache[1]
+        if not self._webui or not self._webui.is_available:
+            return {}
+        rows = self._webui.run_rows(sellable_sq.LIST_PANEL_DEFS)
+        defs = {str(r["panel_key"]): r for r in rows if r.get("panel_key")}
+        self._panel_defs_cache = (now, defs)
+        return defs
+
     def _mapped_product_ids(self, mapping: dict[str, dict[str, Any]]) -> list[str]:
         return [
             pid
@@ -68,11 +145,78 @@ class InventoryOverviewService:
     def _panel_unit_index(self, panels: list[PanelResult]) -> dict[str, str]:
         return {p.panel_key: p.display_unit for p in panels if p.panel_key}
 
+    def _resolve_labels(
+        self,
+        panel_key: str,
+        *,
+        panel: PanelResult | None,
+        entitled: dict[str, Any] | None,
+        panel_defs: dict[str, dict[str, Any]],
+        service_pages: dict[str, dict[str, Any]],
+    ) -> tuple[str, str, str, str | None]:
+        page = service_pages.get(panel_key) or {}
+        pdef = panel_defs.get(panel_key) or {}
+        service_label = (
+            page.get("category_label")
+            or (entitled or {}).get("category_label")
+            or (panel.label if panel else None)
+            or pdef.get("label")
+            or panel_key
+        )
+        family_key = (
+            (panel.family if panel else None)
+            or pdef.get("family")
+            or _infer_family_key(panel_key, panel_defs)
+        )
+        family_key = str(family_key or panel_key)
+        gui_tab = page.get("gui_tab_binding")
+        family_label = _family_label(
+            family_key,
+            service_label=str(service_label),
+            gui_tab_binding=str(gui_tab) if gui_tab else None,
+        )
+        display_unit = (
+            (panel.display_unit if panel else None)
+            or pdef.get("display_unit")
+            or page.get("resource_unit")
+            or (entitled or {}).get("resource_unit")
+            or "Adet"
+        )
+        return str(service_label), family_key, family_label, str(display_unit)
+
+    def _enrich_row(
+        self,
+        base: dict[str, Any],
+        *,
+        service_label: str,
+        family_key: str,
+        family_label: str,
+        entitled: dict[str, Any] | None,
+        panel: PanelResult | None,
+    ) -> dict[str, Any]:
+        product_names = list((entitled or {}).get("product_names") or [])
+        has_infra = bool(base.get("has_infra_source"))
+        infra_binding = "bound" if has_infra else "crm_only"
+        row = {
+            **base,
+            "service_label": service_label,
+            "family": family_key,
+            "family_label": family_label,
+            "label": service_label,
+            "crm_product_names": product_names,
+            "crm_products_summary": _crm_product_names_summary(product_names),
+            "infra_binding": infra_binding,
+            "computation_mode": panel.computation_mode if panel else None,
+        }
+        return row
+
     def _build_panel_row(
         self,
         panel: PanelResult,
         entitled: dict[str, Any] | None,
         *,
+        panel_defs: dict[str, dict[str, Any]],
+        service_pages: dict[str, dict[str, Any]],
         under_pct: float,
         over_pct: float,
     ) -> dict[str, Any]:
@@ -83,6 +227,7 @@ class InventoryOverviewService:
         total = float(panel.total or 0.0) if panel.has_infra_source else None
         used_out = used if panel.has_infra_source else None
         sellable_out = sellable if panel.has_infra_source else None
+        free_out = max(float(total or 0) - used, 0.0) if panel.has_infra_source and total is not None else None
         status = panel_inventory_status(
             crm_sold_qty=crm_sold,
             used_qty=used if panel.has_infra_source else 0.0,
@@ -92,17 +237,25 @@ class InventoryOverviewService:
         )
         delta = (used - crm_sold) if panel.has_infra_source else None
         overage = max(0.0, used - crm_sold) if panel.has_infra_source else 0.0
-        return {
+        service_label, family_key, family_label, display_unit = self._resolve_labels(
+            panel.panel_key,
+            panel=panel,
+            entitled=entitled,
+            panel_defs=panel_defs,
+            service_pages=service_pages,
+        )
+        base = {
             "panel_key": panel.panel_key,
-            "label": panel.label,
-            "family": panel.family,
+            "label": service_label,
+            "family": family_key,
             "resource_kind": panel.resource_kind,
-            "display_unit": panel.display_unit,
+            "display_unit": display_unit,
             "total": total,
             "crm_sold_qty": crm_sold,
             "crm_sold_tl": crm_sold_tl,
             "used_qty": used_out,
             "sellable_qty": sellable_out,
+            "free_qty": free_out,
             "potential_tl": panel.potential_tl,
             "has_infra_source": panel.has_infra_source,
             "has_price": panel.has_price,
@@ -111,6 +264,58 @@ class InventoryOverviewService:
             "overage_qty": overage if panel.has_infra_source else 0.0,
             "efficiency_pct": round((used / crm_sold) * 100.0, 2) if crm_sold > 0 and panel.has_infra_source else None,
         }
+        return self._enrich_row(
+            base,
+            service_label=service_label,
+            family_key=family_key,
+            family_label=family_label,
+            entitled=entitled,
+            panel=panel,
+        )
+
+    def _build_entitled_only_row(
+        self,
+        panel_key: str,
+        bucket: dict[str, Any],
+        *,
+        panel_defs: dict[str, dict[str, Any]],
+        service_pages: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        service_label, family_key, family_label, display_unit = self._resolve_labels(
+            panel_key,
+            panel=None,
+            entitled=bucket,
+            panel_defs=panel_defs,
+            service_pages=service_pages,
+        )
+        base = {
+            "panel_key": panel_key,
+            "label": service_label,
+            "family": family_key,
+            "resource_kind": (panel_defs.get(panel_key) or {}).get("resource_kind") or "other",
+            "display_unit": display_unit,
+            "total": None,
+            "crm_sold_qty": float(bucket.get("entitled_qty") or 0.0),
+            "crm_sold_tl": float(bucket.get("entitled_amount_tl") or 0.0),
+            "used_qty": None,
+            "sellable_qty": None,
+            "free_qty": None,
+            "potential_tl": 0.0,
+            "has_infra_source": False,
+            "has_price": False,
+            "status": "crm_only",
+            "delta_used_vs_crm": None,
+            "overage_qty": 0.0,
+            "efficiency_pct": None,
+        }
+        return self._enrich_row(
+            base,
+            service_label=service_label,
+            family_key=family_key,
+            family_label=family_label,
+            entitled=bucket,
+            panel=None,
+        )
 
     def compute_inventory_overview(
         self,
@@ -131,6 +336,8 @@ class InventoryOverviewService:
         under_pct = float(calc.get("efficiency.under_pct", 80.0))
         over_pct = float(calc.get("efficiency.over_pct", 110.0))
 
+        panel_defs = self._load_panel_defs()
+        service_pages = self._load_service_pages()
         panels = self._sellable.compute_all_panels(dc_code=dc_code or "*")
         mapping = self._load_product_mapping()
         panel_units = self._panel_unit_index(panels)
@@ -149,67 +356,49 @@ class InventoryOverviewService:
             row = self._build_panel_row(
                 panel,
                 entitled_by_panel.get(panel.panel_key),
+                panel_defs=panel_defs,
+                service_pages=service_pages,
                 under_pct=under_pct,
                 over_pct=over_pct,
             )
             panel_rows.append(row)
-            if row["status"] == "crm_only":
+            if row.get("infra_binding") == "crm_only":
                 crm_only_panels.append(row)
 
         for panel_key, bucket in entitled_by_panel.items():
             if panel_key in seen_panels:
                 continue
-            row = {
-                "panel_key": panel_key,
-                "label": bucket.get("category_label") or panel_key,
-                "family": panel_key.split("_")[0] if "_" in panel_key else "other",
-                "resource_kind": "other",
-                "display_unit": bucket.get("resource_unit") or "Adet",
-                "total": None,
-                "crm_sold_qty": float(bucket.get("entitled_qty") or 0.0),
-                "crm_sold_tl": float(bucket.get("entitled_amount_tl") or 0.0),
-                "used_qty": None,
-                "sellable_qty": None,
-                "potential_tl": 0.0,
-                "has_infra_source": False,
-                "has_price": False,
-                "status": "crm_only",
-                "delta_used_vs_crm": None,
-                "overage_qty": 0.0,
-                "efficiency_pct": None,
-            }
+            row = self._build_entitled_only_row(
+                panel_key,
+                bucket,
+                panel_defs=panel_defs,
+                service_pages=service_pages,
+            )
             panel_rows.append(row)
             crm_only_panels.append(row)
 
-        panel_rows.sort(key=lambda r: (-float(r.get("crm_sold_tl") or 0), r.get("panel_key") or ""))
+        panel_rows.sort(key=lambda r: (-float(r.get("crm_sold_tl") or 0), r.get("service_label") or ""))
 
         families_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in panel_rows:
+            if row.get("infra_binding") == "crm_only":
+                continue
             families_map[str(row.get("family") or "other")].append(row)
 
         families_out: list[dict[str, Any]] = []
-        for family, rows in families_map.items():
-            label = rows[0].get("label", "").split(" — ")[0] if rows else family
-            crm_by_kind: dict[str, float] = defaultdict(float)
-            used_by_kind: dict[str, float] = defaultdict(float)
-            sellable_by_kind: dict[str, float] = defaultdict(float)
-            for r in rows:
-                kind = str(r.get("resource_kind") or "other")
-                crm_by_kind[kind] += float(r.get("crm_sold_qty") or 0.0)
-                if r.get("used_qty") is not None:
-                    used_by_kind[kind] += float(r.get("used_qty") or 0.0)
-                if r.get("sellable_qty") is not None:
-                    sellable_by_kind[kind] += float(r.get("sellable_qty") or 0.0)
+        for family_key, rows in families_map.items():
+            family_label = rows[0].get("family_label") or family_key if rows else family_key
+            rows_sorted = sorted(rows, key=lambda r: r.get("service_label") or "")
             families_out.append({
-                "family": family,
-                "label": label or family,
+                "family": family_key,
+                "label": family_label,
+                "family_label": family_label,
                 "dc_code": dc_code or "*",
-                "crm_sold_by_kind": dict(crm_by_kind),
-                "used_by_kind": dict(used_by_kind),
-                "sellable_by_kind": dict(sellable_by_kind),
-                "panels": rows,
+                "panels": rows_sorted,
+                "panel_count": len(rows_sorted),
+                "has_infra": any(r.get("has_infra_source") for r in rows_sorted),
             })
-        families_out.sort(key=lambda f: -sum(float(p.get("crm_sold_tl") or 0) for p in f.get("panels") or []))
+        families_out.sort(key=lambda f: (f.get("family_label") or f.get("family") or "").lower())
 
         mapped_ids = self._mapped_product_ids(mapping)
         bind_ids = mapped_ids if mapped_ids else ["__none__"]
@@ -232,7 +421,7 @@ class InventoryOverviewService:
             "overage_panel_count": overage_count,
             "unsold_usage_count": unsold_count,
             "total_potential_tl": sum(float(r.get("potential_tl") or 0) for r in panel_rows),
-            "note": "Capacity units are heterogeneous across panels; compare quantities in the panel table.",
+            "note": "Capacity units are heterogeneous across panels; compare quantities in the service list.",
         }
 
         payload = {
@@ -240,7 +429,10 @@ class InventoryOverviewService:
             "summary": summary,
             "families": families_out,
             "panels": panel_rows,
-            "crm_only_panels": crm_only_panels,
+            "crm_only_panels": sorted(
+                crm_only_panels,
+                key=lambda r: r.get("service_label") or r.get("panel_key") or "",
+            ),
             "unmapped_products": unmapped_products,
         }
 
