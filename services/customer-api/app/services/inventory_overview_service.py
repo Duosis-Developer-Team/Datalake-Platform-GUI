@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from app.db.queries import crm_sales as sq
@@ -25,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 _INVENTORY_CACHE_TTL_SEC = 300.0
 _INVENTORY_REDIS_PREFIX = "crm:inventory_overview:"
+_INVENTORY_DC_PARALLELISM = max(1, int(os.getenv("INVENTORY_DC_PARALLELISM", "4") or "4"))
 
 _HOST_DUAL_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_hyperconverged"})
 _ALLOC_ONLY_FAMILIES: frozenset[str] = frozenset({"virt_power", "virt_power_hana"})
@@ -354,11 +357,9 @@ class InventoryOverviewService:
             )
 
         merged: dict[str, PanelResult] = {}
-        for code in dc_codes:
-            for panel in self._sellable.compute_all_panels(
-                dc_code=code,
-                force_recompute=force_recompute,
-            ):
+
+        def _ingest_dc_panels(panels: list[PanelResult]) -> None:
+            for panel in panels:
                 if not panel.has_infra_source:
                     if panel.panel_key not in merged:
                         merged[panel.panel_key] = panel
@@ -372,10 +373,46 @@ class InventoryOverviewService:
                     panel,
                 )
 
-        wildcard_panels = self._sellable.compute_all_panels(
-            dc_code="*",
-            force_recompute=force_recompute,
-        )
+        worker_count = min(_INVENTORY_DC_PARALLELISM, len(dc_codes))
+        if worker_count <= 1:
+            for code in dc_codes:
+                _ingest_dc_panels(
+                    self._sellable.compute_all_panels(
+                        dc_code=code,
+                        force_recompute=force_recompute,
+                    )
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = {
+                    executor.submit(
+                        self._sellable.compute_all_panels,
+                        dc_code=code,
+                        force_recompute=force_recompute,
+                    ): code
+                    for code in dc_codes
+                }
+                for future in as_completed(futures):
+                    code = futures[future]
+                    try:
+                        _ingest_dc_panels(future.result())
+                    except Exception:
+                        logger.exception(
+                            "inventory overview: per-DC sellable compute failed dc=%s",
+                            code,
+                        )
+
+        if global_only_keys:
+            wildcard_panels = [
+                panel
+                for panel in self._sellable.compute_all_panels(
+                    dc_code="*",
+                    force_recompute=force_recompute,
+                )
+                if panel.panel_key in global_only_keys
+            ]
+        else:
+            wildcard_panels = []
         for panel in wildcard_panels:
             key = panel.panel_key
             if key in global_only_keys:

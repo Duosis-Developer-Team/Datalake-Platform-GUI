@@ -1759,8 +1759,8 @@ def test_to_display_unit_applies_hz_to_vcpu():
 
 
 def test_site_filter_pattern_for_s3_panels():
-    assert SellableService.site_filter_pattern("storage_s3_ankara") == "%ankara%"
-    assert SellableService.site_filter_pattern("storage_s3_istanbul") == "%istanbul%"
+    assert SellableService.site_filter_pattern("storage_s3_ankara") == "%DC14%"
+    assert SellableService.site_filter_pattern("storage_s3_istanbul") == "%DC13%"
     assert SellableService.site_filter_pattern("virt_classic_cpu") is None
 
 

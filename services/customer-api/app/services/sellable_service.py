@@ -87,6 +87,12 @@ _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
 SELLABLE_PAYLOAD_VERSION: int = 7
 
+# Site-scoped S3 panels map to datalake pool_name prefixes (not city substrings).
+_SITE_SCOPED_PANEL_PATTERNS: dict[str, str] = {
+    "storage_s3_ankara": "%DC14%",
+    "storage_s3_istanbul": "%DC13%",
+}
+
 # Maps allocated_table → Redis section key for per-DC (dc_details) response.
 _VM_TABLE_DC_SECTION: dict[str, str] = {
     "vm_metrics":         "classic",
@@ -503,7 +509,10 @@ class SellableService:
 
     @staticmethod
     def site_filter_pattern(panel_key: str) -> str | None:
-        """Fixed ILIKE pattern for site-scoped panels (not derived from infra DC code)."""
+        """Fixed ILIKE pattern for site-scoped panels (datalake pool_name prefix)."""
+        mapped = _SITE_SCOPED_PANEL_PATTERNS.get(panel_key)
+        if mapped:
+            return mapped
         if panel_key.startswith("storage_s3_"):
             site = panel_key[len("storage_s3_") :].strip().lower()
             if site:

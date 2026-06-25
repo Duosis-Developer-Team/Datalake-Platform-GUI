@@ -165,6 +165,11 @@ _INTERACTIVE_TIMEOUT = httpx.Timeout(
     _INTERACTIVE_READ_TIMEOUT, connect=5.0, read=_INTERACTIVE_READ_TIMEOUT,
     write=_INTERACTIVE_READ_TIMEOUT, pool=5.0,
 )
+_INVENTORY_READ_TIMEOUT = float(os.getenv("API_INVENTORY_READ_TIMEOUT", "300") or "300")
+_INVENTORY_TIMEOUT = httpx.Timeout(
+    _INVENTORY_READ_TIMEOUT, connect=10.0, read=_INVENTORY_READ_TIMEOUT,
+    write=_INVENTORY_READ_TIMEOUT, pool=10.0,
+)
 
 
 def _get_client_dc() -> httpx.Client:
@@ -2129,7 +2134,12 @@ def get_crm_inventory_overview(dc_code: str = "*") -> dict:
     """Global CRM capacity vs entitled vs infra used overview."""
     def fetch() -> dict:
         qs = f"dc_code={quote(dc_code, safe='*')}"
-        data = _get_json(_get_client_crm(), f"/api/v1/crm/inventory-overview?{qs}")
+        with httpx.Client(
+            base_url=CRM_ENGINE_URL,
+            timeout=_INVENTORY_TIMEOUT,
+            transport=_new_http_transport(),
+        ) as client:
+            data = _get_json(client, f"/api/v1/crm/inventory-overview?{qs}")
         return data if isinstance(data, dict) else {}
 
     cache_key = f"api:crm_inventory_overview:{dc_code}"
