@@ -93,6 +93,8 @@ def test_build_layout_returns_report_body():
     ids = _collect_ids(layout)
     assert "crm-inventory-report-body" in ids
     assert "crm-inventory-filter" in ids
+    assert "crm-inventory-search" in ids
+    assert "crm-inventory-view-mode" in ids
 
 
 def test_build_layout_shell_has_store():

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from src.components.crm_inventory_report import (
     build_report_body,
+    filter_by_search,
     filter_service_rows,
     prepare_service_row,
 )
@@ -34,6 +35,30 @@ def test_prepare_service_row_formats_columns():
     assert row["service_label"] == "Klasik Mimari — CPU"
     assert row["free_fmt"] == "60 vCPU"
     assert row["status"] == "over"
+    assert row["status_label"] == "Overage"
+    assert "█" in row["utilization_fmt"]
+
+
+def test_filter_by_search_matches_family():
+    rows = [
+        _sample_row(),
+        _sample_row(panel_key="x", service_label="Veeam Backup", family_label="Veeam"),
+    ]
+    out = filter_by_search(rows, "veeam")
+    assert len(out) == 1
+    assert out[0]["panel_key"] == "x"
+
+
+def test_build_report_body_flat_view():
+    payload = {
+        "families": [],
+        "crm_only_panels": [],
+        "unmapped_products": [],
+        "panels": [_sample_row()],
+        "summary": {"note": ""},
+    }
+    body = build_report_body(payload, filter_mode="all", view_mode="flat")
+    assert len(body) >= 1
 
 
 def test_filter_service_rows_issues():

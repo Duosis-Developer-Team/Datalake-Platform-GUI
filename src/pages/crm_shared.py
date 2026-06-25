@@ -73,6 +73,39 @@ def status_badge(status: str | None) -> dmc.Badge:
     return dmc.Badge(key, color=_STATUS_COLORS.get(key, "gray"), variant="light", size="sm")
 
 
+def inventory_status_label(status: str | None) -> str:
+    """Human-readable status label for inventory tables."""
+    labels = {
+        "ok": "OK",
+        "under": "Under-sold",
+        "over": "Overage",
+        "unsold_usage": "Unsold usage",
+        "crm_only": "CRM only",
+        "no_usage": "No usage",
+    }
+    return labels.get((status or "no_usage").lower(), str(status or "no_usage"))
+
+
+def utilization_summary(
+    total: float | int | None,
+    used: float | int | None,
+) -> str:
+    """Compact utilization string for table cells (10-block bar + percent)."""
+    if total is None:
+        return "—"
+    try:
+        cap = float(total or 0)
+        if cap <= 0:
+            return "—"
+        used_val = float(used or 0)
+        pct = min(100.0, 100.0 * used_val / cap)
+        filled = int(round(pct / 10.0))
+        filled = max(0, min(10, filled))
+        return f"{'█' * filled}{'░' * (10 - filled)} {pct:.0f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def capacity_bar(total: float, crm_sold: float, used: float, sellable: float, color: str = BRAND_PURPLE) -> html.Div:
     cap = max(float(total or 0), 1e-9)
     crm_pct = min(100.0, 100.0 * float(crm_sold or 0) / cap)

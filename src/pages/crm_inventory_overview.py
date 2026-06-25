@@ -11,11 +11,11 @@ from typing import Any
 import dash
 import dash_mantine_components as dmc
 import pandas as pd
-from dash import Input, Output, State, callback, dcc, html
+from dash import ALL, Input, Output, State, callback, ctx, dcc, html
 from dash_iconify import DashIconify
 
 from src.components.crm_inventory_report import build_report_body, prepare_service_row
-from src.pages import crm_shared as shared
+from src.components.crm_inventory_shell import build_inventory_shell
 from src.services import api_client as api
 from src.utils.export_helpers import (
     build_report_info_df,
@@ -25,13 +25,6 @@ from src.utils.export_helpers import (
 )
 
 logger = logging.getLogger(__name__)
-
-_FILTER_OPTIONS = [
-    {"value": "all", "label": "All"},
-    {"value": "infra", "label": "With infra"},
-    {"value": "crm_only", "label": "CRM only"},
-    {"value": "issues", "label": "Issues"},
-]
 
 
 def _unmapped_banner(summary: dict[str, Any], products: list[dict[str, Any]]) -> html.Div | None:
@@ -47,6 +40,7 @@ def _unmapped_banner(summary: dict[str, Any], products: list[dict[str, Any]]) ->
         color="orange",
         variant="light",
         icon=DashIconify(icon="solar:danger-triangle-bold-duotone", width=20),
+        mb="md",
         children=[
             dmc.Text(
                 f"{catalog_unmapped} catalog SKU(s) lack panel mapping; "
@@ -89,106 +83,15 @@ def build_layout(visible_sections=None) -> html.Div:  # noqa: ARG001
     summary = payload.get("summary") or {}
     unmapped = payload.get("unmapped_products") or []
 
-    kpi_ribbon = dmc.SimpleGrid(
-        cols={"base": 1, "sm": 2, "md": 3, "lg": 6},
-        spacing="md",
-        children=[
-            shared.kpi_card(
-                "Infra panels",
-                f"{int(summary.get('infra_panel_count') or 0):,}",
-                f"of {int(summary.get('panel_count') or 0):,} mapped services",
-                color=shared.BRAND_PURPLE,
-                icon="solar:server-bold-duotone",
-            ),
-            shared.kpi_card(
-                "CRM entitled (TL)",
-                shared.fmt_tl(summary.get("crm_entitled_tl")),
-                "Active + invoiced order lines",
-                color=shared.BRAND_GREEN,
-                icon="solar:hand-money-bold-duotone",
-            ),
-            shared.kpi_card(
-                "Sellable potential",
-                shared.fmt_tl(summary.get("total_potential_tl")),
-                "Constrained × unit price",
-                color=shared.BRAND_PURPLE_LIGHT,
-                icon="solar:wallet-money-bold-duotone",
-            ),
-            shared.kpi_card(
-                "Overage",
-                f"{int(summary.get('overage_panel_count') or 0):,}",
-                "Used exceeds CRM entitlement",
-                color=shared.BRAND_RED,
-                icon="solar:scale-bold-duotone",
-            ),
-            shared.kpi_card(
-                "Unsold usage",
-                f"{int(summary.get('unsold_usage_count') or 0):,}",
-                "Infra used without CRM sales",
-                color=shared.BRAND_ORANGE,
-                icon="solar:shield-warning-bold-duotone",
-            ),
-            shared.kpi_card(
-                "CRM-only",
-                f"{int(summary.get('crm_only_count') or 0):,}",
-                "No infra binding",
-                color=shared.BRAND_GREY,
-                icon="solar:cloud-bold-duotone",
-            ),
-        ],
-    )
-
-    report_sections = build_report_body(payload, filter_mode="all")
+    report_sections = build_report_body(payload, filter_mode="all", view_mode="grouped")
 
     return html.Div(
-        style={"maxWidth": "1440px", "margin": "0 auto", "padding": "12px"},
+        style={"maxWidth": "1480px", "margin": "0 auto", "padding": "12px 16px 32px"},
         children=[
             dcc.Store(id="crm-inventory-store", data=payload),
             dcc.Download(id="crm-inventory-export-download"),
-            dmc.Paper(
-                p="md",
-                radius="md",
-                withBorder=True,
-                style={
-                    "background": f"linear-gradient(135deg, {shared.BRAND_PURPLE} 0%, {shared.BRAND_PURPLE_LIGHT} 100%)",
-                    "color": "#ffffff",
-                    "marginBottom": "16px",
-                },
-                children=[
-                    dmc.Group(justify="space-between", align="center", children=[
-                        dmc.Stack(gap=2, children=[
-                            dmc.Text("CRM › GLOBAL REPORT", size="xs", fw=700, c="white"),
-                            dmc.Title("Capacity & Sales Inventory", order=2, c="white"),
-                            dmc.Text(
-                                "Service-level report: total capacity, CRM entitled, used, free, and sellable.",
-                                size="sm", c="white", style={"opacity": 0.9},
-                            ),
-                        ]),
-                        dmc.Button(
-                            "Export Excel",
-                            id="crm-inventory-export-btn",
-                            leftSection=DashIconify(icon="solar:download-square-bold-duotone", width=16),
-                            color="indigo",
-                            variant="white",
-                            size="sm",
-                        ),
-                    ]),
-                ],
-            ),
+            build_inventory_shell(summary, unmapped),
             _unmapped_banner(summary, unmapped),
-            dmc.Space(h="sm"),
-            kpi_ribbon,
-            dmc.Text(summary.get("note") or "", size="xs", c="dimmed", mt="sm"),
-            dmc.Space(h="md"),
-            dmc.Group(justify="space-between", align="center", mb="sm", children=[
-                dmc.Title("Service inventory", order=4),
-                dmc.SegmentedControl(
-                    id="crm-inventory-filter",
-                    value="all",
-                    data=_FILTER_OPTIONS,
-                    size="sm",
-                ),
-            ]),
             html.Div(id="crm-inventory-report-body", children=report_sections),
         ],
     )
@@ -197,12 +100,37 @@ def build_layout(visible_sections=None) -> html.Div:  # noqa: ARG001
 @callback(
     Output("crm-inventory-report-body", "children"),
     Input("crm-inventory-filter", "value"),
+    Input("crm-inventory-search", "value"),
+    Input("crm-inventory-view-mode", "value"),
     State("crm-inventory-store", "data"),
 )
-def _apply_report_filter(filter_mode, store):
+def _apply_report_filters(filter_mode, search, view_mode, store):
     if not store:
         return dash.no_update
-    return build_report_body(store, filter_mode=filter_mode or "all")
+    return build_report_body(
+        store,
+        filter_mode=filter_mode or "all",
+        search_query=search,
+        view_mode=view_mode or "grouped",
+    )
+
+
+@callback(
+    Output("crm-inventory-filter", "value"),
+    Input({"type": "crm-inv-kpi", "filter": ALL}, "n_clicks"),
+    State({"type": "crm-inv-kpi", "filter": ALL}, "id"),
+    State("crm-inventory-filter", "value"),
+    prevent_initial_call=True,
+)
+def _kpi_filter_shortcut(clicks, ids, current):
+    if not ctx.triggered_id or not isinstance(ctx.triggered_id, dict):
+        return dash.no_update
+    triggered = ctx.triggered_id.get("filter")
+    if not triggered:
+        return dash.no_update
+    if not any(clicks):
+        return dash.no_update
+    return triggered
 
 
 @callback(
