@@ -112,6 +112,7 @@ from src.pages import customer_view_callbacks  # noqa: F401 — async customer v
 from src.pages import dc_view_callbacks  # noqa: F401 — async DC view load + tab expand
 from src.pages import availability_annual  # noqa: F401 — annual availability layout + callbacks
 from src.pages import crm_sellable_potential
+from src.pages import crm_inventory_overview
 from src.pages import login as login_page_mod
 from src.pages.settings import shell as settings_shell
 from src.components.access_denied import build_access_denied
@@ -774,6 +775,8 @@ def render_main_content(pathname, time_range, search):
         return query_explorer.layout(visible_sections=vis)
     if pathname == "/crm/sellable-potential":
         return crm_sellable_potential.build_layout_shell(visible_sections=vis)
+    if pathname == "/crm/inventory-overview":
+        return crm_inventory_overview.build_layout_shell(visible_sections=vis)
     if pathname and pathname.startswith("/dc-detail/"):
         dc_id = pathname.replace("/dc-detail/", "").strip("/")
         return dc_detail.build_dc_detail(dc_id, tr, visible_sections=vis)

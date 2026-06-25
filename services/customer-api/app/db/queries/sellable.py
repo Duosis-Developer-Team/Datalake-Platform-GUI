@@ -312,6 +312,20 @@ ORDER BY captured_at;
 # Used by compute_all_panels to pre-fetch all metadata before the panel loop.
 # ---------------------------------------------------------------------------
 
+# Distinct DC codes with configured infra bindings (excludes wildcard '*').
+LIST_INFRA_DC_CODES = """
+SELECT DISTINCT dc_code
+FROM   gui_panel_infra_source
+WHERE  dc_code IS NOT NULL
+  AND  dc_code != '*'
+  AND  (
+        manual_total IS NOT NULL
+        OR (NULLIF(TRIM(source_table), '') IS NOT NULL
+            AND NULLIF(TRIM(total_column), '') IS NOT NULL)
+      )
+ORDER  BY dc_code;
+"""
+
 # Best-matching infra source per panel_key for a given dc_code.
 # dc_code-specific rows win over wildcard ('*') rows (ORDER BY ... (dc_code='*') ASC → False < True).
 BULK_INFRA_SOURCES_FOR_DC = """

@@ -134,6 +134,63 @@ def aggregate_entitled_by_category(
     return agg
 
 
+def aggregate_entitled_by_panel_key(
+    entitled_raw: List[Dict[str, Any]],
+    product_mapping: Dict[str, Dict[str, Any]],
+    panel_units: Dict[str, str] | None = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Sum entitled quantities per panel_key (service mapping page_key)."""
+    panel_units = panel_units or {}
+    agg: Dict[str, Dict[str, Any]] = {}
+
+    for row in entitled_raw or []:
+        pid = str(row.get("productid") or "")
+        m = product_mapping.get(pid) or {}
+        if (m.get("source") or "") == "unmatched":
+            continue
+        panel_key = str((m.get("category_code") if m else None) or "").strip()
+        if not panel_key:
+            continue
+
+        target_unit = (
+            panel_units.get(panel_key)
+            or m.get("resource_unit")
+            or row.get("resource_unit")
+            or "Adet"
+        )
+        ru = row.get("resource_unit") or m.get("resource_unit") or target_unit
+        norm_qty = normalize_entitled_qty(
+            float(row.get("entitled_qty") or 0),
+            str(ru) if ru is not None else None,
+            str(target_unit),
+        )
+
+        bucket = agg.setdefault(
+            panel_key,
+            {
+                "panel_key": panel_key,
+                "category_label": m.get("category_label") or panel_key,
+                "resource_unit": str(target_unit),
+                "entitled_qty": 0.0,
+                "entitled_amount_tl": 0.0,
+                "product_ids": set(),
+                "product_names": set(),
+            },
+        )
+        bucket["entitled_qty"] += norm_qty
+        bucket["entitled_amount_tl"] += float(row.get("entitled_amount_tl") or 0)
+        if pid:
+            bucket["product_ids"].add(pid)
+        pname = str(row.get("product_name") or "").strip()
+        if pname:
+            bucket["product_names"].add(pname)
+
+    for bucket in agg.values():
+        bucket["product_ids"] = list(bucket["product_ids"])
+        bucket["product_names"] = sorted(bucket["product_names"])
+    return agg
+
+
 def resolve_unit_price_tl(
     *,
     category_code: str,
@@ -183,6 +240,35 @@ def compliance_row_status(
         under_pct=under_pct,
         over_pct=over_pct,
         used_qty=used_qty,
+    )
+
+
+def panel_inventory_status(
+    *,
+    crm_sold_qty: float,
+    used_qty: float,
+    has_infra_source: bool,
+    under_pct: float = 80.0,
+    over_pct: float = 110.0,
+) -> str:
+    """Derive inventory overview status for one panel row."""
+    if not has_infra_source and crm_sold_qty > 0:
+        return "crm_only"
+    if crm_sold_qty <= 0 and used_qty > 0:
+        return "unsold_usage"
+    eff_pct: float | None
+    if crm_sold_qty > 0:
+        eff_pct = round((used_qty / crm_sold_qty) * 100.0, 2)
+    else:
+        eff_pct = None
+    overage_qty = max(0.0, used_qty - crm_sold_qty)
+    return compliance_row_status(
+        entitled_qty=crm_sold_qty,
+        used_qty=used_qty,
+        overage_qty=overage_qty,
+        efficiency_pct=eff_pct,
+        under_pct=under_pct,
+        over_pct=over_pct,
     )
 
 

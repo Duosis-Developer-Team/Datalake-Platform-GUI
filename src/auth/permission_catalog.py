@@ -425,6 +425,13 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 route_pattern="/crm/sellable-potential",
                 sort_order=10,
             ),
+            _n(
+                "page:dashboard_crm_inventory",
+                "CRM Inventory Overview dashboard",
+                "view",
+                route_pattern="/crm/inventory-overview",
+                sort_order=11,
+            ),
             _n("page:settings_auth", "Auth Settings", "config", route_pattern="/administration/iam/auth", sort_order=60),
             _n("page:settings_audit", "Audit Log", "config", route_pattern="/administration/iam/audit", sort_order=70),
         ],
