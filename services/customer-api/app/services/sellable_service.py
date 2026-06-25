@@ -1352,6 +1352,250 @@ SELECT _tot, _alloc FROM latest
             return [], "empty", storage_pools
         return hosts, "ok", storage_pools
 
+    def _fetch_host_rows_multi(
+        self,
+        dc_codes: list[str],
+        family: str,
+        clusters: list[str] | None,
+        *,
+        preset: str = "30d",
+    ) -> tuple[list[dict] | None, str, list[dict]]:
+        """Merge per-host rows from multiple DCs for global inventory aggregation."""
+        all_hosts: list[dict] = []
+        all_pools: list[dict] = []
+        statuses: list[str] = []
+        for code in dc_codes:
+            hosts, status, pools = self._fetch_host_rows(
+                code, family, clusters, preset=preset,
+            )
+            statuses.append(status)
+            if hosts:
+                for row in hosts:
+                    tagged = dict(row)
+                    tagged["_inventory_dc_code"] = code
+                    all_hosts.append(tagged)
+            if pools:
+                all_pools.extend(pools)
+        if all_hosts:
+            return all_hosts, "ok", all_pools
+        if any(s == "empty" for s in statuses):
+            return [], "empty", all_pools
+        return None, "unavailable", all_pools
+
+    @staticmethod
+    def _refresh_group_sellable_from_totals(
+        group: list[PanelResult],
+        *,
+        computation_mode: str = "aggregated",
+    ) -> list[PanelResult]:
+        """Recompute sellable_raw from merged total/allocated before ratio constraints."""
+        from dataclasses import replace
+
+        refreshed: list[PanelResult] = []
+        for panel in group:
+            total = float(panel.total or 0.0)
+            allocated = float(panel.allocated or 0.0)
+            sellable_raw = apply_utilization_gate(
+                total, allocated, None, panel.threshold_pct,
+            )
+            gate_blocked = utilization_gate_blocked(
+                total, allocated, None, panel.threshold_pct,
+            )
+            refreshed.append(
+                replace(
+                    panel,
+                    sellable_raw=sellable_raw,
+                    sellable_constrained=sellable_raw,
+                    sellable_allocation=None,
+                    sellable_max_util=None,
+                    sellable_physical=None,
+                    sellable_effective=None,
+                    potential_tl_physical=None,
+                    potential_tl_effective=None,
+                    sellable_min=None,
+                    sellable_max=None,
+                    potential_tl_min=None,
+                    potential_tl_max=None,
+                    ratio_bound=False,
+                    gate_blocked=gate_blocked,
+                    computation_mode=computation_mode,
+                    constraint_reason="gate_blocked" if gate_blocked else "none",
+                    bottleneck_kind=None,
+                    bottleneck_units=None,
+                )
+            )
+        return refreshed
+
+    def _apply_family_constraints_to_results(
+        self,
+        results: list[PanelResult],
+        dc_code: str,
+        *,
+        selected_clusters: list[str] | None = None,
+        infra_dc_codes: list[str] | None = None,
+        skip_storage_range: bool = False,
+        refresh_from_totals: bool = False,
+    ) -> list[PanelResult]:
+        """Apply per-family ratio / host-based constraints to pre-computed panel rows."""
+        by_family: dict[str, list[PanelResult]] = defaultdict(list)
+        for row in results:
+            by_family[row.family].append(row)
+
+        ratio_lookup = {(r.family, r.dc_code): r for r in self.list_ratios()}
+        unit_lookup = self._build_unit_lookup()
+
+        range_inputs: dict | None = None
+        needs_range = any(
+            r.resource_kind == "storage" and r.family in _STORAGE_RANGE_FAMILIES
+            for r in results
+        )
+        if (
+            not skip_storage_range
+            and dc_code
+            and dc_code != "*"
+            and needs_range
+        ):
+            range_inputs = self._query_storage_range_inputs(dc_code)
+
+        constrained: list[PanelResult] = []
+        calc_cfg = self._get_sellable_calc_config()
+        effective_ghz = float(calc_cfg.get("effective_ghz_per_unit") or 1.0)
+        global_host_dcs = [c for c in (infra_dc_codes or []) if c and c != "*"]
+
+        for fam, group in by_family.items():
+            ratio = (
+                ratio_lookup.get((fam, dc_code))
+                or ratio_lookup.get((fam, "*"))
+                or ResourceRatio(family=fam)
+            )
+
+            host_rows: list[dict] | None = None
+            host_status = "unavailable"
+            storage_pools: list[dict] = []
+            host_based_ok = False
+
+            if fam in _HOST_BASED_FAMILIES:
+                if dc_code == "*" and global_host_dcs:
+                    host_rows, host_status, storage_pools = self._fetch_host_rows_multi(
+                        global_host_dcs, fam, selected_clusters,
+                    )
+                elif dc_code and dc_code != "*":
+                    host_rows, host_status, storage_pools = self._fetch_host_rows(
+                        dc_code, fam, selected_clusters,
+                    )
+
+            if host_rows:
+                host_based_ok = True
+                new_group = self._apply_host_based_constraints(
+                    group,
+                    ratio,
+                    host_rows,
+                    unit_lookup,
+                    dc_code=dc_code,
+                    family=fam,
+                    clusters=selected_clusters,
+                    effective_ghz_per_unit=effective_ghz,
+                    storage_pools=storage_pools,
+                    range_inputs=range_inputs if fam == "virt_classic" else None,
+                )
+            elif fam in _HOST_BASED_FAMILIES and dc_code == "*":
+                refreshed = self._refresh_group_sellable_from_totals(
+                    group, computation_mode="aggregated",
+                )
+                new_group = constrain_by_ratio(refreshed, ratio, decouple_resource_kinds=None)
+            elif fam in _HOST_BASED_FAMILIES:
+                new_group = self._apply_cluster_fallback_dual(
+                    group,
+                    ratio,
+                    dc_code,
+                    fam,
+                    selected_clusters,
+                    host_status=host_status,
+                    effective_ghz_per_unit=effective_ghz,
+                    decouple_resource_kinds=None,
+                )
+            else:
+                source_group = (
+                    self._refresh_group_sellable_from_totals(
+                        group,
+                        computation_mode=group[0].computation_mode or "aggregated",
+                    )
+                    if refresh_from_totals
+                    else group
+                )
+                new_group = constrain_by_ratio(
+                    source_group, ratio, decouple_resource_kinds=None,
+                )
+
+            if fam in _STORAGE_RANGE_FAMILIES and range_inputs and not host_based_ok:
+                self._apply_storage_range(new_group, fam, range_inputs, unit_lookup)
+            elif (
+                fam in _STORAGE_RANGE_FAMILIES
+                and needs_range
+                and range_inputs is None
+                and not host_based_ok
+            ):
+                sto_p = next((p for p in new_group if p.resource_kind == "storage"), None)
+                if sto_p is not None:
+                    sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
+
+            if not host_based_ok:
+                new_group = apply_storage_ratio_cap(new_group, ratio)
+            new_group = annotate_panel_constraint_metadata(new_group)
+
+            for new in new_group:
+                if fam in _ALLOCATION_ONLY_FAMILIES:
+                    self._apply_allocation_only_pricing(new)
+                else:
+                    has_tracks = (
+                        new.sellable_allocation is not None
+                        or new.sellable_max_util is not None
+                        or new.sellable_physical is not None
+                        or new.sellable_effective is not None
+                    )
+                    if has_tracks:
+                        self._apply_dual_track_pricing(new, calc_cfg)
+                    else:
+                        new.potential_tl = compute_potential_tl(
+                            new.sellable_constrained, new.unit_price_tl,
+                        )
+                    if new.resource_kind == "storage" and new.sellable_min is not None:
+                        new.potential_tl_min = compute_potential_tl(
+                            new.sellable_min, new.unit_price_tl,
+                        )
+                        if new.sellable_max is not None:
+                            new.potential_tl_max = compute_potential_tl(
+                                new.sellable_max, new.unit_price_tl,
+                            )
+                        else:
+                            new.potential_tl_max = new.potential_tl_min
+                        new.potential_tl = new.potential_tl_min or 0.0
+                constrained.append(new)
+
+        constrained.sort(key=lambda p: (p.family, p.resource_kind, p.panel_key))
+        return constrained
+
+    def recompute_family_constraints(
+        self,
+        panels: list[PanelResult],
+        dc_code: str = "*",
+        *,
+        selected_clusters: list[str] | None = None,
+        infra_dc_codes: list[str] | None = None,
+    ) -> list[PanelResult]:
+        """Re-run family sellable pipeline on panels with pre-merged total/allocated."""
+        if not panels:
+            return []
+        norm_dc = (dc_code or "*").strip() or "*"
+        return self._apply_family_constraints_to_results(
+            panels,
+            norm_dc,
+            selected_clusters=selected_clusters,
+            infra_dc_codes=infra_dc_codes,
+            skip_storage_range=(norm_dc == "*"),
+            refresh_from_totals=True,
+        )
+
     def _get_sellable_calc_config(self) -> dict[str, float | str]:
         """Load dual-CPU sellable calc variables from gui_crm_calc_config."""
         defaults: dict[str, float | str] = {
@@ -2449,106 +2693,11 @@ SELECT _tot, _alloc FROM latest
             for d in defs
         ]
 
-        # 7. Apply ratio per family — host-based for virt_classic / virt_hyperconverged
-        #    (per-host min(CPU, RAM), summed across hosts), aggregate otherwise.
-        by_family: dict[str, list[PanelResult]] = defaultdict(list)
-        for r in results:
-            by_family[r.family].append(r)
-        ratio_lookup = {(r.family, r.dc_code): r for r in self.list_ratios()}
-
-        # Architecture storage range inputs are shared by virt_classic + virt_power.
-        # Only hit the datalake when a storage panel of a range family is present.
-        range_inputs: dict | None = None
-        needs_range = any(
-            r.resource_kind == "storage" and r.family in _STORAGE_RANGE_FAMILIES
-            for r in results
+        constrained = self._apply_family_constraints_to_results(
+            results,
+            dc_code or "*",
+            selected_clusters=selected_clusters,
         )
-        if dc_code and dc_code != "*" and needs_range:
-            range_inputs = self._query_storage_range_inputs(dc_code)
-
-        constrained: list[PanelResult] = []
-        calc_cfg = self._get_sellable_calc_config()
-        effective_ghz = float(calc_cfg.get("effective_ghz_per_unit") or 1.0)
-        for fam, group in by_family.items():
-            ratio = ratio_lookup.get((fam, dc_code)) or ratio_lookup.get((fam, "*")) or ResourceRatio(family=fam)
-
-            host_rows: list[dict] | None = None
-            host_status = "unavailable"
-            storage_pools: list[dict] = []
-            host_based_ok = False
-            if fam in _HOST_BASED_FAMILIES:
-                host_rows, host_status, storage_pools = self._fetch_host_rows(
-                    dc_code, fam, selected_clusters
-                )
-
-            if host_rows:
-                host_based_ok = True
-                new_group = self._apply_host_based_constraints(
-                    group,
-                    ratio,
-                    host_rows,
-                    unit_lookup,
-                    dc_code=dc_code,
-                    family=fam,
-                    clusters=selected_clusters,
-                    effective_ghz_per_unit=effective_ghz,
-                    storage_pools=storage_pools,
-                    range_inputs=range_inputs if fam == "virt_classic" else None,
-                )
-            elif fam in _HOST_BASED_FAMILIES:
-                new_group = self._apply_cluster_fallback_dual(
-                    group,
-                    ratio,
-                    dc_code,
-                    fam,
-                    selected_clusters,
-                    host_status=host_status,
-                    effective_ghz_per_unit=effective_ghz,
-                    decouple_resource_kinds=None,
-                )
-            else:
-                new_group = constrain_by_ratio(group, ratio, decouple_resource_kinds=None)
-
-            if fam in _STORAGE_RANGE_FAMILIES and range_inputs and not host_based_ok:
-                self._apply_storage_range(new_group, fam, range_inputs, unit_lookup)
-            elif fam in _STORAGE_RANGE_FAMILIES and needs_range and range_inputs is None and not host_based_ok:
-                sto_p = next((p for p in new_group if p.resource_kind == "storage"), None)
-                if sto_p is not None:
-                    sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
-
-            if not host_based_ok:
-                new_group = apply_storage_ratio_cap(new_group, ratio)
-            new_group = annotate_panel_constraint_metadata(new_group)
-
-            for new in new_group:
-                if fam in _ALLOCATION_ONLY_FAMILIES:
-                    self._apply_allocation_only_pricing(new)
-                else:
-                    has_tracks = (
-                        new.sellable_allocation is not None
-                        or new.sellable_max_util is not None
-                        or new.sellable_physical is not None
-                        or new.sellable_effective is not None
-                    )
-                    if has_tracks:
-                        self._apply_dual_track_pricing(new, calc_cfg)
-                    else:
-                        new.potential_tl = compute_potential_tl(
-                            new.sellable_constrained, new.unit_price_tl,
-                        )
-                    if new.resource_kind == "storage" and new.sellable_min is not None:
-                        new.potential_tl_min = compute_potential_tl(
-                            new.sellable_min, new.unit_price_tl,
-                        )
-                        if new.sellable_max is not None:
-                            new.potential_tl_max = compute_potential_tl(
-                                new.sellable_max, new.unit_price_tl,
-                            )
-                        else:
-                            new.potential_tl_max = new.potential_tl_min
-                        new.potential_tl = new.potential_tl_min or 0.0
-                constrained.append(new)
-        constrained.sort(key=lambda p: (p.family, p.resource_kind, p.panel_key))
 
         self._result_cache_set(cache_key, constrained)
         self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, constrained)

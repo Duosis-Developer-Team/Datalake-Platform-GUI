@@ -39,6 +39,12 @@ def test_prepare_service_row_formats_columns():
     assert "█" in row["utilization_fmt"]
 
 
+def test_prepare_service_row_marks_suspect_data_quality():
+    row = prepare_service_row(_sample_row(data_quality="suspect"))
+    assert "Check data" in row["status_label"]
+    assert row["data_quality"] == "suspect"
+
+
 def test_filter_by_search_matches_family():
     rows = [
         _sample_row(),

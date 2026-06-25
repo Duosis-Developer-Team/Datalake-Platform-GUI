@@ -326,6 +326,22 @@ WHERE  dc_code IS NOT NULL
 ORDER  BY dc_code;
 """
 
+# Panel keys bound only at dc_code='*' with no per-DC filter (global infra SUM).
+LIST_GLOBAL_ONLY_PANEL_KEYS = """
+SELECT DISTINCT s.panel_key
+FROM   gui_panel_infra_source s
+WHERE  s.dc_code = '*'
+  AND  (s.filter_clause IS NULL OR TRIM(s.filter_clause) = '')
+  AND  NOT EXISTS (
+        SELECT 1
+        FROM   gui_panel_infra_source s2
+        WHERE  s2.panel_key = s.panel_key
+          AND  s2.dc_code IS NOT NULL
+          AND  s2.dc_code != '*'
+      )
+ORDER BY s.panel_key;
+"""
+
 # Best-matching infra source per panel_key for a given dc_code.
 # dc_code-specific rows win over wildcard ('*') rows (ORDER BY ... (dc_code='*') ASC → False < True).
 BULK_INFRA_SOURCES_FOR_DC = """

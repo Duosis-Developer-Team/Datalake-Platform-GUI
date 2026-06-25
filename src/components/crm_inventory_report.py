@@ -22,7 +22,6 @@ _REPORT_COLUMNS = [
     {"name": "Gap", "id": "gap_fmt"},
     {"name": "Status", "id": "status_label"},
     {"name": "Potential TL", "id": "potential_tl_fmt"},
-    {"name": "CRM products", "id": "crm_products_summary"},
 ]
 
 _FLAT_EXTRA_COLUMN = {"name": "Family", "id": "family_label"}
@@ -82,6 +81,11 @@ _ROW_ISSUE_STYLES = [
         "if": {"filter_query": "{status} = unsold_usage"},
         "backgroundColor": "#FFFCF5",
     },
+    {
+        "if": {"filter_query": "{data_quality} = suspect", "column_id": "status_label"},
+        "backgroundColor": "#FEF3F2",
+        "color": "#B42318",
+    },
 ]
 
 
@@ -106,6 +110,10 @@ def _fmt_gap(delta: Any, unit: str) -> str:
 def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
     unit = str(row.get("display_unit") or "")
     status = str(row.get("status") or "no_usage")
+    data_quality = str(row.get("data_quality") or "")
+    status_label = shared.inventory_status_label(status)
+    if data_quality == "suspect":
+        status_label = f"{status_label} · Check data"
     return {
         "panel_key": row.get("panel_key") or "",
         "service_label": row.get("service_label") or row.get("label") or "",
@@ -119,7 +127,8 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "sellable_fmt": _fmt_qty(row.get("sellable_qty"), unit),
         "gap_fmt": _fmt_gap(row.get("delta_used_vs_crm"), unit),
         "status": status,
-        "status_label": shared.inventory_status_label(status),
+        "status_label": status_label,
+        "data_quality": data_quality,
         "potential_tl_fmt": shared.fmt_tl(row.get("potential_tl")),
         "crm_products_summary": row.get("crm_products_summary") or "",
         "infra_binding": row.get("infra_binding") or "",
@@ -183,18 +192,15 @@ def build_report_table(
     table_id: str,
     page_size: int = 15,
     include_family: bool = False,
-    hidden_columns: list[str] | None = None,
 ) -> dash_table.DataTable:
     data = [prepare_service_row(r) for r in rows]
     columns = list(_REPORT_COLUMNS)
     if include_family:
         columns = [_FLAT_EXTRA_COLUMN, *columns]
-    hidden = hidden_columns or ["crm_products_summary"]
     return dash_table.DataTable(
         id=table_id,
         data=data,
         columns=columns,
-        hidden_columns=hidden,
         page_size=page_size,
         filter_action="native",
         sort_action="native",
@@ -309,7 +315,6 @@ def build_flat_view(
         table_id="crm-inventory-flat-table",
         page_size=25,
         include_family=True,
-        hidden_columns=[],
     )
 
 

@@ -1,6 +1,7 @@
 """Unit tests for InventoryOverviewService."""
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import MagicMock
 
 import pytest
@@ -11,7 +12,32 @@ from app.utils.usage_comparison import (
     normalize_entitled_qty,
     panel_inventory_status,
 )
+from shared.sellable.computation import apply_utilization_gate, compute_potential_tl
 from shared.sellable.models import PanelResult
+
+
+def _recompute_panels(panels, **kwargs):
+    """Simulate post-merge sellable recompute from merged total/allocated."""
+    out = []
+    for panel in panels:
+        sellable = apply_utilization_gate(
+            float(panel.total or 0.0),
+            float(panel.allocated or 0.0),
+            None,
+            panel.threshold_pct,
+        )
+        price = float(panel.unit_price_tl or 1500.0)
+        out.append(
+            replace(
+                panel,
+                dc_code="*",
+                sellable_raw=sellable,
+                sellable_constrained=sellable,
+                potential_tl=compute_potential_tl(sellable, price),
+                computation_mode="aggregated",
+            )
+        )
+    return out
 
 
 def test_normalize_entitled_qty_tb_to_gb():
@@ -84,6 +110,8 @@ def _panel(**kwargs) -> PanelResult:
 
 def _webui_rows(sql: str):
     if "FROM   gui_panel_infra_source" in sql and "DISTINCT dc_code" in sql:
+        return []
+    if "NOT EXISTS" in sql and "filter_clause IS NULL" in sql:
         return []
     if "FROM   gui_panel_definition" in sql:
         return [
@@ -159,6 +187,7 @@ def inventory_svc():
         ),
     ]
     sellable._count_unmapped_products.return_value = 3
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
 
     sales = MagicMock()
     def _run_query(sql, params):
@@ -222,26 +251,45 @@ def test_compute_inventory_overview_merges_panels(inventory_svc):
 
 
 def test_global_inventory_aggregates_per_dc_infra():
-    """dc_code='*' should sum total/used/sellable from each configured DC."""
+    """dc_code='*' should sum total/used per DC then recompute sellable."""
     sellable = MagicMock()
     sellable.is_available = True
 
     def _compute(dc_code="*", **kwargs):
         if dc_code == "ANK":
             return [
-                _panel(total=100.0, allocated=40.0, sellable_constrained=20.0, potential_tl=30000.0),
+                _panel(
+                    total=100.0,
+                    allocated=40.0,
+                    sellable_constrained=20.0,
+                    potential_tl=30000.0,
+                    unit_price_tl=1500.0,
+                ),
             ]
         if dc_code == "IST":
             return [
-                _panel(total=50.0, allocated=20.0, sellable_constrained=10.0, potential_tl=15000.0),
+                _panel(
+                    total=50.0,
+                    allocated=20.0,
+                    sellable_constrained=10.0,
+                    potential_tl=15000.0,
+                    unit_price_tl=1500.0,
+                ),
             ]
         if dc_code == "*":
             return [
-                _panel(total=0.0, allocated=0.0, sellable_constrained=0.0, potential_tl=0.0, has_infra_source=False),
+                _panel(
+                    total=0.0,
+                    allocated=0.0,
+                    sellable_constrained=0.0,
+                    potential_tl=0.0,
+                    has_infra_source=False,
+                ),
             ]
         return []
 
     sellable.compute_all_panels.side_effect = _compute
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
     sellable._count_unmapped_products.return_value = 0
 
     sales = MagicMock()
@@ -280,10 +328,71 @@ def test_global_inventory_aggregates_per_dc_infra():
     cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
     assert cpu["total"] == 150.0
     assert cpu["used_qty"] == 60.0
-    assert cpu["sellable_qty"] == 30.0
+    assert cpu["sellable_qty"] == 60.0
     assert cpu["free_qty"] == 90.0
-    assert cpu["potential_tl"] == 45000.0
+    assert cpu["potential_tl"] == 90000.0
     assert cpu["has_infra_source"] is True
     assert cpu["computation_mode"] == "aggregated"
     assert payload["summary"]["infra_panel_count"] == 1
-    assert "across all DCs" in payload["summary"]["note"]
+    assert "recomputes sellable" in payload["summary"]["note"]
+    sellable.recompute_family_constraints.assert_called_once()
+
+
+def test_global_only_panel_not_summed_across_dcs():
+    """Global-only panels must be taken once from wildcard compute, not N× per DC."""
+    sellable = MagicMock()
+    sellable.is_available = True
+
+    global_panel = _panel(
+        panel_key="backup_netbackup_storage",
+        label="NetBackup Storage",
+        family="backup_netbackup",
+        resource_kind="storage",
+        display_unit="GB",
+        total=5000.0,
+        allocated=1000.0,
+        sellable_constrained=3000.0,
+        potential_tl=690000.0,
+        unit_price_tl=230.0,
+        computation_mode="aggregated",
+    )
+
+    def _compute(dc_code="*", **kwargs):
+        if dc_code in ("ANK", "IST"):
+            return [global_panel]
+        if dc_code == "*":
+            return [global_panel]
+        return []
+
+    sellable.compute_all_panels.side_effect = _compute
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._count_unmapped_products.return_value = 0
+
+    sales = MagicMock()
+    sales._run_query.return_value = []
+
+    def _webui_rows_multi(sql: str):
+        if "FROM   gui_panel_infra_source" in sql and "DISTINCT dc_code" in sql:
+            return [{"dc_code": "ANK"}, {"dc_code": "IST"}]
+        if "NOT EXISTS" in sql and "filter_clause IS NULL" in sql:
+            return [{"panel_key": "backup_netbackup_storage"}]
+        return _webui_rows(sql)
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = _webui_rows_multi
+
+    config = MagicMock()
+    config.get_calc_dict.return_value = {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=webui,
+        config=config,
+        crm_redis=None,
+    )
+    payload = svc.compute_inventory_overview("*")
+    nb = next(p for p in payload["panels"] if p["panel_key"] == "backup_netbackup_storage")
+    assert nb["total"] == 5000.0
+    assert nb["used_qty"] == 1000.0

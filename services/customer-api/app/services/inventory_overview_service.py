@@ -78,14 +78,8 @@ def _crm_product_names_summary(names: list[str] | None, limit: int = 3) -> str:
     return f"{', '.join(items[:limit])} (+{rest} more)"
 
 
-def _sum_optional(a: float | None, b: float | None) -> float | None:
-    if a is None and b is None:
-        return None
-    return float(a or 0.0) + float(b or 0.0)
-
-
 def _merge_panel_results(existing: PanelResult | None, incoming: PanelResult) -> PanelResult:
-    """Sum numeric infra fields across DC-scoped PanelResult rows for global inventory."""
+    """Sum total/allocated across DC-scoped PanelResult rows; sellable is recomputed later."""
     if existing is None:
         mode = incoming.computation_mode
         if incoming.has_infra_source and not mode:
@@ -100,29 +94,17 @@ def _merge_panel_results(existing: PanelResult | None, incoming: PanelResult) ->
             total=float(incoming.total or 0.0),
             allocated=float(incoming.allocated or 0.0),
             threshold_pct=incoming.threshold_pct,
-            sellable_raw=float(incoming.sellable_raw or 0.0),
-            sellable_constrained=float(incoming.sellable_constrained or 0.0),
+            sellable_raw=0.0,
+            sellable_constrained=0.0,
             unit_price_tl=incoming.unit_price_tl,
-            potential_tl=float(incoming.potential_tl or 0.0),
-            ratio_bound=incoming.ratio_bound,
-            gate_blocked=incoming.gate_blocked,
+            potential_tl=0.0,
+            ratio_bound=False,
+            gate_blocked=False,
             has_infra_source=incoming.has_infra_source,
             has_price=incoming.has_price,
             notes=list(incoming.notes or []),
-            sellable_min=incoming.sellable_min,
-            sellable_max=incoming.sellable_max,
-            potential_tl_min=incoming.potential_tl_min,
-            potential_tl_max=incoming.potential_tl_max,
-            sellable_allocation=incoming.sellable_allocation,
-            sellable_max_util=incoming.sellable_max_util,
-            sellable_physical=incoming.sellable_physical,
-            sellable_effective=incoming.sellable_effective,
-            potential_tl_physical=incoming.potential_tl_physical,
-            potential_tl_effective=incoming.potential_tl_effective,
             computation_mode=mode,
             constraint_reason=incoming.constraint_reason,
-            bottleneck_kind=incoming.bottleneck_kind,
-            bottleneck_units=incoming.bottleneck_units,
         )
 
     notes = list(existing.notes or [])
@@ -130,9 +112,9 @@ def _merge_panel_results(existing: PanelResult | None, incoming: PanelResult) ->
         if note and note not in notes:
             notes.append(note)
 
-    mode = existing.computation_mode or incoming.computation_mode
-    if existing.has_infra_source and incoming.has_infra_source:
-        mode = "aggregated"
+    mode = "aggregated"
+    if existing.computation_mode == "host_based" or incoming.computation_mode == "host_based":
+        mode = "host_based"
 
     return PanelResult(
         panel_key=existing.panel_key,
@@ -144,31 +126,40 @@ def _merge_panel_results(existing: PanelResult | None, incoming: PanelResult) ->
         total=float(existing.total or 0.0) + float(incoming.total or 0.0),
         allocated=float(existing.allocated or 0.0) + float(incoming.allocated or 0.0),
         threshold_pct=existing.threshold_pct,
-        sellable_raw=float(existing.sellable_raw or 0.0) + float(incoming.sellable_raw or 0.0),
-        sellable_constrained=float(existing.sellable_constrained or 0.0)
-        + float(incoming.sellable_constrained or 0.0),
+        sellable_raw=0.0,
+        sellable_constrained=0.0,
         unit_price_tl=existing.unit_price_tl or incoming.unit_price_tl,
-        potential_tl=float(existing.potential_tl or 0.0) + float(incoming.potential_tl or 0.0),
-        ratio_bound=existing.ratio_bound or incoming.ratio_bound,
-        gate_blocked=existing.gate_blocked or incoming.gate_blocked,
+        potential_tl=0.0,
+        ratio_bound=False,
+        gate_blocked=False,
         has_infra_source=existing.has_infra_source or incoming.has_infra_source,
         has_price=existing.has_price or incoming.has_price,
         notes=notes,
-        sellable_min=_sum_optional(existing.sellable_min, incoming.sellable_min),
-        sellable_max=_sum_optional(existing.sellable_max, incoming.sellable_max),
-        potential_tl_min=_sum_optional(existing.potential_tl_min, incoming.potential_tl_min),
-        potential_tl_max=_sum_optional(existing.potential_tl_max, incoming.potential_tl_max),
-        sellable_allocation=_sum_optional(existing.sellable_allocation, incoming.sellable_allocation),
-        sellable_max_util=_sum_optional(existing.sellable_max_util, incoming.sellable_max_util),
-        sellable_physical=_sum_optional(existing.sellable_physical, incoming.sellable_physical),
-        sellable_effective=_sum_optional(existing.sellable_effective, incoming.sellable_effective),
-        potential_tl_physical=_sum_optional(existing.potential_tl_physical, incoming.potential_tl_physical),
-        potential_tl_effective=_sum_optional(existing.potential_tl_effective, incoming.potential_tl_effective),
         computation_mode=mode,
-        constraint_reason=existing.constraint_reason if existing.constraint_reason != "none" else incoming.constraint_reason,
-        bottleneck_kind=existing.bottleneck_kind or incoming.bottleneck_kind,
-        bottleneck_units=_sum_optional(existing.bottleneck_units, incoming.bottleneck_units),
+        constraint_reason="none",
     )
+
+
+def _assess_data_quality(
+    panel: PanelResult,
+    *,
+    crm_sold: float,
+) -> str | None:
+    """Return 'suspect' when merged infra numbers look inconsistent."""
+    if not panel.has_infra_source:
+        return None
+    total = float(panel.total or 0.0)
+    allocated = float(panel.allocated or 0.0)
+    crm = max(float(crm_sold or 0.0), 1.0)
+    if total > 1e9 or total > 100.0 * crm:
+        return "suspect"
+    if (
+        allocated <= 0.0
+        and total > 0.0
+        and (panel.computation_mode or "") in ("aggregated", "cluster_fallback")
+    ):
+        return "suspect"
+    return None
 
 
 class InventoryOverviewService:
@@ -249,6 +240,17 @@ class InventoryOverviewService:
             if r.get("dc_code") and str(r["dc_code"]).strip() not in ("", "*")
         ]
 
+    def _load_global_only_panel_keys(self) -> frozenset[str]:
+        """Panels with wildcard-only infra bindings and no per-DC filter."""
+        if not self._webui or not self._webui.is_available:
+            return frozenset()
+        rows = self._webui.run_rows(sellable_sq.LIST_GLOBAL_ONLY_PANEL_KEYS)
+        return frozenset(
+            str(r["panel_key"]).strip()
+            for r in rows
+            if r.get("panel_key")
+        )
+
     def _load_sellable_panels(
         self,
         dc_code: str,
@@ -264,6 +266,7 @@ class InventoryOverviewService:
             )
 
         dc_codes = self._list_infra_dc_codes()
+        global_only_keys = self._load_global_only_panel_keys()
         if not dc_codes:
             return self._sellable.compute_all_panels(
                 dc_code="*",
@@ -276,33 +279,46 @@ class InventoryOverviewService:
                 dc_code=code,
                 force_recompute=force_recompute,
             ):
-                if panel.has_infra_source:
-                    merged[panel.panel_key] = _merge_panel_results(
-                        merged.get(panel.panel_key),
-                        panel,
-                    )
-                elif panel.panel_key not in merged:
-                    merged[panel.panel_key] = panel
+                if not panel.has_infra_source:
+                    if panel.panel_key not in merged:
+                        merged[panel.panel_key] = panel
+                    continue
+                if panel.panel_key in global_only_keys:
+                    continue
+                merged[panel.panel_key] = _merge_panel_results(
+                    merged.get(panel.panel_key),
+                    panel,
+                )
 
         wildcard_panels = self._sellable.compute_all_panels(
             dc_code="*",
             force_recompute=force_recompute,
         )
         for panel in wildcard_panels:
-            if panel.panel_key not in merged:
-                merged[panel.panel_key] = panel
-            elif panel.has_infra_source and not merged[panel.panel_key].has_infra_source:
-                merged[panel.panel_key] = _merge_panel_results(
-                    merged.get(panel.panel_key),
-                    panel,
-                )
+            key = panel.panel_key
+            if key in global_only_keys:
+                if panel.has_infra_source:
+                    merged[key] = panel
+                elif key not in merged:
+                    merged[key] = panel
+                continue
+            if key not in merged:
+                merged[key] = panel
+            elif panel.has_infra_source and not merged[key].has_infra_source:
+                merged[key] = _merge_panel_results(merged.get(key), panel)
 
+        merged_list = list(merged.values())
+        recomputed = self._sellable.recompute_family_constraints(
+            merged_list,
+            dc_code="*",
+            infra_dc_codes=dc_codes,
+        )
         logger.info(
             "inventory overview: aggregated sellable panels from %d DC(s), %d panel keys",
             len(dc_codes),
-            len(merged),
+            len(recomputed),
         )
-        return list(merged.values())
+        return recomputed
 
     def _resolve_labels(
         self,
@@ -422,6 +438,7 @@ class InventoryOverviewService:
             "delta_used_vs_crm": delta,
             "overage_qty": overage if panel.has_infra_source else 0.0,
             "efficiency_pct": round((used / crm_sold) * 100.0, 2) if crm_sold > 0 and panel.has_infra_source else None,
+            "data_quality": _assess_data_quality(panel, crm_sold=crm_sold),
         }
         return self._enrich_row(
             base,
@@ -583,7 +600,9 @@ class InventoryOverviewService:
             "note": (
                 "Capacity units are heterogeneous across panels; compare quantities in the service list."
                 + (
-                    " Global view sums infra metrics across all DCs with configured bindings."
+                    " Global view sums DC-scoped infra totals across bound DCs, then "
+                    "recomputes sellable per family; global-only panels (e.g. NetBackup) "
+                    "are counted once."
                     if (dc_code or "*") == "*"
                     else ""
                 )
