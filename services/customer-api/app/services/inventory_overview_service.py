@@ -19,6 +19,7 @@ from app.services.webui_db import WebuiPool
 from app.utils.usage_comparison import (
     aggregate_entitled_by_panel_key,
     panel_inventory_status,
+    panel_inventory_status_virt,
 )
 from shared.sellable.computation import compute_potential_tl
 from shared.sellable.models import PanelResult
@@ -31,6 +32,13 @@ _INVENTORY_DC_PARALLELISM = max(1, int(os.getenv("INVENTORY_DC_PARALLELISM", "4"
 
 _HOST_DUAL_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_hyperconverged"})
 _ALLOC_ONLY_FAMILIES: frozenset[str] = frozenset({"virt_power", "virt_power_hana"})
+_INVENTORY_VIRT_FAMILIES: frozenset[str] = frozenset({
+    "virt_classic",
+    "virt_hyperconverged",
+    "virt_km",
+    "virt_power",
+    "virt_power_hana",
+})
 
 _VIRT_FAMILY_LABELS: dict[str, str] = {
     "virt_classic": "Klasik Mimari",
@@ -160,12 +168,22 @@ def _assess_data_quality(
     total = float(panel.total or 0.0)
     allocated = float(panel.allocated or 0.0)
     crm = max(float(crm_sold or 0.0), 1.0)
+    unit = (panel.display_unit or "").strip().upper()
+    if panel.family not in _INVENTORY_VIRT_FAMILIES and allocated > total > 0:
+        return "suspect"
+    if unit == "TB" and total > 1e4:
+        return "suspect"
+    if unit == "GB" and total > 1e7:
+        return "suspect"
+    if unit == "VCPU" and total > 1e6:
+        return "suspect"
     if total > 1e9 or total > 100.0 * crm:
         return "suspect"
     if (
         allocated <= 0.0
         and total > 0.0
         and (panel.computation_mode or "") in ("aggregated", "cluster_fallback")
+        and panel.family not in _INVENTORY_VIRT_FAMILIES
     ):
         return "suspect"
     return None
@@ -180,7 +198,12 @@ def _family_sellable_profile(family_key: str) -> str:
     return "standard"
 
 
-def _sellable_track_fields(panel: PanelResult, *, has_infra: bool) -> dict[str, Any]:
+def _sellable_track_fields(
+    panel: PanelResult,
+    *,
+    has_infra: bool,
+    hide_used: bool = False,
+) -> dict[str, Any]:
     """Dual-track sellable quantities and TL for virtualization families."""
     if not has_infra:
         return {
@@ -204,9 +227,12 @@ def _sellable_track_fields(panel: PanelResult, *, has_infra: bool) -> dict[str, 
     if potential_tl_alloc is None and panel.potential_tl is not None:
         potential_tl_alloc = panel.potential_tl
     potential_tl_max = panel.potential_tl_max
+    used_tl = None
+    if not hide_used and panel.has_price:
+        used_tl = compute_potential_tl(used, unit_price)
     return {
         "unit_price_tl": unit_price if panel.has_price else None,
-        "used_tl": compute_potential_tl(used, unit_price) if panel.has_price else None,
+        "used_tl": used_tl,
         "sellable_profile": _family_sellable_profile(panel.family),
         "sellable_alloc_qty": alloc_qty,
         "sellable_max_qty": max_qty,
@@ -527,18 +553,6 @@ class InventoryOverviewService:
         used = float(panel.allocated or 0.0)
         sellable = float(panel.sellable_constrained or 0.0)
         total = float(panel.total or 0.0) if panel.has_infra_source else None
-        used_out = used if panel.has_infra_source else None
-        sellable_out = sellable if panel.has_infra_source else None
-        free_out = max(float(total or 0) - used, 0.0) if panel.has_infra_source and total is not None else None
-        status = panel_inventory_status(
-            crm_sold_qty=crm_sold,
-            used_qty=used if panel.has_infra_source else 0.0,
-            has_infra_source=panel.has_infra_source,
-            under_pct=under_pct,
-            over_pct=over_pct,
-        )
-        delta = (used - crm_sold) if panel.has_infra_source else None
-        overage = max(0.0, used - crm_sold) if panel.has_infra_source else 0.0
         service_label, family_key, family_label, display_unit = self._resolve_labels(
             panel.panel_key,
             panel=panel,
@@ -546,6 +560,50 @@ class InventoryOverviewService:
             panel_defs=panel_defs,
             service_pages=service_pages,
         )
+        hide_used = family_key in _INVENTORY_VIRT_FAMILIES
+        if hide_used:
+            used_out = None
+            free_out = (
+                max(float(total or 0) - crm_sold, 0.0)
+                if panel.has_infra_source and total is not None
+                else None
+            )
+            status = panel_inventory_status_virt(
+                crm_sold_qty=crm_sold,
+                total_qty=total,
+                has_infra_source=panel.has_infra_source,
+                under_pct=under_pct,
+                over_pct=over_pct,
+            )
+            delta = (crm_sold - float(total or 0)) if panel.has_infra_source and total is not None else None
+            overage = max(0.0, crm_sold - float(total or 0)) if panel.has_infra_source and total is not None else 0.0
+            efficiency = (
+                round((crm_sold / float(total)) * 100.0, 2)
+                if total and total > 0 and panel.has_infra_source
+                else None
+            )
+        else:
+            used_out = used if panel.has_infra_source else None
+            free_out = (
+                max(float(total or 0) - used, 0.0)
+                if panel.has_infra_source and total is not None
+                else None
+            )
+            status = panel_inventory_status(
+                crm_sold_qty=crm_sold,
+                used_qty=used if panel.has_infra_source else 0.0,
+                has_infra_source=panel.has_infra_source,
+                under_pct=under_pct,
+                over_pct=over_pct,
+            )
+            delta = (used - crm_sold) if panel.has_infra_source else None
+            overage = max(0.0, used - crm_sold) if panel.has_infra_source else 0.0
+            efficiency = (
+                round((used / crm_sold) * 100.0, 2)
+                if crm_sold > 0 and panel.has_infra_source
+                else None
+            )
+        sellable_out = sellable if panel.has_infra_source else None
         base = {
             "panel_key": panel.panel_key,
             "label": service_label,
@@ -564,9 +622,10 @@ class InventoryOverviewService:
             "status": status,
             "delta_used_vs_crm": delta,
             "overage_qty": overage if panel.has_infra_source else 0.0,
-            "efficiency_pct": round((used / crm_sold) * 100.0, 2) if crm_sold > 0 and panel.has_infra_source else None,
+            "efficiency_pct": efficiency,
+            "inventory_hide_used": hide_used,
             "data_quality": _assess_data_quality(panel, crm_sold=crm_sold),
-            **_sellable_track_fields(panel, has_infra=panel.has_infra_source),
+            **_sellable_track_fields(panel, has_infra=panel.has_infra_source, hide_used=hide_used),
         }
         return self._enrich_row(
             base,

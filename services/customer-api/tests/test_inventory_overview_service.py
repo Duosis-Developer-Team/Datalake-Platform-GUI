@@ -14,6 +14,7 @@ from app.utils.usage_comparison import (
     aggregate_entitled_by_panel_key,
     normalize_entitled_qty,
     panel_inventory_status,
+    panel_inventory_status_virt,
 )
 from shared.sellable.computation import apply_utilization_gate, compute_potential_tl
 from shared.sellable.models import PanelResult
@@ -92,6 +93,15 @@ def test_panel_inventory_status_cases():
     assert panel_inventory_status(crm_sold_qty=10, used_qty=15, has_infra_source=True) == "over"
 
 
+def test_panel_inventory_status_virt_uses_crm_vs_total():
+    assert panel_inventory_status_virt(
+        crm_sold_qty=30.0, total_qty=100.0, has_infra_source=True,
+    ) == "under"
+    assert panel_inventory_status_virt(
+        crm_sold_qty=120.0, total_qty=100.0, has_infra_source=True,
+    ) == "over"
+
+
 def test_family_sellable_profile_mapping():
     assert _family_sellable_profile("virt_classic") == "dual_track"
     assert _family_sellable_profile("virt_hyperconverged") == "dual_track"
@@ -127,7 +137,10 @@ def test_build_panel_row_includes_dual_track_fields(inventory_svc):
     payload = inventory_svc.compute_inventory_overview("*")
     cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
     assert cpu["sellable_profile"] == "dual_track"
-    assert cpu["used_tl"] == 60000.0
+    assert cpu["inventory_hide_used"] is True
+    assert cpu["used_qty"] is None
+    assert cpu["used_tl"] is None
+    assert cpu["free_qty"] == 70.0
     assert cpu["unit_price_tl"] == 1500.0
     assert cpu["sellable_alloc_qty"] == 18.0
     assert cpu["sellable_max_qty"] == 22.0
@@ -286,9 +299,9 @@ def test_compute_inventory_overview_merges_panels(inventory_svc):
     panels = {p["panel_key"]: p for p in payload["panels"]}
     cpu = panels["virt_classic_cpu"]
     assert cpu["crm_sold_qty"] == 30.0
-    assert cpu["used_qty"] == 40.0
+    assert cpu["used_qty"] is None
     assert cpu["sellable_qty"] == 20.0
-    assert cpu["free_qty"] == 60.0
+    assert cpu["free_qty"] == 70.0
     assert cpu["service_label"] == "Klasik Mimari — CPU"
     assert cpu["family_label"] == "Klasik Mimari"
     assert cpu["infra_binding"] == "bound"
@@ -375,9 +388,9 @@ def test_global_inventory_aggregates_per_dc_infra():
     payload = svc.compute_inventory_overview("*")
     cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
     assert cpu["total"] == 150.0
-    assert cpu["used_qty"] == 60.0
+    assert cpu["used_qty"] is None
     assert cpu["sellable_qty"] == 60.0
-    assert cpu["free_qty"] == 90.0
+    assert cpu["free_qty"] == 120.0
     assert cpu["potential_tl"] == 90000.0
     assert cpu["has_infra_source"] is True
     assert cpu["computation_mode"] == "aggregated"
@@ -584,5 +597,6 @@ def test_inventory_uses_datacenter_codes_when_infra_bindings_wildcard_only():
     payload = svc.compute_inventory_overview("*")
     cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
     assert cpu["total"] == 150.0
-    assert cpu["used_qty"] == 15.0
+    assert cpu["used_qty"] is None
+    assert cpu["free_qty"] == 150.0
     sellable._fetch_datacenter_codes.assert_called_once()

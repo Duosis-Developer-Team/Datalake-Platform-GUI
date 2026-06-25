@@ -245,6 +245,58 @@ def test_sum_sql_ibm_lpar_general_latest_per_lpar():
     assert params == ["%ict11%"]
 
 
+def test_sum_sql_s3_pool_metrics_latest_per_pool():
+    svc = SellableService.__new__(SellableService)
+    sql, _params = SellableService._sum_sql(
+        svc,
+        column="total_capacity_bytes",
+        physical_table="raw_s3icos_pool_metrics",
+        where_sql=" WHERE pool_name ILIKE %s",
+        params=["%DC14%"],
+    )
+    assert "DISTINCT ON (pool_name)" in sql
+    assert "_infra_s3.total_capacity_bytes" in sql
+
+
+def test_sum_sql_netbackup_latest_per_pool_id():
+    svc = SellableService.__new__(SellableService)
+    sql, _params = SellableService._sum_sql(
+        svc,
+        column="usablesizebytes",
+        physical_table="raw_netbackup_disk_pools_metrics",
+        where_sql="",
+        params=[],
+    )
+    assert "DISTINCT ON (id)" in sql
+    assert "_infra_nb.usablesizebytes" in sql
+
+
+def test_sum_sql_vm_metrics_latest_per_uuid():
+    svc = SellableService.__new__(SellableService)
+    sql, _params = SellableService._sum_sql(
+        svc,
+        column="provisioned_space_gb",
+        physical_table="vm_metrics",
+        where_sql=" WHERE datacenter ILIKE %s",
+        params=["DC13%"],
+    )
+    assert "DISTINCT ON (uuid)" in sql
+    assert "_infra_vm.provisioned_space_gb" in sql
+
+
+def test_dc_pattern_prefix_not_substring():
+    assert SellableService._dc_pattern("*") == "%"
+    assert SellableService._dc_pattern("DC13") == "DC13%"
+    assert SellableService._dc_pattern("DC1") == "DC1%"
+
+
+def test_convert_redis_stor_provisioned_gb_stays_gb_for_tb_target():
+    out = SellableService._convert_redis_field_unit(
+        1024.0, "classic", "stor_provisioned_gb", "GB",
+    )
+    assert out == 1024.0
+
+
 # ---------------------------------------------------------------------------
 # Redis-backed allocated fetch tests
 # ---------------------------------------------------------------------------
@@ -1765,4 +1817,4 @@ def test_site_filter_pattern_for_s3_panels():
 
 
 def test_sellable_payload_version_bumped_for_data_accuracy():
-    assert SELLABLE_PAYLOAD_VERSION >= 7
+    assert SELLABLE_PAYLOAD_VERSION >= 8

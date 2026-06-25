@@ -71,6 +71,41 @@ _SUBQUERY_NUTANIX_CLUSTER_LATEST = """(
     ORDER BY cluster_uuid, collection_time DESC
 ) AS _infra_ncm"""
 
+_SUBQUERY_S3_POOL_LATEST = """(
+    SELECT DISTINCT ON (pool_name)
+        *
+    FROM raw_s3icos_pool_metrics
+    ORDER BY pool_name, collection_timestamp DESC
+) AS _infra_s3"""
+
+_SUBQUERY_NETBACKUP_POOL_LATEST = """(
+    SELECT DISTINCT ON (id)
+        *
+    FROM raw_netbackup_disk_pools_metrics
+    ORDER BY id, collection_timestamp DESC
+) AS _infra_nb"""
+
+_SUBQUERY_VEEAM_REPO_LATEST = """(
+    SELECT DISTINCT ON (id)
+        *
+    FROM raw_veeam_repositories_states
+    ORDER BY id, collection_time DESC
+) AS _infra_veeam"""
+
+_SUBQUERY_VM_METRICS_LATEST = """(
+    SELECT DISTINCT ON (uuid)
+        *
+    FROM vm_metrics
+    ORDER BY uuid, "timestamp" DESC
+) AS _infra_vm"""
+
+_SUBQUERY_NUTANIX_VM_LATEST = """(
+    SELECT DISTINCT ON (vm_uuid)
+        *
+    FROM nutanix_vm_metrics
+    ORDER BY vm_uuid, collection_time DESC
+) AS _infra_nutanix_vm"""
+
 # -- Redis-backed allocated lookup (vm_metrics / nutanix_vm_metrics) -----------
 
 # How many days back to use when constructing the dc_details Redis key.
@@ -85,7 +120,7 @@ _SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT",
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 7
+SELLABLE_PAYLOAD_VERSION: int = 8
 
 # Site-scoped S3 panels map to datalake pool_name prefixes (not city substrings).
 _SITE_SCOPED_PANEL_PATTERNS: dict[str, str] = {
@@ -157,12 +192,14 @@ _REDIS_FIELD_UNITS: dict[tuple[str, str], str] = {
     ("classic", "mem_used"): "GB",
     ("classic", "stor_cap"): "TB",
     ("classic", "stor_used"): "TB",
+    ("classic", "stor_provisioned_gb"): "GB",
     ("hyperconv", "cpu_cap"): "GHz",
     ("hyperconv", "cpu_used"): "GHz",
     ("hyperconv", "mem_cap"): "GB",
     ("hyperconv", "mem_used"): "GB",
     ("hyperconv", "stor_cap"): "TB",
     ("hyperconv", "stor_used"): "TB",
+    ("hyperconv", "stor_provisioned_gb"): "GB",
     ("power", "cpu_total_procunits"): "procunit",
     ("power", "cpu_assigned"): "procunit",
     ("power", "cpu_used"): "procunit",
@@ -775,6 +812,36 @@ class SellableService:
                 f"FROM {_SUBQUERY_NUTANIX_CLUSTER_LATEST} {where_sql};"
             )
             return sql, list(params)
+        if base == "raw_s3icos_pool_metrics":
+            sql = (
+                f"SELECT COALESCE(SUM(_infra_s3.{col}), 0)::double precision "
+                f"FROM {_SUBQUERY_S3_POOL_LATEST} {where_sql};"
+            )
+            return sql, list(params)
+        if base == "raw_netbackup_disk_pools_metrics":
+            sql = (
+                f"SELECT COALESCE(SUM(_infra_nb.{col}), 0)::double precision "
+                f"FROM {_SUBQUERY_NETBACKUP_POOL_LATEST} {where_sql};"
+            )
+            return sql, list(params)
+        if base == "raw_veeam_repositories_states":
+            sql = (
+                f"SELECT COALESCE(SUM(_infra_veeam.{col}), 0)::double precision "
+                f"FROM {_SUBQUERY_VEEAM_REPO_LATEST} {where_sql};"
+            )
+            return sql, list(params)
+        if base == "vm_metrics":
+            sql = (
+                f"SELECT COALESCE(SUM(_infra_vm.{col}), 0)::double precision "
+                f"FROM {_SUBQUERY_VM_METRICS_LATEST} {where_sql};"
+            )
+            return sql, list(params)
+        if base == "nutanix_vm_metrics":
+            sql = (
+                f"SELECT COALESCE(SUM(_infra_nutanix_vm.{col}), 0)::double precision "
+                f"FROM {_SUBQUERY_NUTANIX_VM_LATEST} {where_sql};"
+            )
+            return sql, list(params)
         if base == "ibm_server_general":
             pattern = params[0] if params else "%"
             sql = f"""
@@ -1039,9 +1106,10 @@ SELECT _tot, _alloc FROM latest
 
     @staticmethod
     def _dc_pattern(dc_code: str) -> str:
+        """Prefix ILIKE pattern — avoids DC1 matching DC13 rows."""
         if not dc_code or dc_code == "*":
             return "%"
-        return f"%{dc_code.lower()}%"
+        return f"{dc_code}%"
 
     @staticmethod
     def _utc_today() -> datetime.date:

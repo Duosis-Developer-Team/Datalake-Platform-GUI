@@ -243,6 +243,34 @@ def compliance_row_status(
     )
 
 
+def panel_inventory_status_virt(
+    *,
+    crm_sold_qty: float,
+    total_qty: float | None,
+    has_infra_source: bool,
+    under_pct: float = 80.0,
+    over_pct: float = 110.0,
+) -> str:
+    """Inventory status for virtualization families (no infra Used column)."""
+    if not has_infra_source and crm_sold_qty > 0:
+        return "crm_only"
+    if crm_sold_qty <= 0:
+        return "no_usage"
+    cap = float(total_qty or 0.0)
+    if cap <= 0:
+        return "no_usage"
+    overage_qty = max(0.0, crm_sold_qty - cap)
+    eff_pct = round((crm_sold_qty / cap) * 100.0, 2)
+    return compliance_row_status(
+        entitled_qty=cap,
+        used_qty=crm_sold_qty,
+        overage_qty=overage_qty,
+        efficiency_pct=eff_pct,
+        under_pct=under_pct,
+        over_pct=over_pct,
+    )
+
+
 def panel_inventory_status(
     *,
     crm_sold_qty: float,

@@ -40,16 +40,17 @@ def _sample_row(**kwargs):
 
 def test_columns_for_family_profiles():
     assert len(columns_for_family("standard")) == 6
-    assert len(columns_for_family("dual_track")) == 8
-    assert len(columns_for_family("allocation_only")) == 7
+    assert len(columns_for_family("dual_track")) == 7
+    assert len(columns_for_family("allocation_only")) == 6
+    assert len(columns_for_family("virt_km", hide_used=True)) == 5
 
 
 def test_prepare_service_row_formats_qty_tl_blocks():
-    row = prepare_service_row(_sample_row())
+    row = prepare_service_row(_sample_row(inventory_hide_used=True))
     assert row["service_label"] == "Klasik Mimari — CPU"
     assert "60 vCPU" in row["free_fmt"]
     assert "45,000 TL" in row["crm_sold_fmt"]
-    assert "60,000 TL" in row["used_fmt"]
+    assert row["used_fmt"] == "—\n—"
     assert "18 vCPU" in row["sellable_alloc_fmt"]
     assert "22 vCPU" in row["sellable_max_fmt"]
 

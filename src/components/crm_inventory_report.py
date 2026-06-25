@@ -19,6 +19,22 @@ _BASE_COLUMNS = [
     {"name": "Free", "id": "free_fmt"},
 ]
 
+_VIRT_BASE_COLUMNS = [
+    {"name": "Service", "id": "service_label"},
+    {"name": "Unit", "id": "display_unit"},
+    {"name": "CRM Sold", "id": "crm_sold_fmt"},
+    {"name": "Total", "id": "total_fmt"},
+    {"name": "Free", "id": "free_fmt"},
+]
+
+_INVENTORY_VIRT_FAMILIES = frozenset({
+    "virt_classic",
+    "virt_hyperconverged",
+    "virt_km",
+    "virt_power",
+    "virt_power_hana",
+})
+
 _DUAL_TRACK_COLUMNS = [
     {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
     {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
@@ -65,14 +81,22 @@ _TABLE_STYLE_HEADER = {
 }
 
 
-def columns_for_family(family: str | None) -> list[dict[str, str]]:
+def columns_for_family(
+    family: str | None,
+    *,
+    hide_used: bool = False,
+) -> list[dict[str, str]]:
     """Return DataTable columns for a family sellable profile."""
     profile = (family or "standard").strip()
+    use_virt_base = hide_used or profile in ("dual_track", "allocation_only")
+    if profile in _INVENTORY_VIRT_FAMILIES:
+        use_virt_base = True
+    base_cols = _VIRT_BASE_COLUMNS if use_virt_base else _BASE_COLUMNS
     if profile == _FLAT_VIEW_FAMILY or profile == "dual_track":
-        return [*list(_BASE_COLUMNS), *list(_DUAL_TRACK_COLUMNS)]
+        return [*list(base_cols), *list(_DUAL_TRACK_COLUMNS)]
     if profile == "allocation_only":
-        return [*list(_BASE_COLUMNS), *list(_ALLOC_ONLY_COLUMNS)]
-    return list(_BASE_COLUMNS)
+        return [*list(base_cols), *list(_ALLOC_ONLY_COLUMNS)]
+    return list(base_cols)
 
 
 def _fmt_qty(value: Any, unit: str) -> str:
@@ -104,6 +128,7 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
     potential_tl_max = row.get("potential_tl_max")
 
     free_tl = potential_tl if profile == "standard" and has_infra else None
+    hide_used = bool(row.get("inventory_hide_used"))
 
     return {
         "panel_key": row.get("panel_key") or "",
@@ -114,10 +139,14 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "crm_sold_fmt": shared.fmt_qty_tl_block(
             row.get("crm_sold_qty"), unit, crm_sold_tl,
         ),
-        "used_fmt": shared.fmt_qty_tl_block(
-            row.get("used_qty"), unit, used_tl,
-            qty_missing="—",
-        ) if has_infra else "—\n—",
+        "used_fmt": (
+            "—\n—"
+            if hide_used
+            else shared.fmt_qty_tl_block(
+                row.get("used_qty"), unit, used_tl,
+                qty_missing="—",
+            ) if has_infra else "—\n—"
+        ),
         "free_fmt": shared.fmt_qty_tl_block(
             row.get("free_qty"), unit, free_tl,
             qty_missing="—",
@@ -189,6 +218,7 @@ def build_report_table(
     include_family: bool = False,
     family: str | None = None,
     sellable_profile: str | None = None,
+    hide_used: bool = False,
 ) -> dash_table.DataTable:
     data = [prepare_service_row(r) for r in rows]
     profile = sellable_profile
@@ -196,7 +226,10 @@ def build_report_table(
         profile = str(rows[0].get("sellable_profile") or "standard")
     if profile is None and family:
         profile = family if family in ("dual_track", "allocation_only") else None
-    columns = columns_for_family(profile or family)
+    row_hide_used = hide_used or any(r.get("inventory_hide_used") for r in rows)
+    if family and family in _INVENTORY_VIRT_FAMILIES:
+        row_hide_used = True
+    columns = columns_for_family(profile or family, hide_used=row_hide_used)
     if include_family:
         columns = [_FLAT_EXTRA_COLUMN, *columns]
     return dash_table.DataTable(
@@ -267,6 +300,7 @@ def build_family_accordion(
         issues = _family_issue_count(filtered)
         potential = _family_potential_tl(filtered)
         profile = _family_sellable_profile(fam, filtered)
+        family_key = str(fam.get("family") or "")
         badges = [
             dmc.Badge(f"{len(filtered)} services", color="gray", variant="light", size="sm"),
             dmc.Badge(shared.fmt_tl(potential), color="indigo", variant="light", size="sm"),
@@ -288,6 +322,8 @@ def build_family_accordion(
                             filtered,
                             table_id=f"{id_prefix}-family-{idx}",
                             sellable_profile=profile,
+                            family=family_key,
+                            hide_used=family_key in _INVENTORY_VIRT_FAMILIES,
                         ),
                     ),
                 ],
