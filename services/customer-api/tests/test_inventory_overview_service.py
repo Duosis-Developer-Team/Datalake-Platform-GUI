@@ -234,6 +234,8 @@ def inventory_svc():
     ]
     sellable._count_unmapped_products.return_value = 3
     sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._fetch_datacenter_codes.return_value = []
+    sellable.compute_site_scoped_panels.return_value = []
 
     sales = MagicMock()
     def _run_query(sql, params):
@@ -542,3 +544,45 @@ def test_assess_data_quality_flags_unit_conversion_missing():
         notes=["unit_conversion_missing: Hz->vCPU (total)"],
     )
     assert _assess_data_quality(panel, crm_sold=10.0) == "suspect"
+
+
+def test_inventory_uses_datacenter_codes_when_infra_bindings_wildcard_only():
+    """When gui_panel_infra_source has only dc_code='*', aggregate per platform DC."""
+    sellable = MagicMock()
+    sellable.is_available = True
+    sellable._fetch_datacenter_codes.return_value = ["ANK", "IST"]
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._count_unmapped_products.return_value = 0
+    sellable.compute_site_scoped_panels.return_value = []
+
+    def _compute(dc_code="*", **kwargs):
+        if dc_code == "ANK":
+            return [_panel(total=100.0, allocated=10.0)]
+        if dc_code == "IST":
+            return [_panel(total=50.0, allocated=5.0)]
+        return []
+
+    sellable.compute_all_panels.side_effect = _compute
+
+    sales = MagicMock()
+    sales._run_query.return_value = []
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = _webui_rows
+
+    config = MagicMock()
+    config.get_calc_dict.return_value = {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=webui,
+        config=config,
+        crm_redis=None,
+    )
+    payload = svc.compute_inventory_overview("*")
+    cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
+    assert cpu["total"] == 150.0
+    assert cpu["used_qty"] == 15.0
+    sellable._fetch_datacenter_codes.assert_called_once()

@@ -280,15 +280,33 @@ class InventoryOverviewService:
         return {p.panel_key: p.display_unit for p in panels if p.panel_key}
 
     def _list_infra_dc_codes(self) -> list[str]:
-        """Return DC codes that have configured infra bindings in webui-db."""
-        if not self._webui or not self._webui.is_available:
-            return []
-        rows = self._webui.run_rows(sellable_sq.LIST_INFRA_DC_CODES)
-        return [
-            str(r["dc_code"]).strip()
-            for r in rows
-            if r.get("dc_code") and str(r["dc_code"]).strip() not in ("", "*")
-        ]
+        """Return DC codes for global inventory per-DC aggregation.
+
+        Prefer explicit per-DC rows in ``gui_panel_infra_source``. When all bindings
+        are wildcard-only (``dc_code='*'`` with ``filter_clause``), fall back to
+        active datacenter codes from datacenter-api / Redis so panels are computed
+        once per DC instead of a single global SQL SUM.
+        """
+        codes: list[str] = []
+        if self._webui and self._webui.is_available:
+            rows = self._webui.run_rows(sellable_sq.LIST_INFRA_DC_CODES)
+            codes = [
+                str(r["dc_code"]).strip()
+                for r in rows
+                if r.get("dc_code") and str(r["dc_code"]).strip() not in ("", "*")
+            ]
+        if codes:
+            return codes
+        fallback = self._sellable._fetch_datacenter_codes()
+        if not isinstance(fallback, list):
+            fallback = []
+        if fallback:
+            logger.info(
+                "inventory overview: wildcard-only infra bindings; aggregating across "
+                "%d datacenter code(s) from platform",
+                len(fallback),
+            )
+        return fallback
 
     def _load_global_only_panel_keys(self) -> frozenset[str]:
         """Panels with wildcard-only infra bindings and no per-DC filter."""
