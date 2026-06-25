@@ -83,6 +83,8 @@ def _panel(**kwargs) -> PanelResult:
 
 
 def _webui_rows(sql: str):
+    if "FROM   gui_panel_infra_source" in sql and "DISTINCT dc_code" in sql:
+        return []
     if "FROM   gui_panel_definition" in sql:
         return [
             {
@@ -217,3 +219,71 @@ def test_compute_inventory_overview_merges_panels(inventory_svc):
     assert bkp["status"] == "crm_only"
     assert bkp["service_label"] == "Veeam Cloud Connect Backup"
     assert bkp["infra_binding"] == "crm_only"
+
+
+def test_global_inventory_aggregates_per_dc_infra():
+    """dc_code='*' should sum total/used/sellable from each configured DC."""
+    sellable = MagicMock()
+    sellable.is_available = True
+
+    def _compute(dc_code="*", **kwargs):
+        if dc_code == "ANK":
+            return [
+                _panel(total=100.0, allocated=40.0, sellable_constrained=20.0, potential_tl=30000.0),
+            ]
+        if dc_code == "IST":
+            return [
+                _panel(total=50.0, allocated=20.0, sellable_constrained=10.0, potential_tl=15000.0),
+            ]
+        if dc_code == "*":
+            return [
+                _panel(total=0.0, allocated=0.0, sellable_constrained=0.0, potential_tl=0.0, has_infra_source=False),
+            ]
+        return []
+
+    sellable.compute_all_panels.side_effect = _compute
+    sellable._count_unmapped_products.return_value = 0
+
+    sales = MagicMock()
+    sales._run_query.side_effect = lambda sql, params: (
+        [{"productid": "x", "product_name": "Unknown", "entitled_qty": 1, "entitled_amount_tl": 1}]
+        if "!= ALL" in sql
+        else [{
+            "productid": "p-cpu",
+            "product_name": "KM CPU",
+            "resource_unit": "vCPU",
+            "entitled_qty": 30.0,
+            "entitled_amount_tl": 45000.0,
+        }]
+    )
+
+    def _webui_rows_multi(sql: str):
+        if "FROM   gui_panel_infra_source" in sql and "DISTINCT dc_code" in sql:
+            return [{"dc_code": "ANK"}, {"dc_code": "IST"}]
+        return _webui_rows(sql)
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = _webui_rows_multi
+
+    config = MagicMock()
+    config.get_calc_dict.return_value = {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=webui,
+        config=config,
+        crm_redis=None,
+    )
+    payload = svc.compute_inventory_overview("*")
+    cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
+    assert cpu["total"] == 150.0
+    assert cpu["used_qty"] == 60.0
+    assert cpu["sellable_qty"] == 30.0
+    assert cpu["free_qty"] == 90.0
+    assert cpu["potential_tl"] == 45000.0
+    assert cpu["has_infra_source"] is True
+    assert cpu["computation_mode"] == "aggregated"
+    assert payload["summary"]["infra_panel_count"] == 1
+    assert "across all DCs" in payload["summary"]["note"]
