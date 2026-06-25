@@ -48,6 +48,7 @@ _PAGE_LABELS = {
     "/availability-annual": "Yıllık Erişilebilirlik",
     "/query-explorer": "Query Explorer",
     "/crm/sellable-potential": "Satılabilir Potansiyel",
+    "/crm/inventory-overview": "CRM Kapasite Özeti",
     "/region-drilldown": "Bölge Detayı",
 }
 
@@ -59,6 +60,10 @@ _SUGGESTIONS = {
     "/customer-view": ["Seçili müşterinin kaynak kullanımını özetle", "SLA durumunu açıkla"],
     "/availability-annual": ["Yıllık erişilebilirlik trendini özetle", "En düşük SLA hangi müşteride?"],
     "/crm/sellable-potential": ["Öne çıkan satılabilir fırsatlar neler?", "Hangi panel riskli?"],
+    "/crm/inventory-overview": [
+        "CRM satılmış ile kullanılan arasındaki fark nedir?",
+        "Hangi panellerde uyumsuzluk var?",
+    ],
     "/query-explorer": ["Bu query sonuçlarını nasıl yorumlamalıyım?"],
     "/region-drilldown": ["Bu bölgedeki kapasiteyi özetle", "Hangi datacenter en yoğun?"],
 }

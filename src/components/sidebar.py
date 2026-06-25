@@ -16,6 +16,7 @@ NAV_ITEM_SPECS: list[tuple[str, str, str, str]] = [
         "page:availability_annual",
     ),
     ("/customers", "Customer View", "solar:users-group-rounded-bold-duotone", "page:customer_view"),
+    ("/crm/inventory-overview", "CRM Inventory", "solar:chart-2-bold-duotone", "page:dashboard_crm_inventory"),
     ("/query-explorer", "Query Explorer", "solar:code-square-bold-duotone", "page:query_explorer"),
 ]
 

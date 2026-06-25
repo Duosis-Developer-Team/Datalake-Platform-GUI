@@ -42,11 +42,12 @@ from app.core.redis_client import (
     init_redis_pool,
     redis_is_healthy,
 )
-from app.routers import admin_cache, crm_config, sellable, service_mapping
+from app.routers import admin_cache, crm_config, inventory, sellable, service_mapping
 from app.services.crm_config_service import CrmConfigService
 from app.services.currency_service import CurrencyService
 from app.services.customer_service import CustomerService
 from app.services.sales_service import SalesService
+from app.services.inventory_overview_service import InventoryOverviewService
 from app.services.sellable_service import SellableService
 from app.services.tagging_service import TaggingService
 from app.services.webui_db import WebuiPool
@@ -184,6 +185,13 @@ async def lifespan(app: FastAPI):
     app.state.currency = currency_svc
     app.state.tagging = tagging_svc
     app.state.sellable = sellable_svc
+    app.state.inventory = InventoryOverviewService(
+        sellable=sellable_svc,
+        sales=app.state.sales,
+        webui=webui,
+        config=config_svc,
+        crm_redis=crm_redis,
+    )
 
     app.state.scheduler = _start_scheduler(sellable_svc)
     yield
@@ -223,6 +231,13 @@ app.include_router(
     sellable.router,
     prefix="/api/v1",
     tags=["crm-sellable"],
+    dependencies=[Depends(verify_api_user)],
+)
+
+app.include_router(
+    inventory.router,
+    prefix="/api/v1",
+    tags=["crm-inventory"],
     dependencies=[Depends(verify_api_user)],
 )
 

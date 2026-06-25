@@ -189,6 +189,41 @@ ORDER BY sold_amount_tl DESC NULLS LAST;
 # statecode 0,1 = open; 3,4 = fulfilled/invoiced (ADR-0016 entitlement baseline).
 # ---------------------------------------------------------------------------
 
+SALES_ENTITLED_RAW_GLOBAL = """
+SELECT
+    d.productid,
+    d.product_name,
+    COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
+    SUM(d.quantity)::double precision       AS entitled_qty,
+    SUM(d.extendedamount)::double precision AS entitled_amount_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.statecode IN (0, 1, 3, 4)
+GROUP BY d.productid, d.product_name, COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet')
+ORDER BY entitled_amount_tl DESC NULLS LAST;
+"""
+
+UNMAPPED_ENTITLED_PRODUCTS = """
+SELECT
+    d.productid,
+    COALESCE(
+        NULLIF(TRIM(d.product_name), ''),
+        NULLIF(TRIM(p.name), ''),
+        d.productid
+    ) AS product_name,
+    COALESCE(NULLIF(TRIM(d.uomid_name), ''), 'Adet') AS resource_unit,
+    SUM(d.quantity)::double precision       AS entitled_qty,
+    SUM(d.extendedamount)::double precision AS entitled_amount_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+LEFT JOIN discovery_crm_products p ON p.productid = d.productid
+WHERE  so.statecode IN (0, 1, 3, 4)
+  AND  d.productid != ALL(%s::text[])
+GROUP BY d.productid, product_name, resource_unit
+HAVING SUM(d.quantity) > 0
+ORDER BY entitled_amount_tl DESC NULLS LAST;
+"""
+
 SALES_ENTITLED_RAW_BY_PRODUCT = """
 SELECT
     d.productid,

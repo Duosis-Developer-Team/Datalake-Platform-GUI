@@ -2070,6 +2070,17 @@ def get_sellable_summary_light(dc_code: str) -> dict:
     return get_sellable_summary(dc_code, rollup_only=True)
 
 
+def get_crm_inventory_overview(dc_code: str = "*") -> dict:
+    """Global CRM capacity vs entitled vs infra used overview."""
+    def fetch() -> dict:
+        qs = f"dc_code={quote(dc_code, safe='*')}"
+        data = _get_json(_get_client_crm(), f"/api/v1/crm/inventory-overview?{qs}")
+        return data if isinstance(data, dict) else {}
+
+    cache_key = f"api:crm_inventory_overview:{dc_code}"
+    return _api_cache_get_sellable_summary(cache_key, fetch, dc_code)
+
+
 def _normalize_clusters_arg(clusters: Optional[list]) -> Optional[list[str]]:
     """Coerce a clusters argument into a clean list[str] or None.
 
