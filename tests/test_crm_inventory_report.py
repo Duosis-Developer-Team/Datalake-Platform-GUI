@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from src.components.crm_inventory_report import (
     build_report_body,
+    columns_for_family,
     filter_by_search,
     filter_service_rows,
     prepare_service_row,
@@ -14,15 +15,22 @@ def _sample_row(**kwargs):
         "panel_key": "virt_classic_cpu",
         "service_label": "Klasik Mimari — CPU",
         "family_label": "Klasik Mimari",
+        "family": "virt_classic",
         "display_unit": "vCPU",
         "total": 100.0,
         "crm_sold_qty": 30.0,
+        "crm_sold_tl": 45000.0,
         "used_qty": 40.0,
+        "used_tl": 60000.0,
         "free_qty": 60.0,
         "sellable_qty": 20.0,
-        "delta_used_vs_crm": 10.0,
-        "status": "over",
         "potential_tl": 30000.0,
+        "sellable_profile": "dual_track",
+        "sellable_alloc_qty": 18.0,
+        "sellable_max_qty": 22.0,
+        "potential_tl_alloc": 27000.0,
+        "potential_tl_max": 33000.0,
+        "status": "over",
         "has_infra_source": True,
         "infra_binding": "bound",
     }
@@ -30,19 +38,37 @@ def _sample_row(**kwargs):
     return base
 
 
-def test_prepare_service_row_formats_columns():
+def test_columns_for_family_profiles():
+    assert len(columns_for_family("standard")) == 6
+    assert len(columns_for_family("dual_track")) == 8
+    assert len(columns_for_family("allocation_only")) == 7
+
+
+def test_prepare_service_row_formats_qty_tl_blocks():
     row = prepare_service_row(_sample_row())
     assert row["service_label"] == "Klasik Mimari — CPU"
-    assert row["free_fmt"] == "60 vCPU"
-    assert row["status"] == "over"
-    assert row["status_label"] == "Overage"
-    assert "█" in row["utilization_fmt"]
+    assert "60 vCPU" in row["free_fmt"]
+    assert "45,000 TL" in row["crm_sold_fmt"]
+    assert "60,000 TL" in row["used_fmt"]
+    assert "18 vCPU" in row["sellable_alloc_fmt"]
+    assert "22 vCPU" in row["sellable_max_fmt"]
 
 
 def test_prepare_service_row_marks_suspect_data_quality():
     row = prepare_service_row(_sample_row(data_quality="suspect"))
-    assert "Check data" in row["status_label"]
+    assert row["service_label"].startswith("⚠")
     assert row["data_quality"] == "suspect"
+
+
+def test_prepare_service_row_standard_free_shows_sellable_tl():
+    row = prepare_service_row(_sample_row(
+        sellable_profile="standard",
+        sellable_alloc_qty=None,
+        sellable_max_qty=None,
+    ))
+    assert "60 vCPU" in row["free_fmt"]
+    assert "30,000 TL" in row["free_fmt"]
+    assert row["sellable_alloc_fmt"] == "—\n—"
 
 
 def test_filter_by_search_matches_family():

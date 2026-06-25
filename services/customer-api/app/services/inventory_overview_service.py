@@ -18,12 +18,16 @@ from app.utils.usage_comparison import (
     aggregate_entitled_by_panel_key,
     panel_inventory_status,
 )
+from shared.sellable.computation import compute_potential_tl
 from shared.sellable.models import PanelResult
 
 logger = logging.getLogger(__name__)
 
 _INVENTORY_CACHE_TTL_SEC = 300.0
 _INVENTORY_REDIS_PREFIX = "crm:inventory_overview:"
+
+_HOST_DUAL_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_hyperconverged"})
+_ALLOC_ONLY_FAMILIES: frozenset[str] = frozenset({"virt_power", "virt_power_hana"})
 
 _VIRT_FAMILY_LABELS: dict[str, str] = {
     "virt_classic": "Klasik Mimari",
@@ -160,6 +164,50 @@ def _assess_data_quality(
     ):
         return "suspect"
     return None
+
+
+def _family_sellable_profile(family_key: str) -> str:
+    """Column profile for inventory report sellable tracks."""
+    if family_key in _HOST_DUAL_FAMILIES:
+        return "dual_track"
+    if family_key in _ALLOC_ONLY_FAMILIES:
+        return "allocation_only"
+    return "standard"
+
+
+def _sellable_track_fields(panel: PanelResult, *, has_infra: bool) -> dict[str, Any]:
+    """Dual-track sellable quantities and TL for virtualization families."""
+    if not has_infra:
+        return {
+            "unit_price_tl": None,
+            "used_tl": None,
+            "sellable_profile": _family_sellable_profile(panel.family),
+            "sellable_alloc_qty": None,
+            "sellable_max_qty": None,
+            "potential_tl_alloc": None,
+            "potential_tl_max": None,
+        }
+    unit_price = float(panel.unit_price_tl or 0.0)
+    used = float(panel.allocated or 0.0)
+    alloc_qty = panel.sellable_allocation
+    max_qty = panel.sellable_max_util
+    if alloc_qty is None and panel.sellable_effective is not None:
+        alloc_qty = panel.sellable_effective
+    if max_qty is None and panel.resource_kind == "ram" and panel.sellable_effective is not None:
+        max_qty = panel.sellable_effective
+    potential_tl_alloc = panel.potential_tl_min
+    if potential_tl_alloc is None and panel.potential_tl is not None:
+        potential_tl_alloc = panel.potential_tl
+    potential_tl_max = panel.potential_tl_max
+    return {
+        "unit_price_tl": unit_price if panel.has_price else None,
+        "used_tl": compute_potential_tl(used, unit_price) if panel.has_price else None,
+        "sellable_profile": _family_sellable_profile(panel.family),
+        "sellable_alloc_qty": alloc_qty,
+        "sellable_max_qty": max_qty,
+        "potential_tl_alloc": potential_tl_alloc,
+        "potential_tl_max": potential_tl_max,
+    }
 
 
 class InventoryOverviewService:
@@ -439,6 +487,7 @@ class InventoryOverviewService:
             "overage_qty": overage if panel.has_infra_source else 0.0,
             "efficiency_pct": round((used / crm_sold) * 100.0, 2) if crm_sold > 0 and panel.has_infra_source else None,
             "data_quality": _assess_data_quality(panel, crm_sold=crm_sold),
+            **_sellable_track_fields(panel, has_infra=panel.has_infra_source),
         }
         return self._enrich_row(
             base,
@@ -483,6 +532,14 @@ class InventoryOverviewService:
             "delta_used_vs_crm": None,
             "overage_qty": 0.0,
             "efficiency_pct": None,
+            "data_quality": None,
+            "unit_price_tl": None,
+            "used_tl": None,
+            "sellable_profile": _family_sellable_profile(family_key),
+            "sellable_alloc_qty": None,
+            "sellable_max_qty": None,
+            "potential_tl_alloc": None,
+            "potential_tl_max": None,
         }
         return self._enrich_row(
             base,

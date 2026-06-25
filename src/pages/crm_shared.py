@@ -29,6 +29,21 @@ def fmt_unit(value: float | int | None, unit: str) -> str:
         return f"— {unit}".strip()
 
 
+def fmt_qty_tl_block(
+    qty: float | int | None,
+    unit: str,
+    tl: float | int | None,
+    *,
+    qty_missing: str = "—",
+) -> str:
+    """Two-line cell: quantity on first line, TL on second."""
+    if qty is None and tl is None:
+        return qty_missing
+    qty_line = fmt_unit(qty, unit) if qty is not None else qty_missing
+    tl_line = fmt_tl(tl) if tl is not None else "—"
+    return f"{qty_line}\n{tl_line}"
+
+
 def kpi_card(
     title: str,
     value: str,

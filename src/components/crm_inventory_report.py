@@ -10,25 +10,31 @@ from src.pages import crm_shared as shared
 
 _ISSUE_STATUSES = frozenset({"over", "unsold_usage"})
 
-_REPORT_COLUMNS = [
-    {"name": "Service (CRM)", "id": "service_label"},
+_BASE_COLUMNS = [
+    {"name": "Service", "id": "service_label"},
     {"name": "Unit", "id": "display_unit"},
-    {"name": "Utilization", "id": "utilization_fmt"},
-    {"name": "Total", "id": "total_fmt"},
     {"name": "CRM Sold", "id": "crm_sold_fmt"},
+    {"name": "Total", "id": "total_fmt"},
     {"name": "Used", "id": "used_fmt"},
     {"name": "Free", "id": "free_fmt"},
-    {"name": "Sellable", "id": "sellable_fmt"},
-    {"name": "Gap", "id": "gap_fmt"},
-    {"name": "Status", "id": "status_label"},
-    {"name": "Potential TL", "id": "potential_tl_fmt"},
+]
+
+_DUAL_TRACK_COLUMNS = [
+    {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
+    {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
+]
+
+_ALLOC_ONLY_COLUMNS = [
+    {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
 ]
 
 _FLAT_EXTRA_COLUMN = {"name": "Family", "id": "family_label"}
 
+_FLAT_VIEW_FAMILY = "dual_track"
+
 _NUMERIC_COLS = {
-    "total_fmt", "crm_sold_fmt", "used_fmt", "free_fmt",
-    "sellable_fmt", "gap_fmt", "potential_tl_fmt",
+    "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
+    "sellable_alloc_fmt", "sellable_max_fmt",
 }
 
 _UNMAPPED_COLUMNS = [
@@ -45,6 +51,7 @@ _TABLE_STYLE_CELL = {
     "textAlign": "left",
     "border": "none",
     "borderBottom": "1px solid #E9EDF7",
+    "whiteSpace": "pre-line",
 }
 _TABLE_STYLE_HEADER = {
     "backgroundColor": "#F4F7FE",
@@ -56,37 +63,16 @@ _TABLE_STYLE_HEADER = {
     "top": 0,
     "zIndex": 1,
 }
-_STATUS_COLORS = {
-    "ok": "#12B76A",
-    "under": "#F79009",
-    "over": "#F04438",
-    "unsold_usage": "#F79009",
-    "crm_only": "#7C3AED",
-    "no_usage": "#98A2B3",
-}
-_ROW_ISSUE_STYLES = [
-    {
-        "if": {"filter_query": "{status} = over", "column_id": "status_label"},
-        "backgroundColor": "#FFF4F4",
-    },
-    {
-        "if": {"filter_query": "{status} = unsold_usage", "column_id": "status_label"},
-        "backgroundColor": "#FFFAEB",
-    },
-    {
-        "if": {"filter_query": "{status} = over"},
-        "backgroundColor": "#FFFBFB",
-    },
-    {
-        "if": {"filter_query": "{status} = unsold_usage"},
-        "backgroundColor": "#FFFCF5",
-    },
-    {
-        "if": {"filter_query": "{data_quality} = suspect", "column_id": "status_label"},
-        "backgroundColor": "#FEF3F2",
-        "color": "#B42318",
-    },
-]
+
+
+def columns_for_family(family: str | None) -> list[dict[str, str]]:
+    """Return DataTable columns for a family sellable profile."""
+    profile = (family or "standard").strip()
+    if profile == _FLAT_VIEW_FAMILY or profile == "dual_track":
+        return [*list(_BASE_COLUMNS), *list(_DUAL_TRACK_COLUMNS)]
+    if profile == "allocation_only":
+        return [*list(_BASE_COLUMNS), *list(_ALLOC_ONLY_COLUMNS)]
+    return list(_BASE_COLUMNS)
 
 
 def _fmt_qty(value: Any, unit: str) -> str:
@@ -98,41 +84,56 @@ def _fmt_qty(value: Any, unit: str) -> str:
         return "—"
 
 
-def _fmt_gap(delta: Any, unit: str) -> str:
-    if delta is None:
-        return "—"
-    try:
-        return f"{float(delta):+,.0f} {unit}".strip()
-    except (TypeError, ValueError):
-        return "—"
-
-
 def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
     unit = str(row.get("display_unit") or "")
     status = str(row.get("status") or "no_usage")
     data_quality = str(row.get("data_quality") or "")
-    status_label = shared.inventory_status_label(status)
+    profile = str(row.get("sellable_profile") or "standard")
+    has_infra = bool(row.get("has_infra_source"))
+
+    service_label = row.get("service_label") or row.get("label") or ""
     if data_quality == "suspect":
-        status_label = f"{status_label} · Check data"
+        service_label = f"⚠ {service_label}"
+
+    crm_sold_tl = row.get("crm_sold_tl")
+    used_tl = row.get("used_tl")
+    potential_tl = row.get("potential_tl")
+    sellable_alloc_qty = row.get("sellable_alloc_qty")
+    sellable_max_qty = row.get("sellable_max_qty")
+    potential_tl_alloc = row.get("potential_tl_alloc")
+    potential_tl_max = row.get("potential_tl_max")
+
+    free_tl = potential_tl if profile == "standard" and has_infra else None
+
     return {
         "panel_key": row.get("panel_key") or "",
-        "service_label": row.get("service_label") or row.get("label") or "",
+        "service_label": service_label,
         "family_label": row.get("family_label") or row.get("family") or "",
         "display_unit": unit,
-        "utilization_fmt": shared.utilization_summary(row.get("total"), row.get("used_qty")),
-        "total_fmt": _fmt_qty(row.get("total"), unit),
-        "crm_sold_fmt": _fmt_qty(row.get("crm_sold_qty"), unit),
-        "used_fmt": _fmt_qty(row.get("used_qty"), unit),
-        "free_fmt": _fmt_qty(row.get("free_qty"), unit),
-        "sellable_fmt": _fmt_qty(row.get("sellable_qty"), unit),
-        "gap_fmt": _fmt_gap(row.get("delta_used_vs_crm"), unit),
+        "total_fmt": _fmt_qty(row.get("total"), unit) if has_infra else "—",
+        "crm_sold_fmt": shared.fmt_qty_tl_block(
+            row.get("crm_sold_qty"), unit, crm_sold_tl,
+        ),
+        "used_fmt": shared.fmt_qty_tl_block(
+            row.get("used_qty"), unit, used_tl,
+            qty_missing="—",
+        ) if has_infra else "—\n—",
+        "free_fmt": shared.fmt_qty_tl_block(
+            row.get("free_qty"), unit, free_tl,
+            qty_missing="—",
+        ) if has_infra else "—\n—",
+        "sellable_alloc_fmt": shared.fmt_qty_tl_block(
+            sellable_alloc_qty, unit, potential_tl_alloc,
+        ) if profile in ("dual_track", "allocation_only") else "—\n—",
+        "sellable_max_fmt": shared.fmt_qty_tl_block(
+            sellable_max_qty, unit, potential_tl_max,
+        ) if profile == "dual_track" else "—\n—",
         "status": status,
-        "status_label": status_label,
         "data_quality": data_quality,
-        "potential_tl_fmt": shared.fmt_tl(row.get("potential_tl")),
+        "sellable_profile": profile,
         "crm_products_summary": row.get("crm_products_summary") or "",
         "infra_binding": row.get("infra_binding") or "",
-        "has_infra_source": bool(row.get("has_infra_source")),
+        "has_infra_source": has_infra,
     }
 
 
@@ -165,24 +166,18 @@ def filter_by_search(rows: list[dict[str, Any]], query: str | None) -> list[dict
 
 
 def _table_style_data_conditional() -> list[dict[str, Any]]:
-    styles: list[dict[str, Any]] = list(_ROW_ISSUE_STYLES)
-    for status, color in _STATUS_COLORS.items():
-        styles.append({
-            "if": {"filter_query": f"{{status}} = {status}", "column_id": "status_label"},
-            "color": color,
-            "fontWeight": "600",
-        })
+    styles: list[dict[str, Any]] = [
+        {
+            "if": {"filter_query": "{data_quality} = suspect", "column_id": "service_label"},
+            "backgroundColor": "#FEF3F2",
+            "color": "#B42318",
+        },
+    ]
     for col in _NUMERIC_COLS:
         styles.append({
             "if": {"column_id": col},
             "textAlign": "right",
         })
-    styles.append({
-        "if": {"column_id": "utilization_fmt"},
-        "fontFamily": "ui-monospace, monospace",
-        "fontSize": "11px",
-        "letterSpacing": "-0.02em",
-    })
     return styles
 
 
@@ -192,9 +187,16 @@ def build_report_table(
     table_id: str,
     page_size: int = 15,
     include_family: bool = False,
+    family: str | None = None,
+    sellable_profile: str | None = None,
 ) -> dash_table.DataTable:
     data = [prepare_service_row(r) for r in rows]
-    columns = list(_REPORT_COLUMNS)
+    profile = sellable_profile
+    if profile is None and rows:
+        profile = str(rows[0].get("sellable_profile") or "standard")
+    if profile is None and family:
+        profile = family if family in ("dual_track", "allocation_only") else None
+    columns = columns_for_family(profile or family)
     if include_family:
         columns = [_FLAT_EXTRA_COLUMN, *columns]
     return dash_table.DataTable(
@@ -202,7 +204,6 @@ def build_report_table(
         data=data,
         columns=columns,
         page_size=page_size,
-        filter_action="native",
         sort_action="native",
         sort_mode="multi",
         style_table={"overflowX": "auto", "borderRadius": "8px"},
@@ -226,7 +227,6 @@ def build_unmapped_table(rows: list[dict[str, Any]], *, table_id: str) -> dash_t
         data=data,
         columns=_UNMAPPED_COLUMNS,
         page_size=15,
-        filter_action="native",
         sort_action="native",
         sort_mode="multi",
         style_table={"overflowX": "auto"},
@@ -241,6 +241,12 @@ def _family_issue_count(panels: list[dict[str, Any]]) -> int:
 
 def _family_potential_tl(panels: list[dict[str, Any]]) -> float:
     return sum(float(p.get("potential_tl") or 0) for p in panels)
+
+
+def _family_sellable_profile(family: dict[str, Any], panels: list[dict[str, Any]]) -> str:
+    if panels:
+        return str(panels[0].get("sellable_profile") or "standard")
+    return "standard"
 
 
 def build_family_accordion(
@@ -260,6 +266,7 @@ def build_family_accordion(
         title = str(fam.get("family_label") or fam.get("label") or fam.get("family") or "Services")
         issues = _family_issue_count(filtered)
         potential = _family_potential_tl(filtered)
+        profile = _family_sellable_profile(fam, filtered)
         badges = [
             dmc.Badge(f"{len(filtered)} services", color="gray", variant="light", size="sm"),
             dmc.Badge(shared.fmt_tl(potential), color="indigo", variant="light", size="sm"),
@@ -280,6 +287,7 @@ def build_family_accordion(
                         children=build_report_table(
                             filtered,
                             table_id=f"{id_prefix}-family-{idx}",
+                            sellable_profile=profile,
                         ),
                     ),
                 ],
@@ -315,6 +323,7 @@ def build_flat_view(
         table_id="crm-inventory-flat-table",
         page_size=25,
         include_family=True,
+        sellable_profile=_FLAT_VIEW_FAMILY,
     )
 
 
@@ -362,7 +371,7 @@ def build_crm_only_section(
                         "Mapped CRM sales without infrastructure telemetry binding.",
                         size="xs", c="dimmed", mb="sm",
                     ),
-                    build_report_table(filtered, table_id=table_id),
+                    build_report_table(filtered, table_id=table_id, sellable_profile="standard"),
                 ],
             ),
         ],
@@ -431,7 +440,11 @@ def build_report_body(
                             f"{len(issue_rows)} service(s) with overage or unsold usage",
                             size="sm", c="dimmed", mb="sm",
                         ),
-                        build_report_table(issue_rows, table_id="crm-inventory-issues"),
+                        build_report_table(
+                            issue_rows,
+                            table_id="crm-inventory-issues",
+                            sellable_profile=_FLAT_VIEW_FAMILY,
+                        ),
                     ],
                 )
             )

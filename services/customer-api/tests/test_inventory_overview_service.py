@@ -6,7 +6,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.services.inventory_overview_service import InventoryOverviewService
+from app.services.inventory_overview_service import (
+    InventoryOverviewService,
+    _family_sellable_profile,
+)
 from app.utils.usage_comparison import (
     aggregate_entitled_by_panel_key,
     normalize_entitled_qty,
@@ -87,6 +90,49 @@ def test_panel_inventory_status_cases():
     assert panel_inventory_status(crm_sold_qty=0, used_qty=5, has_infra_source=True) == "unsold_usage"
     assert panel_inventory_status(crm_sold_qty=10, used_qty=0, has_infra_source=False) == "crm_only"
     assert panel_inventory_status(crm_sold_qty=10, used_qty=15, has_infra_source=True) == "over"
+
+
+def test_family_sellable_profile_mapping():
+    assert _family_sellable_profile("virt_classic") == "dual_track"
+    assert _family_sellable_profile("virt_hyperconverged") == "dual_track"
+    assert _family_sellable_profile("virt_power") == "allocation_only"
+    assert _family_sellable_profile("backup_netbackup") == "standard"
+
+
+def test_build_panel_row_includes_dual_track_fields(inventory_svc):
+    sellable = inventory_svc._sellable
+    sellable.compute_all_panels.return_value = [
+        _panel(
+            unit_price_tl=1500.0,
+            sellable_allocation=18.0,
+            sellable_max_util=22.0,
+            potential_tl_min=27000.0,
+            potential_tl_max=33000.0,
+        ),
+        _panel(
+            panel_key="backup_veeam",
+            label="Veeam Backup",
+            family="backup_veeam",
+            resource_kind="other",
+            display_unit="Adet",
+            total=0,
+            allocated=0,
+            sellable_constrained=0,
+            potential_tl=0,
+            has_infra_source=False,
+            has_price=True,
+            computation_mode=None,
+        ),
+    ]
+    payload = inventory_svc.compute_inventory_overview("*")
+    cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
+    assert cpu["sellable_profile"] == "dual_track"
+    assert cpu["used_tl"] == 60000.0
+    assert cpu["unit_price_tl"] == 1500.0
+    assert cpu["sellable_alloc_qty"] == 18.0
+    assert cpu["sellable_max_qty"] == 22.0
+    assert cpu["potential_tl_alloc"] == 27000.0
+    assert cpu["potential_tl_max"] == 33000.0
 
 
 def _panel(**kwargs) -> PanelResult:
