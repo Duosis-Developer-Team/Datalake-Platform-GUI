@@ -65,8 +65,7 @@ INSERT INTO gui_panel_definition (
 
 -- NetBackup CRM unit aligns with panel display_unit (TB).
 UPDATE gui_crm_service_pages
-SET    resource_unit = 'TB',
-       updated_at = NOW()
+SET    resource_unit = 'TB'
 WHERE  page_key = 'backup_netbackup_storage';
 
 COMMIT;
