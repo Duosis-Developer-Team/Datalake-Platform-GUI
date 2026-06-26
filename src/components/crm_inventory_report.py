@@ -131,7 +131,16 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
 
     service_label = row.get("service_label") or row.get("label") or ""
     if data_quality == "suspect":
+        reason_hint = {
+            "crm_exceeds_total": "CRM sold exceeds infra total (check units)",
+            "used_exceeds_total": "Used exceeds total capacity",
+            "unit_conversion_missing": "Unit conversion missing",
+            "zero_used_with_capacity": "Zero used with positive capacity",
+            "total_scale_anomaly": "Unusually large capacity value",
+        }.get(str(row.get("suspect_reason") or ""), "Data quality review suggested")
         service_label = f"⚠ {service_label}"
+        if row.get("suspect_reason"):
+            service_label = f"{service_label}\n({reason_hint})"
 
     crm_sold_tl = row.get("crm_sold_tl")
     used_tl = row.get("used_tl")
@@ -294,6 +303,10 @@ def _family_potential_tl(panels: list[dict[str, Any]]) -> float:
     return sum(float(p.get("potential_tl") or 0) for p in panels)
 
 
+def _family_crm_tl(panels: list[dict[str, Any]]) -> float:
+    return sum(float(p.get("crm_sold_tl") or 0) for p in panels)
+
+
 def _family_sellable_profile(family: dict[str, Any], panels: list[dict[str, Any]]) -> str:
     if panels:
         return str(panels[0].get("sellable_profile") or "standard")
@@ -317,12 +330,22 @@ def build_family_accordion(
         title = str(fam.get("family_label") or fam.get("label") or fam.get("family") or "Services")
         issues = _family_issue_count(filtered)
         potential = _family_potential_tl(filtered)
+        crm_tl = _family_crm_tl(filtered)
         profile = _family_sellable_profile(fam, filtered)
         family_key = str(fam.get("family") or "")
         badges = [
             dmc.Badge(f"{len(filtered)} services", color="gray", variant="light", size="sm"),
-            dmc.Badge(shared.fmt_tl(potential), color="indigo", variant="light", size="sm"),
+            dmc.Badge(
+                shared.fmt_tl(potential) if potential > 0 else shared.fmt_tl(crm_tl),
+                color="indigo",
+                variant="light",
+                size="sm",
+            ),
         ]
+        if potential <= 0 and crm_tl > 0:
+            badges.append(
+                dmc.Badge("CRM entitled", color="teal", variant="outline", size="xs"),
+            )
         if issues:
             badges.append(dmc.Badge(f"{issues} issues", color="red", variant="light", size="sm"))
         items.append(

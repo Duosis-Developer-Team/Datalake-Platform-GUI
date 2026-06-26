@@ -11,6 +11,7 @@ from app.services.inventory_overview_service import (
     _build_merged_s3_panel,
     _family_sellable_profile,
     _inventory_panel_hidden,
+    _merge_entitled_for_target,
     _merge_s3_site_entitled,
 )
 from app.utils.usage_comparison import (
@@ -48,10 +49,88 @@ def _recompute_panels(panels, **kwargs):
     return out
 
 
+def _panel_defs_default(**overrides) -> dict[str, dict]:
+    base = {
+        "virt_classic_cpu": {
+            "panel_key": "virt_classic_cpu",
+            "label": "Classic CPU",
+            "family": "virt_classic",
+            "inventory_visible": True,
+            "inventory_merge_target": None,
+        },
+        "backup_veeam": {
+            "panel_key": "backup_veeam",
+            "label": "Veeam Backup",
+            "family": "backup_veeam",
+            "inventory_visible": True,
+            "inventory_merge_target": None,
+        },
+        "backup_zerto_replication_cpu": {
+            "panel_key": "backup_zerto_replication_cpu",
+            "family": "backup_zerto_replication",
+            "inventory_visible": False,
+            "inventory_merge_target": None,
+        },
+        "backup_veeam_replication_ram": {
+            "panel_key": "backup_veeam_replication_ram",
+            "family": "backup_veeam_replication",
+            "inventory_visible": False,
+            "inventory_merge_target": None,
+        },
+        "backup_netbackup_storage": {
+            "panel_key": "backup_netbackup_storage",
+            "family": "backup_netbackup",
+            "inventory_visible": True,
+            "inventory_merge_target": None,
+        },
+        "storage_s3_ankara": {
+            "panel_key": "storage_s3_ankara",
+            "family": "storage_s3",
+            "inventory_visible": True,
+            "inventory_merge_target": "storage_s3",
+        },
+        "storage_s3_istanbul": {
+            "panel_key": "storage_s3_istanbul",
+            "family": "storage_s3",
+            "inventory_visible": True,
+            "inventory_merge_target": "storage_s3",
+        },
+        "storage_s3": {
+            "panel_key": "storage_s3",
+            "label": "IBM ICOS S3",
+            "family": "storage_s3",
+            "inventory_visible": True,
+            "inventory_merge_target": None,
+        },
+        "virt_km_cpu": {
+            "panel_key": "virt_km_cpu",
+            "family": "virt_km",
+            "inventory_visible": True,
+            "inventory_merge_target": "virt_classic_cpu",
+        },
+        "virt_power_cpu": {
+            "panel_key": "virt_power_cpu",
+            "family": "virt_power",
+            "inventory_visible": True,
+            "inventory_merge_target": None,
+        },
+        "virt_power_hana_cpu": {
+            "panel_key": "virt_power_hana_cpu",
+            "family": "virt_power_hana",
+            "inventory_visible": True,
+            "inventory_merge_target": None,
+        },
+    }
+    base.update(overrides)
+    return base
+
+
 def test_inventory_panel_hidden_replication_families():
-    assert _inventory_panel_hidden("backup_zerto_replication_cpu", "backup_zerto_replication")
-    assert _inventory_panel_hidden("backup_veeam_replication_storage", "backup_veeam_replication")
-    assert not _inventory_panel_hidden("backup_netbackup_storage", "backup_netbackup")
+    defs = _panel_defs_default()
+    assert _inventory_panel_hidden("backup_zerto_replication_cpu", defs)
+    assert _inventory_panel_hidden("backup_veeam_replication_ram", defs)
+    assert not _inventory_panel_hidden("backup_netbackup_storage", defs)
+    assert _inventory_panel_hidden("storage_s3_ankara", defs)
 
 
 def test_merge_s3_site_entitled_sums_buckets():
@@ -69,7 +148,7 @@ def test_merge_s3_site_entitled_sums_buckets():
             "product_names": ["S3 Istanbul"],
         },
     }
-    merged = _merge_s3_site_entitled(entitled)
+    merged = _merge_s3_site_entitled(entitled, _panel_defs_default())
     assert merged is not None
     assert merged["panel_key"] == "storage_s3"
     assert merged["entitled_qty"] == 9.0
@@ -101,7 +180,7 @@ def test_build_merged_s3_panel_uses_max_node_metrics():
         has_price=True,
         threshold_pct=80.0,
     )
-    merged = _build_merged_s3_panel([ank, ist])
+    merged = _build_merged_s3_panel([ank, ist], _panel_defs_default())
     assert merged is not None
     assert merged.panel_key == "storage_s3"
     assert merged.total == 2603.0
@@ -153,10 +232,6 @@ def test_replication_panels_excluded_from_inventory_overview():
     assert "backup_zerto_replication_cpu" not in keys
     assert "backup_veeam_replication_ram" not in keys
     assert "backup_netbackup_storage" in keys
-
-
-def test_normalize_entitled_qty_tb_to_gb():
-    assert normalize_entitled_qty(2.0, "TB", "GB") == 2048.0
 
 
 def test_aggregate_entitled_by_panel_key_maps_products():
@@ -284,22 +359,7 @@ def _webui_rows(sql: str):
     if "NOT EXISTS" in sql and "filter_clause IS NULL" in sql:
         return []
     if "FROM   gui_panel_definition" in sql:
-        return [
-            {
-                "panel_key": "virt_classic_cpu",
-                "label": "Classic CPU",
-                "family": "virt_classic",
-                "resource_kind": "cpu",
-                "display_unit": "vCPU",
-            },
-            {
-                "panel_key": "backup_veeam",
-                "label": "Veeam Backup",
-                "family": "backup_veeam",
-                "resource_kind": "other",
-                "display_unit": "Adet",
-            },
-        ]
+        return list(_panel_defs_default().values())
     if "gui_crm_service_mapping_seed" in sql:
         return [
             {
@@ -668,7 +728,9 @@ def test_assess_data_quality_flags_unit_conversion_missing():
         has_infra_source=True,
         notes=["unit_conversion_missing: Hz->vCPU (total)"],
     )
-    assert _assess_data_quality(panel, crm_sold=10.0) == "suspect"
+    quality, reason = _assess_data_quality(panel, crm_sold=10.0)
+    assert quality == "suspect"
+    assert reason == "unit_conversion_missing"
 
 
 def test_inventory_uses_datacenter_codes_when_infra_bindings_wildcard_only():
@@ -790,22 +852,12 @@ def test_inventory_merged_families_skip_km_infra_and_merge_crm():
 
     def _webui_rows_merge(sql: str):
         if "FROM   gui_panel_definition" in sql:
-            return [
-                {
-                    "panel_key": "virt_classic_cpu",
-                    "label": "Classic CPU",
-                    "family": "virt_classic",
-                    "resource_kind": "cpu",
-                    "display_unit": "vCPU",
-                },
-                {
-                    "panel_key": "virt_km_cpu",
-                    "label": "KM CPU",
-                    "family": "virt_km",
-                    "resource_kind": "cpu",
-                    "display_unit": "vCPU",
-                },
-            ]
+            defs = _panel_defs_default()
+            defs["virt_classic_cpu"]["resource_kind"] = "cpu"
+            defs["virt_classic_cpu"]["display_unit"] = "vCPU"
+            defs["virt_km_cpu"]["resource_kind"] = "cpu"
+            defs["virt_km_cpu"]["display_unit"] = "vCPU"
+            return [defs["virt_classic_cpu"], defs["virt_km_cpu"]]
         if "gui_crm_service_mapping_seed" in sql:
             return [
                 {
@@ -851,7 +903,8 @@ def test_inventory_merged_families_skip_km_infra_and_merge_crm():
     assert "virt_classic" in family_keys
 
 
-def test_inventory_merged_power_hana_crm_sub_bucket():
+def test_inventory_power_hana_separate_family():
+    """Power and Power HANA appear as separate inventory families."""
     sellable = MagicMock()
     sellable.is_available = True
 
@@ -902,22 +955,7 @@ def test_inventory_merged_power_hana_crm_sub_bucket():
 
     def _webui_rows_power(sql: str):
         if "FROM   gui_panel_definition" in sql:
-            return [
-                {
-                    "panel_key": "virt_power_cpu",
-                    "label": "Power CPU",
-                    "family": "virt_power",
-                    "resource_kind": "cpu",
-                    "display_unit": "Core",
-                },
-                {
-                    "panel_key": "virt_power_hana_cpu",
-                    "label": "Power HANA CPU",
-                    "family": "virt_power_hana",
-                    "resource_kind": "cpu",
-                    "display_unit": "Core",
-                },
-            ]
+            return list(_panel_defs_default().values())
         if "gui_crm_service_mapping_seed" in sql:
             return [
                 {
@@ -952,11 +990,13 @@ def test_inventory_merged_power_hana_crm_sub_bucket():
         crm_redis=None,
     )
     payload = svc.compute_inventory_overview("*")
-    assert "virt_power_hana_cpu" not in [p["panel_key"] for p in payload["panels"]]
+    assert "virt_power_hana_cpu" in [p["panel_key"] for p in payload["panels"]]
     power = next(p for p in payload["panels"] if p["panel_key"] == "virt_power_cpu")
-    assert power["crm_sold_qty"] == 50.0
-    assert power["crm_sold_qty_hana"] == 10.0
-    assert "virt_power_hana" not in [f["family"] for f in payload["families"]]
+    assert power["crm_sold_qty"] == 40.0
+    assert power.get("crm_sold_qty_hana") is None
+    family_keys = [f["family"] for f in payload["families"]]
+    assert "virt_power_hana" in family_keys
+    assert "virt_power" in family_keys
 
 
 def test_warm_inventory_cache_force_recomputes_and_writes_redis(inventory_svc):

@@ -16,14 +16,16 @@ ADR-0013):
 
 LIST_PANEL_DEFS = """
 SELECT panel_key, label, family, resource_kind, display_unit, sort_order,
-       enabled, notes, updated_by, updated_at
+       enabled, inventory_visible, inventory_merge_target,
+       notes, updated_by, updated_at
 FROM   gui_panel_definition
 ORDER BY sort_order, panel_key;
 """
 
 GET_PANEL_DEF = """
 SELECT panel_key, label, family, resource_kind, display_unit, sort_order,
-       enabled, notes, updated_by, updated_at
+       enabled, inventory_visible, inventory_merge_target,
+       notes, updated_by, updated_at
 FROM   gui_panel_definition
 WHERE  panel_key = %s;
 """

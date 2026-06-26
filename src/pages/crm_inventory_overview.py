@@ -7,7 +7,6 @@ Phase A: instant skeleton shell. Phase B: async fetch via ``_fill_crm_inventory_
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 import dash
@@ -21,7 +20,6 @@ from src.components.crm_inventory_report import build_report_body, prepare_servi
 from src.components.crm_inventory_shell import build_inventory_shell
 from src.services import api_client as api
 from src.utils.export_helpers import (
-    build_report_info_df,
     dash_send_excel_workbook,
     dataframes_to_excel_with_meta,
     records_to_dataframe,
@@ -168,22 +166,34 @@ def _export_inventory(n_clicks, store):
     panels = store.get("panels") or []
     summary = store.get("summary") or {}
     unmapped = store.get("unmapped_products") or []
+    crm_only = store.get("crm_only_panels") or []
+    families = store.get("families") or []
     export_rows = []
     for p in panels:
         row = {**p, **prepare_service_row(p)}
         export_rows.append(row)
-    meta = build_report_info_df(
-        title="CRM Inventory Report",
-        generated_at=datetime.now(timezone.utc).isoformat(),
-        filters={"dc_code": store.get("dc_code") or "*"},
-    )
+    crm_only_rows = [{**p, **prepare_service_row(p)} for p in crm_only]
+    families_summary = [
+        {
+            "family": f.get("family"),
+            "family_label": f.get("family_label"),
+            "panel_count": f.get("panel_count"),
+            "crm_entitled_tl": sum(float(r.get("crm_sold_tl") or 0) for r in (f.get("panels") or [])),
+            "potential_tl": sum(float(r.get("potential_tl") or 0) for r in (f.get("panels") or [])),
+        }
+        for f in families
+    ]
     sheets = {
-        "summary": pd.DataFrame([summary]),
-        "services": records_to_dataframe(export_rows),
-        "unmapped": records_to_dataframe(unmapped),
-        "meta": meta,
+        "Summary": pd.DataFrame([summary]),
+        "Services": records_to_dataframe(export_rows),
+        "CRM_only": records_to_dataframe(crm_only_rows),
+        "Unmapped": records_to_dataframe(unmapped),
+        "Families_summary": records_to_dataframe(families_summary),
     }
-    content = dataframes_to_excel_with_meta(sheets, sheet_order=[
-        "summary", "services", "unmapped", "meta",
-    ])
+    content = dataframes_to_excel_with_meta(
+        sheets,
+        time_range=None,
+        page_name="CRM Inventory",
+        extra_filters={"dc_code": store.get("dc_code") or "*"},
+    )
     return dash_send_excel_workbook(content, "crm-inventory-report.xlsx")

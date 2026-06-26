@@ -102,6 +102,14 @@ def build_inventory_shell(summary: dict[str, Any], unmapped: list[dict[str, Any]
                     variant="light",
                     size="sm",
                 ),
+                dmc.Button(
+                    "PDF",
+                    id={"type": "pdf-export-btn", "index": "inventory"},
+                    leftSection=DashIconify(icon="solar:document-bold-duotone", width=16),
+                    color="indigo",
+                    variant="light",
+                    size="sm",
+                ),
             ]),
             dmc.Divider(my="md", color="gray.2"),
             dmc.SimpleGrid(
@@ -151,7 +159,7 @@ def build_inventory_shell(summary: dict[str, Any], unmapped: list[dict[str, Any]
                     _kpi_button(
                         "CRM-only",
                         f"{int(summary.get('crm_only_count') or 0):,}",
-                        "No infra binding",
+                        "Mapped sales, no infra telemetry",
                         filter_value="crm_only",
                         color=shared.BRAND_GREY,
                         icon="solar:cloud-bold-duotone",
@@ -160,7 +168,7 @@ def build_inventory_shell(summary: dict[str, Any], unmapped: list[dict[str, Any]
                     _kpi_button(
                         "Unmapped SKUs",
                         f"{catalog_unmapped:,}",
-                        f"{int(summary.get('unmapped_entitled_count') or 0):,} entitled lines",
+                        f"{int(summary.get('unmapped_entitled_count') or 0):,} lines · no panel mapping",
                         filter_value="all",
                         color=shared.BRAND_ORANGE if catalog_unmapped else shared.BRAND_GREY,
                         icon="solar:question-circle-bold-duotone",

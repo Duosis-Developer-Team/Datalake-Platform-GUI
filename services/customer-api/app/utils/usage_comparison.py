@@ -79,6 +79,12 @@ def normalize_entitled_qty(
             return value * 1024.0
         return value
 
+    if target in ("tb", "tib"):
+        if u in ("gb", "gib"):
+            return value / 1024.0
+        if "mb" in u or "mib" in u:
+            return value / (1024.0 * 1024.0)
+
     if "mb" in u or "mib" in u:
         if target in ("gb", "gib"):
             return value / 1024.0

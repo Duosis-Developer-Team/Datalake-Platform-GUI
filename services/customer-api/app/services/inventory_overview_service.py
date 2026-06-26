@@ -40,46 +40,14 @@ _INVENTORY_VIRT_FAMILIES: frozenset[str] = frozenset({
     "virt_classic",
     "virt_hyperconverged",
     "virt_power",
+    "virt_power_hana",
 })
 
-# Sub-families merged into canonical inventory accordions (infra hidden; CRM sub-lines).
-_INVENTORY_SKIP_INFRA_PANEL_KEYS: frozenset[str] = frozenset({
-    "virt_km_cpu",
-    "virt_km_ram",
-    "virt_km_storage",
-    "virt_power_hana_cpu",
-    "virt_power_hana_ram",
-    "virt_power_hana_storage",
-    # Replication backup — hidden from inventory until mapping is trusted.
-    "backup_zerto_replication_cpu",
-    "backup_zerto_replication_ram",
-    "backup_zerto_replication_storage",
-    "backup_veeam_replication_cpu",
-    "backup_veeam_replication_ram",
-    "backup_veeam_replication_storage",
-    # S3 site nodes merged into a single IBM ICOS S3 row.
-    "storage_s3_ankara",
-    "storage_s3_istanbul",
-})
-
-_INVENTORY_SKIP_FAMILIES: frozenset[str] = frozenset({
-    "backup_zerto_replication",
-    "backup_veeam_replication",
-})
-
-_INVENTORY_MERGED_S3_PANEL_KEY = "storage_s3"
-_INVENTORY_MERGED_S3_SOURCE_KEYS: frozenset[str] = frozenset({
-    "storage_s3_ankara",
-    "storage_s3_istanbul",
-})
-
+# CRM sub-buckets merged into canonical inventory rows (KM → Klasik Mimari).
 _INVENTORY_MERGED_CRM_SUB: dict[str, tuple[str, str]] = {
     "virt_classic_cpu": ("virt_km_cpu", "km"),
     "virt_classic_ram": ("virt_km_ram", "km"),
     "virt_classic_storage": ("virt_km_storage", "km"),
-    "virt_power_cpu": ("virt_power_hana_cpu", "hana"),
-    "virt_power_ram": ("virt_power_hana_ram", "hana"),
-    "virt_power_storage": ("virt_power_hana_storage", "hana"),
 }
 
 _VIRT_FAMILY_LABELS: dict[str, str] = {
@@ -125,26 +93,55 @@ def _family_label(
     return _humanize_token(family_key)
 
 
-def _inventory_panel_hidden(panel_key: str, family_key: str | None = None) -> bool:
-    """Return True when a panel must not appear on the inventory overview."""
-    if panel_key in _INVENTORY_SKIP_INFRA_PANEL_KEYS:
+def _coerce_bool(value: Any, *, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "t", "yes", "y")
+
+
+def _inventory_panel_hidden(
+    panel_key: str,
+    panel_defs: dict[str, dict[str, Any]],
+) -> bool:
+    """Return True when panel registry marks the row hidden from inventory."""
+    meta = panel_defs.get(panel_key)
+    if meta is None:
+        return False
+    if not _coerce_bool(meta.get("inventory_visible"), default=True):
         return True
-    if family_key and family_key in _INVENTORY_SKIP_FAMILIES:
+    merge_target = str(meta.get("inventory_merge_target") or "").strip()
+    if merge_target and merge_target != panel_key:
         return True
     return False
 
 
-def _merge_s3_site_entitled(
+def _merge_source_keys_for_target(
+    target_key: str,
+    panel_defs: dict[str, dict[str, Any]],
+) -> list[str]:
+    return sorted(
+        pk
+        for pk, meta in panel_defs.items()
+        if str(meta.get("inventory_merge_target") or "").strip() == target_key
+    )
+
+
+def _merge_entitled_for_target(
+    target_key: str,
     entitled_by_panel: dict[str, dict[str, Any]],
+    panel_defs: dict[str, dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Merge Ankara + Istanbul CRM buckets into one storage_s3 panel row."""
+    """Merge CRM buckets from source panels into one inventory target row."""
+    source_keys = _merge_source_keys_for_target(target_key, panel_defs)
     buckets = [
         entitled_by_panel.get(key)
-        for key in sorted(_INVENTORY_MERGED_S3_SOURCE_KEYS)
+        for key in source_keys
         if entitled_by_panel.get(key)
     ]
     if not buckets:
-        return None
+        return entitled_by_panel.get(target_key)
 
     entitled_qty = sum(float(b.get("entitled_qty") or 0.0) for b in buckets)
     entitled_tl = sum(float(b.get("entitled_amount_tl") or 0.0) for b in buckets)
@@ -155,17 +152,29 @@ def _merge_s3_site_entitled(
         product_names.update(str(name) for name in (bucket.get("product_names") or []) if name)
 
     base = dict(buckets[0])
-    base["panel_key"] = _INVENTORY_MERGED_S3_PANEL_KEY
+    base["panel_key"] = target_key
     base["entitled_qty"] = entitled_qty
     base["entitled_amount_tl"] = entitled_tl
     base["product_ids"] = sorted(product_ids)
     base["product_names"] = sorted(product_names)
+    target_bucket = entitled_by_panel.get(target_key)
+    if target_bucket:
+        base["entitled_qty"] += float(target_bucket.get("entitled_qty") or 0.0)
+        base["entitled_amount_tl"] += float(target_bucket.get("entitled_amount_tl") or 0.0)
+        product_ids.update(str(pid) for pid in (target_bucket.get("product_ids") or []) if pid)
+        product_names.update(str(name) for name in (target_bucket.get("product_names") or []) if name)
+        base["product_ids"] = sorted(product_ids)
+        base["product_names"] = sorted(product_names)
     return base
 
 
-def _build_merged_s3_panel(candidates: list[PanelResult]) -> PanelResult | None:
-    """Collapse ICOS site-scoped nodes into one inventory panel (same cluster)."""
-    found = [p for p in candidates if p.panel_key in _INVENTORY_MERGED_S3_SOURCE_KEYS]
+def _build_merged_infra_panel(
+    target_key: str,
+    candidates: list[PanelResult],
+    panel_defs: dict[str, dict[str, Any]],
+) -> PanelResult | None:
+    """Collapse site-scoped source panels into one inventory row (max node metrics)."""
+    found = list(candidates)
     if not found:
         return None
 
@@ -185,15 +194,18 @@ def _build_merged_s3_panel(candidates: list[PanelResult]) -> PanelResult | None:
         if template.has_price
         else 0.0
     )
+    meta = panel_defs.get(target_key) or {}
+    label = str(meta.get("label") or template.label or target_key)
+    family = str(meta.get("family") or template.family or target_key)
     notes = list(template.notes or [])
-    merge_note = "merged from site nodes (Ankara + Istanbul)"
+    merge_note = f"merged from {len(found)} source panel(s)"
     if merge_note not in notes:
         notes.append(merge_note)
 
     return PanelResult(
-        panel_key=_INVENTORY_MERGED_S3_PANEL_KEY,
-        label="IBM ICOS S3",
-        family="storage_s3",
+        panel_key=target_key,
+        label=label,
+        family=family,
         resource_kind=template.resource_kind,
         display_unit=template.display_unit,
         dc_code="*",
@@ -212,6 +224,46 @@ def _build_merged_s3_panel(candidates: list[PanelResult]) -> PanelResult | None:
         computation_mode="aggregated",
         constraint_reason="none",
     )
+
+
+def _build_merged_infra_panels(
+    panels: list[PanelResult],
+    panel_defs: dict[str, dict[str, Any]],
+) -> list[PanelResult]:
+    """Build synthetic inventory panels for merge targets declared in panel registry."""
+    targets: dict[str, list[PanelResult]] = defaultdict(list)
+    for panel in panels:
+        target = str((panel_defs.get(panel.panel_key) or {}).get("inventory_merge_target") or "").strip()
+        if target:
+            targets[target].append(panel)
+
+    merged: list[PanelResult] = []
+    for target_key in sorted(targets):
+        built = _build_merged_infra_panel(target_key, targets[target_key], panel_defs)
+        if built is not None:
+            merged.append(built)
+    return merged
+
+
+def _merge_s3_site_entitled(
+    entitled_by_panel: dict[str, dict[str, Any]],
+    panel_defs: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Backward-compatible wrapper for storage_s3 entitled merge."""
+    return _merge_entitled_for_target("storage_s3", entitled_by_panel, panel_defs)
+
+
+def _build_merged_s3_panel(
+    candidates: list[PanelResult],
+    panel_defs: dict[str, dict[str, Any]] | None = None,
+) -> PanelResult | None:
+    """Backward-compatible wrapper for storage_s3 infra merge."""
+    panel_defs = panel_defs or {}
+    source_keys = _merge_source_keys_for_target("storage_s3", panel_defs)
+    if not source_keys:
+        source_keys = ["storage_s3_ankara", "storage_s3_istanbul"]
+    found = [p for p in candidates if p.panel_key in source_keys]
+    return _build_merged_infra_panel("storage_s3", found, panel_defs)
 
 
 def _crm_product_names_summary(names: list[str] | None, limit: int = 3) -> str:
@@ -290,34 +342,30 @@ def _assess_data_quality(
     panel: PanelResult,
     *,
     crm_sold: float,
-) -> str | None:
-    """Return 'suspect' when merged infra numbers look inconsistent."""
+) -> tuple[str | None, str | None]:
+    """Return (data_quality flag, suspect_reason) for inventory rows."""
     if not panel.has_infra_source:
-        return None
+        return None, None
     if any("unit_conversion_missing" in (note or "") for note in (panel.notes or [])):
-        return "suspect"
+        return "suspect", "unit_conversion_missing"
     total = float(panel.total or 0.0)
     allocated = float(panel.allocated or 0.0)
-    crm = max(float(crm_sold or 0.0), 1.0)
-    unit = (panel.display_unit or "").strip().upper()
+    crm = float(crm_sold or 0.0)
     if panel.family not in _INVENTORY_VIRT_FAMILIES and allocated > total > 0:
-        return "suspect"
-    if unit == "TB" and total > 1e4:
-        return "suspect"
-    if unit == "GB" and total > 1e7:
-        return "suspect"
-    if unit == "VCPU" and total > 1e6:
-        return "suspect"
-    if total > 1e9 or total > 100.0 * crm:
-        return "suspect"
+        return "suspect", "used_exceeds_total"
+    if crm > total > 0 and panel.family not in _INVENTORY_VIRT_FAMILIES:
+        return "suspect", "crm_exceeds_total"
+    if total > 1e9:
+        return "suspect", "total_scale_anomaly"
     if (
         allocated <= 0.0
         and total > 0.0
         and (panel.computation_mode or "") in ("aggregated", "cluster_fallback")
         and panel.family not in _INVENTORY_VIRT_FAMILIES
+        and panel.panel_key != "backup_netbackup_storage"
     ):
-        return "suspect"
-    return None
+        return "suspect", "zero_used_with_capacity"
+    return None, None
 
 
 def _family_sellable_profile(family_key: str) -> str:
@@ -748,6 +796,7 @@ class InventoryOverviewService:
             ):
                 if key in entitled:
                     crm_fields[key] = entitled[key]
+        data_quality, suspect_reason = _assess_data_quality(panel, crm_sold=crm_sold)
         base = {
             "panel_key": panel.panel_key,
             "label": service_label,
@@ -768,7 +817,8 @@ class InventoryOverviewService:
             "overage_qty": overage if panel.has_infra_source else 0.0,
             "efficiency_pct": efficiency,
             "inventory_hide_used": hide_used,
-            "data_quality": _assess_data_quality(panel, crm_sold=crm_sold),
+            "data_quality": data_quality,
+            "suspect_reason": suspect_reason,
             **_sellable_track_fields(panel, has_infra=panel.has_infra_source, hide_used=hide_used),
             **crm_fields,
         }
@@ -867,10 +917,15 @@ class InventoryOverviewService:
         crm_only_panels: list[dict[str, Any]] = []
         seen_panels: set[str] = set()
 
-        s3_merged = _build_merged_s3_panel(panels)
+        s3_merged = _build_merged_s3_panel(panels, panel_defs)
+        merged_infra = _build_merged_infra_panels(panels, panel_defs)
+        merged_keys = {p.panel_key for p in merged_infra}
+        if s3_merged is not None and s3_merged.panel_key not in merged_keys:
+            merged_infra.append(s3_merged)
+            merged_keys.add(s3_merged.panel_key)
 
         for panel in panels:
-            if _inventory_panel_hidden(panel.panel_key, panel.family):
+            if _inventory_panel_hidden(panel.panel_key, panel_defs):
                 continue
             seen_panels.add(panel.panel_key)
             merge_cfg = _INVENTORY_MERGED_CRM_SUB.get(panel.panel_key)
@@ -896,20 +951,26 @@ class InventoryOverviewService:
             if row.get("infra_binding") == "crm_only":
                 crm_only_panels.append(row)
 
-        if s3_merged is not None:
-            seen_panels.add(_INVENTORY_MERGED_S3_PANEL_KEY)
-            s3_entitled = _merge_s3_site_entitled(entitled_by_panel)
-            s3_row = self._build_panel_row(
-                s3_merged,
-                s3_entitled,
+        for merged_panel in merged_infra:
+            if merged_panel.panel_key in seen_panels:
+                continue
+            seen_panels.add(merged_panel.panel_key)
+            merged_entitled = _merge_entitled_for_target(
+                merged_panel.panel_key,
+                entitled_by_panel,
+                panel_defs,
+            )
+            row = self._build_panel_row(
+                merged_panel,
+                merged_entitled,
                 panel_defs=panel_defs,
                 service_pages=service_pages,
                 under_pct=under_pct,
                 over_pct=over_pct,
             )
-            panel_rows.append(s3_row)
-            if s3_row.get("infra_binding") == "crm_only":
-                crm_only_panels.append(s3_row)
+            panel_rows.append(row)
+            if row.get("infra_binding") == "crm_only":
+                crm_only_panels.append(row)
 
         for panel_key, bucket in entitled_by_panel.items():
             if panel_key in seen_panels:
@@ -919,7 +980,9 @@ class InventoryOverviewService:
                 or panel_defs.get(panel_key, {}).get("family")
                 or _infer_family_key(panel_key, panel_defs)
             )
-            if _inventory_panel_hidden(panel_key, family_key):
+            if _inventory_panel_hidden(panel_key, panel_defs):
+                continue
+            if panel_key in merged_keys:
                 continue
             if panel_key in {pair[0] for pair in _INVENTORY_MERGED_CRM_SUB.values()}:
                 continue
@@ -939,8 +1002,6 @@ class InventoryOverviewService:
             if row.get("infra_binding") == "crm_only":
                 continue
             family_key = str(row.get("family") or "other")
-            if family_key in ("virt_km", "virt_power_hana"):
-                continue
             families_map[family_key].append(row)
 
         families_out: list[dict[str, Any]] = []

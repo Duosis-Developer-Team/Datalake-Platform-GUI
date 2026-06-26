@@ -42,6 +42,10 @@ def _mapping() -> dict:
     }
 
 
+def test_normalize_gb_to_tb():
+    assert normalize_entitled_qty(1024.0, "GB", "TB") == 1.0
+
+
 def test_normalize_tb_to_gb():
     assert normalize_entitled_qty(1.0, "TB", "GB") == 1024.0
 

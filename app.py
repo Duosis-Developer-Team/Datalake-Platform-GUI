@@ -367,14 +367,16 @@ app.clientside_callback(
             "dc": "dc_detail",
             "global": "global_view",
             "customer": "customer_view",
-            "qe": "query_explorer"
+            "qe": "query_explorer",
+            "inventory": "crm_inventory"
         };
         const prefix = map[index];
         if (!prefix) return window.dash_clientside.no_update;
 
         const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
         if (typeof window.triggerPagePDF === "function") {
-            window.triggerPagePDF("main-content", prefix + "_" + ts + ".pdf");
+            const rootId = index === "inventory" ? "crm-inventory-page-root" : "main-content";
+            window.triggerPagePDF(rootId, prefix + "_" + ts + ".pdf");
         }
         return window.dash_clientside.no_update;
     }
