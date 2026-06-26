@@ -8,6 +8,7 @@ import pytest
 
 from app.services.inventory_overview_service import (
     InventoryOverviewService,
+    _apply_netbackup_inventory_fields,
     _build_merged_s3_panel,
     _family_sellable_profile,
     _include_row_in_families,
@@ -89,19 +90,19 @@ def _panel_defs_default(**overrides) -> dict[str, dict]:
             "panel_key": "storage_s3_ankara",
             "family": "storage_s3",
             "inventory_visible": True,
-            "inventory_merge_target": "storage_s3",
+            "inventory_merge_target": None,
         },
         "storage_s3_istanbul": {
             "panel_key": "storage_s3_istanbul",
             "family": "storage_s3",
             "inventory_visible": True,
-            "inventory_merge_target": "storage_s3",
+            "inventory_merge_target": None,
         },
         "storage_s3": {
             "panel_key": "storage_s3",
             "label": "IBM ICOS S3",
             "family": "storage_s3",
-            "inventory_visible": True,
+            "inventory_visible": False,
             "inventory_merge_target": None,
         },
         "virt_km_cpu": {
@@ -127,12 +128,25 @@ def _panel_defs_default(**overrides) -> dict[str, dict]:
     return base
 
 
+def _stub_netbackup_metrics(sellable: MagicMock) -> None:
+    sellable.get_netbackup_inventory_metrics.return_value = {
+        "total_bytes": 0.0,
+        "used_post_dedup_bytes": 0.0,
+        "pre_dedup_bytes": 0.0,
+        "available_bytes": 0.0,
+        "dedup_savings_bytes": 0.0,
+        "dedup_savings_pct": 0.0,
+        "dedup_factor": 0.0,
+    }
+
+
 def test_inventory_panel_hidden_replication_families():
     defs = _panel_defs_default()
     assert _inventory_panel_hidden("backup_zerto_replication_cpu", defs)
     assert _inventory_panel_hidden("backup_veeam_replication_ram", defs)
     assert not _inventory_panel_hidden("backup_netbackup_storage", defs)
-    assert _inventory_panel_hidden("storage_s3_ankara", defs)
+    assert not _inventory_panel_hidden("storage_s3_ankara", defs)
+    assert _inventory_panel_hidden("storage_s3", defs)
 
 
 def test_merge_s3_site_entitled_sums_buckets():
@@ -201,6 +215,7 @@ def test_replication_panels_excluded_from_inventory_overview():
     sellable.recompute_family_constraints.side_effect = _recompute_panels
     sellable._count_unmapped_products.return_value = 0
     sellable.compute_site_scoped_panels.return_value = []
+    _stub_netbackup_metrics(sellable)
 
     sales = MagicMock()
     sales._run_query.return_value = [
@@ -422,6 +437,7 @@ def inventory_svc():
     sellable.recompute_family_constraints.side_effect = _recompute_panels
     sellable._fetch_datacenter_codes.return_value = []
     sellable.compute_site_scoped_panels.return_value = []
+    _stub_netbackup_metrics(sellable)
 
     sales = MagicMock()
     def _run_query(sql, params):
@@ -525,6 +541,7 @@ def test_global_inventory_aggregates_per_dc_infra():
     sellable.compute_all_panels.side_effect = _compute
     sellable.recompute_family_constraints.side_effect = _recompute_panels
     sellable._count_unmapped_products.return_value = 0
+    _stub_netbackup_metrics(sellable)
 
     sales = MagicMock()
     sales._run_query.side_effect = lambda sql, params: (
@@ -572,7 +589,31 @@ def test_global_inventory_aggregates_per_dc_infra():
     sellable.recompute_family_constraints.assert_called_once()
 
 
-def test_global_only_panel_not_summed_across_dcs():
+def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
+    row = {
+        "panel_key": "backup_netbackup_storage",
+        "has_infra_source": True,
+        "used_qty": 5.0,
+        "free_qty": 999.0,
+    }
+    tb = 1024.0 ** 4
+    metrics = {
+        "available_bytes": 100.0 * tb,
+        "pre_dedup_bytes": 50.0 * tb,
+        "dedup_savings_bytes": 45.0 * tb,
+        "dedup_savings_pct": 90.0,
+        "dedup_factor": 10.0,
+    }
+    out = _apply_netbackup_inventory_fields(row, metrics)
+    assert out["free_qty"] == 100.0
+    assert out["pre_dedup_qty"] == 50.0
+    assert out["dedup_savings_qty"] == 45.0
+    assert out["dedup_savings_pct"] == 90.0
+    assert out["dedup_factor"] == 10.0
+    assert out["inventory_free_mode"] == "physical"
+
+
+def test_global_only_panel_netbackup_enriched_free_qty():
     """Global-only panels must be taken once from wildcard compute, not N× per DC."""
     sellable = MagicMock()
     sellable.is_available = True
@@ -601,6 +642,16 @@ def test_global_only_panel_not_summed_across_dcs():
     sellable.compute_all_panels.side_effect = _compute
     sellable.recompute_family_constraints.side_effect = _recompute_panels
     sellable._count_unmapped_products.return_value = 0
+    tb = 1024.0 ** 4
+    sellable.get_netbackup_inventory_metrics.return_value = {
+        "total_bytes": 5000.0 * tb,
+        "used_post_dedup_bytes": 1000.0 * tb,
+        "pre_dedup_bytes": 5000.0 * tb,
+        "available_bytes": 300.0 * tb,
+        "dedup_savings_bytes": 4000.0 * tb,
+        "dedup_savings_pct": 80.0,
+        "dedup_factor": 5.0,
+    }
 
     sales = MagicMock()
     sales._run_query.return_value = []
@@ -630,6 +681,9 @@ def test_global_only_panel_not_summed_across_dcs():
     nb = next(p for p in payload["panels"] if p["panel_key"] == "backup_netbackup_storage")
     assert nb["total"] == 5000.0
     assert nb["used_qty"] == 1000.0
+    assert nb["free_qty"] == 300.0
+    assert nb["pre_dedup_qty"] == 5000.0
+    assert nb["dedup_savings_pct"] == 80.0
 
 
 def test_site_scoped_panels_not_summed_across_dcs():
@@ -676,6 +730,7 @@ def test_site_scoped_panels_not_summed_across_dcs():
     sellable.compute_site_scoped_panels.return_value = [ank_site, ist_site]
     sellable.recompute_family_constraints.side_effect = _recompute_panels
     sellable._count_unmapped_products.return_value = 0
+    _stub_netbackup_metrics(sellable)
 
     sales = MagicMock()
     sales._run_query.return_value = []
@@ -707,12 +762,15 @@ def test_site_scoped_panels_not_summed_across_dcs():
         crm_redis=None,
     )
     payload = svc.compute_inventory_overview("*")
-    s3 = next(p for p in payload["panels"] if p["panel_key"] == "storage_s3")
-    assert "storage_s3_ankara" not in {p["panel_key"] for p in payload["panels"]}
-    assert "storage_s3_istanbul" not in {p["panel_key"] for p in payload["panels"]}
-    assert s3["total"] == 200.0
-    assert s3["used_qty"] == 80.0
-    assert s3["service_label"] == "IBM ICOS S3"
+    panel_keys = {p["panel_key"] for p in payload["panels"]}
+    assert "storage_s3_ankara" in panel_keys
+    assert "storage_s3_istanbul" in panel_keys
+    assert "storage_s3" not in panel_keys
+    ank = next(p for p in payload["panels"] if p["panel_key"] == "storage_s3_ankara")
+    assert ank["total"] == 100.0
+    assert ank["used_qty"] == 40.0
+    assert ank["inventory_free_mode"] == "physical"
+    assert ank["free_qty"] == 60.0
     sellable.compute_site_scoped_panels.assert_called_once()
 
 
@@ -743,6 +801,7 @@ def test_inventory_uses_datacenter_codes_when_infra_bindings_wildcard_only():
     sellable.recompute_family_constraints.side_effect = _recompute_panels
     sellable._count_unmapped_products.return_value = 0
     sellable.compute_site_scoped_panels.return_value = []
+    _stub_netbackup_metrics(sellable)
 
     def _compute(dc_code="*", **kwargs):
         if dc_code == "ANK":
@@ -833,6 +892,7 @@ def test_inventory_merged_families_skip_km_infra_and_merge_crm():
     sellable.compute_all_panels.return_value = [classic_cpu, km_cpu]
     sellable.recompute_family_constraints.side_effect = _recompute_panels
     sellable._count_unmapped_products.return_value = 0
+    _stub_netbackup_metrics(sellable)
 
     sales = MagicMock()
     sales._run_query.return_value = [
@@ -936,6 +996,7 @@ def test_inventory_power_hana_separate_family():
     sellable.compute_all_panels.return_value = [power_cpu, hana_cpu]
     sellable.recompute_family_constraints.side_effect = _recompute_panels
     sellable._count_unmapped_products.return_value = 0
+    _stub_netbackup_metrics(sellable)
 
     sales = MagicMock()
     sales._run_query.return_value = [

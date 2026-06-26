@@ -438,6 +438,29 @@ WHERE jobtype = 'BACKUP'
   AND percentcomplete = 100
 """
 
+GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY = """
+SELECT
+    COALESCE(SUM(kilobytestransferred) / 1024.0 / 1024.0 / 1024.0, 0) AS pre_dedup_gib,
+    COALESCE(
+        SUM(kilobytestransferred / NULLIF(dedupratio, 0))
+        / 1024.0 / 1024.0 / 1024.0,
+        0
+    ) AS post_dedup_gib
+FROM public.raw_netbackup_jobs_metrics
+WHERE jobtype = 'BACKUP'
+  AND percentcomplete = 100
+"""
+
+GLOBAL_NETBACKUP_POOL_AVAILABLE_BYTES = """
+SELECT COALESCE(SUM(availablespacebytes), 0)
+FROM (
+    SELECT DISTINCT ON (netbackup_host, name)
+        availablespacebytes
+    FROM public.raw_netbackup_disk_pools_metrics
+    ORDER BY netbackup_host, name, collection_timestamp DESC
+) AS latest_pools
+"""
+
 GET_LATEST_SNAPSHOT_META = """
 SELECT dc_code, family, clusters_csv, computed_at
 FROM   gui_panel_result_snapshot

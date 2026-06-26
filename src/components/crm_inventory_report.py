@@ -34,6 +34,8 @@ _INVENTORY_VIRT_FAMILIES = frozenset({
     "virt_power_hana",
 })
 
+_PHYSICAL_FREE_FAMILIES = frozenset({"storage_s3", "backup_netbackup"})
+
 _DUAL_TRACK_COLUMNS = [
     {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
     {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
@@ -125,6 +127,25 @@ def _fmt_crm_sold_block(row: dict[str, Any], unit: str, crm_sold_tl: Any) -> str
     return f"{qty_line}\n{sub_line}\n{tl_line}"
 
 
+def _fmt_netbackup_used_block(row: dict[str, Any], unit: str, used_tl: Any) -> str:
+    """Format NetBackup Used with post-dedup primary and pre-dedup savings sub-lines."""
+    post = row.get("used_qty")
+    pre = row.get("pre_dedup_qty")
+    savings = row.get("dedup_savings_qty")
+    savings_pct = row.get("dedup_savings_pct")
+    factor = row.get("dedup_factor")
+    if post is None:
+        return "—\n—"
+    lines = [shared.fmt_qty_tl_block(post, unit, used_tl, qty_missing="—")]
+    if pre is not None:
+        lines.append(f"Pre: {_fmt_qty(pre, unit)}")
+    if savings is not None and savings_pct is not None:
+        lines.append(f"Saved: {_fmt_qty(savings, unit)} ({float(savings_pct):,.1f}%)")
+    if factor is not None and float(factor) > 0:
+        lines.append(f"Dedup: {float(factor):,.1f}x")
+    return "\n".join(lines)
+
+
 def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
     unit = str(row.get("display_unit") or "")
     status = str(row.get("status") or "no_usage")
@@ -157,12 +178,19 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
 
     free_tl = potential_tl if profile == "standard" and has_infra else None
     free_display_qty = row.get("free_qty")
-    if profile == "standard" and has_infra:
+    family = str(row.get("family") or "")
+    free_mode = str(row.get("inventory_free_mode") or "standard")
+    use_physical_free = (
+        free_mode == "physical"
+        or family in _PHYSICAL_FREE_FAMILIES
+    )
+    if profile == "standard" and has_infra and not use_physical_free:
         sellable_qty = row.get("sellable_qty")
         if sellable_qty is not None:
             free_display_qty = sellable_qty
             free_tl = potential_tl
     hide_used = bool(row.get("inventory_hide_used"))
+    is_netbackup = row.get("panel_key") == "backup_netbackup_storage"
 
     return {
         "panel_key": row.get("panel_key") or "",
@@ -174,6 +202,8 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "used_fmt": (
             "—\n—"
             if hide_used
+            else _fmt_netbackup_used_block(row, unit, used_tl)
+            if is_netbackup and has_infra
             else shared.fmt_qty_tl_block(
                 row.get("used_qty"), unit, used_tl,
                 qty_missing="—",
@@ -195,6 +225,11 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "crm_products_summary": row.get("crm_products_summary") or "",
         "infra_binding": row.get("infra_binding") or "",
         "has_infra_source": has_infra,
+        "pre_dedup_qty": row.get("pre_dedup_qty"),
+        "dedup_savings_qty": row.get("dedup_savings_qty"),
+        "dedup_savings_pct": row.get("dedup_savings_pct"),
+        "dedup_factor": row.get("dedup_factor"),
+        "inventory_free_mode": free_mode,
     }
 
 

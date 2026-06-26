@@ -72,6 +72,45 @@ def test_prepare_service_row_standard_free_shows_sellable_tl():
     assert row["sellable_alloc_fmt"] == "—\n—"
 
 
+def test_prepare_service_row_s3_physical_free_not_sellable():
+    row = prepare_service_row(_sample_row(
+        panel_key="storage_s3_istanbul",
+        family="storage_s3",
+        display_unit="TB",
+        sellable_profile="standard",
+        total=2000.0,
+        used_qty=800.0,
+        free_qty=1200.0,
+        sellable_qty=385.0,
+        potential_tl=38500.0,
+        inventory_free_mode="physical",
+    ))
+    assert "1,200 TB" in row["free_fmt"]
+    assert "385 TB" not in row["free_fmt"]
+
+
+def test_prepare_service_row_netbackup_used_dedup_block():
+    row = prepare_service_row(_sample_row(
+        panel_key="backup_netbackup_storage",
+        family="backup_netbackup",
+        display_unit="TB",
+        sellable_profile="standard",
+        used_qty=5.0,
+        pre_dedup_qty=120.0,
+        dedup_savings_qty=115.0,
+        dedup_savings_pct=95.8,
+        dedup_factor=24.0,
+        free_qty=300.0,
+        inventory_free_mode="physical",
+    ))
+    assert "5 TB" in row["used_fmt"]
+    assert "Pre: 120 TB" in row["used_fmt"]
+    assert "Saved: 115 TB" in row["used_fmt"]
+    assert "95.8%" in row["used_fmt"]
+    assert "Dedup: 24.0x" in row["used_fmt"]
+    assert "300 TB" in row["free_fmt"]
+
+
 def test_filter_by_search_matches_family():
     rows = [
         _sample_row(),

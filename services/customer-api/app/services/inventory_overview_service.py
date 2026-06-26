@@ -62,6 +62,8 @@ _RESOURCE_SUFFIXES = ("_cpu", "_ram", "_storage")
 
 _S3_MERGE_TARGET = "storage_s3"
 _S3_SITE_PANEL_KEYS: tuple[str, ...] = ("storage_s3_ankara", "storage_s3_istanbul")
+_TB_BYTES = 1024.0 ** 4
+_PHYSICAL_FREE_FAMILIES: frozenset[str] = frozenset({"storage_s3", "backup_netbackup"})
 
 # Families shown in grouped accordion even when infra binding is CRM-only (when CRM entitled).
 _INVENTORY_CRM_VISIBLE_FAMILIES: frozenset[str] = frozenset({
@@ -109,6 +111,27 @@ def _coerce_bool(value: Any, *, default: bool = True) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in ("1", "true", "t", "yes", "y")
+
+
+def _bytes_to_tb(value: float) -> float:
+    return float(value or 0.0) / _TB_BYTES
+
+
+def _apply_netbackup_inventory_fields(
+    row: dict[str, Any],
+    metrics: dict[str, float],
+) -> dict[str, Any]:
+    """Enrich NetBackup row with physical free and dedup savings (display TB)."""
+    if not row.get("has_infra_source"):
+        return row
+    row = dict(row)
+    row["inventory_free_mode"] = "physical"
+    row["free_qty"] = _bytes_to_tb(metrics.get("available_bytes", 0.0))
+    row["pre_dedup_qty"] = _bytes_to_tb(metrics.get("pre_dedup_bytes", 0.0))
+    row["dedup_savings_qty"] = _bytes_to_tb(metrics.get("dedup_savings_bytes", 0.0))
+    row["dedup_savings_pct"] = float(metrics.get("dedup_savings_pct") or 0.0)
+    row["dedup_factor"] = float(metrics.get("dedup_factor") or 0.0)
+    return row
 
 
 def _inventory_panel_hidden(
@@ -873,6 +896,9 @@ class InventoryOverviewService:
                 if key in entitled:
                     crm_fields[key] = entitled[key]
         data_quality, suspect_reason = _assess_data_quality(panel, crm_sold=crm_sold)
+        inventory_free_mode = (
+            "physical" if family_key in _PHYSICAL_FREE_FAMILIES else "standard"
+        )
         base = {
             "panel_key": panel.panel_key,
             "label": service_label,
@@ -893,6 +919,7 @@ class InventoryOverviewService:
             "overage_qty": overage if panel.has_infra_source else 0.0,
             "efficiency_pct": efficiency,
             "inventory_hide_used": hide_used,
+            "inventory_free_mode": inventory_free_mode,
             "data_quality": data_quality,
             "suspect_reason": suspect_reason,
             **_sellable_track_fields(panel, has_infra=panel.has_infra_source, hide_used=hide_used),
@@ -999,12 +1026,9 @@ class InventoryOverviewService:
         crm_only_panels: list[dict[str, Any]] = []
         seen_panels: set[str] = set()
 
-        s3_merged = _build_merged_s3_panel(panels, panel_defs)
         merged_infra = _build_merged_infra_panels(panels, panel_defs)
         merged_keys = {p.panel_key for p in merged_infra}
-        if s3_merged is not None and s3_merged.panel_key not in merged_keys:
-            merged_infra.append(s3_merged)
-            merged_keys.add(s3_merged.panel_key)
+        netbackup_metrics = self._sellable.get_netbackup_inventory_metrics()
 
         for panel in panels:
             if _inventory_panel_hidden(panel.panel_key, panel_defs):
@@ -1029,6 +1053,8 @@ class InventoryOverviewService:
                 under_pct=under_pct,
                 over_pct=over_pct,
             )
+            if row.get("panel_key") == "backup_netbackup_storage":
+                row = _apply_netbackup_inventory_fields(row, netbackup_metrics)
             panel_rows.append(row)
             if row.get("infra_binding") == "crm_only":
                 crm_only_panels.append(row)
@@ -1050,6 +1076,8 @@ class InventoryOverviewService:
                 under_pct=under_pct,
                 over_pct=over_pct,
             )
+            if row.get("panel_key") == "backup_netbackup_storage":
+                row = _apply_netbackup_inventory_fields(row, netbackup_metrics)
             _upsert_inventory_row(panel_rows, crm_only_panels, row)
 
         for panel_key, bucket in entitled_by_panel.items():

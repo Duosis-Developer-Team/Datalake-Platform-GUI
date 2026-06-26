@@ -16,12 +16,19 @@ from dash import ALL, Input, Output, State, callback, ctx, dcc, html
 from dash_iconify import DashIconify
 
 from src.components.crm_inventory_loading import build_crm_inventory_loading_shell
-from src.components.crm_inventory_report import build_report_body, prepare_service_row
+from src.components.crm_inventory_report import (
+    build_report_body,
+    filter_by_search,
+    filter_service_rows,
+    prepare_service_row,
+)
 from src.components.crm_inventory_shell import build_inventory_shell
 from src.services import api_client as api
 from src.utils.export_helpers import (
     dash_send_excel_workbook,
+    dash_send_pdf_workbook,
     dataframes_to_excel_with_meta,
+    dataframes_to_pdf_with_meta,
     records_to_dataframe,
 )
 
@@ -105,6 +112,7 @@ def build_layout_content(payload: dict[str, Any]) -> html.Div:
         children=[
             dcc.Store(id="crm-inventory-store", data=payload),
             dcc.Download(id="crm-inventory-export-download"),
+            dcc.Download(id="crm-inventory-export-pdf-download"),
             build_inventory_shell(summary, unmapped),
             _unmapped_banner(summary, unmapped),
             html.Div(id="crm-inventory-report-body", children=report_sections),
@@ -154,24 +162,26 @@ def _kpi_filter_shortcut(clicks, ids, current):
     return triggered
 
 
-@callback(
-    Output("crm-inventory-export-download", "data"),
-    Input("crm-inventory-export-btn", "n_clicks"),
-    State("crm-inventory-store", "data"),
-    prevent_initial_call=True,
-)
-def _export_inventory(n_clicks, store):
-    if not n_clicks or not store:
-        return dash.no_update
+def _build_inventory_export_sheets(
+    store: dict[str, Any],
+    *,
+    filter_mode: str = "all",
+    search: str | None = None,
+    view_mode: str = "grouped",
+) -> dict[str, pd.DataFrame]:
+    """Build Excel/PDF sheet dict from store respecting active UI filters."""
     panels = store.get("panels") or []
-    summary = store.get("summary") or {}
-    unmapped = store.get("unmapped_products") or []
+    filtered = filter_by_search(filter_service_rows(panels, filter_mode or "all"), search)
+    if (filter_mode or "all").lower() == "crm_only":
+        filtered = [r for r in filtered if (r.get("infra_binding") or "") == "crm_only"]
+    export_rows = [{**p, **prepare_service_row(p)} for p in filtered]
+    summary = dict(store.get("summary") or {})
+    summary["export_filter"] = filter_mode or "all"
+    summary["export_view_mode"] = view_mode or "grouped"
+    summary["export_search"] = search or ""
     crm_only = store.get("crm_only_panels") or []
+    unmapped = store.get("unmapped_products") or []
     families = store.get("families") or []
-    export_rows = []
-    for p in panels:
-        row = {**p, **prepare_service_row(p)}
-        export_rows.append(row)
     crm_only_rows = [{**p, **prepare_service_row(p)} for p in crm_only]
     families_summary = [
         {
@@ -183,17 +193,74 @@ def _export_inventory(n_clicks, store):
         }
         for f in families
     ]
-    sheets = {
+    return {
         "Summary": pd.DataFrame([summary]),
         "Services": records_to_dataframe(export_rows),
         "CRM_only": records_to_dataframe(crm_only_rows),
         "Unmapped": records_to_dataframe(unmapped),
         "Families_summary": records_to_dataframe(families_summary),
     }
+
+
+@callback(
+    Output("crm-inventory-export-download", "data"),
+    Input("crm-inventory-export-btn", "n_clicks"),
+    State("crm-inventory-store", "data"),
+    State("crm-inventory-filter", "value"),
+    State("crm-inventory-search", "value"),
+    State("crm-inventory-view-mode", "value"),
+    prevent_initial_call=True,
+)
+def _export_inventory(n_clicks, store, filter_mode, search, view_mode):
+    if not n_clicks or not store:
+        return dash.no_update
+    sheets = _build_inventory_export_sheets(
+        store,
+        filter_mode=filter_mode or "all",
+        search=search,
+        view_mode=view_mode or "grouped",
+    )
     content = dataframes_to_excel_with_meta(
         sheets,
         time_range=None,
         page_name="CRM Inventory",
-        extra_filters={"dc_code": store.get("dc_code") or "*"},
+        extra_filters={
+            "dc_code": store.get("dc_code") or "*",
+            "filter": filter_mode or "all",
+            "view_mode": view_mode or "grouped",
+            "search": search or "",
+        },
     )
     return dash_send_excel_workbook(content, "crm-inventory-report.xlsx")
+
+
+@callback(
+    Output("crm-inventory-export-pdf-download", "data"),
+    Input("crm-inventory-export-pdf-btn", "n_clicks"),
+    State("crm-inventory-store", "data"),
+    State("crm-inventory-filter", "value"),
+    State("crm-inventory-search", "value"),
+    State("crm-inventory-view-mode", "value"),
+    prevent_initial_call=True,
+)
+def _export_inventory_pdf(n_clicks, store, filter_mode, search, view_mode):
+    if not n_clicks or not store:
+        return dash.no_update
+    sheets = _build_inventory_export_sheets(
+        store,
+        filter_mode=filter_mode or "all",
+        search=search,
+        view_mode=view_mode or "grouped",
+    )
+    content = dataframes_to_pdf_with_meta(
+        sheets,
+        time_range=None,
+        page_name="CRM Inventory",
+        extra_filters={
+            "dc_code": store.get("dc_code") or "*",
+            "filter": filter_mode or "all",
+            "view_mode": view_mode or "grouped",
+            "search": search or "",
+        },
+    )
+    return dash_send_pdf_workbook(content, "crm-inventory-report.pdf")

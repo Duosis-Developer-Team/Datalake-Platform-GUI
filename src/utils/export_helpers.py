@@ -177,6 +177,84 @@ def dataframe_to_pdf_bytes(
     return bytes(pdf.output())
 
 
+def dataframes_to_pdf_with_meta(
+    sheets: dict[str, pd.DataFrame],
+    time_range: dict[str, Any] | None,
+    page_name: str,
+    extra_filters: dict[str, Any] | None = None,
+) -> bytes:
+    """Build multi-page PDF: Report_Info metadata then one page per sheet."""
+    meta = build_report_info_df(time_range, page_name, extra_filters)
+    ordered: dict[str, pd.DataFrame] = {"Report_Info": meta}
+    for name, df in sheets.items():
+        ordered[name] = df
+    return dataframes_to_pdf_bytes(ordered, title=page_name)
+
+
+def dataframes_to_pdf_bytes(
+    sheets: dict[str, pd.DataFrame],
+    *,
+    title: str = "Report",
+) -> bytes:
+    """Render each sheet as a separate PDF page (fpdf2)."""
+    try:
+        from fpdf import FPDF
+    except ImportError as exc:
+        raise RuntimeError("fpdf2 is required for PDF export") from exc
+
+    class _PDF(FPDF):
+        def __init__(self, doc_title: str) -> None:
+            super().__init__(orientation="L", unit="mm", format="A4")
+            self._doc_title = doc_title
+
+        def header(self) -> None:
+            self.set_font("Helvetica", "B", 12)
+            self.cell(0, 8, self._doc_title[:120], ln=True)
+            self.ln(2)
+
+    pdf = _PDF(title)
+    pdf.set_auto_page_break(auto=True, margin=12)
+
+    for sheet_name, df in sheets.items():
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 7, str(sheet_name)[:80], ln=True)
+        pdf.ln(2)
+        pdf.set_font("Helvetica", size=7)
+        if df is None or df.empty:
+            pdf.cell(0, 6, "No data", ln=True)
+            continue
+        cols = [str(c) for c in df.columns.tolist()]
+        rows = df.fillna("").astype(str).values.tolist()
+        col_width = min(40, max(190, pdf.w - 24) / max(len(cols), 1))
+        pdf.set_font("Helvetica", "B", 6)
+        for col in cols:
+            pdf.cell(col_width, 5, col[:28], border=1)
+        pdf.ln()
+        pdf.set_font("Helvetica", size=6)
+        for row in rows[:200]:
+            for cell in row:
+                pdf.cell(col_width, 4, str(cell)[:36], border=1)
+            pdf.ln()
+        if len(rows) > 200:
+            pdf.ln(1)
+            pdf.cell(0, 5, f"... truncated ({len(rows) - 200} more rows)", ln=True)
+
+    return bytes(pdf.output())
+
+
+def dash_send_pdf_workbook(
+    content: bytes,
+    base_filename: str,
+) -> dict[str, Any]:
+    """Send multi-page PDF bytes via dcc.Download."""
+    from dash import dcc
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in base_filename)[:80]
+    return dcc.send_bytes(content, filename=f"{safe}_{ts}.pdf")
+
+
 def records_to_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
     if not records:
         return pd.DataFrame()

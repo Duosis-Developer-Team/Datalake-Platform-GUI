@@ -14,7 +14,6 @@ CFG_PATH = GUI_ROOT.parent / ".cursor" / "local-environment.local.json"
 
 PANEL_KEYS = (
     "backup_netbackup_storage",
-    "storage_s3",
     "storage_s3_ankara",
     "storage_s3_istanbul",
 )
@@ -27,6 +26,7 @@ VIRT_FAMILIES = (
 )
 
 EXPECTED_FAMILIES = (*VIRT_FAMILIES, "storage_s3", "backup_netbackup")
+MERGED_S3_KEY = "storage_s3"
 
 
 def _load_crm_engine_url(host: str | None) -> str:
@@ -36,6 +36,16 @@ def _load_crm_engine_url(host: str | None) -> str:
     return cfg.get("test_server", {}).get("urls", {}).get(
         "crm_engine",
         "http://10.134.52.250:8070",
+    )
+
+
+def _load_datacenter_api_url(host: str | None) -> str:
+    cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
+    if host:
+        return f"http://{host}:8060"
+    return cfg.get("test_server", {}).get("urls", {}).get(
+        "datacenter_api",
+        "http://10.134.52.250:8060",
     )
 
 
@@ -49,15 +59,27 @@ def _fetch_overview(base_url: str, *, force_recompute: bool) -> dict:
         return resp.json()
 
 
-def _fetch_s3_sellable(base_url: str) -> list[dict]:
-    with httpx.Client(base_url=base_url, timeout=120.0) as client:
-        resp = client.get(
-            "/api/v1/crm/sellable-potential/by-panel",
-            params={"dc_code": "*", "family": "storage_s3", "force_recompute": "true"},
-        )
+def _fetch_s3_pools(dc_api: str, dc_id: str) -> list[dict]:
+    with httpx.Client(base_url=dc_api, timeout=120.0) as client:
+        resp = client.get(f"/api/v1/datacenters/{dc_id}/s3/pools")
         resp.raise_for_status()
         data = resp.json()
-        return data if isinstance(data, list) else []
+        return data if isinstance(data, list) else data.get("pools") or []
+
+
+def _sum_s3_pools(pools: list[dict]) -> dict[str, float]:
+    total = sum(float(p.get("total_usable") or p.get("total_usable_tb") or 0) for p in pools)
+    used = sum(float(p.get("used") or p.get("used_tb") or 0) for p in pools)
+    free = sum(float(p.get("free") or p.get("free_tb") or 0) for p in pools)
+    if free <= 0 and total > 0:
+        free = max(total - used, 0.0)
+    return {"total": total, "used": used, "free": free}
+
+
+def _pct_diff(a: float, b: float) -> float:
+    if b == 0:
+        return 0.0 if a == 0 else 100.0
+    return abs(a - b) / abs(b) * 100.0
 
 
 def _panel_row(payload: dict, key: str) -> dict | None:
@@ -73,9 +95,11 @@ def _print_families(payload: dict) -> list[str]:
     for fam in payload.get("families") or []:
         key = str(fam.get("family") or "")
         keys.append(key)
+        panel_keys = [p.get("panel_key") for p in (fam.get("panels") or [])]
         print(
             f"  {key}: panels={fam.get('panel_count')} "
-            f"has_infra={fam.get('has_infra')} label={fam.get('family_label')}"
+            f"has_infra={fam.get('has_infra')} label={fam.get('family_label')} "
+            f"keys={panel_keys}"
         )
     return keys
 
@@ -91,6 +115,37 @@ def _try_prepare_service_row(row: dict) -> dict | None:
         return None
 
 
+def _check_s3_parity(
+    label: str,
+    inv_row: dict | None,
+    dc_pools: list[dict],
+    *,
+    tolerance_pct: float = 1.0,
+) -> None:
+    if inv_row is None:
+        print(f"  {label}: inventory row MISSING")
+        return
+    dc = _sum_s3_pools(dc_pools)
+    inv_total = float(inv_row.get("total") or 0)
+    inv_used = float(inv_row.get("used_qty") or 0)
+    inv_free = float(inv_row.get("free_qty") or 0)
+    print(
+        f"  {label} inventory: total={inv_total:.2f} used={inv_used:.2f} "
+        f"free={inv_free:.2f} mode={inv_row.get('inventory_free_mode')}"
+    )
+    print(
+        f"  {label} DC pools: total={dc['total']:.2f} used={dc['used']:.2f} free={dc['free']:.2f}"
+    )
+    for metric, inv_val, dc_val in (
+        ("total", inv_total, dc["total"]),
+        ("used", inv_used, dc["used"]),
+        ("free", inv_free, dc["free"]),
+    ):
+        diff = _pct_diff(inv_val, dc_val)
+        status = "OK" if diff <= tolerance_pct else "WARN"
+        print(f"    {metric} parity: {status} ({diff:.2f}% diff)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verify inventory NetBackup/S3/virt rows")
     parser.add_argument("--host", help="Server host IP (default: test_server from local JSON)")
@@ -103,11 +158,13 @@ def main() -> None:
     args = parser.parse_args()
 
     base = _load_crm_engine_url(args.host)
+    dc_api = _load_datacenter_api_url(args.host)
     payload = _fetch_overview(base, force_recompute=args.force_recompute)
     excerpt = {key: _panel_row(payload, key) for key in PANEL_KEYS}
     summary = payload.get("summary") or {}
 
     print(f"crm_engine={base}")
+    print(f"datacenter_api={dc_api}")
     print(
         f"panel_count={summary.get('panel_count')} "
         f"infra={summary.get('infra_panel_count')} "
@@ -120,16 +177,23 @@ def main() -> None:
     else:
         print("OK: expected families present")
 
+    merged = _panel_row(payload, MERGED_S3_KEY)
+    if merged is None:
+        print(f"OK: merged {MERGED_S3_KEY} row absent (un-merge expected)")
+    else:
+        print(f"WARN: merged {MERGED_S3_KEY} row still present — migration 024 may be pending")
+
     for key, row in excerpt.items():
         if row is None:
             print(f"{key}: MISSING")
             continue
         print(
             f"{key}: total={row.get('total')} crm_sold={row.get('crm_sold_qty')} "
-            f"used={row.get('used_qty')} sellable={row.get('sellable_qty')} "
-            f"has_infra={row.get('has_infra_source')} binding={row.get('infra_binding')} "
-            f"status={row.get('status')} quality={row.get('data_quality')} "
-            f"reason={row.get('suspect_reason')}"
+            f"used={row.get('used_qty')} pre_dedup={row.get('pre_dedup_qty')} "
+            f"savings={row.get('dedup_savings_qty')} ({row.get('dedup_savings_pct')}%) "
+            f"free={row.get('free_qty')} sellable={row.get('sellable_qty')} "
+            f"free_mode={row.get('inventory_free_mode')} "
+            f"has_infra={row.get('has_infra_source')} status={row.get('status')}"
         )
         if key == "backup_netbackup_storage":
             crm = float(row.get("crm_sold_qty") or 0)
@@ -142,23 +206,22 @@ def main() -> None:
                     "  fmt: crm_sold=", prepared.get("crm_sold_fmt", "").replace("\n", " / "),
                     "| total=", prepared.get("total_fmt"),
                     "| used=", prepared.get("used_fmt", "").replace("\n", " / "),
+                    "| free=", prepared.get("free_fmt", "").replace("\n", " / "),
                 )
-        if key == "storage_s3":
-            if not row.get("has_infra_source"):
-                print("  WARN: merged S3 row has no infra — check site-scoped sellable panels")
-            elif float(row.get("total") or 0) <= 0:
-                print("  WARN: merged S3 total is zero")
+        if key.startswith("storage_s3_"):
+            if row.get("inventory_free_mode") != "physical":
+                print("  WARN: S3 free_mode is not physical")
+            if float(row.get("total") or 0) <= 0:
+                print("  WARN: S3 site total is zero")
 
-    print("sellable storage_s3 family:")
+    print("S3 DC parity:")
     try:
-        sell_panels = _fetch_s3_sellable(base)
-        for panel in sell_panels:
-            print(
-                f"  {panel.get('panel_key')}: total={panel.get('total')} "
-                f"has_infra={panel.get('has_infra_source')}"
-            )
+        dc13 = _fetch_s3_pools(dc_api, "DC13")
+        dc14 = _fetch_s3_pools(dc_api, "DC14")
+        _check_s3_parity("Istanbul/DC13", excerpt.get("storage_s3_istanbul"), dc13)
+        _check_s3_parity("Ankara/DC14", excerpt.get("storage_s3_ankara"), dc14)
     except Exception as exc:  # noqa: BLE001
-        print(f"  sellable fetch failed: {exc}")
+        print(f"  S3 DC parity fetch failed: {exc}")
 
     if args.json_out:
         out = {

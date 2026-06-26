@@ -964,6 +964,55 @@ SELECT _tot, _alloc FROM latest
             return 0.0, 0.0
         return total_bytes, used_gib * _gib
 
+    def get_netbackup_inventory_metrics(self) -> dict[str, float]:
+        """Global NetBackup pool capacity, physical free, and jobs dedup summary (bytes)."""
+        _gib = 1024.0 ** 3
+        zero = {
+            "total_bytes": 0.0,
+            "used_post_dedup_bytes": 0.0,
+            "pre_dedup_bytes": 0.0,
+            "available_bytes": 0.0,
+            "dedup_savings_bytes": 0.0,
+            "dedup_savings_pct": 0.0,
+            "dedup_factor": 0.0,
+        }
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    total_bytes = float(
+                        self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USABLE_BYTES, ()) or 0.0
+                    )
+                    available_bytes = float(
+                        self._svc._run_value(
+                            cur, sq.GLOBAL_NETBACKUP_POOL_AVAILABLE_BYTES, (),
+                        ) or 0.0
+                    )
+                    dedup_row = self._svc._run_row(
+                        cur, sq.GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY, (),
+                    )
+                    pre_gib = float(dedup_row[0] or 0.0) if dedup_row else 0.0
+                    post_gib = float(dedup_row[1] or 0.0) if dedup_row else 0.0
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "SellableService: NetBackup inventory metrics aggregate failed",
+            )
+            return zero
+
+        pre_bytes = pre_gib * _gib
+        post_bytes = post_gib * _gib
+        savings_bytes = max(pre_bytes - post_bytes, 0.0)
+        savings_pct = (savings_bytes / pre_bytes * 100.0) if pre_bytes > 0 else 0.0
+        dedup_factor = (pre_bytes / post_bytes) if post_bytes > 0 else 0.0
+        return {
+            "total_bytes": total_bytes,
+            "used_post_dedup_bytes": post_bytes,
+            "pre_dedup_bytes": pre_bytes,
+            "available_bytes": available_bytes,
+            "dedup_savings_bytes": savings_bytes,
+            "dedup_savings_pct": savings_pct,
+            "dedup_factor": dedup_factor,
+        }
+
     def _query_total_allocated(
         self,
         src: InfraSource,

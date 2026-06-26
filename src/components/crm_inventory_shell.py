@@ -94,21 +94,36 @@ def build_inventory_shell(summary: dict[str, Any], unmapped: list[dict[str, Any]
                         ]),
                     ]),
                 ]),
-                dmc.Button(
-                    "Export Excel",
-                    id="crm-inventory-export-btn",
-                    leftSection=DashIconify(icon="solar:download-square-bold-duotone", width=16),
-                    color="indigo",
-                    variant="light",
-                    size="sm",
-                ),
-                dmc.Button(
-                    "PDF",
-                    id={"type": "pdf-export-btn", "index": "inventory"},
-                    leftSection=DashIconify(icon="solar:document-bold-duotone", width=16),
-                    color="indigo",
-                    variant="light",
-                    size="sm",
+                dmc.Stack(
+                    gap=4,
+                    align="flex-end",
+                    children=[
+                        dmc.Text("Export", size="xs", c="dimmed", fw=600),
+                        dmc.Button.Group(
+                            children=[
+                                dmc.Button(
+                                    "Excel",
+                                    id="crm-inventory-export-btn",
+                                    size="xs",
+                                    variant="light",
+                                    color="indigo",
+                                    leftSection=DashIconify(
+                                        icon="solar:download-square-bold-duotone", width=14,
+                                    ),
+                                ),
+                                dmc.Button(
+                                    "PDF",
+                                    id="crm-inventory-export-pdf-btn",
+                                    size="xs",
+                                    variant="light",
+                                    color="indigo",
+                                    leftSection=DashIconify(
+                                        icon="solar:document-bold-duotone", width=14,
+                                    ),
+                                ),
+                            ],
+                        ),
+                    ],
                 ),
             ]),
             dmc.Divider(my="md", color="gray.2"),

@@ -11,11 +11,23 @@ from src.utils.export_helpers import (
     build_report_info_df,
     csv_bytes_with_report_header,
     dataframes_to_excel_with_meta,
+    dataframes_to_pdf_with_meta,
     records_to_dataframe,
 )
 from src.pages.global_view import _global_export_table
 from src.pages.dc_view import _build_dc_export_sheets
 from src.pages.customer_view import _build_customer_export_sheets
+
+
+def test_dataframes_to_pdf_with_meta_multi_sheet():
+    pytest.importorskip("fpdf2")
+    sheets = {
+        "Summary": pd.DataFrame([{"a": 1}]),
+        "Services": pd.DataFrame([{"b": 2}]),
+    }
+    raw = dataframes_to_pdf_with_meta(sheets, None, "CRM Inventory", {"filter": "all"})
+    assert isinstance(raw, bytes)
+    assert len(raw) > 200
 
 
 def test_build_report_info_df_contains_range_and_page():
