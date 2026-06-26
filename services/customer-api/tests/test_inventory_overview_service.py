@@ -10,9 +10,11 @@ from app.services.inventory_overview_service import (
     InventoryOverviewService,
     _build_merged_s3_panel,
     _family_sellable_profile,
+    _include_row_in_families,
     _inventory_panel_hidden,
     _merge_entitled_for_target,
     _merge_s3_site_entitled,
+    _upsert_inventory_row,
 )
 from app.utils.usage_comparison import (
     aggregate_entitled_by_panel_key,
@@ -997,6 +999,70 @@ def test_inventory_power_hana_separate_family():
     family_keys = [f["family"] for f in payload["families"]]
     assert "virt_power_hana" in family_keys
     assert "virt_power" in family_keys
+
+
+def test_merge_entitled_includes_legacy_storage_s3_bucket():
+    entitled = {
+        "storage_s3_ankara": {
+            "entitled_qty": 8.0,
+            "entitled_amount_tl": 66.0,
+            "product_ids": ["a"],
+            "product_names": ["S3 Ankara"],
+        },
+        "storage_s3": {
+            "entitled_qty": 2.0,
+            "entitled_amount_tl": 10.0,
+            "product_ids": ["legacy"],
+            "product_names": ["Legacy S3"],
+        },
+    }
+    merged = _merge_entitled_for_target("storage_s3", entitled, _panel_defs_default())
+    assert merged is not None
+    assert merged["entitled_qty"] == 10.0
+    assert merged["entitled_amount_tl"] == 76.0
+
+
+def test_include_row_in_families_shows_crm_entitled_s3():
+    row = {
+        "family": "storage_s3",
+        "infra_binding": "crm_only",
+        "crm_sold_tl": 100.0,
+        "has_infra_source": False,
+    }
+    assert _include_row_in_families(row) is True
+
+
+def test_upsert_inventory_row_replaces_prior_crm_only():
+    rows = [{"panel_key": "storage_s3", "infra_binding": "crm_only"}]
+    crm_only = [{"panel_key": "storage_s3", "infra_binding": "crm_only"}]
+    _upsert_inventory_row(
+        rows,
+        crm_only,
+        {"panel_key": "storage_s3", "infra_binding": "bound", "has_infra_source": True},
+    )
+    assert len(rows) == 1
+    assert rows[0]["infra_binding"] == "bound"
+    assert crm_only == []
+
+
+def test_ensure_s3_site_panels_injects_missing_nodes():
+    sellable = MagicMock()
+    ank = _panel(panel_key="storage_s3_ankara", family="storage_s3", total=100.0, allocated=10.0)
+    ist = _panel(panel_key="storage_s3_istanbul", family="storage_s3", total=200.0, allocated=20.0)
+    sellable.compute_site_scoped_panels.return_value = [ank, ist]
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=MagicMock(),
+        webui=MagicMock(is_available=False),
+        config=MagicMock(),
+        crm_redis=None,
+    )
+    out = svc._ensure_s3_site_panels([_panel(panel_key="virt_classic_cpu")])
+    keys = {p.panel_key for p in out}
+    assert "storage_s3_ankara" in keys
+    assert "storage_s3_istanbul" in keys
+    sellable.compute_site_scoped_panels.assert_called_once()
 
 
 def test_warm_inventory_cache_force_recomputes_and_writes_redis(inventory_svc):

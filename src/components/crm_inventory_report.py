@@ -31,6 +31,7 @@ _INVENTORY_VIRT_FAMILIES = frozenset({
     "virt_classic",
     "virt_hyperconverged",
     "virt_power",
+    "virt_power_hana",
 })
 
 _DUAL_TRACK_COLUMNS = [
@@ -110,12 +111,14 @@ def _fmt_crm_sold_block(row: dict[str, Any], unit: str, crm_sold_tl: Any) -> str
     """Format CRM Sold with optional KM/HANA sub-product line."""
     sub_qty_km = row.get("crm_sold_qty_km")
     sub_qty_hana = row.get("crm_sold_qty_hana")
-    if sub_qty_km is None and sub_qty_hana is None:
+    has_km = sub_qty_km is not None and float(sub_qty_km or 0) > 0
+    has_hana = sub_qty_hana is not None and float(sub_qty_hana or 0) > 0
+    if not has_km and not has_hana:
         return shared.fmt_qty_tl_block(
             row.get("crm_sold_qty"), unit, crm_sold_tl,
         )
-    sub_label = "KM" if sub_qty_km is not None else "HANA"
-    sub_qty = sub_qty_km if sub_qty_km is not None else sub_qty_hana
+    sub_label = "KM" if has_km else "HANA"
+    sub_qty = sub_qty_km if has_km else sub_qty_hana
     qty_line = shared.fmt_unit(row.get("crm_sold_qty"), unit)
     sub_line = f"({sub_label}: {shared.fmt_unit(sub_qty, unit)})"
     tl_line = shared.fmt_tl(crm_sold_tl) if crm_sold_tl is not None else "—"
@@ -141,6 +144,8 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         service_label = f"⚠ {service_label}"
         if row.get("suspect_reason"):
             service_label = f"{service_label}\n({reason_hint})"
+    elif has_infra is False and float(row.get("crm_sold_tl") or 0) > 0:
+        service_label = f"{service_label}\n(CRM entitled — infra telemetry pending)"
 
     crm_sold_tl = row.get("crm_sold_tl")
     used_tl = row.get("used_tl")

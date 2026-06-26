@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any, Callable, Literal, Optional, TypedDict
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -2130,10 +2130,13 @@ def get_sellable_summary_light(dc_code: str) -> dict:
     return get_sellable_summary(dc_code, rollup_only=True)
 
 
-def get_crm_inventory_overview(dc_code: str = "*") -> dict:
+def get_crm_inventory_overview(dc_code: str = "*", *, force_recompute: bool = False) -> dict:
     """Global CRM capacity vs entitled vs infra used overview."""
     def fetch() -> dict:
-        qs = f"dc_code={quote(dc_code, safe='*')}"
+        params: list[tuple[str, str]] = [("dc_code", dc_code or "*")]
+        if force_recompute:
+            params.append(("force_recompute", "true"))
+        qs = urlencode(params)
         with httpx.Client(
             base_url=CRM_ENGINE_URL,
             timeout=_INVENTORY_TIMEOUT,
@@ -2141,6 +2144,9 @@ def get_crm_inventory_overview(dc_code: str = "*") -> dict:
         ) as client:
             data = _get_json(client, f"/api/v1/crm/inventory-overview?{qs}")
         return data if isinstance(data, dict) else {}
+
+    if force_recompute:
+        return fetch()
 
     cache_key = f"api:crm_inventory_overview:{dc_code}"
     return _api_cache_get_sellable_summary(cache_key, fetch, dc_code)

@@ -60,6 +60,16 @@ _VIRT_FAMILY_LABELS: dict[str, str] = {
 
 _RESOURCE_SUFFIXES = ("_cpu", "_ram", "_storage")
 
+_S3_MERGE_TARGET = "storage_s3"
+_S3_SITE_PANEL_KEYS: tuple[str, ...] = ("storage_s3_ankara", "storage_s3_istanbul")
+
+# Families shown in grouped accordion even when infra binding is CRM-only (when CRM entitled).
+_INVENTORY_CRM_VISIBLE_FAMILIES: frozenset[str] = frozenset({
+    _S3_MERGE_TARGET,
+    *_INVENTORY_VIRT_FAMILIES,
+    "backup_netbackup",
+})
+
 
 def _humanize_token(value: str) -> str:
     return (value or "").replace("_", " ").replace(".", " ").strip().title()
@@ -135,13 +145,16 @@ def _merge_entitled_for_target(
 ) -> dict[str, Any] | None:
     """Merge CRM buckets from source panels into one inventory target row."""
     source_keys = _merge_source_keys_for_target(target_key, panel_defs)
+    if target_key == _S3_MERGE_TARGET:
+        source_keys = sorted(set(source_keys) | set(_S3_SITE_PANEL_KEYS))
     buckets = [
         entitled_by_panel.get(key)
         for key in source_keys
         if entitled_by_panel.get(key)
     ]
+    legacy_bucket = entitled_by_panel.get(target_key)
     if not buckets:
-        return entitled_by_panel.get(target_key)
+        return legacy_bucket
 
     entitled_qty = sum(float(b.get("entitled_qty") or 0.0) for b in buckets)
     entitled_tl = sum(float(b.get("entitled_amount_tl") or 0.0) for b in buckets)
@@ -157,15 +170,40 @@ def _merge_entitled_for_target(
     base["entitled_amount_tl"] = entitled_tl
     base["product_ids"] = sorted(product_ids)
     base["product_names"] = sorted(product_names)
-    target_bucket = entitled_by_panel.get(target_key)
-    if target_bucket:
-        base["entitled_qty"] += float(target_bucket.get("entitled_qty") or 0.0)
-        base["entitled_amount_tl"] += float(target_bucket.get("entitled_amount_tl") or 0.0)
-        product_ids.update(str(pid) for pid in (target_bucket.get("product_ids") or []) if pid)
-        product_names.update(str(name) for name in (target_bucket.get("product_names") or []) if name)
+    if legacy_bucket:
+        base["entitled_qty"] += float(legacy_bucket.get("entitled_qty") or 0.0)
+        base["entitled_amount_tl"] += float(legacy_bucket.get("entitled_amount_tl") or 0.0)
+        product_ids.update(str(pid) for pid in (legacy_bucket.get("product_ids") or []) if pid)
+        product_names.update(
+            str(name) for name in (legacy_bucket.get("product_names") or []) if name
+        )
         base["product_ids"] = sorted(product_ids)
         base["product_names"] = sorted(product_names)
     return base
+
+
+def _include_row_in_families(row: dict[str, Any]) -> bool:
+    """Whether a panel row belongs in the grouped family accordion."""
+    if row.get("infra_binding") != "crm_only":
+        return True
+    family_key = str(row.get("family") or "other")
+    if family_key not in _INVENTORY_CRM_VISIBLE_FAMILIES:
+        return False
+    return float(row.get("crm_sold_tl") or 0) > 0 or bool(row.get("has_infra_source"))
+
+
+def _upsert_inventory_row(
+    panel_rows: list[dict[str, Any]],
+    crm_only_panels: list[dict[str, Any]],
+    row: dict[str, Any],
+) -> None:
+    """Replace any prior row for the same panel_key (e.g. CRM-only before infra merge)."""
+    panel_key = str(row.get("panel_key") or "")
+    panel_rows[:] = [r for r in panel_rows if str(r.get("panel_key") or "") != panel_key]
+    crm_only_panels[:] = [r for r in crm_only_panels if str(r.get("panel_key") or "") != panel_key]
+    panel_rows.append(row)
+    if row.get("infra_binding") == "crm_only":
+        crm_only_panels.append(row)
 
 
 def _build_merged_infra_panel(
@@ -529,14 +567,52 @@ class InventoryOverviewService:
 
     def _load_site_scoped_panel_keys(self) -> frozenset[str]:
         """Panels tied to a fixed site (e.g. storage_s3_ankara) — never SUM-merged per infra DC."""
-        if not self._webui or not self._webui.is_available:
-            return frozenset()
-        rows = self._webui.run_rows(sellable_sq.LIST_SITE_SCOPED_PANEL_KEYS)
-        return frozenset(
-            str(r["panel_key"]).strip()
-            for r in rows
-            if r.get("panel_key")
+        keys: set[str] = set()
+        if self._webui and self._webui.is_available:
+            rows = self._webui.run_rows(sellable_sq.LIST_SITE_SCOPED_PANEL_KEYS)
+            keys.update(
+                str(r["panel_key"]).strip()
+                for r in rows
+                if r.get("panel_key")
+            )
+        if not keys:
+            keys.update(_S3_SITE_PANEL_KEYS)
+            logger.info(
+                "inventory overview: site-scoped panel SQL empty; using S3 fallback keys %s",
+                list(_S3_SITE_PANEL_KEYS),
+            )
+        return frozenset(keys)
+
+    def _ensure_s3_site_panels(
+        self,
+        panels: list[PanelResult],
+        *,
+        force_recompute: bool = False,
+    ) -> list[PanelResult]:
+        """Ensure S3 site nodes are present for merge (not dropped by per-DC aggregation)."""
+        present = {p.panel_key for p in panels}
+        missing = [key for key in _S3_SITE_PANEL_KEYS if key not in present]
+        if not missing:
+            return panels
+        site_panels = self._sellable.compute_site_scoped_panels(
+            panel_keys=missing,
+            force_recompute=force_recompute,
         )
+        if not site_panels:
+            logger.warning(
+                "inventory overview: S3 site-scoped compute returned no panels for %s",
+                missing,
+            )
+            return panels
+        merged = {p.panel_key: p for p in panels}
+        for panel in site_panels:
+            merged[panel.panel_key] = panel
+        logger.info(
+            "inventory overview: injected %d S3 site-scoped panel(s): %s",
+            len(site_panels),
+            [p.panel_key for p in site_panels],
+        )
+        return list(merged.values())
 
     def _load_sellable_panels(
         self,
@@ -905,6 +981,12 @@ class InventoryOverviewService:
         panel_defs = self._load_panel_defs()
         service_pages = self._load_service_pages()
         panels = self._load_sellable_panels(dc_code or "*", force_recompute=force_recompute)
+        panels = self._ensure_s3_site_panels(panels, force_recompute=force_recompute)
+        panels = [
+            panel
+            for panel in panels
+            if panel.panel_key != _S3_MERGE_TARGET or panel.has_infra_source
+        ]
         mapping = self._load_product_mapping()
         panel_units = self._panel_unit_index(panels)
 
@@ -968,9 +1050,7 @@ class InventoryOverviewService:
                 under_pct=under_pct,
                 over_pct=over_pct,
             )
-            panel_rows.append(row)
-            if row.get("infra_binding") == "crm_only":
-                crm_only_panels.append(row)
+            _upsert_inventory_row(panel_rows, crm_only_panels, row)
 
         for panel_key, bucket in entitled_by_panel.items():
             if panel_key in seen_panels:
@@ -999,7 +1079,7 @@ class InventoryOverviewService:
 
         families_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in panel_rows:
-            if row.get("infra_binding") == "crm_only":
+            if not _include_row_in_families(row):
                 continue
             family_key = str(row.get("family") or "other")
             families_map[family_key].append(row)

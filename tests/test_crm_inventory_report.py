@@ -143,3 +143,26 @@ def test_prepare_service_row_crm_sub_line_hana():
         inventory_hide_used=True,
     ))
     assert "(HANA: 30 Core)" in row["crm_sold_fmt"]
+
+
+def test_prepare_service_row_ignores_zero_km_sub_bucket():
+    row = prepare_service_row(_sample_row(
+        crm_sold_qty=58.0,
+        crm_sold_qty_km=0.0,
+        crm_sold_tl=23246.0,
+        sellable_profile="standard",
+        display_unit="TB",
+        used_qty=5.0,
+        free_qty=44000.0,
+        sellable_qty=44000.0,
+    ))
+    assert "(KM:" not in row["crm_sold_fmt"]
+    assert "58 TB" in row["crm_sold_fmt"]
+    assert "23,246 TL" in row["crm_sold_fmt"]
+
+
+def test_columns_for_family_includes_power_hana_virt():
+    cols = columns_for_family("virt_power_hana", hide_used=True)
+    col_ids = [c["id"] for c in cols]
+    assert "used_fmt" not in col_ids
+    assert "free_fmt" in col_ids
