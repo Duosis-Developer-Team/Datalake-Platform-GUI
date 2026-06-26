@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from app.utils.storage_capacity_parse import parse_storage_string_to_gb
+from app.utils.time_range import default_time_range, time_range_to_bounds
 
 if TYPE_CHECKING:
     import redis as _redis_t
@@ -114,13 +115,14 @@ _SUBQUERY_NUTANIX_VM_LATEST = """(
 _DC_DETAILS_WINDOW_DAYS: int = int(os.getenv("SELLABLE_REDIS_WINDOW_DAYS", "7"))
 # Timeout for datacenter-api DC list fetch during snapshot prewarm.
 _SELLABLE_DC_CODES_TIMEOUT: float = float(os.getenv("SELLABLE_DC_CODES_TIMEOUT", "30"))
+_NETBACKUP_DC_POOL_TIMEOUT: float = float(os.getenv("SELLABLE_NETBACKUP_DC_TIMEOUT", "45"))
 
 # TTL (seconds) for compute_all_panels result in crm-engine Redis (DB 2).
 # 0 disables caching. Override with SELLABLE_CACHE_TTL_SECONDS.
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 9
+SELLABLE_PAYLOAD_VERSION: int = 10
 
 # Site-scoped S3 panels map to datalake pool_name prefixes (not city substrings).
 _SITE_SCOPED_PANEL_PATTERNS: dict[str, str] = {
@@ -934,37 +936,166 @@ SELECT _tot, _alloc FROM latest
                 used_gb += second
         return total_gb, used_gb
 
+    @staticmethod
+    def _netbackup_dc_api_time_params() -> dict[str, str]:
+        """Query params aligned with GUI api_client._build_time_params (7d default)."""
+        tr = default_time_range()
+        preset = tr.get("preset")
+        if preset in {"1h", "1d", "7d", "30d"}:
+            return {"preset": str(preset)}
+        start = tr.get("start")
+        end = tr.get("end")
+        if start and end:
+            return {"start": str(start), "end": str(end)}
+        return {"preset": "7d"}
+
+    @staticmethod
+    def _sum_netbackup_pool_rows(rows: list[dict[str, Any]]) -> tuple[float, float, float]:
+        """Sum pool byte columns — same semantics as backup_panel._aggregate_netbackup."""
+        total_bytes = 0.0
+        used_bytes = 0.0
+        avail_bytes = 0.0
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            total_bytes += float(row.get("usablesizebytes") or 0)
+            used_bytes += float(row.get("usedcapacitybytes") or 0)
+            avail_bytes += float(row.get("availablespacebytes") or 0)
+        return total_bytes, used_bytes, avail_bytes
+
+    def _aggregate_netbackup_pools_via_dc_api(self) -> dict[str, float] | None:
+        """Fetch NetBackup pool totals per DC via datacenter-api (DC View parity)."""
+        if not self._dc_api_url:
+            logger.warning(
+                "SellableService: datacenter_api_url not configured — NetBackup pool "
+                "aggregation cannot use DC View path",
+            )
+            return None
+        params = self._netbackup_dc_api_time_params()
+        dc_codes = self._fetch_datacenter_codes()
+        if not dc_codes:
+            logger.warning("SellableService: no DC codes for NetBackup pool aggregation")
+            return None
+        total_bytes = 0.0
+        used_bytes = 0.0
+        avail_bytes = 0.0
+        fetched = 0
+        for dc_code in dc_codes:
+            url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/backup/netbackup"
+            try:
+                resp = httpx.get(url, params=params, timeout=_NETBACKUP_DC_POOL_TIMEOUT)
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "SellableService: NetBackup pool fetch failed dc=%s url=%s",
+                    dc_code,
+                    url,
+                    exc_info=True,
+                )
+                continue
+            rows = data.get("rows") if isinstance(data, dict) else []
+            t, u, a = self._sum_netbackup_pool_rows(rows or [])
+            total_bytes += t
+            used_bytes += u
+            avail_bytes += a
+            fetched += 1
+        if fetched == 0:
+            return None
+        logger.info(
+            "SellableService: NetBackup pools aggregated via datacenter-api "
+            "(dcs=%d total_bytes=%.0f used_bytes=%.0f)",
+            fetched,
+            total_bytes,
+            used_bytes,
+        )
+        return {
+            "total_bytes": total_bytes,
+            "used_pool_bytes": used_bytes,
+            "available_bytes": avail_bytes,
+        }
+
+    def _aggregate_netbackup_pools_via_sql_fallback(self) -> dict[str, float]:
+        """Degraded NetBackup pool totals when datacenter-api is unavailable."""
+        logger.warning(
+            "SellableService: using SQL fallback for NetBackup pool totals (not DC View parity)",
+        )
+        with self._svc._get_connection() as conn:
+            with conn.cursor() as cur:
+                total_bytes = float(
+                    self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USABLE_BYTES, ()) or 0.0
+                )
+                used_bytes = float(
+                    self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USED_BYTES, ()) or 0.0
+                )
+                avail_bytes = float(
+                    self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_AVAILABLE_BYTES, ()) or 0.0
+                )
+        return {
+            "total_bytes": total_bytes,
+            "used_pool_bytes": used_bytes,
+            "available_bytes": avail_bytes,
+        }
+
+    def _fetch_netbackup_pool_bytes(self) -> dict[str, float]:
+        """Pool capacity bytes — prefer datacenter-api per-DC path, else SQL fallback."""
+        pools = self._aggregate_netbackup_pools_via_dc_api()
+        if pools is not None:
+            return pools
+        try:
+            return self._aggregate_netbackup_pools_via_sql_fallback()
+        except Exception:  # noqa: BLE001
+            logger.exception("SellableService: NetBackup SQL pool fallback failed")
+            return {
+                "total_bytes": 0.0,
+                "used_pool_bytes": 0.0,
+                "available_bytes": 0.0,
+            }
+
+    def _fetch_netbackup_jobs_dedup_summary(self) -> tuple[float, float]:
+        """Pre/post dedup GiB from finished BACKUP jobs in the default 7d window."""
+        _gib = 1024.0 ** 3
+        start_ts, end_ts = time_range_to_bounds(default_time_range())
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    dedup_row = self._svc._run_row(
+                        cur,
+                        sq.GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY,
+                        (start_ts, end_ts),
+                    )
+        except Exception:  # noqa: BLE001
+            logger.exception("SellableService: NetBackup jobs dedup summary failed")
+            return 0.0, 0.0
+        if not dedup_row:
+            return 0.0, 0.0
+        pre_gib = float(dedup_row[0] or 0.0)
+        post_gib = float(dedup_row[1] or 0.0)
+        return pre_gib * _gib, post_gib * _gib
+
     def _query_netbackup_storage_totals(
         self,
         src: InfraSource,
         dc_code: str,
     ) -> tuple[float, float]:
-        """NetBackup inventory totals aligned with datacenter NetBackup disk pool semantics.
+        """NetBackup inventory totals via datacenter-api (DC View disk pool semantics).
 
-        Total: sum of latest pool ``usablesizebytes`` per (netbackup_host, name).
-        Used: sum of latest pool ``usedcapacitybytes`` per (netbackup_host, name).
+        Total / used: sum of pool ``usablesizebytes`` / ``usedcapacitybytes`` across all DCs,
+        fetched with the same API and 7d time window as the DC NetBackup tab.
         """
         del src, dc_code  # global panel; DC-scoped inventory uses wildcard merge only
         try:
-            with self._svc._get_connection() as conn:
-                with conn.cursor() as cur:
-                    total_bytes = float(
-                        self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USABLE_BYTES, ()) or 0.0
-                    )
-                    used_bytes = float(
-                        self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USED_BYTES, ()) or 0.0
-                    )
+            pools = self._fetch_netbackup_pool_bytes()
+            return pools["total_bytes"], pools["used_pool_bytes"]
         except Exception:  # noqa: BLE001
             logger.exception(
                 "SellableService: NetBackup inventory aggregate failed (panel=%s)",
                 "backup_netbackup_storage",
             )
             return 0.0, 0.0
-        return total_bytes, used_bytes
 
     def get_netbackup_inventory_metrics(self) -> dict[str, float]:
-        """Global NetBackup pool capacity, physical free, and jobs dedup summary (bytes)."""
-        _gib = 1024.0 ** 3
+        """Global NetBackup pool capacity (DC-api path), physical free, jobs dedup (7d)."""
         zero = {
             "total_bytes": 0.0,
             "used_pool_bytes": 0.0,
@@ -976,32 +1107,17 @@ SELECT _tot, _alloc FROM latest
             "dedup_factor": 0.0,
         }
         try:
-            with self._svc._get_connection() as conn:
-                with conn.cursor() as cur:
-                    total_bytes = float(
-                        self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USABLE_BYTES, ()) or 0.0
-                    )
-                    used_pool_bytes = float(
-                        self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USED_BYTES, ()) or 0.0
-                    )
-                    available_bytes = float(
-                        self._svc._run_value(
-                            cur, sq.GLOBAL_NETBACKUP_POOL_AVAILABLE_BYTES, (),
-                        ) or 0.0
-                    )
-                    dedup_row = self._svc._run_row(
-                        cur, sq.GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY, (),
-                    )
-                    pre_gib = float(dedup_row[0] or 0.0) if dedup_row else 0.0
-                    post_gib = float(dedup_row[1] or 0.0) if dedup_row else 0.0
+            pools = self._fetch_netbackup_pool_bytes()
+            pre_bytes, post_bytes = self._fetch_netbackup_jobs_dedup_summary()
         except Exception:  # noqa: BLE001
             logger.exception(
                 "SellableService: NetBackup inventory metrics aggregate failed",
             )
             return zero
 
-        pre_bytes = pre_gib * _gib
-        post_bytes = post_gib * _gib
+        total_bytes = float(pools.get("total_bytes") or 0.0)
+        used_pool_bytes = float(pools.get("used_pool_bytes") or 0.0)
+        available_bytes = float(pools.get("available_bytes") or 0.0)
         savings_bytes = max(pre_bytes - post_bytes, 0.0)
         savings_pct = (savings_bytes / pre_bytes * 100.0) if pre_bytes > 0 else 0.0
         dedup_factor = (pre_bytes / post_bytes) if post_bytes > 0 else 0.0

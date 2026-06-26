@@ -449,6 +449,7 @@ SELECT
 FROM public.raw_netbackup_jobs_metrics
 WHERE jobtype = 'BACKUP'
   AND percentcomplete = 100
+  AND collection_timestamp BETWEEN %s AND %s
 """
 
 GLOBAL_NETBACKUP_POOL_USED_BYTES = """

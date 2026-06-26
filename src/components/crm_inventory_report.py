@@ -49,6 +49,8 @@ _FLAT_EXTRA_COLUMN = {"name": "Family", "id": "family_label"}
 
 _FLAT_VIEW_FAMILY = "dual_track"
 
+INVENTORY_REPORT_SCHEMA_VERSION = "netbackup-dc-api-v1"
+
 _NUMERIC_COLS = {
     "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
     "sellable_alloc_fmt", "sellable_max_fmt",
@@ -314,18 +316,24 @@ def build_report_table(
         for col in columns
         if col["id"] in _NUMERIC_COLS
     ]
-    return dash_table.DataTable(
-        id=table_id,
-        data=data,
-        columns=columns,
-        page_size=page_size,
-        sort_action="native",
-        sort_mode="multi",
-        style_table={"overflowX": "auto", "borderRadius": "8px", "minWidth": "720px"},
-        style_cell=_TABLE_STYLE_CELL,
-        style_header=_TABLE_STYLE_HEADER,
-        style_data_conditional=[*_table_style_data_conditional(), *column_widths],
+    use_fixed_columns = family in _PHYSICAL_FREE_FAMILIES or any(
+        r.get("panel_key") == "backup_netbackup_storage" for r in rows
     )
+    table_kwargs: dict[str, Any] = {
+        "id": table_id,
+        "data": data,
+        "columns": columns,
+        "page_size": page_size,
+        "sort_action": "native",
+        "sort_mode": "multi",
+        "style_table": {"overflowX": "auto", "borderRadius": "8px", "minWidth": "900px"},
+        "style_cell": _TABLE_STYLE_CELL,
+        "style_header": _TABLE_STYLE_HEADER,
+        "style_data_conditional": [*_table_style_data_conditional(), *column_widths],
+    }
+    if use_fixed_columns:
+        table_kwargs["fixed_columns"] = {"headers": True, "data": 2}
+    return dash_table.DataTable(**table_kwargs)
 
 
 def build_unmapped_table(rows: list[dict[str, Any]], *, table_id: str) -> dash_table.DataTable:
@@ -416,7 +424,7 @@ def build_family_accordion(
                     dmc.AccordionPanel(
                         children=build_report_table(
                             filtered,
-                            table_id=f"{id_prefix}-family-{idx}",
+                            table_id=f"{id_prefix}-family-{idx}-{INVENTORY_REPORT_SCHEMA_VERSION}",
                             sellable_profile=profile,
                             family=family_key,
                             hide_used=family_key in _INVENTORY_VIRT_FAMILIES,

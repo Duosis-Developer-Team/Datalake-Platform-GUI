@@ -1817,16 +1817,54 @@ def test_site_filter_pattern_for_s3_panels():
 
 
 def test_sellable_payload_version_bumped_for_data_accuracy():
-    assert SELLABLE_PAYLOAD_VERSION >= 9
+    assert SELLABLE_PAYLOAD_VERSION >= 10
+
+
+def test_sum_netbackup_pool_rows():
+    rows = [
+        {"usablesizebytes": 1000, "usedcapacitybytes": 400, "availablespacebytes": 600},
+        {"usablesizebytes": 2000, "usedcapacitybytes": 500, "availablespacebytes": 1500},
+    ]
+    total, used, avail = SellableService._sum_netbackup_pool_rows(rows)
+    assert total == 3000.0
+    assert used == 900.0
+    assert avail == 2100.0
+
+
+def test_aggregate_netbackup_pools_via_dc_api_sums_all_dcs():
+    svc = SellableService.__new__(SellableService)
+    svc._dc_api_url = "http://dc-api:8000"
+    svc._fetch_datacenter_codes = MagicMock(return_value=["DC13", "DC14"])
+
+    def _fake_get(url, params=None, timeout=None):
+        del params, timeout
+        if "DC13" in url:
+            payload = {
+                "rows": [
+                    {"usablesizebytes": 1_500_000_000_000_000, "usedcapacitybytes": 1_200_000_000_000_000, "availablespacebytes": 300_000_000_000_000},
+                ],
+            }
+        else:
+            payload = {
+                "rows": [
+                    {"usablesizebytes": 500_000_000_000_000, "usedcapacitybytes": 200_000_000_000_000, "availablespacebytes": 300_000_000_000_000},
+                ],
+            }
+        mock = MagicMock()
+        mock.raise_for_status = MagicMock()
+        mock.json = MagicMock(return_value=payload)
+        return mock
+
+    with patch("app.services.sellable_service.httpx.get", side_effect=_fake_get):
+        out = svc._aggregate_netbackup_pools_via_dc_api()
+    assert out is not None
+    assert out["total_bytes"] == 2_000_000_000_000_000.0
+    assert out["used_pool_bytes"] == 1_400_000_000_000_000.0
+    assert out["available_bytes"] == 600_000_000_000_000.0
 
 
 def test_query_netbackup_inventory_metrics_dedup_and_available():
     svc_inner = MagicMock()
-    svc_inner._run_value.side_effect = [
-        5_000_000_000_000.0,
-        2_000_000_000_000.0,
-        300_000_000_000_000.0,
-    ]
     svc_inner._run_row.return_value = (512.0, 128.0)
     conn = MagicMock()
     svc_inner._get_connection.return_value.__enter__ = MagicMock(return_value=conn)
@@ -1834,25 +1872,30 @@ def test_query_netbackup_inventory_metrics_dedup_and_available():
 
     sellable = SellableService.__new__(SellableService)
     sellable._svc = svc_inner
+    sellable._fetch_netbackup_pool_bytes = MagicMock(return_value={
+        "total_bytes": 5_000_000_000_000.0,
+        "used_pool_bytes": 2_000_000_000_000.0,
+        "available_bytes": 3_000_000_000_000.0,
+    })
     metrics = sellable.get_netbackup_inventory_metrics()
     assert metrics["total_bytes"] == 5_000_000_000_000.0
     assert metrics["used_pool_bytes"] == 2_000_000_000_000.0
-    assert metrics["available_bytes"] == 300_000_000_000_000.0
+    assert metrics["available_bytes"] == 3_000_000_000_000.0
     assert metrics["pre_dedup_bytes"] == 512.0 * (1024.0 ** 3)
     assert metrics["used_post_dedup_bytes"] == 128.0 * (1024.0 ** 3)
     assert metrics["dedup_savings_bytes"] > 0
     assert metrics["dedup_factor"] == pytest.approx(4.0)
+    svc_inner._run_row.assert_called_once()
+    assert len(svc_inner._run_row.call_args[0][2]) == 2  # start_ts, end_ts
 
 
 def test_query_netbackup_storage_totals_pool_capacity_and_pool_used():
-    svc_inner = MagicMock()
-    svc_inner._run_value.side_effect = [5_000_000_000_000.0, 2_000_000_000_000.0]
-    conn = MagicMock()
-    svc_inner._get_connection.return_value.__enter__ = MagicMock(return_value=conn)
-    svc_inner._get_connection.return_value.__exit__ = MagicMock(return_value=False)
-
     sellable = SellableService.__new__(SellableService)
-    sellable._svc = svc_inner
+    sellable._fetch_netbackup_pool_bytes = MagicMock(return_value={
+        "total_bytes": 5_000_000_000_000.0,
+        "used_pool_bytes": 2_000_000_000_000.0,
+        "available_bytes": 3_000_000_000_000.0,
+    })
     src = InfraSource(
         "backup_netbackup_storage",
         "*",

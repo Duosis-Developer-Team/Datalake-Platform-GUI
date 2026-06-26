@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from src.components.crm_inventory_report import (
+    INVENTORY_REPORT_SCHEMA_VERSION,
     build_report_body,
+    build_report_table,
     columns_for_family,
     filter_by_search,
     filter_service_rows,
@@ -131,6 +133,21 @@ def test_columns_for_family_netbackup_includes_used():
     assert col_ids == [
         "service_label", "display_unit", "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
     ]
+
+
+def test_build_report_table_netbackup_uses_fixed_columns():
+    row = _sample_row(
+        panel_key="backup_netbackup_storage",
+        family="backup_netbackup",
+        display_unit="TB",
+        sellable_profile="standard",
+    )
+    table = build_report_table(
+        [row],
+        table_id=f"test-nb-{INVENTORY_REPORT_SCHEMA_VERSION}",
+        family="backup_netbackup",
+    )
+    assert table.fixed_columns == {"headers": True, "data": 2}
 
 
 def test_filter_by_search_matches_family():

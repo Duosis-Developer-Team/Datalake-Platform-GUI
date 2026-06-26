@@ -29,23 +29,35 @@ EXPECTED_FAMILIES = (*VIRT_FAMILIES, "storage_s3", "backup_netbackup")
 MERGED_S3_KEY = "storage_s3"
 
 
+def _load_datacenter_api_url(host: str | None) -> str:
+    cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
+    if host:
+        urls = cfg.get("test_server", {}).get("urls", {})
+        if host in ("10.134.52.250", "10.134.52.251"):
+            key = "test_server" if host == "10.134.52.250" else "dc132_server"
+            urls = cfg.get(key, {}).get("urls", urls)
+        dc_url = urls.get("datacenter_api")
+        if dc_url:
+            return str(dc_url).rstrip("/")
+        return f"http://{host}:8000"
+    return cfg.get("test_server", {}).get("urls", {}).get(
+        "datacenter_api",
+        "http://10.134.52.250:8000",
+    )
+
+
 def _load_crm_engine_url(host: str | None) -> str:
     cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
     if host:
+        key = "test_server" if host == "10.134.52.250" else "dc132_server"
+        urls = cfg.get(key, {}).get("urls", cfg.get("test_server", {}).get("urls", {}))
+        crm_url = urls.get("crm_engine")
+        if crm_url:
+            return str(crm_url).rstrip("/")
         return f"http://{host}:8070"
     return cfg.get("test_server", {}).get("urls", {}).get(
         "crm_engine",
         "http://10.134.52.250:8070",
-    )
-
-
-def _load_datacenter_api_url(host: str | None) -> str:
-    cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
-    if host:
-        return f"http://{host}:8060"
-    return cfg.get("test_server", {}).get("urls", {}).get(
-        "datacenter_api",
-        "http://10.134.52.250:8060",
     )
 
 
@@ -127,7 +139,10 @@ def _sum_netbackup_pools(rows: list[dict]) -> dict[str, float]:
 
 def _fetch_netbackup_pools(dc_api: str, dc_id: str) -> list[dict]:
     with httpx.Client(base_url=dc_api, timeout=120.0) as client:
-        resp = client.get(f"/api/v1/datacenters/{dc_id}/backup/netbackup")
+        resp = client.get(
+            f"/api/v1/datacenters/{dc_id}/backup/netbackup",
+            params={"preset": "7d"},
+        )
         resp.raise_for_status()
         data = resp.json()
         return data.get("rows") or []
@@ -166,6 +181,10 @@ def _check_netbackup_parity(
         print(f"    {metric} global>=DC13: {status} (inv={inv_val:.2f} dc13={dc_val:.2f})")
     if inv_used < 100.0 and dc["used"] > 1000.0:
         print("    WARN: used still looks like jobs post-dedup, not pool used")
+    if abs(inv_total - inv_used) < 1.0 and inv_total > 1000.0:
+        print("    WARN: inventory total≈used — check column mapping or aggregation")
+    if inv_total > 0 and inv_used > inv_total * 1.05:
+        print("    WARN: inventory used exceeds total (>5%)")
 
 
 def _check_s3_parity(
@@ -251,16 +270,25 @@ def main() -> None:
         if key == "backup_netbackup_storage":
             crm = float(row.get("crm_sold_qty") or 0)
             total = float(row.get("total") or 0)
+            used = float(row.get("used_qty") or 0)
             if total > 0 and crm > total * 1.05:
                 print("  WARN: CRM sold still exceeds total (>5%) — check unit mapping")
+            if used > 0 and total > 0 and abs(used - total) < 1.0:
+                print("  WARN: used≈total — likely column shift or wrong metric in Used")
+            if used > total * 1.05:
+                print("  WARN: used exceeds total (>5%) — check pool aggregation")
             prepared = _try_prepare_service_row(row)
             if prepared:
+                used_fmt = prepared.get("used_fmt", "")
+                total_fmt = prepared.get("total_fmt", "")
                 print(
                     "  fmt: crm_sold=", prepared.get("crm_sold_fmt", "").replace("\n", " / "),
-                    "| total=", prepared.get("total_fmt"),
-                    "| used=", prepared.get("used_fmt", "").replace("\n", " / "),
+                    "| total=", total_fmt,
+                    "| used=", used_fmt.replace("\n", " / "),
                     "| free=", prepared.get("free_fmt", "").replace("\n", " / "),
                 )
+                if total_fmt and total_fmt in used_fmt.split("\n")[0]:
+                    print("  WARN: total value appears in used_fmt — column mapping bug")
         if key.startswith("storage_s3_"):
             if row.get("inventory_free_mode") != "physical":
                 print("  WARN: S3 free_mode is not physical")
