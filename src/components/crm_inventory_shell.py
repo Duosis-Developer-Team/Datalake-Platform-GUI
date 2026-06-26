@@ -128,7 +128,7 @@ def build_inventory_shell(summary: dict[str, Any], unmapped: list[dict[str, Any]
                     _kpi_button(
                         "Sellable potential",
                         shared.fmt_tl(summary.get("total_potential_tl")),
-                        "Constrained × unit price",
+                        "All mapped infra panels · constrained × unit price",
                         filter_value="all",
                         color=shared.BRAND_PURPLE_LIGHT,
                         icon="solar:wallet-money-bold-duotone",

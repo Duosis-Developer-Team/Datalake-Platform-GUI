@@ -8,7 +8,10 @@ import pytest
 
 from app.services.inventory_overview_service import (
     InventoryOverviewService,
+    _build_merged_s3_panel,
     _family_sellable_profile,
+    _inventory_panel_hidden,
+    _merge_s3_site_entitled,
 )
 from app.utils.usage_comparison import (
     aggregate_entitled_by_panel_key,
@@ -43,6 +46,113 @@ def _recompute_panels(panels, **kwargs):
             )
         )
     return out
+
+
+def test_inventory_panel_hidden_replication_families():
+    assert _inventory_panel_hidden("backup_zerto_replication_cpu", "backup_zerto_replication")
+    assert _inventory_panel_hidden("backup_veeam_replication_storage", "backup_veeam_replication")
+    assert not _inventory_panel_hidden("backup_netbackup_storage", "backup_netbackup")
+
+
+def test_merge_s3_site_entitled_sums_buckets():
+    entitled = {
+        "storage_s3_ankara": {
+            "entitled_qty": 8.0,
+            "entitled_amount_tl": 66.0,
+            "product_ids": ["a"],
+            "product_names": ["S3 Ankara"],
+        },
+        "storage_s3_istanbul": {
+            "entitled_qty": 1.0,
+            "entitled_amount_tl": 871.0,
+            "product_ids": ["b"],
+            "product_names": ["S3 Istanbul"],
+        },
+    }
+    merged = _merge_s3_site_entitled(entitled)
+    assert merged is not None
+    assert merged["panel_key"] == "storage_s3"
+    assert merged["entitled_qty"] == 9.0
+    assert merged["entitled_amount_tl"] == 937.0
+
+
+def test_build_merged_s3_panel_uses_max_node_metrics():
+    ank = _panel(
+        panel_key="storage_s3_ankara",
+        label="IBM ICOS S3 — Ankara",
+        family="storage_s3",
+        resource_kind="storage",
+        display_unit="TB",
+        total=2603.0,
+        allocated=1828.0,
+        unit_price_tl=100.0,
+        has_price=True,
+        threshold_pct=80.0,
+    )
+    ist = _panel(
+        panel_key="storage_s3_istanbul",
+        label="IBM ICOS S3 — Istanbul",
+        family="storage_s3",
+        resource_kind="storage",
+        display_unit="TB",
+        total=2603.0,
+        allocated=1587.0,
+        unit_price_tl=100.0,
+        has_price=True,
+        threshold_pct=80.0,
+    )
+    merged = _build_merged_s3_panel([ank, ist])
+    assert merged is not None
+    assert merged.panel_key == "storage_s3"
+    assert merged.total == 2603.0
+    assert merged.allocated == 1828.0
+    assert merged.sellable_constrained > 0.0
+
+
+def test_replication_panels_excluded_from_inventory_overview():
+    sellable = MagicMock()
+    sellable.is_available = True
+    sellable.compute_all_panels.return_value = [
+        _panel(panel_key="backup_zerto_replication_cpu", family="backup_zerto_replication"),
+        _panel(panel_key="backup_veeam_replication_ram", family="backup_veeam_replication"),
+        _panel(panel_key="backup_netbackup_storage", family="backup_netbackup"),
+    ]
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._count_unmapped_products.return_value = 0
+    sellable.compute_site_scoped_panels.return_value = []
+
+    sales = MagicMock()
+    sales._run_query.return_value = [
+        {
+            "productid": "z1",
+            "product_name": "Zerto CPU",
+            "entitled_qty": 5.0,
+            "entitled_amount_tl": 100.0,
+            "resource_unit": "vCPU",
+        },
+    ]
+    mapping = {
+        "z1": {
+            "category_code": "backup_zerto_replication_cpu",
+            "category_label": "Zerto Replication — CPU",
+            "resource_unit": "vCPU",
+            "source": "yaml",
+        },
+    }
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=MagicMock(is_available=True, run_rows=_webui_rows),
+        config=MagicMock(get_calc_dict=lambda: {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}),
+        crm_redis=None,
+    )
+    svc._load_product_mapping = MagicMock(return_value=mapping)
+    payload = svc.compute_inventory_overview("*")
+    keys = {p["panel_key"] for p in payload["panels"]}
+    assert "backup_zerto_replication_cpu" not in keys
+    assert "backup_veeam_replication_ram" not in keys
+    assert "backup_netbackup_storage" in keys
 
 
 def test_normalize_entitled_qty_tb_to_gb():
@@ -535,11 +645,12 @@ def test_site_scoped_panels_not_summed_across_dcs():
         crm_redis=None,
     )
     payload = svc.compute_inventory_overview("*")
-    ank = next(p for p in payload["panels"] if p["panel_key"] == "storage_s3_ankara")
-    ist = next(p for p in payload["panels"] if p["panel_key"] == "storage_s3_istanbul")
-    assert ank["total"] == 100.0
-    assert ist["total"] == 200.0
-    assert ank["total"] != ist["total"]
+    s3 = next(p for p in payload["panels"] if p["panel_key"] == "storage_s3")
+    assert "storage_s3_ankara" not in {p["panel_key"] for p in payload["panels"]}
+    assert "storage_s3_istanbul" not in {p["panel_key"] for p in payload["panels"]}
+    assert s3["total"] == 200.0
+    assert s3["used_qty"] == 80.0
+    assert s3["service_label"] == "IBM ICOS S3"
     sellable.compute_site_scoped_panels.assert_called_once()
 
 

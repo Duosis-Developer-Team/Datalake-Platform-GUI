@@ -67,7 +67,7 @@ def test_prepare_service_row_standard_free_shows_sellable_tl():
         sellable_alloc_qty=None,
         sellable_max_qty=None,
     ))
-    assert "60 vCPU" in row["free_fmt"]
+    assert "20 vCPU" in row["free_fmt"]
     assert "30,000 TL" in row["free_fmt"]
     assert row["sellable_alloc_fmt"] == "—\n—"
 

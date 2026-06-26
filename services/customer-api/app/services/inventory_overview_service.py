@@ -22,7 +22,10 @@ from app.utils.usage_comparison import (
     panel_inventory_status,
     panel_inventory_status_virt,
 )
-from shared.sellable.computation import compute_potential_tl
+from shared.sellable.computation import (
+    apply_utilization_gate,
+    compute_potential_tl,
+)
 from shared.sellable.models import PanelResult
 
 logger = logging.getLogger(__name__)
@@ -47,6 +50,27 @@ _INVENTORY_SKIP_INFRA_PANEL_KEYS: frozenset[str] = frozenset({
     "virt_power_hana_cpu",
     "virt_power_hana_ram",
     "virt_power_hana_storage",
+    # Replication backup — hidden from inventory until mapping is trusted.
+    "backup_zerto_replication_cpu",
+    "backup_zerto_replication_ram",
+    "backup_zerto_replication_storage",
+    "backup_veeam_replication_cpu",
+    "backup_veeam_replication_ram",
+    "backup_veeam_replication_storage",
+    # S3 site nodes merged into a single IBM ICOS S3 row.
+    "storage_s3_ankara",
+    "storage_s3_istanbul",
+})
+
+_INVENTORY_SKIP_FAMILIES: frozenset[str] = frozenset({
+    "backup_zerto_replication",
+    "backup_veeam_replication",
+})
+
+_INVENTORY_MERGED_S3_PANEL_KEY = "storage_s3"
+_INVENTORY_MERGED_S3_SOURCE_KEYS: frozenset[str] = frozenset({
+    "storage_s3_ankara",
+    "storage_s3_istanbul",
 })
 
 _INVENTORY_MERGED_CRM_SUB: dict[str, tuple[str, str]] = {
@@ -99,6 +123,95 @@ def _family_label(
         if parts:
             return _humanize_token(parts[0])
     return _humanize_token(family_key)
+
+
+def _inventory_panel_hidden(panel_key: str, family_key: str | None = None) -> bool:
+    """Return True when a panel must not appear on the inventory overview."""
+    if panel_key in _INVENTORY_SKIP_INFRA_PANEL_KEYS:
+        return True
+    if family_key and family_key in _INVENTORY_SKIP_FAMILIES:
+        return True
+    return False
+
+
+def _merge_s3_site_entitled(
+    entitled_by_panel: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Merge Ankara + Istanbul CRM buckets into one storage_s3 panel row."""
+    buckets = [
+        entitled_by_panel.get(key)
+        for key in sorted(_INVENTORY_MERGED_S3_SOURCE_KEYS)
+        if entitled_by_panel.get(key)
+    ]
+    if not buckets:
+        return None
+
+    entitled_qty = sum(float(b.get("entitled_qty") or 0.0) for b in buckets)
+    entitled_tl = sum(float(b.get("entitled_amount_tl") or 0.0) for b in buckets)
+    product_ids: set[str] = set()
+    product_names: set[str] = set()
+    for bucket in buckets:
+        product_ids.update(str(pid) for pid in (bucket.get("product_ids") or []) if pid)
+        product_names.update(str(name) for name in (bucket.get("product_names") or []) if name)
+
+    base = dict(buckets[0])
+    base["panel_key"] = _INVENTORY_MERGED_S3_PANEL_KEY
+    base["entitled_qty"] = entitled_qty
+    base["entitled_amount_tl"] = entitled_tl
+    base["product_ids"] = sorted(product_ids)
+    base["product_names"] = sorted(product_names)
+    return base
+
+
+def _build_merged_s3_panel(candidates: list[PanelResult]) -> PanelResult | None:
+    """Collapse ICOS site-scoped nodes into one inventory panel (same cluster)."""
+    found = [p for p in candidates if p.panel_key in _INVENTORY_MERGED_S3_SOURCE_KEYS]
+    if not found:
+        return None
+
+    template = max(found, key=lambda p: float(p.allocated or 0.0))
+    total = max(float(p.total or 0.0) for p in found)
+    allocated = max(float(p.allocated or 0.0) for p in found)
+    sellable_raw = apply_utilization_gate(
+        total,
+        allocated,
+        None,
+        float(template.threshold_pct or 80.0),
+    )
+    sellable_constrained = sellable_raw
+    unit_price = float(template.unit_price_tl or 0.0)
+    potential_tl = (
+        compute_potential_tl(sellable_constrained, unit_price)
+        if template.has_price
+        else 0.0
+    )
+    notes = list(template.notes or [])
+    merge_note = "merged from site nodes (Ankara + Istanbul)"
+    if merge_note not in notes:
+        notes.append(merge_note)
+
+    return PanelResult(
+        panel_key=_INVENTORY_MERGED_S3_PANEL_KEY,
+        label="IBM ICOS S3",
+        family="storage_s3",
+        resource_kind=template.resource_kind,
+        display_unit=template.display_unit,
+        dc_code="*",
+        total=total,
+        allocated=allocated,
+        threshold_pct=template.threshold_pct,
+        sellable_raw=sellable_raw,
+        sellable_constrained=sellable_constrained,
+        unit_price_tl=unit_price,
+        potential_tl=potential_tl,
+        ratio_bound=False,
+        gate_blocked=sellable_raw <= 0.0 and total > 0.0,
+        has_infra_source=True,
+        has_price=template.has_price,
+        notes=notes,
+        computation_mode="aggregated",
+        constraint_reason="none",
+    )
 
 
 def _crm_product_names_summary(names: list[str] | None, limit: int = 3) -> str:
@@ -754,8 +867,10 @@ class InventoryOverviewService:
         crm_only_panels: list[dict[str, Any]] = []
         seen_panels: set[str] = set()
 
+        s3_merged = _build_merged_s3_panel(panels)
+
         for panel in panels:
-            if panel.panel_key in _INVENTORY_SKIP_INFRA_PANEL_KEYS:
+            if _inventory_panel_hidden(panel.panel_key, panel.family):
                 continue
             seen_panels.add(panel.panel_key)
             merge_cfg = _INVENTORY_MERGED_CRM_SUB.get(panel.panel_key)
@@ -781,10 +896,30 @@ class InventoryOverviewService:
             if row.get("infra_binding") == "crm_only":
                 crm_only_panels.append(row)
 
+        if s3_merged is not None:
+            seen_panels.add(_INVENTORY_MERGED_S3_PANEL_KEY)
+            s3_entitled = _merge_s3_site_entitled(entitled_by_panel)
+            s3_row = self._build_panel_row(
+                s3_merged,
+                s3_entitled,
+                panel_defs=panel_defs,
+                service_pages=service_pages,
+                under_pct=under_pct,
+                over_pct=over_pct,
+            )
+            panel_rows.append(s3_row)
+            if s3_row.get("infra_binding") == "crm_only":
+                crm_only_panels.append(s3_row)
+
         for panel_key, bucket in entitled_by_panel.items():
             if panel_key in seen_panels:
                 continue
-            if panel_key in _INVENTORY_SKIP_INFRA_PANEL_KEYS:
+            family_key = str(
+                bucket.get("family")
+                or panel_defs.get(panel_key, {}).get("family")
+                or _infer_family_key(panel_key, panel_defs)
+            )
+            if _inventory_panel_hidden(panel_key, family_key):
                 continue
             if panel_key in {pair[0] for pair in _INVENTORY_MERGED_CRM_SUB.values()}:
                 continue

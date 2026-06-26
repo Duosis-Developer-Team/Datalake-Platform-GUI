@@ -142,6 +142,12 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
     potential_tl_max = row.get("potential_tl_max")
 
     free_tl = potential_tl if profile == "standard" and has_infra else None
+    free_display_qty = row.get("free_qty")
+    if profile == "standard" and has_infra:
+        sellable_qty = row.get("sellable_qty")
+        if sellable_qty is not None:
+            free_display_qty = sellable_qty
+            free_tl = potential_tl
     hide_used = bool(row.get("inventory_hide_used"))
 
     return {
@@ -160,7 +166,7 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
             ) if has_infra else "—\n—"
         ),
         "free_fmt": shared.fmt_qty_tl_block(
-            row.get("free_qty"), unit, free_tl,
+            free_display_qty, unit, free_tl,
             qty_missing="—",
         ) if has_infra else "—\n—",
         "sellable_alloc_fmt": shared.fmt_qty_tl_block(
