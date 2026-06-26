@@ -10,6 +10,7 @@ from app.services.inventory_overview_service import (
     InventoryOverviewService,
     _apply_netbackup_inventory_fields,
     _build_merged_s3_panel,
+    _value_tl_from_catalog_price,
     _family_sellable_profile,
     _include_row_in_families,
     _inventory_panel_hidden,
@@ -589,10 +590,18 @@ def test_global_inventory_aggregates_per_dc_infra():
     sellable.recompute_family_constraints.assert_called_once()
 
 
+def test_value_tl_from_catalog_price():
+    assert _value_tl_from_catalog_price(775.0, unit_price_tl=762.0, has_price=True) == 590550.0
+    assert _value_tl_from_catalog_price(775.0, unit_price_tl=0.0, has_price=True) is None
+    assert _value_tl_from_catalog_price(775.0, unit_price_tl=762.0, has_price=False) is None
+
+
 def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
     row = {
         "panel_key": "backup_netbackup_storage",
         "has_infra_source": True,
+        "has_price": True,
+        "unit_price_tl": 230.0,
         "used_qty": 5.0,
         "free_qty": 999.0,
     }
@@ -611,6 +620,7 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
     assert out["dedup_savings_pct"] == 90.0
     assert out["dedup_factor"] == 10.0
     assert out["inventory_free_mode"] == "physical"
+    assert out["free_tl"] == 23000.0
 
 
 def test_global_only_panel_netbackup_enriched_free_qty():
@@ -684,6 +694,7 @@ def test_global_only_panel_netbackup_enriched_free_qty():
     assert nb["free_qty"] == 300.0
     assert nb["pre_dedup_qty"] == 5000.0
     assert nb["dedup_savings_pct"] == 80.0
+    assert nb["free_tl"] == 69000.0
 
 
 def test_site_scoped_panels_not_summed_across_dcs():
@@ -771,6 +782,7 @@ def test_site_scoped_panels_not_summed_across_dcs():
     assert ank["used_qty"] == 40.0
     assert ank["inventory_free_mode"] == "physical"
     assert ank["free_qty"] == 60.0
+    assert ank["free_tl"] == 6000.0
     sellable.compute_site_scoped_panels.assert_called_once()
 
 

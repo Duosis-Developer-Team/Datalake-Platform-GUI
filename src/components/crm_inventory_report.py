@@ -184,7 +184,9 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         free_mode == "physical"
         or family in _PHYSICAL_FREE_FAMILIES
     )
-    if profile == "standard" and has_infra and not use_physical_free:
+    if use_physical_free and has_infra:
+        free_tl = row.get("free_tl")
+    elif profile == "standard" and has_infra and not use_physical_free:
         sellable_qty = row.get("sellable_qty")
         if sellable_qty is not None:
             free_display_qty = sellable_qty

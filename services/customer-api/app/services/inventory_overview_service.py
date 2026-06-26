@@ -117,6 +117,24 @@ def _bytes_to_tb(value: float) -> float:
     return float(value or 0.0) / _TB_BYTES
 
 
+def _value_tl_from_catalog_price(
+    qty: float | None,
+    *,
+    unit_price_tl: float | None,
+    has_price: bool,
+) -> float | None:
+    """Monetary value for a physical qty using CRM catalog / override unit price."""
+    if qty is None or not has_price or unit_price_tl is None:
+        return None
+    try:
+        price = float(unit_price_tl)
+    except (TypeError, ValueError):
+        return None
+    if price <= 0.0:
+        return None
+    return compute_potential_tl(float(qty), price)
+
+
 def _apply_netbackup_inventory_fields(
     row: dict[str, Any],
     metrics: dict[str, float],
@@ -131,6 +149,11 @@ def _apply_netbackup_inventory_fields(
     row["dedup_savings_qty"] = _bytes_to_tb(metrics.get("dedup_savings_bytes", 0.0))
     row["dedup_savings_pct"] = float(metrics.get("dedup_savings_pct") or 0.0)
     row["dedup_factor"] = float(metrics.get("dedup_factor") or 0.0)
+    row["free_tl"] = _value_tl_from_catalog_price(
+        row.get("free_qty"),
+        unit_price_tl=row.get("unit_price_tl"),
+        has_price=bool(row.get("has_price")),
+    )
     return row
 
 
@@ -899,6 +922,16 @@ class InventoryOverviewService:
         inventory_free_mode = (
             "physical" if family_key in _PHYSICAL_FREE_FAMILIES else "standard"
         )
+        track_fields = _sellable_track_fields(
+            panel, has_infra=panel.has_infra_source, hide_used=hide_used,
+        )
+        free_tl_out = None
+        if inventory_free_mode == "physical" and panel.has_infra_source:
+            free_tl_out = _value_tl_from_catalog_price(
+                free_out,
+                unit_price_tl=panel.unit_price_tl,
+                has_price=panel.has_price,
+            )
         base = {
             "panel_key": panel.panel_key,
             "label": service_label,
@@ -911,6 +944,7 @@ class InventoryOverviewService:
             "used_qty": used_out,
             "sellable_qty": sellable_out,
             "free_qty": free_out,
+            "free_tl": free_tl_out,
             "potential_tl": panel.potential_tl,
             "has_infra_source": panel.has_infra_source,
             "has_price": panel.has_price,
@@ -922,7 +956,7 @@ class InventoryOverviewService:
             "inventory_free_mode": inventory_free_mode,
             "data_quality": data_quality,
             "suspect_reason": suspect_reason,
-            **_sellable_track_fields(panel, has_infra=panel.has_infra_source, hide_used=hide_used),
+            **track_fields,
             **crm_fields,
         }
         return self._enrich_row(

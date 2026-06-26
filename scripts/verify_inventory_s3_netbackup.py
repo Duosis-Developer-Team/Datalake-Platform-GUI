@@ -191,7 +191,7 @@ def main() -> None:
             f"{key}: total={row.get('total')} crm_sold={row.get('crm_sold_qty')} "
             f"used={row.get('used_qty')} pre_dedup={row.get('pre_dedup_qty')} "
             f"savings={row.get('dedup_savings_qty')} ({row.get('dedup_savings_pct')}%) "
-            f"free={row.get('free_qty')} sellable={row.get('sellable_qty')} "
+            f"free={row.get('free_qty')} free_tl={row.get('free_tl')} sellable={row.get('sellable_qty')} "
             f"free_mode={row.get('inventory_free_mode')} "
             f"has_infra={row.get('has_infra_source')} status={row.get('status')}"
         )

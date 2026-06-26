@@ -81,11 +81,13 @@ def test_prepare_service_row_s3_physical_free_not_sellable():
         total=2000.0,
         used_qty=800.0,
         free_qty=1200.0,
+        free_tl=914400.0,
         sellable_qty=385.0,
         potential_tl=38500.0,
         inventory_free_mode="physical",
     ))
     assert "1,200 TB" in row["free_fmt"]
+    assert "914,400 TL" in row["free_fmt"]
     assert "385 TB" not in row["free_fmt"]
 
 
