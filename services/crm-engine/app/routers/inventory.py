@@ -18,7 +18,8 @@ def _inventory(request: Request) -> InventoryOverviewService:
 @router.get("/crm/inventory-overview", response_model=dict)
 def get_inventory_overview(
     dc_code: str = "*",
+    force_recompute: bool = False,
     svc: InventoryOverviewService = Depends(_inventory),
 ):
     """Global capacity vs CRM entitled vs infra used, aggregated across all DCs."""
-    return svc.compute_inventory_overview(dc_code=dc_code)
+    return svc.compute_inventory_overview(dc_code=dc_code, force_recompute=force_recompute)

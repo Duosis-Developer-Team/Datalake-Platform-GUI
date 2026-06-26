@@ -30,7 +30,7 @@ from shared.sellable.models import PanelResult
 
 logger = logging.getLogger(__name__)
 
-_INVENTORY_CACHE_TTL_SEC = 300.0
+_INVENTORY_CACHE_TTL_SEC = float(os.getenv("INVENTORY_OVERVIEW_CACHE_TTL", "600") or "600")
 _INVENTORY_REDIS_PREFIX = "crm:inventory_overview:"
 _INVENTORY_DC_PARALLELISM = max(1, int(os.getenv("INVENTORY_DC_PARALLELISM", "4") or "4"))
 
@@ -1014,3 +1014,8 @@ class InventoryOverviewService:
                 logger.debug("inventory overview cache write failed", exc_info=True)
 
         return payload
+
+    def warm_inventory_cache(self, dc_code: str = "*") -> dict[str, Any]:
+        """Prewarm Redis inventory overview cache (scheduler / admin refresh)."""
+        logger.info("inventory overview: warming cache dc=%s", dc_code or "*")
+        return self.compute_inventory_overview(dc_code=dc_code, force_recompute=True)

@@ -11,8 +11,9 @@ Routes mounted under /api/v1:
   - /crm/config/*                (crm_config router)
   - /crm/service-mapping*        (service_mapping router)
 
-Background scheduler runs SellableService.snapshot_all every
-REFRESH_INTERVAL_MINUTES; customer cache warm-up stays in customer-api.
+Background scheduler runs SellableService.snapshot_all and
+InventoryOverviewService.warm_inventory_cache every REFRESH_INTERVAL_MINUTES;
+customer cache warm-up stays in customer-api.
 """
 from __future__ import annotations
 
@@ -111,9 +112,12 @@ _WEBUI_REQUIRED = _env_bool("WEBUI_DB_REQUIRED", settings.webui_db_required)
 _SYNC_SNAPSHOT_ON_STARTUP = _env_bool("CRM_ENGINE_SYNC_SNAPSHOT_ON_STARTUP", False)
 
 
-def _start_scheduler(sellable_svc: SellableService) -> BackgroundScheduler:
+def _start_scheduler(
+    sellable_svc: SellableService,
+    inventory_svc: InventoryOverviewService | None = None,
+) -> BackgroundScheduler:
     scheduler = BackgroundScheduler(daemon=True)
-    job_kw: dict = {
+    sellable_kw: dict = {
         "func": sellable_svc.snapshot_all,
         "trigger": IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
         "id": "sellable_snapshot",
@@ -122,22 +126,42 @@ def _start_scheduler(sellable_svc: SellableService) -> BackgroundScheduler:
         "misfire_grace_time": 60,
     }
     if not _SYNC_SNAPSHOT_ON_STARTUP:
-        job_kw["next_run_time"] = datetime.now()
-    scheduler.add_job(**job_kw)
+        sellable_kw["next_run_time"] = datetime.now()
+    scheduler.add_job(**sellable_kw)
+
+    if inventory_svc is not None:
+        inventory_kw: dict = {
+            "func": inventory_svc.warm_inventory_cache,
+            "kwargs": {"dc_code": "*"},
+            "trigger": IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
+            "id": "inventory_overview_warm",
+            "name": "CRM inventory overview prewarm",
+            "replace_existing": True,
+            "misfire_grace_time": 120,
+        }
+        if not _SYNC_SNAPSHOT_ON_STARTUP:
+            inventory_kw["next_run_time"] = datetime.now()
+        scheduler.add_job(**inventory_kw)
+
     if _SYNC_SNAPSHOT_ON_STARTUP:
         try:
             sellable_svc.snapshot_all()
         except Exception:  # noqa: BLE001 - never abort startup
             logger.exception("Initial sellable snapshot failed (sync)")
+        if inventory_svc is not None:
+            try:
+                inventory_svc.warm_inventory_cache(dc_code="*")
+            except Exception:  # noqa: BLE001 - never abort startup
+                logger.exception("Initial inventory overview warm failed (sync)")
     scheduler.start()
     if _SYNC_SNAPSHOT_ON_STARTUP:
         logger.info(
-            "crm-engine scheduler started (sellable snapshot every %d minutes, sync startup).",
+            "crm-engine scheduler started (sellable + inventory every %d minutes, sync startup).",
             REFRESH_INTERVAL_MINUTES,
         )
     else:
         logger.info(
-            "crm-engine ready; scheduler started (sellable snapshot every %d min, "
+            "crm-engine ready; scheduler started (sellable + inventory every %d min, "
             "first run in background).",
             REFRESH_INTERVAL_MINUTES,
         )
@@ -193,7 +217,7 @@ async def lifespan(app: FastAPI):
         crm_redis=crm_redis,
     )
 
-    app.state.scheduler = _start_scheduler(sellable_svc)
+    app.state.scheduler = _start_scheduler(sellable_svc, app.state.inventory)
     yield
     if getattr(app.state, "scheduler", None) and app.state.scheduler.running:
         app.state.scheduler.shutdown(wait=False)

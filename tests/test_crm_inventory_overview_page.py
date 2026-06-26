@@ -97,8 +97,25 @@ def test_build_layout_returns_report_body():
     assert "crm-inventory-view-mode" in ids
 
 
-def test_build_layout_shell_has_store():
+def test_build_layout_shell_has_store_and_skeleton():
     shell = crm_inventory_overview.build_layout_shell()
     assert isinstance(shell, html.Div)
-    ids = [c.id for c in shell.children if hasattr(c, "id") and c.id]
+    ids = _collect_ids(shell)
     assert "crm-inventory-visible-sections" in ids
+    assert "crm-inventory-page-root" in ids
+    assert "crm-inventory-loading-layer" in ids
+
+
+def test_build_layout_content_renders_from_payload():
+    layout = crm_inventory_overview.build_layout_content(_fake_payload())
+    assert isinstance(layout, html.Div)
+    ids = _collect_ids(layout)
+    assert "crm-inventory-report-body" in ids
+    assert "crm-inventory-store" in ids
+    assert "crm-inventory-filter" in ids
+
+
+def test_fill_callback_does_not_listen_to_time_range():
+    cb = crm_inventory_overview._fill_crm_inventory_content
+    input_components = {inp.component_id for inp in cb.inputs}
+    assert input_components == {"url"}

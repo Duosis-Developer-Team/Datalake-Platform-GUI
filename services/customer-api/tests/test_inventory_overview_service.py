@@ -957,3 +957,15 @@ def test_inventory_merged_power_hana_crm_sub_bucket():
     assert power["crm_sold_qty"] == 50.0
     assert power["crm_sold_qty_hana"] == 10.0
     assert "virt_power_hana" not in [f["family"] for f in payload["families"]]
+
+
+def test_warm_inventory_cache_force_recomputes_and_writes_redis(inventory_svc):
+    redis = MagicMock()
+    inventory_svc._crm_redis = redis
+    inventory_svc.compute_inventory_overview = MagicMock(return_value={"dc_code": "*", "summary": {}})
+
+    result = inventory_svc.warm_inventory_cache("*")
+
+    inventory_svc.compute_inventory_overview.assert_called_once_with(dc_code="*", force_recompute=True)
+    assert result["dc_code"] == "*"
+

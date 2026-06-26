@@ -25,10 +25,24 @@ def refresh_cache(request: Request) -> dict:
     if sellable is None:
         raise HTTPException(status_code=503, detail="SellableService not available")
     metrics_emitted = sellable.snapshot_all()
+    inventory = getattr(request.app.state, "inventory", None)
+    inventory_warmed = False
+    if inventory is not None:
+        try:
+            inventory.warm_inventory_cache(dc_code="*")
+            inventory_warmed = True
+        except Exception:  # noqa: BLE001
+            logger.exception("Inventory overview warm failed during admin refresh")
     stats = cache_stats()
     logger.info(
-        "Admin cache refresh complete (crm-engine). metrics_emitted=%s redis_keys=%s",
+        "Admin cache refresh complete (crm-engine). metrics_emitted=%s inventory_warmed=%s redis_keys=%s",
         metrics_emitted,
+        inventory_warmed,
         stats.get("redis_keys"),
     )
-    return {"status": "ok", "metrics_emitted": metrics_emitted, "cache": stats}
+    return {
+        "status": "ok",
+        "metrics_emitted": metrics_emitted,
+        "inventory_warmed": inventory_warmed,
+        "cache": stats,
+    }

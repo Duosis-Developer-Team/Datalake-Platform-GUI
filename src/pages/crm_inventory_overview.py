@@ -1,6 +1,8 @@
 """Global CRM inventory overview — capacity vs CRM sold vs infra used.
 
 Route: ``/crm/inventory-overview``
+
+Phase A: instant skeleton shell. Phase B: async fetch via ``_fill_crm_inventory_content``.
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ import pandas as pd
 from dash import ALL, Input, Output, State, callback, ctx, dcc, html
 from dash_iconify import DashIconify
 
+from src.components.crm_inventory_loading import build_crm_inventory_loading_shell
 from src.components.crm_inventory_report import build_report_body, prepare_service_row
 from src.components.crm_inventory_shell import build_inventory_shell
 from src.services import api_client as api
@@ -53,6 +56,7 @@ def _unmapped_banner(summary: dict[str, Any], products: list[dict[str, Any]]) ->
 
 
 def build_layout_shell(visible_sections=None) -> html.Div:
+    """Phase A: instant skeleton; Phase B fills ``crm-inventory-page-root`` via callback."""
     return html.Div([
         dcc.Store(
             id="crm-inventory-visible-sections",
@@ -61,7 +65,11 @@ def build_layout_shell(visible_sections=None) -> html.Div:
         dcc.Loading(
             id="crm-inventory-content-loading",
             type="circle", color="#4318FF", delay_show=150,
-            children=html.Div(id="crm-inventory-page-root", style={"minHeight": "60vh", "padding": "0 8px"}),
+            children=html.Div(
+                id="crm-inventory-page-root",
+                style={"minHeight": "60vh", "padding": "0 8px"},
+                children=build_crm_inventory_loading_shell(),
+            ),
         ),
     ])
 
@@ -69,20 +77,29 @@ def build_layout_shell(visible_sections=None) -> html.Div:
 @callback(
     Output("crm-inventory-page-root", "children"),
     Input("url", "pathname"),
-    Input("app-time-range", "data"),
     State("crm-inventory-visible-sections", "data"),
 )
-def _fill_crm_inventory_content(pathname, time_range, visible_sections):
+def _fill_crm_inventory_content(pathname, visible_sections):
+    """Phase B: fetch inventory overview off the initial render path."""
     if pathname != "/crm/inventory-overview":
         return dash.no_update
-    return build_layout(visible_sections=visible_sections)
+    del visible_sections  # reserved for future RBAC section gating
+    try:
+        payload = api.get_crm_inventory_overview("*")
+    except Exception:  # noqa: BLE001
+        logger.exception("CRM inventory overview fetch failed")
+        return dmc.Alert(
+            title="Inventory unavailable",
+            color="red",
+            children="Could not load CRM inventory overview. Please retry in a moment.",
+        )
+    return build_layout_content(payload)
 
 
-def build_layout(visible_sections=None) -> html.Div:  # noqa: ARG001
-    payload = api.get_crm_inventory_overview("*")
+def build_layout_content(payload: dict[str, Any]) -> html.Div:
+    """Render inventory page from a pre-fetched API payload."""
     summary = payload.get("summary") or {}
     unmapped = payload.get("unmapped_products") or []
-
     report_sections = build_report_body(payload, filter_mode="all", view_mode="grouped")
 
     return html.Div(
@@ -95,6 +112,12 @@ def build_layout(visible_sections=None) -> html.Div:  # noqa: ARG001
             html.Div(id="crm-inventory-report-body", children=report_sections),
         ],
     )
+
+
+def build_layout(visible_sections=None) -> html.Div:  # noqa: ARG001
+    """Synchronous layout builder (tests and legacy callers)."""
+    payload = api.get_crm_inventory_overview("*")
+    return build_layout_content(payload)
 
 
 @callback(
