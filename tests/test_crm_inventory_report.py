@@ -93,7 +93,7 @@ def test_prepare_service_row_s3_physical_free_not_sellable():
     assert "385 TB" not in row["free_fmt"]
 
 
-def test_prepare_service_row_netbackup_used_dedup_block():
+def test_prepare_service_row_netbackup_used_qty_tl_only():
     row = prepare_service_row(_sample_row(
         panel_key="backup_netbackup_storage",
         family="backup_netbackup",
@@ -116,11 +116,10 @@ def test_prepare_service_row_netbackup_used_dedup_block():
     assert "23,246 TL" in row["crm_sold_fmt"]
     assert "44,069 TB" in row["total_fmt"]
     assert "23,246 TL" not in row["total_fmt"]
-    assert "1,229 TB" in row["used_fmt"]
-    assert "Pre: 411 TB" in row["used_fmt"]
-    assert "Saved: 406 TB" in row["used_fmt"]
-    assert "98.8%" in row["used_fmt"]
-    assert "Dedup: 81.8x" in row["used_fmt"]
+    assert row["used_fmt"] == "1,229 TB\n1,720 TL"
+    assert "Pre:" not in row["used_fmt"]
+    assert "Saved:" not in row["used_fmt"]
+    assert "Dedup:" not in row["used_fmt"]
     assert "42,115 TB" in row["free_fmt"]
     assert "58,961 TL" in row["free_fmt"]
     assert "44,069 TB" not in row["used_fmt"]
@@ -135,7 +134,7 @@ def test_columns_for_family_netbackup_includes_used():
     ]
 
 
-def test_build_report_table_netbackup_uses_fixed_columns():
+def test_build_report_table_no_fixed_columns():
     row = _sample_row(
         panel_key="backup_netbackup_storage",
         family="backup_netbackup",
@@ -147,7 +146,44 @@ def test_build_report_table_netbackup_uses_fixed_columns():
         table_id=f"test-nb-{INVENTORY_REPORT_SCHEMA_VERSION}",
         family="backup_netbackup",
     )
-    assert table.fixed_columns == {"headers": True, "data": 2}
+    assert getattr(table, "fixed_columns", None) is None
+    assert table.style_table["tableLayout"] == "fixed"
+    assert table.style_table["width"] == "100%"
+
+
+def _header_align_for_column(table, column_id: str) -> str | None:
+    for rule in table.style_header_conditional or []:
+        if rule.get("if", {}).get("column_id") == column_id:
+            return rule.get("textAlign")
+    return None
+
+
+def test_report_table_numeric_header_alignment():
+    table = build_report_table(
+        [_sample_row()],
+        table_id="test-align-report",
+        sellable_profile="standard",
+    )
+    for col_id in ("crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt"):
+        assert _header_align_for_column(table, col_id) == "right"
+
+
+def test_unmapped_table_numeric_alignment():
+    from src.components.crm_inventory_report import build_unmapped_table
+
+    table = build_unmapped_table(
+        [{"product_name": "X", "resource_unit": "TB", "entitled_qty": 10, "entitled_amount_tl": 5000}],
+        table_id="test-unmapped-align",
+    )
+    assert _header_align_for_column(table, "entitled_qty") == "right"
+    assert _header_align_for_column(table, "entitled_amount_tl") == "right"
+    data_rules = {
+        r.get("if", {}).get("column_id"): r.get("textAlign")
+        for r in (table.style_data_conditional or [])
+        if r.get("if", {}).get("column_id") in ("entitled_qty", "entitled_amount_tl")
+    }
+    assert data_rules.get("entitled_qty") == "right"
+    assert data_rules.get("entitled_amount_tl") == "right"
 
 
 def test_filter_by_search_matches_family():

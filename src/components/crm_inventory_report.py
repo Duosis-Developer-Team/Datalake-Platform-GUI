@@ -49,11 +49,24 @@ _FLAT_EXTRA_COLUMN = {"name": "Family", "id": "family_label"}
 
 _FLAT_VIEW_FAMILY = "dual_track"
 
-INVENTORY_REPORT_SCHEMA_VERSION = "netbackup-dc-api-v1"
+INVENTORY_REPORT_SCHEMA_VERSION = "inventory-align-v2"
 
-_NUMERIC_COLS = {
+_LEFT_COLS = frozenset({
+    "service_label", "display_unit", "family_label", "product_name", "resource_unit",
+})
+
+_NUMERIC_COLS = frozenset({
     "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
     "sellable_alloc_fmt", "sellable_max_fmt",
+    "entitled_qty", "entitled_amount_tl",
+})
+
+_TABLE_STYLE_TABLE = {
+    "overflowX": "auto",
+    "borderRadius": "8px",
+    "minWidth": "900px",
+    "tableLayout": "fixed",
+    "width": "100%",
 }
 
 _UNMAPPED_COLUMNS = [
@@ -132,25 +145,6 @@ def _fmt_crm_sold_block(row: dict[str, Any], unit: str, crm_sold_tl: Any) -> str
     return f"{qty_line}\n{sub_line}\n{tl_line}"
 
 
-def _fmt_netbackup_used_block(row: dict[str, Any], unit: str, used_tl: Any) -> str:
-    """Format NetBackup Used: pool used primary line; pre-dedup/savings from finished jobs."""
-    post = row.get("used_qty")
-    pre = row.get("pre_dedup_qty")
-    savings = row.get("dedup_savings_qty")
-    savings_pct = row.get("dedup_savings_pct")
-    factor = row.get("dedup_factor")
-    if post is None:
-        return "—\n—"
-    lines = [shared.fmt_qty_tl_block(post, unit, used_tl, qty_missing="—")]
-    if pre is not None:
-        lines.append(f"Pre: {_fmt_qty(pre, unit)}")
-    if savings is not None and savings_pct is not None:
-        lines.append(f"Saved: {_fmt_qty(savings, unit)} ({float(savings_pct):,.1f}%)")
-    if factor is not None and float(factor) > 0:
-        lines.append(f"Dedup: {float(factor):,.1f}x")
-    return "\n".join(lines)
-
-
 def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
     unit = str(row.get("display_unit") or "")
     status = str(row.get("status") or "no_usage")
@@ -197,7 +191,6 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
             free_display_qty = sellable_qty
             free_tl = potential_tl
     hide_used = bool(row.get("inventory_hide_used"))
-    is_netbackup = row.get("panel_key") == "backup_netbackup_storage"
 
     return {
         "panel_key": row.get("panel_key") or "",
@@ -209,8 +202,6 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "used_fmt": (
             "—\n—"
             if hide_used
-            else _fmt_netbackup_used_block(row, unit, used_tl)
-            if is_netbackup and has_infra
             else shared.fmt_qty_tl_block(
                 row.get("used_qty"), unit, used_tl,
                 qty_missing="—",
@@ -232,10 +223,6 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "crm_products_summary": row.get("crm_products_summary") or "",
         "infra_binding": row.get("infra_binding") or "",
         "has_infra_source": has_infra,
-        "pre_dedup_qty": row.get("pre_dedup_qty"),
-        "dedup_savings_qty": row.get("dedup_savings_qty"),
-        "dedup_savings_pct": row.get("dedup_savings_pct"),
-        "dedup_factor": row.get("dedup_factor"),
         "inventory_free_mode": free_mode,
     }
 
@@ -280,7 +267,49 @@ def _table_style_data_conditional() -> list[dict[str, Any]]:
         styles.append({
             "if": {"column_id": col},
             "textAlign": "right",
+            "fontVariantNumeric": "tabular-nums",
         })
+    return styles
+
+
+def _table_style_header_conditional() -> list[dict[str, Any]]:
+    return [
+        {
+            "if": {"column_id": col},
+            "textAlign": "right",
+            "fontVariantNumeric": "tabular-nums",
+        }
+        for col in _NUMERIC_COLS
+    ]
+
+
+def _table_column_width_styles(columns: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Matched width rules for header and body cells (prevents column drift)."""
+    styles: list[dict[str, Any]] = []
+    for col in columns:
+        col_id = col["id"]
+        if col_id in ("service_label", "product_name", "family_label"):
+            styles.append({
+                "if": {"column_id": col_id},
+                "minWidth": "220px",
+                "maxWidth": "360px",
+                "textAlign": "left",
+            })
+        elif col_id in ("display_unit", "resource_unit"):
+            styles.append({
+                "if": {"column_id": col_id},
+                "width": "72px",
+                "minWidth": "72px",
+                "textAlign": "left",
+            })
+        elif col_id in _NUMERIC_COLS:
+            styles.append({
+                "if": {"column_id": col_id},
+                "minWidth": "118px",
+                "width": "118px",
+                "textAlign": "right",
+                "fontVariantNumeric": "tabular-nums",
+            })
     return styles
 
 
@@ -311,29 +340,20 @@ def build_report_table(
     columns = columns_for_family(profile or family, hide_used=row_hide_used)
     if include_family:
         columns = [_FLAT_EXTRA_COLUMN, *columns]
-    column_widths = [
-        {"if": {"column_id": col["id"]}, "minWidth": "110px"}
-        for col in columns
-        if col["id"] in _NUMERIC_COLS
-    ]
-    use_fixed_columns = family in _PHYSICAL_FREE_FAMILIES or any(
-        r.get("panel_key") == "backup_netbackup_storage" for r in rows
+    width_styles = _table_column_width_styles(columns)
+    return dash_table.DataTable(
+        id=table_id,
+        data=data,
+        columns=columns,
+        page_size=page_size,
+        sort_action="native",
+        sort_mode="multi",
+        style_table=_TABLE_STYLE_TABLE,
+        style_cell=_TABLE_STYLE_CELL,
+        style_header=_TABLE_STYLE_HEADER,
+        style_data_conditional=[*_table_style_data_conditional(), *width_styles],
+        style_header_conditional=[*_table_style_header_conditional(), *width_styles],
     )
-    table_kwargs: dict[str, Any] = {
-        "id": table_id,
-        "data": data,
-        "columns": columns,
-        "page_size": page_size,
-        "sort_action": "native",
-        "sort_mode": "multi",
-        "style_table": {"overflowX": "auto", "borderRadius": "8px", "minWidth": "900px"},
-        "style_cell": _TABLE_STYLE_CELL,
-        "style_header": _TABLE_STYLE_HEADER,
-        "style_data_conditional": [*_table_style_data_conditional(), *column_widths],
-    }
-    if use_fixed_columns:
-        table_kwargs["fixed_columns"] = {"headers": True, "data": 2}
-    return dash_table.DataTable(**table_kwargs)
 
 
 def build_unmapped_table(rows: list[dict[str, Any]], *, table_id: str) -> dash_table.DataTable:
@@ -345,6 +365,7 @@ def build_unmapped_table(rows: list[dict[str, Any]], *, table_id: str) -> dash_t
             "entitled_qty": r.get("entitled_qty"),
             "entitled_amount_tl": r.get("entitled_amount_tl"),
         })
+    width_styles = _table_column_width_styles(_UNMAPPED_COLUMNS)
     return dash_table.DataTable(
         id=table_id,
         data=data,
@@ -352,9 +373,11 @@ def build_unmapped_table(rows: list[dict[str, Any]], *, table_id: str) -> dash_t
         page_size=15,
         sort_action="native",
         sort_mode="multi",
-        style_table={"overflowX": "auto"},
+        style_table=_TABLE_STYLE_TABLE,
         style_cell=_TABLE_STYLE_CELL,
         style_header=_TABLE_STYLE_HEADER,
+        style_data_conditional=[*_table_style_data_conditional(), *width_styles],
+        style_header_conditional=[*_table_style_header_conditional(), *width_styles],
     )
 
 
