@@ -99,7 +99,7 @@ def build_inventory_shell(summary: dict[str, Any], unmapped: list[dict[str, Any]
                     align="flex-end",
                     children=[
                         dmc.Text("Export", size="xs", c="dimmed", fw=600),
-                        dmc.Button.Group(
+                        dmc.ButtonGroup(
                             children=[
                                 dmc.Button(
                                     "Excel",
