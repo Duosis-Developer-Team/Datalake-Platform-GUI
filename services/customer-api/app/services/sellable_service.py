@@ -1826,17 +1826,35 @@ SELECT _tot, _alloc FROM latest
                     range_inputs=range_inputs if fam == "virt_classic" else None,
                 )
             elif fam in _HOST_BASED_FAMILIES and dc_code == "*":
-                logger.warning(
-                    "global inventory: host_rows unavailable for family=%s "
-                    "dc_codes=%s status=%s — aggregated fallback (dual-track qty may be empty)",
-                    fam,
-                    global_host_dcs,
-                    host_status,
-                )
-                refreshed = self._refresh_group_sellable_from_totals(
-                    group, computation_mode="aggregated",
-                )
-                new_group = constrain_by_ratio(refreshed, ratio, decouple_resource_kinds=None)
+                global_panels = self.compute_all_panels(dc_code="*", family=fam)
+                if global_panels:
+                    logger.warning(
+                        "global inventory: host_rows unavailable for family=%s "
+                        "dc_codes=%s status=%s — using single global compute",
+                        fam,
+                        global_host_dcs,
+                        host_status,
+                    )
+                    refreshed = self._refresh_group_sellable_from_totals(
+                        global_panels, computation_mode="aggregated",
+                    )
+                    new_group = constrain_by_ratio(
+                        refreshed, ratio, decouple_resource_kinds=None,
+                    )
+                else:
+                    logger.warning(
+                        "global inventory: host_rows unavailable for family=%s "
+                        "dc_codes=%s status=%s — aggregated fallback (dual-track qty may be empty)",
+                        fam,
+                        global_host_dcs,
+                        host_status,
+                    )
+                    refreshed = self._refresh_group_sellable_from_totals(
+                        group, computation_mode="aggregated",
+                    )
+                    new_group = constrain_by_ratio(
+                        refreshed, ratio, decouple_resource_kinds=None,
+                    )
             elif fam in _HOST_BASED_FAMILIES:
                 new_group = self._apply_cluster_fallback_dual(
                     group,

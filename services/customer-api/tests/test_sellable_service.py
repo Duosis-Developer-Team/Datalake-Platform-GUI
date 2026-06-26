@@ -1932,3 +1932,58 @@ def test_netbackup_bytes_to_tb_magnitude_under_ceiling():
     assert out < 100_000.0
     assert out == pytest.approx(50.0)
     assert not notes
+
+
+def test_recompute_family_constraints_global_host_fallback_uses_star_compute():
+    """Global inventory must not keep inflated per-DC SUM when host_rows are unavailable."""
+    inflated_cpu = PanelResult(
+        panel_key="virt_hyperconverged_cpu",
+        label="HC CPU",
+        family="virt_hyperconverged",
+        resource_kind="cpu",
+        display_unit="vCPU",
+        dc_code="*",
+        total=5_724_195_000_000.0,
+        allocated=100.0,
+        threshold_pct=80.0,
+        sellable_raw=0.0,
+        sellable_constrained=0.0,
+        has_infra_source=True,
+        has_price=True,
+        computation_mode="aggregated",
+    )
+    global_cpu = PanelResult(
+        panel_key="virt_hyperconverged_cpu",
+        label="HC CPU",
+        family="virt_hyperconverged",
+        resource_kind="cpu",
+        display_unit="vCPU",
+        dc_code="*",
+        total=12_000.0,
+        allocated=8_000.0,
+        threshold_pct=80.0,
+        sellable_raw=0.0,
+        sellable_constrained=0.0,
+        has_infra_source=True,
+        has_price=True,
+        computation_mode="aggregated",
+    )
+
+    svc = SellableService.__new__(SellableService)
+    svc.list_ratios = MagicMock(return_value=[RATIO])  # type: ignore[method-assign]
+    svc._build_unit_lookup = MagicMock(return_value={})  # type: ignore[method-assign]
+    svc._get_sellable_calc_config = MagicMock(  # type: ignore[method-assign]
+        return_value={"effective_ghz_per_unit": 1.0, "physical_price_unit": "GHz", "power_core_to_ghz": 3.3},
+    )
+    svc._fetch_host_rows_multi = MagicMock(return_value=(None, "unavailable", []))  # type: ignore[method-assign]
+    svc.compute_all_panels = MagicMock(return_value=[global_cpu])  # type: ignore[method-assign]
+
+    out = svc.recompute_family_constraints(
+        [inflated_cpu],
+        dc_code="*",
+        infra_dc_codes=["DC1", "DC2", "DC3"],
+    )
+    svc.compute_all_panels.assert_called_once_with(dc_code="*", family="virt_hyperconverged")
+    cpu = next(p for p in out if p.panel_key == "virt_hyperconverged_cpu")
+    assert cpu.total == 12_000.0
+    assert cpu.total != inflated_cpu.total

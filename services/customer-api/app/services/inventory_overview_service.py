@@ -687,6 +687,8 @@ class InventoryOverviewService:
 
         def _ingest_dc_panels(panels: list[PanelResult]) -> None:
             for panel in panels:
+                if panel.family in _HOST_DUAL_FAMILIES:
+                    continue
                 if not panel.has_infra_source:
                     if panel.panel_key not in merged:
                         merged[panel.panel_key] = panel
@@ -728,6 +730,17 @@ class InventoryOverviewService:
                             "inventory overview: per-DC sellable compute failed dc=%s",
                             code,
                         )
+
+        for fam in sorted(_HOST_DUAL_FAMILIES):
+            for panel in self._sellable.compute_all_panels(
+                dc_code="*",
+                family=fam,
+                force_recompute=force_recompute,
+            ):
+                if panel.has_infra_source:
+                    merged[panel.panel_key] = panel
+                elif panel.panel_key not in merged:
+                    merged[panel.panel_key] = panel
 
         if global_only_keys:
             wildcard_panels = [

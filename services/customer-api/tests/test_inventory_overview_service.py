@@ -502,29 +502,44 @@ def test_compute_inventory_overview_merges_panels(inventory_svc):
 
 
 def test_global_inventory_aggregates_per_dc_infra():
-    """dc_code='*' should sum total/used per DC then recompute sellable."""
+    """dc_code='*' should sum total/used per DC for non-host-dual families."""
     sellable = MagicMock()
     sellable.is_available = True
 
     def _compute(dc_code="*", **kwargs):
+        family = kwargs.get("family")
+        if family in ("virt_classic", "virt_hyperconverged"):
+            return []
         if dc_code == "ANK":
             return [
                 _panel(
+                    panel_key="virt_power_cpu",
+                    label="Power CPU",
+                    family="virt_power",
+                    resource_kind="cpu",
+                    display_unit="Core",
                     total=100.0,
                     allocated=40.0,
                     sellable_constrained=20.0,
                     potential_tl=30000.0,
                     unit_price_tl=1500.0,
+                    computation_mode="aggregated",
                 ),
             ]
         if dc_code == "IST":
             return [
                 _panel(
+                    panel_key="virt_power_cpu",
+                    label="Power CPU",
+                    family="virt_power",
+                    resource_kind="cpu",
+                    display_unit="Core",
                     total=50.0,
                     allocated=20.0,
                     sellable_constrained=10.0,
                     potential_tl=15000.0,
                     unit_price_tl=1500.0,
+                    computation_mode="aggregated",
                 ),
             ]
         if dc_code == "*":
@@ -550,8 +565,8 @@ def test_global_inventory_aggregates_per_dc_infra():
         if "!= ALL" in sql
         else [{
             "productid": "p-cpu",
-            "product_name": "KM CPU",
-            "resource_unit": "vCPU",
+            "product_name": "Power CPU",
+            "resource_unit": "Core",
             "entitled_qty": 30.0,
             "entitled_amount_tl": 45000.0,
         }]
@@ -577,17 +592,92 @@ def test_global_inventory_aggregates_per_dc_infra():
         crm_redis=None,
     )
     payload = svc.compute_inventory_overview("*")
-    cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
+    cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_power_cpu")
     assert cpu["total"] == 150.0
     assert cpu["used_qty"] is None
     assert cpu["sellable_qty"] == 60.0
-    assert cpu["free_qty"] == 120.0
+    assert cpu["free_qty"] == 150.0
     assert cpu["potential_tl"] == 90000.0
     assert cpu["has_infra_source"] is True
     assert cpu["computation_mode"] == "aggregated"
     assert payload["summary"]["infra_panel_count"] == 1
     assert "recomputes sellable" in payload["summary"]["note"]
     sellable.recompute_family_constraints.assert_called_once()
+
+
+def test_global_inventory_virt_family_not_summed_per_dc():
+    """Host-dual virt families use single dc='*' compute, not per-DC SUM."""
+    sellable = MagicMock()
+    sellable.is_available = True
+    per_dc_calls: list[str] = []
+    star_family_calls: list[str | None] = []
+
+    def _compute(dc_code="*", **kwargs):
+        family = kwargs.get("family")
+        if dc_code == "*":
+            star_family_calls.append(family)
+            if family == "virt_hyperconverged":
+                return [
+                    _panel(
+                        panel_key="virt_hyperconverged_cpu",
+                        label="HC CPU",
+                        family="virt_hyperconverged",
+                        total=100.0,
+                        allocated=40.0,
+                        sellable_constrained=20.0,
+                        computation_mode="aggregated",
+                    ),
+                ]
+            if family == "virt_classic":
+                return []
+            return []
+        per_dc_calls.append(dc_code)
+        return [
+            _panel(
+                panel_key="virt_hyperconverged_cpu",
+                label="HC CPU",
+                family="virt_hyperconverged",
+                total=100.0,
+                allocated=40.0,
+                sellable_constrained=20.0,
+                computation_mode="aggregated",
+            ),
+        ]
+
+    sellable.compute_all_panels.side_effect = _compute
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._count_unmapped_products.return_value = 0
+    sellable.compute_site_scoped_panels.return_value = []
+    _stub_netbackup_metrics(sellable)
+
+    sales = MagicMock()
+    sales._run_query.return_value = []
+
+    def _webui_rows_multi(sql: str):
+        if "FROM   gui_panel_infra_source" in sql and "DISTINCT dc_code" in sql:
+            return [{"dc_code": "DC1"}, {"dc_code": "DC2"}, {"dc_code": "DC3"}]
+        return _webui_rows(sql)
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = _webui_rows_multi
+
+    config = MagicMock()
+    config.get_calc_dict.return_value = {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=webui,
+        config=config,
+        crm_redis=None,
+    )
+    payload = svc.compute_inventory_overview("*")
+    hc = next(p for p in payload["panels"] if p["panel_key"] == "virt_hyperconverged_cpu")
+    assert hc["total"] == 100.0
+    assert per_dc_calls == ["DC1", "DC2", "DC3"]
+    assert "virt_hyperconverged" in star_family_calls
+    assert "virt_classic" in star_family_calls
 
 
 def test_value_tl_from_catalog_price():
@@ -806,7 +896,7 @@ def test_assess_data_quality_flags_unit_conversion_missing():
 
 
 def test_inventory_uses_datacenter_codes_when_infra_bindings_wildcard_only():
-    """When gui_panel_infra_source has only dc_code='*', aggregate per platform DC."""
+    """When gui_panel_infra_source has only dc_code='*', virt uses single global compute."""
     sellable = MagicMock()
     sellable.is_available = True
     sellable._fetch_datacenter_codes.return_value = ["ANK", "IST"]
@@ -816,10 +906,13 @@ def test_inventory_uses_datacenter_codes_when_infra_bindings_wildcard_only():
     _stub_netbackup_metrics(sellable)
 
     def _compute(dc_code="*", **kwargs):
-        if dc_code == "ANK":
+        family = kwargs.get("family")
+        if dc_code == "ANK" or dc_code == "IST":
             return [_panel(total=100.0, allocated=10.0)]
-        if dc_code == "IST":
-            return [_panel(total=50.0, allocated=5.0)]
+        if dc_code == "*" and family == "virt_classic":
+            return [_panel(total=100.0, allocated=10.0)]
+        if dc_code == "*" and family == "virt_hyperconverged":
+            return []
         return []
 
     sellable.compute_all_panels.side_effect = _compute
@@ -843,9 +936,9 @@ def test_inventory_uses_datacenter_codes_when_infra_bindings_wildcard_only():
     )
     payload = svc.compute_inventory_overview("*")
     cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
-    assert cpu["total"] == 150.0
+    assert cpu["total"] == 100.0
     assert cpu["used_qty"] is None
-    assert cpu["free_qty"] == 150.0
+    assert cpu["free_qty"] == 100.0
     sellable._fetch_datacenter_codes.assert_called_once()
 
 
