@@ -416,7 +416,7 @@ DELETE FROM gui_panel_result_snapshot
 WHERE  (%s IS NULL OR dc_code = %s);
 """
 
-# NetBackup inventory — pool capacity (latest per host+name) and jobs post-dedup used (GiB).
+# NetBackup inventory — pool capacity (latest per host+name); jobs dedup for display sub-lines.
 GLOBAL_NETBACKUP_POOL_USABLE_BYTES = """
 SELECT COALESCE(SUM(usablesizebytes), 0)
 FROM (
@@ -449,6 +449,16 @@ SELECT
 FROM public.raw_netbackup_jobs_metrics
 WHERE jobtype = 'BACKUP'
   AND percentcomplete = 100
+"""
+
+GLOBAL_NETBACKUP_POOL_USED_BYTES = """
+SELECT COALESCE(SUM(usedcapacitybytes), 0)
+FROM (
+    SELECT DISTINCT ON (netbackup_host, name)
+        usedcapacitybytes
+    FROM public.raw_netbackup_disk_pools_metrics
+    ORDER BY netbackup_host, name, collection_timestamp DESC
+) AS latest_pools
 """
 
 GLOBAL_NETBACKUP_POOL_AVAILABLE_BYTES = """

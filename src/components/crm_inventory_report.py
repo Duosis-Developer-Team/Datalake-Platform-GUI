@@ -89,6 +89,9 @@ def columns_for_family(
 ) -> list[dict[str, str]]:
     """Return DataTable columns for a family sellable profile."""
     profile = (family or "standard").strip()
+    if profile in _PHYSICAL_FREE_FAMILIES:
+        profile = "standard"
+        hide_used = False
     use_virt_base = hide_used or profile in ("dual_track", "allocation_only")
     if profile in _INVENTORY_VIRT_FAMILIES:
         use_virt_base = True
@@ -128,7 +131,7 @@ def _fmt_crm_sold_block(row: dict[str, Any], unit: str, crm_sold_tl: Any) -> str
 
 
 def _fmt_netbackup_used_block(row: dict[str, Any], unit: str, used_tl: Any) -> str:
-    """Format NetBackup Used with post-dedup primary and pre-dedup savings sub-lines."""
+    """Format NetBackup Used: pool used primary line; pre-dedup/savings from finished jobs."""
     post = row.get("used_qty")
     pre = row.get("pre_dedup_qty")
     savings = row.get("dedup_savings_qty")
@@ -298,9 +301,19 @@ def build_report_table(
     row_hide_used = hide_used or any(r.get("inventory_hide_used") for r in rows)
     if family and family in _INVENTORY_VIRT_FAMILIES:
         row_hide_used = True
+    if family in _PHYSICAL_FREE_FAMILIES or any(
+        r.get("panel_key") == "backup_netbackup_storage" for r in rows
+    ):
+        row_hide_used = False
+        profile = "standard"
     columns = columns_for_family(profile or family, hide_used=row_hide_used)
     if include_family:
         columns = [_FLAT_EXTRA_COLUMN, *columns]
+    column_widths = [
+        {"if": {"column_id": col["id"]}, "minWidth": "110px"}
+        for col in columns
+        if col["id"] in _NUMERIC_COLS
+    ]
     return dash_table.DataTable(
         id=table_id,
         data=data,
@@ -308,10 +321,10 @@ def build_report_table(
         page_size=page_size,
         sort_action="native",
         sort_mode="multi",
-        style_table={"overflowX": "auto", "borderRadius": "8px"},
+        style_table={"overflowX": "auto", "borderRadius": "8px", "minWidth": "720px"},
         style_cell=_TABLE_STYLE_CELL,
         style_header=_TABLE_STYLE_HEADER,
-        style_data_conditional=_table_style_data_conditional(),
+        style_data_conditional=[*_table_style_data_conditional(), *column_widths],
     )
 
 

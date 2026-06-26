@@ -1822,7 +1822,11 @@ def test_sellable_payload_version_bumped_for_data_accuracy():
 
 def test_query_netbackup_inventory_metrics_dedup_and_available():
     svc_inner = MagicMock()
-    svc_inner._run_value.side_effect = [5_000_000_000_000.0, 300_000_000_000_000.0]
+    svc_inner._run_value.side_effect = [
+        5_000_000_000_000.0,
+        2_000_000_000_000.0,
+        300_000_000_000_000.0,
+    ]
     svc_inner._run_row.return_value = (512.0, 128.0)
     conn = MagicMock()
     svc_inner._get_connection.return_value.__enter__ = MagicMock(return_value=conn)
@@ -1832,6 +1836,7 @@ def test_query_netbackup_inventory_metrics_dedup_and_available():
     sellable._svc = svc_inner
     metrics = sellable.get_netbackup_inventory_metrics()
     assert metrics["total_bytes"] == 5_000_000_000_000.0
+    assert metrics["used_pool_bytes"] == 2_000_000_000_000.0
     assert metrics["available_bytes"] == 300_000_000_000_000.0
     assert metrics["pre_dedup_bytes"] == 512.0 * (1024.0 ** 3)
     assert metrics["used_post_dedup_bytes"] == 128.0 * (1024.0 ** 3)
@@ -1839,9 +1844,9 @@ def test_query_netbackup_inventory_metrics_dedup_and_available():
     assert metrics["dedup_factor"] == pytest.approx(4.0)
 
 
-def test_query_netbackup_storage_totals_pool_capacity_and_jobs_used():
+def test_query_netbackup_storage_totals_pool_capacity_and_pool_used():
     svc_inner = MagicMock()
-    svc_inner._run_value.side_effect = [5_000_000_000_000.0, 128.0]
+    svc_inner._run_value.side_effect = [5_000_000_000_000.0, 2_000_000_000_000.0]
     conn = MagicMock()
     svc_inner._get_connection.return_value.__enter__ = MagicMock(return_value=conn)
     svc_inner._get_connection.return_value.__exit__ = MagicMock(return_value=False)
@@ -1860,7 +1865,7 @@ def test_query_netbackup_storage_totals_pool_capacity_and_jobs_used():
     )
     total, used = sellable._query_netbackup_storage_totals(src, "*")
     assert total == 5_000_000_000_000.0
-    assert used == 128.0 * (1024.0 ** 3)
+    assert used == 2_000_000_000_000.0
 
 
 def test_netbackup_bytes_to_tb_magnitude_under_ceiling():

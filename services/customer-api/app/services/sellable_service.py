@@ -939,22 +939,20 @@ SELECT _tot, _alloc FROM latest
         src: InfraSource,
         dc_code: str,
     ) -> tuple[float, float]:
-        """NetBackup inventory totals aligned with Customer View backup semantics.
+        """NetBackup inventory totals aligned with datacenter NetBackup disk pool semantics.
 
         Total: sum of latest pool ``usablesizebytes`` per (netbackup_host, name).
-        Used: global post-dedup backup workload from jobs metrics (returned as bytes
-        so existing ``allocated_unit=bytes`` binding and TB display conversion apply).
+        Used: sum of latest pool ``usedcapacitybytes`` per (netbackup_host, name).
         """
         del src, dc_code  # global panel; DC-scoped inventory uses wildcard merge only
-        _gib = 1024.0 ** 3
         try:
             with self._svc._get_connection() as conn:
                 with conn.cursor() as cur:
                     total_bytes = float(
                         self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USABLE_BYTES, ()) or 0.0
                     )
-                    used_gib = float(
-                        self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_JOBS_POST_DEDUP_GIB, ()) or 0.0
+                    used_bytes = float(
+                        self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USED_BYTES, ()) or 0.0
                     )
         except Exception:  # noqa: BLE001
             logger.exception(
@@ -962,13 +960,14 @@ SELECT _tot, _alloc FROM latest
                 "backup_netbackup_storage",
             )
             return 0.0, 0.0
-        return total_bytes, used_gib * _gib
+        return total_bytes, used_bytes
 
     def get_netbackup_inventory_metrics(self) -> dict[str, float]:
         """Global NetBackup pool capacity, physical free, and jobs dedup summary (bytes)."""
         _gib = 1024.0 ** 3
         zero = {
             "total_bytes": 0.0,
+            "used_pool_bytes": 0.0,
             "used_post_dedup_bytes": 0.0,
             "pre_dedup_bytes": 0.0,
             "available_bytes": 0.0,
@@ -981,6 +980,9 @@ SELECT _tot, _alloc FROM latest
                 with conn.cursor() as cur:
                     total_bytes = float(
                         self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USABLE_BYTES, ()) or 0.0
+                    )
+                    used_pool_bytes = float(
+                        self._svc._run_value(cur, sq.GLOBAL_NETBACKUP_POOL_USED_BYTES, ()) or 0.0
                     )
                     available_bytes = float(
                         self._svc._run_value(
@@ -1005,6 +1007,7 @@ SELECT _tot, _alloc FROM latest
         dedup_factor = (pre_bytes / post_bytes) if post_bytes > 0 else 0.0
         return {
             "total_bytes": total_bytes,
+            "used_pool_bytes": used_pool_bytes,
             "used_post_dedup_bytes": post_bytes,
             "pre_dedup_bytes": pre_bytes,
             "available_bytes": available_bytes,

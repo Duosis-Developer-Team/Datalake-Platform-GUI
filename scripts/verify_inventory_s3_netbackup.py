@@ -115,6 +115,59 @@ def _try_prepare_service_row(row: dict) -> dict | None:
         return None
 
 
+def _sum_netbackup_pools(rows: list[dict]) -> dict[str, float]:
+    tb = 1024.0 ** 4
+    total = sum(float(r.get("usablesizebytes") or 0) for r in rows) / tb
+    used = sum(float(r.get("usedcapacitybytes") or 0) for r in rows) / tb
+    free = sum(float(r.get("availablespacebytes") or 0) for r in rows) / tb
+    if free <= 0 and total > 0:
+        free = max(total - used, 0.0)
+    return {"total": total, "used": used, "free": free}
+
+
+def _fetch_netbackup_pools(dc_api: str, dc_id: str) -> list[dict]:
+    with httpx.Client(base_url=dc_api, timeout=120.0) as client:
+        resp = client.get(f"/api/v1/datacenters/{dc_id}/backup/netbackup")
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("rows") or []
+
+
+def _check_netbackup_parity(
+    inv_row: dict | None,
+    dc_rows: list[dict],
+    *,
+    tolerance_pct: float = 5.0,
+) -> None:
+    if inv_row is None:
+        print("  NetBackup inventory row MISSING")
+        return
+    dc = _sum_netbackup_pools(dc_rows)
+    inv_total = float(inv_row.get("total") or 0)
+    inv_used = float(inv_row.get("used_qty") or 0)
+    inv_free = float(inv_row.get("free_qty") or 0)
+    pre_dedup = float(inv_row.get("pre_dedup_qty") or 0)
+    print(
+        f"  DC13 pools: total={dc['total']:.2f} TB used={dc['used']:.2f} TB "
+        f"free={dc['free']:.2f} TB (rows={len(dc_rows)})"
+    )
+    print(
+        f"  global inventory: total={inv_total:.2f} used={inv_used:.2f} "
+        f"free={inv_free:.2f} pre_dedup={pre_dedup:.2f}"
+    )
+    if inv_total < dc["total"] * 0.95:
+        print("    WARN: global total below DC13 pool total — check pool aggregation")
+    for metric, inv_val, dc_val in (
+        ("used", inv_used, dc["used"]),
+        ("free", inv_free, dc["free"]),
+    ):
+        diff = _pct_diff(inv_val, dc_val)
+        status = "OK" if inv_val >= dc_val * 0.95 or diff <= tolerance_pct else "WARN"
+        print(f"    {metric} global>=DC13: {status} (inv={inv_val:.2f} dc13={dc_val:.2f})")
+    if inv_used < 100.0 and dc["used"] > 1000.0:
+        print("    WARN: used still looks like jobs post-dedup, not pool used")
+
+
 def _check_s3_parity(
     label: str,
     inv_row: dict | None,
@@ -222,6 +275,13 @@ def main() -> None:
         _check_s3_parity("Ankara/DC14", excerpt.get("storage_s3_ankara"), dc14)
     except Exception as exc:  # noqa: BLE001
         print(f"  S3 DC parity fetch failed: {exc}")
+
+    print("NetBackup DC13 parity:")
+    try:
+        nb_rows = _fetch_netbackup_pools(dc_api, "DC13")
+        _check_netbackup_parity(excerpt.get("backup_netbackup_storage"), nb_rows)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  NetBackup DC parity fetch failed: {exc}")
 
     if args.json_out:
         out = {

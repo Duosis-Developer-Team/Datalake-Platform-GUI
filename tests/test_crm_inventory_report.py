@@ -97,20 +97,40 @@ def test_prepare_service_row_netbackup_used_dedup_block():
         family="backup_netbackup",
         display_unit="TB",
         sellable_profile="standard",
-        used_qty=5.0,
-        pre_dedup_qty=120.0,
-        dedup_savings_qty=115.0,
-        dedup_savings_pct=95.8,
-        dedup_factor=24.0,
-        free_qty=300.0,
+        crm_sold_qty=58.0,
+        crm_sold_tl=23246.0,
+        total=44069.0,
+        used_qty=1229.0,
+        used_tl=1720.0,
+        pre_dedup_qty=411.0,
+        dedup_savings_qty=406.0,
+        dedup_savings_pct=98.8,
+        dedup_factor=81.8,
+        free_qty=42115.0,
+        free_tl=58961.0,
         inventory_free_mode="physical",
     ))
-    assert "5 TB" in row["used_fmt"]
-    assert "Pre: 120 TB" in row["used_fmt"]
-    assert "Saved: 115 TB" in row["used_fmt"]
-    assert "95.8%" in row["used_fmt"]
-    assert "Dedup: 24.0x" in row["used_fmt"]
-    assert "300 TB" in row["free_fmt"]
+    assert "58 TB" in row["crm_sold_fmt"]
+    assert "23,246 TL" in row["crm_sold_fmt"]
+    assert "44,069 TB" in row["total_fmt"]
+    assert "23,246 TL" not in row["total_fmt"]
+    assert "1,229 TB" in row["used_fmt"]
+    assert "Pre: 411 TB" in row["used_fmt"]
+    assert "Saved: 406 TB" in row["used_fmt"]
+    assert "98.8%" in row["used_fmt"]
+    assert "Dedup: 81.8x" in row["used_fmt"]
+    assert "42,115 TB" in row["free_fmt"]
+    assert "58,961 TL" in row["free_fmt"]
+    assert "44,069 TB" not in row["used_fmt"]
+    assert "58 TB" not in row["total_fmt"]
+
+
+def test_columns_for_family_netbackup_includes_used():
+    cols = columns_for_family("backup_netbackup")
+    col_ids = [c["id"] for c in cols]
+    assert col_ids == [
+        "service_label", "display_unit", "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
+    ]
 
 
 def test_filter_by_search_matches_family():
