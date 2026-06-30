@@ -61,8 +61,27 @@ def test_customer_tabs_hide_billing_for_customer_perspective():
     assert "Billing" in manager_tabs
     assert "ITSM" in manager_tabs
     assert "Billing" not in customer_tabs
-    assert "ITSM" not in customer_tabs
+    assert "ITSM" in customer_tabs
     assert "Availability" in customer_tabs
+
+
+def test_tab_hyperconv_hides_usage_vs_sold_for_customer_perspective():
+    from src.pages.customer_view import _tab_hyperconv
+
+    hyperconv = {
+        "vm_count": 1,
+        "cpu_total": 4,
+        "memory_gb": 8,
+        "disk_gb": 100,
+        "vm_list": [{"name": "vm1", "cpu": 2, "cluster": "c1"}],
+        "deleted_vm_list": [],
+    }
+    panel = _tab_hyperconv(hyperconv, {}, include_usage_vs_sold=False)
+    text = str(panel)
+    assert "CPU Usage vs Sold" not in text
+
+    panel_mgr = _tab_hyperconv(hyperconv, {}, include_usage_vs_sold=True)
+    assert "CPU Usage vs Sold" in str(panel_mgr)
 
 
 def test_customer_summary_panel_customer_perspective_hides_commercial_signals():
@@ -102,7 +121,8 @@ def test_export_sheets_dual_perspective_prefixes():
     assert "Manager_Customer_Meta" in both
     assert "Customer_Customer_Meta" in both
     assert "Manager_ITSM_Summary" in both
-    assert "Customer_ITSM_Summary" not in both
+    assert "Customer_ITSM_Summary" in both
+    assert "Customer_Classic_VMs_Real_CPU" not in both
 
     manager_only = _build_export_sheets_for_user(ctx, {"manager": True, "customer": False})
     assert "Customer_Meta" in manager_only
@@ -110,7 +130,8 @@ def test_export_sheets_dual_perspective_prefixes():
 
     customer_only = _build_export_sheets_for_user(ctx, {"manager": False, "customer": True})
     assert "Customer_Customer_Meta" in customer_only
-    assert "Customer_ITSM_Summary" not in customer_only
+    assert "Customer_ITSM_Summary" in customer_only
+    assert "Customer_Classic_VMs_Real_CPU" not in customer_only
 
 
 def test_render_customer_page_shows_switch_when_both_permissions():
@@ -118,7 +139,7 @@ def test_render_customer_page_shows_switch_when_both_permissions():
         "manager": {"summary": "mgr-summary", "virt": "virt", "avail": "avail", "backup": "backup",
                     "billing": "billing", "itsm": "itsm", "s3": "s3", "phys_inv": "phys"},
         "customer": {"summary": "cust-summary", "virt": "virt", "avail": "avail", "backup": "backup",
-                     "s3": "s3", "phys_inv": "phys"},
+                     "itsm": "itsm", "s3": "s3", "phys_inv": "phys"},
         "has_s3": True,
         "has_phys_inv": True,
         "export_context": {},

@@ -442,6 +442,10 @@ def _build_customer_perspective_export_sheets(
     power_asset: dict,
     s3_data: dict,
     phys_inv_devices: list,
+    *,
+    itsm_summary: dict | None = None,
+    itsm_extremes: dict | None = None,
+    itsm_tickets: list | None = None,
 ) -> dict[str, list[dict]]:
     """Usage and inventory sheets for the customer-facing perspective."""
     sheets: dict[str, list[dict]] = {}
@@ -469,9 +473,7 @@ def _build_customer_perspective_export_sheets(
         sheets["Assets_Intel_Aggregate"] = iw
 
     sheets["Classic_VMs"] = _vm_records_for_export(classic.get("vm_list") or [])
-    sheets["Classic_VMs_Real_CPU"] = _real_cpu_export_records(classic.get("vm_list") or [])
     sheets["HyperConv_VMs"] = _vm_records_for_export(hyperconv.get("vm_list") or [])
-    sheets["HyperConv_VMs_Real_CPU"] = _real_cpu_export_records(hyperconv.get("vm_list") or [])
     sheets["Pure_Nutanix_VMs"] = _vm_records_for_export(pure_nx.get("vm_list") or [])
     pl = (
         power_asset.get("vm_list")
@@ -500,6 +502,27 @@ def _build_customer_perspective_export_sheets(
     phys = _device_records_for_export(phys_inv_devices)
     if phys:
         sheets["Physical_Inventory"] = phys
+
+    if itsm_summary:
+        summary_flat = {
+            k: v for k, v in itsm_summary.items()
+            if not isinstance(v, (list, dict))
+        }
+        if summary_flat:
+            sheets["ITSM_Summary"] = [summary_flat]
+
+    ex = itsm_extremes or {}
+    long_tail_rows = _itsm_tickets_for_export(ex.get("long_tail") or [])
+    if long_tail_rows:
+        sheets["ITSM_Extremes_Closed"] = long_tail_rows
+
+    sla_rows = _itsm_tickets_for_export(ex.get("sla_breach") or [])
+    if sla_rows:
+        sheets["ITSM_Extremes_OpenSlaBreach"] = sla_rows
+
+    all_ticket_rows = _itsm_tickets_for_export(itsm_tickets or [])
+    if all_ticket_rows:
+        sheets["ITSM_All_Tickets"] = all_ticket_rows
 
     return sheets
 
@@ -542,7 +565,12 @@ def _build_export_sheets_for_user(
             combined.update(manager_sheets)
 
     if has_customer:
-        customer_sheets = _build_customer_perspective_export_sheets(**kwargs)
+        customer_sheets = _build_customer_perspective_export_sheets(
+            **kwargs,
+            itsm_summary=export_context.get("itsm_summary") or {},
+            itsm_extremes=export_context.get("itsm_extremes") or {},
+            itsm_tickets=export_context.get("itsm_tickets") or [],
+        )
         if has_manager and has_customer:
             combined.update(_prefix_export_sheets(customer_sheets, "Customer"))
         else:
@@ -930,7 +958,13 @@ def _real_cpu_export_records(vm_list: list | None) -> list[dict]:
     return out
 
 
-def _tab_classic(classic: dict, vm_outage_counts: dict | None = None, crm_eff_panel: html.Div | None = None):
+def _tab_classic(
+    classic: dict,
+    vm_outage_counts: dict | None = None,
+    crm_eff_panel: html.Div | None = None,
+    *,
+    include_usage_vs_sold: bool = True,
+):
     """Classic Compute (KM cluster) billing tab."""
     vm_count = int(classic.get("vm_count", 0) or 0)
     cpu = float(classic.get("cpu_total", 0) or 0)
@@ -1025,16 +1059,17 @@ def _tab_classic(classic: dict, vm_outage_counts: dict | None = None, crm_eff_pa
             ),
         )
     )
-    body.append(
-        _real_cpu_vm_table(
-            vm_list,
-            title="Classic VMs — CPU Usage vs Sold",
-            subtitle=(
-                "Flags VMs where measured usage (GHz) exceeds sold CPU (1 vCPU = 1 GHz), "
-                "using real host capacity as the usage base."
-            ),
+    if include_usage_vs_sold:
+        body.append(
+            _real_cpu_vm_table(
+                vm_list,
+                title="Classic VMs — CPU Usage vs Sold",
+                subtitle=(
+                    "Flags VMs where measured usage (GHz) exceeds sold CPU (1 vCPU = 1 GHz), "
+                    "using real host capacity as the usage base."
+                ),
+            )
         )
-    )
     return dmc.Stack(gap="lg", children=body)
 
 
@@ -1043,6 +1078,8 @@ def _tab_hyperconv(
     pure_nutanix: dict | None = None,
     vm_outage_counts: dict | None = None,
     crm_eff_panel: html.Div | None = None,
+    *,
+    include_usage_vs_sold: bool = True,
 ):
     """Hyperconverged (non-KM VMware + Nutanix) billing tab."""
     pure_nutanix = pure_nutanix or {}
@@ -1168,16 +1205,17 @@ def _tab_hyperconv(
             ),
         )
     )
-    body_h.append(
-        _real_cpu_vm_table(
-            vm_list,
-            title="Hyperconverged VMs — CPU Usage vs Sold",
-            subtitle=(
-                "Flags VMs where measured usage (GHz) exceeds sold CPU (1 vCPU = 1 GHz); "
-                "Nutanix rows use 1 GHz/core (sales ≈ real cap)."
-            ),
+    if include_usage_vs_sold:
+        body_h.append(
+            _real_cpu_vm_table(
+                vm_list,
+                title="Hyperconverged VMs — CPU Usage vs Sold",
+                subtitle=(
+                    "Flags VMs where measured usage (GHz) exceeds sold CPU (1 vCPU = 1 GHz); "
+                    "Nutanix rows use 1 GHz/core (sales ≈ real cap)."
+                ),
+            )
         )
-    )
     return dmc.Stack(gap="lg", children=body_h)
 
 
@@ -2008,6 +2046,89 @@ def _build_backup_tabs(
     )
 
 
+def _build_virt_content(
+    classic: dict,
+    hyperconv: dict,
+    pure_nx: dict,
+    power_asset: dict,
+    vm_outage_counts: dict | None,
+    *,
+    include_usage_vs_sold: bool,
+) -> html.Div:
+    """Nested virtualization tabs; sold-vs-CPU table optional (manager perspective only)."""
+    show_pure_tab = asset_has_usage(pure_nx)
+    show_classic_tab = asset_has_usage(classic)
+    show_hyperconv_tab = asset_has_usage(hyperconv)
+    show_power_tab = asset_has_usage(power_asset, instance_keys=("lpar_count",))
+
+    virt_tab_defs: list[tuple[str, str, html.Div]] = []
+    if show_classic_tab:
+        virt_tab_defs.append(
+            (
+                "classic",
+                "Klasik Mimari",
+                _tab_classic(
+                    classic,
+                    vm_outage_counts,
+                    include_usage_vs_sold=include_usage_vs_sold,
+                ),
+            )
+        )
+    if show_hyperconv_tab:
+        virt_tab_defs.append(
+            (
+                "hyperconv",
+                "Hyperconverged Mimari",
+                _tab_hyperconv(
+                    hyperconv,
+                    pure_nx,
+                    vm_outage_counts,
+                    include_usage_vs_sold=include_usage_vs_sold,
+                ),
+            )
+        )
+    if show_pure_tab:
+        virt_tab_defs.append(
+            (
+                "pure_nx",
+                "Pure Nutanix (AHV)",
+                _tab_pure_nutanix(pure_nx, vm_outage_counts),
+            )
+        )
+    if show_power_tab:
+        virt_tab_defs.append(
+            (
+                "power",
+                "Power Mimari",
+                _tab_power(power_asset, vm_outage_counts),
+            )
+        )
+
+    if virt_tab_defs:
+        default_virt = virt_tab_defs[0][0]
+        return dmc.Tabs(
+            color="violet",
+            variant="outline",
+            radius="md",
+            value=default_virt,
+            children=[
+                dmc.TabsList(
+                    children=[dmc.TabsTab(label, value=value) for value, label, _panel in virt_tab_defs]
+                ),
+                *[
+                    dmc.TabsPanel(value=value, pt="lg", children=panel)
+                    for value, _label, panel in virt_tab_defs
+                ],
+            ],
+        )
+    return dmc.Alert(
+        color="gray",
+        variant="light",
+        title="No virtualization assets",
+        children="No provisioned compute instances were returned for this customer.",
+    )
+
+
 def _crm_rows_outside_virt_backup(eff_rows: list | None) -> list:
     """Categories for Billing tab (firewall, licensing, colocation, S3, etc.)."""
     out: list = []
@@ -2141,69 +2262,13 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     classic   = assets.get("classic", {}) or {}
     hyperconv = assets.get("hyperconv", {}) or {}
     pure_nx   = assets.get("pure_nutanix", {}) or {}
-    show_pure_tab = asset_has_usage(pure_nx)
-    show_classic_tab = asset_has_usage(classic)
-    show_hyperconv_tab = asset_has_usage(hyperconv)
-    show_power_tab = asset_has_usage(power_asset, instance_keys=("lpar_count",))
 
-    virt_tab_defs: list[tuple[str, str, html.Div]] = []
-    if show_classic_tab:
-        virt_tab_defs.append(
-            (
-                "classic",
-                "Klasik Mimari",
-                _tab_classic(classic, vm_outage_counts),
-            )
-        )
-    if show_hyperconv_tab:
-        virt_tab_defs.append(
-            (
-                "hyperconv",
-                "Hyperconverged Mimari",
-                _tab_hyperconv(hyperconv, pure_nx, vm_outage_counts),
-            )
-        )
-    if show_pure_tab:
-        virt_tab_defs.append(
-            (
-                "pure_nx",
-                "Pure Nutanix (AHV)",
-                _tab_pure_nutanix(pure_nx, vm_outage_counts),
-            )
-        )
-    if show_power_tab:
-        virt_tab_defs.append(
-            (
-                "power",
-                "Power Mimari",
-                _tab_power(power_asset, vm_outage_counts),
-            )
-        )
-
-    if virt_tab_defs:
-        default_virt = virt_tab_defs[0][0]
-        virt_content = dmc.Tabs(
-            color="violet",
-            variant="outline",
-            radius="md",
-            value=default_virt,
-            children=[
-                dmc.TabsList(
-                    children=[dmc.TabsTab(label, value=value) for value, label, _panel in virt_tab_defs]
-                ),
-                *[
-                    dmc.TabsPanel(value=value, pt="lg", children=panel)
-                    for value, _label, panel in virt_tab_defs
-                ],
-            ],
-        )
-    else:
-        virt_content = dmc.Alert(
-            color="gray",
-            variant="light",
-            title="No virtualization assets",
-            children="No provisioned compute instances were returned for this customer.",
-        )
+    virt_content_manager = _build_virt_content(
+        classic, hyperconv, pure_nx, power_asset, vm_outage_counts, include_usage_vs_sold=True
+    )
+    virt_content_customer = _build_virt_content(
+        classic, hyperconv, pure_nx, power_asset, vm_outage_counts, include_usage_vs_sold=False
+    )
 
     backup_tabs_manager = _build_backup_tabs(
         backup_assets, backup_totals, eff_by_cat, include_sold_vs_used=True
@@ -2253,10 +2318,12 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         "sales_summary": sales_summary or {},
     }
 
+    itsm_panel = _tab_itsm(name, tr, itsm_summary, itsm_extremes, itsm_tickets)
+
     return {
         "manager": {
             "summary": _tab_summary(name, perspective=PERSPECTIVE_MANAGER, **summary_kwargs),
-            "virt": virt_content,
+            "virt": virt_content_manager,
             "avail": avail_panel,
             "backup": backup_tabs_manager,
             "billing": _tab_billing(
@@ -2273,15 +2340,16 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
                 active_items=active_items,
                 efficiency_rows=eff_by_cat,
             ),
-            "itsm": _tab_itsm(name, tr, itsm_summary, itsm_extremes, itsm_tickets),
+            "itsm": itsm_panel,
             "s3": s3_panel,
             "phys_inv": phys_inv_panel,
         },
         "customer": {
             "summary": _tab_summary(name, perspective=PERSPECTIVE_CUSTOMER, **summary_kwargs),
-            "virt": virt_content,
+            "virt": virt_content_customer,
             "avail": avail_panel,
             "backup": backup_tabs_customer,
+            "itsm": itsm_panel,
             "s3": s3_panel,
             "phys_inv": phys_inv_panel,
         },
@@ -2403,14 +2471,10 @@ def _build_customer_tabs_list(
         dmc.TabsTab("Virtualization", value="virt"),
         dmc.TabsTab("Availability", value="avail"),
         dmc.TabsTab("Backup", value="backup"),
+        dmc.TabsTab("ITSM", value="itsm"),
     ]
     if perspective == PERSPECTIVE_MANAGER:
-        tabs.extend(
-            [
-                dmc.TabsTab("Billing", value="billing"),
-                dmc.TabsTab("ITSM", value="itsm"),
-            ]
-        )
+        tabs.insert(4, dmc.TabsTab("Billing", value="billing"))
     if has_phys_inv:
         tabs.append(dmc.TabsTab("Physical Inventory", value="phys-inv"))
     if has_s3:
@@ -2452,26 +2516,27 @@ def _perspective_tab_panels(
         ),
     ]
     if perspective == PERSPECTIVE_MANAGER:
-        panels.extend(
-            [
-                dmc.TabsPanel(
-                    value="billing",
-                    children=dmc.Stack(
-                        gap="lg",
-                        style={"padding": "0 30px"},
-                        children=[tab_content.get("billing")],
-                    ),
+        panels.insert(
+            4,
+            dmc.TabsPanel(
+                value="billing",
+                children=dmc.Stack(
+                    gap="lg",
+                    style={"padding": "0 30px"},
+                    children=[tab_content.get("billing")],
                 ),
-                dmc.TabsPanel(
-                    value="itsm",
-                    children=dmc.Stack(
-                        gap="lg",
-                        style={"padding": "0 30px"},
-                        children=[tab_content.get("itsm")],
-                    ),
-                ),
-            ]
+            ),
         )
+    panels.append(
+        dmc.TabsPanel(
+            value="itsm",
+            children=dmc.Stack(
+                gap="lg",
+                style={"padding": "0 30px"},
+                children=[tab_content.get("itsm")],
+            ),
+        ),
+    )
     if has_phys_inv:
         panels.append(
             dmc.TabsPanel(
