@@ -25,6 +25,7 @@ from src.utils.datacenters_virt_sellable import (
 )
 from src.utils.format_units import fmt_tl_range
 from src.utils.virt_sellable_aggregate import VIRT_SELLABLE_FAMILY_LABELS
+from shared.display.static_energy import STATIC_TOTAL_ENERGY_KW
 
 _LOG = logging.getLogger(__name__)
 
@@ -653,10 +654,7 @@ def build_datacenters(time_range=None, visible_sections=None):
     total_hosts    = sum(dc.get("host_count", 0) for dc in datacenters)
     total_vms      = sum(dc.get("vm_count", 0) for dc in datacenters)
     total_clusters = sum(dc.get("cluster_count", 0) for dc in datacenters)
-    total_power    = sum(
-        float((dc.get("stats") or {}).get("total_energy_kw", 0) or 0)
-        for dc in datacenters
-    )
+    total_power = STATIC_TOTAL_ENERGY_KW
 
     # ── Summary KPI Strip (C2) ──
     summary_strip = html.Div(
@@ -1000,10 +998,7 @@ def poll_virt_sellable_refresh(_n, state, time_range):
     total_hosts = sum(dc.get("host_count", 0) for dc in datacenters)
     total_vms = sum(dc.get("vm_count", 0) for dc in datacenters)
     total_clusters = sum(dc.get("cluster_count", 0) for dc in datacenters)
-    total_power = sum(
-        float((dc.get("stats") or {}).get("total_energy_kw", 0) or 0)
-        for dc in datacenters
-    )
+    total_power = STATIC_TOTAL_ENERGY_KW
 
     kpi_strip = dmc.SimpleGrid(
         cols={"base": 2, "sm": 3},

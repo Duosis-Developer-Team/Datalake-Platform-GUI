@@ -33,6 +33,7 @@ from app.utils.time_range import (
     BACKUP_JOBS_WARM_GRANULARITIES,
 )
 from app.utils.format_units import smart_cpu, smart_memory, smart_storage
+from shared.display.static_energy import apply_static_aggregate_energy, resolve_static_total_energy_kw
 from shared.customer.cache_keys import customer_assets_cache_key
 from shared.network.backbone_billing import estimate_backbone_cost_tl, p95_bps_to_mbit
 from shared.sellable.host_aggregate import finalize_host_payload
@@ -2962,6 +2963,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         ibm_totals["stor_cap"] = round(ibm_totals["stor_cap"], 2)
         ibm_totals["stor_used"] = round(ibm_totals["stor_used"], 2)
         range_suffix = f"{tr.get('start','')}:{tr.get('end','')}"
+        energy_breakdown = {"ibm_kw": round(ei, 2), "vcenter_kw": round(ev, 2)}
+        static_target_kw = resolve_static_total_energy_kw(settings.static_total_energy_kw)
+        apply_static_aggregate_energy(overview, energy_breakdown, target_kw=static_target_kw)
         cache.set(f"global_dashboard:{range_suffix}", {
             "overview": overview,
             "platforms": {
@@ -2969,7 +2973,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 "vmware": {"clusters": vmware_c, "hosts": vmware_h, "vms": vmware_v},
                 "ibm": {"hosts": ibm_h, "vios": ibm_v, "lpars": ibm_l},
             },
-            "energy_breakdown": {"ibm_kw": round(ei, 2), "vcenter_kw": round(ev, 2)},
+            "energy_breakdown": energy_breakdown,
             "classic_totals": classic_totals,
             "hyperconv_totals": hyperconv_totals,
             "ibm_totals": ibm_totals,
@@ -2998,11 +3002,13 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             return cached_val
 
         summaries = self.get_all_datacenters_summary(tr)
+        live_total_energy_kw = round(sum(s["stats"]["total_energy_kw"] for s in summaries), 2)
+        static_target_kw = resolve_static_total_energy_kw(settings.static_total_energy_kw)
         result = {
             "total_hosts": sum(s["host_count"] for s in summaries),
             "total_vms": sum(s["vm_count"] for s in summaries),
             "total_platforms": sum(s["platform_count"] for s in summaries),
-            "total_energy_kw": round(sum(s["stats"]["total_energy_kw"] for s in summaries), 2),
+            "total_energy_kw": static_target_kw if static_target_kw is not None else live_total_energy_kw,
             "dc_count": len(summaries),
         }
         cache.set(cache_key, result)

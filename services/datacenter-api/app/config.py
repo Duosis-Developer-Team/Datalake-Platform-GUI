@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     webui_db_pass: str = ""
     webui_db_statement_timeout_ms: int = 15000
 
+    # Temporary aggregate energy display override (kW). Set to 0 to use live DB totals.
+    static_total_energy_kw: float = 780.0
+
     class Config:
         env_file = ".env"
 
