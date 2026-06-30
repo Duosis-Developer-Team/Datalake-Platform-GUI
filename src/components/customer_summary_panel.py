@@ -103,6 +103,47 @@ def build_summary_signal_strip(
     )
 
 
+def _build_usage_signal_defs(
+    *,
+    totals: dict,
+    assets: dict,
+    backup_totals: dict,
+    s3_data: dict | None,
+) -> list[tuple[Any, str, str]]:
+    """Usage-only signal definitions for the customer perspective summary."""
+    classic = assets.get("classic", {}) or {}
+    hyperconv = assets.get("hyperconv", {}) or {}
+    pure_nx = assets.get("pure_nutanix", {}) or {}
+    power = assets.get("power", {}) or {}
+
+    total_vms = int(totals.get("vms_total", 0) or 0)
+    veeam_defined = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
+    zerto_protected = int(backup_totals.get("zerto_protected_vms", 0) or 0)
+    nb_pre_gib = float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0)
+    vault_count = len((s3_data or {}).get("vaults") or [])
+
+    signals: list[tuple[Any, str, str]] = [
+        (total_vms, "Total instances", f"{total_vms:,}"),
+        (veeam_defined, "Veeam sessions", f"{veeam_defined:,}"),
+        (zerto_protected, "Zerto protected VMs", f"{zerto_protected:,}"),
+        (nb_pre_gib, "NetBackup pre-dedup", f"{nb_pre_gib:.2f} GiB"),
+        (vault_count, "S3 vaults", f"{vault_count:,}"),
+    ]
+    if asset_has_usage(classic):
+        n = int(classic.get("vm_count", 0) or 0)
+        signals.append((n, "Classic VMs", f"{n:,}"))
+    if asset_has_usage(hyperconv):
+        n = int(hyperconv.get("vm_count", 0) or 0)
+        signals.append((n, "Hyperconverged VMs", f"{n:,}"))
+    if asset_has_usage(pure_nx):
+        n = int(pure_nx.get("vm_count", 0) or 0)
+        signals.append((n, "Pure Nutanix VMs", f"{n:,}"))
+    if asset_has_usage(power, instance_keys=("lpar_count",)):
+        n = int(power.get("lpar_count", 0) or 0)
+        signals.append((n, "Power LPARs", f"{n:,}"))
+    return signals
+
+
 def _build_signal_defs(
     *,
     totals: dict,
@@ -295,8 +336,62 @@ def build_customer_summary_panel(
     service_breakdown: list[dict[str, Any]] | None = None,
     s3_data: dict | None = None,
     sla_categories: list[dict[str, Any]] | None = None,
+    perspective: str = "manager",
 ) -> html.Div:
     """Single unified summary card: header, compact signals, problems list."""
+    if perspective == "customer":
+        signal_defs = _build_usage_signal_defs(
+            totals=totals,
+            assets=assets,
+            backup_totals=backup_totals,
+            s3_data=s3_data,
+        )
+        signal_strip = build_summary_signal_strip(signal_defs)
+        body_children: list = []
+        if signal_strip is not None:
+            body_children.append(
+                dmc.Stack(
+                    gap="xs",
+                    children=[
+                        dmc.Text("Resource usage", size="sm", fw=700, c="#2B3674"),
+                        signal_strip,
+                    ],
+                )
+            )
+        if not body_children:
+            return dmc.Alert(
+                color="gray",
+                variant="light",
+                title="No usage data",
+                children="No meaningful usage indicators for this customer in the selected period.",
+            )
+        return html.Div(
+            className="nexus-card",
+            style={"padding": "24px", "margin": "0"},
+            children=[
+                dmc.Stack(
+                    gap="lg",
+                    children=[
+                        dmc.Group(
+                            gap="xs",
+                            align="center",
+                            children=[
+                                dmc.Text(customer_name, fw=700, size="lg", c="#2B3674"),
+                            ],
+                        ),
+                        dmc.Text(
+                            "Customer overview — provisioned resources and usage; see tabs for inventory detail.",
+                            size="sm",
+                            c="#A3AED0",
+                            fw=500,
+                        ),
+                        dmc.Divider(color="#F4F7FE"),
+                        *body_children,
+                    ],
+                ),
+            ],
+        )
+
     summary = sales_summary or {}
     currency = summary.get("currency")
     compliance_summary = (compliance_payload or {}).get("summary") or {}

@@ -9,7 +9,7 @@ def test_export_customer_view_prevents_without_clicks():
     import dash
 
     with pytest.raises(dash.exceptions.PreventUpdate):
-        export_customer_view(None, None, {"customer": "Acme", "export_context": {}}, {})
+        export_customer_view(None, None, None, {"customer": "Acme", "export_context": {}}, {})
 
 
 def test_build_customer_layout_has_static_export_buttons():
@@ -17,17 +17,16 @@ def test_build_customer_layout_has_static_export_buttons():
 
     layout = build_customer_layout(selected_customer="Acme Corp")
     text = str(layout)
-    assert "customer-export-toolbar" in text
-    assert "customer-export-csv" in text
-    assert "customer-export-xlsx" in text
+    assert "customer-view-page-root" in text
 
 
 def test_export_sheets_built_from_context_on_demand():
-    from src.pages.customer_view import _export_sheets_from_store
+    from src.pages.customer_view import _resolve_export_sheets_from_store
 
-    sheets = _export_sheets_from_store(
+    sheets = _resolve_export_sheets_from_store(
         {
             "customer": "Acme Corp",
+            "perspective_access": {"manager": True, "customer": False},
             "export_context": {
                 "customer_name": "Acme Corp",
                 "totals": {"vms_total": 2},

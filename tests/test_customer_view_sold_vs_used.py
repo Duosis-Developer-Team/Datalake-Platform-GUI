@@ -60,10 +60,11 @@ def test_customer_content_has_crm_summary_sections(_a, _b, _c, _d, _e, _f, _g, _
     content = _customer_content("Acme", {"preset": "30d"})
     assert "sales" not in content
     assert "intro_card" not in content
-    assert "billing" in content
-    assert "virt" in content
-    summary_text = str(content.get("summary"))
-    billing_text = str(content.get("billing"))
+    manager = content["manager"]
+    assert "billing" in manager
+    assert "virt" in manager
+    summary_text = str(manager.get("summary"))
+    billing_text = str(manager.get("billing"))
     assert "Customer signals" in summary_text or "No summary data" in summary_text
     assert "CRM Sales Summary" not in summary_text
     assert "Active Orders" not in summary_text
@@ -117,6 +118,6 @@ def test_virt_tab_has_no_compliance_gauges(_a, _b, _c, _d, _e, _f, _g, _h, _i, _
     from src.pages.customer_view import _customer_content
 
     content = _customer_content("Acme", {"preset": "30d"})
-    virt_text = str(content.get("virt"))
+    virt_text = str(content["manager"].get("virt"))
     assert "create_premium_gauge_chart" not in virt_text
     assert "Used / sold" not in virt_text

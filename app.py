@@ -366,7 +366,6 @@ app.clientside_callback(
             "datacenters": "datacenters",
             "dc": "dc_detail",
             "global": "global_view",
-            "customer": "customer_view",
             "qe": "query_explorer"
         };
         const prefix = map[index];

@@ -22,16 +22,15 @@ def test_customers_list_shell_and_fill():
 
 
 def test_customer_view_shell_and_fill_reads_customer_param():
-    with patch.object(cv, "build_customer_layout") as bd:
+    with patch.object(cv, "render_customer_loading_page") as bd:
         shell = cv.build_customer_layout_shell(["p"])
     bd.assert_not_called()
     assert "customer-view-page-root" in repr(shell)
     assert cv._fill_customer_view_content("/customers", "?customer=ACME", {}, None) is dash.no_update
-    with patch.object(cv, "build_customer_layout", return_value="X") as bd:
+    with patch.object(cv, "render_customer_loading_page", return_value="X") as bd:
         out = cv._fill_customer_view_content("/customer-view", "?customer=ACME", {"preset": "7d"}, ["p"])
     assert out == "X"
-    # the chosen customer parsed from ?customer= is passed through
-    assert bd.call_args.args[1] == "ACME"
+    assert bd.call_args.args[0] == "ACME"
 
 
 def test_crm_sellable_shell_and_fill():

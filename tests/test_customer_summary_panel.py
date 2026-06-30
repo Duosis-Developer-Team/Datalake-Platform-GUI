@@ -65,6 +65,24 @@ def test_build_compliance_issue_table_renders_over_rows():
     assert "Over-utilized" in text or "over" in text.lower()
 
 
+def test_build_customer_summary_panel_customer_perspective():
+    panel = build_customer_summary_panel(
+        "Acme Corp",
+        totals={"vms_total": 5},
+        assets={"classic": {"vm_count": 5, "cpu_total": 10}},
+        backup_totals={"veeam_defined_sessions": 2},
+        sales_summary={"active_order_value": 100.0, "currency": "TL"},
+        compliance_payload={
+            "summary": {"has_overuse": True, "total_overage_loss_tl": 50},
+            "rows": [],
+        },
+        perspective="customer",
+    )
+    text = str(panel)
+    assert "Resource usage" in text
+    assert "Resource overusage" not in text
+
+
 def test_build_customer_summary_panel_unified_layout():
     panel = build_customer_summary_panel(
         "Acme Corp",

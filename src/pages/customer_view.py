@@ -19,9 +19,11 @@ from src.utils.export_helpers import (
     records_to_dataframe,
     build_report_info_df,
     dataframes_to_excel_with_meta,
+    dataframes_to_pdf_with_meta,
     csv_bytes_with_report_header,
     dash_send_excel_workbook,
     dash_send_csv_bytes,
+    dash_send_pdf_workbook,
 )
 from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_float, title_case
 from src.components.header import create_detail_header
@@ -48,6 +50,14 @@ from src.utils.visibility import (
     asset_has_usage,
     backup_vendor_has_data,
     is_meaningful_value,
+)
+from src.pages.customer_view_perspective import (
+    PERSPECTIVE_CUSTOMER,
+    PERSPECTIVE_MANAGER,
+    default_perspective,
+    effective_perspective,
+    perspective_access,
+    show_perspective_switch,
 )
 
 
@@ -311,7 +321,7 @@ def _itsm_tickets_for_export(tickets: list) -> list[dict]:
     return out
 
 
-def _build_customer_export_sheets(
+def _build_manager_export_sheets(
     customer_name: str,
     totals: dict,
     backup_totals: dict,
@@ -421,6 +431,129 @@ def _build_customer_export_sheets(
     return sheets
 
 
+def _build_customer_perspective_export_sheets(
+    customer_name: str,
+    totals: dict,
+    backup_totals: dict,
+    assets: dict,
+    classic: dict,
+    hyperconv: dict,
+    pure_nx: dict,
+    power_asset: dict,
+    s3_data: dict,
+    phys_inv_devices: list,
+) -> dict[str, list[dict]]:
+    """Usage and inventory sheets for the customer-facing perspective."""
+    sheets: dict[str, list[dict]] = {}
+    sheets["Customer_Meta"] = [{"customer": customer_name}]
+    trow = _dict_to_wide_row(totals)
+    if trow:
+        sheets["Summary_Usage_Totals"] = trow
+    brow = _dict_to_wide_row(backup_totals)
+    if brow:
+        sheets["Backup_Totals"] = brow
+
+    for label, block in (
+        ("Assets_Classic_Block", classic),
+        ("Assets_Hyperconv_Block", hyperconv),
+        ("Assets_Pure_Nutanix_Block", pure_nx),
+        ("Assets_Power_Block", power_asset),
+    ):
+        w = _dict_to_wide_row(block)
+        if w:
+            sheets[label] = w
+
+    intel_asset = assets.get("intel", {}) or {}
+    iw = _dict_to_wide_row(intel_asset)
+    if iw:
+        sheets["Assets_Intel_Aggregate"] = iw
+
+    sheets["Classic_VMs"] = _vm_records_for_export(classic.get("vm_list") or [])
+    sheets["Classic_VMs_Real_CPU"] = _real_cpu_export_records(classic.get("vm_list") or [])
+    sheets["HyperConv_VMs"] = _vm_records_for_export(hyperconv.get("vm_list") or [])
+    sheets["HyperConv_VMs_Real_CPU"] = _real_cpu_export_records(hyperconv.get("vm_list") or [])
+    sheets["Pure_Nutanix_VMs"] = _vm_records_for_export(pure_nx.get("vm_list") or [])
+    pl = (
+        power_asset.get("vm_list")
+        or power_asset.get("lpar_list")
+        or power_asset.get("lpars")
+        or []
+    )
+    sheets["Power_LPARS"] = _vm_records_for_export(pl)
+
+    backup_assets = assets.get("backup", {}) or {}
+    for bk, key in (
+        ("Backup_Veeam_Detail", "veeam"),
+        ("Backup_Zerto_Detail", "zerto"),
+        ("Backup_Netbackup_Detail", "netbackup"),
+    ):
+        sub = backup_assets.get(key)
+        if isinstance(sub, dict) and sub:
+            br = _dict_to_wide_row(sub)
+            if br:
+                sheets[bk] = br
+
+    sv = _s3_vault_rows(s3_data)
+    if sv:
+        sheets["S3_Vaults"] = sv
+
+    phys = _device_records_for_export(phys_inv_devices)
+    if phys:
+        sheets["Physical_Inventory"] = phys
+
+    return sheets
+
+
+def _prefix_export_sheets(sheets: dict[str, list[dict]], prefix: str) -> dict[str, list[dict]]:
+    return {f"{prefix}_{name}": rows for name, rows in sheets.items()}
+
+
+def _build_export_sheets_for_user(
+    export_context: dict,
+    perspective_access_map: dict[str, bool],
+) -> dict[str, list[dict]]:
+    """Build export sheets for all perspectives the user may access."""
+    kwargs = dict(
+        customer_name=export_context.get("customer_name") or "",
+        totals=export_context.get("totals") or {},
+        backup_totals=export_context.get("backup_totals") or {},
+        assets=export_context.get("assets") or {},
+        classic=export_context.get("classic") or {},
+        hyperconv=export_context.get("hyperconv") or {},
+        pure_nx=export_context.get("pure_nx") or {},
+        power_asset=export_context.get("power_asset") or {},
+        s3_data=export_context.get("s3_data") or {},
+        phys_inv_devices=export_context.get("phys_inv_devices") or [],
+    )
+    has_manager = bool(perspective_access_map.get("manager"))
+    has_customer = bool(perspective_access_map.get("customer"))
+    combined: dict[str, list[dict]] = {}
+
+    if has_manager:
+        manager_sheets = _build_manager_export_sheets(
+            **kwargs,
+            itsm_summary=export_context.get("itsm_summary") or {},
+            itsm_extremes=export_context.get("itsm_extremes") or {},
+            itsm_tickets=export_context.get("itsm_tickets") or [],
+        )
+        if has_manager and has_customer:
+            combined.update(_prefix_export_sheets(manager_sheets, "Manager"))
+        else:
+            combined.update(manager_sheets)
+
+    if has_customer:
+        customer_sheets = _build_customer_perspective_export_sheets(**kwargs)
+        if has_manager and has_customer:
+            combined.update(_prefix_export_sheets(customer_sheets, "Customer"))
+        else:
+            combined.update(_prefix_export_sheets(customer_sheets, "Customer"))
+    return combined
+
+
+# Backward-compatible alias for tests and external callers.
+_build_customer_export_sheets = _build_manager_export_sheets
+
+
 def _deleted_vms_panel(deleted_names: list[str] | None):
     """Names-only list for VMs whose name starts with underscore (removed inventory)."""
     names = [n for n in (deleted_names or []) if n]
@@ -473,6 +606,7 @@ def _tab_summary(
     service_breakdown: list | None = None,
     s3_data: dict | None = None,
     sla_categories: list | None = None,
+    perspective: str = PERSPECTIVE_MANAGER,
 ):
     """Summary tab: unified panel with compact signals and problems list."""
     return build_customer_summary_panel(
@@ -488,6 +622,7 @@ def _tab_summary(
         service_breakdown=service_breakdown,
         s3_data=s3_data,
         sla_categories=sla_categories,
+        perspective=perspective,
     )
 
 
@@ -1817,6 +1952,62 @@ def _tab_itsm(
 # Main content block
 # ---------------------------------------------------------------------------
 
+def _build_backup_tabs(
+    backup_assets: dict,
+    backup_totals: dict,
+    eff_by_cat: list | None,
+    *,
+    include_sold_vs_used: bool,
+) -> html.Div:
+    """Backup vendor nested tabs; sold-vs-used panels optional (manager perspective only)."""
+    backup_tab_defs: list[tuple[str, str, html.Div]] = []
+
+    def _eff_panel(scope: str) -> html.Div | None:
+        if not include_sold_vs_used:
+            return None
+        return build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, scope))
+
+    if backup_vendor_has_data(backup_totals, backup_assets, "veeam"):
+        backup_tab_defs.append(
+            ("veeam", "Veeam", _tab_veeam(backup_assets, backup_totals, crm_eff_panel=_eff_panel("backup.veeam")))
+        )
+    if backup_vendor_has_data(backup_totals, backup_assets, "zerto"):
+        backup_tab_defs.append(
+            ("zerto", "Zerto", _tab_zerto(backup_assets, backup_totals, crm_eff_panel=_eff_panel("backup.zerto")))
+        )
+    if backup_vendor_has_data(backup_totals, backup_assets, "netbackup"):
+        backup_tab_defs.append(
+            (
+                "netbackup",
+                "Netbackup",
+                _tab_netbackup(backup_assets, backup_totals, crm_eff_panel=_eff_panel("backup.netbackup")),
+            )
+        )
+
+    if backup_tab_defs:
+        return dmc.Tabs(
+            color="green",
+            variant="outline",
+            radius="md",
+            value=backup_tab_defs[0][0],
+            children=[
+                dmc.TabsList(
+                    children=[dmc.TabsTab(label, value=value) for value, label, _panel in backup_tab_defs]
+                ),
+                *[
+                    dmc.TabsPanel(value=value, pt="lg", children=panel)
+                    for value, _label, panel in backup_tab_defs
+                ],
+            ],
+        )
+    return dmc.Alert(
+        color="gray",
+        variant="light",
+        title="No backup services",
+        children="No billable backup vendor data for this customer in the selected period.",
+    )
+
+
 def _crm_rows_outside_virt_backup(eff_rows: list | None) -> list:
     """Categories for Billing tab (firewall, licensing, colocation, S3, etc.)."""
     out: list = []
@@ -1837,16 +2028,27 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             children="Open a customer from the Customers catalog to load metrics.",
         )
         return {
-            "summary": empty,
-            "virt": empty,
-            "avail": empty,
-            "backup": empty,
-            "billing": empty,
-            "itsm": empty,
-            "s3": html.Div(),
+            "manager": {
+                "summary": empty,
+                "virt": empty,
+                "avail": empty,
+                "backup": empty,
+                "billing": empty,
+                "itsm": empty,
+                "s3": html.Div(),
+                "phys_inv": empty,
+            },
+            "customer": {
+                "summary": empty,
+                "virt": empty,
+                "avail": empty,
+                "backup": empty,
+                "s3": html.Div(),
+                "phys_inv": empty,
+            },
             "has_s3": False,
-            "phys_inv": empty,
             "has_phys_inv": False,
+            "customer_name": "",
             "export_context": {},
         }
 
@@ -2003,67 +2205,34 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
             children="No provisioned compute instances were returned for this customer.",
         )
 
-    backup_tab_defs: list[tuple[str, str, html.Div]] = []
-    if backup_vendor_has_data(backup_totals, backup_assets, "veeam"):
-        backup_tab_defs.append(
-            (
-                "veeam",
-                "Veeam",
-                _tab_veeam(
-                    backup_assets,
-                    backup_totals,
-                    crm_eff_panel=build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, "backup.veeam")),
-                ),
-            )
-        )
-    if backup_vendor_has_data(backup_totals, backup_assets, "zerto"):
-        backup_tab_defs.append(
-            (
-                "zerto",
-                "Zerto",
-                _tab_zerto(
-                    backup_assets,
-                    backup_totals,
-                    crm_eff_panel=build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, "backup.zerto")),
-                ),
-            )
-        )
-    if backup_vendor_has_data(backup_totals, backup_assets, "netbackup"):
-        backup_tab_defs.append(
-            (
-                "netbackup",
-                "Netbackup",
-                _tab_netbackup(
-                    backup_assets,
-                    backup_totals,
-                    crm_eff_panel=build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, "backup.netbackup")),
-                ),
-            )
-        )
+    backup_tabs_manager = _build_backup_tabs(
+        backup_assets, backup_totals, eff_by_cat, include_sold_vs_used=True
+    )
+    backup_tabs_customer = _build_backup_tabs(
+        backup_assets, backup_totals, eff_by_cat, include_sold_vs_used=False
+    )
 
-    if backup_tab_defs:
-        backup_tabs = dmc.Tabs(
-            color="green",
-            variant="outline",
-            radius="md",
-            value=backup_tab_defs[0][0],
-            children=[
-                dmc.TabsList(
-                    children=[dmc.TabsTab(label, value=value) for value, label, _panel in backup_tab_defs]
-                ),
-                *[
-                    dmc.TabsPanel(value=value, pt="lg", children=panel)
-                    for value, _label, panel in backup_tab_defs
-                ],
-            ],
-        )
-    else:
-        backup_tabs = dmc.Alert(
-            color="gray",
-            variant="light",
-            title="No backup services",
-            children="No billable backup vendor data for this customer in the selected period.",
-        )
+    s3_panel = html.Div(
+        id="s3-customer-metrics-panel",
+        style={"padding": "0 30px"},
+        children=build_customer_s3_panel(name, s3_data, tr, None) if has_s3 else html.Div(),
+    )
+    phys_inv_panel = _tab_physical_inventory(phys_inv_devices)
+    avail_panel = _tab_customer_availability(avail_bundle)
+
+    summary_kwargs = dict(
+        totals=totals,
+        assets=assets,
+        backup_totals=backup_totals,
+        sales_summary=sales_summary,
+        compliance_payload=compliance_payload,
+        efficiency_rows=eff_by_cat,
+        itsm_summary=itsm_summary,
+        vm_outage_counts=vm_outage_counts,
+        service_breakdown=service_breakdown,
+        s3_data=s3_data,
+        sla_categories=sla_categories,
+    )
 
     export_context = {
         "customer_name": name,
@@ -2079,49 +2248,46 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
         "itsm_summary": itsm_summary or {},
         "itsm_extremes": itsm_extremes or {},
         "itsm_tickets": itsm_tickets or [],
+        "compliance_payload": compliance_payload or {},
+        "efficiency_rows": eff_by_cat or [],
+        "sales_summary": sales_summary or {},
     }
 
     return {
-        "summary": _tab_summary(
-            name,
-            totals,
-            assets,
-            backup_totals,
-            sales_summary=sales_summary,
-            compliance_payload=compliance_payload,
-            efficiency_rows=eff_by_cat,
-            itsm_summary=itsm_summary,
-            vm_outage_counts=vm_outage_counts,
-            service_breakdown=service_breakdown,
-            s3_data=s3_data,
-            sla_categories=sla_categories,
-        ),
-        "virt": virt_content,
-        "avail": _tab_customer_availability(avail_bundle),
-        "itsm": _tab_itsm(name, tr, itsm_summary, itsm_extremes, itsm_tickets),
-        "backup": backup_tabs,
-        "billing": _tab_billing(
-            totals,
-            assets,
-            backup_totals,
-            s3_data,
-            sales_summary=sales_summary,
-            crm_eff_panel=build_sold_vs_used_stack(_crm_rows_outside_virt_backup(eff_by_cat)),
-            customer_name=name,
-            service_breakdown=service_breakdown,
-            sales_items=sales_items,
-            active_orders=active_orders,
-            active_items=active_items,
-            efficiency_rows=eff_by_cat,
-        ),
-        "s3": html.Div(
-            id="s3-customer-metrics-panel",
-            style={"padding": "0 30px"},
-            children=build_customer_s3_panel(name, s3_data, tr, None) if has_s3 else html.Div(),
-        ),
+        "manager": {
+            "summary": _tab_summary(name, perspective=PERSPECTIVE_MANAGER, **summary_kwargs),
+            "virt": virt_content,
+            "avail": avail_panel,
+            "backup": backup_tabs_manager,
+            "billing": _tab_billing(
+                totals,
+                assets,
+                backup_totals,
+                s3_data,
+                sales_summary=sales_summary,
+                crm_eff_panel=build_sold_vs_used_stack(_crm_rows_outside_virt_backup(eff_by_cat)),
+                customer_name=name,
+                service_breakdown=service_breakdown,
+                sales_items=sales_items,
+                active_orders=active_orders,
+                active_items=active_items,
+                efficiency_rows=eff_by_cat,
+            ),
+            "itsm": _tab_itsm(name, tr, itsm_summary, itsm_extremes, itsm_tickets),
+            "s3": s3_panel,
+            "phys_inv": phys_inv_panel,
+        },
+        "customer": {
+            "summary": _tab_summary(name, perspective=PERSPECTIVE_CUSTOMER, **summary_kwargs),
+            "virt": virt_content,
+            "avail": avail_panel,
+            "backup": backup_tabs_customer,
+            "s3": s3_panel,
+            "phys_inv": phys_inv_panel,
+        },
         "has_s3": has_s3,
-        "phys_inv": _tab_physical_inventory(phys_inv_devices),
         "has_phys_inv": has_phys_inv,
+        "customer_name": name,
         "export_context": export_context,
     }
 
@@ -2193,35 +2359,152 @@ def _build_customer_export_group(visible_sections) -> dmc.Group | None:
             dmc.Text("Export", size="xs", c="dimmed"),
             dmc.Button("CSV", id="customer-export-csv", size="xs", variant="light", color="gray"),
             dmc.Button("Excel", id="customer-export-xlsx", size="xs", variant="light", color="gray"),
-            dmc.Button(
-                "PDF",
-                id={"type": "pdf-export-btn", "index": "customer"},
-                size="xs",
-                variant="light",
-                color="gray",
+            dmc.Button("PDF", id="customer-export-pdf", size="xs", variant="light", color="gray"),
+        ],
+    )
+
+
+def _build_perspective_switch(perspective: str) -> dmc.SegmentedControl:
+    return dmc.SegmentedControl(
+        id="customer-view-perspective",
+        value=perspective,
+        data=[
+            {"label": "Manager", "value": PERSPECTIVE_MANAGER},
+            {"label": "Customer", "value": PERSPECTIVE_CUSTOMER},
+        ],
+        size="xs",
+        color="indigo",
+    )
+
+
+def _build_customer_header_extras(
+    *,
+    perspective: str,
+    visible_sections,
+) -> list:
+    access = perspective_access(visible_sections)
+    extras: list = []
+    if show_perspective_switch(access):
+        extras.append(_build_perspective_switch(perspective))
+    export_group = _build_customer_export_group(visible_sections)
+    if export_group is not None:
+        extras.append(export_group)
+    return extras
+
+
+def _build_customer_tabs_list(
+    perspective: str,
+    *,
+    has_s3: bool = False,
+    has_phys_inv: bool = False,
+) -> dmc.TabsList:
+    tabs = [
+        dmc.TabsTab("Summary", value="summary"),
+        dmc.TabsTab("Virtualization", value="virt"),
+        dmc.TabsTab("Availability", value="avail"),
+        dmc.TabsTab("Backup", value="backup"),
+    ]
+    if perspective == PERSPECTIVE_MANAGER:
+        tabs.extend(
+            [
+                dmc.TabsTab("Billing", value="billing"),
+                dmc.TabsTab("ITSM", value="itsm"),
+            ]
+        )
+    if has_phys_inv:
+        tabs.append(dmc.TabsTab("Physical Inventory", value="phys-inv"))
+    if has_s3:
+        tabs.append(dmc.TabsTab("S3", value="s3"))
+    return dmc.TabsList(style={"paddingTop": "8px"}, children=tabs)
+
+
+def _perspective_tab_panels(
+    tab_content: dict,
+    *,
+    perspective: str,
+    has_s3: bool,
+    has_phys_inv: bool,
+) -> list:
+    panels = [
+        dmc.TabsPanel(
+            value="summary",
+            children=dmc.Stack(
+                gap="lg",
+                style={"padding": "0 30px"},
+                children=[tab_content.get("summary")],
             ),
-        ],
-    )
+        ),
+        dmc.TabsPanel(
+            value="virt",
+            children=html.Div(style={"padding": "0 30px"}, children=[tab_content.get("virt")]),
+        ),
+        dmc.TabsPanel(
+            value="avail",
+            children=dmc.Stack(
+                gap="lg",
+                style={"padding": "0 30px"},
+                children=[tab_content.get("avail")],
+            ),
+        ),
+        dmc.TabsPanel(
+            value="backup",
+            children=html.Div(style={"padding": "0 30px"}, children=[tab_content.get("backup")]),
+        ),
+    ]
+    if perspective == PERSPECTIVE_MANAGER:
+        panels.extend(
+            [
+                dmc.TabsPanel(
+                    value="billing",
+                    children=dmc.Stack(
+                        gap="lg",
+                        style={"padding": "0 30px"},
+                        children=[tab_content.get("billing")],
+                    ),
+                ),
+                dmc.TabsPanel(
+                    value="itsm",
+                    children=dmc.Stack(
+                        gap="lg",
+                        style={"padding": "0 30px"},
+                        children=[tab_content.get("itsm")],
+                    ),
+                ),
+            ]
+        )
+    if has_phys_inv:
+        panels.append(
+            dmc.TabsPanel(
+                value="phys-inv",
+                children=dmc.Stack(
+                    gap="lg",
+                    style={"padding": "0 30px"},
+                    children=[tab_content.get("phys_inv")],
+                ),
+            )
+        )
+    if has_s3:
+        panels.append(
+            dmc.TabsPanel(value="s3", children=tab_content.get("s3") or html.Div())
+        )
+    return panels
 
 
-def _build_customer_tabs_list(*, has_s3: bool = False, has_phys_inv: bool = False) -> dmc.TabsList:
-    return dmc.TabsList(
-        style={"paddingTop": "8px"},
-        children=[
-            dmc.TabsTab("Summary", value="summary"),
-            dmc.TabsTab("Virtualization", value="virt"),
-            dmc.TabsTab("Availability", value="avail"),
-            dmc.TabsTab("Backup", value="backup"),
-            dmc.TabsTab("Billing", value="billing"),
-            dmc.TabsTab("ITSM", value="itsm"),
-            dmc.TabsTab("Physical Inventory", value="phys-inv") if has_phys_inv else None,
-            dmc.TabsTab("S3", value="s3") if has_s3 else None,
-        ],
-    )
+def _resolve_tab_content(content: dict, perspective: str) -> dict:
+    if "manager" in content and "customer" in content:
+        return content.get(perspective) or content.get(PERSPECTIVE_MANAGER) or {}
+    return content
 
 
-def render_customer_loading_page(chosen: str, time_range, visible_sections=None) -> html.Div:
-    del visible_sections
+def render_customer_loading_page(
+    chosen: str,
+    time_range,
+    visible_sections=None,
+    *,
+    perspective: str | None = None,
+) -> html.Div:
+    access = perspective_access(visible_sections)
+    perspective = effective_perspective(perspective, access)
     tr = time_range or default_time_range()
     header = create_detail_header(
         title="Customer View",
@@ -2231,7 +2514,8 @@ def render_customer_loading_page(chosen: str, time_range, visible_sections=None)
         subtitle_color="teal",
         time_range=tr,
         icon="solar:users-group-two-rounded-bold-duotone",
-        tabs=_build_customer_tabs_list(),
+        tabs=_build_customer_tabs_list(perspective),
+        right_extra=_build_customer_header_extras(perspective=perspective, visible_sections=visible_sections),
     )
     return html.Div(
         className="customer-page-enter",
@@ -2254,11 +2538,20 @@ def render_customer_loading_page(chosen: str, time_range, visible_sections=None)
     )
 
 
-def render_customer_page(chosen: str, time_range, content: dict, visible_sections=None) -> html.Div:
-    del visible_sections
+def render_customer_page(
+    chosen: str,
+    time_range,
+    content: dict,
+    visible_sections=None,
+    *,
+    perspective: str | None = None,
+) -> html.Div:
+    access = perspective_access(visible_sections)
+    perspective = effective_perspective(perspective, access)
     tr = time_range or default_time_range()
     has_s3 = bool(content.get("has_s3"))
     has_phys_inv = bool(content.get("has_phys_inv"))
+    tab_content = _resolve_tab_content(content, perspective)
     header = create_detail_header(
         title="Customer View",
         back_href="/customers",
@@ -2267,7 +2560,8 @@ def render_customer_page(chosen: str, time_range, content: dict, visible_section
         subtitle_color="teal",
         time_range=tr,
         icon="solar:users-group-two-rounded-bold-duotone",
-        tabs=_build_customer_tabs_list(has_s3=has_s3, has_phys_inv=has_phys_inv),
+        tabs=_build_customer_tabs_list(perspective, has_s3=has_s3, has_phys_inv=has_phys_inv),
+        right_extra=_build_customer_header_extras(perspective=perspective, visible_sections=visible_sections),
     )
     return html.Div(
         className="customer-page-enter",
@@ -2279,62 +2573,12 @@ def render_customer_page(chosen: str, time_range, content: dict, visible_section
                 value="summary",
                 children=[
                     header,
-                    dmc.TabsPanel(
-                        value="summary",
-                        children=dmc.Stack(
-                            gap="lg",
-                            style={"padding": "0 30px"},
-                            children=[content.get("summary")],
-                        ),
+                    *_perspective_tab_panels(
+                        tab_content,
+                        perspective=perspective,
+                        has_s3=has_s3,
+                        has_phys_inv=has_phys_inv,
                     ),
-                    dmc.TabsPanel(
-                        value="virt",
-                        children=html.Div(style={"padding": "0 30px"}, children=[content.get("virt")]),
-                    ),
-                    dmc.TabsPanel(
-                        value="avail",
-                        children=dmc.Stack(
-                            gap="lg",
-                            style={"padding": "0 30px"},
-                            children=[content.get("avail")],
-                        ),
-                    ),
-                    dmc.TabsPanel(
-                        value="backup",
-                        children=html.Div(style={"padding": "0 30px"}, children=[content.get("backup")]),
-                    ),
-                    dmc.TabsPanel(
-                        value="billing",
-                        children=dmc.Stack(
-                            gap="lg",
-                            style={"padding": "0 30px"},
-                            children=[content.get("billing")],
-                        ),
-                    ),
-                    dmc.TabsPanel(
-                        value="itsm",
-                        children=dmc.Stack(
-                            gap="lg",
-                            style={"padding": "0 30px"},
-                            children=[content.get("itsm")],
-                        ),
-                    ),
-                    dmc.TabsPanel(
-                        value="phys-inv",
-                        children=dmc.Stack(
-                            gap="lg",
-                            style={"padding": "0 30px"},
-                            children=[content.get("phys_inv")],
-                        )
-                        if has_phys_inv
-                        else None,
-                    ),
-                    dmc.TabsPanel(
-                        value="s3",
-                        children=content.get("s3") if has_s3 else html.Div(),
-                    )
-                    if has_s3
-                    else None,
                 ],
             ),
         ],
@@ -2342,13 +2586,15 @@ def render_customer_page(chosen: str, time_range, content: dict, visible_section
 
 
 def build_customer_layout_shell(visible_sections=None):
-    """Phase A: instant skeleton shell; `_fill_customer_view_content` builds the real
-    content off the render path so a cold backend never leaves the page blank."""
+    """Phase A: instant skeleton shell; callbacks build content off the render path."""
     return html.Div([
         dcc.Store(
             id="customer-view-visible-sections",
             data=list(visible_sections) if visible_sections else None,
         ),
+        dcc.Store(id="customer-view-perspective-store", data=None),
+        dcc.Store(id="customer-export-store", data=None),
+        dcc.Download(id="customer-export-download"),
         dcc.Loading(
             id="customer-view-content-loading",
             type="circle", color="#4318FF", delay_show=150,
@@ -2365,13 +2611,15 @@ def build_customer_layout_shell(visible_sections=None):
     State("customer-view-visible-sections", "data"),
 )
 def _fill_customer_view_content(pathname, search, time_range, visible_sections):
-    """Phase B: build the real Customer View content off the initial render path."""
+    """Phase B: show loading shell while async callback loads data."""
     if pathname != "/customer-view":
         return dash.no_update
     from urllib.parse import parse_qs
     chosen = (parse_qs((search or "").lstrip("?")).get("customer", [""])[0] or "").strip()
     tr = time_range or default_time_range()
-    return build_customer_layout(tr, chosen, visible_sections=visible_sections)
+    access = perspective_access(visible_sections)
+    perspective = default_perspective(access)
+    return render_customer_loading_page(chosen, tr, visible_sections, perspective=perspective)
 
 
 def build_customer_layout(time_range=None, selected_customer=None, visible_sections=None):
@@ -2396,13 +2644,15 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
         )
 
     export_group = _build_customer_export_group(vs)
+    access = perspective_access(vs)
+    perspective = default_perspective(access)
     export_toolbar = (
         html.Div(
             id="customer-export-toolbar",
             style={"display": "flex", "justifyContent": "flex-end", "padding": "8px 30px 0"},
             children=[export_group],
         )
-        if export_group
+        if export_group and not show_perspective_switch(access)
         else html.Div(id="customer-export-toolbar")
     )
 
@@ -2412,15 +2662,18 @@ def build_customer_layout(time_range=None, selected_customer=None, visible_secti
                 id="customer-view-visible-sections",
                 data=list(vs) if vs is not None else None,
             ),
+            dcc.Store(id="customer-view-perspective-store", data=perspective),
             dcc.Store(
                 id="customer-export-store",
-                data={"customer": chosen, "export_context": {}},
+                data={"customer": chosen, "export_context": {}, "perspective_access": access},
             ),
             dcc.Download(id="customer-export-download"),
             export_toolbar,
             html.Div(
                 id="customer-view-page-root",
-                children=render_customer_loading_page(chosen, tr, visible_sections=vs),
+                children=render_customer_loading_page(
+                    chosen, tr, visible_sections=vs, perspective=perspective
+                ),
             ),
         ],
     )
@@ -2430,33 +2683,14 @@ def layout():
     return build_customer_layout(default_time_range())
 
 
-@callback(
-    Output("customer-export-download", "data"),
-    Input("customer-export-csv", "n_clicks"),
-    Input("customer-export-xlsx", "n_clicks"),
-    State("customer-export-store", "data"),
-    State("app-time-range", "data"),
-    prevent_initial_call=True,
-)
-def _export_sheets_from_store(store: dict | None) -> dict[str, list[dict]]:
+def _resolve_export_sheets_from_store(store: dict | None) -> dict[str, list[dict]]:
     store = store or {}
     export_context = store.get("export_context")
+    perspective_access_map = store.get("perspective_access")
+    if not isinstance(perspective_access_map, dict):
+        perspective_access_map = perspective_access(None)
     if isinstance(export_context, dict) and export_context.get("customer_name"):
-        return _build_customer_export_sheets(
-            export_context["customer_name"],
-            export_context.get("totals") or {},
-            export_context.get("backup_totals") or {},
-            export_context.get("assets") or {},
-            export_context.get("classic") or {},
-            export_context.get("hyperconv") or {},
-            export_context.get("pure_nx") or {},
-            export_context.get("power_asset") or {},
-            export_context.get("s3_data") or {},
-            export_context.get("phys_inv_devices") or [],
-            itsm_summary=export_context.get("itsm_summary") or {},
-            itsm_extremes=export_context.get("itsm_extremes") or {},
-            itsm_tickets=export_context.get("itsm_tickets") or [],
-        )
+        return _build_export_sheets_for_user(export_context, perspective_access_map)
     sheets_raw = store.get("sheets")
     if isinstance(sheets_raw, dict) and sheets_raw:
         return sheets_raw
@@ -2465,51 +2699,81 @@ def _export_sheets_from_store(store: dict | None) -> dict[str, list[dict]]:
     return {}
 
 
-def export_customer_view(nc, nx, store, time_range):
-    if not nc and not nx:
-        raise dash.exceptions.PreventUpdate
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return dash.no_update
-    tid = ctx.triggered[0]["prop_id"].split(".")[0]
-    fmt_map = {"customer-export-csv": "csv", "customer-export-xlsx": "xlsx"}
-    fmt = fmt_map.get(tid)
-    if not fmt:
-        return dash.no_update
-    if fmt == "csv" and not nc:
-        raise dash.exceptions.PreventUpdate
-    if fmt == "xlsx" and not nx:
-        raise dash.exceptions.PreventUpdate
-    store = store or {}
-    base = str(store.get("customer") or "customer_view")
-    extra = {"customer": base}
-    sheets_raw = _export_sheets_from_store(store)
-
-    order = [
+def _export_sheet_order() -> list[str]:
+    return [
         "Customer_Meta",
+        "Manager_Customer_Meta",
+        "Customer_Customer_Meta",
         "Summary_Totals",
+        "Manager_Summary_Totals",
+        "Customer_Summary_Usage_Totals",
         "Backup_Totals",
+        "Manager_Backup_Totals",
+        "Customer_Backup_Totals",
         "Assets_Classic_Block",
+        "Manager_Assets_Classic_Block",
+        "Customer_Assets_Classic_Block",
         "Assets_Hyperconv_Block",
+        "Manager_Assets_Hyperconv_Block",
+        "Customer_Assets_Hyperconv_Block",
         "Assets_Pure_Nutanix_Block",
+        "Manager_Assets_Pure_Nutanix_Block",
+        "Customer_Assets_Pure_Nutanix_Block",
         "Assets_Power_Block",
+        "Manager_Assets_Power_Block",
+        "Customer_Assets_Power_Block",
         "Assets_Intel_Aggregate",
+        "Manager_Assets_Intel_Aggregate",
+        "Customer_Assets_Intel_Aggregate",
         "Classic_VMs",
+        "Manager_Classic_VMs",
+        "Customer_Classic_VMs",
+        "Classic_VMs_Real_CPU",
+        "Manager_Classic_VMs_Real_CPU",
+        "Customer_Classic_VMs_Real_CPU",
         "HyperConv_VMs",
+        "Manager_HyperConv_VMs",
+        "Customer_HyperConv_VMs",
+        "HyperConv_VMs_Real_CPU",
+        "Manager_HyperConv_VMs_Real_CPU",
+        "Customer_HyperConv_VMs_Real_CPU",
         "Pure_Nutanix_VMs",
+        "Manager_Pure_Nutanix_VMs",
+        "Customer_Pure_Nutanix_VMs",
         "Power_LPARS",
+        "Manager_Power_LPARS",
+        "Customer_Power_LPARS",
         "Backup_Veeam_Detail",
+        "Manager_Backup_Veeam_Detail",
+        "Customer_Backup_Veeam_Detail",
         "Backup_Zerto_Detail",
+        "Manager_Backup_Zerto_Detail",
+        "Customer_Backup_Zerto_Detail",
         "Backup_Netbackup_Detail",
+        "Manager_Backup_Netbackup_Detail",
+        "Customer_Backup_Netbackup_Detail",
         "Billing_Key_Metrics",
+        "Manager_Billing_Key_Metrics",
         "S3_Vaults",
+        "Manager_S3_Vaults",
+        "Customer_S3_Vaults",
         "Physical_Inventory",
+        "Manager_Physical_Inventory",
+        "Customer_Physical_Inventory",
         "ITSM_Summary",
+        "Manager_ITSM_Summary",
         "ITSM_Extremes_Closed",
+        "Manager_ITSM_Extremes_Closed",
         "ITSM_Extremes_OpenSlaBreach",
+        "Manager_ITSM_Extremes_OpenSlaBreach",
         "ITSM_All_Tickets",
+        "Manager_ITSM_All_Tickets",
         "Legacy",
     ]
+
+
+def _sheets_to_dataframes(sheets_raw: dict[str, list[dict]]) -> dict:
+    order = _export_sheet_order()
     dfs = {}
     for name in order:
         recs = sheets_raw.get(name)
@@ -2518,10 +2782,51 @@ def export_customer_view(nc, nx, store, time_range):
     for name, recs in sheets_raw.items():
         if name not in dfs and isinstance(recs, list):
             dfs[name] = records_to_dataframe(recs)
+    return dfs
+
+
+@callback(
+    Output("customer-export-download", "data"),
+    Input("customer-export-csv", "n_clicks"),
+    Input("customer-export-xlsx", "n_clicks"),
+    Input("customer-export-pdf", "n_clicks"),
+    State("customer-export-store", "data"),
+    State("app-time-range", "data"),
+    prevent_initial_call=True,
+)
+def export_customer_view(nc, nx, npdf, store, time_range):
+    if not nc and not nx and not npdf:
+        raise dash.exceptions.PreventUpdate
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+    tid = ctx.triggered[0]["prop_id"].split(".")[0]
+    fmt_map = {
+        "customer-export-csv": "csv",
+        "customer-export-xlsx": "xlsx",
+        "customer-export-pdf": "pdf",
+    }
+    fmt = fmt_map.get(tid)
+    if not fmt:
+        return dash.no_update
+    if fmt == "csv" and not nc:
+        raise dash.exceptions.PreventUpdate
+    if fmt == "xlsx" and not nx:
+        raise dash.exceptions.PreventUpdate
+    if fmt == "pdf" and not npdf:
+        raise dash.exceptions.PreventUpdate
+    store = store or {}
+    base = str(store.get("customer") or "customer_view")
+    extra = {"customer": base}
+    sheets_raw = _resolve_export_sheets_from_store(store)
+    dfs = _sheets_to_dataframes(sheets_raw)
 
     if fmt == "xlsx":
         content = dataframes_to_excel_with_meta(dfs, time_range, "Customer_View", extra)
         return dash_send_excel_workbook(content, base)
+    if fmt == "pdf":
+        content = dataframes_to_pdf_with_meta(dfs, time_range, "Customer_View", extra)
+        return dash_send_pdf_workbook(content, f"{base}.pdf")
     report_info = build_report_info_df(time_range, "Customer_View", extra)
     sections = [(k, v) for k, v in dfs.items()]
     if not sections:
