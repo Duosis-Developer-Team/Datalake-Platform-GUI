@@ -39,6 +39,7 @@ def rotate_customer_loading_status(n_intervals):
     Input("url", "search"),
     Input("app-time-range", "data"),
     State("customer-view-visible-sections", "data"),
+    prevent_initial_call="initial_duplicate",
 )
 def load_customer_view_data(pathname, search, time_range, visible_sections):
     if (pathname or "") != "/customer-view":
