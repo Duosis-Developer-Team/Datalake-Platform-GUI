@@ -12,6 +12,7 @@
 # (e.g. rack clicks) are not displaced by long global prefetch key streams.
 
 import logging
+import os
 import pickle
 import threading
 from collections import OrderedDict
@@ -157,9 +158,36 @@ class RedisBackend:
         return {"backend": "redis", "namespace": self._ns, "current_size": self.size()}
 
 
-# The active backend. Swapped at startup (item 1.3) when REDIS_URL is set, and
-# swappable in tests via set_backend().
-_backend: Any = InProcessBackend(MAX_SIZE)
+def make_backend_from_env(env: Optional[dict] = None) -> Any:
+    """Pick the cache backend from the environment.
+
+    REDIS_URL set and reachable -> shared RedisBackend (binary client for
+    pickle). Otherwise (unset, empty, or Redis unreachable) -> per-process
+    InProcessBackend. A bad REDIS_URL degrades to per-pod cache, never crashes.
+    """
+    env = env if env is not None else os.environ
+    url = (env.get("REDIS_URL") or "").strip()
+    if not url:
+        return InProcessBackend(MAX_SIZE)
+    try:
+        import redis
+
+        client = redis.Redis.from_url(url, decode_responses=False)
+        client.ping()
+        logger.info("cache_service: using shared Redis backend (REDIS_URL set)")
+        return RedisBackend(client)
+    except Exception as exc:
+        logger.warning(
+            "cache_service: REDIS_URL set but Redis unavailable (%s); "
+            "falling back to in-process cache",
+            exc,
+        )
+        return InProcessBackend(MAX_SIZE)
+
+
+# The active backend, selected from the environment at import. Swappable in
+# tests via set_backend().
+_backend: Any = make_backend_from_env()
 
 
 def get_backend() -> Any:
