@@ -3076,6 +3076,12 @@ def _resolve_export_sheets_from_store(store: dict | None) -> dict[str, list[dict
     perspective_access_map = store.get("perspective_access")
     if not isinstance(perspective_access_map, dict):
         perspective_access_map = perspective_access(None)
+    # Async path: no pre-built context — assemble it on demand from the (cached)
+    # getters using the customer/time-range the shell stored.
+    if not (isinstance(export_context, dict) and export_context.get("customer_name")):
+        customer = (store.get("customer") or "").strip()
+        if customer:
+            export_context = _build_export_context(customer, store.get("tr"))
     if isinstance(export_context, dict) and export_context.get("customer_name"):
         return _build_export_sheets_for_user(export_context, perspective_access_map)
     sheets_raw = store.get("sheets")

@@ -7,10 +7,7 @@ import dash
 from dash import Input, Output, State, callback
 
 from src.components.customer_loading import LOADING_STAGE_MESSAGES
-from src.pages.customer_view import (
-    _customer_content,
-    render_customer_page,
-)
+from src.pages.customer_view import render_customer_shell
 from src.pages.customer_view_perspective import (
     default_perspective,
     effective_perspective,
@@ -51,19 +48,12 @@ def load_customer_view_data(pathname, search, time_range, visible_sections):
     tr = time_range or default_time_range()
     access = perspective_access(visible_sections)
     perspective = default_perspective(access)
-    content = _customer_content(chosen, tr, only_perspective=perspective)
-    page = render_customer_page(
-        chosen,
-        tr,
-        content,
-        visible_sections=visible_sections,
-        perspective=perspective,
+    # Async: render the shell instantly (no data fetch); each tab fills itself
+    # via the per-tab callbacks keyed on customer-view-ctx.
+    page = render_customer_shell(
+        chosen, tr, visible_sections=visible_sections, perspective=perspective
     )
-    store = {
-        "customer": chosen,
-        "export_context": content.get("export_context") or {},
-        "perspective_access": access,
-    }
+    store = {"customer": chosen, "tr": tr, "perspective_access": access}
     return page, store, perspective
 
 
@@ -84,12 +74,9 @@ def toggle_customer_perspective(perspective, search, time_range, visible_section
     access = perspective_access(visible_sections)
     perspective = effective_perspective(perspective, access)
     tr = time_range or default_time_range()
-    content = _customer_content(chosen, tr, only_perspective=perspective)
-    page = render_customer_page(
-        chosen,
-        tr,
-        content,
-        visible_sections=visible_sections,
-        perspective=perspective,
+    # Re-render the shell for the new perspective; the new ctx Store re-triggers
+    # the per-tab callbacks to refill each tab (data is shared-cached).
+    page = render_customer_shell(
+        chosen, tr, visible_sections=visible_sections, perspective=perspective
     )
     return page, perspective

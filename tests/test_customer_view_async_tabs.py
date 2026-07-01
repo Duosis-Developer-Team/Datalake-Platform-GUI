@@ -75,3 +75,19 @@ def test_build_export_context_from_getters():
             ctx = cv._build_export_context("Acme", _tr())
     assert ctx["customer_name"] == "Acme"
     assert "totals" in ctx and "assets" in ctx
+
+
+def test_export_resolves_context_on_demand(monkeypatch):
+    """3.4b: when the store has no pre-built export_context, build it on demand
+    from {customer, tr} (async path)."""
+    seen = {}
+
+    def fake_build_ctx(name, tr):
+        seen["name"] = name
+        return {"customer_name": name, "totals": {}}
+
+    monkeypatch.setattr(cv, "_build_export_context", fake_build_ctx)
+    monkeypatch.setattr(cv, "_build_export_sheets_for_user", lambda ctx, acc: {"Sheet": [{"a": 1}]})
+    sheets = cv._resolve_export_sheets_from_store({"customer": "Acme", "tr": _tr()})
+    assert seen["name"] == "Acme"
+    assert sheets == {"Sheet": [{"a": 1}]}
