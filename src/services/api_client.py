@@ -141,6 +141,50 @@ _inflight: dict[str, threading.Event] = {}
 # carry no timestamp and so read as "unknown age".
 _SWR_TTL_SECONDS = float(os.getenv("API_CACHE_SWR_TTL", "300") or "300")
 
+# Cache observability (item 7): hit/miss/fetch counters + fetch timing, so we can
+# see the shared cache working (hit rate) and how slow the backend is on a miss.
+_metrics_lock = threading.Lock()
+_cache_metrics: dict[str, float] = {
+    "hits": 0,
+    "misses": 0,
+    "fetches": 0,
+    "errors": 0,
+    "fetch_seconds_total": 0.0,
+}
+
+
+def reset_cache_metrics() -> None:
+    with _metrics_lock:
+        _cache_metrics.update(hits=0, misses=0, fetches=0, errors=0, fetch_seconds_total=0.0)
+
+
+def _record_cache_hit() -> None:
+    with _metrics_lock:
+        _cache_metrics["hits"] += 1
+
+
+def _record_cache_miss() -> None:
+    with _metrics_lock:
+        _cache_metrics["misses"] += 1
+
+
+def _record_cache_fetch(seconds: float, *, error: bool = False) -> None:
+    with _metrics_lock:
+        _cache_metrics["fetches"] += 1
+        _cache_metrics["fetch_seconds_total"] += max(0.0, seconds)
+        if error:
+            _cache_metrics["errors"] += 1
+
+
+def get_cache_metrics() -> dict:
+    """Snapshot of cache counters plus derived hit_rate / avg_fetch_seconds."""
+    with _metrics_lock:
+        m = dict(_cache_metrics)
+    total = m["hits"] + m["misses"]
+    m["hit_rate"] = (m["hits"] / total) if total else None
+    m["avg_fetch_seconds"] = (m["fetch_seconds_total"] / m["fetches"]) if m["fetches"] else None
+    return m
+
 # httpx.Client is not safe to share across threads; background prefetch uses thread pools.
 # One client (+ transport pool) per thread avoids cross-thread contention and 30s read timeouts.
 
@@ -477,15 +521,16 @@ def _api_cache_get_with_stale(
     fetch_normalized: Callable[[], Any],
     empty_fallback: Any,
 ) -> Any:
-    """Cached payload if present; else single-flight fetch (concurrent callers share one fetch).
-    On cache HIT, if the entry is older than _SWR_TTL_SECONDS, a background refresh is scheduled
-    (stale-while-revalidate) — the caller always receives the cached value immediately without
-    blocking. On HTTP/transport errors return last-good payload."""
+    """Return the cached payload while fresh; otherwise fetch fresh with single-
+    flight coalescing (concurrent callers share one fetch). No-stale: a stale
+    entry is refetched, and only returned as last-good if the fetch hard-fails."""
     cached = _api_response_cache.get(cache_key)
     if cached is not None and _is_fresh(cache_key):
+        _record_cache_hit()
         return _clone(cached)
     # Stale or miss: never serve stale — fetch fresh below. `cached` stays in the
     # cache and is returned as last-good only if the fetch hard-fails.
+    _record_cache_miss()
 
     with _inflight_lock:
         ev = _inflight.get(cache_key)
@@ -498,13 +543,16 @@ def _api_cache_get_with_stale(
         hit = _api_response_cache.get(cache_key)
         return _clone(hit) if hit is not None else _clone(empty_fallback)
 
+    t0 = time.time()
     try:
         out = fetch_normalized()
+        _record_cache_fetch(time.time() - t0)
         if _should_persist_api_cache(out, empty_fallback):
             _api_response_cache.set(cache_key, out)
             _mark_fetched(cache_key)
         return out
     except _HTTP_ERRORS as exc:
+        _record_cache_fetch(time.time() - t0, error=True)
         logger.warning("API cache fetch failed for key=%s: %s", cache_key, exc)
         hit = _api_response_cache.get(cache_key)
         if hit is not None:
