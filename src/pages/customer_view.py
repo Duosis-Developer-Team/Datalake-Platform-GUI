@@ -3,7 +3,7 @@ from __future__ import annotations
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup
 import json
 import dash
-from dash import html, dcc, callback, Input, Output, State
+from dash import html, dcc, callback, Input, Output, State, MATCH
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objs as go
@@ -227,6 +227,86 @@ def _vm_table(
     if comfortable:
         wrap_kwargs["className"] = "customer-vm-table-wrap"
     return html.Div(**wrap_kwargs)
+
+
+# Rows per page for large VM/LPAR tables. Only this many <tr> are in the DOM at
+# once; the full set lives in a Store and pages are swapped by _vmtable_change_page.
+_VM_TABLE_PAGE_SIZE = 100
+
+
+def _page_slice(rows: list, page, page_size: int = _VM_TABLE_PAGE_SIZE) -> list:
+    """Return the `page`-th slice (1-indexed) of `rows`. Page is clamped to >=1."""
+    if not rows:
+        return []
+    page = max(1, int(page or 1))
+    start = (page - 1) * page_size
+    return rows[start:start + page_size]
+
+
+def _paginated_rows_table(
+    header_cells: list,
+    rows: list,
+    table_id: str,
+    *,
+    comfortable: bool = False,
+    page_size: int = _VM_TABLE_PAGE_SIZE,
+):
+    """Scrollable table that renders only one page of `rows` at a time. The full
+    (already-rendered) row set is held in a dcc.Store and the visible page is
+    swapped client-to-server via the MATCH _vmtable_change_page callback — so a
+    5000-VM list never floods the DOM, yet keeps its rich cells (badges, etc.)."""
+    total = len(rows)
+    n_pages = max(1, math.ceil(total / page_size))
+    table = dmc.Table(
+        striped=True,
+        highlightOnHover=True,
+        withColumnBorders=True,
+        className="customer-vm-table" if comfortable else None,
+        children=[
+            html.Thead(html.Tr(header_cells)),
+            html.Tbody(rows[:page_size], id={"type": "vmtable-body", "id": table_id}),
+        ],
+    )
+    wrap_style = {
+        "maxHeight": "420px",
+        "overflowY": "auto",
+        "overflowX": "auto",
+        "WebkitOverflowScrolling": "touch",
+    }
+    return html.Div(
+        [
+            dcc.Store(id={"type": "vmtable-rows", "id": table_id}, data=rows),
+            html.Div(
+                table,
+                style=wrap_style,
+                className="customer-vm-table-wrap" if comfortable else None,
+            ),
+            dmc.Group(
+                justify="space-between",
+                mt="xs",
+                children=[
+                    dmc.Text(f"{total} kayıt", size="sm", c="dimmed"),
+                    dmc.Pagination(
+                        id={"type": "vmtable-page", "id": table_id},
+                        total=n_pages,
+                        value=1,
+                        size="sm",
+                    ),
+                ],
+            ),
+        ]
+    )
+
+
+@callback(
+    Output({"type": "vmtable-body", "id": MATCH}, "children"),
+    Input({"type": "vmtable-page", "id": MATCH}, "value"),
+    State({"type": "vmtable-rows", "id": MATCH}, "data"),
+    prevent_initial_call=True,
+)
+def _vmtable_change_page(page, rows):
+    """Swap the visible page of a paginated VM table (rows held in the Store)."""
+    return _page_slice(rows, page)
 
 
 def _section_card(title: str, subtitle: str | None = None, children=None):
