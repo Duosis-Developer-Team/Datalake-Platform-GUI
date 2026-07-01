@@ -6,3 +6,6 @@ data:
   API_BASE_URL: "http://bulutistan-data-api"
   # Dash server-side widget -> internal chatbot-api (browser never calls the LLM)
   CHATBOT_API_URL: "http://bulutistan-chatbot-api"
+  # Shared cross-pod data cache + permission-map cache. Without this every pod
+  # keeps its own in-process cache (per-pod islands), so most requests miss.
+  REDIS_URL: "redis://bulutistan-redis:6379/0"
