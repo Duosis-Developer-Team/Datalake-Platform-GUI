@@ -3,7 +3,6 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any, Callable, Literal, Optional, TypedDict
 from urllib.parse import quote, urlencode
@@ -141,9 +140,6 @@ _inflight: dict[str, threading.Event] = {}
 # an entry is fresh. Entries written directly via cache_service.set (warm jobs)
 # carry no timestamp and so read as "unknown age".
 _SWR_TTL_SECONDS = float(os.getenv("API_CACHE_SWR_TTL", "300") or "300")
-_swr_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="api-swr")
-_swr_refreshing_lock = threading.Lock()
-_swr_refreshing: set[str] = set()
 
 # httpx.Client is not safe to share across threads; background prefetch uses thread pools.
 # One client (+ transport pool) per thread avoids cross-thread contention and 30s read timeouts.
@@ -355,13 +351,11 @@ def _api_cache_get_sellable_panels(
     """Cache sellable panels (even empty) with stale-while-revalidate, so DCs without a
     snapshot don't re-pay the CRM round-trip on every build. Transient empties self-heal
     via the SWR background refresh after _SWR_TTL_SECONDS."""
-    stale = _api_response_cache.get(cache_key)
-    if stale is not None:
-        if _SWR_TTL_SECONDS > 0:
-            age = _swr_age(cache_key)
-            if age is not None and age > _SWR_TTL_SECONDS:
-                _schedule_swr_refresh(cache_key, fetch_normalized)
-        return _clone(stale)
+    cached = _api_response_cache.get(cache_key)
+    if cached is not None and _is_fresh(cache_key):
+        return _clone(cached)
+    # Stale or miss: never serve stale — fetch fresh below. `cached` stays in the
+    # cache and is returned as last-good only if the fetch hard-fails.
     try:
         out = fetch_normalized()
         _api_response_cache.set(cache_key, out)
@@ -382,13 +376,11 @@ def _api_cache_get_sellable_summary(
     """Cache sellable summary (even empty) with stale-while-revalidate, so DCs without a
     snapshot don't re-pay the CRM round-trip on every build. Transient empties self-heal
     via the SWR background refresh after _SWR_TTL_SECONDS."""
-    stale = _api_response_cache.get(cache_key)
-    if stale is not None:
-        if _SWR_TTL_SECONDS > 0:
-            age = _swr_age(cache_key)
-            if age is not None and age > _SWR_TTL_SECONDS:
-                _schedule_swr_refresh(cache_key, fetch_normalized)
-        return _clone(stale)
+    cached = _api_response_cache.get(cache_key)
+    if cached is not None and _is_fresh(cache_key):
+        return _clone(cached)
+    # Stale or miss: never serve stale — fetch fresh below. `cached` stays in the
+    # cache and is returned as last-good only if the fetch hard-fails.
     try:
         out = fetch_normalized()
         _api_response_cache.set(cache_key, out)
@@ -434,25 +426,14 @@ def _swr_age(cache_key: str) -> Optional[float]:
     return None if ts is None else (time.time() - ts)
 
 
-def _schedule_swr_refresh(cache_key: str, fetch_normalized: Callable[[], Any]) -> None:
-    """Background single-flight refresh of a stale entry. Errors swallowed (keep serving stale)."""
-    with _swr_refreshing_lock:
-        if cache_key in _swr_refreshing:
-            return
-        _swr_refreshing.add(cache_key)
-
-    def _refresh() -> None:
-        try:
-            out = fetch_normalized()
-            _api_response_cache.set(cache_key, out)
-            _mark_fetched(cache_key)
-        except _HTTP_ERRORS:
-            pass
-        finally:
-            with _swr_refreshing_lock:
-                _swr_refreshing.discard(cache_key)
-
-    _swr_executor.submit(_refresh)
+def _is_fresh(cache_key: str) -> bool:
+    """True if the cached entry may be served without a refetch: TTL disabled,
+    warm-written (no timestamp), or age within the freshness window. A stale entry
+    returns False so callers refetch — the no-stale rule (never serve stale)."""
+    if _SWR_TTL_SECONDS <= 0:
+        return True
+    age = _swr_age(cache_key)
+    return age is None or age <= _SWR_TTL_SECONDS
 
 
 def _serialize_tr_cache_key(tr: Optional[dict]) -> str:
@@ -493,13 +474,11 @@ def _api_cache_get_with_stale(
     On cache HIT, if the entry is older than _SWR_TTL_SECONDS, a background refresh is scheduled
     (stale-while-revalidate) — the caller always receives the cached value immediately without
     blocking. On HTTP/transport errors return last-good payload."""
-    stale = _api_response_cache.get(cache_key)
-    if stale is not None:
-        if _SWR_TTL_SECONDS > 0:
-            age = _swr_age(cache_key)
-            if age is not None and age > _SWR_TTL_SECONDS:
-                _schedule_swr_refresh(cache_key, fetch_normalized)
-        return _clone(stale)
+    cached = _api_response_cache.get(cache_key)
+    if cached is not None and _is_fresh(cache_key):
+        return _clone(cached)
+    # Stale or miss: never serve stale — fetch fresh below. `cached` stays in the
+    # cache and is returned as last-good only if the fetch hard-fails.
 
     with _inflight_lock:
         ev = _inflight.get(cache_key)
@@ -1875,13 +1854,10 @@ def get_crm_aliases() -> list:
         data = _get_json(_get_client_cust(), "/api/v1/crm/aliases")
         return data if isinstance(data, list) else []
 
-    stale = _api_response_cache.get(ck)
-    if stale is not None:
-        if _SWR_TTL_SECONDS > 0:
-            age = _swr_age(ck)
-            if age is not None and age > _SWR_TTL_SECONDS:
-                _schedule_swr_refresh(ck, fetch)
-        return _clone(stale)
+    cached = _api_response_cache.get(ck)
+    if cached is not None and _is_fresh(ck):
+        return _clone(cached)
+    # Stale or miss: never serve stale — fetch fresh below.
 
     with _inflight_lock:
         ev = _inflight.get(ck)

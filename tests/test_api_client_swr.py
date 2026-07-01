@@ -1,5 +1,9 @@
-"""C2: stale cache entries are served immediately and refreshed in the background."""
+"""Freshness gating (item 2, no-stale): a cached entry is served only while fresh
+(age <= TTL, TTL disabled, or warm-written with no timestamp). Stale entries are
+refetched, never served. Replaces the old stale-while-revalidate behavior.
+"""
 import time
+
 from src.services import api_client as api
 from src.services import cache_service
 
@@ -9,63 +13,54 @@ def _set_with_age(key, value, age_seconds):
     cache_service.set(api._fetched_ts_key(key), time.time() - age_seconds)
 
 
-def test_fresh_entry_does_not_schedule_refresh(monkeypatch):
+def test_fresh_entry_served_without_refetch(monkeypatch):
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
-    scheduled = []
-    monkeypatch.setattr(api, "_schedule_swr_refresh", lambda k, f: scheduled.append(k))
     _set_with_age("fresh", {"v": 1}, age_seconds=10)  # well under TTL
-    out = api._api_cache_get_with_stale("fresh", lambda: {"v": 2}, {})
+    called = []
+    out = api._api_cache_get_with_stale("fresh", lambda: called.append(1) or {"v": 2}, {})
     assert out == {"v": 1}
-    assert scheduled == []
+    assert called == [], "fresh entry served, no refetch"
 
 
-def test_stale_entry_served_now_and_schedules_one_refresh(monkeypatch):
+def test_stale_entry_is_refetched_not_served(monkeypatch):
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
-    scheduled = []
-    monkeypatch.setattr(api, "_schedule_swr_refresh", lambda k, f: scheduled.append(k))
     _set_with_age("stale", {"v": 1}, age_seconds=310)  # older than TTL
     out = api._api_cache_get_with_stale("stale", lambda: {"v": 2}, {})
-    assert out == {"v": 1}, "must serve the cached (stale) value immediately, not block"
-    assert scheduled == ["stale"], "exactly one background refresh scheduled"
+    assert out == {"v": 2}, "stale entry must be refetched, never served stale"
 
 
-def test_ttl_zero_disables_swr(monkeypatch):
+def test_ttl_zero_treats_cache_as_always_fresh(monkeypatch):
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 0.0)
-    scheduled = []
-    monkeypatch.setattr(api, "_schedule_swr_refresh", lambda k, f: scheduled.append(k))
     _set_with_age("any", {"v": 1}, age_seconds=99999)
-    api._api_cache_get_with_stale("any", lambda: {"v": 2}, {})
-    assert scheduled == []
+    called = []
+    out = api._api_cache_get_with_stale("any", lambda: called.append(1) or {"v": 2}, {})
+    assert out == {"v": 1}
+    assert called == [], "TTL<=0 disables freshness expiry -> serve cached"
 
 
-def test_no_timestamp_entry_not_refreshed(monkeypatch):
-    """Warm-job entries (set directly, no timestamp) must NOT be auto-refreshed."""
+def test_warm_written_entry_without_timestamp_is_fresh(monkeypatch):
+    """Warm-job entries (set directly, no timestamp) are treated as fresh and served."""
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
-    scheduled = []
-    monkeypatch.setattr(api, "_schedule_swr_refresh", lambda k, f: scheduled.append(k))
     cache_service.set("warm", {"v": 1})  # no freshness timestamp
-    api._api_cache_get_with_stale("warm", lambda: {"v": 2}, {})
-    assert scheduled == []
+    called = []
+    out = api._api_cache_get_with_stale("warm", lambda: called.append(1) or {"v": 2}, {})
+    assert out == {"v": 1}
+    assert called == []
 
 
 def test_leader_fetch_records_timestamp(monkeypatch):
     cache_service.clear()
     api._api_cache_get_with_stale("missk", lambda: {"v": 9}, {})
-    assert cache_service.get(api._fetched_ts_key("missk")) is not None  # leader path stamped it
+    assert cache_service.get(api._fetched_ts_key("missk")) is not None  # leader stamped it
 
 
-def test_schedule_swr_refresh_runs_fetch_and_updates(monkeypatch):
-    """The real _schedule_swr_refresh executes the fetch and updates cache+timestamp."""
+def test_is_fresh_helper():
     cache_service.clear()
-    _set_with_age("rk", {"v": 1}, age_seconds=999)
-    api._schedule_swr_refresh("rk", lambda: {"v": 2})
-    # background executor — wait briefly for completion
-    for _ in range(50):
-        if cache_service.get("rk") == {"v": 2}:
-            break
-        time.sleep(0.02)
-    assert cache_service.get("rk") == {"v": 2}
+    cache_service.set(api._fetched_ts_key("k"), time.time() - 10)
+    assert api._is_fresh("k") is True
+    cache_service.set(api._fetched_ts_key("k"), time.time() - 100000)
+    assert api._is_fresh("k") is False

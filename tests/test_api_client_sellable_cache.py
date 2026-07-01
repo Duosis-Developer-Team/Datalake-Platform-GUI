@@ -38,17 +38,16 @@ def test_panels_data_cached_and_stamped(monkeypatch):
     assert cache_service.get(api._fetched_ts_key("kd")) is not None  # stamped for SWR
 
 
-def test_stale_panels_schedule_swr_refresh(monkeypatch):
+def test_stale_panels_are_refetched_not_served(monkeypatch):
     import time as _t
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
-    cache_service.set("ks", [{"panel_key": "x"}])
+    cache_service.set("ks", [{"panel_key": "old"}])
     cache_service.set(api._fetched_ts_key("ks"), _t.time() - 999)  # stale
-    scheduled = []
-    monkeypatch.setattr(api, "_schedule_swr_refresh", lambda k, f: scheduled.append(k))
-    out = api._api_cache_get_sellable_panels("ks", lambda: [], "DC13", "virt_classic", None)
-    assert out == [{"panel_key": "x"}]  # served stale immediately
-    assert scheduled == ["ks"]
+    out = api._api_cache_get_sellable_panels(
+        "ks", lambda: [{"panel_key": "fresh"}], "DC13", "virt_classic", None
+    )
+    assert out == [{"panel_key": "fresh"}], "stale panels refetched, never served stale"
 
 
 def test_empty_summary_is_cached(monkeypatch):
