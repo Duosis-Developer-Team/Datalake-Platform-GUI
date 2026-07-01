@@ -1571,13 +1571,14 @@ def get_dc_availability_sla_items_for_dcs(
     try:
         if force_refresh:
             _api_response_cache.delete(ck)
-        stale = _api_response_cache.get(ck)
-        if stale is not None and isinstance(stale, list) and not force_refresh:
-            items = stale
+        cached = _api_response_cache.get(ck)
+        if cached is not None and isinstance(cached, list) and not force_refresh and _is_fresh(ck):
+            items = cached
         else:
             items = fetch()
             if items:
                 _api_response_cache.set(ck, items)
+                _mark_fetched(ck)
         if not items:
             status = "empty"
     except _HTTP_ERRORS as exc:

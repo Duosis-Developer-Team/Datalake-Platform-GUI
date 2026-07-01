@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -34,10 +35,29 @@ def test_get_dc_availability_sla_items_for_dcs_ok_match():
     assert result["items_map"]["AZ11"]["availability_pct"] == 99.95
 
 
+def test_get_dc_availability_sla_items_stale_cache_is_refetched(monkeypatch):
+    """No-stale: a cached SLA list past TTL must be refetched, not served."""
+    rows = [{"id": "DC11", "name": "DC11", "description": "Premier DC"}]
+    tr = {"start": "2026-01-01", "end": "2026-12-31", "preset": "year_2026"}
+    ck = f"api:dc_svc_sla_items:{api._serialize_tr_cache_key(tr)}"
+    monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
+    cache.set(ck, [{"group_name": "Premier - DC11", "availability_pct": 11.1}])  # old value
+    cache.set(api._fetched_ts_key(ck), time.time() - 100000)  # stale timestamp
+
+    with patch.object(
+        api,
+        "_get_json",
+        return_value={"items": [{"group_name": "Premier - DC11", "availability_pct": 99.9}]},
+    ):
+        result = api.get_dc_availability_sla_items_for_dcs(rows, tr)
+
+    assert result["items_map"]["DC11"]["availability_pct"] == 99.9, "stale SLA cache must be refetched"
+
+
 def test_get_dc_availability_sla_items_for_dcs_uses_stale_cache_on_http_error():
     rows = [{"id": "DC11", "name": "DC11", "description": "Premier DC"}]
     tr = {"start": "2026-01-01", "end": "2026-12-31", "preset": "year_2026"}
-    ck = f"api:dc_svc_sla_items:{api._serialize_tr_params(tr)}"
+    ck = f"api:dc_svc_sla_items:{api._serialize_tr_cache_key(tr)}"
     cache.set(ck, [{"group_name": "Premier - DC11", "availability_pct": 99.9}])
 
     with patch.object(api, "_get_json", side_effect=httpx.ConnectError("refused")):
