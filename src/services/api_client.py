@@ -675,9 +675,19 @@ def set_customer_vip(crm_accountid: str, *, is_vip: bool) -> dict[str, Any]:
     return out if isinstance(out, dict) else {}
 
 
+def _customer_resources_ck(name: str, tr: Optional[dict]) -> str:
+    return f"api:customer_resources:cpu-usage-v3:{quote(name, safe='')}:{_serialize_tr_cache_key(tr)}"
+
+
+def get_customer_resources_as_of(name: str, tr: Optional[dict]) -> Optional[float]:
+    """Wall-clock epoch when this customer's resources were last fetched (or None)
+    — powers the customer-view data-freshness stamp."""
+    return get_cache_as_of(_customer_resources_ck(name, tr))
+
+
 def get_customer_resources(name: str, tr: Optional[dict]) -> dict:
     enc = quote(name, safe="")
-    ck = f"api:customer_resources:cpu-usage-v3:{enc}:{_serialize_tr_cache_key(tr)}"
+    ck = _customer_resources_ck(name, tr)
 
     def fetch() -> dict:
         data = _get_json(

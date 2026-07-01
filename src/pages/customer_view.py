@@ -10,6 +10,7 @@ import plotly.graph_objs as go
 
 import itertools
 import math
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -2595,6 +2596,18 @@ def _build_export_context(name: str, tr: dict | None) -> dict:
     }
 
 
+def _as_of_stamp_text(ctx: dict | None) -> str:
+    """Data-freshness label from the customer's resources fetch time (or '')."""
+    ctx = ctx or {}
+    customer = (ctx.get("customer") or "").strip()
+    if not customer:
+        return ""
+    ts = api.get_customer_resources_as_of(customer, ctx.get("tr"))
+    if ts is None:
+        return ""
+    return f"Veri şu ana ait (as-of): {datetime.fromtimestamp(ts).strftime('%H:%M')}"
+
+
 # ---------------------------------------------------------------------------
 # Page builders
 # ---------------------------------------------------------------------------
@@ -2947,6 +2960,16 @@ def render_customer_shell(
                 id="customer-view-ctx",
                 data={"customer": chosen, "perspective": perspective, "tr": tr},
             ),
+            html.Div(
+                id="cust-as-of-stamp",
+                style={
+                    "padding": "2px 30px 0",
+                    "fontSize": "0.72rem",
+                    "color": "#A3AED0",
+                    "textAlign": "right",
+                    "fontFamily": "DM Sans, sans-serif",
+                },
+            ),
             dmc.Tabs(
                 color="indigo",
                 variant="pills",
@@ -2970,6 +2993,18 @@ def _register_tab_callback(tab: str) -> None:
 
 for _t in ("summary", "virt", "avail", "backup", "billing", "itsm", "phys-inv", "s3"):
     _register_tab_callback(_t)
+
+
+@callback(
+    Output("cust-as-of-stamp", "children"),
+    Input("cust-tab-body-summary", "children"),
+    State("customer-view-ctx", "data"),
+    prevent_initial_call=True,
+)
+def _fill_as_of_stamp(_summary_children, ctx):
+    # Fires after the summary tab loads (which fetches resources -> stamps the
+    # freshness), so the "as-of HH:MM" reflects the actually-served data.
+    return _as_of_stamp_text(ctx)
 
 
 def build_customer_layout_shell(visible_sections=None):
