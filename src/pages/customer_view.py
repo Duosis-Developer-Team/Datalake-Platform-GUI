@@ -2398,6 +2398,85 @@ def render_s3_tab(name: str, tr: dict | None):
     )
 
 
+def render_virtualization_tab(name: str, tr: dict | None, perspective: str):
+    """Virtualization tab — customer resources (assets) + availability (outages).
+    include_usage_vs_sold is a manager-only view."""
+    assets = (api.get_customer_resources(name, tr).get("assets", {}) or {})
+    vm_outage_counts = api.get_customer_availability_bundle(name, tr).get("vm_outage_counts") or {}
+    return _build_virt_content(
+        assets.get("classic", {}) or {},
+        assets.get("hyperconv", {}) or {},
+        assets.get("pure_nutanix", {}) or {},
+        assets.get("power", {}) or {},
+        vm_outage_counts,
+        include_usage_vs_sold=(perspective == PERSPECTIVE_MANAGER),
+    )
+
+
+def render_backup_tab(name: str, tr: dict | None, perspective: str):
+    """Backup tab — customer resources (backup assets/totals) + efficiency rows."""
+    resources = api.get_customer_resources(name, tr)
+    totals = resources.get("totals", {}) or {}
+    assets = resources.get("assets", {}) or {}
+    return _build_backup_tabs(
+        assets.get("backup", {}) or {},
+        totals.get("backup", {}) or {},
+        api.get_customer_efficiency_by_category(name, tr),
+        include_sold_vs_used=(perspective == PERSPECTIVE_MANAGER),
+    )
+
+
+def render_summary_tab(name: str, tr: dict | None, perspective: str):
+    """Summary tab — the most coupled tab; the shared cache/coalescing collapses
+    the repeated getters (resources, eff, sales, s3, service_breakdown) to one
+    backend hit each."""
+    resources = api.get_customer_resources(name, tr)
+    totals = resources.get("totals", {}) or {}
+    assets = resources.get("assets", {}) or {}
+    vm_outage_counts = api.get_customer_availability_bundle(name, tr).get("vm_outage_counts") or {}
+    start_ts, end_ts = time_range_to_bounds(tr or default_time_range())
+    sla = aura.get_dc_services_availability(
+        start_ts.strftime("%Y-%m-%dT%H:%M:%S"), end_ts.strftime("%Y-%m-%dT%H:%M:%S")
+    )
+    return _tab_summary(
+        name,
+        perspective=perspective,
+        totals=totals,
+        assets=assets,
+        backup_totals=totals.get("backup", {}) or {},
+        sales_summary=api.get_customer_sales_summary(name),
+        compliance_payload=api.get_customer_resource_compliance(name, "virtualization", tr),
+        efficiency_rows=api.get_customer_efficiency_by_category(name, tr),
+        itsm_summary=api.get_customer_itsm_summary(name, tr),
+        vm_outage_counts=vm_outage_counts,
+        service_breakdown=api.get_customer_sales_service_breakdown(name),
+        s3_data=api.get_customer_s3_vaults(name, tr),
+        sla_categories=aggregate_sla_categories(sla),
+    )
+
+
+def render_billing_tab(name: str, tr: dict | None):
+    """Billing tab (manager perspective only) — resources + the full sales set."""
+    resources = api.get_customer_resources(name, tr)
+    totals = resources.get("totals", {}) or {}
+    assets = resources.get("assets", {}) or {}
+    eff_by_cat = api.get_customer_efficiency_by_category(name, tr)
+    return _tab_billing(
+        totals,
+        assets,
+        totals.get("backup", {}) or {},
+        api.get_customer_s3_vaults(name, tr),
+        sales_summary=api.get_customer_sales_summary(name),
+        crm_eff_panel=build_sold_vs_used_stack(_crm_rows_outside_virt_backup(eff_by_cat)),
+        customer_name=name,
+        service_breakdown=api.get_customer_sales_service_breakdown(name),
+        sales_items=api.get_customer_sales_items(name),
+        active_orders=api.get_customer_sales_active_orders(name),
+        active_items=api.get_customer_sales_active_items(name),
+        efficiency_rows=eff_by_cat,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Page builders
 # ---------------------------------------------------------------------------
