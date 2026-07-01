@@ -2539,6 +2539,62 @@ def render_billing_tab(name: str, tr: dict | None):
     )
 
 
+# Map a tab value to its render function; used by the per-tab async callbacks.
+def _render_tab_body(tab: str, ctx: dict | None):
+    """Render one tab's body from the ctx store {customer, perspective, tr}.
+    Returns no_update for an empty customer so the placeholder stays put."""
+    ctx = ctx or {}
+    customer = (ctx.get("customer") or "").strip()
+    if not customer:
+        return dash.no_update
+    tr = ctx.get("tr")
+    perspective = ctx.get("perspective") or PERSPECTIVE_MANAGER
+    if tab == "summary":
+        return render_summary_tab(customer, tr, perspective)
+    if tab == "virt":
+        return render_virtualization_tab(customer, tr, perspective)
+    if tab == "avail":
+        return render_availability_tab(customer, tr)
+    if tab == "backup":
+        return render_backup_tab(customer, tr, perspective)
+    if tab == "billing":
+        return render_billing_tab(customer, tr)
+    if tab == "itsm":
+        return render_itsm_tab(customer, tr)
+    if tab == "phys-inv":
+        return render_physical_inventory_tab(customer)
+    if tab == "s3":
+        return render_s3_tab(customer, tr)
+    return dash.no_update
+
+
+def _build_export_context(name: str, tr: dict | None) -> dict:
+    """Assemble the export context from the (shared-cached) getters on demand,
+    so export works without _customer_content having pre-built it."""
+    name = (name or "").strip()
+    resources = api.get_customer_resources(name, tr)
+    totals = resources.get("totals", {}) or {}
+    assets = resources.get("assets", {}) or {}
+    return {
+        "customer_name": name,
+        "totals": totals,
+        "backup_totals": totals.get("backup", {}) or {},
+        "assets": assets,
+        "classic": assets.get("classic", {}) or {},
+        "hyperconv": assets.get("hyperconv", {}) or {},
+        "pure_nx": assets.get("pure_nutanix", {}) or {},
+        "power_asset": assets.get("power", {}) or {},
+        "s3_data": api.get_customer_s3_vaults(name, tr) or {},
+        "phys_inv_devices": api.get_physical_inventory_customer(name) or [],
+        "itsm_summary": api.get_customer_itsm_summary(name, tr) or {},
+        "itsm_extremes": api.get_customer_itsm_extremes(name, tr) or {},
+        "itsm_tickets": api.get_customer_itsm_tickets(name, tr) or [],
+        "compliance_payload": api.get_customer_resource_compliance(name, "virtualization", tr) or {},
+        "efficiency_rows": api.get_customer_efficiency_by_category(name, tr) or [],
+        "sales_summary": api.get_customer_sales_summary(name) or {},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Page builders
 # ---------------------------------------------------------------------------
@@ -2832,6 +2888,88 @@ def render_customer_page(
             ),
         ],
     )
+
+
+def _tab_body_placeholder(tab: str):
+    return dcc.Loading(
+        type="dot",
+        color="#4318FF",
+        children=html.Div(id=f"cust-tab-body-{tab}"),
+    )
+
+
+def _perspective_tab_panels_shell(perspective: str) -> list:
+    """Tab panels holding only placeholders; each is filled by its own async
+    callback (item 3.4). S3/PhysInv are always present (empty-state if no data)
+    so the shell needs no data fetch to decide tab visibility."""
+    def panel(value: str):
+        return dmc.TabsPanel(
+            value=value,
+            children=html.Div(style={"padding": "0 30px"}, children=_tab_body_placeholder(value)),
+        )
+
+    panels = [panel("summary"), panel("virt"), panel("avail"), panel("backup")]
+    if perspective == PERSPECTIVE_MANAGER:
+        panels.insert(4, panel("billing"))
+    panels.append(panel("itsm"))
+    panels.append(panel("phys-inv"))
+    panels.append(panel("s3"))
+    return panels
+
+
+def render_customer_shell(
+    chosen: str,
+    time_range,
+    visible_sections=None,
+    *,
+    perspective: str | None = None,
+) -> html.Div:
+    """Instant tabbed shell: tab bar + per-tab placeholders + the ctx Store that
+    drives the per-tab async callbacks. No data is fetched here."""
+    access = perspective_access(visible_sections)
+    perspective = effective_perspective(perspective, access)
+    tr = time_range or default_time_range()
+    header = create_detail_header(
+        title="Customer View",
+        back_href="/customers",
+        back_label="Customers",
+        subtitle_badge=f"Customer: {chosen}",
+        subtitle_color="teal",
+        time_range=tr,
+        icon="solar:users-group-two-rounded-bold-duotone",
+        tabs=_build_customer_tabs_list(perspective, has_s3=True, has_phys_inv=True),
+        right_extra=_build_customer_header_extras(perspective=perspective, visible_sections=visible_sections),
+    )
+    return html.Div(
+        className="customer-page-enter",
+        children=[
+            dcc.Store(
+                id="customer-view-ctx",
+                data={"customer": chosen, "perspective": perspective, "tr": tr},
+            ),
+            dmc.Tabs(
+                color="indigo",
+                variant="pills",
+                radius="md",
+                value="summary",
+                children=[header, *_perspective_tab_panels_shell(perspective)],
+            ),
+        ],
+    )
+
+
+def _register_tab_callback(tab: str) -> None:
+    @callback(
+        Output(f"cust-tab-body-{tab}", "children"),
+        Input("customer-view-ctx", "data"),
+        prevent_initial_call=False,
+    )
+    def _fill(ctx, _tab=tab):
+        return _render_tab_body(_tab, ctx)
+
+
+for _t in ("summary", "virt", "avail", "backup", "billing", "itsm", "phys-inv", "s3"):
+    _register_tab_callback(_t)
 
 
 def build_customer_layout_shell(visible_sections=None):
