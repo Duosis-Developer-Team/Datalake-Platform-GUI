@@ -1452,8 +1452,9 @@ def _auranotify_end_date_iso(tr: Optional[dict]) -> str:
     return end_ts.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-# In-memory TTL cache for customer availability (AuraNotify). Scheduler force-refreshes on interval.
-_CUSTOMER_AVAIL_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+# TTL cache for customer availability (AuraNotify), stored in the shared
+# cache_service backend so all pods share it. Scheduler force-refreshes on
+# interval. The local lock only serializes the read/refresh within one process.
 _CUSTOMER_AVAIL_LOCK = threading.Lock()
 CUSTOMER_AVAIL_TTL_SECONDS = 900
 
@@ -1462,7 +1463,7 @@ def _customer_availability_cache_key(customer_name: str, tr: Optional[dict]) -> 
     from src.utils.time_range import default_time_range
 
     t = tr if tr is not None else default_time_range()
-    return f"{customer_name or ''}:{t.get('start', '')}:{t.get('end', '')}"
+    return f"api:cust_avail:{customer_name or ''}:{t.get('start', '')}:{t.get('end', '')}"
 
 
 def _fetch_customer_availability_bundle_uncached(customer_name: str, tr: Optional[dict]) -> dict[str, Any]:
@@ -1472,9 +1473,9 @@ def _fetch_customer_availability_bundle_uncached(customer_name: str, tr: Optiona
 
 
 def clear_customer_availability_bundle_cache() -> None:
-    """Clear in-memory customer availability cache (tests / admin)."""
+    """Clear customer availability cache (tests / admin)."""
     with _CUSTOMER_AVAIL_LOCK:
-        _CUSTOMER_AVAIL_CACHE.clear()
+        _api_response_cache.delete_prefix("api:cust_avail:")
 
 
 def get_customer_availability_bundle(
@@ -1500,7 +1501,7 @@ def get_customer_availability_bundle(
         "customer_ids": [],
     }
     with _CUSTOMER_AVAIL_LOCK:
-        prev = _CUSTOMER_AVAIL_CACHE.get(key)
+        prev = _api_response_cache.get(key)
         if not force_refresh and prev is not None and (now - prev[0]) < CUSTOMER_AVAIL_TTL_SECONDS:
             return deepcopy(prev[1])
         try:
@@ -1509,7 +1510,7 @@ def get_customer_availability_bundle(
             if prev is not None:
                 return deepcopy(prev[1])
             data = _empty_bundle
-        _CUSTOMER_AVAIL_CACHE[key] = (now, data)
+        _api_response_cache.set(key, (now, data))
         return deepcopy(data)
 
 
@@ -1657,7 +1658,8 @@ def get_dc_availability_sla_items_for_dcs(
 # CRM Sales API functions
 # ---------------------------------------------------------------------------
 
-_CRM_SALES_CACHE: dict[str, tuple[float, Any]] = {}
+# CRM sales cache lives in the shared cache_service backend (keys api:crm_sales_*)
+# so all pods share it, instead of a private per-process dict.
 CRM_SALES_CACHE_TTL_SECONDS = 900
 CRM_SALES_CACHE_VERSION = "prod-v1"
 
@@ -1668,13 +1670,13 @@ def _crm_sales_cache_get(
     empty_fallback: Any,
 ) -> Any:
     now = time.time()
-    prev = _CRM_SALES_CACHE.get(cache_key)
+    prev = _api_response_cache.get(cache_key)
     if prev is not None and (now - prev[0]) < CRM_SALES_CACHE_TTL_SECONDS:
         return _clone(prev[1])
     try:
         out = fetch_normalized()
         if _should_persist_api_cache(out, empty_fallback):
-            _CRM_SALES_CACHE[cache_key] = (now, out)
+            _api_response_cache.set(cache_key, (now, out))
         return out
     except _HTTP_ERRORS:
         if prev is not None:
@@ -2504,8 +2506,9 @@ def refresh_platform_redis_caches() -> dict[str, Any]:
         except Exception as exc:
             out["services"][name] = {"ok": False, "error": str(exc)}
     try:
+        # cache_service.clear() flushes the whole shared cache, which now
+        # includes the customer-availability and CRM-sales entries too.
         _api_response_cache.clear()
-        _CRM_SALES_CACHE.clear()
         out["gui_cache_cleared"] = True
     except Exception as exc:
         out["gui_cache_error"] = str(exc)
