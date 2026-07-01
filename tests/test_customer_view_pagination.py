@@ -68,3 +68,21 @@ def test_vm_table_small_list_not_paginated():
     comp = cv._vm_table(small, ["Name"], lambda r: html.Tr(html.Td(r["name"])))
     nodes = list(_walk(comp))
     assert not any(isinstance(n, dcc.Store) for n in nodes), "small list stays a plain table"
+
+
+def test_maybe_paginated_table_large_list_paginates():
+    rows = [html.Tr(html.Td(str(i))) for i in range(cv._VM_TABLE_PAGE_SIZE + 1)]
+    comp = cv._maybe_paginated_table(["Ticket"], rows)
+    assert any(isinstance(n, dcc.Store) for n in _walk(comp))
+
+
+def test_maybe_paginated_table_small_list_plain():
+    rows = [html.Tr(html.Td(str(i))) for i in range(3)]
+    comp = cv._maybe_paginated_table(["Ticket"], rows)
+    assert not any(isinstance(n, dcc.Store) for n in _walk(comp))
+
+
+def test_maybe_paginated_table_empty_shows_no_data():
+    comp = cv._maybe_paginated_table(["A", "B"], [])
+    text = str(comp)
+    assert "No data" in text

@@ -323,6 +323,43 @@ def _vmtable_change_page(page, rows):
     return _page_slice(rows, page)
 
 
+def _maybe_paginated_table(
+    cols: list,
+    rows: list,
+    *,
+    comfortable: bool = False,
+    empty_cols: int | None = None,
+):
+    """Scrollable table from column titles + pre-rendered `rows` (list of html.Tr).
+    Large lists (> _VM_TABLE_PAGE_SIZE) paginate so only one page hits the DOM;
+    small lists render plainly. Used by the non-`_vm_table` list tables (ITSM
+    tickets, VM/service downtimes, deleted-VM names) that could also grow large."""
+    header_cells = [html.Th(c) for c in cols]
+    if not rows:
+        rows = [html.Tr([html.Td("No data", colSpan=empty_cols or len(cols) or 1)])]
+    if len(rows) > _VM_TABLE_PAGE_SIZE:
+        return _paginated_rows_table(
+            header_cells, rows, f"vmt-{next(_vm_table_counter)}", comfortable=comfortable
+        )
+    table = dmc.Table(
+        striped=True,
+        highlightOnHover=True,
+        withColumnBorders=True,
+        className="customer-vm-table" if comfortable else None,
+        children=[html.Thead(html.Tr(header_cells)), html.Tbody(rows)],
+    )
+    return html.Div(
+        table,
+        style={
+            "maxHeight": "420px",
+            "overflowY": "auto",
+            "overflowX": "auto",
+            "WebkitOverflowScrolling": "touch",
+        },
+        className="customer-vm-table-wrap" if comfortable else None,
+    )
+
+
 def _section_card(title: str, subtitle: str | None = None, children=None):
     return html.Div(
         className="nexus-card",
@@ -691,20 +728,9 @@ def _deleted_vms_panel(deleted_names: list[str] | None):
                 c="dimmed",
                 mb="sm",
             ),
-            html.Div(
-                style={"maxHeight": "200px", "overflowY": "auto"},
-                children=[
-                    dmc.Table(
-                        striped=True,
-                        highlightOnHover=True,
-                        children=[
-                            html.Thead(html.Tr([html.Th("VM name")])),
-                            html.Tbody(
-                                [html.Tr([html.Td(n)]) for n in sorted(names)],
-                            ),
-                        ],
-                    )
-                ],
+            _maybe_paginated_table(
+                ["VM name"],
+                [html.Tr([html.Td(n)]) for n in sorted(names)],
             ),
         ],
     )
@@ -1710,14 +1736,7 @@ def _tab_customer_availability(avail: dict):
             _section_card(
                 "Service outages",
                 "Infrastructure / service interruptions (source=service)",
-                dmc.Table(
-                    striped=True,
-                    highlightOnHover=True,
-                    children=[
-                        html.Thead(html.Tr([html.Th(c) for c in svc_cols])),
-                        html.Tbody([_svc_row(e) for e in svc if isinstance(e, dict)]),
-                    ],
-                ),
+                _maybe_paginated_table(svc_cols, [_svc_row(e) for e in svc if isinstance(e, dict)]),
             )
         )
     if vm:
@@ -1725,14 +1744,7 @@ def _tab_customer_availability(avail: dict):
             _section_card(
                 "VM outages",
                 "Virtual machine downtime records (source=vm)",
-                dmc.Table(
-                    striped=True,
-                    highlightOnHover=True,
-                    children=[
-                        html.Thead(html.Tr([html.Th(c) for c in vm_cols])),
-                        html.Tbody([_vm_row(e) for e in vm if isinstance(e, dict)]),
-                    ],
-                ),
+                _maybe_paginated_table(vm_cols, [_vm_row(e) for e in vm if isinstance(e, dict)]),
             )
         )
     if len(children) == 1:
@@ -1798,25 +1810,7 @@ def _itsm_ticket_table(tickets: list, source: str, cols: list) -> html.Div:
             html.Td(target),
         ])
 
-    return html.Div(
-        style={"maxHeight": "360px", "overflowY": "auto", "overflowX": "auto"},
-        children=[
-            dmc.Table(
-                striped=True,
-                highlightOnHover=True,
-                withColumnBorders=True,
-                className="customer-vm-table",
-                children=[
-                    html.Thead(html.Tr([html.Th(c) for c in cols])),
-                    html.Tbody(
-                        [_row(t) for t in filtered]
-                        if filtered
-                        else [html.Tr([html.Td("No data", colSpan=len(cols))])]
-                    ),
-                ],
-            )
-        ],
-    )
+    return _maybe_paginated_table(cols, [_row(t) for t in filtered], comfortable=True)
 
 
 def _tab_itsm(
@@ -1949,40 +1943,18 @@ def _tab_itsm(
             html.Td(target),
         ])
 
-    long_tail_table = html.Div(
-        style={"maxHeight": "300px", "overflowY": "auto"},
-        children=[dmc.Table(
-            striped=True, highlightOnHover=True, withColumnBorders=True,
-            children=[
-                html.Thead(html.Tr([
-                    html.Th("ID"), html.Th("User"), html.Th("Subject"),
-                    html.Th("Priority"), html.Th("Resolution"), html.Th("Closed Date"),
-                ])),
-                html.Tbody(
-                    [_long_tail_row(t) for t in long_tail]
-                    if long_tail
-                    else [html.Tr([html.Td("No outliers in this period", colSpan=6)])]
-                ),
-            ],
-        )],
+    long_tail_table = _maybe_paginated_table(
+        ["ID", "User", "Subject", "Priority", "Resolution", "Closed Date"],
+        [_long_tail_row(t) for t in long_tail]
+        if long_tail
+        else [html.Tr([html.Td("No outliers in this period", colSpan=6)])],
     )
 
-    sla_table = html.Div(
-        style={"maxHeight": "300px", "overflowY": "auto"},
-        children=[dmc.Table(
-            striped=True, highlightOnHover=True, withColumnBorders=True,
-            children=[
-                html.Thead(html.Tr([
-                    html.Th("Type"), html.Th("ID"), html.Th("Subject"),
-                    html.Th("Priority"), html.Th("Group"), html.Th("Open Age"), html.Th("Target Date"),
-                ])),
-                html.Tbody(
-                    [_sla_row(t) for t in sla_list]
-                    if sla_list
-                    else [html.Tr([html.Td("No SLA breaches in this period", colSpan=7)])]
-                ),
-            ],
-        )],
+    sla_table = _maybe_paginated_table(
+        ["Type", "ID", "Subject", "Priority", "Group", "Open Age", "Target Date"],
+        [_sla_row(t) for t in sla_list]
+        if sla_list
+        else [html.Tr([html.Td("No SLA breaches in this period", colSpan=7)])],
     )
 
     extremes_accordion = dmc.Accordion(
