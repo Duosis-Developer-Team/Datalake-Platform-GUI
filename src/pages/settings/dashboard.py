@@ -11,6 +11,7 @@ from dash_iconify import DashIconify
 from src.pages.settings.admin_routes import ADMIN_PREFIX
 from src.services import admin_client as settings_crud
 from src.services import api_client as api
+from src.services import cache_service
 from src.utils.ui_tokens import (
     ON_DIM,
     ON_SURFACE,
@@ -20,6 +21,54 @@ from src.utils.ui_tokens import (
     section_nav_card,
     settings_page_shell,
 )
+
+
+def build_cache_metrics_panel() -> dmc.Paper:
+    """Live snapshot of the shared-cache observability counters (item 7.2)."""
+    m = api.get_cache_metrics()
+    s = cache_service.stats()
+    hit_rate = m.get("hit_rate")
+    avg_fetch = m.get("avg_fetch_seconds")
+    hit_rate_txt = f"{hit_rate * 100:.0f}%" if hit_rate is not None else "—"
+    avg_fetch_txt = f"{avg_fetch:.2f}s" if avg_fetch is not None else "—"
+
+    def _stat(label: str, value: str):
+        return dmc.Stack(
+            gap=0,
+            children=[
+                dmc.Text(value, fw=700, size="lg", c=ON_SURFACE),
+                dmc.Text(label, size="xs", c="dimmed"),
+            ],
+        )
+
+    return dmc.Paper(
+        withBorder=True,
+        radius="md",
+        p="md",
+        mt="md",
+        children=[
+            dmc.Text("Cache metrics", fw=700, mb="xs", c=ON_SURFACE),
+            dmc.Text(
+                "Shared cache effectiveness since the last worker start / reset. "
+                "A high hit rate means pods are serving from the shared cache; "
+                "avg fetch is how slow the backend is on a miss.",
+                size="xs",
+                c="dimmed",
+                mb="sm",
+            ),
+            dmc.Group(
+                gap="xl",
+                children=[
+                    _stat("Hit rate", hit_rate_txt),
+                    _stat("Hits", str(int(m.get("hits", 0)))),
+                    _stat("Misses", str(int(m.get("misses", 0)))),
+                    _stat("Avg fetch", avg_fetch_txt),
+                    _stat("Entries", str(s.get("current_size", 0))),
+                    _stat("Backend", str(s.get("backend", "—"))),
+                ],
+            ),
+        ],
+    )
 
 
 def build_layout(search: str | None = None) -> html.Div:
@@ -316,6 +365,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 kpi_row,
                 dmc.Space(h="lg"),
                 cache_ops_row,
+                build_cache_metrics_panel(),
                 dmc.Space(h="lg"),
                 anchor_latest_row,
                 dmc.Space(h="lg"),
