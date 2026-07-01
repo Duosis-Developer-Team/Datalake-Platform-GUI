@@ -95,6 +95,30 @@ def _warm_host_rows_for_dcs(dc_codes: list[str], tr: dict) -> int:
     return warmed
 
 
+def _warm_customer_view(customers, time_range: dict | None) -> int:
+    """Pre-populate the shared cache with each warmed customer's customer-view
+    data (resources, availability, ITSM, sales, efficiency, S3), so first visits
+    hit the cache. Returns how many customers warmed without error."""
+    from src.services import api_client as api
+
+    warmed = 0
+    for name in customers:
+        name = (name or "").strip()
+        if not name:
+            continue
+        try:
+            api.get_customer_resources(name, time_range)
+            api.get_customer_availability_bundle(name, time_range)
+            api.get_customer_itsm_summary(name, time_range)
+            api.get_customer_sales_summary(name)
+            api.get_customer_efficiency_by_category(name, time_range)
+            api.get_customer_s3_vaults(name, time_range)
+            warmed += 1
+        except Exception as exc:
+            logger.warning("customer-view warm failed for %s: %s", name, exc)
+    return warmed
+
+
 def warm_rbac_scope(
     user_id: int,
     time_range: dict | None,
@@ -132,6 +156,11 @@ def warm_rbac_scope(
     if can_view(user_id, "page:global_view"):
         _warm_global_phase1(tr)
         stats["global"] = True
+
+    if can_view(user_id, "page:customer_view"):
+        from src.services.db_service import WARMED_CUSTOMERS
+
+        stats["customer_view"] = _warm_customer_view(WARMED_CUSTOMERS, tr)
 
     del page_codes, get_visible_sections  # reserved for future per-section warm
     return stats
