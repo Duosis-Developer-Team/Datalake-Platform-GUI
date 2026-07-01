@@ -2361,6 +2361,44 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
 
 
 # ---------------------------------------------------------------------------
+# Per-tab render functions (independent async loading — item 3).
+# Each fetches only its own endpoint(s) via the shared-cached api getters and
+# renders, so a slow tab can never block another tab or the page shell.
+# ---------------------------------------------------------------------------
+
+def render_availability_tab(name: str, tr: dict | None):
+    """Availability tab — depends only on the customer availability bundle."""
+    return _tab_customer_availability(api.get_customer_availability_bundle(name, tr))
+
+
+def render_physical_inventory_tab(name: str):
+    """Physical inventory tab — depends only on the physical inventory list."""
+    return _tab_physical_inventory(api.get_physical_inventory_customer(name))
+
+
+def render_itsm_tab(name: str, tr: dict | None):
+    """ITSM tab — depends only on the three (independent) ITSM endpoints."""
+    return _tab_itsm(
+        name,
+        tr,
+        api.get_customer_itsm_summary(name, tr),
+        api.get_customer_itsm_extremes(name, tr),
+        api.get_customer_itsm_tickets(name, tr),
+    )
+
+
+def render_s3_tab(name: str, tr: dict | None):
+    """S3 tab — depends only on the customer S3 vaults."""
+    s3_data = api.get_customer_s3_vaults(name, tr)
+    has_s3 = bool(s3_data.get("vaults"))
+    return html.Div(
+        id="s3-customer-metrics-panel",
+        style={"padding": "0 30px"},
+        children=build_customer_s3_panel(name, s3_data, tr, None) if has_s3 else html.Div(),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Page builders
 # ---------------------------------------------------------------------------
 
