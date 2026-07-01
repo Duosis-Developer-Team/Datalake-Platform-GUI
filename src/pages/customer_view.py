@@ -8,6 +8,7 @@ import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objs as go
 
+import itertools
 import math
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -200,6 +201,15 @@ def _vm_table(
         )
         for i, c in enumerate(columns)
     ]
+    # Large lists flood the DOM (thousands of <tr> freeze the browser) — paginate
+    # so only one page of rows is rendered at a time. Small lists render directly.
+    if vm_list and len(vm_list) > _VM_TABLE_PAGE_SIZE:
+        return _paginated_rows_table(
+            header_cells,
+            [row_fn(r) for r in vm_list],
+            f"vmt-{next(_vm_table_counter)}",
+            comfortable=comfortable,
+        )
     wrap_kwargs: dict = {
         "style": {
             "maxHeight": "420px",
@@ -232,6 +242,10 @@ def _vm_table(
 # Rows per page for large VM/LPAR tables. Only this many <tr> are in the DOM at
 # once; the full set lives in a Store and pages are swapped by _vmtable_change_page.
 _VM_TABLE_PAGE_SIZE = 100
+
+# Unique id source for paginated tables so each table's Store/body/pager triple
+# matches. Grows monotonically; only large (paginated) tables consume an id.
+_vm_table_counter = itertools.count(1)
 
 
 def _page_slice(rows: list, page, page_size: int = _VM_TABLE_PAGE_SIZE) -> list:

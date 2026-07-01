@@ -52,3 +52,19 @@ def test_paginated_rows_table_pagination_total_pages():
     comp = cv._paginated_rows_table([html.Th("X")], rows, "vm-x", page_size=100)
     pagers = [n for n in _walk(comp) if isinstance(n, dmc.Pagination)]
     assert pagers and pagers[0].total == 3  # ceil(250/100)
+
+
+def test_vm_table_paginates_large_lists():
+    big = [{"name": f"vm{i}"} for i in range(cv._VM_TABLE_PAGE_SIZE + 50)]
+    comp = cv._vm_table(big, ["Name"], lambda r: html.Tr(html.Td(r["name"])))
+    nodes = list(_walk(comp))
+    assert any(isinstance(n, dcc.Store) for n in nodes), "large list must be paginated"
+    tbodies = [n for n in nodes if isinstance(n, html.Tbody)]
+    assert tbodies and len(tbodies[0].children) == cv._VM_TABLE_PAGE_SIZE
+
+
+def test_vm_table_small_list_not_paginated():
+    small = [{"name": f"vm{i}"} for i in range(5)]
+    comp = cv._vm_table(small, ["Name"], lambda r: html.Tr(html.Td(r["name"])))
+    nodes = list(_walk(comp))
+    assert not any(isinstance(n, dcc.Store) for n in nodes), "small list stays a plain table"
