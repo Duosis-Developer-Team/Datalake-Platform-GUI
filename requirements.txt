@@ -9,6 +9,9 @@ gunicorn
 psycopg2-binary>=2.9.9
 python-dotenv>=1.0.0
 APScheduler>=3.10.0
+# Shared cross-pod data cache backend (cache_service.RedisBackend). Frontend
+# falls back to the in-process backend when REDIS_URL is unset / Redis is down.
+redis>=5.0.0
 requests>=2.31.0
 httpx
 openpyxl>=3.1.0

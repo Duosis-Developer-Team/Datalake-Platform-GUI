@@ -12,6 +12,7 @@
 # (e.g. rack clicks) are not displaced by long global prefetch key streams.
 
 import logging
+import pickle
 import threading
 from collections import OrderedDict
 from typing import Any, Optional
@@ -80,6 +81,80 @@ class InProcessBackend:
                 "max_size": self._max_size,
                 "keys": list(self._cache.keys()),
             }
+
+
+class RedisBackend:
+    """Shared cache backed by Redis, so all frontend pods hit one warm cache
+    instead of per-pod islands.
+
+    Values are pickled (faithful round-trip of arbitrary cached Python objects —
+    unlike JSON, which coerces tuples to lists and dict int-keys to strings).
+    The client must be a *binary* redis client (decode_responses=False).
+
+    Every operation degrades gracefully: if Redis is unreachable, reads return a
+    miss and writes are dropped (logged), so a Redis outage can only slow the
+    app down, never crash it.
+    """
+
+    def __init__(self, client: Any, namespace: str = "dl:fecache:") -> None:
+        self._r = client
+        self._ns = namespace
+
+    def _k(self, key: str) -> str:
+        return self._ns + key
+
+    def get(self, key: str) -> Optional[Any]:
+        try:
+            raw = self._r.get(self._k(key))
+        except Exception as exc:
+            logger.warning("Redis cache GET failed for %s: %s", key, exc)
+            return None
+        if raw is None:
+            return None
+        try:
+            return pickle.loads(raw)
+        except Exception as exc:
+            logger.warning("Redis cache decode failed for %s: %s", key, exc)
+            return None
+
+    def set(self, key: str, value: Any) -> None:
+        try:
+            self._r.set(self._k(key), pickle.dumps(value))
+        except Exception as exc:
+            logger.warning("Redis cache SET failed for %s: %s", key, exc)
+
+    def delete(self, key: str) -> None:
+        try:
+            self._r.delete(self._k(key))
+        except Exception as exc:
+            logger.warning("Redis cache DELETE failed for %s: %s", key, exc)
+
+    def delete_prefix(self, prefix: str) -> int:
+        count = 0
+        try:
+            for k in self._r.scan_iter(match=self._k(prefix) + "*"):
+                self._r.delete(k)
+                count += 1
+        except Exception as exc:
+            logger.warning("Redis cache DELETE_PREFIX failed for %s: %s", prefix, exc)
+        return count
+
+    def clear(self) -> None:
+        try:
+            for k in self._r.scan_iter(match=self._ns + "*"):
+                self._r.delete(k)
+        except Exception as exc:
+            logger.warning("Redis cache CLEAR failed: %s", exc)
+
+    def size(self) -> int:
+        try:
+            return sum(1 for _ in self._r.scan_iter(match=self._ns + "*"))
+        except Exception as exc:
+            logger.warning("Redis cache SIZE failed: %s", exc)
+            return 0
+
+    def stats(self) -> dict:
+        return {"backend": "redis", "namespace": self._ns, "current_size": self.size()}
 
 
 # The active backend. Swapped at startup (item 1.3) when REDIS_URL is set, and

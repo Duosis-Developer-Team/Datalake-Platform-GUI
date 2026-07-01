@@ -1,0 +1,5 @@
+# Development / test-only dependencies (not installed in production images).
+-r requirements.txt
+pytest
+# In-memory Redis fake so cache_service RedisBackend tests need no live server.
+fakeredis>=2.20.0
