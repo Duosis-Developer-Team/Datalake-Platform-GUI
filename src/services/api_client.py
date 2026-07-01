@@ -426,6 +426,13 @@ def _swr_age(cache_key: str) -> Optional[float]:
     return None if ts is None else (time.time() - ts)
 
 
+def get_cache_as_of(cache_key: str) -> Optional[float]:
+    """Wall-clock epoch seconds when `cache_key` was last fetched, or None if
+    unknown. For the UI "as-of HH:MM" data-freshness stamp and age metrics."""
+    ts = _api_response_cache.get(_fetched_ts_key(cache_key))
+    return float(ts) if ts is not None else None
+
+
 def _is_fresh(cache_key: str) -> bool:
     """True if the cached entry may be served without a refetch: TTL disabled,
     warm-written (no timestamp), or age within the freshness window. A stale entry
