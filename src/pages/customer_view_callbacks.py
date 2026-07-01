@@ -51,7 +51,7 @@ def load_customer_view_data(pathname, search, time_range, visible_sections):
     tr = time_range or default_time_range()
     access = perspective_access(visible_sections)
     perspective = default_perspective(access)
-    content = _customer_content(chosen, tr)
+    content = _customer_content(chosen, tr, only_perspective=perspective)
     page = render_customer_page(
         chosen,
         tr,
@@ -84,7 +84,7 @@ def toggle_customer_perspective(perspective, search, time_range, visible_section
     access = perspective_access(visible_sections)
     perspective = effective_perspective(perspective, access)
     tr = time_range or default_time_range()
-    content = _customer_content(chosen, tr)
+    content = _customer_content(chosen, tr, only_perspective=perspective)
     page = render_customer_page(
         chosen,
         tr,

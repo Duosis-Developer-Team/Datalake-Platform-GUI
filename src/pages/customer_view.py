@@ -2205,7 +2205,10 @@ def _crm_rows_outside_virt_backup(eff_rows: list | None) -> list:
     return out
 
 
-def _customer_content(customer_name: str, time_range: dict | None = None):
+def _customer_content(customer_name: str, time_range: dict | None = None, *, only_perspective: str | None = None):
+    # only_perspective builds just that perspective's summary/virt/backup (used by
+    # the perspective toggle so it doesn't rebuild both). Data is shared-cached
+    # (items 1-2), so this cuts CPU/render, not backend calls.
     tr = time_range or default_time_range()
     name = (customer_name or "").strip()
     if not name:
@@ -2329,20 +2332,6 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
     hyperconv = assets.get("hyperconv", {}) or {}
     pure_nx   = assets.get("pure_nutanix", {}) or {}
 
-    virt_content_manager = _build_virt_content(
-        classic, hyperconv, pure_nx, power_asset, vm_outage_counts, include_usage_vs_sold=True
-    )
-    virt_content_customer = _build_virt_content(
-        classic, hyperconv, pure_nx, power_asset, vm_outage_counts, include_usage_vs_sold=False
-    )
-
-    backup_tabs_manager = _build_backup_tabs(
-        backup_assets, backup_totals, eff_by_cat, include_sold_vs_used=True
-    )
-    backup_tabs_customer = _build_backup_tabs(
-        backup_assets, backup_totals, eff_by_cat, include_sold_vs_used=False
-    )
-
     s3_panel = html.Div(
         id="s3-customer-metrics-panel",
         style={"padding": "0 30px"},
@@ -2386,13 +2375,24 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
 
     itsm_panel = _tab_itsm(name, tr, itsm_summary, itsm_extremes, itsm_tickets)
 
-    return {
-        "manager": {
-            "summary": _tab_summary(name, perspective=PERSPECTIVE_MANAGER, **summary_kwargs),
-            "virt": virt_content_manager,
+    def _sections_for(perspective: str) -> dict:
+        is_mgr = perspective == PERSPECTIVE_MANAGER
+        sections = {
+            "summary": _tab_summary(name, perspective=perspective, **summary_kwargs),
+            "virt": _build_virt_content(
+                classic, hyperconv, pure_nx, power_asset, vm_outage_counts,
+                include_usage_vs_sold=is_mgr,
+            ),
             "avail": avail_panel,
-            "backup": backup_tabs_manager,
-            "billing": _tab_billing(
+            "backup": _build_backup_tabs(
+                backup_assets, backup_totals, eff_by_cat, include_sold_vs_used=is_mgr
+            ),
+            "itsm": itsm_panel,
+            "s3": s3_panel,
+            "phys_inv": phys_inv_panel,
+        }
+        if is_mgr:
+            sections["billing"] = _tab_billing(
                 totals,
                 assets,
                 backup_totals,
@@ -2405,25 +2405,21 @@ def _customer_content(customer_name: str, time_range: dict | None = None):
                 active_orders=active_orders,
                 active_items=active_items,
                 efficiency_rows=eff_by_cat,
-            ),
-            "itsm": itsm_panel,
-            "s3": s3_panel,
-            "phys_inv": phys_inv_panel,
-        },
-        "customer": {
-            "summary": _tab_summary(name, perspective=PERSPECTIVE_CUSTOMER, **summary_kwargs),
-            "virt": virt_content_customer,
-            "avail": avail_panel,
-            "backup": backup_tabs_customer,
-            "itsm": itsm_panel,
-            "s3": s3_panel,
-            "phys_inv": phys_inv_panel,
-        },
+            )
+        return sections
+
+    result = {
         "has_s3": has_s3,
         "has_phys_inv": has_phys_inv,
         "customer_name": name,
         "export_context": export_context,
     }
+    if only_perspective in (PERSPECTIVE_MANAGER, PERSPECTIVE_CUSTOMER):
+        result[only_perspective] = _sections_for(only_perspective)
+    else:
+        result["manager"] = _sections_for(PERSPECTIVE_MANAGER)
+        result["customer"] = _sections_for(PERSPECTIVE_CUSTOMER)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2739,8 +2735,13 @@ def _perspective_tab_panels(
 
 
 def _resolve_tab_content(content: dict, perspective: str) -> dict:
-    if "manager" in content and "customer" in content:
-        return content.get(perspective) or content.get(PERSPECTIVE_MANAGER) or {}
+    if PERSPECTIVE_MANAGER in content or PERSPECTIVE_CUSTOMER in content:
+        return (
+            content.get(perspective)
+            or content.get(PERSPECTIVE_MANAGER)
+            or content.get(PERSPECTIVE_CUSTOMER)
+            or {}
+        )
     return content
 
 
