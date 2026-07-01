@@ -33,8 +33,19 @@ logger = logging.getLogger(__name__)
 
 _DC_CODE_RE = re.compile(r"(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)", re.IGNORECASE)
 
-# Customers pre-warmed by scheduler / warm_cache (extend when adding tenants).
-WARMED_CUSTOMERS: tuple[str, ...] = ("Boyner",)
+# Customers pre-warmed by scheduler / warm_cache. Configurable via
+# APP_WARMED_CUSTOMERS (comma-separated) so tenants can be added without a code
+# change; defaults to the original single pilot customer.
+def _load_warmed_customers() -> tuple[str, ...]:
+    raw = (os.environ.get("APP_WARMED_CUSTOMERS") or "").strip()
+    if raw:
+        names = tuple(n.strip() for n in raw.split(",") if n.strip())
+        if names:
+            return names
+    return ("Boyner",)
+
+
+WARMED_CUSTOMERS: tuple[str, ...] = _load_warmed_customers()
 # Shown as grayed-out cards on the Customer View page (no API/cache warm-up yet).
 DISABLED_CUSTOMERS: tuple[str, ...] = ("A101", "Arabam", "Danone", "Turkonay")
 DEFAULT_CUSTOMER_NAME: str = WARMED_CUSTOMERS[0] if WARMED_CUSTOMERS else "Boyner"
