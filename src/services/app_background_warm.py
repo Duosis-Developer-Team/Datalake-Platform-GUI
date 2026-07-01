@@ -54,14 +54,26 @@ def _warm_sellable_for_dcs(dc_codes: list[str], tr: dict) -> int:
     return warmed
 
 
+def _warm_tr_variants(tr: dict) -> list[dict]:
+    """The overview/datacenters pages fetch with AND without anchor_latest (a user
+    toggle) — different cache keys. Warm both so whichever the page requests hits."""
+    base = {k: v for k, v in (tr or {}).items() if k != "anchor_latest"}
+    return [base, {**base, "anchor_latest": True}]
+
+
 def _warm_home_bundle(tr: dict) -> None:
     from src.services import api_client as api
 
     if _should_pause():
         return
     try:
-        api.get_global_dashboard(tr)
-        api.get_all_datacenters_summary(tr)
+        # warm_mode: long timeout so the genuinely-slow overview/summary queries
+        # complete off the user path and populate the shared cache (both key
+        # variants), instead of timing out interactively and never caching.
+        with api.warm_mode():
+            for t in _warm_tr_variants(tr):
+                api.get_global_dashboard(t)
+                api.get_all_datacenters_summary(t)
     except Exception:
         logger.debug("background warm home failed", exc_info=True)
 

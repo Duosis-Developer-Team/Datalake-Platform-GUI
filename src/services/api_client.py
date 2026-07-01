@@ -1,5 +1,6 @@
 import json
 import logging
+import contextvars
 import os
 import threading
 import time
@@ -211,55 +212,60 @@ _INVENTORY_TIMEOUT = httpx.Timeout(
     write=_INVENTORY_READ_TIMEOUT, pool=10.0,
 )
 
+# Warm mode: fetches inside use the long inventory timeout so genuinely-slow cold
+# queries (e.g. the >60s overview) COMPLETE and populate the shared cache instead
+# of timing out at the interactive limit and never caching (warm==cold). Set only
+# by the background warm. Contextvar is per-thread; warm runs synchronously in its
+# own thread so the flag applies to the getters it calls.
+_WARM_MODE: contextvars.ContextVar = contextvars.ContextVar("api_warm_mode", default=False)
+
+
+class warm_mode:
+    """Context manager enabling the long warm timeout for enclosed fetches."""
+
+    def __enter__(self):
+        self._token = _WARM_MODE.set(True)
+        return self
+
+    def __exit__(self, *exc):
+        _WARM_MODE.reset(self._token)
+        return False
+
+
+def _tls_client(attr: str, base_url: str) -> httpx.Client:
+    """Thread-local httpx client. In warm mode a separate long-timeout client is
+    cached (attr + '_warm') so warm and interactive callers don't share timeouts."""
+    warm = _WARM_MODE.get()
+    key = attr + "_warm" if warm else attr
+    c = getattr(_HTTP_TLS, key, None)
+    if c is None:
+        c = httpx.Client(
+            base_url=base_url,
+            timeout=_INVENTORY_TIMEOUT if warm else _INTERACTIVE_TIMEOUT,
+            transport=_new_http_transport(),
+        )
+        setattr(_HTTP_TLS, key, c)
+    return c
+
 
 def _get_client_dc() -> httpx.Client:
-    c = getattr(_HTTP_TLS, "dc", None)
-    if c is None:
-        _HTTP_TLS.dc = httpx.Client(
-            base_url=DATACENTER_API_URL, timeout=_INTERACTIVE_TIMEOUT, transport=_new_http_transport()
-        )
-        c = _HTTP_TLS.dc
-    return c
+    return _tls_client("dc", DATACENTER_API_URL)
 
 
 def _get_client_cust() -> httpx.Client:
-    c = getattr(_HTTP_TLS, "cust", None)
-    if c is None:
-        _HTTP_TLS.cust = httpx.Client(
-            base_url=CUSTOMER_API_URL, timeout=_INTERACTIVE_TIMEOUT, transport=_new_http_transport()
-        )
-        c = _HTTP_TLS.cust
-    return c
+    return _tls_client("cust", CUSTOMER_API_URL)
 
 
 def _get_client_query() -> httpx.Client:
-    c = getattr(_HTTP_TLS, "query", None)
-    if c is None:
-        _HTTP_TLS.query = httpx.Client(
-            base_url=QUERY_API_URL, timeout=_INTERACTIVE_TIMEOUT, transport=_new_http_transport()
-        )
-        c = _HTTP_TLS.query
-    return c
+    return _tls_client("query", QUERY_API_URL)
 
 
 def _get_client_hmdl() -> httpx.Client:
-    c = getattr(_HTTP_TLS, "hmdl", None)
-    if c is None:
-        _HTTP_TLS.hmdl = httpx.Client(
-            base_url=HMDL_API_URL, timeout=_INTERACTIVE_TIMEOUT, transport=_new_http_transport()
-        )
-        c = _HTTP_TLS.hmdl
-    return c
+    return _tls_client("hmdl", HMDL_API_URL)
 
 
 def _get_client_crm() -> httpx.Client:
-    c = getattr(_HTTP_TLS, "crm", None)
-    if c is None:
-        _HTTP_TLS.crm = httpx.Client(
-            base_url=CRM_ENGINE_URL, timeout=_INTERACTIVE_TIMEOUT, transport=_new_http_transport()
-        )
-        c = _HTTP_TLS.crm
-    return c
+    return _tls_client("crm", CRM_ENGINE_URL)
 
 
 def _clone(value: Any) -> Any:
