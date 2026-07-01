@@ -35,7 +35,7 @@ def test_panels_data_cached_and_stamped(monkeypatch):
     out = api._api_cache_get_sellable_panels("kd", lambda: rows, "DC13", "virt_classic", None)
     assert out == rows
     assert cache_service.get("kd") == rows
-    assert "kd" in api._fetched_at  # stamped for SWR
+    assert cache_service.get(api._fetched_ts_key("kd")) is not None  # stamped for SWR
 
 
 def test_stale_panels_schedule_swr_refresh(monkeypatch):
@@ -43,7 +43,7 @@ def test_stale_panels_schedule_swr_refresh(monkeypatch):
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
     cache_service.set("ks", [{"panel_key": "x"}])
-    api._fetched_at["ks"] = _t.monotonic() - 999  # stale
+    cache_service.set(api._fetched_ts_key("ks"), _t.time() - 999)  # stale
     scheduled = []
     monkeypatch.setattr(api, "_schedule_swr_refresh", lambda k, f: scheduled.append(k))
     out = api._api_cache_get_sellable_panels("ks", lambda: [], "DC13", "virt_classic", None)

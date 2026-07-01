@@ -136,11 +136,11 @@ _HTTP_TLS = threading.local()
 _inflight_lock = threading.Lock()
 _inflight: dict[str, threading.Event] = {}
 
-# Stale-while-revalidate (SWR): timestamps tracked ONLY for entries fetched by the leader
-# path below. Warm-job entries (written directly via cache_service.set) have NO entry here
-# and are therefore NEVER auto-refreshed (avoids conflict with warm jobs).
+# Freshness (age) is tracked in the SHARED cache backend using wall-clock time
+# (see _fetched_ts_key / _mark_fetched / _swr_age) so every pod agrees on whether
+# an entry is fresh. Entries written directly via cache_service.set (warm jobs)
+# carry no timestamp and so read as "unknown age".
 _SWR_TTL_SECONDS = float(os.getenv("API_CACHE_SWR_TTL", "300") or "300")
-_fetched_at: dict[str, float] = {}
 _swr_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="api-swr")
 _swr_refreshing_lock = threading.Lock()
 _swr_refreshing: set[str] = set()
@@ -365,7 +365,7 @@ def _api_cache_get_sellable_panels(
     try:
         out = fetch_normalized()
         _api_response_cache.set(cache_key, out)
-        _fetched_at[cache_key] = time.monotonic()
+        _mark_fetched(cache_key)
         return out
     except _HTTP_ERRORS:
         hit = _api_response_cache.get(cache_key)
@@ -392,7 +392,7 @@ def _api_cache_get_sellable_summary(
     try:
         out = fetch_normalized()
         _api_response_cache.set(cache_key, out)
-        _fetched_at[cache_key] = time.monotonic()
+        _mark_fetched(cache_key)
         return out
     except _HTTP_ERRORS:
         hit = _api_response_cache.get(cache_key)
@@ -417,10 +417,21 @@ def _serialize_tr_params(tr: Optional[dict]) -> str:
     return json.dumps(sorted(p.items()), separators=(",", ":"), ensure_ascii=False)
 
 
+def _fetched_ts_key(cache_key: str) -> str:
+    """Shared-cache key holding the wall-clock fetch time of `cache_key`."""
+    return f"api:__ts__:{cache_key}"
+
+
+def _mark_fetched(cache_key: str) -> None:
+    """Record now() as the fetch time of cache_key in the shared cache (wall-clock)."""
+    _api_response_cache.set(_fetched_ts_key(cache_key), time.time())
+
+
 def _swr_age(cache_key: str) -> Optional[float]:
-    """Return age (seconds) of this key's last leader-fetch, or None if no timestamp exists."""
-    ts = _fetched_at.get(cache_key)
-    return None if ts is None else (time.monotonic() - ts)
+    """Age (seconds) since this key was last fetched, from the shared timestamp,
+    or None if no timestamp exists (e.g. warm-written entries)."""
+    ts = _api_response_cache.get(_fetched_ts_key(cache_key))
+    return None if ts is None else (time.time() - ts)
 
 
 def _schedule_swr_refresh(cache_key: str, fetch_normalized: Callable[[], Any]) -> None:
@@ -434,7 +445,7 @@ def _schedule_swr_refresh(cache_key: str, fetch_normalized: Callable[[], Any]) -
         try:
             out = fetch_normalized()
             _api_response_cache.set(cache_key, out)
-            _fetched_at[cache_key] = time.monotonic()
+            _mark_fetched(cache_key)
         except _HTTP_ERRORS:
             pass
         finally:
@@ -505,7 +516,7 @@ def _api_cache_get_with_stale(
         out = fetch_normalized()
         if _should_persist_api_cache(out, empty_fallback):
             _api_response_cache.set(cache_key, out)
-            _fetched_at[cache_key] = time.monotonic()
+            _mark_fetched(cache_key)
         return out
     except _HTTP_ERRORS as exc:
         logger.warning("API cache fetch failed for key=%s: %s", cache_key, exc)
@@ -1887,7 +1898,7 @@ def get_crm_aliases() -> list:
         out = fetch()
         if _crm_aliases_response_cacheable(out):
             _api_response_cache.set(ck, out)
-            _fetched_at[ck] = time.monotonic()
+            _mark_fetched(ck)
         return out
     except _HTTP_ERRORS as exc:
         logger.warning("CRM aliases fetch failed: %s", exc)
