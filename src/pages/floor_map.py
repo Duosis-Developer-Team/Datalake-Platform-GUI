@@ -13,6 +13,7 @@ import logging
 import math
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time as _time
 from collections import OrderedDict
 
@@ -126,6 +127,31 @@ def _color_by_fill(status, occupied_u, total_u):
     if pct >= 50:
         return FILL_PALETTE["orange"]
     return FILL_PALETTE["green"]
+
+
+def _fetch_rack_occupancy(dc_id, racks):
+    """{rack_name -> occupied_u} for the given racks. occupied_u = number of
+    devices with a position (get_rack_devices per rack, fetched in parallel and
+    shared-cached). A rack whose fetch fails is omitted -> rendered gray."""
+    from src.services import api_client as api
+
+    names = [str(r.get("name") or "").strip() for r in racks if str(r.get("name") or "").strip()]
+    if not names:
+        return {}
+
+    def _one(name):
+        try:
+            devices = (api.get_rack_devices(dc_id or "", name) or {}).get("devices", [])
+            return name, sum(1 for d in devices if d.get("position") is not None)
+        except Exception:
+            return name, None
+
+    occupancy: dict = {}
+    with ThreadPoolExecutor(max_workers=min(12, len(names))) as pool:
+        for name, occ in pool.map(_one, names):
+            if occ is not None:
+                occupancy[name] = occ
+    return occupancy
 
 
 def _rack_fill_info(occupied_u, total_u):
