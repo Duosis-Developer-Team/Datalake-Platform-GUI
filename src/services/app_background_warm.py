@@ -78,6 +78,28 @@ def _warm_home_bundle(tr: dict) -> None:
         logger.debug("background warm home failed", exc_info=True)
 
 
+def _warm_dc_and_availability_sla(dc_rows: list, tr: dict) -> int:
+    """Warm the Data Centers (get_sla_by_dc) and Availability
+    (get_dc_availability_sla_items_for_dcs) aggregate calls with the long warm
+    timeout and both anchor_latest key variants, so those pages hit the cache
+    instead of a cold SLA query. Returns variants warmed."""
+    from src.services import api_client as api
+
+    if _should_pause():
+        return 0
+    warmed = 0
+    try:
+        with api.warm_mode():
+            for t in _warm_tr_variants(tr):
+                api.get_sla_by_dc(t)
+                if dc_rows:
+                    api.get_dc_availability_sla_items_for_dcs(dc_rows, t)
+                warmed += 1
+    except Exception:
+        logger.debug("background warm dc/availability sla failed", exc_info=True)
+    return warmed
+
+
 def _warm_global_phase1(tr: dict) -> None:
     if _should_pause():
         return
@@ -143,23 +165,34 @@ def warm_rbac_scope(
     from src.utils.time_range import default_time_range
 
     tr = time_range or default_time_range()
-    stats = {"sellable_dcs": 0, "host_rows_dcs": 0, "home": False, "global": False}
+    stats = {"sellable_dcs": 0, "host_rows_dcs": 0, "home": False, "global": False, "dc_avail_sla": 0}
+
+    # DC rows are shared by the datacenters, dc_view and availability warms.
+    dc_rows: list = []
+    if (
+        can_view(user_id, "page:datacenters")
+        or can_view(user_id, "page:dc_view")
+        or can_view(user_id, "page:availability_annual")
+    ):
+        try:
+            dc_rows = api.get_all_datacenters_summary(tr) or []
+        except Exception:
+            dc_rows = []
 
     if can_view(user_id, "page:datacenters") or can_view(user_id, "page:dc_view"):
-        try:
-            rows = api.get_all_datacenters_summary(tr) or []
-            dc_codes = [
-                str(r.get("id") or r.get("dc_code") or r.get("code") or "").strip()
-                for r in rows
-                if isinstance(r, dict)
-            ]
-            dc_codes = [c for c in dc_codes if c]
-        except Exception:
-            dc_codes = []
+        dc_codes = [
+            str(r.get("id") or r.get("dc_code") or r.get("code") or "").strip()
+            for r in dc_rows
+            if isinstance(r, dict)
+        ]
+        dc_codes = [c for c in dc_codes if c]
         if dc_codes:
             stats["sellable_dcs"] = _warm_sellable_for_dcs(dc_codes[:12], tr)
             if can_view(user_id, "page:dc_view"):
                 stats["host_rows_dcs"] = _warm_host_rows_for_dcs(dc_codes[:6], tr)
+
+    if can_view(user_id, "page:datacenters") or can_view(user_id, "page:availability_annual"):
+        stats["dc_avail_sla"] = _warm_dc_and_availability_sla(dc_rows, tr)
 
     if can_view(user_id, "page:overview"):
         _warm_home_bundle(tr)
