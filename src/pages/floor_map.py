@@ -217,9 +217,8 @@ def _hall_dimensions(hall_racks):
 # ── Accumulator-based rack collector (avoids O(N²) add_shape calls) ─────────
 
 def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
-                  rx, ry, status, name, rack_data, dc_id=""):
+                  rx, ry, status, name, rack_data, dc_id="", occupancy=None):
     """Append shape dicts and hover point data to accumulator lists."""
-    fill, dark = _color(status)
     rid       = rack_data.get("id") or ""
     u         = rack_data.get("u_height") or 0
     pwr       = rack_data.get("kabin_enerji") or "—"
@@ -227,6 +226,20 @@ def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
     rack_type = rack_data.get("rack_type") or "—"
     serial    = rack_data.get("serial") or "—"
     led_fill  = "#ECFDF3" if status == "active" else "rgba(255,255,255,0.65)"
+
+    # Phase 1 (no occupancy yet) keeps the status color; phase 2 colors by fill.
+    if occupancy is None:
+        fill, dark = _color(status)
+        occupied_u = None
+    else:
+        occupied_u = occupancy.get(name)
+        fill, dark = _color_by_fill(status, occupied_u, u)
+    info = _rack_fill_info(occupied_u, u)
+    if info["occupied"] is None:
+        doluluk_str, free_str = "—", "—"
+    else:
+        doluluk_str = f"{info['occupied']}/{info['total']}U (%{info['pct']})"
+        free_str = f"{info['free']}U"
 
     # 5 shapes per rack — appended to list (set once in bulk later)
     shapes.append(dict(
@@ -250,11 +263,12 @@ def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
     hover_x.append(rx + RACK_W / 2)
     hover_y.append(ry + RACK_H / 2 + 2)
     hover_text.append(name[:6])
-    hover_cd.append([rid, name, status, u, pwr, rh, rack_type, serial, dc_id])
+    hover_cd.append([rid, name, status, u, pwr, rh, rack_type, serial, dc_id,
+                     doluluk_str, free_str, info["label"]])
 
 
 def _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_cd,
-                       hx, hy, hall_name, dims, dc_id=""):
+                       hx, hy, hall_name, dims, dc_id="", occupancy=None):
     """Collect hall background, label, aisle, and all rack shapes into accumulator lists."""
     zw = dims["zone_w"]
     zh = dims["zone_h"]
@@ -324,7 +338,8 @@ def _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_
             rx = hx + ZONE_PAD_X + ci * (RACK_W + GAP_X)
             status = (rack.get("status") or "unknown").lower()
             _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
-                          rx, ry_base, status, str(rack.get("name") or "?"), rack, dc_id=dc_id)
+                          rx, ry_base, status, str(rack.get("name") or "?"), rack,
+                          dc_id=dc_id, occupancy=occupancy)
 
     for i, rack in enumerate(ungridded):
         ci = i % n_ung_per_row
@@ -333,14 +348,18 @@ def _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_
         rx = hx + ZONE_PAD_X + ci * (RACK_W + GAP_X)
         status = (rack.get("status") or "unknown").lower()
         _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
-                      rx, ry_base, status, str(rack.get("name") or "?"), rack, dc_id=dc_id)
+                      rx, ry_base, status, str(rack.get("name") or "?"), rack,
+                      dc_id=dc_id, occupancy=occupancy)
 
 
 # ── Main figure builder ─────────────────────────────────────────────────────
 
-def build_floor_map_figure(racks, dc_id=""):
+def build_floor_map_figure(racks, dc_id="", occupancy=None):
     # ── Cache lookup ─────────────────────────────────────────────────────────
-    fp = _rack_fingerprint(dc_id, racks)
+    # occupancy is part of the fingerprint so a phase-1 (status) figure is never
+    # served in place of a phase-2 (fill-colored) one, and vice versa.
+    occ_fp = "|".join(f"{k}:{v}" for k, v in sorted(occupancy.items())) if occupancy else ""
+    fp = _rack_fingerprint(dc_id, racks) + "::" + occ_fp
     cached = _FIG_CACHE.get(fp)
     if cached is not None:
         _logger.debug("floor_map figure cache HIT dc=%s racks=%d", dc_id, len(racks))
@@ -427,7 +446,7 @@ def build_floor_map_figure(racks, dc_id=""):
         hy_from_top = FLOOR_PAD + sum(row_heights[:gr]) + HALL_ROW_GAP * gr
         hy = floor_h - hy_from_top - dims["zone_h"]
         _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_cd,
-                           hx, hy, hall_name, dims, dc_id=dc_id)
+                           hx, hy, hall_name, dims, dc_id=dc_id, occupancy=occupancy)
 
     # ── Build figure — set shapes/annotations in bulk (O(N) not O(N²)) ──────
     fig = go.Figure()
@@ -445,7 +464,9 @@ def build_floor_map_figure(racks, dc_id=""):
                 "<b>%{customdata[1]}</b><br>"
                 "Hall: %{customdata[5]}<br>"
                 "Status: %{customdata[2]}<br>"
-                "U: %{customdata[3]}U<br>"
+                "Doluluk: %{customdata[9]}<br>"
+                "Boş (satılabilir): %{customdata[10]}<br>"
+                "Durum: %{customdata[11]}<br>"
                 "Power: %{customdata[4]}<br>"
                 "Type: %{customdata[6]}"
                 "<extra></extra>"
