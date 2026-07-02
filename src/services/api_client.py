@@ -522,6 +522,18 @@ def _should_persist_api_cache(value: Any, empty_fallback: Any) -> bool:
 
 
 
+def _wait_for_shared_result(cache_key: str, timeout: float) -> bool:
+    """Poll the shared cache for another pod's in-flight fetch result. Returns
+    True as soon as the key appears, False on timeout."""
+    deadline = time.time() + timeout
+    while True:
+        if _api_response_cache.get(cache_key) is not None:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.15)
+
+
 def _api_cache_get_with_stale(
     cache_key: str,
     fetch_normalized: Callable[[], Any],
@@ -549,22 +561,34 @@ def _api_cache_get_with_stale(
         hit = _api_response_cache.get(cache_key)
         return _clone(hit) if hit is not None else _clone(empty_fallback)
 
-    t0 = time.time()
+    # Per-process leader. Try the cross-pod lock so only ONE pod fetches this key;
+    # other pods wait for its result in the shared cache (kills the stampede).
+    got_lock = _api_response_cache.try_acquire(cache_key, _INFLIGHT_WAIT_SECONDS)
     try:
-        out = fetch_normalized()
-        _record_cache_fetch(time.time() - t0)
-        if _should_persist_api_cache(out, empty_fallback):
-            _api_response_cache.set(cache_key, out)
-            _mark_fetched(cache_key)
-        return out
-    except _HTTP_ERRORS as exc:
-        _record_cache_fetch(time.time() - t0, error=True)
-        logger.warning("API cache fetch failed for key=%s: %s", cache_key, exc)
-        hit = _api_response_cache.get(cache_key)
-        if hit is not None:
-            return _clone(hit)
-        return _clone(empty_fallback)
+        if not got_lock:
+            if _wait_for_shared_result(cache_key, _INFLIGHT_WAIT_SECONDS):
+                hit = _api_response_cache.get(cache_key)
+                if hit is not None:
+                    return _clone(hit)
+            # No result before timeout — fetch ourselves as a fallback.
+        t0 = time.time()
+        try:
+            out = fetch_normalized()
+            _record_cache_fetch(time.time() - t0)
+            if _should_persist_api_cache(out, empty_fallback):
+                _api_response_cache.set(cache_key, out)
+                _mark_fetched(cache_key)
+            return out
+        except _HTTP_ERRORS as exc:
+            _record_cache_fetch(time.time() - t0, error=True)
+            logger.warning("API cache fetch failed for key=%s: %s", cache_key, exc)
+            hit = _api_response_cache.get(cache_key)
+            if hit is not None:
+                return _clone(hit)
+            return _clone(empty_fallback)
     finally:
+        if got_lock:
+            _api_response_cache.release(cache_key)
         with _inflight_lock:
             _inflight.pop(cache_key, None)
         ev.set()
