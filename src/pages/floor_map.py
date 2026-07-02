@@ -656,26 +656,26 @@ def build_floor_map_layout(dc_id, dc_name, racks):
                                     ),
                                 ],
                             ),
-                            # Legend
+                            # Legend — fill-based (color by U-occupancy)
                             dmc.Group(
                                 gap="lg", mt="sm", px="sm",
                                 children=[
-                                    dmc.Group(gap=6, align="center", children=[
-                                        html.Div(className="fm-legend-swatch fm-swatch-active"),
-                                        dmc.Text("Active", size="xs", c="#667085"),
-                                    ]),
-                                    dmc.Group(gap=6, align="center", children=[
-                                        html.Div(className="fm-legend-swatch fm-swatch-inactive"),
-                                        dmc.Text("Inactive", size="xs", c="#667085"),
-                                    ]),
-                                    dmc.Group(gap=6, align="center", children=[
-                                        html.Div(className="fm-legend-swatch fm-swatch-planned"),
-                                        dmc.Text("Planned", size="xs", c="#667085"),
-                                    ]),
-                                    dmc.Group(gap=6, align="center", children=[
-                                        html.Div(className="fm-legend-swatch fm-swatch-unknown"),
-                                        dmc.Text("Unknown", size="xs", c="#667085"),
-                                    ]),
+                                    *[
+                                        dmc.Group(gap=6, align="center", children=[
+                                            html.Div(
+                                                className="fm-legend-swatch",
+                                                style={"backgroundColor": FILL_PALETTE[key][0]},
+                                            ),
+                                            dmc.Text(label, size="xs", c="#667085"),
+                                        ])
+                                        for key, label in (
+                                            ("green", "Satılabilir alan var"),
+                                            ("orange", "Orta"),
+                                            ("red", "Çok dolu"),
+                                            ("blue", "Boş / Kapalı"),
+                                            ("unknown", "Bilinmiyor"),
+                                        )
+                                    ],
                                     dmc.Text(
                                         "Scroll to zoom · Drag to pan · Click rack to inspect",
                                         size="xs", c="#98A2B3", ml="auto",
