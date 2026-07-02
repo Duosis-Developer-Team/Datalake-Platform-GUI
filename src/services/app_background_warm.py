@@ -216,6 +216,27 @@ def warm_rbac_scope(
     return stats
 
 
+def warm_common(time_range: dict | None = None) -> dict:
+    """User-independent warm of the shared aggregate data (overview + datacenters
+    + SLA), so the cache stays hot even with no logged-in session. Re-reads
+    default_time_range each call, so it also covers the daily 7d-window rollover."""
+    from src.services import api_client as api
+    from src.utils.time_range import default_time_range
+
+    tr = time_range or default_time_range()
+    stats: dict = {"home": False, "dc_avail_sla": 0}
+    if _should_pause():
+        return stats
+    _warm_home_bundle(tr)
+    stats["home"] = True
+    try:
+        dc_rows = api.get_all_datacenters_summary(tr) or []
+    except Exception:
+        dc_rows = []
+    stats["dc_avail_sla"] = _warm_dc_and_availability_sla(dc_rows, tr)
+    return stats
+
+
 def _warm_guarded(user_id: int, tr: dict | None) -> None:
     global _in_flight, _last_warm
     with _lock:

@@ -171,6 +171,25 @@ def _warm_worker_local_customer_availability_cache() -> None:
 
 threading.Thread(target=_warm_worker_local_customer_availability_cache, daemon=True).start()
 
+
+def _periodic_common_warm() -> None:
+    """User-independent periodic warm: keep the shared aggregate cache (overview,
+    datacenters, availability SLA) hot even with no logged-in session, and pick up
+    the daily time-window rollover. Runs in every worker; the shared cache dedupes
+    the result."""
+    from src.services.app_background_warm import warm_common
+
+    interval = int(os.environ.get("APP_COMMON_WARM_INTERVAL_SECONDS", "240") or "240")
+    while True:
+        try:
+            warm_common()
+        except Exception as exc:  # never let the warm loop die
+            _log.debug("periodic common warm failed: %s", exc)
+        time_module.sleep(interval)
+
+
+threading.Thread(target=_periodic_common_warm, daemon=True).start()
+
 _sidebar = html.Div(
     id="sidebar-shell",
     style={
