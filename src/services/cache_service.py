@@ -15,6 +15,7 @@ import logging
 import os
 import pickle
 import threading
+import time
 from collections import OrderedDict
 from typing import Any, Optional
 
@@ -35,6 +36,21 @@ class InProcessBackend:
         self._max_size = max_size
         self._cache: "OrderedDict[str, Any]" = OrderedDict()
         self._lock = threading.RLock()
+        self._locks: dict[str, float] = {}  # lock_key -> expiry epoch
+
+    def try_acquire(self, lock_key: str, ttl: float) -> bool:
+        """Atomic acquire: True if the lock was free (per-process), else False."""
+        with self._lock:
+            now = time.time()
+            exp = self._locks.get(lock_key)
+            if exp is not None and exp > now:
+                return False
+            self._locks[lock_key] = now + ttl
+            return True
+
+    def release(self, lock_key: str) -> None:
+        with self._lock:
+            self._locks.pop(lock_key, None)
 
     def get(self, key: str) -> Optional[Any]:
         with self._lock:
@@ -157,6 +173,21 @@ class RedisBackend:
     def stats(self) -> dict:
         return {"backend": "redis", "namespace": self._ns, "current_size": self.size()}
 
+    def try_acquire(self, lock_key: str, ttl: float) -> bool:
+        """Atomic cross-pod acquire via SET NX EX. On a Redis error, act as the
+        leader (return True) so the caller fetches rather than blocking forever."""
+        try:
+            return bool(self._r.set(self._k("__lock__:" + lock_key), b"1", nx=True, ex=int(max(1, ttl))))
+        except Exception as exc:
+            logger.warning("Redis lock acquire failed for %s: %s", lock_key, exc)
+            return True
+
+    def release(self, lock_key: str) -> None:
+        try:
+            self._r.delete(self._k("__lock__:" + lock_key))
+        except Exception as exc:
+            logger.warning("Redis lock release failed for %s: %s", lock_key, exc)
+
 
 def make_backend_from_env(env: Optional[dict] = None) -> Any:
     """Pick the cache backend from the environment.
@@ -231,6 +262,17 @@ def clear() -> None:
     """Flush the entire cache (e.g. on config reload or forced refresh)."""
     _backend.clear()
     logger.info("Cache cleared.")
+
+
+def try_acquire(lock_key: str, ttl: float) -> bool:
+    """Atomic single-flight lock (shared across pods when the backend is Redis).
+    True => caller is the leader and should fetch; False => someone else holds it."""
+    return _backend.try_acquire(lock_key, ttl)
+
+
+def release(lock_key: str) -> None:
+    """Release a lock acquired via try_acquire."""
+    _backend.release(lock_key)
 
 
 def cached(key_fn):
