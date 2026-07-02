@@ -99,6 +99,54 @@ def _color(status):
     return STATUS_FILL.get(k, STATUS_FILL["unknown"]), STATUS_DARK.get(k, STATUS_DARK["unknown"])
 
 
+# ── Fill-based palette (color by U-occupancy) ──────────────────────────────
+FILL_PALETTE = {
+    "green":   ("#17B26A", "#027A48"),   # sellable headroom
+    "orange":  ("#F79009", "#B54708"),   # medium
+    "red":     ("#F04438", "#B42318"),   # full
+    "blue":    ("#2E90FA", "#175CD3"),   # empty / non-active
+    "unknown": ("#98A2B3", "#667085"),   # occupancy not yet known
+}
+
+_NON_ACTIVE_STATUSES = ("inactive", "planned", "closed")
+
+
+def _color_by_fill(status, occupied_u, total_u):
+    """(fill, dark) by U-occupancy: gray if occupancy unknown; blue if the rack
+    is non-active or empty; else green <50%, orange 50-80%, red >80%."""
+    if occupied_u is None:
+        return FILL_PALETTE["unknown"]
+    if (status or "").lower() in _NON_ACTIVE_STATUSES:
+        return FILL_PALETTE["blue"]
+    if occupied_u <= 0:
+        return FILL_PALETTE["blue"]
+    pct = (occupied_u / total_u * 100) if total_u else 0
+    if pct > 80:
+        return FILL_PALETTE["red"]
+    if pct >= 50:
+        return FILL_PALETTE["orange"]
+    return FILL_PALETTE["green"]
+
+
+def _rack_fill_info(occupied_u, total_u):
+    """Occupancy summary for the hover popup: occupied/total/free/pct + label."""
+    total = int(total_u or 0)
+    if occupied_u is None:
+        return {"occupied": None, "total": total, "free": None, "pct": None, "label": "Bilinmiyor"}
+    occ = max(int(occupied_u), 0)
+    free = max(total - occ, 0)
+    pct = round(occ / total * 100) if total else 0
+    if occ == 0:
+        label = "Boş"
+    elif pct > 80:
+        label = "Çok dolu"
+    elif pct >= 50:
+        label = "Orta"
+    else:
+        label = "Satılabilir alan var"
+    return {"occupied": occ, "total": total, "free": free, "pct": pct, "label": label}
+
+
 def _parse_row_col(identifier):
     if not identifier:
         return None, None
