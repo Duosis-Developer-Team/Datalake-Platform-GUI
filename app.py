@@ -1748,6 +1748,23 @@ def _detail_row(icon, label, value):
 
 
 @app.callback(
+    dash.Output("floor-map-graph", "figure"),
+    dash.Input("floor-map-occupancy-interval", "n_intervals"),
+    dash.State("selected-building-dc-store", "data"),
+    prevent_initial_call=True,
+)
+def recolor_floor_map_by_fill(n_intervals, dc_store):
+    """Phase 2: after the fast status-colored paint, recolor racks by U-fill."""
+    dc_id = (dc_store or {}).get("dc_id", "")
+    if not n_intervals or not dc_id:
+        return dash.no_update
+    from src.pages.floor_map import build_recolored_floor_map_figure
+
+    fig = build_recolored_floor_map_figure(dc_id)
+    return fig if fig is not None else dash.no_update
+
+
+@app.callback(
     dash.Output("floor-map-rack-detail", "children"),
     dash.Input("floor-map-graph", "clickData"),
     dash.State("selected-building-dc-store", "data"),

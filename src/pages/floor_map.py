@@ -529,6 +529,19 @@ def build_floor_map_figure(racks, dc_id="", occupancy=None):
     return fig
 
 
+def build_recolored_floor_map_figure(dc_id):
+    """Phase 2: fetch racks + per-rack occupancy and return the fill-colored
+    figure the phase-2 callback swaps in after the fast status-colored paint.
+    Returns None if the DC has no racks."""
+    from src.services import api_client as api
+
+    racks = (api.get_dc_racks(dc_id or "") or {}).get("racks", [])
+    if not racks:
+        return None
+    occupancy = _fetch_rack_occupancy(dc_id, racks)
+    return build_floor_map_figure(racks, dc_id=dc_id, occupancy=occupancy)
+
+
 # ── Layout builder ──────────────────────────────────────────────────────────
 
 def build_floor_map_layout(dc_id, dc_name, racks):
@@ -634,6 +647,12 @@ def build_floor_map_layout(dc_id, dc_name, racks):
                                         config={"scrollZoom": True,
                                                 "displayModeBar": False},
                                         style={"height": "560px"},
+                                    ),
+                                    # Phase 2: fires once shortly after the fast
+                                    # status-colored paint to recolor racks by fill.
+                                    dcc.Interval(
+                                        id="floor-map-occupancy-interval",
+                                        interval=400, max_intervals=1,
                                     ),
                                 ],
                             ),
