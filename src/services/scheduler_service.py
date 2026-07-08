@@ -88,6 +88,47 @@ def refresh_dc_network_caches() -> None:
         logger.warning("GUI network cache refresh failed: %s", exc)
 
 
+def _warm_dc_nutanix_for_range(tr: dict) -> None:
+    """Prime GUI api:* cache for the Nutanix snapshot panel (summary + first page)."""
+    try:
+        summaries = api.get_all_datacenters_summary(tr)
+    except Exception as exc:
+        logger.warning("GUI nutanix warm: datacenter summary failed: %s", exc)
+        return
+
+    dc_ids = [dc.get("id") for dc in (summaries or []) if dc.get("id")]
+    for dc_id in dc_ids:
+        try:
+            snap = api.get_dc_nutanix_snapshots(dc_id, tr)
+            if not (snap or {}).get("rows"):
+                continue
+            api.get_dc_nutanix_snapshot_table(dc_id, tr, page=1, page_size=50)
+            api.get_dc_nutanix_missing(dc_id, tr, page=1, page_size=50)
+        except Exception as exc:
+            logger.warning("GUI nutanix warm failed for DC %s: %s", dc_id, exc)
+
+
+def warm_dc_nutanix_snapshots() -> None:
+    """Warm GUI HTTP response cache for Nutanix snapshot panels (default range)."""
+    logger.info("Warming GUI nutanix snapshot cache for default time range…")
+    try:
+        _warm_dc_nutanix_for_range(default_time_range())
+        logger.info("GUI nutanix snapshot cache warm-up complete for default range.")
+    except Exception as exc:
+        logger.warning("GUI nutanix snapshot cache warm-up failed: %s", exc)
+
+
+def refresh_dc_nutanix_snapshot_caches() -> None:
+    """Refresh GUI nutanix snapshot cache for all standard reporting ranges."""
+    logger.info("GUI nutanix snapshot cache refresh started.")
+    try:
+        for tr in cache_time_ranges():
+            _warm_dc_nutanix_for_range(tr)
+        logger.info("GUI nutanix snapshot cache refresh complete.")
+    except Exception as exc:
+        logger.warning("GUI nutanix snapshot cache refresh failed: %s", exc)
+
+
 def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
     """
     1. Warm the cache immediately (blocking, runs in the calling thread).
@@ -297,6 +338,34 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
         logger.info("Scheduled network cache refresh every 30 minutes.")
     except Exception as exc:
         logger.warning("Failed to schedule network cache refresh: %s", exc)
+
+    # Step 8c: warm nutanix snapshot cache once in the background (default range).
+    try:
+        scheduler.add_job(
+            func=warm_dc_nutanix_snapshots,
+            trigger=DateTrigger(run_date=datetime.now()),
+            id="nutanix_snapshot_initial_warm",
+            name="Initial nutanix snapshot cache warm-up (default range)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled initial nutanix snapshot cache warm-up for default range.")
+    except Exception as exc:
+        logger.warning("Failed to schedule initial nutanix snapshot cache warm-up: %s", exc)
+
+    # Step 8d: periodic nutanix snapshot cache refresh (every 30 minutes).
+    try:
+        scheduler.add_job(
+            func=refresh_dc_nutanix_snapshot_caches,
+            trigger=IntervalTrigger(minutes=30),
+            id="nutanix_snapshot_refresh",
+            name="Nutanix snapshot cache refresh (30 minutes)",
+            replace_existing=True,
+            misfire_grace_time=60,
+        )
+        logger.info("Scheduled nutanix snapshot cache refresh every 30 minutes.")
+    except Exception as exc:
+        logger.warning("Failed to schedule nutanix snapshot cache refresh: %s", exc)
 
     # Step 9: schedule periodic physical inventory cache refresh (every 30 minutes).
     try:

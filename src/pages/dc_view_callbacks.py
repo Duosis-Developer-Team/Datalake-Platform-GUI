@@ -192,3 +192,66 @@ def expand_dc_view_on_tab(active_tab, pathname, time_range, visible_sections, lo
         raise dash.exceptions.PreventUpdate
 
     return (*updates, sorted(loaded))
+
+
+# ---------------------------------------------------------------------------
+# Nutanix snapshot table: pagination + search + live-SQL refresh
+# ---------------------------------------------------------------------------
+
+from src.services import api_client as _api  # noqa: E402
+from src.components.backup_panel import nutanix_snapshot_table as _nutanix_snapshot_table  # noqa: E402
+
+_NUTANIX_PAGE_SIZE = 50
+
+
+@callback(
+    Output("backup-nutanix-table", "children"),
+    Output("backup-nutanix-pageinfo", "children"),
+    Output("backup-nutanix-page", "data"),
+    Input("backup-nutanix-search", "value"),
+    Input("backup-nutanix-prev", "n_clicks"),
+    Input("backup-nutanix-next", "n_clicks"),
+    Input("backup-nutanix-refresh", "n_clicks"),
+    Input("backup-nutanix-filter-customer", "value"),
+    Input("backup-nutanix-filter-schedtype", "value"),
+    Input("backup-nutanix-filter-retention", "value"),
+    Input("backup-nutanix-filter-cluster", "value"),
+    Input("dc-main-tabs", "value"),
+    State("backup-nutanix-page", "data"),
+    State("url", "pathname"),
+    prevent_initial_call=True,
+)
+def _update_nutanix_snapshot_table(search, prev_n, next_n, refresh_n,
+                                   f_customer, f_schedtype, f_retention, f_cluster,
+                                   active_tab, page, pathname):
+    dc_id = _dc_id_from_path(pathname)
+    if not dc_id or (active_tab or "") != "backup":
+        return dash.no_update, dash.no_update, dash.no_update
+
+    trig = ctx.triggered_id
+    page = int(page or 1)
+    if trig == "backup-nutanix-next":
+        page += 1
+    elif trig == "backup-nutanix-prev":
+        page = max(1, page - 1)
+    else:
+        # search / refresh / any filter change → back to page 1
+        page = 1
+        if trig == "backup-nutanix-refresh" and refresh_n:
+            try:
+                _api.refresh_dc_nutanix_snapshots_cache(dc_id)
+            except Exception:  # noqa: BLE001 — refresh best-effort; fall through to fetch
+                pass
+
+    try:
+        payload = _api.get_dc_nutanix_snapshot_table(
+            dc_id, None, page=page, page_size=_NUTANIX_PAGE_SIZE, search=search or "",
+            customers=f_customer or None, schedule_types=f_schedtype or None,
+            retentions=f_retention or None, clusters=f_cluster or None)
+    except Exception:  # noqa: BLE001
+        return dash.no_update, dash.no_update, dash.no_update
+
+    total = int(payload.get("total", 0) or 0)
+    pages = max(1, -(-total // _NUTANIX_PAGE_SIZE))
+    page = min(page, pages)
+    return _nutanix_snapshot_table(payload.get("items", [])), f"{page} / {pages}", page

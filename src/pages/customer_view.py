@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from src.components.customer_loading import build_customer_loading_shell
+from src.components.backup_panel import build_nutanix_snapshot_panel
 from src.services import api_client as api
 from src.utils.time_range import default_time_range
 from src.utils.export_helpers import (
@@ -2063,6 +2064,7 @@ def _build_backup_tabs(
     eff_by_cat: list | None,
     *,
     include_sold_vs_used: bool,
+    nutanix_payload: dict | None = None,
 ) -> html.Div:
     """Backup vendor nested tabs; sold-vs-used panels optional (manager perspective only)."""
     backup_tab_defs: list[tuple[str, str, html.Div]] = []
@@ -2086,6 +2088,14 @@ def _build_backup_tabs(
                 "netbackup",
                 "Netbackup",
                 _tab_netbackup(backup_assets, backup_totals, crm_eff_panel=_eff_panel("backup.netbackup")),
+            )
+        )
+    if nutanix_payload and nutanix_payload.get("rows"):
+        backup_tab_defs.append(
+            (
+                "nutanix",
+                "Nutanix",
+                build_nutanix_snapshot_panel(nutanix_payload, paginated=False),
             )
         )
 
@@ -2386,7 +2396,8 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
             ),
             "avail": avail_panel,
             "backup": _build_backup_tabs(
-                backup_assets, backup_totals, eff_by_cat, include_sold_vs_used=is_mgr
+                backup_assets, backup_totals, eff_by_cat, include_sold_vs_used=is_mgr,
+                nutanix_payload=api.get_customer_nutanix_snapshots(name, time_range),
             ),
             "itsm": itsm_panel,
             "s3": s3_panel,
@@ -2486,6 +2497,7 @@ def render_backup_tab(name: str, tr: dict | None, perspective: str):
         totals.get("backup", {}) or {},
         api.get_customer_efficiency_by_category(name, tr),
         include_sold_vs_used=(perspective == PERSPECTIVE_MANAGER),
+        nutanix_payload=api.get_customer_nutanix_snapshots(name, tr),
     )
 
 

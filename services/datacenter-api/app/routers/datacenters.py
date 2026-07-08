@@ -79,6 +79,55 @@ def dc_veeam(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Dep
     return db.get_dc_veeam_repos(dc_code, tf.to_dict())
 
 
+@router.get("/datacenters/{dc_code}/backup/nutanix", response_model=dict[str, Any])
+def dc_nutanix_snapshots(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_dc_nutanix_snapshots(dc_code, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/backup/nutanix/table", response_model=dict[str, Any])
+def dc_nutanix_snapshot_table(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    search: Optional[str] = Query(""),
+    customers: Optional[str] = Query(None, description="comma-separated"),
+    schedule_types: Optional[str] = Query(None, description="comma-separated"),
+    retentions: Optional[str] = Query(None, description="comma-separated"),
+    clusters: Optional[str] = Query(None, description="comma-separated"),
+):
+    def _split(v):
+        return [p for p in (v or "").split(",") if p] or None
+
+    return db.get_dc_nutanix_snapshot_table(
+        dc_code, tf.to_dict(), page=page, page_size=page_size, search=search or "",
+        customers=_split(customers), schedule_types=_split(schedule_types),
+        retentions=_split(retentions), clusters=_split(clusters),
+    )
+
+
+@router.get("/datacenters/{dc_code}/backup/nutanix/missing", response_model=dict[str, Any])
+def dc_nutanix_missing(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    return db.get_dc_nutanix_missing(dc_code, tf.to_dict(), page=page, page_size=page_size)
+
+
+@router.post("/datacenters/{dc_code}/backup/nutanix/refresh")
+def dc_nutanix_refresh(dc_code: str, db: DatabaseService = Depends(get_db)):
+    return db.refresh_dc_nutanix_snapshots(dc_code)
+
+
+@router.get("/customers/{customer}/backup/nutanix", response_model=dict[str, Any])
+def customer_nutanix_snapshots(customer: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
+    return db.get_customer_nutanix_snapshots(customer, tf.to_dict())
+
+
 @router.get("/datacenters/{dc_code}/backup/veeam/jobs", response_model=JobStatsResponse)
 def dc_veeam_jobs(
     dc_code: str,

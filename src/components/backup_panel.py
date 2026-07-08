@@ -1118,3 +1118,257 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
         ]
     )
 
+
+
+# ---------------------------------------------------------------------------
+# Nutanix snapshots
+# ---------------------------------------------------------------------------
+
+_NUTANIX_TABLE_HEADERS = [
+    "Nutanix IP", "Cluster", "Customer", "Schedule", "VMs", "Entity Type",
+    "Schedule Type", "Retention", "Start", "Create", "Expiry", "Size",
+]
+
+_NUTANIX_SCHED_COLORS = ["#4318FF", "#12B886", "#FFB547", "#EE5D50", "#15AABF", "#ADB5BD"]
+
+
+def _ts(value) -> str:
+    """ISO string → 'YYYY-MM-DD HH:MM:SS' for compact table display."""
+    if not value:
+        return "—"
+    return str(value)[:19].replace("T", " ")
+
+
+def _nsnap_cell(value, *, max_width: str | None = None, title: str | None = None):
+    """Table cell: single-line (nowrap); optional ellipsis truncation with a
+    hover tooltip for long values (VM lists, long schedule names)."""
+    style = {"whiteSpace": "nowrap"}
+    if max_width:
+        style.update({"maxWidth": max_width, "overflow": "hidden", "textOverflow": "ellipsis"})
+    kwargs = {"style": style}
+    if title:
+        kwargs["title"] = title
+    return html.Td(value, **kwargs)
+
+
+def nutanix_snapshot_table(items: list[dict]) -> html.Div:
+    head = html.Thead(
+        html.Tr([html.Th(h, style={"fontSize": "0.75rem", "color": "#A3AED0"})
+                 for h in _NUTANIX_TABLE_HEADERS])
+    )
+    body = []
+    for r in items or []:
+        pd = r.get("protection_domain_name") or "—"
+        vm = r.get("vm_names") or ""
+        body.append(html.Tr(children=[
+            _nsnap_cell(r.get("nutanix_ip")),
+            _nsnap_cell(r.get("cluster") or "—"),
+            _nsnap_cell(r.get("customer") or "—"),
+            _nsnap_cell(pd, max_width="240px", title=pd),
+            _nsnap_cell(vm or "—", max_width="260px", title=vm),
+            _nsnap_cell(r.get("entity_type") or "—", max_width="180px", title=r.get("entity_type") or ""),
+            _nsnap_cell(r.get("schedule_type") or "—"),
+            _nsnap_cell(str(r.get("retention")) if r.get("retention") is not None else "—"),
+            _nsnap_cell(_ts(r.get("start_time"))),
+            _nsnap_cell(_ts(r.get("create_time"))),
+            _nsnap_cell(_ts(r.get("expiry_time"))),
+            _nsnap_cell(smart_bytes(r.get("size_in_bytes", 0) or 0)),
+        ]))
+    if not body:
+        body = [html.Tr(html.Td("Bu aralıkta snapshot yok.", colSpan=len(_NUTANIX_TABLE_HEADERS),
+                                style={"textAlign": "center", "color": "#A3AED0", "padding": "24px"}))]
+    table = dmc.Table(
+        striped=True, highlightOnHover=True, withTableBorder=False, withColumnBorders=False,
+        className="nexus-table dc-premium-table", style={"minWidth": "1180px"},
+        children=[head, html.Tbody(body)],
+    )
+    # Horizontal scroll so wide columns are reachable (repo pattern: overflowX auto).
+    return html.Div(style={"overflowX": "auto", "width": "100%"}, children=table)
+
+
+def _nutanix_sched_donut(breakdown: dict) -> go.Figure:
+    items = [(k, v) for k, v in (breakdown or {}).items() if v]
+    labels = [k for k, _ in items] or ["No data"]
+    values = [v for _, v in items] or [1]
+    fig = go.Figure(data=[go.Pie(
+        labels=labels, values=values, hole=0.72, sort=False, direction="clockwise",
+        marker=dict(colors=_NUTANIX_SCHED_COLORS, line=dict(color="rgba(0,0,0,0)", width=0)),
+        textinfo="label+percent",
+        hovertemplate="<b>%{label}</b><br>%{value} snapshot (%{percent})<extra></extra>",
+    )])
+    fig.update_layout(
+        title=dict(text="<b>Snapshots by Schedule</b>", x=0.5, xanchor="center",
+                   font=dict(size=11, color="#A3AED0", family="DM Sans")),
+        margin=dict(l=8, r=8, t=28, b=8), showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)", height=260,
+    )
+    return fig
+
+
+def _nutanix_state_panel(state_breakdown: dict) -> html.Div:
+    rows = []
+    palette = {"AVAILABLE": "#05CD99", "EXPIRED": "#EE5D50", "RETAIN_FOREVER": "#4318FF"}
+    for state, count in (state_breakdown or {}).items():
+        rows.append(dmc.Group(gap="xs", align="center", children=[
+            DashIconify(icon="solar:record-circle-bold-duotone", width=18,
+                        style={"color": palette.get(state, "#A3AED0")}),
+            html.Span(f"{count:,}", style={"fontSize": "1.4rem", "fontWeight": 800, "color": "#2B3674"}),
+            html.Span(state, style={"fontSize": "0.78rem", "color": "#A3AED0", "marginLeft": "4px"}),
+        ]))
+    if not rows:
+        rows = [html.Span("—", style={"color": "#A3AED0"})]
+    return html.Div(
+        className="nexus-card dc-kpi-card",
+        style={"padding": "20px 24px", "flex": "1", "minWidth": "200px",
+               "display": "flex", "flexDirection": "column", "gap": "12px", "justifyContent": "center"},
+        children=[
+            html.Div(style={"borderBottom": "1px solid #F4F7FE", "paddingBottom": "12px"},
+                     children=[html.Span("SNAPSHOT STATE", style={
+                         "fontSize": "0.7rem", "fontWeight": 700, "color": "#A3AED0",
+                         "letterSpacing": "0.08em", "textTransform": "uppercase"})]),
+            *rows,
+        ],
+    )
+
+
+def build_nutanix_snapshot_panel(data: dict, table: dict | None = None, missing: dict | None = None,
+                                 *, paginated: bool = True):
+    """Nutanix snapshot panel: KPI cards + schedule donut + state panel +
+    per-snapshot table + collapsible Missing Entities section.
+
+    `data`      = get_dc/customer_nutanix_snapshots payload ({rows, totals, as_of}).
+    `table`     = first-page table payload ({items, total}) — DC view (server-paged).
+    `missing`   = missing-entities payload ({items, total}).
+    `paginated` = True for DC view (server-side pagination + live-refresh controls).
+                  False for customer view (small, single-customer) — renders all
+                  rows from `data['rows']` with no pagination controls.
+    """
+    totals = (data or {}).get("totals") or {}
+    all_rows = (data or {}).get("rows") or []
+    if paginated:
+        table = table or {"items": [], "total": 0}
+        missing = missing or {"items": [], "total": 0}
+    else:
+        table = {"items": all_rows, "total": len(all_rows)}
+        missing = {"items": [r for r in all_rows if r.get("missing_entity")],
+                   "total": sum(1 for r in all_rows if r.get("missing_entity"))}
+    total_rows = int(table.get("total", 0) or 0)
+    pages = max(1, -(-total_rows // 50)) if total_rows else 1
+
+    header = html.Div(
+        style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
+               "marginBottom": "16px"},
+        children=[
+            dmc.Group(gap="md", children=[
+                DashIconify(icon="solar:gallery-wide-bold-duotone", width=28, style={"color": "#4318FF"}),
+                html.Div(children=[
+                    html.H3("Nutanix Snapshots", style={"margin": 0, "fontSize": "1rem", "color": "#2B3674"}),
+                    html.P("Protection-domain snapshots: retention, schedule, size ve eksik entity'ler.",
+                           style={"margin": "2px 0 0 0", "fontSize": "0.8rem", "color": "#A3AED0"}),
+                ]),
+            ]),
+            (dmc.Tooltip(
+                label="Cache'i yenile (canlı SQL)", position="top", withArrow=True,
+                children=dmc.ActionIcon(
+                    id="backup-nutanix-refresh", variant="light", color="indigo", size="lg",
+                    children=DashIconify(icon="solar:refresh-bold-duotone", width=18)),
+            ) if paginated else None),
+        ],
+    )
+
+    kpis = html.Div(
+        style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gridTemplateRows": "1fr 1fr",
+               "gap": "8px", "width": "100%", "height": "100%"},
+        children=[
+            _kpi_card("Total snapshots", f"{int(totals.get('total_snapshots', 0)):,}",
+                      "solar:gallery-wide-bold-duotone"),
+            _kpi_card("Total size", smart_bytes(totals.get("total_size_bytes", 0) or 0),
+                      "solar:database-bold-duotone"),
+            _kpi_card("Protected VMs", f"{int(totals.get('protected_vms', 0)):,}",
+                      "solar:server-bold-duotone"),
+            _kpi_card("Missing entities", f"{int(totals.get('missing_entities', 0)):,}",
+                      "solar:danger-triangle-bold-duotone", color="orange"),
+        ],
+    )
+
+    top_grid = html.Div(
+        style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "16px", "alignItems": "stretch"},
+        children=[
+            html.Div(style={"minWidth": 0, "height": "100%"}, children=kpis),
+            _gauge_card(_nutanix_sched_donut(totals.get("schedule_type_breakdown") or {})),
+            _nutanix_state_panel(totals.get("state_breakdown") or {}),
+        ],
+    )
+
+    # Filter options derived from the full base set (all_rows).
+    def _opts(values):
+        return [{"label": v, "value": v} for v in values]
+
+    customers = sorted({r.get("customer") for r in all_rows if r.get("customer")})
+    sched_types = sorted({r.get("schedule_type") for r in all_rows if r.get("schedule_type")})
+    clusters = sorted({r.get("cluster") for r in all_rows if r.get("cluster")})
+    retentions = sorted({r.get("retention") for r in all_rows if r.get("retention") is not None})
+
+    filter_bar = html.Div(
+        style={"display": "flex", "gap": "10px", "flexWrap": "wrap", "marginBottom": "12px"},
+        children=[
+            dmc.MultiSelect(id="backup-nutanix-filter-customer", data=_opts(customers),
+                            placeholder="Customers", clearable=True, searchable=True,
+                            size="sm", style={"minWidth": "200px", "flex": "1"}, maxDropdownHeight=280),
+            dmc.MultiSelect(id="backup-nutanix-filter-schedtype", data=_opts(sched_types),
+                            placeholder="Schedule Type", clearable=True,
+                            size="sm", style={"minWidth": "160px"}),
+            dmc.MultiSelect(id="backup-nutanix-filter-retention",
+                            data=[{"label": str(v), "value": str(v)} for v in retentions],
+                            placeholder="Retention", clearable=True, searchable=True,
+                            size="sm", style={"minWidth": "150px"}),
+            dmc.MultiSelect(id="backup-nutanix-filter-cluster", data=_opts(clusters),
+                            placeholder="Cluster", clearable=True, searchable=True,
+                            size="sm", style={"minWidth": "180px", "flex": "1"}, maxDropdownHeight=280),
+        ],
+    )
+
+    controls = html.Div(
+        style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
+               "marginBottom": "12px", "gap": "12px", "flexWrap": "wrap"},
+        children=[
+            dmc.TextInput(id="backup-nutanix-search", placeholder="Ara: müşteri, schedule, VM, IP",
+                          size="sm", style={"minWidth": "300px"},
+                          leftSection=DashIconify(icon="solar:magnifer-linear", width=16)),
+            dmc.Group(gap="xs", align="center", children=[
+                dmc.ActionIcon(id="backup-nutanix-prev", variant="light", color="indigo", size="md",
+                               children=DashIconify(icon="solar:alt-arrow-left-linear", width=16)),
+                html.Span(id="backup-nutanix-pageinfo", children=f"1 / {pages}",
+                          style={"fontSize": "0.8rem", "color": "#2B3674", "fontWeight": 600, "minWidth": "70px",
+                                 "textAlign": "center"}),
+                dmc.ActionIcon(id="backup-nutanix-next", variant="light", color="indigo", size="md",
+                               children=DashIconify(icon="solar:alt-arrow-right-linear", width=16)),
+            ]),
+        ],
+    )
+
+    table_body = dcc.Loading(type="circle", color="#4318FF", delay_show=150, children=html.Div(
+        id="backup-nutanix-table" if paginated else "backup-nutanix-table-static",
+        children=nutanix_snapshot_table(table.get("items", []))))
+    table_card = html.Div(
+        className="nexus-card", style={"padding": "16px", "marginTop": "8px"},
+        children=([filter_bar, controls, dcc.Store(id="backup-nutanix-page", data=1), table_body]
+                  if paginated else [table_body]),
+    )
+
+    missing_section = dmc.Accordion(
+        chevronPosition="right", variant="separated", radius="md", style={"marginTop": "16px"},
+        children=[dmc.AccordionItem(value="missing", children=[
+            dmc.AccordionControl(
+                dmc.Group(gap="xs", children=[
+                    DashIconify(icon="solar:danger-triangle-bold-duotone", width=18, style={"color": "#FFB547"}),
+                    html.Span(f"Missing Entities ({int(missing.get('total', 0)):,})",
+                              style={"fontWeight": 600, "color": "#2B3674"}),
+                ])),
+            dmc.AccordionPanel(nutanix_snapshot_table(missing.get("items", []))),
+        ])],
+    )
+
+    return html.Div(children=[
+        header, top_grid, html.Div(style={"height": "16px"}), table_card, missing_section,
+    ])
