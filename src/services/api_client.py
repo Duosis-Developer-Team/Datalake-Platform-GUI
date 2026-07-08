@@ -862,6 +862,90 @@ def get_dc_veeam_repos(dc_code: str, tr: Optional[dict]) -> dict:
     return _api_cache_get_with_stale(ck, fetch, empty)
 
 
+def get_dc_nutanix_snapshots(dc_code: str, tr: Optional[dict]) -> dict:
+    enc = quote(dc_code, safe="")
+    empty = {"rows": [], "totals": {}, "as_of": ""}
+    ck = f"api:dc_nutanix_snap:{enc}:{_serialize_tr_cache_key(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/nutanix", params=_build_time_params(tr))
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
+def get_dc_nutanix_snapshot_table(dc_code: str, tr: Optional[dict], page: int = 1,
+                                  page_size: int = 50, search: str = "",
+                                  schedule_type: Optional[str] = None) -> dict:
+    enc = quote(dc_code, safe="")
+    empty = {"items": [], "total": 0, "page": page, "page_size": page_size}
+    ck = (f"api:dc_nutanix_snap_tbl:{enc}:{_serialize_tr_cache_key(tr)}"
+          f":p{page}:ps{page_size}:q{search}:st{schedule_type or ''}")
+
+    def fetch() -> dict:
+        params = {**_build_time_params(tr), "page": page, "page_size": page_size, "search": search or ""}
+        if schedule_type:
+            params["schedule_type"] = schedule_type
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/nutanix/table", params=params)
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
+def get_dc_nutanix_missing(dc_code: str, tr: Optional[dict], page: int = 1, page_size: int = 50) -> dict:
+    enc = quote(dc_code, safe="")
+    empty = {"items": [], "total": 0, "page": page, "page_size": page_size}
+    ck = f"api:dc_nutanix_miss:{enc}:{_serialize_tr_cache_key(tr)}:p{page}:ps{page_size}"
+
+    def fetch() -> dict:
+        params = {**_build_time_params(tr), "page": page, "page_size": page_size}
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/nutanix/missing", params=params)
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
+def get_customer_nutanix_snapshots(customer: str, tr: Optional[dict]) -> dict:
+    # Served by datacenter-api (all snapshot logic lives there), so use _get_client_dc.
+    enc = quote(customer, safe="")
+    empty = {"rows": [], "totals": {}, "as_of": ""}
+    ck = f"api:cust_nutanix_snap:{enc}:{_serialize_tr_cache_key(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(_get_client_dc(), f"/api/v1/customers/{enc}/backup/nutanix", params=_build_time_params(tr))
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
+def refresh_dc_nutanix_snapshots_cache(dc_code: str) -> dict:
+    """Force live-SQL: clear backend + GUI wrapper caches (mirror refresh_dc_backup_jobs_cache)."""
+    enc = quote(dc_code, safe="")
+    try:
+        client = _get_client_dc()
+        resp = client.post(
+            f"/api/v1/datacenters/{enc}/backup/nutanix/refresh",
+            headers=_auth_headers(),
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        payload = resp.json() if resp.content else {"status": "ok"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+    from src.services import cache_service as cs
+    for prefix in (
+        f"api:dc_nutanix_snap:{enc}:",
+        f"api:dc_nutanix_snap_tbl:{enc}:",
+        f"api:dc_nutanix_miss:{enc}:",
+    ):
+        try:
+            cs.delete_prefix(prefix)
+        except AttributeError:
+            cs.clear()
+    return payload
+
+
 def _empty_job_stats(vendor: str, granularity: str) -> dict:
     return {
         "vendor": vendor,
