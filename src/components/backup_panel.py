@@ -1214,17 +1214,27 @@ def _nutanix_state_panel(state_breakdown: dict) -> html.Div:
     )
 
 
-def build_nutanix_snapshot_panel(data: dict, table: dict | None = None, missing: dict | None = None):
+def build_nutanix_snapshot_panel(data: dict, table: dict | None = None, missing: dict | None = None,
+                                 *, paginated: bool = True):
     """Nutanix snapshot panel: KPI cards + schedule donut + state panel +
-    paginated per-snapshot table + collapsible Missing Entities section.
+    per-snapshot table + collapsible Missing Entities section.
 
-    `data`    = get_dc/customer_nutanix_snapshots payload ({rows, totals, as_of}).
-    `table`   = first-page table payload ({items, total}).
-    `missing` = missing-entities payload ({items, total}).
+    `data`      = get_dc/customer_nutanix_snapshots payload ({rows, totals, as_of}).
+    `table`     = first-page table payload ({items, total}) — DC view (server-paged).
+    `missing`   = missing-entities payload ({items, total}).
+    `paginated` = True for DC view (server-side pagination + live-refresh controls).
+                  False for customer view (small, single-customer) — renders all
+                  rows from `data['rows']` with no pagination controls.
     """
     totals = (data or {}).get("totals") or {}
-    table = table or {"items": [], "total": 0}
-    missing = missing or {"items": [], "total": 0}
+    all_rows = (data or {}).get("rows") or []
+    if paginated:
+        table = table or {"items": [], "total": 0}
+        missing = missing or {"items": [], "total": 0}
+    else:
+        table = {"items": all_rows, "total": len(all_rows)}
+        missing = {"items": [r for r in all_rows if r.get("missing_entity")],
+                   "total": sum(1 for r in all_rows if r.get("missing_entity"))}
     total_rows = int(table.get("total", 0) or 0)
     pages = max(1, -(-total_rows // 50)) if total_rows else 1
 
@@ -1240,12 +1250,12 @@ def build_nutanix_snapshot_panel(data: dict, table: dict | None = None, missing:
                            style={"margin": "2px 0 0 0", "fontSize": "0.8rem", "color": "#A3AED0"}),
                 ]),
             ]),
-            dmc.Tooltip(
+            (dmc.Tooltip(
                 label="Cache'i yenile (canlı SQL)", position="top", withArrow=True,
                 children=dmc.ActionIcon(
                     id="backup-nutanix-refresh", variant="light", color="indigo", size="lg",
                     children=DashIconify(icon="solar:refresh-bold-duotone", width=18)),
-            ),
+            ) if paginated else None),
         ],
     )
 
@@ -1292,14 +1302,13 @@ def build_nutanix_snapshot_panel(data: dict, table: dict | None = None, missing:
         ],
     )
 
+    table_body = dcc.Loading(type="circle", color="#4318FF", delay_show=150, children=html.Div(
+        id="backup-nutanix-table" if paginated else "backup-nutanix-table-static",
+        children=nutanix_snapshot_table(table.get("items", []))))
     table_card = html.Div(
         className="nexus-card", style={"padding": "16px", "marginTop": "8px"},
-        children=[
-            controls,
-            dcc.Store(id="backup-nutanix-page", data=1),
-            dcc.Loading(type="circle", color="#4318FF", delay_show=150, children=html.Div(
-                id="backup-nutanix-table", children=nutanix_snapshot_table(table.get("items", [])))),
-        ],
+        children=([controls, dcc.Store(id="backup-nutanix-page", data=1), table_body]
+                  if paginated else [table_body]),
     )
 
     missing_section = dmc.Accordion(
