@@ -124,8 +124,13 @@ Response models added to `models/schemas.py` as needed (or `dict[str, Any]` like
 - `get_dc_nutanix_snapshots(dc_code, tr)` → `…/backup/nutanix`
 - `get_dc_nutanix_snapshot_table(dc_code, tr, page, page_size, search, ...)` → `…/backup/nutanix/table`
 - `get_customer_nutanix_snapshots(customer, tr)` → `/customers/{customer}/backup/nutanix`
-- Cache keys `api:dc_nutanix_snap:{enc}:{tr}` etc., following `get_dc_netbackup_pools` conventions;
-  add prefix-delete to the existing cache-clear helpers.
+- `refresh_dc_nutanix_snapshots_cache(dc_code)` → `POST …/backup/nutanix/refresh` (mirrors
+  `refresh_dc_backup_jobs_cache`), for the panel's "Yenile" (live-SQL) button.
+- All wrappers go through `_api_cache_get_with_stale`; cache keys per §9.
+
+> **Caching is a first-class requirement here — see §9.** This feature must match the platform's
+> existing cache rigor (shared Redis, no-stale, cross-pod single-flight, warm). Do not ship an
+> uncached or naively-cached path.
 
 ---
 
@@ -195,3 +200,65 @@ Unit tests for the pure/testable pieces, following `tests/test_backup_panels.py`
   and are excluded from DC view; logged, not fatal. Customer view still shows them (IP-independent).
 - **DC-code convention drift** → reuse the exact `LIKE '%dc_code%'` approach already used by
   `queries/nutanix.py`, so behaviour matches existing Nutanix tabs.
+
+---
+
+## 9. Caching, single-flight & warm (cache rigor)
+
+Caching is a **hard requirement**, not an afterthought. The panel fans out over a very large table,
+so an uncached or per-request path would hammer the slow remote DB. We reuse the platform's existing
+two-layer cache exactly, with the more rigorous variant (single-flight + stale-TTL) because the
+`DISTINCT ON (snapshot_id)` scan is the expensive step.
+
+### 9.1 Backend (`datacenter-api`, `cache_service`) — compute the heavy set ONCE
+
+- **Base set, single-flight + stale-TTL.** `get_dc_nutanix_snapshots` computes the full DC
+  latest-per-snapshot set (enriched: cluster name, parsed customer, µs→dt, retention, KPIs,
+  schedule-type & state breakdowns, missing-entities list) via
+  `cache.run_singleflight(key, factory, ttl)` and stores it with `cache.set_with_stale(key, val,
+  fresh_ttl, stale_ttl)`. Key: `dc_nutanix_snap:{dc_code}:{start}:{end}`. The expensive SQL runs
+  **once per (DC, effective-window)** even under a concurrent stampede — matching the compute path at
+  `dc_service.py:1039–1048` (`_set_compute_cached` / `run_singleflight`), NOT the plain `cache.get/set`
+  used by the vendor pool endpoints.
+- **Pagination derives from the cached base set in-process** (slice + `search`/`schedule_type`
+  filter in Python), then caches the page result under a page-scoped key
+  `dc_nutanix_snap_tbl:{dc}:{start}:{end}:p={page}:ps={size}:q={search}` (matching the
+  `network/interface-table` per-page key shape). ⇒ page N never re-runs the `DISTINCT ON`.
+- **Inventory IP→cluster/DC map cached separately** under `nutanix_ip_dc_map` with a **long TTL
+  (~6h)** — the discovery inventory changes rarely, so we don't re-scan it on every snapshot fetch
+  (analogous to the existing `_brocade_switch_dc_cache` / `_ibm_storage_ip_dc_cache` maps).
+- **Customer variant:** `cust_nutanix_snap:{customer}:{start}:{end}`, same single-flight + stale-TTL.
+- **Refresh endpoint** `POST /datacenters/{dc}/backup/nutanix/refresh` → `cache.delete_prefix
+  ("dc_nutanix_snap:{dc}:")` + `delete_prefix("dc_nutanix_snap_tbl:{dc}:")` so the next read runs live
+  SQL. Mirrors the existing `/backup/jobs/refresh` handler.
+- **Failure = last-good, never crash:** wrap fetch in the same `(OperationalError, PoolError)` guard
+  the vendor `get_dc_*` methods use; on hard failure return the empty payload (DB hiccup never breaks
+  the tab).
+
+### 9.2 Frontend (`api_client`) — no-stale + cross-pod single-flight
+
+- Every wrapper returns through `_api_cache_get_with_stale(ck, fetch, empty)` — inheriting: **no-stale**
+  (never serve a stale entry; refetch, fall back to last-good only on hard failure), **per-process
+  single-flight**, and the **cross-pod Redis lock** (`try_acquire` / `_wait_for_shared_result`) that
+  kills the multi-pod stampede.
+- Keys: `api:dc_nutanix_snap:{enc}:{tr}`, `api:dc_nutanix_snap_tbl:{enc}:{tr}:p{page}:q{search}`,
+  `api:cust_nutanix_snap:{enc}:{tr}` — all via `_serialize_tr_cache_key(tr)` and `anchor_latest`-aware,
+  exactly like `get_dc_netbackup_pools`.
+- `refresh_dc_nutanix_snapshots_cache` also calls `cache_service.delete_prefix("api:dc_nutanix_snap")`
+  on the GUI side so the "Yenile" button forces an end-to-end live run (GUI cache → backend cache →
+  SQL), matching `refresh_dc_backup_jobs_cache`.
+
+### 9.3 Warm scheduler (`scheduler_service`) — first load is instant
+
+- Add a `warm_dc_nutanix_snapshots()` job mirroring `_warm_dc_network_for_range`: for each DC ×
+  `cache_time_ranges` (default + the standard warmed ranges), call `api.get_dc_nutanix_snapshots(dc, tr)`
+  and `api.get_dc_nutanix_snapshot_table(dc, tr, page=1, page_size=50)` **inside `warm_mode`** so the
+  cache is populated without ever serving stale, and pre-warm `nutanix_ip_dc_map`.
+- Register it alongside the existing initial + periodic warm steps (same cadence as the network warm),
+  so cold-cache freezes (the "yüklenmiyor" class of issue) never surface on this tab.
+
+### 9.4 Effective-window interaction with cache keys
+
+The 48h minimum-lookback (§3.2) is applied **before** key derivation, so a narrow UI range and the
+default range that both floor to the same effective window share one cache entry (no needless misses),
+while still keying distinctly when the user genuinely widens the range.
