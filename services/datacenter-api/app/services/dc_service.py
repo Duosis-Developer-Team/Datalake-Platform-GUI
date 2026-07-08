@@ -16,6 +16,7 @@ from psycopg2.pool import PoolError
 from app.db.queries import nutanix as nq, vmware as vq, virt_compute as vcq, ibm as iq, energy as eq
 from app.db.queries import vmware_datastore as vdq
 from app.db.queries import loki as lq, customer as cq, s3 as s3q, backup as bq
+from app.db.queries import nutanix_snapshot as nsq
 from app.db.queries import brocade as brq, ibm_storage as isq
 from app.db.queries import zabbix_network as znq, zabbix_storage as zsq
 from app.db.queries import discovery_rack as drq
@@ -37,6 +38,7 @@ from shared.display.static_energy import apply_static_aggregate_energy, resolve_
 from shared.customer.cache_keys import customer_assets_cache_key
 from shared.network.backbone_billing import estimate_backbone_cost_tl, p95_bps_to_mbit
 from shared.sellable.host_aggregate import finalize_host_payload
+from shared.nutanix import snapshot_helpers as nsnap
 from shared.vmware.host_cpu_ghz import (
     DEFAULT_HOST_CPU_GHZ,
     NETBOX_HOST_CPU_STRINGS,
@@ -3841,6 +3843,126 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
         cache.set(cache_key, result)
         return result
+
+    # ------------------------------------------------------------------
+    # Nutanix snapshots (Backup & Replication → Nutanix tab)
+    # ------------------------------------------------------------------
+
+    _NSNAP_FRESH_TTL = 1200          # 20 min
+    _NSNAP_STALE_TTL = 86400         # 24 h
+    _NSNAP_MIN_LOOKBACK_SECONDS = 48 * 3600  # collection is sparse; floor the window
+
+    def _nsnap_effective_bounds(self, tr: dict):
+        """Floor start to end-48h so a narrow UI range never empties the panel."""
+        start_ts, end_ts = time_range_to_bounds(tr)
+        floor = end_ts - timedelta(seconds=self._NSNAP_MIN_LOOKBACK_SECONDS)
+        return (min(start_ts, floor), end_ts)
+
+    def _resolve_dc_nutanix_ips(self, dc_code: str, cursor) -> dict[str, str]:
+        """{nutanix_ip: cluster_name} for a DC, from the discovery inventory."""
+        rows = self._run_rows(cursor, nsq.DC_NUTANIX_IPS, (dc_code,))
+        return {ip: cluster for (ip, cluster) in (rows or []) if ip}
+
+    def _fetch_dc_nutanix_snapshots(self, dc_code: str, start_ts, end_ts) -> dict:
+        """Latest-per-snapshot rows for a DC, enriched + aggregated."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                ip_to_cluster = self._resolve_dc_nutanix_ips(dc_code, cur)
+                if not ip_to_cluster:
+                    return {"rows": [], "totals": nsnap.aggregate_snapshots([]), "as_of": ""}
+                raw = self._run_rows(
+                    cur, nsq.SNAPSHOTS_BY_IPS_LATEST,
+                    (list(ip_to_cluster.keys()), start_ts, end_ts),
+                )
+        rows, as_of = nsnap.enrich_snapshot_rows(raw, ip_to_cluster)
+        return {"rows": rows, "totals": nsnap.aggregate_snapshots(rows), "as_of": as_of}
+
+    def _fetch_customer_nutanix_snapshots(self, customer: str, start_ts, end_ts) -> dict:
+        """Latest-per-snapshot rows for a customer (prefix match), enriched."""
+        like = f"{customer}-%"
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                raw = self._run_rows(
+                    cur, nsq.SNAPSHOTS_BY_CUSTOMER_LATEST,
+                    (like, like, start_ts, end_ts),
+                )
+        rows, as_of = nsnap.enrich_snapshot_rows(raw, None)
+        return {"rows": rows, "totals": nsnap.aggregate_snapshots(rows), "as_of": as_of}
+
+    def get_dc_nutanix_snapshots(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """Cached base set (rows + totals). Single-flight + stale-TTL because the
+        DISTINCT ON (snapshot_id) scan is the expensive step."""
+        tr = time_range or default_time_range()
+        start_ts, end_ts = self._nsnap_effective_bounds(tr)
+        key = f"dc_nutanix_snap:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val, _ = cache.get_with_stale(key)
+        if cached_val is not None:
+            return cached_val
+
+        def factory():
+            try:
+                return self._fetch_dc_nutanix_snapshots(dc_code, start_ts, end_ts)
+            except (OperationalError, PoolError) as exc:
+                logger.warning("get_dc_nutanix_snapshots failed for %s: %s", dc_code, exc)
+                return {"rows": [], "totals": nsnap.aggregate_snapshots([]), "as_of": ""}
+
+        result = cache.run_singleflight(key, factory)
+        cache.set_with_stale(key, result, fresh_ttl=self._NSNAP_FRESH_TTL, stale_ttl=self._NSNAP_STALE_TTL)
+        return result
+
+    def get_customer_nutanix_snapshots(self, customer: str, time_range: dict | None = None) -> dict:
+        tr = time_range or default_time_range()
+        start_ts, end_ts = self._nsnap_effective_bounds(tr)
+        key = f"cust_nutanix_snap:{customer}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val, _ = cache.get_with_stale(key)
+        if cached_val is not None:
+            return cached_val
+
+        def factory():
+            try:
+                return self._fetch_customer_nutanix_snapshots(customer, start_ts, end_ts)
+            except (OperationalError, PoolError) as exc:
+                logger.warning("get_customer_nutanix_snapshots failed for %s: %s", customer, exc)
+                return {"rows": [], "totals": nsnap.aggregate_snapshots([]), "as_of": ""}
+
+        result = cache.run_singleflight(key, factory)
+        cache.set_with_stale(key, result, fresh_ttl=self._NSNAP_FRESH_TTL, stale_ttl=self._NSNAP_STALE_TTL)
+        return result
+
+    @staticmethod
+    def _nsnap_paginate(items: list[dict], page: int, page_size: int) -> dict:
+        page = max(1, int(page or 1))
+        page_size = max(1, min(200, int(page_size or 50)))
+        total = len(items)
+        start = (page - 1) * page_size
+        return {"items": items[start:start + page_size], "total": total,
+                "page": page, "page_size": page_size}
+
+    def get_dc_nutanix_snapshot_table(self, dc_code: str, time_range: dict | None = None, *,
+                                      page: int = 1, page_size: int = 50,
+                                      search: str = "", schedule_type: str | None = None) -> dict:
+        """Paged/filtered view derived in-process from the cached base set."""
+        rows = self.get_dc_nutanix_snapshots(dc_code, time_range).get("rows", [])
+        q = (search or "").strip().lower()
+        if q:
+            fields = ("customer", "protection_domain_name", "vm_names", "nutanix_ip", "cluster")
+            rows = [r for r in rows
+                    if q in " ".join(str(r.get(k) or "") for k in fields).lower()]
+        if schedule_type:
+            rows = [r for r in rows if (r.get("schedule_type") or "") == schedule_type]
+        return self._nsnap_paginate(rows, page, page_size)
+
+    def get_dc_nutanix_missing(self, dc_code: str, time_range: dict | None = None, *,
+                               page: int = 1, page_size: int = 50) -> dict:
+        rows = [r for r in self.get_dc_nutanix_snapshots(dc_code, time_range).get("rows", [])
+                if r.get("missing_entity")]
+        return self._nsnap_paginate(rows, page, page_size)
+
+    def refresh_dc_nutanix_snapshots(self, dc_code: str) -> dict:
+        """Drop backend cache (fresh + stale) so the next read runs live SQL."""
+        cache.delete_prefix(f"dc_nutanix_snap:{dc_code}:")
+        cache.delete_prefix(f"stale:dc_nutanix_snap:{dc_code}:")
+        return {"status": "ok", "dc": dc_code}
 
     # ------------------------------------------------------------------
     # Backup job statistics (Phase 1) — Veeam / Zerto / NetBackup
