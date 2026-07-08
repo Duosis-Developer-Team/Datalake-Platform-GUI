@@ -48,6 +48,12 @@ from src.components.crm_sales_panel import (
     format_crm_money,
 )
 from src.services import auranotify_client as aura
+from src.utils.crm_sales_project_filter import (
+    ALL_PROJECTS,
+    filter_by_project,
+    project_select_options,
+    recompute_summary_for_project,
+)
 from src.utils.time_range import time_range_to_bounds
 from src.utils.visibility import (
     asset_has_usage,
@@ -757,9 +763,13 @@ def _tab_summary(
     s3_data: dict | None = None,
     sla_categories: list | None = None,
     perspective: str = PERSPECTIVE_MANAGER,
+    active_orders: list | None = None,
+    active_items: list | None = None,
+    sales_items: list | None = None,
 ):
-    """Summary tab: unified panel with compact signals and problems list."""
-    return build_customer_summary_panel(
+    """Summary tab: unified panel with compact signals and problems list, plus the
+    CRM sales summary card (manager view; project-scoped by the caller)."""
+    panel = build_customer_summary_panel(
         customer_name,
         totals=totals,
         assets=assets,
@@ -774,6 +784,25 @@ def _tab_summary(
         sla_categories=sla_categories,
         perspective=perspective,
     )
+    if perspective != PERSPECTIVE_MANAGER:
+        return panel
+
+    kv_panel = build_crm_summary_kv_panel(
+        customer_name,
+        sales_summary,
+        service_breakdown,
+        sales_items,
+        active_items,
+    )
+    if kv_panel is None or "No CRM sales metrics" in str(kv_panel):
+        return panel
+
+    crm_card = _section_card(
+        "CRM sales summary",
+        "Open orders plus realized sales (YTD primary, lifetime secondary)",
+        kv_panel,
+    )
+    return dmc.Stack(gap="lg", children=[panel, crm_card])
 
 
 def _compute_billing_rows(
@@ -2501,10 +2530,10 @@ def render_backup_tab(name: str, tr: dict | None, perspective: str):
     )
 
 
-def render_summary_tab(name: str, tr: dict | None, perspective: str):
+def render_summary_tab(name: str, tr: dict | None, perspective: str, project: str | None = ALL_PROJECTS):
     """Summary tab — the most coupled tab; the shared cache/coalescing collapses
     the repeated getters (resources, eff, sales, s3, service_breakdown) to one
-    backend hit each."""
+    backend hit each. `project` scopes the CRM sales summary card."""
     resources = api.get_customer_resources(name, tr)
     totals = resources.get("totals", {}) or {}
     assets = resources.get("assets", {}) or {}
@@ -2513,13 +2542,23 @@ def render_summary_tab(name: str, tr: dict | None, perspective: str):
     sla = aura.get_dc_services_availability(
         start_ts.strftime("%Y-%m-%dT%H:%M:%S"), end_ts.strftime("%Y-%m-%dT%H:%M:%S")
     )
+    active_orders = api.get_customer_sales_active_orders(name)
+    active_items = api.get_customer_sales_active_items(name)
+    sales_items = api.get_customer_sales_items(name)
+    sales_summary = recompute_summary_for_project(
+        api.get_customer_sales_summary(name),
+        active_orders=active_orders,
+        sales_items=sales_items,
+        project=project,
+        current_year=datetime.now().year,
+    )
     return _tab_summary(
         name,
         perspective=perspective,
         totals=totals,
         assets=assets,
         backup_totals=totals.get("backup", {}) or {},
-        sales_summary=api.get_customer_sales_summary(name),
+        sales_summary=sales_summary,
         compliance_payload=api.get_customer_resource_compliance(name, "virtualization", tr),
         efficiency_rows=api.get_customer_efficiency_by_category(name, tr),
         itsm_summary=api.get_customer_itsm_summary(name, tr),
@@ -2527,34 +2566,49 @@ def render_summary_tab(name: str, tr: dict | None, perspective: str):
         service_breakdown=api.get_customer_sales_service_breakdown(name),
         s3_data=api.get_customer_s3_vaults(name, tr),
         sla_categories=aggregate_sla_categories(sla),
+        active_orders=filter_by_project(active_orders, project),
+        active_items=filter_by_project(active_items, project),
+        sales_items=filter_by_project(sales_items, project),
     )
 
 
-def render_billing_tab(name: str, tr: dict | None):
-    """Billing tab (manager perspective only) — resources + the full sales set."""
+def render_billing_tab(name: str, tr: dict | None, project: str | None = ALL_PROJECTS):
+    """Billing tab (manager perspective only) — resources + the full sales set,
+    scoped to `project` (PRJ-*) when one is selected."""
     resources = api.get_customer_resources(name, tr)
     totals = resources.get("totals", {}) or {}
     assets = resources.get("assets", {}) or {}
     eff_by_cat = api.get_customer_efficiency_by_category(name, tr)
+    active_orders = api.get_customer_sales_active_orders(name)
+    active_items = api.get_customer_sales_active_items(name)
+    sales_items = api.get_customer_sales_items(name)
+    sales_summary = recompute_summary_for_project(
+        api.get_customer_sales_summary(name),
+        active_orders=active_orders,
+        sales_items=sales_items,
+        project=project,
+        current_year=datetime.now().year,
+    )
     return _tab_billing(
         totals,
         assets,
         totals.get("backup", {}) or {},
         api.get_customer_s3_vaults(name, tr),
-        sales_summary=api.get_customer_sales_summary(name),
+        sales_summary=sales_summary,
         crm_eff_panel=build_sold_vs_used_stack(_crm_rows_outside_virt_backup(eff_by_cat)),
         customer_name=name,
         service_breakdown=api.get_customer_sales_service_breakdown(name),
-        sales_items=api.get_customer_sales_items(name),
-        active_orders=api.get_customer_sales_active_orders(name),
-        active_items=api.get_customer_sales_active_items(name),
+        sales_items=filter_by_project(sales_items, project),
+        active_orders=filter_by_project(active_orders, project),
+        active_items=filter_by_project(active_items, project),
         efficiency_rows=eff_by_cat,
     )
 
 
 # Map a tab value to its render function; used by the per-tab async callbacks.
-def _render_tab_body(tab: str, ctx: dict | None):
+def _render_tab_body(tab: str, ctx: dict | None, project: str | None = ALL_PROJECTS):
     """Render one tab's body from the ctx store {customer, perspective, tr}.
+    `project` scopes the CRM sales set (summary + billing) to one PRJ-* order.
     Returns no_update for an empty customer so the placeholder stays put."""
     ctx = ctx or {}
     customer = (ctx.get("customer") or "").strip()
@@ -2563,7 +2617,7 @@ def _render_tab_body(tab: str, ctx: dict | None):
     tr = ctx.get("tr")
     perspective = ctx.get("perspective") or PERSPECTIVE_MANAGER
     if tab == "summary":
-        return render_summary_tab(customer, tr, perspective)
+        return render_summary_tab(customer, tr, perspective, project=project)
     if tab == "virt":
         return render_virtualization_tab(customer, tr, perspective)
     if tab == "avail":
@@ -2571,7 +2625,7 @@ def _render_tab_body(tab: str, ctx: dict | None):
     if tab == "backup":
         return render_backup_tab(customer, tr, perspective)
     if tab == "billing":
-        return render_billing_tab(customer, tr)
+        return render_billing_tab(customer, tr, project=project)
     if tab == "itsm":
         return render_itsm_tab(customer, tr)
     if tab == "phys-inv":
@@ -2705,13 +2759,30 @@ def _build_perspective_switch(perspective: str) -> dmc.SegmentedControl:
     )
 
 
+def _build_project_select() -> dmc.Select:
+    """CRM project (PRJ-*) filter shown in the customer header. Options are filled
+    by the ctx-driven callback; it scopes the Summary + Billing CRM sales set."""
+    return dmc.Select(
+        id="customer-view-project-select",
+        data=[{"label": "All projects", "value": ALL_PROJECTS}],
+        value=ALL_PROJECTS,
+        size="xs",
+        w=240,
+        clearable=False,
+        allowDeselect=False,
+        leftSection=DashIconify(icon="solar:folder-with-files-bold-duotone", width=16),
+        comboboxProps={"withinPortal": True},
+        placeholder="Project",
+    )
+
+
 def _build_customer_header_extras(
     *,
     perspective: str,
     visible_sections,
 ) -> list:
     access = perspective_access(visible_sections)
-    extras: list = []
+    extras: list = [_build_project_select()]
     if show_perspective_switch(access):
         extras.append(_build_perspective_switch(perspective))
     export_group = _build_customer_export_group(visible_sections)
@@ -2994,6 +3065,19 @@ def render_customer_shell(
 
 
 def _register_tab_callback(tab: str) -> None:
+    # Summary and Billing carry the CRM sales set, so they also re-render when the
+    # project selector changes; other tabs depend only on the customer ctx.
+    if tab in ("summary", "billing"):
+        @callback(
+            Output(f"cust-tab-body-{tab}", "children"),
+            Input("customer-view-ctx", "data"),
+            Input("customer-view-project-select", "value"),
+            prevent_initial_call=False,
+        )
+        def _fill_crm(ctx, project, _tab=tab):
+            return _render_tab_body(_tab, ctx, project)
+        return
+
     @callback(
         Output(f"cust-tab-body-{tab}", "children"),
         Input("customer-view-ctx", "data"),
@@ -3005,6 +3089,31 @@ def _register_tab_callback(tab: str) -> None:
 
 for _t in ("summary", "virt", "avail", "backup", "billing", "itsm", "phys-inv", "s3"):
     _register_tab_callback(_t)
+
+
+@callback(
+    Output("customer-view-project-select", "data"),
+    Output("customer-view-project-select", "value"),
+    Input("customer-view-ctx", "data"),
+    prevent_initial_call=False,
+)
+def _fill_project_options(ctx):
+    """Populate the project (PRJ-*) dropdown from the customer's CRM sales orders.
+    Resets to 'All projects' whenever the customer changes (ctx fires)."""
+    ctx = ctx or {}
+    customer = (ctx.get("customer") or "").strip()
+    default = [{"label": "All projects", "value": ALL_PROJECTS}]
+    if not customer:
+        return default, ALL_PROJECTS
+    try:
+        options = project_select_options(
+            api.get_customer_sales_active_orders(customer),
+            api.get_customer_sales_active_items(customer),
+            api.get_customer_sales_items(customer),
+        )
+    except Exception:  # noqa: BLE001
+        return default, ALL_PROJECTS
+    return options, ALL_PROJECTS
 
 
 @callback(
