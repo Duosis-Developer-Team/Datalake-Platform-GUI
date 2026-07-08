@@ -52,7 +52,14 @@ def _filled_mapping_count(entries: list[dict]) -> int:
     return len([e for e in entries if str(e.get("match_value") or "").strip()])
 
 
-def _render_mapping_entry(section_key: str, data_sources: tuple[str, ...], entry: dict, index: int):
+def _render_mapping_entry(
+    section_key: str,
+    data_sources: tuple[str, ...],
+    entry: dict,
+    index: int,
+    *,
+    prefix: str = "alias",
+):
     source_options = [{"label": s, "value": s} for s in data_sources]
     return dmc.Paper(
         withBorder=True,
@@ -65,7 +72,7 @@ def _render_mapping_entry(section_key: str, data_sources: tuple[str, ...], entry
                 align="flex-end",
                 children=[
                     dmc.Select(
-                        id={"type": "alias-edit-method", "section": section_key, "index": index},
+                        id={"type": f"{prefix}-edit-method", "section": section_key, "index": index},
                         label="Method" if index == 0 else None,
                         data=MATCH_METHOD_OPTIONS,
                         value=entry.get("match_method") or "contains",
@@ -73,7 +80,7 @@ def _render_mapping_entry(section_key: str, data_sources: tuple[str, ...], entry
                         style={"minWidth": "120px", "flex": 1},
                     ),
                     dmc.TextInput(
-                        id={"type": "alias-edit-value", "section": section_key, "index": index},
+                        id={"type": f"{prefix}-edit-value", "section": section_key, "index": index},
                         label="Value" if index == 0 else None,
                         value=entry.get("match_value") or "",
                         placeholder="match value",
@@ -81,7 +88,7 @@ def _render_mapping_entry(section_key: str, data_sources: tuple[str, ...], entry
                         style={"minWidth": "160px", "flex": 2},
                     ),
                     dmc.Select(
-                        id={"type": "alias-edit-source", "section": section_key, "index": index},
+                        id={"type": f"{prefix}-edit-source", "section": section_key, "index": index},
                         label="Source" if index == 0 else None,
                         data=source_options,
                         value=entry.get("data_source") or data_sources[0],
@@ -89,14 +96,14 @@ def _render_mapping_entry(section_key: str, data_sources: tuple[str, ...], entry
                         style={"minWidth": "140px", "flex": 1},
                     ),
                     dmc.Switch(
-                        id={"type": "alias-edit-enabled", "section": section_key, "index": index},
+                        id={"type": f"{prefix}-edit-enabled", "section": section_key, "index": index},
                         label="On",
                         checked=bool(entry.get("enabled", True)),
                         size="xs",
                     ),
                     dmc.ActionIcon(
                         DashIconify(icon="tabler:trash", width=16),
-                        id={"type": "alias-edit-remove", "section": section_key, "index": index},
+                        id={"type": f"{prefix}-edit-remove", "section": section_key, "index": index},
                         color="red",
                         variant="light",
                         size="sm",
@@ -107,25 +114,36 @@ def _render_mapping_entry(section_key: str, data_sources: tuple[str, ...], entry
     )
 
 
-def render_section_rows(section_key: str, data_sources: tuple[str, ...], entries: list[dict]) -> list:
+def render_section_rows(
+    section_key: str,
+    data_sources: tuple[str, ...],
+    entries: list[dict],
+    *,
+    prefix: str = "alias",
+) -> list:
     return [
-        _render_mapping_entry(section_key, data_sources, entry, idx)
+        _render_mapping_entry(section_key, data_sources, entry, idx, prefix=prefix)
         for idx, entry in enumerate(entries)
     ]
 
 
-def section_refresh_outputs(editor_state: dict | None) -> tuple[list, list]:
+def section_refresh_outputs(editor_state: dict | None, *, prefix: str = "alias") -> tuple[list, list]:
     sections = (editor_state or {}).get("sections") or {}
     rows_out: list = []
     counts_out: list = []
     for column_key, _label, data_sources in UI_COLUMNS:
         entries = sections.get(column_key) or []
-        rows_out.append(render_section_rows(column_key, data_sources, entries))
+        rows_out.append(render_section_rows(column_key, data_sources, entries, prefix=prefix))
         counts_out.append(str(_filled_mapping_count(entries)))
     return rows_out, counts_out
 
 
-def build_editor_shell(editor_state: dict | None, *, open_sections: list[str] | None = None) -> html.Div:
+def build_editor_shell(
+    editor_state: dict | None,
+    *,
+    open_sections: list[str] | None = None,
+    prefix: str = "alias",
+) -> html.Div:
     if not editor_state:
         return html.Div(
             children=dmc.Alert(
@@ -135,8 +153,7 @@ def build_editor_shell(editor_state: dict | None, *, open_sections: list[str] | 
             )
         )
 
-    sections = editor_state.get("sections") or {}
-    initial_rows, initial_counts = section_refresh_outputs(editor_state)
+    initial_rows, initial_counts = section_refresh_outputs(editor_state, prefix=prefix)
     accordion_value = list(open_sections) if open_sections else [UI_COLUMNS[0][0]]
 
     accordion_items = []
@@ -151,7 +168,7 @@ def build_editor_shell(editor_state: dict | None, *, open_sections: list[str] | 
                             children=[
                                 dmc.Text(label, fw=600, size="sm"),
                                 dmc.Badge(
-                                    id={"type": "alias-section-count", "section": column_key},
+                                    id={"type": f"{prefix}-section-count", "section": column_key},
                                     children=initial_counts[idx],
                                     color="gray",
                                     size="sm",
@@ -164,13 +181,13 @@ def build_editor_shell(editor_state: dict | None, *, open_sections: list[str] | 
                             gap="xs",
                             children=[
                                 html.Div(
-                                    id={"type": "alias-section-rows", "section": column_key},
+                                    id={"type": f"{prefix}-section-rows", "section": column_key},
                                     style=_SECTION_ROW_STYLE,
                                     children=initial_rows[idx],
                                 ),
                                 dmc.Button(
                                     "Add mapping",
-                                    id={"type": "alias-edit-add", "section": column_key},
+                                    id={"type": f"{prefix}-edit-add", "section": column_key},
                                     size="xs",
                                     variant="light",
                                     color="gray",
@@ -190,12 +207,12 @@ def build_editor_shell(editor_state: dict | None, *, open_sections: list[str] | 
                 gap="xs",
                 mb="sm",
                 children=[
-                    dmc.Button("Reset", id="alias-edit-reset", size="xs", variant="subtle", color="gray"),
-                    dmc.Button("Save mappings", id="alias-edit-save", size="xs", color="indigo"),
+                    dmc.Button("Reset", id=f"{prefix}-edit-reset", size="xs", variant="subtle", color="gray"),
+                    dmc.Button("Save mappings", id=f"{prefix}-edit-save", size="xs", color="indigo"),
                 ],
             ),
             dmc.TextInput(
-                id="alias-edit-notes",
+                id=f"{prefix}-edit-notes",
                 label="Notes",
                 value=editor_state.get("notes") or "",
                 size="xs",
@@ -203,7 +220,7 @@ def build_editor_shell(editor_state: dict | None, *, open_sections: list[str] | 
                 placeholder="Optional operator notes",
             ),
             dmc.Accordion(
-                id="alias-editor-accordion",
+                id=f"{prefix}-editor-accordion",
                 multiple=True,
                 value=accordion_value,
                 children=accordion_items,

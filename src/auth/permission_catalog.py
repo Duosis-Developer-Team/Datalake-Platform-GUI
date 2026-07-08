@@ -382,6 +382,13 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 sort_order=58,
             ),
             _n(
+                "page:settings_crm_internal_aliases",
+                "CRM internal aliases (Bulutistan)",
+                "config",
+                route_pattern="/administration/integrations/crm/internal-aliases",
+                sort_order=66,
+            ),
+            _n(
                 "page:settings_crm_thresholds",
                 "CRM capacity thresholds",
                 "config",

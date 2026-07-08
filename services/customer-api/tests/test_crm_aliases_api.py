@@ -62,3 +62,37 @@ def test_seed_boyner_endpoint(mock_customer_service):
     resp = client.post("/api/v1/crm/aliases/seed-boyner")
     assert resp.status_code == 200
     assert resp.json()["rows_upserted"] == 12
+
+
+def test_get_internal_alias_endpoint(mock_customer_service):
+    client, _svc = mock_customer_service
+    sales = MagicMock()
+    sales.get_internal_alias.return_value = {
+        "crm_accountid": "INTERNAL",
+        "crm_account_name": "Bulutistan (Internal)",
+        "canonical_customer_key": None,
+        "netbox_musteri_value": None,
+        "notes": None,
+        "source": "internal",
+        "source_mappings": [
+            {
+                "id": 1,
+                "crm_accountid": "INTERNAL",
+                "crm_account_name": "Bulutistan (Internal)",
+                "data_source": "virtualization",
+                "match_method": "contains",
+                "match_value": "Bulutistan",
+                "enabled": True,
+                "priority": 10,
+                "source": "manual",
+            }
+        ],
+    }
+    client.app.state.sales = sales
+    resp = client.get("/api/v1/crm/internal-alias")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["crm_accountid"] == "INTERNAL"
+    assert body["source"] == "internal"
+    assert body["source_mappings"][0]["match_value"] == "Bulutistan"
+    sales.get_internal_alias.assert_called_once()

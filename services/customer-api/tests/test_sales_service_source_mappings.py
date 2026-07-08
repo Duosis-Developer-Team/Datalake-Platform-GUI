@@ -119,3 +119,57 @@ def test_seed_boyner_source_mappings_is_idempotent_upsert():
     assert result["crm_accountid"] == "boyner-id"
     assert result["rows_upserted"] > 0
     assert any(call.args[0] == smq.UPSERT_SOURCE_MAPPING for call in webui.execute.call_args_list)
+
+
+def test_get_internal_alias_returns_reserved_account_with_mappings():
+    from app.services.customer_mapping_resolver import (
+        INTERNAL_ACCOUNT_ID,
+        INTERNAL_ACCOUNT_NAME,
+    )
+
+    webui = MagicMock()
+    webui.is_available = True
+    rows = [
+        {
+            "id": 1,
+            "crm_accountid": "INTERNAL",
+            "crm_account_name": "Bulutistan (Internal)",
+            "data_source": "virtualization",
+            "match_method": "contains",
+            "match_value": "Bulutistan",
+            "enabled": True,
+            "priority": 10,
+            "source": "manual",
+            "notes": "core infra",
+        }
+    ]
+
+    def _run_rows(sql, params=None):
+        if sql == smq.LIST_SOURCE_MAPPINGS_FOR_ACCOUNT and params == (INTERNAL_ACCOUNT_ID,):
+            return rows
+        return []
+
+    webui.run_rows.side_effect = _run_rows
+    svc = _service_with_webui(webui)
+    out = svc.get_internal_alias()
+
+    assert out["crm_accountid"] == INTERNAL_ACCOUNT_ID == "INTERNAL"
+    assert out["crm_account_name"] == INTERNAL_ACCOUNT_NAME
+    assert out["source"] == "internal"
+    assert out["canonical_customer_key"] is None
+    assert out["netbox_musteri_value"] is None
+    assert out["notes"] == "core infra"
+    assert out["source_mappings"] == rows
+
+
+def test_get_internal_alias_empty_when_no_mappings():
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.return_value = []
+
+    svc = _service_with_webui(webui)
+    out = svc.get_internal_alias()
+
+    assert out["crm_accountid"] == "INTERNAL"
+    assert out["source_mappings"] == []
+    assert out["notes"] is None

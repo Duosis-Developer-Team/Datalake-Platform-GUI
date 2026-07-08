@@ -27,6 +27,12 @@ MATCH_METHODS: tuple[str, ...] = (
     "id_exact",
 )
 
+# Reserved pseudo-account for Bulutistan's own (internal) resources. Not a real
+# CRM account; source mappings under this id identify infra owned by Bulutistan
+# itself so it can be separated from real customer resources.
+INTERNAL_ACCOUNT_ID: str = "INTERNAL"
+INTERNAL_ACCOUNT_NAME: str = "Bulutistan (Internal)"
+
 # UI column -> backend data_source keys
 UI_COLUMN_SOURCES: dict[str, tuple[str, ...]] = {
     "virtualization": ("virtualization", "netbox_vm_customer"),

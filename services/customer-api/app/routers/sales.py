@@ -154,6 +154,15 @@ def list_aliases(svc: SalesService = Depends(get_sales_service)):
     return svc.get_all_aliases()
 
 
+@router.get("/crm/internal-alias", response_model=CustomerAliasWithMappings)
+def get_internal_alias(svc: SalesService = Depends(get_sales_service)):
+    """Return the reserved Internal (Bulutistan) pseudo-account with its source mappings.
+
+    Save via PUT /crm/aliases/INTERNAL/source-mappings (reuses the customer path).
+    """
+    return svc.get_internal_alias()
+
+
 @router.put("/crm/aliases/{crm_accountid}/source-mappings", response_model=List[dict])
 def save_source_mappings(
     crm_accountid: str,

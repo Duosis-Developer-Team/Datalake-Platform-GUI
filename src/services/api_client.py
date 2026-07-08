@@ -2119,6 +2119,12 @@ def seed_boyner_source_mappings() -> dict[str, Any]:
     return out if isinstance(out, dict) else {}
 
 
+def get_crm_internal_alias() -> dict[str, Any]:
+    """Reserved Internal (Bulutistan) pseudo-account with its source mappings."""
+    data = _get_json(_get_client_cust(), "/api/v1/crm/internal-alias")
+    return data if isinstance(data, dict) else {}
+
+
 def delete_crm_alias(crm_accountid: str) -> dict[str, Any]:
     enc = quote(crm_accountid, safe="")
     out = _delete_json(_get_client_cust(), f"/api/v1/crm/aliases/{enc}")

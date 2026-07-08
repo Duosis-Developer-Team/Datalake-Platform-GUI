@@ -34,6 +34,8 @@ from app.services.customer_catalog import (
 from app.utils.service_sales_mapping import map_service_sales_lines
 from app.services.customer_mapping_resolver import (
     DATA_SOURCES,
+    INTERNAL_ACCOUNT_ID,
+    INTERNAL_ACCOUNT_NAME,
     MATCH_METHODS,
     boyner_seed_rows,
     group_mappings_by_account,
@@ -613,6 +615,29 @@ class SalesService:
         if not self._webui or not self._webui.is_available:
             return []
         return self._webui.run_rows(smq.LIST_SOURCE_MAPPINGS_FOR_ACCOUNT, (crm_accountid,))
+
+    def get_internal_alias(self) -> dict[str, Any]:
+        """Return the reserved Internal (Bulutistan) pseudo-account with its source mappings.
+
+        Mirrors a single customer-alias entry so the Internal aliases page can reuse
+        the same editor. Backed by gui_crm_customer_source_mapping under crm_accountid
+        = INTERNAL; not present in gui_crm_customer_alias so it never leaks into the
+        CRM customer list.
+        """
+        mappings = self.list_source_mappings_for_account(INTERNAL_ACCOUNT_ID)
+        notes = next(
+            (str(m.get("notes")) for m in mappings if str(m.get("notes") or "").strip()),
+            None,
+        )
+        return {
+            "crm_accountid": INTERNAL_ACCOUNT_ID,
+            "crm_account_name": INTERNAL_ACCOUNT_NAME,
+            "canonical_customer_key": None,
+            "netbox_musteri_value": None,
+            "notes": notes,
+            "source": "internal",
+            "source_mappings": mappings,
+        }
 
     def save_source_mappings(
         self,

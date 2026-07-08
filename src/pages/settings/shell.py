@@ -22,6 +22,7 @@ from src.pages.settings.integrations import ldap as ldap_page
 from src.pages.settings.integrations import overview as integrations_overview_page
 from src.pages.settings.integrations import crm_overview as crm_overview_page
 from src.pages.settings.integrations import crm_aliases as crm_aliases_page
+from src.pages.settings.integrations import crm_internal_aliases as crm_internal_aliases_page
 from src.pages.settings.integrations import crm_thresholds as crm_thresholds_page
 from src.pages.settings.integrations import crm_price_overrides as crm_price_overrides_page
 from src.pages.settings.integrations import crm_calc_config as crm_calc_config_page
@@ -72,6 +73,7 @@ CRM_INT_TABS: list[tuple[str, str, str]] = [
     (f"{_A}/integrations/crm/resource-ratios", "Resource ratios", "page:settings_crm_resource_ratios"),
     (f"{_A}/integrations/crm/unit-conversions", "Unit conversions", "page:settings_crm_unit_conversions"),
     (f"{_A}/integrations/crm/aliases", "Customer aliases", "page:settings_crm_aliases"),
+    (f"{_A}/integrations/crm/internal-aliases", "Internal aliases", "page:settings_crm_internal_aliases"),
     (f"{_A}/integrations/crm/thresholds", "Thresholds", "page:settings_crm_thresholds"),
     (f"{_A}/integrations/crm/price-overrides", "Price overrides", "page:settings_crm_price_overrides"),
     (f"{_A}/integrations/crm/calc-config", "Calc variables", "page:settings_crm_calc_config"),
@@ -116,6 +118,10 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
     f"{_A}/integrations/crm": ("page:settings_crm_overview", crm_overview_page.build_layout),
     f"{_A}/integrations/crm/service-mapping": ("page:settings_service_mapping", crm_service_mapping_page.build_layout),
     f"{_A}/integrations/crm/aliases": ("page:settings_crm_aliases", crm_aliases_page.build_layout),
+    f"{_A}/integrations/crm/internal-aliases": (
+        "page:settings_crm_internal_aliases",
+        crm_internal_aliases_page.build_layout,
+    ),
     f"{_A}/integrations/crm/thresholds": ("page:settings_crm_thresholds", crm_thresholds_page.build_layout),
     f"{_A}/integrations/crm/price-overrides": ("page:settings_crm_price_overrides", crm_price_overrides_page.build_layout),
     f"{_A}/integrations/crm/calc-config": ("page:settings_crm_calc_config", crm_calc_config_page.build_layout),
