@@ -63,6 +63,7 @@ from src.components.backup_panel import (
     build_netbackup_panel,
     build_zerto_panel,
     build_veeam_panel,
+    build_nutanix_snapshot_panel,
 )
 # noqa: F401 — import for side effect (registers backup-jobs callbacks)
 from src.components import backup_jobs_section  # noqa: F401
@@ -5038,9 +5039,13 @@ def compute_has_backup(dc_id: str, time_range: dict | None = None) -> bool:
         nb = api.get_dc_netbackup_pools(dc_id, tr)
         zerto = api.get_dc_zerto_sites(dc_id, tr)
         veeam = api.get_dc_veeam_repos(dc_id, tr)
+        nx = api.get_dc_nutanix_snapshots(dc_id, tr)
     except Exception:
         return False
-    return bool((nb or {}).get("pools") or (zerto or {}).get("sites") or (veeam or {}).get("repos"))
+    return bool(
+        (nb or {}).get("pools") or (zerto or {}).get("sites")
+        or (veeam or {}).get("repos") or (nx or {}).get("rows")
+    )
 
 
 def build_dc_view(
@@ -5243,16 +5248,25 @@ def build_dc_view(
                 "nb": lambda: api.get_dc_netbackup_pools(dc_id, tr),
                 "zerto": lambda: api.get_dc_zerto_sites(dc_id, tr),
                 "veeam": lambda: api.get_dc_veeam_repos(dc_id, tr),
+                "nutanix": lambda: api.get_dc_nutanix_snapshots(dc_id, tr),
+                "nutanix_table": lambda: api.get_dc_nutanix_snapshot_table(dc_id, tr, page=1, page_size=50),
+                "nutanix_missing": lambda: api.get_dc_nutanix_missing(dc_id, tr, page=1, page_size=50),
             }
         )
         nb_data = backup_batch["nb"]
         zerto_data = backup_batch["zerto"]
         veeam_data = backup_batch["veeam"]
+        nutanix_data = backup_batch["nutanix"]
+        nutanix_table = backup_batch["nutanix_table"]
+        nutanix_missing = backup_batch["nutanix_missing"]
         _log_dc_build_phase(str(dc_id), "backup", t_backup)
     else:
         nb_data = {"pools": []}
         zerto_data = {"sites": []}
         veeam_data = {"repos": []}
+        nutanix_data = {"rows": [], "totals": {}}
+        nutanix_table = {"items": [], "total": 0}
+        nutanix_missing = {"items": [], "total": 0}
     backup_ms = round((time.perf_counter() - t_backup) * 1000, 1)
 
     export_sheets = (
@@ -5335,7 +5349,7 @@ def build_dc_view(
     has_zerto = bool(zerto_data.get("sites"))
     has_veeam = bool(veeam_data.get("repos"))
     has_netbackup = bool(nb_data.get("pools"))
-    has_nutanix_backup = False
+    has_nutanix_backup = bool(nutanix_data.get("rows"))
     has_backup = has_zerto or has_veeam or has_netbackup or has_nutanix_backup
 
     # S3 presence already computed above
@@ -5581,7 +5595,19 @@ def build_dc_view(
                                     dmc.TabsPanel(
                                         value="nutanix",
                                         pt="lg",
-                                        children=_build_backup_subtab("Nutanix"),
+                                        children=dmc.Stack(
+                                            gap="lg",
+                                            children=[
+                                                html.Div(
+                                                    id="backup-nutanix-panel",
+                                                    children=build_nutanix_snapshot_panel(
+                                                        nutanix_data,
+                                                        table=nutanix_table,
+                                                        missing=nutanix_missing,
+                                                    ) if has_nutanix_backup else html.Div(),
+                                                ),
+                                            ],
+                                        ),
                                     ) if has_nutanix_backup else None,
                                 ],
                             ),
