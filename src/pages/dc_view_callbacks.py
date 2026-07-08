@@ -212,12 +212,18 @@ _NUTANIX_PAGE_SIZE = 50
     Input("backup-nutanix-prev", "n_clicks"),
     Input("backup-nutanix-next", "n_clicks"),
     Input("backup-nutanix-refresh", "n_clicks"),
+    Input("backup-nutanix-filter-customer", "value"),
+    Input("backup-nutanix-filter-schedtype", "value"),
+    Input("backup-nutanix-filter-retention", "value"),
+    Input("backup-nutanix-filter-cluster", "value"),
     Input("dc-main-tabs", "value"),
     State("backup-nutanix-page", "data"),
     State("url", "pathname"),
     prevent_initial_call=True,
 )
-def _update_nutanix_snapshot_table(search, prev_n, next_n, refresh_n, active_tab, page, pathname):
+def _update_nutanix_snapshot_table(search, prev_n, next_n, refresh_n,
+                                   f_customer, f_schedtype, f_retention, f_cluster,
+                                   active_tab, page, pathname):
     dc_id = _dc_id_from_path(pathname)
     if not dc_id or (active_tab or "") != "backup":
         return dash.no_update, dash.no_update, dash.no_update
@@ -228,7 +234,8 @@ def _update_nutanix_snapshot_table(search, prev_n, next_n, refresh_n, active_tab
         page += 1
     elif trig == "backup-nutanix-prev":
         page = max(1, page - 1)
-    elif trig in ("backup-nutanix-search", "backup-nutanix-refresh"):
+    else:
+        # search / refresh / any filter change → back to page 1
         page = 1
         if trig == "backup-nutanix-refresh" and refresh_n:
             try:
@@ -238,7 +245,9 @@ def _update_nutanix_snapshot_table(search, prev_n, next_n, refresh_n, active_tab
 
     try:
         payload = _api.get_dc_nutanix_snapshot_table(
-            dc_id, None, page=page, page_size=_NUTANIX_PAGE_SIZE, search=search or "")
+            dc_id, None, page=page, page_size=_NUTANIX_PAGE_SIZE, search=search or "",
+            customers=f_customer or None, schedule_types=f_schedtype or None,
+            retentions=f_retention or None, clusters=f_cluster or None)
     except Exception:  # noqa: BLE001
         return dash.no_update, dash.no_update, dash.no_update
 

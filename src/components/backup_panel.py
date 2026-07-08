@@ -1139,34 +1139,51 @@ def _ts(value) -> str:
     return str(value)[:19].replace("T", " ")
 
 
-def nutanix_snapshot_table(items: list[dict]) -> dmc.Table:
+def _nsnap_cell(value, *, max_width: str | None = None, title: str | None = None):
+    """Table cell: single-line (nowrap); optional ellipsis truncation with a
+    hover tooltip for long values (VM lists, long schedule names)."""
+    style = {"whiteSpace": "nowrap"}
+    if max_width:
+        style.update({"maxWidth": max_width, "overflow": "hidden", "textOverflow": "ellipsis"})
+    kwargs = {"style": style}
+    if title:
+        kwargs["title"] = title
+    return html.Td(value, **kwargs)
+
+
+def nutanix_snapshot_table(items: list[dict]) -> html.Div:
     head = html.Thead(
         html.Tr([html.Th(h, style={"fontSize": "0.75rem", "color": "#A3AED0"})
                  for h in _NUTANIX_TABLE_HEADERS])
     )
     body = []
     for r in items or []:
+        pd = r.get("protection_domain_name") or "—"
+        vm = r.get("vm_names") or ""
         body.append(html.Tr(children=[
-            html.Td(r.get("nutanix_ip")),
-            html.Td(r.get("cluster") or "—"),
-            html.Td(r.get("customer") or "—"),
-            html.Td(r.get("protection_domain_name")),
-            html.Td((r.get("vm_names") or "")[:60] or "—"),
-            html.Td(r.get("entity_type") or "—"),
-            html.Td(r.get("schedule_type") or "—"),
-            html.Td(str(r.get("retention")) if r.get("retention") is not None else "—"),
-            html.Td(_ts(r.get("start_time"))),
-            html.Td(_ts(r.get("create_time"))),
-            html.Td(_ts(r.get("expiry_time"))),
-            html.Td(smart_bytes(r.get("size_in_bytes", 0) or 0)),
+            _nsnap_cell(r.get("nutanix_ip")),
+            _nsnap_cell(r.get("cluster") or "—"),
+            _nsnap_cell(r.get("customer") or "—"),
+            _nsnap_cell(pd, max_width="240px", title=pd),
+            _nsnap_cell(vm or "—", max_width="260px", title=vm),
+            _nsnap_cell(r.get("entity_type") or "—", max_width="180px", title=r.get("entity_type") or ""),
+            _nsnap_cell(r.get("schedule_type") or "—"),
+            _nsnap_cell(str(r.get("retention")) if r.get("retention") is not None else "—"),
+            _nsnap_cell(_ts(r.get("start_time"))),
+            _nsnap_cell(_ts(r.get("create_time"))),
+            _nsnap_cell(_ts(r.get("expiry_time"))),
+            _nsnap_cell(smart_bytes(r.get("size_in_bytes", 0) or 0)),
         ]))
     if not body:
         body = [html.Tr(html.Td("Bu aralıkta snapshot yok.", colSpan=len(_NUTANIX_TABLE_HEADERS),
                                 style={"textAlign": "center", "color": "#A3AED0", "padding": "24px"}))]
-    return dmc.Table(
+    table = dmc.Table(
         striped=True, highlightOnHover=True, withTableBorder=False, withColumnBorders=False,
-        className="nexus-table dc-premium-table", children=[head, html.Tbody(body)],
+        className="nexus-table dc-premium-table", style={"minWidth": "1180px"},
+        children=[head, html.Tbody(body)],
     )
+    # Horizontal scroll so wide columns are reachable (repo pattern: overflowX auto).
+    return html.Div(style={"overflowX": "auto", "width": "100%"}, children=table)
 
 
 def _nutanix_sched_donut(breakdown: dict) -> go.Figure:
@@ -1283,6 +1300,34 @@ def build_nutanix_snapshot_panel(data: dict, table: dict | None = None, missing:
         ],
     )
 
+    # Filter options derived from the full base set (all_rows).
+    def _opts(values):
+        return [{"label": v, "value": v} for v in values]
+
+    customers = sorted({r.get("customer") for r in all_rows if r.get("customer")})
+    sched_types = sorted({r.get("schedule_type") for r in all_rows if r.get("schedule_type")})
+    clusters = sorted({r.get("cluster") for r in all_rows if r.get("cluster")})
+    retentions = sorted({r.get("retention") for r in all_rows if r.get("retention") is not None})
+
+    filter_bar = html.Div(
+        style={"display": "flex", "gap": "10px", "flexWrap": "wrap", "marginBottom": "12px"},
+        children=[
+            dmc.MultiSelect(id="backup-nutanix-filter-customer", data=_opts(customers),
+                            placeholder="Customers", clearable=True, searchable=True,
+                            size="sm", style={"minWidth": "200px", "flex": "1"}, maxDropdownHeight=280),
+            dmc.MultiSelect(id="backup-nutanix-filter-schedtype", data=_opts(sched_types),
+                            placeholder="Schedule Type", clearable=True,
+                            size="sm", style={"minWidth": "160px"}),
+            dmc.MultiSelect(id="backup-nutanix-filter-retention",
+                            data=[{"label": str(v), "value": str(v)} for v in retentions],
+                            placeholder="Retention", clearable=True, searchable=True,
+                            size="sm", style={"minWidth": "150px"}),
+            dmc.MultiSelect(id="backup-nutanix-filter-cluster", data=_opts(clusters),
+                            placeholder="Cluster", clearable=True, searchable=True,
+                            size="sm", style={"minWidth": "180px", "flex": "1"}, maxDropdownHeight=280),
+        ],
+    )
+
     controls = html.Div(
         style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
                "marginBottom": "12px", "gap": "12px", "flexWrap": "wrap"},
@@ -1307,7 +1352,7 @@ def build_nutanix_snapshot_panel(data: dict, table: dict | None = None, missing:
         children=nutanix_snapshot_table(table.get("items", []))))
     table_card = html.Div(
         className="nexus-card", style={"padding": "16px", "marginTop": "8px"},
-        children=([controls, dcc.Store(id="backup-nutanix-page", data=1), table_body]
+        children=([filter_bar, controls, dcc.Store(id="backup-nutanix-page", data=1), table_body]
                   if paginated else [table_body]),
     )
 

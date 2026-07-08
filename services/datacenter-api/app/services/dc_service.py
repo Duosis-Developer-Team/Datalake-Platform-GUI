@@ -3939,17 +3939,32 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 "page": page, "page_size": page_size}
 
     def get_dc_nutanix_snapshot_table(self, dc_code: str, time_range: dict | None = None, *,
-                                      page: int = 1, page_size: int = 50,
-                                      search: str = "", schedule_type: str | None = None) -> dict:
-        """Paged/filtered view derived in-process from the cached base set."""
+                                      page: int = 1, page_size: int = 50, search: str = "",
+                                      customers: list | None = None, schedule_types: list | None = None,
+                                      retentions: list | None = None, clusters: list | None = None) -> dict:
+        """Paged/filtered view derived in-process from the cached base set.
+
+        Filters are multi-value (Grafana-style): a value matches if it is in the
+        selected set; empty/None means "no filter" for that dimension.
+        """
         rows = self.get_dc_nutanix_snapshots(dc_code, time_range).get("rows", [])
         q = (search or "").strip().lower()
         if q:
             fields = ("customer", "protection_domain_name", "vm_names", "nutanix_ip", "cluster")
             rows = [r for r in rows
                     if q in " ".join(str(r.get(k) or "") for k in fields).lower()]
-        if schedule_type:
-            rows = [r for r in rows if (r.get("schedule_type") or "") == schedule_type]
+        cust_set = {str(c) for c in (customers or []) if c not in (None, "")}
+        if cust_set:
+            rows = [r for r in rows if str(r.get("customer") or "") in cust_set]
+        st_set = {str(s) for s in (schedule_types or []) if s not in (None, "")}
+        if st_set:
+            rows = [r for r in rows if str(r.get("schedule_type") or "") in st_set]
+        ret_set = {str(x) for x in (retentions or []) if x not in (None, "")}
+        if ret_set:
+            rows = [r for r in rows if str(r.get("retention")) in ret_set]
+        cl_set = {str(c) for c in (clusters or []) if c not in (None, "")}
+        if cl_set:
+            rows = [r for r in rows if str(r.get("cluster") or "") in cl_set]
         return self._nsnap_paginate(rows, page, page_size)
 
     def get_dc_nutanix_missing(self, dc_code: str, time_range: dict | None = None, *,

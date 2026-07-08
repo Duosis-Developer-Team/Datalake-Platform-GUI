@@ -876,16 +876,25 @@ def get_dc_nutanix_snapshots(dc_code: str, tr: Optional[dict]) -> dict:
 
 def get_dc_nutanix_snapshot_table(dc_code: str, tr: Optional[dict], page: int = 1,
                                   page_size: int = 50, search: str = "",
-                                  schedule_type: Optional[str] = None) -> dict:
+                                  customers: Optional[list] = None,
+                                  schedule_types: Optional[list] = None,
+                                  retentions: Optional[list] = None,
+                                  clusters: Optional[list] = None) -> dict:
     enc = quote(dc_code, safe="")
     empty = {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+    def _join(v):
+        return ",".join(str(x) for x in v) if v else ""
+
+    cust, st, ret, cl = _join(customers), _join(schedule_types), _join(retentions), _join(clusters)
     ck = (f"api:dc_nutanix_snap_tbl:{enc}:{_serialize_tr_cache_key(tr)}"
-          f":p{page}:ps{page_size}:q{search}:st{schedule_type or ''}")
+          f":p{page}:ps{page_size}:q{search}:c{cust}:st{st}:r{ret}:cl{cl}")
 
     def fetch() -> dict:
         params = {**_build_time_params(tr), "page": page, "page_size": page_size, "search": search or ""}
-        if schedule_type:
-            params["schedule_type"] = schedule_type
+        for k, v in (("customers", cust), ("schedule_types", st), ("retentions", ret), ("clusters", cl)):
+            if v:
+                params[k] = v
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/nutanix/table", params=params)
         return data if isinstance(data, dict) else empty
 

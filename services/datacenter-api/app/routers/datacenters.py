@@ -92,11 +92,18 @@ def dc_nutanix_snapshot_table(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     search: Optional[str] = Query(""),
-    schedule_type: Optional[str] = Query(None),
+    customers: Optional[str] = Query(None, description="comma-separated"),
+    schedule_types: Optional[str] = Query(None, description="comma-separated"),
+    retentions: Optional[str] = Query(None, description="comma-separated"),
+    clusters: Optional[str] = Query(None, description="comma-separated"),
 ):
+    def _split(v):
+        return [p for p in (v or "").split(",") if p] or None
+
     return db.get_dc_nutanix_snapshot_table(
-        dc_code, tf.to_dict(), page=page, page_size=page_size,
-        search=search or "", schedule_type=schedule_type,
+        dc_code, tf.to_dict(), page=page, page_size=page_size, search=search or "",
+        customers=_split(customers), schedule_types=_split(schedule_types),
+        retentions=_split(retentions), clusters=_split(clusters),
     )
 
 
