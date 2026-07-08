@@ -2771,7 +2771,9 @@ def _build_project_select() -> dmc.Select:
         clearable=False,
         allowDeselect=False,
         leftSection=DashIconify(icon="solar:folder-with-files-bold-duotone", width=16),
-        comboboxProps={"withinPortal": True},
+        # Header Paper is a sticky z-index:1000 layer; float the dropdown above it
+        # so its options are clickable (default combobox z-index sits behind it).
+        comboboxProps={"withinPortal": True, "zIndex": 2000},
         placeholder="Project",
     )
 

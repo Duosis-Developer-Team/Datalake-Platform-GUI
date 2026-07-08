@@ -231,7 +231,7 @@ def build_crm_line_items_table(sales_items: list[dict] | None, limit: int = 25):
     if not items:
         return dmc.Text("No invoiced sales line items.", size="sm", c="dimmed")
 
-    return dmc.Table(
+    table = dmc.Table(
         striped=True,
         highlightOnHover=True,
         withTableBorder=True,
@@ -250,6 +250,7 @@ def build_crm_line_items_table(sales_items: list[dict] | None, limit: int = 25):
             html.Tbody(_line_items_table_body(items)),
         ],
     )
+    return html.Div(style={"overflowX": "auto", "width": "100%"}, children=table)
 
 
 def _order_header_cards(headers: list[dict] | None):
@@ -374,7 +375,8 @@ def build_crm_active_orders_section(
     children = []
     if header_cards is not None:
         children.append(header_cards)
-    children.append(table)
+    # Wide line-item table: horizontal scroll so QUANTITY/price columns stay reachable.
+    children.append(html.Div(style={"overflowX": "auto", "width": "100%"}, children=table))
     return dmc.Stack(gap="md", children=children)
 
 
