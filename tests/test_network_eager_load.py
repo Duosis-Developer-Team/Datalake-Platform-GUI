@@ -50,6 +50,14 @@ def _fake_service_with_network(monkeypatch, *, call_log: list[str]):
         def get_dc_veeam_repos(self, dc_id, tr):
             return {"repos": [], "rows": []}
 
+        def get_dc_nutanix_snapshots(self, dc_id, tr):
+            return {"rows": [], "totals": {}, "as_of": ""}
+
+        def get_dc_nutanix_snapshot_table(self, dc_id, tr, page=1, page_size=50, search="", schedule_type=None):
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+        def get_dc_nutanix_missing(self, dc_id, tr, page=1, page_size=50):
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
         def get_dc_network_filters(self, dc_id, tr):
             call_log.append("filters")
             return net_filters
@@ -134,6 +142,14 @@ def test_build_dc_view_skips_network_payload_when_no_devices(monkeypatch):
         def get_dc_veeam_repos(self, dc_id, tr):
             return {"repos": [], "rows": []}
 
+        def get_dc_nutanix_snapshots(self, dc_id, tr):
+            return {"rows": [], "totals": {}, "as_of": ""}
+
+        def get_dc_nutanix_snapshot_table(self, dc_id, tr, page=1, page_size=50, search="", schedule_type=None):
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+        def get_dc_nutanix_missing(self, dc_id, tr, page=1, page_size=50):
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
         def get_dc_network_filters(self, dc_id, tr):
             call_log.append("filters")
             return {"manufacturers": [], "roles_by_manufacturer": {}, "devices_by_manufacturer_role": {}}

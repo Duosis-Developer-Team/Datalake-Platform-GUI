@@ -147,6 +147,14 @@ def _fake_service(monkeypatch, dc_details: dict, s3_pools: dict | None = None):
         def get_dc_veeam_repos(self, dc_id, tr):
             return {"repos": [], "rows": []}
 
+        def get_dc_nutanix_snapshots(self, dc_id, tr):
+            return {"rows": [], "totals": {}, "as_of": ""}
+
+        def get_dc_nutanix_snapshot_table(self, dc_id, tr, page=1, page_size=50, search="", schedule_type=None):
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+        def get_dc_nutanix_missing(self, dc_id, tr, page=1, page_size=50):
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
         # Network > SAN (Brocade)
         def get_dc_san_switches(self, dc_id, tr):
             return san_switches
@@ -268,6 +276,14 @@ def _fake_service_network(
         def get_dc_veeam_repos(self, dc_id, tr):
             return {"repos": [], "rows": []}
 
+        def get_dc_nutanix_snapshots(self, dc_id, tr):
+            return {"rows": [], "totals": {}, "as_of": ""}
+
+        def get_dc_nutanix_snapshot_table(self, dc_id, tr, page=1, page_size=50, search="", schedule_type=None):
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+        def get_dc_nutanix_missing(self, dc_id, tr, page=1, page_size=50):
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
         # Network > SAN (Brocade)
         def get_dc_san_switches(self, dc_id, tr):
             return san_switches_val
