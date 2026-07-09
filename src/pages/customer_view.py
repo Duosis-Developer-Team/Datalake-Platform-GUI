@@ -863,6 +863,51 @@ def build_project_chip_bar(project_options: list | None, selected: str | None):
     )
 
 
+def _billing_crm_children(
+    *,
+    customer_name: str,
+    sales_summary: dict | None,
+    service_breakdown: list | None,
+    sales_items: list | None,
+    active_orders: list | None,
+    active_items: list | None,
+    efficiency_rows: list | None,
+) -> list:
+    """The project-scoped CRM sales section cards (KPI strip, summary, active
+    orders, invoiced). Lives in its own div so the project chips can re-render
+    only this — never the whole (heavy) billing tab, which would loop."""
+    out: list = []
+    kpi_strip = build_crm_intro_kpi_strip(sales_summary, service_breakdown)
+    if kpi_strip is not None:
+        out.append(_section_card(
+            "CRM — realized sales (YTD)",
+            "Fulfilled / invoiced sales orders only (no pipeline) — see ADR-0010",
+            kpi_strip,
+        ))
+    kv_panel = build_crm_summary_kv_panel(
+        customer_name, sales_summary, service_breakdown, sales_items, active_items,
+    )
+    if kv_panel is not None and "No CRM sales metrics" not in str(kv_panel):
+        out.append(_section_card(
+            "CRM sales summary",
+            "Open orders plus realized sales (YTD primary, lifetime secondary)",
+            kv_panel,
+        ))
+    active_section = build_crm_active_orders_section(active_orders, active_items)
+    if active_section is not None and "No active orders" not in str(active_section):
+        out.append(_section_card(
+            "Active orders", "Open CRM sales orders (active / submitted)", active_section,
+        ))
+    invoiced_section = build_crm_invoiced_orders_section(service_breakdown, efficiency_rows, sales_items)
+    if invoiced_section is not None and "No invoiced orders yet" not in str(invoiced_section):
+        out.append(_section_card(
+            "Invoiced orders",
+            "Fulfilled and invoiced CRM sales — service breakdown and line items",
+            invoiced_section,
+        ))
+    return out
+
+
 def _tab_billing(
     totals: dict,
     assets: dict,
@@ -918,51 +963,21 @@ def _tab_billing(
     if chip_bar is not None:
         children.append(chip_bar)
 
-    kpi_strip = build_crm_intro_kpi_strip(sales_summary, service_breakdown)
-    if kpi_strip is not None:
-        children.append(
-            _section_card(
-                "CRM — realized sales (YTD)",
-                "Fulfilled / invoiced sales orders only (no pipeline) — see ADR-0010",
-                kpi_strip,
-            )
+    # Project-scoped CRM sections in their own div; the chips re-render only this.
+    children.append(
+        html.Div(
+            id="billing-crm-content",
+            children=_billing_crm_children(
+                customer_name=customer_name,
+                sales_summary=sales_summary,
+                service_breakdown=service_breakdown,
+                sales_items=sales_items,
+                active_orders=active_orders,
+                active_items=active_items,
+                efficiency_rows=efficiency_rows,
+            ),
         )
-
-    kv_panel = build_crm_summary_kv_panel(
-        customer_name,
-        sales_summary,
-        service_breakdown,
-        sales_items,
-        active_items,
     )
-    if kv_panel is not None and "No CRM sales metrics" not in str(kv_panel):
-        children.append(
-            _section_card(
-                "CRM sales summary",
-                "Open orders plus realized sales (YTD primary, lifetime secondary)",
-                kv_panel,
-            )
-        )
-
-    active_section = build_crm_active_orders_section(active_orders, active_items)
-    if active_section is not None and "No active orders" not in str(active_section):
-        children.append(
-            _section_card(
-                "Active orders",
-                "Open CRM sales orders (active / submitted)",
-                active_section,
-            )
-        )
-
-    invoiced_section = build_crm_invoiced_orders_section(service_breakdown, efficiency_rows, sales_items)
-    if invoiced_section is not None and "No invoiced orders yet" not in str(invoiced_section):
-        children.append(
-            _section_card(
-                "Invoiced orders",
-                "Fulfilled and invoiced CRM sales — service breakdown and line items",
-                invoiced_section,
-            )
-        )
 
     if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None):
         children.append(
@@ -2636,6 +2651,30 @@ def render_billing_tab(name: str, tr: dict | None, project: str | None = ALL_PRO
     )
 
 
+def render_billing_crm_content(name: str, tr: dict | None, project: str | None = ALL_PROJECTS):
+    """Just the project-scoped CRM sales sections (no heavy infra). Driven by the
+    project chips — cheap, cached sales getters only, so switching projects is fast."""
+    active_orders = api.get_customer_sales_active_orders(name)
+    active_items = api.get_customer_sales_active_items(name)
+    sales_items = api.get_customer_sales_items(name)
+    sales_summary = recompute_summary_for_project(
+        api.get_customer_sales_summary(name),
+        active_orders=active_orders,
+        sales_items=sales_items,
+        project=project,
+        current_year=datetime.now().year,
+    )
+    return _billing_crm_children(
+        customer_name=name,
+        sales_summary=sales_summary,
+        service_breakdown=api.get_customer_sales_service_breakdown(name),
+        sales_items=filter_by_project(sales_items, project),
+        active_orders=filter_by_project(active_orders, project),
+        active_items=filter_by_project(active_items, project),
+        efficiency_rows=api.get_customer_efficiency_by_category(name, tr),
+    )
+
+
 # Map a tab value to its render function; used by the per-tab async callbacks.
 def _render_tab_body(tab: str, ctx: dict | None, project: str | None = ALL_PROJECTS):
     """Render one tab's body from the ctx store {customer, perspective, tr}.
@@ -3057,9 +3096,6 @@ def render_customer_shell(
                 id="customer-view-ctx",
                 data={"customer": chosen, "perspective": perspective, "tr": tr},
             ),
-            # Selected billing project (PRJ-*) — lives in the shell so it survives
-            # billing-tab re-renders; driven by the in-tab project chips.
-            dcc.Store(id="billing-project-store", data=ALL_PROJECTS),
             html.Div(
                 id="cust-as-of-stamp",
                 style={
@@ -3082,19 +3118,6 @@ def render_customer_shell(
 
 
 def _register_tab_callback(tab: str) -> None:
-    # Billing holds the in-tab project chips, so it re-renders when the selected
-    # project changes; every other tab depends only on the customer ctx.
-    if tab == "billing":
-        @callback(
-            Output("cust-tab-body-billing", "children"),
-            Input("customer-view-ctx", "data"),
-            Input("billing-project-store", "data"),
-            prevent_initial_call=False,
-        )
-        def _fill_billing(ctx, project):
-            return _render_tab_body("billing", ctx, project)
-        return
-
     @callback(
         Output(f"cust-tab-body-{tab}", "children"),
         Input("customer-view-ctx", "data"),
@@ -3109,13 +3132,20 @@ for _t in ("summary", "virt", "avail", "backup", "billing", "itsm", "phys-inv", 
 
 
 @callback(
-    Output("billing-project-store", "data"),
+    Output("billing-crm-content", "children"),
     Input("billing-project-chips", "value"),
+    State("customer-view-ctx", "data"),
     prevent_initial_call=True,
 )
-def _sync_billing_project(value):
-    """Project chip selection -> shared store (survives billing re-renders)."""
-    return value or ALL_PROJECTS
+def _filter_billing_crm(project, ctx):
+    """Re-render ONLY the CRM sales sections for the picked project. The chips
+    live outside this div, so this never re-renders the heavy billing tab
+    (which would loop) — just the cheap, cached sales sections."""
+    ctx = ctx or {}
+    customer = (ctx.get("customer") or "").strip()
+    if not customer:
+        return dash.no_update
+    return render_billing_crm_content(customer, ctx.get("tr"), project or ALL_PROJECTS)
 
 
 @callback(
