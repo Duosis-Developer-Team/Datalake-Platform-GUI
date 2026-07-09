@@ -841,6 +841,28 @@ def _compute_billing_rows(
     return rows
 
 
+def build_project_chip_bar(project_options: list | None, selected: str | None):
+    """Project (PRJ-*) filter chips shown at the top of the Billing tab. Renders
+    only when the customer has >=2 projects (the separation use case)."""
+    options = project_options or []
+    if len(options) < 3:  # [All] + <2 real projects -> nothing to separate
+        return None
+    chips = []
+    for opt in options:
+        value = opt.get("value")
+        label = "Tümü" if value == ALL_PROJECTS else str(opt.get("label") or value)
+        chips.append(dmc.Chip(label, value=value, size="xs", variant="filled", color="indigo"))
+    return _section_card(
+        "Proje filtresi",
+        "Bu müşterinin CRM satışlarını (özet + siparişler + kalemler) projeye göre ayır",
+        dmc.ChipGroup(
+            id="billing-project-chips",
+            value=selected or ALL_PROJECTS,
+            children=dmc.Group(chips, gap="xs", wrap="wrap"),
+        ),
+    )
+
+
 def _tab_billing(
     totals: dict,
     assets: dict,
@@ -855,6 +877,8 @@ def _tab_billing(
     active_orders: list | None = None,
     active_items: list | None = None,
     efficiency_rows: list | None = None,
+    project_options: list | None = None,
+    selected_project: str | None = None,
 ):
     """Billing tab: CRM commercial detail plus billable infrastructure lines."""
     sales_summary = sales_summary or {}
@@ -889,6 +913,10 @@ def _tab_billing(
         return f"{float(v):,.2f} {cur}"
 
     children: list = []
+
+    chip_bar = build_project_chip_bar(project_options, selected_project)
+    if chip_bar is not None:
+        children.append(chip_bar)
 
     kpi_strip = build_crm_intro_kpi_strip(sales_summary, service_breakdown)
     if kpi_strip is not None:
@@ -2582,6 +2610,7 @@ def render_billing_tab(name: str, tr: dict | None, project: str | None = ALL_PRO
     active_orders = api.get_customer_sales_active_orders(name)
     active_items = api.get_customer_sales_active_items(name)
     sales_items = api.get_customer_sales_items(name)
+    project_options = project_select_options(active_orders, active_items, sales_items)
     sales_summary = recompute_summary_for_project(
         api.get_customer_sales_summary(name),
         active_orders=active_orders,
@@ -2602,6 +2631,8 @@ def render_billing_tab(name: str, tr: dict | None, project: str | None = ALL_PRO
         active_orders=filter_by_project(active_orders, project),
         active_items=filter_by_project(active_items, project),
         efficiency_rows=eff_by_cat,
+        project_options=project_options,
+        selected_project=project,
     )
 
 
@@ -2759,32 +2790,13 @@ def _build_perspective_switch(perspective: str) -> dmc.SegmentedControl:
     )
 
 
-def _build_project_select() -> dmc.Select:
-    """CRM project (PRJ-*) filter shown in the customer header. Options are filled
-    by the ctx-driven callback; it scopes the Summary + Billing CRM sales set."""
-    return dmc.Select(
-        id="customer-view-project-select",
-        data=[{"label": "All projects", "value": ALL_PROJECTS}],
-        value=ALL_PROJECTS,
-        size="xs",
-        w=240,
-        clearable=False,
-        allowDeselect=False,
-        leftSection=DashIconify(icon="solar:folder-with-files-bold-duotone", width=16),
-        # Header Paper is a sticky z-index:1000 layer; float the dropdown above it
-        # so its options are clickable (default combobox z-index sits behind it).
-        comboboxProps={"withinPortal": True, "zIndex": 2000},
-        placeholder="Project",
-    )
-
-
 def _build_customer_header_extras(
     *,
     perspective: str,
     visible_sections,
 ) -> list:
     access = perspective_access(visible_sections)
-    extras: list = [_build_project_select()]
+    extras: list = []
     if show_perspective_switch(access):
         extras.append(_build_perspective_switch(perspective))
     export_group = _build_customer_export_group(visible_sections)
@@ -3045,6 +3057,9 @@ def render_customer_shell(
                 id="customer-view-ctx",
                 data={"customer": chosen, "perspective": perspective, "tr": tr},
             ),
+            # Selected billing project (PRJ-*) — lives in the shell so it survives
+            # billing-tab re-renders; driven by the in-tab project chips.
+            dcc.Store(id="billing-project-store", data=ALL_PROJECTS),
             html.Div(
                 id="cust-as-of-stamp",
                 style={
@@ -3067,17 +3082,17 @@ def render_customer_shell(
 
 
 def _register_tab_callback(tab: str) -> None:
-    # Summary and Billing carry the CRM sales set, so they also re-render when the
-    # project selector changes; other tabs depend only on the customer ctx.
-    if tab in ("summary", "billing"):
+    # Billing holds the in-tab project chips, so it re-renders when the selected
+    # project changes; every other tab depends only on the customer ctx.
+    if tab == "billing":
         @callback(
-            Output(f"cust-tab-body-{tab}", "children"),
+            Output("cust-tab-body-billing", "children"),
             Input("customer-view-ctx", "data"),
-            Input("customer-view-project-select", "value"),
+            Input("billing-project-store", "data"),
             prevent_initial_call=False,
         )
-        def _fill_crm(ctx, project, _tab=tab):
-            return _render_tab_body(_tab, ctx, project)
+        def _fill_billing(ctx, project):
+            return _render_tab_body("billing", ctx, project)
         return
 
     @callback(
@@ -3094,28 +3109,13 @@ for _t in ("summary", "virt", "avail", "backup", "billing", "itsm", "phys-inv", 
 
 
 @callback(
-    Output("customer-view-project-select", "data"),
-    Output("customer-view-project-select", "value"),
-    Input("customer-view-ctx", "data"),
-    prevent_initial_call=False,
+    Output("billing-project-store", "data"),
+    Input("billing-project-chips", "value"),
+    prevent_initial_call=True,
 )
-def _fill_project_options(ctx):
-    """Populate the project (PRJ-*) dropdown from the customer's CRM sales orders.
-    Resets to 'All projects' whenever the customer changes (ctx fires)."""
-    ctx = ctx or {}
-    customer = (ctx.get("customer") or "").strip()
-    default = [{"label": "All projects", "value": ALL_PROJECTS}]
-    if not customer:
-        return default, ALL_PROJECTS
-    try:
-        options = project_select_options(
-            api.get_customer_sales_active_orders(customer),
-            api.get_customer_sales_active_items(customer),
-            api.get_customer_sales_items(customer),
-        )
-    except Exception:  # noqa: BLE001
-        return default, ALL_PROJECTS
-    return options, ALL_PROJECTS
+def _sync_billing_project(value):
+    """Project chip selection -> shared store (survives billing re-renders)."""
+    return value or ALL_PROJECTS
 
 
 @callback(
