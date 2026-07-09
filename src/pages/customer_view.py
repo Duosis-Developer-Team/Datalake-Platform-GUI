@@ -3,7 +3,7 @@ from __future__ import annotations
 # Tab hierarchy: Summary | Virtualization (Classic / Hyperconverged / Power) | Backup
 import json
 import dash
-from dash import html, dcc, callback, Input, Output, State, MATCH
+from dash import html, dcc, callback, Input, Output, State, MATCH, ALL, ctx as dash_ctx
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objs as go
@@ -841,37 +841,39 @@ def _compute_billing_rows(
     return rows
 
 
-def build_project_chip_bar(project_options: list | None, selected: str | None):
-    """Project (PRJ-*) filter buttons at the top of the Billing tab. Renders only
-    when the customer has >=2 projects (the separation use case).
+def _project_filter_buttons(project_options: list | None, selected: str | None):
+    """Wrapping row of project (PRJ-*) filter buttons; the active one is filled.
+    Plain dmc.Button in a wrap group so any number of projects flows onto
+    multiple lines instead of clipping (SegmentedControl does not wrap)."""
+    sel = selected or ALL_PROJECTS
+    btns = []
+    for opt in project_options or []:
+        value = opt.get("value")
+        label = "Tümü" if value == ALL_PROJECTS else str(opt.get("label") or value)
+        active = value == sel
+        btns.append(
+            dmc.Button(
+                label,
+                id={"type": "billing-proj-btn", "proj": value},
+                variant="filled" if active else "light",
+                color="indigo" if active else "gray",
+                size="xs",
+                radius="xl",
+            )
+        )
+    return dmc.Group(btns, gap="xs", wrap="wrap")
 
-    Uses SegmentedControl (button-like, single-select, always registered in the
-    dmc JS bundle) — dmc.ChipGroup is not renderable in this dmc version.
-    """
+
+def build_project_chip_bar(project_options: list | None, selected: str | None):
+    """Project (PRJ-*) filter shown at the top of the Billing tab. Renders only
+    when the customer has >=2 projects (the separation use case)."""
     options = project_options or []
     if len(options) < 3:  # [All] + <2 real projects -> nothing to separate
         return None
-    data = [
-        {
-            "label": "Tümü" if opt.get("value") == ALL_PROJECTS else str(opt.get("label") or opt.get("value")),
-            "value": opt.get("value"),
-        }
-        for opt in options
-    ]
     return _section_card(
         "Proje filtresi",
         "Bu müşterinin CRM satışlarını (özet + siparişler + kalemler) projeye göre ayır",
-        html.Div(
-            style={"overflowX": "auto", "maxWidth": "100%", "minWidth": 0},
-            children=dmc.SegmentedControl(
-                id="billing-project-seg",
-                data=data,
-                value=selected or ALL_PROJECTS,
-                color="indigo",
-                size="xs",
-                radius="md",
-            ),
-        ),
+        html.Div(id="billing-project-btnbar", children=_project_filter_buttons(options, selected)),
     )
 
 
@@ -3145,19 +3147,34 @@ for _t in ("summary", "virt", "avail", "backup", "billing", "itsm", "phys-inv", 
 
 @callback(
     Output("billing-crm-content", "children"),
-    Input("billing-project-seg", "value"),
+    Output("billing-project-btnbar", "children"),
+    Input({"type": "billing-proj-btn", "proj": ALL}, "n_clicks"),
     State("customer-view-ctx", "data"),
     prevent_initial_call=True,
 )
-def _filter_billing_crm(project, ctx):
-    """Re-render ONLY the CRM sales sections for the picked project. The chips
-    live outside this div, so this never re-renders the heavy billing tab
-    (which would loop) — just the cheap, cached sales sections."""
-    ctx = ctx or {}
-    customer = (ctx.get("customer") or "").strip()
+def _pick_billing_project(_clicks, view_ctx):
+    """A project button click -> re-render ONLY the CRM sections (cheap, cached)
+    for that project, plus the button bar to move the active highlight. The
+    buttons live outside billing-crm-content, so this never re-renders the heavy
+    billing tab. Guard against Dash re-firing on the button-bar rebuild."""
+    trig = dash_ctx.triggered_id
+    if not isinstance(trig, dict) or trig.get("type") != "billing-proj-btn":
+        return dash.no_update, dash.no_update
+    if not dash_ctx.triggered or not dash_ctx.triggered[0].get("value"):
+        return dash.no_update, dash.no_update  # rebuild reset, not a real click
+    view_ctx = view_ctx or {}
+    customer = (view_ctx.get("customer") or "").strip()
     if not customer:
-        return dash.no_update
-    return render_billing_crm_content(customer, ctx.get("tr"), project or ALL_PROJECTS)
+        return dash.no_update, dash.no_update
+    project = trig.get("proj") or ALL_PROJECTS
+    tr = view_ctx.get("tr")
+    content = render_billing_crm_content(customer, tr, project)
+    options = project_select_options(
+        api.get_customer_sales_active_orders(customer),
+        api.get_customer_sales_active_items(customer),
+        api.get_customer_sales_items(customer),
+    )
+    return content, _project_filter_buttons(options, project)
 
 
 @callback(
