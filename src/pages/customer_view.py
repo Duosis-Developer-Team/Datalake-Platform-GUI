@@ -842,23 +842,35 @@ def _compute_billing_rows(
 
 
 def build_project_chip_bar(project_options: list | None, selected: str | None):
-    """Project (PRJ-*) filter chips shown at the top of the Billing tab. Renders
-    only when the customer has >=2 projects (the separation use case)."""
+    """Project (PRJ-*) filter buttons at the top of the Billing tab. Renders only
+    when the customer has >=2 projects (the separation use case).
+
+    Uses SegmentedControl (button-like, single-select, always registered in the
+    dmc JS bundle) — dmc.ChipGroup is not renderable in this dmc version.
+    """
     options = project_options or []
     if len(options) < 3:  # [All] + <2 real projects -> nothing to separate
         return None
-    chips = []
-    for opt in options:
-        value = opt.get("value")
-        label = "Tümü" if value == ALL_PROJECTS else str(opt.get("label") or value)
-        chips.append(dmc.Chip(label, value=value, size="xs", variant="filled", color="indigo"))
+    data = [
+        {
+            "label": "Tümü" if opt.get("value") == ALL_PROJECTS else str(opt.get("label") or opt.get("value")),
+            "value": opt.get("value"),
+        }
+        for opt in options
+    ]
     return _section_card(
         "Proje filtresi",
         "Bu müşterinin CRM satışlarını (özet + siparişler + kalemler) projeye göre ayır",
-        dmc.ChipGroup(
-            id="billing-project-chips",
-            value=selected or ALL_PROJECTS,
-            children=dmc.Group(chips, gap="xs", wrap="wrap"),
+        html.Div(
+            style={"overflowX": "auto", "maxWidth": "100%", "minWidth": 0},
+            children=dmc.SegmentedControl(
+                id="billing-project-seg",
+                data=data,
+                value=selected or ALL_PROJECTS,
+                color="indigo",
+                size="xs",
+                radius="md",
+            ),
         ),
     )
 
@@ -3133,7 +3145,7 @@ for _t in ("summary", "virt", "avail", "backup", "billing", "itsm", "phys-inv", 
 
 @callback(
     Output("billing-crm-content", "children"),
-    Input("billing-project-chips", "value"),
+    Input("billing-project-seg", "value"),
     State("customer-view-ctx", "data"),
     prevent_initial_call=True,
 )
