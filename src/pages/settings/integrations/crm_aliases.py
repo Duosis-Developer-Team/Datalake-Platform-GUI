@@ -8,6 +8,7 @@ import dash_mantine_components as dmc
 from dash import dcc, html
 from dash_iconify import DashIconify
 
+from src.services import api_client as api
 from src.utils.crm_source_mapping_ui import (
     DEFAULT_ALIAS_TABLE_PAGE_SIZE,
     MATCH_METHOD_OPTIONS,
@@ -27,6 +28,19 @@ _STATUS_COLORS = {
     "empty": "gray",
 }
 _SECTION_ROW_STYLE = {"transition": "opacity 0.15s ease-in-out"}
+
+_AURANOTIFY_OPTIONS_CACHE: list[dict[str, str]] | None = None
+
+
+def _auranotify_options() -> list[dict[str, str]]:
+    """AuraNotify customer options for the picker; lazy + memoised; never raises."""
+    global _AURANOTIFY_OPTIONS_CACHE
+    if _AURANOTIFY_OPTIONS_CACHE is None:
+        try:
+            _AURANOTIFY_OPTIONS_CACHE = api.get_auranotify_customer_options()
+        except Exception:
+            _AURANOTIFY_OPTIONS_CACHE = []
+    return _AURANOTIFY_OPTIONS_CACHE
 
 
 def summary_strip(aliases: list[dict]) -> dmc.Group:
@@ -61,6 +75,37 @@ def _render_mapping_entry(
     prefix: str = "alias",
 ):
     source_options = [{"label": s, "value": s} for s in data_sources]
+    is_auranotify = section_key == "auranotify"
+    method_control = dmc.Select(
+        id={"type": f"{prefix}-edit-method", "section": section_key, "index": index},
+        label="Method" if index == 0 else None,
+        data=[{"label": "ID exact", "value": "id_exact"}] if is_auranotify else MATCH_METHOD_OPTIONS,
+        value="id_exact" if is_auranotify else (entry.get("match_method") or "contains"),
+        disabled=is_auranotify,
+        size="xs",
+        style={"minWidth": "120px", "flex": 1},
+    )
+    if is_auranotify:
+        value_control = dmc.Select(
+            id={"type": f"{prefix}-edit-value", "section": section_key, "index": index},
+            label="AuraNotify customer" if index == 0 else None,
+            data=_auranotify_options(),
+            value=(str(entry.get("match_value")) if entry.get("match_value") else None),
+            placeholder="Search AuraNotify customer or id…",
+            searchable=True,
+            nothingFoundMessage="No match",
+            size="xs",
+            style={"minWidth": "220px", "flex": 3},
+        )
+    else:
+        value_control = dmc.TextInput(
+            id={"type": f"{prefix}-edit-value", "section": section_key, "index": index},
+            label="Value" if index == 0 else None,
+            value=entry.get("match_value") or "",
+            placeholder="match value",
+            size="xs",
+            style={"minWidth": "160px", "flex": 2},
+        )
     return dmc.Paper(
         withBorder=True,
         p="xs",
@@ -71,22 +116,8 @@ def _render_mapping_entry(
                 wrap="wrap",
                 align="flex-end",
                 children=[
-                    dmc.Select(
-                        id={"type": f"{prefix}-edit-method", "section": section_key, "index": index},
-                        label="Method" if index == 0 else None,
-                        data=MATCH_METHOD_OPTIONS,
-                        value=entry.get("match_method") or "contains",
-                        size="xs",
-                        style={"minWidth": "120px", "flex": 1},
-                    ),
-                    dmc.TextInput(
-                        id={"type": f"{prefix}-edit-value", "section": section_key, "index": index},
-                        label="Value" if index == 0 else None,
-                        value=entry.get("match_value") or "",
-                        placeholder="match value",
-                        size="xs",
-                        style={"minWidth": "160px", "flex": 2},
-                    ),
+                    method_control,
+                    value_control,
                     dmc.Select(
                         id={"type": f"{prefix}-edit-source", "section": section_key, "index": index},
                         label="Source" if index == 0 else None,
