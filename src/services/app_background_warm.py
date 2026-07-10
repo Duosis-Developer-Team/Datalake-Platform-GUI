@@ -141,6 +141,10 @@ def _warm_customer_view(customers, time_range: dict | None) -> int:
     from src.services import api_client as api
 
     warmed = 0
+    # The customer-view page fetches with AND without anchor_latest (a browser-local
+    # toggle) — different cache keys. Warm both so whichever the page requests hits,
+    # mirroring _warm_home_bundle / _warm_dc_and_availability_sla.
+    variants = _warm_tr_variants(time_range or {})
     # warm_mode: the long inventory timeout so genuinely-slow cold customer
     # queries COMPLETE and populate the shared cache, instead of timing out at
     # the interactive limit and never caching (warm == cold).
@@ -150,12 +154,14 @@ def _warm_customer_view(customers, time_range: dict | None) -> int:
             if not name:
                 continue
             try:
-                api.get_customer_resources(name, time_range)
-                api.get_customer_availability_bundle(name, time_range)
-                api.get_customer_itsm_summary(name, time_range)
+                for t in variants:
+                    api.get_customer_resources(name, t)
+                    api.get_customer_availability_bundle(name, t)
+                    api.get_customer_itsm_summary(name, t)
+                    api.get_customer_efficiency_by_category(name, t)
+                    api.get_customer_s3_vaults(name, t)
+                # Sales is not time-range scoped — warm once per customer.
                 api.get_customer_sales_summary(name)
-                api.get_customer_efficiency_by_category(name, time_range)
-                api.get_customer_s3_vaults(name, time_range)
                 warmed += 1
             except Exception as exc:
                 logger.warning("customer-view warm failed for %s: %s", name, exc)

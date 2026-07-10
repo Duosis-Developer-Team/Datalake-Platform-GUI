@@ -16,9 +16,10 @@ def test_warm_customer_view_calls_getters_per_customer():
          patch("src.services.api_client.get_customer_s3_vaults") as m_s3:
         n = warm._warm_customer_view(["Acme", "Globex"], {"preset": "7d"})
     assert n == 2
-    assert m_res.call_count == 2
-    assert m_av.call_count == 2
-    assert m_it.call_count == 2
+    # 2 customers x 2 anchor variants (anchor + non-anchor) = 4 tr-scoped calls each.
+    assert m_res.call_count == 4
+    assert m_av.call_count == 4
+    assert m_it.call_count == 4
 
 
 def test_warm_customer_view_survives_one_failing_customer():
@@ -53,3 +54,22 @@ def test_warm_customer_view_runs_under_warm_mode():
          patch("src.services.api_client.get_customer_s3_vaults", side_effect=rec):
         warm._warm_customer_view(["Acme"], {"preset": "7d"})
     assert seen and all(seen), "every customer getter must run inside warm_mode (long timeout)"
+
+
+def test_warm_customer_view_warms_both_anchor_variants():
+    # The page fetches with anchor_latest (a browser-local toggle) but the old warm
+    # only cached the non-anchor key, so those users always missed the warm.
+    anchors = []
+
+    def rec_res(name, tr):
+        anchors.append(bool((tr or {}).get("anchor_latest")))
+        return {}
+
+    with patch("src.services.api_client.get_customer_resources", side_effect=rec_res), \
+         patch("src.services.api_client.get_customer_availability_bundle", return_value={}), \
+         patch("src.services.api_client.get_customer_itsm_summary", return_value={}), \
+         patch("src.services.api_client.get_customer_sales_summary", return_value={}), \
+         patch("src.services.api_client.get_customer_efficiency_by_category", return_value=[]), \
+         patch("src.services.api_client.get_customer_s3_vaults", return_value={}):
+        warm._warm_customer_view(["Acme"], {"preset": "7d", "start": "a", "end": "b"})
+    assert set(anchors) == {True, False}, "resources must be warmed for both anchor and non-anchor keys"
