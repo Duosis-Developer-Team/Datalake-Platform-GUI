@@ -1766,8 +1766,32 @@ def _tab_physical_inventory(devices: list[dict]):
     return dmc.Stack(gap="lg", children=children)
 
 
+def _outage_type_badge(t):
+    tt = str(t or "").strip()
+    unplanned = "plansız" in tt.casefold()
+    return dmc.Badge(tt or "-", color="red" if unplanned else "gray", variant="light", size="sm")
+
+
+def _avail_tile(label: str, value: str, sub: str | None = None, accent: str = "#4318FF"):
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "16px 18px"},
+        children=[
+            html.Div(label, style={"color": "#A3AED0", "fontSize": "0.72rem", "fontWeight": 600,
+                                   "textTransform": "uppercase", "letterSpacing": "0.02em",
+                                   "fontFamily": "DM Sans"}),
+            html.Div(value, style={"color": accent, "fontSize": "1.5rem", "fontWeight": 700,
+                                   "fontFamily": "DM Sans", "marginTop": "4px", "lineHeight": 1.1}),
+            html.Div(sub, style={"color": "#707EAE", "fontSize": "0.72rem", "marginTop": "2px",
+                                 "fontFamily": "DM Sans"}) if sub else None,
+        ],
+    )
+
+
 def _tab_customer_availability(avail: dict):
-    """AuraNotify: service outages and VM-level outages for the customer."""
+    """AuraNotify outages for the customer — readable summary tiles + detail lists."""
+    from src.utils.availability_summary import summarize_outages, format_downtime
+
     svc = avail.get("service_downtimes") or []
     vm = avail.get("vm_downtimes") or []
     cid = avail.get("customer_id")
@@ -1775,75 +1799,85 @@ def _tab_customer_availability(avail: dict):
     if not cids and cid is not None:
         cids = [cid]
 
-    def _svc_row(e: dict):
-        return html.Tr(
-            [
-                html.Td(str(e.get("category") or "-")),
-                html.Td(str(e.get("group_name") or "-")),
-                html.Td(str(e.get("type") or "-")),
-                html.Td(str(e.get("start_time") or "-")),
-                html.Td(str(e.get("end_time") or "-")),
-                html.Td(str(e.get("duration_minutes") or "-")),
-                html.Td(str(e.get("service_impact") or e.get("outage_status") or "-")),
-            ]
+    s = summarize_outages(svc, vm)
+
+    def _sort_recent(rows):
+        return sorted(
+            [r for r in rows if isinstance(r, dict)],
+            key=lambda r: str(r.get("start_time") or ""),
+            reverse=True,
         )
+
+    def _svc_row(e: dict):
+        return html.Tr([
+            html.Td(str(e.get("category") or "-")),
+            html.Td(str(e.get("group_name") or "-")),
+            html.Td(_outage_type_badge(e.get("type"))),
+            html.Td(str(e.get("start_time") or "-")),
+            html.Td(str(e.get("end_time") or "-")),
+            html.Td(format_downtime(e.get("duration_minutes"))),
+            html.Td(str(e.get("service_impact") or e.get("outage_status") or "-")),
+        ])
 
     def _vm_row(e: dict):
-        return html.Tr(
-            [
-                html.Td(str(e.get("vm_name") or e.get("vm") or e.get("category") or "-")),
-                html.Td(str(e.get("group_name") or "-")),
-                html.Td(str(e.get("start_time") or "-")),
-                html.Td(str(e.get("end_time") or "-")),
-                html.Td(str(e.get("duration_minutes") or "-")),
-                html.Td(str(e.get("reason") or "-")),
-            ]
-        )
+        cluster_host = " / ".join(
+            str(e.get(k)) for k in ("cluster", "host") if str(e.get(k) or "").strip()
+        ) or "-"
+        return html.Tr([
+            html.Td(str(e.get("vm_name") or e.get("vm") or "-")),
+            html.Td(cluster_host),
+            html.Td(_outage_type_badge(e.get("type"))),
+            html.Td(str(e.get("start_time") or "-")),
+            html.Td(str(e.get("end_time") or "-")),
+            html.Td(format_downtime(e.get("duration_minutes"))),
+            html.Td(str(e.get("category") or e.get("reason") or "-")),
+        ])
 
-    svc_cols = [
-        "Category",
-        "Datacenter group",
-        "Type",
-        "Start",
-        "End",
-        "Duration (min)",
-        "Impact",
-    ]
-    vm_cols = ["VM / Subject", "Datacenter group", "Start", "End", "Duration (min)", "Reason"]
+    svc_cols = ["Category", "Datacenter group", "Type", "Start", "End", "Duration", "Impact"]
+    vm_cols = ["VM", "Cluster / Host", "Type", "Start", "End", "Duration", "Category"]
+
+    longest = s["longest"]
+    longest_val = format_downtime(longest.get("duration_minutes")) if longest else "-"
+    longest_sub = (str(longest.get("category") or longest.get("group_name") or "")[:28]
+                   if longest else "No outages")
+    down_accent = "#E31A1A" if s["total_downtime_min"] else "#05CD99"
+    unpl_accent = "#E31A1A" if s["unplanned_count"] else "#05CD99"
+    tiles = dmc.SimpleGrid(
+        cols={"base": 2, "sm": 3, "lg": 5}, spacing="sm", mb="lg",
+        children=[
+            _avail_tile("Total outages", str(s["total_outages"]),
+                        f"{s['service_outages']} service · {s['vm_outages']} VM"),
+            _avail_tile("Total downtime", format_downtime(s["total_downtime_min"]), "in period", down_accent),
+            _avail_tile("Unplanned", str(s["unplanned_count"]), f"{s['planned_count']} planned", unpl_accent),
+            _avail_tile("Longest outage", longest_val, longest_sub, "#FFB547"),
+            _avail_tile("Locations", str(len(s["locations"])), (", ".join(s["locations"])[:28] or "—")),
+        ],
+    )
 
     children: list = [
         dmc.Text(
-            f"AuraNotify availability (customer ids: {cids or 'none'}) — "
-            "aligned with report period start.",
-            size="sm",
-            c="dimmed",
+            f"AuraNotify availability (customer ids: {cids or 'none'}) — aligned with report period start.",
+            size="sm", c="dimmed",
         ),
+        tiles,
     ]
     if svc:
-        children.append(
-            _section_card(
-                "Service outages",
-                "Infrastructure / service interruptions (source=service)",
-                _maybe_paginated_table(svc_cols, [_svc_row(e) for e in svc if isinstance(e, dict)]),
-            )
-        )
+        children.append(_section_card(
+            "Service & datacenter outages",
+            "Infrastructure interruptions affecting this customer",
+            _maybe_paginated_table(svc_cols, [_svc_row(e) for e in _sort_recent(svc)]),
+        ))
     if vm:
-        children.append(
-            _section_card(
-                "VM outages",
-                "Virtual machine downtime records (source=vm)",
-                _maybe_paginated_table(vm_cols, [_vm_row(e) for e in vm if isinstance(e, dict)]),
-            )
-        )
-    if len(children) == 1:
-        children.append(
-            dmc.Alert(
-                color="teal",
-                variant="light",
-                title="No outages in period",
-                children="No service or VM downtime records for this customer in the selected report period.",
-            )
-        )
+        children.append(_section_card(
+            "VM outages",
+            "Virtual machine downtime records",
+            _maybe_paginated_table(vm_cols, [_vm_row(e) for e in _sort_recent(vm)]),
+        ))
+    if not svc and not vm:
+        children.append(dmc.Alert(
+            color="teal", variant="light", title="No outages in period",
+            children="No service or VM downtime records for this customer in the selected report period.",
+        ))
     return dmc.Stack(gap="lg", children=children)
 
 

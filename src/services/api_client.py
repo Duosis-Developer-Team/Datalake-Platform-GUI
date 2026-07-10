@@ -1644,10 +1644,60 @@ def _customer_availability_cache_key(customer_name: str, tr: Optional[dict]) -> 
     return f"api:cust_avail:{customer_name or ''}:{t.get('start', '')}:{t.get('end', '')}"
 
 
+def get_auranotify_customer_options() -> list[dict[str, str]]:
+    """Searchable options for the alias editor: label '<name> · id <id>', value '<id>'.
+    Cached; safe to call during page render."""
+    ck = "api:auranotify_customer_options"
+    cached = _api_response_cache.get(ck)
+    if cached is not None:
+        return _clone(cached)
+    from src.services import auranotify_client as aura
+
+    opts: list[dict[str, str]] = []
+    for row in aura.get_customer_list_aura():
+        cid = row.get("id")
+        if cid is None:
+            continue
+        name = str(row.get("name") or "").strip()
+        opts.append({"label": f"{name} · id {cid}", "value": str(cid)})
+    opts.sort(key=lambda o: o["label"].casefold())
+    if opts:
+        _api_response_cache.set(ck, opts)
+    return _clone(opts)
+
+
+def get_auranotify_ids_for_customer(customer_name: str) -> list[int]:
+    """Explicit AuraNotify ids mapped to this customer via the alias page
+    (data_source='auranotify'). Empty when unmapped — the caller then falls back
+    to AuraNotify name matching."""
+    name = (customer_name or "").strip().casefold()
+    if not name:
+        return []
+    ids: list[int] = []
+    for alias in get_crm_aliases():
+        if str(alias.get("crm_account_name") or "").strip().casefold() != name:
+            continue
+        for m in alias.get("source_mappings") or []:
+            if str(m.get("data_source") or "") != "auranotify":
+                continue
+            if m.get("enabled", True) is False:
+                continue
+            try:
+                ids.append(int(str(m.get("match_value") or "").strip()))
+            except (TypeError, ValueError):
+                continue
+        break
+    return sorted(set(ids))
+
+
 def _fetch_customer_availability_bundle_uncached(customer_name: str, tr: Optional[dict]) -> dict[str, Any]:
     from src.services import auranotify_client as aura
 
-    return aura.get_customer_availability_bundle(customer_name or "", _auranotify_start_date(tr))
+    start = _auranotify_start_date(tr)
+    explicit_ids = get_auranotify_ids_for_customer(customer_name or "")
+    if explicit_ids:
+        return aura.get_availability_bundle_for_ids(explicit_ids, start)
+    return aura.get_customer_availability_bundle(customer_name or "", start)
 
 
 def clear_customer_availability_bundle_cache() -> None:

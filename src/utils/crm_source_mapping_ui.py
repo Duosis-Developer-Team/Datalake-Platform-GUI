@@ -8,6 +8,7 @@ UI_COLUMNS: list[tuple[str, str, tuple[str, ...]]] = [
     ("storage", "Storage", ("storage_ibm",)),
     ("s3", "S3", ("s3_icos",)),
     ("itsm", "ITSM", ("itsm_servicecore",)),
+    ("auranotify", "Availability (AuraNotify)", ("auranotify",)),
 ]
 
 MATCH_METHOD_OPTIONS = [
