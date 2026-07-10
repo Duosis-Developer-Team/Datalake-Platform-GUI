@@ -269,6 +269,34 @@ def _warm_guarded(user_id: int, tr: dict | None) -> None:
             _last_warm = _time.monotonic()
 
 
+# On-demand per-customer warm throttle: a customer whose interactive fetch came
+# back cold/empty gets warmed in the background so the NEXT visit hits the cache
+# (self-healing for customers not in WARMED_CUSTOMERS). Throttled per customer.
+_cust_warm_lock = threading.Lock()
+_cust_last_warm: dict[str, float] = {}
+
+
+def trigger_customer_view_warm(name: str, time_range: dict | None) -> None:
+    """Warm one customer's customer-view data in a daemon thread (warm_mode, both
+    anchor variants via _warm_customer_view). Per-customer throttled to
+    _WARM_INTERVAL_SECONDS so repeated cold visits don't spawn a thread each time."""
+    name = (name or "").strip()
+    if not name:
+        return
+    now = _time.monotonic()
+    with _cust_warm_lock:
+        if (now - _cust_last_warm.get(name, 0.0)) < _WARM_INTERVAL_SECONDS:
+            return
+        _cust_last_warm[name] = now
+    t = threading.Thread(
+        target=_warm_customer_view,
+        args=([name], time_range),
+        daemon=True,
+        name=f"cust-warm-{name[:24]}",
+    )
+    t.start()
+
+
 def trigger_rbac_warm(user_id: int, time_range: dict | None) -> None:
     """Start RBAC warm in a daemon thread; returns immediately."""
     if not user_id:
