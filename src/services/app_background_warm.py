@@ -231,10 +231,11 @@ def warm_common(time_range: dict | None = None) -> dict:
     + SLA), so the cache stays hot even with no logged-in session. Re-reads
     default_time_range each call, so it also covers the daily 7d-window rollover."""
     from src.services import api_client as api
+    from src.services.db_service import WARMED_CUSTOMERS
     from src.utils.time_range import default_time_range
 
     tr = time_range or default_time_range()
-    stats: dict = {"home": False, "dc_avail_sla": 0}
+    stats: dict = {"home": False, "dc_avail_sla": 0, "customer_view": 0}
     if _should_pause():
         return stats
     _warm_home_bundle(tr)
@@ -244,6 +245,10 @@ def warm_common(time_range: dict | None = None) -> dict:
     except Exception:
         dc_rows = []
     stats["dc_avail_sla"] = _warm_dc_and_availability_sla(dc_rows, tr)
+    # customer-view has no other server-side warm timer; seed the warmed customers
+    # here so their cache stays hot even with no active browser session.
+    if not _should_pause() and WARMED_CUSTOMERS:
+        stats["customer_view"] = _warm_customer_view(WARMED_CUSTOMERS, tr)
     return stats
 
 
