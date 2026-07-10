@@ -27,15 +27,6 @@ REFRESH_INTERVAL_MINUTES = 15
 SLA_REFRESH_INTERVAL_MINUTES = 60
 
 
-def warm_warmed_customer_caches(db_service: "DatabaseService") -> None:
-    """
-    Legacy hook — customer resource cache warm is owned by customer-api (VIP hot tier +
-    mapped non-VIP 6h batch). GUI scheduler no longer duplicates Redis warm here.
-    """
-    _ = db_service
-    logger.debug("Skipping GUI customer Redis warm; customer-api owns cache tiers.")
-
-
 def refresh_warmed_customer_availability_bundles() -> None:
     """
     Force-refresh AuraNotify customer availability cache for WARMED_CUSTOMERS × cache_time_ranges.
@@ -208,36 +199,9 @@ def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
     except Exception as exc:
         logger.warning("Failed to schedule initial DC long-range warm-up: %s", exc)
 
-    # Step 3: warm customer cache for 30d + previous month in background (7d already in warm_cache).
-    try:
-        scheduler.add_job(
-            func=lambda: warm_warmed_customer_caches(db_service),
-            trigger=DateTrigger(run_date=datetime.now()),
-            id="customer_initial_warm",
-            name="Initial warmed-customers cache warm-up (all standard ranges)",
-            replace_existing=True,
-            misfire_grace_time=60,
-        )
-        logger.info("Scheduled initial customer cache warm-up (7d + 30d + previous month).")
-    except Exception as exc:
-        logger.warning("Failed to schedule initial customer cache warm-up: %s", exc)
-
-    # Step 4: periodic customer cache refresh (write-through: get_customer_resources overwrites cache).
-    try:
-        scheduler.add_job(
-            func=lambda: warm_warmed_customer_caches(db_service),
-            trigger=IntervalTrigger(minutes=REFRESH_INTERVAL_MINUTES),
-            id="customer_warmed_refresh",
-            name="Warmed customers cache refresh (7d + 30d + previous month)",
-            replace_existing=True,
-            misfire_grace_time=60,
-        )
-        logger.info(
-            "Scheduled customer cache refresh every %d minutes (all standard ranges).",
-            REFRESH_INTERVAL_MINUTES,
-        )
-    except Exception as exc:
-        logger.warning("Failed to schedule customer cache refresh: %s", exc)
+    # Customer-view resource cache is warmed by app_background_warm.warm_common on the
+    # 240s server-side timer (and both anchor variants, under warm_mode). The former
+    # 15-min scheduler jobs here were a NO-OP and have been removed.
 
     # Step 4a: customer availability (AuraNotify) — initial warm + same interval as DC cache refresh.
     try:
