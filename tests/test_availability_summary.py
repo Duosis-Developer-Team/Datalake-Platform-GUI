@@ -35,6 +35,7 @@ def test_summarize_empty_and_defensive():
 
 def test_format_downtime_units():
     assert format_downtime(45) == "45 dk"
+    assert format_downtime(0) == "0 dk"
     assert format_downtime(90) == "1,5 sa"
     assert format_downtime(2880) == "2,0 gün"
     assert format_downtime(None) == "-"
