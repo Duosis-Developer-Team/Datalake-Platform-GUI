@@ -29,18 +29,12 @@ _STATUS_COLORS = {
 }
 _SECTION_ROW_STYLE = {"transition": "opacity 0.15s ease-in-out"}
 
-_AURANOTIFY_OPTIONS_CACHE: list[dict[str, str]] | None = None
-
-
 def _auranotify_options() -> list[dict[str, str]]:
-    """AuraNotify customer options for the picker; lazy + memoised; never raises."""
-    global _AURANOTIFY_OPTIONS_CACHE
-    if _AURANOTIFY_OPTIONS_CACHE is None:
-        try:
-            _AURANOTIFY_OPTIONS_CACHE = api.get_auranotify_customer_options()
-        except Exception:
-            _AURANOTIFY_OPTIONS_CACHE = []
-    return _AURANOTIFY_OPTIONS_CACHE
+    """AuraNotify customer options for the picker; the api layer caches; never raises."""
+    try:
+        return api.get_auranotify_customer_options()
+    except Exception:
+        return []
 
 
 def summary_strip(aliases: list[dict]) -> dmc.Group:

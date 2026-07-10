@@ -27,7 +27,6 @@ def _find(component, predicate):
 
 def test_auranotify_row_uses_searchable_select_with_options():
     opts = [{"label": "4a_Kozmetik · id 1498", "value": "1498"}]
-    crm_aliases._AURANOTIFY_OPTIONS_CACHE = None  # reset memoised options so the patch is used
     with patch.object(crm_aliases.api, "get_auranotify_customer_options", return_value=opts):
         entry = {"data_source": "auranotify", "match_method": "id_exact", "match_value": "1498", "enabled": True}
         row = crm_aliases._render_mapping_entry("auranotify", ("auranotify",), entry, 0)
