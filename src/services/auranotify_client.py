@@ -117,21 +117,32 @@ def get_customer_list_aura() -> list[dict[str, Any]]:
         return []
 
 
-def get_customer_downtimes(customer_id: int, start_date: str, source: str) -> dict[str, Any]:
-    """GET /api/customers/{id}/downtimes?start_date=&source=service|vm"""
+def get_customer_downtimes(
+    customer_id: int, start_date: str, source: str | None = None
+) -> dict[str, Any]:
+    """GET /api/customers/{id}/downtimes?start_date=[&source=]
+
+    When ``source`` is None (default) the endpoint returns every downtime
+    category (datacenter/dedicated/service/vm). Passing a ``source`` filters the
+    response to that one category — the modern API behaviour, so the availability
+    bundle deliberately omits it.
+    """
     if not AURANOTIFY_KEY:
         return {}
+    params: dict[str, str] = {"start_date": start_date}
+    if source:
+        params["source"] = source
     try:
         r = _get_client().get(
             f"/api/customers/{customer_id}/downtimes",
-            params={"start_date": start_date, "source": source},
+            params=params,
             headers=_headers(),
         )
         r.raise_for_status()
         data = r.json()
         return data if isinstance(data, dict) else {}
     except Exception as exc:
-        logger.warning("get_customer_downtimes failed (%s): %s", source, exc)
+        logger.warning("get_customer_downtimes failed (source=%s): %s", source, exc)
         return {}
 
 
@@ -196,9 +207,24 @@ def vm_outage_counts_from_events(events: list[dict[str, Any]]) -> dict[str, int]
     return counts
 
 
-def get_customer_availability_bundle(customer_name: str, start_date: str) -> dict[str, Any]:
-    """
-    Service + VM downtimes and vm_outage_counts for virtualization VM name matching.
+_SERVICE_DOWNTIME_FIELDS = ("datacenter_downtimes", "dedicated_downtimes", "service_downtimes")
+
+
+def _coerce_ids(ids: list[int]) -> list[int]:
+    out: list[int] = []
+    for i in ids or []:
+        try:
+            out.append(int(i))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(out))
+
+
+def get_availability_bundle_for_ids(ids: list[int], start_date: str) -> dict[str, Any]:
+    """Service + VM downtimes and per-VM outage counts for explicit AuraNotify ids.
+
+    One no-source request per id returns all categories; the service-outage table
+    merges datacenter/dedicated/service events, the VM-outage table uses vm events.
     """
     empty: dict[str, Any] = {
         "service_downtimes": [],
@@ -207,24 +233,30 @@ def get_customer_availability_bundle(customer_name: str, start_date: str) -> dic
         "customer_id": None,
         "customer_ids": [],
     }
-    cids = resolve_customer_ids(customer_name)
-    if not cids:
+    clean_ids = _coerce_ids(ids)
+    if not clean_ids:
         return empty
     svc_events: list[Any] = []
     vm_events: list[Any] = []
-    for cid in cids:
-        svc_body = get_customer_downtimes(cid, start_date, "service")
-        vm_body = get_customer_downtimes(cid, start_date, "vm")
-        se = svc_body.get("datacenter_downtimes") or []
-        ve = vm_body.get("datacenter_downtimes") or []
-        if isinstance(se, list):
-            svc_events.extend(se)
+    for cid in clean_ids:
+        body = get_customer_downtimes(cid, start_date)
+        for field in _SERVICE_DOWNTIME_FIELDS:
+            part = body.get(field)
+            if isinstance(part, list):
+                svc_events.extend(part)
+        ve = body.get("vm_downtimes")
         if isinstance(ve, list):
             vm_events.extend(ve)
     return {
         "service_downtimes": svc_events,
         "vm_downtimes": vm_events,
         "vm_outage_counts": vm_outage_counts_from_events(vm_events),
-        "customer_id": cids[0],
-        "customer_ids": cids,
+        "customer_id": clean_ids[0],
+        "customer_ids": clean_ids,
     }
+
+
+def get_customer_availability_bundle(customer_name: str, start_date: str) -> dict[str, Any]:
+    """Name-based resolution then bundle. Callers with an explicit mapping should
+    use get_availability_bundle_for_ids directly (see api_client)."""
+    return get_availability_bundle_for_ids(resolve_customer_ids(customer_name), start_date)
