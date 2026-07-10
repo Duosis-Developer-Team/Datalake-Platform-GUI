@@ -46,7 +46,7 @@ def test_alias_to_table_row_counts_coverage_and_status():
     row = alias_to_table_row(_boyner_alias())
     assert row["crm_account_name"] == "Boyner Holding"
     assert row["mapping_count"] == 3
-    assert row["coverage"] == "3/6"
+    assert row["coverage"] == "3/7"
     assert row["status"] == "seed"
 
 
