@@ -220,6 +220,31 @@ def make_backend_from_env(env: Optional[dict] = None) -> Any:
 # tests via set_backend().
 _backend: Any = make_backend_from_env()
 
+# R7: if a pod boots before Redis is reachable, the import-time selection above
+# falls back to the per-pod InProcessBackend. Without a retry it would stay per-pod
+# for the whole process lifetime (cache "never holds" across the fleet). So when
+# REDIS_URL is set but we're on in-process, cache ops retry the connection at most
+# once per _REDIS_RETRY_INTERVAL_SECONDS and upgrade to the shared RedisBackend
+# once Redis is reachable.
+_REDIS_RETRY_INTERVAL_SECONDS = float(os.getenv("CACHE_REDIS_RETRY_INTERVAL", "30") or "30")
+_last_backend_attempt: float = time.monotonic()
+
+
+def _maybe_upgrade_backend() -> None:
+    global _backend, _last_backend_attempt
+    if not isinstance(_backend, InProcessBackend):
+        return
+    if not (os.environ.get("REDIS_URL") or "").strip():
+        return  # no Redis configured — per-pod cache is correct here
+    now = time.monotonic()
+    if (now - _last_backend_attempt) < _REDIS_RETRY_INTERVAL_SECONDS:
+        return
+    _last_backend_attempt = now
+    candidate = make_backend_from_env()
+    if isinstance(candidate, RedisBackend):
+        _backend = candidate
+        logger.info("cache_service: upgraded to shared Redis backend on retry")
+
 
 def get_backend() -> Any:
     """Return the currently active cache backend."""
@@ -234,11 +259,13 @@ def set_backend(backend: Any) -> None:
 
 def get(key: str) -> Optional[Any]:
     """Return cached value or None if not present. Never expires."""
+    _maybe_upgrade_backend()
     return _backend.get(key)
 
 
 def set(key: str, value: Any) -> None:
     """Store / overwrite a value in the cache."""
+    _maybe_upgrade_backend()
     _backend.set(key, value)
     logger.debug("Cache SET: %s", key)
 

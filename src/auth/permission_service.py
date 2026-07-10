@@ -17,28 +17,34 @@ _CACHE: dict[int, tuple[float, dict[str, dict[str, bool]]]] = {}
 _CACHE_TTL_SEC = float(os.environ.get("PERMISSION_MAP_CACHE_TTL_SEC", "300"))
 
 _REDIS = None
+# R7: don't latch Redis off forever on a boot-race failure. When REDIS_URL is set
+# but Redis was unreachable, retry the connection at most once per interval instead
+# of staying on the per-pod fallback for the whole process lifetime.
+_REDIS_LAST_ATTEMPT: float = 0.0
+_REDIS_RETRY_INTERVAL_SEC = float(os.environ.get("PERMISSION_REDIS_RETRY_INTERVAL", "30") or "30")
 
 
 def _redis_client():
-    global _REDIS
-    if _REDIS is False:
-        return None
-    if _REDIS is not None:
+    global _REDIS, _REDIS_LAST_ATTEMPT
+    if _REDIS is not None and _REDIS is not False:
         return _REDIS
     url = (os.environ.get("REDIS_URL") or "").strip()
     if not url:
-        _REDIS = False
+        return None  # no Redis configured — no retry needed
+    now = time.monotonic()
+    if (now - _REDIS_LAST_ATTEMPT) < _REDIS_RETRY_INTERVAL_SEC:
         return None
+    _REDIS_LAST_ATTEMPT = now
     try:
         import redis
 
-        _REDIS = redis.Redis.from_url(url, decode_responses=True)
-        _REDIS.ping()
+        client = redis.Redis.from_url(url, decode_responses=True)
+        client.ping()
+        _REDIS = client
         return _REDIS
     except Exception as e:
         logger.warning("Redis unavailable for permission cache: %s", e)
-        _REDIS = False
-        return None
+        return None  # transient: retry after the interval, don't latch off
 
 
 def _redis_key(uid: int) -> str:
