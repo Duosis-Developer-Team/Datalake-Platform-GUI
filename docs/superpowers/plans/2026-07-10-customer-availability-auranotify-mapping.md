@@ -637,29 +637,168 @@ git commit -m "feat(alias): searchable AuraNotify picker for the auranotify mapp
 
 ---
 
-### Task 5: VM-outage table shows the real VM record shape (Defect A display)
+### Task 5: Availability summary helpers (pure, TDD) — for G4 readable view
 
 **Files:**
-- Modify: `src/pages/customer_view.py` (`_tab_customer_availability` `_vm_row:1791-1801` and `vm_cols:1812`)
-- Test: `tests/test_customer_availability_vm_render.py` (create)
+- Create: `src/utils/availability_summary.py`
+- Test: `tests/test_availability_summary.py` (create)
 
 **Interfaces:**
-- Consumes: the bundle's `vm_downtimes` records, keys `{vm_name, cluster, host, start_time, end_time, duration_minutes, category, reason, senaryo, service_impact}` (no `group_name`).
-- Produces: VM table columns `["VM", "Cluster / Host", "Start", "End", "Duration (min)", "Category"]`.
+- Produces:
+  - `summarize_outages(service_downtimes: list, vm_downtimes: list) -> dict` with keys
+    `total_outages, service_outages, vm_outages, total_downtime_min, unplanned_count,
+    planned_count, longest (dict|None), locations (list[str])`.
+  - `format_downtime(minutes) -> str` — Turkish units.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/test_customer_availability_vm_render.py`:
+Create `tests/test_availability_summary.py`:
 
 ```python
-"""VM outages table renders vm_name + cluster/host from the real vm record shape."""
+"""Pure availability-summary helpers."""
+from __future__ import annotations
+
+from src.utils.availability_summary import summarize_outages, format_downtime
+
+
+def test_summarize_counts_split_longest_locations():
+    svc = [
+        {"type": "Plansız", "duration_minutes": 60, "group_name": "DC13"},
+        {"type": "Planlı", "duration_minutes": 30, "group_name": "DC13"},
+    ]
+    vm = [{"type": "Plansız", "duration_minutes": 274, "cluster": "DC16-CLS", "vm_name": "web-01"}]
+    s = summarize_outages(svc, vm)
+    assert s["total_outages"] == 3
+    assert s["service_outages"] == 2
+    assert s["vm_outages"] == 1
+    assert s["total_downtime_min"] == 364
+    assert s["unplanned_count"] == 2
+    assert s["planned_count"] == 1
+    assert s["longest"]["duration_minutes"] == 274
+    assert s["locations"] == ["DC13", "DC16-CLS"]
+
+
+def test_summarize_empty_and_defensive():
+    s = summarize_outages([], [])
+    assert s["total_outages"] == 0
+    assert s["longest"] is None
+    assert s["locations"] == []
+    s2 = summarize_outages([None, {"duration_minutes": "x", "type": ""}], [])
+    assert s2["total_outages"] == 1
+    assert s2["total_downtime_min"] == 0
+    assert s2["planned_count"] == 0
+    assert s2["unplanned_count"] == 0
+
+
+def test_format_downtime_units():
+    assert format_downtime(45) == "45 dk"
+    assert format_downtime(90) == "1,5 sa"
+    assert format_downtime(2880) == "2,0 gün"
+    assert format_downtime(None) == "-"
+    assert format_downtime("x") == "-"
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `source .venv/bin/activate && pytest tests/test_availability_summary.py -v`
+Expected: FAIL — module does not exist.
+
+- [ ] **Step 3: Write the implementation**
+
+Create `src/utils/availability_summary.py`:
+
+```python
+"""Pure helpers to summarise AuraNotify outage records for the availability tab."""
+from __future__ import annotations
+
+
+def _duration(rec: dict) -> int:
+    try:
+        return int(rec.get("duration_minutes") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_unplanned(rec: dict) -> bool:
+    return "plansız" in str(rec.get("type") or "").casefold()
+
+
+def summarize_outages(service_downtimes: list, vm_downtimes: list) -> dict:
+    svc = [r for r in (service_downtimes or []) if isinstance(r, dict)]
+    vm = [r for r in (vm_downtimes or []) if isinstance(r, dict)]
+    events = svc + vm
+    unplanned = sum(1 for r in events if _is_unplanned(r))
+    planned = sum(
+        1 for r in events if str(r.get("type") or "").strip() and not _is_unplanned(r)
+    )
+    locations = sorted(
+        {
+            str(r.get("group_name") or r.get("cluster") or "").strip()
+            for r in events
+            if str(r.get("group_name") or r.get("cluster") or "").strip()
+        }
+    )
+    return {
+        "total_outages": len(events),
+        "service_outages": len(svc),
+        "vm_outages": len(vm),
+        "total_downtime_min": sum(_duration(r) for r in events),
+        "unplanned_count": unplanned,
+        "planned_count": planned,
+        "longest": max(events, key=_duration) if events else None,
+        "locations": locations,
+    }
+
+
+def format_downtime(minutes) -> str:
+    try:
+        m = int(minutes or 0)
+    except (TypeError, ValueError):
+        return "-"
+    if m < 60:
+        return f"{m} dk"
+    if m < 1440:
+        return f"{m / 60:.1f} sa".replace(".", ",")
+    return f"{m / 1440:.1f} gün".replace(".", ",")
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `source .venv/bin/activate && pytest tests/test_availability_summary.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/utils/availability_summary.py tests/test_availability_summary.py
+git commit -m "feat(availability): pure outage-summary helpers for readable tab"
+```
+
+---
+
+### Task 6: Rebuild the Availability tab — summary tiles + readable lists (G4, supersedes old §4.2)
+
+**Files:**
+- Modify: `src/pages/customer_view.py` (`_tab_customer_availability` ~1769-1847; add two module-level helpers above it)
+- Test: `tests/test_customer_availability_tab.py` (create)
+
+**Interfaces:**
+- Consumes (Task 5): `summarize_outages`, `format_downtime`.
+- Produces: rebuilt `_tab_customer_availability(avail)` — metric tiles + two readable outage lists; VM list uses `vm_name` + `cluster/host` (this replaces the standalone VM-row fix from the earlier plan version).
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_customer_availability_tab.py`:
+
+```python
+"""Availability tab renders summary tiles + readable outage lists."""
 from __future__ import annotations
 
 from src.pages.customer_view import _tab_customer_availability
+from src.utils.availability_summary import format_downtime
 
 
 def _text_blob(component) -> str:
-    """Flatten a Dash component tree to a string of its leaf text."""
     out = []
 
     def walk(c):
@@ -678,93 +817,201 @@ def _text_blob(component) -> str:
     return " ".join(out)
 
 
-def test_vm_table_shows_vm_name_and_cluster():
-    avail = {
+def _avail_with_outages():
+    return {
         "customer_id": 1504,
         "customer_ids": [1504],
-        "service_downtimes": [],
+        "service_downtimes": [
+            {"category": "Klasik Mimari DR", "group_name": "Equinix IL2 - DC13", "type": "Plansız",
+             "start_time": "2026-06-30T18:31", "end_time": "2026-06-30T19:31",
+             "duration_minutes": 60, "service_impact": "Degraded"},
+        ],
         "vm_downtimes": [
-            {
-                "vm_name": "web-01", "cluster": "DC16-G2-CLS-HYBRID", "host": "g2hv2dc16.blt.vc",
-                "start_time": "2026-01-23T10:00", "end_time": "2026-01-23T14:00",
-                "duration_minutes": 274, "category": "DC Elektrik Altyapısı",
-            }
+            {"vm_name": "web-01", "cluster": "DC16-G2-CLS-HYBRID", "host": "g2hv2dc16.blt.vc",
+             "type": "Plansız", "start_time": "2026-01-23T10:00", "end_time": "2026-01-23T14:34",
+             "duration_minutes": 274, "category": "DC Elektrik Altyapısı"},
         ],
         "vm_outage_counts": {"web-01": 1},
     }
-    blob = _text_blob(_tab_customer_availability(avail))
+
+
+def test_tab_shows_tiles_and_readable_rows():
+    blob = _text_blob(_tab_customer_availability(_avail_with_outages()))
+    # summary tiles
+    assert "Total outages" in blob
+    assert "Total downtime" in blob
+    # total downtime 60+274=334 min rendered via format_downtime
+    assert format_downtime(334) in blob
+    # readable rows: vm identity + cluster + type badge + formatted duration
     assert "web-01" in blob
     assert "DC16-G2-CLS-HYBRID" in blob
-    assert "274" in blob
+    assert "Plansız" in blob
+    assert format_downtime(274) in blob
+
+
+def test_tab_empty_state():
+    avail = {"customer_id": 1, "customer_ids": [1], "service_downtimes": [],
+             "vm_downtimes": [], "vm_outage_counts": {}}
+    blob = _text_blob(_tab_customer_availability(avail))
+    assert "No outages in period" in blob
+    assert "Total outages" in blob  # tiles still render (all zero)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `source .venv/bin/activate && pytest tests/test_customer_availability_vm_render.py -v`
-Expected: FAIL — current `_vm_row` reads `group_name` (missing) and does not surface `cluster`.
+Run: `source .venv/bin/activate && pytest tests/test_customer_availability_tab.py -v`
+Expected: FAIL — no tiles ("Total outages"), old `_vm_row` reads `group_name` (missing) so cluster not shown.
 
 - [ ] **Step 3: Write the implementation**
 
-In `src/pages/customer_view.py`, replace `_vm_row` inside `_tab_customer_availability`:
+In `src/pages/customer_view.py`, add two module-level helpers immediately above `_tab_customer_availability`:
 
 ```python
+def _outage_type_badge(t):
+    tt = str(t or "").strip()
+    unplanned = "plansız" in tt.casefold()
+    return dmc.Badge(tt or "-", color="red" if unplanned else "gray", variant="light", size="sm")
+
+
+def _avail_tile(label: str, value: str, sub: str | None = None, accent: str = "#4318FF"):
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "16px 18px"},
+        children=[
+            html.Div(label, style={"color": "#A3AED0", "fontSize": "0.72rem", "fontWeight": 600,
+                                   "textTransform": "uppercase", "letterSpacing": "0.02em",
+                                   "fontFamily": "DM Sans"}),
+            html.Div(value, style={"color": accent, "fontSize": "1.5rem", "fontWeight": 700,
+                                   "fontFamily": "DM Sans", "marginTop": "4px", "lineHeight": 1.1}),
+            html.Div(sub, style={"color": "#707EAE", "fontSize": "0.72rem", "marginTop": "2px",
+                                 "fontFamily": "DM Sans"}) if sub else None,
+        ],
+    )
+```
+
+Replace the entire `_tab_customer_availability` function body with:
+
+```python
+def _tab_customer_availability(avail: dict):
+    """AuraNotify outages for the customer — readable summary tiles + detail lists."""
+    from src.utils.availability_summary import summarize_outages, format_downtime
+
+    svc = avail.get("service_downtimes") or []
+    vm = avail.get("vm_downtimes") or []
+    cid = avail.get("customer_id")
+    cids = [x for x in (avail.get("customer_ids") or []) if x is not None]
+    if not cids and cid is not None:
+        cids = [cid]
+
+    s = summarize_outages(svc, vm)
+
+    def _sort_recent(rows):
+        return sorted(
+            [r for r in rows if isinstance(r, dict)],
+            key=lambda r: str(r.get("start_time") or ""),
+            reverse=True,
+        )
+
+    def _svc_row(e: dict):
+        return html.Tr([
+            html.Td(str(e.get("category") or "-")),
+            html.Td(str(e.get("group_name") or "-")),
+            html.Td(_outage_type_badge(e.get("type"))),
+            html.Td(str(e.get("start_time") or "-")),
+            html.Td(str(e.get("end_time") or "-")),
+            html.Td(format_downtime(e.get("duration_minutes"))),
+            html.Td(str(e.get("service_impact") or e.get("outage_status") or "-")),
+        ])
+
     def _vm_row(e: dict):
         cluster_host = " / ".join(
             str(e.get(k)) for k in ("cluster", "host") if str(e.get(k) or "").strip()
         ) or "-"
-        return html.Tr(
-            [
-                html.Td(str(e.get("vm_name") or e.get("vm") or "-")),
-                html.Td(cluster_host),
-                html.Td(str(e.get("start_time") or "-")),
-                html.Td(str(e.get("end_time") or "-")),
-                html.Td(str(e.get("duration_minutes") or "-")),
-                html.Td(str(e.get("category") or e.get("reason") or e.get("senaryo") or "-")),
-            ]
-        )
-```
+        return html.Tr([
+            html.Td(str(e.get("vm_name") or e.get("vm") or "-")),
+            html.Td(cluster_host),
+            html.Td(_outage_type_badge(e.get("type"))),
+            html.Td(str(e.get("start_time") or "-")),
+            html.Td(str(e.get("end_time") or "-")),
+            html.Td(format_downtime(e.get("duration_minutes"))),
+            html.Td(str(e.get("category") or e.get("reason") or "-")),
+        ])
 
-And replace `vm_cols`:
+    svc_cols = ["Category", "Datacenter group", "Type", "Start", "End", "Duration", "Impact"]
+    vm_cols = ["VM", "Cluster / Host", "Type", "Start", "End", "Duration", "Category"]
 
-```python
-    vm_cols = ["VM", "Cluster / Host", "Start", "End", "Duration (min)", "Category"]
+    longest = s["longest"]
+    longest_val = format_downtime(longest.get("duration_minutes")) if longest else "-"
+    longest_sub = (str(longest.get("category") or longest.get("group_name") or "")[:28]
+                   if longest else "No outages")
+    down_accent = "#E31A1A" if s["total_downtime_min"] else "#05CD99"
+    unpl_accent = "#E31A1A" if s["unplanned_count"] else "#05CD99"
+    tiles = dmc.SimpleGrid(
+        cols={"base": 2, "sm": 3, "lg": 5}, spacing="sm", mb="lg",
+        children=[
+            _avail_tile("Total outages", str(s["total_outages"]),
+                        f"{s['service_outages']} service · {s['vm_outages']} VM"),
+            _avail_tile("Total downtime", format_downtime(s["total_downtime_min"]), "in period", down_accent),
+            _avail_tile("Unplanned", str(s["unplanned_count"]), f"{s['planned_count']} planned", unpl_accent),
+            _avail_tile("Longest outage", longest_val, longest_sub, "#FFB547"),
+            _avail_tile("Locations", str(len(s["locations"])), (", ".join(s["locations"])[:28] or "—")),
+        ],
+    )
+
+    children: list = [
+        dmc.Text(
+            f"AuraNotify availability (customer ids: {cids or 'none'}) — aligned with report period start.",
+            size="sm", c="dimmed",
+        ),
+        tiles,
+    ]
+    if svc:
+        children.append(_section_card(
+            "Service & datacenter outages",
+            "Infrastructure interruptions affecting this customer",
+            _maybe_paginated_table(svc_cols, [_svc_row(e) for e in _sort_recent(svc)]),
+        ))
+    if vm:
+        children.append(_section_card(
+            "VM outages",
+            "Virtual machine downtime records",
+            _maybe_paginated_table(vm_cols, [_vm_row(e) for e in _sort_recent(vm)]),
+        ))
+    if not svc and not vm:
+        children.append(dmc.Alert(
+            color="teal", variant="light", title="No outages in period",
+            children="No service or VM downtime records for this customer in the selected report period.",
+        ))
+    return dmc.Stack(gap="lg", children=children)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `source .venv/bin/activate && pytest tests/test_customer_availability_vm_render.py -v`
+Run: `source .venv/bin/activate && pytest tests/test_customer_availability_tab.py -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/pages/customer_view.py tests/test_customer_availability_vm_render.py
-git commit -m "fix(availability): VM outages table shows vm_name + cluster/host"
+git add src/pages/customer_view.py tests/test_customer_availability_tab.py
+git commit -m "feat(availability): readable tab — summary tiles + clean outage lists"
 ```
 
 ---
 
-### Task 6: Full suite + live verification
+### Task 7: Targeted suite + standalone preview + (deferred) live verification
 
 **Files:** none (verification only).
 
-- [ ] **Step 1: Run the whole test suite**
+- [ ] **Step 1: Run the feature's test set**
 
-Run: `source .venv/bin/activate && pytest -q`
-Expected: PASS (no regressions). If `pytest -q` is slow, at minimum run:
-`pytest tests/test_auranotify_bundle_fields.py tests/test_api_client_auranotify_mapping.py tests/test_crm_source_mapping_auranotify.py tests/test_crm_aliases_auranotify_render.py tests/test_customer_availability_vm_render.py tests/test_crm_aliases_page.py tests/test_api_client_customer_avail_cache.py -q`
+Run: `source .venv/bin/activate && pytest tests/test_auranotify_bundle_fields.py tests/test_api_client_auranotify_mapping.py tests/test_crm_source_mapping_auranotify.py tests/test_crm_aliases_auranotify_render.py tests/test_availability_summary.py tests/test_customer_availability_tab.py tests/test_crm_aliases_page.py tests/test_api_client_customer_avail_cache.py -q`
+Expected: all PASS. (Repo-root `pytest` also collects `services/*/tests` which fail to import in this venv — a pre-existing environment gap, not a regression.)
 
-- [ ] **Step 2: Live-map a known customer**
+- [ ] **Step 2: Standalone preview (no live AuraNotify needed)**
 
-Bring up the stack (`docker compose up -d`, VPN on). In the GUI: Administration → Integrations → Customer source mappings → find a customer, Edit mappings → **Availability (AuraNotify)** → search and add `Affinitybox · id 1514` (22 datacenter records) or a VM-outage customer `Abrak_Enerji · id 1504` → Save.
+Render `_tab_customer_availability` with representative sample data (both a populated customer and the empty state) in a standalone Dash app on a spare port, screenshot with headless Chrome, and review the layout for readability. This confirms the tiles + lists render correctly without needing the AuraNotify service.
 
-- [ ] **Step 3: Confirm the tab populates**
+- [ ] **Step 3: Deferred live verification (when AuraNotify :5001 is back)**
 
-Open Customer View → that customer → Availability. Service-outages and/or VM-outages tables now show rows; VM badges appear in the virtualization tables. Confirm an *unmapped* customer still resolves by name (regression check).
-
-- [ ] **Step 4: Final commit if any verification fixups were needed**
-
-```bash
-git add -A && git commit -m "chore(availability): live-verification fixups"
-```
-(Skip if nothing changed.)
+Map a real customer with data (e.g. `Affinitybox · id 1514`, or a VM-outage customer) via the alias editor, open Customer View → Availability, confirm tiles + lists populate from real data and match the offline analysis. Run the full all-customer outage analysis at the same time and tune tile choices if the real distribution warrants.

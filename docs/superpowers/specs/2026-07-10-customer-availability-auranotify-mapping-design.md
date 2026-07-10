@@ -78,6 +78,12 @@ mappings) so an operator can bind a platform customer to explicit AuraNotify id(
   existing alias page, by searching AuraNotify by name **or** entering an id directly.
 - G3. When an explicit mapping exists, use it; otherwise keep today's name-based matching
   (backward compatible — 1602 customers will not be mapped on day one).
+- G4. **Readable outage view (customer-satisfaction lens).** Rework the Availability tab
+  from raw tables into a scannable summary: at-a-glance metric tiles (total outages,
+  total downtime, planned vs unplanned, longest outage, locations affected) above clean,
+  clearly-formatted outage lists, so an operator can gauge how a customer experienced
+  service interruptions in the period. Stakeholder ask (2026-07-10): "kesintileri görmek
+  istiyoruz … arayüzü okunabilir ve anlaşılabilir yap."
 
 **Non-goals**
 - No schema change to `gui_crm_customer_source_mapping`.
@@ -180,6 +186,33 @@ imports `auranotify_client` lazily; the reverse is not introduced.
 `crm_account_name` both originate from CRM PRJ-* orders, so an exact (case-insensitive)
 match is expected. If it ever mismatches, the code falls back to name-based matching —
 no worse than today.
+
+### 4.4 Readable outage view (G4)
+
+Two new units. A pure summary module and a rebuilt tab body.
+
+**`src/utils/availability_summary.py` (pure, no Dash).**
+- `summarize_outages(service_downtimes, vm_downtimes) -> dict` returns:
+  `total_outages` (len service + len vm), `service_outages`, `vm_outages`,
+  `total_downtime_min` (sum of `duration_minutes`), `unplanned_count`
+  (records whose `type` casefolds to contain "plansız"), `planned_count`
+  (records with a non-empty `type` that are not unplanned), `longest`
+  (the single record with the max `duration_minutes`, or None),
+  `locations` (sorted distinct non-empty `group_name`/`cluster` values).
+  Ignores non-dict rows and non-numeric durations defensively.
+- `format_downtime(minutes) -> str`: Turkish, human units — `< 60` → `"N dk"`,
+  `< 1440` → `"H,h sa"`, else `"G,g gün"`.
+
+**`_tab_customer_availability` rebuild (`customer_view.py`).** Above the lists,
+a `dmc.SimpleGrid` of metric tiles built from `summarize_outages`: Total outages,
+Total downtime (`format_downtime`), Unplanned / Planned split, Longest outage
+(`format_downtime` + its category), Locations affected. Tiles use the existing
+`nexus-card`/stat styling already in the page. Below, the two outage lists keep the
+`_section_card` + `_maybe_paginated_table` structure but with readability upgrades:
+`type` rendered as a colored badge (Plansız = red, Planlı = gray), `duration_minutes`
+rendered via `format_downtime`, most-recent-first ordering by `start_time`. The
+empty-state stays (green "no outages in period"). The VM list uses the corrected
+`vm_name` + `cluster/host` columns (supersedes the earlier §4.2 row-only tweak).
 
 ## 5. Edge cases & backward compatibility
 
