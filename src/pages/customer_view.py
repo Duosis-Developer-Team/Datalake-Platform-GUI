@@ -2393,6 +2393,16 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
         f_service_breakdown = pool.submit(api.get_customer_sales_service_breakdown, name)
         f_sla = pool.submit(aura.get_dc_services_availability, sla_start, sla_end)
         data = f_resources.result()
+        # Cold miss: empty resources means the backend timed out / hasn't cached this
+        # customer yet. Kick off a per-customer background warm (warm_mode, both anchor
+        # variants) so the NEXT visit hits the cache — self-healing for customers not in
+        # WARMED_CUSTOMERS. Throttled; a no-op once the customer is warm.
+        if not (isinstance(data, dict) and data.get("totals")):
+            try:
+                from src.services.app_background_warm import trigger_customer_view_warm
+                trigger_customer_view_warm(name, tr)
+            except Exception:
+                pass  # on-demand warm is best-effort; never block the page render
         # Compliance reads infra from Redis populated by /resources — run after resources, not in parallel.
         compliance_payload = api.get_customer_resource_compliance(name, "virtualization", tr)
         avail_bundle = f_avail.result()
