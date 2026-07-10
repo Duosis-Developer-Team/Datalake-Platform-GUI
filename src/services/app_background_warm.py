@@ -141,20 +141,24 @@ def _warm_customer_view(customers, time_range: dict | None) -> int:
     from src.services import api_client as api
 
     warmed = 0
-    for name in customers:
-        name = (name or "").strip()
-        if not name:
-            continue
-        try:
-            api.get_customer_resources(name, time_range)
-            api.get_customer_availability_bundle(name, time_range)
-            api.get_customer_itsm_summary(name, time_range)
-            api.get_customer_sales_summary(name)
-            api.get_customer_efficiency_by_category(name, time_range)
-            api.get_customer_s3_vaults(name, time_range)
-            warmed += 1
-        except Exception as exc:
-            logger.warning("customer-view warm failed for %s: %s", name, exc)
+    # warm_mode: the long inventory timeout so genuinely-slow cold customer
+    # queries COMPLETE and populate the shared cache, instead of timing out at
+    # the interactive limit and never caching (warm == cold).
+    with api.warm_mode():
+        for name in customers:
+            name = (name or "").strip()
+            if not name:
+                continue
+            try:
+                api.get_customer_resources(name, time_range)
+                api.get_customer_availability_bundle(name, time_range)
+                api.get_customer_itsm_summary(name, time_range)
+                api.get_customer_sales_summary(name)
+                api.get_customer_efficiency_by_category(name, time_range)
+                api.get_customer_s3_vaults(name, time_range)
+                warmed += 1
+            except Exception as exc:
+                logger.warning("customer-view warm failed for %s: %s", name, exc)
     return warmed
 
 

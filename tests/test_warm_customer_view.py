@@ -33,3 +33,23 @@ def test_warm_customer_view_survives_one_failing_customer():
          patch("src.services.api_client.get_customer_s3_vaults"):
         n = warm._warm_customer_view(["Acme"], {"preset": "7d"})
     assert n == 0  # failed customer counted as not warmed, no crash
+
+
+def test_warm_customer_view_runs_under_warm_mode():
+    # The genuinely-slow cold customer queries must run with the long warm timeout,
+    # or they time out during warm and are never cached (warm == cold).
+    from src.services import api_client
+    seen = []
+
+    def rec(*a, **k):
+        seen.append(api_client._WARM_MODE.get())
+        return {}
+
+    with patch("src.services.api_client.get_customer_resources", side_effect=rec), \
+         patch("src.services.api_client.get_customer_availability_bundle", side_effect=rec), \
+         patch("src.services.api_client.get_customer_itsm_summary", side_effect=rec), \
+         patch("src.services.api_client.get_customer_sales_summary", side_effect=rec), \
+         patch("src.services.api_client.get_customer_efficiency_by_category", side_effect=rec), \
+         patch("src.services.api_client.get_customer_s3_vaults", side_effect=rec):
+        warm._warm_customer_view(["Acme"], {"preset": "7d"})
+    assert seen and all(seen), "every customer getter must run inside warm_mode (long timeout)"
