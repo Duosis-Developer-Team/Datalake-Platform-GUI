@@ -8,6 +8,16 @@
 
 **Tech Stack:** Python 3, Dash/Flask GUI (`src/`), FastAPI customer-api (`services/customer-api/`), psycopg2 + TimescaleDB (`bulutlake` on 10.134.16.6), Redis shared cache, pytest, docker-compose (local) / k8s (prod).
 
+## STATUS (2026-07-10) — all phases complete on `fix/customer-cache-never-holds`
+
+- **Phase 0** ✅ profiled: ~30 serial ~2s statements (not one slow query); pg_trgm needs DBA (superuser off). `docs/.../phase0-resources-profile.md`.
+- **Phase 1** ✅ warm effective (warm_mode + both anchor variants + 240s server timer + removed NO-OP jobs). Live-verified: warm completes in 36s, both cache keys populated, post-warm interactive get = **0.01s with real data**.
+- **Phase 2** ✅ self-healing: `trigger_customer_view_warm` (throttled) fires an on-demand background warm when interactive resources come back empty, so non-warmed customers get fast on the next visit.
+- **Phase 3** ✅ root perf fix delivered as a DBA runbook: pg_trgm GIN indexes (`sql/dba/...`, `docs/dba/...`). Code-side parallelization measured at only 1.6× and redundant once indexed — deliberately not done.
+- **Phase 4** ✅ R7: cache_service + permission_service recover from a Redis boot-race (throttled retry/upgrade) instead of latching to per-pod forever. k8s Redis left ephemeral (Phases 1-3 make re-warm fast; persisting a cache risks stale-pickle across deploys).
+
+Remaining external action: a DBA runs `sql/dba/customer_resources_pg_trgm_indexes.sql` on the datalake DB (the only thing not in our code control).
+
 ## Global Constraints
 
 - **TDD, one behavior per test, frequent commits.** Every code task: failing test → run-fail → minimal impl → run-pass → commit.
