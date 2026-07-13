@@ -1,7 +1,8 @@
 /**
  * Grafana Faro Web SDK bootstrap for Dash (datalake-webui).
- * Loads config from /telemetry/faro-config.json; no-op when Faro is disabled.
- * CDN IIFE bundles (pinned major v2) — no npm build in the main GUI.
+ * Sends RUM to the **same OTEL Collector** via OTLP HTTP (:4318), with
+ * browser-specific labels (app.name / telemetry.source=faro).
+ * Config: GET /telemetry/faro-config.json — no-op when disabled.
  */
 (function () {
   "use strict";
@@ -9,6 +10,8 @@
   var SDK_SRC = "https://cdn.jsdelivr.net/npm/@grafana/faro-web-sdk@2/dist/bundle/faro-web-sdk.iife.js";
   var TRACING_SRC =
     "https://cdn.jsdelivr.net/npm/@grafana/faro-web-tracing@2/dist/bundle/faro-web-tracing.iife.js";
+  var OTLP_SRC =
+    "https://cdn.jsdelivr.net/npm/@grafana/faro-transport-otlp-http@2/dist/bundle/faro-transport-otlp-http.iife.js";
 
   var queue = [];
   var faroInstance = null;
@@ -24,10 +27,6 @@
     }
   }
 
-  /**
-   * Public helpers for clientside callbacks and other assets.
-   * Safe to call before Faro finishes loading (calls are queued).
-   */
   window.__datalakeFaro = {
     ready: false,
     pushEvent: function (name, attributes, domain) {
@@ -93,16 +92,6 @@
     }
   }
 
-  function collectorHostPattern(collectorUrl) {
-    try {
-      var u = new URL(collectorUrl, window.location.origin);
-      var host = u.host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return new RegExp(host + ".*\\/collect");
-    } catch (e) {
-      return /\/collect$/;
-    }
-  }
-
   function readCookie(name) {
     var match = document.cookie.match(
       new RegExp("(?:^|; )" + name.replace(/([.$?*|{}()[\]\\/+^])/g, "\\$1") + "=([^;]*)")
@@ -123,24 +112,39 @@
   }
 
   function initFromConfig(cfg) {
-    if (!cfg || !cfg.enabled || !cfg.url) {
+    if (!cfg || !cfg.enabled || !cfg.tracesURL || !cfg.logsURL) {
       return;
     }
     if (!window.GrafanaFaroWebSdk || typeof window.GrafanaFaroWebSdk.initializeFaro !== "function") {
       console.warn("[faro] GrafanaFaroWebSdk not available");
       return;
     }
+    var OtlpHttpTransport =
+      window.GrafanaFaroTransportOtlpHttp &&
+      window.GrafanaFaroTransportOtlpHttp.OtlpHttpTransport;
+    if (!OtlpHttpTransport) {
+      console.warn("[faro] OtlpHttpTransport not available");
+      return;
+    }
 
     var ignoreUrls = [
       /\/telemetry\/faro-config\.json/,
-      collectorHostPattern(cfg.url),
+      /\/v1\/traces/,
+      /\/v1\/logs/,
       /cdn\.jsdelivr\.net/,
       /unpkg\.com/,
     ];
 
+    var transportOpts = {
+      tracesURL: cfg.tracesURL,
+      logsURL: cfg.logsURL,
+    };
+    if (cfg.apiKey) {
+      transportOpts.apiKey = cfg.apiKey;
+    }
+
     var options = {
-      url: cfg.url,
-      app: cfg.app || { name: "datalake-webui" },
+      app: cfg.app || { name: "datalake-webui-browser" },
       ignoreUrls: ignoreUrls,
       ignoreErrors: [
         /^ResizeObserver loop limit exceeded$/,
@@ -152,10 +156,8 @@
       beforeSend: function (item) {
         return scrubPayloadUrls(item);
       },
+      transports: [new OtlpHttpTransport(transportOpts)],
     };
-    if (cfg.apiKey) {
-      options.apiKey = cfg.apiKey;
-    }
     if (typeof window.GrafanaFaroWebSdk.getWebInstrumentations === "function") {
       options.instrumentations = window.GrafanaFaroWebSdk.getWebInstrumentations({
         captureConsole: false,
@@ -164,6 +166,17 @@
 
     faroInstance = window.GrafanaFaroWebSdk.initializeFaro(options);
     window.__datalakeFaro.ready = true;
+
+    if (cfg.attributes && faroInstance && faroInstance.api && faroInstance.api.setSession) {
+      try {
+        faroInstance.api.setSession({
+          attributes: cfg.attributes,
+        });
+      } catch (e) {
+        /* optional session labels */
+      }
+    }
+
     drainQueue();
 
     var pathname = (window.location && window.location.pathname) || "/";
@@ -194,6 +207,9 @@
           return null;
         }
         return loadScript(SDK_SRC)
+          .then(function () {
+            return loadScript(OTLP_SRC);
+          })
           .then(function () {
             return loadScript(TRACING_SRC);
           })

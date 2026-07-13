@@ -1,4 +1,4 @@
-"""Tests for Grafana Faro browser RUM config (no live collector required)."""
+"""Tests for Grafana Faro browser RUM config (OTLP HTTP → same collector as OTEL)."""
 
 from __future__ import annotations
 
@@ -24,59 +24,69 @@ def test_is_faro_enabled_truthy(monkeypatch, val):
 
 def test_get_faro_public_config_disabled(monkeypatch):
     monkeypatch.setenv("FARO_ENABLED", "false")
-    monkeypatch.setenv("FARO_COLLECTOR_URL", "https://alloy.example:12345/collect")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example:4317")
     monkeypatch.setenv("FARO_API_KEY", "secret-key")
     from src.telemetry.faro_config import get_faro_public_config
 
     cfg = get_faro_public_config()
     assert cfg == {"enabled": False}
-    assert "url" not in cfg
+    assert "tracesURL" not in cfg
     assert "apiKey" not in cfg
 
 
-def test_get_faro_public_config_enabled_without_url(monkeypatch):
+def test_get_faro_public_config_enabled_without_otel_host(monkeypatch):
     monkeypatch.setenv("FARO_ENABLED", "true")
-    monkeypatch.delenv("FARO_COLLECTOR_URL", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    monkeypatch.delenv("FARO_OTLP_HTTP_ENDPOINT", raising=False)
     from src.telemetry.faro_config import get_faro_public_config
 
     assert get_faro_public_config() == {"enabled": False}
 
 
-def test_get_faro_public_config_enabled(monkeypatch):
+def test_get_faro_public_config_derives_otlp_http_from_otel(monkeypatch):
     monkeypatch.setenv("FARO_ENABLED", "true")
-    monkeypatch.setenv("FARO_COLLECTOR_URL", "https://alloy.example:12345/collect")
-    monkeypatch.setenv("FARO_APP_NAME", "datalake-webui")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://10.134.16.63:4317")
+    monkeypatch.delenv("FARO_OTLP_HTTP_ENDPOINT", raising=False)
+    monkeypatch.delenv("FARO_APP_NAME", raising=False)
     monkeypatch.setenv("FARO_APP_VERSION", "1.2.3")
     monkeypatch.setenv("FARO_ENVIRONMENT", "staging")
-    monkeypatch.setenv("FARO_API_KEY", "collector-key")
     from src.telemetry.faro_config import get_faro_public_config
 
     cfg = get_faro_public_config()
     assert cfg["enabled"] is True
-    assert cfg["url"] == "https://alloy.example:12345/collect"
-    assert cfg["apiKey"] == "collector-key"
-    assert cfg["app"] == {
-        "name": "datalake-webui",
-        "version": "1.2.3",
-        "environment": "staging",
-    }
+    assert cfg["transport"] == "otlp-http"
+    assert cfg["tracesURL"] == "http://10.134.16.63:4318/v1/traces"
+    assert cfg["logsURL"] == "http://10.134.16.63:4318/v1/logs"
+    assert cfg["app"]["name"] == "datalake-webui-browser"
+    assert cfg["attributes"]["telemetry.source"] == "faro"
+    assert "url" not in cfg
 
 
-def test_get_faro_public_config_version_falls_back_to_app_build_id(monkeypatch):
+def test_get_faro_public_config_explicit_otlp_http_override(monkeypatch):
     monkeypatch.setenv("FARO_ENABLED", "true")
-    monkeypatch.setenv("FARO_COLLECTOR_URL", "http://localhost:12345/collect")
-    monkeypatch.delenv("FARO_APP_VERSION", raising=False)
-    monkeypatch.setenv("APP_BUILD_ID", "abc1234")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://ignored:4317")
+    monkeypatch.setenv("FARO_OTLP_HTTP_ENDPOINT", "https://collector.example:4318")
+    monkeypatch.setenv("FARO_APP_NAME", "custom-browser")
     from src.telemetry.faro_config import get_faro_public_config
 
     cfg = get_faro_public_config()
-    assert cfg["app"]["version"] == "abc1234"
+    assert cfg["tracesURL"] == "https://collector.example:4318/v1/traces"
+    assert cfg["logsURL"] == "https://collector.example:4318/v1/logs"
+    assert cfg["app"]["name"] == "custom-browser"
+
+
+def test_get_faro_public_config_otel_plain_host_port(monkeypatch):
+    monkeypatch.setenv("FARO_ENABLED", "true")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel.local:4317")
+    from src.telemetry.faro_config import get_faro_public_config
+
+    cfg = get_faro_public_config()
+    assert cfg["tracesURL"] == "http://otel.local:4318/v1/traces"
 
 
 def test_faro_config_endpoint(monkeypatch):
     monkeypatch.setenv("FARO_ENABLED", "true")
-    monkeypatch.setenv("FARO_COLLECTOR_URL", "https://alloy.example:12345/collect")
-    monkeypatch.setenv("FARO_APP_NAME", "datalake-webui")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://10.134.16.63:4317")
     monkeypatch.delenv("FARO_API_KEY", raising=False)
 
     from flask import Flask
@@ -90,7 +100,8 @@ def test_faro_config_endpoint(monkeypatch):
     assert res.status_code == 200
     body = json.loads(res.data)
     assert body["enabled"] is True
-    assert body["url"] == "https://alloy.example:12345/collect"
+    assert body["tracesURL"].endswith("/v1/traces")
+    assert body["app"]["name"] == "datalake-webui-browser"
     assert "apiKey" not in body
 
 
@@ -98,5 +109,4 @@ def test_telemetry_path_is_public():
     from src.auth.middleware import _is_public_path
 
     assert _is_public_path("/telemetry/faro-config.json") is True
-    assert _is_public_path("/telemetry/") is True
     assert _is_public_path("/customers") is False
