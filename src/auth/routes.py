@@ -61,7 +61,17 @@ def login_post():
     )
     session[SESSION_COOKIE_NAME] = token
     service.audit(int(user["id"]), "login", None, request.remote_addr)
-    return redirect(nxt or "/")
+    resp = redirect(nxt or "/")
+    # Non-HttpOnly flag consumed by assets/faro-init.js (Phase 2 RUM event).
+    resp.set_cookie(
+        "faro_evt_login",
+        "1",
+        max_age=120,
+        httponly=False,
+        samesite="Lax",
+        path="/",
+    )
+    return resp
 
 
 @auth_bp.route("/logout", methods=["GET", "POST"])

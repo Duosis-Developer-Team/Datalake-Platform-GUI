@@ -31,6 +31,8 @@ def _is_public_path(path: str) -> bool:
         return True
     if path.startswith("/auth/"):
         return True
+    if path.startswith("/telemetry/"):
+        return True
     return False
 
 

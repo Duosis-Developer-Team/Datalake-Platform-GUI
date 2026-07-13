@@ -14,6 +14,8 @@ Authoritative architecture decision: [`datalake-platform-knowledge-base/adrs/ADR
 
 The Collector’s own pipelines (sampling, exporters to Jaeger/Tempo, etc.) are **out of scope** for this repository.
 
+**Browser RUM** uses Grafana Faro (separate HTTP `/collect` protocol), not this OTLP gRPC endpoint. See [FARO_FRONTEND.md](FARO_FRONTEND.md).
+
 ---
 
 ## Quick start (Docker Compose)

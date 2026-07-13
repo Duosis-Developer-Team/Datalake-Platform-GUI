@@ -24,6 +24,7 @@ logging.basicConfig(
 )
 
 from src.telemetry.dash_instrumentation import trace_dash_callback
+from src.telemetry.faro_config import register_faro_routes
 from src.telemetry.setup import instrument_flask_server, setup_telemetry_sdk
 
 setup_telemetry_sdk()
@@ -84,6 +85,7 @@ from src.auth.middleware import register_middleware
 
 server.register_blueprint(auth_bp)
 register_middleware(server)
+register_faro_routes(server)
 instrument_flask_server(server)
 
 APP_BUILD_ID = (os.environ.get("APP_BUILD_ID") or "dev").strip()
@@ -317,6 +319,7 @@ app.layout = dmc.MantineProvider(
         dcc.Store(id="app-time-range", data=_default_tr),
         dcc.Store(id="backup-time-range", data=_default_tr),
         dcc.Store(id="plot-resize-tick", data=0),
+        dcc.Store(id="faro-view-tick", data=None),
         dcc.Store(id="anchor-latest-store", data=False, storage_type="local"),
         dcc.Store(id="auth-user-store", data=None),
         dcc.Store(id="auth-permissions-store", data=None),
@@ -367,6 +370,23 @@ register_chatbot_callbacks(app)
 
 app.clientside_callback(
     """
+    function(pathname) {
+        if (!pathname) return window.dash_clientside.no_update;
+        if (window.__datalakeFaro && typeof window.__datalakeFaro.setView === "function") {
+            window.__datalakeFaro.setView(pathname);
+            window.__datalakeFaro.pushEvent("view_changed", { pathname: String(pathname) }, "navigation");
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    dash.Output("faro-view-tick", "data"),
+    dash.Input("url", "pathname"),
+    prevent_initial_call=False,
+)
+
+
+app.clientside_callback(
+    """
     function(btn_clicks) {
         const triggered = dash_clientside.callback_context.triggered;
         if (!triggered || !triggered.length) return window.dash_clientside.no_update;
@@ -392,6 +412,10 @@ app.clientside_callback(
         const prefix = map[index];
         if (!prefix) return window.dash_clientside.no_update;
 
+        if (window.__datalakeFaro && typeof window.__datalakeFaro.pushEvent === "function") {
+            window.__datalakeFaro.pushEvent("pdf_export", { page: prefix }, "ui");
+        }
+
         const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
         if (typeof window.triggerPagePDF === "function") {
             const rootId = "main-content";
@@ -415,6 +439,9 @@ app.clientside_callback(
         // for window.resize. We dispatch that event (twice, with a small delay)
         // to give the DOM a chance to settle before Plotly recalculates layout.
         if (!tabValue) return window.dash_clientside.no_update;
+        if (window.__datalakeFaro && typeof window.__datalakeFaro.pushEvent === "function") {
+            window.__datalakeFaro.pushEvent("dc_tab_changed", { tab: String(tabValue) }, "ui");
+        }
         const fire = () => window.dispatchEvent(new Event("resize"));
         requestAnimationFrame(fire);
         setTimeout(fire, 120);

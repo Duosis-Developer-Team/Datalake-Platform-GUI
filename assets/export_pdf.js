@@ -99,6 +99,13 @@
       })
       .catch(function (err) {
         console.error("triggerPagePDF failed:", err);
+        if (window.__datalakeFaro && typeof window.__datalakeFaro.pushEvent === "function") {
+          window.__datalakeFaro.pushEvent(
+            "pdf_export_failed",
+            { message: err && err.message ? String(err.message) : "unknown" },
+            "ui"
+          );
+        }
         throw err;
       });
   };
