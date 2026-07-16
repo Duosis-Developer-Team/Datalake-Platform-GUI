@@ -2642,6 +2642,7 @@ def render_virtualization_tab(name: str, tr: dict | None, perspective: str):
         assets.get("power", {}) or {},
         vm_outage_counts,
         include_usage_vs_sold=(perspective == PERSPECTIVE_MANAGER),
+        deleted_machines=api.get_deleted_machines(name),
     )
 
 
