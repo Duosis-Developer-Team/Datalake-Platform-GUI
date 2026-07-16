@@ -226,6 +226,30 @@ def warm_rbac_scope(
     return stats
 
 
+def _warm_unmapped(tr: dict) -> bool:
+    """The unmapped (Eşleşmeyen Veriler) page has no other server-side warm timer.
+    Its backend key is derived from date-only bounds, so it rolls at UTC midnight —
+    warming here keeps the first visitor after the roll off the orphan scan.
+
+    Only the base tr is warmed. The anchor_latest variant re-anchors to the newest
+    ingested timestamp, so its key moves with every collection cycle and a warm for
+    it would never be the key the page later asks for.
+    """
+    from src.services import api_client as api
+
+    if _should_pause():
+        return False
+    try:
+        # warm_mode: the orphan scan is slow on a cold key; the long timeout lets it
+        # finish off the user path instead of timing out and never populating cache.
+        with api.warm_mode():
+            api.get_unmapped_resources(tr)
+        return True
+    except Exception:
+        logger.debug("background warm unmapped failed", exc_info=True)
+        return False
+
+
 def warm_common(time_range: dict | None = None) -> dict:
     """User-independent warm of the shared aggregate data (overview + datacenters
     + SLA), so the cache stays hot even with no logged-in session. Re-reads
@@ -235,7 +259,7 @@ def warm_common(time_range: dict | None = None) -> dict:
     from src.utils.time_range import default_time_range
 
     tr = time_range or default_time_range()
-    stats: dict = {"home": False, "dc_avail_sla": 0, "customer_view": 0}
+    stats: dict = {"home": False, "dc_avail_sla": 0, "customer_view": 0, "unmapped": False}
     if _should_pause():
         return stats
     _warm_home_bundle(tr)
@@ -249,6 +273,7 @@ def warm_common(time_range: dict | None = None) -> dict:
     # here so their cache stays hot even with no active browser session.
     if not _should_pause() and WARMED_CUSTOMERS:
         stats["customer_view"] = _warm_customer_view(WARMED_CUSTOMERS, tr)
+    stats["unmapped"] = _warm_unmapped(tr)
     return stats
 
 

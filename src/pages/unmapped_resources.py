@@ -79,8 +79,19 @@ def build_layout(tr: dict | None = None, visible_sections=None) -> html.Div:
                          size="sm", c="dimmed"),
             ]),
         ]),
-        dcc.Link(dmc.Button("← Müşterilere dön", variant="subtle", size="sm"),
-                 href="/customers", style={"textDecoration": "none"}),
+        # "light" not "subtle": subtle paints no background until hover, so on a
+        # fresh page load the only way back read as blank space.
+        dcc.Link(
+            dmc.Button(
+                "Müşterilere dön",
+                variant="light",
+                size="sm",
+                radius="md",
+                leftSection=DashIconify(icon="tabler:arrow-left", width=16),
+            ),
+            href="/customers",
+            style={"textDecoration": "none"},
+        ),
     ])
 
     kpis = dmc.SimpleGrid(cols={"base": 1, "sm": 3}, spacing="md", mb="md", children=[
