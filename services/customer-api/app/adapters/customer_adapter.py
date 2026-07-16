@@ -6,6 +6,10 @@ from typing import Callable
 from app.db.queries import customer as cq
 from app.services.customer_mapping_resolver import ResolvedSourcePatterns, dedupe_vm_rows, dedupe_zerto_vpgs
 from app.utils.time_range import default_time_range, time_range_to_bounds
+from shared.backup.policy_classification import (
+    load_policy_panel_mapping,
+    policy_types_for_category,
+)
 from shared.vmware.host_cpu_ghz import (
     DEFAULT_HOST_CPU_GHZ,
     NETBOX_HOST_CPU_STRINGS,
@@ -400,6 +404,68 @@ class CustomerAdapter:
                     netbackup_summary_row[2] if netbackup_summary_row and netbackup_summary_row[2] else "1x"
                 )
 
+                mapping = load_policy_panel_mapping()
+                image_policy_types = [
+                    str(t).strip().upper()
+                    for t in (mapping.get("image_policy_types") or ["VMWARE"])
+                    if str(t).strip()
+                ] or ["VMWARE"]
+                empty_cat = {
+                    "pre_dedup_size_gib": 0.0,
+                    "post_dedup_size_gib": 0.0,
+                    "deduplication_factor": "1x",
+                }
+                netbackup_by_category = {"image": dict(empty_cat), "application": dict(empty_cat)}
+                try:
+                    cat_rows = self._run_rows(
+                        cur,
+                        cq.CUSTOMER_NETBACKUP_BACKUP_SUMMARY_BY_CATEGORY,
+                        (image_policy_types, netbackup_workload_pattern, start_ts, end_ts),
+                    )
+                    for r in cat_rows or []:
+                        if not r or not r[0]:
+                            continue
+                        cat = str(r[0]).strip().lower()
+                        if cat not in netbackup_by_category:
+                            continue
+                        netbackup_by_category[cat] = {
+                            "pre_dedup_size_gib": float(r[1] or 0.0),
+                            "post_dedup_size_gib": float(r[2] or 0.0),
+                            "deduplication_factor": r[3] if r[3] else "1x",
+                        }
+                except Exception as exc:
+                    from app.services.customer_service import _is_fatal_db_error
+
+                    if _is_fatal_db_error(exc):
+                        raise
+                    logger.warning("CUSTOMER_NETBACKUP_BACKUP_SUMMARY_BY_CATEGORY failed: %s", exc)
+
+                netbackup_policy_types_all: list[str] = []
+                try:
+                    pt_rows = self._run_rows(
+                        cur,
+                        cq.CUSTOMER_NETBACKUP_POLICY_TYPES,
+                        (netbackup_workload_pattern, start_ts, end_ts),
+                    )
+                    netbackup_policy_types_all = [
+                        str(r[0]) for r in (pt_rows or []) if r and r[0] is not None
+                    ]
+                except Exception as exc:
+                    from app.services.customer_service import _is_fatal_db_error
+
+                    if _is_fatal_db_error(exc):
+                        raise
+                    logger.warning("CUSTOMER_NETBACKUP_POLICY_TYPES failed: %s", exc)
+
+                netbackup_policy_types = {
+                    "image": policy_types_for_category(
+                        "image", netbackup_policy_types_all, mapping=mapping
+                    ),
+                    "application": policy_types_for_category(
+                        "application", netbackup_policy_types_all, mapping=mapping
+                    ),
+                }
+
                 zerto_protected_vms = int(
                     self._run_value(
                         cur,
@@ -534,6 +600,9 @@ class CustomerAdapter:
                     "pre_dedup_size_gib": netbackup_pre_dedup_gib,
                     "post_dedup_size_gib": netbackup_post_dedup_gib,
                     "deduplication_factor": netbackup_dedup_factor,
+                    "image": netbackup_by_category["image"],
+                    "application": netbackup_by_category["application"],
+                    "policy_types": netbackup_policy_types,
                 },
             },
         }
@@ -640,6 +709,17 @@ class CustomerAdapter:
                         "pre_dedup_size_gib": 0.0,
                         "post_dedup_size_gib": 0.0,
                         "deduplication_factor": "1x",
+                        "image": {
+                            "pre_dedup_size_gib": 0.0,
+                            "post_dedup_size_gib": 0.0,
+                            "deduplication_factor": "1x",
+                        },
+                        "application": {
+                            "pre_dedup_size_gib": 0.0,
+                            "post_dedup_size_gib": 0.0,
+                            "deduplication_factor": "1x",
+                        },
+                        "policy_types": {"image": [], "application": []},
                     },
                 },
             },

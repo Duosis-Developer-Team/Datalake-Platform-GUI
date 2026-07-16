@@ -1,0 +1,30 @@
+# NetBackup policytype → Backup & Replication panel mapping.
+# Configurable: which policy types render under Image vs Application panels.
+# Future settings UI can override this without code changes.
+#
+# Categories:
+#   image       — classic VM image backup (KM / VMware)
+#   application — database / app-aware backups
+#
+# Any policytype not listed in image_policy_types is treated as application
+# (including empty / Unknown). Explicit application_policy_types is optional
+# documentation / future UI seeding.
+
+image_policy_types:
+  - VMWARE
+
+# Optional explicit list (documentation / future config UI). Classification
+# still uses "not in image_policy_types → application" so new types default
+# to the Application panel until remapped.
+application_policy_types:
+  - SAP
+  - SQL_SERVER
+  - OBACKUP
+  - SYBASE
+  - DB2
+  - EXCHANGE
+  - ENTERPRISE_VAULT
+  - WINDOWS_NT
+  - STANDARD
+  - DATASTORE
+  - NBU_CATALOG

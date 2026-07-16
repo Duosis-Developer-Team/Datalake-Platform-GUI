@@ -883,6 +883,33 @@ def get_dc_zerto_sites(dc_code: str, tr: Optional[dict]) -> dict:
     return _api_cache_get_with_stale(ck, fetch, empty)
 
 
+def get_dc_zerto_license(dc_code: str) -> dict:
+    """Zerto license + per-site protected VM usage for a DC."""
+    enc = quote(dc_code, safe="")
+    empty = {
+        "has_license": False,
+        "licenses": [],
+        "sites": [],
+        "summary": {
+            "license_type": None,
+            "is_valid": None,
+            "max_vms": None,
+            "total_vms_count": None,
+            "days_until_expiry": None,
+            "expirationdate": None,
+            "protected_vms_in_dc": 0,
+            "zerto_hosts": [],
+        },
+    }
+    ck = f"api:dc_zerto_license:{enc}"
+
+    def fetch() -> dict:
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/zerto/license")
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
 def get_dc_veeam_repos(dc_code: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_code, safe="")
     empty = {"repos": [], "rows": []}

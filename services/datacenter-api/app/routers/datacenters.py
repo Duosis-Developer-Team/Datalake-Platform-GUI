@@ -74,6 +74,12 @@ def dc_zerto(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Dep
     return db.get_dc_zerto_sites(dc_code, tf.to_dict())
 
 
+@router.get("/datacenters/{dc_code}/backup/zerto/license", response_model=dict[str, Any])
+def dc_zerto_license(dc_code: str, db: DatabaseService = Depends(get_db)):
+    """Zerto license + per-site protected VM usage for a DC (datalake)."""
+    return db.get_dc_zerto_license(dc_code)
+
+
 @router.get("/datacenters/{dc_code}/backup/veeam", response_model=dict[str, Any])
 def dc_veeam(dc_code: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
     return db.get_dc_veeam_repos(dc_code, tf.to_dict())

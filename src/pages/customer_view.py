@@ -1802,6 +1802,101 @@ def _tab_netbackup(backup_assets: dict, backup_totals: dict, crm_eff_panel: html
     return dmc.Stack(gap="lg", children=body_nb)
 
 
+def _tab_netbackup_category(
+    backup_assets: dict,
+    category: str,
+    crm_eff_panel: html.Div | None = None,
+    *,
+    title: str,
+    subtitle: str,
+):
+    """NetBackup image or application billing breakdown for Customer View."""
+    nb = backup_assets.get("netbackup", {}) or {}
+    cat = nb.get(category) or {}
+    pre_gib = float(cat.get("pre_dedup_size_gib", 0) or 0)
+    post_gib = float(cat.get("post_dedup_size_gib", 0) or 0)
+    dedup_fact = cat.get("deduplication_factor", "1x")
+    policy_types = (nb.get("policy_types") or {}).get(category) or []
+
+    head = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
+    kpi = _build_metrics_grid(
+        [
+            (pre_gib, "Pre-dedup (GiB)", f"{pre_gib:.2f}", "mdi:database-lock-outline", "indigo"),
+            (post_gib, "Stored (GiB)", f"{post_gib:.2f}", "mdi:database-arrow-down-outline", "teal"),
+            (
+                dedup_fact if dedup_fact not in (None, "1x", "1.0x") else None,
+                "Dedup factor",
+                dedup_fact,
+                "mdi:percent-outline",
+                "orange",
+            ),
+        ],
+        cols=3,
+    )
+    body = head + ([kpi] if kpi is not None else [])
+    body.append(
+        _section_card(
+            title,
+            subtitle,
+            dmc.Table(
+                striped=True,
+                highlightOnHover=True,
+                children=[
+                    html.Thead(html.Tr([html.Th("Metric"), html.Th("Value")])),
+                    html.Tbody(
+                        [
+                            html.Tr([html.Td("Pre-Dedup Size"), html.Td(f"{pre_gib:.2f} GiB")]),
+                            html.Tr([html.Td("Post-Dedup Size"), html.Td(f"{post_gib:.2f} GiB")]),
+                            html.Tr([html.Td("Dedup Ratio"), html.Td(dedup_fact)]),
+                            html.Tr(
+                                [
+                                    html.Td("Policy types"),
+                                    html.Td(", ".join(policy_types) if policy_types else "—"),
+                                ]
+                            ),
+                        ]
+                    ),
+                ],
+            ),
+        )
+    )
+    return dmc.Stack(gap="lg", children=body)
+
+
+def _crm_license_panel_from_efficiency(eff_by_cat: list | None, binding: str):
+    """Build Veeam/Zerto license panel from CRM efficiency rows when sold data exists."""
+    from src.components.backup_panel import build_veeam_license_panel
+
+    rows = filter_efficiency_rows(eff_by_cat, binding) or []
+    if not rows:
+        return None
+    sold_total = 0.0
+    license_rows = []
+    for r in rows:
+        try:
+            sold = float(r.get("sold_qty") or r.get("sold") or 0)
+        except (TypeError, ValueError):
+            sold = 0.0
+        sold_total += sold
+        license_rows.append(
+            {
+                "product_name": r.get("category_label") or r.get("product_name") or binding,
+                "sold_qty": sold,
+                "unit": r.get("resource_unit") or r.get("unit") or "license",
+            }
+        )
+    if sold_total <= 0 and not license_rows:
+        return None
+    return build_veeam_license_panel(
+        {
+            "label": binding,
+            "sold_qty": sold_total,
+            "unit": "license",
+            "rows": license_rows,
+        }
+    )
+
+
 def _tab_physical_inventory(devices: list[dict]):
     """Physical Inventory tab: device table (name, device_role, manufacturer, location). Title-case display."""
     total = len(devices or [])
@@ -2256,7 +2351,7 @@ def _build_backup_tabs(
     include_sold_vs_used: bool,
     nutanix_payload: dict | None = None,
 ) -> html.Div:
-    """Backup vendor nested tabs; sold-vs-used panels optional (manager perspective only)."""
+    """Backup category tabs (Image / Application / Replication); sold-vs-used optional."""
     backup_tab_defs: list[tuple[str, str, html.Div]] = []
 
     def _eff_panel(scope: str) -> html.Div | None:
@@ -2264,29 +2359,98 @@ def _build_backup_tabs(
             return None
         return build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, scope))
 
-    if backup_vendor_has_data(backup_totals, backup_assets, "veeam"):
+    nb_assets = backup_assets.get("netbackup", {}) or {}
+    nb_image = nb_assets.get("image") or {}
+    nb_app = nb_assets.get("application") or {}
+    has_nb_image = float(nb_image.get("pre_dedup_size_gib", 0) or 0) > 0 or float(
+        nb_image.get("post_dedup_size_gib", 0) or 0
+    ) > 0
+    has_nb_app = float(nb_app.get("pre_dedup_size_gib", 0) or 0) > 0 or float(
+        nb_app.get("post_dedup_size_gib", 0) or 0
+    ) > 0
+    has_nb_legacy = backup_vendor_has_data(backup_totals, backup_assets, "netbackup")
+    if not has_nb_image and not has_nb_app and has_nb_legacy:
+        has_nb_app = True
+    has_nutanix = bool(nutanix_payload and nutanix_payload.get("rows"))
+
+    if has_nb_image or has_nutanix:
+        image_children: list = []
+        if has_nb_image:
+            image_children.append(
+                _tab_netbackup_category(
+                    backup_assets,
+                    "image",
+                    crm_eff_panel=_eff_panel("backup.netbackup"),
+                    title="Classic Image Backup (NetBackup VMWARE)",
+                    subtitle="Image backup transferred vs. stored after deduplication",
+                )
+            )
+        if has_nutanix:
+            image_children.append(
+                html.Div(
+                    children=[
+                        dmc.Text("Hyperconverged — Nutanix", fw=600, size="sm", mb="sm"),
+                        build_nutanix_snapshot_panel(nutanix_payload, paginated=False),
+                    ]
+                )
+            )
         backup_tab_defs.append(
-            ("veeam", "Veeam", _tab_veeam(backup_assets, backup_totals, crm_eff_panel=_eff_panel("backup.veeam")))
+            ("image", "Image Backup", dmc.Stack(gap="lg", children=image_children))
         )
-    if backup_vendor_has_data(backup_totals, backup_assets, "zerto"):
-        backup_tab_defs.append(
-            ("zerto", "Zerto", _tab_zerto(backup_assets, backup_totals, crm_eff_panel=_eff_panel("backup.zerto")))
-        )
-    if backup_vendor_has_data(backup_totals, backup_assets, "netbackup"):
-        backup_tab_defs.append(
-            (
-                "netbackup",
-                "Netbackup",
-                _tab_netbackup(backup_assets, backup_totals, crm_eff_panel=_eff_panel("backup.netbackup")),
+
+    if has_nb_app:
+        app_has_split = float(nb_app.get("pre_dedup_size_gib", 0) or 0) > 0 or float(
+            nb_app.get("post_dedup_size_gib", 0) or 0
+        ) > 0
+        app_panel = (
+            _tab_netbackup_category(
+                backup_assets,
+                "application",
+                crm_eff_panel=_eff_panel("backup.netbackup"),
+                title="Application Backup (NetBackup)",
+                subtitle="Application / DB policy types transferred vs. stored",
+            )
+            if app_has_split
+            else _tab_netbackup(
+                backup_assets,
+                backup_totals,
+                crm_eff_panel=_eff_panel("backup.netbackup"),
             )
         )
-    if nutanix_payload and nutanix_payload.get("rows"):
-        backup_tab_defs.append(
-            (
-                "nutanix",
-                "Nutanix",
-                build_nutanix_snapshot_panel(nutanix_payload, paginated=False),
+        backup_tab_defs.append(("application", "Application Backup", app_panel))
+
+    has_veeam = backup_vendor_has_data(backup_totals, backup_assets, "veeam")
+    has_zerto = backup_vendor_has_data(backup_totals, backup_assets, "zerto")
+    if has_veeam or has_zerto:
+        repl_children: list = []
+        if has_veeam:
+            repl_children.append(
+                _tab_veeam(
+                    backup_assets,
+                    backup_totals,
+                    crm_eff_panel=_eff_panel("backup.veeam"),
+                )
             )
+            if include_sold_vs_used:
+                veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.veeam")
+                if veeam_lic is None:
+                    veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "backup.veeam")
+                if veeam_lic is not None:
+                    repl_children.append(veeam_lic)
+        if has_zerto:
+            repl_children.append(
+                _tab_zerto(
+                    backup_assets,
+                    backup_totals,
+                    crm_eff_panel=_eff_panel("backup.zerto"),
+                )
+            )
+            if include_sold_vs_used:
+                zerto_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.zerto")
+                if zerto_lic is not None:
+                    repl_children.append(zerto_lic)
+        backup_tab_defs.append(
+            ("replication", "Replication", dmc.Stack(gap="lg", children=repl_children))
         )
 
     if backup_tab_defs:
