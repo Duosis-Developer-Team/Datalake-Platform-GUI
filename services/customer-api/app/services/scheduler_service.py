@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 REFRESH_INTERVAL_MINUTES = 15
 MAPPED_BATCH_WARM_INTERVAL_HOURS = 6
+DELETED_VM_REGISTRY_INTERVAL_HOURS = 6
 
 
 def start_scheduler(
@@ -49,6 +50,19 @@ def start_scheduler(
         except Exception:  # noqa: BLE001 - never abort startup
             logger.exception("Customer API: initial mapped batch warm failed")
 
+    def _refresh_deleted_vm_registry_bg() -> None:
+        logger.info("Customer API: deleted-VM registry refresh started (background).")
+        t0 = time.perf_counter()
+        try:
+            result = svc.refresh_deleted_vm_registry()
+            logger.info(
+                "Customer API: deleted-VM registry refresh finished in %.2fs (%s).",
+                time.perf_counter() - t0,
+                result,
+            )
+        except Exception:  # noqa: BLE001 - never abort startup
+            logger.exception("Customer API: deleted-VM registry refresh failed")
+
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
         func=svc.refresh_all_data,
@@ -67,6 +81,16 @@ def start_scheduler(
         name="Customer API mapped non-VIP batch warm (6h)",
         replace_existing=True,
         misfire_grace_time=300,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        func=svc.refresh_deleted_vm_registry,
+        trigger=IntervalTrigger(hours=DELETED_VM_REGISTRY_INTERVAL_HOURS),
+        id="deleted_vm_registry_refresh",
+        name="Deleted-VM registry refresh (all-time scan)",
+        replace_existing=True,
+        misfire_grace_time=600,
         max_instances=1,
         coalesce=True,
     )
@@ -94,6 +118,11 @@ def start_scheduler(
         target=_warm_mapped_batch_bg,
         daemon=True,
         name="customer-initial-mapped-batch-warm",
+    ).start()
+    threading.Thread(
+        target=_refresh_deleted_vm_registry_bg,
+        daemon=True,
+        name="customer-initial-deleted-vm-registry",
     ).start()
     logger.info(
         "Customer API background scheduler started (hot refresh every %d minutes, mapped batch every %dh).",

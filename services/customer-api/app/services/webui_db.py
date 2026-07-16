@@ -110,6 +110,19 @@ class WebuiPool:
                 conn.commit()
                 return int(cur.rowcount or 0)
 
+    def execute_batch(self, sql: str, rows: Iterable[Any], page_size: int = 500) -> int:
+        """Execute one statement over many param sets in a single transaction."""
+        from psycopg2.extras import execute_batch as _pg_execute_batch
+
+        rows = list(rows)
+        if not rows:
+            return 0
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                _pg_execute_batch(cur, sql, rows, page_size=page_size)
+                conn.commit()
+                return len(rows)
+
     def close(self) -> None:
         if self._pool is not None:
             try:
