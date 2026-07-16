@@ -584,6 +584,33 @@ class CustomerService:
         )
         return {"ok": True, "scanned": scanned, "upserted": upserted}
 
+    def get_infra_patterns(self, customer_name: str) -> dict:
+        """Resolved ILIKE patterns that match a customer's infra by name.
+
+        The GUI passes these to datacenter-api's Nutanix-snapshot endpoint so the
+        snapshot protection-domain names (short prefix, e.g. 'Acme-...') are
+        matched the same way the rest of the platform matches this customer — not
+        the raw CRM legal name. Returns virtualization + backup patterns, deduped;
+        falls back to '%name%' if nothing resolves.
+        """
+        name = str(customer_name or "").strip()
+        if not name:
+            return {"patterns": []}
+        patterns: list[str] = []
+        try:
+            rp = self.resolve_source_patterns(name)
+            seen: set[str] = set()
+            for src in ("virtualization", "backup_veeam", "backup_zerto", "backup_netbackup"):
+                for p in rp.ilike_patterns(src):
+                    if p not in seen:
+                        seen.add(p)
+                        patterns.append(p)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Infra-pattern resolve failed for %s: %s", name, exc)
+        if not patterns:
+            patterns = [f"%{name}%"]
+        return {"patterns": patterns}
+
     def get_deleted_machines(self, customer_name: str) -> dict:
         """All-time deleted VMs for a customer, read from the registry (instant).
 

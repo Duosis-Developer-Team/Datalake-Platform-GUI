@@ -80,6 +80,15 @@ def customer_deleted_machines(
     return db.get_deleted_machines(customer_name)
 
 
+@router.get("/customers/{customer_name}/infra-patterns", response_model=dict[str, Any])
+def customer_infra_patterns(
+    customer_name: str,
+    db: CustomerService = Depends(get_db),
+):
+    """Resolved ILIKE patterns for a customer's infra (for datacenter-api matching)."""
+    return db.get_infra_patterns(customer_name)
+
+
 @router.get("/customers/{customer_name}/s3/vaults", response_model=dict[str, Any])
 def customer_s3_vaults(
     customer_name: str,

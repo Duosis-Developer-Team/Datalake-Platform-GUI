@@ -53,7 +53,7 @@ ORDER BY snapshot_id, collection_time DESC
 # name prefix on either the protection domain or the VM list.
 # Params: (like, like, start_ts, end_ts) where like = 'Customer-%'
 SNAPSHOTS_BY_CUSTOMER_LATEST = _SNAPSHOT_SELECT + """
-WHERE (protection_domain_name LIKE %s OR vm_names LIKE %s)
+WHERE (protection_domain_name ILIKE ANY(%s) OR vm_names ILIKE ANY(%s))
   AND collection_time BETWEEN %s AND %s
 ORDER BY snapshot_id, collection_time DESC
 """

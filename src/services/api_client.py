@@ -947,14 +947,39 @@ def get_dc_nutanix_missing(dc_code: str, tr: Optional[dict], page: int = 1, page
     return _api_cache_get_with_stale(ck, fetch, empty)
 
 
-def get_customer_nutanix_snapshots(customer: str, tr: Optional[dict]) -> dict:
-    # Served by datacenter-api (all snapshot logic lives there), so use _get_client_dc.
+def get_customer_infra_patterns(customer: str) -> list[str]:
+    """The customer's resolved ILIKE infra patterns (from customer-api).
+
+    Cached; empty list on failure. Used to match snapshots by the customer's real
+    infra name rather than the raw CRM legal name.
+    """
     enc = quote(customer, safe="")
-    empty = {"rows": [], "totals": {}, "as_of": ""}
-    ck = f"api:cust_nutanix_snap:{enc}:{_serialize_tr_cache_key(tr)}"
+    ck = f"api:cust_infra_patterns:{enc}"
 
     def fetch() -> dict:
-        data = _get_json(_get_client_dc(), f"/api/v1/customers/{enc}/backup/nutanix", params=_build_time_params(tr))
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/infra-patterns")
+        return data if isinstance(data, dict) else {"patterns": []}
+
+    data = _api_cache_get_with_stale(ck, fetch, {"patterns": []})
+    pats = (data or {}).get("patterns")
+    return [str(p) for p in pats if p] if isinstance(pats, list) else []
+
+
+def get_customer_nutanix_snapshots(customer: str, tr: Optional[dict]) -> dict:
+    # Snapshot logic lives in datacenter-api, but customer↔infra name resolution
+    # lives in customer-api. So resolve the customer's patterns first, then pass
+    # them to datacenter-api so snapshots match the customer's real infra name.
+    enc = quote(customer, safe="")
+    empty = {"rows": [], "totals": {}, "as_of": ""}
+    patterns = get_customer_infra_patterns(customer)
+    pat_key = "|".join(sorted(patterns)) if patterns else enc
+    ck = f"api:cust_nutanix_snap:{pat_key}:{_serialize_tr_cache_key(tr)}"
+
+    def fetch() -> dict:
+        params = _build_time_params(tr)
+        if patterns:
+            params = {**params, "pattern": patterns}
+        data = _get_json(_get_client_dc(), f"/api/v1/customers/{enc}/backup/nutanix", params=params)
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)

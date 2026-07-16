@@ -3877,14 +3877,21 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         rows, as_of = nsnap.enrich_snapshot_rows(raw, ip_to_cluster)
         return {"rows": rows, "totals": nsnap.aggregate_snapshots(rows), "as_of": as_of}
 
-    def _fetch_customer_nutanix_snapshots(self, customer: str, start_ts, end_ts) -> dict:
-        """Latest-per-snapshot rows for a customer (prefix match), enriched."""
-        like = f"{customer}-%"
+    def _fetch_customer_nutanix_snapshots(self, customer: str, start_ts, end_ts,
+                                          patterns: list[str] | None = None) -> dict:
+        """Latest-per-snapshot rows for a customer, enriched.
+
+        Matches the customer's resolved ILIKE patterns (passed from the GUI, which
+        gets them from customer-api) against protection_domain_name / vm_names — so
+        the short snapshot prefix ('Acme-...') is matched, not the raw legal CRM
+        name. Falls back to a prefix match on the customer name if none supplied.
+        """
+        pats = [p for p in (patterns or []) if p] or [f"{customer}-%"]
         with self._get_connection() as conn:
             with conn.cursor() as cur:
                 raw = self._run_rows(
                     cur, nsq.SNAPSHOTS_BY_CUSTOMER_LATEST,
-                    (like, like, start_ts, end_ts),
+                    (pats, pats, start_ts, end_ts),
                 )
         rows, as_of = nsnap.enrich_snapshot_rows(raw, None)
         return {"rows": rows, "totals": nsnap.aggregate_snapshots(rows), "as_of": as_of}
@@ -3910,17 +3917,20 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         cache.set_with_stale(key, result, fresh_ttl=self._NSNAP_FRESH_TTL, stale_ttl=self._NSNAP_STALE_TTL)
         return result
 
-    def get_customer_nutanix_snapshots(self, customer: str, time_range: dict | None = None) -> dict:
+    def get_customer_nutanix_snapshots(self, customer: str, time_range: dict | None = None,
+                                       patterns: list[str] | None = None) -> dict:
         tr = time_range or default_time_range()
         start_ts, end_ts = self._nsnap_effective_bounds(tr)
-        key = f"cust_nutanix_snap:{customer}:{tr.get('start','')}:{tr.get('end','')}"
+        pats = [p for p in (patterns or []) if p]
+        pat_key = "|".join(sorted(pats)) if pats else customer
+        key = f"cust_nutanix_snap:{pat_key}:{tr.get('start','')}:{tr.get('end','')}"
         cached_val, _ = cache.get_with_stale(key)
         if cached_val is not None:
             return cached_val
 
         def factory():
             try:
-                return self._fetch_customer_nutanix_snapshots(customer, start_ts, end_ts)
+                return self._fetch_customer_nutanix_snapshots(customer, start_ts, end_ts, pats)
             except (OperationalError, PoolError) as exc:
                 logger.warning("get_customer_nutanix_snapshots failed for %s: %s", customer, exc)
                 return {"rows": [], "totals": nsnap.aggregate_snapshots([]), "as_of": ""}

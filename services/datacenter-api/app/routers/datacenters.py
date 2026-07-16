@@ -124,8 +124,15 @@ def dc_nutanix_refresh(dc_code: str, db: DatabaseService = Depends(get_db)):
 
 
 @router.get("/customers/{customer}/backup/nutanix", response_model=dict[str, Any])
-def customer_nutanix_snapshots(customer: str, tf: TimeFilter = Depends(), db: DatabaseService = Depends(get_db)):
-    return db.get_customer_nutanix_snapshots(customer, tf.to_dict())
+def customer_nutanix_snapshots(
+    customer: str,
+    tf: TimeFilter = Depends(),
+    pattern: list[str] | None = Query(default=None),
+    db: DatabaseService = Depends(get_db),
+):
+    """`pattern` (repeatable) = the customer's resolved ILIKE patterns, supplied by
+    the GUI from customer-api so snapshots match by the customer's real infra name."""
+    return db.get_customer_nutanix_snapshots(customer, tf.to_dict(), pattern)
 
 
 @router.get("/datacenters/{dc_code}/backup/veeam/jobs", response_model=JobStatsResponse)
