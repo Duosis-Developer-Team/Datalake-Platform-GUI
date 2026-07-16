@@ -224,3 +224,24 @@ def test_format_as_of(value, expected_substring):
     else:
         assert expected_substring in out
         assert out.startswith("· Son güncelleme:")
+
+
+# ---- callback registration (mount gate) -------------------------------------
+
+
+def test_job_stats_callbacks_gate_on_backup_panels_ready():
+    """DC job-stats must wait for Backup panel mount, not raw tab click."""
+    from dash import _callback
+
+    found = False
+    for key, meta in _callback.GLOBAL_CALLBACK_MAP.items():
+        if "backup-jobs-veeam-chart" not in str(key):
+            continue
+        input_ids = [i["id"] for i in meta["inputs"]]
+        state_ids = [s["id"] for s in meta["state"]]
+        assert "backup-panels-ready" in input_ids
+        assert "dc-main-tabs" not in input_ids
+        assert "dc-main-tabs" in state_ids
+        found = True
+        break
+    assert found, "veeam job-stats callback not registered"

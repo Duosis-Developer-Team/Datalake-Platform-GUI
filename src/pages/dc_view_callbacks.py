@@ -63,12 +63,15 @@ def sync_dc_active_tab(active_tab):
     Output("dc-view-page-root", "children"),
     Output("dc-view-loaded-tabs", "data"),
     Output("dc-view-context-store", "data"),
+    Output("backup-panels-ready", "data"),
     Input("url", "pathname"),
     Input("app-time-range", "data"),
     State("dc-view-visible-sections", "data"),
     State("dc-view-loaded-tabs", "data"),
     State("dc-view-active-tab", "data"),
+    State("dc-main-tabs", "value"),
     State("dc-view-dc-id", "data"),
+    State("backup-panels-ready", "data"),
     prevent_initial_call=False,
 )
 def load_dc_view_data(
@@ -77,7 +80,9 @@ def load_dc_view_data(
     visible_sections,
     loaded_tabs,
     active_tab,
+    tabs_value,
     prev_dc_id,
+    panels_ready,
 ):
     dc_id = _dc_id_from_path(pathname)
     if not dc_id:
@@ -95,7 +100,8 @@ def load_dc_view_data(
         active = "summary"
     else:
         loaded = set(loaded_tabs or _SUMMARY_EAGER_TABS)
-        active = active_tab or "summary"
+        # Tabs UI is source of truth when present (avoids Summary race).
+        active = tabs_value or active_tab or "summary"
 
     if active in _LAZY_TAB_KEYS:
         loaded.add(active)
@@ -109,7 +115,10 @@ def load_dc_view_data(
         active_outer_tab=active,
     )
     wrapper = html.Div(className="dc-page-enter customer-page-enter", children=[page])
-    return wrapper, sorted(eager), _dc_context(dc_id, tr)
+    ready_bump = dash.no_update
+    if active == "backup":
+        ready_bump = int(panels_ready or 0) + 1
+    return wrapper, sorted(eager), _dc_context(dc_id, tr), ready_bump
 
 
 @callback(
@@ -136,14 +145,18 @@ def reset_dc_active_tab_on_dc_change(pathname, prev_dc_id):
     Output("dc-tab-network-root", "children", allow_duplicate=True),
     Output("dc-tab-avail-root", "children", allow_duplicate=True),
     Output("dc-view-loaded-tabs", "data", allow_duplicate=True),
+    Output("backup-panels-ready", "data", allow_duplicate=True),
     Input("dc-main-tabs", "value"),
     State("url", "pathname"),
     State("app-time-range", "data"),
     State("dc-view-visible-sections", "data"),
     State("dc-view-loaded-tabs", "data"),
+    State("backup-panels-ready", "data"),
     prevent_initial_call=True,
 )
-def expand_dc_view_on_tab(active_tab, pathname, time_range, visible_sections, loaded_tabs):
+def expand_dc_view_on_tab(
+    active_tab, pathname, time_range, visible_sections, loaded_tabs, panels_ready
+):
     dc_id = _dc_id_from_path(pathname)
     if not dc_id or not active_tab:
         raise dash.exceptions.PreventUpdate
@@ -191,7 +204,24 @@ def expand_dc_view_on_tab(active_tab, pathname, time_range, visible_sections, lo
     except ValueError:
         raise dash.exceptions.PreventUpdate
 
-    return (*updates, sorted(loaded))
+    ready_bump = dash.no_update
+    if active_tab == "backup" and root_found:
+        ready_bump = int(panels_ready or 0) + 1
+    return (*updates, sorted(loaded), ready_bump)
+
+
+@callback(
+    Output("backup-uj-defer", "disabled"),
+    Output("backup-uj-defer", "max_intervals"),
+    Input("backup-panels-ready", "data"),
+    State("backup-uj-defer", "n_intervals"),
+    prevent_initial_call=True,
+)
+def _arm_unique_jobs_defer(ready, n_intervals):
+    """After Backup panel mounts, fire unique-jobs once ~450ms later (stampede guard)."""
+    if not ready:
+        raise dash.exceptions.PreventUpdate
+    return False, int(n_intervals or 0) + 1
 
 
 # ---------------------------------------------------------------------------

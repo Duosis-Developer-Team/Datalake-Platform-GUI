@@ -5852,6 +5852,16 @@ def build_dc_view_layout_shell(dc_id, time_range=None, visible_sections=None):
             dcc.Store(id="dc-view-loaded-tabs", data=["summary"]),
             dcc.Store(id="dc-view-active-tab", data="summary"),
             dcc.Store(id="dc-view-context-store", data={}),
+            # Bumped when Backup panel content is mounted (expand or eager rebuild).
+            dcc.Store(id="backup-panels-ready", data=0),
+            # One-shot deferral so unique-jobs start after job-stats (stampede guard).
+            dcc.Interval(
+                id="backup-uj-defer",
+                interval=450,
+                n_intervals=0,
+                max_intervals=0,
+                disabled=True,
+            ),
             html.Div(
                 id="dc-view-page-root",
                 children=render_dc_loading_page(str(dc_id), tr, visible_sections=vs),

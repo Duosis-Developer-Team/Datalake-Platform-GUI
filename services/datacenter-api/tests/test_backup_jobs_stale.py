@@ -104,6 +104,30 @@ def test_stale_hit_returns_value_and_triggers_async_compute():
     assert args[0] == "veeam"  # vendor
 
 
+def test_stale_hit_rewrites_via_set_with_stale_not_plain_set():
+    """Stale re-write must use set_with_stale so fresh+stale TTLs stay aligned."""
+    svc = _make_service()
+    cache_key = "dc_veeam_jobs:DC13:2026-04-01:2026-05-01:day"
+    cs.delete(cache_key)
+    cs.delete(f"stale:{cache_key}")
+    stale_payload = {"vendor": "veeam", "totals": {"total": 50}, "series": []}
+    cs.set_with_stale(cache_key, stale_payload, fresh_ttl=30, stale_ttl=600)
+    cs.delete(cache_key)
+
+    with patch.object(svc, "_trigger_async_jobs_compute"), \
+         patch("app.services.dc_service.cache.set_with_stale") as p_swr, \
+         patch("app.services.dc_service.cache.set") as p_set:
+        out = svc.get_dc_veeam_jobs(
+            "DC13",
+            {"start": "2026-04-01", "end": "2026-05-01", "preset": "custom"},
+            "day",
+        )
+
+    assert out == stale_payload
+    p_swr.assert_called()
+    p_set.assert_not_called()
+
+
 def test_total_miss_falls_back_to_synchronous_compute():
     svc = _make_service()
     cache_key = "dc_veeam_jobs:DC13:2026-04-01:2026-05-01:day"

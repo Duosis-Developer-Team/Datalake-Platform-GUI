@@ -505,8 +505,8 @@ def _fetch_table_payload(
     platforms,
     active_tab: str | None,
 ) -> dict | None:
-    policy_types = types if vendor == "netbackup" else None
-    type_filter = None if vendor == "netbackup" else types
+    policy_types = (types or None) if vendor == "netbackup" else None
+    type_filter = None if vendor == "netbackup" else (types or None)
     categories = [category] if category else None
     if scope == "dc":
         dc_id = _extract_dc_id(pathname)
@@ -559,11 +559,13 @@ def _make_dc_callback(vendor: str, category: str | None = None) -> None:
         Input(f"backup-uj-{sid}-filter-status", "value"),
         Input(f"backup-uj-{sid}-filter-type", "value"),
         Input(f"backup-uj-{sid}-filter-platform", "value"),
-        Input("dc-main-tabs", "value"),
+        # Deferred after Backup mount so job-stats runs first (stampede guard).
+        Input("backup-uj-defer", "n_intervals"),
         Input("backup-time-range", "data"),
+        State("dc-main-tabs", "value"),
         State(f"backup-uj-{sid}-page", "data"),
         State("url", "pathname"),
-        prevent_initial_call=False,
+        prevent_initial_call=True,
     )
     def _update_dc(
         search,
@@ -572,16 +574,20 @@ def _make_dc_callback(vendor: str, category: str | None = None) -> None:
         f_status,
         f_type,
         f_platform,
-        active_tab,
+        defer_n,
         tr,
+        active_tab,
         page,
         pathname,
         _vendor=vendor,
         _category=category,
         _sid=sid,
     ):
-        page = int(page or 1)
+        # Initial mount path: wait until Interval has fired at least once.
         trig = ctx.triggered_id
+        if trig == "backup-uj-defer" and not defer_n:
+            return (dash.no_update,) * 6
+        page = int(page or 1)
         if trig == f"backup-uj-{_sid}-next":
             page += 1
         elif trig == f"backup-uj-{_sid}-prev":
@@ -706,8 +712,7 @@ def _register_callbacks() -> None:
     for category in _NETBACKUP_CATEGORIES:
         _make_dc_callback("netbackup", category)
         _make_customer_callback("netbackup", category)
-    _make_dc_callback("netbackup")
-    _make_customer_callback("netbackup")
+    # Unscoped NetBackup unique-jobs panels are not rendered — do not register.
 
 
 _register_callbacks()

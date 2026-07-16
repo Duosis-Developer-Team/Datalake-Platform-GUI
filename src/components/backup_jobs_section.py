@@ -487,19 +487,23 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
         Input(f"backup-jobs-{sid}-granularity", "value"),
         Input(f"backup-jobs-{sid}-groupby", "value"),
         Input(f"backup-jobs-{sid}-refresh", "n_clicks"),
-        Input("dc-main-tabs", "value"),
+        # Gate on panel mount (not raw tab click) — avoids empty Outputs race.
+        Input("backup-panels-ready", "data"),
         Input(f"backup-uj-{uj_sid}-filter-status", "value"),
         Input(f"backup-uj-{uj_sid}-filter-type", "value"),
     ]
     if vendor == "netbackup" and category:
         inputs.append(Input(f"backup-nb-policy-selector-{category}", "value"))
-    states = [State("url", "pathname")]
+    states = [
+        State("dc-main-tabs", "value"),
+        State("url", "pathname"),
+    ]
 
     @callback(
         *outputs,
         *inputs,
         *states,
-        prevent_initial_call=False,
+        prevent_initial_call=True,
     )
     def _update(*args, _vendor=vendor, _category=category, _sid=sid):
         if _vendor == "netbackup" and _category:
@@ -508,10 +512,11 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
                 granularity,
                 group_by,
                 refresh_n,
-                active_main_tab,
+                panels_ready,
                 uj_statuses,
                 uj_types,
                 selected_policies,
+                active_main_tab,
                 pathname,
             ) = args
         else:
@@ -520,12 +525,16 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
                 granularity,
                 group_by,
                 refresh_n,
-                active_main_tab,
+                panels_ready,
                 uj_statuses,
                 uj_types,
+                active_main_tab,
                 pathname,
             ) = args
             selected_policies = None
+
+        if not panels_ready:
+            return dash.no_update, dash.no_update, dash.no_update
 
         dc_id = _extract_dc_id(pathname)
         if should_skip_fetch(active_main_tab, dc_id):

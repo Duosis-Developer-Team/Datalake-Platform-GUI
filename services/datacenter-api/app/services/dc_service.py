@@ -4608,10 +4608,10 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         value, is_stale = cache.get_with_stale(cache_key)
         if value is not None:
             if is_stale:
-                # Fresh key'i stale snapshot'tan re-write et — cache_backend
-                # memory→Redis backfill'i default TTL kullanıyor; bu TTL'imizi
-                # 35dk'da tutar. Background refresh sonucunu hala overwrite eder.
-                cache.set(cache_key, value, ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS)
+                # Re-write fresh+stale keys so memory→Redis backfill keeps our TTL.
+                cache.set_with_stale(
+                    cache_key, value, fresh_ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS
+                )
                 self._trigger_async_jobs_compute("veeam", gran, start_ts, end_ts, tr_start, tr_end)
             return self._filter_job_stats_payload(value, statuses=statuses, job_types=job_types)
 
@@ -4705,7 +4705,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         value, is_stale = cache.get_with_stale(cache_key)
         if value is not None:
             if is_stale:
-                cache.set(cache_key, value, ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS)
+                cache.set_with_stale(
+                    cache_key, value, fresh_ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS
+                )
                 self._trigger_async_jobs_compute("zerto", gran, start_ts, end_ts, tr_start, tr_end)
             return self._filter_job_stats_payload(value, statuses=statuses, job_types=job_types)
 
@@ -4808,7 +4810,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         value, is_stale = cache.get_with_stale(cache_key)
         if value is not None:
             if is_stale:
-                cache.set(cache_key, value, ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS)
+                cache.set_with_stale(
+                    cache_key, value, fresh_ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS
+                )
                 self._trigger_async_jobs_compute("netbackup", gran, start_ts, end_ts, tr_start, tr_end)
             return self._filter_job_stats_payload(
                 value, statuses=statuses, job_types=job_types, policy_types=policy_types, category=category,
