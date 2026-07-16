@@ -272,15 +272,31 @@ def _aggregate_netbackup(data: dict, selected_pools: Iterable[str] | None) -> di
     }
 
 
-def build_netbackup_panel(data: dict, selected_pools: Iterable[str] | None):
+def build_netbackup_panel(
+    data: dict,
+    selected_pools: Iterable[str] | None,
+    *,
+    category: str | None = None,
+    policy_type_options: list[str] | None = None,
+    pool_selector_id: str | None = None,
+):
     agg = _aggregate_netbackup(data, selected_pools)
     selector_value = list(selected_pools) if selected_pools else agg["pools"]
+    resolved_selector_id = pool_selector_id or (
+        f"backup-nb-pool-selector-{category}" if category else "backup-nb-pool-selector"
+    )
 
     fig = _usage_gauge_fig(
         used=agg["total_used"],
         total=max(agg["total_usable"], agg["total_used"] + agg["total_avail"]),
         title="NetBackup Capacity",
     )
+
+    category_label = ""
+    if category == "image":
+        category_label = " — Image (KM)"
+    elif category == "application":
+        category_label = " — Application"
 
     header = html.Div(
         style={
@@ -301,7 +317,7 @@ def build_netbackup_panel(data: dict, selected_pools: Iterable[str] | None):
                     html.Div(
                         children=[
                             html.H3(
-                                "NetBackup Disk Pools",
+                                f"NetBackup Disk Pools{category_label}",
                                 style={
                                     "margin": 0,
                                     "fontSize": "1rem",
@@ -321,7 +337,7 @@ def build_netbackup_panel(data: dict, selected_pools: Iterable[str] | None):
                 ],
             ),
             dmc.MultiSelect(
-                id="backup-nb-pool-selector",
+                id=resolved_selector_id,
                 data=[{"label": p, "value": p} for p in agg["pools"]],
                 value=selector_value,
                 clearable=True,
@@ -504,7 +520,15 @@ def build_netbackup_panel(data: dict, selected_pools: Iterable[str] | None):
                 style={"padding": "16px", "marginTop": "8px"},
                 children=table,
             ),
-            build_job_stats_section("netbackup"),
+            (
+                build_job_stats_section(
+                    "netbackup",
+                    category=category,
+                    policy_type_options=policy_type_options,
+                )
+                if category in ("image", "application")
+                else html.Div()
+            ),
         ]
     )
 
@@ -1372,3 +1396,383 @@ def build_nutanix_snapshot_panel(data: dict, table: dict | None = None, missing:
     return html.Div(children=[
         header, top_grid, html.Div(style={"height": "16px"}), table_card, missing_section,
     ])
+
+# ---------------------------------------------------------------------------
+# License panels (Veeam CRM / Zerto datalake)
+# ---------------------------------------------------------------------------
+
+
+def build_zerto_license_panel(license_payload: dict | None) -> html.Div | None:
+    """Render Zerto license KPIs when datalake license data exists; else None."""
+    data = license_payload or {}
+    if not data.get("has_license"):
+        return None
+    summary = data.get("summary") or {}
+    sites = data.get("sites") or []
+    is_valid = summary.get("is_valid")
+    max_vms = summary.get("max_vms")
+    total_vms = summary.get("total_vms_count")
+    protected_dc = summary.get("protected_vms_in_dc")
+    days = summary.get("days_until_expiry")
+    license_type = summary.get("license_type") or "—"
+    valid_label = "Valid" if is_valid else ("Invalid" if is_valid is False else "Unknown")
+    valid_color = "teal" if is_valid else ("red" if is_valid is False else "gray")
+
+    kpis = html.Div(
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "repeat(4, 1fr)",
+            "gap": "12px",
+            "marginBottom": "12px",
+        },
+        children=[
+            _kpi_card("License type", str(license_type), "solar:ticket-bold-duotone", "indigo"),
+            _kpi_card(
+                "Validity",
+                valid_label,
+                "solar:shield-check-bold-duotone",
+                valid_color,
+            ),
+            _kpi_card(
+                "Max VMs",
+                f"{int(max_vms):,}" if max_vms is not None else "—",
+                "solar:server-bold-duotone",
+            ),
+            _kpi_card(
+                "Used VMs (license)",
+                f"{int(total_vms):,}" if total_vms is not None else "—",
+                "solar:users-group-rounded-bold-duotone",
+            ),
+        ],
+    )
+
+    extra = dmc.Group(
+        gap="md",
+        children=[
+            dmc.Badge(
+                f"Protected in DC: {int(protected_dc or 0):,}",
+                variant="light",
+                color="indigo",
+                radius="xl",
+            ),
+            dmc.Badge(
+                f"Days until expiry: {days}" if days is not None else "Expiry: n/a",
+                variant="light",
+                color="orange" if days is not None and int(days) < 90 else "gray",
+                radius="xl",
+            ),
+            dmc.Badge(
+                "License required (usage present)",
+                variant="outline",
+                color="grape",
+                radius="xl",
+            ),
+        ],
+    )
+
+    table_rows = [
+        html.Tr(
+            [
+                html.Td(s.get("site_name")),
+                html.Td(f"{int(s.get('protected_vms_count') or 0):,}"),
+            ]
+        )
+        for s in sites
+    ] or [html.Tr([html.Td("No site usage in this DC", colSpan=2)])]
+
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "16px", "marginTop": "16px"},
+        children=[
+            html.H4(
+                "Zerto License",
+                style={"margin": "0 0 12px 0", "fontSize": "0.95rem", "color": "#2B3674"},
+            ),
+            kpis,
+            extra,
+            html.Div(style={"height": "12px"}),
+            dmc.Table(
+                striped=True,
+                highlightOnHover=True,
+                children=[
+                    html.Thead(html.Tr([html.Th("Site"), html.Th("Protected VMs")])),
+                    html.Tbody(table_rows),
+                ],
+            ),
+        ],
+    )
+
+
+def build_veeam_license_panel(crm_license_payload: dict | None) -> html.Div | None:
+    """Render Veeam license from CRM sold reference when data exists; else None."""
+    data = crm_license_payload or {}
+    sold_qty = data.get("sold_qty")
+    rows = data.get("rows") or []
+    has_data = bool(rows) or (sold_qty is not None and float(sold_qty or 0) > 0)
+    if not has_data:
+        return None
+    label = data.get("label") or "Veeam License (CRM sold)"
+    unit = data.get("unit") or "license"
+    try:
+        sold_fmt = f"{float(sold_qty):,.2f}" if sold_qty is not None else "—"
+    except (TypeError, ValueError):
+        sold_fmt = str(sold_qty)
+
+    body_rows = []
+    for r in rows:
+        body_rows.append(
+            html.Tr(
+                [
+                    html.Td(r.get("product_name") or r.get("label") or "—"),
+                    html.Td(r.get("sold_qty")),
+                    html.Td(r.get("unit") or unit),
+                ]
+            )
+        )
+    if not body_rows:
+        body_rows = [
+            html.Tr(
+                [
+                    html.Td(label),
+                    html.Td(sold_fmt),
+                    html.Td(unit),
+                ]
+            )
+        ]
+
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "16px", "marginTop": "16px"},
+        children=[
+            html.H4(
+                "Veeam License",
+                style={"margin": "0 0 8px 0", "fontSize": "0.95rem", "color": "#2B3674"},
+            ),
+            html.P(
+                "CRM sold reference (datalake license inventory not available). "
+                "License is required when sold/usage data exists.",
+                style={"margin": "0 0 12px 0", "fontSize": "0.78rem", "color": "#A3AED0"},
+            ),
+            dmc.Group(
+                gap="md",
+                children=[
+                    _kpi_card("Sold (CRM)", sold_fmt, "solar:ticket-bold-duotone", "indigo"),
+                    dmc.Badge(
+                        "License required",
+                        variant="outline",
+                        color="grape",
+                        radius="xl",
+                    ),
+                ],
+            ),
+            html.Div(style={"height": "12px"}),
+            dmc.Table(
+                striped=True,
+                highlightOnHover=True,
+                children=[
+                    html.Thead(
+                        html.Tr([html.Th("Product"), html.Th("Sold qty"), html.Th("Unit")])
+                    ),
+                    html.Tbody(body_rows),
+                ],
+            ),
+        ],
+    )
+
+
+def build_hc_image_placeholder() -> html.Div:
+    """Hyperconverged image backup placeholder until Nutanix snapshot tab lands."""
+    return dmc.Alert(
+        color="gray",
+        variant="light",
+        title="Hyperconverged Image Backup (Nutanix)",
+        children=(
+            "Nutanix snapshot / HC image backup panel is not available on this "
+            "branch yet. Classic (KM) image backup uses NetBackup VMWARE policy types."
+        ),
+    )
+
+
+def build_image_backup_section(
+    *,
+    nb_data: dict | None = None,
+    selected_pools: Iterable[str] | None = None,
+    policy_type_options: list[str] | None = None,
+    nutanix_panel: html.Div | None = None,
+    has_netbackup: bool = False,
+    has_nutanix: bool = False,
+) -> html.Div:
+    """Image Backup category: Classic KM (NetBackup) + Hyperconverged (Nutanix)."""
+    children: list = []
+    tab_defs: list[tuple[str, str]] = []
+    if has_netbackup:
+        tab_defs.append(("km", "Classic (KM) — NetBackup"))
+    if has_nutanix or nutanix_panel is not None:
+        tab_defs.append(("hc", "Hyperconverged — Nutanix"))
+    if not tab_defs:
+        tab_defs.append(("km", "Classic (KM) — NetBackup"))
+
+    panels = []
+    if has_netbackup:
+        panels.append(
+            dmc.TabsPanel(
+                value="km",
+                pt="lg",
+                children=html.Div(
+                    id="backup-netbackup-panel-image",
+                    children=build_netbackup_panel(
+                        nb_data or {},
+                        selected_pools,
+                        category="image",
+                        policy_type_options=policy_type_options,
+                    ),
+                ),
+            )
+        )
+    elif any(v == "km" for v, _ in tab_defs):
+        panels.append(
+            dmc.TabsPanel(
+                value="km",
+                pt="lg",
+                children=dmc.Alert(
+                    color="gray",
+                    variant="light",
+                    title="No NetBackup pools",
+                    children="No NetBackup disk pool data for this datacenter.",
+                ),
+            )
+        )
+    if has_nutanix or nutanix_panel is not None:
+        panels.append(
+            dmc.TabsPanel(
+                value="hc",
+                pt="lg",
+                children=nutanix_panel if nutanix_panel is not None else build_hc_image_placeholder(),
+            )
+        )
+
+    return html.Div(
+        children=[
+            dmc.Tabs(
+                color="indigo",
+                variant="outline",
+                radius="md",
+                value=tab_defs[0][0],
+                children=[
+                    dmc.TabsList(
+                        children=[dmc.TabsTab(label, value=value) for value, label in tab_defs]
+                    ),
+                    *panels,
+                ],
+            )
+        ]
+    )
+
+
+def build_application_backup_section(
+    *,
+    nb_data: dict | None = None,
+    selected_pools: Iterable[str] | None = None,
+    policy_type_options: list[str] | None = None,
+) -> html.Div:
+    """Application Backup category: NetBackup non-VMWARE policy types."""
+    return html.Div(
+        id="backup-netbackup-panel-application",
+        children=[
+            build_netbackup_panel(
+                nb_data or {},
+                selected_pools,
+                category="application",
+                policy_type_options=policy_type_options,
+            )
+        ]
+    )
+
+
+def build_replication_section(
+    *,
+    veeam_data: dict | None = None,
+    zerto_data: dict | None = None,
+    zerto_license: dict | None = None,
+    veeam_license: dict | None = None,
+    has_veeam: bool = False,
+    has_zerto: bool = False,
+) -> html.Div:
+    """Replication category: Veeam + Zerto (+ licenses when data exists)."""
+    tab_defs: list[tuple[str, str]] = []
+    if has_zerto:
+        tab_defs.append(("zerto", "Zerto"))
+    if has_veeam:
+        tab_defs.append(("veeam", "Veeam"))
+    if not tab_defs:
+        return dmc.Alert(
+            color="gray",
+            variant="light",
+            title="No replication services",
+            children="No Veeam or Zerto infrastructure data for this datacenter.",
+        )
+
+    zerto_license_panel = build_zerto_license_panel(zerto_license)
+    veeam_license_panel = build_veeam_license_panel(veeam_license)
+
+    panels = []
+    if has_zerto:
+        zerto_children = [
+            html.Div(
+                id="backup-zerto-panel",
+                children=build_zerto_panel(zerto_data or {}, None),
+            )
+        ]
+        if zerto_license_panel is not None:
+            zerto_children.append(zerto_license_panel)
+        elif (zerto_data or {}).get("sites"):
+            # Usage present but license payload empty — still show required note
+            zerto_children.append(
+                dmc.Alert(
+                    color="grape",
+                    variant="light",
+                    title="License required",
+                    children="Zerto usage is present; license metrics were not returned for this DC.",
+                )
+            )
+        panels.append(dmc.TabsPanel(value="zerto", pt="lg", children=html.Div(children=zerto_children)))
+    if has_veeam:
+        veeam_children = [
+            html.Div(
+                id="backup-veeam-panel",
+                children=build_veeam_panel(veeam_data or {}, None),
+            )
+        ]
+        if veeam_license_panel is not None:
+            veeam_children.append(veeam_license_panel)
+        else:
+            veeam_children.append(
+                dmc.Alert(
+                    color="gray",
+                    variant="light",
+                    title="Veeam license",
+                    children=(
+                        "Veeam license is managed at customer level via CRM sold. "
+                        "No DC-scoped license inventory in datalake."
+                    ),
+                )
+            )
+        panels.append(dmc.TabsPanel(value="veeam", pt="lg", children=html.Div(children=veeam_children)))
+
+    return html.Div(
+        children=[
+            dmc.Tabs(
+                color="violet",
+                variant="outline",
+                radius="md",
+                value=tab_defs[0][0],
+                children=[
+                    dmc.TabsList(
+                        children=[dmc.TabsTab(label, value=value) for value, label in tab_defs]
+                    ),
+                    *panels,
+                ],
+            )
+        ]
+    )
+

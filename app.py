@@ -1314,12 +1314,12 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
 
 
 @app.callback(
-    dash.Output("backup-netbackup-panel", "children"),
-    dash.Input("backup-nb-pool-selector", "value"),
+    dash.Output("backup-netbackup-panel-image", "children"),
+    dash.Input("backup-nb-pool-selector-image", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
-def update_backup_netbackup_panel(selected_pools, time_range, pathname):
+def update_backup_netbackup_panel_image(selected_pools, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
@@ -1332,7 +1332,47 @@ def update_backup_netbackup_panel(selected_pools, time_range, pathname):
         selected = pools
     else:
         selected = [p for p in selected_pools if p in pools] or pools
-    return build_netbackup_panel(data, selected)
+    from shared.backup.policy_classification import load_policy_panel_mapping
+
+    return build_netbackup_panel(
+        data,
+        selected,
+        category="image",
+        policy_type_options=list(
+            load_policy_panel_mapping().get("image_policy_types") or ["VMWARE"]
+        ),
+    )
+
+
+@app.callback(
+    dash.Output("backup-netbackup-panel-application", "children"),
+    dash.Input("backup-nb-pool-selector-application", "value"),
+    dash.Input("app-time-range", "data"),
+    dash.State("url", "pathname"),
+)
+def update_backup_netbackup_panel_application(selected_pools, time_range, pathname):
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    data = api.get_dc_netbackup_pools(dc_id, tr)
+    pools = data.get("pools") or []
+    if not pools:
+        return html.Div()
+    if not selected_pools:
+        selected = pools
+    else:
+        selected = [p for p in selected_pools if p in pools] or pools
+    from shared.backup.policy_classification import load_policy_panel_mapping
+
+    return build_netbackup_panel(
+        data,
+        selected,
+        category="application",
+        policy_type_options=list(
+            load_policy_panel_mapping().get("application_policy_types") or []
+        ),
+    )
 
 
 @app.callback(

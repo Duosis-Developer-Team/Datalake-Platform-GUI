@@ -2,14 +2,10 @@
 Backup job statistics section: layout + callbacks.
 
 Built once per vendor (zerto/veeam/netbackup) and appended to each backup
-sub-tab panel in backup_panel.py. Callbacks live here too — they listen to
-the isolated `backup-time-range` store, the per-vendor granularity selector,
-and the per-vendor group-by selector. They read pathname only as State to
-derive the DC id, so they never depend on `app-time-range`.
+sub-tab panel in backup_panel.py. NetBackup also supports category-scoped
+instances (image / application) with policy-type MultiSelect filtering.
 """
 from __future__ import annotations
-
-from typing import Any
 
 import dash
 from dash import Input, Output, State, callback, dcc, html
@@ -21,6 +17,7 @@ from src.services import api_client as api
 
 
 VENDORS = ("zerto", "veeam", "netbackup")
+NETBACKUP_CATEGORIES = ("image", "application")
 
 # Stacked bar palette — keeps status colours consistent across vendors.
 _STATUS_COLORS = {
@@ -42,13 +39,93 @@ def _api_wrapper(vendor: str):
     raise ValueError(f"Unknown vendor: {vendor}")
 
 
-def _vendor_label(vendor: str) -> str:
-    return {"zerto": "Zerto", "veeam": "Veeam", "netbackup": "NetBackup"}.get(vendor, vendor)
+def _vendor_label(vendor: str, category: str | None = None) -> str:
+    base = {"zerto": "Zerto", "veeam": "Veeam", "netbackup": "NetBackup"}.get(vendor, vendor)
+    if category == "image":
+        return f"{base} Image"
+    if category == "application":
+        return f"{base} Application"
+    return base
 
 
-# ---------------------------------------------------------------------------
-# Layout
-# ---------------------------------------------------------------------------
+def _section_id(vendor: str, category: str | None = None) -> str:
+    """Component ID suffix: vendor or vendor-category for NetBackup splits."""
+    if vendor == "netbackup" and category in NETBACKUP_CATEGORIES:
+        return f"netbackup-{category}"
+    return vendor
+
+
+def filter_series_by_category(series: list[dict] | None, category: str | None) -> list[dict]:
+    """Keep series points matching ``category`` (image|application). None = all."""
+    if not category:
+        return list(series or [])
+    return [p for p in (series or []) if (p.get("category") or "") == category]
+
+
+def filter_series_by_policy_types(
+    series: list[dict] | None,
+    policy_types: list[str] | None,
+) -> list[dict]:
+    """Keep series whose policy_type is in ``policy_types``. Empty/None = all."""
+    if not policy_types:
+        return list(series or [])
+    chosen = {str(p).strip().upper() for p in policy_types if str(p).strip()}
+    if not chosen:
+        return list(series or [])
+    out: list[dict] = []
+    for point in series or []:
+        pt = str(point.get("policy_type") or "").strip().upper()
+        if pt in chosen:
+            out.append(point)
+    return out
+
+
+def apply_job_filters(
+    payload: dict | None,
+    *,
+    category: str | None = None,
+    policy_types: list[str] | None = None,
+) -> dict:
+    """Return a shallow-copied payload with series/totals filtered client-side."""
+    base = dict(payload or {})
+    series = list(base.get("series") or [])
+    series = filter_series_by_category(series, category)
+    series = filter_series_by_policy_types(series, policy_types)
+    filtered = dict(base)
+    filtered["series"] = series
+    total = sum(int(p.get("count", 0) or 0) for p in series)
+    success = sum(int(p["count"]) for p in series if p.get("status") == "success")
+    failed = sum(int(p["count"]) for p in series if p.get("status") == "failed")
+    warning = sum(int(p["count"]) for p in series if p.get("status") == "warning")
+    other = max(total - success - failed - warning, 0)
+    success_rate = (success / total * 100.0) if total else 0.0
+    period_count = len({p.get("period") for p in series if p.get("period")})
+    avg_per_period = (total / period_count) if period_count else 0.0
+    filtered["totals"] = {
+        "total": total,
+        "success": success,
+        "failed": failed,
+        "warning": warning,
+        "other": other,
+        "success_rate": round(success_rate, 2),
+        "avg_per_period": round(avg_per_period, 2),
+        "period_count": period_count,
+    }
+    return filtered
+
+
+def available_policy_types(payload: dict | None, category: str | None = None) -> list[str]:
+    """Distinct policy types for MultiSelect options (optionally category-scoped)."""
+    if category and isinstance((payload or {}).get("policy_types"), dict):
+        pts = (payload or {}).get("policy_types", {}).get(category) or []
+        if pts:
+            return sorted({str(p) for p in pts if p}, key=lambda s: s.upper())
+    series = filter_series_by_category((payload or {}).get("series"), category)
+    return sorted(
+        {str(p.get("policy_type")) for p in series if p.get("policy_type")},
+        key=lambda s: s.upper(),
+    )
+
 
 def _kpi(title: str, value: str, icon: str, color: str) -> dmc.Paper:
     return dmc.Paper(
@@ -70,8 +147,19 @@ def _kpi(title: str, value: str, icon: str, color: str) -> dmc.Paper:
                 ),
                 html.Div(
                     children=[
-                        html.Div(title, style={"fontSize": "0.7rem", "color": "#A3AED0", "letterSpacing": "0.04em", "textTransform": "uppercase"}),
-                        html.Div(value, style={"fontSize": "1.15rem", "fontWeight": 600, "color": "#2B3674"}),
+                        html.Div(
+                            title,
+                            style={
+                                "fontSize": "0.7rem",
+                                "color": "#A3AED0",
+                                "letterSpacing": "0.04em",
+                                "textTransform": "uppercase",
+                            },
+                        ),
+                        html.Div(
+                            value,
+                            style={"fontSize": "1.15rem", "fontWeight": 600, "color": "#2B3674"},
+                        ),
                     ]
                 ),
             ],
@@ -112,15 +200,81 @@ def _empty_figure(message: str = "Loading…") -> go.Figure:
     return fig
 
 
-def build_job_stats_section(vendor: str) -> html.Div:
+def build_job_stats_section(
+    vendor: str,
+    *,
+    category: str | None = None,
+    policy_type_options: list[str] | None = None,
+) -> html.Div:
     """
-    Vendor (zerto|veeam|netbackup) için Job Statistics bölümü.
+    Vendor (zerto|veeam|netbackup) Job Statistics section.
 
-    Component ID'leri vendor-spesifik; her panel kendi state'ini tutar.
+    For NetBackup, pass ``category='image'|'application'`` to scope IDs and
+    enable policy-type MultiSelect filtering.
     """
     if vendor not in VENDORS:
         raise ValueError(f"Unknown vendor: {vendor}")
-    label = _vendor_label(vendor)
+    if category is not None and category not in NETBACKUP_CATEGORIES:
+        raise ValueError(f"Unknown category: {category}")
+    if category and vendor != "netbackup":
+        raise ValueError("category is only supported for netbackup")
+
+    sid = _section_id(vendor, category)
+    label = _vendor_label(vendor, category)
+    controls: list = [
+        dmc.SegmentedControl(
+            id=f"backup-jobs-{sid}-granularity",
+            value="day",
+            data=[
+                {"label": "Daily", "value": "day"},
+                {"label": "Weekly", "value": "week"},
+                {"label": "Monthly", "value": "month"},
+            ],
+            size="xs",
+        ),
+        dmc.Select(
+            id=f"backup-jobs-{sid}-groupby",
+            value="status",
+            data=[
+                {"label": "Status", "value": "status"},
+                {"label": "Job Type", "value": "job_type"},
+                {"label": "Policy Type", "value": "policy_type"},
+            ],
+            size="xs",
+            allowDeselect=False,
+            style={"width": "150px"},
+        ),
+    ]
+    if vendor == "netbackup" and category:
+        opts = policy_type_options or []
+        controls.insert(
+            0,
+            dmc.MultiSelect(
+                id=f"backup-nb-policy-selector-{category}",
+                data=[{"label": p, "value": p} for p in opts],
+                value=list(opts),
+                clearable=True,
+                searchable=True,
+                nothingFoundMessage="No policy types",
+                placeholder="Policy types",
+                size="xs",
+                style={"minWidth": "220px"},
+            ),
+        )
+    controls.append(
+        dmc.Tooltip(
+            label="Cache'i yenile (canlı SQL)",
+            position="top",
+            withArrow=True,
+            children=dmc.ActionIcon(
+                id=f"backup-jobs-{sid}-refresh",
+                variant="light",
+                color="indigo",
+                size="lg",
+                children=DashIconify(icon="solar:refresh-bold-duotone", width=18),
+            ),
+        )
+    )
 
     return html.Div(
         style={"marginTop": "20px"},
@@ -142,64 +296,35 @@ def build_job_stats_section(vendor: str) -> html.Div:
                                 style={"margin": 0, "fontSize": "0.95rem", "color": "#2B3674"},
                             ),
                             html.Div(
-                                style={"display": "flex", "alignItems": "center", "gap": "8px", "marginTop": "2px"},
+                                style={
+                                    "display": "flex",
+                                    "alignItems": "center",
+                                    "gap": "8px",
+                                    "marginTop": "2px",
+                                },
                                 children=[
                                     html.P(
                                         "Backup için ekstra zaman aralığı kullanılır.",
                                         style={"margin": 0, "fontSize": "0.75rem", "color": "#A3AED0"},
                                     ),
                                     html.Span(
-                                        id=f"backup-jobs-{vendor}-asof",
-                                        style={"fontSize": "0.72rem", "color": "#A3AED0", "fontStyle": "italic"},
+                                        id=f"backup-jobs-{sid}-asof",
+                                        style={
+                                            "fontSize": "0.72rem",
+                                            "color": "#A3AED0",
+                                            "fontStyle": "italic",
+                                        },
                                         children="",
                                     ),
                                 ],
                             ),
                         ]
                     ),
-                    dmc.Group(
-                        gap="md",
-                        children=[
-                            dmc.SegmentedControl(
-                                id=f"backup-jobs-{vendor}-granularity",
-                                value="day",
-                                data=[
-                                    {"label": "Daily", "value": "day"},
-                                    {"label": "Weekly", "value": "week"},
-                                    {"label": "Monthly", "value": "month"},
-                                ],
-                                size="xs",
-                            ),
-                            dmc.Select(
-                                id=f"backup-jobs-{vendor}-groupby",
-                                value="status",
-                                data=[
-                                    {"label": "Status", "value": "status"},
-                                    {"label": "Job Type", "value": "job_type"},
-                                    {"label": "Policy Type", "value": "policy_type"},
-                                ],
-                                size="xs",
-                                allowDeselect=False,
-                                style={"width": "150px"},
-                            ),
-                            dmc.Tooltip(
-                                label="Cache'i yenile (canlı SQL)",
-                                position="top",
-                                withArrow=True,
-                                children=dmc.ActionIcon(
-                                    id=f"backup-jobs-{vendor}-refresh",
-                                    variant="light",
-                                    color="indigo",
-                                    size="lg",
-                                    children=DashIconify(icon="solar:refresh-bold-duotone", width=18),
-                                ),
-                            ),
-                        ],
-                    ),
+                    dmc.Group(gap="md", children=controls),
                 ],
             ),
             dcc.Loading(
-                id=f"backup-jobs-{vendor}-loading",
+                id=f"backup-jobs-{sid}-loading",
                 type="circle",
                 color="#4318FF",
                 delay_show=200,
@@ -210,7 +335,7 @@ def build_job_stats_section(vendor: str) -> html.Div:
                 },
                 children=[
                     html.Div(
-                        id=f"backup-jobs-{vendor}-kpis",
+                        id=f"backup-jobs-{sid}-kpis",
                         style={
                             "display": "grid",
                             "gridTemplateColumns": "repeat(4, 1fr)",
@@ -223,7 +348,7 @@ def build_job_stats_section(vendor: str) -> html.Div:
                         className="nexus-card",
                         style={"padding": "12px"},
                         children=dcc.Graph(
-                            id=f"backup-jobs-{vendor}-chart",
+                            id=f"backup-jobs-{sid}-chart",
                             figure=_empty_figure(),
                             config={"displayModeBar": False},
                         ),
@@ -234,18 +359,8 @@ def build_job_stats_section(vendor: str) -> html.Div:
     )
 
 
-# ---------------------------------------------------------------------------
-# Aggregation helpers (pure, testable)
-# ---------------------------------------------------------------------------
-
-
 def aggregate_series_by(series: list[dict], group_by: str) -> dict[str, dict[str, int]]:
-    """
-    Series → {period: {group_value: count}} matrix.
-
-    group_by ∈ {'status', 'job_type', 'policy_type'}. Missing/None values
-    bucket under 'Unknown'.
-    """
+    """Series → {period: {group_value: count}} matrix."""
     out: dict[str, dict[str, int]] = {}
     for point in series or []:
         period = str(point.get("period") or "")
@@ -269,7 +384,6 @@ def build_figure(payload: dict, group_by: str) -> go.Figure:
     if not periods:
         return _empty_figure("Bu zaman aralığında veri yok")
 
-    # Collect unique group values across all periods, in display order
     group_values: list[str] = []
     seen: set[str] = set()
     for p in periods:
@@ -278,7 +392,6 @@ def build_figure(payload: dict, group_by: str) -> go.Figure:
                 seen.add(g)
                 group_values.append(g)
 
-    # Sort for status to keep success first; otherwise alphabetic
     if group_by == "status":
         order = ["success", "warning", "failed", "running", "other"]
         group_values.sort(key=lambda g: order.index(g) if g in order else len(order))
@@ -329,29 +442,18 @@ def _extract_dc_id(pathname: str | None) -> str | None:
     p = pathname.rstrip("/")
     for prefix in ("/datacenter/", "/dc-detail/"):
         if p.startswith(prefix):
-            tail = p[len(prefix):].strip("/")
+            tail = p[len(prefix) :].strip("/")
             return tail or None
     return None
 
 
-# ---------------------------------------------------------------------------
-# Callbacks
-# ---------------------------------------------------------------------------
-
-
-def _register_callbacks() -> None:
-    for vendor in VENDORS:
-        _make_callback(vendor)
-
-
 def format_as_of(as_of: str | None) -> str:
-    """ISO timestamp → 'Son güncelleme: HH:MM' (yerel saat formatı). Boşsa '' döner."""
+    """ISO timestamp → 'Son güncelleme: HH:MM'. Empty string when missing."""
     if not as_of:
         return ""
     s = str(as_of).strip()
     if not s:
         return ""
-    # Normalize Zulu suffix for fromisoformat compatibility.
     s_norm = s.replace("Z", "+00:00")
     try:
         from datetime import datetime
@@ -363,12 +465,6 @@ def format_as_of(as_of: str | None) -> str:
 
 
 def should_skip_fetch(active_main_tab: str | None, dc_id: str | None) -> bool:
-    """
-    Lazy-fetch koşulu: Backup & Replication main tab aktif değilse callback'i
-    no-op yap. dc_id None ise (DC sayfasında değiliz) da skip et.
-
-    Saf fonksiyon — test edilebilir.
-    """
     if not dc_id:
         return True
     if (active_main_tab or "") != "backup":
@@ -376,47 +472,51 @@ def should_skip_fetch(active_main_tab: str | None, dc_id: str | None) -> bool:
     return False
 
 
-def _make_callback(vendor: str) -> None:
+def _make_callback(vendor: str, category: str | None = None) -> None:
     wrapper = _api_wrapper(vendor)
+    sid = _section_id(vendor, category)
+
+    outputs = [
+        Output(f"backup-jobs-{sid}-chart", "figure"),
+        Output(f"backup-jobs-{sid}-kpis", "children"),
+        Output(f"backup-jobs-{sid}-asof", "children"),
+    ]
+    inputs = [
+        Input("backup-time-range", "data"),
+        Input(f"backup-jobs-{sid}-granularity", "value"),
+        Input(f"backup-jobs-{sid}-groupby", "value"),
+        Input(f"backup-jobs-{sid}-refresh", "n_clicks"),
+        Input("dc-main-tabs", "value"),
+    ]
+    if vendor == "netbackup" and category:
+        inputs.append(Input(f"backup-nb-policy-selector-{category}", "value"))
+    states = [State("url", "pathname")]
 
     @callback(
-        Output(f"backup-jobs-{vendor}-chart", "figure"),
-        Output(f"backup-jobs-{vendor}-kpis", "children"),
-        Output(f"backup-jobs-{vendor}-asof", "children"),
-        Input("backup-time-range", "data"),
-        Input(f"backup-jobs-{vendor}-granularity", "value"),
-        Input(f"backup-jobs-{vendor}-groupby", "value"),
-        Input(f"backup-jobs-{vendor}-refresh", "n_clicks"),
-        Input("dc-main-tabs", "value"),
-        State("url", "pathname"),
+        *outputs,
+        *inputs,
+        *states,
         prevent_initial_call=False,
     )
-    def _update(
-        tr: dict | None,
-        granularity: str | None,
-        group_by: str | None,
-        refresh_n: int | None,
-        active_main_tab: str | None,
-        pathname: str | None,
-    ):
-        dc_id = _extract_dc_id(pathname)
+    def _update(*args, _vendor=vendor, _category=category, _sid=sid):
+        if _vendor == "netbackup" and _category:
+            tr, granularity, group_by, refresh_n, active_main_tab, selected_policies, pathname = args
+        else:
+            tr, granularity, group_by, refresh_n, active_main_tab, pathname = args
+            selected_policies = None
 
-        # Lazy fetch: Backup tab aktif değilse hiçbir şey yapma (no_update).
-        # Bu sayede DC sayfası açıldığında veya başka tab'da dolaşırken
-        # arka planda Veeam/Zerto/NetBackup endpoint'leri çağrılmaz.
+        dc_id = _extract_dc_id(pathname)
         if should_skip_fetch(active_main_tab, dc_id):
             return dash.no_update, dash.no_update, dash.no_update
 
-        # If the refresh button triggered this callback, drop cache first so
-        # the wrapper goes through HTTP and the backend recomputes via live SQL.
         ctx = dash.callback_context
         if ctx.triggered:
             trig_id = ctx.triggered[0]["prop_id"].split(".")[0]
-            if trig_id == f"backup-jobs-{vendor}-refresh" and refresh_n:
+            if trig_id == f"backup-jobs-{_sid}-refresh" and refresh_n:
                 try:
-                    api.refresh_dc_backup_jobs_cache(dc_id, vendor=vendor)
+                    api.refresh_dc_backup_jobs_cache(dc_id, vendor=_vendor)
                 except Exception:
-                    pass  # refresh fails → continue with current cache
+                    pass
 
         gran = granularity or "day"
         gb = group_by or "status"
@@ -426,8 +526,25 @@ def _make_callback(vendor: str) -> None:
             return _empty_figure("Veri alınamadı"), _empty_kpis(), ""
         if not isinstance(payload, dict):
             return _empty_figure("Beklenmeyen yanıt"), _empty_kpis(), ""
+
+        filtered = apply_job_filters(
+            payload,
+            category=_category,
+            policy_types=selected_policies if isinstance(selected_policies, list) else None,
+        )
         as_of_label = format_as_of(payload.get("as_of"))
-        return build_figure(payload, gb), build_kpis(payload), as_of_label
+        return build_figure(filtered, gb), build_kpis(filtered), as_of_label
+
+
+def _register_callbacks() -> None:
+    for vendor in VENDORS:
+        if vendor == "netbackup":
+            # Category-scoped panels only (image + application). Unscoped
+            # NetBackup job-stats IDs are no longer rendered in DC view.
+            for cat in NETBACKUP_CATEGORIES:
+                _make_callback(vendor, category=cat)
+        else:
+            _make_callback(vendor, category=None)
 
 
 _register_callbacks()

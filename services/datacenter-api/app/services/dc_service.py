@@ -34,6 +34,7 @@ from app.utils.time_range import (
     BACKUP_JOBS_WARM_GRANULARITIES,
 )
 from app.utils.format_units import smart_cpu, smart_memory, smart_storage
+from shared.backup.policy_classification import classify_netbackup_policy
 from shared.display.static_energy import apply_static_aggregate_energy, resolve_static_total_energy_kw
 from shared.customer.cache_keys import customer_assets_cache_key
 from shared.network.backbone_billing import estimate_backbone_cost_tl, p95_bps_to_mbit
@@ -3826,6 +3827,165 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         cache.set(cache_key, result)
         return result
 
+    @staticmethod
+    def _parse_zerto_sites_usage(raw) -> list[dict]:
+        """Normalize sites_usage JSON (list or JSON string) into dict rows."""
+        import json
+
+        if raw is None:
+            return []
+        data = raw
+        if isinstance(raw, str):
+            try:
+                data = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return []
+        if not isinstance(data, list):
+            return []
+        out: list[dict] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            site_name = item.get("SiteName") or item.get("site_name") or item.get("name")
+            if not site_name:
+                continue
+            protected = item.get("ProtectedVmsCount")
+            if protected is None:
+                protected = item.get("protected_vms_count", 0)
+            try:
+                protected_int = int(protected or 0)
+            except (TypeError, ValueError):
+                protected_int = 0
+            out.append(
+                {
+                    "site_name": str(site_name),
+                    "site_identifier": item.get("SiteIdentifier") or item.get("site_identifier"),
+                    "protected_vms_count": protected_int,
+                }
+            )
+        return out
+
+    def _fetch_dc_zerto_license(self, dc_code: str) -> dict:
+        """Fetch latest Zerto license rows and filter sites belonging to this DC."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                raw_rows = self._run_rows(cur, bq.ZERTO_LICENSE_LATEST)
+
+        dc_set = {dc.upper() for dc in self.dc_list}
+        dc_upper = str(dc_code or "").upper()
+        licenses_out: list[dict] = []
+        sites_for_dc: list[dict] = []
+        matched_hosts: set[str] = set()
+
+        for r in raw_rows or []:
+            (
+                ts,
+                host,
+                lic_id,
+                name,
+                expirationdate,
+                license_key,
+                license_type,
+                is_valid,
+                max_vms,
+                total_vms_count,
+                sites_usage,
+                days_until_expiry,
+            ) = r
+            sites = self._parse_zerto_sites_usage(sites_usage)
+            dc_sites = []
+            for site in sites:
+                site_dc = self._extract_dc_from_text(site.get("site_name"), dc_set)
+                if site_dc and site_dc.upper() == dc_upper:
+                    dc_sites.append(site)
+            # Also match when zerto_host / name itself encodes the DC
+            host_dc = self._extract_dc_from_text(host, dc_set) or self._extract_dc_from_text(
+                name, dc_set
+            )
+            if not dc_sites and not (host_dc and host_dc.upper() == dc_upper):
+                continue
+            matched_hosts.add(str(host or ""))
+            sites_for_dc.extend(dc_sites)
+            licenses_out.append(
+                {
+                    "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else ts,
+                    "zerto_host": host,
+                    "id": lic_id,
+                    "name": name,
+                    "expirationdate": expirationdate,
+                    "license_key": license_key,
+                    "license_type": license_type,
+                    "is_valid": bool(is_valid) if is_valid is not None else None,
+                    "max_vms": int(max_vms) if max_vms is not None else None,
+                    "total_vms_count": int(total_vms_count) if total_vms_count is not None else None,
+                    "days_until_expiry": int(days_until_expiry)
+                    if days_until_expiry is not None
+                    else None,
+                    "sites": dc_sites,
+                }
+            )
+
+        # Deduplicate sites by site_name (prefer highest protected count)
+        site_map: dict[str, dict] = {}
+        for s in sites_for_dc:
+            key = s["site_name"]
+            prev = site_map.get(key)
+            if prev is None or int(s.get("protected_vms_count") or 0) >= int(
+                prev.get("protected_vms_count") or 0
+            ):
+                site_map[key] = s
+        sites_unique = sorted(site_map.values(), key=lambda x: x["site_name"])
+        protected_total = sum(int(s.get("protected_vms_count") or 0) for s in sites_unique)
+
+        # Prefer the first matched license row for summary KPIs
+        primary = licenses_out[0] if licenses_out else None
+        return {
+            "has_license": bool(licenses_out),
+            "licenses": licenses_out,
+            "sites": sites_unique,
+            "summary": {
+                "license_type": primary.get("license_type") if primary else None,
+                "is_valid": primary.get("is_valid") if primary else None,
+                "max_vms": primary.get("max_vms") if primary else None,
+                "total_vms_count": primary.get("total_vms_count") if primary else None,
+                "days_until_expiry": primary.get("days_until_expiry") if primary else None,
+                "expirationdate": primary.get("expirationdate") if primary else None,
+                "protected_vms_in_dc": protected_total,
+                "zerto_hosts": sorted(h for h in matched_hosts if h),
+            },
+        }
+
+    def get_dc_zerto_license(self, dc_code: str) -> dict:
+        """Return cached Zerto license + site usage for a DC."""
+        cache_key = f"dc_zerto_license:{dc_code}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        empty = {
+            "has_license": False,
+            "licenses": [],
+            "sites": [],
+            "summary": {
+                "license_type": None,
+                "is_valid": None,
+                "max_vms": None,
+                "total_vms_count": None,
+                "days_until_expiry": None,
+                "expirationdate": None,
+                "protected_vms_in_dc": 0,
+                "zerto_hosts": [],
+            },
+        }
+        try:
+            result = self._fetch_dc_zerto_license(dc_code)
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_dc_zerto_license failed for %s: %s", dc_code, exc)
+            return empty
+
+        cache.set(cache_key, result)
+        return result
+
     def get_dc_veeam_repos(self, dc_code: str, time_range: dict | None = None) -> dict:
         """Return cached Veeam repository states for a DC and time range."""
         tr = time_range or default_time_range()
@@ -4120,22 +4280,51 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
 
     @staticmethod
     def _empty_job_stats(vendor: str, granularity: str, time_range: dict) -> dict:
-        return {
+        empty_totals = {
+            "total": 0,
+            "success": 0,
+            "failed": 0,
+            "warning": 0,
+            "other": 0,
+            "success_rate": 0.0,
+            "avg_per_period": 0.0,
+            "period_count": 0,
+        }
+        payload = {
             "vendor": vendor,
             "granularity": granularity,
             "range": {"start": str(time_range.get("start", "")), "end": str(time_range.get("end", ""))},
             "series": [],
-            "totals": {
-                "total": 0,
-                "success": 0,
-                "failed": 0,
-                "warning": 0,
-                "other": 0,
-                "success_rate": 0.0,
-                "avg_per_period": 0.0,
-                "period_count": 0,
-            },
+            "totals": dict(empty_totals),
             "as_of": DatabaseService._utc_now_iso(),
+        }
+        if vendor == "netbackup":
+            payload["totals_by_category"] = {
+                "image": dict(empty_totals),
+                "application": dict(empty_totals),
+            }
+            payload["policy_types"] = {"image": [], "application": []}
+        return payload
+
+    @staticmethod
+    def _totals_from_series(series: list[dict]) -> dict:
+        total = sum(int(p.get("count", 0)) for p in series)
+        success = sum(int(p["count"]) for p in series if p.get("status") == "success")
+        failed = sum(int(p["count"]) for p in series if p.get("status") == "failed")
+        warning = sum(int(p["count"]) for p in series if p.get("status") == "warning")
+        other = max(total - success - failed - warning, 0)
+        success_rate = (success / total * 100.0) if total else 0.0
+        period_count = len({p.get("period") for p in series if p.get("period")})
+        avg_per_period = (total / period_count) if period_count else 0.0
+        return {
+            "total": total,
+            "success": success,
+            "failed": failed,
+            "warning": warning,
+            "other": other,
+            "success_rate": round(success_rate, 2),
+            "avg_per_period": round(avg_per_period, 2),
+            "period_count": period_count,
         }
 
     @staticmethod
@@ -4147,31 +4336,38 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         as_of: str | None = None,
     ) -> dict:
         """Compute totals + success rate + avg per period over an already-collapsed series."""
-        total = sum(int(p.get("count", 0)) for p in series)
-        success = sum(int(p["count"]) for p in series if p.get("status") == "success")
-        failed = sum(int(p["count"]) for p in series if p.get("status") == "failed")
-        warning = sum(int(p["count"]) for p in series if p.get("status") == "warning")
-        other = max(total - success - failed - warning, 0)
-        success_rate = (success / total * 100.0) if total else 0.0
-        period_count = len({p.get("period") for p in series if p.get("period")})
-        avg_per_period = (total / period_count) if period_count else 0.0
-        return {
+        totals = DatabaseService._totals_from_series(series)
+        payload = {
             "vendor": vendor,
             "granularity": granularity,
             "range": {"start": str(time_range.get("start", "")), "end": str(time_range.get("end", ""))},
             "series": series,
-            "totals": {
-                "total": total,
-                "success": success,
-                "failed": failed,
-                "warning": warning,
-                "other": other,
-                "success_rate": round(success_rate, 2),
-                "avg_per_period": round(avg_per_period, 2),
-                "period_count": period_count,
-            },
+            "totals": totals,
             "as_of": as_of or DatabaseService._utc_now_iso(),
         }
+        if vendor == "netbackup":
+            image_series = [p for p in series if p.get("category") == "image"]
+            app_series = [p for p in series if p.get("category") == "application"]
+            payload["totals_by_category"] = {
+                "image": DatabaseService._totals_from_series(image_series),
+                "application": DatabaseService._totals_from_series(app_series),
+            }
+            image_pts = sorted(
+                {
+                    str(p.get("policy_type"))
+                    for p in image_series
+                    if p.get("policy_type")
+                }
+            )
+            app_pts = sorted(
+                {
+                    str(p.get("policy_type"))
+                    for p in app_series
+                    if p.get("policy_type")
+                }
+            )
+            payload["policy_types"] = {"image": image_pts, "application": app_pts}
+        return payload
 
     # ---- Veeam jobs --------------------------------------------------------
 
@@ -4402,7 +4598,14 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             collapsed = per_dc_collapsed.get(dc_upper, {})
             if collapsed:
                 series = [
-                    {"period": p, "status": s, "job_type": jt, "policy_type": pt, "count": c}
+                    {
+                        "period": p,
+                        "status": s,
+                        "job_type": jt,
+                        "policy_type": pt,
+                        "category": classify_netbackup_policy(pt),
+                        "count": c,
+                    }
                     for (p, s, jt, pt), c in sorted(collapsed.items())
                 ]
                 payload = self._finalize_job_stats(series, "netbackup", gran, tr)

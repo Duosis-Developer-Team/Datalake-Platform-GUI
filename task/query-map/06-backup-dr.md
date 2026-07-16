@@ -5,10 +5,22 @@
 > Ortak desenler ("latest snapshot", DC eşleştirme, cache katmanları) için bkz.
 > [README](README.md).
 
+## GUI bilgi mimarisi (2026-07 — politika-bazlı)
+
+DC ve Customer **Backup & Replication** sekmeleri vendor bazlı değil, kategori bazlıdır:
+
+| Kategori | Kaynak | Not |
+|----------|--------|-----|
+| **Image Backup** | NetBackup `policytype=VMWARE` (KM) + Nutanix snapshot (HC, branch'e göre) | Panel içi MultiSelect ile policytype filtresi |
+| **Application Backup** | NetBackup diğer policytype'lar (SAP, SQL_SERVER, …) | Panel içi MultiSelect |
+| **Replication** | Veeam + Zerto | Lisans: Zerto → `raw_zerto_license_metrics`; Veeam → CRM sold |
+
+`policytype → image|application` eşlemesi config-driven: `shared/backup/policy_panel_mapping.yaml` + `shared/backup/policy_classification.py` (ileride settings UI ile düzenlenebilir).
+
 İçerdiği ürünler:
 - **NetBackup** — disk havuzları + job istatistikleri (`raw_netbackup_*`).
 - **Veeam** — repository state'leri + session (job) istatistikleri (`raw_veeam_*`).
-- **Zerto** — site metrikleri + VPG (Virtual Protection Group) job/DR istatistikleri (`raw_zerto_*`).
+- **Zerto** — site metrikleri + VPG (Virtual Protection Group) job/DR istatistikleri (`raw_zerto_*`) + lisans (`raw_zerto_license_metrics`).
 - **S3 iCOS** (IBM Cloud Object Storage) — pool ve vault kapasite metrikleri (`raw_s3icos_*`).
 
 Kaynak dosyalar:
