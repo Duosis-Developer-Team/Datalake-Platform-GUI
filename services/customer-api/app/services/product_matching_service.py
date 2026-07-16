@@ -82,7 +82,7 @@ class ProductMatchingService:
 
     def _load_sold_by_productnumber(self) -> list[dict[str, Any]]:
         try:
-            return list(self._db._run_query(sq.SALES_SOLD_BY_PRODUCTNUMBER_GLOBAL) or [])
+            return list(self._db._run_query(sq.SALES_SOLD_BY_PRODUCTNUMBER_GLOBAL, ()) or [])
         except Exception:
             logger.exception("SALES_SOLD_BY_PRODUCTNUMBER_GLOBAL failed")
             return []
