@@ -730,6 +730,24 @@ def get_customer_resources(name: str, tr: Optional[dict]) -> dict:
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_CUSTOMER)
 
 
+_EMPTY_UNMAPPED = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0}
+
+
+def get_unmapped_resources(tr: Optional[dict]) -> dict:
+    """Resources (Phase 1: VMs) belonging to no customer — Eşleşmeyen Veriler."""
+    ck = f"api:unmapped_resources:{_serialize_tr_cache_key(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(
+            _get_client_cust(),
+            "/api/v1/customers/unmapped/resources",
+            params=_build_time_params(tr),
+        )
+        return data if isinstance(data, dict) else _clone(_EMPTY_UNMAPPED)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_UNMAPPED)
+
+
 def execute_registered_query(key: str, params: str) -> dict:
     enc_key = quote(key, safe="")
     ck = f"api:query:{enc_key}:{json.dumps(params or '', ensure_ascii=False)}"

@@ -110,6 +110,7 @@ def _prevent_stale_dash_cache(response):
 _log = logging.getLogger(__name__)
 _log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
 from src.pages import home, datacenters, dc_view, customer_view, customers_list, query_explorer, global_view, region_drilldown, dc_detail
+from src.pages import unmapped_resources
 from src.pages import customer_view_callbacks  # noqa: F401 — async customer view load
 from src.pages import dc_view_callbacks  # noqa: F401 — async DC view load + tab expand
 from src.pages import availability_annual  # noqa: F401 — annual availability layout + callbacks
@@ -816,6 +817,8 @@ def render_main_content(pathname, time_range, search):
         return availability_annual.build_availability_annual_layout(visible_sections=vis)
     if pathname == "/customers":
         return customers_list.build_customers_list_shell(visible_sections=vis)
+    if pathname == "/unmapped-resources":
+        return unmapped_resources.build_layout(tr, visible_sections=vis)
     if pathname == "/customer-view":
         # Two-phase: shell instant; `_fill_customer_view_content` reads the ?customer= param.
         return customer_view.build_customer_layout_shell(visible_sections=vis)

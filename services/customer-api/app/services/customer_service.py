@@ -456,6 +456,65 @@ class CustomerService:
             return stale
         return None
 
+    def get_unmapped_resources(self, time_range: dict | None = None) -> dict:
+        """Resources claimed by NO customer — the reverse of per-customer queries.
+
+        Phase 1: VMs. Cached + single-flighted; the classification is Python-side
+        (no leading-wildcard scan). Failure returns the empty payload, never 5xx —
+        an orphan report must never break the customers page.
+        """
+        empty = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0}
+        if self._pool is None:
+            return empty
+        tr = time_range or default_time_range()
+        if tr.get("anchor_latest"):
+            tr = self._smart_1h_tr(tr)
+        start, end = time_range_to_bounds(tr)
+        cache_key = f"unmapped_resources:{start.isoformat()}:{end.isoformat()}"
+        try:
+            return cache.run_singleflight(
+                cache_key,
+                lambda: self._load_unmapped_resources(start, end),
+                ttl=CUSTOMER_DATA_CACHE_TTL_WARM,
+            )
+        except (QueryTimeoutError, OperationalError, PoolError, InterfaceError) as exc:
+            logger.warning("get_unmapped_resources failed key=%s: %s", cache_key, exc)
+            stale = cache.get_stale(cache_key)
+            return stale if stale is not None else empty
+
+    def _load_unmapped_resources(self, start, end) -> dict:
+        from app.db.queries import unmapped as uq
+        from shared.customer.unmapped_classifier import (
+            account_keys_from_names,
+            build_unmapped_payload,
+            owner_matchers_from_mappings,
+        )
+
+        names_with_platform: list[tuple[str, str]] = []
+        for sql, platform in (
+            (uq.UNMAPPED_VMWARE_NAMES, "vmware"),
+            (uq.UNMAPPED_NUTANIX_NAMES, "nutanix"),
+        ):
+            for row in self._run_query(sql, (start, end)):
+                name = str(row.get("name") or "").strip()
+                if name:
+                    names_with_platform.append((name, platform))
+
+        account_names = [
+            str(r.get("name") or "").strip()
+            for r in self._run_query(uq.CRM_ACCOUNT_NAMES, ())
+            if r.get("name")
+        ]
+        account_keys = account_keys_from_names(account_names)
+
+        # Ownership = every VM mapping rule (flattened from the per-account index)
+        # unioned with each customer's display-name fallback (safe over-claim).
+        mapping_index = self._load_source_mapping_index()
+        mapping_rows = [row for rows in mapping_index.values() for row in rows]
+        owners = owner_matchers_from_mappings(mapping_rows, display_names=account_names)
+
+        return build_unmapped_payload(names_with_platform, owners, account_keys)
+
     def _load_customer_names_from_db(self) -> list[str]:
         """Distinct tenant names from NetBox inventory (active devices)."""
         if self._pool is None:

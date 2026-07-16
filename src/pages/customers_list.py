@@ -274,6 +274,32 @@ def _overview_strip(overview: dict):
     )
 
 
+def _unmapped_banner():
+    """Entry card to the synthetic 'Eşleşmeyen Veriler' resource bucket."""
+    return dcc.Link(
+        href="/unmapped-resources",
+        style={"textDecoration": "none", "color": "inherit", "display": "block"},
+        children=dmc.Paper(
+            className="nexus-card customer-list-card--clickable",
+            withBorder=True, radius="md", p="md",
+            children=dmc.Group(justify="space-between", align="center", children=[
+                dmc.Group(gap="sm", children=[
+                    dmc.ThemeIcon(
+                        DashIconify(icon="solar:link-broken-bold-duotone", width=24),
+                        size=44, radius="md", variant="light", color="gray",
+                    ),
+                    dmc.Stack(gap=0, children=[
+                        dmc.Text("Eşleşmeyen Veriler", fw=700, size="sm", c="#2B3674"),
+                        dmc.Text("Hiçbir müşteriye eşleşmeyen kaynakları görüntüle.",
+                                 size="xs", c="#A3AED0"),
+                    ]),
+                ]),
+                DashIconify(icon="tabler:chevron-right", width=20, color="#A3AED0"),
+            ]),
+        ),
+    )
+
+
 def _render_section_cards(
     rows: list[dict],
     *,
@@ -558,6 +584,7 @@ def build_customers_list(time_range=None, visible_sections=None):
                                 html.Div(id="customer-vip-alert"),
                                 *load_alerts,
                                 html.Div(id="customer-overview-strip", children=_overview_strip(overview)),
+                                _unmapped_banner(),
                                 dmc.SimpleGrid(
                                     cols={"base": 1, "lg": 2},
                                     spacing="md",

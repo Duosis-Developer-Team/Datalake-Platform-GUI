@@ -51,6 +51,17 @@ def set_customer_vip(
     )
 
 
+# NOTE: must be declared BEFORE the /{customer_name}/resources route below,
+# otherwise "unmapped" is captured as a customer_name path param.
+@router.get("/customers/unmapped/resources", response_model=dict[str, Any])
+def unmapped_resources(
+    tf: TimeFilter = Depends(),
+    db: CustomerService = Depends(get_db),
+):
+    """Resources (Phase 1: VMs) that match no customer — the Eşleşmeyen Veriler bucket."""
+    return db.get_unmapped_resources(tf.to_dict())
+
+
 @router.get("/customers/{customer_name}/resources", response_model=CustomerResources)
 def customer_resources(
     customer_name: str,

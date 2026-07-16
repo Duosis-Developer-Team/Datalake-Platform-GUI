@@ -33,6 +33,13 @@ MATCH_METHODS: tuple[str, ...] = (
 INTERNAL_ACCOUNT_ID: str = "INTERNAL"
 INTERNAL_ACCOUNT_NAME: str = "Bulutistan (Internal)"
 
+# Reserved pseudo-account for resources that match NO customer at all. Unlike
+# INTERNAL, this account has no mapping rules — its contents are computed as the
+# complement (see UnmappedService): every infra resource claimed by no customer.
+# Surfaces the "orphan resource" blind spot the name-ILIKE ownership model hides.
+UNMAPPED_ACCOUNT_ID: str = "UNMAPPED"
+UNMAPPED_ACCOUNT_NAME: str = "Eşleşmeyen Veriler"
+
 # UI column -> backend data_source keys
 UI_COLUMN_SOURCES: dict[str, tuple[str, ...]] = {
     "virtualization": ("virtualization", "netbox_vm_customer"),
