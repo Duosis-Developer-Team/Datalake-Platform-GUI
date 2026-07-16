@@ -40,6 +40,13 @@ from app.services.customer_mapping_resolver import (
 from app.utils.cluster_match import build_cluster_arch_map
 from app.utils.time_range import cache_time_ranges, default_time_range, time_range_to_bounds
 from shared.customer.cache_keys import customer_assets_cache_key
+from shared.backup.policy_classification import classify_netbackup_policy
+from shared.backup.unique_jobs import (
+    aggregate_unique_jobs,
+    filter_unique_job_rows,
+    normalize_unique_job_rows,
+    paginate_rows as paginate_unique_job_rows,
+)
 from app.utils.usage_comparison import (
     build_lightweight_compliance_from_bundle,
     catalog_product_names_for_compliance,
@@ -881,6 +888,23 @@ class CustomerService:
                     preset,
                     exc,
                 )
+        # Unique-jobs inventory: default time range only (Backup & Replication
+        # table view doesn't need every cache_time_ranges() preset warmed).
+        for vendor in self._UNIQUE_JOBS_VENDORS:
+            try:
+                self.get_customer_unique_jobs(customer_name, vendor)
+                summary["ok"] += 1
+            except Exception as exc:
+                summary["failed"] += 1
+                summary["errors"].append(
+                    {"preset": "default", "target": f"unique_jobs_{vendor}", "error": str(exc)}
+                )
+                logger.warning(
+                    "Customer unique-jobs cache rebuild failed for customer=%s vendor=%s: %s",
+                    customer_name,
+                    vendor,
+                    exc,
+                )
         return summary
 
     def _batch_warm_already_running(self) -> bool:
@@ -1390,6 +1414,292 @@ class CustomerService:
                 exc,
             )
             return {"vaults": [], "latest": {}, "growth": {}, "trend": []}
+
+    # ------------------------------------------------------------------
+    # Unique-job inventory (Backup & Replication → per-vendor table view,
+    # customer-scoped). Mirrors datacenter-api's DatabaseService.get_dc_unique_jobs*
+    # (same row shape / aggregation via shared.backup.unique_jobs) but resolves
+    # the customer's own ILIKE patterns instead of DC attribution.
+    # ------------------------------------------------------------------
+
+    _UNIQUE_JOBS_VENDORS = ("veeam", "zerto", "netbackup")
+    _UNIQUE_JOBS_PATTERN_SOURCE = {
+        "veeam": "backup_veeam",
+        "zerto": "backup_zerto",
+        "netbackup": "backup_netbackup",
+    }
+    _UNIQUE_JOBS_FRESH_TTL = 2100
+    _UNIQUE_JOBS_STALE_TTL = 86400
+
+    @staticmethod
+    def _utc_now_iso() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    @staticmethod
+    def _normalize_zerto_status(raw) -> str:
+        """Zerto VPG status enum: 1=MeetingSLA (success), 2/3=problematic, 0/5=in-progress, 4=removing.
+        Kept in sync with datacenter-api's DatabaseService._normalize_zerto_status."""
+        try:
+            code = int(raw)
+        except (TypeError, ValueError):
+            return "other"
+        if code == 1:
+            return "success"
+        if code in (2, 3):
+            return "failed"
+        if code in (0, 5):
+            return "running"
+        if code == 4:
+            return "warning"
+        return "other"
+
+    @staticmethod
+    def _normalize_netbackup_status(raw) -> str:
+        """NetBackup exit code: 0=success, 1=partial(warning), other=failed.
+        Kept in sync with datacenter-api's DatabaseService._normalize_netbackup_status."""
+        try:
+            code = int(raw)
+        except (TypeError, ValueError):
+            return "other"
+        if code == 0:
+            return "success"
+        if code == 1:
+            return "warning"
+        return "failed"
+
+    @staticmethod
+    def _map_veeam_unique_row(row: tuple) -> dict:
+        (
+            collection_time, id_, name, type_, status, last_result, last_run,
+            objects_count, session_id, workload, source_ip,
+        ) = row
+        return {
+            "collection_time": collection_time,
+            "id": id_,
+            "name": name,
+            "type": type_,
+            "status": status,
+            "last_result": last_result,
+            "last_run": last_run,
+            "objects_count": objects_count,
+            "session_id": session_id,
+            "workload": workload,
+            "source_ip": source_ip,
+        }
+
+    @classmethod
+    def _map_zerto_unique_row(cls, row: tuple) -> dict:
+        (
+            collection_timestamp, id_, name, status, vmscount, source_site,
+            target_site, provisioned_storage_mb, used_storage_mb, zerto_host,
+        ) = row
+        return {
+            "collection_timestamp": collection_timestamp,
+            "id": id_,
+            "name": name,
+            "status": cls._normalize_zerto_status(status),
+            "vmscount": vmscount,
+            "source_site": source_site,
+            "target_site": target_site,
+            "provisioned_storage_mb": provisioned_storage_mb,
+            "used_storage_mb": used_storage_mb,
+            "zerto_host": zerto_host,
+        }
+
+    @classmethod
+    def _map_netbackup_unique_row(cls, row: tuple) -> dict:
+        (
+            starttime, endtime, jobid, policyname, policytype, jobtype, status,
+            workloaddisplayname, clientname, destinationmediaservername,
+            kilobytestransferred, dedupratio, percentcomplete,
+        ) = row
+        return {
+            "starttime": starttime,
+            "endtime": endtime,
+            "jobid": jobid,
+            "policyname": policyname,
+            "policytype": policytype,
+            "jobtype": jobtype,
+            "status": cls._normalize_netbackup_status(status),
+            "workloaddisplayname": workloaddisplayname,
+            "clientname": clientname,
+            "destinationmediaservername": destinationmediaservername,
+            "kilobytestransferred": kilobytestransferred,
+            "dedupratio": dedupratio,
+            "percentcomplete": percentcomplete,
+            "category": classify_netbackup_policy(policytype),
+        }
+
+    def _map_unique_row(self, vendor: str, row: tuple) -> dict:
+        if vendor == "veeam":
+            return self._map_veeam_unique_row(row)
+        if vendor == "zerto":
+            return self._map_zerto_unique_row(row)
+        if vendor == "netbackup":
+            return self._map_netbackup_unique_row(row)
+        return {}
+
+    def _unique_jobs_patterns(self, customer_name: str, vendor: str) -> list[str]:
+        """Resolved ILIKE pattern(s) for a vendor's backup dataset (name/workload column)."""
+        source_key = self._UNIQUE_JOBS_PATTERN_SOURCE.get(vendor)
+        if not source_key:
+            return []
+        try:
+            source_patterns = self.resolve_source_patterns(customer_name)
+            patterns = source_patterns.ilike_patterns(source_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Unique-jobs pattern resolve failed for %s/%s: %s", customer_name, vendor, exc)
+            patterns = []
+        if patterns:
+            return list(patterns)
+        search_name = self.resolve_infra_search_name(customer_name)
+        fallback = (search_name or customer_name or "").strip()
+        return [f"%{fallback}%"] if fallback else ["%"]
+
+    def _fetch_customer_unique_jobs(self, customer_name: str, vendor: str, start_ts, end_ts) -> dict:
+        """Latest-per-identity rows for a customer (one vendor), pattern-filtered + normalized.
+
+        Mirrors CustomerAdapter's `_resolve_patterns` usage: Veeam/NetBackup use
+        only the first (highest-priority) resolved pattern, same as
+        `_customer.fetch()` does for `veeam_pattern` / `netbackup_workload_pattern`.
+        Zerto merges every resolved pattern (dedup by VPG id) since a customer's
+        VPGs can be named after more than one source naming convention.
+        """
+        sql_map = {
+            "veeam": cq.CUSTOMER_VEEAM_UNIQUE_JOBS_LATEST,
+            "zerto": cq.CUSTOMER_ZERTO_UNIQUE_VPGS_LATEST,
+            "netbackup": cq.CUSTOMER_NETBACKUP_UNIQUE_JOBS_LATEST,
+        }
+        sql = sql_map.get(vendor)
+        if sql is None:
+            return {"rows": [], "totals": aggregate_unique_jobs([], vendor), "as_of": "", "vendor": vendor}
+
+        patterns = self._unique_jobs_patterns(customer_name, vendor)
+        query_patterns = patterns if vendor == "zerto" else patterns[:1]
+
+        rows: list[dict] = []
+        seen_ids: set[str] = set()
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                for pattern in query_patterns:
+                    raw = self._run_rows(cur, sql, (pattern, start_ts, end_ts))
+                    for r in raw or []:
+                        mapped = self._map_unique_row(vendor, r)
+                        dedupe_key = str(mapped.get("id") or mapped.get("jobid") or "")
+                        if dedupe_key:
+                            if dedupe_key in seen_ids:
+                                continue
+                            seen_ids.add(dedupe_key)
+                        rows.append(mapped)
+
+        normalized = normalize_unique_job_rows(rows)
+        return {
+            "rows": normalized,
+            "totals": aggregate_unique_jobs(normalized, vendor),
+            "as_of": self._utc_now_iso(),
+            "vendor": vendor,
+        }
+
+    def _trigger_async_unique_jobs_refresh(self, cache_key: str, factory) -> None:
+        sf_key = f"_sf:{cache_key}"
+
+        def _bg() -> None:
+            try:
+                result = cache.run_singleflight(sf_key, factory, ttl=60)
+                cache.set_with_stale(
+                    cache_key, result,
+                    fresh_ttl=self._UNIQUE_JOBS_FRESH_TTL,
+                    stale_ttl=self._UNIQUE_JOBS_STALE_TTL,
+                )
+            except Exception as exc:  # noqa: BLE001 — background log only
+                logger.warning("Stale-revalidate unique_jobs (%s) failed: %s", cache_key, exc)
+
+        threading.Thread(target=_bg, daemon=True, name="cust-unique-jobs-refresh").start()
+
+    def get_customer_unique_jobs(self, customer_name: str, vendor: str, time_range: dict | None = None) -> dict:
+        """Cached base row set (rows + totals) for a customer/vendor. SWR + singleflight."""
+        vendor_key = (vendor or "").strip().lower()
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        cache_key = f"cust_{vendor_key}_unique_jobs:{customer_name}:{tr.get('start', '')}:{tr.get('end', '')}"
+
+        def factory():
+            try:
+                return self._fetch_customer_unique_jobs(customer_name, vendor_key, start_ts, end_ts)
+            except (OperationalError, PoolError, InterfaceError) as exc:
+                logger.warning(
+                    "get_customer_unique_jobs failed for %s/%s: %s", customer_name, vendor_key, exc,
+                )
+                return {
+                    "rows": [], "totals": aggregate_unique_jobs([], vendor_key), "as_of": "", "vendor": vendor_key,
+                }
+
+        cached_val, is_stale = cache.get_with_stale(cache_key)
+        if cached_val is not None:
+            if is_stale:
+                self._trigger_async_unique_jobs_refresh(cache_key, factory)
+            return cached_val
+
+        result = cache.run_singleflight(cache_key, factory)
+        cache.set_with_stale(
+            cache_key, result,
+            fresh_ttl=self._UNIQUE_JOBS_FRESH_TTL,
+            stale_ttl=self._UNIQUE_JOBS_STALE_TTL,
+        )
+        return result
+
+    def get_customer_unique_jobs_table(
+        self,
+        customer_name: str,
+        vendor: str,
+        time_range: dict | None = None,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        search: str = "",
+        statuses: list[str] | None = None,
+        types: list[str] | None = None,
+        policy_types: list[str] | None = None,
+        categories: list[str] | None = None,
+        platforms: list[str] | None = None,
+    ) -> dict:
+        """Paged/filtered view derived in-process from the cached base row set.
+
+        Filters never bust the cache key; totals are recomputed over the
+        filtered set so the customer-view KPI/status/type charts stay in sync
+        with whatever rows are currently shown in the table.
+        """
+        vendor_key = (vendor or "").strip().lower()
+        base = self.get_customer_unique_jobs(customer_name, vendor_key, time_range)
+        rows = base.get("rows", [])
+        filtered = filter_unique_job_rows(
+            rows,
+            search=search,
+            statuses=statuses,
+            types=types,
+            policy_types=policy_types,
+            categories=categories,
+            platforms=platforms,
+        )
+        result = paginate_unique_job_rows(filtered, page, page_size)
+        result["totals"] = aggregate_unique_jobs(filtered, vendor_key)
+        result["vendor"] = vendor_key
+        return result
+
+    def warm_customer_unique_jobs(self, customer_name: str) -> None:
+        """Warm the unique-jobs cache for one customer × all 3 vendors × default
+        time range. Called from `_rebuild_customer_caches_for_customer` so hot
+        (VIP/pinned) and warm (mapped non-VIP) tiers pick it up automatically;
+        also callable standalone from a scheduler hook if a dedicated cadence
+        is ever needed for this dataset."""
+        for vendor in self._UNIQUE_JOBS_VENDORS:
+            try:
+                self.get_customer_unique_jobs(customer_name, vendor)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "warm_customer_unique_jobs failed for customer=%s vendor=%s: %s",
+                    customer_name, vendor, exc,
+                )
 
     def _rebuild_customer_caches_for_warmed_customers(self) -> None:
         """Populate Redis/memory cache for VIP / cache-pinned customers (hot tier)."""

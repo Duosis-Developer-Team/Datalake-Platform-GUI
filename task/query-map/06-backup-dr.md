@@ -714,8 +714,11 @@ UI time range dict'i SQL bound'larına (UTC) çevrilir:
 
 | Katman | Anahtar | TTL | Not |
 |---|---|---|---|
-| **Snapshot cache** (NetBackup pool / Zerto site / Veeam repo) | `dc_netbackup:{dc}:{start}:{end}`, `dc_zerto:{dc}:{start}:{end}`, `dc_veeam:{dc}:{start}:{end}` | global `cache_ttl_seconds` | `get_dc_*` + `refresh_backup_cache` warm eder |
-| **Job-stats cache** (warm-window per-backup) | `dc_<vendor>_jobs:{dc}:{tr_start}:{tr_end}:{gran}` | `2100s` (35 dk override) | `set_with_stale` + stale-while-revalidate |
+| **Snapshot cache** (NetBackup pool / Zerto site / Veeam repo / Zerto license) | `dc_netbackup:…`, `dc_zerto:…`, `dc_veeam:…`, `dc_zerto_license:{dc}` | SWR fresh **2100s** + stale 24h | `get_with_stale` / `set_with_stale` + singleflight; `refresh_backup_cache` warms capacity + license + Nutanix |
+| **Nutanix snapshots** | `dc_nutanix_snap:{dc}:{start}:{end}` | SWR fresh **2100s** + stale 24h + async revalidate | API warm in `refresh_backup_cache`; GUI warm still present |
+| **Job-stats cache** (warm-window per-backup) | `dc_<vendor>_jobs:{dc}:{tr_start}:{tr_end}:{gran}` | `2100s` (35 dk override) | `set_with_stale` + stale-while-revalidate; optional `status`/`job_type`/`policy_type`/`category` filters applied **after** cache read |
+| **Unique-job inventory** | `dc_{vendor}_unique_jobs:{dc}:{start}:{end}` / `cust_{vendor}_unique_jobs:{customer}:{start}:{end}` | SWR fresh **2100s** + stale 24h | Base set cached; `/unique-jobs/table` filters in-process and returns filtered `totals` for KPI/chart binding |
+
 | **Singleflight** | `_sf:<vendor>_jobs:{tr_start}:{tr_end}:{gran}` | `60s` | Eş zamanlı miss'lerde tek SQL pass |
 
 - Backend cache Redis tabanlıdır (datacenter-api Redis DB 0); memory→Redis backfill default

@@ -1053,40 +1053,187 @@ def _empty_job_stats(vendor: str, granularity: str) -> dict:
     }
 
 
-def get_dc_veeam_jobs(dc_code: str, tr: Optional[dict], granularity: str = "day") -> dict:
+def get_dc_veeam_jobs(
+    dc_code: str,
+    tr: Optional[dict],
+    granularity: str = "day",
+    *,
+    statuses: Optional[list] = None,
+    job_types: Optional[list] = None,
+) -> dict:
     enc = quote(dc_code, safe="")
     empty = _empty_job_stats("veeam", granularity)
-    ck = f"api:dc_veeam_jobs:{enc}:{_serialize_tr_cache_key(tr)}:{granularity}"
+    st, jt = _join_csv(statuses), _join_csv(job_types)
+    ck = f"api:dc_veeam_jobs:{enc}:{_serialize_tr_cache_key(tr)}:{granularity}:s{st}:t{jt}"
 
     def fetch() -> dict:
         params = {**_build_time_params(tr), "granularity": granularity}
+        if st:
+            params["status"] = st
+        if jt:
+            params["job_type"] = jt
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/veeam/jobs", params=params)
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
 
 
-def get_dc_zerto_jobs(dc_code: str, tr: Optional[dict], granularity: str = "day") -> dict:
+def get_dc_zerto_jobs(
+    dc_code: str,
+    tr: Optional[dict],
+    granularity: str = "day",
+    *,
+    statuses: Optional[list] = None,
+    job_types: Optional[list] = None,
+) -> dict:
     enc = quote(dc_code, safe="")
     empty = _empty_job_stats("zerto", granularity)
-    ck = f"api:dc_zerto_jobs:{enc}:{_serialize_tr_cache_key(tr)}:{granularity}"
+    st, jt = _join_csv(statuses), _join_csv(job_types)
+    ck = f"api:dc_zerto_jobs:{enc}:{_serialize_tr_cache_key(tr)}:{granularity}:s{st}:t{jt}"
 
     def fetch() -> dict:
         params = {**_build_time_params(tr), "granularity": granularity}
+        if st:
+            params["status"] = st
+        if jt:
+            params["job_type"] = jt
         data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/zerto/jobs", params=params)
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
 
 
-def get_dc_netbackup_jobs(dc_code: str, tr: Optional[dict], granularity: str = "day") -> dict:
+def get_dc_netbackup_jobs(
+    dc_code: str,
+    tr: Optional[dict],
+    granularity: str = "day",
+    *,
+    statuses: Optional[list] = None,
+    job_types: Optional[list] = None,
+    policy_types: Optional[list] = None,
+    category: Optional[str] = None,
+) -> dict:
     enc = quote(dc_code, safe="")
     empty = _empty_job_stats("netbackup", granularity)
-    ck = f"api:dc_netbackup_jobs:{enc}:{_serialize_tr_cache_key(tr)}:{granularity}"
+    st, jt, pt = _join_csv(statuses), _join_csv(job_types), _join_csv(policy_types)
+    ck = (
+        f"api:dc_netbackup_jobs:{enc}:{_serialize_tr_cache_key(tr)}:{granularity}"
+        f":s{st}:t{jt}:pt{pt}:c{category or ''}"
+    )
 
     def fetch() -> dict:
         params = {**_build_time_params(tr), "granularity": granularity}
-        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/backup/netbackup/jobs", params=params)
+        if st:
+            params["status"] = st
+        if jt:
+            params["job_type"] = jt
+        if pt:
+            params["policy_type"] = pt
+        if category:
+            params["category"] = category
+        data = _get_json(
+            _get_client_dc(), f"/api/v1/datacenters/{enc}/backup/netbackup/jobs", params=params
+        )
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
+def _join_csv(values: Optional[list]) -> str:
+    return ",".join(str(v) for v in values) if values else ""
+
+
+def get_dc_unique_jobs(dc_code: str, vendor: str, tr: Optional[dict]) -> dict:
+    """Latest-per-identity unique-job/VPG inventory (rows + status/type totals) for a DC."""
+    enc = quote(dc_code, safe="")
+    empty = {"rows": [], "totals": {}, "as_of": "", "vendor": vendor}
+    ck = f"api:dc_unique_jobs:{vendor}:{enc}:{_serialize_tr_cache_key(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(
+            _get_client_dc(),
+            f"/api/v1/datacenters/{enc}/backup/{vendor}/unique-jobs",
+            params=_build_time_params(tr),
+        )
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
+def get_dc_unique_jobs_table(dc_code: str, vendor: str, tr: Optional[dict], page: int = 1,
+                              page_size: int = 50, search: str = "",
+                              statuses: Optional[list] = None, types: Optional[list] = None,
+                              policy_types: Optional[list] = None, categories: Optional[list] = None,
+                              platforms: Optional[list] = None) -> dict:
+    """Paged/filtered unique-job/VPG table for a DC; totals reflect the filtered set."""
+    enc = quote(dc_code, safe="")
+    empty = {"items": [], "total": 0, "page": page, "page_size": page_size, "totals": {}, "vendor": vendor}
+
+    st, ty, pt, cat, pl = (
+        _join_csv(statuses), _join_csv(types), _join_csv(policy_types),
+        _join_csv(categories), _join_csv(platforms),
+    )
+    ck = (f"api:dc_unique_jobs_tbl:{vendor}:{enc}:{_serialize_tr_cache_key(tr)}"
+          f":p{page}:ps{page_size}:q{search}:s{st}:t{ty}:pt{pt}:c{cat}:pl{pl}")
+
+    def fetch() -> dict:
+        params = {**_build_time_params(tr), "page": page, "page_size": page_size, "search": search or ""}
+        for k, v in (("status", st), ("type", ty), ("policy_type", pt), ("category", cat), ("platform", pl)):
+            if v:
+                params[k] = v
+        data = _get_json(
+            _get_client_dc(),
+            f"/api/v1/datacenters/{enc}/backup/{vendor}/unique-jobs/table",
+            params=params,
+        )
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
+def get_customer_unique_jobs(customer_name: str, vendor: str, tr: Optional[dict]) -> dict:
+    """Latest-per-identity unique-job/VPG inventory (rows + status/type totals) for a customer."""
+    enc = quote(customer_name, safe="")
+    empty = {"rows": [], "totals": {}, "as_of": "", "vendor": vendor}
+    ck = f"api:cust_unique_jobs:{vendor}:{enc}:{_serialize_tr_cache_key(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(
+            _get_client_cust(),
+            f"/api/v1/customers/{enc}/backup/{vendor}/unique-jobs",
+            params=_build_time_params(tr),
+        )
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
+def get_customer_unique_jobs_table(customer_name: str, vendor: str, tr: Optional[dict], page: int = 1,
+                                    page_size: int = 50, search: str = "",
+                                    statuses: Optional[list] = None, types: Optional[list] = None,
+                                    policy_types: Optional[list] = None, categories: Optional[list] = None,
+                                    platforms: Optional[list] = None) -> dict:
+    """Paged/filtered unique-job/VPG table for a customer; totals reflect the filtered set."""
+    enc = quote(customer_name, safe="")
+    empty = {"items": [], "total": 0, "page": page, "page_size": page_size, "totals": {}, "vendor": vendor}
+
+    st, ty, pt, cat, pl = (
+        _join_csv(statuses), _join_csv(types), _join_csv(policy_types),
+        _join_csv(categories), _join_csv(platforms),
+    )
+    ck = (f"api:cust_unique_jobs_tbl:{vendor}:{enc}:{_serialize_tr_cache_key(tr)}"
+          f":p{page}:ps{page_size}:q{search}:s{st}:t{ty}:pt{pt}:c{cat}:pl{pl}")
+
+    def fetch() -> dict:
+        params = {**_build_time_params(tr), "page": page, "page_size": page_size, "search": search or ""}
+        for k, v in (("status", st), ("type", ty), ("policy_type", pt), ("category", cat), ("platform", pl)):
+            if v:
+                params[k] = v
+        data = _get_json(
+            _get_client_cust(),
+            f"/api/v1/customers/{enc}/backup/{vendor}/unique-jobs/table",
+            params=params,
+        )
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)

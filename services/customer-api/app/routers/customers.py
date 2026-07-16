@@ -1,6 +1,6 @@
-from typing import Any, List
+from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from app.core.time_filter import TimeFilter
 from app.models.schemas import (
@@ -96,3 +96,51 @@ def customer_s3_vaults(
     db: CustomerService = Depends(get_db),
 ):
     return db.get_customer_s3_vaults(customer_name, tf.to_dict())
+
+
+_UNIQUE_JOBS_VENDORS = ("veeam", "zerto", "netbackup")
+
+
+def _split_csv(value: Optional[str]) -> Optional[List[str]]:
+    return [p for p in (value or "").split(",") if p] or None
+
+
+@router.get("/customers/{customer_name}/backup/{vendor}/unique-jobs", response_model=dict[str, Any])
+def customer_unique_jobs(
+    customer_name: str,
+    vendor: str,
+    tf: TimeFilter = Depends(),
+    db: CustomerService = Depends(get_db),
+):
+    """Latest-per-identity unique-job/VPG inventory (rows + status/type totals)
+    for a customer, matched via the customer's resolved backup ILIKE patterns."""
+    if vendor not in _UNIQUE_JOBS_VENDORS:
+        raise HTTPException(status_code=404, detail=f"Unknown backup vendor: {vendor}")
+    return db.get_customer_unique_jobs(customer_name, vendor, tf.to_dict())
+
+
+@router.get("/customers/{customer_name}/backup/{vendor}/unique-jobs/table", response_model=dict[str, Any])
+def customer_unique_jobs_table(
+    customer_name: str,
+    vendor: str,
+    tf: TimeFilter = Depends(),
+    db: CustomerService = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    search: Optional[str] = Query(""),
+    status: Optional[str] = Query(None, description="comma-separated"),
+    type: Optional[str] = Query(None, description="comma-separated"),
+    policy_type: Optional[str] = Query(None, description="comma-separated"),
+    category: Optional[str] = Query(None, description="image | application, comma-separated"),
+    platform: Optional[str] = Query(None, description="comma-separated"),
+):
+    """Paged/filtered unique-job/VPG table for a customer; totals reflect the filtered set."""
+    if vendor not in _UNIQUE_JOBS_VENDORS:
+        raise HTTPException(status_code=404, detail=f"Unknown backup vendor: {vendor}")
+    return db.get_customer_unique_jobs_table(
+        customer_name, vendor, tf.to_dict(),
+        page=page, page_size=page_size, search=search or "",
+        statuses=_split_csv(status), types=_split_csv(type),
+        policy_types=_split_csv(policy_type), categories=_split_csv(category),
+        platforms=_split_csv(platform),
+    )

@@ -1195,3 +1195,78 @@ WHERE TRIM(a.name) ILIKE %s
 ORDER BY CASE WHEN TRIM(a.name) ILIKE %s THEN 0 ELSE 1 END, a.name
 LIMIT 1
 """
+
+# =============================================================================
+# Unique-job inventory (customer-scoped) — latest state per unique job/VPG
+# identity, filtered by customer name/workload ILIKE pattern. Companion to the
+# DC-scoped *_UNIQUE_*_LATEST queries in datacenter-api's
+# app/db/queries/backup.py; shared aggregation/filtering/pagination lives in
+# shared.backup.unique_jobs (aggregate_unique_jobs / filter_unique_job_rows /
+# paginate_rows).
+# =============================================================================
+
+# Veeam unique jobs for a customer (latest per job id).
+# Params: (name_pattern, start_ts, end_ts)
+CUSTOMER_VEEAM_UNIQUE_JOBS_LATEST = """
+SELECT DISTINCT ON (id)
+    collection_time,
+    id,
+    name,
+    type,
+    status,
+    last_result,
+    last_run,
+    objects_count,
+    session_id,
+    workload,
+    source_ip
+FROM public.raw_veeam_jobs_states
+WHERE name ILIKE %s
+  AND collection_time BETWEEN %s AND %s
+ORDER BY id, collection_time DESC
+"""
+
+# Zerto unique VPGs for a customer (latest per VPG id).
+# Params: (name_pattern, start_ts, end_ts)
+CUSTOMER_ZERTO_UNIQUE_VPGS_LATEST = """
+SELECT DISTINCT ON (id)
+    collection_timestamp,
+    id,
+    name,
+    status,
+    vmscount,
+    source_site,
+    target_site,
+    provisioned_storage_mb,
+    used_storage_mb,
+    zerto_host
+FROM public.raw_zerto_vpg_metrics
+WHERE name ILIKE %s
+  AND collection_timestamp BETWEEN %s AND %s
+ORDER BY id, collection_timestamp DESC
+"""
+
+# NetBackup unique jobs for a customer workload (latest per policy + workload;
+# BACKUP jobs only).
+# Params: (workload_pattern, start_ts, end_ts)
+CUSTOMER_NETBACKUP_UNIQUE_JOBS_LATEST = """
+SELECT DISTINCT ON (policyname, COALESCE(workloaddisplayname, ''))
+    starttime,
+    endtime,
+    jobid,
+    policyname,
+    policytype,
+    jobtype,
+    status,
+    workloaddisplayname,
+    clientname,
+    destinationmediaservername,
+    kilobytestransferred,
+    dedupratio,
+    percentcomplete
+FROM public.raw_netbackup_jobs_metrics
+WHERE workloaddisplayname ILIKE %s
+  AND starttime BETWEEN %s AND %s
+  AND UPPER(COALESCE(jobtype, '')) = 'BACKUP'
+ORDER BY policyname, COALESCE(workloaddisplayname, ''), starttime DESC
+"""

@@ -70,6 +70,7 @@ from src.components.backup_panel import (
 )
 # noqa: F401 — import for side effect (registers backup-jobs callbacks)
 from src.components import backup_jobs_section  # noqa: F401
+from src.components import backup_unique_jobs_panel  # noqa: F401
 from shared.backup.policy_classification import load_policy_panel_mapping
 from src.services import sla_service
 from src.utils.dc_display import format_dc_display_name, resolve_dc_display_from_summary
@@ -5247,6 +5248,15 @@ def build_dc_view(
     # Backup datasets (per DC)
     t_backup = time.perf_counter()
     if _tab_eager(eager_tabs, "backup"):
+        # Capacity endpoints (nb/zerto/veeam/zerto_license) are independent of
+        # each other and of the Nutanix snapshot base set, so they fan out
+        # together. nutanix_table / nutanix_missing both derive from the same
+        # underlying "latest per snapshot" cache entry as `nutanix` (see
+        # DatabaseService.get_dc_nutanix_missing / get_dc_nutanix_snapshot_table) —
+        # firing all three nutanix calls in parallel just stampedes the same
+        # cache key with concurrent misses/stale-revalidate triggers. Fetch the
+        # base set first (in this fan-out) and only then request table/missing
+        # sequentially, so they land on an already-warm cache.
         backup_batch = parallel_execute(
             {
                 "nb": lambda: api.get_dc_netbackup_pools(dc_id, tr),
@@ -5254,8 +5264,6 @@ def build_dc_view(
                 "veeam": lambda: api.get_dc_veeam_repos(dc_id, tr),
                 "zerto_license": lambda: api.get_dc_zerto_license(dc_id),
                 "nutanix": lambda: api.get_dc_nutanix_snapshots(dc_id, tr),
-                "nutanix_table": lambda: api.get_dc_nutanix_snapshot_table(dc_id, tr, page=1, page_size=50),
-                "nutanix_missing": lambda: api.get_dc_nutanix_missing(dc_id, tr, page=1, page_size=50),
             }
         )
         nb_data = backup_batch["nb"]
@@ -5263,8 +5271,8 @@ def build_dc_view(
         veeam_data = backup_batch["veeam"]
         zerto_license_data = backup_batch["zerto_license"]
         nutanix_data = backup_batch["nutanix"]
-        nutanix_table = backup_batch["nutanix_table"]
-        nutanix_missing = backup_batch["nutanix_missing"]
+        nutanix_table = api.get_dc_nutanix_snapshot_table(dc_id, tr, page=1, page_size=50)
+        nutanix_missing = api.get_dc_nutanix_missing(dc_id, tr, page=1, page_size=50)
         _log_dc_build_phase(str(dc_id), "backup", t_backup)
     else:
         nb_data = {"pools": []}

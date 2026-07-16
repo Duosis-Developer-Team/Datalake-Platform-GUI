@@ -75,3 +75,64 @@ def cached(key_fn: Callable[..., str], ttl: Optional[int] = None):
 
 def stats() -> dict:
     return _backend_stats()
+
+
+# ---------------------------------------------------------------------------
+# Stale-while-revalidate primitives (mirrors datacenter-api's
+# app/services/cache_service.get_with_stale / set_with_stale).
+#
+# customer-api's cache_backend already writes every cache_set as both the
+# primary key and a long-TTL ":last_good" shadow key (ADR-0007). These
+# primitives just expose "did we hit the primary (fresh) key or fall back to
+# last_good (stale)?" so unique-jobs-style callers can decide whether to kick
+# off a background revalidate, without needing a second "stale:" key prefix
+# like datacenter-api uses.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_STALE_TTL_SECONDS = 86400  # 24h — matches LAST_GOOD_TTL_SECONDS floor
+
+
+def get_with_stale(key: str) -> tuple[Optional[Any], bool]:
+    """(value, is_stale). Primary (Redis or memory) hit -> (value, False).
+    last_good-only hit -> (value, True). Neither -> (None, False)."""
+    from app.core.cache_backend import (
+        _memory_cache,
+        _memory_lock,
+        _read_redis_json,
+        cache_get_last_good,
+        get_redis_client,
+        last_good_key,
+    )
+
+    rc = get_redis_client()
+    if rc:
+        primary = _read_redis_json(rc, key)
+        if primary is not None:
+            return primary, False
+        last_good = cache_get_last_good(key)
+        if last_good is not None:
+            return last_good, True
+
+    with _memory_lock:
+        if key in _memory_cache:
+            return _memory_cache[key], False
+        lg_key = last_good_key(key)
+        if lg_key in _memory_cache:
+            return _memory_cache[lg_key], True
+
+    return None, False
+
+
+def set_with_stale(
+    key: str,
+    value: Any,
+    fresh_ttl: Optional[int] = 2100,
+    stale_ttl: int = _DEFAULT_STALE_TTL_SECONDS,
+) -> None:
+    """Write the primary key with `fresh_ttl`. cache_set already writes the
+    ":last_good" shadow key with `max(fresh_ttl * 2, LAST_GOOD_TTL_SECONDS)`
+    (>= 24h for any reasonable fresh_ttl), which is what get_with_stale reads
+    on a primary miss — `stale_ttl` is accepted for signature parity with
+    datacenter-api's set_with_stale but the default last_good TTL already
+    satisfies it in the common case."""
+    cache_set(key, value, ttl=fresh_ttl)

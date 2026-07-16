@@ -11,6 +11,14 @@ from src.components.charts import create_premium_gauge_chart
 from src.components.backup_jobs_section import build_job_stats_section
 
 
+def _unique_jobs_section(vendor: str, *, category: str | None = None, scope: str = "dc"):
+    """Lazy import avoids circular dependency with backup_unique_jobs_panel."""
+    from src.components.backup_unique_jobs_panel import build_unique_jobs_inventory_section
+
+    return build_unique_jobs_inventory_section(vendor, category=category, scope=scope)
+
+
+
 def _kpi_card(title: str, value: str, icon: str, color: str = "indigo"):
     """Compact KPI card — fills its grid cell."""
     return dmc.Paper(
@@ -529,6 +537,15 @@ def build_netbackup_panel(
                 if category in ("image", "application")
                 else html.Div()
             ),
+            (
+                _unique_jobs_section(
+                    "netbackup",
+                    category=category if category in ("image", "application") else None,
+                    scope="dc",
+                )
+                if category in ("image", "application")
+                else html.Div()
+            ),
         ]
     )
 
@@ -859,6 +876,7 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
                 children=table,
             ),
             build_job_stats_section("zerto"),
+            _unique_jobs_section("zerto", scope="dc"),
         ]
     )
 
@@ -1139,6 +1157,7 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
                 children=table,
             ),
             build_job_stats_section("veeam"),
+            _unique_jobs_section("veeam", scope="dc"),
         ]
     )
 

@@ -16,6 +16,8 @@ from typing import Any
 
 from src.components.customer_loading import build_customer_loading_shell
 from src.components.backup_panel import build_nutanix_snapshot_panel
+from src.components.backup_unique_jobs_panel import build_unique_jobs_inventory_section
+from src.components import backup_unique_jobs_panel  # noqa: F401 — register callbacks
 from src.services import api_client as api
 from src.utils.time_range import default_time_range
 from src.utils.export_helpers import (
@@ -1860,7 +1862,17 @@ def _tab_netbackup_category(
             ),
         )
     )
-    return dmc.Stack(gap="lg", children=body)
+    return dmc.Stack(
+        gap="lg",
+        children=body
+        + [
+            build_unique_jobs_inventory_section(
+                "netbackup",
+                category=category if category in ("image", "application") else None,
+                scope="customer",
+            )
+        ],
+    )
 
 
 def _crm_license_panel_from_efficiency(eff_by_cat: list | None, binding: str):
@@ -2431,6 +2443,7 @@ def _build_backup_tabs(
                     crm_eff_panel=_eff_panel("backup.veeam"),
                 )
             )
+            repl_children.append(build_unique_jobs_inventory_section("veeam", scope="customer"))
             if include_sold_vs_used:
                 veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.veeam")
                 if veeam_lic is None:
@@ -2445,6 +2458,7 @@ def _build_backup_tabs(
                     crm_eff_panel=_eff_panel("backup.zerto"),
                 )
             )
+            repl_children.append(build_unique_jobs_inventory_section("zerto", scope="customer"))
             if include_sold_vs_used:
                 zerto_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.zerto")
                 if zerto_lic is not None:

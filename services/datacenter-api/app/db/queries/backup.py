@@ -189,3 +189,76 @@ WHERE collection_time BETWEEN %s AND %s
 ORDER BY id, collection_time DESC
 """
 
+# =============================================================================
+# Unique-job inventory — latest state per unique job/VPG identity.
+#
+# Unlike the *_JOB_STATS queries above (which pre-aggregate for bar charts),
+# these return one row per distinct job/VPG so the application layer can
+# build a searchable/filterable "unique jobs" table (status, type, category,
+# policy_type breakdowns via shared.backup.unique_jobs). Column set verified
+# against services/datacenter-api/tests/backup_jobs_schema.md (live schema
+# inspection) — no adjustments were needed vs. the initial draft.
+# =============================================================================
+
+# Veeam unique jobs (latest per job id).
+# Params: (start_ts, end_ts)
+VEEAM_UNIQUE_JOBS_LATEST = """
+SELECT DISTINCT ON (id)
+    collection_time,
+    id,
+    name,
+    type,
+    status,
+    last_result,
+    last_run,
+    objects_count,
+    session_id,
+    workload,
+    source_ip
+FROM public.raw_veeam_jobs_states
+WHERE collection_time BETWEEN %s AND %s
+ORDER BY id, collection_time DESC
+"""
+
+# Zerto unique VPGs (latest per VPG id).
+# Params: (start_ts, end_ts)
+ZERTO_UNIQUE_VPGS_LATEST = """
+SELECT DISTINCT ON (id)
+    collection_timestamp,
+    id,
+    name,
+    status,
+    vmscount,
+    source_site,
+    target_site,
+    provisioned_storage_mb,
+    used_storage_mb,
+    zerto_host
+FROM public.raw_zerto_vpg_metrics
+WHERE collection_timestamp BETWEEN %s AND %s
+ORDER BY id, collection_timestamp DESC
+"""
+
+# NetBackup unique jobs (latest per policy + workload; BACKUP jobs only).
+# Params: (start_ts, end_ts)
+NETBACKUP_UNIQUE_JOBS_LATEST = """
+SELECT DISTINCT ON (policyname, COALESCE(workloaddisplayname, ''))
+    starttime,
+    endtime,
+    jobid,
+    policyname,
+    policytype,
+    jobtype,
+    status,
+    workloaddisplayname,
+    clientname,
+    destinationmediaservername,
+    kilobytestransferred,
+    dedupratio,
+    percentcomplete
+FROM public.raw_netbackup_jobs_metrics
+WHERE starttime BETWEEN %s AND %s
+  AND UPPER(COALESCE(jobtype, '')) = 'BACKUP'
+ORDER BY policyname, COALESCE(workloaddisplayname, ''), starttime DESC
+"""
+

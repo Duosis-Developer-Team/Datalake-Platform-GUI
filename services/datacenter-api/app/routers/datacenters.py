@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.core.time_filter import TimeFilter
 from app.models.schemas import DataCenterSummary, JobStatsResponse
@@ -21,6 +21,13 @@ def get_db(request: Request) -> DatabaseService:
 
 def get_webui(request: Request) -> WebuiPool:
     return request.app.state.webui
+
+
+_UNIQUE_JOBS_VENDORS = ("veeam", "zerto", "netbackup")
+
+
+def _split_csv(value: Optional[str]) -> Optional[List[str]]:
+    return [p for p in (value or "").split(",") if p] or None
 
 
 @router.get("/datacenters/summary", response_model=List[DataCenterSummary])
@@ -147,8 +154,13 @@ def dc_veeam_jobs(
     tf: TimeFilter = Depends(),
     db: DatabaseService = Depends(get_db),
     granularity: str = Query("day", description="day | week | month"),
+    status: Optional[str] = Query(None, description="comma-separated"),
+    job_type: Optional[str] = Query(None, description="comma-separated"),
 ):
-    return db.get_dc_veeam_jobs(dc_code, tf.to_dict(), granularity)
+    return db.get_dc_veeam_jobs(
+        dc_code, tf.to_dict(), granularity,
+        statuses=_split_csv(status), job_types=_split_csv(job_type),
+    )
 
 
 @router.get("/datacenters/{dc_code}/backup/zerto/jobs", response_model=JobStatsResponse)
@@ -157,8 +169,13 @@ def dc_zerto_jobs(
     tf: TimeFilter = Depends(),
     db: DatabaseService = Depends(get_db),
     granularity: str = Query("day", description="day | week | month"),
+    status: Optional[str] = Query(None, description="comma-separated"),
+    job_type: Optional[str] = Query(None, description="comma-separated"),
 ):
-    return db.get_dc_zerto_jobs(dc_code, tf.to_dict(), granularity)
+    return db.get_dc_zerto_jobs(
+        dc_code, tf.to_dict(), granularity,
+        statuses=_split_csv(status), job_types=_split_csv(job_type),
+    )
 
 
 @router.get("/datacenters/{dc_code}/backup/netbackup/jobs", response_model=JobStatsResponse)
@@ -167,8 +184,56 @@ def dc_netbackup_jobs(
     tf: TimeFilter = Depends(),
     db: DatabaseService = Depends(get_db),
     granularity: str = Query("day", description="day | week | month"),
+    status: Optional[str] = Query(None, description="comma-separated"),
+    job_type: Optional[str] = Query(None, description="comma-separated"),
+    policy_type: Optional[str] = Query(None, description="comma-separated"),
+    category: Optional[str] = Query(None, description="image | application, comma-separated"),
 ):
-    return db.get_dc_netbackup_jobs(dc_code, tf.to_dict(), granularity)
+    return db.get_dc_netbackup_jobs(
+        dc_code, tf.to_dict(), granularity,
+        statuses=_split_csv(status), job_types=_split_csv(job_type),
+        policy_types=_split_csv(policy_type), category=category or None,
+    )
+
+
+@router.get("/datacenters/{dc_code}/backup/{vendor}/unique-jobs", response_model=dict[str, Any])
+def dc_unique_jobs(
+    dc_code: str,
+    vendor: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+):
+    """Latest-per-identity unique-job/VPG inventory (rows + status/type totals) for a DC."""
+    if vendor not in _UNIQUE_JOBS_VENDORS:
+        raise HTTPException(status_code=404, detail=f"Unknown backup vendor: {vendor}")
+    return db.get_dc_unique_jobs(dc_code, vendor, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/backup/{vendor}/unique-jobs/table", response_model=dict[str, Any])
+def dc_unique_jobs_table(
+    dc_code: str,
+    vendor: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    search: Optional[str] = Query(""),
+    status: Optional[str] = Query(None, description="comma-separated"),
+    type: Optional[str] = Query(None, description="comma-separated"),
+    policy_type: Optional[str] = Query(None, description="comma-separated"),
+    category: Optional[str] = Query(None, description="image | application, comma-separated"),
+    platform: Optional[str] = Query(None, description="comma-separated"),
+):
+    """Paged/filtered unique-job/VPG table for a DC; totals reflect the filtered set."""
+    if vendor not in _UNIQUE_JOBS_VENDORS:
+        raise HTTPException(status_code=404, detail=f"Unknown backup vendor: {vendor}")
+    return db.get_dc_unique_jobs_table(
+        dc_code, vendor, tf.to_dict(),
+        page=page, page_size=page_size, search=search or "",
+        statuses=_split_csv(status), types=_split_csv(type),
+        policy_types=_split_csv(policy_type), categories=_split_csv(category),
+        platforms=_split_csv(platform),
+    )
 
 
 @router.post("/datacenters/{dc_code}/backup/jobs/refresh")
@@ -195,6 +260,11 @@ def dc_backup_jobs_refresh(
         # Stale-while-revalidate snapshot'larını da temizle — kullanıcı 'Yenile'
         # dediğinde gerçekten canlı SQL beklesin, eski snapshot dönmesin.
         cache_delete_prefix(f"stale:{prefix}")
+        # Unique-jobs inventory cache aynı SWR şemasını kullanıyor (dc_{v}_unique_jobs);
+        # onu da temizle ki tablo görünümü de canlı SQL ile yenilensin.
+        unique_prefix = f"dc_{v}_unique_jobs:{dc_code}:"
+        cache_delete_prefix(unique_prefix)
+        cache_delete_prefix(f"stale:{unique_prefix}")
         deleted[v] = "invalidated"
     return {"status": "ok", "dc_code": dc_code, "deleted": deleted}
 

@@ -475,6 +475,7 @@ def should_skip_fetch(active_main_tab: str | None, dc_id: str | None) -> bool:
 def _make_callback(vendor: str, category: str | None = None) -> None:
     wrapper = _api_wrapper(vendor)
     sid = _section_id(vendor, category)
+    uj_sid = f"dc-{vendor}-{category}" if category else f"dc-{vendor}"
 
     outputs = [
         Output(f"backup-jobs-{sid}-chart", "figure"),
@@ -487,6 +488,8 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
         Input(f"backup-jobs-{sid}-groupby", "value"),
         Input(f"backup-jobs-{sid}-refresh", "n_clicks"),
         Input("dc-main-tabs", "value"),
+        Input(f"backup-uj-{uj_sid}-filter-status", "value"),
+        Input(f"backup-uj-{uj_sid}-filter-type", "value"),
     ]
     if vendor == "netbackup" and category:
         inputs.append(Input(f"backup-nb-policy-selector-{category}", "value"))
@@ -500,9 +503,28 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
     )
     def _update(*args, _vendor=vendor, _category=category, _sid=sid):
         if _vendor == "netbackup" and _category:
-            tr, granularity, group_by, refresh_n, active_main_tab, selected_policies, pathname = args
+            (
+                tr,
+                granularity,
+                group_by,
+                refresh_n,
+                active_main_tab,
+                uj_statuses,
+                uj_types,
+                selected_policies,
+                pathname,
+            ) = args
         else:
-            tr, granularity, group_by, refresh_n, active_main_tab, pathname = args
+            (
+                tr,
+                granularity,
+                group_by,
+                refresh_n,
+                active_main_tab,
+                uj_statuses,
+                uj_types,
+                pathname,
+            ) = args
             selected_policies = None
 
         dc_id = _extract_dc_id(pathname)
@@ -521,7 +543,27 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
         gran = granularity or "day"
         gb = group_by or "status"
         try:
-            payload = wrapper(dc_id, tr or None, granularity=gran)
+            if _vendor == "netbackup":
+                payload = wrapper(
+                    dc_id,
+                    tr or None,
+                    granularity=gran,
+                    statuses=uj_statuses or None,
+                    policy_types=(
+                        selected_policies
+                        if isinstance(selected_policies, list) and selected_policies
+                        else (uj_types or None)
+                    ),
+                    category=_category,
+                )
+            else:
+                payload = wrapper(
+                    dc_id,
+                    tr or None,
+                    granularity=gran,
+                    statuses=uj_statuses or None,
+                    job_types=uj_types or None,
+                )
         except Exception:
             return _empty_figure("Veri alınamadı"), _empty_kpis(), ""
         if not isinstance(payload, dict):

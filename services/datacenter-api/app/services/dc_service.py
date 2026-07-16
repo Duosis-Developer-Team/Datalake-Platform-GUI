@@ -35,6 +35,12 @@ from app.utils.time_range import (
 )
 from app.utils.format_units import smart_cpu, smart_memory, smart_storage
 from shared.backup.policy_classification import classify_netbackup_policy
+from shared.backup.unique_jobs import (
+    aggregate_unique_jobs,
+    filter_unique_job_rows,
+    normalize_unique_job_rows,
+    paginate_rows as paginate_unique_job_rows,
+)
 from shared.display.static_energy import apply_static_aggregate_energy, resolve_static_total_energy_kw
 from shared.customer.cache_keys import customer_assets_cache_key
 from shared.network.backbone_billing import estimate_backbone_cost_tl, p95_bps_to_mbit
@@ -3619,6 +3625,43 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
     # Backup helpers — NetBackup, Zerto, Veeam (per datacenter)
     # ------------------------------------------------------------------
 
+    # Backup-capacity cache (NetBackup pools / Zerto sites / Veeam repos / Zerto
+    # license) — stale-while-revalidate, same TTL shape as _BACKUP_JOBS_CACHE_TTL_SECONDS
+    # below: fresh_ttl a bit under the 30-min warm-pass cadence, stale_ttl generous
+    # (24h) so a slow/failing warm pass never blanks a panel that already has data.
+    _BACKUP_CAPACITY_FRESH_TTL = 2100
+    _BACKUP_CAPACITY_STALE_TTL = 86400
+
+    def _trigger_async_swr_refresh(
+        self,
+        cache_key: str,
+        factory: Callable[[], Any],
+        *,
+        fresh_ttl: int,
+        stale_ttl: int,
+        label: str = "",
+    ) -> None:
+        """
+        Generic stale-while-revalidate background recompute.
+
+        Spawns a daemon thread that recomputes ``factory()`` under a
+        singleflight lock keyed off ``cache_key`` (so concurrent stale hits on
+        the same key collapse into a single recompute) and writes the result
+        back via ``set_with_stale``. Mirrors ``_trigger_async_jobs_compute``
+        but is reusable across any single-key cache entry (capacity, Nutanix
+        snapshots, …) instead of the jobs "all DCs in one pass" fan-out.
+        """
+        sf_key = f"_sf:{cache_key}"
+
+        def _bg() -> None:
+            try:
+                result = cache.run_singleflight(sf_key, factory, ttl=60)
+                cache.set_with_stale(cache_key, result, fresh_ttl=fresh_ttl, stale_ttl=stale_ttl)
+            except Exception as exc:  # noqa: BLE001 — background log only
+                logger.warning("Stale-revalidate %s (%s) failed: %s", label or "swr", cache_key, exc)
+
+        threading.Thread(target=_bg, daemon=True, name="bkp-stale-refresh").start()
+
     def _fetch_dc_netbackup_pools(self, dc_code: str, start_ts, end_ts) -> dict:
         """Fetch latest NetBackup pool metrics for a DC and time range."""
         with self._get_connection() as conn:
@@ -3792,39 +3835,67 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         }
 
     def get_dc_netbackup_pools(self, dc_code: str, time_range: dict | None = None) -> dict:
-        """Return cached NetBackup pool metrics for a DC and time range."""
+        """Return cached NetBackup pool metrics for a DC and time range (stale-while-revalidate)."""
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
         cache_key = f"dc_netbackup:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
 
-        try:
-            result = self._fetch_dc_netbackup_pools(dc_code, start_ts, end_ts)
-        except (OperationalError, PoolError) as exc:
-            logger.warning("get_dc_netbackup_pools failed for %s: %s", dc_code, exc)
-            return {"pools": [], "rows": []}
+        def factory():
+            try:
+                return self._fetch_dc_netbackup_pools(dc_code, start_ts, end_ts)
+            except (OperationalError, PoolError) as exc:
+                logger.warning("get_dc_netbackup_pools failed for %s: %s", dc_code, exc)
+                return {"pools": [], "rows": []}
 
-        cache.set(cache_key, result)
+        value, is_stale = cache.get_with_stale(cache_key)
+        if value is not None:
+            if is_stale:
+                self._trigger_async_swr_refresh(
+                    cache_key, factory,
+                    fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+                    stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+                    label="netbackup_pools",
+                )
+            return value
+
+        result = cache.run_singleflight(cache_key, factory)
+        cache.set_with_stale(
+            cache_key, result,
+            fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+            stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+        )
         return result
 
     def get_dc_zerto_sites(self, dc_code: str, time_range: dict | None = None) -> dict:
-        """Return cached Zerto site metrics for a DC and time range."""
+        """Return cached Zerto site metrics for a DC and time range (stale-while-revalidate)."""
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
         cache_key = f"dc_zerto:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
 
-        try:
-            result = self._fetch_dc_zerto_sites(dc_code, start_ts, end_ts)
-        except (OperationalError, PoolError) as exc:
-            logger.warning("get_dc_zerto_sites failed for %s: %s", dc_code, exc)
-            return {"sites": [], "rows": []}
+        def factory():
+            try:
+                return self._fetch_dc_zerto_sites(dc_code, start_ts, end_ts)
+            except (OperationalError, PoolError) as exc:
+                logger.warning("get_dc_zerto_sites failed for %s: %s", dc_code, exc)
+                return {"sites": [], "rows": []}
 
-        cache.set(cache_key, result)
+        value, is_stale = cache.get_with_stale(cache_key)
+        if value is not None:
+            if is_stale:
+                self._trigger_async_swr_refresh(
+                    cache_key, factory,
+                    fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+                    stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+                    label="zerto_sites",
+                )
+            return value
+
+        result = cache.run_singleflight(cache_key, factory)
+        cache.set_with_stale(
+            cache_key, result,
+            fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+            stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+        )
         return result
 
     @staticmethod
@@ -3956,12 +4027,8 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         }
 
     def get_dc_zerto_license(self, dc_code: str) -> dict:
-        """Return cached Zerto license + site usage for a DC."""
+        """Return cached Zerto license + site usage for a DC (stale-while-revalidate)."""
         cache_key = f"dc_zerto_license:{dc_code}"
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
-
         empty = {
             "has_license": False,
             "licenses": [],
@@ -3977,38 +4044,70 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 "zerto_hosts": [],
             },
         }
-        try:
-            result = self._fetch_dc_zerto_license(dc_code)
-        except (OperationalError, PoolError) as exc:
-            logger.warning("get_dc_zerto_license failed for %s: %s", dc_code, exc)
-            return empty
 
-        cache.set(cache_key, result)
+        def factory():
+            try:
+                return self._fetch_dc_zerto_license(dc_code)
+            except (OperationalError, PoolError) as exc:
+                logger.warning("get_dc_zerto_license failed for %s: %s", dc_code, exc)
+                return empty
+
+        value, is_stale = cache.get_with_stale(cache_key)
+        if value is not None:
+            if is_stale:
+                self._trigger_async_swr_refresh(
+                    cache_key, factory,
+                    fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+                    stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+                    label="zerto_license",
+                )
+            return value
+
+        result = cache.run_singleflight(cache_key, factory)
+        cache.set_with_stale(
+            cache_key, result,
+            fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+            stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+        )
         return result
 
     def get_dc_veeam_repos(self, dc_code: str, time_range: dict | None = None) -> dict:
-        """Return cached Veeam repository states for a DC and time range."""
+        """Return cached Veeam repository states for a DC and time range (stale-while-revalidate)."""
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
         cache_key = f"dc_veeam:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
-        cached_val = cache.get(cache_key)
-        if cached_val is not None:
-            return cached_val
 
-        try:
-            result = self._fetch_dc_veeam_repositories(dc_code, start_ts, end_ts)
-        except (OperationalError, PoolError) as exc:
-            logger.warning("get_dc_veeam_repos failed for %s: %s", dc_code, exc)
-            return {"repos": [], "rows": []}
+        def factory():
+            try:
+                return self._fetch_dc_veeam_repositories(dc_code, start_ts, end_ts)
+            except (OperationalError, PoolError) as exc:
+                logger.warning("get_dc_veeam_repos failed for %s: %s", dc_code, exc)
+                return {"repos": [], "rows": []}
 
-        cache.set(cache_key, result)
+        value, is_stale = cache.get_with_stale(cache_key)
+        if value is not None:
+            if is_stale:
+                self._trigger_async_swr_refresh(
+                    cache_key, factory,
+                    fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+                    stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+                    label="veeam_repos",
+                )
+            return value
+
+        result = cache.run_singleflight(cache_key, factory)
+        cache.set_with_stale(
+            cache_key, result,
+            fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+            stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+        )
         return result
 
     # ------------------------------------------------------------------
     # Nutanix snapshots (Backup & Replication → Nutanix tab)
     # ------------------------------------------------------------------
 
-    _NSNAP_FRESH_TTL = 1200          # 20 min
+    _NSNAP_FRESH_TTL = 2100          # 35 min (matches _BACKUP_CAPACITY_FRESH_TTL cadence)
     _NSNAP_STALE_TTL = 86400         # 24 h
     _NSNAP_MIN_LOOKBACK_SECONDS = 48 * 3600  # collection is sparse; floor the window
 
@@ -4062,9 +4161,6 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         tr = time_range or default_time_range()
         start_ts, end_ts = self._nsnap_effective_bounds(tr)
         key = f"dc_nutanix_snap:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
-        cached_val, _ = cache.get_with_stale(key)
-        if cached_val is not None:
-            return cached_val
 
         def factory():
             try:
@@ -4072,6 +4168,17 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             except (OperationalError, PoolError) as exc:
                 logger.warning("get_dc_nutanix_snapshots failed for %s: %s", dc_code, exc)
                 return {"rows": [], "totals": nsnap.aggregate_snapshots([]), "as_of": ""}
+
+        cached_val, is_stale = cache.get_with_stale(key)
+        if cached_val is not None:
+            if is_stale:
+                self._trigger_async_swr_refresh(
+                    key, factory,
+                    fresh_ttl=self._NSNAP_FRESH_TTL,
+                    stale_ttl=self._NSNAP_STALE_TTL,
+                    label="dc_nutanix_snap",
+                )
+            return cached_val
 
         result = cache.run_singleflight(key, factory)
         cache.set_with_stale(key, result, fresh_ttl=self._NSNAP_FRESH_TTL, stale_ttl=self._NSNAP_STALE_TTL)
@@ -4084,9 +4191,6 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         pats = [p for p in (patterns or []) if p]
         pat_key = "|".join(sorted(pats)) if pats else customer
         key = f"cust_nutanix_snap:{pat_key}:{tr.get('start','')}:{tr.get('end','')}"
-        cached_val, _ = cache.get_with_stale(key)
-        if cached_val is not None:
-            return cached_val
 
         def factory():
             try:
@@ -4094,6 +4198,17 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             except (OperationalError, PoolError) as exc:
                 logger.warning("get_customer_nutanix_snapshots failed for %s: %s", customer, exc)
                 return {"rows": [], "totals": nsnap.aggregate_snapshots([]), "as_of": ""}
+
+        cached_val, is_stale = cache.get_with_stale(key)
+        if cached_val is not None:
+            if is_stale:
+                self._trigger_async_swr_refresh(
+                    key, factory,
+                    fresh_ttl=self._NSNAP_FRESH_TTL,
+                    stale_ttl=self._NSNAP_STALE_TTL,
+                    label="cust_nutanix_snap",
+                )
+            return cached_val
 
         result = cache.run_singleflight(key, factory)
         cache.set_with_stale(key, result, fresh_ttl=self._NSNAP_FRESH_TTL, stale_ttl=self._NSNAP_STALE_TTL)
@@ -4369,6 +4484,51 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             payload["policy_types"] = {"image": image_pts, "application": app_pts}
         return payload
 
+    @staticmethod
+    def _filter_job_stats_payload(
+        payload: dict,
+        *,
+        statuses: list[str] | None = None,
+        job_types: list[str] | None = None,
+        policy_types: list[str] | None = None,
+        category: str | None = None,
+    ) -> dict:
+        """Server-side filter over an already-cached job-stats payload's `series`.
+
+        Applied *after* the cache read so filter combinations never bust the
+        Redis cache key (shared by every filter view of the same DC/range/
+        granularity). Recomputes totals (+ totals_by_category / policy_types
+        for NetBackup) via `_finalize_job_stats` over the filtered series.
+        `category` only constrains rows that actually carry a `category` key
+        (NetBackup) — it is a no-op for Veeam/Zerto series.
+        """
+        if not any((statuses, job_types, policy_types, category)):
+            return payload
+
+        status_set = {str(s).lower() for s in statuses or [] if s not in (None, "")}
+        job_type_set = {str(t) for t in job_types or [] if t not in (None, "")}
+        policy_type_set = {str(t) for t in policy_types or [] if t not in (None, "")}
+        cat = str(category).strip().lower() if category else None
+
+        def _matches(point: dict) -> bool:
+            if status_set and str(point.get("status") or "").lower() not in status_set:
+                return False
+            if job_type_set and str(point.get("job_type") or "") not in job_type_set:
+                return False
+            if policy_type_set and str(point.get("policy_type") or "") not in policy_type_set:
+                return False
+            if cat and "category" in point and str(point.get("category") or "").lower() != cat:
+                return False
+            return True
+
+        series = [p for p in (payload.get("series") or []) if _matches(p)]
+        vendor = str(payload.get("vendor") or "")
+        granularity = str(payload.get("granularity") or "day")
+        time_range = payload.get("range") or {}
+        return DatabaseService._finalize_job_stats(
+            series, vendor, granularity, time_range, as_of=payload.get("as_of"),
+        )
+
     # ---- Veeam jobs --------------------------------------------------------
 
     def _compute_all_dc_veeam_jobs(
@@ -4432,6 +4592,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         dc_code: str,
         time_range: dict | None = None,
         granularity: str = "day",
+        *,
+        statuses: list[str] | None = None,
+        job_types: list[str] | None = None,
     ) -> dict:
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
@@ -4450,7 +4613,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 # 35dk'da tutar. Background refresh sonucunu hala overwrite eder.
                 cache.set(cache_key, value, ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS)
                 self._trigger_async_jobs_compute("veeam", gran, start_ts, end_ts, tr_start, tr_end)
-            return value
+            return self._filter_job_stats_payload(value, statuses=statuses, job_types=job_types)
 
         sf_key = f"_sf:veeam_jobs:{tr_start}:{tr_end}:{gran}"
         try:
@@ -4463,11 +4626,12 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             logger.warning("get_dc_veeam_jobs failed for %s: %s", dc_code, exc)
             return self._empty_job_stats("veeam", gran, tr)
 
-        return (
+        result = (
             all_payloads.get(dc_code.upper())
             if isinstance(all_payloads, dict)
             else None
         ) or self._empty_job_stats("veeam", gran, tr)
+        return self._filter_job_stats_payload(result, statuses=statuses, job_types=job_types)
 
     # ---- Zerto jobs --------------------------------------------------------
 
@@ -4527,6 +4691,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         dc_code: str,
         time_range: dict | None = None,
         granularity: str = "day",
+        *,
+        statuses: list[str] | None = None,
+        job_types: list[str] | None = None,
     ) -> dict:
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
@@ -4540,7 +4707,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             if is_stale:
                 cache.set(cache_key, value, ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS)
                 self._trigger_async_jobs_compute("zerto", gran, start_ts, end_ts, tr_start, tr_end)
-            return value
+            return self._filter_job_stats_payload(value, statuses=statuses, job_types=job_types)
 
         sf_key = f"_sf:zerto_jobs:{tr_start}:{tr_end}:{gran}"
         try:
@@ -4553,11 +4720,12 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             logger.warning("get_dc_zerto_jobs failed for %s: %s", dc_code, exc)
             return self._empty_job_stats("zerto", gran, tr)
 
-        return (
+        result = (
             all_payloads.get(dc_code.upper())
             if isinstance(all_payloads, dict)
             else None
         ) or self._empty_job_stats("zerto", gran, tr)
+        return self._filter_job_stats_payload(result, statuses=statuses, job_types=job_types)
 
     # ---- NetBackup jobs ----------------------------------------------------
 
@@ -4624,6 +4792,11 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         dc_code: str,
         time_range: dict | None = None,
         granularity: str = "day",
+        *,
+        statuses: list[str] | None = None,
+        job_types: list[str] | None = None,
+        policy_types: list[str] | None = None,
+        category: str | None = None,
     ) -> dict:
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
@@ -4637,7 +4810,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             if is_stale:
                 cache.set(cache_key, value, ttl=self._BACKUP_JOBS_CACHE_TTL_SECONDS)
                 self._trigger_async_jobs_compute("netbackup", gran, start_ts, end_ts, tr_start, tr_end)
-            return value
+            return self._filter_job_stats_payload(
+                value, statuses=statuses, job_types=job_types, policy_types=policy_types, category=category,
+            )
 
         sf_key = f"_sf:netbackup_jobs:{tr_start}:{tr_end}:{gran}"
         try:
@@ -4650,11 +4825,211 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             logger.warning("get_dc_netbackup_jobs failed for %s: %s", dc_code, exc)
             return self._empty_job_stats("netbackup", gran, tr)
 
-        return (
+        result = (
             all_payloads.get(dc_code.upper())
             if isinstance(all_payloads, dict)
             else None
         ) or self._empty_job_stats("netbackup", gran, tr)
+        return self._filter_job_stats_payload(
+            result, statuses=statuses, job_types=job_types, policy_types=policy_types, category=category,
+        )
+
+    # ------------------------------------------------------------------
+    # Unique-job inventory (Backup & Replication → per-vendor table view)
+    #
+    # Latest-per-identity row set (see the *_UNIQUE_*_LATEST SQL in
+    # app/db/queries/backup.py) — distinct from the _JOB_STATS series above,
+    # which pre-aggregate for the bar charts. Aggregation/filter/pagination is
+    # delegated to shared.backup.unique_jobs so DC- and customer-scoped code
+    # paths share one tested implementation.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _map_veeam_unique_row(row: tuple) -> dict:
+        (
+            collection_time, id_, name, type_, status, last_result, last_run,
+            objects_count, session_id, workload, source_ip,
+        ) = row
+        return {
+            "collection_time": collection_time,
+            "id": id_,
+            "name": name,
+            "type": type_,
+            "status": status,
+            "last_result": last_result,
+            "last_run": last_run,
+            "objects_count": objects_count,
+            "session_id": session_id,
+            "workload": workload,
+            "source_ip": source_ip,
+        }
+
+    @staticmethod
+    def _map_zerto_unique_row(row: tuple) -> dict:
+        (
+            collection_timestamp, id_, name, status, vmscount, source_site,
+            target_site, provisioned_storage_mb, used_storage_mb, zerto_host,
+        ) = row
+        return {
+            "collection_timestamp": collection_timestamp,
+            "id": id_,
+            "name": name,
+            # Raw status is an int enum (1=MeetingSLA/success, ...) — normalize
+            # to the same success/failed/warning/running/other vocabulary used
+            # by the job-stats series so status filters behave consistently.
+            "status": DatabaseService._normalize_zerto_status(status),
+            "vmscount": vmscount,
+            "source_site": source_site,
+            "target_site": target_site,
+            "provisioned_storage_mb": provisioned_storage_mb,
+            "used_storage_mb": used_storage_mb,
+            "zerto_host": zerto_host,
+        }
+
+    @staticmethod
+    def _map_netbackup_unique_row(row: tuple) -> dict:
+        (
+            starttime, endtime, jobid, policyname, policytype, jobtype, status,
+            workloaddisplayname, clientname, destinationmediaservername,
+            kilobytestransferred, dedupratio, percentcomplete,
+        ) = row
+        return {
+            "starttime": starttime,
+            "endtime": endtime,
+            "jobid": jobid,
+            "policyname": policyname,
+            "policytype": policytype,
+            "jobtype": jobtype,
+            "status": DatabaseService._normalize_netbackup_status(status),
+            "workloaddisplayname": workloaddisplayname,
+            "clientname": clientname,
+            "destinationmediaservername": destinationmediaservername,
+            "kilobytestransferred": kilobytestransferred,
+            "dedupratio": dedupratio,
+            "percentcomplete": percentcomplete,
+            "category": classify_netbackup_policy(policytype),
+        }
+
+    def _fetch_dc_unique_jobs(self, dc_code: str, vendor: str, start_ts, end_ts) -> dict:
+        """Latest-per-identity rows for a DC (one vendor), DC-filtered + normalized."""
+        dc_upper = (dc_code or "").upper()
+        dc_set = {dc.upper() for dc in self.dc_list}
+        rows: list[dict] = []
+
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                if vendor == "veeam":
+                    raw = self._run_rows(cur, bq.VEEAM_UNIQUE_JOBS_LATEST, (start_ts, end_ts))
+                    seed_rows = self._run_rows(cur, bq.VEEAM_IP_TO_DC_SEED, (start_ts, end_ts))
+                    ip_to_dc = self._build_ip_to_dc_map(seed_rows or [], ip_index=0, label_index=1)
+                    for r in raw or []:
+                        mapped = self._map_veeam_unique_row(r)
+                        dc = ip_to_dc.get(str(mapped.get("source_ip") or ""))
+                        if dc and dc.upper() == dc_upper:
+                            rows.append(mapped)
+                elif vendor == "zerto":
+                    raw = self._run_rows(cur, bq.ZERTO_UNIQUE_VPGS_LATEST, (start_ts, end_ts))
+                    for r in raw or []:
+                        mapped = self._map_zerto_unique_row(r)
+                        dc = (
+                            self._extract_dc_from_text(mapped.get("source_site"), dc_set)
+                            or self._extract_dc_from_text(mapped.get("target_site"), dc_set)
+                            or self._extract_dc_from_text(mapped.get("zerto_host"), dc_set)
+                        )
+                        if dc and dc.upper() == dc_upper:
+                            rows.append(mapped)
+                elif vendor == "netbackup":
+                    raw = self._run_rows(cur, bq.NETBACKUP_UNIQUE_JOBS_LATEST, (start_ts, end_ts))
+                    for r in raw or []:
+                        mapped = self._map_netbackup_unique_row(r)
+                        dc = self._extract_dc_from_text(mapped.get("destinationmediaservername"), dc_set)
+                        if dc and dc.upper() == dc_upper:
+                            rows.append(mapped)
+                else:
+                    return {"rows": [], "totals": aggregate_unique_jobs([], vendor), "as_of": "", "vendor": vendor}
+
+        normalized = normalize_unique_job_rows(rows)
+        return {
+            "rows": normalized,
+            "totals": aggregate_unique_jobs(normalized, vendor),
+            "as_of": self._utc_now_iso(),
+            "vendor": vendor,
+        }
+
+    def get_dc_unique_jobs(self, dc_code: str, vendor: str, time_range: dict | None = None) -> dict:
+        """Cached base row set (rows + totals) for a DC/vendor. SWR + singleflight,
+        same TTL shape as the backup-capacity panels (_BACKUP_CAPACITY_*_TTL)."""
+        vendor_key = (vendor or "").strip().lower()
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        key = f"dc_{vendor_key}_unique_jobs:{dc_code}:{tr.get('start', '')}:{tr.get('end', '')}"
+
+        def factory():
+            try:
+                return self._fetch_dc_unique_jobs(dc_code, vendor_key, start_ts, end_ts)
+            except (OperationalError, PoolError) as exc:
+                logger.warning("get_dc_unique_jobs failed for %s/%s: %s", dc_code, vendor_key, exc)
+                return {
+                    "rows": [], "totals": aggregate_unique_jobs([], vendor_key), "as_of": "", "vendor": vendor_key,
+                }
+
+        cached_val, is_stale = cache.get_with_stale(key)
+        if cached_val is not None:
+            if is_stale:
+                self._trigger_async_swr_refresh(
+                    key, factory,
+                    fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+                    stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+                    label=f"dc_{vendor_key}_unique_jobs",
+                )
+            return cached_val
+
+        result = cache.run_singleflight(key, factory)
+        cache.set_with_stale(
+            key, result,
+            fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+            stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+        )
+        return result
+
+    def get_dc_unique_jobs_table(
+        self,
+        dc_code: str,
+        vendor: str,
+        time_range: dict | None = None,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        search: str = "",
+        statuses: list[str] | None = None,
+        types: list[str] | None = None,
+        policy_types: list[str] | None = None,
+        categories: list[str] | None = None,
+        platforms: list[str] | None = None,
+    ) -> dict:
+        """Paged/filtered view derived in-process from the cached base row set.
+
+        Filters never bust the cache key (the base set is read once and re-used
+        across every filter combination). Totals are recomputed over the
+        *filtered* set so the UI's KPI/status/type charts stay in sync with
+        whatever rows are currently shown in the table.
+        """
+        vendor_key = (vendor or "").strip().lower()
+        base = self.get_dc_unique_jobs(dc_code, vendor_key, time_range)
+        rows = base.get("rows", [])
+        filtered = filter_unique_job_rows(
+            rows,
+            search=search,
+            statuses=statuses,
+            types=types,
+            policy_types=policy_types,
+            categories=categories,
+            platforms=platforms,
+        )
+        result = paginate_unique_job_rows(filtered, page, page_size)
+        result["totals"] = aggregate_unique_jobs(filtered, vendor_key)
+        result["vendor"] = vendor_key
+        return result
 
     def _fetch_customer_s3_vaults(self, customer_name: str, start_ts, end_ts) -> dict:
         """
@@ -7208,42 +7583,82 @@ JOIN latest l
 
     def refresh_backup_cache(self) -> None:
         """
-        Refresh backup (NetBackup, Zerto, Veeam) cache for the standard reporting ranges.
+        Refresh backup (NetBackup, Zerto, Veeam, Zerto license, Nutanix snapshots)
+        cache for the standard reporting ranges.
 
         This is called by the background scheduler every 30 minutes. Cache entries
-        are updated in place so UI panels continue to use the previous values until
-        new data has been written. Capacity warm runs first (lighter, fast UX win),
-        then jobs warm (heavier aggregations across 4 windows × 3 granularities)
-        runs in a thread pool for parallelism.
+        are updated in place (via ``set_with_stale``, so a fresh *and* a stale
+        snapshot both land) so UI panels continue to use the previous values
+        until new data has been written. Capacity + Nutanix-snapshot warm runs
+        first (lighter, fast UX win), then jobs warm (heavier aggregations
+        across 4 windows × 3 granularities) runs in a thread pool for parallelism.
         """
         logger.info("Background backup cache refresh started.")
         try:
-            # ---- Capacity warm (existing) -----------------------------------
+            # ---- Capacity + Nutanix-snapshot warm ---------------------------
             for tr in cache_time_ranges():
                 start_ts, end_ts = time_range_to_bounds(tr)
+                ns_start, ns_end = self._nsnap_effective_bounds(tr)
                 for dc_code in self.dc_list:
                     try:
                         key_nb = f"dc_netbackup:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
                         data_nb = self._fetch_dc_netbackup_pools(dc_code, start_ts, end_ts)
-                        cache.set(key_nb, data_nb)
+                        cache.set_with_stale(
+                            key_nb, data_nb,
+                            fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+                            stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+                        )
                     except Exception as exc:
                         logger.warning("refresh_backup_cache (NetBackup) failed for DC %s: %s", dc_code, exc)
 
                     try:
                         key_z = f"dc_zerto:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
                         data_z = self._fetch_dc_zerto_sites(dc_code, start_ts, end_ts)
-                        cache.set(key_z, data_z)
+                        cache.set_with_stale(
+                            key_z, data_z,
+                            fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+                            stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+                        )
                     except Exception as exc:
                         logger.warning("refresh_backup_cache (Zerto) failed for DC %s: %s", dc_code, exc)
 
                     try:
                         key_v = f"dc_veeam:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
                         data_v = self._fetch_dc_veeam_repositories(dc_code, start_ts, end_ts)
-                        cache.set(key_v, data_v)
+                        cache.set_with_stale(
+                            key_v, data_v,
+                            fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+                            stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+                        )
                     except Exception as exc:
                         logger.warning("refresh_backup_cache (Veeam) failed for DC %s: %s", dc_code, exc)
 
-            # ---- Jobs warm (new in Phase 3 A1) ------------------------------
+                    try:
+                        key_ns = f"dc_nutanix_snap:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+                        data_ns = self._fetch_dc_nutanix_snapshots(dc_code, ns_start, ns_end)
+                        cache.set_with_stale(
+                            key_ns, data_ns,
+                            fresh_ttl=self._NSNAP_FRESH_TTL,
+                            stale_ttl=self._NSNAP_STALE_TTL,
+                        )
+                    except Exception as exc:
+                        logger.warning("refresh_backup_cache (Nutanix snapshots) failed for DC %s: %s", dc_code, exc)
+
+            # Zerto license carries no time-range dimension in its cache key —
+            # warm once per DC per pass (not once per cache_time_ranges() window).
+            for dc_code in self.dc_list:
+                try:
+                    key_lic = f"dc_zerto_license:{dc_code}"
+                    data_lic = self._fetch_dc_zerto_license(dc_code)
+                    cache.set_with_stale(
+                        key_lic, data_lic,
+                        fresh_ttl=self._BACKUP_CAPACITY_FRESH_TTL,
+                        stale_ttl=self._BACKUP_CAPACITY_STALE_TTL,
+                    )
+                except Exception as exc:
+                    logger.warning("refresh_backup_cache (Zerto license) failed for DC %s: %s", dc_code, exc)
+
+            # ---- Jobs warm (Phase 3 A1) -------------------------------------
             self._warm_backup_jobs_cache()
 
             logger.info("Background backup cache refresh complete.")

@@ -219,9 +219,13 @@ def test_rebuild_customer_caches_for_customer_tracks_failures(monkeypatch):
 
     monkeypatch.setattr(svc, "get_customer_resources", _boom_resources)
     monkeypatch.setattr(svc, "get_customer_s3_vaults", lambda *_a, **_k: None)
+    # Unique-jobs warming (3 vendors) runs once per customer regardless of the
+    # cache_time_ranges() loop above — stub it out so this test stays focused
+    # on the resources/s3 failure-tracking behavior it was written to cover.
+    monkeypatch.setattr(svc, "get_customer_unique_jobs", lambda *_a, **_k: {})
     summary = svc._rebuild_customer_caches_for_customer("VIP Corp", cache_ttl=3600)
     assert summary["failed"] == 1
-    assert summary["ok"] == 1
+    assert summary["ok"] == 4  # s3 (1) + unique-jobs warm (3 vendors)
     assert summary["errors"][0]["target"] == "resources"
 
 
