@@ -721,6 +721,37 @@ def _build_export_sheets_for_user(
 _build_customer_export_sheets = _build_manager_export_sheets
 
 
+def _deletion_status_pill(row: dict):
+    """Status of a deletion, encoded in the app's semantic colors.
+
+    Silindi (green) = metrics stopped, actually gone · Gecikmiş (red) = planned
+    date passed but still running · Planlandı (amber) = scheduled, not yet due.
+    """
+    actual = row.get("actual_delete_date")
+    if actual:
+        return dmc.Badge(f"Silindi · {actual}", color="teal", variant="light",
+                         radius="sm", size="sm")
+    if row.get("overdue"):
+        return dmc.Badge("Gecikmiş", color="red", variant="filled", radius="sm", size="sm")
+    return dmc.Badge("Planlandı", color="yellow", variant="light", radius="sm", size="sm")
+
+
+def _deleted_stat(value, label: str, color: str):
+    """Compact stat chip for the panel header (number over caption)."""
+    return html.Div(
+        style={
+            "display": "flex", "flexDirection": "column", "alignItems": "flex-end",
+            "lineHeight": 1.1, "minWidth": "58px",
+        },
+        children=[
+            html.Span(str(value), style={"color": color, "fontSize": "1.35rem",
+                                         "fontWeight": 800, "fontFamily": "DM Sans"}),
+            html.Span(label, style={"color": "#A3AED0", "fontSize": "0.68rem",
+                                    "textTransform": "uppercase", "letterSpacing": "0.04em"}),
+        ],
+    )
+
+
 def _deleted_vms_panel(payload: dict | None):
     """All-time deleted VMs with the 3 deletion dates, read from the registry.
 
@@ -733,39 +764,59 @@ def _deleted_vms_panel(payload: dict | None):
     total = int((payload or {}).get("total") or len(rows))
     overdue = int((payload or {}).get("overdue") or 0)
 
-    badges = [dmc.Badge(f"{total} makine", color="gray", variant="light", size="sm")]
+    stats = [_deleted_stat(total, "makine", "#2B3674")]
     if overdue:
-        badges.append(dmc.Badge(f"{overdue} gecikmiş", color="red", variant="light", size="sm"))
+        stats.append(_deleted_stat(overdue, "gecikmiş", "#EE5D50"))
+
+    _date = lambda v: html.Span(v, style={"color": "#2B3674", "fontVariantNumeric": "tabular-nums"}) if v else html.Span("—", style={"color": "#A3AED0"})
+    _plat = lambda p: dmc.Badge(("Nutanix" if p == "nutanix" else "VMware"),
+                                color=("grape" if p == "nutanix" else "indigo"),
+                                variant="dot", size="sm")
 
     trs = []
     for r in rows:
         is_overdue = bool(r.get("overdue"))
-        actual = r.get("actual_delete_date") or ("gecikmiş — hâlâ çalışıyor" if is_overdue else "silinmedi")
         trs.append(html.Tr(
-            style={"backgroundColor": "rgba(255,80,80,0.06)"} if is_overdue else None,
+            style={"backgroundColor": "rgba(238,93,80,0.05)"} if is_overdue else None,
             children=[
-                html.Td(r.get("vm_name") or ""),
-                html.Td(r.get("request_date") or "—"),
-                html.Td(r.get("planned_date") or "—"),
-                html.Td(actual),
+                html.Td(html.Span(r.get("vm_name") or "", style={"fontWeight": 600, "color": "#2B3674"})),
+                html.Td(_plat(r.get("platform"))),
+                html.Td(_date(r.get("request_date"))),
+                html.Td(_date(r.get("planned_date"))),
+                html.Td(_deletion_status_pill(r)),
             ],
         ))
 
     return html.Div(
-        style={"marginTop": "16px"},
+        className="nexus-card",
+        style={"padding": "20px", "marginTop": "18px"},
         children=[
-            dmc.Group(justify="space-between", align="center", mb="xs", children=[
-                dmc.Text("Silinen Makineler (tüm zamanlar)", size="sm", fw=600, c="#2B3674"),
-                dmc.Group(gap="xs", children=badges),
-            ]),
+            html.Div(
+                style={"display": "flex", "justifyContent": "space-between",
+                       "alignItems": "flex-start", "gap": "16px"},
+                children=[
+                    html.Div(children=[
+                        html.Div("Silinen Makineler", style={
+                            "color": "#2B3674", "fontSize": "1rem", "fontWeight": 700,
+                            "fontFamily": "DM Sans"}),
+                        html.Div("Tüm zamanlar · planlanan silme tarihine göre sıralı", style={
+                            "color": "#A3AED0", "fontSize": "0.78rem", "fontFamily": "DM Sans"}),
+                    ]),
+                    html.Div(style={"display": "flex", "gap": "22px"}, children=stats),
+                ],
+            ),
+            html.Div(style={"height": "2px", "width": "32px", "borderRadius": "2px",
+                            "margin": "14px 0",
+                            "background": "linear-gradient(90deg,#EE5D50,#FFB547)"}),
             dmc.Text(
-                "Addaki tarih = planlanan silme; talep tarihi = 2 hafta öncesi; "
+                "Ad sonundaki tarih = planlanan silme; talep = 2 hafta öncesi; "
                 "gerçek silinme = metrik akışının kesildiği an.",
-                size="xs", c="dimmed", mb="sm",
+                size="xs", c="#A3AED0", mb="sm",
             ),
             _maybe_paginated_table(
-                ["Makine adı", "Talep tarihi", "Planlanan silme", "Gerçek silinme"],
+                ["Makine adı", "Platform", "Talep tarihi", "Planlanan silme", "Durum"],
                 trs,
+                comfortable=True,
             ),
         ],
     )

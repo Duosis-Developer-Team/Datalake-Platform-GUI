@@ -22,14 +22,23 @@ _PLATFORM_LABEL = {"vmware": "VMware", "nutanix": "Nutanix"}
 _TABLE_ID = "unmapped-vm-table"
 
 
-def _kpi(label: str, value, icon: str, color: str) -> dmc.Paper:
+def _kpi(label: str, value, icon: str, accent: str) -> dmc.Paper:
     return dmc.Paper(
         p="md", radius="md", withBorder=True,
+        style={
+            "boxShadow": "0 4px 24px rgba(43,54,116,0.06)",
+            "border": "1px solid rgba(163,174,208,0.18)",
+            "borderLeft": f"4px solid {accent}",
+            "background": "#ffffff",
+        },
         children=dmc.Group(gap="sm", children=[
-            dmc.ThemeIcon(DashIconify(icon=icon, width=22), size=40, radius="md",
-                          variant="light", color=color),
+            dmc.ThemeIcon(
+                DashIconify(icon=icon, width=22), size=42, radius="md", variant="light",
+                style={"background": f"{accent}1A", "color": accent},
+            ),
             dmc.Stack(gap=0, children=[
-                dmc.Text(str(value), fw=700, size="xl", c="#2B3674"),
+                dmc.Text(str(value), fw=800, size="xl", c="#2B3674",
+                         style={"fontFamily": "DM Sans", "lineHeight": 1.1}),
                 dmc.Text(label, size="xs", c="#A3AED0"),
             ]),
         ]),
@@ -75,9 +84,9 @@ def build_layout(tr: dict | None = None, visible_sections=None) -> html.Div:
     ])
 
     kpis = dmc.SimpleGrid(cols={"base": 1, "sm": 3}, spacing="md", mb="md", children=[
-        _kpi("Toplam eşleşmeyen", total, "solar:server-square-bold-duotone", "indigo"),
-        _kpi("Alias eksik (düzeltilebilir)", alias_gap, "solar:pen-new-square-bold-duotone", "orange"),
-        _kpi("Sahipsiz", orphan, "solar:ghost-bold-duotone", "gray"),
+        _kpi("Toplam eşleşmeyen", total, "solar:server-square-bold-duotone", "#4318FF"),
+        _kpi("Alias eksik (düzeltilebilir)", alias_gap, "solar:pen-new-square-bold-duotone", "#FFB547"),
+        _kpi("Sahipsiz", orphan, "solar:ghost-bold-duotone", "#A3AED0"),
     ])
 
     hint = dmc.Alert(
@@ -105,30 +114,49 @@ def _vm_table(rows: list[dict]) -> html.Div:
     if not rows:
         return dmc.Alert(color="teal", variant="light", title="Eşleşmeyen makine yok",
                          children="Seçili zaman aralığında hiçbir sahipsiz sanal makine bulunamadı.")
-    return dmc.Paper(p="md", radius="md", withBorder=True, children=[
-        dmc.Text("Sütun başlıklarından filtreleyin, başlığa tıklayarak sıralayın.",
-                 size="xs", c="dimmed", mb="sm"),
+    return html.Div(className="nexus-card", style={"padding": "20px"}, children=[
+        html.Div(style={"height": "2px", "width": "32px", "borderRadius": "2px",
+                        "marginBottom": "12px",
+                        "background": "linear-gradient(90deg,#4318FF,#FFB547)"}),
+        dmc.Text("Sütun başlıklarından filtreleyin, başlığa tıklayarak sıralayın. "
+                 "Amber satırlar alias eklenerek bir müşteriye bağlanabilir.",
+                 size="xs", c="#A3AED0", mb="sm"),
         dash_table.DataTable(
             id=_TABLE_ID,
             data=_table_rows(rows),
             columns=[
-                {"name": "Tahmini sahip", "id": "guessed_owner"},
-                {"name": "Makine adı", "id": "name"},
-                {"name": "Platform", "id": "platform"},
-                {"name": "Neden", "id": "reason"},
+                {"name": "TAHMİNİ SAHİP", "id": "guessed_owner"},
+                {"name": "MAKİNE ADI", "id": "name"},
+                {"name": "PLATFORM", "id": "platform"},
+                {"name": "NEDEN", "id": "reason"},
             ],
             page_size=25,
             filter_action="native",
             sort_action="native",
             sort_mode="multi",
+            style_as_list_view=True,
             style_table={"overflowX": "auto"},
-            style_cell={"fontSize": "12px", "padding": "6px 8px", "textAlign": "left",
-                        "fontFamily": "Inter, system-ui, sans-serif"},
-            style_header={"backgroundColor": "#F4F7FE", "color": "#2B3674",
-                          "fontWeight": "700", "border": "none"},
+            style_cell={"fontSize": "12.5px", "padding": "10px 12px", "textAlign": "left",
+                        "fontFamily": "DM Sans, Inter, system-ui, sans-serif",
+                        "color": "#2B3674", "border": "none",
+                        "borderBottom": "1px solid #eef1f4"},
+            style_header={"backgroundColor": "#F4F7FE", "color": "#707EAE",
+                          "fontWeight": "700", "fontSize": "10.5px",
+                          "textTransform": "uppercase", "letterSpacing": "0.04em",
+                          "border": "none", "padding": "10px 12px"},
+            style_cell_conditional=[
+                {"if": {"column_id": "name"}, "fontWeight": "600"},
+                {"if": {"column_id": "guessed_owner"}, "color": "#707EAE"},
+            ],
             style_data_conditional=[
                 {"if": {"filter_query": "{reason} = 'Alias eksik'"},
-                 "backgroundColor": "rgba(255,159,64,0.08)"},
+                 "backgroundColor": "rgba(255,181,71,0.07)"},
+                {"if": {"filter_query": "{reason} = 'Alias eksik'", "column_id": "reason"},
+                 "color": "#B26A00", "fontWeight": "700"},
+                {"if": {"filter_query": "{reason} = 'Sahipsiz'", "column_id": "reason"},
+                 "color": "#A3AED0", "fontWeight": "600"},
+                {"if": {"state": "active"},
+                 "backgroundColor": "rgba(67,24,255,0.06)", "border": "none"},
             ],
         ),
     ])
