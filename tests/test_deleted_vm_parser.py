@@ -7,7 +7,11 @@ any real customer data.
 import datetime as dt
 import unittest
 
-from shared.customer.deleted_vm_parser import DeletedVmInfo, parse_deleted_vm
+from shared.customer.deleted_vm_parser import (
+    DeletedVmInfo,
+    build_registry_row,
+    parse_deleted_vm,
+)
 
 
 class TestParseDeletedVm(unittest.TestCase):
@@ -77,6 +81,36 @@ class TestParseDeletedVm(unittest.TestCase):
     def test_non_underscore_prefixed_is_not_deleted(self):
         # a normal live VM that merely happens to end in a date is NOT a deleted VM
         self.assertIsNone(parse_deleted_vm("Ornek_Ltd-Report_01_01_2026"))
+
+
+class TestBuildRegistryRow(unittest.TestCase):
+    TODAY = dt.date(2026, 7, 16)
+
+    def test_still_emitting_has_null_actual(self):
+        # last metric yesterday -> still running -> actual_delete_date None (overdue if planned passed)
+        row = build_registry_row(
+            "vmware", "_Ornek_Ltd-App_Silinecek_01_05_2026",
+            first_seen=dt.date(2026, 4, 17), last_seen=dt.date(2026, 7, 15), today=self.TODAY,
+        )
+        self.assertEqual(row["platform"], "vmware")
+        self.assertEqual(row["planned_date"], dt.date(2026, 5, 1))
+        self.assertEqual(row["request_date"], dt.date(2026, 4, 17))
+        self.assertEqual(row["first_seen"], dt.date(2026, 4, 17))
+        self.assertIsNone(row["actual_delete_date"])  # still emitting
+
+    def test_stopped_emitting_sets_actual(self):
+        # no metrics for >3 days -> actually deleted; actual = last_seen
+        row = build_registry_row(
+            "nutanix", "_Deneme_As-Db_Silinecek_10_03_2026",
+            first_seen=dt.date(2026, 2, 24), last_seen=dt.date(2026, 3, 20), today=self.TODAY,
+        )
+        self.assertEqual(row["actual_delete_date"], dt.date(2026, 3, 20))
+
+    def test_unparseable_name_returns_none(self):
+        self.assertIsNone(build_registry_row(
+            "vmware", "_Globex-NoDateHere",
+            first_seen=dt.date(2026, 1, 1), last_seen=dt.date(2026, 1, 2), today=self.TODAY,
+        ))
 
 
 if __name__ == "__main__":

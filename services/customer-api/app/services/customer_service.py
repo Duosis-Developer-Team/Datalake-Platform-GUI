@@ -64,6 +64,17 @@ BATCH_WARM_COMPLETED_KEY = "customer_warm_batch:last_completed_at"
 HOT_WARM_STATUS_KEY = "customer_warm_hot:status"
 
 
+def _iso_or_none(value: Any) -> str | None:
+    """date/datetime -> 'YYYY-MM-DD' string; None/blank -> None."""
+    if value is None:
+        return None
+    try:
+        return value.isoformat()
+    except AttributeError:
+        s = str(value).strip()
+        return s or None
+
+
 class QueryTimeoutError(Exception):
     """PostgreSQL statement timeout; result must not be cached."""
 
@@ -514,6 +525,119 @@ class CustomerService:
         owners = owner_matchers_from_mappings(mapping_rows, display_names=account_names)
 
         return build_unmapped_payload(names_with_platform, owners, account_keys)
+
+    def refresh_deleted_vm_registry(self) -> dict:
+        """Rebuild gui_deleted_vm_registry from an all-time metric scan (scheduler).
+
+        The leading-'_' scan is a full seq-scan (~84s) that exceeds the request-path
+        60s timeout, so this runs with an elevated per-transaction timeout and is
+        invoked only from the background scheduler — never on a request.
+        """
+        import datetime as _dt
+
+        from app.db.queries import deleted_vm as dvq
+        from shared.customer.deleted_vm_parser import build_registry_row
+
+        if self._pool is None:
+            return {"ok": False, "reason": "datalake pool unavailable"}
+        webui = self._webui
+        if webui is None or not getattr(webui, "is_available", False):
+            return {"ok": False, "reason": "webui pool unavailable"}
+
+        today = _dt.date.today()
+        scanned = 0
+        upserts: list[dict[str, Any]] = []
+        try:
+            with self._get_connection() as conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SET LOCAL statement_timeout = '300s'")  # this txn only; scan ~85-255s under load
+                        for sql, platform in (
+                            (dvq.DELETED_VMWARE_ALLTIME, "vmware"),
+                            (dvq.DELETED_NUTANIX_ALLTIME, "nutanix"),
+                        ):
+                            cur.execute(sql)
+                            cols = [d[0] for d in cur.description]
+                            for r in cur.fetchall():
+                                rec = dict(zip(cols, r))
+                                scanned += 1
+                                row = build_registry_row(
+                                    platform,
+                                    str(rec.get("name") or ""),
+                                    rec.get("first_seen"),
+                                    rec.get("last_seen"),
+                                    today,
+                                )
+                                if row is not None:
+                                    upserts.append(row)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+        except (OperationalError, PoolError, InterfaceError) as exc:
+            logger.warning("Deleted-VM registry scan failed: %s", exc)
+            return {"ok": False, "reason": "scan failed", "scanned": scanned}
+
+        upserted = webui.execute_batch(dvq.UPSERT_DELETED_VM, upserts)
+        logger.info(
+            "Deleted-VM registry refreshed: scanned=%d parsed/upserted=%d", scanned, upserted
+        )
+        return {"ok": True, "scanned": scanned, "upserted": upserted}
+
+    def get_deleted_machines(self, customer_name: str) -> dict:
+        """All-time deleted VMs for a customer, read from the registry (instant).
+
+        Matches by the same `%display_name%` fallback the resources path uses, over
+        the tiny registry table (ILIKE is cheap here). Never raises — an empty
+        payload is returned if the registry is unavailable.
+        """
+        from app.db.queries import deleted_vm as dvq
+
+        empty = {"rows": [], "total": 0, "overdue": 0}
+        webui = self._webui
+        name = str(customer_name or "").strip()
+        if not name or webui is None or not getattr(webui, "is_available", False):
+            return empty
+
+        # Match the customer's resolved virtualization patterns (mapping rules +
+        # display-name fallback) — the same set the resources path uses — so the
+        # short VM prefix (e.g. _Acme-...) is matched, not the full legal name.
+        try:
+            patterns = self.resolve_source_patterns(name).ilike_patterns("virtualization")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Deleted-machines pattern resolve failed for %s: %s", name, exc)
+            patterns = []
+        if not patterns:
+            patterns = [f"%{name}%"]
+
+        try:
+            rows = webui.run_rows(dvq.LIST_DELETED_VMS_BY_PATTERNS, (patterns,))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Deleted-machines read failed for %s: %s", name, exc)
+            return empty
+
+        import datetime as _dt
+
+        today = _dt.date.today()
+        out: list[dict[str, Any]] = []
+        overdue = 0
+        for r in rows:
+            planned = r.get("planned_date")
+            actual = r.get("actual_delete_date")
+            # overdue = planned date passed AND the VM is still emitting (not deleted)
+            is_overdue = actual is None and planned is not None and planned < today
+            if is_overdue:
+                overdue += 1
+            out.append({
+                "vm_name": r.get("vm_name"),
+                "platform": r.get("platform"),
+                "customer": r.get("customer"),
+                "request_date": _iso_or_none(r.get("request_date")),
+                "planned_date": _iso_or_none(planned),
+                "actual_delete_date": _iso_or_none(actual),
+                "overdue": is_overdue,
+            })
+        return {"rows": out, "total": len(out), "overdue": overdue}
 
     def _load_customer_names_from_db(self) -> list[str]:
         """Distinct tenant names from NetBox inventory (active devices)."""

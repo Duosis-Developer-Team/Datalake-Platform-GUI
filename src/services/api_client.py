@@ -748,6 +748,21 @@ def get_unmapped_resources(tr: Optional[dict]) -> dict:
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_UNMAPPED)
 
 
+_EMPTY_DELETED_MACHINES = {"rows": [], "total": 0, "overdue": 0}
+
+
+def get_deleted_machines(name: str) -> dict:
+    """All-time deleted VMs for a customer (3 dates), read from the registry."""
+    enc = quote(name, safe="")
+    ck = f"api:deleted_machines:{enc}"
+
+    def fetch() -> dict:
+        data = _get_json(_get_client_cust(), f"/api/v1/customers/{enc}/deleted-machines")
+        return data if isinstance(data, dict) else _clone(_EMPTY_DELETED_MACHINES)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_DELETED_MACHINES)
+
+
 def execute_registered_query(key: str, params: str) -> dict:
     enc_key = quote(key, safe="")
     ck = f"api:query:{enc_key}:{json.dumps(params or '', ensure_ascii=False)}"

@@ -721,24 +721,51 @@ def _build_export_sheets_for_user(
 _build_customer_export_sheets = _build_manager_export_sheets
 
 
-def _deleted_vms_panel(deleted_names: list[str] | None):
-    """Names-only list for VMs whose name starts with underscore (removed inventory)."""
-    names = [n for n in (deleted_names or []) if n]
-    if not names:
+def _deleted_vms_panel(payload: dict | None):
+    """All-time deleted VMs with the 3 deletion dates, read from the registry.
+
+    Rows where the planned date has passed but the VM is still emitting metrics
+    ("overdue") are highlighted — the machines that should be gone but aren't.
+    """
+    rows = (payload or {}).get("rows") or []
+    if not rows:
         return html.Div()
+    total = int((payload or {}).get("total") or len(rows))
+    overdue = int((payload or {}).get("overdue") or 0)
+
+    badges = [dmc.Badge(f"{total} makine", color="gray", variant="light", size="sm")]
+    if overdue:
+        badges.append(dmc.Badge(f"{overdue} gecikmiş", color="red", variant="light", size="sm"))
+
+    trs = []
+    for r in rows:
+        is_overdue = bool(r.get("overdue"))
+        actual = r.get("actual_delete_date") or ("gecikmiş — hâlâ çalışıyor" if is_overdue else "silinmedi")
+        trs.append(html.Tr(
+            style={"backgroundColor": "rgba(255,80,80,0.06)"} if is_overdue else None,
+            children=[
+                html.Td(r.get("vm_name") or ""),
+                html.Td(r.get("request_date") or "—"),
+                html.Td(r.get("planned_date") or "—"),
+                html.Td(actual),
+            ],
+        ))
+
     return html.Div(
         style={"marginTop": "16px"},
         children=[
-            dmc.Text("Deleted VMs (name prefix _)", size="sm", fw=600, c="#2B3674", mb="xs"),
+            dmc.Group(justify="space-between", align="center", mb="xs", children=[
+                dmc.Text("Silinen Makineler (tüm zamanlar)", size="sm", fw=600, c="#2B3674"),
+                dmc.Group(gap="xs", children=badges),
+            ]),
             dmc.Text(
-                "These VMs are not included in the main list.",
-                size="xs",
-                c="dimmed",
-                mb="sm",
+                "Addaki tarih = planlanan silme; talep tarihi = 2 hafta öncesi; "
+                "gerçek silinme = metrik akışının kesildiği an.",
+                size="xs", c="dimmed", mb="sm",
             ),
             _maybe_paginated_table(
-                ["VM name"],
-                [html.Tr([html.Td(n)]) for n in sorted(names)],
+                ["Makine adı", "Talep tarihi", "Planlanan silme", "Gerçek silinme"],
+                trs,
             ),
         ],
     )
@@ -1181,7 +1208,6 @@ def _tab_classic(
     mem_gb = float(classic.get("memory_gb", 0) or 0)
     disk_gb = float(classic.get("disk_gb", 0) or 0)
     vm_list = classic.get("vm_list", []) or []
-    deleted = classic.get("deleted_vm_list", []) or []
 
     def row_fn(r):
         return html.Tr([
@@ -1262,7 +1288,6 @@ def _tab_classic(
                         numeric_col_indices=_classic_numeric_cols,
                         comfortable=True,
                     ),
-                    _deleted_vms_panel(deleted),
                 ],
             ),
         )
@@ -1301,7 +1326,6 @@ def _tab_hyperconv(
     mem_gb = float(hyperconv.get("memory_gb", 0) or 0)
     disk_gb = float(hyperconv.get("disk_gb", 0) or 0)
     vm_list = hyperconv.get("vm_list", []) or []
-    deleted = hyperconv.get("deleted_vm_list", []) or []
 
     def row_fn(r):
         return html.Tr([
@@ -1408,7 +1432,6 @@ def _tab_hyperconv(
                         numeric_col_indices=_hyperconv_numeric_cols,
                         comfortable=True,
                     ),
-                    _deleted_vms_panel(deleted),
                 ],
             ),
         )
@@ -1435,7 +1458,6 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None, crm_eff_
     mem_gb = float(pure.get("memory_gb", 0) or 0)
     disk_gb = float(pure.get("disk_gb", 0) or 0)
     vm_list = pure.get("vm_list", []) or []
-    deleted = pure.get("deleted_vm_list", []) or []
 
     def row_fn(r):
         return html.Tr([
@@ -1520,7 +1542,6 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None, crm_eff_
                             numeric_col_indices=_pure_nx_numeric_cols,
                             comfortable=True,
                         ),
-                        _deleted_vms_panel(deleted),
                     ],
                 ),
             ),
@@ -1535,7 +1556,6 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None, crm_eff_panel:
     mem_gb = float(power.get("memory_total_gb", 0) or 0)
     disk_gb = float(power.get("disk_total_gb", 0) or 0)
     vm_list = power.get("vm_list", []) or []
-    deleted = power.get("deleted_vm_list", []) or []
 
     def row_fn(r):
         return html.Tr([
@@ -1621,7 +1641,6 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None, crm_eff_panel:
                             numeric_col_indices=_power_numeric_cols,
                             comfortable=True,
                         ),
-                        _deleted_vms_panel(deleted),
                     ],
                 ),
             ),
@@ -2251,8 +2270,14 @@ def _build_virt_content(
     vm_outage_counts: dict | None,
     *,
     include_usage_vs_sold: bool,
+    deleted_machines: dict | None = None,
 ) -> html.Div:
-    """Nested virtualization tabs; sold-vs-CPU table optional (manager perspective only)."""
+    """Nested virtualization tabs; sold-vs-CPU table optional (manager perspective only).
+
+    A single all-time "Silinen Makineler" panel (3 dates, from the registry) is
+    appended below the platform tabs — it spans all platforms, so it is rendered
+    once here rather than per platform sub-tab.
+    """
     show_pure_tab = asset_has_usage(pure_nx)
     show_classic_tab = asset_has_usage(classic)
     show_hyperconv_tab = asset_has_usage(hyperconv)
@@ -2303,7 +2328,7 @@ def _build_virt_content(
 
     if virt_tab_defs:
         default_virt = virt_tab_defs[0][0]
-        return dmc.Tabs(
+        virt_body = dmc.Tabs(
             color="violet",
             variant="outline",
             radius="md",
@@ -2318,12 +2343,14 @@ def _build_virt_content(
                 ],
             ],
         )
-    return dmc.Alert(
-        color="gray",
-        variant="light",
-        title="No virtualization assets",
-        children="No provisioned compute instances were returned for this customer.",
-    )
+    else:
+        virt_body = dmc.Alert(
+            color="gray",
+            variant="light",
+            title="No virtualization assets",
+            children="No provisioned compute instances were returned for this customer.",
+        )
+    return html.Div([virt_body, _deleted_vms_panel(deleted_machines)])
 
 
 def _crm_rows_outside_virt_backup(eff_rows: list | None) -> list:
@@ -2523,6 +2550,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
             "virt": _build_virt_content(
                 classic, hyperconv, pure_nx, power_asset, vm_outage_counts,
                 include_usage_vs_sold=is_mgr,
+                deleted_machines=api.get_deleted_machines(name),
             ),
             "avail": avail_panel,
             "backup": _build_backup_tabs(

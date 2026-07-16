@@ -67,3 +67,39 @@ def _extract_customer(raw: str) -> str | None:
         return None
     prefix = body.split("-", 1)[0].strip()
     return prefix or None
+
+
+# A deleted VM is considered "actually gone" once it has emitted no metrics for
+# this many days (last_seen becomes the actual deletion date). Below the floor it
+# is still running (planned but not yet deleted -> actual_delete_date NULL).
+REGISTRY_STALE_DAYS = 3
+
+
+def build_registry_row(
+    platform: str,
+    name: str,
+    first_seen: dt.date | None,
+    last_seen: dt.date | None,
+    today: dt.date,
+    stale_days: int = REGISTRY_STALE_DAYS,
+) -> dict | None:
+    """Registry upsert row for one deletion-marked VM, or None if unparseable.
+
+    actual_delete_date = last_seen once the VM has stopped emitting for
+    `stale_days`; otherwise NULL (planned but still running — the overdue case).
+    """
+    info = parse_deleted_vm(name)
+    if info is None:
+        return None
+    still_emitting = last_seen is not None and (today - last_seen).days <= stale_days
+    actual = None if still_emitting else last_seen
+    return {
+        "platform": platform,
+        "vm_name": name,
+        "customer": info.customer,
+        "request_date": info.request_date,
+        "planned_date": info.planned_date,
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "actual_delete_date": actual,
+    }
