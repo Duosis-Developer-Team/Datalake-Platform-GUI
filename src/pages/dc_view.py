@@ -60,12 +60,16 @@ from src.components.sellable_constraint_viz import (
 from src.components.header import create_detail_header
 from src.components.s3_panel import build_dc_s3_panel
 from src.components.backup_panel import (
+    build_application_backup_section,
+    build_image_backup_section,
     build_netbackup_panel,
-    build_zerto_panel,
+    build_replication_section,
     build_veeam_panel,
+    build_zerto_panel,
 )
 # noqa: F401 — import for side effect (registers backup-jobs callbacks)
 from src.components import backup_jobs_section  # noqa: F401
+from shared.backup.policy_classification import load_policy_panel_mapping
 from src.services import sla_service
 from src.utils.dc_display import format_dc_display_name, resolve_dc_display_from_summary
 from src.components.dc_availability_panel import build_dc_availability_panel
@@ -5188,16 +5192,19 @@ def build_dc_view(
                 "nb": lambda: api.get_dc_netbackup_pools(dc_id, tr),
                 "zerto": lambda: api.get_dc_zerto_sites(dc_id, tr),
                 "veeam": lambda: api.get_dc_veeam_repos(dc_id, tr),
+                "zerto_license": lambda: api.get_dc_zerto_license(dc_id),
             }
         )
         nb_data = backup_batch["nb"]
         zerto_data = backup_batch["zerto"]
         veeam_data = backup_batch["veeam"]
+        zerto_license_data = backup_batch["zerto_license"]
         _log_dc_build_phase(str(dc_id), "backup", t_backup)
     else:
         nb_data = {"pools": []}
         zerto_data = {"sites": []}
         veeam_data = {"repos": []}
+        zerto_license_data = {"has_license": False, "licenses": [], "sites": [], "summary": {}}
     backup_ms = round((time.perf_counter() - t_backup) * 1000, 1)
 
     export_sheets = (
@@ -5280,8 +5287,12 @@ def build_dc_view(
     has_zerto = bool(zerto_data.get("sites"))
     has_veeam = bool(veeam_data.get("repos"))
     has_netbackup = bool(nb_data.get("pools"))
-    has_nutanix_backup = False
-    has_backup = has_zerto or has_veeam or has_netbackup or has_nutanix_backup
+    has_zerto_license = bool((zerto_license_data or {}).get("has_license"))
+    has_nutanix_backup = False  # Nutanix snapshot panel not on this branch yet
+    has_image = has_netbackup or has_nutanix_backup
+    has_application = has_netbackup
+    has_replication = has_zerto or has_veeam or has_zerto_license
+    has_backup = has_image or has_application or has_replication
 
     # S3 presence already computed above
     # has_s3 = bool(s3_data.get("pools"))
@@ -5460,7 +5471,7 @@ def build_dc_view(
                     ),
                 ) if show_virt else None,
 
-                # Backup (nested tabs)
+                # Backup & Replication (category tabs: Image / Application / Replication)
                 dmc.TabsPanel(
                     value="backup",
                     children=(
@@ -5474,60 +5485,72 @@ def build_dc_view(
                                 color="green",
                                 variant="outline",
                                 radius="md",
-                                value="zerto" if has_zerto else "veeam" if has_veeam else "netbackup",
+                                value=(
+                                    "image"
+                                    if has_image
+                                    else "application"
+                                    if has_application
+                                    else "replication"
+                                ),
                                 children=[
                                     dmc.TabsList(
                                         children=[
-                                            dmc.TabsTab("Zerto", value="zerto") if has_zerto else None,
-                                            dmc.TabsTab("Veeam", value="veeam") if has_veeam else None,
-                                            dmc.TabsTab("NetBackup", value="netbackup") if has_netbackup else None,
-                                            dmc.TabsTab("Nutanix", value="nutanix") if has_nutanix_backup else None,
+                                            dmc.TabsTab("Image Backup", value="image")
+                                            if has_image
+                                            else None,
+                                            dmc.TabsTab("Application Backup", value="application")
+                                            if has_application
+                                            else None,
+                                            dmc.TabsTab("Replication", value="replication")
+                                            if has_replication
+                                            else None,
                                         ]
                                     ),
                                     dmc.TabsPanel(
-                                        value="zerto",
+                                        value="image",
                                         pt="lg",
-                                        children=dmc.Stack(
-                                            gap="lg",
-                                            children=[
-                                                html.Div(
-                                                    id="backup-zerto-panel",
-                                                    children=build_zerto_panel(zerto_data, None) if has_zerto else html.Div(),
-                                                ),
-                                            ],
+                                        children=build_image_backup_section(
+                                            nb_data=nb_data,
+                                            policy_type_options=list(
+                                                load_policy_panel_mapping().get(
+                                                    "image_policy_types"
+                                                )
+                                                or ["VMWARE"]
+                                            ),
+                                            has_netbackup=has_netbackup,
+                                            has_nutanix=has_nutanix_backup,
                                         ),
-                                    ) if has_zerto else None,
+                                    )
+                                    if has_image
+                                    else None,
                                     dmc.TabsPanel(
-                                        value="veeam",
+                                        value="application",
                                         pt="lg",
-                                        children=dmc.Stack(
-                                            gap="lg",
-                                            children=[
-                                                html.Div(
-                                                    id="backup-veeam-panel",
-                                                    children=build_veeam_panel(veeam_data, None) if has_veeam else html.Div(),
-                                                ),
-                                            ],
+                                        children=build_application_backup_section(
+                                            nb_data=nb_data,
+                                            policy_type_options=list(
+                                                load_policy_panel_mapping().get(
+                                                    "application_policy_types"
+                                                )
+                                                or []
+                                            ),
                                         ),
-                                    ) if has_veeam else None,
+                                    )
+                                    if has_application
+                                    else None,
                                     dmc.TabsPanel(
-                                        value="netbackup",
+                                        value="replication",
                                         pt="lg",
-                                        children=dmc.Stack(
-                                            gap="lg",
-                                            children=[
-                                                html.Div(
-                                                    id="backup-netbackup-panel",
-                                                    children=build_netbackup_panel(nb_data, None) if has_netbackup else html.Div(),
-                                                ),
-                                            ],
+                                        children=build_replication_section(
+                                            veeam_data=veeam_data,
+                                            zerto_data=zerto_data,
+                                            zerto_license=zerto_license_data,
+                                            has_veeam=has_veeam,
+                                            has_zerto=has_zerto,
                                         ),
-                                    ) if has_netbackup else None,
-                                    dmc.TabsPanel(
-                                        value="nutanix",
-                                        pt="lg",
-                                        children=_build_backup_subtab("Nutanix"),
-                                    ) if has_nutanix_backup else None,
+                                    )
+                                    if has_replication
+                                    else None,
                                 ],
                             ),
                         ],

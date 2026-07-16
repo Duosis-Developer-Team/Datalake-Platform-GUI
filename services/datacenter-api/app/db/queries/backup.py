@@ -126,6 +126,49 @@ ORDER BY 1, 2, 3, 4, 5
 """
 
 
+# Zerto license — latest row per zerto_host (global snapshot; DC attribution
+# is applied in the service layer via sites_usage JSON SiteName fields).
+# Params: none (DISTINCT ON latest overall; hosts collect continuously).
+ZERTO_LICENSE_LATEST = """
+SELECT DISTINCT ON (zerto_host)
+    collection_timestamp,
+    zerto_host,
+    id,
+    name,
+    expirationdate,
+    license_key,
+    license_type,
+    is_valid,
+    max_vms,
+    total_vms_count,
+    sites_usage,
+    days_until_expiry
+FROM public.raw_zerto_license_metrics
+ORDER BY zerto_host, collection_timestamp DESC
+"""
+
+# Optional time-bounded variant (warm/cache windows).
+# Params: (start_ts, end_ts)
+ZERTO_LICENSE_LATEST_IN_RANGE = """
+SELECT DISTINCT ON (zerto_host)
+    collection_timestamp,
+    zerto_host,
+    id,
+    name,
+    expirationdate,
+    license_key,
+    license_type,
+    is_valid,
+    max_vms,
+    total_vms_count,
+    sites_usage,
+    days_until_expiry
+FROM public.raw_zerto_license_metrics
+WHERE collection_timestamp BETWEEN %s AND %s
+ORDER BY zerto_host, collection_timestamp DESC
+"""
+
+
 # Veeam -----------------------------------------------------------------------
 
 # Latest Veeam repository state per repository ID within a given time range.

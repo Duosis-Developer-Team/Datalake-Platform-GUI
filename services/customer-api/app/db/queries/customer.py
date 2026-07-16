@@ -596,6 +596,50 @@ SELECT
 FROM filtered
 """
 
+# Category-split NetBackup billing summary (image vs application).
+# Params: (workload_pattern, start_ts, end_ts, image_policy_types[])
+# image_policy_types is a text[] of policy types classified as image (e.g. {'VMWARE'}).
+CUSTOMER_NETBACKUP_BACKUP_SUMMARY_BY_CATEGORY = """
+WITH filtered AS (
+    SELECT
+        kilobytestransferred,
+        dedupratio,
+        CASE
+            WHEN UPPER(COALESCE(NULLIF(policytype, ''), '')) = ANY(%s)
+            THEN 'image'
+            ELSE 'application'
+        END AS category
+    FROM public.raw_netbackup_jobs_metrics
+    WHERE workloaddisplayname ILIKE %s
+      AND jobtype = 'BACKUP'
+      AND percentcomplete = 100
+      AND collection_timestamp BETWEEN %s AND %s
+)
+SELECT
+    category,
+    COALESCE(CAST(SUM(kilobytestransferred) / 1024.0 / 1024.0 / 1024.0 AS NUMERIC(20, 2)), 0) AS pre_dedup_gib,
+    COALESCE(
+        CAST(SUM(kilobytestransferred / NULLIF(dedupratio, 0)) / 1024.0 / 1024.0 / 1024.0 AS NUMERIC(20, 2)),
+        0
+    ) AS post_dedup_gib,
+    COALESCE(CAST(AVG(NULLIF(dedupratio, 0)) AS NUMERIC(20, 2)), 1) || 'x' AS deduplication_factor
+FROM filtered
+GROUP BY category
+ORDER BY category
+"""
+
+# Distinct policy types for a customer NetBackup workload (for UI MultiSelect).
+# Params: (workload_pattern, start_ts, end_ts)
+CUSTOMER_NETBACKUP_POLICY_TYPES = """
+SELECT DISTINCT COALESCE(NULLIF(policytype, ''), 'Unknown') AS policytype
+FROM public.raw_netbackup_jobs_metrics
+WHERE workloaddisplayname ILIKE %s
+  AND jobtype = 'BACKUP'
+  AND percentcomplete = 100
+  AND collection_timestamp BETWEEN %s AND %s
+ORDER BY 1
+"""
+
 CUSTOMER_ZERTO_PROVISIONED_STORAGE = """
 WITH latest AS (
     SELECT DISTINCT ON (name)
