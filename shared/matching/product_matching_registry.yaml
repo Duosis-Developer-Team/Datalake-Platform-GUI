@@ -1,0 +1,297 @@
+# CRM product ↔ infrastructure matching registry (ADR-0024).
+# Keys are CRM productnumber (000BLT-*). match_status:
+#   capacity                  — compare CRM sold to infra via panel_key / tables
+#   documented                — count/license/bandwidth; no capacity match this phase
+#   sold_noted_customer_phase — licenses; global sold only until customer pages
+#   crm_only                  — CRM data only / no infra source
+
+version: 1
+description: Seeded from All Products-Operation Excel + live bulutlake verification 2026-07-16
+
+products:
+  # ---- Hyperconverged virt (Loki Virtual Machines / Nutanix) ----
+  "000BLT-46":
+    name: Hyperconverged Mimari Intel CPU
+    usage_source: Loki - Virutal Machines
+    matching_rule: Hyperconverged Sunucu cpu totali
+    match_status: capacity
+    panel_key: virt_hyperconverged_cpu
+    family: virt_hyperconverged
+    infra_tables: [nutanix_vm_metrics, cluster_metrics]
+  "000BLT-52":
+    name: Hyperconverged Mimari Intel RAM
+    usage_source: Loki - Virutal Machines
+    matching_rule: Hyperconverged Sunucu ram totali
+    match_status: capacity
+    panel_key: virt_hyperconverged_ram
+    family: virt_hyperconverged
+    infra_tables: [nutanix_vm_metrics, cluster_metrics]
+  "000BLT-48":
+    name: Hyperconverged Mimari Intel Disk - SSD
+    usage_source: Loki - Virutal Machines
+    matching_rule: Hyperconverged Sunucu disk totali (cluster disk tipi)
+    match_status: capacity
+    panel_key: virt_hyperconverged_storage
+    family: virt_hyperconverged
+    infra_tables: [nutanix_vm_metrics]
+  "000BLT-50":
+    name: Hyperconverged Mimari Intel Disk - SSD Hybrid
+    usage_source: Loki - Virutal Machines
+    matching_rule: Hyperconverged Sunucu disk totali (cluster disk tipi)
+    match_status: capacity
+    panel_key: virt_hyperconverged_storage
+    family: virt_hyperconverged
+    infra_tables: [nutanix_vm_metrics]
+  "000BLT-47":
+    name: Hyperconverged Mimari Intel CPU - DR
+    usage_source: Loki - Virutal Machines
+    matching_rule: HC cpu x DR/Replica VM name patterns (NetBox)
+    match_status: capacity
+    panel_key: virt_hyperconverged_cpu
+    family: backup_replication
+    notes: Classify via global VM name patterns before virt billable
+    infra_tables: [nutanix_vm_metrics, discovery_netbox_virtualization_vm]
+  "000BLT-53":
+    name: Hyperconverged Mimari Intel RAM - DR
+    usage_source: Loki - Virutal Machines
+    matching_rule: HC ram x DR/Replica VM name patterns
+    match_status: capacity
+    family: backup_replication
+    infra_tables: [nutanix_vm_metrics, discovery_netbox_virtualization_vm]
+  "000BLT-51":
+    name: Hyperconverged Mimari Intel Disk - SSD Hybrid - DR
+    usage_source: Loki - Virutal Machines
+    matching_rule: HC disk x DR/Replica VM name patterns
+    match_status: capacity
+    family: backup_replication
+    infra_tables: [nutanix_vm_metrics, discovery_netbox_virtualization_vm]
+  "000BLT-45":
+    name: Hyperconverged İmaj Yedekleme Hizmeti
+    usage_source: Loki - Virutal Machines
+    matching_rule: Nutanix Backup imaj policy x gün x total hyperconverged disk
+    match_status: capacity
+    family: backup_nutanix
+    infra_tables: [nutanix_snapshot_schedule, nutanix_snapshot_schedule_metrics]
+
+  # ---- Classic virt (KM) ----
+  "000BLT-58":
+    name: Klasik Mimari Intel CPU
+    usage_source: Loki - Virutal Machines
+    matching_rule: Klasik Mimari Sunucu cpu totali (cluster ILIKE %KM%)
+    match_status: capacity
+    panel_key: virt_classic_cpu
+    family: virt_classic
+    infra_tables: [vm_metrics, cluster_metrics]
+  "000BLT-64":
+    name: Klasik Mimari Intel RAM
+    usage_source: Loki - Virutal Machines
+    matching_rule: Klasik Mimari Sunucu ram totali
+    match_status: capacity
+    panel_key: virt_classic_ram
+    family: virt_classic
+    infra_tables: [vm_metrics, cluster_metrics]
+  "000BLT-60":
+    name: Klasik Mimari Intel Disk - NVMe
+    usage_source: Loki - Virutal Machines
+    matching_rule: Klasik Mimari Sunucu disk totali
+    match_status: capacity
+    panel_key: virt_classic_storage
+    family: virt_classic
+    infra_tables: [vm_metrics]
+  "000BLT-201":
+    name: Klasik Mimari Intel Disk - SSD
+    usage_source: Loki - Virutal Machines
+    matching_rule: Klasik Mimari Sunucu disk totali
+    match_status: capacity
+    panel_key: virt_classic_storage
+    family: virt_classic
+    infra_tables: [vm_metrics]
+
+  # ---- NetBackup (Classic image) ----
+  "000BLT-203":
+    name: Klasik Mimari İmaj Yedekleme (Veritas Netbackup)
+    usage_source: netbackup
+    matching_rule: Netbackup imaj backuplar
+    match_status: capacity
+    panel_key: backup_netbackup_storage
+    family: backup_netbackup
+    infra_tables: [raw_netbackup_disk_pools_metrics, raw_netbackup_jobs_metrics]
+  "000BLT-142":
+    name: Uygulama Yedekleme Hizmeti (Veritas NetBackup)
+    usage_source: netbackup
+    matching_rule: netbackuptan alınan uygulama yedekleri
+    match_status: capacity
+    panel_key: backup_netbackup_storage
+    family: backup_netbackup
+    infra_tables: [raw_netbackup_jobs_metrics]
+
+  # ---- S3 ----
+  "000BLT-55":
+    name: IBM ICOS S3 Ankara
+    usage_source: s3 endpoint
+    matching_rule: s3 üzerindeki bucket bilgileri (pool DC14)
+    match_status: capacity
+    panel_key: storage_s3_ankara
+    family: storage_s3
+    infra_tables: [raw_s3icos_pool_metrics]
+  "000BLT-56":
+    name: IBM ICOS S3 İstanbul
+    usage_source: s3 endpoint
+    matching_rule: s3 üzerindeki bucket bilgileri (pool DC13)
+    match_status: capacity
+    panel_key: storage_s3_istanbul
+    family: storage_s3
+    infra_tables: [raw_s3icos_pool_metrics]
+  "000BLT-57":
+    name: IBM ICOS S3 Hizmeti
+    usage_source: s3 endpoint
+    matching_rule: s3 üzerindeki bucket bilgileri
+    match_status: documented
+    family: storage_s3
+    infra_tables: [raw_s3icos_pool_metrics]
+
+  # ---- SAP / Power ----
+  "000BLT-100":
+    name: SAP Intel HANA CPU
+    usage_source: zabbix agent - ibm
+    matching_rule: IBM ortamlardan gelen sunucu bilgileri
+    match_status: capacity
+    panel_key: virt_intel_hana_cpu
+    family: virt_intel_hana
+    infra_tables: [raw_zabbix_hana_linux_host_metrics]
+  "000BLT-101":
+    name: SAP Intel HANA RAM
+    usage_source: zabbix agent - ibm
+    matching_rule: IBM ortamlardan gelen sunucu bilgileri
+    match_status: capacity
+    panel_key: virt_intel_hana_ram
+    family: virt_intel_hana
+    infra_tables: [raw_zabbix_hana_linux_host_metrics]
+  "000BLT-105":
+    name: SAP Power HANA CPU
+    usage_source: zabbix agent - ibm
+    matching_rule: IBM ortamlardan gelen sunucu bilgileri
+    match_status: capacity
+    panel_key: virt_power_hana_cpu
+    family: virt_power_hana
+    infra_tables: [ibm_lpar_general]
+  "000BLT-106":
+    name: SAP Power HANA RAM
+    usage_source: zabbix agent - ibm
+    matching_rule: IBM ortamlardan gelen sunucu bilgileri
+    match_status: capacity
+    panel_key: virt_power_hana_ram
+    family: virt_power_hana
+    infra_tables: [ibm_lpar_general]
+
+  # ---- Zerto / Veeam replication capacity SKUs ----
+  "000BLT-170":
+    name: Hyperconverged Mimari Zerto Replication vCPU
+    usage_source: Zerto - loki virtual machines
+    matching_rule: hyperconverged ortamda sadece replikasyon gönderen
+    match_status: capacity
+    family: backup_zerto
+    infra_tables: [raw_zerto_vm_metrics, raw_zerto_vpg_metrics]
+  "000BLT-174":
+    name: Klasik Mimari Zerto Replication vCpu
+    usage_source: Zerto - loki virtual machines
+    matching_rule: Klasik Mimari ortamda sadece replikasyon gönderen
+    match_status: capacity
+    family: backup_zerto
+    infra_tables: [raw_zerto_vm_metrics, raw_zerto_vpg_metrics]
+
+  # ---- Licenses (customer phase) ----
+  "000BLT-144":
+    name: Veeam Cloud Connect Backup Lisansı (Customer Does Not Have Veeam)
+    usage_source: Veeam Cloud Connect
+    matching_rule: Veeam Cloud connect jobları
+    match_status: sold_noted_customer_phase
+    family: backup_veeam
+    infra_tables: [raw_veeam_jobs_states]
+  "000BLT-145":
+    name: Veeam Cloud Connect Backup Lisansı (Customer Has Veeam)
+    usage_source: Veeam Cloud Connect
+    matching_rule: Veeam Cloud connect jobları
+    match_status: sold_noted_customer_phase
+    family: backup_veeam
+    infra_tables: [raw_veeam_jobs_states]
+  "000BLT-147":
+    name: Veeam Cloud Connect Replication Lisansı (Customer does not have Veeam)
+    usage_source: Veeam Cloud Connect
+    matching_rule: Veeam Cloud connect jobları
+    match_status: sold_noted_customer_phase
+    family: backup_veeam
+    infra_tables: [raw_veeam_jobs_states]
+  "000BLT-151":
+    name: Veeam Replikasyon Yönetim Hizmeti
+    usage_source: Veeam Cloud Connect
+    matching_rule: Veeam Cloud connect jobları
+    match_status: sold_noted_customer_phase
+    family: backup_veeam
+    infra_tables: [raw_veeam_jobs_states]
+  "000BLT-167":
+    name: Zerto Replikasyon Yönetim Hizmeti
+    usage_source: ""
+    matching_rule: CRM den gelen data
+    match_status: sold_noted_customer_phase
+    family: backup_zerto
+    infra_tables: [raw_zerto_vpg_metrics]
+  "000BLT-169":
+    name: Zerto Enterprise Cloud Edition License
+    usage_source: ""
+    matching_rule: CRM den gelen data
+    match_status: sold_noted_customer_phase
+    family: backup_zerto
+    infra_tables: []
+
+  # ---- Documented count/license ----
+  "000BLT-3":
+    name: Bulutistan Destek Hizmeti 7x24
+    usage_source: Sanallaştırma Ortamları
+    matching_rule: Hizmet kalemi x Sunucu sayısı
+    match_status: documented
+    family: managed
+    infra_tables: [vm_metrics, nutanix_vm_metrics]
+  "000BLT-136":
+    name: Standart Monitoring Hizmeti
+    usage_source: ""
+    matching_rule: CRM / monitoring
+    match_status: documented
+    family: managed
+    infra_tables: []
+  "000BLT-123":
+    name: Sophos UTM Sanal Dedike Firewall ve Yönetim Hizmeti - Per VM
+    usage_source: Loki- Virutal Firewall
+    matching_rule: Müşteri Sophos FW x Hizmet Adedi
+    match_status: documented
+    family: security
+    infra_tables: [discovery_netbox_inventory_device, discovery_netbox_virtualization_vm]
+  "000BLT-35":
+    name: FortiGate - Sanal Dedike Appliance - VM01 - ATP Lisans - Yönetim Dahil
+    usage_source: Loki- Virutal Firewall
+    matching_rule: Müşteri Forti FW x Hizmet Adedi
+    match_status: documented
+    family: security
+    infra_tables: [discovery_netbox_inventory_device]
+  "000BLT-91":
+    name: Public IPv4 Blok /29 - 8 Adet IP
+    usage_source: Loki- Customer Public IPS
+    matching_rule: Lokiden tanımlanan public ipler
+    match_status: documented
+    family: network
+    infra_tables: []
+    notes: No IPAM table in bulutlake yet
+  "000BLT-20":
+    name: Cross Connection Port Hizmeti
+    usage_source: Loki - Cross Connect
+    matching_rule: Hizmet adedi x CC tanımı
+    match_status: documented
+    family: network
+    infra_tables: []
+  "000BLT-67":
+    name: Data Switch Port ve SFP Hizmeti
+    usage_source: Loki - Data Swictch Port
+    matching_rule: Hizmet adedi x Port tanımı
+    match_status: documented
+    family: network
+    infra_tables: [discovery_netbox_inventory_device]

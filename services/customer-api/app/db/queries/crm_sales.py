@@ -214,6 +214,28 @@ GROUP BY d.productid, d.product_name, COALESCE(NULLIF(TRIM(d.uomid_name), ''), '
 ORDER BY entitled_amount_tl DESC NULLS LAST;
 """
 
+# Global sold by productnumber (catalog join). product_name on detail lines is often empty.
+SALES_SOLD_BY_PRODUCTNUMBER_GLOBAL = """
+SELECT
+    p.productnumber                         AS productnumber,
+    p.name                                  AS product_name,
+    COALESCE(NULLIF(TRIM(d.uomid_name), ''), NULLIF(TRIM(p.defaultuomid_name), ''), 'Adet')
+                                            AS resource_unit,
+    SUM(d.quantity)::double precision       AS sold_qty,
+    SUM(d.extendedamount)::double precision AS sold_amount_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+JOIN   discovery_crm_products p ON p.productid = d.productid
+WHERE  so.statecode IN (0, 1, 3, 4)
+  AND  p.productnumber IS NOT NULL
+  AND  TRIM(p.productnumber) <> ''
+GROUP BY
+    p.productnumber,
+    p.name,
+    COALESCE(NULLIF(TRIM(d.uomid_name), ''), NULLIF(TRIM(p.defaultuomid_name), ''), 'Adet')
+ORDER BY sold_qty DESC NULLS LAST;
+"""
+
 UNMAPPED_ENTITLED_PRODUCTS = """
 SELECT
     d.productid,

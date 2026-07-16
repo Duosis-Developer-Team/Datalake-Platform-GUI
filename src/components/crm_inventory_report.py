@@ -76,6 +76,20 @@ _UNMAPPED_COLUMNS = [
     {"name": "Amount TL", "id": "entitled_amount_tl"},
 ]
 
+_PRODUCT_MATCHING_COLUMNS = [
+    {"name": "SKU", "id": "productnumber"},
+    {"name": "Product", "id": "product_name"},
+    {"name": "Unit", "id": "resource_unit"},
+    {"name": "CRM Sold", "id": "crm_sold_fmt"},
+    {"name": "Status", "id": "match_status"},
+    {"name": "Usage Source", "id": "usage_source"},
+    {"name": "Matching Rule", "id": "matching_rule"},
+    {"name": "Panel", "id": "panel_key"},
+    {"name": "Infra Total", "id": "infra_total_fmt"},
+    {"name": "Infra Used", "id": "infra_used_fmt"},
+    {"name": "Tables", "id": "infra_tables_fmt"},
+]
+
 _TABLE_STYLE_CELL = {
     "fontSize": "12px",
     "fontFamily": "Inter, system-ui, sans-serif",
@@ -541,6 +555,148 @@ def build_crm_only_section(
     )
 
 
+def prepare_product_matching_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Format product matching registry row for DataTable / export."""
+    sold_qty = row.get("crm_sold_qty")
+    sold_tl = row.get("crm_sold_tl")
+    try:
+        sold_fmt = f"{float(sold_qty or 0):,.1f}"
+        if sold_tl is not None:
+            sold_fmt = f"{sold_fmt}\n({float(sold_tl):,.0f} TL)"
+    except (TypeError, ValueError):
+        sold_fmt = str(sold_qty or "")
+
+    def _num(v: Any) -> str:
+        if v is None:
+            return "—"
+        try:
+            return f"{float(v):,.1f}"
+        except (TypeError, ValueError):
+            return str(v)
+
+    tables = row.get("infra_tables") or []
+    return {
+        **row,
+        "crm_sold_fmt": sold_fmt,
+        "infra_total_fmt": _num(row.get("infra_total")),
+        "infra_used_fmt": _num(row.get("infra_used")),
+        "infra_tables_fmt": ", ".join(str(t) for t in tables) if tables else "—",
+        "panel_key": row.get("panel_key") or "—",
+        "usage_source": row.get("usage_source") or "—",
+        "matching_rule": row.get("matching_rule") or "—",
+    }
+
+
+def filter_product_matching_rows(
+    rows: list[dict[str, Any]],
+    status_filter: str | None,
+    search_query: str | None,
+) -> list[dict[str, Any]]:
+    mode = (status_filter or "all").lower()
+    out = list(rows or [])
+    if mode in ("capacity", "documented", "sold_noted_customer_phase", "crm_only"):
+        out = [r for r in out if str(r.get("match_status") or "") == mode]
+    q = (search_query or "").strip().casefold()
+    if q:
+        out = [
+            r
+            for r in out
+            if q in str(r.get("product_name") or "").casefold()
+            or q in str(r.get("productnumber") or "").casefold()
+            or q in str(r.get("usage_source") or "").casefold()
+            or q in str(r.get("matching_rule") or "").casefold()
+        ]
+    return out
+
+
+def build_product_matching_section(
+    matching: dict[str, Any] | None,
+    *,
+    search_query: str | None = None,
+    status_filter: str = "all",
+) -> Any | None:
+    """Accordion item: Excel-driven product ↔ infra matching (ADR-0024)."""
+    if not matching:
+        return None
+    products = matching.get("products") or []
+    if not products:
+        return None
+    filtered = filter_product_matching_rows(products, status_filter, search_query)
+    summary = matching.get("summary") or {}
+    data = [prepare_product_matching_row(r) for r in filtered]
+    return dmc.AccordionItem(
+        value="product-matching",
+        children=[
+            dmc.AccordionControl(
+                dmc.Group(
+                    gap="xs",
+                    children=[
+                        dmc.Text("Product Matching", fw=600),
+                        dmc.Badge(
+                            f"{len(filtered)}/{len(products)}",
+                            size="sm",
+                            variant="light",
+                            color="indigo",
+                        ),
+                        dmc.Badge(
+                            f"capacity {summary.get('capacity_count', 0)}",
+                            size="sm",
+                            variant="outline",
+                            color="teal",
+                        ),
+                        dmc.Badge(
+                            f"documented {summary.get('documented_count', 0)}",
+                            size="sm",
+                            variant="outline",
+                            color="gray",
+                        ),
+                    ],
+                )
+            ),
+            dmc.AccordionPanel(
+                children=[
+                    dmc.Text(
+                        "CRM sold SKUs linked to infra sources (ADR-0024). "
+                        "Capacity rows enrich from inventory panels when mapped; "
+                        "documented / customer-phase rows show rules only.",
+                        size="xs",
+                        c="dimmed",
+                        mb="sm",
+                    ),
+                    dash_table.DataTable(
+                        id="crm-inventory-product-matching",
+                        columns=_PRODUCT_MATCHING_COLUMNS,
+                        data=data,
+                        page_size=20,
+                        sort_action="native",
+                        filter_action="native",
+                        style_table=_TABLE_STYLE_TABLE,
+                        style_cell={
+                            **_TABLE_STYLE_CELL,
+                            "whiteSpace": "pre-line",
+                            "minWidth": "80px",
+                            "maxWidth": "280px",
+                        },
+                        style_header=_TABLE_STYLE_HEADER,
+                        style_data_conditional=[
+                            {
+                                "if": {"filter_query": '{match_status} = "capacity"'},
+                                "backgroundColor": "#F0FDF4",
+                            },
+                            {
+                                "if": {
+                                    "filter_query": '{match_status} = "sold_noted_customer_phase"'
+                                },
+                                "backgroundColor": "#FFF7ED",
+                            },
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
 def build_unmapped_section(
     products: list[dict[str, Any]],
     *,
@@ -639,6 +795,13 @@ def build_report_body(
             unmapped_item = build_unmapped_section(unmapped)
             if unmapped_item is not None:
                 accordion_items.append(unmapped_item)
+            matching_item = build_product_matching_section(
+                payload.get("product_matching"),
+                search_query=search_query,
+                status_filter="all",
+            )
+            if matching_item is not None:
+                accordion_items.append(matching_item)
         if accordion_items:
             body.append(
                 dmc.Accordion(

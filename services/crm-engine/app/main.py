@@ -49,6 +49,7 @@ from app.services.currency_service import CurrencyService
 from app.services.customer_service import CustomerService
 from app.services.sales_service import SalesService
 from app.services.inventory_overview_service import InventoryOverviewService
+from app.services.product_matching_service import ProductMatchingService
 from app.services.sellable_service import SellableService
 from app.services.tagging_service import TaggingService
 from app.services.webui_db import WebuiPool
@@ -215,6 +216,10 @@ async def lifespan(app: FastAPI):
         webui=webui,
         config=config_svc,
         crm_redis=crm_redis,
+    )
+    app.state.product_matching = ProductMatchingService(
+        customer_svc=svc,
+        inventory_svc=app.state.inventory,
     )
 
     app.state.scheduler = _start_scheduler(sellable_svc, app.state.inventory)

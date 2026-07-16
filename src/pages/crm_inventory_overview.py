@@ -20,6 +20,7 @@ from src.components.crm_inventory_report import (
     build_report_body,
     filter_by_search,
     filter_service_rows,
+    prepare_product_matching_row,
     prepare_service_row,
 )
 from src.components.crm_inventory_shell import build_inventory_shell
@@ -193,12 +194,17 @@ def _build_inventory_export_sheets(
         }
         for f in families
     ]
+    matching = store.get("product_matching") or {}
+    matching_rows = [
+        prepare_product_matching_row(r) for r in (matching.get("products") or [])
+    ]
     return {
         "Summary": pd.DataFrame([summary]),
         "Services": records_to_dataframe(export_rows),
         "CRM_only": records_to_dataframe(crm_only_rows),
         "Unmapped": records_to_dataframe(unmapped),
         "Families_summary": records_to_dataframe(families_summary),
+        "Product_Matching": records_to_dataframe(matching_rows),
     }
 
 
