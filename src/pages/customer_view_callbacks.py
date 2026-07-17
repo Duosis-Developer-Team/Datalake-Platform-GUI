@@ -43,6 +43,8 @@ def sync_customer_active_tab(active_tab):
 @callback(
     # Sole initial writer of page-root (mirrors DC View). Perspective toggle uses
     # allow_duplicate on page-root; this callback is the primary for stores + root.
+    # Do NOT State("customer-main-tabs"): that component is created by this callback's
+    # output — a missing State prevents Dash from ever firing the initial load.
     Output("customer-view-page-root", "children"),
     Output("customer-export-store", "data"),
     Output("customer-view-perspective-store", "data"),
@@ -53,7 +55,6 @@ def sync_customer_active_tab(active_tab):
     State("customer-view-visible-sections", "data"),
     State("customer-export-store", "data"),
     State("customer-view-active-tab", "data"),
-    State("customer-main-tabs", "value"),
     prevent_initial_call=False,
 )
 def load_customer_view_data(
@@ -63,7 +64,6 @@ def load_customer_view_data(
     visible_sections,
     export_store,
     active_tab,
-    tabs_value,
 ):
     if (pathname or "") != "/customer-view":
         raise PreventUpdate
@@ -79,7 +79,7 @@ def load_customer_view_data(
         triggered_id=str(ctx.triggered_id or ""),
         prev_customer=prev_customer,
         new_customer=chosen,
-        tabs_value=tabs_value,
+        tabs_value=None,
         stored_tab=active_tab,
     )
     page = render_customer_shell(

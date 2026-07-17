@@ -67,6 +67,8 @@ def test_build_customer_layout_shell_has_static_skeleton_inside_page_root():
     assert "customer-loading-status" in root_ids
     assert "customer-loading-stage-interval" in root_ids
     assert "customer-loading-layer" in root_ids or "building-reveal-dots" in str(page_root)
+    # DC parity: loading Tabs must expose customer-main-tabs so State deps exist.
+    assert "customer-main-tabs" in root_ids
 
     text = str(layout)
     assert 'type="circle"' not in text

@@ -3295,6 +3295,9 @@ def render_customer_loading_page(
         className="customer-page-enter",
         children=[
             dmc.Tabs(
+                # Always-present id (DC View parity) so callbacks that State this
+                # component can fire while the loading skeleton is still mounted.
+                id="customer-main-tabs",
                 color="indigo",
                 variant="pills",
                 radius="md",
