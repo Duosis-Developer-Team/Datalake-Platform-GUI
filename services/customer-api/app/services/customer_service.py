@@ -75,6 +75,13 @@ BATCH_WARM_STATUS_KEY = "customer_warm_batch:status"
 BATCH_WARM_COMPLETED_KEY = "customer_warm_batch:last_completed_at"
 HOT_WARM_STATUS_KEY = "customer_warm_hot:status"
 
+# Guards lazy construction of each CustomerService instance's
+# MappingWarmScheduler (see _get_warm_scheduler). Module-level rather than an
+# instance attribute: several tests build the service via
+# CustomerService.__new__(CustomerService), bypassing __init__, so a lock
+# assigned there would not exist for them.
+_warm_scheduler_init_lock = threading.Lock()
+
 
 def _iso_or_none(value: Any) -> str | None:
     """date/datetime -> 'YYYY-MM-DD' string; None/blank -> None."""
@@ -836,11 +843,18 @@ class CustomerService:
 
     def _get_warm_scheduler(self) -> MappingWarmScheduler:
         scheduler = getattr(self, "_mapping_warm_scheduler", None)
-        if scheduler is None:
-            scheduler = MappingWarmScheduler(
-                warm_fn=lambda name: self._rebuild_customer_caches_for_customer(name)
-            )
-            self._mapping_warm_scheduler = scheduler
+        if scheduler is not None:
+            return scheduler
+        # Double-checked: FastAPI serves sync handlers from a thread pool, so two
+        # concurrent first calls could otherwise each build a scheduler, orphaning
+        # one whose timers still fire — a duplicate warm the debounce exists to avoid.
+        with _warm_scheduler_init_lock:
+            scheduler = getattr(self, "_mapping_warm_scheduler", None)
+            if scheduler is None:
+                scheduler = MappingWarmScheduler(
+                    warm_fn=lambda name: self._rebuild_customer_caches_for_customer(name)
+                )
+                self._mapping_warm_scheduler = scheduler
         return scheduler
 
     def _schedule_mapping_warm(self, names: tuple[str, ...]) -> None:

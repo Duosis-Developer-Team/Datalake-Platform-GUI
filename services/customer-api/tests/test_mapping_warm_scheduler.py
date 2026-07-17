@@ -1,6 +1,7 @@
 import threading
 import time
 
+from app.services.customer_service import CustomerService
 from app.services.mapping_warm_scheduler import MappingWarmScheduler
 
 
@@ -85,3 +86,32 @@ def test_cancel_all_stops_pending_warms():
 
     time.sleep(0.35)
     assert warmed == []
+
+
+def test_concurrent_first_calls_share_one_scheduler_instance():
+    """Task 6 review finding: _get_warm_scheduler's lazy init was an
+    unguarded check-then-act. FastAPI runs sync handlers from a thread pool,
+    so two concurrent first calls could each see no scheduler yet, each
+    construct one, and race on the assignment — orphaning one instance whose
+    running Timer still fires, producing a duplicate warm during the very
+    window the debounce exists to collapse. A threading.Barrier forces the
+    race to actually happen (no sleep-based sequencing, which would defeat
+    the point) and asserts every thread gets back the identical object."""
+    svc = CustomerService.__new__(CustomerService)
+    thread_count = 16
+    barrier = threading.Barrier(thread_count)
+    results: list[MappingWarmScheduler] = [None] * thread_count  # type: ignore[list-item]
+
+    def call(index: int) -> None:
+        barrier.wait()  # release all threads at once to force the race
+        results[index] = svc._get_warm_scheduler()
+
+    threads = [threading.Thread(target=call, args=(i,)) for i in range(thread_count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    first = results[0]
+    assert first is not None
+    assert all(r is first for r in results)
