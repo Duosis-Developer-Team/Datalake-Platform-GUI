@@ -234,7 +234,8 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 40s
+      # Warm runs in a background thread; keep a short grace window for pool/redis init.
+      start_period: 60s
     profiles:
       - microservice
 

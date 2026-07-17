@@ -5,6 +5,7 @@ from urllib.parse import parse_qs
 
 import dash
 from dash import Input, Output, State, callback
+from dash.exceptions import PreventUpdate
 
 from src.components.customer_loading import LOADING_STAGE_MESSAGES
 from src.pages.customer_view import render_customer_shell
@@ -40,11 +41,11 @@ def rotate_customer_loading_status(n_intervals):
 )
 def load_customer_view_data(pathname, search, time_range, visible_sections):
     if (pathname or "") != "/customer-view":
-        raise dash.PreventUpdate
+        raise PreventUpdate
     params = parse_qs((search or "").lstrip("?"))
     chosen = (params.get("customer", [""])[0] or "").strip()
     if not chosen:
-        raise dash.PreventUpdate
+        raise PreventUpdate
     tr = time_range or default_time_range()
     access = perspective_access(visible_sections)
     perspective = default_perspective(access)
@@ -70,7 +71,7 @@ def toggle_customer_perspective(perspective, search, time_range, visible_section
     params = parse_qs((search or "").lstrip("?"))
     chosen = (params.get("customer", [""])[0] or "").strip()
     if not chosen:
-        raise dash.PreventUpdate
+        raise PreventUpdate
     access = perspective_access(visible_sections)
     perspective = effective_perspective(perspective, access)
     tr = time_range or default_time_range()

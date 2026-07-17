@@ -1,5 +1,6 @@
 import logging
 import atexit
+import threading
 import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -20,13 +21,26 @@ INITIAL_WARM_DELAY_SECONDS = 2
 
 
 def start_scheduler(db_service: "DatabaseService") -> BackgroundScheduler:
-    logger.info("Starting initial cache warm-up before scheduler launch.")
-    t0 = time.perf_counter()
-    db_service.warm_cache()
-    logger.info(
-        "Initial cache warm-up finished in %.2fs.",
-        time.perf_counter() - t0,
-    )
+    # Warm in a background thread so FastAPI lifespan can yield immediately and
+    # /health answers during the ~90s cold cache warm (unblocks crm-engine
+    # depends_on: service_healthy). Same pattern as customer-api.
+    def _warm_cache_bg() -> None:
+        logger.info("Starting initial cache warm-up (background).")
+        t0 = time.perf_counter()
+        try:
+            db_service.warm_cache()
+            logger.info(
+                "Initial cache warm-up finished in %.2fs.",
+                time.perf_counter() - t0,
+            )
+        except Exception:  # noqa: BLE001 - never abort startup
+            logger.exception("Initial cache warm-up failed")
+
+    threading.Thread(
+        target=_warm_cache_bg,
+        daemon=True,
+        name="datacenter-initial-cache-warm",
+    ).start()
 
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
