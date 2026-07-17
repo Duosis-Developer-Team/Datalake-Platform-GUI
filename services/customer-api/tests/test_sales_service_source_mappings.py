@@ -99,7 +99,8 @@ def test_save_source_mappings_replaces_account_rows():
         ],
     )
 
-    assert webui.execute.call_args_list[0].args[0] == smq.DELETE_SOURCE_MAPPINGS_FOR_ACCOUNT
+    statements = list(webui.execute_all.call_args[0][0])
+    assert statements[0][0] == smq.DELETE_SOURCE_MAPPINGS_FOR_ACCOUNT
     assert saved[0]["match_value"] == "Boyner"
 
 
