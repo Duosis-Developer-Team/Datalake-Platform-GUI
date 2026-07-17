@@ -174,13 +174,18 @@ Maliyetler asimetrik olduğu için strateji de farklı:
 
 Beşinin de mapping sonucunu değiştirdiği doğrulandı:
 
+Satır numaraları `origin/main` @ `3de24d83` tabanına göredir.
+
 | Yol | Dosya | Şu anki durum |
 |---|---|---|
-| `save_source_mappings` | `sales_service.py:642` | 2 snapshot siliyor, asıl cache'i silmiyor |
-| `seed_boyner_source_mappings` | `sales_service.py:692` | 14 mapping basıyor, **hiç invalidation yok** |
-| `resync_aliases_from_datalake` | `sales_service.py:731` | Toplu mapping değiştiriyor, **hiç yok** |
+| `save_source_mappings` | `sales_service.py:642` | 2 snapshot siliyor (`:686-687`), asıl kaynak cache'ini silmiyor |
+| `seed_boyner_source_mappings` | `sales_service.py:692` | 2 snapshot siliyor (`:720-721`), asıl kaynak cache'ini silmiyor |
+| `resync_aliases_from_datalake` | `sales_service.py:731` | Toplu mapping değiştiriyor, **hiç invalidation yok** |
 | `upsert_alias` | `sales_service.py:836` | `netbox_musteri_value`/`canonical_key` → `resolve_infra_search_name` fallback'ini, dolayısıyla kaynak çözümünü değiştirir, **hiç yok** |
 | `delete_alias` | `sales_service.py:851` | Aynı, **hiç yok** |
+
+`ALIASES_SNAPSHOT_KEY` yalnızca `:555`, `:564`, `:686-687`, `:720-721`'de
+geçiyor — yani son üç yolda snapshot bile temizlenmiyor.
 
 `resync` ve `seed` birden fazla hesabı etkileyebilir → invalidation hesap
 listesi alacak şekilde tasarlanır (`invalidate_for_accounts(ids)`), tekil hal
