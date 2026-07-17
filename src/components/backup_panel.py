@@ -288,6 +288,22 @@ def netbackup_capacity_section_id(category: str | None = None) -> str:
     return "backup-nb-capacity"
 
 
+def _capacity_loading_target(target_id: str) -> dcc.Loading:
+    """Empty capacity target filled asynchronously by capacity callbacks."""
+    return dcc.Loading(
+        id=f"{target_id}-loading",
+        type="circle",
+        color="#4318FF",
+        delay_show=150,
+        overlay_style={
+            "visibility": "visible",
+            "backgroundColor": "rgba(244, 247, 254, 0.65)",
+            "borderRadius": "12px",
+        },
+        children=html.Div(id=target_id, children=None),
+    )
+
+
 def build_netbackup_capacity_section(
     data: dict,
     selected_pools: Iterable[str] | None,
@@ -481,9 +497,22 @@ def build_netbackup_panel(
     category: str | None = None,
     policy_type_options: list[str] | None = None,
     pool_selector_id: str | None = None,
+    content_mode: str = "full",
 ):
-    agg = _aggregate_netbackup(data, selected_pools)
-    selector_value = list(selected_pools) if selected_pools else agg["pools"]
+    """Build NetBackup panel.
+
+    ``content_mode="shell"`` — scaffold only (empty selector/capacity); capacity
+    callbacks populate after ``backup-panels-ready``.
+    ``content_mode="full"`` — populate selector options from ``data``; capacity
+    children stay empty for the async capacity callback (single fetch).
+    """
+    mode = (content_mode or "full").strip().lower()
+    agg = _aggregate_netbackup(data or {}, selected_pools) if mode != "shell" else {"pools": []}
+    selector_value = (
+        []
+        if mode == "shell"
+        else (list(selected_pools) if selected_pools else list(agg["pools"]))
+    )
     resolved_selector_id = pool_selector_id or (
         f"backup-nb-pool-selector-{category}" if category else "backup-nb-pool-selector"
     )
@@ -556,14 +585,7 @@ def build_netbackup_panel(
                 value="capacity",
                 children=[
                     dmc.AccordionControl("Pool capacity"),
-                    dmc.AccordionPanel(
-                        html.Div(
-                            id=capacity_id,
-                            children=build_netbackup_capacity_section(
-                                data, selected_pools, category=category
-                            ),
-                        )
-                    ),
+                    dmc.AccordionPanel(_capacity_loading_target(capacity_id)),
                 ],
             )
         ],
@@ -867,9 +889,19 @@ def build_zerto_capacity_section(data: dict, selected_sites: Iterable[str] | Non
     ]
 
 
-def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
-    agg = _aggregate_zerto(data, selected_sites)
-    selector_value = list(selected_sites) if selected_sites else agg["sites"]
+def build_zerto_panel(
+    data: dict,
+    selected_sites: Iterable[str] | None,
+    *,
+    content_mode: str = "full",
+):
+    mode = (content_mode or "full").strip().lower()
+    agg = _aggregate_zerto(data or {}, selected_sites) if mode != "shell" else {"sites": []}
+    selector_value = (
+        []
+        if mode == "shell"
+        else (list(selected_sites) if selected_sites else list(agg["sites"]))
+    )
 
     site_selector_header = html.Div(
         style={
@@ -932,12 +964,7 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
                 value="capacity",
                 children=[
                     dmc.AccordionControl("Site capacity"),
-                    dmc.AccordionPanel(
-                        html.Div(
-                            id="backup-zerto-capacity",
-                            children=build_zerto_capacity_section(data, selected_sites),
-                        )
-                    ),
+                    dmc.AccordionPanel(_capacity_loading_target("backup-zerto-capacity")),
                 ],
             )
         ],
@@ -1177,9 +1204,19 @@ def build_veeam_capacity_section(data: dict, selected_repos: Iterable[str] | Non
     ]
 
 
-def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
-    agg = _aggregate_veeam(data, selected_repos)
-    selector_value = list(selected_repos) if selected_repos else agg["repos"]
+def build_veeam_panel(
+    data: dict,
+    selected_repos: Iterable[str] | None,
+    *,
+    content_mode: str = "full",
+):
+    mode = (content_mode or "full").strip().lower()
+    agg = _aggregate_veeam(data or {}, selected_repos) if mode != "shell" else {"repos": []}
+    selector_value = (
+        []
+        if mode == "shell"
+        else (list(selected_repos) if selected_repos else list(agg["repos"]))
+    )
 
     repo_selector_header = html.Div(
         style={
@@ -1242,12 +1279,7 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
                 value="capacity",
                 children=[
                     dmc.AccordionControl("Repository capacity"),
-                    dmc.AccordionPanel(
-                        html.Div(
-                            id="backup-veeam-capacity",
-                            children=build_veeam_capacity_section(data, selected_repos),
-                        )
-                    ),
+                    dmc.AccordionPanel(_capacity_loading_target("backup-veeam-capacity")),
                 ],
             )
         ],
@@ -1713,6 +1745,27 @@ def build_hc_image_placeholder() -> html.Div:
     )
 
 
+def build_nutanix_panel_shell() -> html.Div:
+    """Empty Nutanix target filled by post-mount callback after panels-ready."""
+    return html.Div(
+        id="backup-nutanix-panel",
+        children=dcc.Loading(
+            id="backup-nutanix-panel-loading",
+            type="circle",
+            color="#4318FF",
+            delay_show=150,
+            children=html.Div(
+                style={"minHeight": "120px", "padding": "16px"},
+                children=dmc.Text(
+                    "Loading Nutanix snapshots…",
+                    size="sm",
+                    c="#A3AED0",
+                ),
+            ),
+        ),
+    )
+
+
 def build_image_backup_section(
     *,
     nb_data: dict | None = None,
@@ -1721,9 +1774,17 @@ def build_image_backup_section(
     nutanix_panel: html.Div | None = None,
     has_netbackup: bool = False,
     has_nutanix: bool = False,
+    content_mode: str = "full",
 ) -> html.Div:
     """Image Backup category: Classic KM (NetBackup) + Hyperconverged (Nutanix)."""
-    children: list = []
+    mode = (content_mode or "full").strip().lower()
+    # Shell mounts both vendors so callbacks have stable Output IDs.
+    if mode == "shell":
+        has_netbackup = True
+        has_nutanix = True
+        if nutanix_panel is None:
+            nutanix_panel = build_nutanix_panel_shell()
+
     tab_defs: list[tuple[str, str]] = []
     if has_netbackup:
         tab_defs.append(("km", "Classic (KM) — NetBackup"))
@@ -1745,6 +1806,7 @@ def build_image_backup_section(
                         selected_pools,
                         category="image",
                         policy_type_options=policy_type_options,
+                        content_mode=mode,
                     ),
                 ),
             )
@@ -1795,8 +1857,10 @@ def build_application_backup_section(
     nb_data: dict | None = None,
     selected_pools: Iterable[str] | None = None,
     policy_type_options: list[str] | None = None,
+    content_mode: str = "full",
 ) -> html.Div:
     """Application Backup category: NetBackup non-VMWARE policy types."""
+    mode = (content_mode or "full").strip().lower()
     return html.Div(
         id="backup-netbackup-panel-application",
         children=[
@@ -1805,6 +1869,7 @@ def build_application_backup_section(
                 selected_pools,
                 category="application",
                 policy_type_options=policy_type_options,
+                content_mode=mode,
             )
         ]
     )
@@ -1818,8 +1883,14 @@ def build_replication_section(
     veeam_license: dict | None = None,
     has_veeam: bool = False,
     has_zerto: bool = False,
+    content_mode: str = "full",
 ) -> html.Div:
     """Replication category: Veeam + Zerto (+ licenses when data exists)."""
+    mode = (content_mode or "full").strip().lower()
+    if mode == "shell":
+        has_zerto = True
+        has_veeam = True
+
     tab_defs: list[tuple[str, str]] = []
     if has_zerto:
         tab_defs.append(("zerto", "Zerto"))
@@ -1833,20 +1904,20 @@ def build_replication_section(
             children="No Veeam or Zerto infrastructure data for this datacenter.",
         )
 
-    zerto_license_panel = build_zerto_license_panel(zerto_license)
-    veeam_license_panel = build_veeam_license_panel(veeam_license)
+    zerto_license_panel = None if mode == "shell" else build_zerto_license_panel(zerto_license)
+    veeam_license_panel = None if mode == "shell" else build_veeam_license_panel(veeam_license)
 
     panels = []
     if has_zerto:
         zerto_children = [
             html.Div(
                 id="backup-zerto-panel",
-                children=build_zerto_panel(zerto_data or {}, None),
+                children=build_zerto_panel(zerto_data or {}, None, content_mode=mode),
             )
         ]
         if zerto_license_panel is not None:
             zerto_children.append(zerto_license_panel)
-        elif (zerto_data or {}).get("sites"):
+        elif mode != "shell" and (zerto_data or {}).get("sites"):
             # Usage present but license payload empty — still show required note
             zerto_children.append(
                 dmc.Alert(
@@ -1861,12 +1932,12 @@ def build_replication_section(
         veeam_children = [
             html.Div(
                 id="backup-veeam-panel",
-                children=build_veeam_panel(veeam_data or {}, None),
+                children=build_veeam_panel(veeam_data or {}, None, content_mode=mode),
             )
         ]
         if veeam_license_panel is not None:
             veeam_children.append(veeam_license_panel)
-        else:
+        elif mode != "shell":
             veeam_children.append(
                 dmc.Alert(
                     color="gray",
