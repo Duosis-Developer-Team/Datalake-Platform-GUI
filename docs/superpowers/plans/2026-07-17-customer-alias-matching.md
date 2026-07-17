@@ -341,7 +341,7 @@ def predicate(method: str, value: str) -> Callable[[str], bool]:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `$PY -m pytest tests/test_customer_match.py -q`
-Expected: PASS — 15 passed
+Expected: PASS — 21 passed
 
 - [ ] **Step 5: Commit**
 
@@ -609,7 +609,7 @@ In `build_resolved_patterns`, delete the `exact` branch (:157-161). The loop bod
 cd $W/services/customer-api && $PY -m pytest tests/ -q
 cd $W && $PY -m pytest tests/test_customer_match.py -q
 ```
-Expected: customer-api stays at its baseline of 368 passed / 1 failed (the `test_sellable_service` failure is pre-existing); the match test stays at 15 passed. If any other test referenced `exact_by_source`, fix it now — the field is gone on purpose.
+Expected: customer-api stays at its baseline of 368 passed / 1 failed (the `test_sellable_service` failure is pre-existing); the match test stays at 21 passed. If any other test referenced `exact_by_source`, fix it now — the field is gone on purpose.
 
 - [ ] **Step 5: Commit**
 
