@@ -55,6 +55,10 @@ from app.utils.usage_comparison import (
     group_weighted_prices_by_customer,
 )
 from app.services.crm_config_service import CrmConfigService
+from app.services.mapping_cache_invalidator import (
+    ResolutionError,
+    invalidate_for_accounts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -788,6 +792,81 @@ class CustomerService:
         if not resolved.has_mappings():
             return build_resolved_patterns([], fallback_search_name=fallback)
         return resolved
+
+    def resolve_account_id_strict(self, display_name: str) -> str | None:
+        """Resolve a display name to a CRM account id, or raise if we cannot tell.
+
+        _lookup_alias_for_display_name swallows exceptions and returns
+        (None, None, None), which conflates "belongs to nobody" with "lookup
+        failed". Invalidation must not act on that ambiguity: skipping a key we
+        were unsure about leaves it silently stale.
+        """
+        try:
+            _netbox_value, _canonical_key, account_id = self._lookup_alias_for_display_name(
+                display_name
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ResolutionError(f"Could not resolve display name {display_name!r}") from exc
+        return account_id
+
+    def _scan_cache_keys(self, prefix: str) -> list[str]:
+        return cache.scan_prefix(prefix)
+
+    def _delete_cache_keys(self, keys: list[str]) -> None:
+        for key in keys:
+            cache.delete(key)
+
+    def _schedule_mapping_warm(self, names: tuple[str, ...]) -> None:
+        # Replaced by the debounced scheduler in Task 6.
+        return None
+
+    def invalidate_mapping_caches(self, account_ids: set[str]) -> str | None:
+        """Drop every cached view affected by a mapping change for these accounts.
+
+        Returns None on success, or a user-facing warning when the cache could
+        not be cleared. It never raises: the DB write has already committed by
+        the time this runs, so failing the request would report "not saved"
+        about a mapping that was in fact saved.
+        """
+        targets = {a for a in account_ids if a}
+        if not targets:
+            return None
+        try:
+            result = invalidate_for_accounts(
+                targets,
+                resolve_account_id=self.resolve_account_id_strict,
+                scan_keys=self._scan_cache_keys,
+                delete_keys=self._delete_cache_keys,
+            )
+            # The unmapped view is the complement of every mapping, so any
+            # mapping write changes it regardless of which account moved.
+            cache.delete_prefix("unmapped_resources:")
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Mapping cache invalidation failed for accounts=%s: %s",
+                sorted(targets),
+                exc,
+            )
+            return "Mapping kaydedildi, ancak cache temizlenemedi — lütfen tekrar kaydedin."
+
+        if result.deleted_count == 0:
+            # Not necessarily a bug (the customer may never have been viewed),
+            # but a silent miss looks identical to success, so say so out loud.
+            logger.warning(
+                "Mapping cache invalidation deleted nothing for accounts=%s (scanned=%d)",
+                sorted(targets),
+                result.scanned_count,
+            )
+        else:
+            logger.info(
+                "Mapping cache invalidation deleted %d keys for names=%s",
+                result.deleted_count,
+                list(result.matched_names),
+            )
+
+        if result.matched_names:
+            self._schedule_mapping_warm(result.matched_names)
+        return None
 
     def resolve_infra_search_name(self, display_name: str) -> str:
         """Resolve CRM display name to infra ILIKE search key."""

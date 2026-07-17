@@ -10,6 +10,7 @@ from app.core.cache_backend import (
     cache_delete_prefix,
     cache_flush_pattern,
     cache_run_singleflight,
+    cache_scan_prefix,
     cache_stats as _backend_stats,
 )
 
@@ -41,6 +42,11 @@ def delete(key: str) -> None:
 def delete_prefix(prefix: str) -> None:
     cache_delete_prefix(prefix)
     logger.debug("Cache DELETE_PREFIX: %s", prefix)
+
+
+def scan_prefix(prefix: str) -> list[str]:
+    """Return every cache key starting with prefix."""
+    return cache_scan_prefix(prefix)
 
 
 def clear() -> None:
