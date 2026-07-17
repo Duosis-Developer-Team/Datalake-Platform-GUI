@@ -8,14 +8,16 @@ import dash_mantine_components as dmc
 from dash import dcc, html
 from dash_iconify import DashIconify
 
+from shared.customer import match as alias_match
 from src.services import api_client as api
 from src.utils.crm_source_mapping_ui import (
+    _COLUMN_SOURCE_DEFAULTS,
     DEFAULT_ALIAS_TABLE_PAGE_SIZE,
-    MATCH_METHOD_OPTIONS,
     UI_COLUMNS,
     aliases_to_table_rows,
     compute_summary,
     filter_alias_table_rows,
+    method_options_for_source,
     page_count_for_rows,
     paginate_alias_table_rows,
 )
@@ -70,11 +72,14 @@ def _render_mapping_entry(
 ):
     source_options = [{"label": s, "value": s} for s in data_sources]
     is_auranotify = section_key == "auranotify"
+    # Offer only what this source supports: id_exact is tenant-id correlation and
+    # is meaningless on a name-matched source.
+    section_source = _COLUMN_SOURCE_DEFAULTS.get(section_key, section_key)
     method_control = dmc.Select(
         id={"type": f"{prefix}-edit-method", "section": section_key, "index": index},
         label="Method" if index == 0 else None,
-        data=[{"label": "ID exact", "value": "id_exact"}] if is_auranotify else MATCH_METHOD_OPTIONS,
-        value="id_exact" if is_auranotify else (entry.get("match_method") or "contains"),
+        data=method_options_for_source(section_source),
+        value=alias_match.normalize_method(section_source, entry.get("match_method") or ""),
         disabled=is_auranotify,
         size="xs",
         style={"minWidth": "120px", "flex": 1},

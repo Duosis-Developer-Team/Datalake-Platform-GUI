@@ -1,6 +1,8 @@
 """Pure helpers for CRM source mapping UI (no Dash imports)."""
 from __future__ import annotations
 
+from shared.customer import match as alias_match
+
 UI_COLUMNS: list[tuple[str, str, tuple[str, ...]]] = [
     ("virtualization", "Virtualization", ("virtualization", "netbox_vm_customer")),
     ("backup", "Backup & Replication", ("backup_veeam", "backup_zerto", "backup_netbackup")),
@@ -11,13 +13,33 @@ UI_COLUMNS: list[tuple[str, str, tuple[str, ...]]] = [
     ("auranotify", "Availability (AuraNotify)", ("auranotify",)),
 ]
 
+_METHOD_LABELS: dict[str, str] = {
+    "contains": "Contains",
+    "prefix": "Prefix",
+    "suffix": "Suffix",
+    "exact": "Exact",
+    "id_exact": "ID exact",
+}
+
+# Every method, in canonical order. Kept for existing importers; prefer
+# method_options_for_source(), which only offers what the source supports.
 MATCH_METHOD_OPTIONS = [
-    {"label": "Contains", "value": "contains"},
-    {"label": "Prefix", "value": "prefix"},
-    {"label": "Suffix", "value": "suffix"},
-    {"label": "Exact", "value": "exact"},
-    {"label": "ID exact", "value": "id_exact"},
+    {"label": _METHOD_LABELS[m], "value": m} for m in alias_match.ALL_METHODS
 ]
+
+
+def method_options_for_source(data_source: str) -> list[dict]:
+    """Only the methods that mean something for this source.
+
+    id_exact correlates by numeric tenant id, so it is meaningless on a
+    name-matched source — offering it there produced rules that the SQL path
+    dropped and the in-memory path read as `contains`, so the resource fell out
+    of both the customer view and the Unmapped page.
+    """
+    return [
+        {"label": _METHOD_LABELS[m], "value": m}
+        for m in alias_match.allowed_methods(data_source)
+    ]
 
 _SECTION_KEYS = [key for key, _, _ in UI_COLUMNS]
 _COLUMN_SOURCE_DEFAULTS = {key: sources[0] for key, _, sources in UI_COLUMNS}

@@ -18,7 +18,9 @@ from __future__ import annotations
 
 from typing import List
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from shared.customer import match as alias_match
 
 from app.core.time_filter import TimeFilter
 
@@ -163,6 +165,27 @@ def get_internal_alias(svc: SalesService = Depends(get_sales_service)):
     return svc.get_internal_alias()
 
 
+def validate_source_mappings(mappings: List[dict]) -> None:
+    """Reject match methods that are meaningless for their data source.
+
+    id_exact correlates by numeric tenant id: valid only for physical_device and
+    auranotify. On a name-matched source the resolver drops the rule while the
+    in-memory classifier reads it as `contains`, so the resource vanishes from
+    the customer view and the Unmapped page at the same time.
+    """
+    for mapping in mappings or []:
+        data_source = str(mapping.get("data_source") or "")
+        match_method = str(mapping.get("match_method") or "")
+        if not alias_match.is_allowed(data_source, match_method):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"match_method '{match_method}' is not valid for data_source "
+                    f"'{data_source}'; allowed: {list(alias_match.allowed_methods(data_source))}"
+                ),
+            )
+
+
 @router.put("/crm/aliases/{crm_accountid}/source-mappings", response_model=List[dict])
 def save_source_mappings(
     crm_accountid: str,
@@ -171,6 +194,7 @@ def save_source_mappings(
 ):
     """Replace all source mappings for a CRM account."""
     mappings = [m.model_dump() for m in (body.mappings or [])]
+    validate_source_mappings(mappings)
     return svc.save_source_mappings(
         crm_accountid,
         crm_account_name=body.crm_account_name or crm_accountid,

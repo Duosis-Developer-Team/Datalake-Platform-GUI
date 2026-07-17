@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
+from shared.customer import match as alias_match
+
 # Nutanix Controller/Prism VMs, vSphere cluster-services VMs, Nutanix service VMs.
 # Matched case-insensitively against the start of the name. Grounded in live data
 # (NTNX-*-CVM, NTNX-*-PCVM, vCLS-*, Svm_*). Callers may extend this list.
@@ -50,7 +52,8 @@ def norm(s: str | None) -> str:
 class OwnerMatcher:
     """One ownership predicate mirroring a mapping rule / display-name fallback.
 
-    ``kind`` mirrors ``sql_pattern_for_match``: contains/prefix/suffix/exact,
+    ``kind`` is one of ``shared.customer.match.ALL_METHODS``. The semantics live
+    in that module so this path and the SQL path cannot drift apart; it is
     applied case-insensitively to the raw name (like ILIKE), NOT the folded key.
     """
 
@@ -59,16 +62,7 @@ class OwnerMatcher:
     value: str
 
     def matches(self, name_lower: str) -> bool:
-        v = self.value.strip().lower()
-        if not v:
-            return False
-        if self.kind == "prefix":
-            return name_lower.startswith(v)
-        if self.kind == "suffix":
-            return name_lower.endswith(v)
-        if self.kind == "exact":
-            return name_lower == v
-        return v in name_lower  # 'contains' (default)
+        return alias_match.predicate(self.kind, self.value)(name_lower)
 
 
 @dataclass(frozen=True)
@@ -139,10 +133,16 @@ def owner_matchers_from_mappings(
         value = str(row.get("match_value") or "").strip()
         if not value:
             continue
-        method = str(row.get("match_method") or "contains").strip().lower()
-        kind = method if method in ("prefix", "suffix", "exact", "contains") else "contains"
+        source = str(row.get("data_source") or "")
+        method = str(row.get("match_method") or alias_match.DEFAULT_METHOD).strip().lower()
+        if not alias_match.is_allowed(source, method):
+            # An id_exact rule on a name source claims nothing — mirroring the
+            # SQL side, which drops it. Silently rewriting it to `contains` made
+            # every name containing the id vanish from Unmapped while the
+            # customer view showed none of them either.
+            continue
         owner = str(row.get("crm_account_name") or row.get("crm_accountid") or "")
-        matchers.append(OwnerMatcher(owner=owner, kind=kind, value=value))
+        matchers.append(OwnerMatcher(owner=owner, kind=method, value=value))
     for name in display_names:
         n = (name or "").strip()
         if n:
