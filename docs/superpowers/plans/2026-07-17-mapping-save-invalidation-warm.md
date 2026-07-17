@@ -876,6 +876,14 @@ from app.services.mapping_cache_invalidator import (
 Add these methods to `CustomerService`, right after `resolve_source_patterns`:
 
 ```python
+    # CORRECTION (found in review, after this plan was written): the snippet below
+    # is WRONG as originally drafted and must not be copied verbatim. Wrapping
+    # _lookup_alias_for_display_name in try/except accomplishes nothing — that method
+    # swallows its own exceptions and returns (None, None, None), so the guard can never
+    # fire. Extract a raising core (_lookup_alias_for_display_name_raising) holding the
+    # body verbatim, leave _lookup_alias_for_display_name as a thin swallowing wrapper for
+    # existing callers, call the raising core here, and ALSO raise when webui is
+    # unavailable — that is "cannot tell", not "belongs to nobody". See commit a56107e5.
     def resolve_account_id_strict(self, display_name: str) -> str | None:
         """Resolve a display name to a CRM account id, or raise if we cannot tell.
 
