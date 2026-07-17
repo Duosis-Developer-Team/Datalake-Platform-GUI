@@ -18,7 +18,7 @@
 - `shared/` is importable from every service: each Dockerfile does `COPY shared/ ./shared/`, and `services/customer-api/tests/conftest.py` appends the GUI root to `sys.path`. Do not duplicate code into a service.
 - Code and comments in English (matches the codebase). Turkish is fine in commit messages.
 - **Never hardcode the cache version token.** `CUSTOMER_ASSETS_CACHE_VERSION` is `cpu-usage-v3` on this base but is being changed to `netbackup-policy-v4` by parallel in-flight work. Match it with `[^:]+`.
-- **Out of scope — do not touch:** `auranotify` / `DATA_SOURCES` (owned by the `customer-alias-matching` plan, which adds migration `028` and the UI/API layers); the `last_good` read-through root cause in `cache_backend.cache_run_singleflight`; the hardcoded `WARMED_CUSTOMERS = ("Boyner",)` in `src/services/db_service.py:45`.
+- **Out of scope — do not touch:** the `last_good` read-through root cause in `cache_backend.cache_run_singleflight`; the hardcoded `WARMED_CUSTOMERS = ("Boyner",)` in `src/services/db_service.py:45`; `sql_pattern_for_match`, `ResolvedSourcePatterns` and `build_resolved_patterns` in `customer_mapping_resolver.py` (`:95-186`) — the parallel `customer-alias-matching` plan rewrites those, so stay off them. Task 12 touches only `DATA_SOURCES` (`:10-20`) in that same file, which that plan never mentions.
 
 ## Product decisions (already made — do not re-litigate)
 
@@ -1918,6 +1918,120 @@ Expected: keys for that customer reappear, rebuilt with the new mapping applied.
 - [ ] **Step 6: Commit nothing; report the observed output**
 
 This task produces evidence, not code. Paste the before/after key lists and the log line into the PR description.
+
+---
+
+### Task 12: Register `auranotify` as a real data source
+
+**Files:**
+- Modify: `services/customer-api/app/services/customer_mapping_resolver.py:10-20` (`DATA_SOURCES`) and `:44-51` (`UI_COLUMN_SOURCES`)
+- Test: `services/customer-api/tests/test_auranotify_data_source.py`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `"auranotify"` becomes a member of `DATA_SOURCES`, so `save_source_mappings`'s `allowed_sources` check (`sales_service.py:655`, `:666-667`) accepts it.
+
+**Why this is here and not in the other plan.** The front end already offers an AuraNotify section and sends `data_source: "auranotify"` (`src/utils/crm_source_mapping_ui.py:11`, rendered as a real populated `dmc.Select` in `crm_aliases.py:72-86`), but `DATA_SOURCES` (`customer_mapping_resolver.py:10-20`) has no such member, so `save_source_mappings` raises `ValueError` and — with no handler for it in `main.py` — the user gets a **500**. The `2026-07-10-customer-availability-auranotify-mapping` plan landed the front-end half and not the back-end half; no backend test mentions `auranotify`, which is why CI is green.
+
+The `customer-alias-matching` plan **assumes** `auranotify` is already legal — it defines `ID_SOURCES = ("physical_device", "auranotify")` in the new `shared/customer/match.py` and adds migration `028` with `WHEN data_source IN ('physical_device', 'auranotify')` — but it never touches `DATA_SOURCES` (verified: the string appears nowhere in that plan). So without this task, that plan lands and AuraNotify still 500s: the DB constraint would permit a value the API rejects before the statement is ever sent. This one line is the seam neither plan owned.
+
+Only `DATA_SOURCES` and `UI_COLUMN_SOURCES` (`:10-20`, `:44-51`) are edited here. The other plan's Task 3 rewrites `sql_pattern_for_match` / `ResolvedSourcePatterns` / `build_resolved_patterns` (`:95-186`) — different regions of the same file, so a merge conflict is unlikely, and a textual one would be trivial to resolve.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `services/customer-api/tests/test_auranotify_data_source.py`:
+
+```python
+from unittest.mock import MagicMock
+
+from app.services.customer_mapping_resolver import DATA_SOURCES, UI_COLUMN_SOURCES
+from app.services.sales_service import SalesService
+
+
+def test_auranotify_is_a_known_data_source():
+    # The UI has shipped an AuraNotify section that posts this value.
+    assert "auranotify" in DATA_SOURCES
+
+
+def test_auranotify_maps_to_a_ui_column():
+    assert UI_COLUMN_SOURCES["auranotify"] == ("auranotify",)
+
+
+def test_saving_an_auranotify_mapping_does_not_raise():
+    svc = SalesService.__new__(SalesService)
+    svc._webui = MagicMock()
+    svc._invalidate_mapping_caches = MagicMock(return_value=None)
+    svc.list_source_mappings_for_account = lambda account_id: []
+
+    # Before this task this raised ValueError -> unhandled -> HTTP 500.
+    out = svc.save_source_mappings(
+        "acct-1",
+        crm_account_name="Acme",
+        mappings=[
+            {"data_source": "auranotify", "match_method": "id_exact", "match_value": "42"}
+        ],
+    )
+
+    assert out["cache_warning"] is None
+    svc._webui.execute_all.assert_called_once()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `../../../.venv/bin/python -m pytest services/customer-api/tests/test_auranotify_data_source.py -q`
+Expected: FAIL — `assert 'auranotify' in DATA_SOURCES`, and the save test fails with `ValueError: Unsupported data_source: auranotify`
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `services/customer-api/app/services/customer_mapping_resolver.py`, add `auranotify` to `DATA_SOURCES` (`:10-20`):
+
+```python
+DATA_SOURCES: tuple[str, ...] = (
+    "virtualization",
+    "backup_veeam",
+    "backup_zerto",
+    "backup_netbackup",
+    "storage_ibm",
+    "s3_icos",
+    "physical_device",
+    "netbox_vm_customer",
+    "itsm_servicecore",
+    "auranotify",
+)
+```
+
+and add its UI column to `UI_COLUMN_SOURCES` (`:44-51`):
+
+```python
+UI_COLUMN_SOURCES: dict[str, tuple[str, ...]] = {
+    "virtualization": ("virtualization", "netbox_vm_customer"),
+    "backup": ("backup_veeam", "backup_zerto", "backup_netbackup"),
+    "physical_device": ("physical_device",),
+    "storage": ("storage_ibm",),
+    "s3": ("s3_icos",),
+    "itsm": ("itsm_servicecore",),
+    "auranotify": ("auranotify",),
+}
+```
+
+`DATA_SOURCE_UI_COLUMN` (`:54-56`) is derived from `UI_COLUMN_SOURCES` by comprehension, so it picks this up with no further edit.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `../../../.venv/bin/python -m pytest services/customer-api/tests/test_auranotify_data_source.py services/customer-api/tests/test_customer_mapping_resolver.py -q`
+Expected: PASS
+
+Also confirm the front-end side still agrees:
+
+Run: `../../../.venv/bin/python -m pytest tests/test_api_client_auranotify_mapping.py tests/test_crm_aliases_auranotify_render.py -q`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add services/customer-api/app/services/customer_mapping_resolver.py services/customer-api/tests/test_auranotify_data_source.py
+git commit -m "fix(crm): register auranotify as a data source so its save stops 500ing"
+```
 
 ---
 
