@@ -224,6 +224,40 @@ def _arm_unique_jobs_defer(ready, n_intervals):
     return False, int(n_intervals or 0) + 1
 
 
+@callback(
+    Output("backup-category-tab-store", "data"),
+    Input("backup-category-tabs", "value"),
+    prevent_initial_call=True,
+)
+def sync_backup_category_tab_store(value):
+    """Mirror nested Backup category Tabs into an always-present Store."""
+    if value is None:
+        raise dash.exceptions.PreventUpdate
+    return value
+
+
+@callback(
+    Output("backup-image-tab-store", "data"),
+    Input("backup-image-tabs", "value"),
+    prevent_initial_call=True,
+)
+def sync_backup_image_tab_store(value):
+    if value is None:
+        raise dash.exceptions.PreventUpdate
+    return value
+
+
+@callback(
+    Output("backup-replication-tab-store", "data"),
+    Input("backup-replication-tabs", "value"),
+    prevent_initial_call=True,
+)
+def sync_backup_replication_tab_store(value):
+    if value is None:
+        raise dash.exceptions.PreventUpdate
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Nutanix snapshot table: pagination + search + live-SQL refresh
 # ---------------------------------------------------------------------------

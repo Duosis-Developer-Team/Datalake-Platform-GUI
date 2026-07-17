@@ -474,35 +474,43 @@ def should_skip_fetch(
     backup_image_tab: str | None = None,
     backup_replication_tab: str | None = None,
 ) -> bool:
+    """Return True when this vendor/category panel should not hit the API.
+
+    ``backup_category_tab`` None defaults to ``image`` (shell Store default)
+    so a missing nested Tabs value never blocks the first fetch after mount.
+    """
     if not dc_id:
         return True
     if (active_main_tab or "") != "backup":
         return True
     if not vendor:
         return False
-    if backup_category_tab is None:
-        return True
+
+    # Shell Store default is "image"; treat unset the same so panels_ready
+    # mount can populate Job Statistics without waiting for Tabs sync.
+    cat_tab = backup_category_tab or "image"
+    image_tab = backup_image_tab or "km"
 
     if vendor == "netbackup":
         if category == "image":
-            if backup_category_tab != "image":
+            if cat_tab != "image":
                 return True
-            if (backup_image_tab or "km") != "km":
+            if image_tab != "km":
                 return True
         elif category == "application":
-            if backup_category_tab != "application":
+            if cat_tab != "application":
                 return True
         return False
 
     if vendor == "zerto":
-        if backup_category_tab != "replication":
+        if cat_tab != "replication":
             return True
         if backup_replication_tab and backup_replication_tab != "zerto":
             return True
         return False
 
     if vendor == "veeam":
-        if backup_category_tab != "replication":
+        if cat_tab != "replication":
             return True
         if backup_replication_tab and backup_replication_tab != "veeam":
             return True
@@ -514,7 +522,6 @@ def should_skip_fetch(
 def _make_callback(vendor: str, category: str | None = None) -> None:
     wrapper = _api_wrapper(vendor)
     sid = _section_id(vendor, category)
-    uj_sid = f"dc-{vendor}-{category}" if category else f"dc-{vendor}"
 
     outputs = [
         Output(f"backup-jobs-{sid}-chart", "figure"),
@@ -528,17 +535,14 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
         Input(f"backup-jobs-{sid}-refresh", "n_clicks"),
         # Gate on panel mount (not raw tab click) — avoids empty Outputs race.
         Input("backup-panels-ready", "data"),
-        Input(f"backup-uj-{uj_sid}-filter-status", "value"),
-        Input(f"backup-uj-{uj_sid}-filter-type", "value"),
     ]
     has_policy_selector = vendor == "netbackup" and category
     if has_policy_selector:
         inputs.append(Input(f"backup-nb-policy-selector-{category}", "value"))
-    inputs.append(Input("backup-category-tabs", "value"))
-    if vendor == "netbackup" and category == "image":
-        inputs.append(Input("backup-image-tabs", "value"))
-    if vendor in ("zerto", "veeam"):
-        inputs.append(Input("backup-replication-tabs", "value"))
+    # Always-present shell Stores (not nested Tabs — those are lazy-mounted).
+    inputs.append(Input("backup-category-tab-store", "data"))
+    inputs.append(Input("backup-image-tab-store", "data"))
+    inputs.append(Input("backup-replication-tab-store", "data"))
     states = [
         State("dc-main-tabs", "value"),
         State("url", "pathname"),
@@ -557,18 +561,12 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
         group_by = args[idx]; idx += 1
         refresh_n = args[idx]; idx += 1
         panels_ready = args[idx]; idx += 1
-        uj_statuses = args[idx]; idx += 1
-        uj_types = args[idx]; idx += 1
         selected_policies = args[idx] if _has_policy else None
         if _has_policy:
             idx += 1
         backup_category_tab = args[idx]; idx += 1
-        backup_image_tab = None
-        backup_replication_tab = None
-        if _vendor == "netbackup" and _category == "image":
-            backup_image_tab = args[idx]; idx += 1
-        if _vendor in ("zerto", "veeam"):
-            backup_replication_tab = args[idx]; idx += 1
+        backup_image_tab = args[idx]; idx += 1
+        backup_replication_tab = args[idx]; idx += 1
         active_main_tab = args[idx]; idx += 1
         pathname = args[idx]
 
@@ -604,11 +602,11 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
                     dc_id,
                     tr or None,
                     granularity=gran,
-                    statuses=uj_statuses or None,
+                    statuses=None,
                     policy_types=(
                         selected_policies
                         if isinstance(selected_policies, list) and selected_policies
-                        else (uj_types or None)
+                        else None
                     ),
                     category=_category,
                 )
@@ -617,8 +615,8 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
                     dc_id,
                     tr or None,
                     granularity=gran,
-                    statuses=uj_statuses or None,
-                    job_types=uj_types or None,
+                    statuses=None,
+                    job_types=None,
                 )
         except Exception:
             return _empty_figure("Veri alınamadı"), _empty_kpis(), ""

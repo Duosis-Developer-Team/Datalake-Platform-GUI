@@ -1323,10 +1323,14 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
 @app.callback(
     dash.Output("backup-nb-capacity-image", "children"),
     dash.Input("backup-nb-pool-selector-image", "value"),
-    dash.Input("app-time-range", "data"),
+    dash.Input("backup-time-range", "data"),
+    dash.Input("backup-panels-ready", "data"),
     dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
-def update_backup_netbackup_capacity_image(selected_pools, time_range, pathname):
+def update_backup_netbackup_capacity_image(selected_pools, time_range, panels_ready, pathname):
+    if not panels_ready:
+        return dash.no_update
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
@@ -1346,10 +1350,14 @@ def update_backup_netbackup_capacity_image(selected_pools, time_range, pathname)
 @app.callback(
     dash.Output("backup-nb-capacity-application", "children"),
     dash.Input("backup-nb-pool-selector-application", "value"),
-    dash.Input("app-time-range", "data"),
+    dash.Input("backup-time-range", "data"),
+    dash.Input("backup-panels-ready", "data"),
     dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
-def update_backup_netbackup_capacity_application(selected_pools, time_range, pathname):
+def update_backup_netbackup_capacity_application(selected_pools, time_range, panels_ready, pathname):
+    if not panels_ready:
+        return dash.no_update
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
@@ -1369,10 +1377,14 @@ def update_backup_netbackup_capacity_application(selected_pools, time_range, pat
 @app.callback(
     dash.Output("backup-zerto-capacity", "children"),
     dash.Input("backup-zerto-site-selector", "value"),
-    dash.Input("app-time-range", "data"),
+    dash.Input("backup-time-range", "data"),
+    dash.Input("backup-panels-ready", "data"),
     dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
-def update_backup_zerto_capacity(selected_sites, time_range, pathname):
+def update_backup_zerto_capacity(selected_sites, time_range, panels_ready, pathname):
+    if not panels_ready:
+        return dash.no_update
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
@@ -1391,10 +1403,14 @@ def update_backup_zerto_capacity(selected_sites, time_range, pathname):
 @app.callback(
     dash.Output("backup-veeam-capacity", "children"),
     dash.Input("backup-veeam-repo-selector", "value"),
-    dash.Input("app-time-range", "data"),
+    dash.Input("backup-time-range", "data"),
+    dash.Input("backup-panels-ready", "data"),
     dash.State("url", "pathname"),
+    prevent_initial_call=True,
 )
-def update_backup_veeam_capacity(selected_repos, time_range, pathname):
+def update_backup_veeam_capacity(selected_repos, time_range, panels_ready, pathname):
+    if not panels_ready:
+        return dash.no_update
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")

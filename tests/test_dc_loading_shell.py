@@ -23,6 +23,9 @@ def test_build_dc_view_layout_shell_has_async_roots():
     assert "dc-view-loaded-tabs" in text
     assert "dc-view-active-tab" in text
     assert "backup-panels-ready" in text
+    assert "backup-category-tab-store" in text
+    assert "backup-image-tab-store" in text
+    assert "backup-replication-tab-store" in text
     assert "backup-uj-defer" in text
 
 

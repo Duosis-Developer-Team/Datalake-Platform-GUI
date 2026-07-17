@@ -563,9 +563,10 @@ def _make_dc_callback(vendor: str, category: str | None = None) -> None:
         # Deferred after Backup mount so job-stats runs first (stampede guard).
         Input("backup-uj-defer", "n_intervals"),
         Input("backup-time-range", "data"),
-        Input("backup-category-tabs", "value"),
-        Input("backup-image-tabs", "value"),
-        Input("backup-replication-tabs", "value"),
+        # Always-present shell Stores (nested Tabs are lazy-mounted).
+        Input("backup-category-tab-store", "data"),
+        Input("backup-image-tab-store", "data"),
+        Input("backup-replication-tab-store", "data"),
         State("dc-main-tabs", "value"),
         State(f"backup-uj-{sid}-page", "data"),
         State("url", "pathname"),

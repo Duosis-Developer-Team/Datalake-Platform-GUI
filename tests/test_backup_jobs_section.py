@@ -218,7 +218,11 @@ def test_should_skip_fetch(active_tab, dc_id, expected_skip):
         ("netbackup", "image", "image", "hc", None, True),
         ("netbackup", "application", "application", None, None, False),
         ("netbackup", "application", "image", None, None, True),
+        # Store defaults: None category → image; None image → km
         ("veeam", None, None, None, None, True),
+        ("netbackup", "image", None, None, None, False),
+        ("zerto", None, None, None, None, True),
+        ("zerto", None, "replication", None, None, False),
     ],
 )
 def test_should_skip_fetch_vendor_visibility(
@@ -257,6 +261,20 @@ def test_format_as_of(value, expected_substring):
 # ---- callback registration (mount gate) -------------------------------------
 
 
+_NESTED_BACKUP_TAB_IDS = {
+    "backup-category-tabs",
+    "backup-image-tabs",
+    "backup-replication-tabs",
+}
+_ALWAYS_PRESENT_BACKUP_INPUTS = {
+    "backup-panels-ready",
+    "backup-time-range",
+    "backup-category-tab-store",
+    "backup-image-tab-store",
+    "backup-replication-tab-store",
+}
+
+
 def test_job_stats_callbacks_gate_on_backup_panels_ready():
     """DC job-stats must wait for Backup panel mount, not raw tab click."""
     from dash import _callback
@@ -270,6 +288,28 @@ def test_job_stats_callbacks_gate_on_backup_panels_ready():
         assert "backup-panels-ready" in input_ids
         assert "dc-main-tabs" not in input_ids
         assert "dc-main-tabs" in state_ids
+        for store_id in (
+            "backup-category-tab-store",
+            "backup-image-tab-store",
+            "backup-replication-tab-store",
+        ):
+            assert store_id in input_ids
+        assert not (_NESTED_BACKUP_TAB_IDS & set(input_ids)), input_ids
         found = True
         break
     assert found, "veeam job-stats callback not registered"
+
+
+def test_job_stats_callbacks_use_only_store_tab_inputs():
+    """Nested Tabs must never be Inputs — they are lazy-mounted and cause IndexError."""
+    from dash import _callback
+
+    checked = 0
+    for key, meta in _callback.GLOBAL_CALLBACK_MAP.items():
+        if "backup-jobs-" not in str(key) or "-chart" not in str(key):
+            continue
+        input_ids = {i["id"] for i in meta["inputs"]}
+        assert not (_NESTED_BACKUP_TAB_IDS & input_ids), (key, input_ids)
+        assert _ALWAYS_PRESENT_BACKUP_INPUTS <= input_ids
+        checked += 1
+    assert checked >= 4, f"expected multiple job-stats callbacks, found {checked}"

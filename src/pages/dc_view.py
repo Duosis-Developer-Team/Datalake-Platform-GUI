@@ -5855,6 +5855,12 @@ def build_dc_view_layout_shell(dc_id, time_range=None, visible_sections=None):
             dcc.Store(id="dc-view-context-store", data={}),
             # Bumped when Backup panel content is mounted (expand or eager rebuild).
             dcc.Store(id="backup-panels-ready", data=0),
+            # Always-present mirrors of nested Backup tab values. Job-stats /
+            # unique-jobs callbacks Input these Stores (never the real Tabs,
+            # which are absent until the Backup lazy tab mounts).
+            dcc.Store(id="backup-category-tab-store", data="image"),
+            dcc.Store(id="backup-image-tab-store", data="km"),
+            dcc.Store(id="backup-replication-tab-store", data=None),
             # One-shot deferral so unique-jobs start after job-stats (stampede guard).
             dcc.Interval(
                 id="backup-uj-defer",
