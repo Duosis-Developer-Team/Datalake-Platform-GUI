@@ -178,6 +178,8 @@ class JobStatPoint(BaseModel):
     status: str  # normalized: 'success' | 'failed' | 'warning' | 'running' | 'other'
     job_type: str | None = None
     policy_type: str | None = None
+    # NetBackup image|application (stamped from policy_type when missing in cache)
+    category: str | None = None
     count: int
 
 
