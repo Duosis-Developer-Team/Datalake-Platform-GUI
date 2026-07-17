@@ -208,6 +208,34 @@ def test_should_skip_fetch(active_tab, dc_id, expected_skip):
 
 
 @pytest.mark.parametrize(
+    "vendor,category,category_tab,image_tab,replication_tab,expected_skip",
+    [
+        ("veeam", None, "image", None, None, True),
+        ("veeam", None, "replication", None, "veeam", False),
+        ("veeam", None, "replication", None, "zerto", True),
+        ("zerto", None, "replication", None, "zerto", False),
+        ("netbackup", "image", "image", "km", None, False),
+        ("netbackup", "image", "image", "hc", None, True),
+        ("netbackup", "application", "application", None, None, False),
+        ("netbackup", "application", "image", None, None, True),
+        ("veeam", None, None, None, None, True),
+    ],
+)
+def test_should_skip_fetch_vendor_visibility(
+    vendor, category, category_tab, image_tab, replication_tab, expected_skip
+):
+    assert bjs.should_skip_fetch(
+        "backup",
+        "DC13",
+        vendor=vendor,
+        category=category,
+        backup_category_tab=category_tab,
+        backup_image_tab=image_tab,
+        backup_replication_tab=replication_tab,
+    ) is expected_skip
+
+
+@pytest.mark.parametrize(
     "value,expected_substring",
     [
         ("2026-05-14T14:35:00Z", "14:35"),

@@ -5562,6 +5562,7 @@ def build_dc_view(
                                 color="green",
                                 variant="outline",
                                 radius="md",
+                                id="backup-category-tabs",
                                 value=(
                                     "image"
                                     if has_image

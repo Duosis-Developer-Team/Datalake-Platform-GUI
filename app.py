@@ -30,7 +30,14 @@ from src.telemetry.setup import instrument_flask_server, setup_telemetry_sdk
 setup_telemetry_sdk()
 
 from src.components.sidebar import create_sidebar_nav
-from src.components.backup_panel import build_netbackup_panel, build_zerto_panel, build_veeam_panel
+from src.components.backup_panel import (
+    build_netbackup_capacity_section,
+    build_netbackup_panel,
+    build_veeam_capacity_section,
+    build_veeam_panel,
+    build_zerto_capacity_section,
+    build_zerto_panel,
+)
 from src.components.charts import (
     create_capacity_area_chart,
     create_horizontal_bar_chart,
@@ -1314,12 +1321,12 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
 
 
 @app.callback(
-    dash.Output("backup-netbackup-panel-image", "children"),
+    dash.Output("backup-nb-capacity-image", "children"),
     dash.Input("backup-nb-pool-selector-image", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
-def update_backup_netbackup_panel_image(selected_pools, time_range, pathname):
+def update_backup_netbackup_capacity_image(selected_pools, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
@@ -1332,25 +1339,17 @@ def update_backup_netbackup_panel_image(selected_pools, time_range, pathname):
         selected = pools
     else:
         selected = [p for p in selected_pools if p in pools] or pools
-    from shared.backup.policy_classification import load_policy_panel_mapping
 
-    return build_netbackup_panel(
-        data,
-        selected,
-        category="image",
-        policy_type_options=list(
-            load_policy_panel_mapping().get("image_policy_types") or ["VMWARE"]
-        ),
-    )
+    return build_netbackup_capacity_section(data, selected, category="image")
 
 
 @app.callback(
-    dash.Output("backup-netbackup-panel-application", "children"),
+    dash.Output("backup-nb-capacity-application", "children"),
     dash.Input("backup-nb-pool-selector-application", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
-def update_backup_netbackup_panel_application(selected_pools, time_range, pathname):
+def update_backup_netbackup_capacity_application(selected_pools, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
@@ -1363,25 +1362,17 @@ def update_backup_netbackup_panel_application(selected_pools, time_range, pathna
         selected = pools
     else:
         selected = [p for p in selected_pools if p in pools] or pools
-    from shared.backup.policy_classification import load_policy_panel_mapping
 
-    return build_netbackup_panel(
-        data,
-        selected,
-        category="application",
-        policy_type_options=list(
-            load_policy_panel_mapping().get("application_policy_types") or []
-        ),
-    )
+    return build_netbackup_capacity_section(data, selected, category="application")
 
 
 @app.callback(
-    dash.Output("backup-zerto-panel", "children"),
+    dash.Output("backup-zerto-capacity", "children"),
     dash.Input("backup-zerto-site-selector", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
-def update_backup_zerto_panel(selected_sites, time_range, pathname):
+def update_backup_zerto_capacity(selected_sites, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
@@ -1394,16 +1385,16 @@ def update_backup_zerto_panel(selected_sites, time_range, pathname):
         selected = sites
     else:
         selected = [s for s in selected_sites if s in sites] or sites
-    return build_zerto_panel(data, selected)
+    return build_zerto_capacity_section(data, selected)
 
 
 @app.callback(
-    dash.Output("backup-veeam-panel", "children"),
+    dash.Output("backup-veeam-capacity", "children"),
     dash.Input("backup-veeam-repo-selector", "value"),
     dash.Input("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
-def update_backup_veeam_panel(selected_repos, time_range, pathname):
+def update_backup_veeam_capacity(selected_repos, time_range, pathname):
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
@@ -1416,7 +1407,7 @@ def update_backup_veeam_panel(selected_repos, time_range, pathname):
         selected = repos
     else:
         selected = [r for r in selected_repos if r in repos] or repos
-    return build_veeam_panel(data, selected)
+    return build_veeam_capacity_section(data, selected)
 
 
 @app.callback(

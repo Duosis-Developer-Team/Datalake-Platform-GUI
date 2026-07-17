@@ -15,6 +15,7 @@ from dash import Input, Output, State, callback, ctx, dcc, html
 from dash_iconify import DashIconify
 
 from src.components.backup_panel import _gauge_card, _kpi_card
+from src.components.backup_jobs_section import should_skip_fetch
 from src.services import api_client as api
 from src.utils.format_units import smart_bytes
 
@@ -562,6 +563,9 @@ def _make_dc_callback(vendor: str, category: str | None = None) -> None:
         # Deferred after Backup mount so job-stats runs first (stampede guard).
         Input("backup-uj-defer", "n_intervals"),
         Input("backup-time-range", "data"),
+        Input("backup-category-tabs", "value"),
+        Input("backup-image-tabs", "value"),
+        Input("backup-replication-tabs", "value"),
         State("dc-main-tabs", "value"),
         State(f"backup-uj-{sid}-page", "data"),
         State("url", "pathname"),
@@ -576,6 +580,9 @@ def _make_dc_callback(vendor: str, category: str | None = None) -> None:
         f_platform,
         defer_n,
         tr,
+        backup_category_tab,
+        backup_image_tab,
+        backup_replication_tab,
         active_tab,
         page,
         pathname,
@@ -586,6 +593,17 @@ def _make_dc_callback(vendor: str, category: str | None = None) -> None:
         # Initial mount path: wait until Interval has fired at least once.
         trig = ctx.triggered_id
         if trig == "backup-uj-defer" and not defer_n:
+            return (dash.no_update,) * 6
+        dc_id = _extract_dc_id(pathname)
+        if should_skip_fetch(
+            active_tab,
+            dc_id,
+            vendor=_vendor,
+            category=_category,
+            backup_category_tab=backup_category_tab,
+            backup_image_tab=backup_image_tab,
+            backup_replication_tab=backup_replication_tab,
+        ):
             return (dash.no_update,) * 6
         page = int(page or 1)
         if trig == f"backup-uj-{_sid}-next":
