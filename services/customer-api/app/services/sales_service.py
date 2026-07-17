@@ -656,7 +656,9 @@ class SalesService:
         allowed_methods = set(MATCH_METHODS)
         cleaned_name = (crm_account_name or crm_accountid).strip()
 
-        self._webui.execute(smq.DELETE_SOURCE_MAPPINGS_FOR_ACCOUNT, (crm_accountid,))
+        statements: list[tuple[str, tuple[Any, ...]]] = [
+            (smq.DELETE_SOURCE_MAPPINGS_FOR_ACCOUNT, (crm_accountid,))
+        ]
         for entry in mappings or []:
             data_source = str(entry.get("data_source") or "").strip()
             match_method = str(entry.get("match_method") or "").strip()
@@ -667,21 +669,26 @@ class SalesService:
                 raise ValueError(f"Unsupported data_source: {data_source}")
             if match_method not in allowed_methods:
                 raise ValueError(f"Unsupported match_method: {match_method}")
-            self._webui.execute(
-                smq.UPSERT_SOURCE_MAPPING,
+            statements.append(
                 (
-                    crm_accountid,
-                    cleaned_name,
-                    data_source,
-                    match_method,
-                    match_value,
-                    entry.get("display_label"),
-                    int(entry.get("priority") or 100),
-                    bool(entry.get("enabled", True)),
-                    entry.get("notes") or notes,
-                    "manual",
-                ),
+                    smq.UPSERT_SOURCE_MAPPING,
+                    (
+                        crm_accountid,
+                        cleaned_name,
+                        data_source,
+                        match_method,
+                        match_value,
+                        entry.get("display_label"),
+                        int(entry.get("priority") or 100),
+                        bool(entry.get("enabled", True)),
+                        entry.get("notes") or notes,
+                        "manual",
+                    ),
+                )
             )
+        # Validation happens while building, so a bad row aborts before the
+        # DELETE is ever sent — previously the DELETE was already committed.
+        self._webui.execute_all(statements)
         try:
             cache.delete(ALIASES_SNAPSHOT_KEY)
             cache.delete(CATALOG_SNAPSHOT_KEY)
