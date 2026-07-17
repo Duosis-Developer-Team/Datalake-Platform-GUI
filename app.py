@@ -33,6 +33,7 @@ from src.components.sidebar import create_sidebar_nav
 from src.components.backup_panel import (
     build_netbackup_capacity_section,
     build_netbackup_panel,
+    build_nutanix_snapshot_panel,
     build_veeam_capacity_section,
     build_veeam_panel,
     build_zerto_capacity_section,
@@ -1328,6 +1329,7 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
 
 @app.callback(
     dash.Output("backup-nb-capacity-image", "children"),
+    dash.Output("backup-nb-pool-selector-image", "data"),
     dash.Input("backup-nb-pool-selector-image", "value"),
     dash.Input("backup-time-range", "data"),
     dash.Input("backup-panels-ready", "data"),
@@ -1336,25 +1338,27 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
 )
 def update_backup_netbackup_capacity_image(selected_pools, time_range, panels_ready, pathname):
     if not panels_ready:
-        return dash.no_update
+        return dash.no_update, dash.no_update
     if not pathname or not pathname.startswith("/datacenter/"):
-        return dash.no_update
+        return dash.no_update, dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
     data = api.get_dc_netbackup_pools(dc_id, tr)
     pools = data.get("pools") or []
+    options = [{"label": p, "value": p} for p in pools]
     if not pools:
-        return html.Div()
+        return html.Div(), options
     if not selected_pools:
         selected = pools
     else:
         selected = [p for p in selected_pools if p in pools] or pools
 
-    return build_netbackup_capacity_section(data, selected, category="image")
+    return build_netbackup_capacity_section(data, selected, category="image"), options
 
 
 @app.callback(
     dash.Output("backup-nb-capacity-application", "children"),
+    dash.Output("backup-nb-pool-selector-application", "data"),
     dash.Input("backup-nb-pool-selector-application", "value"),
     dash.Input("backup-time-range", "data"),
     dash.Input("backup-panels-ready", "data"),
@@ -1363,25 +1367,27 @@ def update_backup_netbackup_capacity_image(selected_pools, time_range, panels_re
 )
 def update_backup_netbackup_capacity_application(selected_pools, time_range, panels_ready, pathname):
     if not panels_ready:
-        return dash.no_update
+        return dash.no_update, dash.no_update
     if not pathname or not pathname.startswith("/datacenter/"):
-        return dash.no_update
+        return dash.no_update, dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
     data = api.get_dc_netbackup_pools(dc_id, tr)
     pools = data.get("pools") or []
+    options = [{"label": p, "value": p} for p in pools]
     if not pools:
-        return html.Div()
+        return html.Div(), options
     if not selected_pools:
         selected = pools
     else:
         selected = [p for p in selected_pools if p in pools] or pools
 
-    return build_netbackup_capacity_section(data, selected, category="application")
+    return build_netbackup_capacity_section(data, selected, category="application"), options
 
 
 @app.callback(
     dash.Output("backup-zerto-capacity", "children"),
+    dash.Output("backup-zerto-site-selector", "data"),
     dash.Input("backup-zerto-site-selector", "value"),
     dash.Input("backup-time-range", "data"),
     dash.Input("backup-panels-ready", "data"),
@@ -1390,24 +1396,26 @@ def update_backup_netbackup_capacity_application(selected_pools, time_range, pan
 )
 def update_backup_zerto_capacity(selected_sites, time_range, panels_ready, pathname):
     if not panels_ready:
-        return dash.no_update
+        return dash.no_update, dash.no_update
     if not pathname or not pathname.startswith("/datacenter/"):
-        return dash.no_update
+        return dash.no_update, dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
     data = api.get_dc_zerto_sites(dc_id, tr)
     sites = data.get("sites") or []
+    options = [{"label": s, "value": s} for s in sites]
     if not sites:
-        return html.Div()
+        return html.Div(), options
     if not selected_sites:
         selected = sites
     else:
         selected = [s for s in selected_sites if s in sites] or sites
-    return build_zerto_capacity_section(data, selected)
+    return build_zerto_capacity_section(data, selected), options
 
 
 @app.callback(
     dash.Output("backup-veeam-capacity", "children"),
+    dash.Output("backup-veeam-repo-selector", "data"),
     dash.Input("backup-veeam-repo-selector", "value"),
     dash.Input("backup-time-range", "data"),
     dash.Input("backup-panels-ready", "data"),
@@ -1416,20 +1424,53 @@ def update_backup_zerto_capacity(selected_sites, time_range, panels_ready, pathn
 )
 def update_backup_veeam_capacity(selected_repos, time_range, panels_ready, pathname):
     if not panels_ready:
+        return dash.no_update, dash.no_update
+    if not pathname or not pathname.startswith("/datacenter/"):
+        return dash.no_update, dash.no_update
+    dc_id = pathname.replace("/datacenter/", "").strip("/")
+    tr = time_range or default_time_range()
+    data = api.get_dc_veeam_repos(dc_id, tr)
+    repos = data.get("repos") or []
+    options = [{"label": r, "value": r} for r in repos]
+    if not repos:
+        return html.Div(), options
+    if not selected_repos:
+        selected = repos
+    else:
+        selected = [r for r in selected_repos if r in repos] or repos
+    return build_veeam_capacity_section(data, selected), options
+
+
+@app.callback(
+    dash.Output("backup-nutanix-panel", "children"),
+    dash.Input("backup-panels-ready", "data"),
+    dash.Input("backup-time-range", "data"),
+    dash.State("url", "pathname"),
+    prevent_initial_call=True,
+)
+def populate_backup_nutanix_panel(panels_ready, time_range, pathname):
+    """Fill Nutanix snapshot panel after Backup shell mounts (independent of capacity)."""
+    if not panels_ready:
         return dash.no_update
     if not pathname or not pathname.startswith("/datacenter/"):
         return dash.no_update
     dc_id = pathname.replace("/datacenter/", "").strip("/")
     tr = time_range or default_time_range()
-    data = api.get_dc_veeam_repos(dc_id, tr)
-    repos = data.get("repos") or []
-    if not repos:
-        return html.Div()
-    if not selected_repos:
-        selected = repos
-    else:
-        selected = [r for r in selected_repos if r in repos] or repos
-    return build_veeam_capacity_section(data, selected)
+    nutanix_data = api.get_dc_nutanix_snapshots(dc_id, tr)
+    if not (nutanix_data or {}).get("rows"):
+        return dmc.Alert(
+            color="gray",
+            variant="light",
+            title="No Nutanix snapshots",
+            children="No Nutanix snapshot data for this datacenter.",
+        )
+    nutanix_table = api.get_dc_nutanix_snapshot_table(dc_id, tr, page=1, page_size=50)
+    nutanix_missing = api.get_dc_nutanix_missing(dc_id, tr, page=1, page_size=50)
+    return build_nutanix_snapshot_panel(
+        nutanix_data,
+        table=nutanix_table,
+        missing=nutanix_missing,
+    )
 
 
 @app.callback(

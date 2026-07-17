@@ -63,6 +63,7 @@ from src.components.backup_panel import (
     build_application_backup_section,
     build_image_backup_section,
     build_netbackup_panel,
+    build_nutanix_panel_shell,
     build_nutanix_snapshot_panel,
     build_replication_section,
     build_veeam_panel,
@@ -5245,16 +5246,27 @@ def build_dc_view(
     hyperconv = data.get("hyperconv", {})
     power     = data.get("power", {})
 
-    # Backup datasets (per DC)
+    # Backup datasets (per DC).
+    # Lazy tab expand (eager_tabs is a concrete set containing "backup") mounts a
+    # shell with no sync fetches — capacity/jobs/nutanix callbacks fill panels.
+    # Legacy full builds (eager_tabs is None) still fetch synchronously.
     t_backup = time.perf_counter()
-    if _tab_eager(eager_tabs, "backup"):
+    backup_lazy_shell = eager_tabs is not None and "backup" in eager_tabs
+    backup_content_mode = "shell" if backup_lazy_shell else "full"
+    if backup_lazy_shell:
+        nb_data = {"pools": []}
+        zerto_data = {"sites": []}
+        veeam_data = {"repos": []}
+        zerto_license_data = {"has_license": False, "licenses": [], "sites": [], "summary": {}}
+        nutanix_data = {"rows": [], "totals": {}}
+        nutanix_table = {"items": [], "total": 0}
+        nutanix_missing = {"items": [], "total": 0}
+        _log_dc_build_phase(str(dc_id), "backup_shell", t_backup)
+    elif _tab_eager(eager_tabs, "backup"):
         # Capacity endpoints (nb/zerto/veeam/zerto_license) are independent of
         # each other and of the Nutanix snapshot base set, so they fan out
         # together. nutanix_table / nutanix_missing both derive from the same
-        # underlying "latest per snapshot" cache entry as `nutanix` (see
-        # DatabaseService.get_dc_nutanix_missing / get_dc_nutanix_snapshot_table) —
-        # firing all three nutanix calls in parallel just stampedes the same
-        # cache key with concurrent misses/stale-revalidate triggers. Fetch the
+        # underlying "latest per snapshot" cache entry as `nutanix` — fetch the
         # base set first (in this fan-out) and only then request table/missing
         # sequentially, so they land on an already-warm cache.
         backup_batch = parallel_execute(
@@ -5360,16 +5372,28 @@ def build_dc_view(
     has_virt = has_classic or has_hyperconv or has_power
     has_summary = has_virt
 
-    # Backup subtabs enabled only when data exists
-    has_zerto = bool(zerto_data.get("sites"))
-    has_veeam = bool(veeam_data.get("repos"))
-    has_netbackup = bool(nb_data.get("pools"))
-    has_zerto_license = bool((zerto_license_data or {}).get("has_license"))
-    has_nutanix_backup = bool(nutanix_data.get("rows"))
-    has_image = has_netbackup or has_nutanix_backup
-    has_application = has_netbackup
-    has_replication = has_zerto or has_veeam or has_zerto_license
-    has_backup = has_image or has_application or has_replication
+    # Backup subtabs: shell mode mounts all category scaffolds (callbacks fill
+    # independently). Full/legacy path still gates on fetched presence.
+    if backup_content_mode == "shell":
+        has_zerto = True
+        has_veeam = True
+        has_netbackup = True
+        has_zerto_license = False
+        has_nutanix_backup = True
+        has_image = True
+        has_application = True
+        has_replication = True
+        has_backup = True
+    else:
+        has_zerto = bool(zerto_data.get("sites"))
+        has_veeam = bool(veeam_data.get("repos"))
+        has_netbackup = bool(nb_data.get("pools"))
+        has_zerto_license = bool((zerto_license_data or {}).get("has_license"))
+        has_nutanix_backup = bool(nutanix_data.get("rows"))
+        has_image = has_netbackup or has_nutanix_backup
+        has_application = has_netbackup
+        has_replication = has_zerto or has_veeam or has_zerto_license
+        has_backup = has_image or has_application or has_replication
 
     # S3 presence already computed above
     # has_s3 = bool(s3_data.get("pools"))
@@ -5596,19 +5620,24 @@ def build_dc_view(
                                                 or ["VMWARE"]
                                             ),
                                             nutanix_panel=(
-                                                html.Div(
-                                                    id="backup-nutanix-panel",
-                                                    children=build_nutanix_snapshot_panel(
-                                                        nutanix_data,
-                                                        table=nutanix_table,
-                                                        missing=nutanix_missing,
-                                                    ),
+                                                build_nutanix_panel_shell()
+                                                if backup_content_mode == "shell"
+                                                else (
+                                                    html.Div(
+                                                        id="backup-nutanix-panel",
+                                                        children=build_nutanix_snapshot_panel(
+                                                            nutanix_data,
+                                                            table=nutanix_table,
+                                                            missing=nutanix_missing,
+                                                        ),
+                                                    )
+                                                    if has_nutanix_backup
+                                                    else None
                                                 )
-                                                if has_nutanix_backup
-                                                else None
                                             ),
                                             has_netbackup=has_netbackup,
                                             has_nutanix=has_nutanix_backup,
+                                            content_mode=backup_content_mode,
                                         ),
                                     )
                                     if has_image
@@ -5624,6 +5653,7 @@ def build_dc_view(
                                                 )
                                                 or []
                                             ),
+                                            content_mode=backup_content_mode,
                                         ),
                                     )
                                     if has_application
@@ -5637,6 +5667,7 @@ def build_dc_view(
                                             zerto_license=zerto_license_data,
                                             has_veeam=has_veeam,
                                             has_zerto=has_zerto,
+                                            content_mode=backup_content_mode,
                                         ),
                                     )
                                     if has_replication
