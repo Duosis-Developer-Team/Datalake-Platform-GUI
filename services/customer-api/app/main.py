@@ -52,6 +52,16 @@ async def lifespan(app: FastAPI):
         get_customer_assets=lambda name, time_range=None: svc.get_customer_resources(
             name, time_range
         ),
+        invalidate_mapping_caches=lambda account_ids: svc.invalidate_mapping_caches(
+            account_ids
+        ),
+        # Alias-table writes need resolution to happen before them, so they get
+        # the two halves separately rather than the combined call above.
+        plan_mapping_invalidation=lambda account_ids: svc.plan_mapping_invalidation(
+            account_ids
+        ),
+        apply_mapping_invalidation=lambda plan: svc.apply_mapping_invalidation(plan),
+        invalidate_all_mapping_caches=lambda: svc.invalidate_all_mapping_caches(),
         webui=webui,
     )
     app.state.itsm = ITSMService(

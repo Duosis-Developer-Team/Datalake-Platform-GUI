@@ -2383,13 +2383,28 @@ def put_crm_alias(
     return out if isinstance(out, dict) else {}
 
 
+def _invalidate_customer_views_cache() -> None:
+    """Drop the front-end's own copies of anything a mapping change affects.
+
+    This namespace lives in a different Redis database from customer-api's and
+    its entries carry no TTL, so nothing else will ever clear them. The prefix
+    is deliberately version-free: the version token is being bumped by parallel
+    work, and a pinned prefix would silently stop matching.
+    """
+    _api_response_cache.delete_prefix("api:customer_resources:")
+    _api_response_cache.delete("api:crm_aliases")
+    _api_response_cache.delete("api:customer_catalog")
+    _api_response_cache.delete("api:customer_overview")
+
+
 def put_crm_source_mappings(
     crm_accountid: str,
     *,
     crm_account_name: Optional[str] = None,
     mappings: Optional[list[dict[str, Any]]] = None,
     notes: Optional[str] = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    """Save source mappings. Returns (mappings, cache_warning)."""
     enc = quote(crm_accountid, safe="")
     body = {
         "crm_account_name": crm_account_name,
@@ -2397,13 +2412,16 @@ def put_crm_source_mappings(
         "notes": notes,
     }
     out = _put_json(_get_client_cust(), f"/api/v1/crm/aliases/{enc}/source-mappings", body)
-    _api_response_cache.delete("api:crm_aliases")
-    return out if isinstance(out, list) else []
+    _invalidate_customer_views_cache()
+    if not isinstance(out, dict):
+        return [], None
+    saved = out.get("mappings")
+    return (saved if isinstance(saved, list) else []), out.get("cache_warning")
 
 
 def seed_boyner_source_mappings() -> dict[str, Any]:
     out = _post_json(_get_client_cust(), "/api/v1/crm/aliases/seed-boyner", {})
-    _api_response_cache.delete("api:crm_aliases")
+    _invalidate_customer_views_cache()
     return out if isinstance(out, dict) else {}
 
 

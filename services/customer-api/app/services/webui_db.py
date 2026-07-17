@@ -123,6 +123,29 @@ class WebuiPool:
                 conn.commit()
                 return len(rows)
 
+    def execute_all(self, statements: Iterable[tuple[str, Iterable[Any] | None]]) -> int:
+        """Execute several different statements in ONE transaction.
+
+        `execute` commits per statement and `execute_batch` runs a single
+        statement over many params; neither can make a DELETE + INSERT pair
+        atomic. On exception we never commit, and the pool rolls the connection
+        back when `_get_connection` returns it.
+        """
+        stmts = list(statements)
+        if not stmts:
+            return 0
+        total = 0
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                for sql, params in stmts:
+                    cur.execute(sql, params)
+                    # psycopg2 returns -1 when it cannot report a count for a
+                    # statement; treat that as "no contribution" rather than
+                    # letting it subtract from the running total.
+                    total += max(int(cur.rowcount or 0), 0)
+            conn.commit()
+        return total
+
     def close(self) -> None:
         if self._pool is not None:
             try:

@@ -65,12 +65,20 @@ class SalesService:
         run_row,
         run_rows,
         get_customer_assets=None,
+        invalidate_mapping_caches=None,
+        plan_mapping_invalidation=None,
+        apply_mapping_invalidation=None,
+        invalidate_all_mapping_caches=None,
         webui: Optional[WebuiPool] = None,
     ):
         self._get_connection = get_connection
         self._run_row = run_row
         self._run_rows = run_rows
         self._get_customer_assets = get_customer_assets
+        self._invalidate_mapping_caches = invalidate_mapping_caches
+        self._plan_mapping_invalidation = plan_mapping_invalidation
+        self._apply_mapping_invalidation = apply_mapping_invalidation
+        self._invalidate_all_mapping_caches = invalidate_all_mapping_caches
         self._webui = webui
         self._config = CrmConfigService(webui) if webui is not None else None
         self._account_ids_cache: Dict[str, tuple[float, List[str]]] = {}
@@ -639,6 +647,50 @@ class SalesService:
             "source_mappings": mappings,
         }
 
+    def _invalidate_for(self, account_ids: set[str]) -> str | None:
+        """Drop cached views for these accounts. Returns a warning, or None.
+
+        Resolves and deletes in one go, so it is only correct for writes the
+        resolver cannot see — i.e. writes to gui_crm_customer_source_mapping,
+        which it never reads. Anything that writes gui_crm_customer_alias must
+        use _plan_invalidation_for / _apply_invalidation instead.
+
+        Injected from main.py rather than imported, so SalesService never has to
+        know about CustomerService.
+        """
+        if self._invalidate_mapping_caches is None:
+            return None
+        return self._invalidate_mapping_caches(account_ids)
+
+    def _plan_invalidation_for(self, account_ids: set[str]):
+        """Resolve, but do not yet delete, the cached views these accounts own.
+
+        Call before a write to gui_crm_customer_alias. The resolver reads that
+        table, so a name resolved afterwards can come back None (or point
+        somewhere else) and its keys would be skipped as already-correct and
+        left stale — the bug this whole path exists to kill. The returned plan
+        is opaque here; only _apply_invalidation consumes it.
+        """
+        if self._plan_mapping_invalidation is None:
+            return None
+        return self._plan_mapping_invalidation(account_ids)
+
+    def _apply_invalidation(self, plan) -> str | None:
+        """Delete the keys a plan doomed. Must run after the write commits:
+        deleting earlier would let a concurrent reader refill the cache from
+        pre-write rows."""
+        if plan is None or self._apply_mapping_invalidation is None:
+            return None
+        return self._apply_mapping_invalidation(plan)
+
+    def _invalidate_all(self) -> str | None:
+        """Drop every cached customer view, for bulk writes whose account set is
+        every customer anyway. Resolver-free, so no plan/apply split is needed —
+        but it still has to run after the writes commit."""
+        if self._invalidate_all_mapping_caches is None:
+            return None
+        return self._invalidate_all_mapping_caches()
+
     def save_source_mappings(
         self,
         crm_accountid: str,
@@ -646,7 +698,7 @@ class SalesService:
         crm_account_name: str,
         mappings: list[dict[str, Any]],
         notes: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         if not self._webui:
             raise RuntimeError("WebUI pool not configured")
         if not crm_accountid.strip():
@@ -656,7 +708,9 @@ class SalesService:
         allowed_methods = set(MATCH_METHODS)
         cleaned_name = (crm_account_name or crm_accountid).strip()
 
-        self._webui.execute(smq.DELETE_SOURCE_MAPPINGS_FOR_ACCOUNT, (crm_accountid,))
+        statements: list[tuple[str, tuple[Any, ...]]] = [
+            (smq.DELETE_SOURCE_MAPPINGS_FOR_ACCOUNT, (crm_accountid,))
+        ]
         for entry in mappings or []:
             data_source = str(entry.get("data_source") or "").strip()
             match_method = str(entry.get("match_method") or "").strip()
@@ -667,27 +721,36 @@ class SalesService:
                 raise ValueError(f"Unsupported data_source: {data_source}")
             if match_method not in allowed_methods:
                 raise ValueError(f"Unsupported match_method: {match_method}")
-            self._webui.execute(
-                smq.UPSERT_SOURCE_MAPPING,
+            statements.append(
                 (
-                    crm_accountid,
-                    cleaned_name,
-                    data_source,
-                    match_method,
-                    match_value,
-                    entry.get("display_label"),
-                    int(entry.get("priority") or 100),
-                    bool(entry.get("enabled", True)),
-                    entry.get("notes") or notes,
-                    "manual",
-                ),
+                    smq.UPSERT_SOURCE_MAPPING,
+                    (
+                        crm_accountid,
+                        cleaned_name,
+                        data_source,
+                        match_method,
+                        match_value,
+                        entry.get("display_label"),
+                        int(entry.get("priority") or 100),
+                        bool(entry.get("enabled", True)),
+                        entry.get("notes") or notes,
+                        "manual",
+                    ),
+                )
             )
+        # Validation happens while building, so a bad row aborts before the
+        # DELETE is ever sent — previously the DELETE was already committed.
+        self._webui.execute_all(statements)
         try:
             cache.delete(ALIASES_SNAPSHOT_KEY)
             cache.delete(CATALOG_SNAPSHOT_KEY)
         except Exception:  # noqa: BLE001
             pass
-        return self.list_source_mappings_for_account(crm_accountid)
+        cache_warning = self._invalidate_for({crm_accountid})
+        return {
+            "mappings": self.list_source_mappings_for_account(crm_accountid),
+            "cache_warning": cache_warning,
+        }
 
     def seed_boyner_source_mappings(self) -> dict[str, Any]:
         if not self._webui:
@@ -721,6 +784,7 @@ class SalesService:
             cache.delete(CATALOG_SNAPSHOT_KEY)
         except Exception:  # noqa: BLE001
             pass
+        self._invalidate_for({account_id})
         return {
             "status": "ok",
             "crm_accountid": account_id,
@@ -824,6 +888,27 @@ class SalesService:
         except Exception as exc:
             logger.warning("Boyner seed during CRM resync failed: %s", exc)
 
+        # Everything, not a targeted set — for two reasons.
+        #
+        # It cannot be targeted correctly: a targeted plan has to resolve names
+        # to accounts *before* the first write, because both loops above write
+        # gui_crm_customer_alias, which the resolver reads. But half the account
+        # set (the remap ends) is derived from LIST_ORPHAN_SOURCE_MAPPINGS,
+        # which finds mappings whose account has no alias row — a question that
+        # only answers correctly *after* the alias upserts have run. The set is
+        # unknowable at the only moment resolution is still valid.
+        #
+        # And targeting buys nothing here anyway: the accounts reconciled from
+        # the project rows are every project customer, i.e. every customer that
+        # can hold a cached view at all. A targeted plan would delete the same
+        # keys — minus the ones whose name stopped resolving across the very
+        # renames this method performs, which are precisely the stale ones.
+        #
+        # Cost is bounded by what is actually cached (the warm set), and the
+        # names dropped are re-warmed. Correctness never depends on it: an
+        # over-eager drop only costs a read-through recompute.
+        self._invalidate_all()
+
         return {
             "status": "ok",
             "aliases_upserted": aliases_upserted,
@@ -843,15 +928,29 @@ class SalesService:
     ) -> None:
         if not self._webui:
             raise RuntimeError("WebUI pool not configured")
+        # Plan before the write: UPSERT_ALIAS overwrites canonical_customer_key
+        # outright (no COALESCE), so a name that resolved only through the old
+        # canonical key stops resolving the moment this statement commits.
+        plan = self._plan_invalidation_for({crm_accountid})
         self._webui.execute(
             smq.UPSERT_ALIAS,
             (crm_accountid, crm_account_name, canonical_key, netbox_value, notes),
         )
+        self._apply_invalidation(plan)
 
     def delete_alias(self, crm_accountid: str) -> int:
         if not self._webui:
             raise RuntimeError("WebUI pool not configured")
-        return self._webui.execute(smq.DELETE_ALIAS, (crm_accountid,))
+        # Plan before the write, or this invalidation is a no-op for exactly the
+        # keys it exists to catch: once the alias row is gone, a name that
+        # matched only via its crm_account_name (RESOLVE_ALIAS_BY_NAME's ILIKE
+        # '%name%') resolves to None — CRM_ACCOUNT_BY_DISPLAY_NAME is an exact
+        # match and will not stand in for it — and the key is skipped as
+        # already-correct, leaving a stale primary and a zombie :last_good.
+        plan = self._plan_invalidation_for({crm_accountid})
+        deleted = self._webui.execute(smq.DELETE_ALIAS, (crm_accountid,))
+        self._apply_invalidation(plan)
+        return deleted
 
     # ------------------------------------------------------------------
     # CRM service mapping (gui_crm_service_pages + seed + override in webui-db)

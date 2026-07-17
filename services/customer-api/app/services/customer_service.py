@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -32,6 +33,7 @@ from app.services.customer_catalog import (
     _is_mapped,
 )
 from app.utils.service_sales_mapping import map_service_sales_lines
+from app.services.mapping_warm_scheduler import MappingWarmScheduler
 from app.services.customer_mapping_resolver import (
     MappingRule,
     ResolvedSourcePatterns,
@@ -55,8 +57,40 @@ from app.utils.usage_comparison import (
     group_weighted_prices_by_customer,
 )
 from app.services.crm_config_service import CrmConfigService
+from app.services.mapping_cache_invalidator import (
+    ResolutionError,
+    plan_invalidation_for_accounts,
+    plan_invalidation_for_every_name,
+)
 
 logger = logging.getLogger(__name__)
+
+MAPPING_CACHE_WARNING = (
+    "Mapping kaydedildi, ancak cache temizlenemedi — lütfen tekrar kaydedin."
+)
+
+
+@dataclass(frozen=True)
+class MappingInvalidationPlan:
+    """An invalidation that has been decided but not yet executed.
+
+    Carries the outcome of the *resolution* step so that apply can run later,
+    after the DB write has committed, without resolving anything itself.
+
+    ``warning`` holds a resolution failure rather than raising it: planning runs
+    on a request that is about to commit (or already has), so the honest report
+    is "saved, but the cache is suspect", never a 500. ``is_noop`` distinguishes
+    "there was nothing to invalidate in the first place" from "we planned, and
+    the answer happened to be zero keys" — only the latter should still drop
+    unmapped_resources: and log the zero-delete warning.
+    """
+
+    account_ids: tuple[str, ...] = ()
+    doomed_keys: tuple[str, ...] = ()
+    matched_names: tuple[str, ...] = ()
+    scanned_count: int = 0
+    warning: str | None = None
+    is_noop: bool = False
 
 # Hot/cold TTL = 4x the 15-minute scheduler interval (ADR-0007); warm tier stays 6h.
 CLUSTER_ARCH_MAP_TTL_SECONDS = 3600
@@ -69,6 +103,13 @@ CUSTOMER_DATA_CACHE_TTL_SECONDS = CUSTOMER_DATA_CACHE_TTL_COLD
 BATCH_WARM_STATUS_KEY = "customer_warm_batch:status"
 BATCH_WARM_COMPLETED_KEY = "customer_warm_batch:last_completed_at"
 HOT_WARM_STATUS_KEY = "customer_warm_hot:status"
+
+# Guards lazy construction of each CustomerService instance's
+# MappingWarmScheduler (see _get_warm_scheduler). Module-level rather than an
+# instance attribute: several tests build the service via
+# CustomerService.__new__(CustomerService), bypassing __init__, so a lock
+# assigned there would not exist for them.
+_warm_scheduler_init_lock = threading.Lock()
 
 
 def _iso_or_none(value: Any) -> str | None:
@@ -723,45 +764,54 @@ class CustomerService:
             logger.warning("Failed to load CRM project customer names: %s", exc)
             return []
 
-    def _lookup_alias_for_display_name(self, display_name: str) -> tuple[str | None, str | None, str | None]:
+    def _lookup_alias_for_display_name_raising(self, display_name: str) -> tuple[str | None, str | None, str | None]:
+        """The real lookup. Lets failures propagate — see _lookup_alias_for_display_name."""
         webui = self._webui
         if webui is None or not getattr(webui, "is_available", False):
             return None, None, None
-        try:
-            rows = webui.run_rows(
-                smq.RESOLVE_ALIAS_BY_NAME,
-                (display_name, f"%{display_name}%"),
+        rows = webui.run_rows(
+            smq.RESOLVE_ALIAS_BY_NAME,
+            (display_name, f"%{display_name}%"),
+        )
+        if rows:
+            row = rows[0]
+            return (
+                row.get("netbox_musteri_value"),
+                row.get("canonical_customer_key"),
+                row.get("crm_accountid"),
             )
-            if rows:
-                row = rows[0]
-                return (
-                    row.get("netbox_musteri_value"),
-                    row.get("canonical_customer_key"),
-                    row.get("crm_accountid"),
-                )
-            resolved = webui.run_one(
-                smq.RESOLVE_ACCOUNTID_BY_DISPLAY_NAME,
-                (display_name, display_name, display_name),
+        resolved = webui.run_one(
+            smq.RESOLVE_ACCOUNTID_BY_DISPLAY_NAME,
+            (display_name, display_name, display_name),
+        )
+        if resolved:
+            return (
+                resolved.get("netbox_musteri_value"),
+                resolved.get("canonical_customer_key"),
+                resolved.get("crm_accountid"),
             )
-            if resolved:
-                return (
-                    resolved.get("netbox_musteri_value"),
-                    resolved.get("canonical_customer_key"),
-                    resolved.get("crm_accountid"),
-                )
-            datalake_lookup = None
-            if self._pool is not None:
-                datalake_lookup = make_datalake_account_lookup(self._get_connection, self._run_row)
-            account_ids = resolve_crm_account_ids(
-                display_name,
-                webui=None,
-                datalake_account_lookup=datalake_lookup,
-            )
-            if account_ids:
-                return None, None, account_ids[0]
-        except Exception as exc:
-            logger.warning("Alias lookup failed for customer=%s: %s", display_name, exc)
+        datalake_lookup = None
+        if self._pool is not None:
+            datalake_lookup = make_datalake_account_lookup(self._get_connection, self._run_row)
+        account_ids = resolve_crm_account_ids(
+            display_name,
+            webui=None,
+            datalake_account_lookup=datalake_lookup,
+        )
+        if account_ids:
+            return None, None, account_ids[0]
         return None, None, None
+
+    def _lookup_alias_for_display_name(self, display_name: str) -> tuple[str | None, str | None, str | None]:
+        """Swallowing wrapper for read-path callers: never raises, "can't tell"
+        collapses to "belongs to nobody". Do NOT use this for invalidation
+        decisions — see resolve_account_id_strict, which needs the distinction
+        this wrapper deliberately erases."""
+        try:
+            return self._lookup_alias_for_display_name_raising(display_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Alias lookup failed for customer=%s: %s", display_name, exc)
+            return None, None, None
 
     def _load_source_mapping_rules(self, crm_accountid: str | None) -> list[MappingRule]:
         webui = self._webui
@@ -788,6 +838,192 @@ class CustomerService:
         if not resolved.has_mappings():
             return build_resolved_patterns([], fallback_search_name=fallback)
         return resolved
+
+    def resolve_account_id_strict(self, display_name: str) -> str | None:
+        """Resolve a display name to a CRM account id, or raise if we cannot tell.
+
+        _lookup_alias_for_display_name swallows exceptions and returns
+        (None, None, None), which conflates "belongs to nobody" with "lookup
+        failed". Invalidation must not act on that ambiguity: skipping a key we
+        were unsure about leaves it silently stale. So this calls the raising
+        core directly (never the swallowing wrapper) and additionally treats an
+        unavailable webui pool as "cannot tell" rather than "belongs to
+        nobody" — without webui we have no way to answer either way.
+        """
+        webui = self._webui
+        if webui is None or not getattr(webui, "is_available", False):
+            raise ResolutionError(
+                f"WebUI pool unavailable; cannot resolve display name {display_name!r}"
+            )
+        try:
+            _netbox_value, _canonical_key, account_id = self._lookup_alias_for_display_name_raising(
+                display_name
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ResolutionError(f"Could not resolve display name {display_name!r}") from exc
+        return account_id
+
+    def _scan_cache_keys(self, prefix: str) -> list[str]:
+        return cache.scan_prefix(prefix)
+
+    def _delete_cache_keys(self, keys: list[str]) -> None:
+        for key in keys:
+            cache.delete(key)
+
+    def _get_warm_scheduler(self) -> MappingWarmScheduler:
+        scheduler = getattr(self, "_mapping_warm_scheduler", None)
+        if scheduler is not None:
+            return scheduler
+        # Double-checked: FastAPI serves sync handlers from a thread pool, so two
+        # concurrent first calls could otherwise each build a scheduler, orphaning
+        # one whose timers still fire — a duplicate warm the debounce exists to avoid.
+        with _warm_scheduler_init_lock:
+            scheduler = getattr(self, "_mapping_warm_scheduler", None)
+            if scheduler is None:
+                scheduler = MappingWarmScheduler(
+                    warm_fn=lambda name: self._rebuild_customer_caches_for_customer(name)
+                )
+                self._mapping_warm_scheduler = scheduler
+        return scheduler
+
+    def _schedule_mapping_warm(self, names: tuple[str, ...]) -> None:
+        self._get_warm_scheduler().schedule(names)
+
+    def plan_mapping_invalidation(self, account_ids: set[str]) -> MappingInvalidationPlan:
+        """Resolve which cached keys a mapping change dooms, deleting nothing.
+
+        Callers whose write touches gui_crm_customer_alias (upsert_alias,
+        delete_alias) MUST call this before that write. The resolver reads that
+        table, so afterwards a display name can resolve to None — or to a
+        different account — and its keys would be skipped as already-correct and
+        left stale. Only the resolution moves earlier; apply_mapping_invalidation
+        still deletes after the commit.
+
+        Never raises, for the same reason invalidate_mapping_caches does not: a
+        resolution failure is reported as a warning on a write that succeeds.
+        """
+        targets = tuple(sorted({a for a in account_ids if a}))
+        if not targets:
+            return MappingInvalidationPlan(is_noop=True)
+        try:
+            planned = plan_invalidation_for_accounts(
+                set(targets),
+                resolve_account_id=self.resolve_account_id_strict,
+                scan_keys=self._scan_cache_keys,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Mapping cache invalidation planning failed for accounts=%s: %s",
+                list(targets),
+                exc,
+            )
+            return MappingInvalidationPlan(
+                account_ids=targets, warning=MAPPING_CACHE_WARNING
+            )
+        return MappingInvalidationPlan(
+            account_ids=targets,
+            doomed_keys=planned.doomed_keys,
+            matched_names=planned.matched_names,
+            scanned_count=planned.scanned_count,
+        )
+
+    def plan_all_mapping_invalidation(self) -> MappingInvalidationPlan:
+        """Plan the removal of every cached customer view, resolver-free.
+
+        For bulk writes (resync_aliases_from_datalake) whose account set is
+        every project customer anyway and cannot be fully known before their
+        first write. See plan_invalidation_for_every_name for why targeting is
+        both useless and unsafe there.
+        """
+        try:
+            planned = plan_invalidation_for_every_name(scan_keys=self._scan_cache_keys)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Mapping cache invalidation planning failed for all names: %s", exc)
+            return MappingInvalidationPlan(warning=MAPPING_CACHE_WARNING)
+        return MappingInvalidationPlan(
+            doomed_keys=planned.doomed_keys,
+            matched_names=planned.matched_names,
+            scanned_count=planned.scanned_count,
+        )
+
+    def apply_mapping_invalidation(self, plan: MappingInvalidationPlan) -> str | None:
+        """Execute a plan, once the DB write it belongs to has committed.
+
+        Returns None on success, or a user-facing warning when the cache could
+        not be cleared. It never raises: the DB write has already committed by
+        the time this runs, so failing the request would report "not saved"
+        about a mapping that was in fact saved.
+        """
+        if plan.is_noop:
+            return None
+        if plan.warning:
+            return plan.warning
+        try:
+            self._delete_cache_keys(list(plan.doomed_keys))
+            # The unmapped view is the complement of every mapping, so any
+            # mapping write changes it regardless of which account moved.
+            cache.delete_prefix("unmapped_resources:")
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Mapping cache invalidation failed for accounts=%s: %s",
+                list(plan.account_ids),
+                exc,
+            )
+            return MAPPING_CACHE_WARNING
+
+        if not plan.doomed_keys:
+            # Not necessarily a bug (the customer may never have been viewed),
+            # but a silent miss looks identical to success, so say so out loud.
+            logger.warning(
+                "Mapping cache invalidation deleted nothing for accounts=%s (scanned=%d)",
+                list(plan.account_ids),
+                plan.scanned_count,
+            )
+        else:
+            logger.info(
+                "Mapping cache invalidation deleted %d keys for names=%s",
+                len(plan.doomed_keys),
+                list(plan.matched_names),
+            )
+
+        if plan.matched_names:
+            # Warming is an optimisation layered on an invalidation that has
+            # already succeeded (the deletes above already ran). A warm
+            # failure must not be reported as a cache-invalidation failure,
+            # and — critically — must not raise out of this method: the
+            # debounced scheduler can fail for its own reasons (queue/network
+            # errors), and that failure must not escape here.
+            try:
+                self._schedule_mapping_warm(plan.matched_names)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Mapping cache warm scheduling failed for names=%s: %s",
+                    list(plan.matched_names),
+                    exc,
+                )
+        return None
+
+    def invalidate_mapping_caches(self, account_ids: set[str]) -> str | None:
+        """Plan and immediately apply an invalidation for these accounts.
+
+        Safe only for writes that do NOT touch gui_crm_customer_alias — the
+        resolver reads that table, so resolving after such a write can answer
+        for a state the cached views were never built under. save_source_mappings
+        and seed_boyner_source_mappings write gui_crm_customer_source_mapping
+        only, which the resolver never reads, so their resolution is stable
+        across the write and one call is enough. Everything else must split
+        plan (before the write) from apply (after the commit).
+        """
+        return self.apply_mapping_invalidation(self.plan_mapping_invalidation(account_ids))
+
+    def invalidate_all_mapping_caches(self) -> str | None:
+        """Drop every cached customer view. See plan_all_mapping_invalidation.
+
+        No plan/apply split is needed: with no resolution step there is nothing
+        that can go stale across the write. It must still run after the commit,
+        so a reader cannot repopulate the cache from pre-write rows.
+        """
+        return self.apply_mapping_invalidation(self.plan_all_mapping_invalidation())
 
     def resolve_infra_search_name(self, display_name: str) -> str:
         """Resolve CRM display name to infra ILIKE search key."""

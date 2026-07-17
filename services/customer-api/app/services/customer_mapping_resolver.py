@@ -18,6 +18,7 @@ DATA_SOURCES: tuple[str, ...] = (
     "physical_device",
     "netbox_vm_customer",
     "itsm_servicecore",
+    "auranotify",
 )
 
 # Re-exported from the shared module so there is one list, not two.
@@ -44,6 +45,7 @@ UI_COLUMN_SOURCES: dict[str, tuple[str, ...]] = {
     "storage": ("storage_ibm",),
     "s3": ("s3_icos",),
     "itsm": ("itsm_servicecore",),
+    "auranotify": ("auranotify",),
 }
 
 # Reverse lookup: data_source -> UI column key

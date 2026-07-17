@@ -37,6 +37,7 @@ from app.models.schemas import (
     SalesLineItem,
     SalesOrderHeader,
     SalesSummary,
+    SourceMappingSaveResult,
 )
 from app.services.sales_service import SalesService
 
@@ -165,6 +166,7 @@ def get_internal_alias(svc: SalesService = Depends(get_sales_service)):
     return svc.get_internal_alias()
 
 
+
 def validate_source_mappings(mappings: List[dict]) -> None:
     """Reject match methods that are meaningless for their data source.
 
@@ -186,13 +188,19 @@ def validate_source_mappings(mappings: List[dict]) -> None:
             )
 
 
-@router.put("/crm/aliases/{crm_accountid}/source-mappings", response_model=List[dict])
+@router.put("/crm/aliases/{crm_accountid}/source-mappings", response_model=SourceMappingSaveResult)
+
 def save_source_mappings(
     crm_accountid: str,
     body: CustomerSourceMappingUpdate,
     svc: SalesService = Depends(get_sales_service),
 ):
-    """Replace all source mappings for a CRM account."""
+    """Replace all source mappings for a CRM account.
+
+    Returns cache_warning when the mappings were saved but their cached views
+    could not be dropped — the save has already committed, so this is a warning
+    rather than an error.
+    """
     mappings = [m.model_dump() for m in (body.mappings or [])]
     validate_source_mappings(mappings)
     return svc.save_source_mappings(
