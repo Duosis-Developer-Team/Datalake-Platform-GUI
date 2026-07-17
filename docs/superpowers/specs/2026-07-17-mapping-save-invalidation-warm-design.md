@@ -244,15 +244,32 @@ Kullanıcı "Kaydet" → PUT /crm/aliases/{id}/source-mappings
 ### Hata yönetimi
 
 - Invalidation **hata yutmaz**. Şu anki `try/except: pass`
-  (`sales_service.py:685-689`) bu bug'ın sessiz kalmasının sebebi. Redis
-  erişilemezse → log ERROR + exception yükselt.
+  (`sales_service.py:685-689`) bu bug'ın sessiz kalmasının sebebi.
 
-  **DB zaten commit olmuş durumda** (invalidation yazımdan sonra koşuyor), yani
-  kullanıcı 500 görür ama mapping kaydedilmiştir. Kabul edilebilir, çünkü
-  `save_source_mappings` idempotent (DELETE + UPSERT) → tekrar denemek güvenli
-  ve invalidation'ı tekrar tetikler. Alternatif — sessizce başarı dönmek —
-  tam olarak düzeltmeye çalıştığımız bug. Hata mesajı bunu söylemeli:
-  *"Mapping kaydedildi ancak cache temizlenemedi; lütfen tekrar kaydedin."*
+  Redis erişilemezse: **log ERROR + kullanıcıya görünür uyarı**, ama 500 değil.
+  Gerekçe: invalidation yazımdan *sonra* koştuğu için **DB zaten commit olmuş**
+  durumda. Sert hata dönmek "başarısız" derken aslında kaydedilmiş olması
+  demek — kullanıcıyı yanıltır. Sessizce başarı dönmek ise düzeltmeye
+  çalıştığımız bug'ın ta kendisi. İkisi de yanlış; doğrusu gerçeği söylemek:
+
+  > *"Mapping kaydedildi, ancak cache temizlenemedi — lütfen tekrar kaydedin."*
+
+  Tekrar kaydetmek güvenli: `save_source_mappings` idempotent (DELETE + UPSERT),
+  ikinci deneme invalidation'ı yeniden tetikler.
+
+  **Cevap şekli değişikliği (gerekli):** `PUT /crm/aliases/{id}/source-mappings`
+  şu an düz `List[dict]` dönüyor (`sales.py:166`, `response_model=List[dict]`) —
+  uyarı taşıyacak yer yok. Şuna dönüşür:
+
+  ```python
+  {"mappings": [...], "cache_warning": str | None}
+  ```
+
+  Etkilenen üç yer, hepsi dar: router `response_model`, GUI istemcisi
+  `put_crm_source_mappings` (`api_client.py:2233`, şu an
+  `out if isinstance(out, list) else []` → yeni şekle uyarlanır) ve kaydet
+  callback'i `save_editor_mappings_cb` (`crm_aliases_callbacks.py:317`, uyarıyı
+  `dmc.Notification`/alert olarak gösterir).
 
 - **`resolved is None` ile `resolution errored` ayrılır.** Kritik: bugünkü
   `_lookup_alias_for_display_name` istisnayı yutup `(None, None, None)` dönüyor
@@ -263,8 +280,9 @@ Kullanıcı "Kaydet" → PUT /crm/aliases/{id}/source-mappings
     atlanır, doğru davranış. Okuma yolu da `account_id=None` görüp
     `fallback_search_name`'e düşer, yani o hesabın kuralları o görünümü
     etkilemiyordur.
-  - `resolution errored` (istisna) → **invalidation'ın tamamı başarısız sayılır**,
-    exception yükselir. Emin olmadığımız key'i sessizce atlamayız.
+  - `resolution errored` (istisna) → **invalidation'ın tamamı başarısız sayılır**
+    → Redis hatasıyla aynı muamele: log ERROR + `cache_warning`. Emin olmadığımız
+    key'i sessizce atlamayız.
   - İhtiyaç: invalidator, istisnayı yutmayan bir resolver ile beslenir
     (`_lookup_alias_for_display_name`'in yutmayan bir varyantı ya da parametre).
 
@@ -299,8 +317,11 @@ hiçbir plan atomicity'yi kapsamıyor → burada kalır.
 - 5 yazma yolunun her biri invalidation'ı tetikliyor
 - primary **ve** `:last_good` birlikte siliniyor (zombie bırakmıyor)
 - `unmapped_resources:*` siliniyor
-- Redis hatası → exception yükseliyor, sessizce yutulmuyor
+- Redis hatası → `cache_warning` dolu dönüyor, **500 değil**, log ERROR basılıyor,
+  mapping DB'de duruyor
+- Resolver istisnası → aynı muamele (`cache_warning`), sessizce atlanmıyor
 - `deleted_count == 0` → WARNING loglanıyor
+- Mutlu yol → `cache_warning is None`
 
 **Regresyon (asıl bug):**
 - Cache'i doldur → mapping kaydet → `get_customer_resources` **yeni** mapping'e
