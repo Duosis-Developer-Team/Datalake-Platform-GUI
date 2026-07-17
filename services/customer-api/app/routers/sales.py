@@ -189,7 +189,6 @@ def validate_source_mappings(mappings: List[dict]) -> None:
 
 
 @router.put("/crm/aliases/{crm_accountid}/source-mappings", response_model=SourceMappingSaveResult)
-
 def save_source_mappings(
     crm_accountid: str,
     body: CustomerSourceMappingUpdate,
