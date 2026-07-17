@@ -70,20 +70,32 @@ class ResolutionError(Exception):
 
 
 @dataclass(frozen=True)
-class InvalidationResult:
-    deleted_count: int
+class InvalidationPlan:
+    """Which keys an invalidation will delete — decided, but not yet executed.
+
+    Planning is separated from deletion because two write paths (upsert_alias,
+    delete_alias) mutate gui_crm_customer_alias, the very table the resolver
+    reads. A name resolved *after* such a write can come back None ("belongs to
+    nobody") when before the write it belonged to the account being changed, and
+    its keys would then be skipped as already-correct and left stale for the
+    whole TTL — the exact bug this module exists to prevent. Those callers plan
+    before their write and delete after it commits; deletion stays after the
+    commit so a concurrent reader cannot repopulate the cache from pre-write
+    rows.
+    """
+
+    doomed_keys: tuple[str, ...]
     matched_names: tuple[str, ...]
     scanned_count: int
 
 
-def invalidate_for_accounts(
+def plan_invalidation_for_accounts(
     account_ids: set[str],
     *,
     resolve_account_id: Callable[[str], str | None],
     scan_keys: Callable[[str], Iterable[str]],
-    delete_keys: Callable[[list[str]], None],
-) -> InvalidationResult:
-    """Delete every customer_assets key owned by any of account_ids.
+) -> InvalidationPlan:
+    """Select every customer_assets key owned by any of account_ids.
 
     Names are read out of the cache and resolved with the read path's own
     resolver, so "which keys does this account own" is answered by the same code
@@ -92,7 +104,7 @@ def invalidate_for_accounts(
     Raises ResolutionError if any name cannot be resolved.
     """
     if not account_ids:
-        return InvalidationResult(deleted_count=0, matched_names=(), scanned_count=0)
+        return InvalidationPlan(doomed_keys=(), matched_names=(), scanned_count=0)
 
     targets = {a for a in account_ids if a}
     resolved: dict[str, str | None] = {}
@@ -114,11 +126,50 @@ def invalidate_for_accounts(
             if name not in matched:
                 matched.append(name)
 
-    if doomed:
-        delete_keys(doomed)
+    return InvalidationPlan(
+        doomed_keys=tuple(doomed),
+        matched_names=tuple(matched),
+        scanned_count=scanned,
+    )
 
-    return InvalidationResult(
-        deleted_count=len(doomed),
+
+def plan_invalidation_for_every_name(
+    *,
+    scan_keys: Callable[[str], Iterable[str]],
+) -> InvalidationPlan:
+    """Select every customer_assets key, whoever owns it — no resolver involved.
+
+    For bulk writes whose blast radius is already every account
+    (resync_aliases_from_datalake). Two reasons this is not simply
+    plan_invalidation_for_accounts with a big set:
+
+    1. Resync cannot know its full account set before its first write: the
+       orphan list it derives half that set from is a LEFT JOIN against
+       gui_crm_customer_alias WHERE the alias row IS NULL, so it only answers
+       correctly *after* the alias upserts have run. A plan taken that late has
+       already lost the pre-write resolution it depends on.
+    2. Resync's account set is every project customer anyway, so targeting buys
+       nothing — it only adds a way to be wrong, since resync rewrites the very
+       crm_account_name values the resolver matches on.
+
+    Not resolving is what makes this immune: there is no name->account answer to
+    go stale between the plan and the write.
+    """
+    doomed: list[str] = []
+    matched: list[str] = []
+    scanned = 0
+
+    for key in scan_keys(CUSTOMER_ASSETS_SCAN_PREFIX):
+        scanned += 1
+        parsed = parse_customer_assets_key(key)
+        if parsed is None:
+            continue
+        doomed.append(key)
+        if parsed.name not in matched:
+            matched.append(parsed.name)
+
+    return InvalidationPlan(
+        doomed_keys=tuple(doomed),
         matched_names=tuple(matched),
         scanned_count=scanned,
     )

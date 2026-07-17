@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.services.customer_service import CustomerService
+from app.services.customer_service import CustomerService, MappingInvalidationPlan
 from app.services.mapping_cache_invalidator import ResolutionError
 
 
@@ -62,9 +62,11 @@ def test_lookup_alias_for_display_name_still_swallows_exceptions():
 def test_invalidate_drops_unmapped_resources_too():
     svc = _svc()
     with patch("app.services.customer_service.cache") as cache, patch(
-        "app.services.customer_service.invalidate_for_accounts"
+        "app.services.customer_service.plan_invalidation_for_accounts"
     ) as inv, patch.object(CustomerService, "_schedule_mapping_warm"):
-        inv.return_value = MagicMock(deleted_count=2, matched_names=("Boyner",), scanned_count=9)
+        inv.return_value = MagicMock(
+            doomed_keys=("k1", "k2"), matched_names=("Boyner",), scanned_count=9
+        )
         warning = svc.invalidate_mapping_caches({"acct-1"})
 
     assert warning is None
@@ -74,7 +76,7 @@ def test_invalidate_drops_unmapped_resources_too():
 def test_invalidate_returns_warning_when_cache_fails():
     svc = _svc()
     with patch("app.services.customer_service.cache"), patch(
-        "app.services.customer_service.invalidate_for_accounts",
+        "app.services.customer_service.plan_invalidation_for_accounts",
         side_effect=ResolutionError("webui down"),
     ), patch.object(CustomerService, "_schedule_mapping_warm"):
         warning = svc.invalidate_mapping_caches({"acct-1"})
@@ -87,10 +89,10 @@ def test_invalidate_returns_warning_when_cache_fails():
 def test_invalidate_warms_the_matched_names():
     svc = _svc()
     with patch("app.services.customer_service.cache"), patch(
-        "app.services.customer_service.invalidate_for_accounts"
+        "app.services.customer_service.plan_invalidation_for_accounts"
     ) as inv, patch.object(CustomerService, "_schedule_mapping_warm") as warm:
         inv.return_value = MagicMock(
-            deleted_count=2, matched_names=("Boyner", "BOYNER A.Ş."), scanned_count=9
+            doomed_keys=("k1", "k2"), matched_names=("Boyner", "BOYNER A.Ş."), scanned_count=9
         )
         svc.invalidate_mapping_caches({"acct-1"})
 
@@ -106,11 +108,13 @@ def test_invalidate_does_not_raise_when_warm_scheduling_fails():
     failure, since the actual invalidation (the deletes) already succeeded."""
     svc = _svc()
     with patch("app.services.customer_service.cache"), patch(
-        "app.services.customer_service.invalidate_for_accounts"
+        "app.services.customer_service.plan_invalidation_for_accounts"
     ) as inv, patch.object(
         CustomerService, "_schedule_mapping_warm", side_effect=RuntimeError("scheduler down")
     ):
-        inv.return_value = MagicMock(deleted_count=2, matched_names=("Boyner",), scanned_count=9)
+        inv.return_value = MagicMock(
+            doomed_keys=("k1", "k2"), matched_names=("Boyner",), scanned_count=9
+        )
         warning = svc.invalidate_mapping_caches({"acct-1"})
 
     assert warning is None
@@ -119,7 +123,122 @@ def test_invalidate_does_not_raise_when_warm_scheduling_fails():
 def test_invalidate_with_no_accounts_is_a_noop():
     svc = _svc()
     with patch("app.services.customer_service.cache"), patch(
-        "app.services.customer_service.invalidate_for_accounts"
+        "app.services.customer_service.plan_invalidation_for_accounts"
     ) as inv:
         assert svc.invalidate_mapping_caches(set()) is None
         inv.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# The plan/apply split
+# ---------------------------------------------------------------------------
+
+
+def test_plan_deletes_nothing_yet():
+    """The whole point of planning separately: it resolves, but the cache must
+    still be intact afterwards — deletion waits for the DB write to commit."""
+    svc = _svc()
+    with patch("app.services.customer_service.cache") as cache, patch(
+        "app.services.customer_service.plan_invalidation_for_accounts"
+    ) as inv:
+        inv.return_value = MagicMock(
+            doomed_keys=("k1",), matched_names=("Boyner",), scanned_count=9
+        )
+        plan = svc.plan_mapping_invalidation({"acct-1"})
+
+    assert plan.doomed_keys == ("k1",)
+    cache.delete.assert_not_called()
+    cache.delete_prefix.assert_not_called()
+
+
+def test_plan_carries_the_warning_instead_of_raising():
+    """Planning runs on a request that is about to commit, so a resolution
+    failure must travel as a warning, never as an exception."""
+    svc = _svc()
+    with patch("app.services.customer_service.cache"), patch(
+        "app.services.customer_service.plan_invalidation_for_accounts",
+        side_effect=ResolutionError("webui down"),
+    ):
+        plan = svc.plan_mapping_invalidation({"acct-1"})
+
+    assert plan.warning is not None
+    assert plan.doomed_keys == ()
+
+
+def test_apply_returns_the_plans_warning_and_deletes_nothing():
+    svc = _svc()
+    plan = MappingInvalidationPlan(account_ids=("acct-1",), warning="cache temizlenemedi")
+    with patch("app.services.customer_service.cache") as cache:
+        warning = svc.apply_mapping_invalidation(plan)
+
+    assert warning == "cache temizlenemedi"
+    cache.delete_prefix.assert_not_called()
+
+
+def test_apply_deletes_exactly_the_planned_keys():
+    svc = _svc()
+    plan = MappingInvalidationPlan(
+        account_ids=("acct-1",),
+        doomed_keys=("customer_assets:v:Boyner:a:b", "customer_assets:v:Boyner:a:b:last_good"),
+        matched_names=("Boyner",),
+        scanned_count=4,
+    )
+    with patch("app.services.customer_service.cache") as cache, patch.object(
+        CustomerService, "_schedule_mapping_warm"
+    ) as warm:
+        warning = svc.apply_mapping_invalidation(plan)
+
+    assert warning is None
+    cache.delete.assert_any_call("customer_assets:v:Boyner:a:b")
+    cache.delete.assert_any_call("customer_assets:v:Boyner:a:b:last_good")
+    cache.delete_prefix.assert_any_call("unmapped_resources:")
+    warm.assert_called_once_with(("Boyner",))
+
+
+def test_apply_of_a_noop_plan_touches_nothing():
+    """An empty account set means nothing changed, so unmapped_resources: must
+    not be dropped either — distinct from a real plan that matched zero keys."""
+    svc = _svc()
+    with patch("app.services.customer_service.cache") as cache:
+        assert svc.apply_mapping_invalidation(svc.plan_mapping_invalidation(set())) is None
+
+    cache.delete_prefix.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# The resolver-free bulk path (resync)
+# ---------------------------------------------------------------------------
+
+
+def test_invalidate_all_drops_every_key_without_resolving():
+    svc = _svc()
+    keys = [
+        "customer_assets:cpu-usage-v3:Boyner:2026-07-09:2026-07-16",
+        "customer_assets:cpu-usage-v3:Ghost Corp:2026-07-09:2026-07-16",
+    ]
+    with patch("app.services.customer_service.cache") as cache, patch.object(
+        CustomerService, "_scan_cache_keys", return_value=keys
+    ), patch.object(CustomerService, "_schedule_mapping_warm") as warm, patch.object(
+        CustomerService, "resolve_account_id_strict"
+    ) as resolver:
+        warning = svc.invalidate_all_mapping_caches()
+
+    assert warning is None
+    # "Ghost Corp" resolves to nobody; the targeted path would skip it and leave
+    # it stale. Here it goes, and no resolver was consulted at all.
+    for key in keys:
+        cache.delete.assert_any_call(key)
+    resolver.assert_not_called()
+    cache.delete_prefix.assert_any_call("unmapped_resources:")
+    warm.assert_called_once_with(("Boyner", "Ghost Corp"))
+
+
+def test_invalidate_all_returns_warning_when_the_scan_fails():
+    svc = _svc()
+    with patch("app.services.customer_service.cache"), patch.object(
+        CustomerService, "_scan_cache_keys", side_effect=RuntimeError("redis down")
+    ):
+        warning = svc.invalidate_all_mapping_caches()
+
+    assert warning is not None
+    assert "cache" in warning.lower()

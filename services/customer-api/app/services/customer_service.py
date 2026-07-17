@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -58,10 +59,38 @@ from app.utils.usage_comparison import (
 from app.services.crm_config_service import CrmConfigService
 from app.services.mapping_cache_invalidator import (
     ResolutionError,
-    invalidate_for_accounts,
+    plan_invalidation_for_accounts,
+    plan_invalidation_for_every_name,
 )
 
 logger = logging.getLogger(__name__)
+
+MAPPING_CACHE_WARNING = (
+    "Mapping kaydedildi, ancak cache temizlenemedi — lütfen tekrar kaydedin."
+)
+
+
+@dataclass(frozen=True)
+class MappingInvalidationPlan:
+    """An invalidation that has been decided but not yet executed.
+
+    Carries the outcome of the *resolution* step so that apply can run later,
+    after the DB write has committed, without resolving anything itself.
+
+    ``warning`` holds a resolution failure rather than raising it: planning runs
+    on a request that is about to commit (or already has), so the honest report
+    is "saved, but the cache is suspect", never a 500. ``is_noop`` distinguishes
+    "there was nothing to invalidate in the first place" from "we planned, and
+    the answer happened to be zero keys" — only the latter should still drop
+    unmapped_resources: and log the zero-delete warning.
+    """
+
+    account_ids: tuple[str, ...] = ()
+    doomed_keys: tuple[str, ...] = ()
+    matched_names: tuple[str, ...] = ()
+    scanned_count: int = 0
+    warning: str | None = None
+    is_noop: bool = False
 
 # Hot/cold TTL = 4x the 15-minute scheduler interval (ADR-0007); warm tier stays 6h.
 CLUSTER_ARCH_MAP_TTL_SECONDS = 3600
@@ -860,67 +889,141 @@ class CustomerService:
     def _schedule_mapping_warm(self, names: tuple[str, ...]) -> None:
         self._get_warm_scheduler().schedule(names)
 
-    def invalidate_mapping_caches(self, account_ids: set[str]) -> str | None:
-        """Drop every cached view affected by a mapping change for these accounts.
+    def plan_mapping_invalidation(self, account_ids: set[str]) -> MappingInvalidationPlan:
+        """Resolve which cached keys a mapping change dooms, deleting nothing.
+
+        Callers whose write touches gui_crm_customer_alias (upsert_alias,
+        delete_alias) MUST call this before that write. The resolver reads that
+        table, so afterwards a display name can resolve to None — or to a
+        different account — and its keys would be skipped as already-correct and
+        left stale. Only the resolution moves earlier; apply_mapping_invalidation
+        still deletes after the commit.
+
+        Never raises, for the same reason invalidate_mapping_caches does not: a
+        resolution failure is reported as a warning on a write that succeeds.
+        """
+        targets = tuple(sorted({a for a in account_ids if a}))
+        if not targets:
+            return MappingInvalidationPlan(is_noop=True)
+        try:
+            planned = plan_invalidation_for_accounts(
+                set(targets),
+                resolve_account_id=self.resolve_account_id_strict,
+                scan_keys=self._scan_cache_keys,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Mapping cache invalidation planning failed for accounts=%s: %s",
+                list(targets),
+                exc,
+            )
+            return MappingInvalidationPlan(
+                account_ids=targets, warning=MAPPING_CACHE_WARNING
+            )
+        return MappingInvalidationPlan(
+            account_ids=targets,
+            doomed_keys=planned.doomed_keys,
+            matched_names=planned.matched_names,
+            scanned_count=planned.scanned_count,
+        )
+
+    def plan_all_mapping_invalidation(self) -> MappingInvalidationPlan:
+        """Plan the removal of every cached customer view, resolver-free.
+
+        For bulk writes (resync_aliases_from_datalake) whose account set is
+        every project customer anyway and cannot be fully known before their
+        first write. See plan_invalidation_for_every_name for why targeting is
+        both useless and unsafe there.
+        """
+        try:
+            planned = plan_invalidation_for_every_name(scan_keys=self._scan_cache_keys)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Mapping cache invalidation planning failed for all names: %s", exc)
+            return MappingInvalidationPlan(warning=MAPPING_CACHE_WARNING)
+        return MappingInvalidationPlan(
+            doomed_keys=planned.doomed_keys,
+            matched_names=planned.matched_names,
+            scanned_count=planned.scanned_count,
+        )
+
+    def apply_mapping_invalidation(self, plan: MappingInvalidationPlan) -> str | None:
+        """Execute a plan, once the DB write it belongs to has committed.
 
         Returns None on success, or a user-facing warning when the cache could
         not be cleared. It never raises: the DB write has already committed by
         the time this runs, so failing the request would report "not saved"
         about a mapping that was in fact saved.
         """
-        targets = {a for a in account_ids if a}
-        if not targets:
+        if plan.is_noop:
             return None
+        if plan.warning:
+            return plan.warning
         try:
-            result = invalidate_for_accounts(
-                targets,
-                resolve_account_id=self.resolve_account_id_strict,
-                scan_keys=self._scan_cache_keys,
-                delete_keys=self._delete_cache_keys,
-            )
+            self._delete_cache_keys(list(plan.doomed_keys))
             # The unmapped view is the complement of every mapping, so any
             # mapping write changes it regardless of which account moved.
             cache.delete_prefix("unmapped_resources:")
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Mapping cache invalidation failed for accounts=%s: %s",
-                sorted(targets),
+                list(plan.account_ids),
                 exc,
             )
-            return "Mapping kaydedildi, ancak cache temizlenemedi — lütfen tekrar kaydedin."
+            return MAPPING_CACHE_WARNING
 
-        if result.deleted_count == 0:
+        if not plan.doomed_keys:
             # Not necessarily a bug (the customer may never have been viewed),
             # but a silent miss looks identical to success, so say so out loud.
             logger.warning(
                 "Mapping cache invalidation deleted nothing for accounts=%s (scanned=%d)",
-                sorted(targets),
-                result.scanned_count,
+                list(plan.account_ids),
+                plan.scanned_count,
             )
         else:
             logger.info(
                 "Mapping cache invalidation deleted %d keys for names=%s",
-                result.deleted_count,
-                list(result.matched_names),
+                len(plan.doomed_keys),
+                list(plan.matched_names),
             )
 
-        if result.matched_names:
+        if plan.matched_names:
             # Warming is an optimisation layered on an invalidation that has
             # already succeeded (the deletes above already ran). A warm
             # failure must not be reported as a cache-invalidation failure,
-            # and — critically — must not raise out of this method: Task 6
-            # replaces the current no-op stub with a real debounced scheduler
-            # that can fail for its own reasons (queue/network errors), and
-            # that failure must not escape here.
+            # and — critically — must not raise out of this method: the
+            # debounced scheduler can fail for its own reasons (queue/network
+            # errors), and that failure must not escape here.
             try:
-                self._schedule_mapping_warm(result.matched_names)
+                self._schedule_mapping_warm(plan.matched_names)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Mapping cache warm scheduling failed for names=%s: %s",
-                    list(result.matched_names),
+                    list(plan.matched_names),
                     exc,
                 )
         return None
+
+    def invalidate_mapping_caches(self, account_ids: set[str]) -> str | None:
+        """Plan and immediately apply an invalidation for these accounts.
+
+        Safe only for writes that do NOT touch gui_crm_customer_alias — the
+        resolver reads that table, so resolving after such a write can answer
+        for a state the cached views were never built under. save_source_mappings
+        and seed_boyner_source_mappings write gui_crm_customer_source_mapping
+        only, which the resolver never reads, so their resolution is stable
+        across the write and one call is enough. Everything else must split
+        plan (before the write) from apply (after the commit).
+        """
+        return self.apply_mapping_invalidation(self.plan_mapping_invalidation(account_ids))
+
+    def invalidate_all_mapping_caches(self) -> str | None:
+        """Drop every cached customer view. See plan_all_mapping_invalidation.
+
+        No plan/apply split is needed: with no resolution step there is nothing
+        that can go stale across the write. It must still run after the commit,
+        so a reader cannot repopulate the cache from pre-write rows.
+        """
+        return self.apply_mapping_invalidation(self.plan_all_mapping_invalidation())
 
     def resolve_infra_search_name(self, display_name: str) -> str:
         """Resolve CRM display name to infra ILIKE search key."""
