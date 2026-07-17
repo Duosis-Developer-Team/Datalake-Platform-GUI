@@ -16,22 +16,28 @@ from src.pages.customer_view_callbacks import (
 
 def test_load_customer_view_data_wrong_pathname_raises_prevent_update():
     with pytest.raises(PreventUpdate):
-        load_customer_view_data("/customers", "?customer=Boyner", None, None)
+        load_customer_view_data(
+            "/customers", "?customer=Boyner", None, None, None, None, None
+        )
 
 
 def test_load_customer_view_data_missing_customer_raises_prevent_update():
     with pytest.raises(PreventUpdate):
-        load_customer_view_data("/customer-view", "", None, None)
+        load_customer_view_data(
+            "/customer-view", "", None, None, None, None, None
+        )
 
 
 def test_load_customer_view_data_blank_customer_raises_prevent_update():
     with pytest.raises(PreventUpdate):
-        load_customer_view_data("/customer-view", "?customer=%20", None, None)
+        load_customer_view_data(
+            "/customer-view", "?customer=%20", None, None, None, None, None
+        )
 
 
 def test_toggle_customer_perspective_missing_customer_raises_prevent_update():
     with pytest.raises(PreventUpdate):
-        toggle_customer_perspective("manager", "", None, None)
+        toggle_customer_perspective("manager", "", None, None, None, None)
 
 
 def test_prevent_update_is_dash_exceptions_class():

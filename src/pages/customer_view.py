@@ -14,7 +14,11 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from src.components.customer_loading import build_customer_loading_shell
+from src.components.customer_loading import (
+    LOADING_STAGE_MESSAGES,
+    build_customer_loading_shell,
+    build_customer_tab_loading_shell,
+)
 from src.components.backup_panel import build_nutanix_snapshot_panel
 from src.components.backup_unique_jobs_panel import build_unique_jobs_inventory_section
 from src.components import backup_unique_jobs_panel  # noqa: F401 — register callbacks
@@ -3355,22 +3359,22 @@ def render_customer_page(
     )
 
 
-def _tab_body_placeholder(tab: str):
-    return dcc.Loading(
-        type="dot",
-        color="#4318FF",
-        children=html.Div(id=f"cust-tab-body-{tab}"),
+def _tab_body_placeholder(tab: str, customer_name: str):
+    """Instant informative skeleton while the per-tab callback fetches data."""
+    return html.Div(
+        id=f"cust-tab-body-{tab}",
+        children=build_customer_tab_loading_shell(tab, customer_name),
     )
 
 
-def _perspective_tab_panels_shell(perspective: str) -> list:
+def _perspective_tab_panels_shell(perspective: str, customer_name: str) -> list:
     """Tab panels holding only placeholders; each is filled by its own async
     callback (item 3.4). S3/PhysInv are always present (empty-state if no data)
     so the shell needs no data fetch to decide tab visibility."""
     def panel(value: str):
         return dmc.TabsPanel(
             value=value,
-            children=html.Div(style={"padding": "0 30px"}, children=_tab_body_placeholder(value)),
+            children=_tab_body_placeholder(value, customer_name),
         )
 
     panels = [panel("summary"), panel("virt"), panel("avail"), panel("backup")]
@@ -3382,18 +3386,38 @@ def _perspective_tab_panels_shell(perspective: str) -> list:
     return panels
 
 
+def resolve_customer_active_tab(
+    *,
+    triggered_id: str | None,
+    prev_customer: str | None,
+    new_customer: str,
+    tabs_value: str | None,
+    stored_tab: str | None,
+) -> str:
+    """Preserve selected tab on time-range refresh; reset only on customer change."""
+    prev = str(prev_customer or "").strip()
+    new = str(new_customer or "").strip()
+    tid = str(triggered_id or "")
+    customer_changed = tid in ("url.search", "url.pathname") and prev.upper() != new.upper()
+    if customer_changed or not new:
+        return "summary"
+    return tabs_value or stored_tab or "summary"
+
+
 def render_customer_shell(
     chosen: str,
     time_range,
     visible_sections=None,
     *,
     perspective: str | None = None,
+    active_tab: str | None = None,
 ) -> html.Div:
     """Instant tabbed shell: tab bar + per-tab placeholders + the ctx Store that
     drives the per-tab async callbacks. No data is fetched here."""
     access = perspective_access(visible_sections)
     perspective = effective_perspective(perspective, access)
     tr = time_range or default_time_range()
+    resolved_tab = str(active_tab or "summary").strip() or "summary"
     header = create_detail_header(
         title="Customer View",
         back_href="/customers",
@@ -3423,11 +3447,12 @@ def render_customer_shell(
                 },
             ),
             dmc.Tabs(
+                id="customer-main-tabs",
                 color="indigo",
                 variant="pills",
                 radius="md",
-                value="summary",
-                children=[header, *_perspective_tab_panels_shell(perspective)],
+                value=resolved_tab,
+                children=[header, *_perspective_tab_panels_shell(perspective, chosen)],
             ),
         ],
     )
@@ -3493,18 +3518,36 @@ def _fill_as_of_stamp(_summary_children, ctx):
 
 def build_customer_layout_shell(visible_sections=None):
     """Phase A: instant skeleton shell; callbacks build content off the render path."""
+    first_stage = LOADING_STAGE_MESSAGES[0] if LOADING_STAGE_MESSAGES else "Loading…"
     return html.Div([
         dcc.Store(
             id="customer-view-visible-sections",
             data=list(visible_sections) if visible_sections else None,
         ),
         dcc.Store(id="customer-view-perspective-store", data=None),
+        dcc.Store(id="customer-view-active-tab", data="summary"),
         dcc.Store(id="customer-export-store", data=None),
         dcc.Download(id="customer-export-download"),
-        dcc.Loading(
-            id="customer-view-content-loading",
-            type="circle", color="#4318FF", delay_show=150,
-            children=html.Div(id="customer-view-page-root", style={"minHeight": "60vh", "padding": "0 8px"}),
+        html.Div(
+            id="customer-loading-status",
+            className="customer-loading-status-bar",
+            style={
+                "padding": "6px 30px 0",
+                "fontSize": "0.82rem",
+                "color": "#A3AED0",
+                "textAlign": "center",
+                "fontFamily": "DM Sans, sans-serif",
+            },
+            children=first_stage,
+        ),
+        dcc.Interval(
+            id="customer-loading-stage-interval",
+            interval=2200,
+            n_intervals=0,
+        ),
+        html.Div(
+            id="customer-view-page-root",
+            style={"minHeight": "60vh", "padding": "0 8px"},
         ),
     ])
 
