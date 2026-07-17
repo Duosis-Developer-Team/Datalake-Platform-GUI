@@ -522,6 +522,24 @@ def _should_persist_api_cache(value: Any, empty_fallback: Any) -> bool:
     return True
 
 
+def _prefer_stale_over_empty_fetch(
+    cache_key: str,
+    stale: Any,
+    fresh: Any,
+    empty_fallback: Any,
+) -> Any:
+    """Keep empty/degraded fetches from masking a usable last-good entry."""
+    if _should_persist_api_cache(fresh, empty_fallback):
+        return fresh
+    if stale is not None and _should_persist_api_cache(stale, empty_fallback):
+        logger.warning(
+            "API cache fetch returned empty/degraded for key=%s; serving last-good stale payload",
+            cache_key,
+        )
+        return stale
+    return fresh
+
+
 
 def _wait_for_shared_result(cache_key: str, timeout: float) -> bool:
     """Poll the shared cache for another pod's in-flight fetch result. Returns
@@ -576,9 +594,12 @@ def _api_cache_get_with_stale(
         try:
             out = fetch_normalized()
             _record_cache_fetch(time.time() - t0)
-            if _should_persist_api_cache(out, empty_fallback):
+            resolved = _prefer_stale_over_empty_fetch(cache_key, cached, out, empty_fallback)
+            if resolved is out and _should_persist_api_cache(out, empty_fallback):
                 _api_response_cache.set(cache_key, out)
                 _mark_fetched(cache_key)
+            if resolved is cached:
+                return _clone(resolved)
             return out
         except _HTTP_ERRORS as exc:
             _record_cache_fetch(time.time() - t0, error=True)

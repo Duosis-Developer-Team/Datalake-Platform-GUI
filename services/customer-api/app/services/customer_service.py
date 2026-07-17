@@ -30,6 +30,7 @@ from app.services.customer_catalog import (
     build_overview_payload,
     group_catalog_rows,
     load_project_customer_rows,
+    _infra_bundle_has_data,
     _is_mapped,
 )
 from app.utils.service_sales_mapping import map_service_sales_lines
@@ -505,15 +506,15 @@ class CustomerService:
     def _stale_customer_resources(cache_key: str, customer_name: str) -> dict | None:
         """Primary cache, then last_good shadow key (ADR-0007)."""
         stale = cache.get_stale(cache_key)
-        if stale is not None:
-            if cache.get(cache_key) is None and cache.get_last_good(cache_key) is not None:
-                logger.warning(
-                    "Serving last_good stale customer resources for %s key=%s",
-                    customer_name,
-                    cache_key,
-                )
-            return stale
-        return None
+        if stale is None or not _infra_bundle_has_data(stale):
+            return None
+        if cache.get(cache_key) is None and cache.get_last_good(cache_key) is not None:
+            logger.warning(
+                "Serving last_good stale customer resources for %s key=%s",
+                customer_name,
+                cache_key,
+            )
+        return stale
 
     def get_unmapped_resources(self, time_range: dict | None = None) -> dict:
         """Resources claimed by NO customer — the reverse of per-customer queries.
