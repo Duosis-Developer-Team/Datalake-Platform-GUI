@@ -658,7 +658,7 @@ class SalesService:
         crm_account_name: str,
         mappings: list[dict[str, Any]],
         notes: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         if not self._webui:
             raise RuntimeError("WebUI pool not configured")
         if not crm_accountid.strip():
@@ -706,8 +706,11 @@ class SalesService:
             cache.delete(CATALOG_SNAPSHOT_KEY)
         except Exception:  # noqa: BLE001
             pass
-        self._invalidate_for({crm_accountid})
-        return self.list_source_mappings_for_account(crm_accountid)
+        cache_warning = self._invalidate_for({crm_accountid})
+        return {
+            "mappings": self.list_source_mappings_for_account(crm_accountid),
+            "cache_warning": cache_warning,
+        }
 
     def seed_boyner_source_mappings(self) -> dict[str, Any]:
         if not self._webui:

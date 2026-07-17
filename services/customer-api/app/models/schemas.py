@@ -140,6 +140,11 @@ class CustomerAliasWithMappings(CustomerAlias):
     source_mappings: List[CustomerSourceMapping] = []
 
 
+class SourceMappingSaveResult(BaseModel):
+    mappings: List[dict]
+    cache_warning: Optional[str] = None
+
+
 class SalesEfficiencyByCategoryRow(BaseModel):
     model_config = {"extra": "allow"}
 

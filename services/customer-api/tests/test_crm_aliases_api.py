@@ -30,7 +30,10 @@ def test_list_aliases_returns_mappings(mock_customer_service):
 def test_save_source_mappings_endpoint(mock_customer_service):
     client, _svc = mock_customer_service
     sales = MagicMock()
-    sales.save_source_mappings.return_value = [{"match_value": "Boyner"}]
+    sales.save_source_mappings.return_value = {
+        "mappings": [{"match_value": "Boyner"}],
+        "cache_warning": None,
+    }
     client.app.state.sales = sales
     resp = client.put(
         "/api/v1/crm/aliases/acc-1/source-mappings",

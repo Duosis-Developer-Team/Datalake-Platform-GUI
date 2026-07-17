@@ -101,7 +101,7 @@ def test_save_source_mappings_replaces_account_rows():
 
     statements = list(webui.execute_all.call_args[0][0])
     assert statements[0][0] == smq.DELETE_SOURCE_MAPPINGS_FOR_ACCOUNT
-    assert saved[0]["match_value"] == "Boyner"
+    assert saved["mappings"][0]["match_value"] == "Boyner"
 
 
 def test_seed_boyner_source_mappings_is_idempotent_upsert():
