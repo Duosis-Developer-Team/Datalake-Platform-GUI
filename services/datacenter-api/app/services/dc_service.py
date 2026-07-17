@@ -4498,6 +4498,21 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         return payload
 
     @staticmethod
+    def _stamp_job_stats_categories(series: list[dict] | None) -> list[dict]:
+        """Ensure each NetBackup series point has ``category`` (stale-cache safe)."""
+        out: list[dict] = []
+        for point in series or []:
+            if not isinstance(point, dict):
+                continue
+            p = dict(point)
+            if p.get("category") in (None, ""):
+                p["category"] = classify_netbackup_policy(p.get("policy_type"))
+            else:
+                p["category"] = str(p.get("category")).strip().lower()
+            out.append(p)
+        return out
+
+    @staticmethod
     def _filter_job_stats_payload(
         payload: dict,
         *,
@@ -4512,30 +4527,43 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         Redis cache key (shared by every filter view of the same DC/range/
         granularity). Recomputes totals (+ totals_by_category / policy_types
         for NetBackup) via `_finalize_job_stats` over the filtered series.
-        `category` only constrains rows that actually carry a `category` key
-        (NetBackup) — it is a no-op for Veeam/Zerto series.
+
+        Stamps missing ``category`` from ``policy_type`` so stale Redis payloads
+        (pre-category schema) still filter and finalize correctly. ``policy_type``
+        matching is case-insensitive.
         """
+        vendor = str(payload.get("vendor") or "")
+        series = list(payload.get("series") or [])
+        if vendor == "netbackup":
+            series = DatabaseService._stamp_job_stats_categories(series)
+
         if not any((statuses, job_types, policy_types, category)):
+            if vendor == "netbackup" and series != (payload.get("series") or []):
+                granularity = str(payload.get("granularity") or "day")
+                time_range = payload.get("range") or {}
+                return DatabaseService._finalize_job_stats(
+                    series, vendor, granularity, time_range, as_of=payload.get("as_of"),
+                )
             return payload
 
         status_set = {str(s).lower() for s in statuses or [] if s not in (None, "")}
-        job_type_set = {str(t) for t in job_types or [] if t not in (None, "")}
-        policy_type_set = {str(t) for t in policy_types or [] if t not in (None, "")}
+        job_type_set = {str(t).upper() for t in job_types or [] if t not in (None, "")}
+        policy_type_set = {str(t).strip().upper() for t in policy_types or [] if t not in (None, "")}
         cat = str(category).strip().lower() if category else None
 
         def _matches(point: dict) -> bool:
             if status_set and str(point.get("status") or "").lower() not in status_set:
                 return False
-            if job_type_set and str(point.get("job_type") or "") not in job_type_set:
+            if job_type_set and str(point.get("job_type") or "").upper() not in job_type_set:
                 return False
-            if policy_type_set and str(point.get("policy_type") or "") not in policy_type_set:
+            if policy_type_set and str(point.get("policy_type") or "").strip().upper() not in policy_type_set:
                 return False
-            if cat and "category" in point and str(point.get("category") or "").lower() != cat:
+            # Category is NetBackup-only; Veeam/Zerto series ignore it (no-op).
+            if cat and vendor == "netbackup" and str(point.get("category") or "").lower() != cat:
                 return False
             return True
 
-        series = [p for p in (payload.get("series") or []) if _matches(p)]
-        vendor = str(payload.get("vendor") or "")
+        series = [p for p in series if _matches(p)]
         granularity = str(payload.get("granularity") or "day")
         time_range = payload.get("range") or {}
         return DatabaseService._finalize_job_stats(

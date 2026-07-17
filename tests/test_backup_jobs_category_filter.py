@@ -32,6 +32,39 @@ def test_filter_series_by_category():
     assert len(app) == 2
 
 
+def test_filter_series_by_category_classifies_missing_category():
+    """Stale cache points omit category — classify from policy_type."""
+    series = [
+        {"period": "2026-07-11", "status": "success", "policy_type": "VMWARE", "count": 10},
+        {"period": "2026-07-11", "status": "failed", "policy_type": "VMWARE", "count": 1},
+        {"period": "2026-07-11", "status": "success", "policy_type": "SAP", "count": 5},
+        {"period": "2026-07-11", "status": "success", "policy_type": "SQL_SERVER", "count": 3},
+    ]
+    image = filter_series_by_category(series, "image")
+    assert len(image) == 2
+    assert all(p["policy_type"] == "VMWARE" for p in image)
+    app = filter_series_by_category(series, "application")
+    assert len(app) == 2
+    assert {p["policy_type"] for p in app} == {"SAP", "SQL_SERVER"}
+
+
+def test_apply_job_filters_stale_payload_without_category():
+    payload = {
+        "vendor": "netbackup",
+        "series": [
+            {"period": "2026-07-11", "status": "success", "policy_type": "VMWARE", "count": 10},
+            {"period": "2026-07-11", "status": "failed", "policy_type": "VMWARE", "count": 2},
+            {"period": "2026-07-11", "status": "success", "policy_type": "SAP", "count": 5},
+        ],
+        "totals": {"total": 17},
+    }
+    filtered = apply_job_filters(payload, category="image", policy_types=["VMWARE"])
+    assert filtered["totals"]["total"] == 12
+    assert filtered["totals"]["success"] == 10
+    assert filtered["totals"]["failed"] == 2
+    assert len(filtered["series"]) == 2
+
+
 def test_filter_series_by_policy_types():
     series = _sample_payload()["series"]
     only_sap = filter_series_by_policy_types(series, ["SAP"])

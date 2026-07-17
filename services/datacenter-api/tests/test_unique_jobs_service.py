@@ -331,7 +331,7 @@ def test_filter_job_stats_payload_status_is_case_insensitive():
     assert out["totals"]["total"] == 18  # 10 + 8
 
 
-def test_filter_job_stats_payload_category_is_noop_for_series_without_category_key():
+def test_filter_job_stats_payload_category_is_noop_for_veeam():
     payload = _sample_veeam_job_stats_payload()  # veeam series has no "category" key
     out = DatabaseService._filter_job_stats_payload(payload, category="image")
     assert out["totals"]["total"] == 23  # unchanged: 10 + 5 + 8
@@ -351,6 +351,39 @@ def test_filter_job_stats_payload_category_filters_netbackup_series():
         "as_of": "x",
     }
     out = DatabaseService._filter_job_stats_payload(payload, category="image")
+    assert out["totals"]["total"] == 10
+
+
+def test_filter_job_stats_payload_stamps_missing_category_on_stale_netbackup():
+    """Stale Redis series omit category — classify from policy_type then filter."""
+    payload = {
+        "vendor": "netbackup",
+        "granularity": "day",
+        "range": {"start": "a", "end": "b"},
+        "series": [
+            {"period": "d1", "status": "success", "job_type": "BACKUP", "policy_type": "VMWARE", "count": 10},
+            {"period": "d1", "status": "failed", "job_type": "BACKUP", "policy_type": "VMWARE", "count": 2},
+            {"period": "d1", "status": "success", "job_type": "BACKUP", "policy_type": "SAP", "count": 4},
+        ],
+        "as_of": "x",
+    }
+    out = DatabaseService._filter_job_stats_payload(payload, category="image", policy_types=["VMWARE"])
+    assert out["totals"]["total"] == 12
+    assert all(p.get("category") == "image" for p in out["series"])
+
+
+def test_filter_job_stats_payload_policy_type_case_insensitive():
+    payload = {
+        "vendor": "netbackup",
+        "granularity": "day",
+        "range": {},
+        "series": [
+            {"period": "d1", "status": "success", "job_type": "BACKUP", "policy_type": "VMWARE",
+             "category": "image", "count": 10},
+        ],
+        "as_of": "x",
+    }
+    out = DatabaseService._filter_job_stats_payload(payload, policy_types=["vmware"])
     assert out["totals"]["total"] == 10
 
 

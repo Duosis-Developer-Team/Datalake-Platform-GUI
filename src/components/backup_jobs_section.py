@@ -13,6 +13,7 @@ import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objects as go
 
+from shared.backup.policy_classification import classify_netbackup_policy
 from src.services import api_client as api
 
 
@@ -56,10 +57,24 @@ def _section_id(vendor: str, category: str | None = None) -> str:
 
 
 def filter_series_by_category(series: list[dict] | None, category: str | None) -> list[dict]:
-    """Keep series points matching ``category`` (image|application). None = all."""
+    """Keep series points matching ``category`` (image|application). None = all.
+
+    When a point lacks ``category`` (stale Redis jobs payload), classify from
+    ``policy_type`` so client re-filter does not zero a valid API response.
+    """
     if not category:
         return list(series or [])
-    return [p for p in (series or []) if (p.get("category") or "") == category]
+    want = str(category).strip().lower()
+    out: list[dict] = []
+    for point in series or []:
+        raw = point.get("category")
+        if raw not in (None, ""):
+            point_cat = str(raw).strip().lower()
+        else:
+            point_cat = classify_netbackup_policy(point.get("policy_type"))
+        if point_cat == want:
+            out.append(point)
+    return out
 
 
 def filter_series_by_policy_types(
