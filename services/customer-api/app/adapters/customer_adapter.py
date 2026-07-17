@@ -36,25 +36,23 @@ class CustomerAdapter:
         self._run_row = run_row
         self._run_rows = run_rows
 
-    @staticmethod
-    def _normalize_ilike_pattern(pattern: str, fallback: str) -> str:
-        cleaned = (pattern or "").strip()
-        if not cleaned:
-            return fallback
-        if "%" in cleaned:
-            return cleaned
-        return f"%{cleaned}%"
-
     def _resolve_patterns(
         self,
         source_patterns: ResolvedSourcePatterns | None,
         source_key: str,
         fallback: str,
     ) -> list[str]:
+        """Resolved patterns are final — never re-shape them here.
+
+        shared.customer.match decided the semantics when the rule was turned into
+        a pattern. Inferring intent from the pattern string (e.g. "no % means it
+        needs wrapping") re-broadened exact rules back into contains, and would
+        misread an escaped literal % as a wildcard.
+        """
         if source_patterns:
-            patterns = source_patterns.ilike_patterns(source_key)
+            patterns = [p for p in source_patterns.ilike_patterns(source_key) if (p or "").strip()]
             if patterns:
-                return [self._normalize_ilike_pattern(p, fallback) for p in patterns]
+                return patterns
         return [fallback]
 
     def _enrich_customer_vm_list(self, cursor, vm_list: list[dict]) -> list[dict]:
