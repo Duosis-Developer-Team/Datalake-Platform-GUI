@@ -164,5 +164,49 @@ class TestBuilders(unittest.TestCase):
         self.assertEqual(payload["rows"][0]["guessed_owner"], "Örnek Kilit A.Ş.")
 
 
+class TestOwnerMatcherUsesSharedSemantics(unittest.TestCase):
+    def test_underscore_is_literal(self):
+        m = OwnerMatcher(owner="Deneme", kind="contains", value="Deneme_Dr")
+        self.assertTrue(m.matches("deneme_dr_prod"))
+        self.assertFalse(m.matches("denemexdr"))
+
+    def test_four_methods(self):
+        self.assertTrue(OwnerMatcher("o", "prefix", "deneme").matches("deneme-vm01"))
+        self.assertTrue(OwnerMatcher("o", "suffix", "vm01").matches("deneme-vm01"))
+        self.assertTrue(OwnerMatcher("o", "exact", "deneme").matches("deneme"))
+        self.assertFalse(OwnerMatcher("o", "exact", "deneme").matches("deneme-vm01"))
+        self.assertTrue(OwnerMatcher("o", "contains", "deneme").matches("x-deneme-y"))
+
+    def test_empty_value_never_matches(self):
+        self.assertFalse(OwnerMatcher("o", "contains", "  ").matches("anything"))
+
+
+class TestIdExactIsNotBroadenedToContains(unittest.TestCase):
+    def test_id_exact_rule_claims_nothing(self):
+        rows = [{
+            "data_source": "virtualization",
+            "match_method": "id_exact",
+            "match_value": "5",
+            "crm_account_name": "Deneme",
+        }]
+        matchers = owner_matchers_from_mappings(rows, display_names=[])
+        # This used to become contains '5' and claim every VM with a 5 in its
+        # name, hiding them from the Unmapped page while the SQL side — which
+        # drops the rule — showed the customer nothing.
+        for m in matchers:
+            self.assertFalse(m.matches("srv-5-web"))
+
+    def test_valid_rule_still_builds_a_matcher(self):
+        rows = [{
+            "data_source": "virtualization",
+            "match_method": "prefix",
+            "match_value": "Deneme",
+            "crm_account_name": "Deneme",
+        }]
+        matchers = owner_matchers_from_mappings(rows, display_names=[])
+        self.assertEqual(len(matchers), 1)
+        self.assertTrue(matchers[0].matches("deneme-vm01"))
+
+
 if __name__ == "__main__":
     unittest.main()
