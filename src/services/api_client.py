@@ -10,6 +10,7 @@ from urllib.parse import quote, urlencode
 
 import httpx
 
+from shared.customer.cache_keys import CUSTOMER_ASSETS_CACHE_VERSION
 from src.services import cache_service as _api_response_cache
 
 logger = logging.getLogger(__name__)
@@ -706,7 +707,12 @@ def set_customer_vip(crm_accountid: str, *, is_vip: bool) -> dict[str, Any]:
 
 
 def _customer_resources_ck(name: str, tr: Optional[dict]) -> str:
-    return f"api:customer_resources:cpu-usage-v3:{quote(name, safe='')}:{_serialize_tr_cache_key(tr)}"
+    # Same version token as the services, so a payload-shape bump invalidates this
+    # front-end cache too — a hardcoded copy here silently served the old shape.
+    return (
+        f"api:customer_resources:{CUSTOMER_ASSETS_CACHE_VERSION}:"
+        f"{quote(name, safe='')}:{_serialize_tr_cache_key(tr)}"
+    )
 
 
 def get_customer_resources_as_of(name: str, tr: Optional[dict]) -> Optional[float]:
