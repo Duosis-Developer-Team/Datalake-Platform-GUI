@@ -13,16 +13,10 @@ from src.utils.hmdl_sync_ui import build_coverage_section
 from src.utils.ui_tokens import section_header, settings_page_shell
 
 
-def _parse_dc(search: str | None, locations: list[dict]) -> str:
+def _parse_dc(search: str | None) -> str:
+    """Empty means "All locations" — the page must not fall back to a single DC."""
     params = parse_qs((search or "").lstrip("?"))
-    dc = (params.get("dc", [""])[0] or "").strip().upper()
-    if dc:
-        return dc
-    for loc in locations:
-        code = str(loc.get("dc_code") or "").strip().upper()
-        if code:
-            return code
-    return ""
+    return (params.get("dc", [""])[0] or "").strip().upper()
 
 
 def _dc_options(locations: list[dict]) -> list[dict[str, str]]:
@@ -44,7 +38,7 @@ def _dc_options(locations: list[dict]) -> list[dict[str, str]]:
 def build_layout(search: str | None = None) -> html.Div:
     locations_data = api.get_hmdl_locations()
     locations = locations_data.get("items") or []
-    selected_dc = _parse_dc(search, locations)
+    selected_dc = _parse_dc(search)
     dc_options = _dc_options(locations)
 
     coverage = api.get_hmdl_coverage(dc=selected_dc or None)
