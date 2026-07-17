@@ -3516,9 +3516,47 @@ def _fill_as_of_stamp(_summary_children, ctx):
     return _as_of_stamp_text(ctx)
 
 
-def build_customer_layout_shell(visible_sections=None):
-    """Phase A: instant skeleton shell; callbacks build content off the render path."""
+def build_customer_layout_shell(
+    visible_sections=None,
+    selected_customer=None,
+    time_range=None,
+):
+    """Phase A: instant skeleton shell; ``load_customer_view_data`` is the sole page-root filler.
+
+    Static loading skeleton (status bar + stage interval + shimmer) lives INSIDE
+    ``customer-view-page-root`` so it unmounts when real content arrives — no
+    competing Phase-B skeleton callback, and the interval stops with the skeleton.
+    """
     first_stage = LOADING_STAGE_MESSAGES[0] if LOADING_STAGE_MESSAGES else "Loading…"
+    tr = time_range or default_time_range()
+    access = perspective_access(visible_sections)
+    perspective = default_perspective(access)
+    chosen = (selected_customer or "").strip() or "Customer"
+    skeleton = html.Div(
+        className="customer-page-enter",
+        children=[
+            html.Div(
+                id="customer-loading-status",
+                className="customer-loading-status-bar",
+                style={
+                    "padding": "6px 30px 0",
+                    "fontSize": "0.82rem",
+                    "color": "#A3AED0",
+                    "textAlign": "center",
+                    "fontFamily": "DM Sans, sans-serif",
+                },
+                children=first_stage,
+            ),
+            dcc.Interval(
+                id="customer-loading-stage-interval",
+                interval=2200,
+                n_intervals=0,
+            ),
+            render_customer_loading_page(
+                chosen, tr, visible_sections=visible_sections, perspective=perspective
+            ),
+        ],
+    )
     return html.Div([
         dcc.Store(
             id="customer-view-visible-sections",
@@ -3529,46 +3567,11 @@ def build_customer_layout_shell(visible_sections=None):
         dcc.Store(id="customer-export-store", data=None),
         dcc.Download(id="customer-export-download"),
         html.Div(
-            id="customer-loading-status",
-            className="customer-loading-status-bar",
-            style={
-                "padding": "6px 30px 0",
-                "fontSize": "0.82rem",
-                "color": "#A3AED0",
-                "textAlign": "center",
-                "fontFamily": "DM Sans, sans-serif",
-            },
-            children=first_stage,
-        ),
-        dcc.Interval(
-            id="customer-loading-stage-interval",
-            interval=2200,
-            n_intervals=0,
-        ),
-        html.Div(
             id="customer-view-page-root",
             style={"minHeight": "60vh", "padding": "0 8px"},
+            children=skeleton,
         ),
     ])
-
-
-@callback(
-    Output("customer-view-page-root", "children"),
-    Input("url", "pathname"),
-    Input("url", "search"),
-    Input("app-time-range", "data"),
-    State("customer-view-visible-sections", "data"),
-)
-def _fill_customer_view_content(pathname, search, time_range, visible_sections):
-    """Phase B: show loading shell while async callback loads data."""
-    if pathname != "/customer-view":
-        return dash.no_update
-    from urllib.parse import parse_qs
-    chosen = (parse_qs((search or "").lstrip("?")).get("customer", [""])[0] or "").strip()
-    tr = time_range or default_time_range()
-    access = perspective_access(visible_sections)
-    perspective = default_perspective(access)
-    return render_customer_loading_page(chosen, tr, visible_sections, perspective=perspective)
 
 
 def build_customer_layout(time_range=None, selected_customer=None, visible_sections=None):

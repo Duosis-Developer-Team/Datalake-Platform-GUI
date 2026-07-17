@@ -30,7 +30,7 @@ def rotate_customer_loading_status(n_intervals):
 
 
 @callback(
-    Output("customer-view-active-tab", "data"),
+    Output("customer-view-active-tab", "data", allow_duplicate=True),
     Input("customer-main-tabs", "value"),
     prevent_initial_call=True,
 )
@@ -41,10 +41,12 @@ def sync_customer_active_tab(active_tab):
 
 
 @callback(
-    Output("customer-view-page-root", "children", allow_duplicate=True),
-    Output("customer-export-store", "data", allow_duplicate=True),
-    Output("customer-view-perspective-store", "data", allow_duplicate=True),
-    Output("customer-view-active-tab", "data", allow_duplicate=True),
+    # Sole initial writer of page-root (mirrors DC View). Perspective toggle uses
+    # allow_duplicate on page-root; this callback is the primary for stores + root.
+    Output("customer-view-page-root", "children"),
+    Output("customer-export-store", "data"),
+    Output("customer-view-perspective-store", "data"),
+    Output("customer-view-active-tab", "data"),
     Input("url", "pathname"),
     Input("url", "search"),
     Input("app-time-range", "data"),
@@ -52,7 +54,7 @@ def sync_customer_active_tab(active_tab):
     State("customer-export-store", "data"),
     State("customer-view-active-tab", "data"),
     State("customer-main-tabs", "value"),
-    prevent_initial_call="initial_duplicate",
+    prevent_initial_call=False,
 )
 def load_customer_view_data(
     pathname,

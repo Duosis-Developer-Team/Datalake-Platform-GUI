@@ -20,6 +20,13 @@ def _collect_ids(component):
     return {getattr(n, "id", None) for n in _walk(component) if getattr(n, "id", None)}
 
 
+def _find_by_id(component, target_id: str):
+    for node in _walk(component):
+        if getattr(node, "id", None) == target_id:
+            return node
+    return None
+
+
 def test_build_customer_loading_shell_has_skeleton_and_dots():
     from src.components.customer_loading import build_customer_loading_shell
 
@@ -41,15 +48,26 @@ def test_build_customer_tab_loading_shell_has_skeleton_not_dot_loading():
     assert "Loading backup data" in text
 
 
-def test_build_customer_layout_shell_has_persistent_loading_roots():
+def test_build_customer_layout_shell_has_static_skeleton_inside_page_root():
     from src.pages.customer_view import build_customer_layout_shell
 
-    layout = build_customer_layout_shell(["p"])
+    layout = build_customer_layout_shell(
+        ["p"], selected_customer="Acme Corp", time_range={"preset": "7d"}
+    )
     ids = _collect_ids(layout)
     assert "customer-view-page-root" in ids
     assert "customer-loading-status" in ids
     assert "customer-loading-stage-interval" in ids
     assert "customer-view-active-tab" in ids
+
+    page_root = _find_by_id(layout, "customer-view-page-root")
+    assert page_root is not None
+    root_ids = _collect_ids(page_root)
+    # Status bar + interval live INSIDE page-root so they unmount with content swap.
+    assert "customer-loading-status" in root_ids
+    assert "customer-loading-stage-interval" in root_ids
+    assert "customer-loading-layer" in root_ids or "building-reveal-dots" in str(page_root)
+
     text = str(layout)
     assert 'type="circle"' not in text
     assert 'type="dot"' not in text
@@ -118,3 +136,29 @@ def test_build_customer_layout_with_customer_has_async_roots():
     assert "customer-view-visible-sections" in string_ids
     assert "customer-export-toolbar" in string_ids
     assert "customer-export-csv" in str(layout)
+
+
+def test_customer_view_page_root_has_single_initial_writer():
+    """No Phase-B skeleton filler racing load_customer_view_data on page-root."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    cv_src = (root / "src" / "pages" / "customer_view.py").read_text(encoding="utf-8")
+    cb_src = (root / "src" / "pages" / "customer_view_callbacks.py").read_text(encoding="utf-8")
+
+    assert "def _fill_customer_view_content" not in cv_src
+
+    tree = ast.parse(cb_src)
+    load_fn = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "load_customer_view_data":
+            load_fn = node
+            break
+    assert load_fn is not None
+
+    # Decorator must include a plain (non-duplicate) Output for page-root children.
+    deco_src = ast.get_source_segment(cb_src, load_fn.decorator_list[0]) or ""
+    assert 'Output("customer-view-page-root", "children")' in deco_src
+    assert 'Output("customer-view-page-root", "children", allow_duplicate=True)' not in deco_src
+    assert "prevent_initial_call=False" in deco_src or "prevent_initial_call" not in deco_src

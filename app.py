@@ -827,8 +827,14 @@ def render_main_content(pathname, time_range, search):
     if pathname == "/unmapped-resources":
         return unmapped_resources.build_layout(tr, visible_sections=vis)
     if pathname == "/customer-view":
-        # Two-phase: shell instant; `_fill_customer_view_content` reads the ?customer= param.
-        return customer_view.build_customer_layout_shell(visible_sections=vis)
+        # Two-phase: static skeleton in page-root; load_customer_view_data is the sole filler.
+        cust_params = parse_qs((search or "").lstrip("?"))
+        chosen_customer = (cust_params.get("customer", [""])[0] or "").strip()
+        return customer_view.build_customer_layout_shell(
+            visible_sections=vis,
+            selected_customer=chosen_customer,
+            time_range=tr,
+        )
     if pathname == "/query-explorer":
         return query_explorer.layout(visible_sections=vis)
     if pathname == "/crm/sellable-potential":
