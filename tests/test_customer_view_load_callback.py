@@ -1,7 +1,8 @@
-"""load_customer_view_data must fire without State(customer-main-tabs).
+"""load_customer_view_data must State(customer-main-tabs) once loading shell mounts it.
 
-Regression: that State pointed at a component created by the callback's own
-output, so Dash skipped the initial load and Customer View stayed on skeleton.
+Loading skeleton includes id=customer-main-tabs (DC View parity), so the State is
+safe and preserves tab on time-range refresh. Arity must stay stable across deploys
+to avoid Dash \"Inputs do not match callback definition\" from open browser sessions.
 """
 from __future__ import annotations
 
@@ -27,21 +28,19 @@ def _collect_ids(component):
     return {getattr(n, "id", None) for n in _walk(component) if getattr(n, "id", None)}
 
 
-def test_load_customer_view_data_has_no_customer_main_tabs_state():
+def test_load_customer_view_data_has_customer_main_tabs_state():
     from src.pages import customer_view_callbacks as mod
 
     cb_src = Path(mod.__file__).read_text(encoding="utf-8")
-    # Decorator block for load_customer_view_data (before the def line).
     marker = "def load_customer_view_data("
     idx = cb_src.index(marker)
     deco = cb_src[cb_src.rfind("@callback", 0, idx) : idx]
-    # Ignore comments; only real State(...) registrations matter.
     code_lines = [
         ln for ln in deco.splitlines() if not ln.lstrip().startswith("#")
     ]
     deco_code = "\n".join(code_lines)
-    assert 'State("customer-main-tabs"' not in deco_code
-    assert "tabs_value" not in inspect.signature(mod.load_customer_view_data).parameters
+    assert 'State("customer-main-tabs"' in deco_code
+    assert "tabs_value" in inspect.signature(mod.load_customer_view_data).parameters
 
 
 def test_render_customer_loading_page_has_customer_main_tabs_id():
@@ -62,6 +61,7 @@ def test_load_customer_view_data_returns_shell_with_ctx():
             {"preset": "7d"},
             None,
             None,
+            "summary",
             "summary",
         )
 

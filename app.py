@@ -13,7 +13,7 @@ from dash import Dash, html, dcc, _dash_renderer, ALL
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from dotenv import load_dotenv
-from flask import request
+from flask import got_request_exception, request
 
 load_dotenv()
 
@@ -115,8 +115,30 @@ def _prevent_stale_dash_cache(response):
     return response
 
 
+def _log_dash_callback_mismatch(sender, exception, **_extra):
+    """Surface which Dash output failed when client/server callback arity diverges."""
+    from dash.exceptions import CallbackException
+
+    if not isinstance(exception, CallbackException):
+        return
+    if "Inputs do not match" not in str(exception):
+        return
+    try:
+        payload = request.get_json(silent=True) or {}
+        _log.error(
+            "Dash callback arity mismatch output=%r changed=%r n_inputs=%s n_state=%s",
+            payload.get("output"),
+            payload.get("changedPropIds"),
+            len(payload.get("inputs") or []),
+            len(payload.get("state") or []),
+        )
+    except Exception:
+        _log.exception("Failed to log Dash callback mismatch context")
+
+
 _log = logging.getLogger(__name__)
 _log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
+got_request_exception.connect(_log_dash_callback_mismatch, server)
 from src.pages import home, datacenters, dc_view, customer_view, customers_list, query_explorer, global_view, region_drilldown, dc_detail
 from src.pages import unmapped_resources
 from src.pages import customer_view_callbacks  # noqa: F401 — async customer view load
