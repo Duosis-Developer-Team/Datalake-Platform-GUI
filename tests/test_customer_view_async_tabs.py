@@ -34,6 +34,10 @@ def test_shell_has_ctx_store_and_tab_placeholders():
     assert "cust-tab-body-summary" in ids
     assert "cust-tab-body-itsm" in ids
     assert "cust-tab-body-s3" in ids
+    assert "customer-main-tabs" in ids
+    text = str(shell)
+    assert "building-reveal-dots" in text
+    assert 'type="dot"' not in text
 
 
 def test_shell_does_not_fetch_any_data():

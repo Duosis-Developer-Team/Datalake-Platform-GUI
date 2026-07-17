@@ -3,32 +3,93 @@
 from __future__ import annotations
 
 
-def test_build_customer_loading_shell_has_status_and_skeleton():
+def _walk(node):
+    if node is None:
+        return
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _walk(item)
+        return
+    yield node
+    children = getattr(node, "children", None)
+    if children is not None:
+        yield from _walk(children)
+
+
+def _collect_ids(component):
+    return {getattr(n, "id", None) for n in _walk(component) if getattr(n, "id", None)}
+
+
+def test_build_customer_loading_shell_has_skeleton_and_dots():
     from src.components.customer_loading import build_customer_loading_shell
 
     shell = build_customer_loading_shell("Acme Corp")
     assert shell is not None
+    text = str(shell)
+    assert "building-reveal-dots" in text
+    assert "customer-load-shimmer" in text or "Skeleton" in text
 
-    def _walk(node):
-        if node is None:
-            return
-        if isinstance(node, (list, tuple)):
-            for item in node:
-                yield from _walk(item)
-            return
-        yield node
-        children = getattr(node, "children", None)
-        if children is not None:
-            yield from _walk(children)
 
-    ids = set()
-    for node in _walk(shell):
-        node_id = getattr(node, "id", None)
-        if node_id:
-            ids.add(node_id)
+def test_build_customer_tab_loading_shell_has_skeleton_not_dot_loading():
+    from src.components.customer_loading import build_customer_tab_loading_shell
 
+    shell = build_customer_tab_loading_shell("backup", "Acme Corp")
+    assert shell is not None
+    text = str(shell)
+    assert "building-reveal-dots" in text
+    assert 'type="dot"' not in text
+    assert "Loading backup data" in text
+
+
+def test_build_customer_layout_shell_has_persistent_loading_roots():
+    from src.pages.customer_view import build_customer_layout_shell
+
+    layout = build_customer_layout_shell(["p"])
+    ids = _collect_ids(layout)
+    assert "customer-view-page-root" in ids
     assert "customer-loading-status" in ids
     assert "customer-loading-stage-interval" in ids
+    assert "customer-view-active-tab" in ids
+    text = str(layout)
+    assert 'type="circle"' not in text
+    assert 'type="dot"' not in text
+
+
+def test_render_customer_shell_tab_placeholders_use_loading_shell():
+    from src.pages.customer_view import render_customer_shell
+
+    shell = render_customer_shell("Acme Corp", {"preset": "7d"}, None)
+    text = str(shell)
+    assert "cust-tab-body-summary" in text
+    assert "building-reveal-dots" in text
+    assert 'type="dot"' not in text
+    assert "customer-main-tabs" in text
+
+
+def test_resolve_customer_active_tab_preserves_on_time_range():
+    from src.pages.customer_view import resolve_customer_active_tab
+
+    active = resolve_customer_active_tab(
+        triggered_id="app-time-range",
+        prev_customer="Acme",
+        new_customer="Acme",
+        tabs_value="backup",
+        stored_tab="summary",
+    )
+    assert active == "backup"
+
+
+def test_resolve_customer_active_tab_resets_on_customer_change():
+    from src.pages.customer_view import resolve_customer_active_tab
+
+    active = resolve_customer_active_tab(
+        triggered_id="url.search",
+        prev_customer="Acme",
+        new_customer="Boyner",
+        tabs_value="backup",
+        stored_tab="backup",
+    )
+    assert active == "summary"
 
 
 def test_build_customer_layout_without_customer_shows_catalog_link():
@@ -44,18 +105,6 @@ def test_build_customer_layout_with_customer_has_async_roots():
 
     layout = build_customer_layout(selected_customer="Acme Corp")
     assert layout is not None
-
-    def _walk(node):
-        if node is None:
-            return
-        if isinstance(node, (list, tuple)):
-            for item in node:
-                yield from _walk(item)
-            return
-        yield node
-        children = getattr(node, "children", None)
-        if children is not None:
-            yield from _walk(children)
 
     string_ids = set()
     for node in _walk(layout):
