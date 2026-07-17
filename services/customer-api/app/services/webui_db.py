@@ -139,7 +139,10 @@ class WebuiPool:
             with conn.cursor() as cur:
                 for sql, params in stmts:
                     cur.execute(sql, params)
-                    total += int(cur.rowcount or 0)
+                    # psycopg2 returns -1 when it cannot report a count for a
+                    # statement; treat that as "no contribution" rather than
+                    # letting it subtract from the running total.
+                    total += max(int(cur.rowcount or 0), 0)
             conn.commit()
         return total
 
