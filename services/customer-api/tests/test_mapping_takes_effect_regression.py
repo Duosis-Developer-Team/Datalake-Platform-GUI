@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from app.services.customer_service import CustomerService
 
@@ -15,16 +15,17 @@ SEEDED_KEYS = [
 ]
 
 
+def _resolve_boyner_account(name: str) -> str:
+    """Maps names starting with 'boyner' to target account, others to 'other-acct'."""
+    return ACCOUNT if name.lower().startswith("boyner") else "other-acct"
+
+
 def test_saving_a_mapping_evicts_every_cached_view_of_that_account():
     store = {k: {"stale": True} for k in SEEDED_KEYS}
     svc = CustomerService.__new__(CustomerService)
-    svc._webui = MagicMock()
-
-    def fake_resolve(name):
-        return ACCOUNT if name.lower().startswith("boyner") else "other-acct"
 
     with patch("app.services.customer_service.cache") as cache, patch.object(
-        CustomerService, "resolve_account_id_strict", side_effect=fake_resolve
+        CustomerService, "resolve_account_id_strict", side_effect=_resolve_boyner_account
     ), patch.object(CustomerService, "_schedule_mapping_warm"):
         cache.scan_prefix.side_effect = lambda p: [k for k in store if k.startswith(p)]
         cache.delete.side_effect = store.pop
@@ -43,14 +44,16 @@ def test_the_last_good_shadow_is_not_left_behind():
     # falls back to it, so run_singleflight never calls the factory.
     store = {k: {"stale": True} for k in SEEDED_KEYS}
     svc = CustomerService.__new__(CustomerService)
-    svc._webui = MagicMock()
 
     with patch("app.services.customer_service.cache") as cache, patch.object(
-        CustomerService, "resolve_account_id_strict", return_value=ACCOUNT
+        CustomerService, "resolve_account_id_strict", side_effect=_resolve_boyner_account
     ), patch.object(CustomerService, "_schedule_mapping_warm"):
         cache.scan_prefix.side_effect = lambda p: [k for k in store if k.startswith(p)]
         cache.delete.side_effect = store.pop
 
         svc.invalidate_mapping_caches({ACCOUNT})
 
+    # No :last_good key of the target account survives.
     assert not [k for k in store if k.endswith(":last_good")]
+    # The unrelated account is untouched (guards against over-invalidation).
+    assert "customer_assets:cpu-usage-v3:Other Corp:2026-07-09:2026-07-16" in store
