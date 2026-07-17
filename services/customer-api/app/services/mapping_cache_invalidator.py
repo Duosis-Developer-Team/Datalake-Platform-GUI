@@ -56,3 +56,71 @@ def parse_customer_assets_key(key: str) -> ParsedKey | None:
         end=match.group("end"),
         is_shadow=bool(match.group("shadow")),
     )
+
+
+from typing import Callable, Iterable
+
+
+class ResolutionError(Exception):
+    """A display name could not be resolved to an account.
+
+    Distinct from resolving to None. None means "this name belongs to no
+    account" — a clean answer we can act on. This exception means "we could not
+    tell", and we must never treat that as None: skipping a key we were unsure
+    about is precisely how a mapping stays silently stale.
+    """
+
+
+@dataclass(frozen=True)
+class InvalidationResult:
+    deleted_count: int
+    matched_names: tuple[str, ...]
+    scanned_count: int
+
+
+def invalidate_for_accounts(
+    account_ids: set[str],
+    *,
+    resolve_account_id: Callable[[str], str | None],
+    scan_keys: Callable[[str], Iterable[str]],
+    delete_keys: Callable[[list[str]], None],
+) -> InvalidationResult:
+    """Delete every customer_assets key owned by any of account_ids.
+
+    Names are read out of the cache and resolved with the read path's own
+    resolver, so "which keys does this account own" is answered by the same code
+    that answers "which rules build this view". They cannot drift apart.
+
+    Raises ResolutionError if any name cannot be resolved.
+    """
+    if not account_ids:
+        return InvalidationResult(deleted_count=0, matched_names=(), scanned_count=0)
+
+    targets = {a for a in account_ids if a}
+    resolved: dict[str, str | None] = {}
+    doomed: list[str] = []
+    matched: list[str] = []
+    scanned = 0
+
+    for key in scan_keys(CUSTOMER_ASSETS_SCAN_PREFIX):
+        scanned += 1
+        parsed = parse_customer_assets_key(key)
+        if parsed is None:
+            continue
+        name = parsed.name
+        if name not in resolved:
+            resolved[name] = resolve_account_id(name)  # may raise ResolutionError
+        account_id = resolved[name]
+        if account_id is not None and account_id in targets:
+            doomed.append(key)
+            if name not in matched:
+                matched.append(name)
+
+    if doomed:
+        delete_keys(doomed)
+
+    return InvalidationResult(
+        deleted_count=len(doomed),
+        matched_names=tuple(matched),
+        scanned_count=scanned,
+    )
