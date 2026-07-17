@@ -438,6 +438,13 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 sort_order=65,
             ),
             _n(
+                "page:settings_crm_backup",
+                "CRM backup multipliers",
+                "config",
+                route_pattern="/administration/integrations/crm/backup",
+                sort_order=67,
+            ),
+            _n(
                 "page:dashboard_crm_sellable",
                 "CRM Sellable Potential dashboard",
                 "view",
