@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Callable, Iterable
 
 # Key shape: customer_assets:{version}:{name}:{start}:{end}[:last_good]
 #
@@ -56,9 +57,6 @@ def parse_customer_assets_key(key: str) -> ParsedKey | None:
         end=match.group("end"),
         is_shadow=bool(match.group("shadow")),
     )
-
-
-from typing import Callable, Iterable
 
 
 class ResolutionError(Exception):

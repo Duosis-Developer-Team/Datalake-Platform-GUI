@@ -232,3 +232,35 @@ def test_no_matching_keys_reports_zero():
 
     assert result.deleted_count == 0
     assert result.matched_names == ()
+
+
+def test_scanned_count_reflects_keys_walked():
+    deleted, scan_keys, delete_keys, resolver = _fakes()
+
+    result = invalidate_for_accounts(
+        {ACCT_A},
+        resolve_account_id=resolver,
+        scan_keys=scan_keys,
+        delete_keys=delete_keys,
+    )
+
+    # scanned_count includes every key returned by scan_keys (filtered by prefix).
+    # All customer_assets: prefixed keys in KEYS are walked.
+    assert result.scanned_count == 4
+
+
+def test_orphaned_shadow_is_deleted_even_without_its_primary():
+    # Real state: on the live Redis, 5 of 8 shadows outlived their primary.
+    # An orphaned shadow is what keeps a stale mapping alive, so it must go.
+    keys = ["customer_assets:cpu-usage-v3:Boyner:2026-07-09:2026-07-16:last_good"]
+    deleted, scan_keys, delete_keys, resolver = _fakes(keys=keys)
+
+    result = invalidate_for_accounts(
+        {ACCT_A},
+        resolve_account_id=resolver,
+        scan_keys=scan_keys,
+        delete_keys=delete_keys,
+    )
+
+    assert deleted == keys
+    assert result.deleted_count == 1
