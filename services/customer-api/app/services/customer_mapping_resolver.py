@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional, Sequence
 
 from app.utils.customer_needle import customer_to_email_needle
+from shared.customer import match as alias_match
 
 DATA_SOURCES: tuple[str, ...] = (
     "virtualization",
@@ -19,13 +20,8 @@ DATA_SOURCES: tuple[str, ...] = (
     "itsm_servicecore",
 )
 
-MATCH_METHODS: tuple[str, ...] = (
-    "contains",
-    "prefix",
-    "suffix",
-    "exact",
-    "id_exact",
-)
+# Re-exported from the shared module so there is one list, not two.
+MATCH_METHODS: tuple[str, ...] = alias_match.ALL_METHODS
 
 # Reserved pseudo-account for Bulutistan's own (internal) resources. Not a real
 # CRM account; source mappings under this id identify infra owned by Bulutistan
@@ -97,7 +93,6 @@ class ResolvedSourcePatterns:
     """Query-ready patterns grouped by infra data source."""
 
     ilike_by_source: dict[str, list[str]] = field(default_factory=dict)
-    exact_by_source: dict[str, list[str]] = field(default_factory=dict)
     physical_tenant_ids: list[int] = field(default_factory=list)
     itsm_needles: list[str] = field(default_factory=list)
 
@@ -113,25 +108,19 @@ class ResolvedSourcePatterns:
     def has_mappings(self) -> bool:
         return bool(
             self.ilike_by_source
-            or self.exact_by_source
             or self.physical_tenant_ids
             or self.itsm_needles
         )
 
 
 def sql_pattern_for_match(method: str, value: str) -> tuple[str, str]:
-    """Return (kind, pattern) where kind is 'ilike' or 'exact'."""
-    cleaned = (value or "").strip()
-    method_key = (method or "contains").strip().lower()
-    if method_key == "id_exact":
-        return "id_exact", cleaned
-    if method_key == "exact":
-        return "exact", cleaned
-    if method_key == "prefix":
-        return "ilike", f"{cleaned}%"
-    if method_key == "suffix":
-        return "ilike", f"%{cleaned}"
-    return "ilike", f"%{cleaned}%"
+    """Return (kind, pattern) where kind is 'ilike' or 'id_exact'.
+
+    Thin wrapper: shared.customer.match owns the semantics so the SQL and
+    in-memory paths cannot drift. Kept as a named function because existing
+    call sites and tests import it.
+    """
+    return alias_match.sql_pattern(method, value)
 
 
 def build_resolved_patterns(
@@ -153,11 +142,6 @@ def build_resolved_patterns(
                     resolved.physical_tenant_ids.append(int(pattern))
                 except ValueError:
                     continue
-            continue
-        if kind == "exact":
-            bucket = resolved.exact_by_source.setdefault(rule.data_source, [])
-            if pattern not in bucket:
-                bucket.append(pattern)
             continue
         bucket = resolved.ilike_by_source.setdefault(rule.data_source, [])
         if pattern not in bucket:
