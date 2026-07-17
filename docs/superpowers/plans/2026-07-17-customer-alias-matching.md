@@ -33,11 +33,21 @@
   |---|---|
   | root `tests/` | `test_backup_sidebar_helpers.py` — collection error, `KeyError: '_compute_backup_tr'` |
   | root `tests/` | `test_zabbix_query_deduplication.py` — collection error, `No module named 'app.db'` (root `app.py` shadows the `app/` package) |
+  | root `tests/` | **23 further failures** with those two excluded — mostly Dash view tests (`test_dc_view_visibility`, `test_network_eager_load`, `test_db_service`, …) |
   | customer-api | `test_sellable_service.py::test_recompute_family_constraints_global_host_fallback_uses_star_compute` |
   | datacenter-api | `test_dc_service_host_rows_slice.py::test_classic_host_rows_single_sql_for_cluster_subsets` |
   | datacenter-api | `test_host_rows.py::test_datastore_metrics_excludes_backup_datastores` |
 
-  Green baseline to preserve: `tests/test_unmapped_classifier.py` 17 passed; customer-api 368 passed / 1 failed; datacenter-api 230 passed / 2 failed / 29 skipped.
+  Measured baseline to preserve — compare counts, not green:
+
+  | Suite | Baseline |
+  |---|---|
+  | root `tests/` (2 collection errors excluded) | 23 failed, 1082 passed, 1 skipped |
+  | customer-api | 1 failed, 368 passed |
+  | datacenter-api | 2 failed, 230 passed, 29 skipped |
+
+  The root suite is slow (~2–18 min depending on machine load); run it in the
+  background rather than blocking on it.
 - `shared/` is importable from every service: each Dockerfile does `COPY shared/ ./shared/`, and `services/*/tests/conftest.py` appends the GUI root to `sys.path`. Do not duplicate match code into a service.
 - Postgres' default LIKE/ILIKE escape character is backslash. Patterns are passed as bind parameters, so `\_` works with no `ESCAPE` clause. Never string-interpolate a pattern into SQL.
 - Do not change the DB table name: `gui_crm_customer_source_mapping`.
