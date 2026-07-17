@@ -255,7 +255,7 @@ def _top_nav(user_id: int, current_path: str) -> dmc.Group:
         items.append(
             dmc.Anchor(
                 dmc.Button(
-                    "Integrations",
+                    "Integration and Configuration",
                     leftSection=DashIconify(icon="solar:link-round-angle-bold-duotone", width=16),
                     radius="md",
                     **_nav_btn_props(active=active_g),

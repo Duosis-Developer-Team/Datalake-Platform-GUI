@@ -208,7 +208,7 @@ def build_layout(search: str | None = None) -> html.Div:
         settings_page_shell(
             [
                 section_header(
-                    "Integrations",
+                    "Integration and Configuration",
                     "Connect CRM mappings, identity sources and external SLA services.",
                     icon="solar:link-round-angle-bold-duotone",
                 ),

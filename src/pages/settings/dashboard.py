@@ -125,7 +125,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 badges=[f"{len(users)} users", f"{len(roles)} roles"],
             ),
             section_nav_card(
-                "Integrations",
+                "Integration and Configuration",
                 "LDAP directory and AuraNotify SLA connectivity.",
                 f"{ADMIN_PREFIX}/integrations",
                 icon="solar:link-round-angle-bold-duotone",
