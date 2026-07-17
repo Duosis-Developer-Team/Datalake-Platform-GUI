@@ -354,3 +354,46 @@ hiçbir plan atomicity'yi kapsamıyor → burada kalır.
   temizlenmeli ama bu spec ona dokunmuyor; tasarım zaten ismin varlığına dayanmıyor.
 - **Sellable / crm-engine**: `gui_crm_customer_source_mapping` okumuyor, bu
   akışta değil.
+
+---
+
+## Uygulama notları — spec'ten sapmalar (2026-07-17, implementasyon sonrası)
+
+Bu spec tasarım anındaki kaydıdır. Uygulama sırasında review'lar spec'in üç
+yerde yanıldığını gösterdi. Kod doğrudur; aşağısı farkı kayda geçirir.
+
+**1. `resync_aliases_from_datalake` hedefli invalidate ETMİYOR — namespace'i
+komple düşürüyor.** Spec beş yolun beşinde de hedefli olacağını söylüyordu.
+Resync'te bu **imkânsız**: hesap setinin yarısı `LIST_ORPHAN_SOURCE_MAPPINGS`'ten
+geliyor ve o ancak alias upsert'leri koştuktan *sonra* cevap veriyor — yani
+çözümlemenin hâlâ geçerli olduğu tek anda set bilinemiyor. Üstelik hedeflemenin
+kazancı yok: `touched_account_ids` zaten neredeyse tüm proje müşterileriydi.
+Maliyet warm set'iyle sınırlı ve doğruluk buna bağlı değil (fazladan silme
+yalnızca bir read-through yeniden hesaplamasına mal olur). Resync nadir bir
+admin işlemi.
+
+**2. Alias yazan yollar `plan → yaz → uygula` sırasını kullanıyor.** Spec
+invalidation'ın yazımdan sonra koştuğunu varsayıyordu. `upsert_alias` ve
+`delete_alias` için bu, invalidation'ı **tam da yakalaması gereken key'ler
+için no-op** yapıyordu: alias satırı silinince `Boyner` gibi yalnızca
+`RESOLVE_ALIAS_BY_NAME`'in ILIKE'ıyla çözülen bir isim `None` döner
+(`CRM_ACCOUNT_BY_DISPLAY_NAME` tam eşleşmedir, yerini tutmaz), key "zaten doğru"
+diye atlanır ve bayat primary + zombie shadow 24 saat+ yaşar. Artık çözümleme
+yazımdan **önce**, silme yazımdan **sonra** koşuyor. Bunu tek başına hiçbir
+görev-bazlı review göremezdi; whole-branch review'da çıktı.
+
+**3. `unresolved_names` diye bir alan yok.** Spec `InvalidationResult`'ın onu
+taşıdığını ve testlerin doldurduğunu söylüyor. Spec'in kendi *Hata yönetimi*
+bölümündeki sonraki karar — çözümleme hatası tüm invalidation'ı başarısız sayar —
+o alanı gereksiz kıldı. Spec kendi içinde çelişiyordu; kod ikinci kararı uyguluyor.
+
+**4. GUI gerekçesi olgusal olarak yanlıştı.** Spec "GUI cache'inde hiç TTL yok,
+silinmezse ölümsüz" diyor. Gerçekte `api:customer_resources:` yazan her yol
+`set`'i `_mark_fetched` ile eşliyor (`api_client.py:579-580`), yani `_is_fresh`
+girdileri 300sn'de sınırlıyor. **Sonuç yine de doğru** (GUI cache'i silinmeli,
+çünkü ayrı Redis DB'sinde ve backend'in invalidation'ı ona ulaşamıyor) — ama
+gerekçe buydu, "ölümsüzlük" değil.
+
+**Kapsam dışı kalanlar teyit edildi:** kök neden (`cache_run_singleflight`'ın
+`last_good`'a düşmesi) hâlâ duruyor, dolayısıyla 15dk/6sa'lik warm job'lar
+no-op olmaya devam ediyor. Ayrı spec bekliyor.
