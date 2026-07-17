@@ -32,6 +32,7 @@ from app.services.customer_catalog import (
     _is_mapped,
 )
 from app.utils.service_sales_mapping import map_service_sales_lines
+from app.services.mapping_warm_scheduler import MappingWarmScheduler
 from app.services.customer_mapping_resolver import (
     MappingRule,
     ResolvedSourcePatterns,
@@ -833,9 +834,17 @@ class CustomerService:
         for key in keys:
             cache.delete(key)
 
+    def _get_warm_scheduler(self) -> MappingWarmScheduler:
+        scheduler = getattr(self, "_mapping_warm_scheduler", None)
+        if scheduler is None:
+            scheduler = MappingWarmScheduler(
+                warm_fn=lambda name: self._rebuild_customer_caches_for_customer(name)
+            )
+            self._mapping_warm_scheduler = scheduler
+        return scheduler
+
     def _schedule_mapping_warm(self, names: tuple[str, ...]) -> None:
-        # Replaced by the debounced scheduler in Task 6.
-        return None
+        self._get_warm_scheduler().schedule(names)
 
     def invalidate_mapping_caches(self, account_ids: set[str]) -> str | None:
         """Drop every cached view affected by a mapping change for these accounts.
