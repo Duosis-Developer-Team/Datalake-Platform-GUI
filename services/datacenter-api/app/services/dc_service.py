@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from psycopg2 import pool as pg_pool
 from psycopg2 import OperationalError
@@ -43,6 +43,7 @@ from shared.backup.unique_jobs import (
 )
 from shared.display.static_energy import apply_static_aggregate_energy, resolve_static_total_energy_kw
 from shared.customer.cache_keys import customer_assets_cache_key
+from shared.customer import match as alias_match
 from shared.network.backbone_billing import estimate_backbone_cost_tl, p95_bps_to_mbit
 from shared.sellable.host_aggregate import finalize_host_payload
 from shared.nutanix import snapshot_helpers as nsnap
@@ -89,6 +90,18 @@ DC_LOCATIONS: dict[str, str] = {
 }
 
 WARMED_CUSTOMERS: tuple[str, ...] = ("Boyner",)
+
+
+def tenant_matches_text_rules(tenant_name: str, text_rules: Sequence[tuple[str, str]]) -> bool:
+    """Does a NetBox tenant name satisfy any of the customer's name rules?
+
+    Module-level rather than a closure so it can be tested directly. The
+    semantics come from shared.customer.match, so this path cannot drift from
+    the SQL one — which is exactly how id_exact ended up being matched as a
+    substring here.
+    """
+    tenant_key = (tenant_name or "").casefold()
+    return any(alias_match.predicate(method, value)(tenant_key) for method, value in text_rules)
 
 
 def _empty_compute_section() -> dict:
@@ -7132,22 +7145,7 @@ JOIN latest l
         def _matches_device(device: dict) -> bool:
             if tenant_ids and device.get("tenant_id") in tenant_ids:
                 return True
-            tenant_name = str(device.get("tenant_name") or "")
-            tenant_key = tenant_name.casefold()
-            for method, value in text_rules:
-                needle = (value or "").strip()
-                if not needle:
-                    continue
-                key = needle.casefold()
-                if method == "exact" and tenant_key == key:
-                    return True
-                if method == "prefix" and tenant_key.startswith(key):
-                    return True
-                if method == "suffix" and tenant_key.endswith(key):
-                    return True
-                if method in {"contains", "id_exact"} and key in tenant_key:
-                    return True
-            return False
+            return tenant_matches_text_rules(str(device.get("tenant_name") or ""), text_rules)
 
         if not tenant_ids and not text_rules:
             # Legacy Boyner fallback when mappings are unavailable.
