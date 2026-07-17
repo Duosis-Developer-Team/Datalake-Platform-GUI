@@ -866,11 +866,12 @@ Add to `services/customer-api/app/services/customer_service.py` imports (near th
 
 ```python
 from app.services.mapping_cache_invalidator import (
-    CUSTOMER_ASSETS_SCAN_PREFIX,
     ResolutionError,
     invalidate_for_accounts,
 )
 ```
+
+(`CUSTOMER_ASSETS_SCAN_PREFIX` is not imported here — `invalidate_for_accounts` passes it to the injected `scan_keys` itself.)
 
 Add these methods to `CustomerService`, right after `resolve_source_patterns`:
 
