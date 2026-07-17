@@ -14,6 +14,14 @@ from __future__ import annotations
 # - Interface 95th percentile uses TimescaleDB time_bucket downsampling so we
 #   don't compute percentile over every raw point.
 
+# NetBox device ids are numeric; Zabbix firewall rows may carry aliases like VFW_2289.
+NUMERIC_LOKI_ID_REGEX = "^[0-9]+$"
+
+
+def numeric_loki_id_predicate(column: str = "loki_id") -> str:
+    """SQL fragment: keep only numeric loki_id values safe for ::bigint joins."""
+    return f"{column} ~ '{NUMERIC_LOKI_ID_REGEX}'"
+
 
 # --- Devices for DC (latest per loki_id) ---
 # Returns one row per NetBox device (loki_id), with the latest Zabbix snapshot
@@ -595,6 +603,7 @@ latest AS (
         fm.collection_timestamp
     FROM public.raw_zabbix_network_firewall_metrics fm
     WHERE fm.collection_timestamp BETWEEN %s AND %s
+        AND fm.loki_id ~ '^[0-9]+$'
     ORDER BY fm.host, fm.collection_timestamp DESC
 )
 SELECT
@@ -751,6 +760,7 @@ latest AS (
     FROM public.raw_zabbix_network_device_health_metrics dh
     WHERE
         dh.collection_timestamp BETWEEN %s AND %s
+        AND dh.loki_id ~ '^[0-9]+$'
         AND (
             lower(COALESCE(dh.device_type_category, '')) LIKE '%load balancer%'
             OR lower(COALESCE(dh.applied_templates, '')) LIKE '%citrix%'

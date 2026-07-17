@@ -68,12 +68,22 @@ def _infra_bundle_has_data(payload: Any) -> bool:
     return False
 
 
-def _real_data_cached(display_name: str) -> bool:
-    tr = default_time_range()
+def _real_data_cached(display_name: str, time_range: dict | None = None) -> bool:
+    """True when the default (or supplied) time-range key has infra data cached.
+
+    Checks the primary Redis/memory key first, then the ``:last_good`` shadow when
+    the primary is missing or holds an empty placeholder payload.
+    """
+    tr = time_range or default_time_range()
     cache_key = customer_assets_cache_key(display_name, tr.get("start", ""), tr.get("end", ""))
     try:
-        hit = cache.get(cache_key)
-        return _infra_bundle_has_data(hit)
+        value, is_stale = cache.get_with_stale(cache_key)
+        if _infra_bundle_has_data(value):
+            return True
+        if not is_stale:
+            last_good = cache.get_last_good(cache_key)
+            return _infra_bundle_has_data(last_good)
+        return False
     except Exception:
         return False
 

@@ -5965,11 +5965,10 @@ JOIN latest l
             sum_total = 0.0
             sum_speed = 0.0
             for row in top_rows:
-                if len(row) >= 7:
-                    host_name, iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
-                else:
-                    host_name = None
-                    iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
+                parsed = self._unpack_network_p95_row(row, include_total=False)
+                if parsed is None:
+                    continue
+                host_name, iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps, _ = parsed
                 p95_total = float(p95_total_bps or 0)
                 speed = float(speed_bps or 0)
                 utilization_pct = (p95_total / speed * 100.0) if speed > 0 else 0.0
@@ -6105,27 +6104,40 @@ JOIN latest l
         return enriched
 
     @staticmethod
+    def _unpack_network_p95_row(row: tuple, include_total: bool = False) -> tuple | None:
+        """Parse a p95 SQL row; return None when the row is too short."""
+        if not row:
+            return None
+        n = len(row)
+        if include_total and n >= 8:
+            return row[0], row[1], row[2], row[3], row[4], row[5], row[6], int(row[7] or 0)
+        if n >= 7:
+            return row[0], row[1], row[2], row[3], row[4], row[5], row[6], 0
+        if n >= 6:
+            return None, row[0], row[1], row[2], row[3], row[4], row[5], 0
+        logger.warning("Skipping short network p95 row (len=%d)", n)
+        return None
+
+    @staticmethod
     def _network_p95_rows_to_items(rows: list | None, include_total: bool = False) -> tuple[list[dict], int]:
         items: list[dict] = []
         total = 0
         for row in rows or []:
-            if include_total and len(row) >= 8:
-                (
-                    host_name,
-                    iface_name,
-                    iface_alias,
-                    p95_rx_bps,
-                    p95_tx_bps,
-                    p95_total_bps,
-                    speed_bps,
-                    total_count,
-                ) = row
-                total = int(total_count or 0)
-            elif len(row) >= 7:
-                host_name, iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
-            else:
-                host_name = None
-                iface_name, iface_alias, p95_rx_bps, p95_tx_bps, p95_total_bps, speed_bps = row
+            parsed = DatabaseService._unpack_network_p95_row(row, include_total=include_total)
+            if parsed is None:
+                continue
+            (
+                host_name,
+                iface_name,
+                iface_alias,
+                p95_rx_bps,
+                p95_tx_bps,
+                p95_total_bps,
+                speed_bps,
+                total_count,
+            ) = parsed
+            if include_total and total_count:
+                total = int(total_count)
             speed = float(speed_bps or 0)
             p95_total = float(p95_total_bps or 0)
             utilization_pct = (p95_total / speed * 100.0) if speed > 0 else 0.0
