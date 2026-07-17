@@ -52,6 +52,9 @@ async def lifespan(app: FastAPI):
         get_customer_assets=lambda name, time_range=None: svc.get_customer_resources(
             name, time_range
         ),
+        invalidate_mapping_caches=lambda account_ids: svc.invalidate_mapping_caches(
+            account_ids
+        ),
         webui=webui,
     )
     app.state.itsm = ITSMService(

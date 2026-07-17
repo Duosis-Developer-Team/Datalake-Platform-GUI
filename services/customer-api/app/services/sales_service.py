@@ -65,12 +65,14 @@ class SalesService:
         run_row,
         run_rows,
         get_customer_assets=None,
+        invalidate_mapping_caches=None,
         webui: Optional[WebuiPool] = None,
     ):
         self._get_connection = get_connection
         self._run_row = run_row
         self._run_rows = run_rows
         self._get_customer_assets = get_customer_assets
+        self._invalidate_mapping_caches = invalidate_mapping_caches
         self._webui = webui
         self._config = CrmConfigService(webui) if webui is not None else None
         self._account_ids_cache: Dict[str, tuple[float, List[str]]] = {}
@@ -639,6 +641,16 @@ class SalesService:
             "source_mappings": mappings,
         }
 
+    def _invalidate_for(self, account_ids: set[str]) -> str | None:
+        """Drop cached views for these accounts. Returns a warning, or None.
+
+        Injected from main.py rather than imported, so SalesService never has to
+        know about CustomerService.
+        """
+        if self._invalidate_mapping_caches is None:
+            return None
+        return self._invalidate_mapping_caches(account_ids)
+
     def save_source_mappings(
         self,
         crm_accountid: str,
@@ -694,6 +706,7 @@ class SalesService:
             cache.delete(CATALOG_SNAPSHOT_KEY)
         except Exception:  # noqa: BLE001
             pass
+        self._invalidate_for({crm_accountid})
         return self.list_source_mappings_for_account(crm_accountid)
 
     def seed_boyner_source_mappings(self) -> dict[str, Any]:
@@ -728,6 +741,7 @@ class SalesService:
             cache.delete(CATALOG_SNAPSHOT_KEY)
         except Exception:  # noqa: BLE001
             pass
+        self._invalidate_for({account_id})
         return {
             "status": "ok",
             "crm_accountid": account_id,
@@ -831,6 +845,10 @@ class SalesService:
         except Exception as exc:
             logger.warning("Boyner seed during CRM resync failed: %s", exc)
 
+        # Resync can rewrite mappings for many accounts at once; name_to_ids
+        # already holds every account the reconcile walked.
+        self._invalidate_for({aid for ids in name_to_ids.values() for aid in ids})
+
         return {
             "status": "ok",
             "aliases_upserted": aliases_upserted,
@@ -854,11 +872,14 @@ class SalesService:
             smq.UPSERT_ALIAS,
             (crm_accountid, crm_account_name, canonical_key, netbox_value, notes),
         )
+        self._invalidate_for({crm_accountid})
 
     def delete_alias(self, crm_accountid: str) -> int:
         if not self._webui:
             raise RuntimeError("WebUI pool not configured")
-        return self._webui.execute(smq.DELETE_ALIAS, (crm_accountid,))
+        deleted = self._webui.execute(smq.DELETE_ALIAS, (crm_accountid,))
+        self._invalidate_for({crm_accountid})
+        return deleted
 
     # ------------------------------------------------------------------
     # CRM service mapping (gui_crm_service_pages + seed + override in webui-db)
