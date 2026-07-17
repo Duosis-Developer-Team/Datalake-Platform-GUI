@@ -767,6 +767,10 @@ class SalesService:
                 continue
             name_to_ids.setdefault(account_name.casefold(), set()).add(account_id)
 
+        # Accounts genuinely reconciled via the project rows; the orphan-remap
+        # loop below adds to this as it touches accounts outside that set.
+        touched_account_ids: set[str] = {aid for ids in name_to_ids.values() for aid in ids}
+
         collision_names = {name for name, ids in name_to_ids.items() if len(ids) > 1}
         name_to_id = {
             name: next(iter(ids))
@@ -831,6 +835,10 @@ class SalesService:
                 (new_account_id, account_name, mapping_id),
             )
             mappings_remapped += 1
+            if new_account_id:
+                touched_account_ids.add(new_account_id)
+            if old_account_id:
+                touched_account_ids.add(old_account_id)
             if account_name.casefold() not in seen_names:
                 self._webui.execute(
                     smq.UPSERT_ALIAS_AUTO,
@@ -845,9 +853,12 @@ class SalesService:
         except Exception as exc:
             logger.warning("Boyner seed during CRM resync failed: %s", exc)
 
-        # Resync can rewrite mappings for many accounts at once; name_to_ids
-        # already holds every account the reconcile walked.
-        self._invalidate_for({aid for ids in name_to_ids.values() for aid in ids})
+        # A remap moves a mapping from old_account_id to new_account_id, so
+        # both ends' resolved-resource caches go stale: the old account must
+        # stop showing resources it no longer owns, and the new account must
+        # start showing the ones it just gained. touched_account_ids covers
+        # both, plus every account genuinely reconciled from the project rows.
+        self._invalidate_for(touched_account_ids)
 
         return {
             "status": "ok",
