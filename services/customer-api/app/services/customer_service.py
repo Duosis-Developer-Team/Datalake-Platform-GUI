@@ -727,45 +727,54 @@ class CustomerService:
             logger.warning("Failed to load CRM project customer names: %s", exc)
             return []
 
-    def _lookup_alias_for_display_name(self, display_name: str) -> tuple[str | None, str | None, str | None]:
+    def _lookup_alias_for_display_name_raising(self, display_name: str) -> tuple[str | None, str | None, str | None]:
+        """The real lookup. Lets failures propagate — see _lookup_alias_for_display_name."""
         webui = self._webui
         if webui is None or not getattr(webui, "is_available", False):
             return None, None, None
-        try:
-            rows = webui.run_rows(
-                smq.RESOLVE_ALIAS_BY_NAME,
-                (display_name, f"%{display_name}%"),
+        rows = webui.run_rows(
+            smq.RESOLVE_ALIAS_BY_NAME,
+            (display_name, f"%{display_name}%"),
+        )
+        if rows:
+            row = rows[0]
+            return (
+                row.get("netbox_musteri_value"),
+                row.get("canonical_customer_key"),
+                row.get("crm_accountid"),
             )
-            if rows:
-                row = rows[0]
-                return (
-                    row.get("netbox_musteri_value"),
-                    row.get("canonical_customer_key"),
-                    row.get("crm_accountid"),
-                )
-            resolved = webui.run_one(
-                smq.RESOLVE_ACCOUNTID_BY_DISPLAY_NAME,
-                (display_name, display_name, display_name),
+        resolved = webui.run_one(
+            smq.RESOLVE_ACCOUNTID_BY_DISPLAY_NAME,
+            (display_name, display_name, display_name),
+        )
+        if resolved:
+            return (
+                resolved.get("netbox_musteri_value"),
+                resolved.get("canonical_customer_key"),
+                resolved.get("crm_accountid"),
             )
-            if resolved:
-                return (
-                    resolved.get("netbox_musteri_value"),
-                    resolved.get("canonical_customer_key"),
-                    resolved.get("crm_accountid"),
-                )
-            datalake_lookup = None
-            if self._pool is not None:
-                datalake_lookup = make_datalake_account_lookup(self._get_connection, self._run_row)
-            account_ids = resolve_crm_account_ids(
-                display_name,
-                webui=None,
-                datalake_account_lookup=datalake_lookup,
-            )
-            if account_ids:
-                return None, None, account_ids[0]
-        except Exception as exc:
-            logger.warning("Alias lookup failed for customer=%s: %s", display_name, exc)
+        datalake_lookup = None
+        if self._pool is not None:
+            datalake_lookup = make_datalake_account_lookup(self._get_connection, self._run_row)
+        account_ids = resolve_crm_account_ids(
+            display_name,
+            webui=None,
+            datalake_account_lookup=datalake_lookup,
+        )
+        if account_ids:
+            return None, None, account_ids[0]
         return None, None, None
+
+    def _lookup_alias_for_display_name(self, display_name: str) -> tuple[str | None, str | None, str | None]:
+        """Swallowing wrapper for read-path callers: never raises, "can't tell"
+        collapses to "belongs to nobody". Do NOT use this for invalidation
+        decisions — see resolve_account_id_strict, which needs the distinction
+        this wrapper deliberately erases."""
+        try:
+            return self._lookup_alias_for_display_name_raising(display_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Alias lookup failed for customer=%s: %s", display_name, exc)
+            return None, None, None
 
     def _load_source_mapping_rules(self, crm_accountid: str | None) -> list[MappingRule]:
         webui = self._webui
@@ -799,10 +808,18 @@ class CustomerService:
         _lookup_alias_for_display_name swallows exceptions and returns
         (None, None, None), which conflates "belongs to nobody" with "lookup
         failed". Invalidation must not act on that ambiguity: skipping a key we
-        were unsure about leaves it silently stale.
+        were unsure about leaves it silently stale. So this calls the raising
+        core directly (never the swallowing wrapper) and additionally treats an
+        unavailable webui pool as "cannot tell" rather than "belongs to
+        nobody" — without webui we have no way to answer either way.
         """
+        webui = self._webui
+        if webui is None or not getattr(webui, "is_available", False):
+            raise ResolutionError(
+                f"WebUI pool unavailable; cannot resolve display name {display_name!r}"
+            )
         try:
-            _netbox_value, _canonical_key, account_id = self._lookup_alias_for_display_name(
+            _netbox_value, _canonical_key, account_id = self._lookup_alias_for_display_name_raising(
                 display_name
             )
         except Exception as exc:  # noqa: BLE001
@@ -865,7 +882,21 @@ class CustomerService:
             )
 
         if result.matched_names:
-            self._schedule_mapping_warm(result.matched_names)
+            # Warming is an optimisation layered on an invalidation that has
+            # already succeeded (the deletes above already ran). A warm
+            # failure must not be reported as a cache-invalidation failure,
+            # and — critically — must not raise out of this method: Task 6
+            # replaces the current no-op stub with a real debounced scheduler
+            # that can fail for its own reasons (queue/network errors), and
+            # that failure must not escape here.
+            try:
+                self._schedule_mapping_warm(result.matched_names)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Mapping cache warm scheduling failed for names=%s: %s",
+                    list(result.matched_names),
+                    exc,
+                )
         return None
 
     def resolve_infra_search_name(self, display_name: str) -> str:
