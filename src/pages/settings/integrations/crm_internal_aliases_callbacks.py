@@ -209,7 +209,7 @@ def save_editor_mappings_cb(_n_clicks, _methods, _values, _enabled, _sources, no
     mappings, note_text = editor_state_to_save_payload(synced_editor)
 
     try:
-        saved = api.put_crm_source_mappings(
+        saved, cache_warning = api.put_crm_source_mappings(
             INTERNAL_ACCOUNT_ID,
             crm_account_name=INTERNAL_ACCOUNT_NAME,
             mappings=mappings,
@@ -224,8 +224,19 @@ def save_editor_mappings_cb(_n_clicks, _methods, _values, _enabled, _sources, no
         }
         refreshed_editor = build_editor_state(refreshed_alias)
         sections = open_sections if isinstance(open_sections, list) else _DEFAULT_OPEN
+        if cache_warning:
+            # Saved, but the cached views may still show the old mapping.
+            save_alert = dmc.Alert(
+                color="yellow",
+                title="Saved — cache warning",
+                children=cache_warning,
+            )
+        else:
+            save_alert = dmc.Alert(
+                color="green", title="Saved", children="Internal (Bulutistan) mappings updated."
+            )
         return (
-            dmc.Alert(color="green", title="Saved", children="Internal (Bulutistan) mappings updated."),
+            save_alert,
             refreshed_editor,
             build_editor_shell(refreshed_editor, open_sections=sections, prefix=PREFIX),
         )

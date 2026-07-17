@@ -348,7 +348,7 @@ def save_editor_mappings_cb(
     mappings, note_text = editor_state_to_save_payload(synced_editor)
 
     try:
-        saved = api.put_crm_source_mappings(
+        saved, cache_warning = api.put_crm_source_mappings(
             account_id,
             crm_account_name=account_name,
             mappings=mappings,
@@ -363,8 +363,21 @@ def save_editor_mappings_cb(
         refreshed_editor = build_editor_state(find_alias(updated_page, account_id))
         table_out = _table_refresh_outputs(updated_page, query or "", int(page_index or 0))
         sections = open_sections if isinstance(open_sections, list) else [UI_COLUMNS[0][0]]
+        if cache_warning:
+            # Saved, but the cached views may still show the old mapping.
+            save_alert = dmc.Alert(
+                color="yellow",
+                title="Saved — cache warning",
+                children=cache_warning,
+            )
+        else:
+            save_alert = dmc.Alert(
+                color="green",
+                title="Saved",
+                children=f"Mappings updated for {account_name}.",
+            )
         return (
-            dmc.Alert(color="green", title="Saved", children=f"Mappings updated for {account_name}."),
+            save_alert,
             updated_page,
             *table_out,
             _panel_store(True, account_id),
