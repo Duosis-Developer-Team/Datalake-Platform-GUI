@@ -464,11 +464,50 @@ def format_as_of(as_of: str | None) -> str:
     return f"· Son güncelleme: {dt.strftime('%H:%M')}"
 
 
-def should_skip_fetch(active_main_tab: str | None, dc_id: str | None) -> bool:
+def should_skip_fetch(
+    active_main_tab: str | None,
+    dc_id: str | None,
+    *,
+    vendor: str | None = None,
+    category: str | None = None,
+    backup_category_tab: str | None = None,
+    backup_image_tab: str | None = None,
+    backup_replication_tab: str | None = None,
+) -> bool:
     if not dc_id:
         return True
     if (active_main_tab or "") != "backup":
         return True
+    if not vendor:
+        return False
+    if backup_category_tab is None:
+        return True
+
+    if vendor == "netbackup":
+        if category == "image":
+            if backup_category_tab != "image":
+                return True
+            if (backup_image_tab or "km") != "km":
+                return True
+        elif category == "application":
+            if backup_category_tab != "application":
+                return True
+        return False
+
+    if vendor == "zerto":
+        if backup_category_tab != "replication":
+            return True
+        if backup_replication_tab and backup_replication_tab != "zerto":
+            return True
+        return False
+
+    if vendor == "veeam":
+        if backup_category_tab != "replication":
+            return True
+        if backup_replication_tab and backup_replication_tab != "veeam":
+            return True
+        return False
+
     return False
 
 
@@ -492,8 +531,14 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
         Input(f"backup-uj-{uj_sid}-filter-status", "value"),
         Input(f"backup-uj-{uj_sid}-filter-type", "value"),
     ]
-    if vendor == "netbackup" and category:
+    has_policy_selector = vendor == "netbackup" and category
+    if has_policy_selector:
         inputs.append(Input(f"backup-nb-policy-selector-{category}", "value"))
+    inputs.append(Input("backup-category-tabs", "value"))
+    if vendor == "netbackup" and category == "image":
+        inputs.append(Input("backup-image-tabs", "value"))
+    if vendor in ("zerto", "veeam"):
+        inputs.append(Input("backup-replication-tabs", "value"))
     states = [
         State("dc-main-tabs", "value"),
         State("url", "pathname"),
@@ -505,39 +550,41 @@ def _make_callback(vendor: str, category: str | None = None) -> None:
         *states,
         prevent_initial_call=True,
     )
-    def _update(*args, _vendor=vendor, _category=category, _sid=sid):
-        if _vendor == "netbackup" and _category:
-            (
-                tr,
-                granularity,
-                group_by,
-                refresh_n,
-                panels_ready,
-                uj_statuses,
-                uj_types,
-                selected_policies,
-                active_main_tab,
-                pathname,
-            ) = args
-        else:
-            (
-                tr,
-                granularity,
-                group_by,
-                refresh_n,
-                panels_ready,
-                uj_statuses,
-                uj_types,
-                active_main_tab,
-                pathname,
-            ) = args
-            selected_policies = None
+    def _update(*args, _vendor=vendor, _category=category, _sid=sid, _has_policy=has_policy_selector):
+        idx = 0
+        tr = args[idx]; idx += 1
+        granularity = args[idx]; idx += 1
+        group_by = args[idx]; idx += 1
+        refresh_n = args[idx]; idx += 1
+        panels_ready = args[idx]; idx += 1
+        uj_statuses = args[idx]; idx += 1
+        uj_types = args[idx]; idx += 1
+        selected_policies = args[idx] if _has_policy else None
+        if _has_policy:
+            idx += 1
+        backup_category_tab = args[idx]; idx += 1
+        backup_image_tab = None
+        backup_replication_tab = None
+        if _vendor == "netbackup" and _category == "image":
+            backup_image_tab = args[idx]; idx += 1
+        if _vendor in ("zerto", "veeam"):
+            backup_replication_tab = args[idx]; idx += 1
+        active_main_tab = args[idx]; idx += 1
+        pathname = args[idx]
 
         if not panels_ready:
             return dash.no_update, dash.no_update, dash.no_update
 
         dc_id = _extract_dc_id(pathname)
-        if should_skip_fetch(active_main_tab, dc_id):
+        if should_skip_fetch(
+            active_main_tab,
+            dc_id,
+            vendor=_vendor,
+            category=_category,
+            backup_category_tab=backup_category_tab,
+            backup_image_tab=backup_image_tab,
+            backup_replication_tab=backup_replication_tab,
+        ):
             return dash.no_update, dash.no_update, dash.no_update
 
         ctx = dash.callback_context

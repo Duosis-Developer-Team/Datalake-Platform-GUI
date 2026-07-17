@@ -59,6 +59,7 @@ def test_dc_unique_jobs_callbacks_defer_after_mount():
         input_ids = [i["id"] for i in meta["inputs"]]
         state_ids = [s["id"] for s in meta["state"]]
         assert "backup-uj-defer" in input_ids
+        assert "backup-category-tabs" in input_ids
         assert "dc-main-tabs" not in input_ids
         assert "dc-main-tabs" in state_ids
         found = True

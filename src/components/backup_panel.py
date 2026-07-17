@@ -280,82 +280,27 @@ def _aggregate_netbackup(data: dict, selected_pools: Iterable[str] | None) -> di
     }
 
 
-def build_netbackup_panel(
+def netbackup_capacity_section_id(category: str | None = None) -> str:
+    if category == "image":
+        return "backup-nb-capacity-image"
+    if category == "application":
+        return "backup-nb-capacity-application"
+    return "backup-nb-capacity"
+
+
+def build_netbackup_capacity_section(
     data: dict,
     selected_pools: Iterable[str] | None,
     *,
     category: str | None = None,
-    policy_type_options: list[str] | None = None,
-    pool_selector_id: str | None = None,
-):
+) -> list:
+    """Capacity KPI/gauge/detail block; pool selector lives outside this subtree."""
     agg = _aggregate_netbackup(data, selected_pools)
-    selector_value = list(selected_pools) if selected_pools else agg["pools"]
-    resolved_selector_id = pool_selector_id or (
-        f"backup-nb-pool-selector-{category}" if category else "backup-nb-pool-selector"
-    )
 
     fig = _usage_gauge_fig(
         used=agg["total_used"],
         total=max(agg["total_usable"], agg["total_used"] + agg["total_avail"]),
         title="NetBackup Capacity",
-    )
-
-    category_label = ""
-    if category == "image":
-        category_label = " — Image (KM)"
-    elif category == "application":
-        category_label = " — Application"
-
-    header = html.Div(
-        style={
-            "display": "flex",
-            "justifyContent": "space-between",
-            "alignItems": "center",
-            "marginBottom": "16px",
-        },
-        children=[
-            dmc.Group(
-                gap="md",
-                children=[
-                    DashIconify(
-                        icon="solar:database-bold-duotone",
-                        width=28,
-                        style={"color": "#4318FF"},
-                    ),
-                    html.Div(
-                        children=[
-                            html.H3(
-                                f"NetBackup Disk Pools{category_label}",
-                                style={
-                                    "margin": 0,
-                                    "fontSize": "1rem",
-                                    "color": "#2B3674",
-                                },
-                            ),
-                            html.P(
-                                "Latest usable, free and used capacity per selected pools.",
-                                style={
-                                    "margin": "2px 0 0 0",
-                                    "fontSize": "0.8rem",
-                                    "color": "#A3AED0",
-                                },
-                            ),
-                        ]
-                    ),
-                ],
-            ),
-            dmc.MultiSelect(
-                id=resolved_selector_id,
-                data=[{"label": p, "value": p} for p in agg["pools"]],
-                value=selector_value,
-                clearable=True,
-                searchable=True,
-                nothingFoundMessage="No pools",
-                placeholder="Select pools",
-                size="sm",
-                style={"minWidth": "260px"},
-            ),
-        ],
     )
 
     kpis = html.Div(
@@ -511,41 +456,139 @@ def build_netbackup_panel(
         ],
     )
 
-    return html.Div(
+    return [
+        html.Div(
+            style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "16px", "alignItems": "stretch"},
+            children=[
+                html.Div(style={"minWidth": 0, "height": "100%"}, children=kpis),
+                _gauge_card(fig),
+                nb_status_panel,
+            ],
+        ),
+        html.Div(style={"height": "16px"}),
+        html.Div(
+            className="nexus-card",
+            style={"padding": "16px", "marginTop": "8px"},
+            children=table,
+        ),
+    ]
+
+
+def build_netbackup_panel(
+    data: dict,
+    selected_pools: Iterable[str] | None,
+    *,
+    category: str | None = None,
+    policy_type_options: list[str] | None = None,
+    pool_selector_id: str | None = None,
+):
+    agg = _aggregate_netbackup(data, selected_pools)
+    selector_value = list(selected_pools) if selected_pools else agg["pools"]
+    resolved_selector_id = pool_selector_id or (
+        f"backup-nb-pool-selector-{category}" if category else "backup-nb-pool-selector"
+    )
+
+    category_label = ""
+    if category == "image":
+        category_label = " — Image (KM)"
+    elif category == "application":
+        category_label = " — Application"
+
+    pool_selector_header = html.Div(
+        style={
+            "display": "flex",
+            "justifyContent": "space-between",
+            "alignItems": "center",
+            "marginTop": "20px",
+            "marginBottom": "12px",
+        },
         children=[
-            header,
-            html.Div(
-                style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "16px", "alignItems": "stretch"},
+            dmc.Group(
+                gap="md",
                 children=[
-                    html.Div(style={"minWidth": 0, "height": "100%"}, children=kpis),
-                    _gauge_card(fig),
-                    nb_status_panel,
+                    DashIconify(
+                        icon="solar:database-bold-duotone",
+                        width=28,
+                        style={"color": "#4318FF"},
+                    ),
+                    html.Div(
+                        children=[
+                            html.H3(
+                                f"NetBackup Disk Pools{category_label}",
+                                style={
+                                    "margin": 0,
+                                    "fontSize": "1rem",
+                                    "color": "#2B3674",
+                                },
+                            ),
+                            html.P(
+                                "Latest usable, free and used capacity per selected pools.",
+                                style={
+                                    "margin": "2px 0 0 0",
+                                    "fontSize": "0.8rem",
+                                    "color": "#A3AED0",
+                                },
+                            ),
+                        ]
+                    ),
                 ],
             ),
-            html.Div(style={"height": "16px"}),
-            html.Div(
-                className="nexus-card",
-                style={"padding": "16px", "marginTop": "8px"},
-                children=table,
+            dmc.MultiSelect(
+                id=resolved_selector_id,
+                data=[{"label": p, "value": p} for p in agg["pools"]],
+                value=selector_value,
+                clearable=True,
+                searchable=True,
+                nothingFoundMessage="No pools",
+                placeholder="Select pools",
+                size="sm",
+                style={"minWidth": "260px"},
             ),
-            (
-                build_job_stats_section(
-                    "netbackup",
-                    category=category,
-                    policy_type_options=policy_type_options,
-                )
-                if category in ("image", "application")
-                else html.Div()
+        ],
+    )
+
+    capacity_id = netbackup_capacity_section_id(category)
+    capacity_accordion = dmc.Accordion(
+        variant="separated",
+        chevronPosition="right",
+        children=[
+            dmc.AccordionItem(
+                value="capacity",
+                children=[
+                    dmc.AccordionControl("Pool capacity"),
+                    dmc.AccordionPanel(
+                        html.Div(
+                            id=capacity_id,
+                            children=build_netbackup_capacity_section(
+                                data, selected_pools, category=category
+                            ),
+                        )
+                    ),
+                ],
+            )
+        ],
+    )
+
+    job_sections: list = []
+    if category in ("image", "application"):
+        job_sections = [
+            build_job_stats_section(
+                "netbackup",
+                category=category,
+                policy_type_options=policy_type_options,
             ),
-            (
-                _unique_jobs_section(
-                    "netbackup",
-                    category=category if category in ("image", "application") else None,
-                    scope="dc",
-                )
-                if category in ("image", "application")
-                else html.Div()
+            _unique_jobs_section(
+                "netbackup",
+                category=category,
+                scope="dc",
             ),
+        ]
+
+    return html.Div(
+        children=[
+            *job_sections,
+            pool_selector_header,
+            capacity_accordion,
         ]
     )
 
@@ -590,66 +633,14 @@ def _aggregate_zerto(data: dict, selected_sites: Iterable[str] | None) -> dict:
     }
 
 
-def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
+def build_zerto_capacity_section(data: dict, selected_sites: Iterable[str] | None) -> list:
+    """Site capacity KPI/gauge/detail block; site selector lives outside this subtree."""
     agg = _aggregate_zerto(data, selected_sites)
-    selector_value = list(selected_sites) if selected_sites else agg["sites"]
 
     fig = _usage_gauge_fig(
         used=agg["total_used_mb"],
         total=agg["total_provisioned_mb"],
         title="Zerto Storage",
-    )
-
-    header = html.Div(
-        style={
-            "display": "flex",
-            "justifyContent": "space-between",
-            "alignItems": "center",
-            "marginBottom": "16px",
-        },
-        children=[
-            dmc.Group(
-                gap="md",
-                children=[
-                    DashIconify(
-                        icon="solar:shield-check-bold-duotone",
-                        width=28,
-                        style={"color": "#12B886"},
-                    ),
-                    html.Div(
-                        children=[
-                            html.H3(
-                                "Zerto Sites",
-                                style={
-                                    "margin": 0,
-                                    "fontSize": "1rem",
-                                    "color": "#2B3674",
-                                },
-                            ),
-                            html.P(
-                                "Provisioned and used storage with connectivity status.",
-                                style={
-                                    "margin": "2px 0 0 0",
-                                    "fontSize": "0.8rem",
-                                    "color": "#A3AED0",
-                                },
-                            ),
-                        ]
-                    ),
-                ],
-            ),
-            dmc.MultiSelect(
-                id="backup-zerto-site-selector",
-                data=[{"label": s, "value": s} for s in agg["sites"]],
-                value=selector_value,
-                clearable=True,
-                searchable=True,
-                nothingFoundMessage="No sites",
-                placeholder="Select sites",
-                size="sm",
-                style={"minWidth": "260px"},
-            ),
-        ],
     )
 
     kpis = html.Div(
@@ -858,25 +849,106 @@ def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
         ],
     )
 
-    return html.Div(
+    return [
+        html.Div(
+            style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "16px", "alignItems": "stretch"},
+            children=[
+                html.Div(style={"minWidth": 0, "height": "100%"}, children=kpis),
+                _gauge_card(fig),
+                status_panel,
+            ],
+        ),
+        html.Div(style={"height": "16px"}),
+        html.Div(
+            className="nexus-card",
+            style={"padding": "16px", "marginTop": "8px"},
+            children=table,
+        ),
+    ]
+
+
+def build_zerto_panel(data: dict, selected_sites: Iterable[str] | None):
+    agg = _aggregate_zerto(data, selected_sites)
+    selector_value = list(selected_sites) if selected_sites else agg["sites"]
+
+    site_selector_header = html.Div(
+        style={
+            "display": "flex",
+            "justifyContent": "space-between",
+            "alignItems": "center",
+            "marginTop": "20px",
+            "marginBottom": "12px",
+        },
         children=[
-            header,
-            html.Div(
-                style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "16px", "alignItems": "stretch"},
+            dmc.Group(
+                gap="md",
                 children=[
-                    html.Div(style={"minWidth": 0, "height": "100%"}, children=kpis),
-                    _gauge_card(fig),
-                    status_panel,
+                    DashIconify(
+                        icon="solar:shield-check-bold-duotone",
+                        width=28,
+                        style={"color": "#12B886"},
+                    ),
+                    html.Div(
+                        children=[
+                            html.H3(
+                                "Zerto Sites",
+                                style={
+                                    "margin": 0,
+                                    "fontSize": "1rem",
+                                    "color": "#2B3674",
+                                },
+                            ),
+                            html.P(
+                                "Provisioned and used storage with connectivity status.",
+                                style={
+                                    "margin": "2px 0 0 0",
+                                    "fontSize": "0.8rem",
+                                    "color": "#A3AED0",
+                                },
+                            ),
+                        ]
+                    ),
                 ],
             ),
-            html.Div(style={"height": "16px"}),
-            html.Div(
-                className="nexus-card",
-                style={"padding": "16px", "marginTop": "8px"},
-                children=table,
+            dmc.MultiSelect(
+                id="backup-zerto-site-selector",
+                data=[{"label": s, "value": s} for s in agg["sites"]],
+                value=selector_value,
+                clearable=True,
+                searchable=True,
+                nothingFoundMessage="No sites",
+                placeholder="Select sites",
+                size="sm",
+                style={"minWidth": "260px"},
             ),
+        ],
+    )
+
+    capacity_accordion = dmc.Accordion(
+        variant="separated",
+        chevronPosition="right",
+        children=[
+            dmc.AccordionItem(
+                value="capacity",
+                children=[
+                    dmc.AccordionControl("Site capacity"),
+                    dmc.AccordionPanel(
+                        html.Div(
+                            id="backup-zerto-capacity",
+                            children=build_zerto_capacity_section(data, selected_sites),
+                        )
+                    ),
+                ],
+            )
+        ],
+    )
+
+    return html.Div(
+        children=[
             build_job_stats_section("zerto"),
             _unique_jobs_section("zerto", scope="dc"),
+            site_selector_header,
+            capacity_accordion,
         ]
     )
 
@@ -918,66 +990,14 @@ def _aggregate_veeam(data: dict, selected_repos: Iterable[str] | None) -> dict:
     }
 
 
-def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
+def build_veeam_capacity_section(data: dict, selected_repos: Iterable[str] | None) -> list:
+    """Repository capacity KPI/gauge/detail block; repo selector lives outside this subtree."""
     agg = _aggregate_veeam(data, selected_repos)
-    selector_value = list(selected_repos) if selected_repos else agg["repos"]
 
     fig = _usage_gauge_fig(
         used=agg["total_used_gb"],
         total=agg["total_capacity_gb"],
         title="Veeam Repos",
-    )
-
-    header = html.Div(
-        style={
-            "display": "flex",
-            "justifyContent": "space-between",
-            "alignItems": "center",
-            "marginBottom": "16px",
-        },
-        children=[
-            dmc.Group(
-                gap="md",
-                children=[
-                    DashIconify(
-                        icon="solar:cloud-storage-bold-duotone",
-                        width=28,
-                        style={"color": "#15AABF"},
-                    ),
-                    html.Div(
-                        children=[
-                            html.H3(
-                                "Veeam Repositories",
-                                style={
-                                    "margin": 0,
-                                    "fontSize": "1rem",
-                                    "color": "#2B3674",
-                                },
-                            ),
-                            html.P(
-                                "Capacity, free and used space per repository.",
-                                style={
-                                    "margin": "2px 0 0 0",
-                                    "fontSize": "0.8rem",
-                                    "color": "#A3AED0",
-                                },
-                            ),
-                        ]
-                    ),
-                ],
-            ),
-            dmc.MultiSelect(
-                id="backup-veeam-repo-selector",
-                data=[{"label": r, "value": r} for r in agg["repos"]],
-                value=selector_value,
-                clearable=True,
-                searchable=True,
-                nothingFoundMessage="No repositories",
-                placeholder="Select repositories",
-                size="sm",
-                style={"minWidth": "260px"},
-            ),
-        ],
     )
 
     kpis = html.Div(
@@ -1139,25 +1159,106 @@ def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
         ],
     )
 
-    return html.Div(
+    return [
+        html.Div(
+            style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "16px", "alignItems": "stretch"},
+            children=[
+                html.Div(style={"minWidth": 0, "height": "100%"}, children=kpis),
+                _gauge_card(fig),
+                veeam_status_panel,
+            ],
+        ),
+        html.Div(style={"height": "16px"}),
+        html.Div(
+            className="nexus-card",
+            style={"padding": "16px", "marginTop": "8px"},
+            children=table,
+        ),
+    ]
+
+
+def build_veeam_panel(data: dict, selected_repos: Iterable[str] | None):
+    agg = _aggregate_veeam(data, selected_repos)
+    selector_value = list(selected_repos) if selected_repos else agg["repos"]
+
+    repo_selector_header = html.Div(
+        style={
+            "display": "flex",
+            "justifyContent": "space-between",
+            "alignItems": "center",
+            "marginTop": "20px",
+            "marginBottom": "12px",
+        },
         children=[
-            header,
-            html.Div(
-                style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "16px", "alignItems": "stretch"},
+            dmc.Group(
+                gap="md",
                 children=[
-                    html.Div(style={"minWidth": 0, "height": "100%"}, children=kpis),
-                    _gauge_card(fig),
-                    veeam_status_panel,
+                    DashIconify(
+                        icon="solar:cloud-storage-bold-duotone",
+                        width=28,
+                        style={"color": "#15AABF"},
+                    ),
+                    html.Div(
+                        children=[
+                            html.H3(
+                                "Veeam Repositories",
+                                style={
+                                    "margin": 0,
+                                    "fontSize": "1rem",
+                                    "color": "#2B3674",
+                                },
+                            ),
+                            html.P(
+                                "Capacity, free and used space per repository.",
+                                style={
+                                    "margin": "2px 0 0 0",
+                                    "fontSize": "0.8rem",
+                                    "color": "#A3AED0",
+                                },
+                            ),
+                        ]
+                    ),
                 ],
             ),
-            html.Div(style={"height": "16px"}),
-            html.Div(
-                className="nexus-card",
-                style={"padding": "16px", "marginTop": "8px"},
-                children=table,
+            dmc.MultiSelect(
+                id="backup-veeam-repo-selector",
+                data=[{"label": r, "value": r} for r in agg["repos"]],
+                value=selector_value,
+                clearable=True,
+                searchable=True,
+                nothingFoundMessage="No repositories",
+                placeholder="Select repositories",
+                size="sm",
+                style={"minWidth": "260px"},
             ),
+        ],
+    )
+
+    capacity_accordion = dmc.Accordion(
+        variant="separated",
+        chevronPosition="right",
+        children=[
+            dmc.AccordionItem(
+                value="capacity",
+                children=[
+                    dmc.AccordionControl("Repository capacity"),
+                    dmc.AccordionPanel(
+                        html.Div(
+                            id="backup-veeam-capacity",
+                            children=build_veeam_capacity_section(data, selected_repos),
+                        )
+                    ),
+                ],
+            )
+        ],
+    )
+
+    return html.Div(
+        children=[
             build_job_stats_section("veeam"),
             _unique_jobs_section("veeam", scope="dc"),
+            repo_selector_header,
+            capacity_accordion,
         ]
     )
 
@@ -1676,6 +1777,7 @@ def build_image_backup_section(
                 color="indigo",
                 variant="outline",
                 radius="md",
+                id="backup-image-tabs",
                 value=tab_defs[0][0],
                 children=[
                     dmc.TabsList(
@@ -1784,6 +1886,7 @@ def build_replication_section(
                 color="violet",
                 variant="outline",
                 radius="md",
+                id="backup-replication-tabs",
                 value=tab_defs[0][0],
                 children=[
                     dmc.TabsList(
