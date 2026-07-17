@@ -30,6 +30,7 @@ from src.pages.settings.integrations import crm_panels as crm_panels_page
 from src.pages.settings.integrations import crm_infra_sources as crm_infra_sources_page
 from src.pages.settings.integrations import crm_resource_ratios as crm_resource_ratios_page
 from src.pages.settings.integrations import crm_unit_conversions as crm_unit_conversions_page
+from src.pages.settings.integrations import crm_backup as crm_backup_page
 from src.pages.settings.integrations import netbox_visualization as netbox_visualization_page
 from src.pages.settings.integrations import hmdl_overview as hmdl_overview_page
 from src.pages.settings.integrations import hmdl_sync_health as hmdl_sync_health_page
@@ -77,6 +78,7 @@ CRM_INT_TABS: list[tuple[str, str, str]] = [
     (f"{_A}/integrations/crm/thresholds", "Thresholds", "page:settings_crm_thresholds"),
     (f"{_A}/integrations/crm/price-overrides", "Price overrides", "page:settings_crm_price_overrides"),
     (f"{_A}/integrations/crm/calc-config", "Calc variables", "page:settings_crm_calc_config"),
+    (f"{_A}/integrations/crm/backup", "Backup", "page:settings_crm_backup"),
 ]
 
 LEGACY_REDIRECTS: dict[str, str] = {
@@ -129,6 +131,7 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
     f"{_A}/integrations/crm/infra-sources": ("page:settings_crm_infra_sources", crm_infra_sources_page.build_layout),
     f"{_A}/integrations/crm/resource-ratios": ("page:settings_crm_resource_ratios", crm_resource_ratios_page.build_layout),
     f"{_A}/integrations/crm/unit-conversions": ("page:settings_crm_unit_conversions", crm_unit_conversions_page.build_layout),
+    f"{_A}/integrations/crm/backup": ("page:settings_crm_backup", crm_backup_page.build_layout),
     f"{_A}/integrations/ldap": ("page:settings_ldap", ldap_page.build_layout),
     f"{_A}/integrations/auranotify": ("page:settings_auranotify", auranotify_page.build_layout),
     f"{_A}/integrations/netbox/visualization": (
