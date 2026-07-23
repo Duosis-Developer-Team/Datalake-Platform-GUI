@@ -75,6 +75,11 @@ async def lifespan(app: FastAPI):
     # CRM/sellable computation moved to dedicated crm-engine container.
     scheduler = start_scheduler(svc)
     app.state.scheduler = scheduler
+    try:
+        from app.deploy_register import register_this_service
+        register_this_service("customer-api")
+    except Exception:
+        pass
     yield
     if getattr(app.state, "scheduler", None) and app.state.scheduler.running:
         app.state.scheduler.shutdown(wait=False)

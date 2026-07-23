@@ -1,0 +1,22 @@
+diff --git a/.github/workflows/main.yml b/.github/workflows/main.yml
+index 72975244..6c6319aa 100644
+--- a/.github/workflows/main.yml
++++ b/.github/workflows/main.yml
+@@ -114,12 +114,12 @@ jobs:
+           REGISTRY_HOST=$(printf '%s' "$REGISTRY" | cut -d/ -f1)
+           printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" --password-stdin
+       - name: Build And Push datacenter-api
+-        run: docker buildx build --push -t "$REGISTRY/bulutistan-datacenter-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-datacenter-api:latest" -f services/datacenter-api/Dockerfile services/datacenter-api
++        run: docker buildx build --push -t "$REGISTRY/bulutistan-datacenter-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-datacenter-api:latest" -f services/datacenter-api/Dockerfile services/datacenter-api --build-arg GIT_SHA=${GITHUB_SHA} --build-arg APP_VERSION=${GITHUB_SHA}
+       - name: Build And Push customer-api
+-        run: docker buildx build --push -t "$REGISTRY/bulutistan-customer-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-customer-api:latest" -f services/customer-api/Dockerfile services/customer-api
++        run: docker buildx build --push -t "$REGISTRY/bulutistan-customer-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-customer-api:latest" -f services/customer-api/Dockerfile services/customer-api --build-arg GIT_SHA=${GITHUB_SHA} --build-arg APP_VERSION=${GITHUB_SHA}
+       - name: Build And Push query-api
+-        run: docker buildx build --push -t "$REGISTRY/bulutistan-query-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-query-api:latest" -f services/query-api/Dockerfile services/query-api
++        run: docker buildx build --push -t "$REGISTRY/bulutistan-query-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-query-api:latest" -f services/query-api/Dockerfile services/query-api --build-arg GIT_SHA=${GITHUB_SHA} --build-arg APP_VERSION=${GITHUB_SHA}
+       - name: Build And Push chatbot-api
+-        run: docker buildx build --push -t "$REGISTRY/bulutistan-chatbot-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-chatbot-api:latest" -f services/chatbot-api/Dockerfile services/chatbot-api
++        run: docker buildx build --push -t "$REGISTRY/bulutistan-chatbot-api:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-chatbot-api:latest" -f services/chatbot-api/Dockerfile services/chatbot-api --build-arg GIT_SHA=${GITHUB_SHA} --build-arg APP_VERSION=${GITHUB_SHA}
+       - name: Build And Push Frontend
+-        run: docker buildx build --push -t "$REGISTRY/bulutistan-frontend:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-frontend:latest" -f Dockerfile .
++        run: docker buildx build --push -t "$REGISTRY/bulutistan-frontend:${GITHUB_SHA}" -t "$REGISTRY/bulutistan-frontend:latest" -f Dockerfile . --build-arg GIT_SHA=${GITHUB_SHA} --build-arg APP_VERSION=${GITHUB_SHA}

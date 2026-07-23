@@ -22,6 +22,11 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI):
     svc = QueryService()
     app.state.db = svc
+    try:
+        from app.deploy_register import register_this_service
+        register_this_service("query-api")
+    except Exception:
+        pass
     yield
     if svc._pool:
         svc._pool.closeall()

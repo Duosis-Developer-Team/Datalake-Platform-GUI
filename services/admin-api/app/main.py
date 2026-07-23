@@ -31,6 +31,11 @@ async def lifespan(app: FastAPI):
             run_auth_db_migrations(conn)
     except Exception as exc:
         logging.getLogger(__name__).warning("Auth DB migrations failed: %s", exc)
+    try:
+        from app.deploy_register import register_this_service
+        register_this_service("admin-api")
+    except Exception:
+        pass
     yield
     database.close_pool()
 

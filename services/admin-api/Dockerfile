@@ -22,6 +22,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Platform versioning (TASK-64): baked per build, recorded via self-registration.
+ARG APP_VERSION=local
+ARG GIT_SHA=local
+ENV APP_VERSION=${APP_VERSION} \
+    GIT_SHA=${GIT_SHA}
+
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
     libpq5 \
     && rm -rf /var/lib/apt/lists/*

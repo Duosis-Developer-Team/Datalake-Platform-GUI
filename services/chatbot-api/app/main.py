@@ -27,6 +27,11 @@ configure_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        from app.deploy_register import register_this_service
+        register_this_service("chatbot-api")
+    except Exception:
+        pass
     yield
     # Close pooled httpx clients on shutdown.
     close_all()

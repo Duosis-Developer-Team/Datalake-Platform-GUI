@@ -8,6 +8,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 ARG APP_BUILD_ID=local
 ENV APP_BUILD_ID=${APP_BUILD_ID}
 
+# Platform versioning (TASK-64): recorded per deployment via self-registration.
+ARG APP_VERSION=local
+ARG GIT_SHA=local
+ENV APP_VERSION=${APP_VERSION} \
+    GIT_SHA=${GIT_SHA}
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
