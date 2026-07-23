@@ -7596,6 +7596,12 @@ JOIN latest l
             dc["coloc_total_u"] = int(a.get("total_u") or 0)
             dc["coloc_used_u"] = int(a.get("used_u") or 0)
             dc["coloc_free_u"] = int(a.get("free_u") or 0)
+
+        matched_ids = {str(dc.get("id") or "").upper() for dc in (summaries or [])}
+        orphans = [k for k in (agg or {}) if str(k).upper() not in matched_ids]
+        if orphans:
+            logger.info("colocation aggregate keys with no matching DC summary: %s", orphans)
+
         return summaries
 
     def get_rack_devices(self, rack_name: str) -> dict:

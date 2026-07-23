@@ -35,6 +35,23 @@ def test_sql_scopes_by_name_and_site_and_front_face():
     assert "coalesce(l.parent_name, l.name)" in sql  # DC label
 
 
+def test_sql_tenants_filter_is_u_range_bounded():
+    """The tenants ARRAY_AGG must only count devices within the rack's own U
+    range, so a device positioned outside the rack height (which already
+    contributes 0 to used_u) cannot list a phantom tenant."""
+    sql = occ.OCCUPANCY_SQL.lower()
+    assert "array_agg(distinct s.tenant_name)" in sql
+    # The bare U-range guard appears 3x total: used_u's COUNT FILTER, free_u's
+    # COUNT FILTER, and (new) the tenants ARRAY_AGG FILTER.
+    assert sql.count("s.u between 1 and r.capacity_u") >= 3
+    # And specifically: within the tenants FILTER clause (after the
+    # ARRAY_AGG), the U-range guard is AND-ed onto the existing tenant-name
+    # conditions rather than replacing them.
+    tenants_clause = sql.split("array_agg(distinct s.tenant_name)", 1)[1]
+    assert "tenant_name is not null" in tenants_clause
+    assert "and s.u between 1 and r.capacity_u" in tenants_clause
+
+
 def test_row_to_dict_maps_and_coerces():
     row = ("R1", "116", "DC13", "DH1", 47, 35, 12, ["Boyner", "Bulutistan - Linux TEAM"])
     d = occ.row_to_dict(row)

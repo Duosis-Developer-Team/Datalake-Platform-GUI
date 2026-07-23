@@ -58,7 +58,8 @@ SELECT r.rack_id,
            0
        ) AS free_u,
        ARRAY_AGG(DISTINCT s.tenant_name)
-           FILTER (WHERE s.tenant_name IS NOT NULL AND btrim(s.tenant_name) <> '') AS tenants
+           FILTER (WHERE s.tenant_name IS NOT NULL AND btrim(s.tenant_name) <> ''
+                   AND s.u BETWEEN 1 AND r.capacity_u) AS tenants
 FROM rack r
 LEFT JOIN dev_slots s
     ON s.rack_name = r.rack_name
