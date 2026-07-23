@@ -45,6 +45,8 @@ _ALLOC_ONLY_COLUMNS = [
     {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
 ]
 
+_UNIT_PRICE_COLUMN = {"name": "Birim Fiyat", "id": "unit_price_fmt"}
+
 _FLAT_EXTRA_COLUMN = {"name": "Family", "id": "family_label"}
 
 _FLAT_VIEW_FAMILY = "dual_track"
@@ -57,7 +59,7 @@ _LEFT_COLS = frozenset({
 
 _NUMERIC_COLS = frozenset({
     "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
-    "sellable_alloc_fmt", "sellable_max_fmt",
+    "sellable_alloc_fmt", "sellable_max_fmt", "unit_price_fmt",
     "entitled_qty", "entitled_amount_tl",
 })
 
@@ -126,10 +128,12 @@ def columns_for_family(
         use_virt_base = True
     base_cols = _VIRT_BASE_COLUMNS if use_virt_base else _BASE_COLUMNS
     if profile == _FLAT_VIEW_FAMILY or profile == "dual_track":
-        return [*list(base_cols), *list(_DUAL_TRACK_COLUMNS)]
-    if profile == "allocation_only":
-        return [*list(base_cols), *list(_ALLOC_ONLY_COLUMNS)]
-    return list(base_cols)
+        cols = [*list(base_cols), *list(_DUAL_TRACK_COLUMNS)]
+    elif profile == "allocation_only":
+        cols = [*list(base_cols), *list(_ALLOC_ONLY_COLUMNS)]
+    else:
+        cols = list(base_cols)
+    return [*cols, dict(_UNIT_PRICE_COLUMN)]
 
 
 def _fmt_qty(value: Any, unit: str) -> str:
@@ -139,6 +143,25 @@ def _fmt_qty(value: Any, unit: str) -> str:
         return f"{float(value):,.0f} {unit}".strip()
     except (TypeError, ValueError):
         return "—"
+
+
+def _fmt_unit_price(value: Any, unit: str) -> str:
+    """Format a per-unit price. Adaptive precision so per-TB / per-GB prices
+    (e.g. 1.42 TL/TB, 0.03 TL/GB) don't round away to zero."""
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if price <= 0:
+        return "—"
+    if price >= 100:
+        num = f"{price:,.0f}"
+    elif price >= 1:
+        num = f"{price:,.2f}".rstrip("0").rstrip(".")
+    else:
+        num = f"{price:,.4f}".rstrip("0").rstrip(".")
+    unit = (unit or "").strip()
+    return f"{num} TL/{unit}" if unit else f"{num} TL"
 
 
 def _fmt_crm_sold_block(row: dict[str, Any], unit: str, crm_sold_tl: Any) -> str:
@@ -204,6 +227,15 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         if sellable_qty is not None:
             free_display_qty = sellable_qty
             free_tl = potential_tl
+    elif profile in ("dual_track", "allocation_only") and has_infra:
+        # Virt families report Free as raw headroom (total − CRM sold); monetize it at
+        # the panel unit price so the Free cell carries a TL value alongside the qty.
+        unit_price_tl = row.get("unit_price_tl")
+        if free_display_qty is not None and unit_price_tl not in (None, 0):
+            try:
+                free_tl = float(free_display_qty) * float(unit_price_tl)
+            except (TypeError, ValueError):
+                free_tl = None
     hide_used = bool(row.get("inventory_hide_used"))
 
     return {
@@ -231,6 +263,7 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "sellable_max_fmt": shared.fmt_qty_tl_block(
             sellable_max_qty, unit, potential_tl_max,
         ) if profile == "dual_track" else "—\n—",
+        "unit_price_fmt": _fmt_unit_price(row.get("unit_price_tl"), unit),
         "status": status,
         "data_quality": data_quality,
         "sellable_profile": profile,
@@ -346,9 +379,11 @@ def build_report_table(
     row_hide_used = hide_used or any(r.get("inventory_hide_used") for r in rows)
     if family and family in _INVENTORY_VIRT_FAMILIES:
         row_hide_used = True
-    if family in _PHYSICAL_FREE_FAMILIES or any(
-        r.get("panel_key") == "backup_netbackup_storage" for r in rows
-    ):
+    # Only collapse to the standard profile for a single-family physical table
+    # (grouped NetBackup / S3). A mixed/flat table must keep its Sellable columns
+    # even when it contains a NetBackup row — each row still formats its own cells
+    # per its own sellable_profile.
+    if family in _PHYSICAL_FREE_FAMILIES:
         row_hide_used = False
         profile = "standard"
     columns = columns_for_family(profile or family, hide_used=row_hide_used)

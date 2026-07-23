@@ -41,10 +41,11 @@ def _sample_row(**kwargs):
 
 
 def test_columns_for_family_profiles():
-    assert len(columns_for_family("standard")) == 6
-    assert len(columns_for_family("dual_track")) == 7
-    assert len(columns_for_family("allocation_only")) == 6
-    assert len(columns_for_family("virt_km", hide_used=True)) == 5
+    # Every profile carries a trailing "Birim Fiyat" (unit price) column.
+    assert len(columns_for_family("standard")) == 7
+    assert len(columns_for_family("dual_track")) == 8
+    assert len(columns_for_family("allocation_only")) == 7
+    assert len(columns_for_family("virt_km", hide_used=True)) == 6
 
 
 def test_prepare_service_row_formats_qty_tl_blocks():
@@ -130,7 +131,8 @@ def test_columns_for_family_netbackup_includes_used():
     cols = columns_for_family("backup_netbackup")
     col_ids = [c["id"] for c in cols]
     assert col_ids == [
-        "service_label", "display_unit", "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
+        "service_label", "display_unit", "crm_sold_fmt", "total_fmt", "used_fmt",
+        "free_fmt", "unit_price_fmt",
     ]
 
 
@@ -280,3 +282,73 @@ def test_columns_for_family_includes_power_hana_virt():
     col_ids = [c["id"] for c in cols]
     assert "used_fmt" not in col_ids
     assert "free_fmt" in col_ids
+
+
+def test_flat_view_keeps_sellable_columns_with_netbackup_row():
+    """Flat/list view must not drop Sellable columns just because a NetBackup row
+    is present in the mixed table (regression: netbackup row forced whole table to
+    the standard profile, hiding Sellable Alloc/Max util)."""
+    virt_row = _sample_row()
+    netbackup_row = _sample_row(
+        panel_key="backup_netbackup_storage",
+        family="backup_netbackup",
+        family_label="NetBackup",
+        display_unit="TB",
+        sellable_profile="standard",
+        inventory_free_mode="physical",
+    )
+    table = build_report_table(
+        [virt_row, netbackup_row],
+        table_id="test-flat-with-nb",
+        include_family=True,
+        sellable_profile="dual_track",
+    )
+    col_ids = [c["id"] for c in table.columns]
+    assert "sellable_alloc_fmt" in col_ids
+    assert "sellable_max_fmt" in col_ids
+
+
+def test_prepare_service_row_virt_free_shows_tl():
+    """Free capacity on virt families should carry a TL value (free_qty * unit price)."""
+    row = prepare_service_row(_sample_row(
+        inventory_hide_used=True,
+        free_qty=60.0,
+        unit_price_tl=1500.0,
+    ))
+    assert "60 vCPU" in row["free_fmt"]
+    assert "90,000 TL" in row["free_fmt"]
+
+
+def test_prepare_service_row_virt_free_tl_missing_without_price():
+    """No unit price -> Free TL stays em-dash (no fabricated value)."""
+    row = prepare_service_row(_sample_row(inventory_hide_used=True, free_qty=60.0))
+    assert "60 vCPU" in row["free_fmt"]
+    assert row["free_fmt"].endswith("—")
+
+
+def test_unit_price_column_present_and_formatted():
+    cols = columns_for_family("dual_track")
+    assert cols[-1]["id"] == "unit_price_fmt"
+    assert cols[-1]["name"] == "Birim Fiyat"
+    row = prepare_service_row(_sample_row(
+        unit_price_tl=99.0, display_unit="vCPU", inventory_hide_used=True,
+    ))
+    assert row["unit_price_fmt"] == "99 TL/vCPU"
+
+
+def test_unit_price_small_value_keeps_precision():
+    """Per-TB / per-GB prices must not round to zero (Fix #5 diagnosis needs the raw price)."""
+    row = prepare_service_row(_sample_row(
+        panel_key="backup_netbackup_storage",
+        family="backup_netbackup",
+        display_unit="TB",
+        sellable_profile="standard",
+        unit_price_tl=1.42,
+        inventory_free_mode="physical",
+    ))
+    assert row["unit_price_fmt"] == "1.42 TL/TB"
+
+
+def test_unit_price_missing_shows_dash():
+    row = prepare_service_row(_sample_row(sellable_profile="standard", inventory_hide_used=True))
+    assert row["unit_price_fmt"] == "—"
