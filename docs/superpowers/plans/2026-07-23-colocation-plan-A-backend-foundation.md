@@ -10,9 +10,13 @@
 
 ## Global Constraints
 
-- Python interpreter for all tests: `/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.venv/bin/python` (Python 3.11.15). System `python3` is 3.9 and breaks the suite.
-- datacenter-api test command (run from the service dir): `cd services/datacenter-api && ../../.venv/bin/python -m pytest tests/ -v --tb=short`.
-- Shared-module unit tests run from repo root: `.venv/bin/python -m pytest tests/test_colocation_occupancy.py -v`.
+- **Working directory is the worktree** `/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.claude/worktrees/task-62-colocation-viz`. Do all work and commits here; never cd to the main checkout.
+- Python interpreter for all tests: `.venv/bin/python` (a symlink to the main checkout's venv, Python 3.11.15). System `python3` is 3.9 and breaks the suite. Let `WT` = the worktree root above.
+- **datacenter-api test command** (run from the service dir, `shared/` needs the repo root on PYTHONPATH):
+  `cd services/datacenter-api && PYTHONPATH="$WT" ../../.venv/bin/python -m pytest tests/ -v --tb=short -p no:cacheprovider`
+  (or a single file: `... -m pytest tests/test_xyz.py -v`). The trailing atexit "I/O operation on closed file" logging line is harmless scheduler-shutdown noise, not a failure.
+- **Shared-module unit tests** run from the worktree root: `.venv/bin/python -m pytest tests/test_colocation_occupancy.py -v`.
+- **Baseline (pre-existing, NOT yours):** the datacenter-api suite has **2 pre-existing failures unrelated to colocation** — `test_dc_service_host_rows_slice.py::test_classic_host_rows_single_sql_for_cluster_subsets` and `test_host_rows.py::test_datastore_metrics_excludes_backup_datastores` (host-rows/datastore, present before any change). Do not try to fix them; just don't INCREASE the failure count. Full-suite success criterion for this plan = `254 passed` minus those 2 = your new tests pass and nothing else regresses.
 - **No DDL.** The app connects to bulutlake read-only; never emit `CREATE`/`ALTER`. Occupancy lives in Python, not a DB view.
 - **Current tables only:** `discovery_loki_rack`, `discovery_netbox_inventory_device`, `loki_device_types`, `discovery_loki_location`. Never use `loki_devices`/`loki_racks`/`discovery_loki_racks`/`discovery_netbox_inventory_device_type` (stale or nonexistent).
 - Occupancy correctness invariant: `used_u` MUST never exceed `capacity_u` for any rack (verified over_cap=0).
