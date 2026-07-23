@@ -37,6 +37,7 @@ from src.pages.settings.integrations import hmdl_sync_health as hmdl_sync_health
 from src.pages.settings.integrations import hmdl_coverage as hmdl_coverage_page
 from src.pages.settings.integrations import chatbot_logs as chatbot_logs_page
 from src.pages.settings import crm_service_mapping as crm_service_mapping_page
+from src.pages.settings.platform import versions as platform_versions_page
 
 _A = ADMIN_PREFIX
 
@@ -58,6 +59,10 @@ INT_TABS: list[tuple[str, str, str]] = [
     (f"{_A}/integrations/ldap", "LDAP", "page:settings_ldap"),
     (f"{_A}/integrations/auranotify", "AuraNotify", "page:settings_auranotify"),
     (f"{_A}/integrations/chatbot/logs", "AI Assistant", "page:settings_chatbot_logs"),
+]
+
+PLATFORM_TABS: list[tuple[str, str, str]] = [
+    (f"{_A}/platform/versions", "Versions", "page:settings_platform_versions"),
 ]
 
 HMDL_TABS: list[tuple[str, str, str]] = [
@@ -139,6 +144,7 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
         netbox_visualization_page.build_layout,
     ),
     f"{_A}/integrations/chatbot/logs": ("page:settings_chatbot_logs", chatbot_logs_page.build_layout),
+    f"{_A}/platform/versions": ("page:settings_platform_versions", platform_versions_page.build_layout),
 }
 
 
@@ -161,6 +167,7 @@ def has_any_settings_access(user_id: int) -> bool:
         + [c for _, _, c in INT_TABS]
         + [c for _, _, c in CRM_INT_TABS]
         + [c for _, _, c in HMDL_TABS]
+        + [c for _, _, c in PLATFORM_TABS]
     )
     if any(can_view(user_id, c) for c in codes):
         return True
@@ -185,6 +192,15 @@ def first_allowed_integrations_path(user_id: int) -> str | None:
     return None
 
 
+def first_allowed_platform_path(user_id: int) -> str | None:
+    from src.auth.permission_service import can_view
+
+    for href, _label, code in PLATFORM_TABS:
+        if can_view(user_id, code):
+            return href
+    return None
+
+
 def first_allowed_settings_path(user_id: int) -> str | None:
     from src.auth.permission_service import can_view
 
@@ -200,6 +216,8 @@ def _section_for_path(p: str) -> str:
         return "iam"
     if p.startswith(f"{_A}/integrations"):
         return "integrations"
+    if p.startswith(f"{_A}/platform"):
+        return "platform"
     return "overview"
 
 
@@ -267,6 +285,21 @@ def _top_nav(user_id: int, current_path: str) -> dmc.Group:
                 underline=False,
             )
         )
+    plat_href = first_allowed_platform_path(user_id)
+    if plat_href:
+        active_p = _section_for_path(current_path) == "platform"
+        items.append(
+            dmc.Anchor(
+                dmc.Button(
+                    "Platform",
+                    leftSection=DashIconify(icon="solar:box-bold-duotone", width=16),
+                    radius="md",
+                    **_nav_btn_props(active=active_p),
+                ),
+                href=plat_href,
+                underline=False,
+            )
+        )
 
     return dmc.Group(gap="sm", children=items)
 
@@ -278,6 +311,34 @@ def _sub_nav(user_id: int, current_path: str) -> html.Div | None:
     if sec == "iam":
         links = []
         for href, label, code in IAM_TABS:
+            if not can_view(user_id, code):
+                continue
+            active = current_path.rstrip("/") == href.rstrip("/")
+            links.append(
+                dmc.Anchor(
+                    dmc.Button(
+                        label,
+                        variant="subtle" if not active else "light",
+                        color="indigo",
+                        size="xs",
+                        style={
+                            "borderBottom": "2px solid #552cf8" if active else "2px solid transparent",
+                            "borderRadius": 0,
+                        },
+                    ),
+                    href=href,
+                    underline=False,
+                )
+            )
+        if not links:
+            return None
+        return html.Div(
+            style={"borderBottom": "1px solid #eef1f4", "paddingBottom": "8px", "marginBottom": "16px"},
+            children=[dmc.Group(gap="xs", children=links)],
+        )
+    if sec == "platform":
+        links = []
+        for href, label, code in PLATFORM_TABS:
             if not can_view(user_id, code):
                 continue
             active = current_path.rstrip("/") == href.rstrip("/")
@@ -410,6 +471,8 @@ def _breadcrumb(current_path: str) -> str:
         if current_path.startswith(f"{_A}/integrations/hmdl"):
             return "Administration › Integrations › HMDL"
         return "Administration › Integrations"
+    if sec == "platform":
+        return "Administration › Platform › Versions"
     return "Administration"
 
 

@@ -17,3 +17,17 @@ def test_administration_path_unchanged():
 
 def test_non_settings_path_unchanged():
     assert to_administration_path("/datacenters") == "/datacenters"
+
+
+def test_platform_versions_route_normalizes():
+    from src.pages.settings.shell import _normalize_path
+    assert _normalize_path("/administration/platform/versions") == "/administration/platform/versions"
+    assert _normalize_path("/administration/platform/versions/") == "/administration/platform/versions"
+
+
+def test_platform_versions_page_builder_registered():
+    from src.pages.settings.shell import _PAGE_BUILDERS
+    assert "/administration/platform/versions" in _PAGE_BUILDERS
+    code, builder = _PAGE_BUILDERS["/administration/platform/versions"]
+    assert code == "page:settings_platform_versions"
+    assert callable(builder)
