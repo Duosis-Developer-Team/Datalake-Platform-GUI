@@ -59,42 +59,53 @@ The `DC_SALES_POTENTIAL` rack path is therefore dead/broken and is replaced by t
 - **Tenant→customer resolution**: `gui_crm_customer_alias` (NetBox tenant → CRM accountid) + `tenant_matches_text_rules` (`services/datacenter-api/app/services/dc_service.py:96`) + `gui_crm_customer_source_mapping`. Proven on the VM side (`dc_sales_potential_v2.py`); **not yet driven off physical devices/racks** — that wiring is this task.
 - **CRM inventory report** (`src/components/crm_inventory_report.py`, `src/pages/crm_inventory_overview.py`): rows show CRM Sold / Total / Used / Free / Sellable / Unit price. A panel with `has_infra_source=False` but CRM TL > 0 renders "CRM entitled — infra telemetry pending" — the exact current state of the colocation panels.
 
-## 5. Architecture — one occupancy source of truth
+## 5. Architecture — one occupancy source of truth (shared SQL module)
 
-The spine is a **single canonical occupancy computation** consumed by every layer, ending the divergence in §3a:
+The spine is a **single canonical occupancy computation** consumed by every layer, ending the divergence in §3a.
+**Decision (approved):** it lives as a **shared Python SQL module** `shared/colocation/occupancy.py`, NOT a DB view.
+
+Why not a view: datacenter-api connects to bulutlake with a read-only, non-superuser role and issues **zero DDL**;
+the only migration runner in the repo targets the *webui* DB, and bulutlake DDL is a manual DBA action
+(`sql/dba/customer_resources_pg_trgm_indexes.sql` documents the policy). A shared module needs no DBA, is unit-
+testable, and still keeps the math in one place. This is idiomatic: `sellable_service` already has per-panel
+special-case compute paths (`backup_netbackup_storage`, `raw_ibm_storage_system`), so a `dc_hosting_u` path that
+calls the shared module fits the existing pattern. (Can be promoted to a DB view later — a ~10-min change.)
 
 ```
-bulutlake view  v_rack_occupancy        ← correct math, ONE place
-   columns: rack_id, dc, hall, rack_name, capacity_u,
-            used_u, free_u, pct, tenant_names[]
-   used_u = Σ loki_device_types.u_height, keyed by rack_id,
-            deduped by (position, face), capped at capacity_u
+shared/colocation/occupancy.py   ← canonical SQL, ONE place (proven, over_cap=0)
+   OCCUPANCY_SQL → per-rack rows: rack_id, rack_name, dc, hall, capacity_u,
+                   used_u, free_u, tenants[]
         │
-        ├──► datacenter-api  → bulk endpoints (globe aggregate, floor map, DC "Kolokasyon" tab)
-        └──► customer-api sellable → dc_hosting_u infra source (total=capacity_u, allocated=used_u) → TL
+        ├──► datacenter-api  → bulk occupancy endpoint + per-DC aggregate (globe/floor/DC tab)
+        └──► customer-api sellable → dc_hosting_u per-panel path (SUM capacity_u=total, SUM used_u=allocated) → TL
 ```
 
-**Chosen wiring for sellable (approved):** point the `dc_hosting_u` infra source at **`v_rack_occupancy`** rather
-than adding a custom sellable code path. Rationale: the current sellable infra-source model is a naive
-`SUM(column)`, which cannot express the correct occupancy math; baking the math into the view means both
-datacenter-api and customer-api agree by construction. (Rejected alternative: a new `colocation` sellable
-*profile* in `sellable_service.py` — more code, second place for the math to drift.)
-
-**View ownership note:** `v_rack_occupancy` is a small read-only DB view over `discovery_*`/`loki_*` tables.
-Those tables are populated by external collectors (the `datalake` repo). The view DDL will be managed as a
-datacenter-api-owned migration/bootstrap against `bulutlake`; confirm during implementation whether it should
-instead live in the `datalake` repo's SQL. Either way it is additive and read-only.
+**Verified canonical SQL (run read-only against bulutlake 2026-07-23, over_capacity = 0 across 234 racks):**
+- **Current tables only.** `discovery_loki_rack` (racks, 234), `discovery_netbox_inventory_device` (devices, 2220,
+  has `tenant_name`), `loki_device_types` (`u_height`). The legacy `loki_devices`/`loki_racks` timeseries are
+  **stale (last collected 2026-04-12)** — the app's floor map currently reads `loki_devices` (latent staleness bug this
+  design fixes by switching to `discovery_netbox_inventory_device`).
+- **Join keys.** `discovery_netbox_inventory_device.device_type_id = loki_device_types.id` (heights);
+  device→rack by **`(rack_name, site_name)`** — NOT `rack_id` (the two snapshots use disjoint id spaces: 0 matches)
+  and NOT `rack_name` alone (rack names are non-unique: 182 distinct names / 234 racks). Rack→location via
+  `discovery_loki_location.id::varchar = discovery_loki_rack.location_id`; DC label = `COALESCE(l.parent_name, l.name)`
+  (73 racks have null parent → the location itself is the DC).
+- **used_u = count of distinct FRONT-face U-slots occupied**: each device occupies `[floor(position) .. floor(position)+u_height-1]`
+  on its face; `count(distinct u)` over `generate_series` naturally handles chassis-child overlaps and caps at capacity.
+  Filter `lower(coalesce(face_value,'front')) in ('front','')`. This replaces both wrong methods (floor-map's 1-U-per-device
+  count and the naive Σ-height that produced 135 U in a 47 U rack).
+- Aggregate sanity: total 10,745 U / used 3,998 / free 6,747; per-DC e.g. DC13 = 78 racks, 3,616 U total, 1,799 free.
 
 ## 6. Components
 
-### 6.1 Backend — data layer (`services/datacenter-api`)
-- **`v_rack_occupancy`** view — correct per-rack math (§3a), replacing the broken `crm_potential.py` rack path (§3b).
+### 6.1 Backend — data layer (`services/datacenter-api` + `shared/colocation/`)
+- **`shared/colocation/occupancy.py`** — the canonical `OCCUPANCY_SQL` (§5) + a helper returning per-rack rows. Replaces the broken `crm_potential.py` rack path (§3b). Imported by both datacenter-api and customer-api.
 - **`GET /api/v1/datacenters/{dc}/racks/occupancy`** — bulk; one call replaces the current ~78 per-rack `get_rack_devices` fetches. Returns per rack `{rack_id, name, hall, capacity_u, used_u, free_u, pct, tenants[]}`.
 - **Per-DC colocation aggregate** added to `/api/v1/datacenters/summary` (and/or `/datacenters/{id}`): `coloc_total_u, coloc_used_u, coloc_free_u`, so the globe needs no per-DC device fan-out at page load.
 
 ### 6.2 Backend — customer/CRM matching + sellable (`services/customer-api`, `services/crm-engine`)
 - **Tenant→customer resolver for physical devices**: reuse `gui_crm_customer_alias` + `tenant_matches_text_rules`, driven off **device** `tenant_name` aggregated per rack; **exclude internal Bulutistan tenants** from the "customer" set. Output: per-customer colocation footprint (racks, used-U) joined to that account's CRM `dc_hosting` sold lines.
-- **`dc_hosting_u` sellable wiring**: add the missing `007`-style infra source (`services/customer-api/migrations/webui/007_seed_panel_infra_sources.sql` pattern) pointing at `v_rack_occupancy` (total=`capacity_u`, allocated=`used_u`), threshold 80%, `resource_kind='other'` (no ratio coupling), TL/U price override (`gui_crm_price_override` / catalog). crm-engine auto-publishes it into the `inventory-overview` payload.
+- **`dc_hosting_u` sellable wiring**: because the naive infra-source `SUM(column)` model can't express the occupancy CTE, add a **per-panel compute path** in `sellable_service._query_total_allocated` (`if src.panel_key == "dc_hosting_u": ...`, mirroring the existing `backup_netbackup_storage` / `raw_ibm_storage_system` branches) that runs `shared/colocation/occupancy.py` and returns `(Σ capacity_u, Σ used_u)` for the DC pattern. Seed a `dc_hosting_u` row in `007_seed_panel_infra_sources.sql` with `manual_total=NULL` and a sentinel `source_table` so `has_infra_source` is true and the panel is picked up; threshold 80%, `resource_kind='other'` (no ratio coupling), unit `U`, TL/U price override (`gui_crm_price_override`). crm-engine auto-publishes it into the `inventory-overview` payload.
 
 ### 6.3 Frontend — layered visualization (`src/`)
 - **Globe** (`global_view.py`): add `coloc_free_u/used_u/total_u` to each point in `_build_globe_data`; add a 4th "Kolokasyon" ring to `build_dc_info_card` (**Tier A — no JS rebuild**). Optional later: pin-color overlay = JS rebuild of `dash_globe_component`.
@@ -106,13 +117,13 @@ instead live in the `datalake` repo's SQL. Either way it is additive and read-on
 ## 7. Data flow
 
 `v_rack_occupancy` → datacenter-api endpoints → { globe aggregate | floor map | DC Kolokasyon tab }.
-`v_rack_occupancy` → customer-api `dc_hosting_u` sellable → crm-engine `inventory-overview` → CRM report row.
+`shared/colocation/occupancy.py` → customer-api `dc_hosting_u` sellable path → crm-engine `inventory-overview` → CRM report row.
 Tenant→customer resolver runs in customer-api (owns the alias tables); surfaced in the DC-tab customer table
 and floor/rack overlays.
 
 ## 8. Testing
 
-- **Unit:** occupancy math — the 135-U-in-47-U case must cap at 47; dedup `(position, face)`; multi-U gear sums real heights; non-unique rack-name guard (key by `rack_id`).
+- **Unit:** occupancy math — the 135-U-in-47-U case must cap at capacity; front-face distinct U-slots; multi-U gear via `generate_series`; device→rack scoped by `(rack_name, site_name)` (non-unique name guard).
 - **Unit:** tenant→customer resolution — internal Bulutistan tenants excluded; alias + text-rule paths.
 - **Unit:** sellable formula `sellable = max(capacity_u × 0.80 − used_u, 0)`, `potential_tl = sellable_u × TL/U`.
 - **Data-contract test:** assert `discovery_loki_rack`, `loki_device_types`, `discovery_netbox_inventory_device` exist (guards the §3b drift from recurring).
@@ -127,9 +138,10 @@ and floor/rack overlays.
 
 ## 10. Open items to confirm during implementation
 
-1. **`v_rack_occupancy` ownership** — datacenter-api-managed view vs `datalake` repo SQL (§5).
+1. **Occupancy home** — RESOLVED: shared Python module `shared/colocation/occupancy.py` (no DB view; §5). Promote to a DBA-applied view later if desired.
 2. **TL/U price source** — `gui_crm_price_override` vs product catalog default; confirm a sensible default when unset.
 3. **Baseline test run** — execute the datacenter-api / customer-api / GUI suites (Python 3.11 venv) at implementation kickoff before first change.
+4. **Sentinel `source_table` for `dc_hosting_u`** — the per-panel path is keyed on `panel_key`, so the `007` row just needs to make `has_infra_source` true; pick a clear sentinel (e.g. `source_table='__colocation_occupancy__'`) documented in the row's `notes`.
 
 ## 11. Key references
 
