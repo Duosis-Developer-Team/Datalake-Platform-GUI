@@ -352,3 +352,37 @@ def test_unit_price_small_value_keeps_precision():
 def test_unit_price_missing_shows_dash():
     row = prepare_service_row(_sample_row(sellable_profile="standard", inventory_hide_used=True))
     assert row["unit_price_fmt"] == "—"
+
+
+def test_prepare_service_row_netbackup_shows_dedup_logical():
+    """NetBackup Total cell must expose the logical (pre-dedup) size and dedup factor so
+    the physical pool vs logical backup gap ('1.5 PB total but 5 PB stored') is visible."""
+    row = prepare_service_row(_sample_row(
+        panel_key="backup_netbackup_storage",
+        family="backup_netbackup",
+        display_unit="TB",
+        sellable_profile="standard",
+        total=1544.0,
+        pre_dedup_qty=5024.0,
+        dedup_factor=3.2,
+        dedup_savings_pct=69.3,
+        free_qty=238.0,
+        free_tl=338.0,
+        inventory_free_mode="physical",
+    ))
+    assert "1,544 TB" in row["total_fmt"]
+    assert "5,024 TB" in row["total_fmt"]
+    assert "3.2" in row["total_fmt"]
+
+
+def test_prepare_service_row_no_dedup_note_when_absent():
+    """Rows without pre-dedup metrics keep a clean single-line Total."""
+    row = prepare_service_row(_sample_row(
+        panel_key="storage_s3_istanbul",
+        family="storage_s3",
+        display_unit="TB",
+        sellable_profile="standard",
+        total=2000.0,
+        inventory_free_mode="physical",
+    ))
+    assert row["total_fmt"] == "2,000 TB"

@@ -145,6 +145,31 @@ def _fmt_qty(value: Any, unit: str) -> str:
         return "—"
 
 
+def _fmt_dedup_note(row: dict[str, Any], unit: str) -> str:
+    """Annotation for NetBackup-style rows: logical (pre-dedup) size + dedup factor.
+
+    Answers "physical pool is 1.5 PB but ~5 PB is stored — where's the rest?": the
+    gap is deduplication, not missing capacity.
+    """
+    pre = row.get("pre_dedup_qty")
+    if pre is None:
+        return ""
+    try:
+        pre_f = float(pre)
+    except (TypeError, ValueError):
+        return ""
+    if pre_f <= 0:
+        return ""
+    try:
+        factor_f = float(row.get("dedup_factor") or 0.0)
+    except (TypeError, ValueError):
+        factor_f = 0.0
+    parts = [f"Mantıksal: {pre_f:,.0f} {unit}".strip()]
+    if factor_f > 1.0:
+        parts.append(f"Dedup {factor_f:,.1f}×")
+    return "(" + " · ".join(parts) + ")"
+
+
 def _fmt_unit_price(value: Any, unit: str) -> str:
     """Format a per-unit price. Adaptive precision so per-TB / per-GB prices
     (e.g. 1.42 TL/TB, 0.03 TL/GB) don't round away to zero."""
@@ -238,12 +263,18 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
                 free_tl = None
     hide_used = bool(row.get("inventory_hide_used"))
 
+    total_fmt = _fmt_qty(row.get("total"), unit) if has_infra else "—"
+    if has_infra:
+        dedup_note = _fmt_dedup_note(row, unit)
+        if dedup_note:
+            total_fmt = f"{total_fmt}\n{dedup_note}"
+
     return {
         "panel_key": row.get("panel_key") or "",
         "service_label": service_label,
         "family_label": row.get("family_label") or row.get("family") or "",
         "display_unit": unit,
-        "total_fmt": _fmt_qty(row.get("total"), unit) if has_infra else "—",
+        "total_fmt": total_fmt,
         "crm_sold_fmt": _fmt_crm_sold_block(row, unit, crm_sold_tl),
         "used_fmt": (
             "—\n—"
