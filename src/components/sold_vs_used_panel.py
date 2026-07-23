@@ -43,6 +43,10 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
     note = r.get("usage_note")
     gauge_pct = min(float(eff or 0), 100.0) if eff is not None else 0.0
 
+    detected = r.get("detected")
+    has_detected = detected is not None
+    detected_val = float(detected or 0) if has_detected else 0.0
+
     gauge = html.Div(
         style={
             "width": "100%",
@@ -63,10 +67,14 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
         ),
     )
 
+    bar_series = {"Sold": [sold], "Used": [used]}
+    if has_detected:
+        bar_series["Detected"] = [detected_val]
+
     bar = dcc.Graph(
         figure=create_grouped_bar_chart(
             [title[:40]],
-            {"Sold": [sold], "Used": [used]},
+            bar_series,
             f"Quantities ({unit})" if unit else "Quantities",
             height=220,
         ),
@@ -91,6 +99,15 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
             f"Overage: {overage:,.2f} {unit} · Est. loss: {loss_txt}",
             size="xs",
             c="#E03131",
+            fw=600,
+        )
+
+    detected_line = None
+    if has_detected:
+        detected_line = dmc.Text(
+            f"Detected: {detected_val:,.2f} {unit}".strip(),
+            size="xs",
+            c="#4318FF",
             fw=600,
         )
 
@@ -119,6 +136,7 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
                 children=[gauge, bar],
             ),
             alloc_line,
+            detected_line,
             overage_line,
             dmc.Text(note, size="xs", c="orange", mt="xs") if note else None,
         ],

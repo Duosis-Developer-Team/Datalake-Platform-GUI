@@ -53,6 +53,7 @@ from src.components.crm_sales_panel import (
     build_crm_summary_kv_panel,
     format_crm_money,
 )
+from shared.licensing.reconcile import reconcile as _reconcile_licensed_os, FAMILY_TO_SOLD_CATEGORIES
 from src.services import auranotify_client as aura
 from src.utils.crm_sales_project_filter import (
     ALL_PROJECTS,
@@ -2596,6 +2597,65 @@ def _crm_rows_outside_virt_backup(eff_rows: list | None) -> list:
     return out
 
 
+_LICENSE_CATEGORY_CODES: set[str] = {
+    code for codes in FAMILY_TO_SOLD_CATEGORIES.values() for code in codes
+}
+
+
+def _merge_licensed_os_rows(eff_by_cat: list | None, detected_families: dict | None) -> list:
+    """Fold raw per-category license rows (license_redhat, license_suse,
+    mgmt_os_sap, license_microsoft_spla, license_microsoft_csp, mgmt_os_windows)
+    into one synthesized detected-vs-sold row per family (RHEL/SUSE/Windows) for
+    the "Sold vs used (other categories)" panel. Pure — does not mutate the input.
+
+    `used_qty = detected` is deliberate: it keeps the synthesized row visible
+    through `filter_efficiency_rows_for_display`, which drops rows where
+    entitled_qty<=0 AND used_qty<=0 AND overage_qty<=0.
+    """
+    rows = list(eff_by_cat or [])
+    # Reconcile BEFORE the license rows are removed — it reads sold qty from them.
+    family_rows = _reconcile_licensed_os(detected_families or {}, rows)
+
+    kept = [
+        r
+        for r in rows
+        if str(r.get("category_code") or r.get("page_key") or "") not in _LICENSE_CATEGORY_CODES
+    ]
+
+    for fr in family_rows:
+        detected = int(fr.get("detected", 0) or 0)
+        sold = int(fr.get("sold", 0) or 0)
+        if detected <= 0 and sold <= 0:
+            continue
+        delta = int(fr.get("delta", 0) or 0)
+        family = fr.get("family")
+        label = fr.get("label")
+        kept.append({
+            "category_label": f"{label} Lisans",
+            "category_code": f"licensed_os_{family}",
+            "entitled_qty": sold,
+            "used_qty": detected,
+            "detected": detected,
+            "overage_qty": max(delta, 0),
+            "resource_unit": "Adet",
+            "gui_tab_binding": "licensing.os",
+            "status": "over" if delta > 0 else "",
+        })
+
+    return kept
+
+
+def _eff_rows_with_licensed_os(customer_name: str, eff_by_cat: list | None) -> list:
+    """Best-effort merge of detected licensed-OS counts into eff_by_cat, scoped
+    to the Sold-vs-used panel only. Any failure (empty/raising detected fetch)
+    degrades gracefully to the original rows so Customer View never breaks."""
+    try:
+        detected_families = api.get_licensed_os_summary(customer=customer_name).get("families", {}) or {}
+        return _merge_licensed_os_rows(eff_by_cat, detected_families)
+    except Exception:
+        return eff_by_cat
+
+
 def _customer_content(customer_name: str, time_range: dict | None = None, *, only_perspective: str | None = None):
     # only_perspective builds just that perspective's summary/virt/backup (used by
     # the perspective toggle so it doesn't rebuild both). Data is shared-cached
@@ -2801,7 +2861,9 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
                 backup_totals,
                 s3_data,
                 sales_summary=sales_summary,
-                crm_eff_panel=build_sold_vs_used_stack(_crm_rows_outside_virt_backup(eff_by_cat)),
+                crm_eff_panel=build_sold_vs_used_stack(
+                    _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(name, eff_by_cat))
+                ),
                 customer_name=name,
                 service_breakdown=service_breakdown,
                 sales_items=sales_items,
@@ -2959,7 +3021,9 @@ def render_billing_tab(name: str, tr: dict | None, project: str | None = ALL_PRO
         totals.get("backup", {}) or {},
         api.get_customer_s3_vaults(name, tr),
         sales_summary=sales_summary,
-        crm_eff_panel=build_sold_vs_used_stack(_crm_rows_outside_virt_backup(eff_by_cat)),
+        crm_eff_panel=build_sold_vs_used_stack(
+            _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(name, eff_by_cat))
+        ),
         customer_name=name,
         service_breakdown=api.get_customer_sales_service_breakdown(name),
         sales_items=filter_by_project(sales_items, project),
