@@ -146,6 +146,18 @@ def _fetch_rack_occupancy(dc_id, racks):
     return occupancy
 
 
+def _external_rack_tenants(tenants):
+    """External (non-Bulutistan) tenants occupying a rack, order-preserved, deduped."""
+    from shared.colocation.occupancy import is_internal_tenant
+
+    seen, out = set(), []
+    for t in tenants or []:
+        if t and not is_internal_tenant(t) and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
 def _rack_fill_info(occupied_u, total_u):
     """Occupancy summary for the hover popup: occupied/total/free/pct + label."""
     total = int(total_u or 0)
