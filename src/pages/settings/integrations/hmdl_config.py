@@ -7,7 +7,8 @@ Credentials / Vault and are never shown or edited here.
 
 from __future__ import annotations
 
-from dash import dcc, html
+import dash
+from dash import Input, Output, State, callback, ctx, dcc, html
 import dash_mantine_components as dmc
 
 from src.services import api_client as api
@@ -202,3 +203,116 @@ def build_layout(search: str | None = None) -> html.Div:
             dcc.Interval(id="hmdlcfg-job-poll", interval=4000, disabled=True),
         ]
     )
+
+
+_NUMERIC_KEYS = {"device_limit", "parallel_compare_workers"}
+
+
+def assemble_extra_vars(val_ids, val_values, bool_ids, bool_values) -> dict:
+    out: dict = {}
+    for cid, value in zip(val_ids or [], val_values or []):
+        key = cid.get("key")
+        if not key:
+            continue
+        if key == "mail_recipients":
+            if isinstance(value, str):
+                parts = [v.strip() for v in value.split(",") if v.strip()]
+            elif isinstance(value, list):
+                parts = [str(v).strip() for v in value if str(v).strip()]
+            else:
+                parts = []
+            if parts:
+                out[key] = parts
+            continue
+        if isinstance(value, str):
+            if value == "":
+                continue
+            out[key] = value
+        elif value is None:
+            continue
+        elif key in _NUMERIC_KEYS:
+            out[key] = int(value)
+        else:
+            out[key] = value
+    for cid, value in zip(bool_ids or [], bool_values or []):
+        key = cid.get("key")
+        if key:
+            out[key] = bool(value)
+    return out
+
+
+@callback(
+    Output("hmdlcfg-save-msg", "children"),
+    Input("hmdlcfg-save", "n_clicks"),
+    State({"type": "hmdlcfg-val", "key": dash.ALL}, "value"),
+    State({"type": "hmdlcfg-val", "key": dash.ALL}, "id"),
+    State({"type": "hmdlcfg-bool", "key": dash.ALL}, "checked"),
+    State({"type": "hmdlcfg-bool", "key": dash.ALL}, "id"),
+    prevent_initial_call=True,
+)
+def _save_cb(_n, val_values, val_ids, bool_values, bool_ids):
+    extra_vars = assemble_extra_vars(val_ids, val_values, bool_ids, bool_values)
+    try:
+        api.put_hmdl_awx_config(extra_vars)
+        return dmc.Alert(color="green", title="Kaydedildi — bir sonraki (scheduled/manual) çalıştırma bunu kullanır.")
+    except Exception as exc:  # noqa: BLE001
+        return dmc.Alert(color="red", title="Kaydetme başarısız", children=str(exc))
+
+
+@callback(
+    Output("hmdlcfg-job-store", "data"),
+    Output("hmdlcfg-job-poll", "disabled"),
+    Output("hmdlcfg-run-msg", "children"),
+    Input("hmdlcfg-run", "n_clicks"),
+    State("hmdlcfg-run-dryrun", "checked"),
+    prevent_initial_call=True,
+)
+def _run_cb(_n, dryrun):
+    try:
+        res = api.launch_hmdl_awx_job({"dry_run": True} if dryrun else None)
+        job_id = res.get("job_id")
+        return {"job_id": job_id}, False, dmc.Alert(color="blue", title=f"Çalıştırıldı — job #{job_id}")
+    except Exception as exc:  # noqa: BLE001
+        return dash.no_update, True, dmc.Alert(color="red", title="Çalıştırma başarısız", children=str(exc))
+
+
+@callback(
+    Output("hmdlcfg-run-msg", "children", allow_duplicate=True),
+    Output("hmdlcfg-job-poll", "disabled", allow_duplicate=True),
+    Input("hmdlcfg-job-poll", "n_intervals"),
+    State("hmdlcfg-job-store", "data"),
+    prevent_initial_call=True,
+)
+def _poll_cb(_n, store):
+    job_id = (store or {}).get("job_id")
+    if not job_id:
+        return dash.no_update, True
+    job = api.get_hmdl_awx_job(int(job_id))
+    status = job.get("status") or "unknown"
+    done = status in ("successful", "failed", "error", "canceled")
+    color = "green" if status == "successful" else ("red" if status in ("failed", "error") else "blue")
+    return dmc.Alert(color=color, title=f"job #{job_id}: {status}"), bool(done)
+
+
+@callback(
+    Output("hmdlcfg-sched-msg", "children"),
+    Input({"type": "hmdlcfg-sched", "sid": dash.ALL}, "checked"),
+    State({"type": "hmdlcfg-sched", "sid": dash.ALL}, "id"),
+    prevent_initial_call=True,
+)
+def _sched_cb(checked_values, ids):
+    trig = ctx.triggered_id
+    if not isinstance(trig, dict) or trig.get("type") != "hmdlcfg-sched":
+        return dash.no_update
+    sid = trig.get("sid")
+    # find the new value for the triggered switch
+    new_val = None
+    for cid, val in zip(ids or [], checked_values or []):
+        if cid.get("sid") == sid:
+            new_val = bool(val)
+            break
+    try:
+        api.set_hmdl_awx_schedule(int(sid), bool(new_val))
+        return dmc.Alert(color="green", title=f"Schedule #{sid} güncellendi ({'enabled' if new_val else 'disabled'}).")
+    except Exception as exc:  # noqa: BLE001
+        return dmc.Alert(color="red", title="Schedule güncelleme başarısız", children=str(exc))
