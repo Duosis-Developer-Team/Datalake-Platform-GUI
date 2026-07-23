@@ -2545,13 +2545,13 @@ def build_colocation_tab(coloc: dict):
     kpis = dmc.SimpleGrid(cols=4, spacing="lg", style={"marginTop": "12px"}, children=[
         _kpi("Toplam U", f"{total_u:,}", _DC_ICONS.get("total_devices", "solar:server-bold-duotone"), color="indigo", stagger=1),
         _kpi("Kullanılan U", f"{used_u:,}", _DC_ICONS.get("device_roles", "solar:server-bold-duotone"), color="violet", stagger=2),
-        _kpi("Boş (satılabilir) U", f"{free_u:,}", _DC_ICONS.get("top_role", "solar:server-bold-duotone"), color="teal", stagger=3),
+        _kpi("Boş U", f"{free_u:,}", _DC_ICONS.get("top_role", "solar:server-bold-duotone"), color="teal", stagger=3),
         _kpi("Doluluk", f"%{pct}", _DC_ICONS.get("manufacturers", "solar:server-bold-duotone"), color="grape", stagger=4),
     ])
 
     if customers:
         header = html.Tr(children=[html.Th(h) for h in
-                                   ("Müşteri", "CRM Hesabı", "Eşleşme", "Rack", "Kullanılan U")])
+                                   ("Müşteri", "CRM Hesabı", "Eşleşme", "Rack", "Kullanılan U (rack toplamı)")])
         body = []
         for c in customers:
             badge_color = "green" if c.get("match_status") == "matched" else "orange"

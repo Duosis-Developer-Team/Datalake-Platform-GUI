@@ -31,3 +31,12 @@ def test_fetch_rack_occupancy_empty_on_backend_failure():
     with patch("src.services.api_client.get_dc_racks_occupancy", return_value={"racks": [], "summary": {}}):
         occ = fm._fetch_rack_occupancy("DC13", [{"name": "116"}])
     assert occ == {}
+
+
+def test_fetch_rack_occupancy_degrades_gray_on_exception():
+    """An ungraceful backend failure (e.g. httpx.ReadError propagating out of
+    api._api_cache_get_with_stale) must degrade to {} -> all racks gray/unknown,
+    not raise out of the Dash callback."""
+    with patch("src.services.api_client.get_dc_racks_occupancy", side_effect=RuntimeError("boom")):
+        occ = fm._fetch_rack_occupancy("DC13", [{"name": "116"}])
+    assert occ == {}

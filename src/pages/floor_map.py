@@ -131,13 +131,19 @@ def _color_by_fill(status, occupied_u, total_u):
 def _fetch_rack_occupancy(dc_id, racks):
     """{rack_name -> occupied_u} for the given racks, from the bulk colocation
     occupancy endpoint (real used-U via the shared canonical SQL). One call
-    instead of N. Racks absent from the response are omitted -> rendered gray."""
+    instead of N. Racks absent from the response are omitted -> rendered gray.
+    Degrades to {} (all racks gray/unknown) if the bulk call fails for any
+    reason, matching the globe view and rack-detail panel's guarded calls."""
     from src.services import api_client as api
 
     wanted = {str(r.get("name") or "").strip() for r in racks if str(r.get("name") or "").strip()}
     if not wanted:
         return {}
-    payload = api.get_dc_racks_occupancy(dc_id or "") or {}
+    try:
+        payload = api.get_dc_racks_occupancy(dc_id or "") or {}
+    except Exception:
+        _logger.warning("_fetch_rack_occupancy: bulk occupancy call failed for dc_id=%s", dc_id, exc_info=True)
+        return {}
     occupancy: dict = {}
     for row in payload.get("racks", []) or []:
         name = str(row.get("rack_name") or "").strip()

@@ -4,18 +4,27 @@ signal (rack.tenant_name is ~4% populated); Bulutistan-internal tenants are
 excluded via occupancy.is_internal_tenant."""
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Sequence
 
 from shared.colocation.occupancy import is_internal_tenant
 
 
 def build_customer_footprint(
     occupancy_rows: Sequence[dict],
-    alias_by_key: dict,
+    alias_by_key: dict[str, dict],
 ) -> list[dict]:
     """Group external device tenants across racks into per-customer footprints.
 
     alias_by_key: {lowercased tenant string -> {crm_accountid, crm_account_name}}.
+
+    Approximation (disclosed, deliberate): per-customer ``used_u`` is the sum of
+    the *whole rack's* used-U for every rack the tenant appears in, not an
+    exact per-tenant U measurement. A rack shared by N external tenants has
+    its used-U counted once per tenant (so the totals are not additive across
+    tenants sharing a rack), and any co-located Bulutistan-internal gear in
+    that rack is included in the figure too. This is a footprint overview for
+    identifying who occupies which racks, not a precise per-tenant U billing
+    number.
     """
     by_tenant: dict[str, dict] = {}
     for rack in occupancy_rows or []:
