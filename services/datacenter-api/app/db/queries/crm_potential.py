@@ -105,6 +105,15 @@ WHERE  pl.name ILIKE '%%TL%%'
 
 # ---------------------------------------------------------------------------
 # Legacy v1 catalog × capacity (kept for /sales-potential v1 endpoint).
+#
+# NOTE: the rack-capacity CTEs (dc_capacity / dc_rack_capacity) were removed —
+# they referenced discovery_loki_racks (plural) and
+# discovery_netbox_inventory_device_type, neither of which exist in the
+# database, so total_rack_u/used_rack_u/free_rack_u were always broken.
+# Plan A supersedes rack capacity/used math with shared/colocation/occupancy.py
+# + DatabaseService.get_colocation_aggregate(); this v1 endpoint has no
+# remaining callers (see task/architecture-audit-2026-05-12/gaps_and_actions.md
+# M-01) so the columns are dropped rather than repointed.
 # ---------------------------------------------------------------------------
 
 DC_SALES_POTENTIAL = """
@@ -121,26 +130,6 @@ tl_catalog AS (
     WHERE  pl.name ILIKE '%%TL%%'
       AND  pl.statecode = 0
       AND  p.statecode  = 0
-),
-dc_capacity AS (
-    SELECT
-        d.site_name                        AS dc_name,
-        SUM(dt.u_height)                   AS total_rack_units_used,
-        COUNT(DISTINCT d.id)               AS device_count
-    FROM   discovery_netbox_inventory_device d
-    JOIN   discovery_netbox_inventory_device_type dt
-           ON dt.id = d.device_type_id
-    WHERE  d.site_name ILIKE %s
-    GROUP BY d.site_name
-),
-dc_rack_capacity AS (
-    SELECT
-        r.site_name                        AS dc_name,
-        SUM(r.u_height)                    AS total_rack_u,
-        COUNT(DISTINCT r.id)               AS rack_count
-    FROM   discovery_loki_racks r
-    WHERE  r.site_name ILIKE %s
-    GROUP BY r.site_name
 ),
 dc_allocated_vmware AS (
     SELECT
@@ -164,9 +153,6 @@ dc_allocated_nutanix AS (
 )
 SELECT
     %s::TEXT                                   AS dc_code,
-    COALESCE(rc.total_rack_u, 0)               AS total_rack_u,
-    COALESCE(cap.total_rack_units_used, 0)     AS used_rack_u,
-    GREATEST(COALESCE(rc.total_rack_u, 0) - COALESCE(cap.total_rack_units_used, 0), 0) AS free_rack_u,
     COALESCE(va.allocated_vcpu, 0) + COALESCE(na.allocated_vcpu, 0)    AS total_allocated_vcpu,
     COALESCE(va.allocated_ram_gb, 0) + COALESCE(na.allocated_ram_gb, 0) AS total_allocated_ram_gb,
     tc.product_name,
@@ -174,8 +160,6 @@ SELECT
     tc.unit_price_tl,
     tc.price_list
 FROM tl_catalog tc
-FULL JOIN dc_rack_capacity rc  ON TRUE
-FULL JOIN dc_capacity cap      ON TRUE
 LEFT JOIN dc_allocated_vmware va ON va.dc_name ILIKE %s
 LEFT JOIN dc_allocated_nutanix na ON na.dc_name ILIKE %s
 ORDER BY tc.product_name NULLS LAST;

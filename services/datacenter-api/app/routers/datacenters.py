@@ -637,7 +637,7 @@ def dc_sales_potential(
             with conn.cursor() as cur:
                 cur.execute(
                     crm_q.DC_SALES_POTENTIAL,
-                    (dc_pattern, dc_pattern, dc_pattern, dc_pattern, dc_code, dc_pattern, dc_pattern),
+                    (dc_pattern, dc_pattern, dc_code, dc_pattern, dc_pattern),
                 )
                 cols = [d[0] for d in cur.description]
                 detail_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
