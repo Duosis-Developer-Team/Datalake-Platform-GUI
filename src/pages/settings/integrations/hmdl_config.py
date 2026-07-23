@@ -347,6 +347,8 @@ def assemble_extra_vars(val_ids, val_values, bool_ids, bool_values, orig_keys=No
 
 @callback(
     Output("hmdlcfg-save-msg", "children"),
+    Output("hmdlcfg-orig-store", "data"),
+    Output("hmdlcfg-init-store", "data"),
     Input("hmdlcfg-save", "n_clicks"),
     State({"type": "hmdlcfg-val", "key": dash.ALL}, "value"),
     State({"type": "hmdlcfg-val", "key": dash.ALL}, "id"),
@@ -359,10 +361,18 @@ def assemble_extra_vars(val_ids, val_values, bool_ids, bool_values, orig_keys=No
 def _save_cb(_n, val_values, val_ids, bool_values, bool_ids, orig_keys=None, init_values=None):
     extra_vars = assemble_extra_vars(val_ids, val_values, bool_ids, bool_values, orig_keys, init_values)
     try:
-        api.put_hmdl_awx_config(extra_vars)
-        return dmc.Alert(color="green", title="Kaydedildi — bir sonraki (scheduled/manual) çalıştırma bunu kullanır.")
+        resp = api.put_hmdl_awx_config(extra_vars)
+        # Refresh both stores from what AWX now actually has, using the SAME
+        # helpers build_layout uses — otherwise a revert-then-save compares
+        # against the stale pre-save snapshot and silently no-ops (see FIX 1).
+        new_current = (resp or {}).get("extra_vars") or {}
+        new_orig = managed_keys(new_current)
+        new_init = initial_values(new_current)
+        msg = dmc.Alert(color="green", title="Kaydedildi — bir sonraki (scheduled/manual) çalıştırma bunu kullanır.")
+        return msg, new_orig, new_init
     except Exception as exc:  # noqa: BLE001
-        return dmc.Alert(color="red", title="Kaydetme başarısız", children=str(exc))
+        msg = dmc.Alert(color="red", title="Kaydetme başarısız", children=str(exc))
+        return msg, dash.no_update, dash.no_update
 
 
 @callback(

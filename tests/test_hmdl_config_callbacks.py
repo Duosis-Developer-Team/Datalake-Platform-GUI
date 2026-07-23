@@ -1,6 +1,6 @@
 """Behavior tests for HMDL config page helper + save/run/poll/schedule callbacks."""
 
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import dash_mantine_components as dmc
 
@@ -150,7 +150,7 @@ def test_save_cb_success():
     # order mirrors the @callback State declaration order (value before id),
     # which is how Dash actually invokes it.
     with patch.object(page.api, "put_hmdl_awx_config", return_value={"awx_available": True, "extra_vars": {}}) as mock_put:
-        msg = page._save_cb(
+        msg, new_orig, new_init = page._save_cb(
             1,
             ["loki"], [{"type": "hmdlcfg-val", "key": "device_source"}],
             [True], [{"type": "hmdlcfg-bool", "key": "dry_run"}],
@@ -158,17 +158,64 @@ def test_save_cb_success():
     assert isinstance(msg, dmc.Alert)
     assert msg.color == "green"
     mock_put.assert_called_once_with({"device_source": "loki", "dry_run": True})
+    # stores refresh from the (empty) returned extra_vars, using the same
+    # helpers build_layout uses.
+    assert new_orig == page.managed_keys({})
+    assert new_init == page.initial_values({})
 
 
 def test_save_cb_error_surfaces_alert():
     with patch.object(page.api, "put_hmdl_awx_config", side_effect=Exception("nope")):
-        msg = page._save_cb(
+        msg, new_orig, new_init = page._save_cb(
             1,
             ["loki"], [{"type": "hmdlcfg-val", "key": "device_source"}],
             [], [],
         )
     assert isinstance(msg, dmc.Alert)
     assert msg.color == "red"
+    # On failure the stores must NOT be touched — the operator's pending edits
+    # still need to compare against the still-valid prior snapshot.
+    assert new_orig is page.dash.no_update
+    assert new_init is page.dash.no_update
+
+
+def test_save_revert_save_second_save_emits_reverted_key_not_empty():
+    """FIX 1 (BLOCKER): without refreshing the stores after a save, a
+    revert-then-save compares against the STALE pre-save snapshot and silently
+    writes {} — the UI still shows a green success banner while the operator's
+    correction never reaches AWX. Driving _save_cb with the stores it itself
+    returned from the first call must make the SECOND save emit the reverted
+    key; if the fix is reverted (stores no longer refreshed), this either
+    fails to unpack _save_cb's return or reproduces the {} no-op."""
+    # Fresh page load: sync_devices is absent from AWX, rendered at the role
+    # default (True). Nothing is AWX-managed yet.
+    orig0: list = []
+    init0 = {"sync_devices": True}
+
+    with patch.object(
+        page.api, "put_hmdl_awx_config",
+        side_effect=[
+            {"awx_available": True, "extra_vars": {"sync_devices": False}},
+            {"awx_available": True, "extra_vars": {"sync_devices": True}},
+        ],
+    ) as mock_put:
+        # Operator turns sync_devices OFF and saves.
+        msg1, orig1, init1 = page._save_cb(
+            1, [], [], [False], [_bool("sync_devices")], orig0, init0,
+        )
+        assert isinstance(msg1, dmc.Alert) and msg1.color == "green"
+
+        # Operator realises the mistake, turns it back ON, saves again — driven
+        # through the stores _save_cb itself returned from the first call.
+        msg2, _orig2, _init2 = page._save_cb(
+            1, [], [], [True], [_bool("sync_devices")], orig1, init1,
+        )
+        assert isinstance(msg2, dmc.Alert) and msg2.color == "green"
+
+    assert mock_put.call_args_list == [
+        call({"sync_devices": False}),
+        call({"sync_devices": True}),
+    ]
 
 
 def test_run_cb_starts_poll_and_stores_job():
