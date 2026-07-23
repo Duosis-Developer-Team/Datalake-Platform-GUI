@@ -23,6 +23,7 @@ from app.db.queries import discovery_rack as drq
 from app.db.queries import crm_potential as crm_q
 from app.db.queries import crm_network_pricing as net_price_q
 from app.db.queries import netbox_config as nbq
+from app.db.queries import licensed_os as loq
 from app.config import settings
 from app.services import cache_service as cache
 from app.services import query_overrides as qo
@@ -3542,6 +3543,59 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         result = {"totals": totals, "assets": assets}
         cache.set(cache_key, result)
         return result
+
+    # ------------------------------------------------------------------
+    # Licensed OS detection (TASK-81) — VMware guest-OS tally
+    # ------------------------------------------------------------------
+
+    def _os_bounds(self, time_range: dict | None):
+        """Resolve a time_range dict to (start_ts, end_ts) bounds.
+
+        Mirrors the bounds handling used by get_customer_resources — reuses
+        the same time_range_to_bounds helper (it already falls back to
+        default_time_range() for None/incomplete input).
+        """
+        return time_range_to_bounds(time_range)
+
+    def _tally_os_rows(self, rows) -> dict:
+        """rows: iterable of (name, guest_id, guest_full_name). Classify + count."""
+        from shared.licensing.os_classifier import classify
+        families = {"rhel": 0, "suse": 0, "windows": 0, "free": 0, "unknown": 0}
+        unknown_samples: list[str] = []
+        for name, guest_id, guest_full_name in rows or []:
+            fam = classify(guest_full_name, guest_id=guest_id).family
+            families[fam] = families.get(fam, 0) + 1
+            if fam == "unknown" and len(unknown_samples) < 50:
+                label = (guest_full_name or guest_id or name or "").strip()
+                if label:
+                    unknown_samples.append(label)
+        return {
+            "families": families,
+            "total": sum(families.values()),
+            "unknown_samples": unknown_samples,
+        }
+
+    def get_licensed_os_summary(self, time_range: dict | None = None) -> dict:
+        start_ts, end_ts = self._os_bounds(time_range)
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                rows = self._run_rows(
+                    cur, loq.VM_OS_CONFIG_LATEST,
+                    (start_ts, end_ts, start_ts, end_ts),
+                )
+        return self._tally_os_rows(rows)
+
+    def get_licensed_os_for_customer(self, customer_name: str, time_range: dict | None = None) -> dict:
+        start_ts, end_ts = self._os_bounds(time_range)
+        name = (customer_name or "").strip()
+        pattern = f"%{name}%" if name else "%"
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                rows = self._run_rows(
+                    cur, loq.VM_OS_CONFIG_LATEST_FOR_CUSTOMER,
+                    (start_ts, end_ts, start_ts, end_ts, pattern),
+                )
+        return self._tally_os_rows(rows)
 
     # ------------------------------------------------------------------
     # S3 (IBM iCOS) helpers — DC pools & customer vaults
