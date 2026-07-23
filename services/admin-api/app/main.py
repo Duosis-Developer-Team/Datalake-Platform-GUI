@@ -15,7 +15,7 @@ setup_sdk()
 from app.core.api_auth import verify_api_user
 from app import database
 from app.auth_db_migrations import run_auth_db_migrations
-from app.routers import audit, ldap, permissions, roles, teams, users
+from app.routers import audit, ldap, permissions, roles, teams, users, versions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,6 +60,7 @@ app.include_router(permissions.router, prefix="/api/v1", tags=["permissions"], d
 app.include_router(teams.router, prefix="/api/v1", tags=["teams"], dependencies=_auth_dep)
 app.include_router(ldap.router, prefix="/api/v1", tags=["ldap"], dependencies=_auth_dep)
 app.include_router(audit.router, prefix="/api/v1", tags=["audit"], dependencies=_auth_dep)
+app.include_router(versions.router, prefix="/api/v1", tags=["versions"], dependencies=_auth_dep)
 
 
 @app.get("/health", response_model=dict, tags=["health"])

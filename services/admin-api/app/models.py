@@ -217,3 +217,37 @@ class UserDetailOut(BaseModel):
     roles: str = ""
     role_ids: list[int] = Field(default_factory=list)
     team_ids: list[int] = Field(default_factory=list)
+
+
+class ReleaseChangeOut(BaseModel):
+    change_type: str = "other"
+    summary: str
+    commit_sha: str | None = None
+    scope: str | None = None
+
+
+class ServiceDeploymentOut(BaseModel):
+    service: str
+    version: str
+    git_sha: str | None = None
+    image_tag: str | None = None
+    environment: str = "production"
+    started_at: str | None = None
+
+
+class ReleaseOut(BaseModel):
+    version: str
+    released_at: str
+    title: str | None = None
+    notes: str | None = None
+    source: str = "deploy"
+    changes: list[ReleaseChangeOut] = Field(default_factory=list)
+    services: list[ServiceDeploymentOut] = Field(default_factory=list)
+
+
+class RegisterDeploymentRequest(BaseModel):
+    service: str
+    version: str
+    git_sha: str | None = None
+    image_tag: str | None = None
+    environment: str = "production"
