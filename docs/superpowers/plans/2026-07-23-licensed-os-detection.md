@@ -610,10 +610,10 @@ def test_build_layout_renders_family_counts():
     assert hasattr(layout, "children")
 
 
-def test_page_routed_in_app():
-    import app as app_module
-    # the routing ladder references the page module
-    assert hasattr(app_module, "licensed_os") or True  # import presence checked below
+def test_page_module_exposes_shell_and_layout():
+    # both entry points the app.py router relies on must exist and be callable
+    assert callable(licensed_os.build_layout_shell)
+    assert callable(licensed_os.build_layout)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
