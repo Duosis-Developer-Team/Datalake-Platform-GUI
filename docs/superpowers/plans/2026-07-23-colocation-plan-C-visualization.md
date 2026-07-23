@@ -10,7 +10,17 @@
 
 ## Global Constraints
 
-- Python interpreter/tests: `/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.venv/bin/python` (3.11.15). GUI tests from repo root: `.venv/bin/python -m pytest tests/<file> -v`.
+- **Working directory is the worktree** `/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.claude/worktrees/task-62-colocation-viz`. Do all work and commits here; never cd to the main checkout. (Subagents default to the MAIN checkout — always use absolute paths.)
+- Python interpreter/tests: `.venv/bin/python` (symlink to the main venv, Python 3.11.15). GUI tests run from the **worktree root**: `.venv/bin/python -m pytest tests/<file> -v -p no:cacheprovider`.
+- **Do NOT run the whole `tests/` suite** — it takes >10 minutes and aborts on pre-existing collection errors. Run only the specific test files you create/touch, plus the named regression files each task lists.
+- **Pre-existing breakage (NOT yours — do not fix, do not chase):**
+  - Collection errors abort a full-suite run: `tests/test_backup_sidebar_helpers.py` (`KeyError: '_compute_backup_tr'`) and `tests/test_zabbix_query_deduplication.py`.
+  - `tests/test_dc_view_visibility.py` — **9 failures** from a stale test double (`AttributeError: 'FakeApi' object has no attribute 'get_dc_zerto_license'` at `src/pages/dc_view.py:5277`). This file is in Plan C's blast radius (Task 4 edits `dc_view.py`) but it fails BEFORE any change. Baseline for the targeted set = **60 passed / 9 failed**.
+- **Plan A + B are DONE and available:**
+  - `shared/colocation/occupancy.py`: `occupancy_rows`, `aggregate_by_dc`, `is_internal_tenant`; per-rack keys `rack_id, rack_name, dc, hall, capacity_u, used_u, free_u, tenants[]`.
+  - `shared/colocation/matching.py`: `build_customer_footprint`.
+  - datacenter-api: `GET /api/v1/datacenters/{dc_code}/racks/occupancy` → `{racks:[…], summary:{total_u,used_u,free_u,rack_count}}`; DC summaries now carry `coloc_total_u/coloc_used_u/coloc_free_u`.
+  - customer-api: `GET /api/v1/crm/colocation/{dc_code}` → `{aggregate:{…}, customers:[…], racks:[…]}` — use the **`_get_client_cust()`** accessor in `api_client.py`.
 - GUI test import convention: `from src.pages import X`; patch api at its usage module (e.g. `patch("src.services.api_client.get_rack_devices")`, or `patch.multiple("src.pages.dc_view.api", ...)`).
 - dmc version is **0.14.1** — use only props valid there (the verbatim snippets below are known-good).
 - Colocation ring color thresholds: reuse floor-map fill semantics — free-heavy = green (sellable), full = red. Use a **fill %** (used/total), coloring like `_pct_color` (≥80 red, ≥50 orange, else teal).
@@ -87,13 +97,13 @@ def get_colocation(dc_code: str) -> dict:
     ck = f"api:colocation:{enc}"
 
     def fetch() -> dict:
-        data = _get_json(_get_client_crm(), f"/api/v1/crm/colocation/{enc}")
+        data = _get_json(_get_client_cust(), f"/api/v1/crm/colocation/{enc}")
         return data if isinstance(data, dict) else empty
 
     return _api_cache_get_with_stale(ck, fetch, empty)
 ```
 
-Note: confirm the CRM/customer client accessor name (`_get_client_crm` or similar) by grepping `api_client.py` for the inventory-overview client; use whichever accessor the existing `get_crm_inventory_overview` uses. If `/crm/colocation` was mounted on customer-api rather than crm-engine, use that client accessor.
+**VERIFIED (Plan B outcome):** the endpoint is hosted by **customer-api** at `/api/v1/crm/colocation/{dc_code}`, so the client accessor is **`_get_client_cust()`** (the same one `get_netbox_viz_exclusions` uses at `api_client.py:2587`) — NOT `_get_client_crm()`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
