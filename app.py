@@ -88,6 +88,25 @@ try:
 except Exception as _auth_exc:
     logging.getLogger(__name__).warning("Auth DB bootstrap failed: %s", _auth_exc)
 
+
+def _register_frontend_deployment() -> None:
+    """Best-effort: record this frontend build as a deployment. Never blocks startup."""
+    import os as _os
+
+    try:
+        from src.services import admin_client
+
+        version = _os.environ.get("APP_VERSION") or _os.environ.get("APP_BUILD_ID") or "local"
+        git_sha = _os.environ.get("GIT_SHA") or _os.environ.get("APP_BUILD_ID")
+        image_tag = _os.environ.get("IMAGE_TAG")
+        environment = _os.environ.get("DEPLOY_ENV", "production")
+        admin_client.register_deployment("frontend", version, git_sha, image_tag, environment)
+    except Exception as _dep_exc:
+        logging.getLogger(__name__).warning("frontend deploy registration skipped: %s", _dep_exc)
+
+
+_register_frontend_deployment()
+
 from src.auth.routes import auth_bp
 from src.auth.middleware import register_middleware
 

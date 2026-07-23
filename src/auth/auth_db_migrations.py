@@ -42,6 +42,13 @@ def _read_migration_002_sql() -> str:
     return ""
 
 
+def _read_migration_003_sql() -> str:
+    p = _sql_dir() / "migrations" / "003_platform_versions.sql"
+    if p.is_file():
+        return p.read_text(encoding="utf-8")
+    return ""
+
+
 def _exec_sql_statements(cur: Any, sql: str) -> None:
     """Run semicolon-separated statements (002 script has no string literals with ;)."""
 
@@ -136,5 +143,20 @@ def run_auth_db_migrations(conn: Any) -> None:
                 logger.info("Auth DB migration v3 applied (teams extended)")
             else:
                 logger.warning("002 migration SQL missing; v3 not recorded")
+        cur.execute("SELECT 1 FROM schema_migrations WHERE version = 4")
+        if not cur.fetchone():
+            m003 = _read_migration_003_sql()
+            if m003.strip():
+                _exec_sql_statements(cur, m003)
+                cur.execute(
+                    """
+                    INSERT INTO schema_migrations (version, description)
+                    VALUES (4, 'platform versioning tables')
+                    ON CONFLICT (version) DO NOTHING
+                    """
+                )
+                logger.info("Auth DB migration v4 applied (platform versioning)")
+            else:
+                logger.warning("003 migration SQL missing; v4 not recorded")
     finally:
         cur.close()

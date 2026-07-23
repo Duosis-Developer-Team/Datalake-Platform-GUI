@@ -58,6 +58,10 @@ services:
     env_file:
       - .env
     environment:
+      # Platform versioning (TASK-64)
+      APP_VERSION: ${APP_VERSION:-local}
+      GIT_SHA: ${GIT_SHA:-${APP_BUILD_ID:-local}}
+      DEPLOY_ENV: ${DEPLOY_ENV:-local}
       AUTH_DB_HOST: ${AUTH_DB_HOST:-auth-db}
       AUTH_DB_PORT: ${AUTH_DB_PORT:-5432}
       AUTH_DB_NAME: ${AUTH_DB_NAME:-bulutauth}
@@ -94,6 +98,8 @@ services:
       context: .
       args:
         APP_BUILD_ID: ${APP_BUILD_ID:-local}
+        APP_VERSION: ${APP_VERSION:-local}
+        GIT_SHA: ${GIT_SHA:-${APP_BUILD_ID:-local}}
     container_name: datalake-platform-gui-app
     ports:
       - "8050:8050"
@@ -102,6 +108,10 @@ services:
     environment:
       # Matches image label; override when rebuilding to verify new UI: APP_BUILD_ID=$(git rev-parse --short HEAD) docker compose up -d --build app
       APP_BUILD_ID: ${APP_BUILD_ID:-local}
+      # Platform versioning (TASK-64): recorded per deployment via self-registration
+      APP_VERSION: ${APP_VERSION:-local}
+      GIT_SHA: ${GIT_SHA:-${APP_BUILD_ID:-local}}
+      DEPLOY_ENV: ${DEPLOY_ENV:-local}
       # Override .env when APIs run as Compose services (same Docker network)
       DATACENTER_API_URL: ${DATACENTER_API_URL:-http://datacenter-api:8000}
       CUSTOMER_API_URL: ${CUSTOMER_API_URL:-http://customer-api:8000}
@@ -205,6 +215,11 @@ services:
     env_file:
       - .env
     environment:
+      # Platform versioning (TASK-64)
+      ADMIN_API_URL: ${ADMIN_API_URL:-http://admin-api:8000}
+      APP_VERSION: ${APP_VERSION:-local}
+      GIT_SHA: ${GIT_SHA:-${APP_BUILD_ID:-local}}
+      DEPLOY_ENV: ${DEPLOY_ENV:-local}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       WEBUI_DB_HOST: ${WEBUI_DB_HOST:-webui-db}
@@ -250,6 +265,11 @@ services:
     env_file:
       - .env
     environment:
+      # Platform versioning (TASK-64)
+      ADMIN_API_URL: ${ADMIN_API_URL:-http://admin-api:8000}
+      APP_VERSION: ${APP_VERSION:-local}
+      GIT_SHA: ${GIT_SHA:-${APP_BUILD_ID:-local}}
+      DEPLOY_ENV: ${DEPLOY_ENV:-local}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_DB: "1"
@@ -395,6 +415,11 @@ services:
     env_file:
       - .env
     environment:
+      # Platform versioning (TASK-64)
+      ADMIN_API_URL: ${ADMIN_API_URL:-http://admin-api:8000}
+      APP_VERSION: ${APP_VERSION:-local}
+      GIT_SHA: ${GIT_SHA:-${APP_BUILD_ID:-local}}
+      DEPLOY_ENV: ${DEPLOY_ENV:-local}
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       OTEL_SERVICE_NAME: query-api
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
@@ -481,6 +506,10 @@ services:
       - path: .env.local
         required: false
     environment:
+      # Platform versioning (TASK-64)
+      APP_VERSION: ${APP_VERSION:-local}
+      GIT_SHA: ${GIT_SHA:-${APP_BUILD_ID:-local}}
+      DEPLOY_ENV: ${DEPLOY_ENV:-local}
       # NOTE: BULUTISTAN_LLM_API_KEY is intentionally NOT set here — it comes from
       # the env_file (.env.local) so it is never written into this tracked file.
       BULUTISTAN_LLM_BASE_URL: ${BULUTISTAN_LLM_BASE_URL:-https://api.bulutistan.ai/v1}

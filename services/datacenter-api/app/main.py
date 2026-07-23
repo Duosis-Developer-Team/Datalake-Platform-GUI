@@ -31,6 +31,11 @@ async def lifespan(app: FastAPI):
     init_redis_pool()
     scheduler = start_scheduler(db)
     app.state.scheduler = scheduler
+    try:
+        from app.deploy_register import register_this_service
+        register_this_service("datacenter-api")
+    except Exception:
+        pass
     yield
     if scheduler.running:
         scheduler.shutdown(wait=False)
