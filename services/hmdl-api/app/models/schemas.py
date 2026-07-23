@@ -186,6 +186,62 @@ class RunsResponse(BaseModel):
     items: list[SyncLogEntry]
 
 
+# --- Automation health (schedule / freshness of HMDL automations) ---
+
+AutomationStatus = Literal["fresh", "stale", "dead", "unknown"]
+
+
+class AutomationRow(BaseModel):
+    key: str
+    label: str
+    cadence: str
+    last_run_at: datetime | None = None
+    age_hours: float | None = None
+    status: AutomationStatus
+    warn_hours: float
+    dead_hours: float
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class AutomationCounts(BaseModel):
+    fresh: int = 0
+    stale: int = 0
+    dead: int = 0
+    unknown: int = 0
+    alert: int = 0
+
+
+class ProxyHealthRow(BaseModel):
+    proxy_id: str
+    dc_code: str | None = None
+    proxy_nifi_host: str | None = None
+    last_seen_at: datetime | None = None
+    age_hours: float | None = None
+    status: AutomationStatus
+
+
+class ProxySummary(BaseModel):
+    total: int = 0
+    fresh: int = 0
+    stale: int = 0
+    dead: int = 0
+
+
+class DataGaps(BaseModel):
+    cluster_missing: int = 0
+    ibm_missing: int = 0
+    by_source: dict[str, int] = Field(default_factory=dict)
+
+
+class AutomationHealthResponse(BaseModel):
+    generated_at: datetime
+    automations: list[AutomationRow] = Field(default_factory=list)
+    counts: AutomationCounts = Field(default_factory=AutomationCounts)
+    proxies: list[ProxyHealthRow] = Field(default_factory=list)
+    proxy_summary: ProxySummary = Field(default_factory=ProxySummary)
+    data_gaps: DataGaps = Field(default_factory=DataGaps)
+
+
 # --- Datalake coverage (cluster / IBM host present-absent) ---
 
 CoverageStatus = Literal["live", "stale", "missing", "extra", "unknown"]

@@ -35,6 +35,7 @@ from src.pages.settings.integrations import netbox_visualization as netbox_visua
 from src.pages.settings.integrations import hmdl_overview as hmdl_overview_page
 from src.pages.settings.integrations import hmdl_sync_health as hmdl_sync_health_page
 from src.pages.settings.integrations import hmdl_coverage as hmdl_coverage_page
+from src.pages.settings.integrations import hmdl_automation_health as hmdl_automation_health_page
 from src.pages.settings.integrations import chatbot_logs as chatbot_logs_page
 from src.pages.settings import crm_service_mapping as crm_service_mapping_page
 from src.pages.settings.platform import versions as platform_versions_page
@@ -67,6 +68,7 @@ PLATFORM_TABS: list[tuple[str, str, str]] = [
 
 HMDL_TABS: list[tuple[str, str, str]] = [
     (f"{_A}/integrations/hmdl", "Overview", "page:settings_hmdl_overview"),
+    (f"{_A}/integrations/hmdl/automation-health", "Automation Health", "page:settings_hmdl_automation_health"),
     (f"{_A}/integrations/hmdl/sync-health", "Datalake Sync Health", "page:settings_hmdl_sync_health"),
     (f"{_A}/integrations/hmdl/coverage", "Datalake Coverage", "page:settings_hmdl_coverage"),
 ]
@@ -120,6 +122,10 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
     f"{_A}/iam/audit": ("page:settings_audit", audit_page.build_layout),
     f"{_A}/integrations": ("page:settings_integrations", integrations_overview_page.build_layout),
     f"{_A}/integrations/hmdl": ("page:settings_hmdl_overview", hmdl_overview_page.build_layout),
+    f"{_A}/integrations/hmdl/automation-health": (
+        "page:settings_hmdl_automation_health",
+        hmdl_automation_health_page.build_layout,
+    ),
     f"{_A}/integrations/hmdl/sync-health": ("page:settings_hmdl_sync_health", hmdl_sync_health_page.build_layout),
     f"{_A}/integrations/hmdl/coverage": ("page:settings_hmdl_coverage", hmdl_coverage_page.build_layout),
     f"{_A}/integrations/crm": ("page:settings_crm_overview", crm_overview_page.build_layout),
@@ -304,6 +310,17 @@ def _top_nav(user_id: int, current_path: str) -> dmc.Group:
     return dmc.Group(gap="sm", children=items)
 
 
+def _hmdl_alert_count() -> int:
+    """Stale+dead HMDL automation count for the nav staleness badge (0 on any error)."""
+    try:
+        from src.services import api_client as api
+
+        counts = api.get_hmdl_automation_health().get("counts") or {}
+        return int(counts.get("alert") or 0)
+    except Exception:
+        return 0
+
+
 def _sub_nav(user_id: int, current_path: str) -> html.Div | None:
     from src.auth.permission_service import can_view
 
@@ -365,6 +382,17 @@ def _sub_nav(user_id: int, current_path: str) -> html.Div | None:
             children=[dmc.Group(gap="xs", children=links)],
         )
     if sec == "integrations":
+        ah_alert = _hmdl_alert_count()
+
+        def _staleness_badge(suffix: str):
+            return dmc.Badge(
+                ah_alert,
+                id=f"hmdl-staleness-badge-{suffix}",
+                color="red",
+                size="xs",
+                circle=True,
+            )
+
         links = []
         for href, label, code in INT_TABS:
             if not can_view(user_id, code):
@@ -377,6 +405,7 @@ def _sub_nav(user_id: int, current_path: str) -> html.Div | None:
                         variant="subtle" if not active else "light",
                         color="indigo",
                         size="xs",
+                        rightSection=_staleness_badge("int") if (label == "HMDL" and ah_alert > 0) else None,
                         style={
                             "borderBottom": "2px solid #552cf8" if active else "2px solid transparent",
                             "borderRadius": 0,
@@ -438,6 +467,9 @@ def _sub_nav(user_id: int, current_path: str) -> html.Div | None:
                             variant="subtle" if not active else "light",
                             color="indigo",
                             size="xs",
+                            rightSection=_staleness_badge("hmdl")
+                            if (label == "Automation Health" and ah_alert > 0)
+                            else None,
                             style={
                                 "borderBottom": "2px solid #552cf8" if active else "2px solid transparent",
                                 "borderRadius": 0,

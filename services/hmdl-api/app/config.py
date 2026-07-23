@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     db_pool_maxconn: int = 16
     db_statement_timeout_ms: int = 30000
 
+    # Automation-health freshness thresholds (hours). warn = a run was missed;
+    # dead = automation effectively stopped. Overridable per deployment via env.
+    ah_zabbix_warn_hours: float = float(_env("HMDL_AH_ZABBIX_WARN_H", default="12"))
+    ah_zabbix_dead_hours: float = float(_env("HMDL_AH_ZABBIX_DEAD_H", default="24"))
+    ah_collector_warn_hours: float = float(_env("HMDL_AH_COLLECTOR_WARN_H", default="26"))
+    ah_collector_dead_hours: float = float(_env("HMDL_AH_COLLECTOR_DEAD_H", default="50"))
+    ah_checks_warn_hours: float = float(_env("HMDL_AH_CHECKS_WARN_H", default="26"))
+    ah_checks_dead_hours: float = float(_env("HMDL_AH_CHECKS_DEAD_H", default="50"))
+    ah_recon_warn_hours: float = float(_env("HMDL_AH_RECON_WARN_H", default="48"))
+    ah_recon_dead_hours: float = float(_env("HMDL_AH_RECON_DEAD_H", default="120"))
+
     hub_dc_code: str = _env("HMDL_HUB_DC", default="DC13")
     proxy_assignment_path: str = _env(
         "HMDL_PROXY_ASSIGNMENT_PATH",

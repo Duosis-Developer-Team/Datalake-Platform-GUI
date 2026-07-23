@@ -3163,3 +3163,23 @@ def get_hmdl_coverage(
     except _HTTP_ERRORS as exc:
         logger.warning("hmdl-api coverage unavailable: %s", exc)
         return _clone(_EMPTY_HMDL_COVERAGE)
+
+
+_EMPTY_HMDL_AUTOMATION_HEALTH: dict[str, Any] = {
+    "generated_at": None,
+    "automations": [],
+    "counts": {"fresh": 0, "stale": 0, "dead": 0, "unknown": 0, "alert": 0},
+    "proxies": [],
+    "proxy_summary": {"total": 0, "fresh": 0, "stale": 0, "dead": 0},
+    "data_gaps": {"cluster_missing": 0, "ibm_missing": 0, "by_source": {}},
+}
+
+
+def get_hmdl_automation_health() -> dict[str, Any]:
+    """Schedule/freshness of HMDL automations + proxy last-seen + data gaps."""
+    try:
+        data = _get_json(_get_client_hmdl(), "/api/v1/collectors/automation-health")
+        return data if isinstance(data, dict) else _clone(_EMPTY_HMDL_AUTOMATION_HEALTH)
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api automation-health unavailable: %s", exc)
+        return _clone(_EMPTY_HMDL_AUTOMATION_HEALTH)

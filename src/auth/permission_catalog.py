@@ -347,18 +347,25 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 sort_order=56,
             ),
             _n(
+                "page:settings_hmdl_automation_health",
+                "HMDL Automation Health",
+                "config",
+                route_pattern="/administration/integrations/hmdl/automation-health",
+                sort_order=57,
+            ),
+            _n(
                 "page:settings_hmdl_sync_health",
                 "HMDL Datalake Sync Health",
                 "config",
                 route_pattern="/administration/integrations/hmdl/sync-health",
-                sort_order=57,
+                sort_order=58,
             ),
             _n(
                 "page:settings_hmdl_coverage",
                 "HMDL Datalake Coverage",
                 "config",
                 route_pattern="/administration/integrations/hmdl/coverage",
-                sort_order=58,
+                sort_order=59,
             ),
             _n(
                 "page:settings_crm_overview",

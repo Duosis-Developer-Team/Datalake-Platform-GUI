@@ -5,9 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 
 from app.config import settings
+from app.db.queries import automation_health as ah_q
 from app.db.queries import collectors as q
 from app.db.queries import coverage as cov_q
 from app.models.schemas import (
+    AutomationHealthResponse,
     CoverageResponse,
     DcSummaryResponse,
     LocationsResponse,
@@ -74,6 +76,12 @@ def get_dc_targets(
 @router.get("/runs", response_model=RunsResponse)
 def get_runs(limit: int = Query(default=20, ge=1, le=100)):
     return {"items": q.list_recent_runs(limit)}
+
+
+@router.get("/automation-health", response_model=AutomationHealthResponse)
+def get_automation_health():
+    """Schedule/freshness of HMDL automations + proxy last-seen + data gaps."""
+    return ah_q.build_automation_health()
 
 
 @router.get("/coverage", response_model=CoverageResponse)

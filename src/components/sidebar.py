@@ -34,6 +34,7 @@ SETTINGS_ENTRY_CODES: tuple[str, ...] = (
     "page:settings_auranotify",
     "page:settings_service_mapping",
     "page:settings_hmdl_overview",
+    "page:settings_hmdl_automation_health",
     "page:settings_hmdl_sync_health",
 )
 
