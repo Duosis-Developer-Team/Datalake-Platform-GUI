@@ -10,9 +10,13 @@
 
 ## Global Constraints
 
-- Python interpreter for tests: `/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.venv/bin/python` (3.11.15).
-- customer-api test command: `cd services/customer-api && ../../.venv/bin/python -m pytest tests/ -v --tb=short`.
-- customer-api tests import via `from app.main import app`; `shared/` is importable (conftest appends repo root to `sys.path`).
+- **Working directory is the worktree** `/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.claude/worktrees/task-62-colocation-viz`. Do all work and commits here; never cd to the main checkout. (Subagents default to the MAIN checkout — always use absolute paths.)
+- Python interpreter for tests: `.venv/bin/python` (symlink to the main checkout's venv, Python 3.11.15). System `python3` is 3.9 and breaks the suite.
+- **customer-api test command** (from the service dir; NO PYTHONPATH needed — its `tests/conftest.py` appends the repo root to `sys.path`):
+  `cd services/customer-api && ../../.venv/bin/python -m pytest tests/ -v --tb=short -p no:cacheprovider`
+- **Shared-module tests** (e.g. `tests/test_colocation_matching.py`) run from the worktree root: `.venv/bin/python -m pytest tests/test_colocation_matching.py -v`.
+- **Baseline (pre-existing, NOT yours):** the customer-api suite has **1 pre-existing failure** — `tests/test_sellable_service.py::test_recompute_family_constraints_global_host_fallback_uses_star_compute`. It is in the same file this plan touches, but it fails before any change. Do NOT try to fix it; just don't INCREASE the failure count (baseline: 464 passed / 1 failed).
+- **Plan A is DONE and available:** `shared/colocation/occupancy.py` exports `OCCUPANCY_SQL`, `occupancy_rows(cursor, dc_pattern=None)`, `aggregate_by_dc(rows)`, `row_to_dict`, `is_internal_tenant(name)`, `INTERNAL_TENANT_PREFIXES`. Per-rack dict keys: `rack_id, rack_name, dc, hall, capacity_u, used_u, free_u, tenants[]`. Reuse these — never reimplement occupancy math.
 - **No DDL against bulutlake.** Occupancy math is the shared module; the sellable path calls it via `self._svc._get_connection()` (the CustomerService bulutlake connection).
 - `dc_hosting_u`: `family='dc_hosting'`, `resource_kind='other'` (never ratio-bound), `display_unit='U'`. Threshold 80% (the `DEFAULT_THRESHOLD_PCT`). Sellable formula: `sellable = max(capacity_u × 0.80 − used_u, 0)`.
 - The panel definition already exists (`006_seed_panel_definitions.sql:106`). Only the infra-source row + compute path + (optional) price are new.
