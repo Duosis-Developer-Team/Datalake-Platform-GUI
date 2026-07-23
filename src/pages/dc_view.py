@@ -2532,6 +2532,54 @@ def _build_physical_inventory_dc_tab(phys_inv: dict):
         ],
     )
 
+
+def build_colocation_tab(coloc: dict):
+    """Kolokasyon tab: DC free/used-U KPIs + dedicated-customer footprint table."""
+    agg = (coloc or {}).get("aggregate", {}) or {}
+    customers = (coloc or {}).get("customers", []) or []
+    total_u = int(agg.get("total_u") or 0)
+    used_u = int(agg.get("used_u") or 0)
+    free_u = int(agg.get("free_u") or 0)
+    pct = round(used_u / total_u * 100) if total_u else 0
+
+    kpis = dmc.SimpleGrid(cols=4, spacing="lg", style={"marginTop": "12px"}, children=[
+        _kpi("Toplam U", f"{total_u:,}", _DC_ICONS.get("total_devices", "solar:server-bold-duotone"), color="indigo", stagger=1),
+        _kpi("Kullanılan U", f"{used_u:,}", _DC_ICONS.get("device_roles", "solar:server-bold-duotone"), color="violet", stagger=2),
+        _kpi("Boş (satılabilir) U", f"{free_u:,}", _DC_ICONS.get("top_role", "solar:server-bold-duotone"), color="teal", stagger=3),
+        _kpi("Doluluk", f"%{pct}", _DC_ICONS.get("manufacturers", "solar:server-bold-duotone"), color="grape", stagger=4),
+    ])
+
+    if customers:
+        header = html.Tr(children=[html.Th(h) for h in
+                                   ("Müşteri", "CRM Hesabı", "Eşleşme", "Rack", "Kullanılan U")])
+        body = []
+        for c in customers:
+            badge_color = "green" if c.get("match_status") == "matched" else "orange"
+            body.append(html.Tr(children=[
+                html.Td(c.get("tenant", "")),
+                html.Td(c.get("crm_account_name") or "—"),
+                html.Td(dmc.Badge(c.get("match_status", ""), color=badge_color, variant="light", size="sm")),
+                html.Td(", ".join(c.get("racks", []) or [])),
+                html.Td(f"{int(c.get('used_u') or 0):,}"),
+            ]))
+        table = dmc.Table(children=[html.Thead(header), html.Tbody(body)],
+                          striped=True, highlightOnHover=True)
+    else:
+        table = dmc.Text("Bu DC'de dedike (dış müşteri) kolokasyon cihazı bulunamadı.",
+                         size="sm", c="#98A2B3")
+
+    return dmc.Stack(gap="lg", children=[
+        html.Div(className="nexus-card", style={"padding": "20px"}, children=[
+            _section_title("Kolokasyon", "Rack U doluluğu ve dedike müşteriler"),
+            kpis,
+        ]),
+        html.Div(className="nexus-card", style={"padding": "20px"}, children=[
+            _section_title("Dedike Müşteriler", "Cihaz tenant → CRM eşleştirmesi"),
+            html.Div(style={"overflowX": "auto"}, children=table),
+        ]),
+    ])
+
+
 # ---------------------------------------------------------------------------
 # Network (Zabbix) + Intel Storage (Zabbix) - Dedicated UI builders
 # ---------------------------------------------------------------------------
@@ -4920,7 +4968,7 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict)
 _BUILD_LOG = logging.getLogger(__name__)
 
 _SUMMARY_EAGER_TABS = frozenset({"summary"})
-_LAZY_TAB_KEYS: tuple[str, ...] = ("virt", "backup", "storage", "phys-inv", "network", "avail")
+_LAZY_TAB_KEYS: tuple[str, ...] = ("virt", "backup", "storage", "phys-inv", "network", "avail", "colo")
 
 
 def _find_component_by_id(component, target_id: str):
@@ -5408,6 +5456,7 @@ def build_dc_view(
     show_phys = has_phys_inv and _sec("sec:dc_view:phys_inv")
     show_network = has_network and _sec("sec:dc_view:network")
     show_avail = has_avail and _sec("sec:dc_view:availability")
+    show_colo = _sec("sec:dc_view:colocation")
     if eager_tabs is not None:
         show_virt = _sec("sec:dc_view:virtualization")
         show_storage = _sec("sec:dc_view:storage")
@@ -5423,6 +5472,7 @@ def build_dc_view(
         ("phys-inv", show_phys),
         ("network", show_network),
         ("avail", show_avail),
+        ("colo", show_colo),
     ]
     default_outer_tab = next((t for t, ok in tabs_order if ok), "summary")
     resolved_outer_tab = _resolve_outer_tab(active_outer_tab, tabs_order, default_outer_tab)
@@ -5514,6 +5564,7 @@ def build_dc_view(
                             dmc.TabsTab("Physical Inventory", value="phys-inv") if show_phys else None,
                             dmc.TabsTab("Network", value="network") if show_network else None,
                             dmc.TabsTab("Availability", value="avail") if show_avail else None,
+                            dmc.TabsTab("Kolokasyon", value="colo") if show_colo else None,
                         ],
                     ),
                 ),
@@ -5767,6 +5818,23 @@ def build_dc_view(
                 )
                 if show_avail
                 else None,
+
+                # Kolokasyon (dedicated-customer rack footprint)
+                dmc.TabsPanel(
+                    value="colo",
+                    children=(
+                        _tab_lazy_placeholder("colo", dc_display)
+                        if not _tab_eager(eager_tabs, "colo")
+                        else html.Div(
+                            id="dc-tab-colo-root",
+                            children=dmc.Stack(
+                                gap="lg",
+                                style={"padding": "0 30px"},
+                                children=[build_colocation_tab(api.get_colocation(dc_id))],
+                            ),
+                        )
+                    ),
+                ) if show_colo else None,
             ],
         )
     ])
@@ -5808,6 +5876,7 @@ def render_dc_loading_page(
         ("phys-inv", _sec("sec:dc_view:phys_inv")),
         ("network", _sec("sec:dc_view:network")),
         ("avail", _sec("sec:dc_view:availability")),
+        ("colo", _sec("sec:dc_view:colocation")),
     ]
     default_tab = "summary" if show_summary else "virt"
     resolved_tab = _resolve_outer_tab(active_outer_tab, tabs_order, default_tab)
@@ -5819,6 +5888,7 @@ def render_dc_loading_page(
         dmc.TabsTab("Physical Inventory", value="phys-inv") if _sec("sec:dc_view:phys_inv") else None,
         dmc.TabsTab("Network", value="network") if _sec("sec:dc_view:network") else None,
         dmc.TabsTab("Availability", value="avail") if _sec("sec:dc_view:availability") else None,
+        dmc.TabsTab("Kolokasyon", value="colo") if _sec("sec:dc_view:colocation") else None,
     ]
     loc_badge = dc_loc or "Loading…"
     shell_tab = resolved_tab if resolved_tab == "summary" else "summary"
