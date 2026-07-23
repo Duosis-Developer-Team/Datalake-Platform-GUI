@@ -170,6 +170,37 @@ def _fmt_dedup_note(row: dict[str, Any], unit: str) -> str:
     return "(" + " · ".join(parts) + ")"
 
 
+def _crm_sold_unit_price(row: dict[str, Any]) -> float | None:
+    """Unit price implied by the CRM sale itself: crm_sold_tl / crm_sold_qty.
+
+    In the panel's own display unit, so it can be applied directly to free_qty.
+    Returns None when there's no priced sale to derive from.
+    """
+    try:
+        qty = float(row.get("crm_sold_qty") or 0.0)
+        tl = float(row.get("crm_sold_tl") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if qty > 0.0 and tl > 0.0:
+        return tl / qty
+    return None
+
+
+def _effective_unit_price(row: dict[str, Any], *, is_physical: bool) -> Any:
+    """Price used to value a row's free capacity and to fill the Birim Fiyat column.
+
+    Physical panels (NetBackup / S3) prefer the CRM-sold implied price so free is
+    valued at what we actually sell it for — the catalog ``unit_price_tl`` for these
+    panels is mis-scaled (e.g. NetBackup free was valued ~340x below the sold price).
+    Falls back to ``unit_price_tl`` (used as-is for virt families).
+    """
+    if is_physical:
+        sold_price = _crm_sold_unit_price(row)
+        if sold_price is not None:
+            return sold_price
+    return row.get("unit_price_tl")
+
+
 def _fmt_unit_price(value: Any, unit: str) -> str:
     """Format a per-unit price. Adaptive precision so per-TB / per-GB prices
     (e.g. 1.42 TL/TB, 0.03 TL/GB) don't round away to zero."""
@@ -246,7 +277,17 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         or family in _PHYSICAL_FREE_FAMILIES
     )
     if use_physical_free and has_infra:
-        free_tl = row.get("free_tl")
+        # Value physical Free at the CRM-sold implied unit price (same display unit as
+        # free_qty), correcting the mis-scaled catalog price. Fall back to the
+        # service-provided free_tl only when there is no priced sale to derive from.
+        eff_price = _effective_unit_price(row, is_physical=True)
+        if free_display_qty is not None and eff_price not in (None, 0):
+            try:
+                free_tl = float(free_display_qty) * float(eff_price)
+            except (TypeError, ValueError):
+                free_tl = row.get("free_tl")
+        else:
+            free_tl = row.get("free_tl")
     elif profile == "standard" and has_infra and not use_physical_free:
         sellable_qty = row.get("sellable_qty")
         if sellable_qty is not None:
@@ -262,6 +303,8 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
             except (TypeError, ValueError):
                 free_tl = None
     hide_used = bool(row.get("inventory_hide_used"))
+
+    unit_price_display = _effective_unit_price(row, is_physical=use_physical_free)
 
     total_fmt = _fmt_qty(row.get("total"), unit) if has_infra else "—"
     if has_infra:
@@ -294,7 +337,7 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "sellable_max_fmt": shared.fmt_qty_tl_block(
             sellable_max_qty, unit, potential_tl_max,
         ) if profile == "dual_track" else "—\n—",
-        "unit_price_fmt": _fmt_unit_price(row.get("unit_price_tl"), unit),
+        "unit_price_fmt": _fmt_unit_price(unit_price_display, unit),
         "status": status,
         "data_quality": data_quality,
         "sellable_profile": profile,

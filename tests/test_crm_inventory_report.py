@@ -89,8 +89,9 @@ def test_prepare_service_row_s3_physical_free_not_sellable():
         potential_tl=38500.0,
         inventory_free_mode="physical",
     ))
+    # crm_sold 30 TB / 45,000 TL -> 1,500 TL/TB implied; free 1,200 TB -> 1,800,000 TL
     assert "1,200 TB" in row["free_fmt"]
-    assert "914,400 TL" in row["free_fmt"]
+    assert "1,800,000 TL" in row["free_fmt"]
     assert "385 TB" not in row["free_fmt"]
 
 
@@ -122,7 +123,11 @@ def test_prepare_service_row_netbackup_used_qty_tl_only():
     assert "Saved:" not in row["used_fmt"]
     assert "Dedup:" not in row["used_fmt"]
     assert "42,115 TB" in row["free_fmt"]
-    assert "58,961 TL" in row["free_fmt"]
+    # Free valued at the CRM-sold implied price (23,246 TL / 58 TB), not the old
+    # mis-scaled service free_tl (58,961 TL).
+    expected_free_tl = f"{42115.0 * (23246.0 / 58.0):,.0f} TL"
+    assert expected_free_tl in row["free_fmt"]
+    assert "58,961 TL" not in row["free_fmt"]
     assert "44,069 TB" not in row["used_fmt"]
     assert "58 TB" not in row["total_fmt"]
 
@@ -337,16 +342,38 @@ def test_unit_price_column_present_and_formatted():
 
 
 def test_unit_price_small_value_keeps_precision():
-    """Per-TB / per-GB prices must not round to zero (Fix #5 diagnosis needs the raw price)."""
+    """Per-TB / per-GB prices must not round to zero."""
     row = prepare_service_row(_sample_row(
         panel_key="backup_netbackup_storage",
         family="backup_netbackup",
         display_unit="TB",
         sellable_profile="standard",
-        unit_price_tl=1.42,
+        crm_sold_qty=1000.0,
+        crm_sold_tl=1420.0,  # -> 1.42 TL/TB implied
         inventory_free_mode="physical",
     ))
     assert row["unit_price_fmt"] == "1.42 TL/TB"
+
+
+def test_physical_free_valued_at_crm_sold_price():
+    """NetBackup Free (and the Birim Fiyat column) use the CRM-sold implied unit price,
+    not the mis-scaled catalog price. Fixes '338 TL for 238 TB' — the ~340x undervaluation."""
+    row = prepare_service_row(_sample_row(
+        panel_key="backup_netbackup_storage",
+        family="backup_netbackup",
+        display_unit="TB",
+        sellable_profile="standard",
+        crm_sold_qty=79.0,
+        crm_sold_tl=38210.0,      # -> ~484 TL/TB
+        free_qty=238.0,
+        free_tl=338.0,            # mis-scaled service value, must be overridden
+        unit_price_tl=1.42,       # mis-scaled catalog price, must be ignored
+        inventory_free_mode="physical",
+    ))
+    expected_free_tl = f"{238.0 * (38210.0 / 79.0):,.0f} TL"
+    assert expected_free_tl in row["free_fmt"]
+    assert "338 TL" not in row["free_fmt"]
+    assert row["unit_price_fmt"] == "484 TL/TB"
 
 
 def test_unit_price_missing_shows_dash():
