@@ -39,6 +39,7 @@ _PHYSICAL_FREE_FAMILIES = frozenset({"storage_s3", "backup_netbackup"})
 _DUAL_TRACK_COLUMNS = [
     {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
     {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
+    {"name": "Sellable (Ort.)", "id": "sellable_avg_fmt"},
 ]
 
 _ALLOC_ONLY_COLUMNS = [
@@ -59,7 +60,7 @@ _LEFT_COLS = frozenset({
 
 _NUMERIC_COLS = frozenset({
     "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
-    "sellable_alloc_fmt", "sellable_max_fmt", "unit_price_fmt",
+    "sellable_alloc_fmt", "sellable_max_fmt", "sellable_avg_fmt", "unit_price_fmt",
     "entitled_qty", "entitled_amount_tl",
 })
 
@@ -143,6 +144,36 @@ def _fmt_qty(value: Any, unit: str) -> str:
         return f"{float(value):,.0f} {unit}".strip()
     except (TypeError, ValueError):
         return "—"
+
+
+_ZERO_SELLABLE_HINTS = {
+    "ratio_bound": "başka kaynak dolu (oran kısıtı)",
+    "compute_bottleneck": "CPU/hesap darboğazı",
+    "utilization_gate": "kullanım eşiği aşıldı",
+    "gate_blocked": "kullanım eşiği aşıldı",
+    "over_threshold": "kapasite eşiği aşıldı",
+}
+
+
+def _sellable_zero_hint(reason: str) -> str:
+    """Human explanation for a virt row whose sellable is 0 (so it isn't read as a bug)."""
+    return _ZERO_SELLABLE_HINTS.get((reason or "").strip(), "kapasite/oran kısıtı")
+
+
+def _mean(a: Any, b: Any) -> float | None:
+    """Mean of two optional numerics. Returns the present one if only one is set,
+    None if neither is."""
+    vals = []
+    for v in (a, b):
+        if v is None:
+            continue
+        try:
+            vals.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
 
 
 def _fmt_dedup_note(row: dict[str, Any], unit: str) -> str:
@@ -268,6 +299,15 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
     potential_tl_alloc = row.get("potential_tl_alloc")
     potential_tl_max = row.get("potential_tl_max")
 
+    if profile in ("dual_track", "allocation_only") and has_infra:
+        try:
+            _alloc_val = None if sellable_alloc_qty is None else float(sellable_alloc_qty)
+        except (TypeError, ValueError):
+            _alloc_val = None
+        if _alloc_val is not None and _alloc_val <= 0:
+            reason = str(row.get("sellable_constraint_reason") or "")
+            service_label = f"{service_label}\n(Satılabilir 0 — {_sellable_zero_hint(reason)})"
+
     free_tl = potential_tl if profile == "standard" and has_infra else None
     free_display_qty = row.get("free_qty")
     family = str(row.get("family") or "")
@@ -336,6 +376,11 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         ) if profile in ("dual_track", "allocation_only") else "—\n—",
         "sellable_max_fmt": shared.fmt_qty_tl_block(
             sellable_max_qty, unit, potential_tl_max,
+        ) if profile == "dual_track" else "—\n—",
+        "sellable_avg_fmt": shared.fmt_qty_tl_block(
+            _mean(sellable_alloc_qty, sellable_max_qty),
+            unit,
+            _mean(potential_tl_alloc, potential_tl_max),
         ) if profile == "dual_track" else "—\n—",
         "unit_price_fmt": _fmt_unit_price(unit_price_display, unit),
         "status": status,

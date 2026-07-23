@@ -41,11 +41,68 @@ def _sample_row(**kwargs):
 
 
 def test_columns_for_family_profiles():
-    # Every profile carries a trailing "Birim Fiyat" (unit price) column.
+    # Every profile carries a trailing "Birim Fiyat" (unit price) column; dual_track
+    # additionally carries a "Sellable (Ort.)" average column.
     assert len(columns_for_family("standard")) == 7
-    assert len(columns_for_family("dual_track")) == 8
+    assert len(columns_for_family("dual_track")) == 9
     assert len(columns_for_family("allocation_only")) == 7
     assert len(columns_for_family("virt_km", hide_used=True)) == 6
+
+
+def test_dual_track_has_sellable_average_column():
+    cols = columns_for_family("dual_track")
+    ids = [c["id"] for c in cols]
+    assert ids.index("sellable_avg_fmt") == ids.index("sellable_max_fmt") + 1
+    assert "sellable_avg_fmt" not in [c["id"] for c in columns_for_family("allocation_only")]
+
+
+def test_prepare_service_row_sellable_average():
+    """Sellable (Ort.) = mean of alloc and max-util, in qty and TL."""
+    row = prepare_service_row(_sample_row(inventory_hide_used=True))
+    # alloc 18 / max 22 -> avg 20 ; tl alloc 27,000 / max 33,000 -> avg 30,000
+    assert "20 vCPU" in row["sellable_avg_fmt"]
+    assert "30,000 TL" in row["sellable_avg_fmt"]
+
+
+def test_zero_sellable_hint_maps_reason():
+    """Power-HANA-style 0 sellable must be explained (RAM/ratio full), not look like a bug."""
+    row = prepare_service_row(_sample_row(
+        family="virt_power_hana",
+        sellable_profile="allocation_only",
+        sellable_alloc_qty=0.0,
+        sellable_max_qty=None,
+        sellable_constraint_reason="ratio_bound",
+        inventory_hide_used=True,
+    ))
+    assert "Satılabilir 0" in row["service_label"]
+    assert "oran" in row["service_label"].lower()
+
+
+def test_zero_sellable_hint_generic_without_reason():
+    row = prepare_service_row(_sample_row(
+        family="virt_power_hana",
+        sellable_profile="allocation_only",
+        sellable_alloc_qty=0.0,
+        sellable_max_qty=None,
+        inventory_hide_used=True,
+    ))
+    assert "Satılabilir 0" in row["service_label"]
+
+
+def test_no_zero_sellable_hint_when_positive():
+    row = prepare_service_row(_sample_row(inventory_hide_used=True))  # alloc 18 > 0
+    assert "Satılabilir 0" not in row["service_label"]
+
+
+def test_prepare_service_row_sellable_average_dash_for_non_dual():
+    row = prepare_service_row(_sample_row(
+        family="virt_power",
+        sellable_profile="allocation_only",
+        sellable_max_qty=None,
+        potential_tl_max=None,
+        inventory_hide_used=True,
+    ))
+    assert row["sellable_avg_fmt"] == "—\n—"
 
 
 def test_prepare_service_row_formats_qty_tl_blocks():

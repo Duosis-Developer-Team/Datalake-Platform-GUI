@@ -969,6 +969,9 @@ class InventoryOverviewService:
             "inventory_free_mode": inventory_free_mode,
             "data_quality": data_quality,
             "suspect_reason": suspect_reason,
+            # Why a virt row's sellable is 0 (RAM/ratio bound, gate, etc.) — surfaced as a
+            # hint in the report so a legitimate 0 is not mistaken for a bug.
+            "sellable_constraint_reason": panel.constraint_reason,
             **track_fields,
             **crm_fields,
         }
