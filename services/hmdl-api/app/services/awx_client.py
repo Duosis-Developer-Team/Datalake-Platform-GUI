@@ -124,3 +124,36 @@ def list_schedules() -> list[dict]:
         }
         for s in results
     ]
+
+
+def patch_extra_vars(updates: dict) -> dict:
+    clean = filter_allowed(updates)
+    with _client() as c:
+        get_resp = c.get(_jt_path())
+        get_resp.raise_for_status()
+        current = _parse_extra_vars(get_resp.json().get("extra_vars"))
+        current.update(clean)
+        patch_resp = c.patch(_jt_path(), json={"extra_vars": json.dumps(current)})
+        patch_resp.raise_for_status()
+        new = _parse_extra_vars(patch_resp.json().get("extra_vars"))
+    return filter_allowed(new)
+
+
+def launch(extra_vars: dict | None = None) -> int:
+    body: dict = {}
+    if extra_vars:
+        body["extra_vars"] = filter_allowed(extra_vars)
+    with _client() as c:
+        resp = c.post(f"{_jt_path()}launch/", json=body)
+        resp.raise_for_status()
+        data = resp.json()
+    job_id = data.get("job") or data.get("id")
+    return int(job_id)
+
+
+def set_schedule_enabled(schedule_id: int, enabled: bool) -> dict:
+    with _client() as c:
+        resp = c.patch(f"/schedules/{int(schedule_id)}/", json={"enabled": bool(enabled)})
+        resp.raise_for_status()
+        s = resp.json()
+    return {"id": s.get("id"), "enabled": bool(s.get("enabled"))}
