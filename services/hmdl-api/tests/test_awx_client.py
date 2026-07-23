@@ -1,5 +1,7 @@
 """Unit tests for the hmdl-api AWX client helpers."""
 
+import httpx
+
 from app.config import settings
 from app.services import awx_client
 
@@ -71,3 +73,27 @@ def test_client_raises_when_not_configured(monkeypatch):
         assert False, "expected AwxUnavailable"
     except awx_client.AwxUnavailable:
         pass
+
+
+def test_not_configured_prefix_matches_gui_contract():
+    """FIX 4: the 'not configured' marker is duplicated across the service
+    boundary (this module's NOT_CONFIGURED_PREFIX vs the GUI's
+    src/pages/settings/integrations/hmdl_config.py::_NOT_CONFIGURED_PREFIX,
+    pinned there in test_hmdl_config_page.py::
+    test_not_configured_sentinel_matches_service_contract). If the server
+    string changes without updating the GUI's copy, the GUI would misread a
+    genuine 'not configured' state and show the wrong (red, not yellow)
+    banner. Both sides assert against this SAME literal so either one-sided
+    change fails its own suite."""
+    assert awx_client.NOT_CONFIGURED_PREFIX == "AWX not configured"
+
+
+def test_client_timeout_is_pinned_below_gui_interactive_timeout(monkeypatch):
+    """FIX 3: the AWX client timeout is deliberately BELOW the GUI's ~20s
+    interactive httpx read timeout, so a slow-but-alive AWX trips this timeout
+    first and the GUI shows the real reason instead of a bogus "not
+    configured". Pin the exact value so a silent revert (e.g. back to a
+    default httpx timeout, or bumped above ~20s) is caught."""
+    _awx_settings(monkeypatch)
+    with awx_client._client() as client:
+        assert client.timeout == httpx.Timeout(15.0)

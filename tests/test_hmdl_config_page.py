@@ -209,6 +209,16 @@ def test_layout_captures_managed_keys_and_initial_values_in_stores():
     assert init["parallel_compare_workers"] == 20  # inherited role default
 
 
+def test_not_configured_sentinel_matches_service_contract():
+    """FIX 4: the 'not configured' marker is duplicated across the service
+    boundary (this GUI module vs services/hmdl-api/app/services/awx_client.py).
+    Pin the exact literal here AND on the service side (see hmdl-api's
+    test_awx_client.py::test_not_configured_prefix_matches_gui_contract) so a
+    one-sided change to either fails its own suite instead of silently
+    breaking the yellow/red banner distinction (see _NOT_CONFIGURED_PREFIX)."""
+    assert page._NOT_CONFIGURED_PREFIX == "AWX not configured"
+
+
 def test_initial_value_matches_what_the_widget_renders():
     """The init store must mirror the widget exactly, otherwise 'unchanged'
     detection in assemble_extra_vars is wrong."""
