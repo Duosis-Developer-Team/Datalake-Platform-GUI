@@ -92,6 +92,8 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
         return "page:customer_view"
     if p == "/query-explorer":
         return "page:query_explorer"
+    if p == "/licensed-os":
+        return "page:licensed_os"
     if p == "/login":
         return None
     from src.pages.settings.admin_routes import to_administration_path
