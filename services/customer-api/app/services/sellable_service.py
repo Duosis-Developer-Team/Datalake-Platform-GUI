@@ -271,6 +271,7 @@ from app.services.currency_service import CurrencyService
 from app.services.customer_service import CustomerService
 from app.services.tagging_service import TaggingService, build_metric_key
 from app.services.webui_db import WebuiPool
+from shared.colocation import occupancy as coloc_occ
 from shared.sellable.computation import (
     annotate_panel_constraint_metadata,
     apply_storage_ratio_cap,
@@ -1094,6 +1095,25 @@ SELECT _tot, _alloc FROM latest
             )
             return 0.0, 0.0
 
+    def _query_colocation_totals(self, src, dc_code: str) -> tuple[float, float]:
+        """dc_hosting_u total/allocated from the shared occupancy module.
+
+        total = Σ capacity_u, allocated = Σ used_u over the DC pattern.
+        """
+        pattern = self._dc_pattern(dc_code)
+        # '%' (global default) -> None so occupancy returns all racks.
+        dc_pattern = None if pattern in (None, "%", "%%") else pattern
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = coloc_occ.occupancy_rows(cur, dc_pattern=dc_pattern)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("colocation totals query failed for %s: %s", dc_code, exc)
+            return 0.0, 0.0
+        total = float(sum(int(r.get("capacity_u") or 0) for r in rows))
+        allocated = float(sum(int(r.get("used_u") or 0) for r in rows))
+        return total, allocated
+
     def get_netbackup_inventory_metrics(self) -> dict[str, float]:
         """Global NetBackup pool capacity (DC-api path), physical free, jobs dedup (7d)."""
         zero = {
@@ -1159,6 +1179,8 @@ SELECT _tot, _alloc FROM latest
             return self._query_ibm_storage_string_totals(src, dc_code)
         if src.panel_key == "backup_netbackup_storage":
             return self._query_netbackup_storage_totals(src, dc_code)
+        if src.panel_key == "dc_hosting_u":
+            return self._query_colocation_totals(src, dc_code)
 
         payload = preloaded_dc_payload
         if payload is None and self._infra_uses_dc_redis_payload(src):
