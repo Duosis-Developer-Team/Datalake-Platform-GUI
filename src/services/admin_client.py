@@ -402,3 +402,36 @@ def delete_role(role_id: int) -> None:
         from src.auth import settings_crud
         return settings_crud.delete_role_non_system(role_id)
     _delete(f"/api/v1/roles/{role_id}")
+
+
+def list_platform_releases() -> list[dict[str, Any]]:
+    if not _USE_API:
+        from src.auth import versions_crud
+        return versions_crud.list_platform_releases()
+    return _get("/api/v1/versions")
+
+
+def get_current_versions() -> list[dict[str, Any]]:
+    if not _USE_API:
+        from src.auth import versions_crud
+        return versions_crud.get_current_versions()
+    return _get("/api/v1/versions/current")
+
+
+def register_deployment(
+    service: str,
+    version: str,
+    git_sha: str | None = None,
+    image_tag: str | None = None,
+    environment: str = "production",
+) -> None:
+    if not _USE_API:
+        from src.auth import versions_crud
+        return versions_crud.register_deployment(service, version, git_sha, image_tag, environment)
+    _post("/api/v1/versions/deployments", {
+        "service": service,
+        "version": version,
+        "git_sha": git_sha,
+        "image_tag": image_tag,
+        "environment": environment,
+    })
