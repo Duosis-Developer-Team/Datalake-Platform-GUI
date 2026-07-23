@@ -637,6 +637,25 @@ def get_all_datacenters_summary(tr: Optional[dict]) -> list[dict]:
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_DATACENTERS)
 
 
+_EMPTY_LICENSED_OS: dict[str, Any] = {
+    "families": {"rhel": 0, "suse": 0, "windows": 0, "free": 0, "unknown": 0},
+    "total": 0, "unknown_samples": [],
+}
+
+
+def get_licensed_os_summary(customer: Optional[str] = None, tr: Optional[dict] = None) -> dict:
+    ck = f"api:licensed_os:{customer or '*'}:{_serialize_tr_cache_key(tr)}"
+
+    def fetch() -> dict:
+        params = _build_time_params(tr)
+        if customer:
+            params["customer"] = customer
+        data = _get_json(_get_client_dc(), "/api/v1/licensed-os/summary", params=params)
+        return data if isinstance(data, dict) else _clone(_EMPTY_LICENSED_OS)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_LICENSED_OS)
+
+
 def get_dc_details(dc_id: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_id, safe="")
     ck = f"api:dc_details:{enc}:{_serialize_tr_cache_key(tr)}"

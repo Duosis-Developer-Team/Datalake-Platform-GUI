@@ -169,6 +169,12 @@ class HealthResponse(BaseModel):
     db_pool: str
 
 
+class LicensedOsSummary(BaseModel):
+    families: dict[str, int]
+    total: int
+    unknown_samples: list[str] = []
+
+
 # Backup job statistics ------------------------------------------------------
 
 class JobStatPoint(BaseModel):

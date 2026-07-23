@@ -5,7 +5,7 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.core.time_filter import TimeFilter
-from app.models.schemas import DataCenterSummary, JobStatsResponse
+from app.models.schemas import DataCenterSummary, JobStatsResponse, LicensedOsSummary
 from app.services.dc_service import DatabaseService
 from app.services import sla_service
 from app.db.queries import crm_potential as crm_q
@@ -46,6 +46,17 @@ def datacenter_detail(
 ):
     """Full DC payload including classic/hyperconv compute split (not in legacy Pydantic schema)."""
     return db.get_dc_details(dc_code, tf.to_dict())
+
+
+@router.get("/licensed-os/summary", response_model=LicensedOsSummary)
+def licensed_os_summary(
+    customer: str | None = Query(default=None),
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+):
+    if customer:
+        return db.get_licensed_os_for_customer(customer, tf.to_dict())
+    return db.get_licensed_os_summary(tf.to_dict())
 
 
 @router.get("/sla", response_model=dict[str, Any])
