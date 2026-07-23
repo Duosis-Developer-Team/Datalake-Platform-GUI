@@ -42,10 +42,20 @@ def test_put_hmdl_awx_config_sends_body():
 
 def test_launch_hmdl_awx_job():
     client = MagicMock()
-    client.post.return_value = _resp({"job_id": 501})
+    client.post.return_value = _resp({"job_id": 501, "ignored_fields": {}})
     with patch.object(api, "_get_client_hmdl", return_value=client):
         out = api.launch_hmdl_awx_job({"dry_run": True})
     assert out["job_id"] == 501
+    assert out["ignored_fields"] == {}
+
+
+def test_launch_hmdl_awx_job_surfaces_ignored_fields():
+    ignored = {"extra_vars": {"dry_run": True}}
+    client = MagicMock()
+    client.post.return_value = _resp({"job_id": 501, "ignored_fields": ignored})
+    with patch.object(api, "_get_client_hmdl", return_value=client):
+        out = api.launch_hmdl_awx_job({"dry_run": True})
+    assert out["ignored_fields"] == ignored
 
 
 def test_get_hmdl_awx_job_swallows_errors():
@@ -60,8 +70,10 @@ def test_get_hmdl_awx_job_swallows_errors():
     # `test_get_hmdl_awx_config_swallows_errors`.
     client.get.side_effect = api._HTTP_ERRORS[0]("boom") if isinstance(api._HTTP_ERRORS, tuple) else Exception("boom")
     with patch.object(api, "_get_client_hmdl", return_value=client):
-        out = api.get_hmdl_awx_job(501)
+        out = api.get_hmdl_awx_job("501")
+    # the fallback must be typed like the success path, not the raw param
     assert out["job_id"] == 501
+    assert isinstance(out["job_id"], int)
     assert out["status"] == "unknown"
 
 

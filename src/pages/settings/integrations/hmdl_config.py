@@ -17,67 +17,119 @@ _PATH = "/administration/integrations/hmdl/config"
 
 _SOURCE_OPTS = [{"value": "loki", "label": "loki (NetBox)"}, {"value": "datalake", "label": "datalake (Postgres)"}]
 
-# section, key, kind, label. kind ∈ {"select","switch","number","text","csvlist"}
+# Shown under every field whose key is ABSENT from the job template extra_vars:
+# the widget then displays the Ansible role default, not a fabricated False/0.
+_INHERITED_DESC = "rol varsayılanı"
+
+# Prefix used by hmdl-api for the genuinely-not-configured case; any other
+# `reason` means AWX *is* configured but the call failed (token, DNS, JT id…).
+_NOT_CONFIGURED_PREFIX = "AWX not configured"
+
+# section, key, kind, label, default. kind ∈ {"select","switch","number","text","csvlist"}
+# `default` is the ACTUAL value from the Ansible role that runs in AWX:
+#   project-zabake/zabbix-netbox/playbooks/roles/netbox_zabbix_sync/defaults/main.yml
+# When a key is missing from the job template's extra_vars, the role default is
+# what really applies — so that is what the form must show and must not clobber.
 FIELD_SPECS: list[dict] = [
     # Source routing
-    {"section": "Kaynak yönlendirme", "key": "device_source", "kind": "select", "label": "device_source", "opts": _SOURCE_OPTS},
-    {"section": "Kaynak yönlendirme", "key": "platform_source", "kind": "select", "label": "platform_source", "opts": _SOURCE_OPTS},
-    {"section": "Kaynak yönlendirme", "key": "virtual_fw_source", "kind": "select", "label": "virtual_fw_source", "opts": _SOURCE_OPTS},
+    {"section": "Kaynak yönlendirme", "key": "device_source", "kind": "select", "label": "device_source", "opts": _SOURCE_OPTS, "default": "datalake"},
+    {"section": "Kaynak yönlendirme", "key": "platform_source", "kind": "select", "label": "platform_source", "opts": _SOURCE_OPTS, "default": "loki"},
+    {"section": "Kaynak yönlendirme", "key": "virtual_fw_source", "kind": "select", "label": "virtual_fw_source", "opts": _SOURCE_OPTS, "default": "loki"},
     # Sync scope
-    {"section": "Sync kapsamı", "key": "sync_devices", "kind": "switch", "label": "sync_devices"},
-    {"section": "Sync kapsamı", "key": "sync_platforms", "kind": "switch", "label": "sync_platforms"},
-    {"section": "Sync kapsamı", "key": "sync_virtual_fws", "kind": "switch", "label": "sync_virtual_fws"},
-    {"section": "Sync kapsamı", "key": "report_izlenmeyecek", "kind": "switch", "label": "report_izlenmeyecek"},
-    {"section": "Sync kapsamı", "key": "create_devices_disabled", "kind": "switch", "label": "create_devices_disabled"},
-    {"section": "Sync kapsamı", "key": "create_platforms_disabled", "kind": "switch", "label": "create_platforms_disabled"},
-    {"section": "Sync kapsamı", "key": "create_virtual_fws_disabled", "kind": "switch", "label": "create_virtual_fws_disabled"},
+    {"section": "Sync kapsamı", "key": "sync_devices", "kind": "switch", "label": "sync_devices", "default": True},
+    {"section": "Sync kapsamı", "key": "sync_platforms", "kind": "switch", "label": "sync_platforms", "default": False},
+    {"section": "Sync kapsamı", "key": "sync_virtual_fws", "kind": "switch", "label": "sync_virtual_fws", "default": False},
+    {"section": "Sync kapsamı", "key": "report_izlenmeyecek", "kind": "switch", "label": "report_izlenmeyecek", "default": True},
+    {"section": "Sync kapsamı", "key": "create_devices_disabled", "kind": "switch", "label": "create_devices_disabled", "default": False},
+    {"section": "Sync kapsamı", "key": "create_platforms_disabled", "kind": "switch", "label": "create_platforms_disabled", "default": False},
+    {"section": "Sync kapsamı", "key": "create_virtual_fws_disabled", "kind": "switch", "label": "create_virtual_fws_disabled", "default": False},
     # Execution
-    {"section": "Çalıştırma", "key": "dry_run", "kind": "switch", "label": "dry_run"},
-    {"section": "Çalıştırma", "key": "only_fetch", "kind": "switch", "label": "only_fetch"},
-    {"section": "Çalıştırma", "key": "debug_mode", "kind": "switch", "label": "debug_mode"},
-    {"section": "Çalıştırma", "key": "parallel_compare_ignore_errors", "kind": "switch", "label": "parallel_compare_ignore_errors"},
-    {"section": "Çalıştırma", "key": "device_limit", "kind": "number", "label": "device_limit (0=limitsiz)"},
-    {"section": "Çalıştırma", "key": "parallel_compare_workers", "kind": "number", "label": "parallel_compare_workers"},
-    {"section": "Çalıştırma", "key": "location_filter", "kind": "text", "label": "location_filter"},
+    {"section": "Çalıştırma", "key": "dry_run", "kind": "switch", "label": "dry_run", "default": False},
+    {"section": "Çalıştırma", "key": "only_fetch", "kind": "switch", "label": "only_fetch", "default": False},
+    {"section": "Çalıştırma", "key": "debug_mode", "kind": "switch", "label": "debug_mode", "default": False},
+    {"section": "Çalıştırma", "key": "parallel_compare_ignore_errors", "kind": "switch", "label": "parallel_compare_ignore_errors", "default": False},
+    {"section": "Çalıştırma", "key": "device_limit", "kind": "number", "label": "device_limit (0=limitsiz)", "default": 0, "min": 0},
+    # min=1: ThreadPoolExecutor(max_workers=0) raises ValueError, so 0 is never a legal write.
+    {"section": "Çalıştırma", "key": "parallel_compare_workers", "kind": "number", "label": "parallel_compare_workers", "default": 20, "min": 1},
+    {"section": "Çalıştırma", "key": "location_filter", "kind": "text", "label": "location_filter", "default": ""},
     # Logging + email
-    {"section": "Log & e-posta", "key": "hmdl_log_enabled", "kind": "switch", "label": "hmdl_log_enabled"},
-    {"section": "Log & e-posta", "key": "mail_recipients", "kind": "csvlist", "label": "mail_recipients (virgülle ayır)"},
-    {"section": "Log & e-posta", "key": "mail_from", "kind": "text", "label": "mail_from"},
+    {"section": "Log & e-posta", "key": "hmdl_log_enabled", "kind": "switch", "label": "hmdl_log_enabled", "default": False},
+    {"section": "Log & e-posta", "key": "mail_recipients", "kind": "csvlist", "label": "mail_recipients (virgülle ayır)", "default": []},
+    {"section": "Log & e-posta", "key": "mail_from", "kind": "text", "label": "mail_from", "default": "infrareport@alert.bulutistan.com"},
     # Endpoints (no passwords)
-    {"section": "Bağlantı adresleri (parolasız)", "key": "zabbix_url", "kind": "text", "label": "zabbix_url"},
-    {"section": "Bağlantı adresleri (parolasız)", "key": "netbox_url", "kind": "text", "label": "netbox_url"},
-    {"section": "Bağlantı adresleri (parolasız)", "key": "discovery_db_host", "kind": "text", "label": "discovery_db_host"},
-    {"section": "Bağlantı adresleri (parolasız)", "key": "discovery_db_port", "kind": "text", "label": "discovery_db_port"},
-    {"section": "Bağlantı adresleri (parolasız)", "key": "discovery_db_name", "kind": "text", "label": "discovery_db_name"},
+    {"section": "Bağlantı adresleri (parolasız)", "key": "zabbix_url", "kind": "text", "label": "zabbix_url", "default": ""},
+    {"section": "Bağlantı adresleri (parolasız)", "key": "netbox_url", "kind": "text", "label": "netbox_url", "default": ""},
+    {"section": "Bağlantı adresleri (parolasız)", "key": "discovery_db_host", "kind": "text", "label": "discovery_db_host", "default": ""},
+    {"section": "Bağlantı adresleri (parolasız)", "key": "discovery_db_port", "kind": "text", "label": "discovery_db_port", "default": 5000},
+    {"section": "Bağlantı adresleri (parolasız)", "key": "discovery_db_name", "kind": "text", "label": "discovery_db_name", "default": ""},
 ]
+
+
+def _effective_value(spec: dict, current: dict):
+    """Raw value the run will actually use: the JT override if the key is present,
+    otherwise the role default."""
+    key = spec["key"]
+    return current[key] if key in current else spec.get("default")
+
+
+def initial_value(spec: dict, current: dict):
+    """The value as the widget renders it — the exact thing Dash hands back as the
+    component's `value`/`checked` when the operator does not touch the field."""
+    kind = spec["kind"]
+    val = _effective_value(spec, current)
+    if kind == "switch":
+        return bool(val)
+    if kind == "select":
+        return str(val) if val is not None else None
+    if kind == "number":
+        return int(val) if isinstance(val, (int, float)) and not isinstance(val, bool) else 0
+    if kind == "csvlist":
+        vals = val if isinstance(val, list) else ([val] if val else [])
+        return ", ".join(str(v) for v in vals)
+    return "" if val is None else str(val)
+
+
+def initial_values(current: dict) -> dict:
+    """{key: initial_rendered_value} for every field (both val and bool groups)."""
+    return {spec["key"]: initial_value(spec, current) for spec in FIELD_SPECS}
+
+
+def managed_keys(current: dict) -> list[str]:
+    """Whitelisted keys that are actually present in the fetched extra_vars."""
+    return [spec["key"] for spec in FIELD_SPECS if spec["key"] in (current or {})]
 
 
 def _build_field(spec: dict, current: dict):
     key = spec["key"]
     kind = spec["kind"]
     label = spec["label"]
-    val = current.get(key)
+    # Absent from AWX -> the role default applies; show it and flag it as inherited.
+    desc = None if key in (current or {}) else _INHERITED_DESC
+    value = initial_value(spec, current)
     if kind == "switch":
         return dmc.Switch(
             id={"type": "hmdlcfg-bool", "key": key},
             label=label,
-            checked=bool(val),
+            description=desc,
+            checked=value,
             size="sm",
         )
     if kind == "select":
         return dmc.Select(
             id={"type": "hmdlcfg-val", "key": key},
             label=label,
+            description=desc,
             data=spec["opts"],
-            value=str(val) if val is not None else None,
+            value=value,
             size="xs",
         )
     if kind == "number":
         return dmc.NumberInput(
             id={"type": "hmdlcfg-val", "key": key},
             label=label,
-            value=int(val) if isinstance(val, (int, float)) else 0,
-            min=0,
+            description=desc,
+            value=value,
+            min=spec.get("min", 0),
             size="xs",
         )
     if kind == "csvlist":
@@ -85,18 +137,19 @@ def _build_field(spec: dict, current: dict):
         # MultiSelect, and a MultiSelect seeded only from existing values
         # can't accept a brand-new address. Use a plain comma-delimited
         # TextInput instead; Task 7's callback splits it back into a list.
-        vals = val if isinstance(val, list) else ([val] if val else [])
         return dmc.TextInput(
             id={"type": "hmdlcfg-val", "key": key},
             label=label,
-            value=", ".join(str(v) for v in vals),
+            description=desc,
+            value=value,
             size="xs",
         )
     # text
     return dmc.TextInput(
         id={"type": "hmdlcfg-val", "key": key},
         label=label,
-        value="" if val is None else str(val),
+        description=desc,
+        value=value,
         size="xs",
     )
 
@@ -153,13 +206,31 @@ def build_layout(search: str | None = None) -> html.Div:
 
     banner = None
     if not available:
-        banner = dmc.Alert(
-            color="yellow",
-            title="AWX yapılandırılmadı",
-            children="hmdl-api'de AWX_API_URL / AWX_TOKEN / AWX_NETBOX_ZABBIX_JT_ID ayarlanınca "
-                     "değişkenler ve schedule buradan yönetilebilecek. Ekran salt görünümde.",
-            mb="md",
-        )
+        reason = str(cfg.get("reason") or "")
+        if not reason or reason.startswith(_NOT_CONFIGURED_PREFIX):
+            # Genuinely not wired up yet.
+            body = [
+                dmc.Text(
+                    "hmdl-api'de AWX_API_URL / AWX_TOKEN / AWX_NETBOX_ZABBIX_JT_ID ayarlanınca "
+                    "değişkenler ve schedule buradan yönetilebilecek. Ekran salt görünümde.",
+                    size="sm",
+                )
+            ]
+            if reason:
+                body.append(dmc.Text(reason, size="xs", c="dimmed", mt="xs"))
+            banner = dmc.Alert(color="yellow", title="AWX yapılandırılmadı", children=body, mb="md")
+        else:
+            # AWX *is* configured but the call failed — show the real reason
+            # (expired token, DNS, wrong JT id, timeout) instead of blaming setup.
+            banner = dmc.Alert(
+                color="red",
+                title="AWX'e ulaşılamadı",
+                children=[
+                    dmc.Text("Yapılandırma okunamadı; ekran salt görünümde.", size="sm"),
+                    dmc.Text(reason, size="xs", c="dimmed", mt="xs"),
+                ],
+                mb="md",
+            )
 
     run_bar = dmc.Paper(
         p="md", radius="md", withBorder=True, mb="md",
@@ -198,6 +269,11 @@ def build_layout(search: str | None = None) -> html.Div:
                           html.Div(id="hmdlcfg-sched-msg", style={"marginBottom": "8px"}),
                           dmc.Stack(gap="xs", children=_schedule_rows(schedules))],
             ),
+            # Keys AWX already manages (present in the fetched extra_vars) and the
+            # value every field rendered with. Save uses both so untouched
+            # role-default fields are never written back. See assemble_extra_vars.
+            dcc.Store(id="hmdlcfg-orig-store", data=managed_keys(current)),
+            dcc.Store(id="hmdlcfg-init-store", data=initial_values(current)),
             # job-status polling plumbing (callbacks in Task 7)
             dcc.Store(id="hmdlcfg-job-store"),
             dcc.Interval(id="hmdlcfg-job-poll", interval=4000, disabled=True),
@@ -208,11 +284,29 @@ def build_layout(search: str | None = None) -> html.Div:
 _NUMERIC_KEYS = {"device_limit", "parallel_compare_workers"}
 
 
-def assemble_extra_vars(val_ids, val_values, bool_ids, bool_values) -> dict:
+def _should_emit(key: str, value, orig: set, init: dict) -> bool:
+    """A key is written back only when AWX already manages it (so it stays
+    editable AND clearable), or when the operator actually moved the widget off
+    the role default. Anything else is left out so the role default keeps
+    applying — writing it would silently override e.g. sync_devices=true."""
+    if key in orig:
+        return True
+    if key not in init:
+        # No render-time snapshot (legacy/direct call): fall back to emitting.
+        return True
+    return value != init.get(key)
+
+
+def assemble_extra_vars(val_ids, val_values, bool_ids, bool_values, orig_keys=None, init_values=None) -> dict:
+    orig = set(orig_keys or [])
+    init = init_values or {}
     out: dict = {}
     for cid, value in zip(val_ids or [], val_values or []):
         key = cid.get("key")
         if not key:
+            continue
+        in_orig = key in orig
+        if not _should_emit(key, value, orig, init):
             continue
         if key == "mail_recipients":
             if isinstance(value, str):
@@ -221,23 +315,33 @@ def assemble_extra_vars(val_ids, val_values, bool_ids, bool_values) -> dict:
                 parts = [str(v).strip() for v in value if str(v).strip()]
             else:
                 parts = []
-            if parts:
+            # Emit [] only for an AWX-managed key, so blanking it really clears it.
+            if parts or in_orig:
                 out[key] = parts
             continue
+        if value is None:
+            continue
+        if key == "parallel_compare_workers" and not value:
+            # ThreadPoolExecutor(max_workers=0) raises ValueError — never write 0.
+            continue
         if isinstance(value, str):
-            if value == "":
+            # "" is a real clear for an AWX-managed key; for an inherited key it
+            # would just pin the role default, so skip it.
+            if value == "" and not in_orig:
                 continue
             out[key] = value
-        elif value is None:
-            continue
         elif key in _NUMERIC_KEYS:
             out[key] = int(value)
         else:
             out[key] = value
     for cid, value in zip(bool_ids or [], bool_values or []):
         key = cid.get("key")
-        if key:
-            out[key] = bool(value)
+        if not key:
+            continue
+        checked = bool(value)
+        if not _should_emit(key, checked, orig, init):
+            continue
+        out[key] = checked
     return out
 
 
@@ -248,10 +352,12 @@ def assemble_extra_vars(val_ids, val_values, bool_ids, bool_values) -> dict:
     State({"type": "hmdlcfg-val", "key": dash.ALL}, "id"),
     State({"type": "hmdlcfg-bool", "key": dash.ALL}, "checked"),
     State({"type": "hmdlcfg-bool", "key": dash.ALL}, "id"),
+    State("hmdlcfg-orig-store", "data"),
+    State("hmdlcfg-init-store", "data"),
     prevent_initial_call=True,
 )
-def _save_cb(_n, val_values, val_ids, bool_values, bool_ids):
-    extra_vars = assemble_extra_vars(val_ids, val_values, bool_ids, bool_values)
+def _save_cb(_n, val_values, val_ids, bool_values, bool_ids, orig_keys=None, init_values=None):
+    extra_vars = assemble_extra_vars(val_ids, val_values, bool_ids, bool_values, orig_keys, init_values)
     try:
         api.put_hmdl_awx_config(extra_vars)
         return dmc.Alert(color="green", title="Kaydedildi — bir sonraki (scheduled/manual) çalıştırma bunu kullanır.")
@@ -271,7 +377,20 @@ def _run_cb(_n, dryrun):
     try:
         res = api.launch_hmdl_awx_job({"dry_run": True} if dryrun else None)
         job_id = res.get("job_id")
-        return {"job_id": job_id}, False, dmc.Alert(color="blue", title=f"Çalıştırıldı — job #{job_id}")
+        ignored = res.get("ignored_fields") or {}
+        if "extra_vars" in ignored:
+            # AWX drops launch-time extra_vars unless the JT has
+            # ask_variables_on_launch ("Prompt on launch" for Variables) set —
+            # the job is running WITHOUT the dry_run override.
+            msg = dmc.Alert(
+                color="yellow",
+                title=f"Çalıştırıldı — job #{job_id} (override YOKSAYILDI)",
+                children="AWX job template'inde Variables için 'Prompt on launch' işaretli değil; "
+                         "dry_run override uygulanmadı, iş kayıtlı extra_vars ile çalışıyor.",
+            )
+        else:
+            msg = dmc.Alert(color="blue", title=f"Çalıştırıldı — job #{job_id}")
+        return {"job_id": job_id}, False, msg
     except Exception as exc:  # noqa: BLE001
         return dash.no_update, True, dmc.Alert(color="red", title="Çalıştırma başarısız", children=str(exc))
 
