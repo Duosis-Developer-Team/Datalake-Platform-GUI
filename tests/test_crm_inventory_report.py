@@ -41,10 +41,68 @@ def _sample_row(**kwargs):
 
 
 def test_columns_for_family_profiles():
-    assert len(columns_for_family("standard")) == 6
-    assert len(columns_for_family("dual_track")) == 7
-    assert len(columns_for_family("allocation_only")) == 6
-    assert len(columns_for_family("virt_km", hide_used=True)) == 5
+    # Every profile carries a trailing "Birim Fiyat" (unit price) column; dual_track
+    # additionally carries a "Sellable (Ort.)" average column.
+    assert len(columns_for_family("standard")) == 7
+    assert len(columns_for_family("dual_track")) == 9
+    assert len(columns_for_family("allocation_only")) == 7
+    assert len(columns_for_family("virt_km", hide_used=True)) == 6
+
+
+def test_dual_track_has_sellable_average_column():
+    cols = columns_for_family("dual_track")
+    ids = [c["id"] for c in cols]
+    assert ids.index("sellable_avg_fmt") == ids.index("sellable_max_fmt") + 1
+    assert "sellable_avg_fmt" not in [c["id"] for c in columns_for_family("allocation_only")]
+
+
+def test_prepare_service_row_sellable_average():
+    """Sellable (Ort.) = mean of alloc and max-util, in qty and TL."""
+    row = prepare_service_row(_sample_row(inventory_hide_used=True))
+    # alloc 18 / max 22 -> avg 20 ; tl alloc 27,000 / max 33,000 -> avg 30,000
+    assert "20 vCPU" in row["sellable_avg_fmt"]
+    assert "30,000 TL" in row["sellable_avg_fmt"]
+
+
+def test_zero_sellable_hint_maps_reason():
+    """Power-HANA-style 0 sellable must be explained (RAM/ratio full), not look like a bug."""
+    row = prepare_service_row(_sample_row(
+        family="virt_power_hana",
+        sellable_profile="allocation_only",
+        sellable_alloc_qty=0.0,
+        sellable_max_qty=None,
+        sellable_constraint_reason="ratio_bound",
+        inventory_hide_used=True,
+    ))
+    assert "Satılabilir 0" in row["service_label"]
+    assert "oran" in row["service_label"].lower()
+
+
+def test_zero_sellable_hint_generic_without_reason():
+    row = prepare_service_row(_sample_row(
+        family="virt_power_hana",
+        sellable_profile="allocation_only",
+        sellable_alloc_qty=0.0,
+        sellable_max_qty=None,
+        inventory_hide_used=True,
+    ))
+    assert "Satılabilir 0" in row["service_label"]
+
+
+def test_no_zero_sellable_hint_when_positive():
+    row = prepare_service_row(_sample_row(inventory_hide_used=True))  # alloc 18 > 0
+    assert "Satılabilir 0" not in row["service_label"]
+
+
+def test_prepare_service_row_sellable_average_dash_for_non_dual():
+    row = prepare_service_row(_sample_row(
+        family="virt_power",
+        sellable_profile="allocation_only",
+        sellable_max_qty=None,
+        potential_tl_max=None,
+        inventory_hide_used=True,
+    ))
+    assert row["sellable_avg_fmt"] == "—\n—"
 
 
 def test_prepare_service_row_formats_qty_tl_blocks():
@@ -88,8 +146,9 @@ def test_prepare_service_row_s3_physical_free_not_sellable():
         potential_tl=38500.0,
         inventory_free_mode="physical",
     ))
+    # crm_sold 30 TB / 45,000 TL -> 1,500 TL/TB implied; free 1,200 TB -> 1,800,000 TL
     assert "1,200 TB" in row["free_fmt"]
-    assert "914,400 TL" in row["free_fmt"]
+    assert "1,800,000 TL" in row["free_fmt"]
     assert "385 TB" not in row["free_fmt"]
 
 
@@ -121,7 +180,11 @@ def test_prepare_service_row_netbackup_used_qty_tl_only():
     assert "Saved:" not in row["used_fmt"]
     assert "Dedup:" not in row["used_fmt"]
     assert "42,115 TB" in row["free_fmt"]
-    assert "58,961 TL" in row["free_fmt"]
+    # Free valued at the CRM-sold implied price (23,246 TL / 58 TB), not the old
+    # mis-scaled service free_tl (58,961 TL).
+    expected_free_tl = f"{42115.0 * (23246.0 / 58.0):,.0f} TL"
+    assert expected_free_tl in row["free_fmt"]
+    assert "58,961 TL" not in row["free_fmt"]
     assert "44,069 TB" not in row["used_fmt"]
     assert "58 TB" not in row["total_fmt"]
 
@@ -130,7 +193,8 @@ def test_columns_for_family_netbackup_includes_used():
     cols = columns_for_family("backup_netbackup")
     col_ids = [c["id"] for c in cols]
     assert col_ids == [
-        "service_label", "display_unit", "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
+        "service_label", "display_unit", "crm_sold_fmt", "total_fmt", "used_fmt",
+        "free_fmt", "unit_price_fmt",
     ]
 
 
@@ -280,3 +344,129 @@ def test_columns_for_family_includes_power_hana_virt():
     col_ids = [c["id"] for c in cols]
     assert "used_fmt" not in col_ids
     assert "free_fmt" in col_ids
+
+
+def test_flat_view_keeps_sellable_columns_with_netbackup_row():
+    """Flat/list view must not drop Sellable columns just because a NetBackup row
+    is present in the mixed table (regression: netbackup row forced whole table to
+    the standard profile, hiding Sellable Alloc/Max util)."""
+    virt_row = _sample_row()
+    netbackup_row = _sample_row(
+        panel_key="backup_netbackup_storage",
+        family="backup_netbackup",
+        family_label="NetBackup",
+        display_unit="TB",
+        sellable_profile="standard",
+        inventory_free_mode="physical",
+    )
+    table = build_report_table(
+        [virt_row, netbackup_row],
+        table_id="test-flat-with-nb",
+        include_family=True,
+        sellable_profile="dual_track",
+    )
+    col_ids = [c["id"] for c in table.columns]
+    assert "sellable_alloc_fmt" in col_ids
+    assert "sellable_max_fmt" in col_ids
+
+
+def test_prepare_service_row_virt_free_shows_tl():
+    """Free capacity on virt families should carry a TL value (free_qty * unit price)."""
+    row = prepare_service_row(_sample_row(
+        inventory_hide_used=True,
+        free_qty=60.0,
+        unit_price_tl=1500.0,
+    ))
+    assert "60 vCPU" in row["free_fmt"]
+    assert "90,000 TL" in row["free_fmt"]
+
+
+def test_prepare_service_row_virt_free_tl_missing_without_price():
+    """No unit price -> Free TL stays em-dash (no fabricated value)."""
+    row = prepare_service_row(_sample_row(inventory_hide_used=True, free_qty=60.0))
+    assert "60 vCPU" in row["free_fmt"]
+    assert row["free_fmt"].endswith("—")
+
+
+def test_unit_price_column_present_and_formatted():
+    cols = columns_for_family("dual_track")
+    assert cols[-1]["id"] == "unit_price_fmt"
+    assert cols[-1]["name"] == "Birim Fiyat"
+    row = prepare_service_row(_sample_row(
+        unit_price_tl=99.0, display_unit="vCPU", inventory_hide_used=True,
+    ))
+    assert row["unit_price_fmt"] == "99 TL/vCPU"
+
+
+def test_unit_price_small_value_keeps_precision():
+    """Per-TB / per-GB prices must not round to zero."""
+    row = prepare_service_row(_sample_row(
+        panel_key="backup_netbackup_storage",
+        family="backup_netbackup",
+        display_unit="TB",
+        sellable_profile="standard",
+        crm_sold_qty=1000.0,
+        crm_sold_tl=1420.0,  # -> 1.42 TL/TB implied
+        inventory_free_mode="physical",
+    ))
+    assert row["unit_price_fmt"] == "1.42 TL/TB"
+
+
+def test_physical_free_valued_at_crm_sold_price():
+    """NetBackup Free (and the Birim Fiyat column) use the CRM-sold implied unit price,
+    not the mis-scaled catalog price. Fixes '338 TL for 238 TB' — the ~340x undervaluation."""
+    row = prepare_service_row(_sample_row(
+        panel_key="backup_netbackup_storage",
+        family="backup_netbackup",
+        display_unit="TB",
+        sellable_profile="standard",
+        crm_sold_qty=79.0,
+        crm_sold_tl=38210.0,      # -> ~484 TL/TB
+        free_qty=238.0,
+        free_tl=338.0,            # mis-scaled service value, must be overridden
+        unit_price_tl=1.42,       # mis-scaled catalog price, must be ignored
+        inventory_free_mode="physical",
+    ))
+    expected_free_tl = f"{238.0 * (38210.0 / 79.0):,.0f} TL"
+    assert expected_free_tl in row["free_fmt"]
+    assert "338 TL" not in row["free_fmt"]
+    assert row["unit_price_fmt"] == "484 TL/TB"
+
+
+def test_unit_price_missing_shows_dash():
+    row = prepare_service_row(_sample_row(sellable_profile="standard", inventory_hide_used=True))
+    assert row["unit_price_fmt"] == "—"
+
+
+def test_prepare_service_row_netbackup_shows_dedup_logical():
+    """NetBackup Total cell must expose the logical (pre-dedup) size and dedup factor so
+    the physical pool vs logical backup gap ('1.5 PB total but 5 PB stored') is visible."""
+    row = prepare_service_row(_sample_row(
+        panel_key="backup_netbackup_storage",
+        family="backup_netbackup",
+        display_unit="TB",
+        sellable_profile="standard",
+        total=1544.0,
+        pre_dedup_qty=5024.0,
+        dedup_factor=3.2,
+        dedup_savings_pct=69.3,
+        free_qty=238.0,
+        free_tl=338.0,
+        inventory_free_mode="physical",
+    ))
+    assert "1,544 TB" in row["total_fmt"]
+    assert "5,024 TB" in row["total_fmt"]
+    assert "3.2" in row["total_fmt"]
+
+
+def test_prepare_service_row_no_dedup_note_when_absent():
+    """Rows without pre-dedup metrics keep a clean single-line Total."""
+    row = prepare_service_row(_sample_row(
+        panel_key="storage_s3_istanbul",
+        family="storage_s3",
+        display_unit="TB",
+        sellable_profile="standard",
+        total=2000.0,
+        inventory_free_mode="physical",
+    ))
+    assert row["total_fmt"] == "2,000 TB"

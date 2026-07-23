@@ -39,11 +39,14 @@ _PHYSICAL_FREE_FAMILIES = frozenset({"storage_s3", "backup_netbackup"})
 _DUAL_TRACK_COLUMNS = [
     {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
     {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
+    {"name": "Sellable (Ort.)", "id": "sellable_avg_fmt"},
 ]
 
 _ALLOC_ONLY_COLUMNS = [
     {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
 ]
+
+_UNIT_PRICE_COLUMN = {"name": "Birim Fiyat", "id": "unit_price_fmt"}
 
 _FLAT_EXTRA_COLUMN = {"name": "Family", "id": "family_label"}
 
@@ -57,7 +60,7 @@ _LEFT_COLS = frozenset({
 
 _NUMERIC_COLS = frozenset({
     "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
-    "sellable_alloc_fmt", "sellable_max_fmt",
+    "sellable_alloc_fmt", "sellable_max_fmt", "sellable_avg_fmt", "unit_price_fmt",
     "entitled_qty", "entitled_amount_tl",
 })
 
@@ -126,10 +129,12 @@ def columns_for_family(
         use_virt_base = True
     base_cols = _VIRT_BASE_COLUMNS if use_virt_base else _BASE_COLUMNS
     if profile == _FLAT_VIEW_FAMILY or profile == "dual_track":
-        return [*list(base_cols), *list(_DUAL_TRACK_COLUMNS)]
-    if profile == "allocation_only":
-        return [*list(base_cols), *list(_ALLOC_ONLY_COLUMNS)]
-    return list(base_cols)
+        cols = [*list(base_cols), *list(_DUAL_TRACK_COLUMNS)]
+    elif profile == "allocation_only":
+        cols = [*list(base_cols), *list(_ALLOC_ONLY_COLUMNS)]
+    else:
+        cols = list(base_cols)
+    return [*cols, dict(_UNIT_PRICE_COLUMN)]
 
 
 def _fmt_qty(value: Any, unit: str) -> str:
@@ -139,6 +144,111 @@ def _fmt_qty(value: Any, unit: str) -> str:
         return f"{float(value):,.0f} {unit}".strip()
     except (TypeError, ValueError):
         return "—"
+
+
+_ZERO_SELLABLE_HINTS = {
+    "ratio_bound": "başka kaynak dolu (oran kısıtı)",
+    "compute_bottleneck": "CPU/hesap darboğazı",
+    "utilization_gate": "kullanım eşiği aşıldı",
+    "gate_blocked": "kullanım eşiği aşıldı",
+    "over_threshold": "kapasite eşiği aşıldı",
+}
+
+
+def _sellable_zero_hint(reason: str) -> str:
+    """Human explanation for a virt row whose sellable is 0 (so it isn't read as a bug)."""
+    return _ZERO_SELLABLE_HINTS.get((reason or "").strip(), "kapasite/oran kısıtı")
+
+
+def _mean(a: Any, b: Any) -> float | None:
+    """Mean of two optional numerics. Returns the present one if only one is set,
+    None if neither is."""
+    vals = []
+    for v in (a, b):
+        if v is None:
+            continue
+        try:
+            vals.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
+
+
+def _fmt_dedup_note(row: dict[str, Any], unit: str) -> str:
+    """Annotation for NetBackup-style rows: logical (pre-dedup) size + dedup factor.
+
+    Answers "physical pool is 1.5 PB but ~5 PB is stored — where's the rest?": the
+    gap is deduplication, not missing capacity.
+    """
+    pre = row.get("pre_dedup_qty")
+    if pre is None:
+        return ""
+    try:
+        pre_f = float(pre)
+    except (TypeError, ValueError):
+        return ""
+    if pre_f <= 0:
+        return ""
+    try:
+        factor_f = float(row.get("dedup_factor") or 0.0)
+    except (TypeError, ValueError):
+        factor_f = 0.0
+    parts = [f"Mantıksal: {pre_f:,.0f} {unit}".strip()]
+    if factor_f > 1.0:
+        parts.append(f"Dedup {factor_f:,.1f}×")
+    return "(" + " · ".join(parts) + ")"
+
+
+def _crm_sold_unit_price(row: dict[str, Any]) -> float | None:
+    """Unit price implied by the CRM sale itself: crm_sold_tl / crm_sold_qty.
+
+    In the panel's own display unit, so it can be applied directly to free_qty.
+    Returns None when there's no priced sale to derive from.
+    """
+    try:
+        qty = float(row.get("crm_sold_qty") or 0.0)
+        tl = float(row.get("crm_sold_tl") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if qty > 0.0 and tl > 0.0:
+        return tl / qty
+    return None
+
+
+def _effective_unit_price(row: dict[str, Any], *, is_physical: bool) -> Any:
+    """Price used to value a row's free capacity and to fill the Birim Fiyat column.
+
+    Physical panels (NetBackup / S3) prefer the CRM-sold implied price so free is
+    valued at what we actually sell it for — the catalog ``unit_price_tl`` for these
+    panels is mis-scaled (e.g. NetBackup free was valued ~340x below the sold price).
+    Falls back to ``unit_price_tl`` (used as-is for virt families).
+    """
+    if is_physical:
+        sold_price = _crm_sold_unit_price(row)
+        if sold_price is not None:
+            return sold_price
+    return row.get("unit_price_tl")
+
+
+def _fmt_unit_price(value: Any, unit: str) -> str:
+    """Format a per-unit price. Adaptive precision so per-TB / per-GB prices
+    (e.g. 1.42 TL/TB, 0.03 TL/GB) don't round away to zero."""
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if price <= 0:
+        return "—"
+    if price >= 100:
+        num = f"{price:,.0f}"
+    elif price >= 1:
+        num = f"{price:,.2f}".rstrip("0").rstrip(".")
+    else:
+        num = f"{price:,.4f}".rstrip("0").rstrip(".")
+    unit = (unit or "").strip()
+    return f"{num} TL/{unit}" if unit else f"{num} TL"
 
 
 def _fmt_crm_sold_block(row: dict[str, Any], unit: str, crm_sold_tl: Any) -> str:
@@ -189,6 +299,15 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
     potential_tl_alloc = row.get("potential_tl_alloc")
     potential_tl_max = row.get("potential_tl_max")
 
+    if profile in ("dual_track", "allocation_only") and has_infra:
+        try:
+            _alloc_val = None if sellable_alloc_qty is None else float(sellable_alloc_qty)
+        except (TypeError, ValueError):
+            _alloc_val = None
+        if _alloc_val is not None and _alloc_val <= 0:
+            reason = str(row.get("sellable_constraint_reason") or "")
+            service_label = f"{service_label}\n(Satılabilir 0 — {_sellable_zero_hint(reason)})"
+
     free_tl = potential_tl if profile == "standard" and has_infra else None
     free_display_qty = row.get("free_qty")
     family = str(row.get("family") or "")
@@ -198,20 +317,47 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         or family in _PHYSICAL_FREE_FAMILIES
     )
     if use_physical_free and has_infra:
-        free_tl = row.get("free_tl")
+        # Value physical Free at the CRM-sold implied unit price (same display unit as
+        # free_qty), correcting the mis-scaled catalog price. Fall back to the
+        # service-provided free_tl only when there is no priced sale to derive from.
+        eff_price = _effective_unit_price(row, is_physical=True)
+        if free_display_qty is not None and eff_price not in (None, 0):
+            try:
+                free_tl = float(free_display_qty) * float(eff_price)
+            except (TypeError, ValueError):
+                free_tl = row.get("free_tl")
+        else:
+            free_tl = row.get("free_tl")
     elif profile == "standard" and has_infra and not use_physical_free:
         sellable_qty = row.get("sellable_qty")
         if sellable_qty is not None:
             free_display_qty = sellable_qty
             free_tl = potential_tl
+    elif profile in ("dual_track", "allocation_only") and has_infra:
+        # Virt families report Free as raw headroom (total − CRM sold); monetize it at
+        # the panel unit price so the Free cell carries a TL value alongside the qty.
+        unit_price_tl = row.get("unit_price_tl")
+        if free_display_qty is not None and unit_price_tl not in (None, 0):
+            try:
+                free_tl = float(free_display_qty) * float(unit_price_tl)
+            except (TypeError, ValueError):
+                free_tl = None
     hide_used = bool(row.get("inventory_hide_used"))
+
+    unit_price_display = _effective_unit_price(row, is_physical=use_physical_free)
+
+    total_fmt = _fmt_qty(row.get("total"), unit) if has_infra else "—"
+    if has_infra:
+        dedup_note = _fmt_dedup_note(row, unit)
+        if dedup_note:
+            total_fmt = f"{total_fmt}\n{dedup_note}"
 
     return {
         "panel_key": row.get("panel_key") or "",
         "service_label": service_label,
         "family_label": row.get("family_label") or row.get("family") or "",
         "display_unit": unit,
-        "total_fmt": _fmt_qty(row.get("total"), unit) if has_infra else "—",
+        "total_fmt": total_fmt,
         "crm_sold_fmt": _fmt_crm_sold_block(row, unit, crm_sold_tl),
         "used_fmt": (
             "—\n—"
@@ -231,6 +377,12 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "sellable_max_fmt": shared.fmt_qty_tl_block(
             sellable_max_qty, unit, potential_tl_max,
         ) if profile == "dual_track" else "—\n—",
+        "sellable_avg_fmt": shared.fmt_qty_tl_block(
+            _mean(sellable_alloc_qty, sellable_max_qty),
+            unit,
+            _mean(potential_tl_alloc, potential_tl_max),
+        ) if profile == "dual_track" else "—\n—",
+        "unit_price_fmt": _fmt_unit_price(unit_price_display, unit),
         "status": status,
         "data_quality": data_quality,
         "sellable_profile": profile,
@@ -346,9 +498,11 @@ def build_report_table(
     row_hide_used = hide_used or any(r.get("inventory_hide_used") for r in rows)
     if family and family in _INVENTORY_VIRT_FAMILIES:
         row_hide_used = True
-    if family in _PHYSICAL_FREE_FAMILIES or any(
-        r.get("panel_key") == "backup_netbackup_storage" for r in rows
-    ):
+    # Only collapse to the standard profile for a single-family physical table
+    # (grouped NetBackup / S3). A mixed/flat table must keep its Sellable columns
+    # even when it contains a NetBackup row — each row still formats its own cells
+    # per its own sellable_profile.
+    if family in _PHYSICAL_FREE_FAMILIES:
         row_hide_used = False
         profile = "standard"
     columns = columns_for_family(profile or family, hide_used=row_hide_used)
