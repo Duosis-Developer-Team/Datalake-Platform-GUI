@@ -1894,6 +1894,30 @@ def get_rack_devices(dc_code: str, rack_name: str) -> dict:
     return _api_cache_get_with_stale(ck, fetch, empty)
 
 
+def get_dc_racks_occupancy(dc_code: str) -> dict:
+    enc = quote(dc_code, safe="")
+    empty = {"racks": [], "summary": {}}
+    ck = f"api:dc_racks_occupancy:{enc}"
+
+    def fetch() -> dict:
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/racks/occupancy")
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
+def get_colocation(dc_code: str) -> dict:
+    enc = quote(dc_code, safe="")
+    empty = {"aggregate": {}, "customers": [], "racks": []}
+    ck = f"api:colocation:{enc}"
+
+    def fetch() -> dict:
+        data = _get_json(_get_client_cust(), f"/api/v1/crm/colocation/{enc}")
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
 def _auranotify_start_date(tr: Optional[dict]) -> str:
     from src.utils.time_range import time_range_to_bounds
 
