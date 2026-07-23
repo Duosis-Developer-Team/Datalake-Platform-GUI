@@ -28,6 +28,14 @@ def _ids(layout):
     return out
 
 
+def _by_id(layout, pattern_id):
+    """Find a node whose id matches the given pattern-matching id dict."""
+    for n in _walk(layout):
+        if getattr(n, "id", None) == pattern_id:
+            return n
+    return None
+
+
 def test_layout_renders_banner_when_awx_unavailable():
     with patch.object(page.api, "get_hmdl_awx_config",
                       return_value={"awx_available": False, "extra_vars": {}, "schedules": []}):
@@ -48,6 +56,32 @@ def test_layout_prefills_fields_from_extra_vars():
     assert {"type": "hmdlcfg-val", "key": "device_source"} in ids
     assert {"type": "hmdlcfg-bool", "key": "dry_run"} in ids
     assert {"type": "hmdlcfg-val", "key": "device_limit"} in ids
+
+    # rendered state must actually reflect the mocked extra_vars, not just
+    # the presence of the id
+    dry_run_switch = _by_id(layout, {"type": "hmdlcfg-bool", "key": "dry_run"})
+    assert isinstance(dry_run_switch, dmc.Switch)
+    assert dry_run_switch.checked is True
+
+    device_limit_input = _by_id(layout, {"type": "hmdlcfg-val", "key": "device_limit"})
+    assert isinstance(device_limit_input, dmc.NumberInput)
+    assert device_limit_input.value == 7
+
+    device_source_select = _by_id(layout, {"type": "hmdlcfg-val", "key": "device_source"})
+    assert isinstance(device_source_select, dmc.Select)
+    assert device_source_select.value == "loki"
+
+
+def test_mail_recipients_renders_as_csv_textinput_seeded_from_list():
+    with patch.object(page.api, "get_hmdl_awx_config",
+                      return_value={"awx_available": True,
+                                    "extra_vars": {"mail_recipients": ["a@b.c", "d@e.f"]},
+                                    "schedules": []}):
+        layout = page.build_layout()
+    mail_field = _by_id(layout, {"type": "hmdlcfg-val", "key": "mail_recipients"})
+    assert isinstance(mail_field, dmc.TextInput)
+    assert "a@b.c" in mail_field.value
+    assert "d@e.f" in mail_field.value
 
 
 def test_field_specs_cover_whitelist():

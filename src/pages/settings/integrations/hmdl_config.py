@@ -16,7 +16,7 @@ _PATH = "/administration/integrations/hmdl/config"
 
 _SOURCE_OPTS = [{"value": "loki", "label": "loki (NetBox)"}, {"value": "datalake", "label": "datalake (Postgres)"}]
 
-# section, key, kind, label. kind ∈ {"select","switch","number","text","tags"}
+# section, key, kind, label. kind ∈ {"select","switch","number","text","csvlist"}
 FIELD_SPECS: list[dict] = [
     # Source routing
     {"section": "Kaynak yönlendirme", "key": "device_source", "kind": "select", "label": "device_source", "opts": _SOURCE_OPTS},
@@ -40,7 +40,7 @@ FIELD_SPECS: list[dict] = [
     {"section": "Çalıştırma", "key": "location_filter", "kind": "text", "label": "location_filter"},
     # Logging + email
     {"section": "Log & e-posta", "key": "hmdl_log_enabled", "kind": "switch", "label": "hmdl_log_enabled"},
-    {"section": "Log & e-posta", "key": "mail_recipients", "kind": "tags", "label": "mail_recipients"},
+    {"section": "Log & e-posta", "key": "mail_recipients", "kind": "csvlist", "label": "mail_recipients (virgülle ayır)"},
     {"section": "Log & e-posta", "key": "mail_from", "kind": "text", "label": "mail_from"},
     # Endpoints (no passwords)
     {"section": "Bağlantı adresleri (parolasız)", "key": "zabbix_url", "kind": "text", "label": "zabbix_url"},
@@ -79,19 +79,16 @@ def _build_field(spec: dict, current: dict):
             min=0,
             size="xs",
         )
-    if kind == "tags":
-        # dash-mantine-components 0.14.1 has no dmc.TagsInput; adapted to
-        # dmc.MultiSelect seeded with the current values as its option list
-        # (so prefilled recipients render as removable chips) while keeping
-        # the same list[str] value contract a TagsInput would have produced.
+    if kind == "csvlist":
+        # dash-mantine-components 0.14.1 has no dmc.TagsInput/creatable
+        # MultiSelect, and a MultiSelect seeded only from existing values
+        # can't accept a brand-new address. Use a plain comma-delimited
+        # TextInput instead; Task 7's callback splits it back into a list.
         vals = val if isinstance(val, list) else ([val] if val else [])
-        str_vals = [str(v) for v in vals]
-        return dmc.MultiSelect(
+        return dmc.TextInput(
             id={"type": "hmdlcfg-val", "key": key},
             label=label,
-            data=[{"value": v, "label": v} for v in str_vals],
-            value=str_vals,
-            searchable=True,
+            value=", ".join(str(v) for v in vals),
             size="xs",
         )
     # text
