@@ -276,6 +276,9 @@ def _build_globe_data(summaries):
             "vm_count": dc.get("vm_count", 0) or 0,
             "host_count": dc.get("host_count", 0) or 0,
             "health": round(health, 1),
+            "coloc_total_u": int(dc.get("coloc_total_u") or 0),
+            "coloc_used_u": int(dc.get("coloc_used_u") or 0),
+            "coloc_free_u": int(dc.get("coloc_free_u") or 0),
         })
     return data
 
@@ -1125,6 +1128,18 @@ def build_dc_info_card(dc_id, tr, site_name=""):
     storage_used = intel.get("storage_used", 0.0)
     storage_pct = round(storage_used / storage_cap * 100, 1) if storage_cap > 0 else 0.0
 
+    # Colocation summary (best-effort; this card must never break when the
+    # occupancy endpoint is slow/unavailable — always default to 0).
+    try:
+        _coloc = (api.get_dc_racks_occupancy(dc_id) or {}).get("summary") or {}
+    except Exception:
+        logger.warning("get_dc_racks_occupancy failed for dc_id=%s", dc_id, exc_info=True)
+        _coloc = {}
+    coloc_total = int(_coloc.get("total_u") or 0)
+    coloc_used = int(_coloc.get("used_u") or 0)
+    coloc_free = int(_coloc.get("free_u") or 0)
+    coloc_pct = round(coloc_used / coloc_total * 100) if coloc_total else 0
+
     health_val = (cpu_pct + ram_pct) / 2.0
     health_color = "red" if health_val >= 70 else ("orange" if health_val >= 40 else "teal")
     total_kw = float(energy.get("total_kw", 0.0) or 0.0)
@@ -1185,7 +1200,7 @@ def build_dc_info_card(dc_id, tr, site_name=""):
             ),
             dmc.Divider(my="md", color="rgba(67, 24, 255, 0.08)"),
             dmc.SimpleGrid(
-                cols=4,
+                cols=5,
                 spacing="lg",
                 children=[
                     dmc.Stack(gap=4, align="center", children=[
@@ -1205,6 +1220,13 @@ def build_dc_info_card(dc_id, tr, site_name=""):
                             sections=[{"value": storage_pct, "color": _pct_color(storage_pct)}],
                             label=dmc.Text(f"{storage_pct:.0f}%", ta="center", fw=700, size="sm")),
                         dmc.Text("Storage", size="xs", fw=600, c="#A3AED0"),
+                    ]),
+                    dmc.Stack(gap=4, align="center", children=[
+                        dmc.RingProgress(size=80, thickness=7, roundCaps=True,
+                            sections=[{"value": coloc_pct, "color": _pct_color(coloc_pct)}],
+                            label=dmc.Text(f"{coloc_pct:.0f}%", ta="center", fw=700, size="sm")),
+                        dmc.Text("Kolokasyon", size="xs", fw=600, c="#A3AED0"),
+                        dmc.Text(f"{coloc_free}U boş", size="xs", c="#667085"),
                     ]),
                     dmc.Stack(gap=6, justify="center", children=[
                         dmc.Group(gap="xs", children=[
