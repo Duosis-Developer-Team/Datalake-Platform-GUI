@@ -14,6 +14,28 @@ Set on the `hmdl-api` service (see `.env.example`):
   no-op while this is `false`, so AWX control would be unauthenticated-writable on
   the published host port. hmdl-api therefore reports AWX as *not configured* when
   `AWX_ENABLED=true` and `API_AUTH_REQUIRED=false`.
+
+  > **⚠️ `API_AUTH_REQUIRED` is a single SHARED variable, not an hmdl-api-only
+  > setting.** It comes from the one `.env` loaded by every service via
+  > `env_file:` in `docker-compose.yml` and is independently read by
+  > **hmdl-api, admin-api, chatbot-api, datacenter-api, customer-api and
+  > query-api**. Flipping it to `true` to unlock this screen enforces JWT
+  > auth on ALL of those services at once — not just hmdl-api — in whatever
+  > environment shares that `.env` (see risk **R-02** in
+  > `task/architecture-audit-2026-05-12/ARCHITECTURE.md`).
+  >
+  > In particular, `src/services/api_client.py::_auth_headers()` only
+  > attaches a JWT when called from inside an active Flask request context
+  > (it returns `{}` otherwise). The GUI's background cache-warm threads
+  > (`src/services/app_background_warm.py`, and the scheduler jobs described
+  > in ARCHITECTURE.md §9.4) call the same backend APIs from a daemon thread
+  > with no request context, so once `API_AUTH_REQUIRED=true` those warm
+  > requests send no `Authorization` header and start failing with 401 —
+  > silently, since warm failures are logged at `debug`/`warning` and
+  > swallowed, not surfaced to an operator. Before flipping this on in any
+  > shared environment, give the warm/scheduler path a service-account token
+  > (or equivalent non-request-context credential) so it keeps authenticating
+  > once enforcement is on.
 - `AWX_ENABLED=true`
 - `AWX_API_URL` — AWX REST root, e.g. `https://awx.example/api/v2`
 - `AWX_TOKEN` — AWX personal access token (User → Tokens in the AWX UI)
