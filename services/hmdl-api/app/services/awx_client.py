@@ -145,6 +145,27 @@ def get_job(job_id: int) -> dict:
     }
 
 
+def get_last_job() -> dict | None:
+    """Most recently created job launched from this job template (page-load view
+    of the previous run, independent of any job launched in the current
+    session). Normalized to the same shape as get_job(); None when the job
+    template has never been run."""
+    with _client() as c:
+        resp = c.get(f"{_jt_path()}jobs/", params={"order_by": "-id", "page_size": 1})
+        resp.raise_for_status()
+        results = resp.json().get("results") or []
+    if not results:
+        return None
+    j = results[0]
+    return {
+        "job_id": j.get("id"),
+        "status": j.get("status"),
+        "started": j.get("started"),
+        "finished": j.get("finished"),
+        "failed": bool(j.get("failed")),
+    }
+
+
 def list_schedules() -> list[dict]:
     with _client() as c:
         resp = c.get(f"{_jt_path()}schedules/")

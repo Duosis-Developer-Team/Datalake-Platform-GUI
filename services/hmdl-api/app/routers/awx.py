@@ -34,14 +34,29 @@ def get_config():
             "reason": awx_client.not_configured_reason(),
             "extra_vars": {},
             "schedules": [],
+            "last_job": None,
         }
     try:
         extra_vars = awx_client.get_extra_vars()
         schedules = awx_client.list_schedules()
     except Exception as exc:  # noqa: BLE001
         logger.warning("AWX config fetch failed: %s", exc)
-        return {"awx_available": False, "reason": str(exc), "extra_vars": {}, "schedules": []}
-    return {"awx_available": True, "reason": None, "extra_vars": extra_vars, "schedules": schedules}
+        return {"awx_available": False, "reason": str(exc), "extra_vars": {}, "schedules": [], "last_job": None}
+    try:
+        last_job = awx_client.get_last_job()
+    except Exception as exc:  # noqa: BLE001
+        # The last-run status is a nice-to-have on top of a working config; a
+        # failure here (e.g. AWX flakiness on the jobs list) must not take
+        # down extra_vars/schedules, which the rest of the screen needs.
+        logger.warning("AWX last job fetch failed: %s", exc)
+        last_job = None
+    return {
+        "awx_available": True,
+        "reason": None,
+        "extra_vars": extra_vars,
+        "schedules": schedules,
+        "last_job": last_job,
+    }
 
 
 @router.put("/config")

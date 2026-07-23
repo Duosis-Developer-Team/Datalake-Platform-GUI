@@ -177,6 +177,22 @@ def _sections(current: dict):
     return papers
 
 
+def _last_run_line(last_job: dict | None):
+    """Page-load view of the previous run (independent of any job launched via
+    'Şimdi çalıştır' in the current session, which is tracked separately by
+    hmdlcfg-job-store / the poll callback). Historical runs beyond this last
+    one live in the Datalake Sync Health tab."""
+    if not last_job:
+        return dmc.Text("Son çalıştırma kaydı yok.", id="hmdlcfg-last-run", size="sm", c="dimmed")
+    job_id = last_job.get("job_id")
+    status = last_job.get("status") or "unknown"
+    finished = last_job.get("finished")
+    label = f"Son çalıştırma: job #{job_id} — {status}"
+    if finished:
+        label += f" ({finished})"
+    return dmc.Text(label, id="hmdlcfg-last-run", size="sm", c="dimmed")
+
+
 def _schedule_rows(schedules: list[dict]):
     rows = []
     for s in schedules or []:
@@ -203,6 +219,7 @@ def build_layout(search: str | None = None) -> html.Div:
     available = bool(cfg.get("awx_available"))
     current = cfg.get("extra_vars") or {}
     schedules = cfg.get("schedules") or []
+    last_job = cfg.get("last_job")
 
     banner = None
     if not available:
@@ -242,6 +259,7 @@ def build_layout(search: str | None = None) -> html.Div:
                     dmc.Switch(id="hmdlcfg-run-dryrun", label="dry_run override", size="sm"),
                 ],
             ),
+            html.Div(_last_run_line(last_job), style={"marginTop": "8px"}),
             html.Div(id="hmdlcfg-save-msg", style={"marginTop": "8px"}),
             html.Div(id="hmdlcfg-run-msg", style={"marginTop": "8px"}),
         ],

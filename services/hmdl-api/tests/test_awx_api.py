@@ -77,6 +77,43 @@ def test_config_reports_real_reason_when_awx_call_fails():
     assert not body["reason"].startswith(awx_client.NOT_CONFIGURED_PREFIX)
 
 
+def test_config_includes_last_job_when_configured():
+    last_job = {"job_id": 501, "status": "successful", "started": "t1", "finished": "t2", "failed": False}
+    with patch("app.routers.awx.awx_client.is_configured", return_value=True), \
+         patch("app.routers.awx.awx_client.get_extra_vars", return_value={"dry_run": True}), \
+         patch("app.routers.awx.awx_client.list_schedules", return_value=[]), \
+         patch("app.routers.awx.awx_client.get_last_job", return_value=last_job):
+        client = TestClient(app)
+        resp = client.get("/api/v1/awx/config")
+    assert resp.status_code == 200
+    assert resp.json()["last_job"] == last_job
+
+
+def test_config_last_job_none_when_not_configured():
+    with patch("app.routers.awx.awx_client.is_configured", return_value=False):
+        client = TestClient(app)
+        resp = client.get("/api/v1/awx/config")
+    assert resp.status_code == 200
+    assert resp.json()["last_job"] is None
+
+
+def test_config_last_job_failure_degrades_gracefully_without_breaking_config():
+    """A get_last_job failure must not break the rest of the config response —
+    extra_vars and schedules still render, last_job just degrades to None."""
+    with patch("app.routers.awx.awx_client.is_configured", return_value=True), \
+         patch("app.routers.awx.awx_client.get_extra_vars", return_value={"dry_run": True}), \
+         patch("app.routers.awx.awx_client.list_schedules", return_value=[{"id": 1, "enabled": True}]), \
+         patch("app.routers.awx.awx_client.get_last_job", side_effect=RuntimeError("boom")):
+        client = TestClient(app)
+        resp = client.get("/api/v1/awx/config")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["awx_available"] is True
+    assert body["extra_vars"] == {"dry_run": True}
+    assert body["schedules"] == [{"id": 1, "enabled": True}]
+    assert body["last_job"] is None
+
+
 def test_put_config_rejected_when_not_configured():
     with patch("app.routers.awx.awx_client.is_configured", return_value=False):
         client = TestClient(app)

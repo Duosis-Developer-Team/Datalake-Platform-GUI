@@ -28,6 +28,11 @@ def _requested_path(mock_method):
     return call.args[0] if call.args else call.kwargs["url"]
 
 
+def _requested_params(mock_method):
+    call = mock_method.call_args
+    return call.kwargs.get("params")
+
+
 def test_get_extra_vars_parses_and_filters(jt_id):
     mock_client = MagicMock()
     resp = MagicMock()
@@ -67,6 +72,31 @@ def test_list_schedules_shapes_rows(jt_id):
     assert out == [{"id": 3, "name": "nightly", "enabled": True, "next_run": "t", "rrule": "FREQ=DAILY"}]
     # must be the job-template-scoped collection, not the global /schedules/
     assert _requested_path(mock_client.get) == f"/job_templates/{jt_id}/schedules/"
+
+
+def test_get_last_job_normalizes_and_scopes_to_job_template(jt_id):
+    mock_client = MagicMock()
+    resp = MagicMock()
+    resp.json.return_value = {"results": [
+        {"id": 99, "status": "successful", "started": "t1", "finished": "t2", "failed": False, "extra": "x"},
+    ]}
+    mock_client.get.return_value = resp
+    with patch.object(awx_client, "_client", return_value=_fake_client_cm(mock_client)):
+        out = awx_client.get_last_job()
+    assert out == {"job_id": 99, "status": "successful", "started": "t1", "finished": "t2", "failed": False}
+    # must be the job-template-scoped jobs collection, not the global /jobs/
+    assert _requested_path(mock_client.get) == f"/job_templates/{jt_id}/jobs/"
+    assert _requested_params(mock_client.get) == {"order_by": "-id", "page_size": 1}
+
+
+def test_get_last_job_returns_none_when_no_results(jt_id):
+    mock_client = MagicMock()
+    resp = MagicMock()
+    resp.json.return_value = {"results": []}
+    mock_client.get.return_value = resp
+    with patch.object(awx_client, "_client", return_value=_fake_client_cm(mock_client)):
+        out = awx_client.get_last_job()
+    assert out is None
 
 
 def test_get_extra_vars_propagates_http_error(jt_id):

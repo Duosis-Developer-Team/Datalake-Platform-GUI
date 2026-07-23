@@ -31,6 +31,17 @@ def test_get_hmdl_awx_config_swallows_errors():
     assert out["extra_vars"] == {}
 
 
+def test_get_hmdl_awx_config_fallback_includes_last_job():
+    """The safe-default fallback dict must carry 'last_job' so the page never
+    KeyErrors reading cfg.get('last_job') when hmdl-api is unreachable."""
+    client = MagicMock()
+    client.get.side_effect = api._HTTP_ERRORS[0]("boom") if isinstance(api._HTTP_ERRORS, tuple) else Exception("boom")
+    with patch.object(api, "_get_client_hmdl", return_value=client):
+        out = api.get_hmdl_awx_config()
+    assert out["awx_available"] is False
+    assert out["last_job"] is None
+
+
 def test_put_hmdl_awx_config_sends_body():
     client = MagicMock()
     client.put.return_value = _resp({"awx_available": True, "extra_vars": {"dry_run": True}})

@@ -209,6 +209,41 @@ def test_layout_captures_managed_keys_and_initial_values_in_stores():
     assert init["parallel_compare_workers"] == 20  # inherited role default
 
 
+def test_layout_renders_last_run_line_when_present():
+    last_job = {"job_id": 501, "status": "successful", "started": "t1", "finished": "t2", "failed": False}
+    with patch.object(page.api, "get_hmdl_awx_config",
+                      return_value={"awx_available": True, "extra_vars": {}, "schedules": [],
+                                    "last_job": last_job}):
+        layout = page.build_layout()
+    node = _by_id(layout, "hmdlcfg-last-run")
+    assert node is not None
+    assert "job #501" in node.children
+    assert "successful" in node.children
+    assert "t2" in node.children  # finish time shown when present
+
+
+def test_layout_renders_no_last_run_message_when_last_job_is_none():
+    with patch.object(page.api, "get_hmdl_awx_config",
+                      return_value={"awx_available": True, "extra_vars": {}, "schedules": [],
+                                    "last_job": None}):
+        layout = page.build_layout()
+    node = _by_id(layout, "hmdlcfg-last-run")
+    assert node is not None
+    assert node.children == "Son çalıştırma kaydı yok."
+    assert node.c == "dimmed"
+
+
+def test_layout_last_run_absent_key_treated_like_none():
+    """A config payload that never mentions 'last_job' (e.g. an older cached
+    response) must not crash build_layout — it renders the same as None."""
+    with patch.object(page.api, "get_hmdl_awx_config",
+                      return_value={"awx_available": True, "extra_vars": {}, "schedules": []}):
+        layout = page.build_layout()
+    node = _by_id(layout, "hmdlcfg-last-run")
+    assert node is not None
+    assert node.children == "Son çalıştırma kaydı yok."
+
+
 def test_not_configured_sentinel_matches_service_contract():
     """FIX 4: the 'not configured' marker is duplicated across the service
     boundary (this GUI module vs services/hmdl-api/app/services/awx_client.py).

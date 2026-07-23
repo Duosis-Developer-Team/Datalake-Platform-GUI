@@ -66,3 +66,8 @@ the banner turns red and shows the reason reported by `hmdl-api`.
 - **Şimdi çalıştır** → launches the job template (optional `dry_run` override), then
   polls job status.
 - **Schedule** switches enable/disable AWX schedules on the job template.
+- On load, the screen shows the job template's **last run** (job id, status, and
+  finish time when available) next to the Kaydet/Şimdi çalıştır buttons — this is
+  independent of the live poll shown after you trigger a run in the current
+  session. It reflects only the single most recent job; the full run history
+  lives in the **Datalake Sync Health** tab.

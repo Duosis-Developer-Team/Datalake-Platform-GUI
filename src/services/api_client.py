@@ -3173,7 +3173,13 @@ def get_hmdl_awx_config() -> dict[str, Any]:
             return data
     except _HTTP_ERRORS as exc:
         logger.warning("hmdl-api awx config unavailable: %s", exc)
-    return {"awx_available": False, "extra_vars": {}, "schedules": [], "reason": "hmdl-api unreachable"}
+    return {
+        "awx_available": False,
+        "extra_vars": {},
+        "schedules": [],
+        "last_job": None,
+        "reason": "hmdl-api unreachable",
+    }
 
 
 def put_hmdl_awx_config(extra_vars: dict[str, Any]) -> dict[str, Any]:
