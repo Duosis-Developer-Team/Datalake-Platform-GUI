@@ -37,13 +37,45 @@ class AwxUnavailable(RuntimeError):
     """Raised when AWX is not configured or unreachable."""
 
 
+NOT_CONFIGURED_PREFIX = "AWX not configured"
+
+_AUTH_REQUIRED_REASON = (
+    f"{NOT_CONFIGURED_PREFIX}: API_AUTH_REQUIRED must be true when AWX_ENABLED is true. "
+    "The AWX routes are remote execution (launch job / write extra_vars / toggle schedules) "
+    "and must not be served unauthenticated."
+)
+
+_MISSING_SETTINGS_REASON = (
+    f"{NOT_CONFIGURED_PREFIX}: set AWX_ENABLED=true plus AWX_API_URL, AWX_TOKEN and "
+    "AWX_NETBOX_ZABBIX_JT_ID on hmdl-api."
+)
+
+
+def _auth_gate_open() -> bool:
+    """True when AWX control would be exposed without authentication."""
+    return bool(settings.awx_enabled) and not bool(settings.api_auth_required)
+
+
 def is_configured() -> bool:
+    if not settings.awx_enabled:
+        return False
+    # verify_api_user is a no-op while api_auth_required is false, so honouring
+    # AWX_ENABLED there would publish unauthenticated remote execution.
+    if not settings.api_auth_required:
+        return False
     return bool(
-        settings.awx_enabled
-        and settings.awx_api_url
+        settings.awx_api_url
         and settings.awx_token
         and settings.awx_netbox_zabbix_jt_id
     )
+
+
+def not_configured_reason() -> str:
+    """Why is_configured() is False — surfaced to the UI so operators see the
+    actual blocker instead of a generic 'not configured'."""
+    if _auth_gate_open():
+        return _AUTH_REQUIRED_REASON
+    return _MISSING_SETTINGS_REASON
 
 
 def is_secret_key(key: str) -> bool:
@@ -78,7 +110,11 @@ def _client() -> httpx.Client:
             "Authorization": f"Bearer {settings.awx_token}",
             "Content-Type": "application/json",
         },
-        timeout=30.0,
+        # Must stay BELOW the GUI's interactive httpx timeout (~20s, see
+        # src/services/api_client.py). Otherwise a slow-but-alive AWX trips the
+        # GUI timeout first and the page shows "not configured" instead of the
+        # real reason this call failed.
+        timeout=15.0,
         verify=settings.awx_verify_ssl,
     )
 
@@ -139,7 +175,14 @@ def patch_extra_vars(updates: dict) -> dict:
     return filter_allowed(new)
 
 
-def launch(extra_vars: dict | None = None) -> int:
+def launch(extra_vars: dict | None = None) -> dict:
+    """Launch the job template. Returns {"job_id": int, "ignored_fields": dict}.
+
+    AWX only honours launch-time extra_vars when the job template has
+    `ask_variables_on_launch` ("Prompt on launch" for Variables) enabled;
+    otherwise it silently drops them and reports them in `ignored_fields`.
+    Callers must surface that instead of claiming the override applied.
+    """
     body: dict = {}
     if extra_vars:
         body["extra_vars"] = filter_allowed(extra_vars)
@@ -148,7 +191,11 @@ def launch(extra_vars: dict | None = None) -> int:
         resp.raise_for_status()
         data = resp.json()
     job_id = data.get("job") or data.get("id")
-    return int(job_id)
+    ignored = data.get("ignored_fields")
+    return {
+        "job_id": int(job_id),
+        "ignored_fields": ignored if isinstance(ignored, dict) else {},
+    }
 
 
 def set_schedule_enabled(schedule_id: int, enabled: bool) -> dict:

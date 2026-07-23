@@ -29,7 +29,12 @@ class ScheduleUpdate(BaseModel):
 @router.get("/config")
 def get_config():
     if not awx_client.is_configured():
-        return {"awx_available": False, "reason": "AWX not configured", "extra_vars": {}, "schedules": []}
+        return {
+            "awx_available": False,
+            "reason": awx_client.not_configured_reason(),
+            "extra_vars": {},
+            "schedules": [],
+        }
     try:
         extra_vars = awx_client.get_extra_vars()
         schedules = awx_client.list_schedules()
@@ -42,7 +47,7 @@ def get_config():
 @router.put("/config")
 def put_config(body: ConfigUpdate):
     if not awx_client.is_configured():
-        raise HTTPException(status_code=503, detail="AWX not configured")
+        raise HTTPException(status_code=503, detail=awx_client.not_configured_reason())
     try:
         updated = awx_client.patch_extra_vars(body.extra_vars)
     except Exception as exc:  # noqa: BLE001
@@ -53,18 +58,20 @@ def put_config(body: ConfigUpdate):
 @router.post("/launch")
 def launch(body: LaunchRequest):
     if not awx_client.is_configured():
-        raise HTTPException(status_code=503, detail="AWX not configured")
+        raise HTTPException(status_code=503, detail=awx_client.not_configured_reason())
     try:
-        job_id = awx_client.launch(body.extra_vars)
+        result = awx_client.launch(body.extra_vars)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"AWX launch failed: {exc}") from exc
-    return {"job_id": job_id}
+    # ignored_fields tells the caller AWX dropped the launch-time extra_vars
+    # (job template lacks "Prompt on launch" for Variables).
+    return {"job_id": result.get("job_id"), "ignored_fields": result.get("ignored_fields") or {}}
 
 
 @router.get("/jobs/{job_id}")
 def get_job(job_id: int):
     if not awx_client.is_configured():
-        raise HTTPException(status_code=503, detail="AWX not configured")
+        raise HTTPException(status_code=503, detail=awx_client.not_configured_reason())
     try:
         return awx_client.get_job(job_id)
     except Exception as exc:  # noqa: BLE001
@@ -74,17 +81,18 @@ def get_job(job_id: int):
 @router.get("/schedules")
 def get_schedules():
     if not awx_client.is_configured():
-        return {"awx_available": False, "items": []}
+        return {"awx_available": False, "items": [], "reason": awx_client.not_configured_reason()}
     try:
         return {"awx_available": True, "items": awx_client.list_schedules()}
     except Exception as exc:  # noqa: BLE001
+        logger.warning("AWX schedules fetch failed: %s", exc)
         return {"awx_available": False, "items": [], "reason": str(exc)}
 
 
 @router.put("/schedules/{schedule_id}")
 def put_schedule(schedule_id: int, body: ScheduleUpdate):
     if not awx_client.is_configured():
-        raise HTTPException(status_code=503, detail="AWX not configured")
+        raise HTTPException(status_code=503, detail=awx_client.not_configured_reason())
     try:
         return awx_client.set_schedule_enabled(schedule_id, body.enabled)
     except Exception as exc:  # noqa: BLE001
