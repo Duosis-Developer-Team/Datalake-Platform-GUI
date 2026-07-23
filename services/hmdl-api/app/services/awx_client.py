@@ -81,3 +81,46 @@ def _client() -> httpx.Client:
         timeout=30.0,
         verify=settings.awx_verify_ssl,
     )
+
+
+def _jt_path() -> str:
+    return f"/job_templates/{settings.awx_netbox_zabbix_jt_id}/"
+
+
+def get_extra_vars() -> dict:
+    with _client() as c:
+        resp = c.get(_jt_path())
+        resp.raise_for_status()
+        jt = resp.json()
+    return filter_allowed(_parse_extra_vars(jt.get("extra_vars")))
+
+
+def get_job(job_id: int) -> dict:
+    with _client() as c:
+        resp = c.get(f"/jobs/{int(job_id)}/")
+        resp.raise_for_status()
+        j = resp.json()
+    return {
+        "job_id": j.get("id"),
+        "status": j.get("status"),
+        "started": j.get("started"),
+        "finished": j.get("finished"),
+        "failed": bool(j.get("failed")),
+    }
+
+
+def list_schedules() -> list[dict]:
+    with _client() as c:
+        resp = c.get(f"{_jt_path()}schedules/")
+        resp.raise_for_status()
+        results = resp.json().get("results", []) or []
+    return [
+        {
+            "id": s.get("id"),
+            "name": s.get("name"),
+            "enabled": bool(s.get("enabled")),
+            "next_run": s.get("next_run"),
+            "rrule": s.get("rrule"),
+        }
+        for s in results
+    ]
