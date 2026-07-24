@@ -44,5 +44,11 @@ class Settings(BaseSettings):
     )
     api_jwt_secret: str = _env("API_JWT_SECRET", "SECRET_KEY", default="change_me_secret_key")
 
+    awx_enabled: bool = _env("AWX_ENABLED", default="false").lower() in ("1", "true", "yes")
+    awx_api_url: str = _env("AWX_API_URL", default="")
+    awx_token: str = _env("AWX_TOKEN", default="")
+    awx_netbox_zabbix_jt_id: str = _env("AWX_NETBOX_ZABBIX_JT_ID", default="")
+    awx_verify_ssl: bool = _env("AWX_VERIFY_SSL", default="false").lower() in ("1", "true", "yes")
+
 
 settings = Settings()

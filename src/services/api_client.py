@@ -3163,3 +3163,48 @@ def get_hmdl_coverage(
     except _HTTP_ERRORS as exc:
         logger.warning("hmdl-api coverage unavailable: %s", exc)
         return _clone(_EMPTY_HMDL_COVERAGE)
+
+
+def get_hmdl_awx_config() -> dict[str, Any]:
+    """AWX runtime config (non-secret extra_vars) + schedules. Never raises."""
+    try:
+        data = _get_json(_get_client_hmdl(), "/api/v1/awx/config")
+        if isinstance(data, dict):
+            return data
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api awx config unavailable: %s", exc)
+    return {
+        "awx_available": False,
+        "extra_vars": {},
+        "schedules": [],
+        "last_job": None,
+        "reason": "hmdl-api unreachable",
+    }
+
+
+def put_hmdl_awx_config(extra_vars: dict[str, Any]) -> dict[str, Any]:
+    """PUT the whitelisted AWX extra_vars to hmdl-api, which merges them into the
+    job template (that inner AWX call is the PATCH). Raises on error."""
+    return _put_json(_get_client_hmdl(), "/api/v1/awx/config", {"extra_vars": extra_vars})
+
+
+def launch_hmdl_awx_job(extra_vars: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Launch the netbox-zabbix AWX job. Raises on error."""
+    body = {"extra_vars": extra_vars} if extra_vars else {}
+    return _post_json(_get_client_hmdl(), "/api/v1/awx/launch", body)
+
+
+def get_hmdl_awx_job(job_id: int) -> dict[str, Any]:
+    """AWX job status. Never raises."""
+    try:
+        data = _get_json(_get_client_hmdl(), f"/api/v1/awx/jobs/{int(job_id)}")
+        if isinstance(data, dict):
+            return data
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api awx job unavailable: %s", exc)
+    return {"job_id": int(job_id), "status": "unknown"}
+
+
+def set_hmdl_awx_schedule(schedule_id: int, enabled: bool) -> dict[str, Any]:
+    """Enable/disable an AWX schedule. Raises on error."""
+    return _put_json(_get_client_hmdl(), f"/api/v1/awx/schedules/{int(schedule_id)}", {"enabled": bool(enabled)})

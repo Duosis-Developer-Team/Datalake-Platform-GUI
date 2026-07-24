@@ -14,7 +14,7 @@ setup_sdk()
 
 from app.core.api_auth import verify_api_user
 from app.db import pool
-from app.routers import collectors
+from app.routers import awx, collectors
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,6 +49,11 @@ app.add_middleware(
 _auth_dep = [Depends(verify_api_user)]
 app.include_router(
     collectors.router,
+    prefix="/api/v1",
+    dependencies=_auth_dep,
+)
+app.include_router(
+    awx.router,
     prefix="/api/v1",
     dependencies=_auth_dep,
 )

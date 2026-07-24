@@ -140,6 +140,8 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
             return "page:settings_hmdl_coverage"
         if admin_p.startswith("/administration/integrations/hmdl/sync-health"):
             return "page:settings_hmdl_sync_health"
+        if admin_p.startswith("/administration/integrations/hmdl/config"):
+            return "page:settings_hmdl_config"
         if admin_p.rstrip("/") == "/administration/integrations/hmdl":
             return "page:settings_hmdl_overview"
         if admin_p.rstrip("/") == "/administration/integrations/crm":

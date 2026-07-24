@@ -361,6 +361,13 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 sort_order=58,
             ),
             _n(
+                "page:settings_hmdl_config",
+                "HMDL netbox-zabbix run configuration",
+                "config",
+                route_pattern="/administration/integrations/hmdl/config",
+                sort_order=59,
+            ),
+            _n(
                 "page:settings_crm_overview",
                 "CRM Dynamics 365 overview",
                 "config",
