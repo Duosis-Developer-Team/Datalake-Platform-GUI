@@ -69,43 +69,64 @@ FROM latest_per_server
 #
 # Params: (start_ts, end_ts)
 
+# NOTE: HOST/VIOS/LPAR consumers only take the DISTINCT set of names (see
+# dc_service._fetch_all_batch: rows go into a set()). MEMORY/CPU consumers keep
+# only the latest sample per host (max by time). Doing that reduction in SQL
+# keeps this from streaming the full timeseries into Python — the raw LPAR scan
+# alone was ~245M rows / OOM. Mirrors the latest-per-group shape already used by
+# the ibm_storage_raw query in the same batch. Result is identical; cost is not.
+
 BATCH_RAW_HOST = """
-SELECT server_details_servername
+SELECT DISTINCT server_details_servername
 FROM public.ibm_server_general
 WHERE time BETWEEN %s AND %s
 """
 
 BATCH_RAW_VIOS = """
-SELECT vios_details_servername, viosname
+SELECT DISTINCT vios_details_servername, viosname
 FROM public.ibm_vios_general
 WHERE time BETWEEN %s AND %s
 """
 
 BATCH_RAW_LPAR = """
-SELECT lpar_details_servername, lparname
+SELECT DISTINCT lpar_details_servername, lparname
 FROM public.ibm_lpar_general
 WHERE time BETWEEN %s AND %s
 """
 
 BATCH_RAW_MEMORY = """
-SELECT server_details_servername,
-       server_memory_totalmem,
-       server_memory_availablemem,
-       server_memory_assignedmemtolpars,
-       time
-FROM public.ibm_server_general
-WHERE time BETWEEN %s AND %s
+WITH latest AS (
+    SELECT server_details_servername AS server_name, MAX(time) AS max_time
+    FROM public.ibm_server_general
+    WHERE time BETWEEN %s AND %s
+    GROUP BY server_details_servername
+)
+SELECT g.server_details_servername,
+       g.server_memory_totalmem,
+       g.server_memory_availablemem,
+       g.server_memory_assignedmemtolpars,
+       g.time
+FROM public.ibm_server_general g
+JOIN latest l
+  ON g.server_details_servername = l.server_name AND g.time = l.max_time
 """
 
 BATCH_RAW_CPU = """
-SELECT server_details_servername,
-       server_processor_totalprocunits,
-       server_processor_availableprocunits,
-       server_processor_utilizedprocunits,
-       server_physicalprocessorpool_assignedprocunits,
-       time
-FROM public.ibm_server_general
-WHERE time BETWEEN %s AND %s
+WITH latest AS (
+    SELECT server_details_servername AS server_name, MAX(time) AS max_time
+    FROM public.ibm_server_general
+    WHERE time BETWEEN %s AND %s
+    GROUP BY server_details_servername
+)
+SELECT g.server_details_servername,
+       g.server_processor_totalprocunits,
+       g.server_processor_availableprocunits,
+       g.server_processor_utilizedprocunits,
+       g.server_physicalprocessorpool_assignedprocunits,
+       g.time
+FROM public.ibm_server_general g
+JOIN latest l
+  ON g.server_details_servername = l.server_name AND g.time = l.max_time
 """
 
 # Legacy batch queries kept for registry/explorer use but no longer called
