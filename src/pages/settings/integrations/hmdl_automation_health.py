@@ -62,6 +62,11 @@ def _automation_card(a: dict) -> dmc.Paper:
     )
 
 
+# Match the Turkish labels used on the freshness cards (Taze/Bayat/Ölü), so the
+# proxy table doesn't show raw English statuses alongside them.
+_STATUS_TR = {"fresh": "Taze", "stale": "Bayat", "dead": "Ölü", "unknown": "Bilinmiyor"}
+
+
 def _proxy_row(p: dict) -> html.Tr:
     status = str(p.get("status") or "unknown")
     color = {"fresh": "green", "stale": "orange", "dead": "red"}.get(status, "gray")
@@ -71,7 +76,7 @@ def _proxy_row(p: dict) -> html.Tr:
             html.Td(str(p.get("dc_code") or "—")),
             html.Td(str(p.get("proxy_nifi_host") or "—")),
             html.Td(relative_age(p.get("age_hours"))),
-            html.Td(dmc.Badge(status, color=color, variant="light", size="xs")),
+            html.Td(dmc.Badge(_STATUS_TR.get(status, status.title()), color=color, variant="light", size="xs")),
         ]
     )
 
@@ -161,11 +166,15 @@ def build_layout(search: str | None = None) -> html.Div:
                 gap="lg",
                 children=[
                     kpi_card("Cluster eksik", str(gaps.get("cluster_missing") or 0),
+                             icon="solar:server-path-bold-duotone",
                              color="orange" if gaps.get("cluster_missing") else "gray"),
                     kpi_card("IBM host eksik", str(gaps.get("ibm_missing") or 0),
+                             icon="solar:server-path-bold-duotone",
                              color="orange" if gaps.get("ibm_missing") else "gray"),
                     *[
-                        kpi_card(f"{src} eksik", str(cnt), color="orange" if cnt else "gray")
+                        kpi_card(f"{src} eksik", str(cnt),
+                                 icon="solar:server-path-bold-duotone",
+                                 color="orange" if cnt else "gray")
                         for src, cnt in sorted(by_source.items())
                     ],
                 ],

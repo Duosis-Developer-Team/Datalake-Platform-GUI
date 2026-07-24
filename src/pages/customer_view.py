@@ -2645,12 +2645,14 @@ def _merge_licensed_os_rows(eff_by_cat: list | None, detected_families: dict | N
     return kept
 
 
-def _eff_rows_with_licensed_os(customer_name: str, eff_by_cat: list | None) -> list:
+def _eff_rows_with_licensed_os(customer_name: str, eff_by_cat: list | None, tr: dict | None = None) -> list:
     """Best-effort merge of detected licensed-OS counts into eff_by_cat, scoped
     to the Sold-vs-used panel only. Any failure (empty/raising detected fetch)
-    degrades gracefully to the original rows so Customer View never breaks."""
+    degrades gracefully to the original rows so Customer View never breaks.
+    tr is passed through so the detected counts respect the selected period
+    (without it the API falls back to the last 7 days — see the licensed_os page fix)."""
     try:
-        detected_families = api.get_licensed_os_summary(customer=customer_name).get("families", {}) or {}
+        detected_families = api.get_licensed_os_summary(customer=customer_name, tr=tr).get("families", {}) or {}
         return _merge_licensed_os_rows(eff_by_cat, detected_families)
     except Exception:
         return eff_by_cat
@@ -2862,7 +2864,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
                 s3_data,
                 sales_summary=sales_summary,
                 crm_eff_panel=build_sold_vs_used_stack(
-                    _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(name, eff_by_cat))
+                    _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(name, eff_by_cat, tr=time_range))
                 ),
                 customer_name=name,
                 service_breakdown=service_breakdown,
@@ -3022,7 +3024,7 @@ def render_billing_tab(name: str, tr: dict | None, project: str | None = ALL_PRO
         api.get_customer_s3_vaults(name, tr),
         sales_summary=sales_summary,
         crm_eff_panel=build_sold_vs_used_stack(
-            _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(name, eff_by_cat))
+            _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(name, eff_by_cat, tr=tr))
         ),
         customer_name=name,
         service_breakdown=api.get_customer_sales_service_breakdown(name),

@@ -15,6 +15,12 @@ import re
 import subprocess
 import sys
 from datetime import date
+from pathlib import Path
+
+# Allow "python scripts/backfill_platform_versions.py" from the repo root: without
+# this, sys.path[0] is scripts/ and "from src.auth import db" fails with
+# ModuleNotFoundError. Put the repo root (this file's parent's parent) on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 _PREFIX_RE = re.compile(r"^(feat|fix|perf|chore|docs|refactor|test|style|build|ci)(\(([^)]+)\))?!?:\s*(.*)$")
 _KNOWN = {"feat", "fix", "perf", "chore", "docs", "refactor"}

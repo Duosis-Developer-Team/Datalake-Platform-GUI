@@ -256,7 +256,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 children=[
                     dmc.Button("Kaydet", id="hmdlcfg-save", size="sm", disabled=not available),
                     dmc.Button("Şimdi çalıştır", id="hmdlcfg-run", size="sm", color="teal", variant="light", disabled=not available),
-                    dmc.Switch(id="hmdlcfg-run-dryrun", label="dry_run override", size="sm"),
+                    dmc.Switch(id="hmdlcfg-run-dryrun", label="dry_run override", size="sm", disabled=not available),
                 ],
             ),
             html.Div(_last_run_line(last_job), style={"marginTop": "8px"}),
