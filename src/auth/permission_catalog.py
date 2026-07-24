@@ -153,6 +153,7 @@ def build_default_permission_roots() -> list[PermissionNode]:
                         ],
                     ),
                     _n("sec:dc_view:availability", "Availability", "section", sort_order=70),
+                    _n("sec:dc_view:colocation", "Kolokasyon", "section", sort_order=75),
                     _n("action:dc_view:export", "Export", "action", sort_order=100),
                 ],
             ),

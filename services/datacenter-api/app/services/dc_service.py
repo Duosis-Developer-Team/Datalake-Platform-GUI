@@ -20,6 +20,7 @@ from app.db.queries import nutanix_snapshot as nsq
 from app.db.queries import brocade as brq, ibm_storage as isq
 from app.db.queries import zabbix_network as znq, zabbix_storage as zsq
 from app.db.queries import discovery_rack as drq
+from shared.colocation import occupancy as coloc_occ
 from app.db.queries import crm_potential as crm_q
 from app.db.queries import crm_network_pricing as net_price_q
 from app.db.queries import netbox_config as nbq
@@ -3001,6 +3002,13 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             "hyperconv_totals": hyperconv_totals,
             "ibm_totals": ibm_totals,
         })
+
+        try:
+            summary_list = self._merge_colocation_into_summaries(
+                summary_list, self.get_colocation_aggregate()
+            )
+        except Exception as exc:  # never let colocation break the summary
+            logger.warning("colocation summary enrichment skipped: %s", exc)
 
         cache.set(f"all_dc_summary:{range_suffix}", summary_list)
         logger.info(
@@ -7521,6 +7529,80 @@ JOIN latest l
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_racks(%s): %s", dc_code, exc)
             return empty
+
+    def get_dc_racks_occupancy(self, dc_code: str) -> dict:
+        """Per-rack colocation occupancy for a DC via the shared canonical SQL.
+
+        Returns {"racks": [...], "summary": {total_u, used_u, free_u, rack_count}}.
+        Each rack: rack_id, rack_name, dc, hall, capacity_u, used_u, free_u, tenants[].
+        """
+        empty = {"racks": [], "summary": {"total_u": 0, "used_u": 0, "free_u": 0, "rack_count": 0}}
+        if not dc_code or not dc_code.strip():
+            return empty
+        code = dc_code.strip()
+        cache_key = f"dc_racks_occupancy:{code}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        def _fetch():
+            pattern = f"%{code}%"
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = coloc_occ.occupancy_rows(cur, dc_pattern=pattern)
+            agg = coloc_occ.aggregate_by_dc(rows)
+            total = {"total_u": 0, "used_u": 0, "free_u": 0, "rack_count": 0}
+            for dc_agg in agg.values():
+                for k in total:
+                    total[k] += dc_agg[k]
+            return {"racks": rows, "summary": total}
+
+        try:
+            return cache.run_singleflight(cache_key, _fetch, ttl=21600)
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_dc_racks_occupancy(%s): %s", code, exc)
+            return empty
+
+    def get_colocation_aggregate(self) -> dict:
+        """Per-DC colocation U rollup for ALL DCs in one query. 6h cached.
+
+        Returns {dc_label: {total_u, used_u, free_u, rack_count}} keyed by
+        COALESCE(location.parent_name, location.name).
+        """
+        cache_key = "colocation_aggregate:all"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        def _fetch():
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = coloc_occ.occupancy_rows(cur, dc_pattern=None)
+            return coloc_occ.aggregate_by_dc(rows)
+
+        try:
+            return cache.run_singleflight(cache_key, _fetch, ttl=21600)
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_colocation_aggregate: %s", exc)
+            return {}
+
+    @staticmethod
+    def _merge_colocation_into_summaries(summaries: list, agg: dict) -> list:
+        """Attach coloc_total_u/used_u/free_u to each DC summary dict (0 if absent)."""
+        by_upper = {str(k).upper(): v for k, v in (agg or {}).items()}
+        for dc in summaries or []:
+            key = str(dc.get("id") or "").upper()
+            a = by_upper.get(key) or {}
+            dc["coloc_total_u"] = int(a.get("total_u") or 0)
+            dc["coloc_used_u"] = int(a.get("used_u") or 0)
+            dc["coloc_free_u"] = int(a.get("free_u") or 0)
+
+        matched_ids = {str(dc.get("id") or "").upper() for dc in (summaries or [])}
+        orphans = [k for k in (agg or {}) if str(k).upper() not in matched_ids]
+        if orphans:
+            logger.info("colocation aggregate keys with no matching DC summary: %s", orphans)
+
+        return summaries
 
     def get_rack_devices(self, rack_name: str) -> dict:
         """Return all devices installed in a specific rack (by name), with U position."""

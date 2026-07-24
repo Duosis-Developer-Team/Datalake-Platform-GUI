@@ -1968,6 +1968,27 @@ def show_rack_detail(click_data, dc_store):
     devices_ms = round((time_module.perf_counter() - t_devices) * 1000, 1)
     devices = devices_resp.get("devices", [])
 
+    # Dedicated-customer badges — external colocation tenants occupying this
+    # rack, from the bulk occupancy payload. Degrades to no badges if the
+    # occupancy call fails or the rack isn't present in the response.
+    from src.pages.floor_map import _external_rack_tenants
+
+    tenant_badges = None
+    try:
+        _occ = (api.get_dc_racks_occupancy(dc_id or "") or {}).get("racks", [])
+        _tenants = next(
+            (r.get("tenants") for r in _occ if str(r.get("rack_name")) == str(name)), []
+        ) or []
+        _ext = _external_rack_tenants(_tenants)
+    except Exception:
+        _log.warning("show_rack_detail: occupancy tenant lookup failed for rack %s", name, exc_info=True)
+        _ext = []
+    if _ext:
+        tenant_badges = dmc.Group(gap=6, mb="sm", children=[
+            dmc.Text("Dedike:", size="xs", c="#667085", fw=600),
+            *[dmc.Badge(t, color="grape", variant="light", size="sm") for t in _ext],
+        ])
+
     return html.Div(
         children=[
             # ── Status color bar at top
@@ -2039,6 +2060,9 @@ def show_rack_detail(click_data, dc_store):
                     ],
                 ),
             ]),
+
+            # ── Dedicated-customer badges (external colocation tenants only)
+            tenant_badges,
 
             # ── Rack unit diagram (or empty state)
             _build_rack_unit_diagram(name, u_height or 47, devices, fill, dark)

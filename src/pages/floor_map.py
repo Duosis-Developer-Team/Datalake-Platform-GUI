@@ -13,7 +13,6 @@ import logging
 import math
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
 import time as _time
 from collections import OrderedDict
 
@@ -130,28 +129,39 @@ def _color_by_fill(status, occupied_u, total_u):
 
 
 def _fetch_rack_occupancy(dc_id, racks):
-    """{rack_name -> occupied_u} for the given racks. occupied_u = number of
-    devices with a position (get_rack_devices per rack, fetched in parallel and
-    shared-cached). A rack whose fetch fails is omitted -> rendered gray."""
+    """{rack_name -> occupied_u} for the given racks, from the bulk colocation
+    occupancy endpoint (real used-U via the shared canonical SQL). One call
+    instead of N. Racks absent from the response are omitted -> rendered gray.
+    Degrades to {} (all racks gray/unknown) if the bulk call fails for any
+    reason, matching the globe view and rack-detail panel's guarded calls."""
     from src.services import api_client as api
 
-    names = [str(r.get("name") or "").strip() for r in racks if str(r.get("name") or "").strip()]
-    if not names:
+    wanted = {str(r.get("name") or "").strip() for r in racks if str(r.get("name") or "").strip()}
+    if not wanted:
         return {}
-
-    def _one(name):
-        try:
-            devices = (api.get_rack_devices(dc_id or "", name) or {}).get("devices", [])
-            return name, sum(1 for d in devices if d.get("position") is not None)
-        except Exception:
-            return name, None
-
+    try:
+        payload = api.get_dc_racks_occupancy(dc_id or "") or {}
+    except Exception:
+        _logger.warning("_fetch_rack_occupancy: bulk occupancy call failed for dc_id=%s", dc_id, exc_info=True)
+        return {}
     occupancy: dict = {}
-    with ThreadPoolExecutor(max_workers=min(12, len(names))) as pool:
-        for name, occ in pool.map(_one, names):
-            if occ is not None:
-                occupancy[name] = occ
+    for row in payload.get("racks", []) or []:
+        name = str(row.get("rack_name") or "").strip()
+        if name in wanted and row.get("used_u") is not None:
+            occupancy[name] = int(row.get("used_u") or 0)
     return occupancy
+
+
+def _external_rack_tenants(tenants):
+    """External (non-Bulutistan) tenants occupying a rack, order-preserved, deduped."""
+    from shared.colocation.occupancy import is_internal_tenant
+
+    seen, out = set(), []
+    for t in tenants or []:
+        if t and not is_internal_tenant(t) and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
 
 
 def _rack_fill_info(occupied_u, total_u):
