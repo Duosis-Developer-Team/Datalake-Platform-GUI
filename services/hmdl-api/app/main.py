@@ -25,6 +25,11 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool.init_pool()
+    try:
+        from app.deploy_register import register_this_service
+        register_this_service("hmdl-api")
+    except Exception:
+        pass
     yield
     pool.close_pool()
 

@@ -223,6 +223,11 @@ async def lifespan(app: FastAPI):
     )
 
     app.state.scheduler = _start_scheduler(sellable_svc, app.state.inventory)
+    try:
+        from app.deploy_register import register_this_service
+        register_this_service("crm-engine")
+    except Exception:
+        pass
     yield
     if getattr(app.state, "scheduler", None) and app.state.scheduler.running:
         app.state.scheduler.shutdown(wait=False)

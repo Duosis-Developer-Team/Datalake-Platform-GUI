@@ -508,11 +508,14 @@ def register_chatbot_callbacks(app) -> None:
         Input("url", "pathname"),
         Input("url", "search"),
         Input("app-time-range", "data"),
-        Input("customer-select", "value"),
     )
-    def _sync_context(pathname, search, time_range, customer):
+    def _sync_context(pathname, search, time_range):
+        # NOTE: previously also took Input("customer-select", "value"), but no
+        # layout defines that id — Dash raised a ReferenceError on every page
+        # load and this callback never ran, so the chatbot context/subtitle
+        # never updated. selected_customer is optional context; pass None.
         try:
-            context = extract_context(pathname, search, time_range, customer)
+            context = extract_context(pathname, search, time_range, None)
             return context, context.get("page_title", "")
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("chatbot context sync failed: %s", exc)

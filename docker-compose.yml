@@ -318,6 +318,7 @@ services:
     env_file:
       - .env
     environment:
+      ADMIN_API_URL: ${ADMIN_API_URL:-http://admin-api:8000}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_DB: "2"
@@ -377,6 +378,7 @@ services:
     env_file:
       - .env
     environment:
+      ADMIN_API_URL: ${ADMIN_API_URL:-http://admin-api:8000}
       HMDL_DB_HOST: ${HMDL_DB_HOST:-${DB_HOST:-}}
       HMDL_DB_PORT: ${HMDL_DB_PORT:-${DB_PORT:-5000}}
       HMDL_DB_NAME: ${HMDL_DB_NAME:-${DB_NAME:-bulutlake}}
