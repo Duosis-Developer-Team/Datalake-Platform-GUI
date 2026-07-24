@@ -24,6 +24,75 @@ CATEGORY_COLORS: dict[str, str] = {
 }
 
 
+AUTOMATION_STATUS_LABELS: dict[str, str] = {
+    "fresh": "Taze",
+    "stale": "Bayat",
+    "dead": "Ölü",
+    "unknown": "Bilinmiyor",
+}
+
+AUTOMATION_STATUS_COLORS: dict[str, str] = {
+    "fresh": "green",
+    "stale": "orange",
+    "dead": "red",
+    "unknown": "gray",
+}
+
+
+def relative_age(hours: float | None) -> str:
+    """Human-readable Turkish 'X ago' from an age in hours."""
+    if hours is None:
+        return "—"
+    if hours < 1:
+        return "az önce"
+    if hours < 48:
+        return f"{round(hours)} sa önce"
+    days = round(hours / 24, 1)
+    return f"{days:.1f} gün önce".replace(".", ",")
+
+
+def automation_status_badge(status: str | None) -> dmc.Badge:
+    s = str(status or "unknown")
+    return dmc.Badge(
+        AUTOMATION_STATUS_LABELS.get(s, s),
+        color=AUTOMATION_STATUS_COLORS.get(s, "gray"),
+        variant="light",
+        size="sm",
+    )
+
+
+def staleness_alert_banner(counts: dict, href: str) -> dmc.Alert | None:
+    """Red banner when any HMDL automation is stale/dead, linking to Automation Health.
+
+    Returns None when there is nothing to alert on (``alert`` count is 0).
+    """
+    alert = int((counts or {}).get("alert") or 0)
+    if alert <= 0:
+        return None
+    stale = int(counts.get("stale") or 0)
+    dead = int(counts.get("dead") or 0)
+    return dmc.Alert(
+        color="red",
+        variant="light",
+        title=f"{alert} HMDL otomasyonu schedule'da değil",
+        icon=dmc.Text("⚠", size="lg"),
+        children=dmc.Group(
+            justify="space-between",
+            children=[
+                dmc.Text(
+                    f"{dead} ölü · {stale} bayat otomasyon var — veriler güncellenmiyor olabilir.",
+                    size="sm",
+                ),
+                dmc.Anchor(
+                    dmc.Button("Automation Health'e git", variant="filled", color="red", size="xs"),
+                    href=href,
+                    underline=False,
+                ),
+            ],
+        ),
+    )
+
+
 def sync_status_badge(status: str | None) -> dmc.Badge:
     if not status:
         return proxy_config_badge()

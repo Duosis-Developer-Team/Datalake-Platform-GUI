@@ -13,6 +13,7 @@ from src.utils.hmdl_sync_ui import (
     build_coverage_summary,
     node_status_badge,
     proxy_config_badge,
+    staleness_alert_banner,
     sync_status_badge,
 )
 from src.utils.ui_tokens import kpi_card, section_header, settings_page_shell
@@ -21,6 +22,11 @@ from src.utils.ui_tokens import kpi_card, section_header, settings_page_shell
 def build_layout(search: str | None = None) -> html.Div:
     topology = api.get_hmdl_topology()
     summary = api.get_hmdl_sync_summary()
+    automation_health = api.get_hmdl_automation_health()
+    staleness_banner = staleness_alert_banner(
+        automation_health.get("counts") or {},
+        f"{ADMIN_PREFIX}/integrations/hmdl/automation-health",
+    )
 
     synced = int(summary.get("synced_dc_count") or topology.get("synced_dc_count") or 0)
     total = int(summary.get("total_dc_count") or topology.get("total_dc_count") or 0)
@@ -191,6 +197,7 @@ def build_layout(search: str | None = None) -> html.Div:
     return html.Div(
         settings_page_shell(
             [
+                *([staleness_banner] if staleness_banner else []),
                 dmc.Group(
                     mb="md",
                     children=[
