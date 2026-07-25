@@ -257,3 +257,90 @@ def tenant_occupancy_rows(cursor, dc_pattern: str | None = None) -> list[dict]:
     """Execute TENANT_OCCUPANCY_SQL and return exact per-(rack, tenant) dicts."""
     cursor.execute(TENANT_OCCUPANCY_SQL, {"dc_pattern": dc_pattern})
     return [tenant_row_to_dict(r) for r in (cursor.fetchall() or [])]
+
+
+# --- Used-U breakdown: External / Internal / Untagged partition --------------
+# Answers "where does the DC's used rack-U go?": each occupied front-face U-slot
+# is assigned to exactly ONE group (external customer > internal Bulutistan >
+# untagged) so the three counts sum to the de-duplicated used_u. Feeds the
+# colocation summary bar in the DC Colocation tab and the Floor Map.
+#
+# Per-slot source rows (rack_name, site_name, u, tenant_name), DC-filtered and
+# capacity-capped. Joins to a de-duplicated rack (one row per name+site) so the
+# non-unique rack table cannot fan out a device's U (same guard as
+# _dedupe_physical_racks / TENANT_OCCUPANCY_SQL).
+USED_U_BREAKDOWN_SQL = """
+WITH dev_slots AS (
+    SELECT d.rack_name,
+           d.site_name,
+           generate_series(
+               floor(d.position)::int,
+               floor(d.position)::int
+                   + GREATEST(COALESCE(NULLIF(dt.u_height, 0), 1), 1)::int - 1
+           ) AS u,
+           d.tenant_name
+    FROM discovery_netbox_inventory_device d
+    JOIN loki_device_types dt ON dt.id = d.device_type_id
+    WHERE d.position IS NOT NULL
+      AND lower(coalesce(d.face_value, 'front')) IN ('front', '')
+),
+rack_cap AS (
+    SELECT rack_name,
+           site_name,
+           MAX(capacity_u) AS capacity_u,
+           MIN(dc)         AS dc
+    FROM (
+        SELECT r.name          AS rack_name,
+               l.site_name     AS site_name,
+               r.u_height::int AS capacity_u,
+               COALESCE(l.parent_name, l.name) AS dc
+        FROM discovery_loki_rack r
+        LEFT JOIN discovery_loki_location l ON l.id::varchar = r.location_id
+    ) x
+    GROUP BY rack_name, site_name
+)
+SELECT s.rack_name, s.site_name, s.u, s.tenant_name
+FROM dev_slots s
+JOIN rack_cap rc
+    ON rc.rack_name = s.rack_name
+   AND COALESCE(rc.site_name, '') = COALESCE(s.site_name, '')
+WHERE (%(dc_pattern)s IS NULL OR COALESCE(rc.dc, '') ILIKE %(dc_pattern)s)
+  AND s.u BETWEEN 1 AND rc.capacity_u
+"""
+
+
+def _classify_slots(rows) -> dict:
+    """Partition occupied front-face U-slots into external/internal/untagged.
+
+    rows: iterable of (rack_name, site_name, u, tenant_name). Each distinct
+    (rack_name, site_name, u) slot is counted once and assigned to the
+    highest-priority tenant occupying it: external (2) > internal (1) >
+    untagged (0). Returns U counts per group + distinct external tenant count.
+    """
+    best: dict[tuple, int] = {}
+    external_names: set[str] = set()
+    for rack_name, site_name, u, tenant in rows:
+        key = (rack_name, site_name or "", u)
+        t = (tenant or "").strip()
+        if not t:
+            rank = 0
+        elif is_internal_tenant(t):
+            rank = 1
+        else:
+            rank = 2
+            external_names.add(t)
+        if key not in best or rank > best[key]:
+            best[key] = rank
+    return {
+        "external_u": sum(1 for r in best.values() if r == 2),
+        "internal_u": sum(1 for r in best.values() if r == 1),
+        "untagged_u": sum(1 for r in best.values() if r == 0),
+        "external_customer_count": len(external_names),
+    }
+
+
+def used_u_breakdown(cursor, dc_pattern: str | None = None) -> dict:
+    """Execute USED_U_BREAKDOWN_SQL and return the external/internal/untagged
+    used-U split (sums to the de-duplicated used_u) + external customer count."""
+    cursor.execute(USED_U_BREAKDOWN_SQL, {"dc_pattern": dc_pattern})
+    return _classify_slots(cursor.fetchall() or [])

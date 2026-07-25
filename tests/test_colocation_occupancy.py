@@ -168,3 +168,52 @@ def test_tenant_occupancy_row_coerces_null_used_u():
     cur = _FakeCursor([("DC13", "116", "Boyner", None)])
     rows = occ.tenant_occupancy_rows(cur, dc_pattern=None)
     assert rows[0]["used_u"] == 0
+
+
+# --- used-U breakdown: External / Internal / Untagged partition ---
+
+def test_classify_slots_partitions_by_priority():
+    # slot (R,IST,10): external Boyner + internal -> external wins
+    # slot (R,IST,11): only internal
+    # slot (R,IST,12): blank/None tenant -> untagged
+    rows = [
+        ("R", "IST", 10, "Boyner"),
+        ("R", "IST", 10, "Bulutistan - Linux TEAM"),
+        ("R", "IST", 11, "Bulutistan - Virtualization"),
+        ("R", "IST", 12, ""),
+        ("R", "IST", 12, None),
+        ("R", "IST", 13, "AytemizBank"),
+    ]
+    out = occ._classify_slots(rows)
+    assert out == {
+        "external_u": 2,               # slots 10, 13
+        "internal_u": 1,               # slot 11
+        "untagged_u": 1,               # slot 12
+        "external_customer_count": 2,  # Boyner, AytemizBank
+    }
+    assert out["external_u"] + out["internal_u"] + out["untagged_u"] == 4
+
+
+def test_used_u_breakdown_executes_and_classifies():
+    cur = _FakeCursor([
+        ("102", "IST", 10, "Boyner"),
+        ("102", "IST", 11, "Bulutistan - Linux TEAM"),
+        ("102", "IST", 12, None),
+    ])
+    out = occ.used_u_breakdown(cur, dc_pattern="%DC13%")
+    assert cur.executed[1] == {"dc_pattern": "%DC13%"}
+    assert out == {"external_u": 1, "internal_u": 1, "untagged_u": 1, "external_customer_count": 1}
+
+
+def test_used_u_breakdown_sql_is_defanned_and_current_tables():
+    sql = occ.USED_U_BREAKDOWN_SQL.lower()
+    assert "discovery_netbox_inventory_device" in sql
+    assert "loki_device_types" in sql
+    assert "discovery_loki_rack" in sql
+    assert "in ('front', '')" in sql
+    assert "s.u between 1 and rc.capacity_u" in sql
+    # de-fan: rack side collapsed to one row per (name, site) before the join
+    assert "max(capacity_u)" in sql
+    assert "group by rack_name, site_name" in sql
+    assert "loki_devices" not in sql
+    assert "discovery_loki_racks" not in sql
