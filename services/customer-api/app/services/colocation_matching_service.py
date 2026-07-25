@@ -8,6 +8,7 @@ from shared.colocation.occupancy import (
     occupancy_rows,
     aggregate_by_dc,
     tenant_occupancy_rows,
+    used_u_breakdown,
 )
 from shared.colocation.matching import build_customer_footprint
 from app.db.queries import service_mapping as sm
@@ -46,19 +47,28 @@ class ColocationMatchingService:
         pattern = None if not dc_code or dc_code == "*" else f"%{dc_code.strip()}%"
         rows: list = []
         tenant_rows: list = []
+        breakdown: dict = {}
         try:
             with self._svc._get_connection() as conn:
                 with conn.cursor() as cur:
                     rows = occupancy_rows(cur, dc_pattern=pattern)
                     tenant_rows = tenant_occupancy_rows(cur, dc_pattern=pattern)
+                    breakdown = used_u_breakdown(cur, dc_pattern=pattern)
         except Exception as exc:  # noqa: BLE001
             logger.error("colocation occupancy query failed for %s: %s", dc_code, exc)
             rows = []
             tenant_rows = []
+            breakdown = {}
         agg_by_dc = aggregate_by_dc(rows)
         aggregate = {"total_u": 0, "used_u": 0, "free_u": 0, "rack_count": 0}
         for a in agg_by_dc.values():
             for k in aggregate:
                 aggregate[k] += a[k]
+        aggregate.update({
+            "external_u": int(breakdown.get("external_u") or 0),
+            "internal_u": int(breakdown.get("internal_u") or 0),
+            "untagged_u": int(breakdown.get("untagged_u") or 0),
+            "external_customer_count": int(breakdown.get("external_customer_count") or 0),
+        })
         customers = build_customer_footprint(tenant_rows, self._alias_index())
         return {"aggregate": aggregate, "customers": customers, "racks": rows}
