@@ -10,44 +10,44 @@ from shared.colocation.occupancy import is_internal_tenant
 
 
 def build_customer_footprint(
-    occupancy_rows: Sequence[dict],
+    tenant_rows: Sequence[dict],
     alias_by_key: dict[str, dict],
 ) -> list[dict]:
-    """Group external device tenants across racks into per-customer footprints.
+    """Group EXACT per-(rack, tenant) U rows into per-customer footprints.
 
-    alias_by_key: {lowercased tenant string -> {crm_accountid, crm_account_name}}.
+    tenant_rows: rows from ``occupancy.tenant_occupancy_rows`` — one per
+    ``(dc, rack_name, tenant_name)`` carrying an exact per-tenant ``used_u``
+    (COUNT DISTINCT U-slot). alias_by_key: {lowercased tenant string ->
+    {crm_accountid, crm_account_name}}. Bulutistan-internal tenants excluded.
 
-    Approximation (disclosed, deliberate): per-customer ``used_u`` is the sum of
-    the *whole rack's* used-U for every rack the tenant appears in, not an
-    exact per-tenant U measurement. A rack shared by N external tenants has
-    its used-U counted once per tenant (so the totals are not additive across
-    tenants sharing a rack), and any co-located Bulutistan-internal gear in
-    that rack is included in the figure too. This is a footprint overview for
-    identifying who occupies which racks, not a precise per-tenant U billing
-    number.
+    ``used_u`` is exact and additive: a rack shared by two external tenants
+    contributes each tenant's own U (not the whole rack to both), so the
+    per-customer totals sum correctly. Untagged devices carry no tenant, so the
+    (large) share of physical used-U with no owner in NetBox is intentionally
+    absent here — this is per-customer occupancy, not a rack total.
     """
     by_tenant: dict[str, dict] = {}
-    for rack in occupancy_rows or []:
-        rack_name = rack.get("rack_name")
-        dc = rack.get("dc")
-        used = int(rack.get("capacity_u") or 0) - int(rack.get("free_u") or 0)
-        for tenant in rack.get("tenants") or []:
-            if not tenant or is_internal_tenant(tenant):
-                continue
-            entry = by_tenant.get(tenant)
-            if entry is None:
-                alias = alias_by_key.get(tenant.strip().lower()) or {}
-                entry = {
-                    "tenant": tenant,
-                    "crm_accountid": alias.get("crm_accountid"),
-                    "crm_account_name": alias.get("crm_account_name"),
-                    "match_status": "matched" if alias.get("crm_accountid") else "unmatched",
-                    "racks": [],
-                    "used_u": 0,
-                    "dc": dc,
-                }
-                by_tenant[tenant] = entry
-            if rack_name and rack_name not in entry["racks"]:
-                entry["racks"].append(rack_name)
-            entry["used_u"] += max(used, 0)
+    for row in tenant_rows or []:
+        tenant = row.get("tenant_name")
+        if not tenant or is_internal_tenant(tenant):
+            continue
+        dc = row.get("dc")
+        rack_name = row.get("rack_name")
+        used = int(row.get("used_u") or 0)
+        entry = by_tenant.get(tenant)
+        if entry is None:
+            alias = alias_by_key.get(tenant.strip().lower()) or {}
+            entry = {
+                "tenant": tenant,
+                "crm_accountid": alias.get("crm_accountid"),
+                "crm_account_name": alias.get("crm_account_name"),
+                "match_status": "matched" if alias.get("crm_accountid") else "unmatched",
+                "racks": [],
+                "used_u": 0,
+                "dc": dc,
+            }
+            by_tenant[tenant] = entry
+        if rack_name and rack_name not in entry["racks"]:
+            entry["racks"].append(rack_name)
+        entry["used_u"] += max(used, 0)
     return sorted(by_tenant.values(), key=lambda e: (-e["used_u"], e["tenant"]))

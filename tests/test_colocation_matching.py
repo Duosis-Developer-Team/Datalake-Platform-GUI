@@ -1,43 +1,80 @@
-"""Group rack occupancy by external device-tenant into per-customer footprints,
-resolving to CRM accounts via the alias map; Bulutistan-internal excluded."""
+"""Group EXACT per-(rack, tenant) U rows into per-customer footprints,
+resolving to CRM accounts via the alias map; Bulutistan-internal excluded.
+
+Input rows come from occupancy.tenant_occupancy_rows: one row per
+(dc, rack_name, tenant_name) carrying an exact per-tenant ``used_u``
+(COUNT DISTINCT U-slot), so a rack shared by two tenants splits correctly
+instead of crediting each tenant with the whole rack.
+"""
 from shared.colocation import matching as m
 
 
-def _rows():
-    return [
-        {"rack_name": "116", "dc": "DC13", "capacity_u": 47, "used_u": 35, "free_u": 12,
-         "tenants": ["Boyner", "Bulutistan - Linux TEAM"]},
-        {"rack_name": "209", "dc": "DC13", "capacity_u": 47, "used_u": 27, "free_u": 20,
-         "tenants": ["AytemizBank"]},
-        {"rack_name": "300", "dc": "DC14", "capacity_u": 45, "used_u": 10, "free_u": 35,
-         "tenants": ["Bulutistan - Virtualization"]},  # internal only -> no customer entry
+def test_footprint_uses_exact_per_tenant_u_and_excludes_internal():
+    rows = [
+        # rack 116 shared by an external + an internal tenant: each keeps ITS OWN U
+        {"dc": "DC13", "rack_name": "116", "tenant_name": "Boyner", "used_u": 20},
+        {"dc": "DC13", "rack_name": "116", "tenant_name": "Bulutistan - Linux TEAM", "used_u": 15},
+        {"dc": "DC13", "rack_name": "209", "tenant_name": "AytemizBank", "used_u": 27},
+        {"dc": "DC14", "rack_name": "300", "tenant_name": "Bulutistan - Virtualization", "used_u": 10},
     ]
-
-
-def test_footprint_groups_external_tenants_and_excludes_internal():
     alias = {"boyner": {"crm_accountid": "A-1", "crm_account_name": "Boyner A.Ş."}}
-    out = {f["tenant"]: f for f in m.build_customer_footprint(_rows(), alias)}
-    assert set(out) == {"Boyner", "AytemizBank"}          # internal excluded
+    out = {f["tenant"]: f for f in m.build_customer_footprint(rows, alias)}
+    assert set(out) == {"Boyner", "AytemizBank"}       # internal excluded
+    assert out["Boyner"]["used_u"] == 20               # ONLY Boyner's U, not the whole rack (35)
+    assert out["Boyner"]["racks"] == ["116"]
     assert out["Boyner"]["crm_accountid"] == "A-1"
     assert out["Boyner"]["match_status"] == "matched"
-    assert out["Boyner"]["racks"] == ["116"]
-    assert out["Boyner"]["used_u"] == 35                  # 47 - 12
+    assert out["AytemizBank"]["used_u"] == 27
     assert out["AytemizBank"]["match_status"] == "unmatched"
     assert out["AytemizBank"]["crm_accountid"] is None
 
 
-def test_footprint_sums_used_u_across_racks():
+def test_footprint_sums_exact_u_across_racks():
     rows = [
-        {"rack_name": "1", "dc": "DC13", "capacity_u": 47, "used_u": 10, "free_u": 37, "tenants": ["Paycore"]},
-        {"rack_name": "2", "dc": "DC13", "capacity_u": 47, "used_u": 20, "free_u": 27, "tenants": ["Paycore"]},
+        {"dc": "DC13", "rack_name": "1", "tenant_name": "Paycore", "used_u": 10},
+        {"dc": "DC13", "rack_name": "2", "tenant_name": "Paycore", "used_u": 20},
     ]
     out = m.build_customer_footprint(rows, {})
     assert out[0]["tenant"] == "Paycore"
     assert sorted(out[0]["racks"]) == ["1", "2"]
-    assert out[0]["used_u"] == 10 + 20
+    assert out[0]["used_u"] == 30
+
+
+def test_shared_rack_totals_are_additive_across_tenants():
+    """The whole point of the fix: two external tenants in one rack each get
+    their own U, and the sum never exceeds the rack's real used-U (no
+    whole-rack double counting)."""
+    rows = [
+        {"dc": "DC13", "rack_name": "500", "tenant_name": "Boyner", "used_u": 12},
+        {"dc": "DC13", "rack_name": "500", "tenant_name": "AytemizBank", "used_u": 8},
+    ]
+    out = {f["tenant"]: f for f in m.build_customer_footprint(rows, {})}
+    assert out["Boyner"]["used_u"] == 12
+    assert out["AytemizBank"]["used_u"] == 8
+    assert out["Boyner"]["used_u"] + out["AytemizBank"]["used_u"] == 20
 
 
 def test_footprint_empty_when_no_external_tenants():
-    rows = [{"rack_name": "9", "dc": "DC13", "capacity_u": 47, "used_u": 5, "free_u": 42,
-             "tenants": ["Bulutistan - Network & Security"]}]
+    rows = [{"dc": "DC13", "rack_name": "9", "tenant_name": "Bulutistan - Network & Security", "used_u": 5}]
     assert m.build_customer_footprint(rows, {}) == []
+
+
+def test_footprint_sorted_by_used_u_desc():
+    rows = [
+        {"dc": "DC13", "rack_name": "1", "tenant_name": "SmallCo", "used_u": 5},
+        {"dc": "DC13", "rack_name": "2", "tenant_name": "BigCo", "used_u": 50},
+    ]
+    out = m.build_customer_footprint(rows, {})
+    assert [e["tenant"] for e in out] == ["BigCo", "SmallCo"]
+
+
+def test_footprint_skips_blank_tenant_and_zero_or_null_u():
+    rows = [
+        {"dc": "DC13", "rack_name": "1", "tenant_name": "", "used_u": 9},
+        {"dc": "DC13", "rack_name": "1", "tenant_name": None, "used_u": 9},
+        {"dc": "DC13", "rack_name": "1", "tenant_name": "Paycore", "used_u": None},
+    ]
+    out = m.build_customer_footprint(rows, {})
+    # blank/None tenants dropped; Paycore present but with 0 U (null coerced)
+    assert [e["tenant"] for e in out] == ["Paycore"]
+    assert out[0]["used_u"] == 0

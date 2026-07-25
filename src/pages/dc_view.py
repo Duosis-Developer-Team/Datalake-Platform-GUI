@@ -2551,7 +2551,7 @@ def build_colocation_tab(coloc: dict):
 
     if customers:
         header = html.Tr(children=[html.Th(h) for h in
-                                   ("Müşteri", "CRM Hesabı", "Eşleşme", "Rack", "Kullanılan U (rack toplamı)")])
+                                   ("Müşteri", "CRM Hesabı", "Eşleşme", "Rack", "Kullanılan U (müşteriye ait)")])
         body = []
         for c in customers:
             badge_color = "green" if c.get("match_status") == "matched" else "orange"

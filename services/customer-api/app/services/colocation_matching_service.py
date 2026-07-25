@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import logging
 
-from shared.colocation.occupancy import occupancy_rows, aggregate_by_dc
+from shared.colocation.occupancy import (
+    occupancy_rows,
+    aggregate_by_dc,
+    tenant_occupancy_rows,
+)
 from shared.colocation.matching import build_customer_footprint
 from app.db.queries import service_mapping as sm
 
@@ -40,17 +44,21 @@ class ColocationMatchingService:
 
     def get_colocation(self, dc_code: str) -> dict:
         pattern = None if not dc_code or dc_code == "*" else f"%{dc_code.strip()}%"
+        rows: list = []
+        tenant_rows: list = []
         try:
             with self._svc._get_connection() as conn:
                 with conn.cursor() as cur:
                     rows = occupancy_rows(cur, dc_pattern=pattern)
+                    tenant_rows = tenant_occupancy_rows(cur, dc_pattern=pattern)
         except Exception as exc:  # noqa: BLE001
             logger.error("colocation occupancy query failed for %s: %s", dc_code, exc)
             rows = []
+            tenant_rows = []
         agg_by_dc = aggregate_by_dc(rows)
         aggregate = {"total_u": 0, "used_u": 0, "free_u": 0, "rack_count": 0}
         for a in agg_by_dc.values():
             for k in aggregate:
                 aggregate[k] += a[k]
-        customers = build_customer_footprint(rows, self._alias_index())
+        customers = build_customer_footprint(tenant_rows, self._alias_index())
         return {"aggregate": aggregate, "customers": customers, "racks": rows}
