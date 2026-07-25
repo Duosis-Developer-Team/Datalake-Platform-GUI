@@ -30,6 +30,11 @@ async def lifespan(app: FastAPI):
         register_this_service("hmdl-api")
     except Exception:
         pass
+    try:
+        from app.services import freshness_snapshot
+        freshness_snapshot.start_refresher()
+    except Exception:  # best-effort: never block startup on the freshness sweep
+        pass
     yield
     pool.close_pool()
 

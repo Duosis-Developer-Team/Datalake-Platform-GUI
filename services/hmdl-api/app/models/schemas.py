@@ -233,17 +233,26 @@ class DataGaps(BaseModel):
     by_source: dict[str, int] = Field(default_factory=dict)
 
 
+class DataFamily(BaseModel):
+    family: str
+    counts: AutomationCounts = Field(default_factory=AutomationCounts)
+    sources: list[AutomationRow] = Field(default_factory=list)
+
+
 class AutomationHealthResponse(BaseModel):
-    generated_at: datetime
+    generated_at: datetime | None = None
     automations: list[AutomationRow] = Field(default_factory=list)
     counts: AutomationCounts = Field(default_factory=AutomationCounts)
     proxies: list[ProxyHealthRow] = Field(default_factory=list)
     proxy_summary: ProxySummary = Field(default_factory=ProxySummary)
     data_gaps: DataGaps = Field(default_factory=DataGaps)
-    # Data-collection freshness (newest-row age per collected DATA table) — the
-    # complement to the AWX job-log automations above.
-    data_sources: list[AutomationRow] = Field(default_factory=list)
+    # Data-collection freshness (newest-row age per collected DATA table), grouped
+    # by platform family — served from the background snapshot. Complements the
+    # AWX job-log automations above ("job ran" vs "data actually landed").
+    data_families: list[DataFamily] = Field(default_factory=list)
     data_counts: AutomationCounts = Field(default_factory=AutomationCounts)
+    data_status: str = "computing"
+    data_snapshot_at: datetime | None = None
 
 
 # --- Datalake coverage (cluster / IBM host present-absent) ---

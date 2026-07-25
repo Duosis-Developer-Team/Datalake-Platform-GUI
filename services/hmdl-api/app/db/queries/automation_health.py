@@ -19,6 +19,8 @@ from typing import Any
 from app.config import settings
 from app.db import pool
 from app.services import automation_health as ah
+from app.services import freshness_registry as reg
+from app.services import freshness_snapshot as fsnap
 
 _SCHEMA = settings.hmdl_schema
 
@@ -113,107 +115,34 @@ def _data_gaps() -> dict[str, Any]:
     }
 
 
-# Collected DATA tables the dashboards actually read (public schema). Freshness =
-# age of the newest row. This is separate from the AWX job logs above: a job can
-# report "fresh" while its on-proxy NiFi data flow is dead (e.g. the VMware
-# datastore flow stopped 2026-07-16 → Overview storage 0%).
-_DATA_SOURCES = [
-    ("vmware_clusters", "VMware Clusters", "cluster_metrics", "collection_time"),
-    ("nutanix_clusters", "Nutanix Clusters", "nutanix_cluster_metrics", "collection_time"),
-    ("vmware_datacenter", "VMware Datacenter", "datacenter_metrics", "collection_time"),
-    ("vmware_datastore_metrics", "VMware Datastore Metrics",
-     "raw_vmware_datastore_metrics_agg", "collection_timestamp"),
-    ("vmware_datastore_mounts", "VMware Datastore Mounts",
-     "raw_vmware_datastore_host_mount", "collection_timestamp"),
-    ("ibm_lpar", "IBM LPARs", "ibm_lpar_general", "time"),
-]
-
-
-def _data_sources() -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Freshness of each collected DATA table (age computed in SQL to stay tz-safe
-    across the tables' mixed naive/aware timestamps)."""
-    warn = settings.ah_data_warn_hours
-    dead = settings.ah_data_dead_hours
+def _automation_rows(now) -> list[dict[str, Any]]:
+    """Build one health row per HMDL automation from the AUTOMATION_SPECS registry
+    (each is a run-log table in the hmdl schema). Adding an automation = one spec."""
     rows: list[dict[str, Any]] = []
-    for key, label, table, col in _DATA_SOURCES:
-        r = pool.fetch_one(
-            f"SELECT max({col}) AS ts, "
-            f"EXTRACT(EPOCH FROM (now() - max({col})))/3600.0 AS age_hours "
-            f"FROM public.{table}"
+    for s in reg.AUTOMATION_SPECS:
+        where = f" WHERE {s['where']}" if s.get("where") else ""
+        last = _max_ts(
+            f"SELECT max({s['column']}) AS ts FROM {settings.hmdl_schema}.{s['table']}{where}"
         )
-        ts = r.get("ts") if r else None
-        age = float(r["age_hours"]) if (r and r.get("age_hours") is not None) else None
-        # Naive timestamps (some tables store local time) can read slightly ahead
-        # of now() → a small negative age. That still means "just collected", so
-        # clamp to 0 for a clean display; staleness is always positive.
-        if age is not None and age < 0:
-            age = 0.0
-        rows.append(ah.build_data_source_row(
-            key=key, label=label, table=table,
-            last_data_at=ts, age_hours=age,
-            warn_hours=warn, dead_hours=dead,
+        rows.append(ah.build_automation_row(
+            key=s["key"], label=s["label"], cadence=s["cadence"],
+            last_run_at=last, now=now,
+            warn_hours=getattr(settings, s["warn"]),
+            dead_hours=getattr(settings, s["dead"]),
+            extra=_collector_extra() if s.get("extra") == "collector" else None,
         ))
-    counts = ah.overall_status_counts([r["status"] for r in rows])
-    return rows, counts
+    return rows
 
 
 def build_automation_health() -> dict[str, Any]:
     now = _now()
-
-    collector_last = _max_ts(
-        f"SELECT max(finished_at) AS ts FROM {_SCHEMA}.collector_sync_log WHERE dry_run = FALSE"
-    )
-    zabbix_last = _max_ts(
-        f"SELECT max(processed_at) AS ts FROM {_SCHEMA}.zabbix_sync_log WHERE dry_run = FALSE"
-    )
-    checks_last = _max_ts(f"SELECT max(checked_at) AS ts FROM {_SCHEMA}.collector_check_log")
-    recon_last = _max_ts(
-        f"SELECT max(check_time) AS ts FROM {_SCHEMA}.hmdl_datalake_monitoring_clusters"
-    )
-
-    automations = [
-        ah.build_automation_row(
-            key="zabbix_sync",
-            label="NetBox → Zabbix Sync",
-            cadence="~8 saatte bir",
-            last_run_at=zabbix_last,
-            now=now,
-            warn_hours=settings.ah_zabbix_warn_hours,
-            dead_hours=settings.ah_zabbix_dead_hours,
-        ),
-        ah.build_automation_row(
-            key="collector_sync",
-            label="Datalake Collector Sync",
-            cadence="günlük 02:00",
-            last_run_at=collector_last,
-            now=now,
-            warn_hours=settings.ah_collector_warn_hours,
-            dead_hours=settings.ah_collector_dead_hours,
-            extra=_collector_extra(),
-        ),
-        ah.build_automation_row(
-            key="reachability_checks",
-            label="Collector Reachability Checks",
-            cadence="collector sync ile",
-            last_run_at=checks_last,
-            now=now,
-            warn_hours=settings.ah_checks_warn_hours,
-            dead_hours=settings.ah_checks_dead_hours,
-        ),
-        ah.build_automation_row(
-            key="vm_reconciliation",
-            label="VM Envanter Reconciliation",
-            cadence="günlük",
-            last_run_at=recon_last,
-            now=now,
-            warn_hours=settings.ah_recon_warn_hours,
-            dead_hours=settings.ah_recon_dead_hours,
-        ),
-    ]
-
+    automations = _automation_rows(now)
     counts = ah.overall_status_counts([a["status"] for a in automations])
     proxies, proxy_summary = _proxy_health(now)
-    data_sources, data_counts = _data_sources()
+
+    # Data-collection freshness comes from the background snapshot (never computed
+    # on the request path — see app.services.freshness_snapshot).
+    snap = fsnap.get_snapshot()
 
     return {
         "generated_at": now,
@@ -222,6 +151,8 @@ def build_automation_health() -> dict[str, Any]:
         "proxies": proxies,
         "proxy_summary": proxy_summary,
         "data_gaps": _data_gaps(),
-        "data_sources": data_sources,
-        "data_counts": data_counts,
+        "data_families": snap.get("families", []),
+        "data_counts": snap.get("counts", {}),
+        "data_status": snap.get("status", "computing"),
+        "data_snapshot_at": snap.get("generated_at"),
     }

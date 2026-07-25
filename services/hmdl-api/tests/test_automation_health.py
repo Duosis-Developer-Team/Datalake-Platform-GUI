@@ -38,6 +38,14 @@ def test_build_data_source_row_unknown_when_no_data():
     assert row["last_run_at"] is None
 
 
+def test_automation_specs_cover_the_four_hmdl_automations():
+    from app.services.freshness_registry import AUTOMATION_SPECS
+    keys = {s["key"] for s in AUTOMATION_SPECS}
+    assert keys == {"zabbix_sync", "collector_sync", "reachability_checks", "vm_reconciliation"}
+    for s in AUTOMATION_SPECS:
+        assert s["schema"] and s["table"] and s["column"] and s["label"]
+
+
 def test_classify_fresh_below_warn():
     assert classify(5.0, warn_hours=12, dead_hours=24) == "fresh"
 

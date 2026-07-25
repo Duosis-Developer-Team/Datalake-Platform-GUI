@@ -59,3 +59,22 @@ def test_automation_health_endpoint(mock_build):
     assert body["automations"][0]["extra"]["proxy_coverage"] == "4/23"
     assert body["proxy_summary"]["dead"] == 19
     assert body["data_gaps"]["ibm_missing"] == 8
+
+
+def test_build_automation_health_merges_freshness_snapshot(monkeypatch):
+    from app.db.queries import automation_health as q
+    from app.services import freshness_snapshot as snap
+    monkeypatch.setattr(snap, "get_snapshot", lambda: {
+        "families": [{"family": "VMware", "counts": {"fresh": 1, "stale": 0, "dead": 1,
+                     "unknown": 0, "alert": 1}, "sources": []}],
+        "counts": {"fresh": 1, "stale": 0, "dead": 1, "unknown": 0, "alert": 1},
+        "generated_at": None, "status": "ok"})
+    # stub the DB-backed parts so only the assembly/merge is exercised
+    monkeypatch.setattr(q, "_now", lambda: None)
+    monkeypatch.setattr(q, "_automation_rows", lambda now: [])
+    monkeypatch.setattr(q, "_proxy_health", lambda now: ([], {"total": 0, "fresh": 0, "stale": 0, "dead": 0}))
+    monkeypatch.setattr(q, "_data_gaps", lambda: {"cluster_missing": 0, "ibm_missing": 0, "by_source": {}})
+    out = q.build_automation_health()
+    assert out["data_status"] == "ok"
+    assert out["data_counts"]["alert"] == 1
+    assert out["data_families"][0]["family"] == "VMware"
