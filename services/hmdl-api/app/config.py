@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     # table (not the AWX job log). Data should land at least daily.
     ah_data_warn_hours: float = float(_env("HMDL_AH_DATA_WARN_H", default="26"))
     ah_data_dead_hours: float = float(_env("HMDL_AH_DATA_DEAD_H", default="50"))
+    ah_freshness_refresh_min: float = float(_env("HMDL_FRESHNESS_REFRESH_MIN", default="30"))
 
     hub_dc_code: str = _env("HMDL_HUB_DC", default="DC13")
     proxy_assignment_path: str = _env(
