@@ -1,4 +1,4 @@
-"""Globe points carry coloc_* fields; the DC info card renders a Kolokasyon ring."""
+"""Globe points carry coloc_* fields; the DC info card renders a Colocation ring."""
 from unittest.mock import patch
 
 from src.pages import global_view as gv
@@ -26,7 +26,7 @@ def test_coloc_fields_default_zero_when_absent():
 
 
 # ---------------------------------------------------------------------------
-# build_dc_info_card: Kolokasyon ring smoke tests (must never raise, even when
+# build_dc_info_card: Colocation ring smoke tests (must never raise, even when
 # colocation data is missing/unavailable).
 # ---------------------------------------------------------------------------
 
@@ -62,14 +62,14 @@ def _find_texts(node, out=None):
 def test_build_dc_info_card_renders_kolokasyon_ring_with_data():
     # total=3616, used=2712, free=904 -> 75% used, distinct from the
     # CPU (40%) / RAM (50%) / Storage (30%) rings so the assertions below
-    # can only be satisfied by the new Kolokasyon tile.
+    # can only be satisfied by the new Colocation tile.
     with patch.object(gv.api, "get_dc_details", return_value=_DC_DETAILS), \
          patch.object(gv.api, "get_dc_racks_occupancy",
                       return_value={"racks": [], "summary": {"total_u": 3616, "used_u": 2712, "free_u": 904}}):
         card = gv.build_dc_info_card("DC13", {"preset": "7d"}, "IST")
     assert card is not None
     texts = _find_texts(card)
-    assert "Kolokasyon" in texts
+    assert "Colocation" in texts
     assert "904U boş" in texts
     assert "75%" in texts
 
@@ -92,7 +92,7 @@ def test_build_dc_info_card_renders_when_coloc_fetch_fails():
         card = gv.build_dc_info_card("DC13", {"preset": "7d"}, "IST")
     assert card is not None
     texts = _find_texts(card)
-    assert "Kolokasyon" in texts
+    assert "Colocation" in texts
     assert "0U boş" in texts
     assert "0%" in texts
 
@@ -104,5 +104,5 @@ def test_build_dc_info_card_renders_when_coloc_summary_empty():
         card = gv.build_dc_info_card("DC13", {"preset": "7d"}, "IST")
     assert card is not None
     texts = _find_texts(card)
-    assert "Kolokasyon" in texts
+    assert "Colocation" in texts
     assert "0U boş" in texts

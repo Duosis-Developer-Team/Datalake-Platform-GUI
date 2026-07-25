@@ -1,4 +1,4 @@
-"""Assemble the colocation payload for the DC 'Kolokasyon' tab: per-DC U
+"""Assemble the colocation payload for the DC 'Colocation' tab: per-DC U
 aggregate + per-customer footprint (device tenant -> CRM account)."""
 from __future__ import annotations
 

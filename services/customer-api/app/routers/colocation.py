@@ -1,4 +1,4 @@
-"""Colocation rack-occupancy + CRM customer-footprint endpoints (DC 'Kolokasyon' tab)."""
+"""Colocation rack-occupancy + CRM customer-footprint endpoints (DC 'Colocation' tab)."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request

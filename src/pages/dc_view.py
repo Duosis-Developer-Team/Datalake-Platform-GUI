@@ -5556,7 +5556,7 @@ def build_dc_view(
                             dmc.TabsTab("Physical Inventory", value="phys-inv") if show_phys else None,
                             dmc.TabsTab("Network", value="network") if show_network else None,
                             dmc.TabsTab("Availability", value="avail") if show_avail else None,
-                            dmc.TabsTab("Kolokasyon", value="colo") if show_colo else None,
+                            dmc.TabsTab("Colocation", value="colo") if show_colo else None,
                         ],
                     ),
                 ),
@@ -5811,7 +5811,7 @@ def build_dc_view(
                 if show_avail
                 else None,
 
-                # Kolokasyon (dedicated-customer rack footprint)
+                # Colocation (dedicated-customer rack footprint)
                 dmc.TabsPanel(
                     value="colo",
                     children=(

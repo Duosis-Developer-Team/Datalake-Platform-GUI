@@ -1225,7 +1225,7 @@ def build_dc_info_card(dc_id, tr, site_name=""):
                         dmc.RingProgress(size=80, thickness=7, roundCaps=True,
                             sections=[{"value": coloc_pct, "color": _pct_color(coloc_pct)}],
                             label=dmc.Text(f"{coloc_pct:.0f}%", ta="center", fw=700, size="sm")),
-                        dmc.Text("Kolokasyon", size="xs", fw=600, c="#A3AED0"),
+                        dmc.Text("Colocation", size="xs", fw=600, c="#A3AED0"),
                         dmc.Text(f"{coloc_free}U boş", size="xs", c="#667085"),
                     ]),
                     dmc.Stack(gap=6, justify="center", children=[

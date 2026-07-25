@@ -38,6 +38,6 @@ def test_colocation_section_registered():
             break
 
     assert colocation_section is not None
-    assert colocation_section.name == "Kolokasyon"
+    assert colocation_section.name == "Colocation"
     assert colocation_section.resource_type == "section"
     assert colocation_section.sort_order == 75
