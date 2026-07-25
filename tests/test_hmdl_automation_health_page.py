@@ -54,22 +54,33 @@ def test_automation_health_page_builds(mock_ah):
 
 
 @patch("src.pages.settings.integrations.hmdl_automation_health.api.get_hmdl_automation_health")
-def test_page_renders_data_collection_freshness_section(mock_ah):
+def test_page_renders_family_rollups(mock_ah):
     data = dict(MOCK_AH)
-    data["data_sources"] = [
-        {"key": "vmware_datastore_metrics", "label": "VMware Datastore Metrics",
-         "cadence": "public.raw_vmware_datastore_metrics_agg",
-         "last_run_at": "2026-07-16T11:08:40+00:00", "age_hours": 240.0,
-         "status": "dead", "warn_hours": 26, "dead_hours": 50, "extra": {}},
-        {"key": "vmware_clusters", "label": "VMware Clusters", "cadence": "public.cluster_metrics",
-         "last_run_at": "2026-07-26T00:00:00+00:00", "age_hours": 1.0,
-         "status": "fresh", "warn_hours": 26, "dead_hours": 50, "extra": {}},
+    data["data_status"] = "ok"
+    data["data_counts"] = {"fresh": 3, "stale": 0, "dead": 2, "unknown": 0, "alert": 2}
+    data["data_families"] = [
+        {"family": "VMware", "counts": {"fresh": 1, "stale": 0, "dead": 2, "unknown": 0, "alert": 2},
+         "sources": [{"key": "raw_vmware_datastore_metrics_agg", "label": "VMware Datastore Metrics",
+                      "cadence": "public.raw_vmware_datastore_metrics_agg", "last_run_at": None,
+                      "age_hours": 240.0, "status": "dead", "warn_hours": 26, "dead_hours": 50, "extra": {}}]},
+        {"family": "Nutanix", "counts": {"fresh": 2, "stale": 0, "dead": 0, "unknown": 0, "alert": 0},
+         "sources": []},
     ]
-    data["data_counts"] = {"fresh": 1, "stale": 0, "dead": 1, "unknown": 0, "alert": 1}
     mock_ah.return_value = data
     text = str(page.build_layout())
     assert "Data Collection Freshness" in text
+    assert "VMware" in text and "Nutanix" in text
     assert "VMware Datastore Metrics" in text
+
+
+@patch("src.pages.settings.integrations.hmdl_automation_health.api.get_hmdl_automation_health")
+def test_page_shows_computing_state(mock_ah):
+    data = dict(MOCK_AH)
+    data["data_status"] = "computing"
+    data["data_families"] = []
+    data["data_counts"] = {"fresh": 0, "stale": 0, "dead": 0, "unknown": 0, "alert": 0}
+    mock_ah.return_value = data
+    assert "hesaplan" in str(page.build_layout()).lower()
 
 
 @patch("src.pages.settings.integrations.hmdl_automation_health.api.get_hmdl_automation_health")

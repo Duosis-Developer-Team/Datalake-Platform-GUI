@@ -88,8 +88,9 @@ def build_layout(search: str | None = None) -> html.Div:
     proxies = data.get("proxies") or []
     psum = data.get("proxy_summary") or {}
     gaps = data.get("data_gaps") or {}
-    data_sources = data.get("data_sources") or []
+    data_families = data.get("data_families") or []
     data_counts = data.get("data_counts") or {}
+    data_status = data.get("data_status") or "computing"
 
     # Headline alert covers BOTH schedule (automations) and data freshness, so a
     # dead data flow (e.g. datastore stale) shows up even if the job ran.
@@ -129,21 +130,43 @@ def build_layout(search: str | None = None) -> html.Div:
 
     data_dead = int(data_counts.get("dead") or 0)
     data_stale = int(data_counts.get("stale") or 0)
+
+    def _family_card(fam: dict):
+        c = fam.get("counts") or {}
+        dead, stale, fresh = int(c.get("dead") or 0), int(c.get("stale") or 0), int(c.get("fresh") or 0)
+        color = "red" if dead else ("orange" if stale else "green")
+        problems = [s for s in (fam.get("sources") or []) if s.get("status") in ("dead", "stale")]
+        return dmc.Paper(
+            p="md", withBorder=True, radius="md",
+            children=[
+                dmc.Group(justify="space-between", align="center", children=[
+                    dmc.Text(fam.get("family") or "—", fw=700),
+                    dmc.Badge(f"{dead} ölü · {stale} bayat · {fresh} taze", color=color, variant="light"),
+                ]),
+                dmc.Stack(gap=6, mt="xs", children=[_automation_card(s) for s in problems]
+                          or [dmc.Text("Tümü taze.", size="xs", c="dimmed")]),
+            ],
+        )
+
+    if data_status == "computing":
+        data_body = dmc.Text("Veri tazeliği hesaplanıyor… birazdan yenileyin.", size="sm", c="dimmed")
+    else:
+        data_body = dmc.SimpleGrid(
+            cols={"base": 1, "md": 2, "lg": 3}, spacing="md",
+            children=[_family_card(f) for f in data_families]
+            or [dmc.Text("Veri kaynağı bilgisi yok (hmdl-api erişilemiyor).", size="sm", c="dimmed")],
+        )
+
     data_sources_section = dmc.Paper(
         p="lg", withBorder=True, radius="md", mb="lg",
         children=[
             section_header(
                 "Data Collection Freshness",
-                "Toplanan verinin tazeliği — 'iş çalıştı' değil, 'veri gerçekten geldi mi'. "
+                "Toplanan verinin aile bazında tazeliği — 'iş çalıştı' değil, 'veri geldi mi'. "
                 f"{data_dead} ölü · {data_stale} bayat.",
                 icon="solar:database-bold-duotone",
             ),
-            dmc.SimpleGrid(
-                cols={"base": 1, "md": 2, "lg": 3},
-                spacing="md",
-                children=[_automation_card(d) for d in data_sources]
-                or [dmc.Text("Veri kaynağı bilgisi yok (hmdl-api erişilemiyor).", size="sm", c="dimmed")],
-            ),
+            data_body,
         ],
     )
 
