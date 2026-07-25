@@ -2535,9 +2535,11 @@ def _build_physical_inventory_dc_tab(phys_inv: dict):
 
 
 def build_colocation_tab(coloc: dict):
-    """Colocation tab: DC used-U breakdown summary + dedicated-customer footprint."""
+    """Colocation tab: DC used-U breakdown summary + dedicated-customer footprint
+    + internal-resource footprint."""
     agg = (coloc or {}).get("aggregate", {}) or {}
     customers = (coloc or {}).get("customers", []) or []
+    internal = (coloc or {}).get("internal", []) or []
 
     summary = build_colocation_summary(agg)
 
@@ -2560,6 +2562,21 @@ def build_colocation_tab(coloc: dict):
         table = dmc.Text("No dedicated (external customer) colocation devices found in this DC.",
                          size="sm", c="#98A2B3")
 
+    if internal:
+        int_header = html.Tr(children=[html.Th(h) for h in ("Resource", "Rack", "Used U")])
+        int_body = []
+        for r in internal:
+            int_body.append(html.Tr(children=[
+                html.Td(r.get("tenant", "")),
+                html.Td(", ".join(r.get("racks", []) or [])),
+                html.Td(f"{int(r.get('used_u') or 0):,}"),
+            ]))
+        internal_table = dmc.Table(children=[html.Thead(int_header), html.Tbody(int_body)],
+                                   striped=True, highlightOnHover=True)
+    else:
+        internal_table = dmc.Text("No internal (Bulutistan) colocation devices found in this DC.",
+                                  size="sm", c="#98A2B3")
+
     return dmc.Stack(gap="lg", children=[
         html.Div(className="nexus-card", style={"padding": "20px"}, children=[
             _section_title("Colocation", "Rack U occupancy and dedicated customers"),
@@ -2568,6 +2585,10 @@ def build_colocation_tab(coloc: dict):
         html.Div(className="nexus-card", style={"padding": "20px"}, children=[
             _section_title("Dedicated Customers", "Device tenant → CRM match"),
             html.Div(style={"overflowX": "auto"}, children=table),
+        ]),
+        html.Div(className="nexus-card", style={"padding": "20px"}, children=[
+            _section_title("Internal Resources", "Bulutistan-owned rack footprint"),
+            html.Div(style={"overflowX": "auto"}, children=internal_table),
         ]),
     ])
 

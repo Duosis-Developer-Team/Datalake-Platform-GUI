@@ -46,6 +46,27 @@ def test_colocation_tab_english_labels_and_summary():
     assert "External 149U" in text        # summary component embedded
 
 
+def test_colocation_tab_renders_internal_resources_table():
+    payload = {
+        "aggregate": {"total_u": 1000, "used_u": 600, "free_u": 400, "rack_count": 10,
+                      "external_u": 149, "internal_u": 300, "untagged_u": 151,
+                      "external_customer_count": 1},
+        "customers": [
+            {"tenant": "Boyner", "crm_account_name": None, "match_status": "unmatched",
+             "racks": ["122"], "used_u": 85},
+        ],
+        "internal": [
+            {"tenant": "Bulutistan - Virtualization", "racks": ["1", "2"], "used_u": 224},
+            {"tenant": "Bulutistan - Linux TEAM", "racks": ["3"], "used_u": 121},
+        ],
+        "racks": [],
+    }
+    text = str(build_colocation_tab(payload))
+    assert "Internal Resources" in text
+    assert "Bulutistan - Virtualization" in text and "224" in text
+    assert "Resource" in text            # internal table header
+
+
 def test_dc_view_exposes_colo_root_when_eager():
     # build_dc_view always fetches get_dc_details in batch1 regardless of which
     # tab is eager, so it needs a minimally valid payload (meta.name etc.) —

@@ -51,3 +51,26 @@ def build_customer_footprint(
             entry["racks"].append(rack_name)
         entry["used_u"] += max(used, 0)
     return sorted(by_tenant.values(), key=lambda e: (-e["used_u"], e["tenant"]))
+
+
+def build_internal_footprint(tenant_rows: Sequence[dict]) -> list[dict]:
+    """Group EXACT per-(rack, tenant) U rows for Bulutistan-INTERNAL tenants into
+    per-resource footprints. Mirror of build_customer_footprint but keeps only
+    internal tenants (is_internal_tenant) and carries no CRM columns — internal
+    gear does not map to a CRM account. Untagged/blank tenants are excluded.
+    """
+    by_tenant: dict[str, dict] = {}
+    for row in tenant_rows or []:
+        tenant = row.get("tenant_name")
+        if not tenant or not is_internal_tenant(tenant):
+            continue
+        rack_name = row.get("rack_name")
+        used = int(row.get("used_u") or 0)
+        entry = by_tenant.get(tenant)
+        if entry is None:
+            entry = {"tenant": tenant, "racks": [], "used_u": 0, "dc": row.get("dc")}
+            by_tenant[tenant] = entry
+        if rack_name and rack_name not in entry["racks"]:
+            entry["racks"].append(rack_name)
+        entry["used_u"] += max(used, 0)
+    return sorted(by_tenant.values(), key=lambda e: (-e["used_u"], e["tenant"]))

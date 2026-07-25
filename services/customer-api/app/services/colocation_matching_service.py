@@ -10,7 +10,7 @@ from shared.colocation.occupancy import (
     tenant_occupancy_rows,
     used_u_breakdown,
 )
-from shared.colocation.matching import build_customer_footprint
+from shared.colocation.matching import build_customer_footprint, build_internal_footprint
 from app.db.queries import service_mapping as sm
 
 logger = logging.getLogger(__name__)
@@ -71,4 +71,5 @@ class ColocationMatchingService:
             "external_customer_count": int(breakdown.get("external_customer_count") or 0),
         })
         customers = build_customer_footprint(tenant_rows, self._alias_index())
-        return {"aggregate": aggregate, "customers": customers, "racks": rows}
+        internal = build_internal_footprint(tenant_rows)
+        return {"aggregate": aggregate, "customers": customers, "internal": internal, "racks": rows}

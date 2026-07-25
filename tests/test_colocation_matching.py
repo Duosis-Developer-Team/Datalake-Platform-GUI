@@ -68,6 +68,29 @@ def test_footprint_sorted_by_used_u_desc():
     assert [e["tenant"] for e in out] == ["BigCo", "SmallCo"]
 
 
+def test_internal_footprint_keeps_only_internal_tenants():
+    rows = [
+        {"dc": "DC13", "rack_name": "1", "tenant_name": "Bulutistan - Virtualization", "used_u": 20},
+        {"dc": "DC13", "rack_name": "2", "tenant_name": "Bulutistan - Virtualization", "used_u": 5},
+        {"dc": "DC13", "rack_name": "1", "tenant_name": "Boyner", "used_u": 10},   # external -> excluded
+        {"dc": "DC13", "rack_name": "3", "tenant_name": "", "used_u": 9},          # untagged -> excluded
+    ]
+    out = m.build_internal_footprint(rows)
+    assert [e["tenant"] for e in out] == ["Bulutistan - Virtualization"]
+    assert out[0]["used_u"] == 25            # 20 + 5, exact
+    assert sorted(out[0]["racks"]) == ["1", "2"]
+    assert "crm_accountid" not in out[0]     # internal rows carry no CRM columns
+
+
+def test_internal_footprint_sorted_by_used_u_desc():
+    rows = [
+        {"dc": "DC13", "rack_name": "1", "tenant_name": "Bulut Broker", "used_u": 5},
+        {"dc": "DC13", "rack_name": "2", "tenant_name": "Bulutistan - Linux TEAM", "used_u": 50},
+    ]
+    out = m.build_internal_footprint(rows)
+    assert [e["tenant"] for e in out] == ["Bulutistan - Linux TEAM", "Bulut Broker"]
+
+
 def test_footprint_skips_blank_tenant_and_zero_or_null_u():
     rows = [
         {"dc": "DC13", "rack_name": "1", "tenant_name": "", "used_u": 9},

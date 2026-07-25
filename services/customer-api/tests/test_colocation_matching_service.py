@@ -81,3 +81,29 @@ def test_get_colocation_aggregate_includes_used_u_breakdown():
     assert agg["internal_u"] == 481
     assert agg["untagged_u"] == 648
     assert agg["external_customer_count"] == 5
+
+
+def test_get_colocation_returns_internal_footprint():
+    customer = MagicMock()
+    webui = MagicMock()
+    webui.is_available = False
+    svc = ColocationMatchingService(customer_service=customer, webui=webui)
+
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    conn.cursor.return_value.__enter__.return_value = MagicMock()
+    customer._get_connection.return_value = conn
+
+    with patch("app.services.colocation_matching_service.occupancy_rows", return_value=_rows()), \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows", return_value=_tenant_rows()), \
+         patch("app.services.colocation_matching_service.used_u_breakdown",
+               return_value={"external_u": 149, "internal_u": 481, "untagged_u": 648,
+                             "external_customer_count": 5}):
+        out = svc.get_colocation("DC13")
+
+    internal = {r["tenant"]: r for r in out["internal"]}
+    # _tenant_rows() has "Bulutistan - Linux TEAM" (internal) with 15U in rack 116
+    assert "Bulutistan - Linux TEAM" in internal
+    assert internal["Bulutistan - Linux TEAM"]["used_u"] == 15
+    # external tenants must NOT appear in the internal list
+    assert "Boyner" not in internal and "AytemizBank" not in internal
