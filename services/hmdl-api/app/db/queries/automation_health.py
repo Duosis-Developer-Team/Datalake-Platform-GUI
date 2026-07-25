@@ -143,6 +143,11 @@ def _data_sources() -> tuple[list[dict[str, Any]], dict[str, int]]:
         )
         ts = r.get("ts") if r else None
         age = float(r["age_hours"]) if (r and r.get("age_hours") is not None) else None
+        # Naive timestamps (some tables store local time) can read slightly ahead
+        # of now() → a small negative age. That still means "just collected", so
+        # clamp to 0 for a clean display; staleness is always positive.
+        if age is not None and age < 0:
+            age = 0.0
         rows.append(ah.build_data_source_row(
             key=key, label=label, table=table,
             last_data_at=ts, age_hours=age,
