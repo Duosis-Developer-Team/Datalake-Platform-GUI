@@ -26,3 +26,23 @@ def test_sub_nav_no_badge_when_no_alert(mock_can_view, mock_ah):
     nav = shell._sub_nav(1, "/administration/integrations/hmdl")
     assert nav is not None  # nav still renders
     assert _BADGE_ID not in str(nav)  # but no badge when nothing is stale
+
+
+def test_combined_alert_count_sums_schedule_and_data():
+    from src.utils.hmdl_sync_ui import combined_alert_count
+    assert combined_alert_count({"alert": 0}, {"alert": 2}) == 2
+    assert combined_alert_count({"alert": 1}, {"alert": 2}) == 3
+    assert combined_alert_count(None, None) == 0
+
+
+@patch("src.services.api_client.get_hmdl_automation_health")
+@patch("src.auth.permission_service.can_view")
+def test_sub_nav_badge_includes_data_freshness_alert(mock_can_view, mock_ah):
+    # schedule clean (alert 0) but a data flow is dead (data_counts.alert 2) -> badge = 2
+    mock_can_view.return_value = True
+    mock_ah.return_value = {"counts": {"alert": 0, "stale": 0, "dead": 0},
+                            "data_counts": {"alert": 2, "stale": 0, "dead": 2}}
+    nav = shell._sub_nav(1, "/administration/integrations/hmdl/automation-health")
+    rendered = str(nav)
+    assert _BADGE_ID in rendered
+    assert "'children': 2" in rendered or "children=2" in rendered

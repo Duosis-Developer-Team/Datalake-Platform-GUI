@@ -61,6 +61,12 @@ def automation_status_badge(status: str | None) -> dmc.Badge:
     )
 
 
+def combined_alert_count(counts: dict | None, data_counts: dict | None) -> int:
+    """Total staleness alerts = automation schedule alerts + data-freshness alerts,
+    so a data-only outage (e.g. datastore dead) surfaces on the badge/banner too."""
+    return int((counts or {}).get("alert") or 0) + int((data_counts or {}).get("alert") or 0)
+
+
 def staleness_alert_banner(counts: dict, href: str) -> dmc.Alert | None:
     """Red banner when any HMDL automation is stale/dead, linking to Automation Health.
 

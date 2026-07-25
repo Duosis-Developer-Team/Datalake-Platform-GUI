@@ -23,8 +23,16 @@ def build_layout(search: str | None = None) -> html.Div:
     topology = api.get_hmdl_topology()
     summary = api.get_hmdl_sync_summary()
     automation_health = api.get_hmdl_automation_health()
+    _sched = automation_health.get("counts") or {}
+    _data = automation_health.get("data_counts") or {}
+    # Merge schedule + data-freshness so the banner also fires on a data-only outage.
+    _merged_counts = {
+        "alert": int(_sched.get("alert") or 0) + int(_data.get("alert") or 0),
+        "stale": int(_sched.get("stale") or 0) + int(_data.get("stale") or 0),
+        "dead": int(_sched.get("dead") or 0) + int(_data.get("dead") or 0),
+    }
     staleness_banner = staleness_alert_banner(
-        automation_health.get("counts") or {},
+        _merged_counts,
         f"{ADMIN_PREFIX}/integrations/hmdl/automation-health",
     )
 

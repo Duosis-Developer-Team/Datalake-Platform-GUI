@@ -314,12 +314,15 @@ def _top_nav(user_id: int, current_path: str) -> dmc.Group:
 
 
 def _hmdl_alert_count() -> int:
-    """Stale+dead HMDL automation count for the nav staleness badge (0 on any error)."""
+    """Stale+dead count for the nav staleness badge — schedule automations PLUS
+    data-collection freshness, so a data-only outage also lights the badge
+    (0 on any error)."""
     try:
         from src.services import api_client as api
+        from src.utils.hmdl_sync_ui import combined_alert_count
 
-        counts = api.get_hmdl_automation_health().get("counts") or {}
-        return int(counts.get("alert") or 0)
+        ah = api.get_hmdl_automation_health()
+        return combined_alert_count(ah.get("counts"), ah.get("data_counts"))
     except Exception:
         return 0
 
