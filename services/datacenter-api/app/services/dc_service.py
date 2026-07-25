@@ -7536,7 +7536,9 @@ JOIN latest l
         Returns {"racks": [...], "summary": {total_u, used_u, free_u, rack_count}}.
         Each rack: rack_id, rack_name, dc, hall, capacity_u, used_u, free_u, tenants[].
         """
-        empty = {"racks": [], "summary": {"total_u": 0, "used_u": 0, "free_u": 0, "rack_count": 0}}
+        empty = {"racks": [], "summary": {"total_u": 0, "used_u": 0, "free_u": 0, "rack_count": 0,
+                                          "external_u": 0, "internal_u": 0, "untagged_u": 0,
+                                          "external_customer_count": 0}}
         if not dc_code or not dc_code.strip():
             return empty
         code = dc_code.strip()
@@ -7550,11 +7552,18 @@ JOIN latest l
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     rows = coloc_occ.occupancy_rows(cur, dc_pattern=pattern)
+                    breakdown = coloc_occ.used_u_breakdown(cur, dc_pattern=pattern)
             agg = coloc_occ.aggregate_by_dc(rows)
             total = {"total_u": 0, "used_u": 0, "free_u": 0, "rack_count": 0}
             for dc_agg in agg.values():
                 for k in total:
                     total[k] += dc_agg[k]
+            total.update({
+                "external_u": int(breakdown.get("external_u") or 0),
+                "internal_u": int(breakdown.get("internal_u") or 0),
+                "untagged_u": int(breakdown.get("untagged_u") or 0),
+                "external_customer_count": int(breakdown.get("external_customer_count") or 0),
+            })
             return {"racks": rows, "summary": total}
 
         try:
