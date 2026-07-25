@@ -27,6 +27,25 @@ def test_build_colocation_tab_renders_kpis_and_customers():
     assert "AytemizBank" in text
 
 
+def test_colocation_tab_english_labels_and_summary():
+    payload = {
+        "aggregate": {"total_u": 1000, "used_u": 600, "free_u": 400, "rack_count": 10,
+                      "external_u": 149, "internal_u": 300, "untagged_u": 151,
+                      "external_customer_count": 1},
+        "customers": [
+            {"tenant": "AytemizBank", "crm_account_name": "Aytemiz", "match_status": "matched",
+             "racks": ["209"], "used_u": 29, "crm_accountid": "A-1"},
+        ],
+        "racks": [],
+    }
+    text = str(build_colocation_tab(payload))
+    assert "Dedicated Customers" in text
+    assert "Used U (own)" in text
+    assert "CRM Account" in text
+    assert "Kolokasyon" not in text and "Müşteri" not in text and "Dedike" not in text
+    assert "External 149U" in text        # summary component embedded
+
+
 def test_dc_view_exposes_colo_root_when_eager():
     # build_dc_view always fetches get_dc_details in batch1 regardless of which
     # tab is eager, so it needs a minimally valid payload (meta.name etc.) —

@@ -53,6 +53,7 @@ from src.components.charts import (
 )
 from src.components.charts import create_horizontal_bar_chart, create_premium_horizontal_bar_chart, create_capacity_area_chart, create_grouped_bar_chart, create_storage_breakdown_chart
 from src.components.dc_loading import build_dc_loading_shell, build_dc_tab_loading_shell
+from src.components.colocation_summary import build_colocation_summary
 from src.components.sellable_constraint_viz import (
     fmt_tl_for_card,
     sellable_constraint_badges,
@@ -2534,24 +2535,15 @@ def _build_physical_inventory_dc_tab(phys_inv: dict):
 
 
 def build_colocation_tab(coloc: dict):
-    """Kolokasyon tab: DC free/used-U KPIs + dedicated-customer footprint table."""
+    """Colocation tab: DC used-U breakdown summary + dedicated-customer footprint."""
     agg = (coloc or {}).get("aggregate", {}) or {}
     customers = (coloc or {}).get("customers", []) or []
-    total_u = int(agg.get("total_u") or 0)
-    used_u = int(agg.get("used_u") or 0)
-    free_u = int(agg.get("free_u") or 0)
-    pct = round(used_u / total_u * 100) if total_u else 0
 
-    kpis = dmc.SimpleGrid(cols=4, spacing="lg", style={"marginTop": "12px"}, children=[
-        _kpi("Toplam U", f"{total_u:,}", _DC_ICONS.get("total_devices", "solar:server-bold-duotone"), color="indigo", stagger=1),
-        _kpi("Kullanılan U", f"{used_u:,}", _DC_ICONS.get("device_roles", "solar:server-bold-duotone"), color="violet", stagger=2),
-        _kpi("Boş U", f"{free_u:,}", _DC_ICONS.get("top_role", "solar:server-bold-duotone"), color="teal", stagger=3),
-        _kpi("Doluluk", f"%{pct}", _DC_ICONS.get("manufacturers", "solar:server-bold-duotone"), color="grape", stagger=4),
-    ])
+    summary = build_colocation_summary(agg)
 
     if customers:
         header = html.Tr(children=[html.Th(h) for h in
-                                   ("Müşteri", "CRM Hesabı", "Eşleşme", "Rack", "Kullanılan U (müşteriye ait)")])
+                                   ("Customer", "CRM Account", "Match", "Rack", "Used U (own)")])
         body = []
         for c in customers:
             badge_color = "green" if c.get("match_status") == "matched" else "orange"
@@ -2565,16 +2557,16 @@ def build_colocation_tab(coloc: dict):
         table = dmc.Table(children=[html.Thead(header), html.Tbody(body)],
                           striped=True, highlightOnHover=True)
     else:
-        table = dmc.Text("Bu DC'de dedike (dış müşteri) kolokasyon cihazı bulunamadı.",
+        table = dmc.Text("No dedicated (external customer) colocation devices found in this DC.",
                          size="sm", c="#98A2B3")
 
     return dmc.Stack(gap="lg", children=[
         html.Div(className="nexus-card", style={"padding": "20px"}, children=[
-            _section_title("Kolokasyon", "Rack U doluluğu ve dedike müşteriler"),
-            kpis,
+            _section_title("Colocation", "Rack U occupancy and dedicated customers"),
+            summary,
         ]),
         html.Div(className="nexus-card", style={"padding": "20px"}, children=[
-            _section_title("Dedike Müşteriler", "Cihaz tenant → CRM eşleştirmesi"),
+            _section_title("Dedicated Customers", "Device tenant → CRM match"),
             html.Div(style={"overflowX": "auto"}, children=table),
         ]),
     ])
@@ -5888,7 +5880,7 @@ def render_dc_loading_page(
         dmc.TabsTab("Physical Inventory", value="phys-inv") if _sec("sec:dc_view:phys_inv") else None,
         dmc.TabsTab("Network", value="network") if _sec("sec:dc_view:network") else None,
         dmc.TabsTab("Availability", value="avail") if _sec("sec:dc_view:availability") else None,
-        dmc.TabsTab("Kolokasyon", value="colo") if _sec("sec:dc_view:colocation") else None,
+        dmc.TabsTab("Colocation", value="colo") if _sec("sec:dc_view:colocation") else None,
     ]
     loc_badge = dc_loc or "Loading…"
     shell_tab = resolved_tab if resolved_tab == "summary" else "summary"
