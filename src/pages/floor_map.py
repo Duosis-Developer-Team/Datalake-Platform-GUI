@@ -21,6 +21,8 @@ from dash import html, dcc
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 
+from src.components.colocation_summary import build_colocation_summary
+
 _logger = logging.getLogger(__name__)
 
 # ── Rack unit dimensions ────────────────────────────────────────────────────
@@ -560,6 +562,14 @@ def build_floor_map_layout(dc_id, dc_name, racks):
     inactive_count = len(racks) - active_count - planned_count
     fig = build_floor_map_figure(racks, dc_id=dc_id)
 
+    # DC-level colocation usage breakdown (External / Internal / Untagged).
+    from src.services import api_client as api
+    try:
+        _coloc_summary = (api.get_dc_racks_occupancy(dc_id) or {}).get("summary") or {}
+    except Exception:  # noqa: BLE001
+        _coloc_summary = {}
+    colocation_strip = build_colocation_summary(_coloc_summary)
+
     halls = {}
     for r in racks:
         h = r.get("hall_name") or "Main Hall"
@@ -638,6 +648,13 @@ def build_floor_map_layout(dc_id, dc_name, racks):
                         *hall_badges,
                     ]),
                 ],
+            ),
+
+            # ── Colocation summary (full-width strip)
+            html.Div(
+                className="nexus-card",
+                style={"padding": "16px", "marginTop": "12px"},
+                children=[colocation_strip],
             ),
 
             # ── Body

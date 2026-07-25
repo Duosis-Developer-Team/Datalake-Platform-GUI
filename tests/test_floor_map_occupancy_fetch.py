@@ -37,3 +37,15 @@ def test_fetch_rack_occupancy_skips_nameless_racks():
         occ = fm._fetch_rack_occupancy("DC13", [{"name": ""}, {"id": "x"}])
     assert occ == {}
     m.assert_not_called()
+
+
+def test_floor_map_layout_has_colocation_summary_strip():
+    bulk = {"racks": [], "summary": {
+        "total_u": 100, "used_u": 60, "free_u": 40, "rack_count": 3,
+        "external_u": 20, "internal_u": 25, "untagged_u": 15, "external_customer_count": 2,
+    }}
+    with patch("src.services.api_client.get_dc_racks_occupancy", return_value=bulk):
+        layout = fm.build_floor_map_layout("DC13", "DC13", racks=[])
+    text = str(layout)
+    assert "External 20U (2 customers)" in text
+    assert "Used U" in text
