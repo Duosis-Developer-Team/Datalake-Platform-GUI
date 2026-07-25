@@ -64,6 +64,36 @@ def build_automation_row(
     }
 
 
+def build_data_source_row(
+    *,
+    key: str,
+    label: str,
+    table: str,
+    last_data_at: datetime | None,
+    age_hours: float | None,
+    warn_hours: float,
+    dead_hours: float,
+) -> dict:
+    """Assemble one DATA-source freshness row (same shape as an automation row).
+
+    Unlike an automation, a data source's freshness is the age of the newest row
+    in the collected data table (``last_data_at``). The age is computed in SQL
+    (the tables mix naive/aware timestamps) and passed in, so classification is
+    tz-safe. ``cadence`` carries the source table for the UI.
+    """
+    return {
+        "key": key,
+        "label": label,
+        "cadence": f"public.{table}",
+        "last_run_at": last_data_at,
+        "age_hours": age_hours,
+        "status": classify(age_hours, warn_hours, dead_hours),
+        "warn_hours": warn_hours,
+        "dead_hours": dead_hours,
+        "extra": {},
+    }
+
+
 def overall_status_counts(statuses: list[str]) -> dict[str, int]:
     """Tally statuses; ``alert`` = stale + dead (what the banner/badge shows)."""
     counts = {

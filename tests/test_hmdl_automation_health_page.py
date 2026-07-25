@@ -54,6 +54,25 @@ def test_automation_health_page_builds(mock_ah):
 
 
 @patch("src.pages.settings.integrations.hmdl_automation_health.api.get_hmdl_automation_health")
+def test_page_renders_data_collection_freshness_section(mock_ah):
+    data = dict(MOCK_AH)
+    data["data_sources"] = [
+        {"key": "vmware_datastore_metrics", "label": "VMware Datastore Metrics",
+         "cadence": "public.raw_vmware_datastore_metrics_agg",
+         "last_run_at": "2026-07-16T11:08:40+00:00", "age_hours": 240.0,
+         "status": "dead", "warn_hours": 26, "dead_hours": 50, "extra": {}},
+        {"key": "vmware_clusters", "label": "VMware Clusters", "cadence": "public.cluster_metrics",
+         "last_run_at": "2026-07-26T00:00:00+00:00", "age_hours": 1.0,
+         "status": "fresh", "warn_hours": 26, "dead_hours": 50, "extra": {}},
+    ]
+    data["data_counts"] = {"fresh": 1, "stale": 0, "dead": 1, "unknown": 0, "alert": 1}
+    mock_ah.return_value = data
+    text = str(page.build_layout())
+    assert "Data Collection Freshness" in text
+    assert "VMware Datastore Metrics" in text
+
+
+@patch("src.pages.settings.integrations.hmdl_automation_health.api.get_hmdl_automation_health")
 def test_automation_health_page_builds_when_api_down(mock_ah):
     # api_client returns the empty shape when hmdl-api is unavailable.
     mock_ah.return_value = {

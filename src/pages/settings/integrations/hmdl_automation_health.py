@@ -88,8 +88,12 @@ def build_layout(search: str | None = None) -> html.Div:
     proxies = data.get("proxies") or []
     psum = data.get("proxy_summary") or {}
     gaps = data.get("data_gaps") or {}
+    data_sources = data.get("data_sources") or []
+    data_counts = data.get("data_counts") or {}
 
-    alert = int(counts.get("alert") or 0)
+    # Headline alert covers BOTH schedule (automations) and data freshness, so a
+    # dead data flow (e.g. datastore stale) shows up even if the job ran.
+    alert = int(counts.get("alert") or 0) + int(data_counts.get("alert") or 0)
 
     kpis = dmc.SimpleGrid(
         cols={"base": 2, "md": 4},
@@ -119,6 +123,26 @@ def build_layout(search: str | None = None) -> html.Div:
                 spacing="md",
                 children=[_automation_card(a) for a in automations]
                 or [dmc.Text("Otomasyon verisi yok (hmdl-api erişilemiyor).", size="sm", c="dimmed")],
+            ),
+        ],
+    )
+
+    data_dead = int(data_counts.get("dead") or 0)
+    data_stale = int(data_counts.get("stale") or 0)
+    data_sources_section = dmc.Paper(
+        p="lg", withBorder=True, radius="md", mb="lg",
+        children=[
+            section_header(
+                "Data Collection Freshness",
+                "Toplanan verinin tazeliği — 'iş çalıştı' değil, 'veri gerçekten geldi mi'. "
+                f"{data_dead} ölü · {data_stale} bayat.",
+                icon="solar:database-bold-duotone",
+            ),
+            dmc.SimpleGrid(
+                cols={"base": 1, "md": 2, "lg": 3},
+                spacing="md",
+                children=[_automation_card(d) for d in data_sources]
+                or [dmc.Text("Veri kaynağı bilgisi yok (hmdl-api erişilemiyor).", size="sm", c="dimmed")],
             ),
         ],
     )
@@ -197,6 +221,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 ),
                 kpis,
                 automations_section,
+                data_sources_section,
                 proxy_section,
                 gaps_section,
             ]

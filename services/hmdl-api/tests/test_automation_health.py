@@ -5,9 +5,37 @@ from datetime import datetime, timezone
 from app.services.automation_health import (
     age_in_hours,
     build_automation_row,
+    build_data_source_row,
     classify,
     overall_status_counts,
 )
+
+
+def test_build_data_source_row_uses_precomputed_age_and_classifies():
+    # A data table 240h (10 days) stale -> dead against 26/50 thresholds.
+    row = build_data_source_row(
+        key="vmware_datastore_metrics",
+        label="VMware Datastore Metrics",
+        table="raw_vmware_datastore_metrics_agg",
+        last_data_at=datetime(2026, 7, 16, 11, 8, tzinfo=timezone.utc),
+        age_hours=240.0,
+        warn_hours=26.0,
+        dead_hours=50.0,
+    )
+    assert row["key"] == "vmware_datastore_metrics"
+    assert row["status"] == "dead"
+    assert row["age_hours"] == 240.0
+    assert row["cadence"] == "public.raw_vmware_datastore_metrics_agg"
+    assert row["warn_hours"] == 26.0 and row["dead_hours"] == 50.0
+
+
+def test_build_data_source_row_unknown_when_no_data():
+    row = build_data_source_row(
+        key="x", label="X", table="t", last_data_at=None, age_hours=None,
+        warn_hours=26.0, dead_hours=50.0,
+    )
+    assert row["status"] == "unknown"
+    assert row["last_run_at"] is None
 
 
 def test_classify_fresh_below_warn():

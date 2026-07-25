@@ -240,6 +240,10 @@ class AutomationHealthResponse(BaseModel):
     proxies: list[ProxyHealthRow] = Field(default_factory=list)
     proxy_summary: ProxySummary = Field(default_factory=ProxySummary)
     data_gaps: DataGaps = Field(default_factory=DataGaps)
+    # Data-collection freshness (newest-row age per collected DATA table) — the
+    # complement to the AWX job-log automations above.
+    data_sources: list[AutomationRow] = Field(default_factory=list)
+    data_counts: AutomationCounts = Field(default_factory=AutomationCounts)
 
 
 # --- Datalake coverage (cluster / IBM host present-absent) ---

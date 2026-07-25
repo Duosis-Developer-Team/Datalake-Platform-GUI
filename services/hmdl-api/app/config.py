@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     ah_checks_dead_hours: float = float(_env("HMDL_AH_CHECKS_DEAD_H", default="50"))
     ah_recon_warn_hours: float = float(_env("HMDL_AH_RECON_WARN_H", default="48"))
     ah_recon_dead_hours: float = float(_env("HMDL_AH_RECON_DEAD_H", default="120"))
+    # Data-collection freshness: age of the newest row in each collected data
+    # table (not the AWX job log). Data should land at least daily.
+    ah_data_warn_hours: float = float(_env("HMDL_AH_DATA_WARN_H", default="26"))
+    ah_data_dead_hours: float = float(_env("HMDL_AH_DATA_DEAD_H", default="50"))
 
     hub_dc_code: str = _env("HMDL_HUB_DC", default="DC13")
     proxy_assignment_path: str = _env(

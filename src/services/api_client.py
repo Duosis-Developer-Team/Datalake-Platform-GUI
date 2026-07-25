@@ -3239,6 +3239,8 @@ _EMPTY_HMDL_AUTOMATION_HEALTH: dict[str, Any] = {
     "proxies": [],
     "proxy_summary": {"total": 0, "fresh": 0, "stale": 0, "dead": 0},
     "data_gaps": {"cluster_missing": 0, "ibm_missing": 0, "by_source": {}},
+    "data_sources": [],
+    "data_counts": {"fresh": 0, "stale": 0, "dead": 0, "unknown": 0, "alert": 0},
 }
 
 

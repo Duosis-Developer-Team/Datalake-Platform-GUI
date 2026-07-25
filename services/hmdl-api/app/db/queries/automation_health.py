@@ -113,6 +113,45 @@ def _data_gaps() -> dict[str, Any]:
     }
 
 
+# Collected DATA tables the dashboards actually read (public schema). Freshness =
+# age of the newest row. This is separate from the AWX job logs above: a job can
+# report "fresh" while its on-proxy NiFi data flow is dead (e.g. the VMware
+# datastore flow stopped 2026-07-16 → Overview storage 0%).
+_DATA_SOURCES = [
+    ("vmware_clusters", "VMware Clusters", "cluster_metrics", "collection_time"),
+    ("nutanix_clusters", "Nutanix Clusters", "nutanix_cluster_metrics", "collection_time"),
+    ("vmware_datacenter", "VMware Datacenter", "datacenter_metrics", "collection_time"),
+    ("vmware_datastore_metrics", "VMware Datastore Metrics",
+     "raw_vmware_datastore_metrics_agg", "collection_timestamp"),
+    ("vmware_datastore_mounts", "VMware Datastore Mounts",
+     "raw_vmware_datastore_host_mount", "collection_timestamp"),
+    ("ibm_lpar", "IBM LPARs", "ibm_lpar_general", "time"),
+]
+
+
+def _data_sources() -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Freshness of each collected DATA table (age computed in SQL to stay tz-safe
+    across the tables' mixed naive/aware timestamps)."""
+    warn = settings.ah_data_warn_hours
+    dead = settings.ah_data_dead_hours
+    rows: list[dict[str, Any]] = []
+    for key, label, table, col in _DATA_SOURCES:
+        r = pool.fetch_one(
+            f"SELECT max({col}) AS ts, "
+            f"EXTRACT(EPOCH FROM (now() - max({col})))/3600.0 AS age_hours "
+            f"FROM public.{table}"
+        )
+        ts = r.get("ts") if r else None
+        age = float(r["age_hours"]) if (r and r.get("age_hours") is not None) else None
+        rows.append(ah.build_data_source_row(
+            key=key, label=label, table=table,
+            last_data_at=ts, age_hours=age,
+            warn_hours=warn, dead_hours=dead,
+        ))
+    counts = ah.overall_status_counts([r["status"] for r in rows])
+    return rows, counts
+
+
 def build_automation_health() -> dict[str, Any]:
     now = _now()
 
@@ -169,6 +208,7 @@ def build_automation_health() -> dict[str, Any]:
 
     counts = ah.overall_status_counts([a["status"] for a in automations])
     proxies, proxy_summary = _proxy_health(now)
+    data_sources, data_counts = _data_sources()
 
     return {
         "generated_at": now,
@@ -177,4 +217,6 @@ def build_automation_health() -> dict[str, Any]:
         "proxies": proxies,
         "proxy_summary": proxy_summary,
         "data_gaps": _data_gaps(),
+        "data_sources": data_sources,
+        "data_counts": data_counts,
     }
