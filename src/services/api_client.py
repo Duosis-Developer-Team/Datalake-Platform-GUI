@@ -656,6 +656,21 @@ def get_licensed_os_summary(customer: Optional[str] = None, tr: Optional[dict] =
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_LICENSED_OS)
 
 
+_EMPTY_VM_TOPOLOGY: dict[str, Any] = {
+    "dcs": [], "totals": {"dcs": 0, "clusters": 0, "hosts": 0, "vms": 0, "running": 0}}
+
+
+def get_vm_topology(os: bool = False) -> dict:
+    """Deduped DC → Cluster → Host → VM tree (os=True adds per-node OS tally)."""
+    ck = f"api:vm_topology:{'os' if os else 'plain'}"
+
+    def fetch() -> dict:
+        data = _get_json(_get_client_dc(), "/api/v1/vm-topology", params={"os": str(os).lower()})
+        return data if isinstance(data, dict) else _clone(_EMPTY_VM_TOPOLOGY)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_VM_TOPOLOGY)
+
+
 def get_dc_details(dc_id: str, tr: Optional[dict]) -> dict:
     enc = quote(dc_id, safe="")
     ck = f"api:dc_details:{enc}:{_serialize_tr_cache_key(tr)}"

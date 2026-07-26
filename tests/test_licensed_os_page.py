@@ -17,6 +17,37 @@ def test_build_layout_renders_family_counts():
     assert hasattr(layout, "children")
 
 
+def test_build_layout_has_scope_toggle_and_topology():
+    fake = {
+        "families": {"rhel": 3, "suse": 1, "windows": 5, "free": 10, "unknown": 2},
+        "families_running": {"rhel": 2, "suse": 1, "windows": 4, "free": 8, "unknown": 1},
+        "total": 21, "total_running": 16, "unknown_samples": [],
+    }
+    topo = {"dcs": [{"name": "DC13", "counts": {"clusters": 1, "hosts": 1, "vms": 2, "running": 1},
+                     "os": {"windows": 1, "free": 1, "rhel": 0, "suse": 0, "unknown": 0},
+                     "clusters": [{"name": "CL1", "counts": {"hosts": 1, "vms": 2, "running": 1},
+                       "os": {"windows": 1, "free": 1, "rhel": 0, "suse": 0, "unknown": 0},
+                       "hosts": [{"name": "esx1", "counts": {"vms": 2, "running": 1},
+                         "os": {"windows": 1, "free": 1, "rhel": 0, "suse": 0, "unknown": 0},
+                         "vms": [{"name": "web-01", "os_family": "windows", "power_state": "poweredOn"}]}]}]}],
+             "totals": {"dcs": 1, "clusters": 1, "hosts": 1, "vms": 2, "running": 1}}
+    with patch("src.pages.licensed_os.api.get_licensed_os_summary", return_value=fake), \
+         patch("src.pages.licensed_os.api.get_vm_topology", return_value=topo), \
+         patch("src.pages.licensed_os.api.get_customer_list", return_value=[]):
+        text = str(licensed_os.build_layout())
+    assert "licensed-os-scope" in text          # running/all toggle present
+    assert "DC13" in text and "esx1" in text     # topology tree present
+
+
+def test_kpi_cards_switches_running():
+    fake = {"families": {"rhel": 3, "suse": 1, "windows": 5, "free": 10, "unknown": 2},
+            "families_running": {"rhel": 1, "suse": 0, "windows": 2, "free": 3, "unknown": 0}}
+    all_text = str(licensed_os._kpi_cards(fake, "all"))
+    run_text = str(licensed_os._kpi_cards(fake, "running"))
+    assert "5" in all_text          # windows all
+    assert "2" in run_text          # windows running
+
+
 def test_page_module_exposes_shell_and_layout():
     # both entry points the app.py router relies on must exist and be callable
     assert callable(licensed_os.build_layout_shell)

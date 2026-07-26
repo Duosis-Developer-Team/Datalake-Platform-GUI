@@ -9,6 +9,7 @@ from dash import Input, Output, State, callback, dcc, html
 
 from shared.licensing.reconcile import reconcile
 from src.services import api_client as api
+from src.components.topology_tree import build_topology_tree
 
 _PATH = "/licensed-os"
 _LICENSED = [("rhel", "RHEL", "red"), ("suse", "SUSE", "green"),
@@ -88,14 +89,38 @@ def _no_data_banner() -> Any:
     )
 
 
+def _kpi_cards(summary: dict, scope: str):
+    """5 family stat cards from the all-VMs tally (scope='all') or the
+    poweredOn-only tally (scope='running')."""
+    key = "families_running" if scope == "running" else "families"
+    fam = summary.get(key) or summary.get("families") or {}
+    cards = [_stat_card(lbl, int(fam.get(k, 0)), color) for k, lbl, color in _LICENSED]
+    cards.append(_stat_card("Free", int(fam.get("free", 0)), "gray"))
+    cards.append(_stat_card("Unknown", int(fam.get("unknown", 0)), "orange"))
+    return dmc.SimpleGrid(cards, cols=5, spacing="md")
+
+
 def build_layout(visible_sections=None, tr=None) -> html.Div:  # noqa: ARG001 - visible_sections kept for sig parity
     summary = api.get_licensed_os_summary(tr=tr)
     fam = summary.get("families") or {}
     total_detected = sum(int(fam.get(k, 0)) for k in ("rhel", "suse", "windows", "free", "unknown"))
 
-    cards = [_stat_card(lbl, int(fam.get(key, 0)), color) for key, lbl, color in _LICENSED]
-    cards.append(_stat_card("Free", int(fam.get("free", 0)), "gray"))
-    cards.append(_stat_card("Unknown", int(fam.get("unknown", 0)), "orange"))
+    scope_toggle = dmc.SegmentedControl(
+        id="licensed-os-scope",
+        data=[{"label": "Tümü", "value": "all"}, {"label": "Sadece çalışan", "value": "running"}],
+        value="all", size="sm", mb="sm",
+    )
+    kpi_grid = html.Div(id="licensed-os-kpi-grid", children=_kpi_cards(summary, "all"))
+
+    topology = dmc.Card(
+        [
+            dmc.Text("Topoloji — DC → Cluster → Host → VM", fw=600, mb="xs"),
+            dmc.Text("VM'ler tekilleştirilmiş (config_instance_uuid); vCLS hariç.",
+                     size="xs", c="dimmed", mb="sm"),
+            build_topology_tree(api.get_vm_topology(os=True), with_os=True),
+        ],
+        withBorder=True, padding="md", radius="md", mt="md",
+    )
 
     unknown = summary.get("unknown_samples") or []
     unknown_block = dmc.Card(
@@ -126,8 +151,10 @@ def build_layout(visible_sections=None, tr=None) -> html.Div:  # noqa: ARG001 - 
 
     return html.Div([
         dmc.Title("Licensed OS detection", order=2, mb="md"),
-        dmc.SimpleGrid(cards, cols=5, spacing="md"),
+        scope_toggle,
+        kpi_grid,
         _no_data_banner() if total_detected == 0 else None,
+        topology,
         unknown_block,
         customer_select,
         html.Div(id="licensed-os-reconcile-container"),
@@ -147,11 +174,22 @@ def _fill_licensed_os_content(pathname, time_range, visible_sections):
 
 
 @callback(
+    Output("licensed-os-kpi-grid", "children"),
+    Input("licensed-os-scope", "value"),
+    State("app-time-range", "data"),
+)
+def _switch_licensed_os_scope(scope, time_range):
+    """Swap the family KPI cards between all VMs and poweredOn-only."""
+    summary = api.get_licensed_os_summary(tr=time_range)
+    return _kpi_cards(summary, scope or "all")
+
+
+@callback(
     Output("licensed-os-reconcile-container", "children"),
     Input("licensed-os-customer-select", "value"),
     State("app-time-range", "data"),
 )
-def _fill_licensed_os_reconciliation(name, time_range):
+def _fill_licensed_os_reconciliation(name, time_range=None):
     if not name:
         return dash.no_update
     summary = api.get_licensed_os_summary(customer=name, tr=time_range)
