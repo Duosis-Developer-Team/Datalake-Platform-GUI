@@ -31,6 +31,10 @@ WHERE (l.name = %s OR l.parent_name = %s)
 ORDER BY l.name, r.name
 """
 
+# Reads the LIVE NetBox device snapshot (discovery_netbox_inventory_device) — the
+# legacy loki_devices table is stale since 2026-04-12. Joins loki_device_types for
+# u_height so the rack-unit diagram can span each device across its real height
+# (a 42U Exadata fills the rack), matching the floor-map fill coloring.
 DEVICES_BY_RACK_NAME = """
 SELECT DISTINCT ON (d.name)
     d.name,
@@ -41,10 +45,11 @@ SELECT DISTINCT ON (d.name)
     d.status_value,
     d.status_label,
     d.manufacturer_name,
-    d.description
-FROM loki_devices d
+    d.description,
+    dt.u_height
+FROM public.discovery_netbox_inventory_device d
+LEFT JOIN public.loki_device_types dt ON dt.id = d.device_type_id
 WHERE d.rack_name = %s
-  AND d.rack_id IS NOT NULL
 ORDER BY d.name, d.collection_time DESC
 """
 

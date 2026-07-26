@@ -1782,12 +1782,19 @@ def back_to_globe(n_clicks):
 
 def _build_rack_unit_diagram(rack_name, u_height, devices, fill, dark):
     """Render a CSS-based rack unit diagram showing installed devices."""
-    # Build a map: slot -> device (position is bottom U of device)
+    # Build slot -> (device, is_top): a device at `position` spans its full
+    # u_height (pos .. pos+height-1). The bottom slot carries the chip; the
+    # rest continue it. This matches the floor-map fill coloring (a 42U Exadata
+    # fills the whole rack) instead of treating every device as 1U.
     slot_map = {}
     for d in devices:
         pos = d.get("position")
-        if pos is not None:
-            slot_map[int(pos)] = d
+        if pos is None:
+            continue
+        base = int(pos)
+        height = max(int(d.get("u_height") or 1), 1)
+        for off in range(height):
+            slot_map[base + off] = (d, off == 0)
 
     # Device type → visual style
     DEVICE_STYLES = {
@@ -1807,24 +1814,33 @@ def _build_rack_unit_diagram(rack_name, u_height, devices, fill, dark):
                 return val
         return {"bg": "#F9FAFB", "border": "#EAECF0", "color": "#344054", "icon": "solar:cpu-bold-duotone"}
 
-    total_u = max(u_height or 47, max((int(d.get("position") or 0) for d in devices), default=0) + 1)
+    total_u = max(
+        u_height or 47,
+        max((int(d.get("position") or 0) + max(int(d.get("u_height") or 1), 1) - 1
+             for d in devices), default=0),
+    )
     # Show top-down: slot total_u → 1
     rows = []
     u = total_u
     while u >= 1:
-        device = slot_map.get(u)
+        entry = slot_map.get(u)
+        device = entry[0] if entry else None
+        is_top = entry[1] if entry else False
         u_label = html.Div(
             str(u),
             style={"width": "22px", "flexShrink": "0", "textAlign": "right",
                    "color": "#B0B7C3", "fontSize": "9px", "fontFamily": "DM Mono, monospace",
                    "paddingRight": "6px", "lineHeight": "22px"},
         )
-        if device:
+        if device and is_top:
             s = _style_for(device.get("device_type") or device.get("role") or "")
             dev_name = str(device.get("name") or "")
             # Truncate long names
             display_name = dev_name if len(dev_name) <= 28 else dev_name[:25] + "…"
             dtype = str(device.get("device_type") or device.get("role") or "Device")
+            height = max(int(device.get("u_height") or 1), 1)
+            if height > 1:
+                display_name = f"{display_name}  ({height}U)"
             row_content = html.Div(
                 style={
                     "flex": "1", "height": "22px",
@@ -1835,7 +1851,7 @@ def _build_rack_unit_diagram(rack_name, u_height, devices, fill, dark):
                     "gap": "5px", "padding": "0 6px",
                     "cursor": "default",
                 },
-                title=f"{dev_name} — {dtype}",
+                title=f"{dev_name} — {dtype} ({height}U)",
                 children=[
                     DashIconify(icon=s["icon"], width=11, color=s["color"]),
                     html.Span(display_name, style={
@@ -1846,6 +1862,16 @@ def _build_rack_unit_diagram(rack_name, u_height, devices, fill, dark):
                     }),
                 ],
             )
+        elif device:
+            # continuation slot of a multi-U device — same colour, no label
+            s = _style_for(device.get("device_type") or device.get("role") or "")
+            row_content = html.Div(style={
+                "flex": "1", "height": "22px",
+                "background": s["bg"],
+                "borderLeft": f"1px solid {s['border']}",
+                "borderRight": f"1px solid {s['border']}",
+                "opacity": "0.55",
+            })
         else:
             row_content = html.Div(style={
                 "flex": "1", "height": "22px",
@@ -1860,7 +1886,8 @@ def _build_rack_unit_diagram(rack_name, u_height, devices, fill, dark):
         ))
         u -= 1
 
-    occupied = len([d for d in devices if d.get("position") is not None])
+    # Occupied = distinct U-slots filled (device u_heights), not device count.
+    occupied = len([slot for slot in slot_map if 1 <= slot <= total_u])
 
     return html.Div(children=[
         # Header

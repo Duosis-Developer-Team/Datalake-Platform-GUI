@@ -7657,13 +7657,15 @@ JOIN latest l
                 with conn.cursor() as cur:
                     rows = self._run_rows(cur, drq.DEVICES_BY_RACK_NAME, (rack_name.strip(),))
             columns = ["name", "position", "face", "role", "device_type",
-                       "status_value", "status_label", "manufacturer", "description"]
+                       "status_value", "status_label", "manufacturer", "description", "u_height"]
             devices = []
             for r in (rows or []):
                 d = {}
                 for i, col in enumerate(columns):
                     val = r[i] if i < len(r) else None
-                    d[col] = float(val) if hasattr(val, '__float__') and col == "position" else val
+                    if col in ("position", "u_height") and hasattr(val, "__float__"):
+                        val = float(val)
+                    d[col] = val
                 devices.append(d)
             return {"devices": devices}
 
