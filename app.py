@@ -1796,10 +1796,13 @@ def _build_rack_unit_diagram(rack_name, u_height, devices, fill, dark):
         for off in range(height):
             slot_map[base + off] = (d, off == 0)
 
-    # Device type → visual style
+    # Device ROLE → visual style (role is richer + fully populated in NetBox;
+    # e.g. "MULTI MODE FIBER PATCH PANEL", "HOST", "SAN SWITCH", "FIREWALL").
     DEVICE_STYLES = {
         "patch panel":   {"bg": "#EFF8FF", "border": "#B2DDFF", "color": "#175CD3", "icon": "solar:gamepad-bold-duotone"},
+        "host":          {"bg": "#ECFDF3", "border": "#A9EFC5", "color": "#027A48", "icon": "solar:server-bold-duotone"},
         "server":        {"bg": "#ECFDF3", "border": "#A9EFC5", "color": "#027A48", "icon": "solar:server-bold-duotone"},
+        "firewall":      {"bg": "#FEF3F2", "border": "#FECDCA", "color": "#B42318", "icon": "solar:shield-keyhole-bold-duotone"},
         "switch":        {"bg": "#FDF4FF", "border": "#E9D7FE", "color": "#6941C6", "icon": "solar:routing-bold-duotone"},
         "storage":       {"bg": "#FFF6ED", "border": "#FDD49A", "color": "#B54708", "icon": "solar:hard-drive-bold-duotone"},
         "router":        {"bg": "#F0F9FF", "border": "#B9E6FE", "color": "#026AA2", "icon": "solar:routing-bold-duotone"},
@@ -1807,10 +1810,10 @@ def _build_rack_unit_diagram(rack_name, u_height, devices, fill, dark):
         "ups":           {"bg": "#FFFAEB", "border": "#FEDF89", "color": "#B54708", "icon": "solar:battery-charge-bold-duotone"},
     }
 
-    def _style_for(device_type):
-        dt = (device_type or "").lower()
+    def _style_for(role):
+        r = (role or "").lower()
         for key, val in DEVICE_STYLES.items():
-            if key in dt:
+            if key in r:
                 return val
         return {"bg": "#F9FAFB", "border": "#EAECF0", "color": "#344054", "icon": "solar:cpu-bold-duotone"}
 
@@ -1833,11 +1836,11 @@ def _build_rack_unit_diagram(rack_name, u_height, devices, fill, dark):
                    "paddingRight": "6px", "lineHeight": "22px"},
         )
         if device and is_top:
-            s = _style_for(device.get("device_type") or device.get("role") or "")
+            s = _style_for(device.get("role") or device.get("device_type") or "")
             dev_name = str(device.get("name") or "")
             # Truncate long names
             display_name = dev_name if len(dev_name) <= 28 else dev_name[:25] + "…"
-            dtype = str(device.get("device_type") or device.get("role") or "Device")
+            dtype = str(device.get("role") or device.get("device_type") or "Device")
             height = max(int(device.get("u_height") or 1), 1)
             if height > 1:
                 display_name = f"{display_name}  ({height}U)"
@@ -1864,7 +1867,7 @@ def _build_rack_unit_diagram(rack_name, u_height, devices, fill, dark):
             )
         elif device:
             # continuation slot of a multi-U device — same colour, no label
-            s = _style_for(device.get("device_type") or device.get("role") or "")
+            s = _style_for(device.get("role") or device.get("device_type") or "")
             row_content = html.Div(style={
                 "flex": "1", "height": "22px",
                 "background": s["bg"],
@@ -1920,13 +1923,16 @@ def _build_rack_unit_diagram(rack_name, u_height, devices, fill, dark):
                 ),
             ],
         ),
-        # Legend
+        # Legend — curated role categories (host/server share a style).
         dmc.Group(gap="md", mt="xs", children=[
             *[dmc.Group(gap=4, align="center", children=[
                 html.Div(style={"width": "8px", "height": "8px", "borderRadius": "2px",
-                                "background": v["bg"], "border": f"1px solid {v['border']}"}),
-                dmc.Text(k.title(), size="xs", c="#667085"),
-            ]) for k, v in list(DEVICE_STYLES.items())[:4]],
+                                "background": DEVICE_STYLES[k]["bg"],
+                                "border": f"1px solid {DEVICE_STYLES[k]['border']}"}),
+                dmc.Text(label, size="xs", c="#667085"),
+            ]) for k, label in (("host", "Host"), ("switch", "Switch"),
+                                ("storage", "Storage"), ("firewall", "Firewall"),
+                                ("patch panel", "Patch Panel"))],
         ]),
     ])
 
