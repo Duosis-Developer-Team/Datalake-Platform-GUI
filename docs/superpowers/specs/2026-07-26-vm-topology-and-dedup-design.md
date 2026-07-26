@@ -5,11 +5,19 @@
 
 ## Problem
 
-`discovery_netbox_virtualization_vm` has **42,707 rows but only ~17,418 distinct VMs**
-(`custom_fields_config_instance_uuid`) — a ~2.45× duplication (repeated NetBox records per VM +
-125 vCLS system VMs). So the Licensed OS tally (42,707) is inflated. Separately, users need to see
-**which VM runs on which host, which host in which cluster, in which DC** — a DC→Cluster→Host→VM
-topology — on both the **Licensed OS** page and the **Datalake Coverage** page.
+`discovery_netbox_virtualization_vm` has **42,707 rows** but far fewer real VMs — a ~2.1× duplication
+(repeated NetBox records per VM). After dedup by VM identity: **~20,130 unique VMs**
+(17,133 poweredOn + 2,997 poweredOff; 15 vCLS system VMs). The poweredOn count (17,133) matches the
+platform-metrics dashboard (~17,091) — confirming the dedup. So the Licensed OS tally (42,707) is
+~2× inflated. Separately, users need to see **which VM runs on which host, which host in which
+cluster, in which DC** — a DC→Cluster→Host→VM topology — on both the **Licensed OS** page and the
+**Datalake Coverage** page.
+
+Two data-quality realities the design must handle explicitly (not hide):
+- **2,522 VMs have no DC** (`site_name` empty) → unmappable into the tree → must surface as an
+  "unmapped" bucket, not be dropped.
+- **poweredOff** (~3k) and **vCLS system** (15) VMs must be distinguishable, since licensing usually
+  cares about running, non-system guests.
 
 The full hierarchy already lives in that one table:
 - **DC/Site** = `site_name` · **Cluster** = `cluster_name` · **Host** = `device_name` (ESXi host)
@@ -31,22 +39,33 @@ The full hierarchy already lives in that one table:
 lower(name) || '|' || coalesce(cluster_name,''))` — instanceUUID when present (~89%), else
 name+cluster. One representative record per key via `DISTINCT ON (vm_dedup_key)`.
 
-### 2. Licensed OS summary — dedup
+### 2. Licensed OS summary — dedup + power-state + system exclusion
 
 `VM_OS_NETBOX` / `VM_OS_NETBOX_FOR_CUSTOMER` wrap the base select in
-`SELECT DISTINCT ON (vm_dedup_key) ... ORDER BY vm_dedup_key, (status_value='poweredOn') DESC`
-so each VM is classified once. Result drops from 42,707 → ~17,418. `_tally_os_rows` unchanged.
+`SELECT DISTINCT ON (vm_dedup_key) name, guest_os, status_value ... ORDER BY vm_dedup_key,
+(status_value='poweredOn') DESC` so each VM is classified once. Result drops from 42,707 → ~20,130.
+
+**Curation decisions (this spec):**
+- **vCLS/system VMs excluded** from the tally (`is_system_vm(name)`) — they are vSphere agents, not
+  licensable guests (~15 deduped).
+- **Power state:** `_tally_os_rows` returns families for **all** VMs AND a separate **poweredOn-only**
+  tally (`families`, `families_running`, `total`, `total_running`). The page shows a
+  **"Çalışan / Tümü" toggle** (default: Tümü) so licensing can be viewed either way.
+- Rows now carry `status_value`; `_tally_os_rows((name, guest_id, guest_full_name, status_value))`.
 
 ### 3. Shared topology module — `shared/topology/vm_topology.py` (pure + SQL)
 
 - `VM_TOPOLOGY_SQL` → deduped rows `(dc, cluster, host, vm_name, instance_uuid, guest_os,
   power_state)` (DISTINCT ON dedup_key; `site_name`→dc, `cluster_name`→cluster, `device_name`→host).
-  Empty dc/cluster/host coalesced to a literal `"(bilinmeyen)"` so nothing is silently dropped.
+  **Unmapped coalescing:** empty `site_name`→`"(DC atanmamış)"`, empty cluster→`"(cluster yok)"`,
+  empty host→`"(host yok)"` — so the ~2,522 DC-less VMs surface in an explicit unmapped bucket
+  instead of being dropped.
 - `build_tree(rows, *, with_os=False) -> dict`: nests DC→cluster→host→VM. Each node carries
-  `counts` = `{clusters?, hosts?, vms}` and, when `with_os`, an `os` tally
+  `counts` = `{clusters?, hosts?, vms, running}` and, when `with_os`, an `os` tally
   `{rhel,suse,windows,free,unknown}` (via `shared.licensing.os_classifier.classify`). Leaf VM nodes:
-  `{name, os_family, power_state}`. Pure/unit-testable (no DB).
-- `is_system_vm(name)` → True for `vCLS*` (shown but badge-able).
+  `{name, os_family, power_state}`. vCLS/system VMs are excluded from the tree (kept out of counts,
+  like the tally). Pure/unit-testable (no DB).
+- `is_system_vm(name)` → True for `vCLS*`.
 
 ### 4. Endpoint (datacenter-api) — one source for both pages
 
@@ -63,8 +82,10 @@ DC (count badges + OS mini-bar if with_os) → expand → clusters → hosts →
 
 ### 6. Pages
 
-- **Licensed OS** (`src/pages/licensed_os.py`): deduped family KPIs (now ~17.4k, not 42.7k) + a
-  "Topoloji (DC → Cluster → Host → VM)" section rendering `build_topology_tree(..., with_os=True)`.
+- **Licensed OS** (`src/pages/licensed_os.py`): deduped family KPIs (now ~20k, not 42.7k) with a
+  **"Çalışan / Tümü" toggle** (running-only vs all), vCLS excluded + a "Topoloji (DC → Cluster →
+  Host → VM)" section rendering `build_topology_tree(..., with_os=True)`. The unmapped bucket
+  ("(DC atanmamış)") is a visible top node.
 - **Datalake Coverage** (`hmdl_coverage.py`): add a "Envanter Topolojisi" section rendering
   `build_topology_tree(..., with_os=False)` beside the existing coverage section.
 
@@ -80,13 +101,16 @@ discovery_netbox_virtualization_vm
 
 ## Testing (TDD)
 
-- dedup SQL: `DISTINCT ON` on the dedup key; VM_OS_NETBOX reads NetBox guest_os (not raw_vmware).
-- `build_tree`: nesting DC→cluster→host→VM; per-node counts; OS tally when with_os; unknown-node
-  coalescing; dedup already applied upstream.
-- `is_system_vm`.
-- endpoint: os=true carries os tally, os=false doesn't; totals.
+- dedup SQL: `DISTINCT ON` on the dedup key; VM_OS_NETBOX reads NetBox guest_os (not raw_vmware),
+  carries status_value.
+- `_tally_os_rows`: returns both `families` (all) and `families_running` (poweredOn-only); vCLS
+  excluded from both.
+- `is_system_vm`: True for vCLS, False for a normal VM.
+- `build_tree`: nesting DC→cluster→host→VM; per-node counts incl. `running`; OS tally when with_os;
+  **unmapped coalescing** ((DC atanmamış)/(cluster yok)/(host yok)); vCLS excluded.
+- endpoint: os=true carries os tally, os=false doesn't; totals; unmapped bucket present.
 - `build_topology_tree`: renders DC/cluster/host/VM labels + counts; OS mini-bar when with_os.
-- Licensed OS page: KPIs use deduped total; topology section present.
+- Licensed OS page: KPIs use deduped total; running/all toggle; topology section present.
 - Coverage page: topology section present.
 
 ## Risks
