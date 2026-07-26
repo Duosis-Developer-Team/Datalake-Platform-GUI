@@ -3566,29 +3566,44 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         return time_range_to_bounds(time_range)
 
     def _tally_os_rows(self, rows) -> dict:
-        """rows: iterable of (name, guest_id, guest_full_name). Classify + count."""
+        """rows: iterable of (name, guest_id, guest_full_name[, power_state]).
+        Classify + count; return an all-VMs tally AND a poweredOn-only tally.
+        vCLS/system VMs are excluded (not licensable guests)."""
         from shared.licensing.os_classifier import classify
+        from shared.topology.vm_topology import is_system_vm
         families = {"rhel": 0, "suse": 0, "windows": 0, "free": 0, "unknown": 0}
+        families_running = {"rhel": 0, "suse": 0, "windows": 0, "free": 0, "unknown": 0}
         unknown_samples: list[str] = []
-        for name, guest_id, guest_full_name in rows or []:
+        for row in rows or []:
+            name, guest_id, guest_full_name = row[0], row[1], row[2]
+            power_state = row[3] if len(row) > 3 else None
+            if is_system_vm(name):
+                continue
             fam = classify(guest_full_name, guest_id=guest_id).family
             families[fam] = families.get(fam, 0) + 1
+            if power_state == "poweredOn":
+                families_running[fam] = families_running.get(fam, 0) + 1
             if fam == "unknown" and len(unknown_samples) < 50:
                 label = (guest_full_name or guest_id or name or "").strip()
                 if label:
                     unknown_samples.append(label)
         return {
             "families": families,
+            "families_running": families_running,
             "total": sum(families.values()),
+            "total_running": sum(families_running.values()),
             "unknown_samples": unknown_samples,
         }
 
     @staticmethod
     def _empty_os_tally() -> dict:
         """Zeroed licensed-OS tally shape, returned when the DB pool is unavailable."""
+        z = {"rhel": 0, "suse": 0, "windows": 0, "free": 0, "unknown": 0}
         return {
-            "families": {"rhel": 0, "suse": 0, "windows": 0, "free": 0, "unknown": 0},
+            "families": dict(z),
+            "families_running": dict(z),
             "total": 0,
+            "total_running": 0,
             "unknown_samples": [],
         }
 

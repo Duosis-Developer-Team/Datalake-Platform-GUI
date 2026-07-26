@@ -27,6 +27,26 @@ class _FakeCur:
     def __exit__(self, *a): return False
 
 
+def test_dedup_and_status_in_sql():
+    assert "DISTINCT ON" in lq.VM_OS_NETBOX
+    assert "status_value" in lq.VM_OS_NETBOX
+    assert "DISTINCT ON" in lq.VM_OS_NETBOX_FOR_CUSTOMER
+
+
+def test_tally_splits_running_and_excludes_vcls():
+    from app.services.dc_service import DatabaseService
+    db = DatabaseService.__new__(DatabaseService)
+    rows = [
+        ("web-01", None, "Microsoft Windows Server 2019", "poweredOn"),
+        ("web-02", None, "Microsoft Windows Server 2019", "poweredOff"),
+        ("vCLS-x", None, "", "poweredOn"),   # system -> excluded
+    ]
+    out = db._tally_os_rows(rows)
+    assert out["families"]["windows"] == 2
+    assert out["families_running"]["windows"] == 1
+    assert out["total"] == 2 and out["total_running"] == 1
+
+
 def test_tally_classifies_and_counts():
     from app.services.dc_service import DatabaseService
     db = DatabaseService.__new__(DatabaseService)  # no pool needed for _tally_os_rows

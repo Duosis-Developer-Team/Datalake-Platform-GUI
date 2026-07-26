@@ -171,7 +171,9 @@ class HealthResponse(BaseModel):
 
 class LicensedOsSummary(BaseModel):
     families: dict[str, int]
+    families_running: dict[str, int] = {}
     total: int
+    total_running: int = 0
     unknown_samples: list[str] = []
 
 
