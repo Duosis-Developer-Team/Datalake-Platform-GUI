@@ -101,27 +101,30 @@ def _color(status):
     return STATUS_FILL.get(k, STATUS_FILL["unknown"]), STATUS_DARK.get(k, STATUS_DARK["unknown"])
 
 
-# ── Fill-based palette (color by U-occupancy) ──────────────────────────────
+# ── Fill-based palette (colocation: colour by sellable free space) ──────────
 FILL_PALETTE = {
-    "green":   ("#17B26A", "#027A48"),   # sellable headroom
-    "orange":  ("#F79009", "#B54708"),   # medium
-    "red":     ("#F04438", "#B42318"),   # full
-    "blue":    ("#2E90FA", "#175CD3"),   # empty / non-active
-    "unknown": ("#98A2B3", "#667085"),   # occupancy not yet known
+    "empty":   ("#06AED4", "#0E7090"),   # turquoise — fully free active rack (prime sellable)
+    "green":   ("#17B26A", "#027A48"),   # sellable headroom (<50%)
+    "orange":  ("#F79009", "#B54708"),   # medium (50-80%)
+    "red":     ("#F04438", "#B42318"),   # full (>80%)
+    "closed":  ("#475467", "#344054"),   # dark gray — non-active / closed (not sellable)
+    "unknown": ("#F2F4F7", "#D0D5DD"),   # near-white — occupancy not yet known
 }
 
 _NON_ACTIVE_STATUSES = ("inactive", "planned", "closed")
 
 
 def _color_by_fill(status, occupied_u, total_u):
-    """(fill, dark) by U-occupancy: gray if occupancy unknown; blue if the rack
-    is non-active or empty; else green <50%, orange 50-80%, red >80%."""
+    """(fill, dark) for colocation sellability: near-white if occupancy unknown;
+    dark gray if the rack is non-active/closed; turquoise if it is a fully empty
+    ACTIVE rack (prime sellable); else green <50%, orange 50-80%, red >80%.
+    Closed is checked before empty so a closed 0-U rack is gray, not turquoise."""
     if occupied_u is None:
         return FILL_PALETTE["unknown"]
     if (status or "").lower() in _NON_ACTIVE_STATUSES:
-        return FILL_PALETTE["blue"]
+        return FILL_PALETTE["closed"]
     if occupied_u <= 0:
-        return FILL_PALETTE["blue"]
+        return FILL_PALETTE["empty"]
     pct = (occupied_u / total_u * 100) if total_u else 0
     if pct > 80:
         return FILL_PALETTE["red"]
@@ -175,7 +178,7 @@ def _rack_fill_info(occupied_u, total_u):
     free = max(total - occ, 0)
     pct = round(occ / total * 100) if total else 0
     if occ == 0:
-        label = "Boş"
+        label = "Tamamen boş"
     elif pct > 80:
         label = "Çok dolu"
     elif pct >= 50:
@@ -696,10 +699,11 @@ def build_floor_map_layout(dc_id, dc_name, racks):
                                             dmc.Text(label, size="xs", c="#667085"),
                                         ])
                                         for key, label in (
+                                            ("empty", "Tamamen boş (satılabilir)"),
                                             ("green", "Satılabilir alan var"),
                                             ("orange", "Orta"),
                                             ("red", "Çok dolu"),
-                                            ("blue", "Boş / Kapalı"),
+                                            ("closed", "Kapalı / Pasif"),
                                             ("unknown", "Bilinmiyor"),
                                         )
                                     ],
