@@ -3593,30 +3593,24 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         }
 
     def get_licensed_os_summary(self, time_range: dict | None = None) -> dict:
-        start_ts, end_ts = self._os_bounds(time_range)
+        # time_range is accepted for API compatibility but ignored: NetBox is a
+        # current one-row-per-VM snapshot, so there is no window to apply.
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    rows = self._run_rows(
-                        cur, loq.VM_OS_CONFIG_LATEST,
-                        (start_ts, end_ts, start_ts, end_ts),
-                    )
+                    rows = self._run_rows(cur, loq.VM_OS_NETBOX, ())
         except (OperationalError, PoolError) as exc:
             logger.warning("get_licensed_os_summary failed: %s", exc)
             return self._empty_os_tally()
         return self._tally_os_rows(rows)
 
     def get_licensed_os_for_customer(self, customer_name: str, time_range: dict | None = None) -> dict:
-        start_ts, end_ts = self._os_bounds(time_range)
         name = (customer_name or "").strip()
         pattern = f"%{name}%" if name else "%"
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    rows = self._run_rows(
-                        cur, loq.VM_OS_CONFIG_LATEST_FOR_CUSTOMER,
-                        (start_ts, end_ts, start_ts, end_ts, pattern),
-                    )
+                    rows = self._run_rows(cur, loq.VM_OS_NETBOX_FOR_CUSTOMER, (pattern,))
         except (OperationalError, PoolError) as exc:
             logger.warning("get_licensed_os_for_customer(%s) failed: %s", customer_name, exc)
             return self._empty_os_tally()

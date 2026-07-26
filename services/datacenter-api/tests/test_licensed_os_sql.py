@@ -1,26 +1,22 @@
 from app.db.queries import licensed_os as lq
 
 
-def test_global_sql_reads_config_columns_and_excludes_templates():
-    sql = lq.VM_OS_CONFIG_LATEST
-    assert "raw_vmware_vm_config" in sql
-    assert "guest_id" in sql
+def test_global_sql_reads_netbox_guest_os():
+    # Source switched from the dead raw_vmware_vm_config (135d stale, TASK-81
+    # follow-up) to the live NetBox VM snapshot's guest-OS custom field.
+    sql = lq.VM_OS_NETBOX
+    assert "discovery_netbox_virtualization_vm" in sql
+    assert "custom_fields_guest_os" in sql
     assert "guest_full_name" in sql
-    assert "DISTINCT ON (vm_moid, vcenter_uuid)" in sql
-    assert "collection_timestamp BETWEEN %s AND %s" in sql
-    assert "COALESCE(template, false) = false" in sql
-
-
-def test_global_sql_coalesces_runtime_tools_field():
-    sql = lq.VM_OS_CONFIG_LATEST
-    assert "raw_vmware_vm_runtime" in sql
-    assert "guest_guest_full_name" in sql
+    # the dead VMware raw tables must no longer be the source
+    assert "raw_vmware_vm_config" not in sql
+    assert "raw_vmware_vm_runtime" not in sql
 
 
 def test_customer_sql_adds_name_ilike():
-    sql = lq.VM_OS_CONFIG_LATEST_FOR_CUSTOMER
+    sql = lq.VM_OS_NETBOX_FOR_CUSTOMER
     assert "name ILIKE %s" in sql
-    assert "raw_vmware_vm_config" in sql
+    assert "discovery_netbox_virtualization_vm" in sql
 
 
 class _FakeCur:

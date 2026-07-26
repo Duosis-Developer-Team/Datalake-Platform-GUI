@@ -1,60 +1,33 @@
-# Licensed-OS detection SQL (TASK-81). VMware phase.
-# Reads the latest raw_vmware_vm_config row per VM, LEFT JOINs the Tools-reported
-# runtime OS as a truth-correction, excludes templates. Classification of the
-# returned strings happens in Python (shared.licensing.os_classifier).
+# Licensed-OS detection SQL (TASK-81).
 #
-# Verification (TASK-81 Task 2): raw_vmware_vm_runtime carries vm_moid,
-# vcenter_uuid, guest_guest_full_name, and collection_timestamp (confirmed via
-# datalake/SQL/All Tables/raw_vmware_vm_runtime.sql), so the runtime LEFT JOIN
-# below is used as-is.
+# Source: the LIVE NetBox VM snapshot (discovery_netbox_virtualization_vm), whose
+# custom_fields_guest_os carries the guest OS display string (~92% populated,
+# refreshed daily). The original VMware source (raw_vmware_vm_config /
+# raw_vmware_vm_runtime) stopped collecting 2026-03-12 (~136 days stale), so the
+# 7-day window returned 0 rows and nothing could be classified. NetBox is the
+# inventory-of-record (Loki) and is current, so we read guest OS from it.
+#
+# One row per VM (discovery_netbox_virtualization_vm.id is unique — a snapshot,
+# not a timeseries), so no time window or DISTINCT ON is needed. guest_id is a
+# vSphere-only enum absent from NetBox → NULL; the classifier works on the
+# display string alone. Classification happens in Python
+# (shared.licensing.os_classifier).
 
-# Params: (start_ts, end_ts, start_ts, end_ts)
-VM_OS_CONFIG_LATEST = """
-WITH cfg AS (
-    SELECT DISTINCT ON (vm_moid, vcenter_uuid)
-        vm_moid, vcenter_uuid, name, guest_id, guest_full_name, template
-    FROM public.raw_vmware_vm_config
-    WHERE collection_timestamp BETWEEN %s AND %s
-    ORDER BY vm_moid, vcenter_uuid, collection_timestamp DESC
-),
-rt AS (
-    SELECT DISTINCT ON (vm_moid, vcenter_uuid)
-        vm_moid, vcenter_uuid, guest_guest_full_name
-    FROM public.raw_vmware_vm_runtime
-    WHERE collection_timestamp BETWEEN %s AND %s
-    ORDER BY vm_moid, vcenter_uuid, collection_timestamp DESC
-)
+# Params: none
+VM_OS_NETBOX = """
 SELECT
-    cfg.name,
-    cfg.guest_id,
-    COALESCE(NULLIF(rt.guest_guest_full_name, ''), cfg.guest_full_name) AS guest_full_name
-FROM cfg
-LEFT JOIN rt USING (vm_moid, vcenter_uuid)
-WHERE COALESCE(template, false) = false
+    name,
+    NULL::text AS guest_id,
+    custom_fields_guest_os AS guest_full_name
+FROM public.discovery_netbox_virtualization_vm
 """
 
-# Params: (start_ts, end_ts, start_ts, end_ts, pattern)
-VM_OS_CONFIG_LATEST_FOR_CUSTOMER = """
-WITH cfg AS (
-    SELECT DISTINCT ON (vm_moid, vcenter_uuid)
-        vm_moid, vcenter_uuid, name, guest_id, guest_full_name, template
-    FROM public.raw_vmware_vm_config
-    WHERE collection_timestamp BETWEEN %s AND %s
-    ORDER BY vm_moid, vcenter_uuid, collection_timestamp DESC
-),
-rt AS (
-    SELECT DISTINCT ON (vm_moid, vcenter_uuid)
-        vm_moid, vcenter_uuid, guest_guest_full_name
-    FROM public.raw_vmware_vm_runtime
-    WHERE collection_timestamp BETWEEN %s AND %s
-    ORDER BY vm_moid, vcenter_uuid, collection_timestamp DESC
-)
+# Params: (pattern,)  — VM name ILIKE, same customer heuristic as before.
+VM_OS_NETBOX_FOR_CUSTOMER = """
 SELECT
-    cfg.name,
-    cfg.guest_id,
-    COALESCE(NULLIF(rt.guest_guest_full_name, ''), cfg.guest_full_name) AS guest_full_name
-FROM cfg
-LEFT JOIN rt USING (vm_moid, vcenter_uuid)
-WHERE COALESCE(template, false) = false
-  AND cfg.name ILIKE %s
+    name,
+    NULL::text AS guest_id,
+    custom_fields_guest_os AS guest_full_name
+FROM public.discovery_netbox_virtualization_vm
+WHERE name ILIKE %s
 """
