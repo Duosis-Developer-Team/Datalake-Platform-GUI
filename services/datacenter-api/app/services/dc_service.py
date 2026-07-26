@@ -3631,6 +3631,27 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             return self._empty_os_tally()
         return self._tally_os_rows(rows)
 
+    def get_vm_topology(self, with_os: bool = False) -> dict:
+        """Deduped DC->Cluster->Host->VM tree from the live NetBox VM snapshot.
+        6h cached (the dedup sweep is heavy — never on the request path)."""
+        from shared.topology.vm_topology import VM_TOPOLOGY_SQL, build_tree
+        cache_key = f"vm_topology:{'os' if with_os else 'plain'}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        def _fetch():
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, VM_TOPOLOGY_SQL, ())
+            return build_tree(rows, with_os=with_os)
+
+        try:
+            return cache.run_singleflight(cache_key, _fetch, ttl=21600)
+        except OperationalError as exc:
+            logger.error("get_vm_topology failed: %s", exc)
+            return {"dcs": [], "totals": {"dcs": 0, "clusters": 0, "hosts": 0, "vms": 0, "running": 0}}
+
     # ------------------------------------------------------------------
     # S3 (IBM iCOS) helpers — DC pools & customer vaults
     # ------------------------------------------------------------------

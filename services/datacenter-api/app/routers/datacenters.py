@@ -59,6 +59,12 @@ def licensed_os_summary(
     return db.get_licensed_os_summary(tf.to_dict())
 
 
+@router.get("/vm-topology", response_model=dict[str, Any])
+def vm_topology(os: bool = Query(default=False), db: DatabaseService = Depends(get_db)):
+    """Deduped DC → Cluster → Host → VM tree (os=true adds per-node OS tally)."""
+    return db.get_vm_topology(with_os=os)
+
+
 @router.get("/sla", response_model=dict[str, Any])
 def sla_availability(tf: TimeFilter = Depends()):
     """SLA availability keyed by DC code for the given time range."""
