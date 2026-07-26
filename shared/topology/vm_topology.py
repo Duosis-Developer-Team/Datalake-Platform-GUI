@@ -41,11 +41,14 @@ def _empty_os() -> dict:
     return {"rhel": 0, "suse": 0, "windows": 0, "free": 0, "unknown": 0}
 
 
-def build_tree(rows: Iterable[tuple], *, with_os: bool = False) -> dict[str, Any]:
-    """Nest deduped VM rows into DC->cluster->host->VM with per-node counts.
+def build_tree(rows: Iterable[tuple], *, with_os: bool = False, with_vms: bool = False) -> dict[str, Any]:
+    """Nest deduped VM rows into DC->cluster->host with per-node counts.
 
     rows: iterable of (dc, cluster, host, vm_name, guest_os, power_state).
     vCLS/system VMs are excluded. When with_os, each node also carries an OS tally.
+    When with_vms, host nodes also carry the leaf VM list — OFF by default because
+    ~20k VM leaves at once freeze the browser DOM (VM detail is loaded lazily
+    per host instead).
     """
     dcs: dict[str, dict] = {}
     for dc, cluster, host, vm_name, guest_os, power_state in rows or []:
@@ -81,7 +84,9 @@ def build_tree(rows: Iterable[tuple], *, with_os: bool = False) -> dict[str, Any
             for hn in sorted(dcs[dc]["clusters"][cl]["hosts"]):
                 hvms = dcs[dc]["clusters"][cl]["hosts"][hn]["vms"]
                 cl_vms.extend(hvms)
-                node = {"name": hn, "counts": _counts(hvms), "vms": hvms}
+                node = {"name": hn, "counts": _counts(hvms)}
+                if with_vms:
+                    node["vms"] = hvms
                 if with_os:
                     node["os"] = _os_tally(hvms)
                 out_hosts.append(node)

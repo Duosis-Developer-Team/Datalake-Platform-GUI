@@ -21,6 +21,17 @@ def test_build_tree_nests_and_counts():
     assert dc13["counts"] == {"clusters": 1, "hosts": 2, "vms": 3, "running": 2}
     assert dc13["os"]["windows"] == 1 and dc13["os"]["rhel"] == 1 and dc13["os"]["free"] == 1
     esx1 = dc13["clusters"][0]["hosts"][0]
+    assert esx1["counts"] == {"vms": 2, "running": 1}
+    assert "vms" not in esx1                     # leaf VM lists omitted by default (DOM safety)
+
+
+def test_build_tree_with_vms_includes_leaves():
+    rows = [
+        ("DC13", "CL1", "esx1", "web-01", "Ubuntu Linux", "poweredOn"),
+        ("DC13", "CL1", "esx1", "web-02", "Ubuntu Linux", "poweredOff"),
+    ]
+    t = vt.build_tree(rows, with_vms=True)
+    esx1 = t["dcs"][0]["clusters"][0]["hosts"][0]
     assert {v["name"] for v in esx1["vms"]} == {"web-01", "web-02"}
 
 

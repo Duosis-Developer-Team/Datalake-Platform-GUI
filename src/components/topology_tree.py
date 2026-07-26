@@ -52,28 +52,6 @@ def _node_control(name: str, counts: dict, os_tally: dict | None):
     return dmc.Group(gap="sm", align="center", children=row)
 
 
-def _vm_list(vms: list[dict]):
-    rows = [
-        dmc.Group(gap="xs", align="center", children=[
-            dmc.Badge(v.get("os_family", ""), color=_OS_COLORS_NAME(v.get("os_family")),
-                      variant="dot", size="xs"),
-            dmc.Text(v.get("name", ""), size="xs"),
-            dmc.Badge(v.get("power_state", ""),
-                      color=_PS_COLOR.get(v.get("power_state"), "gray"),
-                      variant="light", size="xs"),
-        ])
-        for v in (vms or [])
-    ]
-    # Long per-host VM lists scroll in their own box (keeps the page compact).
-    return html.Div(style={"maxHeight": "260px", "overflowY": "auto", "paddingLeft": "8px"},
-                    children=rows or [dmc.Text("VM yok.", size="xs", c="dimmed")])
-
-
-def _OS_COLORS_NAME(fam: str | None) -> str:
-    return {"windows": "blue", "rhel": "red", "suse": "green",
-            "free": "gray", "unknown": "gray"}.get(fam or "", "gray")
-
-
 def build_topology_tree(tree: dict, *, with_os: bool = False):
     dcs = (tree or {}).get("dcs") or []
     if not dcs:
@@ -83,18 +61,19 @@ def build_topology_tree(tree: dict, *, with_os: bool = False):
     for dc in dcs:
         cluster_items = []
         for cl in dc.get("clusters", []) or []:
-            host_items = []
-            for h in cl.get("hosts", []) or []:
-                host_items.append(dmc.AccordionItem(value=f"{dc['name']}|{cl['name']}|{h['name']}", children=[
-                    dmc.AccordionControl(_node_control(h["name"], h.get("counts"),
-                                                       h.get("os") if with_os else None)),
-                    dmc.AccordionPanel(_vm_list(h.get("vms"))),
-                ]))
+            # Hosts are plain rows (not accordions) — rendering per-VM leaves for
+            # ~20k VMs at once freezes the browser, so the tree stops at host with
+            # counts; per-host VM detail is a lazy follow-up.
+            host_rows = [
+                html.Div(_node_control(h["name"], h.get("counts"), h.get("os") if with_os else None),
+                         style={"padding": "4px 0 4px 12px", "borderLeft": "2px solid #EAECF0",
+                                "marginLeft": "6px"})
+                for h in (cl.get("hosts", []) or [])
+            ]
             cluster_items.append(dmc.AccordionItem(value=f"{dc['name']}|{cl['name']}", children=[
                 dmc.AccordionControl(_node_control(cl["name"], cl.get("counts"),
                                                    cl.get("os") if with_os else None)),
-                dmc.AccordionPanel(dmc.Accordion(chevronPosition="left", variant="separated",
-                                                 children=host_items)),
+                dmc.AccordionPanel(html.Div(host_rows) or dmc.Text("Host yok.", size="xs", c="dimmed")),
             ]))
         dc_items.append(dmc.AccordionItem(value=dc["name"], children=[
             dmc.AccordionControl(_node_control(dc["name"], dc.get("counts"),

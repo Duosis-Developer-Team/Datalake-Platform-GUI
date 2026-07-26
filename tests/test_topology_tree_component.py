@@ -23,10 +23,13 @@ _TREE = {
 }
 
 
-def test_tree_renders_all_levels():
+def test_tree_renders_down_to_host_with_counts():
     text = str(build_topology_tree(_TREE, with_os=True))
-    for token in ("DC13", "CL1", "esx1", "web-01", "web-02"):
+    # DC -> cluster -> host render (per-VM leaves are intentionally not rendered
+    # upfront — ~20k VMs freeze the DOM; host-level counts only).
+    for token in ("DC13", "CL1", "esx1"):
         assert token in text
+    assert "VM" in text  # count badge like "2 VM"
 
 
 def test_tree_empty_is_graceful():
