@@ -10,6 +10,7 @@ from dash import dcc, html
 from src.pages.settings.admin_routes import ADMIN_PREFIX
 from src.services import api_client as api
 from src.utils.hmdl_sync_ui import build_coverage_section
+from src.components.topology_tree import build_topology_tree
 from src.utils.ui_tokens import section_header, settings_page_shell
 
 
@@ -120,6 +121,21 @@ def build_layout(search: str | None = None) -> html.Div:
                             id="hmdl-coverage-content",
                             children=build_coverage_section(coverage),
                         ),
+                    ],
+                ),
+                dmc.Paper(
+                    p="lg",
+                    withBorder=True,
+                    radius="md",
+                    mt="md",
+                    children=[
+                        section_header(
+                            "Envanter Topolojisi",
+                            "DC → Cluster → Host → VM (tekilleştirilmiş; vCLS hariç). "
+                            "Hangi VM hangi host/cluster/DC'de.",
+                            icon="solar:sitemap-bold-duotone",
+                        ),
+                        build_topology_tree(api.get_vm_topology(os=False), with_os=False),
                     ],
                 ),
                 dcc.Location(id="hmdl-coverage-url-sync", refresh=False),
