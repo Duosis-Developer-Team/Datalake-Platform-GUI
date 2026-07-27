@@ -68,8 +68,12 @@ def test_an_unknown_policy_has_no_owner():
 
 
 def test_a_token_must_not_match_a_longer_segment_it_merely_starts():
-    """'abc' must not claim 'abcdef-prd': the segment boundary is a dash."""
-    index = build_policy_index([{"name": "ABC Deterjan", "accountid": "acc-1"}])
+    """'abcd' must not claim 'abcdef-prd': the segment boundary is a dash.
+
+    An account named 'Abcd Company' produces the token 'abcd'. A policy named
+    'abcdef-prd-log' must not be assigned to that account, because 'abcd' is
+    a whole segment and 'abcdef' is a different segment."""
+    index = build_policy_index([{"name": "Abcd Company", "accountid": "acc-1"}])
     assert guess_policy_owner("abcdef-prd-log", index) is None
 
 
@@ -97,6 +101,12 @@ def test_the_standard_reproduces_the_spreadsheets_own_tokens():
         "Bony Çorap": "bony-cora",
         "Çapa Medikal": "capa-medi",
         "Çelebi Holding": "cele-hold",
+        "Gama Holding": "gama-hold",
+        "Kale Holding": "kale-hold",
+        "Kibar Holding": "kiba-hold",
+        "Rönesans Holding": "rone-hold",
+        "Zorlu Holding": "zorl-hold",
+        "Engin LTD": "engi-ltd",
         "Azer": "azer",
         "Boyner": "boyner",
     }

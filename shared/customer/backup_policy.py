@@ -1,20 +1,25 @@
 """NetBackup policy name → CRM account, via the naming standard (pure, no DB).
 
-Derived from ``backup-musteri-isim.xlsx`` (sheet AD-KARŞILIĞI: 189 customers,
-233 policy tokens) and validated against 1,294 live policy names:
+Derived from ``backup-musteri-isim.xlsx`` (sheet AD-KARŞILIĞI: 172 customers,
+233 policy tokens) and validated against 1,294 distinct live policy names:
 
     <first4(word1)>[-<first4(word2)>]-<workload>-<env>-<type>
 
-Turkish-folded, lowercase. 215 of the sheet's 233 tokens (92%) follow it;
-the rest are consonant squeezes (``trkn`` ← Turkon) or unrelated codes
-(``visa01``), which no rule derives — the spreadsheet is the authority there
-and is loaded separately as a seed.
+Turkish-folded, lowercase. This module reproduces 116 of the sheet's 233 tokens
+(50%) exactly via the standard. The second segment is often NOT the second name
+word — it is a business-unit or system code the customer chose (e.g. anku-bw,
+anku-mii for Ankutsan). No rule derives those from account names. guess_policy_owner()
+falls back from the two-segment token to the single-segment one when needed;
+the single-segment token (first4 of word1) is what generalizes to live policies.
 
-The standard alone is NOT sufficient to assign an owner: matching all 1,294
-live policies against 2,668 CRM accounts leaves 27% matching more than one
-account (``avro`` → AVROMED and AVRORA LLC). guess_policy_owner() therefore
-returns *every* candidate and refuses to choose; callers surface the ambiguity
-rather than guessing.
+Against 2,687 CRM accounts and 1,294 live policies:
+  - unique owner (1 candidate):  759 (59%)
+  - ambiguous (2+ candidates):   360 (28%)
+  - no guess (token not in index): 175 (14%)
+
+When ambiguous, guess_policy_owner() returns *every* candidate and refuses to
+choose. Picking one when there are several binds backup capacity to the wrong
+customer, reaching billing and capacity reports; the ambiguity is surfaced instead.
 """
 from __future__ import annotations
 
@@ -27,7 +32,7 @@ from shared.customer.unmapped_classifier import norm
 # Legal-form and generic words that are not part of the trading name and never
 # contribute a policy token. Folded (norm()) before comparison.
 _NAME_STOPWORDS: frozenset[str] = frozenset({
-    "anonim", "sirketi", "sirket", "limited", "ltd", "sti",
+    "anonim", "sirketi", "sirket", "limited", "sti",
     "as", "ve", "tic", "ticaret", "san", "sanayi",
 })
 
@@ -47,7 +52,14 @@ def _name_words(name: str) -> list[str]:
 
 
 def policy_tokens_for_account(name: str) -> set[str]:
-    """Every policy prefix this account plausibly owns under the standard."""
+    """Every policy prefix this account plausibly owns under the standard.
+
+    Known limitations (non-derivable cases):
+    - "hd holding" -> "hd-hold": head is 2 chars, below the 3-char minimum,
+      so no two-segment token is emitted.
+    - "Kuçükoğlu Holding" -> "kucu-oglu": the second segment splits the FIRST
+      word, not the second word.
+    """
     words = _name_words(name)
     if not words:
         return set()
