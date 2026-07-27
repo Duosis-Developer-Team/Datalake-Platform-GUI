@@ -41,10 +41,13 @@ from app.services.customer_mapping_resolver import (
     group_mappings_by_account,
 )
 from app.utils.efficiency_usage import efficiency_status, resolve_used_quantity
+from app.utils.licensed_os import customer_os_tally
 from app.utils.usage_comparison import (
     aggregate_entitled_by_category,
+    build_licensed_os_compliance,
     build_virtualization_compliance,
     catalog_product_names_for_compliance,
+    summarize_compliance,
 )
 from app.services.crm_config_service import CrmConfigService
 from app.services.webui_db import WebuiPool
@@ -482,9 +485,10 @@ class SalesService:
         under_pct = float(calc.get("efficiency.under_pct", 80.0))
         over_pct = float(calc.get("efficiency.over_pct", 110.0))
 
+        assets = (bundle or {}).get("assets") or {}
         rows, summary = build_virtualization_compliance(
             entitled_agg=entitled_agg,
-            assets=bundle.get("assets") or {},
+            assets=assets,
             totals=bundle.get("totals") or {},
             weighted_prices=weighted_prices,
             price_overrides=price_overrides,
@@ -493,6 +497,24 @@ class SalesService:
             under_pct=under_pct,
             over_pct=over_pct,
         )
+
+        # Licensed-OS lines ride the same payload: this endpoint is the only
+        # entitlement path that is actually hydrated in production (every CRM
+        # order sits at statecode 0, which efficiency-by-category filters out).
+        # Counted from the VM lists Customer View renders, so the overusage row
+        # and the VM table can never disagree.
+        rows = rows + build_licensed_os_compliance(
+            entitled_agg=entitled_agg,
+            detected=customer_os_tally(assets),
+            weighted_prices=weighted_prices,
+            price_overrides=price_overrides,
+            catalog_by_productid=catalog_by_productid,
+            catalog_by_name=catalog_by_name,
+            under_pct=under_pct,
+            over_pct=over_pct,
+        )
+        summary = summarize_compliance(rows)
+
         if not bundle:
             summary = {**summary, "infra_cache_hit": False}
         else:

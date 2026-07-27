@@ -10,6 +10,7 @@ from shared.backup.policy_classification import (
     load_policy_panel_mapping,
     policy_types_for_category,
 )
+from shared.licensing.os_source import tally_vm_list, with_os_family
 from shared.vmware.host_cpu_ghz import (
     DEFAULT_HOST_CPU_GHZ,
     NETBOX_HOST_CPU_STRINGS,
@@ -170,7 +171,7 @@ class CustomerAdapter:
                     (vm_pattern, start_ts, end_ts, vm_pattern, start_ts, end_ts),
                 )
                 classic_vm_list = [
-                    {
+                    with_os_family({
                         "name": r[0],
                         "source": r[1],
                         "cluster": r[2],
@@ -189,7 +190,8 @@ class CustomerAdapter:
                         "disk_gb": float(r[12] or 0.0),
                         "disk_used_min_gb": float(r[13] or 0.0),
                         "disk_used_max_gb": float(r[14] or 0.0),
-                    }
+                        "guest_os": r[15],
+                    })
                     for r in (classic_vm_rows or [])
                     if r and r[0]
                 ]
@@ -227,6 +229,7 @@ class CustomerAdapter:
                     vm_pattern,
                     start_ts,
                     end_ts,
+                    vm_pattern,   # netbox_os guest-OS fallback CTE
                     vm_pattern,
                     start_ts,
                     end_ts,
@@ -236,7 +239,7 @@ class CustomerAdapter:
                 )
                 hc_vm_rows = self._run_rows(cur, cq.CUSTOMER_HYPERCONV_VM_LIST, hc_list_params)
                 hc_vm_list = [
-                    {
+                    with_os_family({
                         "name": r[0],
                         "source": r[1],
                         "cluster": r[2],
@@ -255,7 +258,8 @@ class CustomerAdapter:
                         "disk_gb": float(r[12] or 0.0),
                         "disk_used_min_gb": float(r[13] or 0.0),
                         "disk_used_max_gb": float(r[14] or 0.0),
-                    }
+                        "guest_os": r[15],
+                    })
                     for r in (hc_vm_rows or [])
                     if r and r[0]
                 ]
@@ -287,10 +291,11 @@ class CustomerAdapter:
                     vm_pattern,
                     start_ts,
                     end_ts,
+                    vm_pattern,   # netbox_os guest-OS fallback CTE
                 )
                 pure_vm_rows = self._run_rows(cur, cq.CUSTOMER_PURE_NUTANIX_VM_LIST, pure_list_params)
                 pure_vm_list = [
-                    {
+                    with_os_family({
                         "name": r[0],
                         "source": r[1],
                         "cluster": r[2],
@@ -308,7 +313,8 @@ class CustomerAdapter:
                         "disk_gb": float(r[11] or 0.0),
                         "disk_used_min_gb": float(r[12] or 0.0),
                         "disk_used_max_gb": float(r[13] or 0.0),
-                    }
+                        "guest_os": r[14],
+                    })
                     for r in (pure_vm_rows or [])
                     if r and r[0]
                 ]
@@ -345,7 +351,7 @@ class CustomerAdapter:
                     ),
                 )
                 power_vm_list = [
-                    {
+                    with_os_family({
                         "name": r[0],
                         "lpar_name": r[1],
                         "source": r[2],
@@ -361,7 +367,8 @@ class CustomerAdapter:
                         "disk_used_min_gb": float(r[12] or 0.0),
                         "disk_used_max_gb": float(r[13] or 0.0),
                         "state": r[14],
-                    }
+                        "guest_os": r[15],
+                    })
                     for r in (power_lpar_detail_rows or [])
                     if r and r[0]
                 ]
