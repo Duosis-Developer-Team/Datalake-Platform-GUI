@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dash_mantine_components as dmc
 from dash import html
+from dash_iconify import DashIconify
 
 from src.services import api_client as api
 from src.utils.hmdl_sync_ui import automation_status_badge, relative_age
@@ -88,9 +89,12 @@ def build_layout(search: str | None = None) -> html.Div:
     proxies = data.get("proxies") or []
     psum = data.get("proxy_summary") or {}
     gaps = data.get("data_gaps") or {}
-    data_families = data.get("data_families") or []
+    # data_families is still served by hmdl-api for drill-down consumers; this page
+    # now renders the per-flow rollup instead, so it does not read it.
     data_counts = data.get("data_counts") or {}
     data_status = data.get("data_status") or "computing"
+    data_flows = data.get("data_flows") or []
+    data_unmonitored = data.get("data_unmonitored") or []
 
     # Headline alert covers BOTH schedule (automations) and data freshness, so a
     # dead data flow (e.g. datastore stale) shows up even if the job ran.
@@ -131,31 +135,75 @@ def build_layout(search: str | None = None) -> html.Div:
     data_dead = int(data_counts.get("dead") or 0)
     data_stale = int(data_counts.get("stale") or 0)
 
-    def _family_card(fam: dict):
-        c = fam.get("counts") or {}
-        dead, stale, fresh = int(c.get("dead") or 0), int(c.get("stale") or 0), int(c.get("fresh") or 0)
-        color = "red" if dead else ("orange" if stale else "green")
-        problems = [s for s in (fam.get("sources") or []) if s.get("status") in ("dead", "stale")]
+    def _age_text(age_hours) -> str:
+        if age_hours is None:
+            return ""
+        days = float(age_hours) / 24.0
+        if days >= 1:
+            return f"{days:.0f} gündür güncellenmiyor"
+        return f"{float(age_hours):.0f} saattir güncellenmiyor"
+
+    def _flow_row(flow: dict):
+        """One collection flow. The headline names the DATA; the member tables sit
+        behind a disclosure so internal users keep what they debug with."""
+        status = flow.get("status") or "unknown"
+        color = {"dead": "red", "stale": "orange", "unknown": "gray"}.get(status, "green")
+        icon = "solar:danger-triangle-bold-duotone" if status in ("dead", "stale") \
+            else "solar:check-circle-bold-duotone"
+        sources = flow.get("sources") or []
         return dmc.Paper(
             p="md", withBorder=True, radius="md",
             children=[
-                dmc.Group(justify="space-between", align="center", children=[
-                    dmc.Text(fam.get("family") or "—", fw=700),
-                    dmc.Badge(f"{dead} ölü · {stale} bayat · {fresh} taze", color=color, variant="light"),
+                dmc.Group(gap="xs", align="center", children=[
+                    DashIconify(icon=icon, width=20),
+                    dmc.Text(flow.get("label") or flow.get("key") or "—", fw=700),
+                    dmc.Text(_age_text(flow.get("age_hours")), size="sm", c=color),
                 ]),
-                dmc.Stack(gap=6, mt="xs", children=[_automation_card(s) for s in problems]
-                          or [dmc.Text("Tümü taze.", size="xs", c="dimmed")]),
+                dmc.Accordion(
+                    variant="subtle", chevronPosition="left", mt=6,
+                    children=[dmc.AccordionItem(value="detay", children=[
+                        dmc.AccordionControl(
+                            dmc.Text(f"{len(sources)} tablo", size="xs", c="dimmed")
+                        ),
+                        dmc.AccordionPanel(
+                            dmc.Stack(gap=6, children=[_automation_card(s) for s in sources])
+                        ),
+                    ])],
+                ),
             ],
         )
 
+    alerting_flows = [f for f in data_flows if (f.get("status") in ("dead", "stale"))]
+
     if data_status == "computing":
         data_body = dmc.Text("Veri tazeliği hesaplanıyor… birazdan yenileyin.", size="sm", c="dimmed")
-    else:
-        data_body = dmc.SimpleGrid(
-            cols={"base": 1, "md": 2, "lg": 3}, spacing="md",
-            children=[_family_card(f) for f in data_families]
-            or [dmc.Text("Veri kaynağı bilgisi yok (hmdl-api erişilemiyor).", size="sm", c="dimmed")],
+    elif not data_flows:
+        data_body = dmc.Text("Veri kaynağı bilgisi yok (hmdl-api erişilemiyor).", size="sm", c="dimmed")
+    elif not alerting_flows:
+        data_body = dmc.Alert(
+            "Tüm veri akışları güncel.", color="green", variant="light",
+            icon=DashIconify(icon="solar:check-circle-bold-duotone", width=20),
         )
+    else:
+        data_body = dmc.Stack(gap="sm", children=[_flow_row(f) for f in alerting_flows])
+
+    data_body = html.Div(id="hmdl-ah-flows", children=data_body)
+
+    unmonitored_section = dmc.Accordion(
+        id="hmdl-ah-unmonitored", variant="contained", chevronPosition="left", mt="md",
+        children=[dmc.AccordionItem(value="unmonitored", children=[
+            dmc.AccordionControl(
+                dmc.Text(
+                    f"İzlenmeyen tablolar ({len(data_unmonitored)}) — "
+                    "hiçbir servis bu tabloları sorgulamıyor",
+                    size="sm", c="dimmed",
+                )
+            ),
+            dmc.AccordionPanel(
+                dmc.Stack(gap=6, children=[_automation_card(s) for s in data_unmonitored])
+            ),
+        ])],
+    ) if data_unmonitored else html.Div(id="hmdl-ah-unmonitored")
 
     data_sources_section = dmc.Paper(
         p="lg", withBorder=True, radius="md", mb="lg",
@@ -167,6 +215,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 icon="solar:database-bold-duotone",
             ),
             data_body,
+            unmonitored_section,
         ],
     )
 
