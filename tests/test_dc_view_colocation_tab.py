@@ -14,11 +14,15 @@ def test_colo_is_a_registered_lazy_tab():
 
 
 def test_build_colocation_tab_renders_kpis_and_customers():
+    # Phase 2 Task C: the Dedicated Customers table reads payload["allocation"]
+    # (rack role + tenant/tags/description), not the old tenancy-only
+    # payload["customers"] — see
+    # docs/superpowers/specs/2026-07-27-colocation-allocation-model-design.md.
     payload = {
         "aggregate": {"total_u": 3616, "used_u": 1817, "free_u": 1799, "rack_count": 78},
-        "customers": [
-            {"tenant": "AytemizBank", "crm_account_name": "Aytemiz Bank",
-             "match_status": "matched", "racks": ["209"], "used_u": 52, "crm_accountid": "A-1"},
+        "allocation": [
+            {"customer": "AytemizBank", "allocated_u": 52, "used_u": 52,
+             "rack_count": 1, "racks": ["209"]},
         ],
         "racks": [],
     }
@@ -34,16 +38,15 @@ def test_colocation_tab_english_labels_and_summary():
         "aggregate": {"total_u": 1000, "used_u": 600, "free_u": 400, "rack_count": 10,
                       "external_u": 149, "internal_u": 300, "untagged_u": 151,
                       "external_customer_count": 1},
-        "customers": [
-            {"tenant": "AytemizBank", "crm_account_name": "Aytemiz", "match_status": "matched",
-             "racks": ["209"], "used_u": 29, "crm_accountid": "A-1"},
+        "allocation": [
+            {"customer": "AytemizBank", "allocated_u": 52, "used_u": 29,
+             "rack_count": 1, "racks": ["209"]},
         ],
         "racks": [],
     }
     text = str(build_colocation_tab(payload))
     assert "Dedicated Customers" in text
-    assert "Used U (own)" in text
-    assert "CRM Account" in text
+    assert "Allocated U" in text
     assert "Kolokasyon" not in text and "Müşteri" not in text and "Dedike" not in text
     assert "External 149U" in text        # summary component embedded
 

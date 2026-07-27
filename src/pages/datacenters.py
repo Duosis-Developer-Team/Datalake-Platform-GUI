@@ -133,10 +133,14 @@ def _potential_sales_display(
 def _colocation_sales_line(colo_tl: float | None, *, loading: bool = False):
     """Colocation potential as its own line — a single value, not a range.
 
-    Free rack-U is an exact count and the unit price is a single figure, so no
-    interval exists. Kept separate from the virtualization range because
-    colocation potential measured 8-28x larger per DC (2026-07-27); summing them
-    would erase every movement in the virtualization signal.
+    Sellable free rack-U (free U OUTSIDE colocation-allocated racks — see
+    aggregate["sellable_free_u"]) is an exact count and the unit price is a
+    single figure, so no interval exists. Free U *inside* a customer's own
+    rack is excluded: it belongs to that customer, not to the platform's
+    sellable pool (design doc section 3). Kept separate from the
+    virtualization range because colocation potential measured 8-28x larger
+    per DC (2026-07-27); summing them would erase every movement in the
+    virtualization signal.
 
     Returns None when there is nothing to show, so callers can omit the row.
     """
@@ -149,7 +153,8 @@ def _colocation_sales_line(colo_tl: float | None, *, loading: bool = False):
         tip_value = f"{float(colo_tl):,.0f} TL"
     return dmc.Tooltip(
         label=(f"Potential Sales (Colocation): {tip_value}\n"
-               "Free rack-U x the CRM per-U colocation price. Potential at list "
+               "Sellable free rack-U (outside colocation-allocated racks) x "
+               "the CRM per-U colocation price. Potential at list "
                "price — not billed revenue. Not included in the virtualization range."),
         position="bottom",
         withArrow=True,
@@ -786,7 +791,8 @@ def build_datacenters(time_range=None, visible_sections=None):
                 tooltip=(
                     "Total colocation potential (all DCs): "
                     f"{f'{total_colo_potential_tl:,.0f} TL' if total_colo_potential_tl else '—'}\n"
-                    "Free rack-U x the CRM per-U colocation price. Potential at list "
+                    "Sellable free rack-U (outside colocation-allocated racks) x the "
+                    "CRM per-U colocation price. Potential at list "
                     "price — not billed revenue. Not summed into the virtualization "
                     "figure beside it.\n"
                     "Total is smaller than the sum of the per-DC card values by design: "
@@ -1145,7 +1151,8 @@ def poll_virt_sellable_refresh(_n, state, time_range):
                 tooltip=(
                     "Total colocation potential (all DCs): "
                     f"{f'{total_colo_potential_tl:,.0f} TL' if total_colo_potential_tl else '—'}\n"
-                    "Free rack-U x the CRM per-U colocation price. Potential at list "
+                    "Sellable free rack-U (outside colocation-allocated racks) x the "
+                    "CRM per-U colocation price. Potential at list "
                     "price — not billed revenue. Not summed into the virtualization "
                     "figure beside it.\n"
                     "Total is smaller than the sum of the per-DC card values by design: "

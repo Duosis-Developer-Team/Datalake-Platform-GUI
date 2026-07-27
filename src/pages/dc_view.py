@@ -77,6 +77,7 @@ from src.components.backup_panel import (
 from src.components import backup_jobs_section  # noqa: F401
 from src.components import backup_unique_jobs_panel  # noqa: F401
 from shared.backup.policy_classification import load_policy_panel_mapping
+from shared.colocation.allocation import UNATTRIBUTED
 from src.services import sla_service
 from src.utils.dc_display import format_dc_display_name, resolve_dc_display_from_summary
 from src.components.dc_availability_panel import build_dc_availability_panel
@@ -2549,28 +2550,81 @@ def _build_physical_inventory_dc_tab(phys_inv: dict):
 
 
 def build_colocation_tab(coloc: dict):
-    """Colocation tab: DC used-U breakdown summary + dedicated-customer footprint
-    + internal-resource footprint."""
+    """Colocation tab: DC used-U breakdown summary + allocation-based
+    dedicated-customer footprint + internal-resource footprint.
+
+    Phase 2 Task C: the "Dedicated Customers" table reads payload["allocation"]
+    (rack role_id + tenant_name/tags/description attribution, Task A/B) rather
+    than the old tenancy-only payload["customers"] (populated on ~4% of racks,
+    blind to two of the three largest colocation customers). See
+    docs/superpowers/specs/2026-07-27-colocation-allocation-model-design.md.
+
+    Allocation rows carry no crm_account_name/match_status — the design doc's
+    measured reality is that none of these customers has any CRM sales record
+    at all, so a CRM Account / Match column here would only ever render em
+    dashes. Those columns are dropped for this table rather than kept empty.
+    Allocation rows also carry no precomputed potential_tl (unlike customers/
+    internal, whose potential_tl the service already computes) — it is priced
+    here from aggregate["unit_price_tl"], on Allocated U: the whole capacity
+    dedicated to that customer, which is also how "sellable_free_u" already
+    treats a colocation-role rack (spoken for regardless of how much of it is
+    actually in use — see design section 3).
+    """
     agg = (coloc or {}).get("aggregate", {}) or {}
-    customers = (coloc or {}).get("customers", []) or []
+    allocation = (coloc or {}).get("allocation", []) or []
     internal = (coloc or {}).get("internal", []) or []
 
     summary = build_colocation_summary(agg)
 
-    if customers:
+    unit_price = agg.get("unit_price_tl")
+
+    def _allocation_potential_tl(u):
+        # Mirrors app.services.colocation_price_service.potential_tl: an
+        # unresolved unit price propagates as None (renders "—" via fmt_tl),
+        # never silently prices allocated space at 0.
+        if unit_price is None:
+            return None
+        return float(u or 0) * float(unit_price)
+
+    if allocation:
         header = html.Tr(children=[html.Th(h) for h in
-                                   ("Customer", "CRM Account", "Match", "Rack",
-                                    "Used U (own)", "Potential (TL)")])
+                                   ("Customer", "Racks", "Allocated U",
+                                    "Used U", "Potential (TL)")])
         body = []
-        for c in customers:
-            badge_color = "green" if c.get("match_status") == "matched" else "orange"
+        for c in allocation:
+            name = c.get("customer", "")
+            if name == UNATTRIBUTED:
+                # Not "unowned": either the rack's tenant_name/tags/description
+                # all resolve to nothing, or (4 of these 10 racks) two
+                # colocation-role NetBox rows name DIFFERENT customers for the
+                # same rack and the conflict was never guessed at (design
+                # doc, "Four racks have irreconcilable ownership").
+                name_cell = dmc.Tooltip(
+                    label=(
+                        "Ownership ambiguous in NetBox: some of these racks "
+                        "have no resolvable tenant/tag/description; others "
+                        "carry two colocation-role rows naming different "
+                        "customers for the same rack, and the conflict was "
+                        "left unresolved rather than guessed at. This is "
+                        "real customer footprint, not free space."
+                    ),
+                    position="top", withArrow=True, multiline=True, w=280,
+                    children=dmc.Group(gap=4, wrap="nowrap", children=[
+                        dmc.Text(name, size="sm"),
+                        DashIconify(
+                            icon="solar:info-circle-bold-duotone", width=14,
+                            style={"color": "#F79009", "flexShrink": 0},
+                        ),
+                    ]),
+                )
+            else:
+                name_cell = name
             body.append(html.Tr(children=[
-                html.Td(c.get("tenant", "")),
-                html.Td(c.get("crm_account_name") or "—"),
-                html.Td(dmc.Badge(c.get("match_status", ""), color=badge_color, variant="light", size="sm")),
-                html.Td(", ".join(c.get("racks", []) or [])),
+                html.Td(name_cell),
+                html.Td(f"{int(c.get('rack_count') or 0):,}"),
+                html.Td(f"{int(c.get('allocated_u') or 0):,}"),
                 html.Td(f"{int(c.get('used_u') or 0):,}"),
-                html.Td(fmt_tl(c.get("potential_tl"))),
+                html.Td(fmt_tl(_allocation_potential_tl(c.get("allocated_u")))),
             ]))
         table = dmc.Table(children=[html.Thead(header), html.Tbody(body)],
                           striped=True, highlightOnHover=True)
@@ -2603,7 +2657,8 @@ def build_colocation_tab(coloc: dict):
         html.Div(className="nexus-card", style={"padding": "20px"}, children=[
             _section_title(
                 "Dedicated Customers",
-                "Device tenant → CRM match · Potential at list price, not billed revenue",
+                "Rack allocation (NetBox role + tenant/tag/description) · "
+                "Potential at list price for Allocated U, not billed revenue",
             ),
             html.Div(style={"overflowX": "auto"}, children=table),
         ]),
