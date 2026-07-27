@@ -112,6 +112,96 @@ def test_occupancy_rows_dedupe_unions_tenants_across_duplicates():
     assert sorted(rows[0]["tenants"]) == ["AytemizBank", "Boyner"]
 
 
+# --- Regression guard: DC13 "2,629 vs 2,719 total U" ambiguity -------------
+# Root cause (verified against prod 2026-07-27, NOT a stale build / u_height
+# patch): 25 physical racks at site ISTANBUL are registered in NetBox under
+# TWO conflicting dc labels at once (DC13+DH3 or DC13+DH4) with DIFFERENT
+# capacity_u per label -- racks 101-105 and 201-205 carry both 47 and 52;
+# racks 303-306 carry both 42 and 52. _dedupe_physical_racks collapses these
+# to one row per (rack_name, site_name), so which capacity "wins" depends on
+# which of the conflicting rows made it into the query's row set. These
+# tests pin the CURRENT merge rule so a change to the tie-break silently
+# changing reported totals gets caught.
+
+def test_dedupe_conflicting_capacity_and_dc_pins_current_tiebreak():
+    """Real case: rack 101/ISTANBUL is registered under both DC13 (47U) and
+    DH3 (52U). Pins the current dedupe rule: capacity_u/used_u = MAX across
+    the conflicting rows (never summed, never simply the first or last row's
+    value); free_u is recomputed from that merged pair; dc = the
+    most-frequently-voted label, tie broken to the alphabetically smallest
+    (DC13 < DH3) -- NOT "first row wins" and NOT "last row wins".
+    """
+    cur = _FakeCursor([
+        ("netbox-a", "101", "DC13", "DH1", 47, 30, 17, ["Boyner"], "ISTANBUL"),
+        ("netbox-b", "101", "DH3", "DH3-Hall", 52, 30, 22, ["AytemizBank"], "ISTANBUL"),
+    ])
+    rows = occ.occupancy_rows(cur, dc_pattern=None)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["capacity_u"] == 52         # MAX(47, 52) -- never 47, never 99
+    assert row["used_u"] == 30             # MAX(30, 30)
+    assert row["free_u"] == 22             # 52 - 30, recomputed from the merge
+    assert row["dc"] == "DC13"             # 1 vote each -> tie -> alphabetically smallest
+    assert sorted(row["tenants"]) == ["AytemizBank", "Boyner"]
+
+
+def test_dedupe_conflicting_capacity_and_dc_is_order_stable():
+    """Same ambiguous pair (rack 101/ISTANBUL, DC13/47 vs DH3/52), fed in the
+    opposite order. Every field that feeds a total-U figure -- capacity_u,
+    used_u, free_u, dc, and the tenant set -- must come out identical
+    regardless of input order, because the merge uses commutative max() /
+    vote-counting rather than "first row wins". Verified empirically: it IS
+    order-stable for these fields.
+
+    NOTE (not asserted here, reported separately -- see task report):
+    rack_id and hall are NOT part of this guarantee. They are copied
+    verbatim from whichever row is encountered first and are never
+    recomputed, so the *identity* of the "surviving" row is order-dependent
+    (confirmed by direct experiment: forward run keeps "netbox-a", the
+    reversed run keeps "netbox-b"). This never affects any total-U figure
+    (aggregate_by_dc only reads capacity_u/used_u/free_u/dc), so it is out
+    of scope for this capacity-ambiguity guard, but it is a real
+    order-dependency in the function and is flagged rather than pinned as
+    if it were intended behaviour.
+    """
+    row_dc13 = ("netbox-a", "101", "DC13", "DH1", 47, 30, 17, ["Boyner"], "ISTANBUL")
+    row_dh3 = ("netbox-b", "101", "DH3", "DH3-Hall", 52, 30, 22, ["AytemizBank"], "ISTANBUL")
+
+    forward = occ.occupancy_rows(_FakeCursor([row_dc13, row_dh3]), dc_pattern=None)[0]
+    backward = occ.occupancy_rows(_FakeCursor([row_dh3, row_dc13]), dc_pattern=None)[0]
+
+    assert forward["capacity_u"] == backward["capacity_u"] == 52
+    assert forward["used_u"] == backward["used_u"] == 30
+    assert forward["free_u"] == backward["free_u"] == 22
+    assert forward["dc"] == backward["dc"] == "DC13"
+    assert sorted(forward["tenants"]) == sorted(backward["tenants"])
+
+
+def test_filtered_vs_unfiltered_queries_legitimately_disagree_on_total_u():
+    """Simulates the two real call sites for rack 101/ISTANBUL:
+    occupancy_rows(cur, "%DC13%") only ever sees the DC13-labelled row (the
+    SQL WHERE clause filters the DH3 row out before dedupe runs), while
+    occupancy_rows(cur, None) sees BOTH conflicting rows and dedupe picks
+    the max. This is why a per-DC figure (2,629-style) and the all-DC figure
+    (2,719-style) legitimately disagree for the same physical racks: it is
+    not a bug in either query, it is a consequence of which rows survive the
+    SQL filter before _dedupe_physical_racks ever gets a chance to merge
+    them.
+    """
+    dc13_row = ("netbox-a", "101", "DC13", "DH1", 47, 30, 17, ["Boyner"], "ISTANBUL")
+    dh3_row = ("netbox-b", "101", "DH3", "DH3-Hall", 52, 30, 22, ["AytemizBank"], "ISTANBUL")
+
+    # simulates occupancy_rows(cur, "%DC13%"): only the matching row reaches dedupe
+    filtered = occ.occupancy_rows(_FakeCursor([dc13_row]), dc_pattern="%DC13%")
+    # simulates occupancy_rows(cur, None): both conflicting labels reach dedupe
+    unfiltered = occ.occupancy_rows(_FakeCursor([dc13_row, dh3_row]), dc_pattern=None)
+
+    assert len(filtered) == 1 and len(unfiltered) == 1
+    assert filtered[0]["capacity_u"] == 47      # only the row that matched the filter
+    assert unfiltered[0]["capacity_u"] == 52    # both rows present -> max wins
+    assert filtered[0]["capacity_u"] != unfiltered[0]["capacity_u"]
+
+
 def test_aggregate_by_dc_rolls_up():
     rows = [
         {"dc": "DC13", "capacity_u": 47, "used_u": 35, "free_u": 12},
