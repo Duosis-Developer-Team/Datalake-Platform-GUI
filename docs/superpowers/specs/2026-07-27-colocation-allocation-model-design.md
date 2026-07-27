@@ -51,20 +51,55 @@ customers after nobody — are invisible today.
 
 ### Resolved allocation
 
-| Customer | Racks | Allocated U |
-|---|---|---|
-| SABANCI DX | 18 | 821 |
-| AKSIGORTA | 11 | 517 |
-| BOYNER | 7 | 312 |
-| TURKONAY | 2 | 94 |
-| VERION | 1 | 45 |
-| HRWEB | 1 | 42 |
-| ANKARA SIGORTA EXADATA | 1 | 42 |
-| GATEWAY HOLDING | 1 | 42 |
-| AYTEMIZBANK | 1 | 42 |
-| **Total** | **43** | **1,957** |
+**These figures replace an earlier draft of this table.** The draft came from an ad-hoc probe
+that deduplicated racks by name alone and silently assigned conflicted racks to a guessed
+customer. The numbers below are what the shipped implementation actually produces, measured
+against prod after the tie-break was made order-independent:
 
-6 racks carry a colocation role but no resolvable name in any of the three fields.
+| Customer | Racks | Allocated U | Used U |
+|---|---|---|---|
+| SABANCI DX | 18 | 851 | 83 |
+| **Unattributed** | **10** | **465** | **214** |
+| AKSIGORTA | 8 | 376 | 228 |
+| BOYNER | 7 | 312 | 222 |
+| VERION | 1 | 45 | 10 |
+| GATEWAY HOLDING | 1 | 42 | 19 |
+| ANKARA SIGORTA EXADATA | 1 | 42 | 18 |
+| TURKONAY | 1 | 42 | 19 |
+| AYTEMIZBANK | 1 | 42 | 18 |
+| HRWEB | 1 | 42 | 13 |
+| **Total** | **49** | **2,259** | **844** |
+
+Sellable free U (outside colocation racks): **4,477**, worth **46,698,870.68 TL** at the per-U
+list price. Whole-estate figures are unchanged from phase 1: 188 racks, 8,603 total U, 5,892
+total free U.
+
+### Four racks have irreconcilable ownership
+
+These carry two colocation-role rows naming different customers. They resolve to
+**Unattributed** and log the conflict — the alternative was picking a winner by which row the
+collector happened to paginate first, which the spec's own "never guessed" rule forbids:
+
+| Rack | Competing claims |
+|---|---|
+| 112 / ISTANBUL | `tenant_name = AytemizBank` vs `description = AKSIGORTA` |
+| 114 / ISTANBUL | tag `FINANS CLOUD` vs `description = AKSIGORTA` |
+| 116 / ISTANBUL | tag `FINANS CLOUD` vs `description = AKSIGORTA` |
+| 306 / ISTANBUL | tag `SABANCI DX CO LOCATION` vs `description = TURKONAY` |
+
+Each is worth 42-47 U. They are a NetBox data-entry question, not a code question.
+
+### A rack's identity and its capacity can come from different rows
+
+Racks 204, 303, 304 and 305 have a colocation-role duplicate and a HOST-role duplicate whose
+capacities disagree (42 vs 52). Identity comes from the colocation row; capacity stays
+max-merged, as it is for every other duplicate in the system. So rack 303 reports SABANCI DX
+with 52 U even though its colocation row says 42 U.
+
+This is deliberate. Making capacity follow identity would make the merge order-dependent —
+the same two rows would yield 42 or 52 depending on which arrived first — and there is no
+signal in the data for which capacity is physically real. Uniformity and commutativity were
+chosen over per-row fidelity. It accounts for +30 U of SABANCI DX's allocation.
 
 ## Design
 
