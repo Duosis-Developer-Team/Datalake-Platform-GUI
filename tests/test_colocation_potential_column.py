@@ -169,32 +169,49 @@ def _payload(unit_price):
 
 
 def test_customer_table_has_potential_column_header():
+    # Fix round 1 (Finding 2): the header itself must name its pricing basis
+    # ("-- Allocated") so a reader who never opens the subtitle still gets it
+    # right — a bare "Potential (TL)" is no longer sufficient here.
     texts = _texts(build_colocation_tab(_payload(10430.84)))
 
-    assert "Potential (TL)" in texts
+    assert "Potential (TL) — Allocated" in texts
 
 
 def test_customer_potential_value_rendered():
     # fmt_tl is the compact executive formatter: 886,621.4 -> "886.6 Bin TL".
     # 85 (allocated_u) * 10430.84, NOT 40 (used_u) * 10430.84 — see _payload's
     # docstring for why the two U fields are deliberately unequal here.
+    #
+    # Fix round 1 (Finding 1): Potential (TL) now sits directly after
+    # Allocated U, not after Used U -- row shape is
+    # [Customer, Racks, Allocated U, Potential (TL), Used U] -- so the
+    # potential cell is index 3, not the last cell.
     rows = _table_rows(build_colocation_tab(_payload(10430.84)))
 
     boyner = next(r for r in rows if r[0] == "Boyner")
-    assert boyner[-1] == "886.6 Bin TL"
+    assert boyner[3] == "886.6 Bin TL"
+    assert boyner[-1] == "40"  # Used U stays the LAST column, not Potential
 
 
 def test_internal_table_has_potential_column():
     # Checked against each table's own header row, not a tree-wide occurrence
     # count — a count of 2 would also pass if one table had the header twice
     # and the other had none.
+    #
+    # Fix round 1 (Finding 2): before this fix both tables said the bare
+    # "Potential (TL)" -- identical labels pricing DIFFERENT bases (Allocated
+    # U here, Used U in Internal Resources) with no way to tell them apart at
+    # a glance. Each header must now name its own basis, and the two must
+    # differ from each other.
     tab = build_colocation_tab(_payload(10430.84))
 
     customer_headers = _table_header_texts(_card_for_title(tab, "Dedicated Customers"))
     internal_headers = _table_header_texts(_card_for_title(tab, "Internal Resources"))
 
-    assert customer_headers.count("Potential (TL)") == 1
-    assert internal_headers.count("Potential (TL)") == 1
+    assert customer_headers.count("Potential (TL) — Allocated") == 1
+    assert internal_headers.count("Potential (TL) — Used") == 1
+    assert "Potential (TL) — Used" not in customer_headers
+    assert "Potential (TL) — Allocated" not in internal_headers
 
 
 def test_unresolved_potential_renders_dash_not_zero():
@@ -205,10 +222,10 @@ def test_unresolved_potential_renders_dash_not_zero():
     rows = _table_rows(tab)
 
     boyner = next(r for r in rows if r[0] == "Boyner")
-    assert boyner[-1] == "—"
+    assert boyner[3] == "—"  # Potential (TL) column, not the last cell
 
     internal = next(r for r in rows if r[0] == "Bulutistan - Linux TEAM")
-    assert internal[-1] == "—"
+    assert internal[-1] == "—"  # Internal Resources keeps Potential last
 
 
 def test_dedicated_customers_table_has_no_crm_account_or_match_columns():
@@ -219,7 +236,8 @@ def test_dedicated_customers_table_has_no_crm_account_or_match_columns():
     tab = build_colocation_tab(_payload(10430.84))
     headers = _table_header_texts(_card_for_title(tab, "Dedicated Customers"))
 
-    assert headers == ["Customer", "Racks", "Allocated U", "Used U", "Potential (TL)"]
+    assert headers == ["Customer", "Racks", "Allocated U",
+                        "Potential (TL) — Allocated", "Used U"]
     assert "CRM Account" not in headers
     assert "Match" not in headers
 
@@ -266,28 +284,6 @@ def test_unattributed_row_is_visible_with_its_own_allocated_and_used_u():
     assert "10" in unattributed[1]  # Racks column shows the rack_count
 
 
-def test_unattributed_tooltip_says_ambiguous_not_unowned():
-    # The task is explicit: the tooltip must say ownership is AMBIGUOUS in
-    # NetBox (conflicting/missing source rows), never that the rack is
-    # unowned — Unattributed racks are real customer footprint, just not
-    # nameable from today's NetBox data.
-    payload = _payload(10430.84)
-    payload["allocation"] = [
-        {"customer": "Unattributed", "allocated_u": 465, "used_u": 214,
-         "rack_count": 10, "racks": ["112", "114", "116", "306"]},
-    ]
-    tab = build_colocation_tab(payload)
-    tooltip_labels = [
-        getattr(n, "label", None)
-        for n in _flatten(tab)
-        if getattr(n, "label", None) is not None
-    ]
-    ambiguous_tips = [t for t in tooltip_labels if isinstance(t, str) and "ambiguous" in t.lower()]
-
-    assert ambiguous_tips, "expected an Unattributed tooltip mentioning ambiguous ownership"
-    assert any("unowned" not in t.lower() for t in ambiguous_tips)
-
-
 def _flatten(component):
     out = []
     stack = [component]
@@ -302,3 +298,48 @@ def _flatten(component):
         elif children is not None:
             stack.append(children)
     return out
+
+
+def _unattributed_row_tooltip_label(tab):
+    """The label of the ONE dmc.Tooltip wrapping the Unattributed customer-
+    name cell in the Dedicated Customers table, identified by its own visible
+    text ("Unattributed") — not by scanning the whole tree for any tooltip
+    that happens to mention "ambiguous".
+
+    Fix round 1 (Finding 3): the prior version collected every tooltip in the
+    tree whose label contained "ambiguous" and asserted `any(...)` over the
+    set — with exactly one match today it passed, but it would keep passing
+    even if a second, unrelated "ambiguous" tooltip appeared and the real
+    Unattributed tooltip regressed to say something else entirely. Scoping to
+    the Dedicated Customers card AND to the specific Tooltip node whose own
+    rendered text is "Unattributed" closes that hole: there is exactly one
+    such node, and this returns its label or None if it isn't found at all.
+    """
+    card = _card_for_title(tab, "Dedicated Customers")
+    assert card is not None, "Dedicated Customers card not found"
+    matches = [
+        node for node in _flatten(card)
+        if type(node).__name__ == "Tooltip" and "Unattributed" in _visible_text(node)
+    ]
+    assert len(matches) == 1, (
+        f"expected exactly one Tooltip wrapping the Unattributed cell, found {len(matches)}"
+    )
+    return getattr(matches[0], "label", None)
+
+
+def test_unattributed_tooltip_says_ambiguous_not_unowned():
+    # The task is explicit: the tooltip must say ownership is AMBIGUOUS in
+    # NetBox (conflicting/missing source rows), never that the rack is
+    # unowned — Unattributed racks are real customer footprint, just not
+    # nameable from today's NetBox data.
+    payload = _payload(10430.84)
+    payload["allocation"] = [
+        {"customer": "Unattributed", "allocated_u": 465, "used_u": 214,
+         "rack_count": 10, "racks": ["112", "114", "116", "306"]},
+    ]
+    tab = build_colocation_tab(payload)
+    label = _unattributed_row_tooltip_label(tab)
+
+    assert label is not None
+    assert "ambiguous" in label.lower()
+    assert "unowned" not in label.lower()

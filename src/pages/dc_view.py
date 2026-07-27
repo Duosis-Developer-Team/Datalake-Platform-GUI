@@ -2587,9 +2587,15 @@ def build_colocation_tab(coloc: dict):
         return float(u or 0) * float(unit_price)
 
     if allocation:
+        # Potential (TL) sits directly after Allocated U -- not after Used U
+        # -- and the header itself names its basis ("-- Allocated") rather
+        # than relying solely on the subtitle. Fix round 1: the prior layout
+        # put Potential immediately right of Used U while pricing Allocated
+        # U, inviting exactly the 10x misread (SABANCI DX: 83 used vs 851
+        # allocated) the subtitle alone wasn't enough to prevent.
         header = html.Tr(children=[html.Th(h) for h in
                                    ("Customer", "Racks", "Allocated U",
-                                    "Used U", "Potential (TL)")])
+                                    "Potential (TL) — Allocated", "Used U")])
         body = []
         for c in allocation:
             name = c.get("customer", "")
@@ -2623,8 +2629,8 @@ def build_colocation_tab(coloc: dict):
                 html.Td(name_cell),
                 html.Td(f"{int(c.get('rack_count') or 0):,}"),
                 html.Td(f"{int(c.get('allocated_u') or 0):,}"),
-                html.Td(f"{int(c.get('used_u') or 0):,}"),
                 html.Td(fmt_tl(_allocation_potential_tl(c.get("allocated_u")))),
+                html.Td(f"{int(c.get('used_u') or 0):,}"),
             ]))
         table = dmc.Table(children=[html.Thead(header), html.Tbody(body)],
                           striped=True, highlightOnHover=True)
@@ -2633,8 +2639,13 @@ def build_colocation_tab(coloc: dict):
                          size="sm", c="#98A2B3")
 
     if internal:
+        # Internal Resources is priced on Used U (colocation_matching_service.py
+        # potential_tl(row.get("used_u"), ...)) -- a DIFFERENT basis from the
+        # Dedicated Customers table above. Fix round 1: both tables used to
+        # say the bare "Potential (TL)", which read as the same figure with
+        # the same meaning; naming the basis in each header prevents that.
         int_header = html.Tr(children=[html.Th(h) for h in
-                                       ("Resource", "Rack", "Used U", "Potential (TL)")])
+                                       ("Resource", "Rack", "Used U", "Potential (TL) — Used")])
         int_body = []
         for r in internal:
             int_body.append(html.Tr(children=[
