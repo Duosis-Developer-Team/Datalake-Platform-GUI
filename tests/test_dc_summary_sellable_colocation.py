@@ -54,7 +54,10 @@ def test_entry_shows_sellable_free_u_not_total_free_u():
     texts = _texts(entry)
     assert any("4,477" in t for t in texts)
     assert not any("5,892" in t for t in texts)
-    assert any("4,477 sellable free U x 10,430.84 TL per U" in t for t in texts)
+    # The arithmetic caption must cite the same base the TL value came from.
+    # Asserted on the numbers rather than a fixed sentence so a rewording does
+    # not fail while a wrong base still would.
+    assert any("4,477" in t and "10,430.84" in t for t in texts)
 
 
 def test_entry_renders_dash_when_price_unresolved():

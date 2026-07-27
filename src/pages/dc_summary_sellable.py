@@ -407,23 +407,59 @@ def build_colocation_sellable_entry(coloc_aggregate: dict | None):
     # arithmetic. sellable_free_u falls back to free_u for callers that never
     # set it (no allocation data at all), so the tooltip stays accurate then too.
     sellable_free_u = agg.get("sellable_free_u", free_u)
+    allocated_u = agg.get("colocation_allocated_u")
+    rack_count = agg.get("rack_count")
+
     if unit_price is None:
-        tip = "Colocation unit price unavailable — shown as — rather than 0."
+        price_sub = "unit price unavailable"
+        note = ("Colocation unit price could not be resolved, so no TL figure is shown. "
+                "An em dash means the price is unknown — not that the space is worthless.")
+        note_color = "orange"
+        note_icon = "solar:danger-triangle-bold"
     else:
-        tip = (f"{sellable_free_u:,} sellable free U x {unit_price:,.2f} TL per U. "
-               "Excludes free U inside colocation-allocated racks. "
-               "Potential at list price — not billed revenue.")
-    return dmc.Tooltip(
-        label=tip, position="bottom", withArrow=True, multiline=True, w=300,
-        children=html.Div(
-            className="nexus-card",
-            style={"padding": "16px"},
-            children=[
-                dmc.Text("Physical — Colocation", size="sm", fw=700, c=_TEXT),
-                dmc.Text(f"{sellable_free_u:,} sellable free U", size="xs", c=_MUTED),
-                dmc.Text(fmt_tl(potential), size="xl", fw=800, c=_BRAND),
-            ],
+        price_sub = f"{sellable_free_u:,} U × {unit_price:,.2f} TL"
+        note = ("Potential at list price — not billed revenue. Counts only free U in racks "
+                "that are not allocated to a colocation customer: free space inside a "
+                "customer's own rack belongs to them and cannot be sold to anyone else.")
+        note_color = "blue"
+        note_icon = "solar:info-circle-bold"
+
+    tiles = [
+        _exec_kpi(
+            "Sellable Free U", f"{sellable_free_u:,} U",
+            "outside customer racks", "solar:box-minimalistic-bold-duotone", "blue",
         ),
+        _exec_kpi(
+            "Potential (list price)", fmt_tl(potential),
+            price_sub, "solar:money-bag-bold-duotone", "violet",
+        ),
+    ]
+    if allocated_u:
+        tiles.append(_exec_kpi(
+            "Allocated to Customers", f"{int(allocated_u):,} U",
+            f"of {int(rack_count):,} racks in this DC" if rack_count else "not sellable",
+            "solar:users-group-rounded-bold-duotone", "orange",
+        ))
+
+    # Matches the shell of build_virt_storage_block above: a full-width section
+    # card, not a bare tile. Appended into the same stack, a small standalone
+    # card rendered as a narrow orphan against its full-width siblings.
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "20px"},
+        children=[
+            _section_title(
+                "Physical — Colocation",
+                "Free rack-U available to sell, valued at the CRM per-U list price",
+            ),
+            dmc.SimpleGrid(
+                cols={"base": 1, "md": len(tiles)}, spacing="lg", mt="md", children=tiles,
+            ),
+            dmc.Alert(
+                note, color=note_color, variant="light", radius="md", mt="md",
+                icon=DashIconify(icon=note_icon, width=18),
+            ),
+        ],
     )
 
 
