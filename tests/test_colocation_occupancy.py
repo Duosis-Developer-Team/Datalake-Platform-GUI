@@ -124,23 +124,35 @@ def test_occupancy_rows_dedupe_unions_tenants_across_duplicates():
 # changing reported totals gets caught.
 
 def test_dedupe_conflicting_capacity_and_dc_pins_current_tiebreak():
-    """Real case: rack 101/ISTANBUL is registered under both DC13 (47U) and
-    DH3 (52U). Pins the current dedupe rule: capacity_u/used_u = MAX across
-    the conflicting rows (never summed, never simply the first or last row's
-    value); free_u is recomputed from that merged pair; dc = the
-    most-frequently-voted label, tie broken to the alphabetically smallest
-    (DC13 < DH3) -- NOT "first row wins" and NOT "last row wins".
+    """Illustrative fixture for rack 101/ISTANBUL's DC13/DH3 double-labelling
+    (NOT a literal reproduction of production data -- the real conflicting
+    pair for 101-105/201-205 is 47 vs 52, and 42 only co-occurs with 52 for
+    the separate 303-306 pairing; here the first row is 47 and the SECOND
+    is deliberately made SMALLER (42), a combination that doesn't occur on
+    a single rack in prod, so this test can discriminate the tie-break rule
+    by itself).
+
+    With the second row's capacity/used_u both SMALLER than the first,
+    "last row wins" would report 42/lower-used, while MAX reports 47/the
+    larger used -- so this pins MAX specifically, not just "not first
+    wins". Combined with the order-swap test below (which shows the result
+    is identical either way, ruling out "first wins" and "last wins" both
+    being silently order-dependent), the pair together pin: capacity_u/
+    used_u = MAX across the conflicting rows (never summed, never simply
+    the first or last row's value); free_u is recomputed from that merged
+    pair; dc = the most-frequently-voted label, tie broken to the
+    alphabetically smallest (DC13 < DH3).
     """
     cur = _FakeCursor([
         ("netbox-a", "101", "DC13", "DH1", 47, 30, 17, ["Boyner"], "ISTANBUL"),
-        ("netbox-b", "101", "DH3", "DH3-Hall", 52, 30, 22, ["AytemizBank"], "ISTANBUL"),
+        ("netbox-b", "101", "DH3", "DH3-Hall", 42, 20, 22, ["AytemizBank"], "ISTANBUL"),
     ])
     rows = occ.occupancy_rows(cur, dc_pattern=None)
     assert len(rows) == 1
     row = rows[0]
-    assert row["capacity_u"] == 52         # MAX(47, 52) -- never 47, never 99
-    assert row["used_u"] == 30             # MAX(30, 30)
-    assert row["free_u"] == 22             # 52 - 30, recomputed from the merge
+    assert row["capacity_u"] == 47         # MAX(47, 42) -- last-wins would give 42
+    assert row["used_u"] == 30             # MAX(30, 20) -- last-wins would give 20
+    assert row["free_u"] == 17             # 47 - 30, recomputed from the merge
     assert row["dc"] == "DC13"             # 1 vote each -> tie -> alphabetically smallest
     assert sorted(row["tenants"]) == ["AytemizBank", "Boyner"]
 
