@@ -18,6 +18,7 @@ from scripts.seed_backup_policy_aliases import (
     SeedPlan,
     apply_plan,
     format_report,
+    group_matched_by_account,
     parse_sheet_rows,
     resolve_accounts,
 )
@@ -165,19 +166,18 @@ def test_apply_plan_writes_union_of_existing_and_new_mappings():
     """The save endpoint replaces an account's WHOLE mapping set, so apply_plan
     must send existing + new together, not just the new rule."""
     plan = SeedPlan(matched=[("acc-1", "Azer", "AZERSUN HOLDİNG MMC", ["azer"])])
-    existing_alias = {
-        "crm_accountid": "acc-1",
-        "crm_account_name": "AZERSUN HOLDİNG MMC",
-        "source_mappings": [
-            {
-                "data_source": "virtualization",
-                "match_method": "contains",
-                "match_value": "Azersun",
-                "enabled": True,
-            },
-        ],
-    }
-    with patch("src.services.api_client.get_crm_aliases", return_value=[existing_alias]), \
+    existing = [
+        {
+            "crm_accountid": "acc-1",
+            "crm_account_name": "AZERSUN HOLDİNG MMC",
+            "data_source": "virtualization",
+            "match_method": "contains",
+            "match_value": "Azersun",
+            "enabled": True,
+        },
+    ]
+    with patch("src.services.api_client.get_crm_account_source_mappings",
+               return_value=existing), \
          patch("src.services.api_client.put_crm_source_mappings") as mock_put:
         accounts_written, rules_added = apply_plan(plan)
 
@@ -194,21 +194,20 @@ def test_apply_plan_second_run_writes_nothing():
     """Idempotence: once the rule from the first run is already present, a
     second run must call put_crm_source_mappings zero times."""
     plan = SeedPlan(matched=[("acc-1", "Azer", "AZERSUN HOLDİNG MMC", ["azer"])])
-    alias_after_first_run = {
-        "crm_accountid": "acc-1",
-        "crm_account_name": "AZERSUN HOLDİNG MMC",
-        "source_mappings": [
-            {
-                "data_source": "backup_netbackup",
-                "match_method": "prefix",
-                "match_value": "azer",
-                "enabled": True,
-                "priority": 100,
-                "notes": "backup-musteri-isim.xlsx seed",
-            },
-        ],
-    }
-    with patch("src.services.api_client.get_crm_aliases", return_value=[alias_after_first_run]), \
+    after_first_run = [
+        {
+            "crm_accountid": "acc-1",
+            "crm_account_name": "AZERSUN HOLDİNG MMC",
+            "data_source": "backup_netbackup",
+            "match_method": "prefix",
+            "match_value": "azer",
+            "enabled": True,
+            "priority": 100,
+            "notes": "backup-musteri-isim.xlsx seed",
+        },
+    ]
+    with patch("src.services.api_client.get_crm_account_source_mappings",
+               return_value=after_first_run), \
          patch("src.services.api_client.put_crm_source_mappings") as mock_put:
         accounts_written, rules_added = apply_plan(plan)
 
@@ -231,10 +230,65 @@ def test_apply_plan_never_writes_ambiguous_or_not_addressable_rows():
         ambiguous=[("Sabancı", ["SABANCI ARF", "SABANCI DX", "SABANCI ÜNİVERSİTESİ"])],
         not_addressable=[("acc-1", "Avrora", "AVRORA LLC", ["avro", "avrora"])],
     )
-    with patch("src.services.api_client.get_crm_aliases", return_value=[]), \
+    with patch("src.services.api_client.get_crm_account_source_mappings", return_value=[]), \
          patch("src.services.api_client.put_crm_source_mappings") as mock_put:
         accounts_written, rules_added = apply_plan(plan)
 
     assert accounts_written == 0
     assert rules_added == 0
     mock_put.assert_not_called()
+
+
+def test_two_sheet_rows_for_one_account_keep_both_token_sets():
+    """apply_plan used to fetch every alias once and re-derive `mappings` from
+    that one snapshot on each iteration, so two sheet rows resolving to the same
+    accountid produced two PUTs — and the second, built from the pre-write
+    snapshot, dropped the first's tokens. resolve_accounts()'s startswith
+    fallback makes such duplicates easy to introduce ('Azer' and 'Azersun' both
+    land on AZERSUN HOLDİNG)."""
+    plan = SeedPlan(matched=[
+        ("acc-1", "Azer", "AZERSUN HOLDİNG MMC", ["azer"]),
+        ("acc-1", "Azersun", "AZERSUN HOLDİNG MMC", ["azersun", "azr"]),
+    ])
+    with patch("src.services.api_client.get_crm_account_source_mappings", return_value=[]), \
+         patch("src.services.api_client.put_crm_source_mappings") as mock_put:
+        accounts_written, rules_added = apply_plan(plan)
+
+    # One account, one write — not two racing ones.
+    assert accounts_written == 1
+    assert rules_added == 3
+    mock_put.assert_called_once()
+    written = {m["match_value"] for m in mock_put.call_args.kwargs["mappings"]}
+    assert written == {"azer", "azersun", "azr"}
+
+
+def test_grouping_by_account_dedupes_repeated_tokens():
+    grouped = group_matched_by_account([
+        ("acc-1", "Azer", "AZERSUN HOLDİNG MMC", ["azer"]),
+        ("acc-1", "Azer (2)", "AZERSUN HOLDİNG MMC", ["azer", "azr"]),
+        ("acc-2", "Aksular", "AKSULAR GIDA", ["aksu"]),
+    ])
+    assert grouped == {
+        "acc-1": ("AZERSUN HOLDİNG MMC", ["azer", "azr"]),
+        "acc-2": ("AKSULAR GIDA", ["aksu"]),
+    }
+
+
+def test_apply_plan_reads_each_account_separately_not_one_alias_snapshot():
+    """The read that feeds the write must be per-account and uncached.
+    get_crm_aliases() is both project-scoped and cached for 300s behind an SWR
+    TTL, and cache_service defaults to a per-process backend — so a snapshot
+    taken there can be stale in exactly the worker that is about to overwrite
+    it."""
+    plan = SeedPlan(matched=[
+        ("acc-1", "Azer", "AZERSUN HOLDİNG MMC", ["azer"]),
+        ("acc-2", "Aksular", "AKSULAR GIDA", ["aksu"]),
+    ])
+    with patch("src.services.api_client.get_crm_account_source_mappings",
+               return_value=[]) as mock_read, \
+         patch("src.services.api_client.get_crm_aliases") as mock_aliases, \
+         patch("src.services.api_client.put_crm_source_mappings"):
+        apply_plan(plan)
+
+    assert [c.args[0] for c in mock_read.call_args_list] == ["acc-1", "acc-2"]
+    mock_aliases.assert_not_called()

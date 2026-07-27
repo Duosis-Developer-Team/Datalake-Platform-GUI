@@ -180,17 +180,51 @@ def load_sheet(path: str) -> list[tuple[str, list[str]]]:
     )
 
 
-def apply_plan(plan: SeedPlan) -> tuple[int, int]:
-    """Write the matched rules. Returns (accounts_written, rules_added)."""
-    from src.services import api_client as api
-    from src.utils.crm_source_mapping_ui import find_alias, merge_source_mapping
+def group_matched_by_account(matched) -> dict[str, tuple[str, list[str]]]:
+    """accountid -> (crm_account_name, every token any sheet row asked for).
 
-    aliases = api.get_crm_aliases() or []
+    Two sheet rows can resolve to the same CRM account — resolve_accounts()'s
+    startswith fallback makes that easy ('Azer' and 'Azersun' both land on
+    AZERSUN HOLDİNG). Writing them as two independent PUTs would make the
+    second one, built from the same pre-write snapshot, drop the first's
+    tokens. One account, one union, one write.
+    """
+    grouped: dict[str, tuple[str, list[str]]] = {}
+    for accountid, _sheet_name, account_name, tokens in matched:
+        name, existing = grouped.get(accountid, (account_name, []))
+        merged = list(existing)
+        for token in tokens:
+            if token not in merged:
+                merged.append(token)
+        grouped[accountid] = (name, merged)
+    return grouped
+
+
+def apply_plan(plan: SeedPlan) -> tuple[int, int]:
+    """Write the matched rules. Returns (accounts_written, rules_added).
+
+    Read-modify-write over a replace-all endpoint, so each account is read
+    immediately before its own write, one account at a time — never from a
+    snapshot of every alias taken once up front. See
+    api_client.put_crm_source_mappings for the cross-process limit that
+    remains.
+    """
+    from src.services import api_client as api
+    from src.utils.crm_source_mapping_ui import merge_source_mapping
+
     accounts_written = rules_added = 0
 
-    for accountid, _sheet_name, account_name, tokens in plan.matched:
-        alias = find_alias(aliases, accountid)
-        mappings = list((alias or {}).get("source_mappings") or [])
+    for accountid, (account_name, tokens) in group_matched_by_account(plan.matched).items():
+        # This account's OWN mappings, uncached. get_crm_aliases() is scoped to
+        # project customers and cached for 300s behind an SWR TTL; either would
+        # hand this loop a set that is missing rules the replace-all PUT then
+        # deletes.
+        mappings = list(api.get_crm_account_source_mappings(accountid) or [])
+        account_name = next(
+            (str(m.get("crm_account_name")).strip() for m in mappings
+             if str(m.get("crm_account_name") or "").strip()),
+            account_name,
+        )
         added_here = 0
         for token in tokens:
             mappings, changed = merge_source_mapping(mappings, {
@@ -208,7 +242,7 @@ def apply_plan(plan: SeedPlan) -> tuple[int, int]:
         # union built above is what goes out.
         api.put_crm_source_mappings(
             accountid,
-            crm_account_name=(alias or {}).get("crm_account_name") or account_name,
+            crm_account_name=account_name,
             mappings=mappings,
         )
         accounts_written += 1
