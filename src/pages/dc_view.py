@@ -5182,6 +5182,13 @@ def build_dc_view(
             return True
         return code in visible_sections
 
+    # Colocation moved under Physical Inventory. Accept the new sub-section key OR
+    # the legacy section key, so principals granted the old key keep access.
+    # Computed early (depends only on _sec, no data dependency) so the batch2
+    # fetch below can decide whether to fetch colocation data in parallel with
+    # everything else, instead of fetching it serially inside the panel body.
+    show_colo = _sec("sub:dc_view:phys_inv:colocation") or _sec("sec:dc_view:colocation")
+
     tr = time_range or default_time_range()
     t_total = time.perf_counter()
     t_batch1 = time.perf_counter()
@@ -5265,20 +5272,26 @@ def build_dc_view(
     )
     t_batch2 = time.perf_counter()
     if need_batch2:
-        batch2 = parallel_execute(
-            {
-                "phys_inv": lambda: api.get_physical_inventory_dc(dc_name),
-                "san_switches": lambda: api.get_dc_san_switches(dc_id, tr),
-                "net_filters": lambda: api.get_dc_network_filters(dc_id, tr),
-                "aura_dc": lambda: api.get_dc_availability_sla_item(str(dc_id), dc_name, tr),
-            }
-        )
+        batch2_tasks: dict = {
+            "phys_inv": lambda: api.get_physical_inventory_dc(dc_name),
+            "san_switches": lambda: api.get_dc_san_switches(dc_id, tr),
+            "net_filters": lambda: api.get_dc_network_filters(dc_id, tr),
+            "aura_dc": lambda: api.get_dc_availability_sla_item(str(dc_id), dc_name, tr),
+        }
+        # Only fetch colocation (HTTP round trip to customer-api) when the
+        # Physical Inventory panel is actually being built eagerly AND the
+        # principal can see the Colocation sub-tab — never for principals who
+        # cannot see it, and never on a bare "network"/"avail"/"storage" open.
+        if show_colo and _tab_eager(eager_tabs, "phys-inv"):
+            batch2_tasks["colocation"] = lambda: api.get_colocation(dc_id)
+        batch2 = parallel_execute(batch2_tasks)
         _log_dc_build_phase(str(dc_id), "batch2", t_batch2)
     else:
         batch2 = {}
     aura_dc_item = batch2.get("aura_dc")
     phys_inv = batch2.get("phys_inv") or {"total": 0}
     has_phys_inv = phys_inv.get("total", 0) > 0
+    coloc_data = batch2.get("colocation") or {}
 
     export_group = dmc.Group(
         gap=6,
@@ -5514,9 +5527,8 @@ def build_dc_view(
     show_phys = has_phys_inv and _sec("sec:dc_view:phys_inv")
     show_network = has_network and _sec("sec:dc_view:network")
     show_avail = has_avail and _sec("sec:dc_view:availability")
-    # Colocation moved under Physical Inventory. Accept the new sub-section key OR
-    # the legacy section key, so principals granted the old key keep access.
-    show_colo = _sec("sub:dc_view:phys_inv:colocation") or _sec("sec:dc_view:colocation")
+    # show_colo was already computed near the top of this function (before
+    # batch2), so the colocation fetch could be added to that parallel batch.
     show_phys_overview = _sec("sub:dc_view:phys_inv:overview") or _sec("sec:dc_view:phys_inv")
     # The parent tab appears when either child is visible.
     show_phys = (show_phys and show_phys_overview) or show_colo
@@ -5804,7 +5816,7 @@ def build_dc_view(
                                 style={"padding": "0 30px"},
                                 children=[_build_phys_inv_tab_content(
                                     phys_inv,
-                                    api.get_colocation(dc_id) if show_colo else {},
+                                    coloc_data,
                                     show_overview=show_phys_overview,
                                     show_colo=show_colo,
                                 )],
