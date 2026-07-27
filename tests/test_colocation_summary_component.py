@@ -133,6 +133,23 @@ def test_free_u_potential_tooltip_names_override_price_source():
     assert any("100.00 TL per U" in t and "operator override" in t for t in texts)
 
 
+def test_free_u_potential_tooltip_prices_sellable_free_u_not_total_free_u():
+    """Design section 3: free U inside a colocation-allocated rack isn't
+    sellable, so free_u_potential_tl prices sellable_free_u, which can be
+    much smaller than the Free U tile's total. The tooltip must cite
+    sellable_free_u, not the (larger) Free U tile value -- previously it
+    named the Free U tile's number even though the TL figure was priced off
+    a different, smaller count."""
+    agg = {"total_u": 8603, "used_u": 2711, "free_u": 5892, "rack_count": 188,
+           "sellable_free_u": 4477, "free_u_potential_tl": 4477 * 10430.84,
+           "unit_price_tl": 10430.84, "price_source": "crm"}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert any("4,477 sellable free U x 10,430.84 TL per U" in t for t in texts)
+    assert not any("5,892 sellable free U" in t for t in texts)
+
+
 def test_free_u_potential_tooltip_unresolved_explanation():
     agg = {"total_u": 100, "used_u": 50, "free_u": 50, "rack_count": 2,
            "free_u_potential_tl": None, "unit_price_tl": None}

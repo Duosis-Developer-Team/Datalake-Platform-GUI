@@ -69,12 +69,20 @@ def build_colocation_summary(aggregate: dict, customer_count: int | None = None)
     potential = agg.get("free_u_potential_tl")
     unit_price = agg.get("unit_price_tl")
     price_source = agg.get("price_source") or "unavailable"
+    # free_u_potential_tl prices sellable_free_u (free U OUTSIDE colocation-
+    # allocated racks), not the plain free_u tile above it -- free U inside a
+    # customer's own rack isn't sellable inventory. sellable_free_u falls
+    # back to free_u for callers that never set it (informational-only
+    # aggregates with no allocation data at all), so the tooltip's arithmetic
+    # still holds for them.
+    sellable_free_u = int(agg.get("sellable_free_u", free_u) or 0)
     if unit_price is None:
         price_tip = "Colocation unit price unavailable. Shown as — rather than 0."
     else:
         origin = {"override": "operator override",
                   "crm": "CRM price list"}.get(price_source, price_source)
-        price_tip = (f"Free U x {unit_price:,.2f} TL per U ({origin}). "
+        price_tip = (f"{sellable_free_u:,} sellable free U x {unit_price:,.2f} TL per U "
+                     f"({origin}). Excludes free U inside colocation-allocated racks. "
                      "Potential at list price — not billed revenue.")
 
     tile_nodes = [

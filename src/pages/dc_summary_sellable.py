@@ -401,10 +401,17 @@ def build_colocation_sellable_entry(coloc_aggregate: dict | None):
         return None
     potential = agg.get("free_u_potential_tl")
     unit_price = agg.get("unit_price_tl")
+    # free_u_potential_tl prices sellable_free_u (free U OUTSIDE colocation-
+    # allocated racks) -- free U inside a customer's own rack isn't sellable
+    # inventory, so it's excluded from both the number and the tooltip's
+    # arithmetic. sellable_free_u falls back to free_u for callers that never
+    # set it (no allocation data at all), so the tooltip stays accurate then too.
+    sellable_free_u = agg.get("sellable_free_u", free_u)
     if unit_price is None:
         tip = "Colocation unit price unavailable — shown as — rather than 0."
     else:
-        tip = (f"{free_u:,} free U x {unit_price:,.2f} TL per U. "
+        tip = (f"{sellable_free_u:,} sellable free U x {unit_price:,.2f} TL per U. "
+               "Excludes free U inside colocation-allocated racks. "
                "Potential at list price — not billed revenue.")
     return dmc.Tooltip(
         label=tip, position="bottom", withArrow=True, multiline=True, w=300,
@@ -413,7 +420,7 @@ def build_colocation_sellable_entry(coloc_aggregate: dict | None):
             style={"padding": "16px"},
             children=[
                 dmc.Text("Physical — Colocation", size="sm", fw=700, c=_TEXT),
-                dmc.Text(f"{free_u:,} free U", size="xs", c=_MUTED),
+                dmc.Text(f"{sellable_free_u:,} sellable free U", size="xs", c=_MUTED),
                 dmc.Text(fmt_tl(potential), size="xl", fw=800, c=_BRAND),
             ],
         ),

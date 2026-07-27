@@ -20,12 +20,15 @@ def _texts(component):
             stack.extend(children)
         elif children is not None:
             stack.append(children)
+        label = getattr(node, "label", None)
+        if isinstance(label, str):
+            out.append(label)
     return out
 
 
 def test_entry_renders_free_u_and_tl():
     entry = build_colocation_sellable_entry(
-        {"free_u": 1550, "free_u_potential_tl": 1550 * 10430.84,
+        {"free_u": 1550, "sellable_free_u": 1550, "free_u_potential_tl": 1550 * 10430.84,
          "unit_price_tl": 10430.84, "price_source": "crm"}
     )
 
@@ -33,6 +36,25 @@ def test_entry_renders_free_u_and_tl():
     assert any("Colocation" in t for t in texts)
     assert any("1,550" in t for t in texts)
     assert "16.17 Milyon TL" in texts
+
+
+def test_entry_shows_sellable_free_u_not_total_free_u():
+    """Free U inside a colocation-allocated rack isn't sellable (design
+    section 3), so free_u_potential_tl prices sellable_free_u, which can be
+    much smaller than total free_u. The on-screen U count and its tooltip
+    must both cite the SAME number the TL value was actually computed
+    from -- previously this rendered total free_u beside a TL figure priced
+    off a different, smaller number, an arithmetically false sentence."""
+    entry = build_colocation_sellable_entry({
+        "free_u": 5892, "sellable_free_u": 4477,
+        "free_u_potential_tl": 4477 * 10430.84,
+        "unit_price_tl": 10430.84, "price_source": "crm",
+    })
+
+    texts = _texts(entry)
+    assert any("4,477" in t for t in texts)
+    assert not any("5,892" in t for t in texts)
+    assert any("4,477 sellable free U x 10,430.84 TL per U" in t for t in texts)
 
 
 def test_entry_renders_dash_when_price_unresolved():

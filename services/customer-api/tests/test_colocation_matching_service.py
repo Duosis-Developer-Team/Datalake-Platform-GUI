@@ -242,7 +242,15 @@ def test_payload_carries_unit_price_and_potential():
     agg = payload["aggregate"]
     assert agg["unit_price_tl"] == price
     assert agg["price_source"] == "crm"
-    assert agg["free_u_potential_tl"] == agg["free_u"] * price
+    # free_u_potential_tl prices sellable_free_u, not the (here numerically
+    # equal, since _rows() carries no role_id -> no colocation-allocated
+    # racks to exclude) aggregate["free_u"] -- asserting against free_u would
+    # pass by coincidence for this fixture without proving which field the
+    # code actually multiplies. See
+    # test_free_u_potential_tl_prices_the_sellable_base_not_total_free_u for
+    # the discriminating case where the two genuinely differ.
+    assert agg["sellable_free_u"] == agg["free_u"]  # true for THIS fixture only
+    assert agg["free_u_potential_tl"] == agg["sellable_free_u"] * price
     assert agg["used_u_potential_tl"] == agg["used_u"] * price
 
     boyner = next(c for c in payload["customers"] if c["tenant"] == "Boyner")
