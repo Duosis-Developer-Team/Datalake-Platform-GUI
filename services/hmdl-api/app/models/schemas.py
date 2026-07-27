@@ -239,6 +239,20 @@ class DataFamily(BaseModel):
     sources: list[AutomationRow] = Field(default_factory=list)
 
 
+class DataFlow(BaseModel):
+    """One collection flow: a collector and every table it writes.
+
+    ``age_hours`` is the age of the flow's oldest alerting member, or None when the
+    flow is healthy. ``sources`` carries the member tables for UI drill-down.
+    """
+    key: str
+    label: str
+    status: str = "unknown"
+    age_hours: float | None = None
+    counts: AutomationCounts = Field(default_factory=AutomationCounts)
+    sources: list[AutomationRow] = Field(default_factory=list)
+
+
 class AutomationHealthResponse(BaseModel):
     generated_at: datetime | None = None
     automations: list[AutomationRow] = Field(default_factory=list)
@@ -250,6 +264,14 @@ class AutomationHealthResponse(BaseModel):
     # by platform family — served from the background snapshot. Complements the
     # AWX job-log automations above ("job ran" vs "data actually landed").
     data_families: list[DataFamily] = Field(default_factory=list)
+    # Per-collection-flow rollup of the same freshness data. One dead collector is
+    # one row here however many tables it feeds; data_counts is tallied over these.
+    data_flows: list[DataFlow] = Field(default_factory=list)
+    # Tables no service queries: reported so nothing is hidden, never counted.
+    data_unmonitored: list[AutomationRow] = Field(default_factory=list)
+    # MONITORED names that discovery did not return — a renamed or dropped table.
+    # Surfaced so a stale curation entry is visible instead of silently ignored.
+    data_missing: list[str] = Field(default_factory=list)
     data_counts: AutomationCounts = Field(default_factory=AutomationCounts)
     data_status: str = "computing"
     data_snapshot_at: datetime | None = None

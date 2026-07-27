@@ -11,6 +11,7 @@ from app.config import settings
 from app.db import pool
 from app.services import automation_health as ah
 from app.services import freshness_registry as reg
+from app.services import freshness_rollup as roll
 
 
 def discover_specs() -> list[dict[str, Any]]:
@@ -54,10 +55,24 @@ def _age_hours(table: str, col: str) -> float | None:
 
 
 def compute_freshness() -> dict[str, Any]:
-    """{families: [{family, counts, sources[]}], counts: overall}. Groups the
-    resolved specs by family and classifies each table's newest-row age."""
+    """{families, flows, unmonitored, missing, counts}.
+
+    `families` is the per-table view kept for drill-down. `flows` is what the page
+    and the badge read: one row per collection flow, so a dead collector is one
+    alert however many tables it feeds. `counts` is tallied over FLOWS — tallying
+    tables is what produced 40 alerts for 2 incidents.
+
+    Tables no service queries land in `unmonitored`: still reported, never counted.
+    `missing` names MONITORED tables discovery did not return — a renamed or
+    dropped table must be visible, or the curated set rots silently.
+    """
     families: dict[str, list[dict]] = {}
+    by_flow: dict[str, list[dict]] = {}
+    unmonitored: list[dict] = []
+    seen: set[str] = set()
+
     for spec in discover_specs():
+        seen.add(spec["table"])
         try:
             age = _age_hours(spec["table"], spec["column"])
         except Exception:  # noqa: BLE001 — one bad table never breaks the sweep
@@ -67,17 +82,30 @@ def compute_freshness() -> dict[str, Any]:
             last_data_at=None, age_hours=age,
             warn_hours=spec["warn_hours"], dead_hours=spec["dead_hours"],
         )
+        # Absent key defaults to MONITORED. resolve() always sets it, so a spec
+        # without it is a bug — and the safe direction for a bug in a monitoring
+        # system is to keep alerting, not to fall silent across the board.
+        if not spec.get("monitored", True):
+            unmonitored.append(row)
+            continue
         families.setdefault(spec["family"], []).append(row)
+        by_flow.setdefault(
+            roll.flow_key_for(spec["table"], spec["family"]), []
+        ).append(row)
 
-    fam_list = []
-    all_statuses: list[str] = []
-    for fam in sorted(families):
-        sources = families[fam]
-        statuses = [s["status"] for s in sources]
-        all_statuses.extend(statuses)
-        fam_list.append({
+    fam_list = [
+        {
             "family": fam,
-            "counts": ah.overall_status_counts(statuses),
-            "sources": sources,
-        })
-    return {"families": fam_list, "counts": ah.overall_status_counts(all_statuses)}
+            "counts": ah.overall_status_counts([s["status"] for s in families[fam]]),
+            "sources": families[fam],
+        }
+        for fam in sorted(families)
+    ]
+    flows = roll.build_flow_rows(by_flow)
+    return {
+        "families": fam_list,
+        "flows": flows,
+        "unmonitored": sorted(unmonitored, key=lambda r: r["key"]),
+        "missing": sorted(reg.MONITORED - seen),
+        "counts": roll.flow_counts(flows),
+    }
