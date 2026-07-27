@@ -1,5 +1,6 @@
 """Assemble the colocation payload for the DC 'Colocation' tab: per-DC U
-aggregate + per-customer footprint (device tenant -> CRM account)."""
+aggregate + per-customer footprint (device tenant -> CRM account) + the
+phase-2 rack-ALLOCATION footprint (role_id/tags/description -> customer)."""
 from __future__ import annotations
 
 import logging
@@ -12,6 +13,7 @@ from shared.colocation.occupancy import (
     used_u_breakdown,
 )
 from shared.colocation.matching import build_customer_footprint, build_internal_footprint
+from shared.colocation.allocation import aggregate_rack_allocations
 from app.db.queries import service_mapping as sm
 from app.services import cache_service as cache
 from app.services.colocation_price_service import (
@@ -97,8 +99,15 @@ class ColocationMatchingService:
             "external_customer_count": 0,
             "unit_price_tl": None, "price_source": "unavailable",
             "free_u_potential_tl": None, "used_u_potential_tl": None,
+            # Phase 2 Task B (allocation model): colocation_allocated_u is Σ
+            # capacity_u over every colocation-role rack; sellable_free_u is
+            # the free_u subset OUTSIDE colocation-role racks (see
+            # aggregate_rack_allocations). free_u itself keeps meaning "total
+            # free U across all racks" -- unchanged.
+            "colocation_allocated_u": 0, "sellable_free_u": 0,
         }
-        return {"aggregate": aggregate, "customers": [], "internal": [], "racks": []}
+        return {"aggregate": aggregate, "customers": [], "internal": [], "racks": [],
+                "allocation": []}
 
     def _fetch_colocation(self, dc_code: str) -> dict:
         pattern = None if not dc_code or dc_code == "*" else f"%{dc_code.strip()}%"
@@ -122,6 +131,15 @@ class ColocationMatchingService:
         for a in agg_by_dc.values():
             for k in aggregate:
                 aggregate[k] += a[k]
+
+        # Phase 2 Task B: allocation-based colocation footprint (role_id/
+        # tags/description -> customer), replacing the phase-1 tenancy-based
+        # source (~4% of racks) as what the Colocation tab counts as "who
+        # holds this rack". allocated_u = Σ capacity_u of a customer's racks;
+        # used_u = their front-face U occupancy (same occupancy.py signal,
+        # just grouped by rack allocation instead of device tenant_name).
+        allocation = aggregate_rack_allocations(rows)
+
         aggregate.update({
             "external_u": int(breakdown.get("external_u") or 0),
             "internal_u": int(breakdown.get("internal_u") or 0),
@@ -129,7 +147,14 @@ class ColocationMatchingService:
             "external_customer_count": int(breakdown.get("external_customer_count") or 0),
             "unit_price_tl": unit_price,
             "price_source": price_source,
-            "free_u_potential_tl": potential_tl(aggregate["free_u"], unit_price),
+            "colocation_allocated_u": allocation["colocation_allocated_u"],
+            "sellable_free_u": allocation["sellable_free_u"],
+            # free_u_potential_tl now prices the SELLABLE base only (free U
+            # outside colocation-allocated racks) -- free U *inside* a
+            # customer's own rack belongs to them, not to the platform's
+            # sellable pool (design doc section 3). aggregate["free_u"]
+            # itself is untouched and still means total free U everywhere.
+            "free_u_potential_tl": potential_tl(allocation["sellable_free_u"], unit_price),
             "used_u_potential_tl": potential_tl(aggregate["used_u"], unit_price),
         })
         customers = build_customer_footprint(
@@ -142,7 +167,10 @@ class ColocationMatchingService:
             row["potential_tl"] = potential_tl(row.get("used_u"), unit_price)
         for row in internal:
             row["potential_tl"] = potential_tl(row.get("used_u"), unit_price)
-        return {"aggregate": aggregate, "customers": customers, "internal": internal, "racks": rows}
+        return {
+            "aggregate": aggregate, "customers": customers, "internal": internal,
+            "racks": rows, "allocation": allocation["customers"],
+        }
 
     def get_colocation(self, dc_code: str) -> dict:
         # 6h singleflight cache — see _CACHE_TTL_SECONDS. Keyed on the raw

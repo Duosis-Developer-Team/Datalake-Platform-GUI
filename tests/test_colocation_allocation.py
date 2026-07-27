@@ -265,3 +265,97 @@ def test_tenant_name_wins_even_with_a_bare_customer_tag_present():
     win, and the bare tag must never be mistaken for a name."""
     resolved = alloc.resolve_rack_customer("AytemizBank", [{"name": "CUSTOMER"}], None)
     assert resolved == "AytemizBank"
+
+
+# --- Task B: allocation aggregation ------------------------------------
+
+def _boyner_rows():
+    # Boyner: 7 racks, 312 U allocated total, 87 U used total (design doc's
+    # worked example -- fixture capacities are illustrative, not a literal
+    # per-rack reproduction of prod).
+    return [
+        {"rack_name": f"B{i}", "role_id": "4", "tags": [], "description": "",
+         "tenant_name": "Boyner", "capacity_u": 42, "used_u": 12, "free_u": 30}
+        for i in range(6)
+    ] + [
+        {"rack_name": "B6", "role_id": "4", "tags": [], "description": "",
+         "tenant_name": "Boyner", "capacity_u": 60, "used_u": 15, "free_u": 45},
+    ]
+
+
+def test_aggregate_rack_allocations_sums_allocated_and_used_per_customer():
+    rows = _boyner_rows()
+    out = alloc.aggregate_rack_allocations(rows)
+    boyner = next(c for c in out["customers"] if c["customer"] == "BOYNER")
+    assert boyner["allocated_u"] == 42 * 6 + 60 == 312
+    assert boyner["used_u"] == 12 * 6 + 15 == 87
+    assert boyner["rack_count"] == 7
+    assert sorted(boyner["racks"]) == [f"B{i}" for i in range(7)]
+
+
+def test_aggregate_rack_allocations_unattributed_bucket_counted_not_dropped():
+    rows = [
+        {"rack_name": "R1", "role_id": "3", "tags": [], "description": "",
+         "tenant_name": None, "capacity_u": 42, "used_u": 0, "free_u": 42},
+        {"rack_name": "R2", "role_id": "4", "tags": None, "description": None,
+         "tenant_name": "  ", "capacity_u": 47, "used_u": 0, "free_u": 47},
+    ]
+    out = alloc.aggregate_rack_allocations(rows)
+    names = {c["customer"] for c in out["customers"]}
+    assert alloc.UNATTRIBUTED in names
+    unattributed = next(c for c in out["customers"] if c["customer"] == alloc.UNATTRIBUTED)
+    assert unattributed["allocated_u"] == 89
+    assert unattributed["rack_count"] == 2
+
+
+def test_aggregate_rack_allocations_ignores_non_colocation_roles():
+    rows = [
+        {"rack_name": "H1", "role_id": "2", "tags": [], "description": "",
+         "tenant_name": "Boyner", "capacity_u": 47, "used_u": 10, "free_u": 37},
+    ]
+    out = alloc.aggregate_rack_allocations(rows)
+    assert out["customers"] == []
+    assert out["colocation_allocated_u"] == 0
+
+
+def test_aggregate_rack_allocations_colocation_allocated_u_totals_named_and_unattributed():
+    rows = [
+        {"rack_name": "R1", "role_id": "4", "tags": [], "description": "",
+         "tenant_name": "Boyner", "capacity_u": 42, "used_u": 10, "free_u": 32},
+        {"rack_name": "R2", "role_id": "3", "tags": [], "description": "",
+         "tenant_name": None, "capacity_u": 42, "used_u": 0, "free_u": 42},
+    ]
+    out = alloc.aggregate_rack_allocations(rows)
+    assert out["colocation_allocated_u"] == 84
+
+
+def test_aggregate_rack_allocations_sellable_free_u_excludes_colocation_racks():
+    """Design section 3: free U inside a colocation-role rack is not sellable
+    -- only free_u from NON-colocation racks counts toward sellable_free_u."""
+    rows = [
+        {"rack_name": "R1", "role_id": "4", "tags": [], "description": "",
+         "tenant_name": "Boyner", "capacity_u": 42, "used_u": 10, "free_u": 32},
+        {"rack_name": "R2", "role_id": "2", "tags": [], "description": "",
+         "tenant_name": None, "capacity_u": 47, "used_u": 20, "free_u": 27},
+        {"rack_name": "R3", "role_id": "1", "tags": [], "description": "",
+         "tenant_name": None, "capacity_u": 47, "used_u": 0, "free_u": 47},
+    ]
+    out = alloc.aggregate_rack_allocations(rows)
+    assert out["sellable_free_u"] == 27 + 47   # R1's 32 free U excluded
+    assert out["colocation_allocated_u"] == 42
+
+
+def test_aggregate_rack_allocations_empty_rows():
+    out = alloc.aggregate_rack_allocations([])
+    assert out == {"customers": [], "colocation_allocated_u": 0, "sellable_free_u": 0}
+
+
+def test_aggregate_rack_allocations_sorted_by_allocated_u_descending():
+    rows = [
+        {"rack_name": "R1", "role_id": "4", "tags": [], "description": "",
+         "tenant_name": "Small Co", "capacity_u": 10, "used_u": 0, "free_u": 10},
+        {"rack_name": "R2", "role_id": "4", "tags": [], "description": "",
+         "tenant_name": "Big Co", "capacity_u": 90, "used_u": 0, "free_u": 90},
+    ]
+    out = alloc.aggregate_rack_allocations(rows)
+    assert [c["customer"] for c in out["customers"]] == ["BIG CO", "SMALL CO"]

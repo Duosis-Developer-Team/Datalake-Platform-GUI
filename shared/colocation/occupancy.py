@@ -20,7 +20,17 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from shared.colocation.allocation import is_colocation_rack
+
 # One row per rack. %(dc_pattern)s: a str glob (e.g. '%DC13%') or None for all.
+#
+# role_id / tags / description / tenant_name / first_observed (phase 2 Task B):
+# scalar per-row facts straight off discovery_loki_rack, added for the
+# allocation model (see shared/colocation/allocation.py). They are NOT
+# aggregated -- each duplicate discovery_loki_rack row for the same physical
+# rack carries its own values, and _dedupe_physical_racks below resolves the
+# ambiguity when duplicates disagree (a physical rack cannot simultaneously
+# be a generic HOST rack and a customer's colocation cage).
 OCCUPANCY_SQL = """
 WITH dev_slots AS (
     SELECT d.rack_name,
@@ -42,7 +52,12 @@ rack AS (
            r.u_height::int AS capacity_u,
            l.site_name     AS site_name,
            l.name          AS hall,
-           COALESCE(l.parent_name, l.name) AS dc
+           COALESCE(l.parent_name, l.name) AS dc,
+           r.role_id       AS role_id,
+           r.tags          AS tags,
+           r.description   AS description,
+           r.tenant_name   AS tenant_name,
+           r.first_observed AS first_observed
     FROM discovery_loki_rack r
     LEFT JOIN discovery_loki_location l ON l.id::varchar = r.location_id
 )
@@ -60,19 +75,29 @@ SELECT r.rack_id,
        ARRAY_AGG(DISTINCT s.tenant_name)
            FILTER (WHERE s.tenant_name IS NOT NULL AND btrim(s.tenant_name) <> ''
                    AND s.u BETWEEN 1 AND r.capacity_u) AS tenants,
-       r.site_name
+       r.site_name,
+       r.role_id,
+       r.tags,
+       r.description,
+       r.tenant_name,
+       r.first_observed
 FROM rack r
 LEFT JOIN dev_slots s
     ON s.rack_name = r.rack_name
    AND COALESCE(s.site_name, '') = COALESCE(r.site_name, '')
 WHERE (%(dc_pattern)s IS NULL OR COALESCE(r.dc, '') ILIKE %(dc_pattern)s)
-GROUP BY r.rack_id, r.rack_name, r.dc, r.hall, r.capacity_u, r.site_name
+GROUP BY r.rack_id, r.rack_name, r.dc, r.hall, r.capacity_u, r.site_name,
+         r.role_id, r.tags, r.description, r.tenant_name, r.first_observed
 ORDER BY r.dc, r.rack_name
 """
 
 OCCUPANCY_COLUMNS = (
     "rack_id", "rack_name", "dc", "hall", "capacity_u", "used_u", "free_u", "tenants",
     "site_name",
+    # Appended (phase 2 Task B) -- order is load-bearing, existing callers
+    # index by name via row_to_dict, not position, but the SQL SELECT list
+    # above must match this order 1:1.
+    "role_id", "tags", "description", "tenant_name", "first_observed",
 )
 
 # Tenants that are Bulutistan's own infrastructure, not external colocation
@@ -109,6 +134,22 @@ def _dedupe_physical_racks(rows: Sequence[dict]) -> list[dict]:
     disagree we take the max capacity + max used (the most complete count),
     recompute free, union the tenant lists, and pick the most-common dc
     (tie-break: smallest) since a name+site that spans DC labels is ambiguous.
+
+    Colocation identity (role_id/tags/description/tenant_name, phase 2 Task
+    B): a physical rack cannot simultaneously be a generic HOST/NETWORK rack
+    AND a customer's colocation cage, so when duplicates disagree on role a
+    colocation-role (3/4) duplicate is authoritative for the WHOLE rack --
+    its own capacity_u/used_u win outright rather than being max-merged with
+    the discarded non-colocation duplicate (verified against prod
+    2026-07-27: rack "303"/ISTANBUL carries a 52U HOST-role duplicate and a
+    42U SABANCI DX NON-STANDART-role duplicate; the design doc's published
+    "SABANCI DX: 18 racks, 821 U" only reconciles when 303 contributes ITS
+    OWN 42U, not max(52,42)). When BOTH duplicates are colocation-role (rack
+    "306"/ISTANBUL: a 52U CUSTOMER-role TURKONAY duplicate and a 42U
+    NON-STANDART-role SABANCI DX duplicate), the one with the EARLIER
+    first_observed wins -- also verified against the design doc's published
+    per-customer table, and a commutative (order-independent) rule, unlike
+    "first encountered in SQL row order".
     """
     by_key: dict[tuple, dict] = {}
     order: list[tuple] = []
@@ -124,11 +165,32 @@ def _dedupe_physical_racks(rows: Sequence[dict]) -> list[dict]:
             by_key[key] = dict(r)
             order.append(key)
             continue
-        cap = max(int(cur.get("capacity_u") or 0), int(r.get("capacity_u") or 0))
-        used = max(int(cur.get("used_u") or 0), int(r.get("used_u") or 0))
-        cur["capacity_u"] = cap
-        cur["used_u"] = used
-        cur["free_u"] = max(cap - used, 0)
+
+        cur_is_colo = is_colocation_rack(cur.get("role_id"))
+        r_is_colo = is_colocation_rack(r.get("role_id"))
+        identity_swap = False
+        if r_is_colo and not cur_is_colo:
+            identity_swap = True
+        elif r_is_colo and cur_is_colo:
+            cur_fo, r_fo = cur.get("first_observed"), r.get("first_observed")
+            identity_swap = r_fo is not None and (cur_fo is None or r_fo < cur_fo)
+
+        if identity_swap:
+            for field in (
+                "role_id", "tags", "description", "tenant_name", "first_observed",
+            ):
+                cur[field] = r.get(field)
+            cur["capacity_u"] = int(r.get("capacity_u") or 0)
+            cur["used_u"] = int(r.get("used_u") or 0)
+            cur["free_u"] = max(cur["capacity_u"] - cur["used_u"], 0)
+        elif cur_is_colo and not r_is_colo:
+            pass  # cur's colocation identity + capacity/used already authoritative
+        else:
+            cap = max(int(cur.get("capacity_u") or 0), int(r.get("capacity_u") or 0))
+            used = max(int(cur.get("used_u") or 0), int(r.get("used_u") or 0))
+            cur["capacity_u"] = cap
+            cur["used_u"] = used
+            cur["free_u"] = max(cap - used, 0)
         cur["tenants"] = list(dict.fromkeys((cur.get("tenants") or []) + (r.get("tenants") or [])))
     out = []
     for key in order:

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Sequence
 
 # Rack roles that mean "this rack belongs to a colocation customer", per
 # loki_racks.role_name verified against prod bulutlake on 2026-07-27:
@@ -196,3 +196,74 @@ def resolve_rack_customer_label(
     if resolved is None:
         return UNATTRIBUTED
     return normalize_customer_name(resolved)
+
+
+def aggregate_rack_allocations(rows: Sequence[dict]) -> dict:
+    """Group occupancy rows (role_id/tags/description/tenant_name-carrying,
+    per ``occupancy.occupancy_rows``) into per-colocation-customer allocation
+    totals, plus the sellable-free-U base for the rest of the platform.
+
+    Per customer (``resolve_rack_customer_label``'s output, including the
+    ``UNATTRIBUTED`` bucket -- a colocation-role rack with no resolvable name
+    is counted there, never dropped):
+
+      * ``allocated_u`` -- total capacity (Σ capacity_u) of every rack
+        assigned to that customer (Boyner: 312).
+      * ``used_u`` -- front-face U-slots their devices occupy (Boyner: 87).
+        Same per-rack ``used_u`` occupancy.py already computes; this simply
+        sums it over the customer's own racks rather than by device tenant.
+      * ``rack_count`` / ``racks`` -- how many/which physical racks.
+
+    Also returns the two platform-level numbers design section 3 needs:
+
+      * ``colocation_allocated_u`` -- Σ capacity_u over every colocation-role
+        rack (named + Unattributed), i.e. the whole colocation estate.
+      * ``sellable_free_u`` -- Σ free_u over racks that are NOT colocation-
+        role. Free U *inside* a colocation-role rack belongs to whichever
+        customer holds that rack, not to the platform's sellable pool --
+        this is the "free_u still means total free, this is the sellable
+        subset" field the design doc asks for, separate from ``free_u``
+        (unchanged, still the total across all racks).
+
+    A rack whose role_id doesn't resolve to colocation (``is_colocation_rack``
+    false) contributes only to ``sellable_free_u`` and is otherwise ignored
+    here -- this function has no opinion on non-colocation racks beyond that.
+    """
+    by_customer: dict[str, dict] = {}
+    colocation_allocated_u = 0
+    sellable_free_u = 0
+    for row in rows or []:
+        role_id = row.get("role_id")
+        if not is_colocation_rack(role_id):
+            sellable_free_u += int(row.get("free_u") or 0)
+            continue
+
+        capacity = int(row.get("capacity_u") or 0)
+        used = int(row.get("used_u") or 0)
+        colocation_allocated_u += capacity
+
+        label = resolve_rack_customer_label(
+            row.get("tenant_name"), row.get("tags"), row.get("description")
+        )
+        entry = by_customer.get(label)
+        if entry is None:
+            entry = {
+                "customer": label, "allocated_u": 0, "used_u": 0,
+                "rack_count": 0, "racks": [],
+            }
+            by_customer[label] = entry
+        entry["allocated_u"] += capacity
+        entry["used_u"] += used
+        entry["rack_count"] += 1
+        rack_name = row.get("rack_name")
+        if rack_name and rack_name not in entry["racks"]:
+            entry["racks"].append(rack_name)
+
+    customers = sorted(
+        by_customer.values(), key=lambda e: (-e["allocated_u"], e["customer"])
+    )
+    return {
+        "customers": customers,
+        "colocation_allocated_u": colocation_allocated_u,
+        "sellable_free_u": sellable_free_u,
+    }

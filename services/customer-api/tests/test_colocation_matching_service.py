@@ -283,6 +283,120 @@ def test_internal_rows_also_carry_potential():
 
 
 # ---------------------------------------------------------------------------
+# Phase 2 Task B: allocation-based colocation footprint (role_id/tags/
+# description -> customer), replacing tenancy as the payload's source.
+# ---------------------------------------------------------------------------
+
+def _allocation_rows():
+    # role_id/tags/description/tenant_name-carrying occupancy rows (Task B
+    # shape). Mirrors the design doc's worked examples: Boyner via
+    # tenant_name, SABANCI DX via a CO LOCATION tag, an Unattributed
+    # colocation-role rack with no resolvable name, and a HOST rack (role 2)
+    # with a tenant_name that must NOT be treated as colocation.
+    return [
+        {"rack_name": "116", "dc": "DC13", "capacity_u": 47, "used_u": 20, "free_u": 27,
+         "tenants": ["Boyner"], "role_id": "4", "tags": [], "description": "",
+         "tenant_name": "Boyner"},
+        {"rack_name": "209", "dc": "DC13", "capacity_u": 47, "used_u": 0, "free_u": 47,
+         "tenants": [], "role_id": "3", "tags": [{"name": "SABANCI DX CO LOCATION"}],
+         "description": "", "tenant_name": None},
+        {"rack_name": "301", "dc": "DC13", "capacity_u": 42, "used_u": 0, "free_u": 42,
+         "tenants": [], "role_id": "4", "tags": [], "description": "", "tenant_name": None},
+        {"rack_name": "402", "dc": "DC13", "capacity_u": 47, "used_u": 10, "free_u": 37,
+         "tenants": ["Boyner"], "role_id": "2", "tags": [], "description": "",
+         "tenant_name": "Boyner"},
+    ]
+
+
+def test_get_colocation_payload_includes_allocation_section():
+    svc, price = _service_with_price(100.0)
+
+    with patch("app.services.colocation_matching_service.occupancy_rows",
+               return_value=_allocation_rows()), \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows", return_value=[]), \
+         patch("app.services.colocation_matching_service.used_u_breakdown", return_value={}), \
+         patch("app.services.colocation_matching_service.resolve_colocation_unit_price",
+               return_value=(price, "crm")):
+        payload = svc.get_colocation("DC13")
+
+    by_customer = {c["customer"]: c for c in payload["allocation"]}
+    assert by_customer["BOYNER"]["allocated_u"] == 47   # only rack 116 (role 4)
+    assert by_customer["BOYNER"]["used_u"] == 20
+    assert by_customer["BOYNER"]["rack_count"] == 1
+    assert by_customer["SABANCI DX"]["allocated_u"] == 47
+    assert by_customer["Unattributed"]["allocated_u"] == 42
+
+
+def test_get_colocation_aggregate_carries_colocation_allocated_and_sellable_free_u():
+    svc, price = _service_with_price(100.0)
+
+    with patch("app.services.colocation_matching_service.occupancy_rows",
+               return_value=_allocation_rows()), \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows", return_value=[]), \
+         patch("app.services.colocation_matching_service.used_u_breakdown", return_value={}), \
+         patch("app.services.colocation_matching_service.resolve_colocation_unit_price",
+               return_value=(price, "crm")):
+        payload = svc.get_colocation("DC13")
+
+    agg = payload["aggregate"]
+    # colocation-role racks: 116 (47) + 209 (47) + 301 (42) = 136; rack 402 is
+    # role 2 (HOST), excluded.
+    assert agg["colocation_allocated_u"] == 136
+    # sellable_free_u = free_u OUTSIDE colocation-role racks = only rack 402's 37.
+    assert agg["sellable_free_u"] == 37
+    # free_u itself is untouched -- still the total across ALL racks.
+    assert agg["free_u"] == 27 + 47 + 42 + 37
+    assert agg["free_u"] != agg["sellable_free_u"]
+
+
+def test_free_u_potential_tl_prices_the_sellable_base_not_total_free_u():
+    """Design section 3: the potential figure must shrink because free U
+    inside a colocation-allocated rack is no longer counted as sellable."""
+    svc, price = _service_with_price(100.0)
+
+    with patch("app.services.colocation_matching_service.occupancy_rows",
+               return_value=_allocation_rows()), \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows", return_value=[]), \
+         patch("app.services.colocation_matching_service.used_u_breakdown", return_value={}), \
+         patch("app.services.colocation_matching_service.resolve_colocation_unit_price",
+               return_value=(price, "crm")):
+        payload = svc.get_colocation("DC13")
+
+    agg = payload["aggregate"]
+    assert agg["free_u_potential_tl"] == agg["sellable_free_u"] * price
+    assert agg["free_u_potential_tl"] != agg["free_u"] * price
+
+
+def test_allocation_section_empty_when_no_colocation_role_racks():
+    svc, price = _service_with_price(100.0)
+
+    with patch("app.services.colocation_matching_service.occupancy_rows", return_value=_rows()), \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows", return_value=_tenant_rows()), \
+         patch("app.services.colocation_matching_service.used_u_breakdown", return_value={}), \
+         patch("app.services.colocation_matching_service.resolve_colocation_unit_price",
+               return_value=(price, "crm")):
+        payload = svc.get_colocation("DC13")
+
+    # _rows() fixture carries no role_id at all -> no rack qualifies as
+    # colocation-role -> allocation is empty and sellable_free_u == free_u.
+    assert payload["allocation"] == []
+    assert payload["aggregate"]["colocation_allocated_u"] == 0
+    assert payload["aggregate"]["sellable_free_u"] == payload["aggregate"]["free_u"]
+
+
+def test_failure_payload_includes_allocation_shape():
+    svc = _svc_with_counting_occupancy()
+
+    with patch("app.services.colocation_matching_service.occupancy_rows",
+               side_effect=RuntimeError("db down")):
+        degraded = svc.get_colocation("DC13")
+
+    assert degraded["allocation"] == []
+    assert degraded["aggregate"]["colocation_allocated_u"] == 0
+    assert degraded["aggregate"]["sellable_free_u"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Fix 1: server-side 6h singleflight cache (mirrors
 # dc_service.DatabaseService.get_dc_racks_occupancy), keyed on dc_code.
 # ---------------------------------------------------------------------------

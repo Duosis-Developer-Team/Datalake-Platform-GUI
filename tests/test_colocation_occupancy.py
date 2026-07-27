@@ -35,6 +35,15 @@ def test_sql_scopes_by_name_and_site_and_front_face():
     assert "coalesce(l.parent_name, l.name)" in sql  # DC label
 
 
+def test_sql_selects_role_id_tags_description_tenant_name():
+    sql = occ.OCCUPANCY_SQL.lower()
+    assert "r.role_id" in sql
+    assert "r.tags" in sql
+    assert "r.description" in sql
+    assert "r.tenant_name" in sql
+    assert "r.first_observed" in sql
+
+
 def test_sql_tenants_filter_is_u_range_bounded():
     """The tenants ARRAY_AGG must only count devices within the rack's own U
     range, so a device positioned outside the rack height (which already
@@ -59,6 +68,11 @@ def test_row_to_dict_maps_and_coerces():
         "rack_id": "R1", "rack_name": "116", "dc": "DC13", "hall": "DH1",
         "capacity_u": 47, "used_u": 35, "free_u": 12,
         "tenants": ["Boyner", "Bulutistan - Linux TEAM"], "site_name": "ISTANBUL",
+        # Phase 2 Task B fields: absent from this (pre-Task-B-shaped) row
+        # tuple, so row_to_dict's length guard defaults them to None rather
+        # than raising -- old callers passing 9-element rows keep working.
+        "role_id": None, "tags": None, "description": None,
+        "tenant_name": None, "first_observed": None,
     }
 
 
@@ -66,6 +80,23 @@ def test_row_to_dict_handles_nulls():
     d = occ.row_to_dict(("R2", "117", "DC13", None, 47, None, None, None, None))
     assert d["used_u"] == 0 and d["free_u"] == 0 and d["tenants"] == []
     assert d["site_name"] is None
+
+
+def test_row_to_dict_carries_role_id_tags_description_tenant_name():
+    """Phase 2 Task B: each rack row also carries role_id/tags/description/
+    tenant_name/first_observed straight from discovery_loki_rack, appended
+    after the phase-1 columns so existing positional assumptions hold."""
+    row = (
+        "R3", "119", "DC13", "DH4", 47, 0, 47, [], "ISTANBUL",
+        "4", [{"name": "SABANCI DX CO LOCATION"}], "some description",
+        "Boyner", "2026-04-02 08:23:55.107235+00",
+    )
+    d = occ.row_to_dict(row)
+    assert d["role_id"] == "4"
+    assert d["tags"] == [{"name": "SABANCI DX CO LOCATION"}]
+    assert d["description"] == "some description"
+    assert d["tenant_name"] == "Boyner"
+    assert d["first_observed"] == "2026-04-02 08:23:55.107235+00"
 
 
 def test_occupancy_rows_executes_with_dc_pattern():
@@ -110,6 +141,94 @@ def test_occupancy_rows_dedupe_unions_tenants_across_duplicates():
     rows = occ.occupancy_rows(cur, dc_pattern=None)
     assert len(rows) == 1
     assert sorted(rows[0]["tenants"]) == ["AytemizBank", "Boyner"]
+
+
+# --- Phase 2 Task B: colocation identity wins duplicate-rack conflicts -----
+# Verified against prod bulutlake 2026-07-27: a physical rack can have
+# multiple discovery_loki_rack rows (same rack_name+site_name) that disagree
+# on role_id/tags/description/tenant_name as well as capacity. A rack cannot
+# really be both a generic HOST rack and a customer's colocation cage, so the
+# colocation-role duplicate must be authoritative for the WHOLE rack (name
+# AND capacity/used), not max-merged with the discarded non-colocation one --
+# these tests pin that rule and its order-independence.
+
+def _row(rack_id, rack_name, dc, hall, capacity_u, used_u, free_u, tenants, site_name,
+         role_id, tags, description, tenant_name, first_observed):
+    return (rack_id, rack_name, dc, hall, capacity_u, used_u, free_u, tenants, site_name,
+            role_id, tags, description, tenant_name, first_observed)
+
+
+def test_dedupe_colocation_role_wins_over_non_colocation_duplicate():
+    """Rack '303'/ISTANBUL: a 52U HOST-role (role 2) duplicate and a 42U
+    SABANCI DX NON-STANDART-role (role 3) duplicate. The colocation-role
+    duplicate's OWN capacity (42) must win outright -- not max(52, 42)."""
+    cur = _FakeCursor([
+        _row("host-303", "303", "DH3", "DH3-Hall", 52, 10, 42, [], "ISTANBUL",
+             "2", [], "", None, "2026-04-02 08:23:54.952110+00"),
+        _row("sabanci-303", "303", "DC13", "DH7", 42, 5, 37, [], "ISTANBUL",
+             "3", [{"name": "SABANCI DX CO LOCATION"}], "Sabancı DX  Non Standart Rack Area",
+             None, "2026-04-02 08:23:55.261392+00"),
+    ])
+    rows = occ.occupancy_rows(cur, dc_pattern=None)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["role_id"] == "3"
+    assert row["capacity_u"] == 42          # NOT max(52, 42)
+    assert row["used_u"] == 5
+    assert row["free_u"] == 37
+    assert row["description"] == "Sabancı DX  Non Standart Rack Area"
+
+
+def test_dedupe_colocation_role_wins_regardless_of_row_order():
+    non_colo = _row("host-303", "303", "DH3", "DH3-Hall", 52, 10, 42, [], "ISTANBUL",
+                     "2", [], "", None, "2026-04-02 08:23:54.952110+00")
+    colo = _row("sabanci-303", "303", "DC13", "DH7", 42, 5, 37, [], "ISTANBUL",
+                "3", [{"name": "SABANCI DX CO LOCATION"}], "Sabancı DX  Non Standart Rack Area",
+                None, "2026-04-02 08:23:55.261392+00")
+
+    forward = occ.occupancy_rows(_FakeCursor([non_colo, colo]), dc_pattern=None)[0]
+    backward = occ.occupancy_rows(_FakeCursor([colo, non_colo]), dc_pattern=None)[0]
+
+    assert forward["capacity_u"] == backward["capacity_u"] == 42
+    assert forward["role_id"] == backward["role_id"] == "3"
+
+
+def test_dedupe_both_colocation_role_earliest_first_observed_wins():
+    """Rack '306'/ISTANBUL: a 52U CUSTOMER-role (role 4) TURKONAY duplicate
+    and a 42U NON-STANDART-role (role 3) SABANCI DX duplicate -- both
+    colocation-role. The EARLIER first_observed wins (verified against the
+    design doc's published per-customer table: TURKONAY's total only
+    reconciles to 2 racks/94U, and SABANCI DX's to 18 racks/821U, if rack 306
+    counts as TURKONAY here)."""
+    turkonay = _row("turkonay-306", "306", "DH3", "DH3 - FINANCE CAGE", 52, 0, 52, [], "ISTANBUL",
+                     "4", [], "TURKONAY", None, "2026-04-02 08:23:54.953262+00")
+    sabanci = _row("sabanci-306", "306", "DC13", "DH7", 42, 0, 42, [], "ISTANBUL",
+                   "3", [{"name": "SABANCI DX CO LOCATION"}], "Sabancı DX  Non Standart Rack Area",
+                   None, "2026-04-02 08:23:55.269247+00")
+
+    forward = occ.occupancy_rows(_FakeCursor([turkonay, sabanci]), dc_pattern=None)[0]
+    backward = occ.occupancy_rows(_FakeCursor([sabanci, turkonay]), dc_pattern=None)[0]
+
+    for row in (forward, backward):
+        assert row["role_id"] == "4"
+        assert row["description"] == "TURKONAY"
+        assert row["capacity_u"] == 52
+
+
+def test_dedupe_non_colocation_duplicates_unaffected_by_identity_logic():
+    """Neither duplicate is colocation-role: capacity/used still MAX-merge
+    exactly as before Task B (no behaviour change for the ~96% of racks with
+    no colocation role at all)."""
+    cur = _FakeCursor([
+        ("a", "101", "DC13", "DH1", 47, 30, 17, ["Boyner"], "ISTANBUL",
+         "1", [], "", None, "2026-04-02 08:23:55.0+00"),
+        ("b", "101", "DH3", "DH3-Hall", 42, 20, 22, ["AytemizBank"], "ISTANBUL",
+         "2", [], "", None, "2026-04-02 08:23:55.1+00"),
+    ])
+    rows = occ.occupancy_rows(cur, dc_pattern=None)
+    assert len(rows) == 1
+    assert rows[0]["capacity_u"] == 47   # MAX(47, 42), unchanged rule
+    assert rows[0]["used_u"] == 30
 
 
 # --- Regression guard: DC13 "2,629 vs 2,719 total U" ambiguity -------------
