@@ -243,3 +243,55 @@ def test_builtin_prefixes_unchanged():
     assert INTERNAL_TENANT_PREFIXES == (
         "bulutistan", "bulut broker", "cpe-tenant", "dc11 arista",
     )
+
+
+# --- Fix round 1: internal_prefixes threaded into _classify_slots / used_u_breakdown ---
+
+def test_classify_slots_honours_injected_prefixes():
+    rows = [
+        ("R", "IST", 1, "Acme-Internal"),
+        ("R", "IST", 2, "Boyner"),
+    ]
+    out = occ._classify_slots(rows, internal_prefixes=("acme-internal",))
+    assert out["internal_u"] == 1
+    assert out["external_u"] == 1
+    assert out["external_customer_count"] == 1
+
+
+def test_classify_slots_injected_prefixes_replace_builtins():
+    # "Bulutistan - Linux TEAM" matches a BUILT-IN prefix, but an injected set
+    # REPLACES (not extends) the built-ins, so it must classify as external here.
+    rows = [("R", "IST", 1, "Bulutistan - Linux TEAM")]
+    out = occ._classify_slots(rows, internal_prefixes=("acme-internal",))
+    assert out["internal_u"] == 0
+    assert out["external_u"] == 1
+
+
+def test_classify_slots_slot_priority_external_wins_with_injected_prefixes():
+    # Same slot occupied by both an injected-internal tenant and an external
+    # one: external must still win the slot (rank 2 > rank 1).
+    rows = [
+        ("R", "IST", 1, "Acme-Internal"),
+        ("R", "IST", 1, "Boyner"),
+    ]
+    out = occ._classify_slots(rows, internal_prefixes=("acme-internal",))
+    assert out["external_u"] == 1
+    assert out["internal_u"] == 0
+
+
+def test_used_u_breakdown_forwards_internal_prefixes():
+    rows = [
+        ("102", "IST", 10, "Acme-Internal"),
+        ("102", "IST", 11, "Boyner"),
+    ]
+    out_with = occ.used_u_breakdown(
+        _FakeCursor(rows), dc_pattern=None, internal_prefixes=("acme-internal",)
+    )
+    out_without = occ.used_u_breakdown(
+        _FakeCursor(rows), dc_pattern=None, internal_prefixes=()
+    )
+    assert out_with != out_without
+    assert out_with == {"external_u": 1, "internal_u": 1, "untagged_u": 0,
+                         "external_customer_count": 1}
+    assert out_without == {"external_u": 2, "internal_u": 0, "untagged_u": 0,
+                            "external_customer_count": 2}

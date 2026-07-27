@@ -316,13 +316,17 @@ WHERE (%(dc_pattern)s IS NULL OR COALESCE(rc.dc, '') ILIKE %(dc_pattern)s)
 """
 
 
-def _classify_slots(rows) -> dict:
+def _classify_slots(rows, internal_prefixes: Sequence[str] | None = None) -> dict:
     """Partition occupied front-face U-slots into external/internal/untagged.
 
     rows: iterable of (rack_name, site_name, u, tenant_name). Each distinct
     (rack_name, site_name, u) slot is counted once and assigned to the
     highest-priority tenant occupying it: external (2) > internal (1) >
     untagged (0). Returns U counts per group + distinct external tenant count.
+
+    internal_prefixes: forwarded to ``is_internal_tenant``; ``None`` means the
+    built-in tuple, anything else REPLACES it (see is_internal_tenant) — same
+    replace-not-extend semantics as the rest of this module.
     """
     best: dict[tuple, int] = {}
     external_names: set[str] = set()
@@ -331,7 +335,7 @@ def _classify_slots(rows) -> dict:
         t = (tenant or "").strip()
         if not t:
             rank = 0
-        elif is_internal_tenant(t):
+        elif is_internal_tenant(t, internal_prefixes):
             rank = 1
         else:
             rank = 2
@@ -346,8 +350,15 @@ def _classify_slots(rows) -> dict:
     }
 
 
-def used_u_breakdown(cursor, dc_pattern: str | None = None) -> dict:
+def used_u_breakdown(
+    cursor, dc_pattern: str | None = None, internal_prefixes: Sequence[str] | None = None
+) -> dict:
     """Execute USED_U_BREAKDOWN_SQL and return the external/internal/untagged
-    used-U split (sums to the de-duplicated used_u) + external customer count."""
+    used-U split (sums to the de-duplicated used_u) + external customer count.
+
+    internal_prefixes is forwarded to ``_classify_slots`` untouched — this
+    module never queries for prefixes itself, it only accepts them as an
+    argument (shared/colocation stays database-free).
+    """
     cursor.execute(USED_U_BREAKDOWN_SQL, {"dc_pattern": dc_pattern})
-    return _classify_slots(cursor.fetchall() or [])
+    return _classify_slots(cursor.fetchall() or [], internal_prefixes)

@@ -144,3 +144,61 @@ def test_internal_prefixes_fall_back_to_builtins_when_lookup_raises():
     svc = ColocationMatchingService(customer_service=MagicMock(), webui=webui)
 
     assert svc._internal_prefixes() == INTERNAL_TENANT_PREFIXES
+
+
+def test_used_u_breakdown_receives_same_prefixes_as_footprint_builders():
+    """Fix round 1: the design spec says the summary-bar external/internal
+    split must shift with Administration mappings too, not just the tenant
+    footprint lists. used_u_breakdown, build_customer_footprint and
+    build_internal_footprint must all be called with the identical prefixes
+    tuple computed by _internal_prefixes()."""
+    customer = MagicMock()
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.return_value = [{"match_value": "Acme-Internal", "enabled": True}]
+    svc = ColocationMatchingService(customer_service=customer, webui=webui)
+
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    conn.cursor.return_value.__enter__.return_value = MagicMock()
+    customer._get_connection.return_value = conn
+
+    with patch("app.services.colocation_matching_service.occupancy_rows", return_value=_rows()), \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows", return_value=_tenant_rows()), \
+         patch("app.services.colocation_matching_service.used_u_breakdown",
+               return_value={"external_u": 0, "internal_u": 0, "untagged_u": 0,
+                             "external_customer_count": 0}) as breakdown_mock, \
+         patch("app.services.colocation_matching_service.build_customer_footprint",
+               return_value=[]) as customer_mock, \
+         patch("app.services.colocation_matching_service.build_internal_footprint",
+               return_value=[]) as internal_mock:
+        svc.get_colocation("DC13")
+
+    breakdown_prefixes = breakdown_mock.call_args.kwargs.get("internal_prefixes")
+    customer_prefixes = customer_mock.call_args.kwargs.get("internal_prefixes")
+    internal_prefixes = internal_mock.call_args.kwargs.get("internal_prefixes")
+
+    assert breakdown_prefixes is not None
+    assert breakdown_prefixes == customer_prefixes == internal_prefixes
+    assert "acme-internal" in breakdown_prefixes
+    assert "bulutistan" in breakdown_prefixes
+
+
+def test_internal_prefixes_consulted_once_per_get_colocation_call():
+    customer = MagicMock()
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.return_value = []
+    svc = ColocationMatchingService(customer_service=customer, webui=webui)
+
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    conn.cursor.return_value.__enter__.return_value = MagicMock()
+    customer._get_connection.return_value = conn
+
+    with patch("app.services.colocation_matching_service.occupancy_rows", return_value=_rows()), \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows", return_value=_tenant_rows()), \
+         patch.object(svc, "_internal_prefixes", wraps=svc._internal_prefixes) as prefixes_mock:
+        svc.get_colocation("DC13")
+
+    assert prefixes_mock.call_count == 1

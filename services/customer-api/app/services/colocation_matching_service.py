@@ -78,6 +78,11 @@ class ColocationMatchingService:
 
     def get_colocation(self, dc_code: str) -> dict:
         pattern = None if not dc_code or dc_code == "*" else f"%{dc_code.strip()}%"
+        # Computed once, up front: _internal_prefixes() talks to webui, not the
+        # datalake connection opened below, and is reused for the summary-bar
+        # breakdown AND both footprint builders so all three agree on exactly
+        # the same internal/external split.
+        internal_prefixes = self._internal_prefixes()
         rows: list = []
         tenant_rows: list = []
         breakdown: dict = {}
@@ -86,7 +91,9 @@ class ColocationMatchingService:
                 with conn.cursor() as cur:
                     rows = occupancy_rows(cur, dc_pattern=pattern)
                     tenant_rows = tenant_occupancy_rows(cur, dc_pattern=pattern)
-                    breakdown = used_u_breakdown(cur, dc_pattern=pattern)
+                    breakdown = used_u_breakdown(
+                        cur, dc_pattern=pattern, internal_prefixes=internal_prefixes
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.error("colocation occupancy query failed for %s: %s", dc_code, exc)
             rows = []
@@ -103,7 +110,6 @@ class ColocationMatchingService:
             "untagged_u": int(breakdown.get("untagged_u") or 0),
             "external_customer_count": int(breakdown.get("external_customer_count") or 0),
         })
-        internal_prefixes = self._internal_prefixes()
         customers = build_customer_footprint(
             tenant_rows, self._alias_index(), internal_prefixes=internal_prefixes
         )
