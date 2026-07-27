@@ -572,8 +572,30 @@ class CustomerService:
         mapping_rows = [row for rows in mapping_index.values() for row in rows]
         owners = owner_matchers_from_mappings(mapping_rows, display_names=account_names)
 
+        # Backup: policy names, guessed through the NetBackup naming standard.
+        # Ownership is gated by every backup rule, not just netbackup ones — a
+        # policy claimed by a veeam or zerto rule is already somebody's.
+        from shared.customer.backup_policy import build_policy_index
+        from shared.customer.unmapped_classifier import BACKUP_OWNER_SOURCES
+
+        policies = [
+            str(r.get("name") or "").strip()
+            for r in self._run_query(uq.UNMAPPED_NETBACKUP_POLICIES, (start, end))
+            if r.get("name")
+        ]
+        policy_index = build_policy_index(account_rows)
+        backup_owners = owner_matchers_from_mappings(
+            mapping_rows, sources=BACKUP_OWNER_SOURCES
+        )
+
         return build_unmapped_payload(
-            names_with_platform, owners, account_keys, account_ids=account_ids
+            names_with_platform,
+            owners,
+            account_keys,
+            account_ids=account_ids,
+            policies=policies,
+            policy_index=policy_index,
+            backup_owners=backup_owners,
         )
 
     def refresh_deleted_vm_registry(self) -> dict:

@@ -30,3 +30,13 @@ SELECT DISTINCT name, accountid
 FROM public.discovery_crm_accounts
 WHERE name IS NOT NULL AND btrim(name) <> ''
 """
+
+# Distinct NetBackup policy names in the window. starttime is the job's own
+# clock (this table has no collection_time), so the window bounds it directly.
+UNMAPPED_NETBACKUP_POLICIES = """
+SELECT DISTINCT policyname AS name
+FROM public.raw_netbackup_jobs_metrics
+WHERE starttime BETWEEN %s AND %s
+  AND policyname IS NOT NULL
+  AND btrim(policyname) <> ''
+"""

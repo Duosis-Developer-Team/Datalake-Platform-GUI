@@ -135,6 +135,13 @@ def alias_suggestion(name: str) -> str | None:
 # data_source keys whose rules claim VM names (Phase 1 scope).
 VM_OWNER_SOURCES: tuple[str, ...] = ("virtualization", "netbox_vm_customer")
 
+# data_source keys whose rules claim backup policy names. A policy claimed by
+# any of them is somebody's, regardless of which backup product it was written
+# for, so all three gate the worklist.
+BACKUP_OWNER_SOURCES: tuple[str, ...] = (
+    "backup_netbackup", "backup_veeam", "backup_zerto",
+)
+
 
 def owner_matchers_from_mappings(
     mapping_rows: Iterable[Mapping[str, object]],
@@ -200,17 +207,24 @@ def account_ids_from_rows(rows: Iterable[Mapping[str, object]]) -> dict[str, str
     return ids
 
 
+_REASON_ORDER = {"alias_gap": 0, "ambiguous": 1, "orphan": 2}
+
+
 def build_unmapped_payload(
     names_with_platform: Iterable[tuple[str, str]],
     owners: Sequence[OwnerMatcher],
     account_keys: Mapping[str, str],
     system_prefixes: Sequence[str] = DEFAULT_SYSTEM_PREFIXES,
     account_ids: Mapping[str, str] | None = None,
+    policies: Iterable[str] | None = None,
+    policy_index: Mapping[str, list[tuple[str, str]]] | None = None,
+    backup_owners: Sequence[OwnerMatcher] | None = None,
 ) -> dict[str, object]:
     """Full response payload: sorted rows (+platform) and reason counts.
 
-    alias_gap rows sort first (they are the actionable worklist), then by guessed
-    owner, then name.
+    alias_gap rows sort first (they are the actionable worklist), then
+    ambiguous (resolved by hand), then orphan (nothing to resolve), then by
+    guessed owner, then name.
     """
     name_platform: dict[str, str] = {}
     for name, platform in names_with_platform:
@@ -233,16 +247,23 @@ def build_unmapped_payload(
         }
         for r in classified
     ]
+    if policies is not None and policy_index is not None:
+        rows.extend(classify_unmapped_policies(
+            policies,
+            backup_owners if backup_owners is not None else owners,
+            policy_index,
+        ))
     rows.sort(key=lambda d: (
-        d["reason"] != "alias_gap",
-        (d["guessed_owner"] or "").casefold(),
-        d["name"].casefold(),
+        _REASON_ORDER.get(str(d["reason"]), 9),
+        (d.get("guessed_owner") or "").casefold(),
+        str(d["name"]).casefold(),
     ))
     return {
         "rows": rows,
         "total": len(rows),
         "alias_gap_count": sum(1 for d in rows if d["reason"] == "alias_gap"),
         "orphan_count": sum(1 for d in rows if d["reason"] == "orphan"),
+        "ambiguous_count": sum(1 for d in rows if d["reason"] == "ambiguous"),
     }
 
 
@@ -275,4 +296,55 @@ def classify_unmapped(
             guessed_owner_id=ids.get(key) if key else None,
             suggested_alias=alias_suggestion(name) if key else None,
         ))
+    return rows
+
+
+def classify_unmapped_policies(
+    policies: Iterable[str],
+    owners: Sequence[OwnerMatcher],
+    policy_index: Mapping[str, list[tuple[str, str]]],
+) -> list[dict[str, object]]:
+    """Backup policies owned by nobody, split into gap / ambiguous / orphan.
+
+    ``ambiguous`` is a third outcome the VM path does not have: a 4-char token
+    can address two customers (``avro`` → AVROMED and AVRORA LLC), and 27% of
+    live policies do. Those rows name no owner and offer no action — binding
+    backup capacity to the wrong customer reaches billing and capacity
+    reports, which is worse than leaving the row unresolved.
+    """
+    from shared.customer.backup_policy import guess_policy_owner
+
+    rows: list[dict[str, object]] = []
+    for policy in policies:
+        name = (policy or "").strip()
+        if not name or not norm(name):
+            continue
+        name_lower = name.lower()
+        if any(m.matches(name_lower) for m in owners):
+            continue
+
+        hit = guess_policy_owner(name, policy_index)
+        token, candidates = hit if hit else (None, [])
+
+        if len(candidates) == 1:
+            owner, accountid = candidates[0]
+            reason, suggested = "alias_gap", token
+        elif len(candidates) > 1:
+            owner, accountid = None, None
+            reason, suggested = "ambiguous", None
+        else:
+            owner, accountid = None, None
+            reason, suggested = "orphan", None
+
+        rows.append({
+            "name": name,
+            "platform": "netbackup",
+            "guessed_owner": owner,
+            "guessed_owner_id": accountid,
+            "suggested_alias": suggested,
+            "suggested_method": "prefix" if suggested else None,
+            "reason": reason,
+            "kind": "backup",
+            "candidate_count": len(candidates),
+        })
     return rows

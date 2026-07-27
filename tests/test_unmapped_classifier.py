@@ -281,5 +281,91 @@ def test_account_ids_are_optional_so_existing_callers_keep_working():
     assert row["suggested_alias"] == "Ada_Gross"
 
 
+def test_backup_policies_classify_into_gap_ambiguous_and_orphan():
+    from shared.customer.backup_policy import build_policy_index
+    from shared.customer.unmapped_classifier import classify_unmapped_policies
+
+    index = build_policy_index([
+        {"name": "ABC Deterjan", "accountid": "acc-abc"},
+        {"name": "AVROMED", "accountid": "acc-avromed"},
+        {"name": "AVRORA LLC", "accountid": "acc-avrora"},
+    ])
+    rows = classify_unmapped_policies(
+        ["abc-dete-s4hana-prd-log", "avro-CLAVRDB01-H", "visa01-vm-image"],
+        owners=[],
+        policy_index=index,
+    )
+    by_name = {r["name"]: r for r in rows}
+
+    gap = by_name["abc-dete-s4hana-prd-log"]
+    assert gap["reason"] == "alias_gap"
+    assert gap["guessed_owner"] == "ABC Deterjan"
+    assert gap["guessed_owner_id"] == "acc-abc"
+    assert gap["suggested_alias"] == "abc-dete"
+    assert gap["suggested_method"] == "prefix"
+    assert gap["kind"] == "backup"
+    assert gap["platform"] == "netbackup"
+
+    amb = by_name["avro-CLAVRDB01-H"]
+    assert amb["reason"] == "ambiguous"
+    assert amb["candidate_count"] == 2
+    # No single owner is claimed and no action is offered: binding backup
+    # capacity to the wrong customer reaches billing.
+    assert amb["guessed_owner_id"] is None
+    assert amb["suggested_alias"] is None
+
+    assert by_name["visa01-vm-image"]["reason"] == "orphan"
+
+
+def test_a_policy_already_claimed_by_a_backup_rule_is_not_reported():
+    from shared.customer.backup_policy import build_policy_index
+    from shared.customer.unmapped_classifier import (
+        OwnerMatcher,
+        classify_unmapped_policies,
+    )
+
+    index = build_policy_index([{"name": "ABC Deterjan", "accountid": "acc-abc"}])
+    owners = [OwnerMatcher(owner="ABC Deterjan", kind="prefix", value="abc-dete")]
+
+    rows = classify_unmapped_policies(["abc-dete-s4hana-prd-log"], owners, index)
+    assert rows == []
+
+
+def test_backup_owner_sources_cover_every_backup_data_source():
+    """A policy claimed by any backup rule must not appear in the worklist,
+    regardless of which backup product the rule was written for."""
+    from shared.customer.unmapped_classifier import BACKUP_OWNER_SOURCES
+
+    assert set(BACKUP_OWNER_SOURCES) == {"backup_netbackup", "backup_veeam", "backup_zerto"}
+
+
+def test_payload_merges_vm_and_backup_rows_with_combined_counts():
+    from shared.customer.backup_policy import build_policy_index
+    from shared.customer.unmapped_classifier import (
+        account_ids_from_rows,
+        account_keys_from_names,
+        build_unmapped_payload,
+    )
+
+    accounts = [{"name": "ADA GROSS", "accountid": "acc-ada"},
+                {"name": "AVROMED", "accountid": "acc-avromed"},
+                {"name": "AVRORA LLC", "accountid": "acc-avrora"}]
+    payload = build_unmapped_payload(
+        [("Ada_Gross_Cloud-Db", "vmware")],
+        owners=[],
+        account_keys=account_keys_from_names([a["name"] for a in accounts]),
+        account_ids=account_ids_from_rows(accounts),
+        policies=["avro-CLAVRDB01-H", "visa01-vm-image"],
+        policy_index=build_policy_index(accounts),
+    )
+
+    kinds = {r["kind"] for r in payload["rows"]}
+    assert kinds == {"vm", "backup"}
+    assert payload["total"] == 3
+    assert payload["alias_gap_count"] == 1   # the VM row
+    assert payload["orphan_count"] == 1      # visa01
+    assert payload["ambiguous_count"] == 1   # avro
+
+
 if __name__ == "__main__":
     unittest.main()
