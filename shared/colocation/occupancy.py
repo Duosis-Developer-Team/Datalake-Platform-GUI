@@ -159,10 +159,17 @@ def aggregate_by_dc(rows: Sequence[dict]) -> dict:
     return out
 
 
-def is_internal_tenant(name: str) -> bool:
-    """True when the tenant is Bulutistan-internal (excluded from the customer view)."""
+def is_internal_tenant(name: str, prefixes: Sequence[str] | None = None) -> bool:
+    """True when the tenant is Bulutistan-internal (excluded from the customer view).
+
+    `prefixes` REPLACES the built-in tuple rather than extending it — the caller
+    owns the union, because the caller is the one that knows whether the
+    Administration mapping table was reachable. Passing an empty sequence
+    deliberately classifies nothing as internal.
+    """
+    active = INTERNAL_TENANT_PREFIXES if prefixes is None else prefixes
     key = (name or "").strip().lower()
-    return any(key.startswith(p) for p in INTERNAL_TENANT_PREFIXES)
+    return any(key.startswith(p) for p in active)
 
 
 # --- EXACT per-(rack, tenant) occupancy -------------------------------------

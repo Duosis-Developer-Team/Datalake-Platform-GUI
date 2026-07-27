@@ -4,6 +4,7 @@ rows keyed by netbox_musteri_value and crm_account_name (lowercased)."""
 from unittest.mock import MagicMock, patch
 
 from app.services.colocation_matching_service import ColocationMatchingService
+from shared.colocation.occupancy import INTERNAL_TENANT_PREFIXES
 
 
 def _rows():
@@ -107,3 +108,39 @@ def test_get_colocation_returns_internal_footprint():
     assert internal["Bulutistan - Linux TEAM"]["used_u"] == 15
     # external tenants must NOT appear in the internal list
     assert "Boyner" not in internal and "AytemizBank" not in internal
+
+
+def test_internal_prefixes_union_administration_mappings_with_builtins():
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.return_value = [
+        {"match_value": "Acme-Internal", "enabled": True},
+        {"match_value": "Disabled-One", "enabled": False},
+        {"match_value": "  Padded  ", "enabled": True},
+    ]
+    svc = ColocationMatchingService(customer_service=MagicMock(), webui=webui)
+
+    prefixes = svc._internal_prefixes()
+
+    assert "acme-internal" in prefixes
+    assert "padded" in prefixes
+    assert "disabled-one" not in prefixes
+    # Built-ins are always retained as a seed.
+    assert "bulutistan" in prefixes
+
+
+def test_internal_prefixes_fall_back_to_builtins_when_webui_unavailable():
+    webui = MagicMock()
+    webui.is_available = False
+    svc = ColocationMatchingService(customer_service=MagicMock(), webui=webui)
+
+    assert svc._internal_prefixes() == INTERNAL_TENANT_PREFIXES
+
+
+def test_internal_prefixes_fall_back_to_builtins_when_lookup_raises():
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = RuntimeError("webui down")
+    svc = ColocationMatchingService(customer_service=MagicMock(), webui=webui)
+
+    assert svc._internal_prefixes() == INTERNAL_TENANT_PREFIXES

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from shared.colocation.occupancy import (
+    INTERNAL_TENANT_PREFIXES,
     occupancy_rows,
     aggregate_by_dc,
     tenant_occupancy_rows,
@@ -14,6 +15,10 @@ from shared.colocation.matching import build_customer_footprint, build_internal_
 from app.db.queries import service_mapping as sm
 
 logger = logging.getLogger(__name__)
+
+# Reserved account id the Administration "Internal (Bulutistan) source mappings"
+# editor writes under. Mirrors INTERNAL_ACCOUNT_ID in the GUI editor.
+INTERNAL_ACCOUNT_ID = "INTERNAL"
 
 
 class ColocationMatchingService:
@@ -43,6 +48,34 @@ class ColocationMatchingService:
                     index.setdefault(str(key).strip().lower(), payload)
         return index
 
+    def _internal_prefixes(self) -> tuple[str, ...]:
+        """Bulutistan-internal tenant prefixes: the built-in seed unioned with the
+        enabled Administration -> Internal (Bulutistan) source mappings.
+
+        Before this existed the internal/external split ignored Administration
+        entirely, so operator edits had no effect on the Colocation tab. Built-ins
+        stay in the union so an empty or unreachable mapping table degrades to
+        today's behaviour rather than reclassifying every internal rack as an
+        external customer.
+        """
+        prefixes = list(INTERNAL_TENANT_PREFIXES)
+        if self._webui is None or not getattr(self._webui, "is_available", False):
+            return tuple(prefixes)
+        try:
+            rows = self._webui.run_rows(
+                sm.LIST_SOURCE_MAPPINGS_FOR_ACCOUNT, (INTERNAL_ACCOUNT_ID,)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("internal mapping load failed: %s", exc)
+            return tuple(prefixes)
+        for r in rows or []:
+            if not r.get("enabled", True):
+                continue
+            value = (r.get("match_value") or "").strip().lower()
+            if value and value not in prefixes:
+                prefixes.append(value)
+        return tuple(prefixes)
+
     def get_colocation(self, dc_code: str) -> dict:
         pattern = None if not dc_code or dc_code == "*" else f"%{dc_code.strip()}%"
         rows: list = []
@@ -70,6 +103,11 @@ class ColocationMatchingService:
             "untagged_u": int(breakdown.get("untagged_u") or 0),
             "external_customer_count": int(breakdown.get("external_customer_count") or 0),
         })
-        customers = build_customer_footprint(tenant_rows, self._alias_index())
-        internal = build_internal_footprint(tenant_rows)
+        internal_prefixes = self._internal_prefixes()
+        customers = build_customer_footprint(
+            tenant_rows, self._alias_index(), internal_prefixes=internal_prefixes
+        )
+        internal = build_internal_footprint(
+            tenant_rows, internal_prefixes=internal_prefixes
+        )
         return {"aggregate": aggregate, "customers": customers, "internal": internal, "racks": rows}

@@ -217,3 +217,29 @@ def test_used_u_breakdown_sql_is_defanned_and_current_tables():
     assert "group by rack_name, site_name" in sql
     assert "loki_devices" not in sql
     assert "discovery_loki_racks" not in sql
+
+
+from shared.colocation.occupancy import INTERNAL_TENANT_PREFIXES, is_internal_tenant
+
+
+def test_is_internal_tenant_uses_builtin_prefixes_by_default():
+    assert is_internal_tenant("Bulutistan - Linux TEAM") is True
+    assert is_internal_tenant("Boyner") is False
+
+
+def test_is_internal_tenant_accepts_injected_prefixes():
+    injected = ("acme-internal",)
+    assert is_internal_tenant("ACME-Internal Fabric", injected) is True
+    # Injected prefixes REPLACE the defaults; the caller decides what to union in.
+    assert is_internal_tenant("Bulutistan - Linux TEAM", injected) is False
+
+
+def test_is_internal_tenant_empty_injection_matches_nothing():
+    # An empty Administration table must not classify everything as internal.
+    assert is_internal_tenant("Bulutistan - Linux TEAM", ()) is False
+
+
+def test_builtin_prefixes_unchanged():
+    assert INTERNAL_TENANT_PREFIXES == (
+        "bulutistan", "bulut broker", "cpe-tenant", "dc11 arista",
+    )
