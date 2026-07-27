@@ -311,6 +311,21 @@ def classify_unmapped_policies(
     live policies do. Those rows name no owner and offer no action — binding
     backup capacity to the wrong customer reaches billing and capacity
     reports, which is worse than leaving the row unresolved.
+
+    COLUMN ASYMMETRY — ownership here is decided on ``policyname``; the
+    resulting ``backup_netbackup`` rules are CONSUMED against
+    ``workloaddisplayname``. See the matching note in
+    services/customer-api/app/adapters/customer_adapter.py (fetch(), the
+    netbackup_patterns block).
+
+    Measured over 7 days of live data, only 1,935 of 4,561 distinct
+    (policyname, workloaddisplayname) pairs have a workload name starting with
+    the policy's first segment. So a rule written from this page's one-click
+    action correctly removes the row from the worklist — the classifier and the
+    rule agree on policyname — but does NOT necessarily attribute that backup
+    in the customer view, which matches on the other column. Do not assume the
+    two sides agree. Reconciling them changes behaviour well outside the
+    unmapped worklist and needs a product decision.
     """
     from shared.customer.backup_policy import guess_policy_owner
 

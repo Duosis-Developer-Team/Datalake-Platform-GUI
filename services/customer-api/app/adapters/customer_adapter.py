@@ -83,6 +83,23 @@ class CustomerAdapter:
         storage_patterns = self._resolve_patterns(source_patterns, "storage_ibm", fallback)
         storage_like_pattern = storage_patterns[0]
         netbackup_patterns = self._resolve_patterns(source_patterns, "backup_netbackup", fallback)
+        # COLUMN ASYMMETRY — this pattern is matched against workloaddisplayname
+        # (cq.CUSTOMER_NETBACKUP_UNIQUE_JOBS_LATEST -> db/queries/customer.py,
+        # "WHERE workloaddisplayname ILIKE %s"). The same backup_netbackup rules
+        # are DECIDED on policyname by shared/customer/unmapped_classifier.py
+        # (classify_unmapped_policies -> backup_policy.guess_policy_owner).
+        #
+        # The two sides key on different columns. Measured over 7 days of live
+        # data, only 1,935 of 4,561 distinct (policyname, workloaddisplayname)
+        # pairs have a workload name starting with the policy's first segment.
+        # So a rule added from the Eşleşmeyen Veriler worklist removes the row
+        # there without necessarily attributing the backup here.
+        #
+        # Second, narrower limit: only patterns[0] is used, so a customer with
+        # several netbackup rules ('aksu' and 'aksular') contributes just the
+        # first one to this query — unlike the classifier, which tries them all.
+        # Both are known and deliberately left alone; fixing either changes
+        # customer-visible attribution and needs a product decision.
         netbackup_workload_pattern = netbackup_patterns[0]
         zerto_patterns = self._resolve_patterns(source_patterns, "backup_zerto", fallback)
         zerto_name_like = zerto_patterns[0]
