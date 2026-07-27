@@ -38,10 +38,24 @@ COLOCATION_ROLE_IDS = frozenset({"3", "4"})
 UNATTRIBUTED = "Unattributed"
 
 # Matches "CO LOCATION" (any run of whitespace, including none, between the
-# two words) or "COLOCATION" case-insensitively. Because \s* already matches
-# zero whitespace characters, "CO\s*LOCATION" alone matches "COLOCATION" too;
-# the explicit alternation mirrors the spec's stated pattern for clarity.
-_TAG_MARKER_RE = re.compile(r"CO\s*LOCATION|COLOCATION", re.IGNORECASE)
+# two words) or "COLOCATION" case-insensitively, ANCHORED to the end of the
+# string (trailing whitespace tolerated). Because \s* already matches zero
+# whitespace characters, "CO\s*LOCATION" alone matches "COLOCATION" too; the
+# explicit alternation mirrors the spec's stated pattern for clarity.
+#
+# The trailing anchor is load-bearing, not decorative: an earlier unanchored
+# version stripped the FIRST occurrence of the marker anywhere in the string,
+# which mangled names where the marker isn't a suffix --
+# "COLOCATION EXPRESS" became "EXPRESS" (silently discarding "COLOCATION "
+# instead of rejecting the tag), and "SABANCI CO LOCATION DX" became
+# "SABANCI  DX" (a double space from splicing the two remaining halves back
+# together). Anchoring means a tag only ever contributes a name when the
+# marker is genuinely a suffix, matching the spec's literal wording ("with
+# that marker stripped from the end") and every prod tag seen to date
+# (`SABANCI DX CO LOCATION`, `BOYNER CO LOCATION`); a non-suffix match now
+# simply fails to match, so that tag is skipped (falls through) rather than
+# producing a mangled name.
+_TAG_MARKER_RE = re.compile(r"(?:CO\s*LOCATION|COLOCATION)\s*$", re.IGNORECASE)
 
 
 def is_colocation_rack(role_id: Any) -> bool:
@@ -85,11 +99,15 @@ def _parse_tags(tags: Any) -> list[dict]:
 
 
 def _tag_customer_name(tags: Any) -> str | None:
-    """First ``tags[].name`` matching the CO LOCATION marker, with that
-    marker (and surrounding whitespace) stripped, e.g.
-    "SABANCI DX CO LOCATION" -> "SABANCI DX". A tag that matches but leaves
-    nothing after stripping (or a tag that never matches, like a bare
-    "CUSTOMER" tag) is skipped in favour of the next tag in the list.
+    """First ``tags[].name`` ending in the CO LOCATION marker, with that
+    trailing marker stripped, e.g. "SABANCI DX CO LOCATION" -> "SABANCI DX".
+    A tag where the marker is not a trailing suffix (e.g. "COLOCATION
+    EXPRESS" or "SABANCI CO LOCATION DX") does not match at all -- it is
+    skipped, exactly like a tag that never mentions the marker (a bare
+    "CUSTOMER" tag) -- rather than being partially stripped, which would
+    either discard a legitimate leading word or splice a mid-string removal
+    back together. A match that strips to nothing is likewise skipped in
+    favour of the next tag in the list.
     """
     for tag in _parse_tags(tags):
         name = tag.get("name")
@@ -98,7 +116,7 @@ def _tag_customer_name(tags: Any) -> str | None:
         match = _TAG_MARKER_RE.search(name)
         if not match:
             continue
-        remainder = (name[: match.start()] + name[match.end():]).strip()
+        remainder = name[: match.start()].strip()
         if remainder:
             return remainder
     return None
@@ -148,3 +166,33 @@ def normalize_customer_name(name: str) -> str:
     """
     collapsed = re.sub(r"\s+", " ", (name or "").strip())
     return collapsed.upper()
+
+
+def resolve_rack_customer_label(
+    tenant_name: str | None, tags: Any, description: str | None
+) -> str:
+    """The single, documented way to turn a rack's raw name-bearing fields
+    into its final customer label. This is the function callers (e.g. the
+    allocation grouping in phase 2 Task B) should use -- not
+    ``resolve_rack_customer`` and ``normalize_customer_name`` composed by
+    hand.
+
+    Resolves via ``resolve_rack_customer``, then:
+      * if a name resolved, returns ``normalize_customer_name(resolved)``;
+      * if nothing resolved, returns ``UNATTRIBUTED`` UNTOUCHED (not passed
+        through normalisation).
+
+    That second rule is the whole reason this function exists: writing
+    ``normalize_customer_name(resolve_rack_customer(...) or UNATTRIBUTED)``
+    looks correct but silently upper-cases the sentinel to "UNATTRIBUTED",
+    a string that no longer equals this module's ``UNATTRIBUTED`` constant
+    (``"Unattributed"``) -- every unattributed rack would then group under
+    a value the caller can no longer compare against the constant, quietly
+    splitting the bucket in two. This function returns the constant object
+    itself in that case, so ``resolve_rack_customer_label(...) == UNATTRIBUTED``
+    (and ``is UNATTRIBUTED``) always holds.
+    """
+    resolved = resolve_rack_customer(tenant_name, tags, description)
+    if resolved is None:
+        return UNATTRIBUTED
+    return normalize_customer_name(resolved)

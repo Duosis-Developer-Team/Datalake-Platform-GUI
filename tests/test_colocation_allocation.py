@@ -180,3 +180,88 @@ def test_rack_with_no_resolvable_name_lands_in_unattributed_not_dropped():
 def test_unattributed_is_distinct_from_any_normalized_real_name():
     for name in ("Boyner", "AytemizBank", "Turkonay", "AKSIGORTA", "HRWEB"):
         assert alloc.normalize_customer_name(name) != alloc.UNATTRIBUTED
+
+
+# --- Fix round 1 -----------------------------------------------------
+# Reviewer-confirmed findings on the initial implementation: (1) the tag
+# marker regex matched anywhere in the string rather than only as a
+# trailing suffix, which could mangle a legitimate name; (2) there was no
+# single safe entry point combining resolve + normalise + the UNATTRIBUTED
+# fallback, and the obvious hand-written composition
+# (normalize_customer_name(resolved or UNATTRIBUTED)) silently upper-cases
+# the sentinel, breaking equality with the exported constant.
+
+# 1 (Important): anchor the marker strip to the end of the string.
+
+def test_tag_marker_not_trailing_is_not_split_mid_string():
+    """'SABANCI CO LOCATION DX' must NOT become 'SABANCI  DX' (double
+    space from splicing the two halves back together) -- the marker here
+    is not a suffix, so the tag doesn't qualify and resolution falls
+    through to description untouched."""
+    resolved = alloc.resolve_rack_customer(
+        None, [{"name": "SABANCI CO LOCATION DX"}], "SABANCI DX"
+    )
+    assert resolved == "SABANCI DX"
+
+
+def test_tag_marker_as_prefix_does_not_destroy_the_name():
+    """'COLOCATION EXPRESS' must NOT become 'EXPRESS' -- the marker is a
+    prefix, not a suffix, so the tag doesn't qualify and resolution falls
+    through to description untouched."""
+    resolved = alloc.resolve_rack_customer(
+        None, [{"name": "COLOCATION EXPRESS"}], "EXPRESS HOLDING"
+    )
+    assert resolved == "EXPRESS HOLDING"
+
+
+def test_tag_marker_not_trailing_yields_none_when_nothing_else_resolves():
+    assert alloc.resolve_rack_customer(None, [{"name": "COLOCATION EXPRESS"}], None) is None
+    assert alloc.resolve_rack_customer(None, [{"name": "SABANCI CO LOCATION DX"}], None) is None
+
+
+def test_tag_marker_still_matches_when_genuinely_trailing():
+    # Regression guard: the anchor must not break the real prod shape.
+    assert alloc.resolve_rack_customer(
+        None, [{"name": "SABANCI DX CO LOCATION"}], None
+    ) == "SABANCI DX"
+
+
+# 2 (Important for Task B): single safe entry point.
+
+def test_resolve_rack_customer_label_normalizes_a_resolved_name():
+    assert alloc.resolve_rack_customer_label("Turkonay", None, None) == "TURKONAY"
+    assert (
+        alloc.resolve_rack_customer_label("Turkonay", None, None)
+        == alloc.resolve_rack_customer_label("TURKONAY", None, None)
+    )
+
+
+def test_resolve_rack_customer_label_returns_the_unattributed_constant_untouched():
+    result = alloc.resolve_rack_customer_label(None, None, None)
+    assert result == alloc.UNATTRIBUTED
+    assert result is alloc.UNATTRIBUTED  # not a re-derived/upper-cased copy
+
+
+def test_resolve_rack_customer_label_via_tag_and_description_sources():
+    assert alloc.resolve_rack_customer_label(
+        None, [{"name": "SABANCI DX CO LOCATION"}], None
+    ) == "SABANCI DX"
+    assert alloc.resolve_rack_customer_label(None, None, "AKSIGORTA") == "AKSIGORTA"
+
+
+# 3 (Minor): tags as a list of non-dict elements.
+
+def test_tags_list_of_non_dict_elements_is_ignored_not_raised():
+    resolved = alloc.resolve_rack_customer(None, ["x", 42, None], "GATEWAY HOLDING")
+    assert resolved == "GATEWAY HOLDING"
+
+
+# 4 (Minor): the real-world row shape motivating the bare-CUSTOMER-tag rule.
+
+def test_tenant_name_wins_even_with_a_bare_customer_tag_present():
+    """The design doc's cited reason for rejecting a bare 'CUSTOMER' tag:
+    a real row can carry tenant_name='AytemizBank' alongside a generic
+    'CUSTOMER' tag with no CO LOCATION marker -- tenant_name must still
+    win, and the bare tag must never be mistaken for a name."""
+    resolved = alloc.resolve_rack_customer("AytemizBank", [{"name": "CUSTOMER"}], None)
+    assert resolved == "AytemizBank"
