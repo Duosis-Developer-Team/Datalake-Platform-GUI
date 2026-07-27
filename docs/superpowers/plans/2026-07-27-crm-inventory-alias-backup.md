@@ -331,7 +331,9 @@ EOF
   - `build_unmapped_payload(..., account_ids: Mapping[str, str] | None = None)` — satırlar `guessed_owner_id`, `suggested_alias`, `suggested_method` alanlarını kazanır
   - `classify_unmapped(..., account_ids: Mapping[str, str] | None = None)`
 
-**Geriye dönük uyumluluk:** `guess_owner()` ve `account_keys_from_names()` mevcut imzalarıyla kalır; 22 test onlara dayanıyor. `guess_owner()` artık `guess_owner_key()` üzerinden çalışır.
+**`guess_owner()` silinir.** `classify_unmapped()` artık anahtara ihtiyaç duyduğu için `guess_owner_key()` çağırır; `guess_owner()` geriye kalırsa üretimde çağıranı olmayan, yalnızca testlerin ayakta tuttuğu bir fonksiyon olur. Onu koruyup ölü bırakmaktansa silip testleri güncellemek doğrusu. `tests/test_unmapped_classifier.py` içindeki 6 çağrı yerel bir yardımcıya bağlanır (Step 6'da verildi) — iddialar okunaklı kalır, üretimde ölü kod kalmaz.
+
+`account_keys_from_names()` imzasıyla kalır: üretimde `customer_service.py` çağırıyor.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -340,12 +342,11 @@ EOF
 ```python
 def test_guess_owner_key_returns_the_matching_key_not_the_display_name():
     """Hesap kimliğini bulabilmek için eşleşen anahtar gerekir, görünen ad yetmez."""
-    from shared.customer.unmapped_classifier import guess_owner, guess_owner_key
+    from shared.customer.unmapped_classifier import guess_owner_key
 
     keys = {"abrakenerjielektrikuretimanonimsirketi": "ABRAK ENERJİ ELEKTRİK ÜRETİM ANONİM ŞİRKETİ"}
 
     assert guess_owner_key("Abrak_Enerji-Sophos", keys) == "abrakenerjielektrikuretimanonimsirketi"
-    assert guess_owner("Abrak_Enerji-Sophos", keys) == "ABRAK ENERJİ ELEKTRİK ÜRETİM ANONİM ŞİRKETİ"
     assert guess_owner_key("123host", keys) is None
 
 
@@ -452,12 +453,6 @@ def guess_owner_key(name: str, account_keys: Mapping[str, str]) -> str | None:
         if full.startswith(k) or (pkey_usable and k.startswith(pkey)):
             best_key = k
     return best_key or None
-
-
-def guess_owner(name: str, account_keys: Mapping[str, str]) -> str | None:
-    """Display name for an unmatched name's best-effort owner, or None."""
-    key = guess_owner_key(name, account_keys)
-    return account_keys[key] if key else None
 
 
 def alias_suggestion(name: str) -> str | None:
@@ -600,12 +595,28 @@ def build_unmapped_payload(
 
 `"kind": "vm"` alanı şimdiden eklenir — Görev 7 backup satırlarını aynı listeye koyacak ve arayüz sekmeleri bu alanla ayıracak.
 
-- [ ] **Step 6: Run classifier tests**
+- [ ] **Step 6: Update the existing guess_owner call sites**
+
+`guess_owner()` silindiği için `tests/test_unmapped_classifier.py`'deki 6 çağrı yerinden düzeltilir. Dosyanın import bloğundan `guess_owner` çıkarılır, `guess_owner_key` eklenir, ve testlerin bulunduğu sınıfa yerel bir yardımcı konur:
+
+```python
+    def _owner(self, name, keys=None):
+        """Display name for a guess — the shape the assertions below read best."""
+        k = guess_owner_key(name, keys if keys is not None else self.keys)
+        return (keys if keys is not None else self.keys)[k] if k else None
+```
+
+Ardından `guess_owner(X, self.keys)` çağrıları `self._owner(X)` ile değiştirilir (satır 43, 47, 52, 55, 56 ve varsa diğerleri). İddia edilen değerler **değişmez** — yalnızca çağrı biçimi değişir. Satır 141'deki yorumda geçen `guess_owner` adı `guess_owner_key` yapılır.
+
+Run: `grep -n "guess_owner" tests/test_unmapped_classifier.py`
+Expected: `guess_owner_key` dışında eşleşme yok.
+
+- [ ] **Step 7: Run classifier tests**
 
 Run: `./.venv/bin/python -m pytest tests/test_unmapped_classifier.py -q`
 Expected: PASS — yeni 4 test dahil, mevcut 22 test kırılmadan
 
-- [ ] **Step 7: Select accountid in the SQL**
+- [ ] **Step 8: Select accountid in the SQL**
 
 `services/customer-api/app/db/queries/unmapped.py:27`, `CRM_ACCOUNT_NAMES` şu hale gelir:
 
@@ -619,7 +630,7 @@ WHERE name IS NOT NULL AND btrim(name) <> ''
 """
 ```
 
-- [ ] **Step 8: Wire it in the service**
+- [ ] **Step 9: Wire it in the service**
 
 `services/customer-api/app/services/customer_service.py:545`, `_load_unmapped_resources()` şu hale gelir:
 
@@ -659,12 +670,12 @@ WHERE name IS NOT NULL AND btrim(name) <> ''
         )
 ```
 
-- [ ] **Step 9: Run the full affected suites**
+- [ ] **Step 10: Run the full affected suites**
 
 Run: `./.venv/bin/python -m pytest tests/test_unmapped_classifier.py tests/test_unmapped_page.py services/customer-api/tests/ -q`
 Expected: PASS
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add shared/customer/unmapped_classifier.py services/customer-api/app/db/queries/unmapped.py services/customer-api/app/services/customer_service.py tests/test_unmapped_classifier.py
@@ -2167,31 +2178,30 @@ _PLATFORM_LABEL = {"vmware": "VMware", "nutanix": "Nutanix", "netbackup": "NetBa
 
 ve satır sözlüğünde `"reason": reason` kullan.
 
-- [ ] **Step 4: Add the backup table builder**
+- [ ] **Step 4: Extract the shared table shell, then add the backup table**
 
-`_vm_table()` fonksiyonunun ardına ekle:
+İki tablo aynı görünüme sahip; stil bloğunu ikinci kez yazmak yerine tek bir kurucuya çıkarılır. `_vm_table()` yerine şu üçlü konur:
 
 ```python
-def _backup_table(rows: list[dict]) -> html.Div:
-    if not rows:
-        return dmc.Alert(color="teal", variant="light", title="Eşleşmeyen backup yok",
-                         children="Seçili zaman aralığında sahipsiz bir yedekleme "
-                                  "politikası bulunamadı.")
+def _table_shell(rows: list[dict], *, kind: str, name_header: str,
+                 source_header: str, hint: str) -> html.Div:
+    """The card + DataTable both source tabs share.
+
+    Only the two headers and the hint differ between them, so the styling
+    lives here once; a second copy would drift the moment one is tweaked.
+    """
     return html.Div(className="nexus-card", style={"padding": "20px"}, children=[
         html.Div(style={"height": "2px", "width": "32px", "borderRadius": "2px",
                         "marginBottom": "12px",
                         "background": "linear-gradient(90deg,#4318FF,#FFB547)"}),
-        dmc.Text("Policy adları ‘müşteri-workload-ortam-tip’ standardına göre "
-                 "eşleştirilir. ‘Belirsiz’ satırlarda aynı önek birden fazla "
-                 "müşteriye uyar; doğru müşteriyi Müşteri Alias ekranından seçin.",
-                 size="xs", c="#A3AED0", mb="sm"),
+        dmc.Text(hint, size="xs", c="#A3AED0", mb="sm"),
         dash_table.DataTable(
-            id=table_id("backup"),
+            id=table_id(kind),
             data=_table_rows(rows),
             columns=[
                 {"name": "TAHMİNİ SAHİP", "id": "guessed_owner"},
-                {"name": "POLICY ADI", "id": "name"},
-                {"name": "KAYNAK", "id": "platform"},
+                {"name": name_header, "id": "name"},
+                {"name": source_header, "id": "platform"},
                 {"name": "NEDEN", "id": "reason"},
                 {"name": "İŞLEM", "id": "action"},
             ],
@@ -2215,11 +2225,16 @@ def _backup_table(rows: list[dict]) -> html.Div:
                 {"if": {"column_id": "guessed_owner"}, "color": "#707EAE"},
             ],
             style_data_conditional=[
+                # The cell IS the button: DataTable cannot host a component, and
+                # replacing the table with html.Table would cost the native
+                # column filtering and sorting this page advertises above.
                 {"if": {"column_id": "action", "filter_query": f"{{action}} = '{ACTION_LABEL}'"},
                  "color": "#4318FF", "fontWeight": "700", "cursor": "pointer",
                  "textDecoration": "underline"},
                 {"if": {"filter_query": "{reason} = 'Alias eksik'"},
                  "backgroundColor": "rgba(255,181,71,0.07)"},
+                {"if": {"filter_query": "{reason} = 'Alias eksik'", "column_id": "reason"},
+                 "color": "#B26A00", "fontWeight": "700"},
                 {"if": {"filter_query": "{reason} contains 'Belirsiz'", "column_id": "reason"},
                  "color": "#B26A00", "fontWeight": "700"},
                 {"if": {"filter_query": "{reason} = 'Sahipsiz'", "column_id": "reason"},
@@ -2229,7 +2244,33 @@ def _backup_table(rows: list[dict]) -> html.Div:
             ],
         ),
     ])
+
+
+def _vm_table(rows: list[dict]) -> html.Div:
+    if not rows:
+        return dmc.Alert(color="teal", variant="light", title="Eşleşmeyen makine yok",
+                         children="Seçili zaman aralığında hiçbir sahipsiz sanal makine bulunamadı.")
+    return _table_shell(
+        rows, kind="vm", name_header="MAKİNE ADI", source_header="PLATFORM",
+        hint="Sütun başlıklarından filtreleyin, başlığa tıklayarak sıralayın. "
+             "Amber satırlar alias eklenerek bir müşteriye bağlanabilir.",
+    )
+
+
+def _backup_table(rows: list[dict]) -> html.Div:
+    if not rows:
+        return dmc.Alert(color="teal", variant="light", title="Eşleşmeyen backup yok",
+                         children="Seçili zaman aralığında sahipsiz bir yedekleme "
+                                  "politikası bulunamadı.")
+    return _table_shell(
+        rows, kind="backup", name_header="POLICY ADI", source_header="KAYNAK",
+        hint="Policy adları ‘müşteri-workload-ortam-tip’ standardına göre eşleştirilir. "
+             "‘Belirsiz’ satırlarda aynı önek birden fazla müşteriye uyar; doğru "
+             "müşteriyi Müşteri Alias ekranından seçin.",
+    )
 ```
+
+Görev 5'te `_vm_table()` içine eklenen `style_data_conditional` girdisi ve kolon listesi buraya taşındığı için o fonksiyondan kaldırılır — aynı yapılandırma iki yerde durmamalı.
 
 - [ ] **Step 5: Render both tabs and the ambiguous KPI**
 
