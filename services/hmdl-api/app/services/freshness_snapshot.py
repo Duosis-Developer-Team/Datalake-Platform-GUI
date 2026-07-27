@@ -32,7 +32,8 @@ def _reset_for_test() -> None:
 def get_snapshot() -> dict:
     with _lock:
         if _snapshot is None:
-            return {"families": [], "counts": dict(_EMPTY_COUNTS),
+            return {"families": [], "flows": [], "unmonitored": [], "missing": [],
+                    "counts": dict(_EMPTY_COUNTS),
                     "generated_at": None, "status": "computing"}
         return _snapshot
 

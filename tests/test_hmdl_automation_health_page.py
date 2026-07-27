@@ -54,23 +54,35 @@ def test_automation_health_page_builds(mock_ah):
 
 
 @patch("src.pages.settings.integrations.hmdl_automation_health.api.get_hmdl_automation_health")
-def test_page_renders_family_rollups(mock_ah):
+def test_page_renders_flow_rollups(mock_ah):
+    """The section rolls up per collection FLOW, not per family.
+
+    Families grouped by vendor, which still rendered one card per family and one
+    entry per dead table. A flow is the collector, so the two dead datastore
+    tables are one row named after the data a customer recognises.
+    """
     data = dict(MOCK_AH)
     data["data_status"] = "ok"
-    data["data_counts"] = {"fresh": 3, "stale": 0, "dead": 2, "unknown": 0, "alert": 2}
-    data["data_families"] = [
-        {"family": "VMware", "counts": {"fresh": 1, "stale": 0, "dead": 2, "unknown": 0, "alert": 2},
+    data["data_counts"] = {"fresh": 1, "stale": 0, "dead": 1, "unknown": 0, "alert": 1}
+    data["data_flows"] = [
+        {"key": "vmware_datastore", "label": "Depolama kullanım verisi", "status": "dead",
+         "age_hours": 240.0,
+         "counts": {"fresh": 0, "stale": 0, "dead": 2, "unknown": 0, "alert": 1},
          "sources": [{"key": "raw_vmware_datastore_metrics_agg", "label": "VMware Datastore Metrics",
                       "cadence": "public.raw_vmware_datastore_metrics_agg", "last_run_at": None,
-                      "age_hours": 240.0, "status": "dead", "warn_hours": 26, "dead_hours": 50, "extra": {}}]},
-        {"family": "Nutanix", "counts": {"fresh": 2, "stale": 0, "dead": 0, "unknown": 0, "alert": 0},
-         "sources": []},
+                      "age_hours": 240.0, "status": "dead", "warn_hours": 26, "dead_hours": 50,
+                      "extra": {}}]},
+        {"key": "family:Nutanix", "label": "Nutanix", "status": "fresh", "age_hours": None,
+         "counts": {"fresh": 2, "stale": 0, "dead": 0, "unknown": 0, "alert": 0}, "sources": []},
     ]
     mock_ah.return_value = data
     text = str(page.build_layout())
     assert "Data Collection Freshness" in text
-    assert "VMware" in text and "Nutanix" in text
+    assert "Depolama kullanım verisi" in text
+    # Member table stays reachable behind the disclosure.
     assert "VMware Datastore Metrics" in text
+    # A healthy flow is not rendered as a row — that is the noise being removed.
+    assert "Nutanix" not in text
 
 
 @patch("src.pages.settings.integrations.hmdl_automation_health.api.get_hmdl_automation_health")

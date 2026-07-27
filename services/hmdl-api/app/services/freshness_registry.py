@@ -22,6 +22,97 @@ _EXCLUDE_EXACT = {
     "raw_ibm_storage_ports", "raw_ibm_storage_vdisk_dumps",
 }
 
+# Tables that at least one service actually queries. Freshness monitoring is
+# opt-in by usage: a table nobody reads is not a platform health signal, it is
+# the freshness of data the platform abandoned. Auto-discovery monitored all 159
+# tables carrying a timestamp column, of which 96 feed no query — that is where
+# 33 of the page's 40 alerts came from.
+#
+# Curated, not computed. hmdl-api cannot see the other services' source at
+# runtime, and grepping for table names has two failure modes this set was built
+# to avoid: `zabbix_network_interface_metrics` matches inside
+# `raw_zabbix_network_interface_metrics_v`, and `raw_vmware_vm_config` matches a
+# comment in licensed_os.py that records the table is dead.
+#
+# Only BASE TABLEs belong here — discover_specs filters on table_type, so a view
+# in this set could never be discovered and would sit in data_missing forever
+# reporting a curation defect that isn't one. That excludes the live network
+# source raw_zabbix_network_interface_metrics_v, which is a view; its freshness
+# is out of this framework's reach.
+#
+# MAINTENANCE: a new query against a new table adds that table here in the same
+# commit. A table missing from this set never alerts.
+# Seeded 2026-07-27 from a word-boundary sweep of services/, src/, shared/.
+MONITORED = frozenset({
+    "cluster_metrics", "datacenter_metrics", "discovery_crm_accounts",
+    "discovery_crm_pricelevels", "discovery_crm_productpricelevels",
+    "discovery_crm_products", "discovery_crm_salesorderdetails",
+    "discovery_crm_salesorders", "discovery_loki_location", "discovery_loki_rack",
+    "discovery_netbox_inventory_device", "discovery_netbox_virtualization_vm",
+    "discovery_nutanix_inventory_cluster", "discovery_nutanix_inventory_vm",
+    "discovery_servicecore_incidents", "discovery_servicecore_servicerequests",
+    "discovery_servicecore_users", "discovery_vmware_inventory_datastore",
+    "ibm_lpar_general", "ibm_lpar_performance_metrics", "ibm_server_general",
+    "ibm_server_power", "ibm_vios_general", "nutanix_cluster_metrics",
+    "nutanix_host_performance_metrics", "nutanix_snapshot_schedule_metrics",
+    "nutanix_vm_metrics", "nutanix_vm_performance_metrics",
+    "raw_brocade_port_statistics", "raw_brocade_port_status",
+    "raw_brocade_san_fcport_1", "raw_ibm_storage_system",
+    "raw_ibm_storage_system_stats", "raw_ibm_storage_vdisk",
+    "raw_netbackup_disk_pools_metrics", "raw_netbackup_jobs_metrics",
+    "raw_s3icos_pool_metrics", "raw_s3icos_vault_inventory",
+    "raw_s3icos_vault_metrics", "raw_veeam_jobs_states",
+    "raw_veeam_repositories_states", "raw_veeam_sessions",
+    "raw_vmware_datastore_host_mount", "raw_vmware_datastore_metrics_agg",
+    "raw_zabbix_hana_linux_host_metrics",
+    "raw_zabbix_network_backbone_interface_metrics",
+    "raw_zabbix_network_device_health_metrics",
+    "raw_zabbix_network_firewall_metrics",
+    "raw_zabbix_network_leaf_interface_metrics",
+    "raw_zabbix_network_management_interface_metrics",
+    "raw_zabbix_network_router_uplink_metrics",
+    "raw_zabbix_network_spine_interface_metrics",
+    "raw_zabbix_network_switch_shared_interface_metrics",
+    "raw_zerto_license_metrics", "raw_zerto_site_metrics", "raw_zerto_vm_metrics",
+    "raw_zerto_vpg_metrics", "vm_metrics", "vmhost_metrics",
+    "vmware_host_performance_metrics", "vmware_vm_performance_metrics",
+    "zabbix_storage_device_metrics", "zabbix_storage_disk_metrics",
+})
+
+# Collection flows: which collector writes which tables. One dead collector is
+# one incident, however many tables it feeds — the page used to render a dead
+# collector as N alerts (all 10 raw_panduit_* tables stopped in the same minute).
+#
+# `label` is what a customer reads. It names the DATA, not the table: a customer
+# looking at "Raw Vmware Datastore Metrics Agg" has no way to know it is the
+# storage figure on their overview.
+#
+# A table with no flow rolls up under its family, so an unclassified table
+# degrades to the previous grouping rather than disappearing.
+FLOWS: dict[str, dict] = {
+    "vmware_datastore": {
+        "label": "Depolama kullanım verisi",
+        "tables": frozenset({
+            "raw_vmware_datastore_metrics_agg",
+            "raw_vmware_datastore_host_mount",
+        }),
+    },
+    "hypervisor_performance": {
+        "label": "Sunucu performans verisi",
+        "tables": frozenset({
+            "vmware_host_performance_metrics",
+            "vmware_vm_performance_metrics",
+            "nutanix_host_performance_metrics",
+            "nutanix_vm_performance_metrics",
+            "ibm_lpar_performance_metrics",
+        }),
+    },
+}
+
+_FLOW_BY_TABLE: dict[str, str] = {
+    table: key for key, flow in FLOWS.items() for table in flow["tables"]
+}
+
 # name-prefix -> friendly family (first match wins; order matters)
 _FAMILY_PREFIXES = [
     ("discovery_netbox", "NetBox"),
@@ -77,6 +168,16 @@ def is_excluded(table: str) -> bool:
     return table in _EXCLUDE_EXACT
 
 
+def is_monitored(table: str) -> bool:
+    """True when at least one service queries this table (see MONITORED)."""
+    return table in MONITORED
+
+
+def flow_of(table: str) -> str | None:
+    """Flow key that writes this table, or None when it is unclassified."""
+    return _FLOW_BY_TABLE.get(table)
+
+
 def family_of(table: str) -> str:
     t = table.lower()
     for prefix, fam in _FAMILY_PREFIXES:
@@ -104,6 +205,7 @@ def resolve(table: str, columns: list[str], *, default_warn: float, default_dead
         "column": col,
         "label": _label_for(table),
         "family": ov.get("family") or family_of(table),
+        "monitored": is_monitored(table),
         "warn_hours": float(ov.get("warn_hours", default_warn)),
         "dead_hours": float(ov.get("dead_hours", default_dead)),
     }
