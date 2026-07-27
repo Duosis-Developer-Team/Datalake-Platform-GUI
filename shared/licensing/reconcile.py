@@ -1,10 +1,19 @@
 """Reconcile detected licensed-OS counts against CRM sold counts (TASK-81)."""
 from __future__ import annotations
 
+# Sold side = OS LICENCE SKUs only, one panel per family.
+#
+# Management-service panels (mgmt_os_windows, mgmt_os_sap) are deliberately NOT
+# summed in: they are billed per VM alongside the licence, so adding them double
+# counted the same guest. Live CRM 2026-07-27: 88 of 218 customers hold both
+# `MS Windows Lisans` and `Standart Windows İşletim Sistemi Yönetim Hizmeti` in
+# identical quantities. license_microsoft_spla / _csp are out for the same reason
+# in reverse — they are per-core / per-seat SKUs (SQL Server, RDS CAL, M365), not
+# comparable with a VM count.
 FAMILY_TO_SOLD_CATEGORIES: dict[str, tuple[str, ...]] = {
     "rhel": ("license_redhat",),
-    "suse": ("license_suse", "mgmt_os_sap"),
-    "windows": ("license_microsoft_spla", "license_microsoft_csp", "mgmt_os_windows"),
+    "suse": ("license_suse",),
+    "windows": ("license_windows_os",),
 }
 _LABELS = {"rhel": "RHEL", "suse": "SUSE", "windows": "Windows"}
 

@@ -422,6 +422,124 @@ def build_virtualization_compliance(
     return rows, summary
 
 
+# ---------------------------------------------------------------------------
+# Licensed OS — detected guests vs sold OS licences
+# ---------------------------------------------------------------------------
+
+#: One row per licence family. `category_code` is the OS-licence panel key, so
+#: `entitled_agg` (which is keyed by panel key) resolves without a lookup table.
+#: Units are the SKU's own: `MS Windows Lisans` is per VM, the Linux SKUs are Adet
+#: but still one line per guest — both compare directly with a detected VM count.
+LICENSED_OS_CATEGORIES: List[Dict[str, str]] = [
+    {
+        "family": "windows",
+        "category_code": "license_windows_os",
+        "category_label": "Windows Lisans",
+        "resource_unit": "per VM",
+        "catalog_product_name": "MS Windows Lisans",
+    },
+    {
+        "family": "rhel",
+        "category_code": "license_redhat",
+        "category_label": "RHEL Lisans",
+        "resource_unit": "Adet",
+        "catalog_product_name": "CCSP-RH02823 Red Hat Enterprise Linux Server, Full Support",
+    },
+    {
+        "family": "suse",
+        "category_code": "license_suse",
+        "category_label": "SUSE Lisans",
+        "resource_unit": "Adet",
+        "catalog_product_name": "SUSE Lisans Bedeli",
+    },
+]
+
+LICENSED_OS_TAB_BINDING = "licensing.os"
+
+
+def build_licensed_os_compliance(
+    *,
+    entitled_agg: Dict[str, Dict[str, Any]],
+    detected: Dict[str, int] | None,
+    weighted_prices: Dict[str, float],
+    price_overrides: Dict[str, float],
+    catalog_by_productid: Dict[str, float],
+    catalog_by_name: Dict[str, float],
+    fallback_prices: Dict[str, float] | None = None,
+    under_pct: float = 80.0,
+    over_pct: float = 110.0,
+) -> List[Dict[str, Any]]:
+    """Rows for the Resource Overusage table: sold vs detected licensed guests.
+
+    ``detected`` is the customer's licence-family tally (see
+    ``app.utils.licensed_os.customer_os_tally``). The ``free`` and ``unknown``
+    families are deliberately absent from ``LICENSED_OS_CATEGORIES``: a guest we
+    could not identify must never be billed as if it were Windows.
+
+    A family with no sales and no detected guests produces no row at all — an
+    all-zero line is noise in a table whose whole point is exceptions.
+    """
+    det = detected or {}
+    rows: List[Dict[str, Any]] = []
+
+    for meta in LICENSED_OS_CATEGORIES:
+        cat_code = meta["category_code"]
+        bucket = entitled_agg.get(cat_code) or {}
+        entitled_qty = float(bucket.get("entitled_qty") or 0)
+        used_qty = float(det.get(meta["family"], 0) or 0)
+        if entitled_qty <= 0 and used_qty <= 0:
+            continue
+
+        overage_qty = max(0.0, used_qty - entitled_qty)
+        eff_pct = round((used_qty / entitled_qty) * 100.0, 2) if entitled_qty > 0 else None
+
+        unit_price, price_source = resolve_unit_price_tl(
+            category_code=cat_code,
+            product_ids=list(bucket.get("product_ids") or []),
+            weighted_prices=weighted_prices,
+            price_overrides=price_overrides,
+            catalog_by_productid=catalog_by_productid,
+            catalog_by_name=catalog_by_name,
+        )
+        # Every price above is read off THIS customer's orders. A customer who
+        # never bought the licence has none, so the price came out 0 and the
+        # loss printed as "0 TL" — on exactly the rows that matter most (300 SUSE
+        # guests against 6 sold licences platform-wide). Fall back to the
+        # weighted average of what everyone else actually paid. A price the
+        # customer really paid always wins; this only fills a hole.
+        if unit_price <= 0:
+            platform = float((fallback_prices or {}).get(cat_code) or 0)
+            if platform > 0:
+                unit_price, price_source = platform, "platform_average"
+
+        rows.append({
+            "category_code": cat_code,
+            "category_label": bucket.get("category_label") or meta["category_label"],
+            "gui_tab_binding": LICENSED_OS_TAB_BINDING,
+            "resource_unit": meta["resource_unit"],
+            "entitled_qty": round(entitled_qty, 4),
+            "entitled_amount_tl": round(float(bucket.get("entitled_amount_tl") or 0), 2),
+            "used_qty": round(used_qty, 4),
+            "detected": int(used_qty),
+            "overage_qty": round(overage_qty, 4),
+            "unit_price_tl": round(unit_price, 4),
+            "price_source": price_source,
+            "overage_loss_tl": round(overage_qty * unit_price, 2),
+            "efficiency_pct": eff_pct,
+            "status": compliance_row_status(
+                entitled_qty=entitled_qty,
+                used_qty=used_qty,
+                overage_qty=overage_qty,
+                efficiency_pct=eff_pct,
+                under_pct=under_pct,
+                over_pct=over_pct,
+            ),
+            "usage_note": None,
+        })
+
+    return rows
+
+
 def summarize_compliance(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     overuse_categories = [
         r["category_code"]

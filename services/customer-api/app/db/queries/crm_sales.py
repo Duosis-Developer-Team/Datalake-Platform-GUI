@@ -280,16 +280,32 @@ GROUP BY d.productid, d.product_name, COALESCE(NULLIF(TRIM(d.uomid_name), ''), '
 ORDER BY entitled_amount_tl DESC NULLS LAST;
 """
 
+# priceperunit is stored in the ORDER's currency, so it has to be converted before
+# it can be called a lira price. 19 customers bill in USD and 3 in EUR
+# (2026-07-27); averaging their prices as though they were already TL made every
+# TL figure on their pages roughly 40x too small (the Dynamics USD rate is 0.025).
+# This price feeds overage_loss_tl on every compliance row, not just the licence
+# ones. The fx join is inner: a line whose currency has no active rate cannot be
+# converted, and counting it as lira is the very bug being fixed.
 SALES_ENTITLED_UNIT_PRICE_BY_PRODUCT = """
+WITH fx AS (
+    SELECT DISTINCT ON (transactioncurrency_text)
+           transactioncurrency_text AS ccy,
+           NULLIF(exchangerate, 0)  AS rate
+    FROM   discovery_crm_pricelevels
+    WHERE  statecode = 0
+    ORDER BY transactioncurrency_text, modifiedon DESC
+)
 SELECT
     d.productid,
     CASE
         WHEN SUM(d.quantity) > 0
-        THEN SUM(d.priceperunit * d.quantity) / SUM(d.quantity)
+        THEN SUM((d.priceperunit / fx.rate) * d.quantity) / SUM(d.quantity)
         ELSE NULL
     END::double precision AS weighted_unit_price
 FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+JOIN   fx ON fx.ccy = d.transactioncurrency_text
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (0, 1, 3, 4)
   AND  so.ordernumber LIKE 'PRJ-%%'
@@ -454,4 +470,39 @@ UNION ALL
 SELECT 'discovery_crm_salesorderdetails',
        (SELECT COUNT(*) FROM discovery_crm_salesorderdetails),
        (SELECT MAX(collection_time) FROM discovery_crm_salesorderdetails);
+"""
+
+# ---------------------------------------------------------------------------
+# Platform-wide weighted unit price per product, from what customers actually
+# paid. Used as the last-resort price when a customer never bought the licence
+# whose overuse we are pricing — without it the biggest gaps read as 0 TL.
+# discovery_crm_productpricelevels (the catalog) is empty in production, so real
+# orders are the only price source there is.
+# ---------------------------------------------------------------------------
+
+# Amounts are converted to TL first. `extendedamount` is stored in the ORDER's
+# currency, and the same product is sold in more than one: MS Windows Lisans has
+# 287 TL lines, 7 USD and 2 EUR (2026-07-27). Summing them raw produced 446.63
+# "TL"; converting via the Dynamics rate (TL = amount / exchangerate) gives the
+# real 471.41 TL. The inner join drops lines whose currency has no active rate —
+# a line we cannot convert must not be averaged in as if it were TL.
+PLATFORM_UNIT_PRICE_BY_PRODUCT = """
+WITH fx AS (
+    SELECT DISTINCT ON (transactioncurrency_text)
+           transactioncurrency_text AS ccy,
+           NULLIF(exchangerate, 0)  AS rate
+    FROM   discovery_crm_pricelevels
+    WHERE  statecode = 0
+    ORDER BY transactioncurrency_text, modifiedon DESC
+)
+SELECT d.productid,
+       (SUM(d.extendedamount / fx.rate) / NULLIF(SUM(d.quantity), 0))::double precision AS unit_price_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+JOIN   fx ON fx.ccy = d.transactioncurrency_text
+WHERE  so.statecode IN (0, 1, 3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
+  AND  d.quantity > 0
+GROUP BY d.productid
+HAVING SUM(d.quantity) > 0;
 """

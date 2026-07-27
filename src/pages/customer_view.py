@@ -12,7 +12,7 @@ import itertools
 import math
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, NamedTuple
 
 from src.components.customer_loading import (
     LOADING_STAGE_MESSAGES,
@@ -252,6 +252,65 @@ def _vm_table(
     if comfortable:
         wrap_kwargs["className"] = "customer-vm-table-wrap"
     return html.Div(**wrap_kwargs)
+
+
+class _VmCol(NamedTuple):
+    """One column of a VM/LPAR table.
+
+    ``infra=True`` marks a column that exposes Bulutistan's internal topology
+    (which hypervisor, which cluster). Those are dropped in the customer
+    perspective. Declaring columns as a list keeps the header, the cells and the
+    right-alignment set in step — hiding one by hand used to mean re-deriving a
+    ``numeric_col_indices`` range and getting a misaligned table when it drifted.
+    """
+
+    label: str
+    cell: Any            # (row: dict) -> html.Td
+    numeric: bool = False
+    infra: bool = False
+
+
+def _vm_table_from_spec(
+    vm_list: list,
+    spec: list[_VmCol],
+    *,
+    show_infra_columns: bool = True,
+    comfortable: bool = True,
+):
+    visible = [c for c in spec if show_infra_columns or not c.infra]
+    return _vm_table(
+        vm_list,
+        [c.label for c in visible],
+        lambda r: html.Tr([c.cell(r) for c in visible]),
+        empty_cols=len(visible),
+        numeric_col_indices=frozenset(i for i, c in enumerate(visible) if c.numeric),
+        comfortable=comfortable,
+    )
+
+
+# Guest-OS families we resell a licence for; anything else is shown but not tinted.
+_OS_FAMILY_COLORS: dict[str, str] = {
+    "windows": "#4318FF",
+    "rhel": "#E03131",
+    "suse": "#2F9E44",
+}
+
+
+def _vm_os_td(r: dict):
+    """Guest-OS cell. Licensed families are tinted so a customer can pick their
+    billable guests out of a long list at a glance. A VM with no OS telemetry
+    shows an em dash — never an inferred family."""
+    raw = str(r.get("guest_os") or "").strip()
+    if not raw:
+        return html.Td(
+            dmc.Text("—", size="xs", c="#A3AED0"),
+            style={"verticalAlign": "middle"},
+        )
+    color = _OS_FAMILY_COLORS.get(str(r.get("os_family") or ""))
+    return html.Td(
+        dmc.Text(raw, size="xs", c=color or "#2B3674", fw=600 if color else 400),
+        style={"verticalAlign": "middle", "whiteSpace": "nowrap"},
+    )
 
 
 # Rows per page for large VM/LPAR tables. Only this many <tr> are in the DOM at
@@ -1186,45 +1245,23 @@ def _real_cpu_usage_status_badge(r: dict):
     return dmc.Text("—", c="dimmed", size="xs")
 
 
-def _real_cpu_vm_table(vm_list: list, *, title: str, subtitle: str):
-    cols = [
-        "VM Name",
-        "Cluster",
-        "Host",
-        "CPU Sold (GHz)",
-        "CPU Real cap (GHz)",
-        "CPU Used avg (GHz)",
-        "CPU Used max (GHz)",
-        "CPU % avg",
-        "CPU % max",
-        "Status",
+def _real_cpu_vm_table(vm_list: list, *, title: str, subtitle: str, show_infra_columns: bool = True):
+    spec = [
+        _VmCol("VM Name", lambda r: html.Td(r.get("name"))),
+        _VmCol("Cluster", lambda r: html.Td(r.get("cluster", "-")), infra=True),
+        _VmCol("Host", lambda r: html.Td(r.get("vmhost") or "—"), infra=True),
+        _VmCol("CPU Sold (GHz)", lambda r: _vm_metric_td(r.get("cpu_ghz_sales", r.get("cpu", 0)), decimals=0), numeric=True),
+        _VmCol("CPU Real cap (GHz)", lambda r: _vm_metric_td(r.get("cpu_ghz_real", 0), decimals=1), numeric=True),
+        _VmCol("CPU Used avg (GHz)", lambda r: _vm_metric_td(r.get("cpu_used_ghz_avg", 0), decimals=1), numeric=True),
+        _VmCol("CPU Used max (GHz)", lambda r: _vm_metric_td(r.get("cpu_used_ghz_max", 0), decimals=1), numeric=True),
+        _VmCol("CPU % avg", lambda r: _vm_metric_td(r.get("cpu_pct_avg", r.get("cpu_mhz_avg", 0)), suffix="%"), numeric=True),
+        _VmCol("CPU % max", lambda r: _vm_metric_td(r.get("cpu_pct_max", r.get("cpu_mhz_max", 0)), suffix="%"), numeric=True),
+        _VmCol("Status", lambda r: html.Td(_real_cpu_usage_status_badge(r))),
     ]
-
-    def row_fn(r):
-        return html.Tr([
-            html.Td(r.get("name")),
-            html.Td(r.get("cluster", "-")),
-            html.Td(r.get("vmhost") or "—"),
-            _vm_metric_td(r.get("cpu_ghz_sales", r.get("cpu", 0)), decimals=0),
-            _vm_metric_td(r.get("cpu_ghz_real", 0), decimals=1),
-            _vm_metric_td(r.get("cpu_used_ghz_avg", 0), decimals=1),
-            _vm_metric_td(r.get("cpu_used_ghz_max", 0), decimals=1),
-            _vm_metric_td(r.get("cpu_pct_avg", r.get("cpu_mhz_avg", 0)), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_max", r.get("cpu_mhz_max", 0)), suffix="%"),
-            html.Td(_real_cpu_usage_status_badge(r)),
-        ])
-
     return _section_card(
         title,
         subtitle,
-        _vm_table(
-            vm_list,
-            cols,
-            row_fn,
-            empty_cols=len(cols),
-            numeric_col_indices=frozenset({3, 4, 5, 6, 7, 8}),
-            comfortable=True,
-        ),
+        _vm_table_from_spec(vm_list, spec, show_infra_columns=show_infra_columns),
     )
 
 
@@ -1251,12 +1288,54 @@ def _real_cpu_export_records(vm_list: list | None) -> list[dict]:
     return out
 
 
+def _mem_td(r: dict):
+    return html.Td(
+        smart_memory(r.get("memory_gb", 0)),
+        style={
+            "textAlign": "right",
+            "fontVariantNumeric": "tabular-nums",
+            "fontSize": "0.8125rem",
+            "verticalAlign": "middle",
+        },
+    )
+
+
+def _disk_td(r: dict):
+    return html.Td(
+        smart_storage(r.get("disk_gb", 0)),
+        style={
+            "textAlign": "right",
+            "fontVariantNumeric": "tabular-nums",
+            "fontSize": "0.8125rem",
+            "verticalAlign": "middle",
+        },
+    )
+
+
+def _usage_pct_cols() -> list[_VmCol]:
+    """CPU/memory/disk usage columns shared by the Intel VM tables."""
+    return [
+        _VmCol("CPU (vCPU)", lambda r: _vm_metric_td(r.get("cpu", 0), decimals=0), numeric=True),
+        _VmCol("CPU % max", lambda r: _vm_metric_td(r.get("cpu_pct_max", r.get("cpu_mhz_max", 0)), suffix="%"), numeric=True),
+        _VmCol("CPU % avg", lambda r: _vm_metric_td(r.get("cpu_pct_avg", r.get("cpu_mhz_avg", 0)), suffix="%"), numeric=True),
+        _VmCol("CPU % min", lambda r: _vm_metric_td(r.get("cpu_pct_min", r.get("cpu_mhz_min", 0)), suffix="%"), numeric=True),
+        _VmCol("Memory", _mem_td, numeric=True),
+        _VmCol("Mem % max", lambda r: _vm_metric_td(r.get("mem_pct_max", 0), suffix="%"), numeric=True),
+        _VmCol("Mem % avg", lambda r: _vm_metric_td(r.get("mem_pct_avg", 0), suffix="%"), numeric=True),
+        _VmCol("Mem % min", lambda r: _vm_metric_td(r.get("mem_pct_min", 0), suffix="%"), numeric=True),
+        _VmCol("Disk (prov.)", _disk_td, numeric=True),
+        _VmCol("Disk used min (GiB)", lambda r: _vm_metric_td(r.get("disk_used_min_gb", 0), suffix=" GiB"), numeric=True),
+        _VmCol("Disk used max (GiB)", lambda r: _vm_metric_td(r.get("disk_used_max_gb", 0), suffix=" GiB"), numeric=True),
+    ]
+
+
 def _tab_classic(
     classic: dict,
     vm_outage_counts: dict | None = None,
     crm_eff_panel: html.Div | None = None,
     *,
     include_usage_vs_sold: bool = True,
+    show_infra_columns: bool = True,
 ):
     """Classic Compute (KM cluster) billing tab."""
     vm_count = int(classic.get("vm_count", 0) or 0)
@@ -1267,57 +1346,13 @@ def _tab_classic(
     disk_gb = float(classic.get("disk_gb", 0) or 0)
     vm_list = classic.get("vm_list", []) or []
 
-    def row_fn(r):
-        return html.Tr([
-            html.Td(r.get("name")),
-            html.Td(r.get("cluster", "-")),
-            _vm_metric_td(r.get("cpu", 0), decimals=0),
-            _vm_metric_td(r.get("cpu_pct_max", r.get("cpu_mhz_max", 0)), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_avg", r.get("cpu_mhz_avg", 0)), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_min", r.get("cpu_mhz_min", 0)), suffix="%"),
-            html.Td(
-                smart_memory(r.get("memory_gb", 0)),
-                style={
-                    "textAlign": "right",
-                    "fontVariantNumeric": "tabular-nums",
-                    "fontSize": "0.8125rem",
-                    "verticalAlign": "middle",
-                },
-            ),
-            _vm_metric_td(r.get("mem_pct_max", 0), suffix="%"),
-            _vm_metric_td(r.get("mem_pct_avg", 0), suffix="%"),
-            _vm_metric_td(r.get("mem_pct_min", 0), suffix="%"),
-            html.Td(
-                smart_storage(r.get("disk_gb", 0)),
-                style={
-                    "textAlign": "right",
-                    "fontVariantNumeric": "tabular-nums",
-                    "fontSize": "0.8125rem",
-                    "verticalAlign": "middle",
-                },
-            ),
-            _vm_metric_td(r.get("disk_used_min_gb", 0), suffix=" GiB"),
-            _vm_metric_td(r.get("disk_used_max_gb", 0), suffix=" GiB"),
-            html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
-        ])
-
-    cols = [
-        "VM Name",
-        "Cluster",
-        "CPU (vCPU)",
-        "CPU % max",
-        "CPU % avg",
-        "CPU % min",
-        "Memory",
-        "Mem % max",
-        "Mem % avg",
-        "Mem % min",
-        "Disk (prov.)",
-        "Disk used min (GiB)",
-        "Disk used max (GiB)",
-        "Availability",
+    spec = [
+        _VmCol("VM Name", lambda r: html.Td(r.get("name"))),
+        _VmCol("Cluster", lambda r: html.Td(r.get("cluster", "-")), infra=True),
+        _VmCol("İşletim Sistemi", _vm_os_td),
+        *_usage_pct_cols(),
+        _VmCol("Availability", lambda r: html.Td(_availability_cell(r.get("name"), vm_outage_counts))),
     ]
-    _classic_numeric_cols = frozenset(range(2, 13))
     head = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
     kpi_grid = _build_metrics_grid(
         [
@@ -1338,14 +1373,7 @@ def _tab_classic(
             dmc.Stack(
                 gap="md",
                 children=[
-                    _vm_table(
-                        vm_list,
-                        cols,
-                        row_fn,
-                        empty_cols=len(cols),
-                        numeric_col_indices=_classic_numeric_cols,
-                        comfortable=True,
-                    ),
+                    _vm_table_from_spec(vm_list, spec, show_infra_columns=show_infra_columns),
                 ],
             ),
         )
@@ -1355,6 +1383,7 @@ def _tab_classic(
             _real_cpu_vm_table(
                 vm_list,
                 title="Classic VMs — CPU Usage vs Sold",
+                show_infra_columns=show_infra_columns,
                 subtitle=(
                     "Flags VMs where measured usage (GHz) exceeds sold CPU (1 vCPU = 1 GHz), "
                     "using real host capacity as the usage base."
@@ -1371,6 +1400,7 @@ def _tab_hyperconv(
     crm_eff_panel: html.Div | None = None,
     *,
     include_usage_vs_sold: bool = True,
+    show_infra_columns: bool = True,
 ):
     """Hyperconverged (non-KM VMware + Nutanix) billing tab."""
     pure_nutanix = pure_nutanix or {}
@@ -1385,59 +1415,14 @@ def _tab_hyperconv(
     disk_gb = float(hyperconv.get("disk_gb", 0) or 0)
     vm_list = hyperconv.get("vm_list", []) or []
 
-    def row_fn(r):
-        return html.Tr([
-            html.Td(r.get("name")),
-            html.Td(r.get("source", "-")),
-            html.Td(r.get("cluster", "-")),
-            _vm_metric_td(r.get("cpu", 0), decimals=0),
-            _vm_metric_td(r.get("cpu_pct_max", r.get("cpu_mhz_max", 0)), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_avg", r.get("cpu_mhz_avg", 0)), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_min", r.get("cpu_mhz_min", 0)), suffix="%"),
-            html.Td(
-                smart_memory(r.get("memory_gb", 0)),
-                style={
-                    "textAlign": "right",
-                    "fontVariantNumeric": "tabular-nums",
-                    "fontSize": "0.8125rem",
-                    "verticalAlign": "middle",
-                },
-            ),
-            _vm_metric_td(r.get("mem_pct_max", 0), suffix="%"),
-            _vm_metric_td(r.get("mem_pct_avg", 0), suffix="%"),
-            _vm_metric_td(r.get("mem_pct_min", 0), suffix="%"),
-            html.Td(
-                smart_storage(r.get("disk_gb", 0)),
-                style={
-                    "textAlign": "right",
-                    "fontVariantNumeric": "tabular-nums",
-                    "fontSize": "0.8125rem",
-                    "verticalAlign": "middle",
-                },
-            ),
-            _vm_metric_td(r.get("disk_used_min_gb", 0), suffix=" GiB"),
-            _vm_metric_td(r.get("disk_used_max_gb", 0), suffix=" GiB"),
-            html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
-        ])
-
-    cols = [
-        "VM Name",
-        "Source",
-        "Cluster",
-        "CPU (vCPU)",
-        "CPU % max",
-        "CPU % avg",
-        "CPU % min",
-        "Memory",
-        "Mem % max",
-        "Mem % avg",
-        "Mem % min",
-        "Disk (prov.)",
-        "Disk used min (GiB)",
-        "Disk used max (GiB)",
-        "Availability",
+    spec = [
+        _VmCol("VM Name", lambda r: html.Td(r.get("name"))),
+        _VmCol("Source", lambda r: html.Td(r.get("source", "-")), infra=True),
+        _VmCol("Cluster", lambda r: html.Td(r.get("cluster", "-")), infra=True),
+        _VmCol("İşletim Sistemi", _vm_os_td),
+        *_usage_pct_cols(),
+        _VmCol("Availability", lambda r: html.Td(_availability_cell(r.get("name"), vm_outage_counts))),
     ]
-    _hyperconv_numeric_cols = frozenset(range(3, 14))
     head_h = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
     kpi_grid = _build_metrics_grid(
         [
@@ -1482,14 +1467,7 @@ def _tab_hyperconv(
             dmc.Stack(
                 gap="md",
                 children=[
-                    _vm_table(
-                        vm_list,
-                        cols,
-                        row_fn,
-                        empty_cols=len(cols),
-                        numeric_col_indices=_hyperconv_numeric_cols,
-                        comfortable=True,
-                    ),
+                    _vm_table_from_spec(vm_list, spec, show_infra_columns=show_infra_columns),
                 ],
             ),
         )
@@ -1499,6 +1477,7 @@ def _tab_hyperconv(
             _real_cpu_vm_table(
                 vm_list,
                 title="Hyperconverged VMs — CPU Usage vs Sold",
+                show_infra_columns=show_infra_columns,
                 subtitle=(
                     "Flags VMs where measured usage (GHz) exceeds sold CPU (1 vCPU = 1 GHz); "
                     "Nutanix rows use 1 GHz/core (sales ≈ real cap)."
@@ -1508,7 +1487,13 @@ def _tab_hyperconv(
     return dmc.Stack(gap="lg", children=body_h)
 
 
-def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None, crm_eff_panel: html.Div | None = None):
+def _tab_pure_nutanix(
+    pure: dict,
+    vm_outage_counts: dict | None = None,
+    crm_eff_panel: html.Div | None = None,
+    *,
+    show_infra_columns: bool = True,
+):
     """Pure Nutanix (AHV-only) clusters — no matching VMware non-KM cluster name."""
     vm_count = int(pure.get("vm_count", 0) or 0)
     clusters = int(pure.get("cluster_count", 0) or 0)
@@ -1517,59 +1502,14 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None, crm_eff_
     disk_gb = float(pure.get("disk_gb", 0) or 0)
     vm_list = pure.get("vm_list", []) or []
 
-    def row_fn(r):
-        return html.Tr([
-            html.Td(r.get("name")),
-            html.Td(r.get("source", "-")),
-            html.Td(r.get("cluster", "-")),
-            _vm_metric_td(r.get("cpu", 0), decimals=0),
-            _vm_metric_td(r.get("cpu_pct_max", r.get("cpu_mhz_max", 0)), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_avg", r.get("cpu_mhz_avg", 0)), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_min", r.get("cpu_mhz_min", 0)), suffix="%"),
-            html.Td(
-                smart_memory(r.get("memory_gb", 0)),
-                style={
-                    "textAlign": "right",
-                    "fontVariantNumeric": "tabular-nums",
-                    "fontSize": "0.8125rem",
-                    "verticalAlign": "middle",
-                },
-            ),
-            _vm_metric_td(r.get("mem_pct_max", 0), suffix="%"),
-            _vm_metric_td(r.get("mem_pct_avg", 0), suffix="%"),
-            _vm_metric_td(r.get("mem_pct_min", 0), suffix="%"),
-            html.Td(
-                smart_storage(r.get("disk_gb", 0)),
-                style={
-                    "textAlign": "right",
-                    "fontVariantNumeric": "tabular-nums",
-                    "fontSize": "0.8125rem",
-                    "verticalAlign": "middle",
-                },
-            ),
-            _vm_metric_td(r.get("disk_used_min_gb", 0), suffix=" GiB"),
-            _vm_metric_td(r.get("disk_used_max_gb", 0), suffix=" GiB"),
-            html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
-        ])
-
-    cols = [
-        "VM Name",
-        "Source",
-        "Cluster",
-        "CPU (vCPU)",
-        "CPU % max",
-        "CPU % avg",
-        "CPU % min",
-        "Memory",
-        "Mem % max",
-        "Mem % avg",
-        "Mem % min",
-        "Disk (prov.)",
-        "Disk used min (GiB)",
-        "Disk used max (GiB)",
-        "Availability",
+    spec = [
+        _VmCol("VM Name", lambda r: html.Td(r.get("name"))),
+        _VmCol("Source", lambda r: html.Td(r.get("source", "-")), infra=True),
+        _VmCol("Cluster", lambda r: html.Td(r.get("cluster", "-")), infra=True),
+        _VmCol("İşletim Sistemi", _vm_os_td),
+        *_usage_pct_cols(),
+        _VmCol("Availability", lambda r: html.Td(_availability_cell(r.get("name"), vm_outage_counts))),
     ]
-    _pure_nx_numeric_cols = frozenset(range(3, 14))
     head_p = [crm_eff_panel] if crm_eff_panel is not None else []
     return dmc.Stack(
         gap="lg",
@@ -1588,18 +1528,13 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None, crm_eff_
             ),
             _section_card(
                 "Pure Nutanix VMs",
-                "VMs on Nutanix clusters with no VMware vCenter cluster name match (after normalization)",
+                "VMs on Nutanix clusters with no VMware vCenter cluster name match "
+                "(after normalization). AHV reports no guest OS, so most rows here "
+                "show no operating system.",
                 dmc.Stack(
                     gap="md",
                     children=[
-                        _vm_table(
-                            vm_list,
-                            cols,
-                            row_fn,
-                            empty_cols=len(cols),
-                            numeric_col_indices=_pure_nx_numeric_cols,
-                            comfortable=True,
-                        ),
+                        _vm_table_from_spec(vm_list, spec, show_infra_columns=show_infra_columns),
                     ],
                 ),
             ),
@@ -1607,7 +1542,13 @@ def _tab_pure_nutanix(pure: dict, vm_outage_counts: dict | None = None, crm_eff_
     )
 
 
-def _tab_power(power: dict, vm_outage_counts: dict | None = None, crm_eff_panel: html.Div | None = None):
+def _tab_power(
+    power: dict,
+    vm_outage_counts: dict | None = None,
+    crm_eff_panel: html.Div | None = None,
+    *,
+    show_infra_columns: bool = True,
+):
     """Power Mimari (IBM LPAR) billing tab."""
     lpars = int(power.get("lpar_count", 0) or 0)
     cpu = float(power.get("cpu_total", 0) or 0)
@@ -1615,61 +1556,26 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None, crm_eff_panel:
     disk_gb = float(power.get("disk_total_gb", 0) or 0)
     vm_list = power.get("vm_list", []) or []
 
-    def row_fn(r):
-        return html.Tr([
-            html.Td(r.get("name")),
-            html.Td(r.get("lpar_name", "-")),
-            html.Td(r.get("source", "Power HMC")),
-            _vm_metric_td(r.get("cpu", 0), decimals=1),
-            _vm_metric_td(r.get("cpu_pct_max", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_avg", 0), suffix="%"),
-            _vm_metric_td(r.get("cpu_pct_min", 0), suffix="%"),
-            html.Td(
-                smart_memory(r.get("memory_gb", 0)),
-                style={
-                    "textAlign": "right",
-                    "fontVariantNumeric": "tabular-nums",
-                    "fontSize": "0.8125rem",
-                    "verticalAlign": "middle",
-                },
-            ),
-            _vm_metric_td(r.get("mem_pct_max", 0), suffix="%"),
-            _vm_metric_td(r.get("mem_pct_avg", 0), suffix="%"),
-            _vm_metric_td(r.get("mem_pct_min", 0), suffix="%"),
-            html.Td(
-                smart_storage(r.get("disk_gb", 0)),
-                style={
-                    "textAlign": "right",
-                    "fontVariantNumeric": "tabular-nums",
-                    "fontSize": "0.8125rem",
-                    "verticalAlign": "middle",
-                },
-            ),
-            _vm_metric_td(r.get("disk_used_max_gb", 0)),
-            _vm_metric_td(r.get("disk_used_min_gb", 0)),
-            html.Td(r.get("state", "-")),
-            html.Td(_availability_cell(r.get("name"), vm_outage_counts)),
-        ])
-
-    cols = [
-        "Host Name",
-        "LPAR Name",
-        "Source",
-        "CPU (vProc)",
-        "CPU % max",
-        "CPU % avg",
-        "CPU % min",
-        "Memory",
-        "Mem % max",
-        "Mem % avg",
-        "Mem % min",
-        "Disk",
-        "Disk used max (GB)",
-        "Disk used min (GB)",
-        "State",
-        "Availability",
+    spec = [
+        _VmCol("Host Name", lambda r: html.Td(r.get("name"))),
+        _VmCol("LPAR Name", lambda r: html.Td(r.get("lpar_name", "-"))),
+        _VmCol("Source", lambda r: html.Td(r.get("source", "Power HMC")), infra=True),
+        # HMC's ostype, e.g. "Linux - SUSE" — the SUSE licence signal on Power.
+        _VmCol("İşletim Sistemi", _vm_os_td),
+        _VmCol("CPU (vProc)", lambda r: _vm_metric_td(r.get("cpu", 0), decimals=1), numeric=True),
+        _VmCol("CPU % max", lambda r: _vm_metric_td(r.get("cpu_pct_max", 0), suffix="%"), numeric=True),
+        _VmCol("CPU % avg", lambda r: _vm_metric_td(r.get("cpu_pct_avg", 0), suffix="%"), numeric=True),
+        _VmCol("CPU % min", lambda r: _vm_metric_td(r.get("cpu_pct_min", 0), suffix="%"), numeric=True),
+        _VmCol("Memory", _mem_td, numeric=True),
+        _VmCol("Mem % max", lambda r: _vm_metric_td(r.get("mem_pct_max", 0), suffix="%"), numeric=True),
+        _VmCol("Mem % avg", lambda r: _vm_metric_td(r.get("mem_pct_avg", 0), suffix="%"), numeric=True),
+        _VmCol("Mem % min", lambda r: _vm_metric_td(r.get("mem_pct_min", 0), suffix="%"), numeric=True),
+        _VmCol("Disk", _disk_td, numeric=True),
+        _VmCol("Disk used max (GB)", lambda r: _vm_metric_td(r.get("disk_used_max_gb", 0)), numeric=True),
+        _VmCol("Disk used min (GB)", lambda r: _vm_metric_td(r.get("disk_used_min_gb", 0)), numeric=True),
+        _VmCol("State", lambda r: html.Td(r.get("state", "-"))),
+        _VmCol("Availability", lambda r: html.Td(_availability_cell(r.get("name"), vm_outage_counts))),
     ]
-    _power_numeric_cols = frozenset(range(3, 14))
     head_pw = [crm_eff_panel] if crm_eff_panel is not None else []
     return dmc.Stack(
         gap="lg",
@@ -1691,14 +1597,7 @@ def _tab_power(power: dict, vm_outage_counts: dict | None = None, crm_eff_panel:
                 dmc.Stack(
                     gap="md",
                     children=[
-                        _vm_table(
-                            vm_list,
-                            cols,
-                            row_fn,
-                            empty_cols=len(cols),
-                            numeric_col_indices=_power_numeric_cols,
-                            comfortable=True,
-                        ),
+                        _vm_table_from_spec(vm_list, spec, show_infra_columns=show_infra_columns),
                     ],
                 ),
             ),
@@ -2505,8 +2404,13 @@ def _build_virt_content(
     *,
     include_usage_vs_sold: bool,
     deleted_machines: dict | None = None,
+    show_infra_columns: bool = True,
 ) -> html.Div:
     """Nested virtualization tabs; sold-vs-CPU table optional (manager perspective only).
+
+    ``show_infra_columns`` drops the Source / Cluster / Host columns in the customer
+    perspective — which hypervisor and which cluster a guest runs on is Bulutistan's
+    internal topology, not part of what a customer is shown.
 
     A single all-time "Silinen Makineler" panel (3 dates, from the registry) is
     appended below the platform tabs — it spans all platforms, so it is rendered
@@ -2527,6 +2431,7 @@ def _build_virt_content(
                     classic,
                     vm_outage_counts,
                     include_usage_vs_sold=include_usage_vs_sold,
+                    show_infra_columns=show_infra_columns,
                 ),
             )
         )
@@ -2540,6 +2445,7 @@ def _build_virt_content(
                     pure_nx,
                     vm_outage_counts,
                     include_usage_vs_sold=include_usage_vs_sold,
+                    show_infra_columns=show_infra_columns,
                 ),
             )
         )
@@ -2548,7 +2454,9 @@ def _build_virt_content(
             (
                 "pure_nx",
                 "Pure Nutanix (AHV)",
-                _tab_pure_nutanix(pure_nx, vm_outage_counts),
+                _tab_pure_nutanix(
+                    pure_nx, vm_outage_counts, show_infra_columns=show_infra_columns
+                ),
             )
         )
     if show_power_tab:
@@ -2556,7 +2464,9 @@ def _build_virt_content(
             (
                 "power",
                 "Power Mimari",
-                _tab_power(power_asset, vm_outage_counts),
+                _tab_power(
+                    power_asset, vm_outage_counts, show_infra_columns=show_infra_columns
+                ),
             )
         )
 
@@ -2645,15 +2555,33 @@ def _merge_licensed_os_rows(eff_by_cat: list | None, detected_families: dict | N
     return kept
 
 
-def _eff_rows_with_licensed_os(customer_name: str, eff_by_cat: list | None, tr: dict | None = None) -> list:
-    """Best-effort merge of detected licensed-OS counts into eff_by_cat, scoped
-    to the Sold-vs-used panel only. Any failure (empty/raising detected fetch)
-    degrades gracefully to the original rows so Customer View never breaks.
-    tr is passed through so the detected counts respect the selected period
-    (without it the API falls back to the last 7 days — see the licensed_os page fix)."""
+def _detected_families_from_compliance(compliance_payload: dict | None) -> dict[str, int]:
+    """Read the detected guest counts back off the compliance rows.
+
+    They are computed in customer-api from the VM lists this page renders
+    (app/utils/licensed_os.py). Reading them here rather than re-fetching keeps
+    the Billing panel and the summary overusage table on one number — and avoids
+    the datacenter-api per-customer endpoint, which matches a VM *name* against
+    the customer's full CRM legal name and so resolves almost nothing.
+    """
+    out: dict[str, int] = {}
+    for row in ((compliance_payload or {}).get("rows") or []):
+        code = str(row.get("category_code") or "")
+        family = next(
+            (f for f, codes in FAMILY_TO_SOLD_CATEGORIES.items() if code in codes),
+            None,
+        )
+        if family is not None and row.get("detected") is not None:
+            out[family] = int(row.get("detected") or 0)
+    return out
+
+
+def _eff_rows_with_licensed_os(eff_by_cat: list | None, compliance_payload: dict | None = None) -> list:
+    """Merge detected licensed-OS counts into eff_by_cat for the Sold-vs-used
+    panel. Degrades to the original rows if anything is missing, so Customer View
+    never breaks on a partial payload."""
     try:
-        detected_families = api.get_licensed_os_summary(customer=customer_name, tr=tr).get("families", {}) or {}
-        return _merge_licensed_os_rows(eff_by_cat, detected_families)
+        return _merge_licensed_os_rows(eff_by_cat, _detected_families_from_compliance(compliance_payload))
     except Exception:
         return eff_by_cat
 
@@ -2845,6 +2773,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
             "virt": _build_virt_content(
                 classic, hyperconv, pure_nx, power_asset, vm_outage_counts,
                 include_usage_vs_sold=is_mgr,
+                show_infra_columns=is_mgr,
                 deleted_machines=api.get_deleted_machines(name),
             ),
             "avail": avail_panel,
@@ -2864,7 +2793,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
                 s3_data,
                 sales_summary=sales_summary,
                 crm_eff_panel=build_sold_vs_used_stack(
-                    _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(name, eff_by_cat, tr=time_range))
+                    _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(eff_by_cat, compliance_payload))
                 ),
                 customer_name=name,
                 service_breakdown=service_breakdown,
@@ -2939,6 +2868,7 @@ def render_virtualization_tab(name: str, tr: dict | None, perspective: str):
         assets.get("power", {}) or {},
         vm_outage_counts,
         include_usage_vs_sold=(perspective == PERSPECTIVE_MANAGER),
+        show_infra_columns=(perspective == PERSPECTIVE_MANAGER),
         deleted_machines=api.get_deleted_machines(name),
     )
 
@@ -3006,6 +2936,10 @@ def render_billing_tab(name: str, tr: dict | None, project: str | None = ALL_PRO
     totals = resources.get("totals", {}) or {}
     assets = resources.get("assets", {}) or {}
     eff_by_cat = api.get_customer_efficiency_by_category(name, tr)
+    # Carries the detected licensed-guest counts (and is the only entitlement path
+    # hydrated in production — efficiency-by-category filters on statecode 3/4,
+    # which no live order has).
+    compliance_payload = api.get_customer_resource_compliance(name, "virtualization", tr)
     active_orders = api.get_customer_sales_active_orders(name)
     active_items = api.get_customer_sales_active_items(name)
     sales_items = api.get_customer_sales_items(name)
@@ -3024,7 +2958,7 @@ def render_billing_tab(name: str, tr: dict | None, project: str | None = ALL_PRO
         api.get_customer_s3_vaults(name, tr),
         sales_summary=sales_summary,
         crm_eff_panel=build_sold_vs_used_stack(
-            _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(name, eff_by_cat, tr=tr))
+            _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(eff_by_cat, compliance_payload))
         ),
         customer_name=name,
         service_breakdown=api.get_customer_sales_service_breakdown(name),

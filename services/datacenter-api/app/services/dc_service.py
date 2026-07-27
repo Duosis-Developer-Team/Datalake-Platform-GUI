@@ -3631,6 +3631,160 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             return self._empty_os_tally()
         return self._tally_os_rows(rows)
 
+    # ------------------------------------------------------------------
+    # Licensed OS per DC (DC View › Virtualization › Lisanslı OS)
+    # ------------------------------------------------------------------
+
+    #: Panel keys that represent a resold guest-OS licence, per family. Kept in
+    #: step with shared.licensing.reconcile.FAMILY_TO_SOLD_CATEGORIES.
+    _LICENCE_PANEL_BY_FAMILY: dict[str, str] = {
+        "windows": "license_windows_os",
+        "rhel": "license_redhat",
+        "suse": "license_suse",
+    }
+
+    def get_licensed_os_for_dc(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """Detected licensed guests in one DC, split by virtualization architecture,
+        with an estimated CRM sold count attributed to the DC."""
+        from shared.licensing.dc_breakdown import build_dc_breakdown
+
+        dc = (dc_code or "").strip()
+        dc_wc = f"%{dc}%"
+        start_ts, end_ts = self._os_bounds(time_range)
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    vm_rows = self._run_rows(cur, loq.VM_OS_BY_DC, (dc_wc, dc_wc, start_ts, end_ts))
+                    power_rows = self._run_rows(cur, loq.POWER_OS_BY_DC, (dc_wc, start_ts, end_ts))
+                    ahv_count = int(self._run_value(cur, loq.AHV_VM_COUNT_BY_DC, (dc_wc,)) or 0)
+                    dc_tenants = {r[0]: int(r[1] or 0) for r in (self._run_rows(cur, loq.DC_TENANT_VM_COUNTS, (dc_wc,)) or [])}
+                    all_tenants = {r[0]: int(r[1] or 0) for r in (self._run_rows(cur, loq.TENANT_VM_COUNTS_ALL, ()) or [])}
+        except (OperationalError, PoolError) as exc:
+            logger.warning("get_licensed_os_for_dc(%s) failed: %s", dc, exc)
+            return {**build_dc_breakdown([], [], 0), "dc_code": dc, "sold": None}
+
+        payload = build_dc_breakdown(vm_rows, power_rows, ahv_count)
+        payload["dc_code"] = dc
+        payload["sold"] = self._attributed_licences_for_dc(dc_tenants, all_tenants)
+        payload["prices"] = self._licence_unit_prices() if payload["sold"] else {}
+        return payload
+
+    def _licence_unit_prices(self) -> dict[str, float]:
+        """{family -> weighted unit price TL} from what customers actually paid.
+
+        Turns the DC gap into money. A family nobody has ever bought (RHEL, live
+        2026-07-27) has no price and is left out — the UI shows a dash there
+        rather than 0 TL, which would read as "nothing at stake".
+        """
+        webui = getattr(self, "_webui", None)
+        if webui is None or not getattr(webui, "is_available", False):
+            return {}
+        panel_to_family = {v: k for k, v in self._LICENCE_PANEL_BY_FAMILY.items()}
+        try:
+            product_to_family = {
+                str(r.get("productid")): fam
+                for r in (webui.run_rows(crm_q.WEBUI_PRODUCT_PAGE_KEYS, ()) or [])
+                if (fam := panel_to_family.get(str(r.get("page_key") or "")))
+            }
+            if not product_to_family:
+                return {}
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, crm_q.PLATFORM_UNIT_PRICE_BY_PRODUCT, ())
+        except Exception as exc:  # noqa: BLE001 — pricing is best-effort
+            logger.info("licence unit prices unavailable: %s", exc)
+            return {}
+
+        by_family: dict[str, list[float]] = {}
+        for pid, price in rows or []:
+            fam = product_to_family.get(str(pid))
+            if fam and price:
+                by_family.setdefault(fam, []).append(float(price))
+        return {fam: sum(v) / len(v) for fam, v in by_family.items() if v}
+
+    def _attributed_licences_for_dc(
+        self, dc_tenants: dict[str, int], all_tenants: dict[str, int]
+    ) -> dict | None:
+        """CRM licence quantities allocated to this DC by VM footprint share.
+
+        Returns None when the webui mapping tables are unreachable — a DC card
+        that cannot resolve sales must say so, not show a confident zero.
+        """
+        from shared.licensing.dc_breakdown import attribute_licences_to_dc
+
+        webui = getattr(self, "_webui", None)
+        if webui is None or not getattr(webui, "is_available", False) or not dc_tenants:
+            return None
+        try:
+            sold_by_tenant, match_counts = self._sold_licences_by_tenant(webui, list(dc_tenants))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("licensed-os DC sales attribution failed: %s", exc)
+            return None
+        return {
+            "families": attribute_licences_to_dc(dc_tenants, all_tenants, sold_by_tenant),
+            "method": "vm_footprint_share",
+            "tenant_match": match_counts,
+        }
+
+    def _sold_licences_by_tenant(
+        self, webui, tenants: list[str]
+    ) -> tuple[dict[str, dict[str, float]], dict[str, int]]:
+        """({tenant -> {family -> sold qty}}, {match route -> tenant count}).
+
+        The tenant → CRM account hop prefers the operator-maintained alias. That
+        field is filled by hand (the auto resync writes NULL into it), so most
+        tenants have none and an alias-only path would leave this column blank for
+        nearly every customer. Unaliased tenants therefore fall back to name
+        matching — a guess, counted separately so the UI can label it.
+
+        Quantities come from the datalake CRM tables; cross-DB join in Python,
+        same as dc_sales_potential_v2.
+        """
+        from shared.licensing.tenant_match import MATCH_ALIAS, match_tenants_to_accounts
+
+        alias_rows = webui.run_rows(crm_q.WEBUI_ALIAS_ACCOUNTS_WITH_TENANT, (tenants,)) or []
+        alias_by_tenant = {
+            str(r.get("tenant_value") or "").strip().lower(): str(r.get("crm_accountid") or "")
+            for r in alias_rows
+            if r.get("crm_accountid") and r.get("tenant_value")
+        }
+
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                accounts = self._run_rows(cur, crm_q.CRM_PROJECT_ACCOUNTS, ()) or []
+
+        matched = match_tenants_to_accounts(tenants, accounts, alias_by_tenant)
+        if not matched:
+            return {}, {MATCH_ALIAS: 0, "name": 0}
+
+        account_to_tenant = {aid: tenant for tenant, (aid, _how) in matched.items()}
+        match_counts: dict[str, int] = {}
+        for _tenant, (_aid, how) in matched.items():
+            match_counts[how] = match_counts.get(how, 0) + 1
+
+        panel_to_family = {v: k for k, v in self._LICENCE_PANEL_BY_FAMILY.items()}
+        product_to_family: dict[str, str] = {}
+        for r in webui.run_rows(crm_q.WEBUI_PRODUCT_PAGE_KEYS, ()) or []:
+            fam = panel_to_family.get(str(r.get("page_key") or ""))
+            if fam:
+                product_to_family[str(r.get("productid"))] = fam
+        if not product_to_family:
+            return {}, match_counts
+
+        out: dict[str, dict[str, float]] = {}
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                rows = self._run_rows(
+                    cur, crm_q.SOLD_QTY_BY_ACCOUNT_AND_PRODUCT, (list(account_to_tenant),)
+                )
+        for aid, pid, qty in rows or []:
+            fam = product_to_family.get(str(pid))
+            tenant = account_to_tenant.get(str(aid))
+            if not fam or not tenant:
+                continue
+            out.setdefault(tenant, {})[fam] = out.setdefault(tenant, {}).get(fam, 0.0) + float(qty or 0)
+        return out, match_counts
+
     def get_vm_topology(self, with_os: bool = False) -> dict:
         """Deduped DC->Cluster->Host->VM tree from the live NetBox VM snapshot.
         6h cached (the dedup sweep is heavy — never on the request path)."""

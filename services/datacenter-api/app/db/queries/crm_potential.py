@@ -67,6 +67,24 @@ GROUP BY d.productid, d.product_name, COALESCE(NULLIF(TRIM(d.uomid_name), ''), '
 ORDER BY sold_amount_tl DESC NULLS LAST;
 """
 
+# Licensed-OS attribution needs the quantity kept per CRM account (so it can be
+# split across the DCs that account occupies), and uses the entitlement baseline
+# statecode 0,1,3,4 — every order in production currently sits at 0, so the
+# 12-month realized filter above would return nothing. Matches the baseline
+# customer-api /sales/resource-compliance uses (ADR-0016).
+# Params: (accountids[],)
+SOLD_QTY_BY_ACCOUNT_AND_PRODUCT = """
+SELECT so.customerid,
+       d.productid,
+       SUM(d.quantity)::double precision AS sold_qty
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (0, 1, 3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
+GROUP BY so.customerid, d.productid;
+"""
+
 # ---------------------------------------------------------------------------
 # Nutanix capacity proxy per DC name (unchanged).
 # ---------------------------------------------------------------------------
@@ -175,6 +193,24 @@ FROM   gui_crm_customer_alias
 WHERE  lower(trim(coalesce(netbox_musteri_value, ''))) = ANY(%s);
 """
 
+# Same lookup, but keeps the tenant value so the caller can map a CRM account back
+# to the NetBox tenant it came from. Needed when quantities have to be attributed
+# per tenant (licensed-OS DC allocation), not just summed across a DC.
+WEBUI_ALIAS_ACCOUNTS_WITH_TENANT = """
+SELECT crm_accountid,
+       lower(trim(coalesce(netbox_musteri_value, ''))) AS tenant_value
+FROM   gui_crm_customer_alias
+WHERE  lower(trim(coalesce(netbox_musteri_value, ''))) = ANY(%s);
+"""
+
+# productid -> page_key, operator override winning over the generated seed.
+WEBUI_PRODUCT_PAGE_KEYS = """
+SELECT COALESCE(o.productid, s.productid)          AS productid,
+       COALESCE(o.page_key, s.page_key, 'other')   AS page_key
+FROM       gui_crm_service_mapping_seed s
+FULL JOIN  gui_crm_service_mapping_override o ON o.productid = s.productid;
+"""
+
 WEBUI_RESOLVE_ACCOUNTID_BY_DISPLAY_NAME = """
 SELECT crm_accountid,
        crm_account_name
@@ -195,4 +231,45 @@ WHERE  crm_accountid = %s
   AND data_source = 'physical_device'
   AND enabled = TRUE
 ORDER BY priority, id;
+"""
+
+# CRM accounts that have at least one project order — the candidate set for
+# tenant name matching when no manual alias exists.
+CRM_PROJECT_ACCOUNTS = """
+SELECT DISTINCT a.accountid, a.name
+FROM   discovery_crm_accounts a
+JOIN   discovery_crm_salesorders so ON so.customerid = a.accountid
+WHERE  so.ordernumber LIKE 'PRJ-%%'
+  AND  TRIM(COALESCE(a.name, '')) <> '';
+"""
+
+# Weighted unit price per product across every customer, from real orders.
+# discovery_crm_productpricelevels (the catalog) is empty in production, so what
+# people actually paid is the only price source. Live 2026-07-27:
+# MS Windows Lisans 446.63 TL/VM, SUSE Lisans Bedeli 5,238.76 TL.
+# Amounts are converted to TL first. `extendedamount` is stored in the ORDER's
+# currency, and the same product is sold in more than one: MS Windows Lisans has
+# 287 TL lines, 7 USD and 2 EUR (2026-07-27). Summing them raw produced 446.63
+# "TL"; converting via the Dynamics rate (TL = amount / exchangerate) gives the
+# real 471.41 TL. The inner join drops lines whose currency has no active rate —
+# a line we cannot convert must not be averaged in as if it were TL.
+PLATFORM_UNIT_PRICE_BY_PRODUCT = """
+WITH fx AS (
+    SELECT DISTINCT ON (transactioncurrency_text)
+           transactioncurrency_text AS ccy,
+           NULLIF(exchangerate, 0)  AS rate
+    FROM   discovery_crm_pricelevels
+    WHERE  statecode = 0
+    ORDER BY transactioncurrency_text, modifiedon DESC
+)
+SELECT d.productid,
+       (SUM(d.extendedamount / fx.rate) / NULLIF(SUM(d.quantity), 0))::double precision AS unit_price_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+JOIN   fx ON fx.ccy = d.transactioncurrency_text
+WHERE  so.statecode IN (0, 1, 3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
+  AND  d.quantity > 0
+GROUP BY d.productid
+HAVING SUM(d.quantity) > 0;
 """

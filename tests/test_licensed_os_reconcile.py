@@ -5,21 +5,24 @@ def _sold(page_key, qty):
     return {"page_key": page_key, "entitled_qty": qty}
 
 
-def test_windows_aggregates_multiple_categories():
+def test_sold_counts_only_the_os_licence_sku_per_family():
+    """Non-OS Microsoft SKUs and per-VM management services must not add to the
+    Windows total — see tests/test_licensed_os_no_double_count.py for the why."""
     detected = {"rhel": 10, "suse": 2, "windows": 8, "free": 0, "unknown": 0}
     sold_rows = [
         _sold("license_redhat", 4),
         _sold("license_suse", 5),
-        _sold("license_microsoft_spla", 6),
-        _sold("license_microsoft_csp", 1),
-        _sold("mgmt_os_windows", 1),
+        _sold("license_windows_os", 6),
+        _sold("license_microsoft_spla", 200),   # SQL Server 2-core packs
+        _sold("license_microsoft_csp", 91),     # M365 per-user seats
+        _sold("mgmt_os_windows", 6),            # management service on the same VMs
     ]
     rows = {r["family"]: r for r in reconcile(detected, sold_rows)}
     assert rows["rhel"]["detected"] == 10 and rows["rhel"]["sold"] == 4
     assert rows["rhel"]["delta"] == 6          # leakage
     assert rows["suse"]["sold"] == 5 and rows["suse"]["delta"] == -3
-    assert rows["windows"]["sold"] == 8        # 6 + 1 + 1
-    assert rows["windows"]["delta"] == 0
+    assert rows["windows"]["sold"] == 6
+    assert rows["windows"]["delta"] == 2
 
 
 def test_zero_sold_shows_full_detected_as_delta():

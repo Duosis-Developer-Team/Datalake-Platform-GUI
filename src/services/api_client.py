@@ -656,6 +656,41 @@ def get_licensed_os_summary(customer: Optional[str] = None, tr: Optional[dict] =
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_LICENSED_OS)
 
 
+_EMPTY_OS_FAMILIES: dict[str, int] = {"rhel": 0, "suse": 0, "windows": 0, "free": 0, "unknown": 0}
+
+_EMPTY_DC_LICENSED_OS: dict[str, Any] = {
+    "architectures": {
+        "classic": {"instances": 0, "families": dict(_EMPTY_OS_FAMILIES)},
+        "hyperconverged": {"instances": 0, "families": dict(_EMPTY_OS_FAMILIES)},
+        "pure_nutanix": {"instances": 0, "no_os_telemetry": 0},
+        "power": {"instances": 0, "families": dict(_EMPTY_OS_FAMILIES)},
+    },
+    "totals": {
+        "families": dict(_EMPTY_OS_FAMILIES),
+        "families_running": dict(_EMPTY_OS_FAMILIES),
+        "licensed": 0, "instances": 0, "no_os_telemetry": 0,
+    },
+    "unknown_samples": [],
+    "sold": None,
+    "prices": {},
+}
+
+
+def get_dc_licensed_os(dc_id: str, tr: Optional[dict] = None) -> dict:
+    """Per-DC licensed-OS breakdown split by virtualization architecture."""
+    ck = f"api:dc_licensed_os:{dc_id}:{_serialize_tr_cache_key(tr)}"
+
+    def fetch() -> dict:
+        data = _get_json(
+            _get_client_dc(),
+            f"/api/v1/datacenters/{dc_id}/licensed-os",
+            params=_build_time_params(tr),
+        )
+        return data if isinstance(data, dict) else _clone(_EMPTY_DC_LICENSED_OS)
+
+    return _api_cache_get_with_stale(ck, fetch, _EMPTY_DC_LICENSED_OS)
+
+
 _EMPTY_VM_TOPOLOGY: dict[str, Any] = {
     "dcs": [], "totals": {"dcs": 0, "clusters": 0, "hosts": 0, "vms": 0, "running": 0}}
 

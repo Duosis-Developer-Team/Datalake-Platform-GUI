@@ -447,7 +447,11 @@ latest_lpar AS (
         lparname,
         lpar_processor_currentvirtualprocessors,
         lpar_memory_logicalmem / 1.048576 AS memory_gb,
-        lpar_details_state
+        lpar_details_state,
+        -- HMC's own OS label ("Linux - SUSE", "AIX", "Linux", "Unknown"). This is
+        -- the only guest-OS signal Power has, and it carries the platform's largest
+        -- SUSE estate: 300 LPARs report "Linux - SUSE" on 2026-07-27.
+        lpar_details_ostype
     FROM public.ibm_lpar_general
     WHERE lparname ILIKE %s
       AND LEFT(lparname, 1) <> '_'
@@ -499,7 +503,8 @@ SELECT
     COALESCE(zl.disk_total_bytes / 1073741824.0, 0) AS "Disk (GB)",
     ROUND(COALESCE(za.zbx_disk_used_min_gb, 0)::numeric, 2) AS "Disk used min (GB)",
     ROUND(COALESCE(za.zbx_disk_used_max_gb, 0)::numeric, 2) AS "Disk used max (GB)",
-    COALESCE(l.lpar_details_state, '') AS "State"
+    COALESCE(l.lpar_details_state, '') AS "State",
+    l.lpar_details_ostype AS "Guest OS"
 FROM latest_lpar l
 JOIN agg a ON a.lparname = l.lparname
 LEFT JOIN zabbix_latest zl ON zl.ibm_partition_name = l.lparname
@@ -757,7 +762,8 @@ latest AS (
         vmhost,
         number_of_cpus,
         total_memory_capacity_gb,
-        provisioned_space_gb
+        provisioned_space_gb,
+        guest_os
     FROM public.vm_metrics
     WHERE vmname ILIKE %s
       AND cluster ILIKE '%%KM%%'
@@ -781,7 +787,10 @@ SELECT
     ROUND(COALESCE(a.mem_pct_max, 0)::numeric, 2) AS "Mem max pct",
     COALESCE(l.provisioned_space_gb, 0) AS "Disk (GB)",
     ROUND(COALESCE(a.disk_used_min_gb, 0)::numeric, 2) AS "Disk used min (GB)",
-    ROUND(COALESCE(a.disk_used_max_gb, 0)::numeric, 2) AS "Disk used max (GB)"
+    ROUND(COALESCE(a.disk_used_max_gb, 0)::numeric, 2) AS "Disk used max (GB)",
+    -- Every KM VM carries a vm_metrics.guest_os value (2,749 of 2,749, measured
+    -- 2026-07-27), so no NetBox fallback is needed here.
+    l.guest_os AS "Guest OS"
 FROM latest l
 JOIN agg a ON a.vmname = l.vmname
 ORDER BY l.vmname
@@ -907,13 +916,28 @@ vmware_latest AS (
         vmhost,
         number_of_cpus,
         total_memory_capacity_gb,
-        provisioned_space_gb
+        provisioned_space_gb,
+        guest_os
     FROM public.vm_metrics
     WHERE vmname ILIKE %s
       AND cluster NOT ILIKE '%%KM%%'
       AND LEFT(vmname, 1) <> '_'
       AND timestamp BETWEEN %s AND %s
     ORDER BY vmname, timestamp DESC
+),
+-- Guest-OS fallback for VMs vCenter never reports on. nutanix_vm_metrics.guest_os
+-- is NULL across all 371M rows, so Nutanix-only VMs would otherwise be blank:
+-- 5,799 such VMs live on 2026-07-27, of which NetBox names 4,901.
+-- DISTINCT ON collapses the duplicate NetBox records per VM (roughly two each),
+-- preferring the one that actually carries an OS string.
+netbox_os AS (
+    SELECT DISTINCT ON (lower(name))
+        lower(name)                              AS vm_key,
+        NULLIF(btrim(custom_fields_guest_os), '') AS guest_os
+    FROM public.discovery_netbox_virtualization_vm
+    WHERE name ILIKE %s
+    ORDER BY lower(name),
+             (NULLIF(btrim(custom_fields_guest_os), '') IS NOT NULL) DESC
 ),
 nutanix_agg AS (
     SELECT vm_name,
@@ -1000,12 +1024,14 @@ SELECT
     ROUND(
         (CASE WHEN v.vmname IS NOT NULL THEN va.disk_used_max_gb ELSE na.disk_used_max_gb END)::numeric,
         2
-    ) AS "Disk used max (GB)"
+    ) AS "Disk used max (GB)",
+    COALESCE(v.guest_os, nb.guest_os) AS "Guest OS"
 FROM all_unique u
 LEFT JOIN vmware_latest v ON v.vmname = u.vm_name
 LEFT JOIN nutanix_latest n ON n.vm_name = u.vm_name
 LEFT JOIN vmware_agg va ON va.vmname = u.vm_name
 LEFT JOIN nutanix_agg na ON na.vm_name = u.vm_name
+LEFT JOIN netbox_os nb ON nb.vm_key = lower(u.vm_name)
 ORDER BY "Source", "VM Name"
 """
 
@@ -1113,6 +1139,19 @@ latest AS (
       AND nvm.collection_time BETWEEN %s AND %s
       AND nvm.cluster_uuid::text IN (SELECT cluster_uuid FROM cluster_uuids)
     ORDER BY nvm.vm_name, nvm.collection_time DESC
+),
+-- AHV is the platform's guest-OS blind spot: nutanix_vm_metrics.guest_os is NULL
+-- everywhere and NetBox names only 48 of 1,531 AHV VMs (measured 2026-07-27).
+-- The join is kept anyway so the few that ARE named are not thrown away; the rest
+-- surface honestly as unknown.
+netbox_os AS (
+    SELECT DISTINCT ON (lower(name))
+        lower(name)                              AS vm_key,
+        NULLIF(btrim(custom_fields_guest_os), '') AS guest_os
+    FROM public.discovery_netbox_virtualization_vm
+    WHERE name ILIKE %s
+    ORDER BY lower(name),
+             (NULLIF(btrim(custom_fields_guest_os), '') IS NOT NULL) DESC
 )
 SELECT
     l.vm_name AS "VM Name",
@@ -1128,10 +1167,12 @@ SELECT
     ROUND(COALESCE(a.mem_pct_max, 0)::numeric, 2) AS "Mem max pct",
     COALESCE(l.disk_gb, 0) AS "Disk (GB)",
     ROUND(COALESCE(a.disk_used_min_gb, 0)::numeric, 2) AS "Disk used min (GB)",
-    ROUND(COALESCE(a.disk_used_max_gb, 0)::numeric, 2) AS "Disk used max (GB)"
+    ROUND(COALESCE(a.disk_used_max_gb, 0)::numeric, 2) AS "Disk used max (GB)",
+    nb.guest_os AS "Guest OS"
 FROM latest l
 JOIN agg a ON a.vm_name = l.vm_name
 JOIN cluster_uuids cu ON l.cluster_uuid::text = cu.cluster_uuid
+LEFT JOIN netbox_os nb ON nb.vm_key = lower(l.vm_name)
 ORDER BY "VM Name"
 """
 

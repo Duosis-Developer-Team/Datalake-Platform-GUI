@@ -108,3 +108,35 @@ def test_one_row_card_with_detected_renders_detected_value():
     assert "RHEL Lisans" in text
     assert "Detected" in text
     assert "10" in text
+
+
+def test_detected_counts_are_read_off_the_compliance_rows():
+    """The Billing panel used to call the datacenter-api per-customer endpoint,
+    which matches a VM *name* against the customer's full CRM legal name and so
+    resolved almost nothing (GAMA ENERJİ A.Ş. -> 0 guests). The counts now come
+    from the compliance payload, computed in customer-api from the very VM lists
+    this page renders — so the Billing panel and the summary overusage table can
+    never show different numbers."""
+    from src.pages.customer_view import _detected_families_from_compliance
+
+    payload = {"rows": [
+        {"category_code": "license_windows_os", "detected": 15, "entitled_qty": 10},
+        {"category_code": "license_suse", "detected": 300, "entitled_qty": 6},
+        {"category_code": "virt_classic_cpu", "used_qty": 40},
+    ]}
+    assert _detected_families_from_compliance(payload) == {"windows": 15, "suse": 300}
+
+
+def test_detected_counts_tolerate_a_missing_or_empty_payload():
+    from src.pages.customer_view import _detected_families_from_compliance
+
+    assert _detected_families_from_compliance(None) == {}
+    assert _detected_families_from_compliance({}) == {}
+    assert _detected_families_from_compliance({"rows": []}) == {}
+
+
+def test_merge_falls_back_to_the_original_rows_when_nothing_was_detected():
+    from src.pages.customer_view import _eff_rows_with_licensed_os
+
+    rows = [{"category_code": "firewall_fortigate", "entitled_qty": 2, "used_qty": 2}]
+    assert _eff_rows_with_licensed_os(rows, None) == rows

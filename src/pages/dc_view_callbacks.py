@@ -320,3 +320,21 @@ def _update_nutanix_snapshot_table(search, prev_n, next_n, refresh_n,
     pages = max(1, -(-total // _NUTANIX_PAGE_SIZE))
     page = min(page, pages)
     return _nutanix_snapshot_table(payload.get("items", [])), f"{page} / {pages}", page
+
+
+@callback(
+    Output("dc-licensed-os-body", "children"),
+    Input("dc-licensed-os-scope", "value"),
+    State("dc-licensed-os-payload", "data"),
+    prevent_initial_call=True,
+)
+def _switch_licensed_os_scope(scope, payload):
+    """Swap the Lisanslı OS panel between all guests and powered-on only.
+
+    Both tallies are already in the Store, so this re-renders without touching
+    the API — the scope switch must not cost a round trip on a tab that already
+    waited for a DC-wide query.
+    """
+    from src.pages.dc_view import build_licensed_os_body
+
+    return build_licensed_os_body(payload or {}, scope or "all")
