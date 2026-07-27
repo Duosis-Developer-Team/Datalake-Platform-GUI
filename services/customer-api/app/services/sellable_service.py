@@ -266,12 +266,18 @@ _POWER_HANA_INFRA_ALIASES: dict[str, str] = {
 }
 
 from app.db.queries import sellable as sq
+from app.utils.licensed_os_inventory import (
+    LICENCE_OS_PANEL_FAMILIES,
+    detected_total_for_panel,
+    power_os_tally as _power_os_tally,
+)
 from app.services.crm_config_service import CrmConfigService
 from app.services.currency_service import CurrencyService
 from app.services.customer_service import CustomerService
 from app.services.tagging_service import TaggingService, build_metric_key
 from app.services.webui_db import WebuiPool
 from shared.colocation import occupancy as coloc_occ
+from shared.licensing import os_sql
 from shared.sellable.computation import (
     annotate_panel_constraint_metadata,
     apply_storage_ratio_cap,
@@ -1114,6 +1120,40 @@ SELECT _tot, _alloc FROM latest
         allocated = float(sum(int(r.get("used_u") or 0) for r in rows))
         return total, allocated
 
+    def _query_licensed_os_totals(self, src, dc_code: str) -> tuple[float, float]:
+        """Detected guest count backing a licence / OS-management panel.
+
+        Guests come from NetBox, not vm_metrics: this row claims to be a platform
+        total, and vm_metrics only sees what vCenter manages. Measured 2026-07-27,
+        Windows reads 4,956 through vm_metrics against 8,057 through NetBox — the
+        gap is the Nutanix-only estate. Power has no NetBox presence, so LPARs
+        still come from the HMC table.
+
+        total == allocated on purpose: a Windows licence can only ever be sold to
+        a Windows guest, so there is no headroom to report. What the row is for is
+        the CRM-sold column sitting next to a real Used number instead of a dash.
+        """
+        from shared.licensing.os_source import tally_families
+
+        pattern = self._dc_pattern(dc_code) or "%"
+        start_ts, end_ts = time_range_to_bounds(default_time_range())
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(os_sql.VM_OS_NETBOX_BY_CLUSTER, (pattern,))
+                    vm_rows = cur.fetchall() or []
+                    cur.execute(os_sql.POWER_OS_BY_DC, (pattern, start_ts, end_ts))
+                    power_rows = cur.fetchall() or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("licensed-OS totals query failed for %s: %s", src.panel_key, exc)
+            return 0.0, 0.0
+
+        vm_tally = tally_families(r[0] for r in vm_rows)
+        power_tally = _power_os_tally(r[1] for r in power_rows)
+        detected = detected_total_for_panel(src.panel_key, vm_tally, power_tally)
+        value = float(detected or 0)
+        return value, value
+
     def get_netbackup_inventory_metrics(self) -> dict[str, float]:
         """Global NetBackup pool capacity (DC-api path), physical free, jobs dedup (7d)."""
         zero = {
@@ -1181,6 +1221,8 @@ SELECT _tot, _alloc FROM latest
             return self._query_netbackup_storage_totals(src, dc_code)
         if src.panel_key == "dc_hosting_u":
             return self._query_colocation_totals(src, dc_code)
+        if src.panel_key in LICENCE_OS_PANEL_FAMILIES:
+            return self._query_licensed_os_totals(src, dc_code)
 
         payload = preloaded_dc_payload
         if payload is None and self._infra_uses_dc_redis_payload(src):

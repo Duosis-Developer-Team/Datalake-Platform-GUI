@@ -16,6 +16,7 @@ from app.services.crm_config_service import CrmConfigService
 from app.services.sales_service import SalesService
 from app.services.sellable_service import SellableService
 from app.services.webui_db import WebuiPool
+from app.utils.licensed_os_inventory import LICENCE_OS_PANEL_FAMILIES
 from app.utils.usage_comparison import (
     aggregate_entitled_by_panel_key,
     merge_entitled_for_inventory_panel,
@@ -435,6 +436,12 @@ def _assess_data_quality(
     total = float(panel.total or 0.0)
     allocated = float(panel.allocated or 0.0)
     crm = float(crm_sold or 0.0)
+    # Licence panels compare a sold quantity with a detected guest count. Selling
+    # more licences than there are guests is over-licensing — a real commercial
+    # position, not a unit mismatch — so the "check units" suspicion does not
+    # apply. total == allocated there by construction, so neither does the other.
+    if panel.panel_key in LICENCE_OS_PANEL_FAMILIES:
+        return None, None
     if panel.family not in _INVENTORY_VIRT_FAMILIES and allocated > total > 0:
         return "suspect", "used_exceeds_total"
     if crm > total > 0 and panel.family not in _INVENTORY_VIRT_FAMILIES:

@@ -11,6 +11,7 @@
 # returned so the tally can split running vs all; vCLS/system VMs are excluded in
 # Python (_tally_os_rows). Classification: shared.licensing.os_classifier.
 
+from shared.licensing.os_sql import POWER_OS_BY_DC, VM_OS_BY_DC  # noqa: F401  (re-exported)
 from shared.topology.vm_topology import VM_OS_DEDUP_KEY_SQL
 
 # Params: none
@@ -51,33 +52,6 @@ ORDER BY {VM_OS_DEDUP_KEY_SQL}, (status_value = 'poweredOn') DESC
 # (`cluster ILIKE '%KM%'`), and its guest_os column is written on every row.
 # NetBox knows more VMs but its site_name is city-level (ISTANBUL/ANKARA), which
 # cannot answer "how many licensed guests in DC13".
-
-# Params: (dc_wildcard, start_ts, end_ts)
-VM_OS_BY_DC = """
-SELECT DISTINCT ON (vmname)
-    cluster,
-    vmname,
-    guest_os
-FROM public.vm_metrics
-WHERE datacenter ILIKE %s
-  AND LEFT(vmname, 1) <> '_'
-  AND "timestamp" BETWEEN %s AND %s
-ORDER BY vmname, "timestamp" DESC
-"""
-
-# Params: (dc_wildcard, start_ts, end_ts)
-# Power's only guest-OS signal. Values seen live: 'Linux - SUSE' (300 LPARs),
-# 'Linux', 'AIX', 'AIX/Linux', 'Unknown'.
-POWER_OS_BY_DC = """
-SELECT DISTINCT ON (lparname)
-    lparname,
-    lpar_details_ostype
-FROM public.ibm_lpar_general
-WHERE lpar_details_servername LIKE %s
-  AND LEFT(lparname, 1) <> '_'
-  AND time BETWEEN %s AND %s
-ORDER BY lparname, time DESC
-"""
 
 # Params: (dc_wildcard,)
 # Pure-Nutanix guests carry no OS in any source, so they are reported as an
