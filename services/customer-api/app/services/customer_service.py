@@ -545,6 +545,7 @@ class CustomerService:
     def _load_unmapped_resources(self, start, end) -> dict:
         from app.db.queries import unmapped as uq
         from shared.customer.unmapped_classifier import (
+            account_ids_from_rows,
             account_keys_from_names,
             build_unmapped_payload,
             owner_matchers_from_mappings,
@@ -560,12 +561,10 @@ class CustomerService:
                 if name:
                     names_with_platform.append((name, platform))
 
-        account_names = [
-            str(r.get("name") or "").strip()
-            for r in self._run_query(uq.CRM_ACCOUNT_NAMES, ())
-            if r.get("name")
-        ]
+        account_rows = [r for r in self._run_query(uq.CRM_ACCOUNT_NAMES, ()) if r.get("name")]
+        account_names = [str(r.get("name") or "").strip() for r in account_rows]
         account_keys = account_keys_from_names(account_names)
+        account_ids = account_ids_from_rows(account_rows)
 
         # Ownership = every VM mapping rule (flattened from the per-account index)
         # unioned with each customer's display-name fallback (safe over-claim).
@@ -573,7 +572,9 @@ class CustomerService:
         mapping_rows = [row for rows in mapping_index.values() for row in rows]
         owners = owner_matchers_from_mappings(mapping_rows, display_names=account_names)
 
-        return build_unmapped_payload(names_with_platform, owners, account_keys)
+        return build_unmapped_payload(
+            names_with_platform, owners, account_keys, account_ids=account_ids
+        )
 
     def refresh_deleted_vm_registry(self) -> dict:
         """Rebuild gui_deleted_vm_registry from an all-time metric scan (scheduler).

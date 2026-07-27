@@ -11,7 +11,7 @@ from shared.customer.unmapped_classifier import (
     account_keys_from_names,
     build_unmapped_payload,
     classify_unmapped,
-    guess_owner,
+    guess_owner_key,
     norm,
     owner_matchers_from_mappings,
 )
@@ -39,21 +39,26 @@ class TestGuessOwner(unittest.TestCase):
             "denemekredi": "Deneme Kredi",
         }
 
+    def _owner(self, name, keys=None):
+        """Display name for a guess — the shape the assertions below read best."""
+        k = guess_owner_key(name, keys if keys is not None else self.keys)
+        return (keys if keys is not None else self.keys)[k] if k else None
+
     def test_dash_prefix_exact(self):
-        self.assertEqual(guess_owner("Ornek_Kilit-AppServer01", self.keys), "Örnek Kilit A.Ş.")
+        self.assertEqual(self._owner("Ornek_Kilit-AppServer01"), "Örnek Kilit A.Ş.")
 
     def test_turkish_folded_prefix(self):
         # VM prefix is a short form of a longer legal name -> fuzzy match
-        self.assertEqual(guess_owner("deneme_Kozmetik-Sophos", self.keys),
+        self.assertEqual(self._owner("deneme_Kozmetik-Sophos"),
                          "DENEME KOZMETİK SANAYİ VE TİCARET A.Ş.")
 
     def test_no_dash_startswith_account(self):
         # underscore-joined, no dash: still recognizably the same account
-        self.assertEqual(guess_owner("Deneme_Kredi_LOG_Server", self.keys), "Deneme Kredi")
+        self.assertEqual(self._owner("Deneme_Kredi_LOG_Server"), "Deneme Kredi")
 
     def test_unknown_prefix_returns_none(self):
-        self.assertIsNone(guess_owner("123host", self.keys))
-        self.assertIsNone(guess_owner("342test", self.keys))
+        self.assertIsNone(self._owner("123host"))
+        self.assertIsNone(self._owner("342test"))
 
 
 class TestClassifyUnmapped(unittest.TestCase):
@@ -138,7 +143,7 @@ class TestBuilders(unittest.TestCase):
 
     def test_account_keys_legal_suffix_stays_in_key(self):
         # Real-world: "A.Ş." folds into the key, so exact-prefix match won't fire
-        # and guess_owner's fuzzy path does the work instead.
+        # and guess_owner_key's fuzzy path does the work instead.
         keys = account_keys_from_names(["Örnek Kilit A.Ş."])
         self.assertIn("ornekkilitas", keys)
         self.assertNotIn("ornekkilit", keys)
@@ -206,6 +211,74 @@ class TestIdExactIsNotBroadenedToContains(unittest.TestCase):
         matchers = owner_matchers_from_mappings(rows, display_names=[])
         self.assertEqual(len(matchers), 1)
         self.assertTrue(matchers[0].matches("deneme-vm01"))
+
+
+def test_guess_owner_key_returns_the_matching_key_not_the_display_name():
+    """Hesap kimliğini bulabilmek için eşleşen anahtar gerekir, görünen ad yetmez."""
+    from shared.customer.unmapped_classifier import guess_owner_key
+
+    keys = {"abrakenerjielektrikuretimanonimsirketi": "ABRAK ENERJİ ELEKTRİK ÜRETİM ANONİM ŞİRKETİ"}
+
+    assert guess_owner_key("Abrak_Enerji-Sophos", keys) == "abrakenerjielektrikuretimanonimsirketi"
+    assert guess_owner_key("123host", keys) is None
+
+
+def test_alias_suggestion_is_the_prefix_before_the_first_dash():
+    """Buton, ekranda görünen satır grubunu bağlar — daha genişini değil."""
+    from shared.customer.unmapped_classifier import alias_suggestion
+
+    assert alias_suggestion("Ada_Gross_Cloud-Appsrv_Restored_20_05_2026") == "Ada_Gross_Cloud"
+    assert alias_suggestion("Abrak_Enerji-Sophos") == "Abrak_Enerji"
+    # Tiresiz ad: prefix tüm addır, kural tek makineyi bağlar. Uydurulmuş bir
+    # kesme noktasıyla bilinmeyen sayıda makine bağlamaktan iyidir.
+    assert alias_suggestion("Deneme_Kredi_LOG_Server") == "Deneme_Kredi_LOG_Server"
+    assert alias_suggestion("  Padded-Vm  ") == "Padded"
+
+
+def test_payload_rows_carry_account_id_and_alias_suggestion():
+    from shared.customer.unmapped_classifier import (
+        account_ids_from_rows,
+        account_keys_from_names,
+        build_unmapped_payload,
+    )
+
+    accounts = [{"name": "ADA GROSS", "accountid": "acc-ada-1"}]
+    keys = account_keys_from_names([a["name"] for a in accounts])
+    ids = account_ids_from_rows(accounts)
+
+    payload = build_unmapped_payload(
+        [("Ada_Gross_Cloud-Oracledb", "vmware"), ("123host", "vmware")],
+        owners=[],
+        account_keys=keys,
+        account_ids=ids,
+    )
+    by_name = {r["name"]: r for r in payload["rows"]}
+
+    gap = by_name["Ada_Gross_Cloud-Oracledb"]
+    assert gap["reason"] == "alias_gap"
+    assert gap["guessed_owner"] == "ADA GROSS"
+    assert gap["guessed_owner_id"] == "acc-ada-1"
+    assert gap["suggested_alias"] == "Ada_Gross_Cloud"
+    assert gap["suggested_method"] == "prefix"
+
+    orphan = by_name["123host"]
+    assert orphan["reason"] == "orphan"
+    assert orphan["guessed_owner_id"] is None
+    assert orphan["suggested_alias"] is None
+
+
+def test_account_ids_are_optional_so_existing_callers_keep_working():
+    from shared.customer.unmapped_classifier import account_keys_from_names, build_unmapped_payload
+
+    payload = build_unmapped_payload(
+        [("Ada_Gross-Db", "vmware")],
+        owners=[],
+        account_keys=account_keys_from_names(["ADA GROSS"]),
+    )
+    row = payload["rows"][0]
+    assert row["guessed_owner"] == "ADA GROSS"
+    assert row["guessed_owner_id"] is None
+    assert row["suggested_alias"] == "Ada_Gross"
 
 
 if __name__ == "__main__":

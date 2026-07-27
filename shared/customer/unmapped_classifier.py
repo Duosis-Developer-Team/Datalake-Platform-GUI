@@ -70,6 +70,8 @@ class UnmappedRow:
     name: str
     guessed_owner: str | None
     reason: str  # 'alias_gap' | 'orphan'
+    guessed_owner_id: str | None = None
+    suggested_alias: str | None = None
 
 
 def is_system_vm(name: str, system_prefixes: Sequence[str] = DEFAULT_SYSTEM_PREFIXES) -> bool:
@@ -77,14 +79,17 @@ def is_system_vm(name: str, system_prefixes: Sequence[str] = DEFAULT_SYSTEM_PREF
     return any(nl.startswith(p) for p in system_prefixes)
 
 
-def guess_owner(name: str, account_keys: Mapping[str, str]) -> str | None:
-    """Best-effort owner for an unmatched name, using fuzzy account-name keys.
+def guess_owner_key(name: str, account_keys: Mapping[str, str]) -> str | None:
+    """Best-effort *account key* for an unmatched name.
 
     1. Exact key match on the prefix before the first '-' (strong: the
        ``<Customer>-<VMname>`` convention).
     2. Fallback for dash-less names: the longest account key that the folded
        full name starts with (handles ``Deneme_Kredi_LOG_Server``).
-    Returns the account display name, or ``None`` if nothing plausible.
+
+    Returns the folded key, or ``None``. The *key* is returned rather than the
+    display name because callers need it to look up the CRM account id too;
+    the display name is one lookup away via ``account_keys[key]``.
     """
     raw = (name or "").strip()
     if not raw:
@@ -96,7 +101,7 @@ def guess_owner(name: str, account_keys: Mapping[str, str]) -> str | None:
     if not pkey and not full:
         return None
     if pkey and pkey in account_keys:  # strong: exact <Customer>-... convention
-        return account_keys[pkey]
+        return pkey
 
     # Fuzzy, longest-key-wins, in both directions:
     #   dir A: account key sits at the start of the VM name  (Deneme_Kredi_LOG_Server)
@@ -108,7 +113,23 @@ def guess_owner(name: str, account_keys: Mapping[str, str]) -> str | None:
             continue
         if full.startswith(k) or (pkey_usable and k.startswith(pkey)):
             best_key = k
-    return account_keys[best_key] if best_key else None
+    return best_key or None
+
+
+def alias_suggestion(name: str) -> str | None:
+    """The alias value the one-click action writes: the prefix before the first '-'.
+
+    Deliberately narrow. Widening it to the *matched account key* would bind
+    machines the operator cannot see on screen; widening a rule later from the
+    aliases page is cheaper than discovering an over-claiming one.
+
+    A dash-less name yields the whole name, so the rule binds exactly that one
+    machine — better than inventing a cut point.
+    """
+    raw = (name or "").strip()
+    if not raw:
+        return None
+    return raw.split("-", 1)[0] if "-" in raw else raw
 
 
 # data_source keys whose rules claim VM names (Phase 1 scope).
@@ -160,11 +181,31 @@ def account_keys_from_names(names: Iterable[str]) -> dict[str, str]:
     return keys
 
 
+def account_ids_from_rows(rows: Iterable[Mapping[str, object]]) -> dict[str, str]:
+    """norm(account_name) -> crm accountid, first-writer-wins.
+
+    Kept parallel to account_keys_from_names() rather than merged into it: the
+    22 existing classifier tests build key maps from bare name lists, and the
+    SQL path has callers that never select accountid.
+    """
+    ids: dict[str, str] = {}
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        accountid = str(row.get("accountid") or "").strip()
+        if not name or not accountid:
+            continue
+        k = norm(name)
+        if k and k not in ids:
+            ids[k] = accountid
+    return ids
+
+
 def build_unmapped_payload(
     names_with_platform: Iterable[tuple[str, str]],
     owners: Sequence[OwnerMatcher],
     account_keys: Mapping[str, str],
     system_prefixes: Sequence[str] = DEFAULT_SYSTEM_PREFIXES,
+    account_ids: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Full response payload: sorted rows (+platform) and reason counts.
 
@@ -176,13 +217,19 @@ def build_unmapped_payload(
         if name and name not in name_platform:
             name_platform[name] = platform or ""
 
-    classified = classify_unmapped(name_platform.keys(), owners, account_keys, system_prefixes)
+    classified = classify_unmapped(
+        name_platform.keys(), owners, account_keys, system_prefixes, account_ids
+    )
     rows = [
         {
             "name": r.name,
             "platform": name_platform.get(r.name, ""),
             "guessed_owner": r.guessed_owner,
+            "guessed_owner_id": r.guessed_owner_id,
+            "suggested_alias": r.suggested_alias,
+            "suggested_method": "prefix" if r.suggested_alias else None,
             "reason": r.reason,
+            "kind": "vm",
         }
         for r in classified
     ]
@@ -204,11 +251,13 @@ def classify_unmapped(
     owners: Sequence[OwnerMatcher],
     account_keys: Mapping[str, str],
     system_prefixes: Sequence[str] = DEFAULT_SYSTEM_PREFIXES,
+    account_ids: Mapping[str, str] | None = None,
 ) -> list[UnmappedRow]:
     """Return one row per name owned by nobody (system VMs excluded, not returned).
 
     Order preserved; duplicates preserved (caller de-dupes names upstream).
     """
+    ids = account_ids or {}
     rows: list[UnmappedRow] = []
     for name in names:
         if not name or not name.strip() or not norm(name):
@@ -218,10 +267,12 @@ def classify_unmapped(
         name_lower = name.strip().lower()
         if any(m.matches(name_lower) for m in owners):
             continue
-        owner = guess_owner(name, account_keys)
+        key = guess_owner_key(name, account_keys)
         rows.append(UnmappedRow(
             name=name,
-            guessed_owner=owner,
-            reason="alias_gap" if owner else "orphan",
+            guessed_owner=account_keys[key] if key else None,
+            reason="alias_gap" if key else "orphan",
+            guessed_owner_id=ids.get(key) if key else None,
+            suggested_alias=alias_suggestion(name) if key else None,
         ))
     return rows

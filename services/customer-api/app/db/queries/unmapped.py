@@ -23,9 +23,10 @@ WHERE collection_time BETWEEN %s AND %s
   AND LEFT(vm_name, 1) <> '_'
 """
 
-# All CRM account display names (for fuzzy alias-gap owner guessing).
+# All CRM accounts (for fuzzy alias-gap owner guessing + the one-click alias
+# action, which needs the accountid to address the save endpoint).
 CRM_ACCOUNT_NAMES = """
-SELECT DISTINCT name
+SELECT DISTINCT name, accountid
 FROM public.discovery_crm_accounts
 WHERE name IS NOT NULL AND btrim(name) <> ''
 """
