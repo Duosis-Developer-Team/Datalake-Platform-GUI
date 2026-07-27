@@ -140,3 +140,46 @@ def test_merge_falls_back_to_the_original_rows_when_nothing_was_detected():
 
     rows = [{"category_code": "firewall_fortigate", "entitled_qty": 2, "used_qty": 2}]
     assert _eff_rows_with_licensed_os(rows, None) == rows
+
+
+def test_billing_panel_uses_the_priced_compliance_rows_verbatim():
+    """The Billing panel re-derived its licence rows from a family tally, so they
+    lost the fields the summary table shows — the same SUSE gap read
+    "288,131.93 TL" on the summary and "Est. loss: –" on Billing. One fact
+    priced on one page and unpriced on another is a bug, not a view difference."""
+    from src.pages.customer_view import _eff_rows_with_licensed_os
+
+    compliance = {"rows": [
+        {"category_code": "license_suse", "category_label": "SUSE Lisans",
+         "resource_unit": "Adet", "entitled_qty": 0, "used_qty": 55, "detected": 55,
+         "overage_qty": 55, "overage_loss_tl": 288131.93, "status": "unsold_usage",
+         "gui_tab_binding": "licensing.os"},
+    ]}
+    out = _eff_rows_with_licensed_os([], compliance)
+    suse = next(r for r in out if r.get("category_code") == "license_suse")
+    assert suse["overage_loss_tl"] == 288131.93
+    assert suse["resource_unit"] == "Adet"
+    assert suse["status"] == "unsold_usage"
+
+
+def test_raw_licence_rows_are_not_shown_twice():
+    from src.pages.customer_view import _eff_rows_with_licensed_os
+
+    compliance = {"rows": [
+        {"category_code": "license_windows_os", "category_label": "Windows Lisans",
+         "resource_unit": "per VM", "entitled_qty": 10, "used_qty": 15, "detected": 15,
+         "overage_qty": 5, "overage_loss_tl": 2357.05, "status": "over",
+         "gui_tab_binding": "licensing.os"},
+    ]}
+    eff = [{"category_code": "license_windows_os", "entitled_qty": 10, "used_qty": 0}]
+    out = _eff_rows_with_licensed_os(eff, compliance)
+    assert sum(1 for r in out if r.get("category_code") == "license_windows_os") == 1
+    assert out[0]["overage_loss_tl"] == 2357.05
+
+
+def test_unrelated_rows_survive_untouched():
+    from src.pages.customer_view import _eff_rows_with_licensed_os
+
+    fw = {"category_code": "firewall_fortigate", "entitled_qty": 2, "used_qty": 2}
+    out = _eff_rows_with_licensed_os([fw], {"rows": []})
+    assert fw in out

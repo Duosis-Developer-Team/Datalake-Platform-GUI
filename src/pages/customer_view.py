@@ -2576,12 +2576,40 @@ def _detected_families_from_compliance(compliance_payload: dict | None) -> dict[
     return out
 
 
+def _licence_rows_from_compliance(compliance_payload: dict | None) -> list:
+    """The licence rows customer-api already built, taken as they are.
+
+    They arrive fully formed — quantity, unit, status, and the priced overage —
+    so re-deriving a row shape here is how the two pages drifted: the same SUSE
+    gap read "288,131.93 TL" on the summary and "Est. loss: –" on Billing,
+    because the re-derived row never carried a price.
+    """
+    codes = {m for codes in FAMILY_TO_SOLD_CATEGORIES.values() for m in codes}
+    return [
+        r for r in ((compliance_payload or {}).get("rows") or [])
+        if str(r.get("category_code") or "") in codes
+    ]
+
+
 def _eff_rows_with_licensed_os(eff_by_cat: list | None, compliance_payload: dict | None = None) -> list:
-    """Merge detected licensed-OS counts into eff_by_cat for the Sold-vs-used
-    panel. Degrades to the original rows if anything is missing, so Customer View
-    never breaks on a partial payload."""
+    """eff_by_cat with the licence rows replaced by the priced compliance ones.
+
+    Degrades to the original rows if anything is missing, so Customer View never
+    breaks on a partial payload.
+    """
     try:
-        return _merge_licensed_os_rows(eff_by_cat, _detected_families_from_compliance(compliance_payload))
+        licence_rows = _licence_rows_from_compliance(compliance_payload)
+        if not licence_rows:
+            # Nothing to substitute: fall back to the family-tally synthesis so a
+            # customer with no compliance payload still sees the detected counts.
+            return _merge_licensed_os_rows(
+                eff_by_cat, _detected_families_from_compliance(compliance_payload)
+            )
+        kept = [
+            r for r in (eff_by_cat or [])
+            if str(r.get("category_code") or r.get("page_key") or "") not in _LICENSE_CATEGORY_CODES
+        ]
+        return licence_rows + kept
     except Exception:
         return eff_by_cat
 
