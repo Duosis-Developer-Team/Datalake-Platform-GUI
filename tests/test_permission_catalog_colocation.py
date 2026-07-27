@@ -41,3 +41,28 @@ def test_colocation_section_registered():
     assert colocation_section.name == "Colocation"
     assert colocation_section.resource_type == "section"
     assert colocation_section.sort_order == 75
+
+
+def _find(nodes, code):
+    """PermissionNode is a dataclass with .code / .children — not a dict."""
+    for n in nodes:
+        if n.code == code:
+            return n
+        found = _find(n.children or [], code)
+        if found:
+            return found
+    return None
+
+
+def test_colocation_is_a_child_of_physical_inventory():
+    phys = _find(build_default_permission_roots(), "sec:dc_view:phys_inv")
+
+    assert phys is not None
+    child_codes = [c.code for c in (phys.children or [])]
+    assert "sub:dc_view:phys_inv:colocation" in child_codes
+    assert "sub:dc_view:phys_inv:overview" in child_codes
+
+
+def test_legacy_colocation_section_code_is_retained_for_migration():
+    # Principals granted the old section code must not lose access silently.
+    assert _find(build_default_permission_roots(), "sec:dc_view:colocation") is not None

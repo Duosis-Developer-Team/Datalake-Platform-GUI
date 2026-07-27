@@ -2395,10 +2395,11 @@ def _build_physical_inventory_dc_tab(phys_inv: dict):
     # Horizontal stacked bar: Y=role, X=count, color=manufacturer
     rm_filtered = list(by_rm)
     if not rm_filtered:
+        rm_height = 300
         fig_rm = go.Figure()
         fig_rm.update_layout(
             margin=dict(l=20, r=20, t=30, b=40),
-            height=300,
+            height=rm_height,
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             annotations=[dict(text="No role/manufacturer data", x=0.5, y=0.5, showarrow=False, font=dict(size=14))],
@@ -2602,6 +2603,39 @@ def build_colocation_tab(coloc: dict):
             html.Div(style={"overflowX": "auto"}, children=internal_table),
         ]),
     ])
+
+
+def _build_phys_inv_tab_content(phys_inv, coloc, *, show_overview: bool, show_colo: bool):
+    """Physical Inventory tab body: Overview + Colocation nested tabs.
+
+    Mirrors the Virtualization / Backup nested-tab shape already used in this
+    module, so no new UI mechanism is introduced.
+    """
+    order = [("phys-overview", show_overview), ("phys-colo", show_colo)]
+    default_tab = next((t for t, ok in order if ok), "phys-overview")
+    return dmc.Tabs(
+        id="phys-inv-nested-tabs",
+        color="violet",
+        variant="outline",
+        radius="md",
+        value=default_tab,
+        children=[
+            dmc.TabsList(children=[
+                dmc.TabsTab("Overview", value="phys-overview") if show_overview else None,
+                dmc.TabsTab("Colocation", value="phys-colo") if show_colo else None,
+            ]),
+            dmc.TabsPanel(
+                value="phys-overview",
+                children=dmc.Stack(gap="lg", style={"paddingTop": "12px"},
+                                   children=[_build_physical_inventory_dc_tab(phys_inv)]),
+            ) if show_overview else None,
+            dmc.TabsPanel(
+                value="phys-colo",
+                children=dmc.Stack(gap="lg", style={"paddingTop": "12px"},
+                                   children=[build_colocation_tab(coloc)]),
+            ) if show_colo else None,
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -5480,12 +5514,17 @@ def build_dc_view(
     show_phys = has_phys_inv and _sec("sec:dc_view:phys_inv")
     show_network = has_network and _sec("sec:dc_view:network")
     show_avail = has_avail and _sec("sec:dc_view:availability")
-    show_colo = _sec("sec:dc_view:colocation")
+    # Colocation moved under Physical Inventory. Accept the new sub-section key OR
+    # the legacy section key, so principals granted the old key keep access.
+    show_colo = _sec("sub:dc_view:phys_inv:colocation") or _sec("sec:dc_view:colocation")
+    show_phys_overview = _sec("sub:dc_view:phys_inv:overview") or _sec("sec:dc_view:phys_inv")
+    # The parent tab appears when either child is visible.
+    show_phys = (show_phys and show_phys_overview) or show_colo
     if eager_tabs is not None:
         show_virt = _sec("sec:dc_view:virtualization")
         show_storage = _sec("sec:dc_view:storage")
         show_backup = _sec("sec:dc_view:backup")
-        show_phys = _sec("sec:dc_view:phys_inv")
+        show_phys = _sec("sec:dc_view:phys_inv") or show_colo
         show_network = _sec("sec:dc_view:network")
 
     tabs_order = [
@@ -5496,7 +5535,6 @@ def build_dc_view(
         ("phys-inv", show_phys),
         ("network", show_network),
         ("avail", show_avail),
-        ("colo", show_colo),
     ]
     default_outer_tab = next((t for t, ok in tabs_order if ok), "summary")
     resolved_outer_tab = _resolve_outer_tab(active_outer_tab, tabs_order, default_outer_tab)
@@ -5588,7 +5626,6 @@ def build_dc_view(
                             dmc.TabsTab("Physical Inventory", value="phys-inv") if show_phys else None,
                             dmc.TabsTab("Network", value="network") if show_network else None,
                             dmc.TabsTab("Availability", value="avail") if show_avail else None,
-                            dmc.TabsTab("Colocation", value="colo") if show_colo else None,
                         ],
                     ),
                 ),
@@ -5765,7 +5802,12 @@ def build_dc_view(
                             children=dmc.Stack(
                                 gap="lg",
                                 style={"padding": "0 30px"},
-                                children=[_build_physical_inventory_dc_tab(phys_inv)],
+                                children=[_build_phys_inv_tab_content(
+                                    phys_inv,
+                                    api.get_colocation(dc_id) if show_colo else {},
+                                    show_overview=show_phys_overview,
+                                    show_colo=show_colo,
+                                )],
                             ),
                         )
                     ),
@@ -5842,23 +5884,6 @@ def build_dc_view(
                 )
                 if show_avail
                 else None,
-
-                # Colocation (dedicated-customer rack footprint)
-                dmc.TabsPanel(
-                    value="colo",
-                    children=(
-                        _tab_lazy_placeholder("colo", dc_display)
-                        if not _tab_eager(eager_tabs, "colo")
-                        else html.Div(
-                            id="dc-tab-colo-root",
-                            children=dmc.Stack(
-                                gap="lg",
-                                style={"padding": "0 30px"},
-                                children=[build_colocation_tab(api.get_colocation(dc_id))],
-                            ),
-                        )
-                    ),
-                ) if show_colo else None,
             ],
         )
     ])
@@ -5900,7 +5925,6 @@ def render_dc_loading_page(
         ("phys-inv", _sec("sec:dc_view:phys_inv")),
         ("network", _sec("sec:dc_view:network")),
         ("avail", _sec("sec:dc_view:availability")),
-        ("colo", _sec("sec:dc_view:colocation")),
     ]
     default_tab = "summary" if show_summary else "virt"
     resolved_tab = _resolve_outer_tab(active_outer_tab, tabs_order, default_tab)
@@ -5912,7 +5936,6 @@ def render_dc_loading_page(
         dmc.TabsTab("Physical Inventory", value="phys-inv") if _sec("sec:dc_view:phys_inv") else None,
         dmc.TabsTab("Network", value="network") if _sec("sec:dc_view:network") else None,
         dmc.TabsTab("Availability", value="avail") if _sec("sec:dc_view:availability") else None,
-        dmc.TabsTab("Colocation", value="colo") if _sec("sec:dc_view:colocation") else None,
     ]
     loc_badge = dc_loc or "Loading…"
     shell_tab = resolved_tab if resolved_tab == "summary" else "summary"

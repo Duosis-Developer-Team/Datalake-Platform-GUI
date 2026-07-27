@@ -138,7 +138,16 @@ def build_default_permission_roots() -> list[PermissionNode]:
                             _n("sub:dc_view:backup:nutanix", "Nutanix", "sub_section"),
                         ],
                     ),
-                    _n("sec:dc_view:phys_inv", "Physical Inventory", "section", sort_order=50),
+                    _n(
+                        "sec:dc_view:phys_inv",
+                        "Physical Inventory",
+                        "section",
+                        sort_order=50,
+                        children=[
+                            _n("sub:dc_view:phys_inv:overview", "Overview", "sub_section"),
+                            _n("sub:dc_view:phys_inv:colocation", "Colocation", "sub_section"),
+                        ],
+                    ),
                     _n(
                         "sec:dc_view:network",
                         "Network",
