@@ -160,6 +160,7 @@ _log.info("APP_BUILD_ID=%s", APP_BUILD_ID)
 got_request_exception.connect(_log_dash_callback_mismatch, server)
 from src.pages import home, datacenters, dc_view, customer_view, customers_list, query_explorer, global_view, region_drilldown, dc_detail
 from src.pages import unmapped_resources
+from src.pages import unmapped_resources_callbacks  # noqa: F401 — unmapped one-click alias action
 from src.pages import customer_view_callbacks  # noqa: F401 — async customer view load
 from src.pages import dc_view_callbacks  # noqa: F401 — async DC view load + tab expand
 from src.pages import availability_annual  # noqa: F401 — annual availability layout + callbacks

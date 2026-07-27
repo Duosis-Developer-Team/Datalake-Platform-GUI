@@ -7,8 +7,13 @@ from unittest.mock import patch
 _PAYLOAD = {
     "rows": [
         {"name": "Acme_Kilit-Web01", "guessed_owner": "Örnek Kilit A.Ş.",
-         "platform": "Nutanix", "reason": "alias_gap"},
-        {"name": "123host", "guessed_owner": None, "platform": "VMware", "reason": "orphan"},
+         "platform": "Nutanix", "reason": "alias_gap", "kind": "vm",
+         "guessed_owner_id": "acc-1", "suggested_alias": "Acme_Kilit",
+         "suggested_method": "prefix"},
+        {"name": "123host", "guessed_owner": None, "platform": "VMware",
+         "reason": "orphan", "kind": "vm",
+         "guessed_owner_id": None, "suggested_alias": None,
+         "suggested_method": None},
     ],
     "total": 2,
     "alias_gap_count": 1,
@@ -50,3 +55,30 @@ def test_page_renders_when_the_backend_is_down():
         out = str(page.build_layout({"preset": "7d"}))
     assert "Müşterilere dön" in out
     assert "Toplam eşleşmeyen" in out
+
+
+def test_alias_gap_rows_offer_an_action_and_orphans_do_not():
+    """Sahipsiz satırda bağlanacak müşteri yok; işlem hücresi boş kalır."""
+    from src.pages.unmapped_resources import ACTION_LABEL, _table_rows
+
+    rows = _table_rows(_PAYLOAD["rows"])
+    by_name = {r["name"]: r for r in rows}
+
+    assert by_name["Acme_Kilit-Web01"]["action"] == ACTION_LABEL
+    assert by_name["123host"]["action"] == ""
+
+
+def test_table_rows_carry_a_stable_key_for_the_click_handler():
+    """active_cell yalnızca satır indeksi verir; sıralama/filtre sonrası indeks kayar."""
+    from src.pages.unmapped_resources import _table_rows
+
+    rows = _table_rows(_PAYLOAD["rows"])
+    assert rows[0]["row_key"] == "vm::Acme_Kilit-Web01"
+    assert rows[1]["row_key"] == "vm::123host"
+
+
+def test_hint_links_to_customer_aliases_not_internal_aliases():
+    """İç Alias yalnızca INTERNAL rezerve hesabı içindir; müşteri alias'ı oraya yazılmaz."""
+    out = _render()
+    assert "/settings/integrations/crm/internal-aliases" not in out
+    assert "crm-aliases" in out or "crm/aliases" in out

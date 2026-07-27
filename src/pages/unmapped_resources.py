@@ -19,7 +19,36 @@ ACCOUNT_NAME = "Eşleşmeyen Veriler"
 _REASON_LABEL = {"alias_gap": "Alias eksik", "orphan": "Sahipsiz"}
 _PLATFORM_LABEL = {"vmware": "VMware", "nutanix": "Nutanix"}
 
-_TABLE_ID = "unmapped-vm-table"
+ACTION_LABEL = "Alias ekle"
+# Canonical route from src/pages/settings/shell.py:85 (ADMIN_PREFIX =
+# "/administration"). The hint previously pointed at
+# /settings/integrations/crm/internal-aliases, which is both the wrong page
+# and the wrong prefix.
+CUSTOMER_ALIASES_HREF = "/administration/integrations/crm/aliases"
+
+BODY_ID = "unmapped-body"
+TOAST_ID = "unmapped-toast"
+STORE_ID = "unmapped-store"
+
+
+def table_id(kind: str) -> dict[str, str]:
+    """Pattern-matching id so one callback serves every source tab."""
+    return {"type": "unmapped-table", "kind": kind}
+
+
+def find_payload_row(store: dict, row_key: str | None) -> dict | None:
+    """Resolve a clicked table row back to its full payload row.
+
+    Matched on row_key rather than viewport index: active_cell reports the
+    index within the current page of a sorted/filtered view, which does not
+    address the payload.
+    """
+    if not row_key:
+        return None
+    for r in (store or {}).get("rows") or []:
+        if f"{r.get('kind') or 'vm'}::{r.get('name') or ''}" == row_key:
+            return r
+    return None
 
 
 def _kpi(label: str, value, icon: str, accent: str) -> dmc.Paper:
@@ -48,28 +77,25 @@ def _kpi(label: str, value, icon: str, accent: str) -> dmc.Paper:
 def _table_rows(rows: list[dict]) -> list[dict]:
     out: list[dict] = []
     for r in rows:
+        kind = r.get("kind") or "vm"
+        actionable = bool(r.get("reason") == "alias_gap" and r.get("guessed_owner_id")
+                          and r.get("suggested_alias"))
         out.append({
+            # active_cell reports a viewport row index, which moves as soon as
+            # the operator sorts or filters. The click handler resolves the row
+            # through this key instead.
+            "row_key": f"{kind}::{r.get('name') or ''}",
             "guessed_owner": r.get("guessed_owner") or "—",
             "name": r.get("name") or "",
             "platform": _PLATFORM_LABEL.get(r.get("platform"), r.get("platform") or ""),
             "reason": _REASON_LABEL.get(r.get("reason"), r.get("reason") or ""),
+            "action": ACTION_LABEL if actionable else "",
         })
     return out
 
 
-def build_layout(tr: dict | None = None, visible_sections=None) -> html.Div:
-    tr = tr or default_time_range()
-    try:
-        data = api.get_unmapped_resources(tr)
-    except Exception:
-        data = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0}
-
-    rows = data.get("rows") or []
-    total = int(data.get("total") or 0)
-    alias_gap = int(data.get("alias_gap_count") or 0)
-    orphan = int(data.get("orphan_count") or 0)
-
-    header = dmc.Group(justify="space-between", align="center", mb="xs", children=[
+def _header() -> dmc.Group:
+    return dmc.Group(justify="space-between", align="center", mb="xs", children=[
         dmc.Group(gap="sm", children=[
             dmc.ThemeIcon(DashIconify(icon="solar:link-broken-bold-duotone", width=26),
                           size=46, radius="md", variant="light", color="gray"),
@@ -94,31 +120,63 @@ def build_layout(tr: dict | None = None, visible_sections=None) -> html.Div:
         ),
     ])
 
+
+def _hint() -> dmc.Alert:
+    return dmc.Alert(
+        color="blue", variant="light", mb="md",
+        title="Alias eksik olanlar bir iş listesidir",
+        children=[
+            "‘Alias eksik’ satırlar aslında gerçek bir müşterinin makineleridir; adı "
+            "eşleşmediği için sahipsiz görünürler. ‘İŞLEM’ sütunundaki ‘Alias ekle’ "
+            "bağlantısı kuralı tek tıkla ekler; elle düzenlemek için ",
+            dcc.Link("Ayarlar › CRM › Müşteri Alias", href=CUSTOMER_ALIASES_HREF),
+            " ekranını kullanın.",
+        ],
+    )
+
+
+def build_layout(tr: dict | None = None, visible_sections=None) -> html.Div:
+    tr = tr or default_time_range()
+    return html.Div(style={"padding": "8px 4px"}, children=[
+        _header(),
+        html.Div(id=TOAST_ID),
+        html.Div(id=BODY_ID, children=build_body(tr)),
+    ])
+
+
+def build_body(tr: dict | None = None) -> list:
+    """KPIs, hint and tables — re-rendered after a successful alias write."""
+    tr = tr or default_time_range()
+    try:
+        data = api.get_unmapped_resources(tr)
+    except Exception:
+        data = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0}
+
+    rows = data.get("rows") or []
+    total = int(data.get("total") or 0)
+    alias_gap = int(data.get("alias_gap_count") or 0)
+    orphan = int(data.get("orphan_count") or 0)
+
     kpis = dmc.SimpleGrid(cols={"base": 1, "sm": 3}, spacing="md", mb="md", children=[
         _kpi("Toplam eşleşmeyen", total, "solar:server-square-bold-duotone", "#4318FF"),
         _kpi("Alias eksik (düzeltilebilir)", alias_gap, "solar:pen-new-square-bold-duotone", "#FFB547"),
         _kpi("Sahipsiz", orphan, "solar:ghost-bold-duotone", "#A3AED0"),
     ])
 
-    hint = dmc.Alert(
-        color="blue", variant="light", mb="md",
-        title="Alias eksik olanlar bir iş listesidir",
-        children=[
-            "‘Alias eksik’ satırlar aslında gerçek bir müşterinin makineleridir; adı "
-            "eşleşmediği için sahipsiz görünürler. ‘Tahmini sahip’ sütunundaki müşteri için ",
-            dcc.Link("Ayarlar › CRM › İç Alias", href="/settings/integrations/crm/internal-aliases"),
-            " ekranından bir eşleştirme kuralı eklendiğinde makine o müşteriye bağlanır.",
-        ],
-    )
-
     tabs = dmc.Tabs(value="virt", children=[
         dmc.TabsList([
             dmc.TabsTab("Sanallaştırma", value="virt"),
         ]),
-        dmc.TabsPanel(value="virt", pt="md", children=_vm_table(rows)),
+        dmc.TabsPanel(value="virt", pt="md",
+                      children=_vm_table([r for r in rows if (r.get("kind") or "vm") == "vm"])),
     ])
 
-    return html.Div(style={"padding": "8px 4px"}, children=[header, kpis, hint, tabs])
+    return [
+        dcc.Store(id=STORE_ID, data={"rows": rows, "time_range": tr}),
+        kpis,
+        _hint(),
+        tabs,
+    ]
 
 
 def _vm_table(rows: list[dict]) -> html.Div:
@@ -133,14 +191,16 @@ def _vm_table(rows: list[dict]) -> html.Div:
                  "Amber satırlar alias eklenerek bir müşteriye bağlanabilir.",
                  size="xs", c="#A3AED0", mb="sm"),
         dash_table.DataTable(
-            id=_TABLE_ID,
+            id=table_id("vm"),
             data=_table_rows(rows),
             columns=[
                 {"name": "TAHMİNİ SAHİP", "id": "guessed_owner"},
                 {"name": "MAKİNE ADI", "id": "name"},
                 {"name": "PLATFORM", "id": "platform"},
                 {"name": "NEDEN", "id": "reason"},
+                {"name": "İŞLEM", "id": "action"},
             ],
+            hidden_columns=["row_key"],
             page_size=25,
             filter_action="native",
             sort_action="native",
@@ -160,6 +220,12 @@ def _vm_table(rows: list[dict]) -> html.Div:
                 {"if": {"column_id": "guessed_owner"}, "color": "#707EAE"},
             ],
             style_data_conditional=[
+                # The cell IS the button: DataTable cannot host a component, and
+                # replacing the table with html.Table would cost the native
+                # column filtering and sorting this page advertises above.
+                {"if": {"column_id": "action", "filter_query": f"{{action}} = '{ACTION_LABEL}'"},
+                 "color": "#4318FF", "fontWeight": "700", "cursor": "pointer",
+                 "textDecoration": "underline"},
                 {"if": {"filter_query": "{reason} = 'Alias eksik'"},
                  "backgroundColor": "rgba(255,181,71,0.07)"},
                 {"if": {"filter_query": "{reason} = 'Alias eksik'", "column_id": "reason"},
