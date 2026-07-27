@@ -202,3 +202,66 @@ def test_internal_prefixes_consulted_once_per_get_colocation_call():
         svc.get_colocation("DC13")
 
     assert prefixes_mock.call_count == 1
+
+
+def _service_with_price(price):
+    customer = MagicMock()
+    conn = MagicMock()
+    customer._get_connection.return_value.__enter__.return_value = conn
+    webui = MagicMock()
+    webui.is_available = False
+    svc = ColocationMatchingService(customer_service=customer, webui=webui)
+    return svc, price
+
+
+def test_payload_carries_unit_price_and_potential():
+    svc, price = _service_with_price(10430.84)
+
+    with patch("app.services.colocation_matching_service.occupancy_rows", return_value=_rows()), \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows", return_value=_tenant_rows()), \
+         patch("app.services.colocation_matching_service.used_u_breakdown", return_value={}), \
+         patch("app.services.colocation_matching_service.resolve_colocation_unit_price",
+               return_value=(price, "crm")):
+        payload = svc.get_colocation("DC13")
+
+    agg = payload["aggregate"]
+    assert agg["unit_price_tl"] == price
+    assert agg["price_source"] == "crm"
+    assert agg["free_u_potential_tl"] == agg["free_u"] * price
+    assert agg["used_u_potential_tl"] == agg["used_u"] * price
+
+    boyner = next(c for c in payload["customers"] if c["tenant"] == "Boyner")
+    assert boyner["potential_tl"] == boyner["used_u"] * price
+
+
+def test_payload_potential_is_none_when_price_unresolved():
+    svc, _ = _service_with_price(None)
+
+    with patch("app.services.colocation_matching_service.occupancy_rows", return_value=_rows()), \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows", return_value=_tenant_rows()), \
+         patch("app.services.colocation_matching_service.used_u_breakdown", return_value={}), \
+         patch("app.services.colocation_matching_service.resolve_colocation_unit_price",
+               return_value=(None, "unavailable")):
+        payload = svc.get_colocation("DC13")
+
+    agg = payload["aggregate"]
+    assert agg["unit_price_tl"] is None
+    assert agg["price_source"] == "unavailable"
+    assert agg["free_u_potential_tl"] is None
+    assert all(c["potential_tl"] is None for c in payload["customers"])
+    assert all(r["potential_tl"] is None for r in payload["internal"])
+
+
+def test_internal_rows_also_carry_potential():
+    svc, price = _service_with_price(1000.0)
+
+    with patch("app.services.colocation_matching_service.occupancy_rows", return_value=_rows()), \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows", return_value=_tenant_rows()), \
+         patch("app.services.colocation_matching_service.used_u_breakdown", return_value={}), \
+         patch("app.services.colocation_matching_service.resolve_colocation_unit_price",
+               return_value=(price, "override")):
+        payload = svc.get_colocation("DC13")
+
+    assert payload["internal"]
+    for r in payload["internal"]:
+        assert r["potential_tl"] == r["used_u"] * price

@@ -13,6 +13,10 @@ from shared.colocation.occupancy import (
 )
 from shared.colocation.matching import build_customer_footprint, build_internal_footprint
 from app.db.queries import service_mapping as sm
+from app.services.colocation_price_service import (
+    potential_tl,
+    resolve_colocation_unit_price,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +90,8 @@ class ColocationMatchingService:
         rows: list = []
         tenant_rows: list = []
         breakdown: dict = {}
+        unit_price: float | None = None
+        price_source = "unavailable"
         try:
             with self._svc._get_connection() as conn:
                 with conn.cursor() as cur:
@@ -94,11 +100,16 @@ class ColocationMatchingService:
                     breakdown = used_u_breakdown(
                         cur, dc_pattern=pattern, internal_prefixes=internal_prefixes
                     )
+                    unit_price, price_source = resolve_colocation_unit_price(
+                        cur, self._webui
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.error("colocation occupancy query failed for %s: %s", dc_code, exc)
             rows = []
             tenant_rows = []
             breakdown = {}
+            unit_price = None
+            price_source = "unavailable"
         agg_by_dc = aggregate_by_dc(rows)
         aggregate = {"total_u": 0, "used_u": 0, "free_u": 0, "rack_count": 0}
         for a in agg_by_dc.values():
@@ -109,6 +120,10 @@ class ColocationMatchingService:
             "internal_u": int(breakdown.get("internal_u") or 0),
             "untagged_u": int(breakdown.get("untagged_u") or 0),
             "external_customer_count": int(breakdown.get("external_customer_count") or 0),
+            "unit_price_tl": unit_price,
+            "price_source": price_source,
+            "free_u_potential_tl": potential_tl(aggregate["free_u"], unit_price),
+            "used_u_potential_tl": potential_tl(aggregate["used_u"], unit_price),
         })
         customers = build_customer_footprint(
             tenant_rows, self._alias_index(), internal_prefixes=internal_prefixes
@@ -116,4 +131,8 @@ class ColocationMatchingService:
         internal = build_internal_footprint(
             tenant_rows, internal_prefixes=internal_prefixes
         )
+        for row in customers:
+            row["potential_tl"] = potential_tl(row.get("used_u"), unit_price)
+        for row in internal:
+            row["potential_tl"] = potential_tl(row.get("used_u"), unit_price)
         return {"aggregate": aggregate, "customers": customers, "internal": internal, "racks": rows}
