@@ -144,7 +144,8 @@ def reset_dc_active_tab_on_dc_change(pathname, prev_dc_id):
     Output("dc-tab-phys-inv-root", "children", allow_duplicate=True),
     Output("dc-tab-network-root", "children", allow_duplicate=True),
     Output("dc-tab-avail-root", "children", allow_duplicate=True),
-    Output("dc-tab-colo-root", "children", allow_duplicate=True),
+    # One Output per _LAZY_TAB_KEYS entry, in the same order — see the comment
+    # on that tuple. Do not add one here without adding the key there.
     Output("dc-view-loaded-tabs", "data", allow_duplicate=True),
     Output("backup-panels-ready", "data", allow_duplicate=True),
     Input("dc-main-tabs", "value"),

@@ -9,8 +9,31 @@ from src.pages import dc_view
 from src.pages.dc_view import _LAZY_TAB_KEYS, build_colocation_tab, _find_component_by_id
 
 
-def test_colo_is_a_registered_lazy_tab():
-    assert "colo" in _LAZY_TAB_KEYS
+def test_colo_is_no_longer_a_lazy_tab():
+    """Colocation is a Physical Inventory sub-tab, not a value of dc-main-tabs.
+
+    Leaving "colo" here while dc-tab-colo-root was no longer rendered anywhere
+    made Dash fail to apply the whole lazy-load callback response client-side:
+    every tab hung on "Loading tab content..." with no server-side error.
+    """
+    assert "colo" not in _LAZY_TAB_KEYS
+
+
+def test_lazy_tab_keys_and_callback_outputs_stay_in_sync():
+    """expand_dc_view_on_tab indexes its update list against _LAZY_TAB_KEYS and
+    declares one Output per entry, positionally. If the two ever disagree, tabs
+    silently stop loading — the failure is client-side, so no test that only
+    exercises the server would catch it."""
+    import re
+    from pathlib import Path
+
+    src = Path("src/pages/dc_view_callbacks.py").read_text()
+    block = src.split("def expand_dc_view_on_tab")[0]
+    roots = re.findall(r'Output\("dc-tab-([a-z-]+)-root", "children"', block)
+
+    assert roots == list(_LAZY_TAB_KEYS), (
+        f"callback Outputs {roots} != _LAZY_TAB_KEYS {list(_LAZY_TAB_KEYS)}"
+    )
 
 
 def test_build_colocation_tab_renders_kpis_and_customers():

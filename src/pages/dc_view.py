@@ -5405,7 +5405,17 @@ def _build_ibm_storage_subtab(storage_capacity: dict, storage_performance: dict)
 _BUILD_LOG = logging.getLogger(__name__)
 
 _SUMMARY_EAGER_TABS = frozenset({"summary"})
-_LAZY_TAB_KEYS: tuple[str, ...] = ("virt", "backup", "storage", "phys-inv", "network", "avail", "colo")
+# Order is load-bearing: expand_dc_view_on_tab builds its update list by index
+# against this tuple, and dc_view_callbacks declares one Output per entry in the
+# same order. Adding or removing a key here REQUIRES the matching Output change
+# in that callback, or the two go out of sync by position.
+#
+# "colo" was removed when Colocation moved under Physical Inventory as a nested
+# sub-tab: it stopped being a value of dc-main-tabs, so dc-tab-colo-root is no
+# longer rendered in any state. Leaving the Output pointing at a component that
+# never exists made Dash fail to apply the whole callback response client-side —
+# every lazy tab hung on "Loading tab content..." with no server-side error.
+_LAZY_TAB_KEYS: tuple[str, ...] = ("virt", "backup", "storage", "phys-inv", "network", "avail")
 
 
 def _find_component_by_id(component, target_id: str):
