@@ -1,0 +1,149 @@
+Sheet rows: 172
+Matched:    33 customers
+Not found:  137 customers
+Ambiguous:  2 customers
+
+No CRM account for these sheet names:
+  - Affinitybox
+  - Ağaç Aş
+  - Akasya Maden
+  - Aksular
+  - alternacx
+  - Arabam.com
+  - Infina-arkas
+  - Avrora
+  - axata
+  - aygün medikal
+  - Azmusebat
+  - BackUp
+  - Bayegan
+  - Bizim Toptan
+  - Bony Çorap
+  - Brus
+  - Çağrı Market
+  - Çapa Medikal
+  - Çelebi Holding
+  - Ceyza AVM
+  - codexsan
+  - cs-smart message
+  - Cits
+  - çimsa
+  - Çizmeci Time
+  - cloud expert
+  - comind
+  - cozmopol
+  - cs aktek
+  - dagtech
+  - Demirören
+  - Deni
+  - dias portföy
+  - Doğadan
+  - Dsciene
+  - ECS elektrik
+  - Ekol Lojistik
+  - Emaa Sigorta
+  - english home
+  - Engin LTD
+  - Eren Perakende
+  - Felece
+  - fr_dc
+  - forte milsoft
+  - Fuddy Kurye
+  - Gateway holding
+  - Gama Holding
+  - Gezginler Alemi
+  - Güler Gümrük
+  - Gürsel Turizm
+  - Hasel
+  - hd holding
+  - henka
+  - Indorama
+  - Interzoon
+  - istanbul telekom
+  - İste Gelsin
+  - Joe the juice
+  - johnsons&johnsons
+  - Kale Clamp
+  - Kale Holding
+  - Kale Kilit
+  - Kaplanlar
+  - KLV İnşaat
+  - Kosifler
+  - Kuçükoğlu Holding
+  - Lastikcim
+  - lesaffre
+  - makine takım
+  - Marubeni Dağıtım
+  - Mavi
+  - Memorial
+  - Menderes Tekstil
+  - Metamin
+  - Milangaz
+  - Milhans
+  - Mobiltel
+  - Modern Ambalaj
+  - Movu
+  - Musixen
+  - murr elektronik
+  - My Medikal
+  - Nef
+  - Nmq
+  - nova packaging
+  - novator
+  - Norm Digital
+  - offline kasa
+  - Ozak Global
+  - Polisan
+  - Proj-e
+  - Pros
+  - Reds
+  - Rönesans Holding
+  - Scotty
+  - Semak Makine
+  - Serim Bilgisayar
+  - Shotton
+  - Simfer
+  - Sisal Şans
+  - Soz Teks
+  - Spro
+  - Tab İlaç
+  - temsa
+  - teknosa
+  - This is cober
+  - Thos
+  - Togg
+  - Tosyalı Angola
+  - Tota
+  - Toyz Shop
+  - Tübitak
+  - Türev Yazılım
+  - Türkiye İhracatçılar Meclisi
+  - Turk Onay
+  - Turkon
+  - Univera Nestle
+  - uludağ içecek
+  - Uget
+  - Valensas
+  - V-Count
+  - Vefa İlaç
+  - Vektora
+  - Veyseloğlu
+  - Warmhause
+  - Yataş
+  - Yedas
+  - yemekpos
+  - Yılgenci
+  - Yk
+  - Yontem bilisim
+  - Zen Pırlanta
+  - Zorlu Enerji
+  - Zorlu Holding
+  - Zorlu İstanbul
+  - Zorlu Manisa
+  - Zorlu Tekstil
+
+These sheet names match more than one CRM account (pick one by hand):
+  - Arikan: ARIKAN MAĞAZACILIK A.Ş., ARIKAN SAAT ANONİM ŞİRKETİ
+  - consulta: CONSULTA SERBEST MUHASEBECİLİK MALİ MÜŞAVİRLİK VE BAĞIMSIZ DENETİM ANONİM ŞİRKETİ, CONSULTA YEMİNLİ MALİ MÜŞAVİRLİK ANONİM ŞİRKETİ, CONSULTA YÖNETİM VE TEKNOLOJİ DANIŞMANLIĞI ANONİM ŞİRKETİ, CONSULTA İŞ VE SOSYAL GÜVENLİK MEVZUATI DANIŞMANLIK HİZMETLERİ ANONİM ŞİRKETİ
+
+Dry run — nothing written. Re-run with --apply to seed.
