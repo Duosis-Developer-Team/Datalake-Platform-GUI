@@ -55,8 +55,7 @@ def build_colocation_summary(aggregate: dict, customer_count: int | None = None)
     unit_price = agg.get("unit_price_tl")
     price_source = agg.get("price_source") or "unavailable"
     if unit_price is None:
-        price_tip = ("Colocation unit price unavailable — no operator override and no "
-                     "CRM price level for the per-U product. Shown as — rather than 0.")
+        price_tip = "Colocation unit price unavailable. Shown as — rather than 0."
     else:
         origin = {"override": "operator override",
                   "crm": "CRM price list"}.get(price_source, price_source)

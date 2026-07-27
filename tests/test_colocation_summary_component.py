@@ -69,9 +69,40 @@ def test_free_u_potential_tile_renders_dash_when_price_unresolved():
     assert "Free U Potential" in texts
     assert "—" in texts
     assert "0 TL" not in texts
+    assert any("Colocation unit price unavailable" in t for t in texts)
+    assert any("Shown as — rather than 0" in t for t in texts)
 
 
 def test_free_u_potential_tile_absent_keys_do_not_crash():
     texts = _texts(build_colocation_summary({"total_u": 10, "used_u": 4, "free_u": 6}))
 
     assert "Free U Potential" in texts
+
+
+def test_free_u_potential_tooltip_names_crm_price_source():
+    agg = {"total_u": 100, "used_u": 50, "free_u": 50, "rack_count": 2,
+           "free_u_potential_tl": 50 * 100.0, "unit_price_tl": 100.0,
+           "price_source": "crm"}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert any("100.00 TL per U" in t and "CRM price list" in t for t in texts)
+
+
+def test_free_u_potential_tooltip_names_override_price_source():
+    agg = {"total_u": 100, "used_u": 50, "free_u": 50, "rack_count": 2,
+           "free_u_potential_tl": 50 * 100.0, "unit_price_tl": 100.0,
+           "price_source": "override"}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert any("100.00 TL per U" in t and "operator override" in t for t in texts)
+
+
+def test_free_u_potential_tooltip_unresolved_explanation():
+    agg = {"total_u": 100, "used_u": 50, "free_u": 50, "rack_count": 2,
+           "free_u_potential_tl": None, "unit_price_tl": None}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert any("Colocation unit price unavailable" in t for t in texts)
