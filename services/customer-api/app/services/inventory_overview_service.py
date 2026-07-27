@@ -72,6 +72,20 @@ _INVENTORY_CRM_VISIBLE_FAMILIES: frozenset[str] = frozenset({
     "backup_netbackup",
 })
 
+# Families rendered nowhere on /crm/inventory-overview. virt_power shares the
+# same IBM Power infrastructure as virt_power_hana (see sellable_service:261),
+# so showing both reads the underlying capacity twice. Filtered from the panel
+# list before families AND summary are built, so the table and the KPI cards
+# can never disagree about what is on the page.
+_INVENTORY_HIDDEN_FAMILIES: frozenset[str] = frozenset({"virt_power"})
+
+
+def _drop_hidden_families(panel_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        r for r in panel_rows
+        if str(r.get("family") or "") not in _INVENTORY_HIDDEN_FAMILIES
+    ]
+
 
 def _humanize_token(value: str) -> str:
     return (value or "").replace("_", " ").replace(".", " ").strip().title()
@@ -1153,6 +1167,7 @@ class InventoryOverviewService:
             panel_rows.append(row)
             crm_only_panels.append(row)
 
+        panel_rows = _drop_hidden_families(panel_rows)
         panel_rows.sort(key=lambda r: (-float(r.get("crm_sold_tl") or 0), r.get("service_label") or ""))
 
         families_map: dict[str, list[dict[str, Any]]] = defaultdict(list)

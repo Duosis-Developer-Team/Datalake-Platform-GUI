@@ -502,7 +502,14 @@ def test_compute_inventory_overview_merges_panels(inventory_svc):
 
 
 def test_global_inventory_aggregates_per_dc_infra():
-    """dc_code='*' should sum total/used per DC for non-host-dual families."""
+    """dc_code='*' should sum total/used per DC for non-host-dual families.
+
+    Uses virt_power_hana (not virt_power) as the example alloc-only family:
+    virt_power is hidden from /crm/inventory-overview (see
+    _INVENTORY_HIDDEN_FAMILIES), but both families share the same
+    aggregation code path via _ALLOC_ONLY_FAMILIES, so this still exercises
+    the per-DC SUM logic under test.
+    """
     sellable = MagicMock()
     sellable.is_available = True
 
@@ -513,9 +520,9 @@ def test_global_inventory_aggregates_per_dc_infra():
         if dc_code == "ANK":
             return [
                 _panel(
-                    panel_key="virt_power_cpu",
-                    label="Power CPU",
-                    family="virt_power",
+                    panel_key="virt_power_hana_cpu",
+                    label="Power HANA CPU",
+                    family="virt_power_hana",
                     resource_kind="cpu",
                     display_unit="Core",
                     total=100.0,
@@ -529,9 +536,9 @@ def test_global_inventory_aggregates_per_dc_infra():
         if dc_code == "IST":
             return [
                 _panel(
-                    panel_key="virt_power_cpu",
-                    label="Power CPU",
-                    family="virt_power",
+                    panel_key="virt_power_hana_cpu",
+                    label="Power HANA CPU",
+                    family="virt_power_hana",
                     resource_kind="cpu",
                     display_unit="Core",
                     total=50.0,
@@ -565,7 +572,7 @@ def test_global_inventory_aggregates_per_dc_infra():
         if "!= ALL" in sql
         else [{
             "productid": "p-cpu",
-            "product_name": "Power CPU",
+            "product_name": "Power HANA CPU",
             "resource_unit": "Core",
             "entitled_qty": 30.0,
             "entitled_amount_tl": 45000.0,
@@ -592,7 +599,7 @@ def test_global_inventory_aggregates_per_dc_infra():
         crm_redis=None,
     )
     payload = svc.compute_inventory_overview("*")
-    cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_power_cpu")
+    cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_power_hana_cpu")
     assert cpu["total"] == 150.0
     assert cpu["used_qty"] is None
     assert cpu["sellable_qty"] == 60.0
@@ -1070,8 +1077,8 @@ def test_inventory_merged_families_skip_km_infra_and_merge_crm():
     assert "virt_classic" in family_keys
 
 
-def test_inventory_power_hana_separate_family():
-    """Power and Power HANA appear as separate inventory families."""
+def test_inventory_power_hidden_power_hana_visible():
+    """Power HANA appears as its own family; Power is hidden (shares IBM infra)."""
     sellable = MagicMock()
     sellable.is_available = True
 
@@ -1158,13 +1165,14 @@ def test_inventory_power_hana_separate_family():
         crm_redis=None,
     )
     payload = svc.compute_inventory_overview("*")
-    assert "virt_power_hana_cpu" in [p["panel_key"] for p in payload["panels"]]
-    power = next(p for p in payload["panels"] if p["panel_key"] == "virt_power_cpu")
-    assert power["crm_sold_qty"] == 40.0
-    assert power.get("crm_sold_qty_hana") is None
+    panel_keys = [p["panel_key"] for p in payload["panels"]]
+    assert "virt_power_hana_cpu" in panel_keys
+    assert "virt_power_cpu" not in panel_keys  # virt_power is hidden from the page
+    hana = next(p for p in payload["panels"] if p["panel_key"] == "virt_power_hana_cpu")
+    assert hana["crm_sold_qty"] == 10.0
     family_keys = [f["family"] for f in payload["families"]]
     assert "virt_power_hana" in family_keys
-    assert "virt_power" in family_keys
+    assert "virt_power" not in family_keys  # virt_power is hidden from the page
 
 
 def test_merge_entitled_includes_legacy_storage_s3_bucket():
@@ -1240,4 +1248,27 @@ def test_warm_inventory_cache_force_recomputes_and_writes_redis(inventory_svc):
 
     inventory_svc.compute_inventory_overview.assert_called_once_with(dc_code="*", force_recompute=True)
     assert result["dc_code"] == "*"
+
+
+def test_hidden_families_constant_excludes_power_but_not_power_hana():
+    """Power ve Power HANA aynı IBM altyapısını paylaşır; sayfada yalnızca HANA görünür."""
+    from app.services.inventory_overview_service import _INVENTORY_HIDDEN_FAMILIES
+
+    assert "virt_power" in _INVENTORY_HIDDEN_FAMILIES
+    assert "virt_power_hana" not in _INVENTORY_HIDDEN_FAMILIES
+
+
+def test_hidden_family_rows_are_dropped_before_families_and_summary():
+    """Filtre panel listesinde uygulanır, böylece tablo ve KPI aynı kaynaktan beslenir."""
+    from app.services.inventory_overview_service import _drop_hidden_families
+
+    rows = [
+        {"family": "virt_power", "crm_sold_tl": 100.0, "service_label": "Power CPU"},
+        {"family": "virt_power_hana", "crm_sold_tl": 50.0, "service_label": "HANA CPU"},
+        {"family": "virt_classic", "crm_sold_tl": 25.0, "service_label": "KM CPU"},
+    ]
+    kept = _drop_hidden_families(rows)
+
+    assert [r["family"] for r in kept] == ["virt_power_hana", "virt_classic"]
+    assert sum(float(r["crm_sold_tl"]) for r in kept) == 75.0
 
