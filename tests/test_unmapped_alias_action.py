@@ -191,7 +191,9 @@ def test_a_backend_failure_is_reported_not_raised():
 
 
 # ---------------------------------------------------------------------------
-# _on_action_cell — the click dispatcher, where the write is gated.
+# _on_action_cell — the click dispatcher. It decides WHICH table fired, whether
+# the click means anything at all, and whether the user may write; every one of
+# those is a place a wrong answer either loses work or hands out a write.
 # Follows the callback-testing pattern from test_crm_aliases_save_callback.py:
 # patch the module-level ctx and call the function directly.
 # ---------------------------------------------------------------------------
@@ -199,9 +201,24 @@ def test_a_backend_failure_is_reported_not_raised():
 _VM_ID = {"type": "unmapped-table", "kind": "vm"}
 _BACKUP_ID = {"type": "unmapped-table", "kind": "backup"}
 
+# An ambiguous policy: present in the payload, so find_payload_row resolves it —
+# only the blank action cell may stop the click. Without it the "blank cell"
+# test would pass for the wrong reason.
+_AMBIGUOUS_PAYLOAD_ROW = {
+    "name": "avro-CLAVRDB01-H",
+    "guessed_owner": None,
+    "guessed_owner_id": None,
+    "suggested_alias": None,
+    "suggested_method": None,
+    "reason": "ambiguous",
+    "kind": "backup",
+    "platform": "netbackup",
+    "candidate_count": 2,
+}
+
 _STORE = {
     "time_range": {"preset": "7d"},
-    "rows": [_PAYLOAD_ROW, _BACKUP_PAYLOAD_ROW],
+    "rows": [_PAYLOAD_ROW, _BACKUP_PAYLOAD_ROW, _AMBIGUOUS_PAYLOAD_ROW],
 }
 
 _VM_VIEWPORT = [{"row_key": "vm::Acme_Kilit-Web01", "action": "Alias ekle"}]
@@ -234,6 +251,23 @@ def _dispatch(triggered_id, active_cells, *, can_write=True, apply_return=("save
     return result, apply_mock
 
 
+def test_the_firing_table_is_resolved_by_triggered_id_not_by_scanning():
+    """Once the operator has clicked an action in both tabs, BOTH tables hold a
+    stale active_cell in the action column. A scan for 'the first table with an
+    action cell' would re-fire the VM row every time the Backup table fires."""
+    from dash import no_update
+
+    active_cells = [
+        {"row": 0, "column_id": "action"},   # stale, VM tab
+        {"row": 0, "column_id": "action"},   # the real click, Backup tab
+    ]
+    (_body, _toast), apply_mock = _dispatch(_BACKUP_ID, active_cells)
+
+    apply_mock.assert_called_once()
+    assert apply_mock.call_args.args[0]["name"] == "abc-dete-s4hana-prd-log"
+    assert _body is not no_update
+
+
 def test_a_successful_save_rebuilds_on_the_tab_the_click_came_from():
     """build_body() constructs dmc.Tabs(value=...), so a save on the Backup tab
     used to reset the operator to Sanallaştırma."""
@@ -247,6 +281,45 @@ def test_a_save_from_the_virtualization_tab_rebuilds_on_virt():
     _result, apply_mock = _dispatch(_VM_ID, [{"row": 0, "column_id": "action"}, None])
 
     assert apply_mock.build_body.call_args.args[1] == "virt"
+
+
+def test_a_click_on_a_blank_action_cell_does_nothing():
+    """358 backup rows are deliberately actionless (orphan / ambiguous). A click
+    there is a cell selection, not a request — a red error alert reads like a
+    malfunction. The row IS in the payload, so nothing but the blank action
+    cell itself can stop this click."""
+    from dash.exceptions import PreventUpdate
+    import pytest
+
+    with pytest.raises(PreventUpdate):
+        _dispatch(_BACKUP_ID, [None, {"row": 1, "column_id": "action"}])
+
+
+def test_the_blank_cell_check_is_what_stops_it_not_a_missing_payload_row():
+    """Guards the guard: the ambiguous row above must really be resolvable, or
+    the test passes for the wrong reason."""
+    from src.pages.unmapped_resources import find_payload_row
+
+    assert find_payload_row(_STORE, "backup::avro-CLAVRDB01-H") is not None
+
+
+def test_a_click_outside_the_action_column_is_ignored():
+    from dash.exceptions import PreventUpdate
+    import pytest
+
+    with pytest.raises(PreventUpdate):
+        _dispatch(_VM_ID, [{"row": 0, "column_id": "name"}, None])
+
+
+def test_a_row_index_beyond_the_viewport_does_not_raise():
+    """derived_viewport_data and active_cell can disagree for one round-trip
+    (a filter narrowed the page after the click). That must be a no-op, not an
+    IndexError out of a click handler."""
+    from dash.exceptions import PreventUpdate
+    import pytest
+
+    with pytest.raises(PreventUpdate):
+        _dispatch(_VM_ID, [{"row": 99, "column_id": "action"}, None])
 
 
 def test_a_user_without_the_alias_permission_cannot_write():

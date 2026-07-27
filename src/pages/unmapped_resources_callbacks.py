@@ -178,18 +178,25 @@ def _on_action_cell(active_cells, viewport_data, table_ids, store):
     if row_index is None or row_index >= len(rows):
         raise PreventUpdate
 
-    row_key = rows[row_index].get("row_key")
-    payload_row = page.find_payload_row(store or {}, row_key)
+    clicked = rows[row_index] or {}
+    if not str(clicked.get("action") or "").strip():
+        # Orphan / ambiguous rows render a blank action cell on purpose (358
+        # backup rows alone). A click there is the operator selecting a cell,
+        # not asking for anything — reporting it as a red error reads like a
+        # malfunction.
+        raise PreventUpdate
+
+    payload_row = page.find_payload_row(store or {}, clicked.get("row_key"))
     if not payload_row:
         raise PreventUpdate
 
-    # The security boundary. Blanking the action cell for a user without the
-    # permission is only cosmetic: a DataTable's `data` is client-side, so
-    # nothing stops a crafted callback payload from claiming an action label.
-    # Re-checked here, server-side, before anything is written.
+    # The security boundary. The blank-action rendering above is only cosmetic:
+    # a DataTable's `data` is client-side, so nothing stops a crafted callback
+    # payload from claiming an action label. Re-checked here, server-side,
+    # before anything is written.
     if not page.can_write_alias_rules():
         logger.warning("alias write refused (no %s) row=%s",
-                       page.ALIAS_WRITE_PERMISSION, row_key)
+                       page.ALIAS_WRITE_PERMISSION, clicked.get("row_key"))
         return no_update, _notification("denied", DENIED_MESSAGE)
 
     status, message = apply_alias_suggestion(payload_row)
