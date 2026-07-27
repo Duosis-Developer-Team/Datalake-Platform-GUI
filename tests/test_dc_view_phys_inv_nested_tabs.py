@@ -163,3 +163,49 @@ def test_non_eager_phys_inv_grant_alone_shows_overview_not_colo():
     assert "phys-inv" in values
     assert "phys-overview" in values
     assert "phys-colo" not in values
+
+
+# ---------------------------------------------------------------------------
+# Regression proof: the RBAC widening bug this task fixes.
+#
+# The prior implementer added sub:dc_view:phys_inv:overview and
+# sub:dc_view:phys_inv:colocation to the permission catalog with no
+# role_permissions rows of their own. permission_service._effective_triplet_for_role
+# walks ancestors until it finds an explicit row, so those sub-nodes inherited
+# view=true from whichever ancestor (sec:dc_view:phys_inv, or ultimately
+# page:dc_view) actually had a grant. That means get_visible_sections() would
+# include "sub:dc_view:phys_inv:colocation" in a principal's visible-sections
+# set purely from an unrelated sec:dc_view:phys_inv grant — even when that
+# principal has no grant (or an explicit deny) on sec:dc_view:colocation, the
+# sole intended gate for customer-name/revenue data.
+#
+# This test hand-crafts that exact inherited shape — the set get_visible_sections
+# would have produced pre-fix — and proves dc_view.py no longer honors the
+# inherited sub-node. It fails against the pre-fix show_colo formula
+# (`_sec("sub:dc_view:phys_inv:colocation") or _sec("sec:dc_view:colocation")`)
+# and passes once show_colo is gated on sec:dc_view:colocation alone.
+# ---------------------------------------------------------------------------
+
+
+def test_phys_inv_grant_with_inherited_colo_subnode_does_not_leak_colo():
+    """A principal whose visible sections include sec:dc_view:phys_inv (plus
+    the inherited sub-node shape the old catalog would have produced) but NOT
+    sec:dc_view:colocation must NOT see phys-colo."""
+    inherited_visible_sections = {
+        "sec:dc_view:phys_inv",
+        "sub:dc_view:phys_inv:overview",
+        "sub:dc_view:phys_inv:colocation",  # inherited, never explicitly granted
+    }
+    with patch.multiple("src.pages.dc_view.api", **_patched_api(has_phys_inv_data=True)):
+        page = dc_view.build_dc_view(
+            "DC13", time_range={"preset": "7d"},
+            visible_sections=inherited_visible_sections,
+            eager_tabs=frozenset({"phys-inv"}),
+        )
+    values = _tab_values(page)
+    assert "phys-inv" in values
+    assert "phys-overview" in values
+    assert "phys-colo" not in values, (
+        "sec:dc_view:colocation was not granted, but phys-colo leaked in via "
+        "inherited sub:dc_view:phys_inv:colocation membership"
+    )

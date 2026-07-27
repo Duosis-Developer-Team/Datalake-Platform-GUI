@@ -5182,12 +5182,12 @@ def build_dc_view(
             return True
         return code in visible_sections
 
-    # Colocation moved under Physical Inventory. Accept the new sub-section key OR
-    # the legacy section key, so principals granted the old key keep access.
+    # Colocation moved under Physical Inventory (UI placement only). Access is
+    # still gated solely by sec:dc_view:colocation.
     # Computed early (depends only on _sec, no data dependency) so the batch2
     # fetch below can decide whether to fetch colocation data in parallel with
     # everything else, instead of fetching it serially inside the panel body.
-    show_colo = _sec("sub:dc_view:phys_inv:colocation") or _sec("sec:dc_view:colocation")
+    show_colo = _sec("sec:dc_view:colocation")
 
     tr = time_range or default_time_range()
     t_total = time.perf_counter()
@@ -5529,7 +5529,7 @@ def build_dc_view(
     show_avail = has_avail and _sec("sec:dc_view:availability")
     # show_colo was already computed near the top of this function (before
     # batch2), so the colocation fetch could be added to that parallel batch.
-    show_phys_overview = _sec("sub:dc_view:phys_inv:overview") or _sec("sec:dc_view:phys_inv")
+    show_phys_overview = _sec("sec:dc_view:phys_inv")
     # The parent tab appears when either child is visible.
     show_phys = (show_phys and show_phys_overview) or show_colo
     if eager_tabs is not None:
