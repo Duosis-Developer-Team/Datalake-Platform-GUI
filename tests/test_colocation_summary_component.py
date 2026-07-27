@@ -26,3 +26,52 @@ def test_summary_customer_count_override():
            "external_customer_count": 9}
     text = str(build_colocation_summary(agg, customer_count=2))
     assert "External 20U (2 customers)" in text
+
+
+def _texts(component):
+    """Flatten every dmc.Text/str value in a Dash component tree."""
+    out = []
+    stack = [component]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            out.append(node)
+            continue
+        children = getattr(node, "children", None)
+        if isinstance(children, (list, tuple)):
+            stack.extend(children)
+        elif children is not None:
+            stack.append(children)
+        label = getattr(node, "label", None)
+        if isinstance(label, str):
+            out.append(label)
+    return out
+
+
+def test_free_u_potential_tile_renders_tl_value():
+    agg = {"total_u": 2719, "used_u": 1169, "free_u": 1550, "rack_count": 57,
+           "free_u_potential_tl": 1550 * 10430.84, "unit_price_tl": 10430.84,
+           "price_source": "crm"}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert "Free U Potential" in texts
+    assert "16.17 Milyon TL" in texts
+
+
+def test_free_u_potential_tile_renders_dash_when_price_unresolved():
+    agg = {"total_u": 2719, "used_u": 1169, "free_u": 1550, "rack_count": 57,
+           "free_u_potential_tl": None, "unit_price_tl": None,
+           "price_source": "unavailable"}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert "Free U Potential" in texts
+    assert "—" in texts
+    assert "0 TL" not in texts
+
+
+def test_free_u_potential_tile_absent_keys_do_not_crash():
+    texts = _texts(build_colocation_summary({"total_u": 10, "used_u": 4, "free_u": 6}))
+
+    assert "Free U Potential" in texts
