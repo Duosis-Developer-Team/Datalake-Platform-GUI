@@ -387,6 +387,39 @@ def build_virt_storage_block(summary: dict | None = None, *, panels: list[dict] 
     )
 
 
+def build_colocation_sellable_entry(coloc_aggregate: dict | None):
+    """Physical — Colocation sellable entry: free rack-U and its TL value.
+
+    Returns None when there is no colocation data for this DC, so the caller can
+    omit the card entirely rather than render an empty one. This value is never
+    summed into the virtualization total: colocation potential runs 8-28x larger
+    (measured 2026-07-27) and would swamp it.
+    """
+    agg = coloc_aggregate or {}
+    free_u = agg.get("free_u")
+    if not free_u:
+        return None
+    potential = agg.get("free_u_potential_tl")
+    unit_price = agg.get("unit_price_tl")
+    if unit_price is None:
+        tip = "Colocation unit price unavailable — shown as — rather than 0."
+    else:
+        tip = (f"{free_u:,} free U x {unit_price:,.2f} TL per U. "
+               "Potential at list price — not billed revenue.")
+    return dmc.Tooltip(
+        label=tip, position="bottom", withArrow=True, multiline=True, w=300,
+        children=html.Div(
+            className="nexus-card",
+            style={"padding": "16px"},
+            children=[
+                dmc.Text("Physical — Colocation", size="sm", fw=700, c=_TEXT),
+                dmc.Text(f"{free_u:,} free U", size="xs", c=_MUTED),
+                dmc.Text(fmt_tl(potential), size="xl", fw=800, c=_BRAND),
+            ],
+        ),
+    )
+
+
 def build_summary_sellable_section(
     dc_id: str,
     summary: dict | None = None,

@@ -12,7 +12,10 @@ from dash_iconify import DashIconify
 import plotly.graph_objects as go
 
 from src.services import api_client as api
-from src.pages.dc_summary_sellable import build_summary_sellable_section
+from src.pages.dc_summary_sellable import (
+    build_colocation_sellable_entry,
+    build_summary_sellable_section,
+)
 from src.utils.virt_sellable_aggregate import (
     aggregate_virt_sellable_panels,
     collect_virt_sellable_panels,
@@ -2277,6 +2280,7 @@ def _build_summary_tab(
     show_sellable: bool = True,
     classic_clusters: list[str] | None = None,
     hyperconv_clusters: list[str] | None = None,
+    coloc_aggregate: dict | None = None,
 ):
     """Summary tab: Combined Infrastructure + sellable executive overview."""
     classic = data.get("classic", {})
@@ -2312,8 +2316,17 @@ def _build_summary_tab(
             classic_clusters=classic_clusters,
             hyperconv_clusters=hyperconv_clusters,
         )
+        # Physical — Colocation is a sibling entry, never summed into the
+        # virtualization sellable total (potential runs 8-28x larger and would
+        # swamp it). Appended to the same block so it sits alongside the
+        # virtualization families rather than as a separate section.
+        colo_entry = build_colocation_sellable_entry(coloc_aggregate)
         if sellable_block is not None:
+            if colo_entry is not None:
+                sellable_block.children = list(sellable_block.children) + [colo_entry]
             summary_children.append(sellable_block)
+        elif colo_entry is not None:
+            summary_children.append(colo_entry)
 
     return dmc.Stack(gap="lg", children=summary_children)
 
@@ -5188,6 +5201,10 @@ def build_dc_view(
     # fetch below can decide whether to fetch colocation data in parallel with
     # everything else, instead of fetching it serially inside the panel body.
     show_colo = _sec("sec:dc_view:colocation")
+    # Hoisted from its original computation further down (near the other
+    # sub:dc_view:summary:* flags) so it can gate the colocation fetch below —
+    # depends only on _sec, no data dependency, so hoisting is free.
+    show_summary_sellable = _sec("sub:dc_view:summary:sellable")
 
     tr = time_range or default_time_range()
     t_total = time.perf_counter()
@@ -5264,28 +5281,34 @@ def build_dc_view(
     # Mirrors render_dc_loading_page's bare-id fallback.
     dc_display = format_dc_display_name(dc_name, dc_desc) or str(dc_id or "").strip() or "Data Center"
 
-    need_batch2 = (
+    _need_base2 = (
         _tab_eager(eager_tabs, "phys-inv")
         or _tab_eager(eager_tabs, "network")
         or _tab_eager(eager_tabs, "avail")
         or _tab_eager(eager_tabs, "storage")
     )
+    # Colocation is needed by the Physical Inventory sub-tab and by the Summary
+    # sellable section. Fetch it for either, and for neither otherwise — it is an
+    # HTTP round trip to customer-api. Never fetch it for principals who cannot
+    # see the Colocation sub-tab (show_colo gates both callers).
+    need_colo = show_colo and (
+        _tab_eager(eager_tabs, "phys-inv")
+        or (show_summary_sellable and _tab_eager(eager_tabs, "summary"))
+    )
     t_batch2 = time.perf_counter()
-    if need_batch2:
-        batch2_tasks: dict = {
+    batch2_tasks: dict = {}
+    if _need_base2:
+        batch2_tasks.update({
             "phys_inv": lambda: api.get_physical_inventory_dc(dc_name),
             "san_switches": lambda: api.get_dc_san_switches(dc_id, tr),
             "net_filters": lambda: api.get_dc_network_filters(dc_id, tr),
             "aura_dc": lambda: api.get_dc_availability_sla_item(str(dc_id), dc_name, tr),
-        }
-        # Only fetch colocation (HTTP round trip to customer-api) when the
-        # Physical Inventory panel is actually being built eagerly AND the
-        # principal can see the Colocation sub-tab — never for principals who
-        # cannot see it, and never on a bare "network"/"avail"/"storage" open.
-        if show_colo and _tab_eager(eager_tabs, "phys-inv"):
-            batch2_tasks["colocation"] = lambda: api.get_colocation(dc_id)
+        })
+    if need_colo:
+        batch2_tasks["colocation"] = lambda: api.get_colocation(dc_id)
+    if batch2_tasks:
         batch2 = parallel_execute(batch2_tasks)
-        _log_dc_build_phase(str(dc_id), "batch2", t_batch2)
+        _log_dc_build_phase(str(dc_id), "batch2", t_batch2, tasks=len(batch2_tasks))
     else:
         batch2 = {}
     aura_dc_item = batch2.get("aura_dc")
@@ -5555,7 +5578,8 @@ def build_dc_view(
     show_hyperconv = has_hyperconv and _sec("sub:dc_view:virt:hyperconv")
     show_power_inner = has_power and _sec("sub:dc_view:virt:power")
     show_virt_hosts = _sec("sub:dc_view:virt:hosts")
-    show_summary_sellable = _sec("sub:dc_view:summary:sellable")
+    # show_summary_sellable is now computed near show_colo (above, before
+    # batch2) so it can gate the colocation fetch.
     virt_order = [
         ("classic", show_classic),
         ("hyperconv", show_hyperconv),
@@ -5654,6 +5678,10 @@ def build_dc_view(
                             show_sellable=show_summary_sellable,
                             classic_clusters=classic_clusters or None,
                             hyperconv_clusters=hyperconv_clusters or None,
+                            # coloc_data was fetched in the batch2 round (gated by
+                            # need_colo, which covers this Summary sellable case) —
+                            # reuse it rather than issuing a second HTTP call.
+                            coloc_aggregate=coloc_data.get("aggregate"),
                         )],
                     ),
                 ) if show_summary else None,
