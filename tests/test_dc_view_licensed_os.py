@@ -182,3 +182,43 @@ def test_all_alias_matches_are_not_presented_as_guesses():
     }}
     rendered = _text(build_licensed_os_panel(payload)).lower()
     assert "isim tahmini" not in rendered
+
+
+# --- column order + TL -------------------------------------------------------
+
+def _headers(component) -> list[str]:
+    """The header strings of the summary card, in render order."""
+    out: list[str] = []
+    text = _text(component)
+    for label in ("Hizmet", "Satılan (tahmini)", "Kullanılan", "Çalışan", "Ekstra Kullanım", "Tahmini Kayıp"):
+        idx = text.find(f"children='{label}'")
+        if idx >= 0:
+            out.append((idx, label))
+    return [lbl for _i, lbl in sorted(out)]
+
+
+def test_columns_follow_the_requested_order():
+    """Sold before Used, as in the agreed layout — a reader compares entitlement
+    to usage left-to-right."""
+    order = _headers(build_licensed_os_panel(_PAYLOAD))
+    assert order[:4] == ["Hizmet", "Satılan (tahmini)", "Kullanılan", "Ekstra Kullanım"]
+
+
+def test_a_tl_column_prices_the_gap():
+    payload = {**_PAYLOAD, "prices": {"windows": 446.63, "rhel": 0.0, "suse": 5238.76}}
+    rendered = _text(build_licensed_os_panel(payload))
+    assert "Tahmini Kayıp" in rendered
+    # 3,363 detected - 1,294 attributed = 2,069 extra x 446.63 TL
+    assert "924,077" in rendered or "924.077" in rendered
+
+
+def test_no_tl_column_without_prices():
+    assert "Tahmini Kayıp" not in _text(build_licensed_os_panel(_PAYLOAD))
+
+
+def test_a_family_with_no_known_price_shows_a_dash_not_zero_tl():
+    """RHEL has never been sold, so there is no price anywhere. A 0 TL cell would
+    read as 'no money at stake' when the truth is 'we cannot price it'."""
+    payload = {**_PAYLOAD, "prices": {"windows": 446.63, "rhel": 0.0, "suse": 5238.76}}
+    rendered = _text(build_licensed_os_panel(payload))
+    assert "0 TL" not in rendered

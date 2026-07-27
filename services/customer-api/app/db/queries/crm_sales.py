@@ -455,3 +455,23 @@ SELECT 'discovery_crm_salesorderdetails',
        (SELECT COUNT(*) FROM discovery_crm_salesorderdetails),
        (SELECT MAX(collection_time) FROM discovery_crm_salesorderdetails);
 """
+
+# ---------------------------------------------------------------------------
+# Platform-wide weighted unit price per product, from what customers actually
+# paid. Used as the last-resort price when a customer never bought the licence
+# whose overuse we are pricing — without it the biggest gaps read as 0 TL.
+# discovery_crm_productpricelevels (the catalog) is empty in production, so real
+# orders are the only price source there is.
+# ---------------------------------------------------------------------------
+
+PLATFORM_UNIT_PRICE_BY_PRODUCT = """
+SELECT d.productid,
+       (SUM(d.extendedamount) / NULLIF(SUM(d.quantity), 0))::double precision AS unit_price_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.statecode IN (0, 1, 3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
+  AND  d.quantity > 0
+GROUP BY d.productid
+HAVING SUM(d.quantity) > 0;
+"""

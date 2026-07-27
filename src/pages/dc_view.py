@@ -640,8 +640,15 @@ def _licensed_os_arch(payload: dict | None, key: str) -> dict:
     return ((payload or {}).get("architectures") or {}).get(key) or {}
 
 
-def _licensed_os_family_row(label: str, color: str, detected: int, sold: int | None):
-    """One family line: detected, and — where CRM resolved — sold and the gap."""
+def _licensed_os_family_row(
+    label: str,
+    color: str,
+    detected: int,
+    sold: int | None,
+    unit_price_tl: float | None = None,
+):
+    """One family line, in the agreed column order: Hizmet, Satılan, Kullanılan,
+    Ekstra Kullanım, and — where a price is known — the money the gap represents."""
     cells = [
         dmc.Group(gap=6, children=[
             html.Span(style={
@@ -650,19 +657,27 @@ def _licensed_os_family_row(label: str, color: str, detected: int, sold: int | N
             }),
             dmc.Text(label, size="sm", fw=600, c="#2B3674"),
         ]),
-        dmc.Text(f"{detected:,}", size="sm", fw=700, c="#2B3674"),
     ]
     if sold is not None:
-        gap = detected - sold
         cells.append(dmc.Text(f"{sold:,}", size="sm", c="#A3AED0"))
+    cells.append(dmc.Text(f"{detected:,}", size="sm", fw=700, c="#2B3674"))
+    if sold is not None:
+        gap = detected - sold
         cells.append(
-            dmc.Text(
-                f"{gap:+,}",
-                size="sm",
-                fw=700,
-                c="#E03131" if gap > 0 else "#A3AED0",
-            )
+            dmc.Text(f"{gap:+,}", size="sm", fw=700, c="#E03131" if gap > 0 else "#A3AED0")
         )
+        if unit_price_tl is not None:
+            # An unpriced family shows a dash, never 0 TL: RHEL has never been
+            # sold, so no price exists anywhere — "0 TL" would read as "nothing at
+            # stake" when the truth is "we cannot put a number on it".
+            cells.append(
+                dmc.Text(
+                    f"{max(gap, 0) * unit_price_tl:,.0f} TL" if unit_price_tl > 0 else "—",
+                    size="sm",
+                    fw=700,
+                    c="#E03131" if (unit_price_tl > 0 and gap > 0) else "#A3AED0",
+                )
+            )
     return dmc.Group(justify="space-between", children=cells)
 
 
@@ -797,15 +812,22 @@ def build_licensed_os_body(payload: dict | None, scope: str = "all"):
     sold_fams = (sold or {}).get("families") or {}
     totals = (data.get("totals") or {}).get(fam_key) or {}
 
-    header = ["Hizmet", "Çalışan" if running else "Kullanılan"]
+    prices = data.get("prices") or {}
+    header = ["Hizmet"]
     if sold:
-        header += ["Satılan (tahmini)", "Ekstra Kullanım"]
+        header.append("Satılan (tahmini)")
+    header.append("Çalışan" if running else "Kullanılan")
+    if sold:
+        header.append("Ekstra Kullanım")
+        if prices:
+            header.append("Tahmini Kayıp")
 
     summary_rows = [
         _licensed_os_family_row(
             lbl, color,
             int(totals.get(key, 0) or 0),
             int(sold_fams.get(key, 0) or 0) if sold else None,
+            float(prices.get(key, 0) or 0) if (sold and prices) else None,
         )
         for key, lbl, color in _LICENSED_OS_FAMILIES
     ]

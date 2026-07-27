@@ -177,6 +177,30 @@ class SalesService:
             return {}
         return {str(r["productid"]): float(r["unit_price_tl"]) for r in self._config.list_price_overrides()}
 
+    def _platform_licence_prices(self, mapping: Dict[str, Dict[str, Any]]) -> Dict[str, float]:
+        """{licence category_code -> weighted unit price across all customers}.
+
+        Priced from real orders, since discovery_crm_productpricelevels is empty
+        in production. Only used where a customer has no price of their own.
+        """
+        from app.utils.usage_comparison import LICENSED_OS_CATEGORIES
+
+        wanted = {m["category_code"] for m in LICENSED_OS_CATEGORIES}
+        try:
+            rows = self._run_query(sq.PLATFORM_UNIT_PRICE_BY_PRODUCT, ())
+        except Exception as exc:  # noqa: BLE001 — pricing is best-effort
+            logger.info("platform licence prices unavailable: %s", exc)
+            return {}
+
+        totals: Dict[str, list[float]] = {}
+        for r in rows or []:
+            meta = mapping.get(str(r.get("productid") or ""))
+            code = str((meta or {}).get("category_code") or "")
+            price = r.get("unit_price_tl")
+            if code in wanted and price:
+                totals.setdefault(code, []).append(float(price))
+        return {code: sum(v) / len(v) for code, v in totals.items() if v}
+
     def _load_catalog_price_indexes(
         self,
     ) -> tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
@@ -510,6 +534,7 @@ class SalesService:
             price_overrides=price_overrides,
             catalog_by_productid=catalog_by_productid,
             catalog_by_name=catalog_by_name,
+            fallback_prices=self._platform_licence_prices(mapping),
             under_pct=under_pct,
             over_pct=over_pct,
         )

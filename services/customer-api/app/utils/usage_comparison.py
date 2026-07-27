@@ -465,6 +465,7 @@ def build_licensed_os_compliance(
     price_overrides: Dict[str, float],
     catalog_by_productid: Dict[str, float],
     catalog_by_name: Dict[str, float],
+    fallback_prices: Dict[str, float] | None = None,
     under_pct: float = 80.0,
     over_pct: float = 110.0,
 ) -> List[Dict[str, Any]]:
@@ -500,6 +501,16 @@ def build_licensed_os_compliance(
             catalog_by_productid=catalog_by_productid,
             catalog_by_name=catalog_by_name,
         )
+        # Every price above is read off THIS customer's orders. A customer who
+        # never bought the licence has none, so the price came out 0 and the
+        # loss printed as "0 TL" — on exactly the rows that matter most (300 SUSE
+        # guests against 6 sold licences platform-wide). Fall back to the
+        # weighted average of what everyone else actually paid. A price the
+        # customer really paid always wins; this only fills a hole.
+        if unit_price <= 0:
+            platform = float((fallback_prices or {}).get(cat_code) or 0)
+            if platform > 0:
+                unit_price, price_source = platform, "platform_average"
 
         rows.append({
             "category_code": cat_code,

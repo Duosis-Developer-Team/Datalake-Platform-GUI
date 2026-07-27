@@ -242,3 +242,19 @@ JOIN   discovery_crm_salesorders so ON so.customerid = a.accountid
 WHERE  so.ordernumber LIKE 'PRJ-%%'
   AND  TRIM(COALESCE(a.name, '')) <> '';
 """
+
+# Weighted unit price per product across every customer, from real orders.
+# discovery_crm_productpricelevels (the catalog) is empty in production, so what
+# people actually paid is the only price source. Live 2026-07-27:
+# MS Windows Lisans 446.63 TL/VM, SUSE Lisans Bedeli 5,238.76 TL.
+PLATFORM_UNIT_PRICE_BY_PRODUCT = """
+SELECT d.productid,
+       (SUM(d.extendedamount) / NULLIF(SUM(d.quantity), 0))::double precision AS unit_price_tl
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.statecode IN (0, 1, 3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
+  AND  d.quantity > 0
+GROUP BY d.productid
+HAVING SUM(d.quantity) > 0;
+"""

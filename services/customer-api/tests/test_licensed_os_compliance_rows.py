@@ -114,3 +114,48 @@ def test_rows_carry_a_licensing_tab_binding_so_the_gui_can_place_them():
         **_prices(),
     )
     assert rows[0]["gui_tab_binding"] == "licensing.os"
+
+
+# --- pricing the gap ---------------------------------------------------------
+
+def test_customer_who_never_bought_the_licence_still_gets_a_loss_figure():
+    """The unit price is normally read off the customer's own orders. A customer
+    who bought none has no orders, so the price resolved to 0 and the biggest leak
+    on the platform — 300 SUSE guests against 6 sold licences — printed
+    "0 TL lost". The platform-wide weighted average from real orders fills in."""
+    rows = build_licensed_os_compliance(
+        entitled_agg={},
+        detected={"suse": 300},
+        fallback_prices={"license_suse": 5238.76},
+        **_prices(),
+    )
+    suse = next(r for r in rows if r["category_code"] == "license_suse")
+    assert suse["overage_qty"] == 300
+    assert suse["overage_loss_tl"] == round(300 * 5238.76, 2)
+    assert suse["price_source"] == "platform_average"
+
+
+def test_the_customers_own_price_still_wins_over_the_platform_average():
+    """A price the customer actually paid is a fact; the average is an estimate."""
+    rows = build_licensed_os_compliance(
+        entitled_agg={"license_windows_os": _entitled(1, product_ids=["p1"])},
+        detected={"windows": 4},
+        weighted_prices={"p1": 250.0},
+        price_overrides={},
+        catalog_by_productid={},
+        catalog_by_name={},
+        fallback_prices={"license_windows_os": 446.63},
+    )
+    win = rows[0]
+    assert win["overage_loss_tl"] == 750.0        # 3 x the customer's own 250
+    assert win["price_source"] != "platform_average"
+
+
+def test_no_fallback_price_available_leaves_the_loss_at_zero_not_invented():
+    rows = build_licensed_os_compliance(
+        entitled_agg={}, detected={"rhel": 523}, fallback_prices={}, **_prices(),
+    )
+    rhel = next(r for r in rows if r["category_code"] == "license_redhat")
+    assert rhel["overage_qty"] == 523
+    assert rhel["overage_loss_tl"] == 0.0
+    assert rhel["price_source"] == "none"

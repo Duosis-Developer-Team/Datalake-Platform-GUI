@@ -665,8 +665,14 @@ _EMPTY_DC_LICENSED_OS: dict[str, Any] = {
         "pure_nutanix": {"instances": 0, "no_os_telemetry": 0},
         "power": {"instances": 0, "families": dict(_EMPTY_OS_FAMILIES)},
     },
-    "totals": {"families": dict(_EMPTY_OS_FAMILIES), "licensed": 0, "instances": 0, "no_os_telemetry": 0},
+    "totals": {
+        "families": dict(_EMPTY_OS_FAMILIES),
+        "families_running": dict(_EMPTY_OS_FAMILIES),
+        "licensed": 0, "instances": 0, "no_os_telemetry": 0,
+    },
+    "unknown_samples": [],
     "sold": None,
+    "prices": {},
 }
 
 

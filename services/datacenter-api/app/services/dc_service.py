@@ -3666,7 +3666,41 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         payload = build_dc_breakdown(vm_rows, power_rows, ahv_count)
         payload["dc_code"] = dc
         payload["sold"] = self._attributed_licences_for_dc(dc_tenants, all_tenants)
+        payload["prices"] = self._licence_unit_prices() if payload["sold"] else {}
         return payload
+
+    def _licence_unit_prices(self) -> dict[str, float]:
+        """{family -> weighted unit price TL} from what customers actually paid.
+
+        Turns the DC gap into money. A family nobody has ever bought (RHEL, live
+        2026-07-27) has no price and is left out — the UI shows a dash there
+        rather than 0 TL, which would read as "nothing at stake".
+        """
+        webui = getattr(self, "_webui", None)
+        if webui is None or not getattr(webui, "is_available", False):
+            return {}
+        panel_to_family = {v: k for k, v in self._LICENCE_PANEL_BY_FAMILY.items()}
+        try:
+            product_to_family = {
+                str(r.get("productid")): fam
+                for r in (webui.run_rows(crm_q.WEBUI_PRODUCT_PAGE_KEYS, ()) or [])
+                if (fam := panel_to_family.get(str(r.get("page_key") or "")))
+            }
+            if not product_to_family:
+                return {}
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(cur, crm_q.PLATFORM_UNIT_PRICE_BY_PRODUCT, ())
+        except Exception as exc:  # noqa: BLE001 — pricing is best-effort
+            logger.info("licence unit prices unavailable: %s", exc)
+            return {}
+
+        by_family: dict[str, list[float]] = {}
+        for pid, price in rows or []:
+            fam = product_to_family.get(str(pid))
+            if fam and price:
+                by_family.setdefault(fam, []).append(float(price))
+        return {fam: sum(v) / len(v) for fam, v in by_family.items() if v}
 
     def _attributed_licences_for_dc(
         self, dc_tenants: dict[str, int], all_tenants: dict[str, int]
