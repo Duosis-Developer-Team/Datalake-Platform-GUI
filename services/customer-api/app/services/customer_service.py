@@ -523,7 +523,8 @@ class CustomerService:
         (no leading-wildcard scan). Failure returns the empty payload, never 5xx —
         an orphan report must never break the customers page.
         """
-        empty = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0}
+        empty = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0,
+                 "ambiguous_count": 0}
         if self._pool is None:
             return empty
         tr = time_range or default_time_range()

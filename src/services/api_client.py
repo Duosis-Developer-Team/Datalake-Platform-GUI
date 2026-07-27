@@ -791,7 +791,8 @@ def get_customer_resources(name: str, tr: Optional[dict]) -> dict:
     return _api_cache_get_with_stale(ck, fetch, _EMPTY_CUSTOMER)
 
 
-_EMPTY_UNMAPPED = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0}
+_EMPTY_UNMAPPED = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0,
+                    "ambiguous_count": 0}
 
 
 def get_unmapped_resources(tr: Optional[dict]) -> dict:

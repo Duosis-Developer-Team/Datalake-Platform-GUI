@@ -17,7 +17,7 @@ from src.utils.time_range import default_time_range
 ACCOUNT_NAME = "Eşleşmeyen Veriler"
 
 _REASON_LABEL = {"alias_gap": "Alias eksik", "orphan": "Sahipsiz"}
-_PLATFORM_LABEL = {"vmware": "VMware", "nutanix": "Nutanix"}
+_PLATFORM_LABEL = {"vmware": "VMware", "nutanix": "Nutanix", "netbackup": "NetBackup"}
 
 ACTION_LABEL = "Alias ekle"
 # Canonical route from src/pages/settings/shell.py:85 (ADMIN_PREFIX =
@@ -80,6 +80,11 @@ def _table_rows(rows: list[dict]) -> list[dict]:
         kind = r.get("kind") or "vm"
         actionable = bool(r.get("reason") == "alias_gap" and r.get("guessed_owner_id")
                           and r.get("suggested_alias"))
+        reason_key = r.get("reason") or ""
+        if reason_key == "ambiguous":
+            reason = f"Belirsiz ({int(r.get('candidate_count') or 0)} aday)"
+        else:
+            reason = _REASON_LABEL.get(reason_key, reason_key)
         out.append({
             # active_cell reports a viewport row index, which moves as soon as
             # the operator sorts or filters. The click handler resolves the row
@@ -88,7 +93,7 @@ def _table_rows(rows: list[dict]) -> list[dict]:
             "guessed_owner": r.get("guessed_owner") or "—",
             "name": r.get("name") or "",
             "platform": _PLATFORM_LABEL.get(r.get("platform"), r.get("platform") or ""),
-            "reason": _REASON_LABEL.get(r.get("reason"), r.get("reason") or ""),
+            "reason": reason,
             "action": ACTION_LABEL if actionable else "",
         })
     return out
@@ -101,7 +106,8 @@ def _header() -> dmc.Group:
                           size=46, radius="md", variant="light", color="gray"),
             dmc.Stack(gap=0, children=[
                 dmc.Title(ACCOUNT_NAME, order=2),
-                dmc.Text("Hiçbir müşteriye eşleşmeyen kaynaklar (Faz 1: sanal makineler).",
+                dmc.Text("Hiçbir müşteriye eşleşmeyen kaynaklar: sanal makineler ve "
+                         "yedekleme politikaları.",
                          size="sm", c="dimmed"),
             ]),
         ]),
@@ -150,25 +156,45 @@ def build_body(tr: dict | None = None) -> list:
     try:
         data = api.get_unmapped_resources(tr)
     except Exception:
-        data = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0}
+        data = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0,
+                "ambiguous_count": 0}
 
     rows = data.get("rows") or []
     total = int(data.get("total") or 0)
     alias_gap = int(data.get("alias_gap_count") or 0)
     orphan = int(data.get("orphan_count") or 0)
 
-    kpis = dmc.SimpleGrid(cols={"base": 1, "sm": 3}, spacing="md", mb="md", children=[
+    vm_rows = [r for r in rows if (r.get("kind") or "vm") == "vm"]
+    backup_rows = [r for r in rows if r.get("kind") == "backup"]
+    ambiguous = int(data.get("ambiguous_count") or 0)
+
+    kpi_cards = [
         _kpi("Toplam eşleşmeyen", total, "solar:server-square-bold-duotone", "#4318FF"),
         _kpi("Alias eksik (düzeltilebilir)", alias_gap, "solar:pen-new-square-bold-duotone", "#FFB547"),
         _kpi("Sahipsiz", orphan, "solar:ghost-bold-duotone", "#A3AED0"),
-    ])
+    ]
+    if ambiguous:
+        # Only shown when it exists: a permanent zero card would read as a
+        # state the operator has to clear.
+        kpi_cards.append(
+            _kpi("Belirsiz (elle seçim)", ambiguous, "solar:question-circle-bold-duotone", "#B26A00")
+        )
+    # KPIs stay source-agnostic on purpose; per-tab counts live on the tab
+    # badges, so the page never shows two different readings of "total".
+    kpis = dmc.SimpleGrid(cols={"base": 1, "sm": len(kpi_cards)}, spacing="md", mb="md",
+                          children=kpi_cards)
 
     tabs = dmc.Tabs(value="virt", children=[
         dmc.TabsList([
-            dmc.TabsTab("Sanallaştırma", value="virt"),
+            dmc.TabsTab("Sanallaştırma", value="virt",
+                        rightSection=dmc.Badge(str(len(vm_rows)), size="xs",
+                                               variant="light", color="indigo")),
+            dmc.TabsTab("Backup", value="backup",
+                        rightSection=dmc.Badge(str(len(backup_rows)), size="xs",
+                                               variant="light", color="indigo")),
         ]),
-        dmc.TabsPanel(value="virt", pt="md",
-                      children=_vm_table([r for r in rows if (r.get("kind") or "vm") == "vm"])),
+        dmc.TabsPanel(value="virt", pt="md", children=_vm_table(vm_rows)),
+        dmc.TabsPanel(value="backup", pt="md", children=_backup_table(backup_rows)),
     ])
 
     return [
@@ -179,24 +205,25 @@ def build_body(tr: dict | None = None) -> list:
     ]
 
 
-def _vm_table(rows: list[dict]) -> html.Div:
-    if not rows:
-        return dmc.Alert(color="teal", variant="light", title="Eşleşmeyen makine yok",
-                         children="Seçili zaman aralığında hiçbir sahipsiz sanal makine bulunamadı.")
+def _table_shell(rows: list[dict], *, kind: str, name_header: str,
+                 source_header: str, hint: str) -> html.Div:
+    """The card + DataTable both source tabs share.
+
+    Only the two headers and the hint differ between them, so the styling
+    lives here once; a second copy would drift the moment one is tweaked.
+    """
     return html.Div(className="nexus-card", style={"padding": "20px"}, children=[
         html.Div(style={"height": "2px", "width": "32px", "borderRadius": "2px",
                         "marginBottom": "12px",
                         "background": "linear-gradient(90deg,#4318FF,#FFB547)"}),
-        dmc.Text("Sütun başlıklarından filtreleyin, başlığa tıklayarak sıralayın. "
-                 "Amber satırlar alias eklenerek bir müşteriye bağlanabilir.",
-                 size="xs", c="#A3AED0", mb="sm"),
+        dmc.Text(hint, size="xs", c="#A3AED0", mb="sm"),
         dash_table.DataTable(
-            id=table_id("vm"),
+            id=table_id(kind),
             data=_table_rows(rows),
             columns=[
                 {"name": "TAHMİNİ SAHİP", "id": "guessed_owner"},
-                {"name": "MAKİNE ADI", "id": "name"},
-                {"name": "PLATFORM", "id": "platform"},
+                {"name": name_header, "id": "name"},
+                {"name": source_header, "id": "platform"},
                 {"name": "NEDEN", "id": "reason"},
                 {"name": "İŞLEM", "id": "action"},
             ],
@@ -230,6 +257,8 @@ def _vm_table(rows: list[dict]) -> html.Div:
                  "backgroundColor": "rgba(255,181,71,0.07)"},
                 {"if": {"filter_query": "{reason} = 'Alias eksik'", "column_id": "reason"},
                  "color": "#B26A00", "fontWeight": "700"},
+                {"if": {"filter_query": "{reason} contains 'Belirsiz'", "column_id": "reason"},
+                 "color": "#B26A00", "fontWeight": "700"},
                 {"if": {"filter_query": "{reason} = 'Sahipsiz'", "column_id": "reason"},
                  "color": "#A3AED0", "fontWeight": "600"},
                 {"if": {"state": "active"},
@@ -237,3 +266,27 @@ def _vm_table(rows: list[dict]) -> html.Div:
             ],
         ),
     ])
+
+
+def _vm_table(rows: list[dict]) -> html.Div:
+    if not rows:
+        return dmc.Alert(color="teal", variant="light", title="Eşleşmeyen makine yok",
+                         children="Seçili zaman aralığında hiçbir sahipsiz sanal makine bulunamadı.")
+    return _table_shell(
+        rows, kind="vm", name_header="MAKİNE ADI", source_header="PLATFORM",
+        hint="Sütun başlıklarından filtreleyin, başlığa tıklayarak sıralayın. "
+             "Amber satırlar alias eklenerek bir müşteriye bağlanabilir.",
+    )
+
+
+def _backup_table(rows: list[dict]) -> html.Div:
+    if not rows:
+        return dmc.Alert(color="teal", variant="light", title="Eşleşmeyen backup yok",
+                         children="Seçili zaman aralığında sahipsiz bir yedekleme "
+                                  "politikası bulunamadı.")
+    return _table_shell(
+        rows, kind="backup", name_header="POLICY ADI", source_header="KAYNAK",
+        hint="Policy adları ‘müşteri-workload-ortam-tip’ standardına göre eşleştirilir. "
+             "‘Belirsiz’ satırlarda aynı önek birden fazla müşteriye uyar; doğru "
+             "müşteriyi Müşteri Alias ekranından seçin.",
+    )

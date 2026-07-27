@@ -82,3 +82,62 @@ def test_hint_links_to_customer_aliases_not_internal_aliases():
     out = _render()
     assert "/settings/integrations/crm/internal-aliases" not in out
     assert "crm-aliases" in out or "crm/aliases" in out
+
+
+_MIXED_PAYLOAD = {
+    "rows": [
+        {"name": "Acme_Kilit-Web01", "guessed_owner": "Örnek Kilit A.Ş.",
+         "platform": "Nutanix", "reason": "alias_gap", "kind": "vm",
+         "guessed_owner_id": "acc-1", "suggested_alias": "Acme_Kilit",
+         "suggested_method": "prefix"},
+        {"name": "abc-dete-s4hana-prd-log", "guessed_owner": "ABC Deterjan",
+         "platform": "netbackup", "reason": "alias_gap", "kind": "backup",
+         "guessed_owner_id": "acc-abc", "suggested_alias": "abc-dete",
+         "suggested_method": "prefix", "candidate_count": 1},
+        {"name": "avro-CLAVRDB01-H", "guessed_owner": None,
+         "platform": "netbackup", "reason": "ambiguous", "kind": "backup",
+         "guessed_owner_id": None, "suggested_alias": None,
+         "suggested_method": None, "candidate_count": 2},
+    ],
+    "total": 3,
+    "alias_gap_count": 2,
+    "orphan_count": 0,
+    "ambiguous_count": 1,
+}
+
+
+def test_backup_tab_renders_next_to_virtualization():
+    out = _render(_MIXED_PAYLOAD)
+    assert "Sanallaştırma" in out
+    assert "Backup" in out
+    assert "abc-dete-s4hana-prd-log" in out
+
+
+def test_backup_rows_do_not_leak_into_the_virtualization_table():
+    """Her sekme yalnızca kendi kaynağını gösterir."""
+    from src.pages.unmapped_resources import _table_rows
+
+    vm_only = _table_rows([r for r in _MIXED_PAYLOAD["rows"] if r["kind"] == "vm"])
+    assert [r["name"] for r in vm_only] == ["Acme_Kilit-Web01"]
+
+
+def test_ambiguous_rows_are_labelled_and_offer_no_action():
+    """Yanlış müşteriye backup bağlamak boş bırakmaktan kötüdür."""
+    from src.pages.unmapped_resources import _table_rows
+
+    rows = _table_rows([r for r in _MIXED_PAYLOAD["rows"] if r["kind"] == "backup"])
+    by_name = {r["name"]: r for r in rows}
+
+    assert by_name["avro-CLAVRDB01-H"]["reason"] == "Belirsiz (2 aday)"
+    assert by_name["avro-CLAVRDB01-H"]["action"] == ""
+    assert by_name["abc-dete-s4hana-prd-log"]["action"] == "Alias ekle"
+
+
+def test_ambiguous_kpi_appears_only_when_there_are_ambiguous_rows():
+    # Checked against the KPI card's own label, not the bare word "Belirsiz":
+    # the DataTable's static style_data_conditional carries a
+    # "{reason} contains 'Belirsiz'" filter_query on every rendered table
+    # (VM included) regardless of whether any row actually has that reason,
+    # so a bare substring check can never tell the two payloads apart.
+    assert "Belirsiz (elle seçim)" in _render(_MIXED_PAYLOAD)
+    assert "Belirsiz (elle seçim)" not in _render(_PAYLOAD)
