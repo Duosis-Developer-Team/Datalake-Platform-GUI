@@ -59,7 +59,7 @@ def licensed_os_summary(
     return db.get_licensed_os_summary(tf.to_dict())
 
 
-@router.get("/{dc_code}/licensed-os", response_model=dict[str, Any])
+@router.get("/datacenters/{dc_code}/licensed-os", response_model=dict[str, Any])
 def licensed_os_for_dc(
     dc_code: str,
     tf: TimeFilter = Depends(),

@@ -47,25 +47,53 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
     has_detected = detected is not None
     detected_val = float(detected or 0) if has_detected else 0.0
 
-    gauge = html.Div(
-        style={
-            "width": "100%",
-            "aspectRatio": "16 / 11",
-            "maxWidth": "360px",
-            "margin": "0 auto",
-        },
-        children=dcc.Graph(
-            figure=create_premium_gauge_chart(
-                gauge_pct,
-                f"Used / sold ({eff:.0f}%)" if eff is not None else "Used / sold",
-                color="#4318FF",
-                height=200,
-                show_threshold=False,
+    # The gauge is a used/sold ratio, so it means nothing when nothing was sold:
+    # the denominator is zero and efficiency_pct comes back None. Rendering that
+    # as a literal 0% put "0%" next to an OVER-UTILIZED badge and a 74-unit
+    # overage — it reads as "barely used" when the truth is the exact opposite.
+    # Undefined is not zero, so the ratio is replaced with the plain statement.
+    if eff is None and used > 0 and sold <= 0:
+        gauge = html.Div(
+            style={
+                "width": "100%",
+                "maxWidth": "360px",
+                "margin": "0 auto",
+                "display": "flex",
+                "flexDirection": "column",
+                "alignItems": "center",
+                "justifyContent": "center",
+                "minHeight": "200px",
+                "textAlign": "center",
+            },
+            children=[
+                dmc.Text(f"{used:,.0f} {unit}".strip(), fw=700, size="xl", c="#E03131"),
+                dmc.Text("kullanımda, hiç satılmamış", size="sm", c="#A3AED0"),
+                dmc.Text(
+                    "Satış olmadığı için kullanım/satış oranı hesaplanamıyor.",
+                    size="xs", c="#A3AED0", mt="xs",
+                ),
+            ],
+        )
+    else:
+        gauge = html.Div(
+            style={
+                "width": "100%",
+                "aspectRatio": "16 / 11",
+                "maxWidth": "360px",
+                "margin": "0 auto",
+            },
+            children=dcc.Graph(
+                figure=create_premium_gauge_chart(
+                    gauge_pct,
+                    f"Used / sold ({eff:.0f}%)" if eff is not None else "Used / sold",
+                    color="#4318FF",
+                    height=200,
+                    show_threshold=False,
+                ),
+                config={"displayModeBar": False, "responsive": True},
+                style={"height": "100%", "width": "100%"},
             ),
-            config={"displayModeBar": False, "responsive": True},
-            style={"height": "100%", "width": "100%"},
-        ),
-    )
+        )
 
     bar_series = {"Sold": [sold], "Used": [used]}
     if has_detected:
