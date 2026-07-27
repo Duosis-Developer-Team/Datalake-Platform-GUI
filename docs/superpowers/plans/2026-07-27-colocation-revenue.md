@@ -1855,38 +1855,59 @@ At lines ~672 and ~1013, add a sibling `_summary_kpi` immediately after the exis
             ),
 ```
 
-`datacenters.py` does not currently call `get_colocation` at all. Do **not** loop it per DC: `ColocationMatchingService.get_colocation` treats `dc_code == "*"` as "all DCs" (`colocation_matching_service.py:47`), so one fetch covers the whole page and the per-DC split comes from the `racks` rows it already returns.
+**Read this before writing the helper — an earlier draft of this plan got it wrong.**
+
+`datacenters.py` does not currently call `get_colocation` at all. The obvious optimisation — one `get_colocation("*")` fetch, then group its `racks` rows by `dc` to get the per-DC split — produces numbers that **contradict the DC View Colocation tab**, and must not be used.
+
+Measured 2026-07-27: 25 racks at site ISTANBUL are registered in NetBox under two DC labels at once (DC13+DH3, DC13+DH4) with conflicting `u_height` values. `_dedupe_physical_racks` keeps one row per `(rack_name, site_name)`, so the surviving capacity depends on which rows the query returned. Grouping the all-DC payload gives DC13 **1,550** free U; the per-DC call the Colocation tab makes gives **1,460**. Same datacenter, two screens, ~0.94 M TL apart.
+
+So: the per-DC figure comes from the same per-DC call the Colocation tab uses, and the all-DC total comes from the `"*"` aggregate. They are deliberately not derived from each other, and the total is LESS than the sum of the cards because the `"*"` path deduplicates racks shared between DC labels. The KPI tooltip must say so.
 
 Add this helper near the other module-level helpers in `src/pages/datacenters.py`:
 
 ```python
-def _colocation_potential() -> tuple[float, dict[str, float]]:
-    """(total potential TL, {dc_code: potential TL}) from ONE all-DC fetch.
+def _colocation_potential(dc_codes) -> tuple[float, dict[str, float]]:
+    """(all-DC potential TL, {dc_code: potential TL}).
 
-    get_colocation("*") returns the merged aggregate plus every rack row, each
-    carrying its own `dc`, so the per-DC split needs no extra round trips.
+    The per-DC values come from per-DC get_colocation calls — the SAME path the
+    DC View Colocation tab uses — because 25 ISTANBUL racks are registered under
+    two DC labels with conflicting heights (measured 2026-07-27), and deriving a
+    per-DC split from the all-DC payload disagrees with what the Colocation tab
+    shows for the same datacenter.
+
+    The all-DC total comes from the "*" aggregate, which de-duplicates those
+    shared racks. It is therefore SMALLER than the sum of the per-DC values, by
+    design. api_client caches these calls with single-flight, so the per-DC
+    fetches are cheap once warm.
+
     Returns (0.0, {}) when the price is unresolved — the caller renders nothing
     rather than a misleading zero.
     """
-    payload = api.get_colocation("*") or {}
-    agg = payload.get("aggregate") or {}
-    unit_price = agg.get("unit_price_tl")
-    if unit_price is None:
+    total_payload = api.get_colocation("*") or {}
+    total_agg = total_payload.get("aggregate") or {}
+    if total_agg.get("unit_price_tl") is None:
         return 0.0, {}
     by_dc: dict[str, float] = {}
-    for rack in payload.get("racks") or []:
-        dc = str(rack.get("dc") or "").strip()
-        if not dc:
+    for code in dc_codes:
+        code = str(code or "").strip()
+        if not code:
             continue
-        by_dc[dc] = by_dc.get(dc, 0.0) + float(rack.get("free_u") or 0) * float(unit_price)
-    return float(agg.get("free_u_potential_tl") or 0.0), by_dc
+        agg = (api.get_colocation(code) or {}).get("aggregate") or {}
+        value = agg.get("free_u_potential_tl")
+        if value:
+            by_dc[code] = float(value)
+    return float(total_agg.get("free_u_potential_tl") or 0.0), by_dc
 ```
 
-In each of the two functions containing the KPI strips, call it once alongside the other totals:
+In each of the two functions containing the KPI strips, call it once alongside the other totals, passing the DC codes that function already has in scope:
 
 ```python
-    total_colo_potential_tl, colo_potential_by_dc = _colocation_potential()
+    total_colo_potential_tl, colo_potential_by_dc = _colocation_potential(
+        [d.get("dc_code") or d.get("code") for d in datacenters]
+    )
 ```
+
+Inspect how each function names its DC collection before writing this line — `datacenters` is the name used in the KPI strips around lines 665 and 1008, but confirm the per-DC code key (`dc_code` vs `code`) against the real records rather than assuming.
 
 `colo_potential_by_dc` is what Step 5's call site consumes.
 

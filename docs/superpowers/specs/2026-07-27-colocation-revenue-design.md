@@ -156,14 +156,35 @@ traceable to CRM. The existing four-column `SimpleGrid` becomes five columns. Th
 reads `free_u` from the same aggregate the other four tiles already use, so it can never
 disagree with the Free U tile beside it.
 
-**Capacity discrepancy to resolve during implementation.** The deployed UI currently
-renders DC13 as Total U 2,629 / Free U 1,460, while `occupancy_rows` measured on
-2026-07-27 returns 2,719 / 1,550 — a 90 U gap. Used U (1,169) and rack count (57) match
-exactly, so the divergence is in rack capacity (`u_height`), not occupancy. Candidate
-causes: a `u_height` patch landed after the screenshot was taken, or the deployed build
-predates it. This must be identified before the potential figure ships, because the tile
-multiplies free U by price and a 90 U error is ~0.94 M TL in DC13 alone. Do not adjust
-either number to match the other until the cause is known.
+**Capacity discrepancy — RESOLVED 2026-07-27, and it changes the design.**
+
+The apparent DC13 gap (deployed UI 2,629 / 1,460 versus 2,719 / 1,550 in this spec's first
+draft) is neither a stale build nor a `u_height` patch. Root cause: **25 racks at site
+ISTANBUL are registered in NetBox under two DC labels at once** — DC13+DH3 or DC13+DH4 —
+with *conflicting* heights. Racks 101-105 and 201-205 carry both 47 and 52; racks 303-306
+carry both 42 and 52.
+
+`_dedupe_physical_racks` collapses each `(rack_name, site_name)` to one row, so which
+capacity survives depends on which rows were in the query set:
+
+| Reading | DC13 total U | DC13 free U | Platform total U | Platform free U |
+|---|---|---|---|---|
+| `occupancy_rows(cur, "%DC13%")` — what the UI calls | 2,629 | 1,460 | — | — |
+| `occupancy_rows(cur, None)` grouped by `dc` | 2,719 | 1,550 | 8,603 | 5,892 |
+| Sum of per-DC queries | 2,629 | 1,460 | 9,241 | 6,201 |
+
+The third row double-counts the 25 cross-label racks. DH3 swings the opposite way from
+DC13 (+728 U per-DC versus grouped), which is the same effect seen from the other side.
+
+**Design consequence — binding.** Any per-DC potential figure MUST come from the same
+per-DC query path the DC View Colocation tab uses. Deriving a per-DC split by grouping the
+all-DC payload's rack rows yields 1,550 free U for DC13 on one screen while the Colocation
+tab shows 1,460 on another — the same datacenter, two numbers, ~0.94 M TL apart. Two
+surfaces disagreeing about one datacenter is worse than either number being imperfect.
+
+**Underlying data defect, out of scope here:** one physical rack cannot be both 47U and
+52U. The NetBox duplication needs fixing at source; until it is, every colocation capacity
+figure carries that ambiguity. Recorded, not fixed by this plan.
 
 ### 4. Dedicated Customers table
 
