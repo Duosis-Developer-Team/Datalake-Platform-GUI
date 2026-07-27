@@ -101,3 +101,33 @@ def test_footprint_skips_blank_tenant_and_zero_or_null_u():
     # blank/None tenants dropped; Paycore present but with 0 U (null coerced)
     assert [e["tenant"] for e in out] == ["Paycore"]
     assert out[0]["used_u"] == 0
+
+
+from shared.colocation.matching import build_customer_footprint, build_internal_footprint
+
+
+def _rows():
+    return [
+        {"dc": "DC13", "rack_name": "116", "tenant_name": "Boyner", "used_u": 20},
+        {"dc": "DC13", "rack_name": "116", "tenant_name": "Acme-Internal", "used_u": 15},
+    ]
+
+
+def test_internal_footprint_honours_injected_prefixes():
+    internal = build_internal_footprint(_rows(), internal_prefixes=("acme-internal",))
+
+    assert [r["tenant"] for r in internal] == ["Acme-Internal"]
+
+
+def test_customer_footprint_excludes_injected_internal_tenants():
+    customers = build_customer_footprint(_rows(), {}, internal_prefixes=("acme-internal",))
+
+    assert [c["tenant"] for c in customers] == ["Boyner"]
+
+
+def test_default_prefixes_still_apply_when_none_injected():
+    rows = [{"dc": "DC13", "rack_name": "116",
+             "tenant_name": "Bulutistan - Linux TEAM", "used_u": 15}]
+
+    assert build_internal_footprint(rows) != []
+    assert build_customer_footprint(rows, {}) == []

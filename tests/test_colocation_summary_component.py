@@ -26,3 +26,134 @@ def test_summary_customer_count_override():
            "external_customer_count": 9}
     text = str(build_colocation_summary(agg, customer_count=2))
     assert "External 20U (2 customers)" in text
+
+
+def _texts(component):
+    """Flatten every dmc.Text/str value in a Dash component tree."""
+    out = []
+    stack = [component]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            out.append(node)
+            continue
+        children = getattr(node, "children", None)
+        if isinstance(children, (list, tuple)):
+            stack.extend(children)
+        elif children is not None:
+            stack.append(children)
+        label = getattr(node, "label", None)
+        if isinstance(label, str):
+            out.append(label)
+    return out
+
+
+def test_free_u_potential_tile_renders_tl_value():
+    agg = {"total_u": 2719, "used_u": 1169, "free_u": 1550, "rack_count": 57,
+           "free_u_potential_tl": 1550 * 10430.84, "unit_price_tl": 10430.84,
+           "price_source": "crm"}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert "Free U Potential" in texts
+    assert "16.17 Milyon TL" in texts
+
+
+def test_free_u_potential_tile_renders_dash_when_price_unresolved():
+    agg = {"total_u": 2719, "used_u": 1169, "free_u": 1550, "rack_count": 57,
+           "free_u_potential_tl": None, "unit_price_tl": None,
+           "price_source": "unavailable"}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert "Free U Potential" in texts
+    assert "—" in texts
+    assert "0 TL" not in texts
+    assert any("Colocation unit price unavailable" in t for t in texts)
+    assert any("Shown as — rather than 0" in t for t in texts)
+
+
+def test_free_u_potential_tile_absent_when_price_keys_absent():
+    """Fix 2: the Floor Map feeds get_dc_racks_occupancy()["summary"], which
+    carries no unit_price_tl/free_u_potential_tl keys at all (no price
+    resolution happens on that path). That is "never asked", not "asked and
+    unresolved" — the card must render its original four tiles with no
+    fifth tile and no false "price unavailable" tooltip."""
+    component = build_colocation_summary({"total_u": 10, "used_u": 4, "free_u": 6, "rack_count": 2})
+    texts = _texts(component)
+
+    assert "Free U Potential" not in texts
+    assert not any("Colocation unit price unavailable" in t for t in texts)
+    assert component.children[0].cols == 4
+
+
+def test_free_u_potential_tile_present_when_price_keys_present_and_resolved():
+    """Keys present + a resolved price: five tiles, value rendered (DC
+    Colocation tab caller)."""
+    agg = {"total_u": 10, "used_u": 4, "free_u": 6, "rack_count": 2,
+           "unit_price_tl": 100.0, "free_u_potential_tl": 600.0, "price_source": "crm"}
+    component = build_colocation_summary(agg)
+    texts = _texts(component)
+
+    assert "Free U Potential" in texts
+    assert component.children[0].cols == 5
+
+
+def test_free_u_potential_tile_dash_when_price_keys_present_but_none():
+    """Keys present but the price resolved to None: five tiles, — rendered,
+    and the "unavailable" tooltip is accurate here (the caller did ask)."""
+    agg = {"total_u": 10, "used_u": 4, "free_u": 6, "rack_count": 2,
+           "unit_price_tl": None, "free_u_potential_tl": None, "price_source": "unavailable"}
+    component = build_colocation_summary(agg)
+    texts = _texts(component)
+
+    assert "Free U Potential" in texts
+    assert "—" in texts
+    assert any("Colocation unit price unavailable" in t for t in texts)
+    assert component.children[0].cols == 5
+
+
+def test_free_u_potential_tooltip_names_crm_price_source():
+    agg = {"total_u": 100, "used_u": 50, "free_u": 50, "rack_count": 2,
+           "free_u_potential_tl": 50 * 100.0, "unit_price_tl": 100.0,
+           "price_source": "crm"}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert any("100.00 TL per U" in t and "CRM price list" in t for t in texts)
+
+
+def test_free_u_potential_tooltip_names_override_price_source():
+    agg = {"total_u": 100, "used_u": 50, "free_u": 50, "rack_count": 2,
+           "free_u_potential_tl": 50 * 100.0, "unit_price_tl": 100.0,
+           "price_source": "override"}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert any("100.00 TL per U" in t and "operator override" in t for t in texts)
+
+
+def test_free_u_potential_tooltip_prices_sellable_free_u_not_total_free_u():
+    """Design section 3: free U inside a colocation-allocated rack isn't
+    sellable, so free_u_potential_tl prices sellable_free_u, which can be
+    much smaller than the Free U tile's total. The tooltip must cite
+    sellable_free_u, not the (larger) Free U tile value -- previously it
+    named the Free U tile's number even though the TL figure was priced off
+    a different, smaller count."""
+    agg = {"total_u": 8603, "used_u": 2711, "free_u": 5892, "rack_count": 188,
+           "sellable_free_u": 4477, "free_u_potential_tl": 4477 * 10430.84,
+           "unit_price_tl": 10430.84, "price_source": "crm"}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert any("4,477 sellable free U x 10,430.84 TL per U" in t for t in texts)
+    assert not any("5,892 sellable free U" in t for t in texts)
+
+
+def test_free_u_potential_tooltip_unresolved_explanation():
+    agg = {"total_u": 100, "used_u": 50, "free_u": 50, "rack_count": 2,
+           "free_u_potential_tl": None, "unit_price_tl": None}
+
+    texts = _texts(build_colocation_summary(agg))
+
+    assert any("Colocation unit price unavailable" in t for t in texts)

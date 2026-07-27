@@ -23,7 +23,8 @@ from src.utils.datacenters_virt_sellable import (
     refresh_virt_sellable_cache,
     resolve_virt_sellable_for_dcs,
 )
-from src.utils.format_units import fmt_tl_range
+from src.utils.api_parallel import parallel_execute
+from src.utils.format_units import fmt_tl, fmt_tl_range
 from src.utils.virt_sellable_aggregate import VIRT_SELLABLE_FAMILY_LABELS
 from shared.display.static_energy import STATIC_TOTAL_ENERGY_KW
 
@@ -129,6 +130,54 @@ def _potential_sales_display(
     return short, full
 
 
+def _colocation_sales_line(colo_tl: float | None, *, loading: bool = False):
+    """Colocation potential as its own line — a single value, not a range.
+
+    Sellable free rack-U (free U OUTSIDE colocation-allocated racks — see
+    aggregate["sellable_free_u"]) is an exact count and the unit price is a
+    single figure, so no interval exists. Free U *inside* a customer's own
+    rack is excluded: it belongs to that customer, not to the platform's
+    sellable pool (design doc section 3). Kept separate from the
+    virtualization range because colocation potential measured 8-28x larger
+    per DC (2026-07-27); summing them would erase every movement in the
+    virtualization signal.
+
+    Returns None when there is nothing to show, so callers can omit the row.
+    """
+    if loading:
+        headline, tip_value = "…", "Calculating"
+    elif not colo_tl:
+        return None
+    else:
+        headline = fmt_tl(colo_tl)
+        tip_value = f"{float(colo_tl):,.0f} TL"
+    return dmc.Tooltip(
+        label=(f"Potential Sales (Colocation): {tip_value}\n"
+               "Sellable free rack-U (outside colocation-allocated racks) x "
+               "the CRM per-U colocation price. Potential at list "
+               "price — not billed revenue. Not included in the virtualization range."),
+        position="bottom",
+        withArrow=True,
+        multiline=True,
+        w=320,
+        children=dmc.Group(
+            justify="space-between",
+            gap="xs",
+            mt=6,
+            children=[
+                dmc.Text("Potential Sales (Colocation)", size="xs", fw=600, c="#A3AED0"),
+                dmc.Text(
+                    headline,
+                    size="xs",
+                    fw=800,
+                    c="#0BA5EC",
+                    style={"textAlign": "right", "lineHeight": 1.2, "maxWidth": "55%"},
+                ),
+            ],
+        ),
+    )
+
+
 def _summary_kpi(
     icon: str,
     label: str,
@@ -216,6 +265,7 @@ def _dc_sellable_ribbon(
     virt_tl_max: float | None = None,
     total_portfolio_tl: float,
     loading: bool = False,
+    colo_tl: float | None = None,
 ) -> html.Div:
     """Compact virtualization-derived sellable TL strip + share of portfolio progress."""
     if loading:
@@ -240,7 +290,7 @@ def _dc_sellable_ribbon(
         f"Share of all DCs (by virt sellable TL): {pct:.1f}%\n"
         f"Sources: {', '.join(VIRT_SELLABLE_FAMILY_LABELS)}"
     )
-    return dmc.Tooltip(
+    ribbon = dmc.Tooltip(
         label=tip,
         position="bottom",
         withArrow=True,
@@ -268,6 +318,10 @@ def _dc_sellable_ribbon(
             ],
         ),
     )
+    colo_line = _colocation_sales_line(colo_tl, loading=loading)
+    if colo_line is None:
+        return ribbon
+    return html.Div(children=[ribbon, colo_line])
 
 
 def _dc_vault_card(
@@ -279,6 +333,7 @@ def _dc_vault_card(
     virt_tl_max: float | None = None,
     total_virt_tl: float = 0.0,
     virt_loading: bool = False,
+    colo_potential_by_dc: dict[str, float] | None = None,
 ):
     """Elite DC Vault card: shimmer, dual ring, CPU/RAM footer, SLA accent."""
     dc_title = format_dc_display_name(dc.get("name"), dc.get("description"))
@@ -598,9 +653,48 @@ def _dc_vault_card(
                 virt_tl_max=virt_tl_max,
                 total_portfolio_tl=total_virt_tl,
                 loading=virt_loading,
+                colo_tl=(colo_potential_by_dc or {}).get(str(dc.get("id") or "")),
             ),
         ],
     )
+
+
+def _colocation_potential(dc_codes) -> tuple[float, dict[str, float]]:
+    """(all-DC potential TL, {dc_code: potential TL}).
+
+    The per-DC values come from per-DC get_colocation calls — the SAME path the
+    DC View Colocation tab uses — because 25 ISTANBUL racks are registered under
+    two DC labels with conflicting heights (measured 2026-07-27), and deriving a
+    per-DC split from the all-DC payload disagrees with what the Colocation tab
+    shows for the same datacenter.
+
+    The all-DC total comes from the "*" aggregate, which de-duplicates those
+    shared racks. It is therefore SMALLER than the sum of the per-DC values, by
+    design. api_client caches these calls with single-flight, so the per-DC
+    fetches are cheap once warm — but on a cold/expired cache they are real
+    HTTP round trips, so the N per-DC calls are fanned out via
+    parallel_execute (same pattern as dc_view.py's batch1/batch2 and
+    datacenters_virt_sellable.py's warm pool) rather than issued serially.
+
+    Returns (0.0, {}) when the price is unresolved — the caller renders nothing
+    rather than a misleading zero.
+    """
+    total_payload = api.get_colocation("*") or {}
+    total_agg = total_payload.get("aggregate") or {}
+    if total_agg.get("unit_price_tl") is None:
+        return 0.0, {}
+    codes = list(dict.fromkeys(
+        str(code or "").strip() for code in dc_codes if str(code or "").strip()
+    ))
+    by_dc: dict[str, float] = {}
+    if codes:
+        results = parallel_execute({code: (lambda c=code: api.get_colocation(c)) for code in codes})
+        for code, payload in results.items():
+            agg = (payload or {}).get("aggregate") or {}
+            value = agg.get("free_u_potential_tl")
+            if value:
+                by_dc[code] = float(value)
+    return float(total_agg.get("free_u_potential_tl") or 0.0), by_dc
 
 
 def build_datacenters(time_range=None, visible_sections=None):
@@ -627,6 +721,10 @@ def build_datacenters(time_range=None, visible_sections=None):
     total_potential_tl_min = float(virt_state.get("total_potential_tl_min") or 0.0)
     total_potential_tl_max = float(virt_state.get("total_potential_tl_max") or 0.0)
     virt_loading = bool(virt_state["loading"])
+
+    total_colo_potential_tl, colo_potential_by_dc = _colocation_potential(
+        [d.get("id") for d in datacenters]
+    )
 
     # ── Export rows ──
     export_rows = []
@@ -685,6 +783,24 @@ def build_datacenters(time_range=None, visible_sections=None):
                 total_potential_tl_max,
                 loading=virt_loading,
             )),
+            _summary_kpi(
+                "solar:box-bold-duotone",
+                "Potential Sales (Colocation)",
+                fmt_tl(total_colo_potential_tl or None),
+                "cyan",
+                tooltip=(
+                    "Total colocation potential (all DCs): "
+                    f"{f'{total_colo_potential_tl:,.0f} TL' if total_colo_potential_tl else '—'}\n"
+                    "Sellable free rack-U (outside colocation-allocated racks) x the "
+                    "CRM per-U colocation price. Potential at list "
+                    "price — not billed revenue. Not summed into the virtualization "
+                    "figure beside it.\n"
+                    "Total is smaller than the sum of the per-DC card values by design: "
+                    "some racks are registered under two DC labels at once, and this "
+                    "total de-duplicates them while each per-DC card does not."
+                ),
+                allow_wrap=True,
+            ),
         ],
         )]
     )
@@ -864,6 +980,7 @@ def build_datacenters(time_range=None, visible_sections=None):
                             virt_tl_max=virt_tl_max_by_dc.get(str(dc.get("id", ""))),
                             total_virt_tl=total_potential_tl,
                             virt_loading=loading_by_dc.get(str(dc.get("id", "")), virt_loading),
+                            colo_potential_by_dc=colo_potential_by_dc,
                         ),
                     )
                     for i, dc in enumerate(datacenters)
@@ -995,6 +1112,10 @@ def poll_virt_sellable_refresh(_n, state, time_range):
     total_potential_tl_min = float(virt_state.get("total_potential_tl_min") or 0.0)
     total_potential_tl_max = float(virt_state.get("total_potential_tl_max") or 0.0)
 
+    total_colo_potential_tl, colo_potential_by_dc = _colocation_potential(
+        [d.get("id") for d in datacenters]
+    )
+
     total_hosts = sum(dc.get("host_count", 0) for dc in datacenters)
     total_vms = sum(dc.get("vm_count", 0) for dc in datacenters)
     total_clusters = sum(dc.get("cluster_count", 0) for dc in datacenters)
@@ -1022,6 +1143,24 @@ def poll_virt_sellable_refresh(_n, state, time_range):
                 ),
                 allow_wrap=True,
             ))(*_potential_sales_display(total_potential_tl_min, total_potential_tl_max)),
+            _summary_kpi(
+                "solar:box-bold-duotone",
+                "Potential Sales (Colocation)",
+                fmt_tl(total_colo_potential_tl or None),
+                "cyan",
+                tooltip=(
+                    "Total colocation potential (all DCs): "
+                    f"{f'{total_colo_potential_tl:,.0f} TL' if total_colo_potential_tl else '—'}\n"
+                    "Sellable free rack-U (outside colocation-allocated racks) x the "
+                    "CRM per-U colocation price. Potential at list "
+                    "price — not billed revenue. Not summed into the virtualization "
+                    "figure beside it.\n"
+                    "Total is smaller than the sum of the per-DC card values by design: "
+                    "some racks are registered under two DC labels at once, and this "
+                    "total de-duplicates them while each per-DC card does not."
+                ),
+                allow_wrap=True,
+            ),
         ],
     )
 
@@ -1042,6 +1181,7 @@ def poll_virt_sellable_refresh(_n, state, time_range):
                     virt_tl_max=virt_tl_max_by_dc.get(str(dc.get("id", ""))),
                     total_virt_tl=total_potential_tl,
                     virt_loading=loading_by_dc.get(str(dc.get("id", "")), False),
+                    colo_potential_by_dc=colo_potential_by_dc,
                 ),
             )
             for i, dc in enumerate(datacenters)

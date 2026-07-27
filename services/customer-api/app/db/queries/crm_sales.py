@@ -139,7 +139,8 @@ ORDER BY so.modifiedon DESC NULLS LAST;
 # ---------------------------------------------------------------------------
 # /customers/{name}/sales/efficiency — billed quantities by product, no catalog join
 # (catalog price comes from gui_crm_price_override + discovery_crm_productpricelevels
-#  resolved in the service layer; productpricelevels is currently empty in production).
+#  resolved in the service layer. NOTE: productpricelevels is NOT empty — verified
+#  2026-07-27, it holds 12 rows across the colocation product family alone.)
 # ---------------------------------------------------------------------------
 
 SALES_EFFICIENCY_BILLED = """
@@ -159,8 +160,8 @@ GROUP BY d.productid, d.product_name, d.uomid_name
 ORDER BY total_billed_amount DESC NULLS LAST;
 """
 
-# Optional fallback: catalog rows if the price-level table is populated. Service layer
-# uses gui_crm_price_override first; this query is the secondary source for completeness.
+# Catalog rows from the price-level table (populated — verified 2026-07-27). Service
+# layer uses gui_crm_price_override first; this query is the secondary source.
 SALES_CATALOG_PRICES = """
 SELECT
     p.productid,

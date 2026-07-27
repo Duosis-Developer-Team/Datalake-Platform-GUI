@@ -12,7 +12,10 @@ from dash_iconify import DashIconify
 import plotly.graph_objects as go
 
 from src.services import api_client as api
-from src.pages.dc_summary_sellable import build_summary_sellable_section
+from src.pages.dc_summary_sellable import (
+    build_colocation_sellable_entry,
+    build_summary_sellable_section,
+)
 from src.utils.virt_sellable_aggregate import (
     aggregate_virt_sellable_panels,
     collect_virt_sellable_panels,
@@ -74,6 +77,7 @@ from src.components.backup_panel import (
 from src.components import backup_jobs_section  # noqa: F401
 from src.components import backup_unique_jobs_panel  # noqa: F401
 from shared.backup.policy_classification import load_policy_panel_mapping
+from shared.colocation.allocation import UNATTRIBUTED
 from src.services import sla_service
 from src.utils.dc_display import format_dc_display_name, resolve_dc_display_from_summary
 from src.components.dc_availability_panel import build_dc_availability_panel
@@ -2577,6 +2581,7 @@ def _build_summary_tab(
     show_sellable: bool = True,
     classic_clusters: list[str] | None = None,
     hyperconv_clusters: list[str] | None = None,
+    coloc_aggregate: dict | None = None,
 ):
     """Summary tab: Combined Infrastructure + sellable executive overview."""
     classic = data.get("classic", {})
@@ -2612,8 +2617,17 @@ def _build_summary_tab(
             classic_clusters=classic_clusters,
             hyperconv_clusters=hyperconv_clusters,
         )
+        # Physical — Colocation is a sibling entry, never summed into the
+        # virtualization sellable total (potential runs 8-28x larger and would
+        # swamp it). Appended to the same block so it sits alongside the
+        # virtualization families rather than as a separate section.
+        colo_entry = build_colocation_sellable_entry(coloc_aggregate)
         if sellable_block is not None:
+            if colo_entry is not None:
+                sellable_block.children = list(sellable_block.children) + [colo_entry]
             summary_children.append(sellable_block)
+        elif colo_entry is not None:
+            summary_children.append(colo_entry)
 
     return dmc.Stack(gap="lg", children=summary_children)
 
@@ -2695,10 +2709,11 @@ def _build_physical_inventory_dc_tab(phys_inv: dict):
     # Horizontal stacked bar: Y=role, X=count, color=manufacturer
     rm_filtered = list(by_rm)
     if not rm_filtered:
+        rm_height = 300
         fig_rm = go.Figure()
         fig_rm.update_layout(
             margin=dict(l=20, r=20, t=30, b=40),
-            height=300,
+            height=rm_height,
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             annotations=[dict(text="No role/manufacturer data", x=0.5, y=0.5, showarrow=False, font=dict(size=14))],
@@ -2835,25 +2850,86 @@ def _build_physical_inventory_dc_tab(phys_inv: dict):
 
 
 def build_colocation_tab(coloc: dict):
-    """Colocation tab: DC used-U breakdown summary + dedicated-customer footprint
-    + internal-resource footprint."""
+    """Colocation tab: DC used-U breakdown summary + allocation-based
+    dedicated-customer footprint + internal-resource footprint.
+
+    Phase 2 Task C: the "Dedicated Customers" table reads payload["allocation"]
+    (rack role_id + tenant_name/tags/description attribution, Task A/B) rather
+    than the old tenancy-only payload["customers"] (populated on ~4% of racks,
+    blind to two of the three largest colocation customers). See
+    docs/superpowers/specs/2026-07-27-colocation-allocation-model-design.md.
+
+    Allocation rows carry no crm_account_name/match_status — the design doc's
+    measured reality is that none of these customers has any CRM sales record
+    at all, so a CRM Account / Match column here would only ever render em
+    dashes. Those columns are dropped for this table rather than kept empty.
+    Allocation rows also carry no precomputed potential_tl (unlike customers/
+    internal, whose potential_tl the service already computes) — it is priced
+    here from aggregate["unit_price_tl"], on Allocated U: the whole capacity
+    dedicated to that customer, which is also how "sellable_free_u" already
+    treats a colocation-role rack (spoken for regardless of how much of it is
+    actually in use — see design section 3).
+    """
     agg = (coloc or {}).get("aggregate", {}) or {}
-    customers = (coloc or {}).get("customers", []) or []
+    allocation = (coloc or {}).get("allocation", []) or []
     internal = (coloc or {}).get("internal", []) or []
 
     summary = build_colocation_summary(agg)
 
-    if customers:
+    unit_price = agg.get("unit_price_tl")
+
+    def _allocation_potential_tl(u):
+        # Mirrors app.services.colocation_price_service.potential_tl: an
+        # unresolved unit price propagates as None (renders "—" via fmt_tl),
+        # never silently prices allocated space at 0.
+        if unit_price is None:
+            return None
+        return float(u or 0) * float(unit_price)
+
+    if allocation:
+        # Potential (TL) sits directly after Allocated U -- not after Used U
+        # -- and the header itself names its basis ("-- Allocated") rather
+        # than relying solely on the subtitle. Fix round 1: the prior layout
+        # put Potential immediately right of Used U while pricing Allocated
+        # U, inviting exactly the 10x misread (SABANCI DX: 83 used vs 851
+        # allocated) the subtitle alone wasn't enough to prevent.
         header = html.Tr(children=[html.Th(h) for h in
-                                   ("Customer", "CRM Account", "Match", "Rack", "Used U (own)")])
+                                   ("Customer", "Racks", "Allocated U",
+                                    "Potential (TL) — Allocated", "Used U")])
         body = []
-        for c in customers:
-            badge_color = "green" if c.get("match_status") == "matched" else "orange"
+        for c in allocation:
+            name = c.get("customer", "")
+            if name == UNATTRIBUTED:
+                # Not "unowned": either the rack's tenant_name/tags/description
+                # all resolve to nothing, or (4 of these 10 racks) two
+                # colocation-role NetBox rows name DIFFERENT customers for the
+                # same rack and the conflict was never guessed at (design
+                # doc, "Four racks have irreconcilable ownership").
+                name_cell = dmc.Tooltip(
+                    label=(
+                        "Ownership ambiguous in NetBox: some of these racks "
+                        "have no resolvable tenant/tag/description; others "
+                        "carry two colocation-role rows naming different "
+                        "customers for the same rack, and the conflict was "
+                        "left unresolved rather than guessed at. This is "
+                        "real customer footprint, not free space."
+                    ),
+                    position="top", withArrow=True, multiline=True, w=280,
+                    children=dmc.Group(gap=4, wrap="nowrap", children=[
+                        dmc.Text(name, size="sm"),
+                        DashIconify(
+                            icon="solar:info-circle-bold-duotone", width=14,
+                            style={"color": "#F79009", "flexShrink": 0},
+                        ),
+                    ]),
+                )
+            else:
+                name_cell = name
             body.append(html.Tr(children=[
-                html.Td(c.get("tenant", "")),
-                html.Td(c.get("crm_account_name") or "—"),
-                html.Td(dmc.Badge(c.get("match_status", ""), color=badge_color, variant="light", size="sm")),
-                html.Td(", ".join(c.get("racks", []) or [])),
+                html.Td(name_cell),
+                html.Td(f"{int(c.get('rack_count') or 0):,}"),
+                html.Td(f"{int(c.get('allocated_u') or 0):,}"),
+                html.Td(fmt_tl(_allocation_potential_tl(c.get("allocated_u")))),
                 html.Td(f"{int(c.get('used_u') or 0):,}"),
             ]))
         table = dmc.Table(children=[html.Thead(header), html.Tbody(body)],
@@ -2863,13 +2939,20 @@ def build_colocation_tab(coloc: dict):
                          size="sm", c="#98A2B3")
 
     if internal:
-        int_header = html.Tr(children=[html.Th(h) for h in ("Resource", "Rack", "Used U")])
+        # Internal Resources is priced on Used U (colocation_matching_service.py
+        # potential_tl(row.get("used_u"), ...)) -- a DIFFERENT basis from the
+        # Dedicated Customers table above. Fix round 1: both tables used to
+        # say the bare "Potential (TL)", which read as the same figure with
+        # the same meaning; naming the basis in each header prevents that.
+        int_header = html.Tr(children=[html.Th(h) for h in
+                                       ("Resource", "Rack", "Used U", "Potential (TL) — Used")])
         int_body = []
         for r in internal:
             int_body.append(html.Tr(children=[
                 html.Td(r.get("tenant", "")),
                 html.Td(", ".join(r.get("racks", []) or [])),
                 html.Td(f"{int(r.get('used_u') or 0):,}"),
+                html.Td(fmt_tl(r.get("potential_tl"))),
             ]))
         internal_table = dmc.Table(children=[html.Thead(int_header), html.Tbody(int_body)],
                                    striped=True, highlightOnHover=True)
@@ -2883,14 +2966,55 @@ def build_colocation_tab(coloc: dict):
             summary,
         ]),
         html.Div(className="nexus-card", style={"padding": "20px"}, children=[
-            _section_title("Dedicated Customers", "Device tenant → CRM match"),
+            _section_title(
+                "Dedicated Customers",
+                "Rack allocation (NetBox role + tenant/tag/description) · "
+                "Potential at list price for Allocated U, not billed revenue",
+            ),
             html.Div(style={"overflowX": "auto"}, children=table),
         ]),
         html.Div(className="nexus-card", style={"padding": "20px"}, children=[
-            _section_title("Internal Resources", "Bulutistan-owned rack footprint"),
+            _section_title(
+                "Internal Resources",
+                "Bulutistan-owned rack footprint · Potential at list price, "
+                "not billed revenue — opportunity cost of self-occupied U",
+            ),
             html.Div(style={"overflowX": "auto"}, children=internal_table),
         ]),
     ])
+
+
+def _build_phys_inv_tab_content(phys_inv, coloc, *, show_overview: bool, show_colo: bool):
+    """Physical Inventory tab body: Overview + Colocation nested tabs.
+
+    Mirrors the Virtualization / Backup nested-tab shape already used in this
+    module, so no new UI mechanism is introduced.
+    """
+    order = [("phys-overview", show_overview), ("phys-colo", show_colo)]
+    default_tab = next((t for t, ok in order if ok), "phys-overview")
+    return dmc.Tabs(
+        id="phys-inv-nested-tabs",
+        color="violet",
+        variant="outline",
+        radius="md",
+        value=default_tab,
+        children=[
+            dmc.TabsList(children=[
+                dmc.TabsTab("Overview", value="phys-overview") if show_overview else None,
+                dmc.TabsTab("Colocation", value="phys-colo") if show_colo else None,
+            ]),
+            dmc.TabsPanel(
+                value="phys-overview",
+                children=dmc.Stack(gap="lg", style={"paddingTop": "12px"},
+                                   children=[_build_physical_inventory_dc_tab(phys_inv)]),
+            ) if show_overview else None,
+            dmc.TabsPanel(
+                value="phys-colo",
+                children=dmc.Stack(gap="lg", style={"paddingTop": "12px"},
+                                   children=[build_colocation_tab(coloc)]),
+            ) if show_colo else None,
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -5437,6 +5561,17 @@ def build_dc_view(
             return True
         return code in visible_sections
 
+    # Colocation moved under Physical Inventory (UI placement only). Access is
+    # still gated solely by sec:dc_view:colocation.
+    # Computed early (depends only on _sec, no data dependency) so the batch2
+    # fetch below can decide whether to fetch colocation data in parallel with
+    # everything else, instead of fetching it serially inside the panel body.
+    show_colo = _sec("sec:dc_view:colocation")
+    # Hoisted from its original computation further down (near the other
+    # sub:dc_view:summary:* flags) so it can gate the colocation fetch below —
+    # depends only on _sec, no data dependency, so hoisting is free.
+    show_summary_sellable = _sec("sub:dc_view:summary:sellable")
+
     tr = time_range or default_time_range()
     t_total = time.perf_counter()
     t_batch1 = time.perf_counter()
@@ -5512,28 +5647,40 @@ def build_dc_view(
     # Mirrors render_dc_loading_page's bare-id fallback.
     dc_display = format_dc_display_name(dc_name, dc_desc) or str(dc_id or "").strip() or "Data Center"
 
-    need_batch2 = (
+    _need_base2 = (
         _tab_eager(eager_tabs, "phys-inv")
         or _tab_eager(eager_tabs, "network")
         or _tab_eager(eager_tabs, "avail")
         or _tab_eager(eager_tabs, "storage")
     )
+    # Colocation is needed by the Physical Inventory sub-tab and by the Summary
+    # sellable section. Fetch it for either, and for neither otherwise — it is an
+    # HTTP round trip to customer-api. Never fetch it for principals who cannot
+    # see the Colocation sub-tab (show_colo gates both callers).
+    need_colo = show_colo and (
+        _tab_eager(eager_tabs, "phys-inv")
+        or (show_summary_sellable and _tab_eager(eager_tabs, "summary"))
+    )
     t_batch2 = time.perf_counter()
-    if need_batch2:
-        batch2 = parallel_execute(
-            {
-                "phys_inv": lambda: api.get_physical_inventory_dc(dc_name),
-                "san_switches": lambda: api.get_dc_san_switches(dc_id, tr),
-                "net_filters": lambda: api.get_dc_network_filters(dc_id, tr),
-                "aura_dc": lambda: api.get_dc_availability_sla_item(str(dc_id), dc_name, tr),
-            }
-        )
-        _log_dc_build_phase(str(dc_id), "batch2", t_batch2)
+    batch2_tasks: dict = {}
+    if _need_base2:
+        batch2_tasks.update({
+            "phys_inv": lambda: api.get_physical_inventory_dc(dc_name),
+            "san_switches": lambda: api.get_dc_san_switches(dc_id, tr),
+            "net_filters": lambda: api.get_dc_network_filters(dc_id, tr),
+            "aura_dc": lambda: api.get_dc_availability_sla_item(str(dc_id), dc_name, tr),
+        })
+    if need_colo:
+        batch2_tasks["colocation"] = lambda: api.get_colocation(dc_id)
+    if batch2_tasks:
+        batch2 = parallel_execute(batch2_tasks)
+        _log_dc_build_phase(str(dc_id), "batch2", t_batch2, tasks=len(batch2_tasks))
     else:
         batch2 = {}
     aura_dc_item = batch2.get("aura_dc")
     phys_inv = batch2.get("phys_inv") or {"total": 0}
     has_phys_inv = phys_inv.get("total", 0) > 0
+    coloc_data = batch2.get("colocation") or {}
 
     export_group = dmc.Group(
         gap=6,
@@ -5769,12 +5916,16 @@ def build_dc_view(
     show_phys = has_phys_inv and _sec("sec:dc_view:phys_inv")
     show_network = has_network and _sec("sec:dc_view:network")
     show_avail = has_avail and _sec("sec:dc_view:availability")
-    show_colo = _sec("sec:dc_view:colocation")
+    # show_colo was already computed near the top of this function (before
+    # batch2), so the colocation fetch could be added to that parallel batch.
+    show_phys_overview = _sec("sec:dc_view:phys_inv")
+    # The parent tab appears when either child is visible.
+    show_phys = (show_phys and show_phys_overview) or show_colo
     if eager_tabs is not None:
         show_virt = _sec("sec:dc_view:virtualization")
         show_storage = _sec("sec:dc_view:storage")
         show_backup = _sec("sec:dc_view:backup")
-        show_phys = _sec("sec:dc_view:phys_inv")
+        show_phys = _sec("sec:dc_view:phys_inv") or show_colo
         show_network = _sec("sec:dc_view:network")
 
     tabs_order = [
@@ -5785,7 +5936,6 @@ def build_dc_view(
         ("phys-inv", show_phys),
         ("network", show_network),
         ("avail", show_avail),
-        ("colo", show_colo),
     ]
     default_outer_tab = next((t for t, ok in tabs_order if ok), "summary")
     resolved_outer_tab = _resolve_outer_tab(active_outer_tab, tabs_order, default_outer_tab)
@@ -5797,7 +5947,8 @@ def build_dc_view(
     # compute metrics are thin, and its own "no data" state is explicit.
     show_licensed_os = _sec("sub:dc_view:virt:licensed_os")
     show_virt_hosts = _sec("sub:dc_view:virt:hosts")
-    show_summary_sellable = _sec("sub:dc_view:summary:sellable")
+    # show_summary_sellable is now computed near show_colo (above, before
+    # batch2) so it can gate the colocation fetch.
     virt_order = [
         ("classic", show_classic),
         ("hyperconv", show_hyperconv),
@@ -5884,7 +6035,6 @@ def build_dc_view(
                             dmc.TabsTab("Physical Inventory", value="phys-inv") if show_phys else None,
                             dmc.TabsTab("Network", value="network") if show_network else None,
                             dmc.TabsTab("Availability", value="avail") if show_avail else None,
-                            dmc.TabsTab("Colocation", value="colo") if show_colo else None,
                         ],
                     ),
                 ),
@@ -5901,6 +6051,10 @@ def build_dc_view(
                             show_sellable=show_summary_sellable,
                             classic_clusters=classic_clusters or None,
                             hyperconv_clusters=hyperconv_clusters or None,
+                            # coloc_data was fetched in the batch2 round (gated by
+                            # need_colo, which covers this Summary sellable case) —
+                            # reuse it rather than issuing a second HTTP call.
+                            coloc_aggregate=coloc_data.get("aggregate"),
                         )],
                     ),
                 ) if show_summary else None,
@@ -6063,7 +6217,12 @@ def build_dc_view(
                             children=dmc.Stack(
                                 gap="lg",
                                 style={"padding": "0 30px"},
-                                children=[_build_physical_inventory_dc_tab(phys_inv)],
+                                children=[_build_phys_inv_tab_content(
+                                    phys_inv,
+                                    coloc_data,
+                                    show_overview=show_phys_overview,
+                                    show_colo=show_colo,
+                                )],
                             ),
                         )
                     ),
@@ -6140,23 +6299,6 @@ def build_dc_view(
                 )
                 if show_avail
                 else None,
-
-                # Colocation (dedicated-customer rack footprint)
-                dmc.TabsPanel(
-                    value="colo",
-                    children=(
-                        _tab_lazy_placeholder("colo", dc_display)
-                        if not _tab_eager(eager_tabs, "colo")
-                        else html.Div(
-                            id="dc-tab-colo-root",
-                            children=dmc.Stack(
-                                gap="lg",
-                                style={"padding": "0 30px"},
-                                children=[build_colocation_tab(api.get_colocation(dc_id))],
-                            ),
-                        )
-                    ),
-                ) if show_colo else None,
             ],
         )
     ])
@@ -6198,7 +6340,6 @@ def render_dc_loading_page(
         ("phys-inv", _sec("sec:dc_view:phys_inv")),
         ("network", _sec("sec:dc_view:network")),
         ("avail", _sec("sec:dc_view:availability")),
-        ("colo", _sec("sec:dc_view:colocation")),
     ]
     default_tab = "summary" if show_summary else "virt"
     resolved_tab = _resolve_outer_tab(active_outer_tab, tabs_order, default_tab)
@@ -6210,7 +6351,6 @@ def render_dc_loading_page(
         dmc.TabsTab("Physical Inventory", value="phys-inv") if _sec("sec:dc_view:phys_inv") else None,
         dmc.TabsTab("Network", value="network") if _sec("sec:dc_view:network") else None,
         dmc.TabsTab("Availability", value="avail") if _sec("sec:dc_view:availability") else None,
-        dmc.TabsTab("Colocation", value="colo") if _sec("sec:dc_view:colocation") else None,
     ]
     loc_badge = dc_loc or "Loading…"
     shell_tab = resolved_tab if resolved_tab == "summary" else "summary"

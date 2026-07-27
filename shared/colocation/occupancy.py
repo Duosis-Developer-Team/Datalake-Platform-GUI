@@ -18,9 +18,22 @@ Data model (see the TASK-62 spec §5):
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Sequence
 
+from shared.colocation.allocation import is_colocation_rack, resolve_rack_customer_label
+
+logger = logging.getLogger(__name__)
+
 # One row per rack. %(dc_pattern)s: a str glob (e.g. '%DC13%') or None for all.
+#
+# role_id / tags / description / tenant_name (phase 2 Task B): scalar per-row
+# facts straight off discovery_loki_rack, added for the allocation model (see
+# shared/colocation/allocation.py). They are NOT aggregated -- each duplicate
+# discovery_loki_rack row for the same physical rack carries its own values,
+# and _dedupe_physical_racks below resolves the ambiguity when duplicates
+# disagree (a physical rack cannot simultaneously be a generic HOST rack and
+# a customer's colocation cage).
 OCCUPANCY_SQL = """
 WITH dev_slots AS (
     SELECT d.rack_name,
@@ -42,7 +55,11 @@ rack AS (
            r.u_height::int AS capacity_u,
            l.site_name     AS site_name,
            l.name          AS hall,
-           COALESCE(l.parent_name, l.name) AS dc
+           COALESCE(l.parent_name, l.name) AS dc,
+           r.role_id       AS role_id,
+           r.tags          AS tags,
+           r.description   AS description,
+           r.tenant_name   AS tenant_name
     FROM discovery_loki_rack r
     LEFT JOIN discovery_loki_location l ON l.id::varchar = r.location_id
 )
@@ -60,19 +77,28 @@ SELECT r.rack_id,
        ARRAY_AGG(DISTINCT s.tenant_name)
            FILTER (WHERE s.tenant_name IS NOT NULL AND btrim(s.tenant_name) <> ''
                    AND s.u BETWEEN 1 AND r.capacity_u) AS tenants,
-       r.site_name
+       r.site_name,
+       r.role_id,
+       r.tags,
+       r.description,
+       r.tenant_name
 FROM rack r
 LEFT JOIN dev_slots s
     ON s.rack_name = r.rack_name
    AND COALESCE(s.site_name, '') = COALESCE(r.site_name, '')
 WHERE (%(dc_pattern)s IS NULL OR COALESCE(r.dc, '') ILIKE %(dc_pattern)s)
-GROUP BY r.rack_id, r.rack_name, r.dc, r.hall, r.capacity_u, r.site_name
+GROUP BY r.rack_id, r.rack_name, r.dc, r.hall, r.capacity_u, r.site_name,
+         r.role_id, r.tags, r.description, r.tenant_name
 ORDER BY r.dc, r.rack_name
 """
 
 OCCUPANCY_COLUMNS = (
     "rack_id", "rack_name", "dc", "hall", "capacity_u", "used_u", "free_u", "tenants",
     "site_name",
+    # Appended (phase 2 Task B) -- order is load-bearing, existing callers
+    # index by name via row_to_dict, not position, but the SQL SELECT list
+    # above must match this order 1:1.
+    "role_id", "tags", "description", "tenant_name",
 )
 
 # Tenants that are Bulutistan's own infrastructure, not external colocation
@@ -93,6 +119,66 @@ def row_to_dict(row: Sequence[Any]) -> dict:
     return d
 
 
+def _resolve_colocation_identity(rack_name: Any, site_name: Any, colo_rows: list[dict]) -> dict:
+    """Pick role_id/tags/description/tenant_name for a physical rack from its
+    colocation-role (3/4) duplicate rows -- called only when ``colo_rows`` is
+    non-empty.
+
+    * Exactly one colocation-role duplicate: unambiguous, use it verbatim.
+    * Two or more, all resolving (via ``resolve_rack_customer_label``) to the
+      SAME customer: use any one of them (they agree; e.g. capacity or hall
+      may differ but the identity does not).
+    * Two or more resolving to DIFFERENT customers: a genuine conflict --
+      verified against prod 2026-07-27, 4 racks ("112", "114", "116", "306")
+      have duplicate colocation-role rows naming different customers (e.g.
+      rack "306": a CUSTOMER-role row naming TURKONAY vs a NON-STANDART-role
+      row naming SABANCI DX; rack "112": two CUSTOMER-role rows, one naming
+      AKSIGORTA via description, one naming AytemizBank via tenant_name).
+      There is no principled way to pick a winner from the data available --
+      an ordering signal like ``first_observed`` only reflects which record
+      the collector happened to paginate first within one sweep (sub-second
+      apart on these rows), not which registration is authoritative. Per the
+      design doc's own rule for unresolvable racks ("never dropped, never
+      guessed"), a conflict resolves to UNATTRIBUTED, not to either
+      candidate, and is logged with the competing values so it can be
+      corrected in NetBox.
+
+    This function decides IDENTITY ONLY. capacity_u/used_u/free_u are never
+    touched here -- they keep the pure max-merge every duplicate has always
+    used (see _dedupe_physical_racks), regardless of which row (if any) wins
+    the colocation identity.
+    """
+    labels = {
+        resolve_rack_customer_label(r.get("tenant_name"), r.get("tags"), r.get("description"))
+        for r in colo_rows
+    }
+    if len(labels) > 1:
+        logger.warning(
+            "colocation identity conflict for rack %r/%r: %d colocation-role "
+            "duplicates disagree on customer (%s) -- resolving to Unattributed. "
+            "Competing rows: %s",
+            rack_name, site_name, len(colo_rows), sorted(labels),
+            [
+                {
+                    "role_id": r.get("role_id"), "tenant_name": r.get("tenant_name"),
+                    "tags": r.get("tags"), "description": r.get("description"),
+                }
+                for r in colo_rows
+            ],
+        )
+        return {
+            "role_id": colo_rows[0].get("role_id"),
+            "tags": [], "description": "", "tenant_name": None,
+        }
+    winner = colo_rows[0]
+    return {
+        "role_id": winner.get("role_id"),
+        "tags": winner.get("tags"),
+        "description": winner.get("description"),
+        "tenant_name": winner.get("tenant_name"),
+    }
+
+
 def _dedupe_physical_racks(rows: Sequence[dict]) -> list[dict]:
     """Collapse duplicate ``discovery_loki_rack`` entries for the same physical
     rack so used/free U are not inflated.
@@ -109,34 +195,55 @@ def _dedupe_physical_racks(rows: Sequence[dict]) -> list[dict]:
     disagree we take the max capacity + max used (the most complete count),
     recompute free, union the tenant lists, and pick the most-common dc
     (tie-break: smallest) since a name+site that spans DC labels is ambiguous.
+    This max/union/vote merge is UNCHANGED by colocation identity (phase 2
+    Task B) -- capacity_u/used_u/free_u/tenants/dc never depend on which
+    duplicate (if any) is colocation-role. Only role_id/tags/description/
+    tenant_name are resolved separately, via ``_resolve_colocation_identity``
+    for the subset of duplicates that are colocation-role (3/4); a rack with
+    no colocation-role duplicate keeps an arbitrary (first-encountered, like
+    the existing rack_id/hall fields) role_id/tags/description/tenant_name,
+    which is never read since ``is_colocation_rack`` gates entry into the
+    allocation aggregation.
     """
-    by_key: dict[tuple, dict] = {}
+    groups: dict[tuple, list[dict]] = {}
     order: list[tuple] = []
-    dc_votes: dict[tuple, dict] = {}
     for r in rows:
         key = (r.get("rack_name"), (r.get("site_name") or ""))
-        dc = r.get("dc")
-        votes = dc_votes.setdefault(key, {})
-        if dc:
-            votes[dc] = votes.get(dc, 0) + 1
-        cur = by_key.get(key)
-        if cur is None:
-            by_key[key] = dict(r)
+        if key not in groups:
+            groups[key] = []
             order.append(key)
-            continue
-        cap = max(int(cur.get("capacity_u") or 0), int(r.get("capacity_u") or 0))
-        used = max(int(cur.get("used_u") or 0), int(r.get("used_u") or 0))
-        cur["capacity_u"] = cap
-        cur["used_u"] = used
-        cur["free_u"] = max(cap - used, 0)
-        cur["tenants"] = list(dict.fromkeys((cur.get("tenants") or []) + (r.get("tenants") or [])))
+        groups[key].append(r)
+
     out = []
     for key in order:
-        row = by_key[key]
-        votes = dc_votes.get(key) or {}
-        if votes:
-            row["dc"] = min(votes, key=lambda d: (-votes[d], d))  # most-common, tie -> smallest
-        out.append(row)
+        group = groups[key]
+        base = dict(group[0])
+
+        cap = 0
+        used = 0
+        tenants: list = []
+        dc_votes: dict = {}
+        for r in group:
+            cap = max(cap, int(r.get("capacity_u") or 0))
+            used = max(used, int(r.get("used_u") or 0))
+            for t in (r.get("tenants") or []):
+                if t not in tenants:
+                    tenants.append(t)
+            dc = r.get("dc")
+            if dc:
+                dc_votes[dc] = dc_votes.get(dc, 0) + 1
+        base["capacity_u"] = cap
+        base["used_u"] = used
+        base["free_u"] = max(cap - used, 0)
+        base["tenants"] = tenants
+        if dc_votes:
+            base["dc"] = min(dc_votes, key=lambda d: (-dc_votes[d], d))  # most-common, tie -> smallest
+
+        colo_rows = [r for r in group if is_colocation_rack(r.get("role_id"))]
+        if colo_rows:
+            base.update(_resolve_colocation_identity(key[0], key[1], colo_rows))
+
+        out.append(base)
     return out
 
 
@@ -159,10 +266,17 @@ def aggregate_by_dc(rows: Sequence[dict]) -> dict:
     return out
 
 
-def is_internal_tenant(name: str) -> bool:
-    """True when the tenant is Bulutistan-internal (excluded from the customer view)."""
+def is_internal_tenant(name: str, prefixes: Sequence[str] | None = None) -> bool:
+    """True when the tenant is Bulutistan-internal (excluded from the customer view).
+
+    `prefixes` REPLACES the built-in tuple rather than extending it — the caller
+    owns the union, because the caller is the one that knows whether the
+    Administration mapping table was reachable. Passing an empty sequence
+    deliberately classifies nothing as internal.
+    """
+    active = INTERNAL_TENANT_PREFIXES if prefixes is None else prefixes
     key = (name or "").strip().lower()
-    return any(key.startswith(p) for p in INTERNAL_TENANT_PREFIXES)
+    return any(key.startswith(p) for p in active)
 
 
 # --- EXACT per-(rack, tenant) occupancy -------------------------------------
@@ -309,13 +423,17 @@ WHERE (%(dc_pattern)s IS NULL OR COALESCE(rc.dc, '') ILIKE %(dc_pattern)s)
 """
 
 
-def _classify_slots(rows) -> dict:
+def _classify_slots(rows, internal_prefixes: Sequence[str] | None = None) -> dict:
     """Partition occupied front-face U-slots into external/internal/untagged.
 
     rows: iterable of (rack_name, site_name, u, tenant_name). Each distinct
     (rack_name, site_name, u) slot is counted once and assigned to the
     highest-priority tenant occupying it: external (2) > internal (1) >
     untagged (0). Returns U counts per group + distinct external tenant count.
+
+    internal_prefixes: forwarded to ``is_internal_tenant``; ``None`` means the
+    built-in tuple, anything else REPLACES it (see is_internal_tenant) — same
+    replace-not-extend semantics as the rest of this module.
     """
     best: dict[tuple, int] = {}
     external_names: set[str] = set()
@@ -324,7 +442,7 @@ def _classify_slots(rows) -> dict:
         t = (tenant or "").strip()
         if not t:
             rank = 0
-        elif is_internal_tenant(t):
+        elif is_internal_tenant(t, internal_prefixes):
             rank = 1
         else:
             rank = 2
@@ -339,8 +457,15 @@ def _classify_slots(rows) -> dict:
     }
 
 
-def used_u_breakdown(cursor, dc_pattern: str | None = None) -> dict:
+def used_u_breakdown(
+    cursor, dc_pattern: str | None = None, internal_prefixes: Sequence[str] | None = None
+) -> dict:
     """Execute USED_U_BREAKDOWN_SQL and return the external/internal/untagged
-    used-U split (sums to the de-duplicated used_u) + external customer count."""
+    used-U split (sums to the de-duplicated used_u) + external customer count.
+
+    internal_prefixes is forwarded to ``_classify_slots`` untouched — this
+    module never queries for prefixes itself, it only accepts them as an
+    argument (shared/colocation stays database-free).
+    """
     cursor.execute(USED_U_BREAKDOWN_SQL, {"dc_pattern": dc_pattern})
-    return _classify_slots(cursor.fetchall() or [])
+    return _classify_slots(cursor.fetchall() or [], internal_prefixes)
