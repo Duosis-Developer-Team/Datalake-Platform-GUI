@@ -2545,7 +2545,8 @@ def build_colocation_tab(coloc: dict):
 
     if customers:
         header = html.Tr(children=[html.Th(h) for h in
-                                   ("Customer", "CRM Account", "Match", "Rack", "Used U (own)")])
+                                   ("Customer", "CRM Account", "Match", "Rack",
+                                    "Used U (own)", "Potential (TL)")])
         body = []
         for c in customers:
             badge_color = "green" if c.get("match_status") == "matched" else "orange"
@@ -2555,6 +2556,7 @@ def build_colocation_tab(coloc: dict):
                 html.Td(dmc.Badge(c.get("match_status", ""), color=badge_color, variant="light", size="sm")),
                 html.Td(", ".join(c.get("racks", []) or [])),
                 html.Td(f"{int(c.get('used_u') or 0):,}"),
+                html.Td(fmt_tl(c.get("potential_tl"))),
             ]))
         table = dmc.Table(children=[html.Thead(header), html.Tbody(body)],
                           striped=True, highlightOnHover=True)
@@ -2563,13 +2565,15 @@ def build_colocation_tab(coloc: dict):
                          size="sm", c="#98A2B3")
 
     if internal:
-        int_header = html.Tr(children=[html.Th(h) for h in ("Resource", "Rack", "Used U")])
+        int_header = html.Tr(children=[html.Th(h) for h in
+                                       ("Resource", "Rack", "Used U", "Potential (TL)")])
         int_body = []
         for r in internal:
             int_body.append(html.Tr(children=[
                 html.Td(r.get("tenant", "")),
                 html.Td(", ".join(r.get("racks", []) or [])),
                 html.Td(f"{int(r.get('used_u') or 0):,}"),
+                html.Td(fmt_tl(r.get("potential_tl"))),
             ]))
         internal_table = dmc.Table(children=[html.Thead(int_header), html.Tbody(int_body)],
                                    striped=True, highlightOnHover=True)
@@ -2583,11 +2587,18 @@ def build_colocation_tab(coloc: dict):
             summary,
         ]),
         html.Div(className="nexus-card", style={"padding": "20px"}, children=[
-            _section_title("Dedicated Customers", "Device tenant → CRM match"),
+            _section_title(
+                "Dedicated Customers",
+                "Device tenant → CRM match · Potential at list price, not billed revenue",
+            ),
             html.Div(style={"overflowX": "auto"}, children=table),
         ]),
         html.Div(className="nexus-card", style={"padding": "20px"}, children=[
-            _section_title("Internal Resources", "Bulutistan-owned rack footprint"),
+            _section_title(
+                "Internal Resources",
+                "Bulutistan-owned rack footprint · Potential at list price, "
+                "not billed revenue — opportunity cost of self-occupied U",
+            ),
             html.Div(style={"overflowX": "auto"}, children=internal_table),
         ]),
     ])
