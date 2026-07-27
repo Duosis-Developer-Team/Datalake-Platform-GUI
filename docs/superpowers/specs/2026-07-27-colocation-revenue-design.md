@@ -64,11 +64,20 @@ The cabinet-priced products have zero rows in `salesorderdetails`.
 ### Free rack-U per DC
 
 Computed via `shared.colocation.occupancy.occupancy_rows` (188 deduplicated racks — the
-`(rack_name, site_name)` fan-out guard documented in that module is load-bearing):
+`(rack_name, site_name)` fan-out guard documented in that module is load-bearing).
+
+**Reading:** every row except DC13 is the grouped reading
+(`occupancy_rows(cur, dc_pattern=None)` grouped by `dc`); DC13 is corrected here to the
+per-DC query path (`occupancy_rows(cur, "%DC13%")`) that the shipped Colocation tab and
+Floor Map actually use — see "Capacity discrepancy — RESOLVED" below for why the two
+readings disagree for DC13 (and, in the opposite direction, for DH3). Because of that same
+defect, the per-DC rows below do **not** sum to the platform **Total** row, which is the
+separately-deduplicated `"*"` path and is authoritative platform-wide — do not "fix" that
+apparent mismatch by re-deriving it from the rows above.
 
 | DC | Racks | Total U | Used U | Free U | Free U × list (TL) |
 |---|---|---|---|---|---|
-| DC13 | 57 | 2,719 | 1,169 | 1,550 | 16,167,802 |
+| DC13 | 57 | 2,629 | 1,169 | 1,460 | 15,229,026 |
 | DC16 | 38 | 1,596 | 234 | 1,362 | 14,206,804 |
 | DH3 | 30 | 1,420 | 266 | 1,154 | 12,037,189 |
 | DC14 | 28 | 1,251 | 501 | 750 | 7,823,130 |
@@ -85,7 +94,7 @@ Computed via `shared.colocation.occupancy.occupancy_rows` (188 deduplicated rack
 
 **Scale finding that shapes the DC card design:** DC13's card currently reads
 "Potential Sales (Virtualization) 574.8 Bin TL – 1.91 Milyon TL". Colocation potential in
-the same DC is 16.17 M TL — 8× to 28× larger. Summing colocation into the virtualization
+the same DC is 15.23 M TL — 8× to 26× larger. Summing colocation into the virtualization
 range would make the combined figure colocation-dominated and erase every movement in the
 virtualization signal. **Decision: colocation is rendered as a separate line, never summed
 into the virtualization range.**
@@ -148,7 +157,7 @@ access. Migration behaviour is specified in the implementation plan.
 
 ```
 Total U | Used U | Free U | Racks | Free U Potential
-2,719     1,169    1,550    57      16.17 M TL
+2,629     1,169    1,460    57      15.23 M TL
 ```
 
 The tile carries a tooltip naming the price source and unit price so the number is
@@ -218,7 +227,7 @@ Potential Sales (Virtualization)
 574.8 Bin TL – 1.91 Milyon TL
 
 Potential Sales (Colocation)
-16.17 Milyon TL
+15.23 Milyon TL
 ```
 
 Colocation shows a single value, not a range: free U is an exact count and the unit price
