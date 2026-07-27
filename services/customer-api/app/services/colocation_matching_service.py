@@ -13,6 +13,7 @@ from shared.colocation.occupancy import (
 )
 from shared.colocation.matching import build_customer_footprint, build_internal_footprint
 from app.db.queries import service_mapping as sm
+from app.services import cache_service as cache
 from app.services.colocation_price_service import (
     potential_tl,
     resolve_colocation_unit_price,
@@ -23,6 +24,14 @@ logger = logging.getLogger(__name__)
 # Reserved account id the Administration "Internal (Bulutistan) source mappings"
 # editor writes under. Mirrors INTERNAL_ACCOUNT_ID in the GUI editor.
 INTERNAL_ACCOUNT_ID = "INTERNAL"
+
+# Mirrors dc_service.DatabaseService.get_dc_racks_occupancy's 6h singleflight
+# cache for the same shared.colocation.occupancy queries: rack occupancy
+# changes on operator/NetBox timescales, not per-request, and this endpoint's
+# per-request cost (occupancy_rows + tenant_occupancy_rows + used_u_breakdown
+# + two price lookups, ~42 SQL statements for the unfiltered "*" variant) is
+# the same shape of cost that justified 21600s there.
+_CACHE_TTL_SECONDS = 21600
 
 
 class ColocationMatchingService:
@@ -80,36 +89,34 @@ class ColocationMatchingService:
                 prefixes.append(value)
         return tuple(prefixes)
 
-    def get_colocation(self, dc_code: str) -> dict:
+    @staticmethod
+    def _empty_payload() -> dict:
+        aggregate = {
+            "total_u": 0, "used_u": 0, "free_u": 0, "rack_count": 0,
+            "external_u": 0, "internal_u": 0, "untagged_u": 0,
+            "external_customer_count": 0,
+            "unit_price_tl": None, "price_source": "unavailable",
+            "free_u_potential_tl": None, "used_u_potential_tl": None,
+        }
+        return {"aggregate": aggregate, "customers": [], "internal": [], "racks": []}
+
+    def _fetch_colocation(self, dc_code: str) -> dict:
         pattern = None if not dc_code or dc_code == "*" else f"%{dc_code.strip()}%"
         # Computed once, up front: _internal_prefixes() talks to webui, not the
         # datalake connection opened below, and is reused for the summary-bar
         # breakdown AND both footprint builders so all three agree on exactly
         # the same internal/external split.
         internal_prefixes = self._internal_prefixes()
-        rows: list = []
-        tenant_rows: list = []
-        breakdown: dict = {}
-        unit_price: float | None = None
-        price_source = "unavailable"
-        try:
-            with self._svc._get_connection() as conn:
-                with conn.cursor() as cur:
-                    rows = occupancy_rows(cur, dc_pattern=pattern)
-                    tenant_rows = tenant_occupancy_rows(cur, dc_pattern=pattern)
-                    breakdown = used_u_breakdown(
-                        cur, dc_pattern=pattern, internal_prefixes=internal_prefixes
-                    )
-                    unit_price, price_source = resolve_colocation_unit_price(
-                        cur, self._webui
-                    )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("colocation occupancy query failed for %s: %s", dc_code, exc)
-            rows = []
-            tenant_rows = []
-            breakdown = {}
-            unit_price = None
-            price_source = "unavailable"
+        with self._svc._get_connection() as conn:
+            with conn.cursor() as cur:
+                rows = occupancy_rows(cur, dc_pattern=pattern)
+                tenant_rows = tenant_occupancy_rows(cur, dc_pattern=pattern)
+                breakdown = used_u_breakdown(
+                    cur, dc_pattern=pattern, internal_prefixes=internal_prefixes
+                )
+                unit_price, price_source = resolve_colocation_unit_price(
+                    cur, self._webui
+                )
         agg_by_dc = aggregate_by_dc(rows)
         aggregate = {"total_u": 0, "used_u": 0, "free_u": 0, "rack_count": 0}
         for a in agg_by_dc.values():
@@ -136,3 +143,23 @@ class ColocationMatchingService:
         for row in internal:
             row["potential_tl"] = potential_tl(row.get("used_u"), unit_price)
         return {"aggregate": aggregate, "customers": customers, "internal": internal, "racks": rows}
+
+    def get_colocation(self, dc_code: str) -> dict:
+        # 6h singleflight cache — see _CACHE_TTL_SECONDS. Keyed on the raw
+        # dc_code argument since "*" (all DCs, ~42 SQL statements) and a
+        # single DC code return different payloads and must not share an
+        # entry. Mirrors dc_service.DatabaseService.get_dc_racks_occupancy.
+        cache_key = f"colocation:{dc_code}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+        try:
+            return cache.run_singleflight(
+                cache_key, lambda: self._fetch_colocation(dc_code), ttl=_CACHE_TTL_SECONDS
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A factory exception is never cached by run_singleflight, so a
+            # transient DB outage self-heals on the next request rather than
+            # serving this degraded shape for the full TTL.
+            logger.error("colocation occupancy query failed for %s: %s", dc_code, exc)
+            return self._empty_payload()

@@ -3,8 +3,23 @@ into {aggregate, customers, racks}. Alias index is built from GET_ALL_ALIASES
 rows keyed by netbox_musteri_value and crm_account_name (lowercased)."""
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from app.services import cache_service as cache
 from app.services.colocation_matching_service import ColocationMatchingService
 from shared.colocation.occupancy import INTERNAL_TENANT_PREFIXES
+
+
+@pytest.fixture(autouse=True)
+def _no_stale_colocation_cache():
+    """get_colocation is now 6h-cached (Fix 1) on the "colocation:{dc_code}"
+    key. Every test below exercises "DC13" against a fresh set of patched
+    return values, so the process-wide cache must be cleared before AND
+    after each test or a later test would silently observe an earlier
+    test's cached payload instead of its own mocks."""
+    cache.delete_prefix("colocation:")
+    yield
+    cache.delete_prefix("colocation:")
 
 
 def _rows():
@@ -265,3 +280,81 @@ def test_internal_rows_also_carry_potential():
     assert payload["internal"]
     for r in payload["internal"]:
         assert r["potential_tl"] == r["used_u"] * price
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: server-side 6h singleflight cache (mirrors
+# dc_service.DatabaseService.get_dc_racks_occupancy), keyed on dc_code.
+# ---------------------------------------------------------------------------
+
+def _svc_with_counting_occupancy():
+    customer = MagicMock()
+    webui = MagicMock()
+    webui.is_available = False
+    svc = ColocationMatchingService(customer_service=customer, webui=webui)
+
+    conn = MagicMock()
+    conn.__enter__.return_value = conn
+    conn.cursor.return_value.__enter__.return_value = MagicMock()
+    customer._get_connection.return_value = conn
+    return svc
+
+
+def test_get_colocation_same_dc_code_hits_query_path_once():
+    svc = _svc_with_counting_occupancy()
+
+    with patch("app.services.colocation_matching_service.occupancy_rows",
+               return_value=_rows()) as occ, \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows",
+               return_value=_tenant_rows()), \
+         patch("app.services.colocation_matching_service.used_u_breakdown", return_value={}), \
+         patch("app.services.colocation_matching_service.resolve_colocation_unit_price",
+               return_value=(None, "unavailable")):
+        first = svc.get_colocation("DC13")
+        second = svc.get_colocation("DC13")
+
+    assert occ.call_count == 1  # second call served entirely from cache
+    assert first == second
+
+
+def test_get_colocation_different_dc_codes_do_not_share_cache_entry():
+    svc = _svc_with_counting_occupancy()
+
+    with patch("app.services.colocation_matching_service.occupancy_rows",
+               return_value=_rows()) as occ, \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows",
+               return_value=_tenant_rows()), \
+         patch("app.services.colocation_matching_service.used_u_breakdown", return_value={}), \
+         patch("app.services.colocation_matching_service.resolve_colocation_unit_price",
+               return_value=(None, "unavailable")):
+        svc.get_colocation("DC13")
+        svc.get_colocation("DC16")
+        svc.get_colocation("*")
+
+    assert occ.call_count == 3  # each distinct dc_code re-runs the query path
+
+
+def test_get_colocation_failure_is_not_cached():
+    """A factory exception must not populate the cache — otherwise a
+    transient DB outage would serve the degraded/empty shape for the full
+    6h TTL instead of self-healing on the next request."""
+    svc = _svc_with_counting_occupancy()
+
+    with patch("app.services.colocation_matching_service.occupancy_rows",
+               side_effect=RuntimeError("db down")) as occ:
+        degraded = svc.get_colocation("DC13")
+
+    assert degraded["aggregate"]["total_u"] == 0
+    assert degraded["customers"] == []
+
+    with patch("app.services.colocation_matching_service.occupancy_rows",
+               return_value=_rows()) as occ2, \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows",
+               return_value=_tenant_rows()), \
+         patch("app.services.colocation_matching_service.used_u_breakdown", return_value={}), \
+         patch("app.services.colocation_matching_service.resolve_colocation_unit_price",
+               return_value=(None, "unavailable")):
+        recovered = svc.get_colocation("DC13")
+
+    assert occ2.call_count == 1  # the earlier failure was not cached
+    assert recovered["aggregate"]["total_u"] == 94
