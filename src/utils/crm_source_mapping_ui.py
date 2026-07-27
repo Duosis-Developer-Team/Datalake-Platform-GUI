@@ -516,3 +516,33 @@ def remove_mapping_row(editor_state: dict | None, section: str, index: int) -> d
     entries.pop(index)
     state["sections"][section] = entries
     return state
+
+
+def _rule_identity(mapping: dict) -> tuple[str, str, str]:
+    """The triple that makes two mappings the same rule.
+
+    match_value is lowercased because values resolve through ILIKE (see
+    shared.customer.match.sql_pattern) — 'ADA_GROSS' and 'Ada_Gross' claim
+    exactly the same rows, so writing both would be a silent duplicate.
+    """
+    return (
+        str(mapping.get("data_source") or "").strip(),
+        str(mapping.get("match_method") or "").strip().lower(),
+        str(mapping.get("match_value") or "").strip().lower(),
+    )
+
+
+def merge_source_mapping(existing: list[dict], entry: dict) -> tuple[list[dict], bool]:
+    """Union `entry` into `existing`. Returns (merged, needs_write).
+
+    The save endpoint replaces every mapping an account has, so callers must
+    send old + new together; appending is not optional. Returns needs_write
+    False when the rule is already present, so the caller can skip the PUT
+    entirely rather than rewrite an unchanged set.
+    """
+    merged = [dict(m) for m in (existing or [])]
+    identity = _rule_identity(entry)
+    if any(_rule_identity(m) == identity for m in merged):
+        return merged, False
+    merged.append(dict(entry))
+    return merged, True

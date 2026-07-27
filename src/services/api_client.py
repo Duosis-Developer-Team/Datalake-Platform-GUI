@@ -2471,6 +2471,11 @@ def _invalidate_customer_views_cache() -> None:
     work, and a pinned prefix would silently stop matching.
     """
     _api_response_cache.delete_prefix("api:customer_resources:")
+    # The unmapped view is the complement of every mapping, so any mapping
+    # write changes it. customer-api drops its own copy already; without this
+    # line the GUI kept serving the stale list and the row the operator just
+    # fixed stayed on screen.
+    _api_response_cache.delete_prefix("api:unmapped_resources:")
     _api_response_cache.delete("api:crm_aliases")
     _api_response_cache.delete("api:customer_catalog")
     _api_response_cache.delete("api:customer_overview")
