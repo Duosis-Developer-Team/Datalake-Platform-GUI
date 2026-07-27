@@ -204,7 +204,21 @@ def build_layout(tr: dict | None = None, visible_sections=None) -> html.Div:
     tr = tr or default_time_range()
     return html.Div(style={"padding": "8px 4px"}, children=[
         _header(),
-        html.Div(id=TOAST_ID),
+        # Pinned to the viewport, not to the top of the document. The worklist
+        # is ~13k rows deep, so an operator clicking a row is scrolled far past
+        # any in-flow banner: the write succeeded and the page reported it
+        # hundreds of pixels above the fold, which read as "the button does
+        # nothing" and invited a second, unintended click.
+        html.Div(
+            id=TOAST_ID,
+            style={
+                "position": "fixed",
+                "top": "16px",
+                "right": "16px",
+                "zIndex": 2000,
+                "maxWidth": "440px",
+            },
+        ),
         html.Div(id=BODY_ID, children=build_body(tr)),
     ])
 

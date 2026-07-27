@@ -252,3 +252,33 @@ def test_ambiguous_kpi_appears_only_when_there_are_ambiguous_rows():
     # so a bare substring check can never tell the two payloads apart.
     assert "Belirsiz (elle seçim)" in _render(_MIXED_PAYLOAD)
     assert "Belirsiz (elle seçim)" not in _render(_PAYLOAD)
+
+
+def test_the_toast_is_pinned_to_the_viewport_not_the_document():
+    """The worklist is ~13k rows deep. An in-flow banner at the top of the page
+    is invisible to an operator scrolled down to the row they clicked — the write
+    succeeded and reported it above the fold, which read as a dead button and
+    invited a second, unintended click. It must not be able to scroll away.
+    """
+    from src.pages.unmapped_resources import TOAST_ID, build_layout
+
+    layout = _find_toast(build_layout({"preset": "7d"}), TOAST_ID)
+    assert layout is not None, "toast container not found in the layout"
+    style = layout.style or {}
+    assert style.get("position") == "fixed"
+    assert int(style.get("zIndex") or 0) >= 1000
+
+
+def _find_toast(node, toast_id):
+    if getattr(node, "id", None) == toast_id:
+        return node
+    children = getattr(node, "children", None)
+    if children is None:
+        return None
+    if not isinstance(children, (list, tuple)):
+        children = [children]
+    for child in children:
+        hit = _find_toast(child, toast_id)
+        if hit is not None:
+            return hit
+    return None
