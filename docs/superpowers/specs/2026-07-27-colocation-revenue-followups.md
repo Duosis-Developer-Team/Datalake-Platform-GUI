@@ -110,3 +110,29 @@ reproducible, and a real regression could hide in the noise.
 - `tests/test_dc_display 2.py` — a stray duplicate file present since 2026-04-09.
 - A pre-existing `NameError` in `_build_physical_inventory_dc_tab` (`rm_height` unset on the
   empty-manufacturer branch) was fixed in passing during this work. It has no test.
+
+## 7. A code deploy does not take effect for 24h without clearing Redis DB 1
+
+Found while verifying the first full rebuild, 2026-07-27. All ten images rebuilt
+`--no-cache`, every container ran the new image, and the new bytecode was verified loaded —
+yet `/api/v1/crm/colocation/{dc}` kept returning the *previous* payload shape.
+
+Cause: `cache_get` (`services/customer-api/app/core/cache_backend.py:108`) falls back to a
+`{key}:last_good` shadow entry with `LAST_GOOD_TTL_SECONDS = 86400` when the primary key
+misses. Deleting the primary key — or letting the 6h singleflight TTL lapse — is not enough;
+the 24h shadow keeps serving the old value.
+
+**The trap that cost the most time:** these live in **Redis DB 1**, not DB 0. `redis-cli`
+defaults to DB 0, so `redis-cli --scan --pattern '*colocation*'` reports nothing while 13
+stale entries sit in DB 1. Use `redis-cli INFO keyspace` first, then `-n <db>`.
+
+Clearing after a deploy that changes a payload shape:
+
+```bash
+docker exec bulutistan-redis redis-cli -n 1 --scan --pattern '*colocation*' \
+  | while read k; do docker exec bulutistan-redis redis-cli -n 1 DEL "$k"; done
+```
+
+Worth a deploy step or a cache-version key that invalidates on schema change, the way
+`CUSTOMER_ASSETS_CACHE_VERSION` already does elsewhere in this codebase. A stale-shape
+response is worse than a slow one: consumers see missing fields, not an error.
