@@ -85,11 +85,8 @@ _PRODUCT_MATCHING_COLUMNS = [
     {"name": "Unit", "id": "resource_unit"},
     {"name": "CRM Sold", "id": "crm_sold_fmt"},
     {"name": "Status", "id": "match_status"},
-    {"name": "Usage Source", "id": "usage_source"},
     {"name": "Matching Rule", "id": "matching_rule"},
     {"name": "Panel", "id": "panel_key"},
-    {"name": "Infra Total", "id": "infra_total_fmt"},
-    {"name": "Infra Used", "id": "infra_used_fmt"},
     {"name": "Tables", "id": "infra_tables_fmt"},
 ]
 
@@ -720,25 +717,19 @@ def prepare_product_matching_row(row: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         sold_fmt = str(sold_qty or "")
 
-    def _num(v: Any) -> str:
-        if v is None:
-            return "—"
-        try:
-            return f"{float(v):,.1f}"
-        except (TypeError, ValueError):
-            return str(v)
-
     tables = row.get("infra_tables") or []
-    return {
+    out = {
         **row,
         "crm_sold_fmt": sold_fmt,
-        "infra_total_fmt": _num(row.get("infra_total")),
-        "infra_used_fmt": _num(row.get("infra_used")),
         "infra_tables_fmt": ", ".join(str(t) for t in tables) if tables else "—",
         "panel_key": row.get("panel_key") or "—",
-        "usage_source": row.get("usage_source") or "—",
         "matching_rule": row.get("matching_rule") or "—",
     }
+    # Screen and export are both fed from this dict; dropping them here is what
+    # keeps them out of the downloaded workbook, not the column list above.
+    for key in ("usage_source", "infra_total", "infra_used"):
+        out.pop(key, None)
+    return out
 
 
 def filter_product_matching_rows(
@@ -757,7 +748,6 @@ def filter_product_matching_rows(
             for r in out
             if q in str(r.get("product_name") or "").casefold()
             or q in str(r.get("productnumber") or "").casefold()
-            or q in str(r.get("usage_source") or "").casefold()
             or q in str(r.get("matching_rule") or "").casefold()
         ]
     return out

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from src.components.crm_inventory_report import (
+    _PRODUCT_MATCHING_COLUMNS,
     build_product_matching_section,
     filter_product_matching_rows,
     prepare_product_matching_row,
@@ -47,3 +48,41 @@ def test_prepare_and_filter_product_matching_rows():
     section = build_product_matching_section({"products": rows, "summary": {"capacity_count": 1}})
     assert section is not None
     assert section.value == "product-matching"
+
+
+def test_dropped_columns_are_absent_from_screen_and_export():
+    """Usage Source / Infra Total / Infra Used ekrandan da Excel'den de kalktı.
+
+    Ekran kolonları ve export alanları ayrı yollardan beslenir, bu yüzden ikisi
+    de ayrıca kontrol edilir: yalnızca kolon listesini düzenlemek export'ta
+    alanları bırakırdı.
+    """
+    dropped = {"usage_source", "infra_total_fmt", "infra_used_fmt"}
+
+    screen_ids = {c["id"] for c in _PRODUCT_MATCHING_COLUMNS}
+    assert not (screen_ids & dropped)
+    assert "infra_tables_fmt" in screen_ids  # Tables kolonu kalıyor
+
+    prepared = prepare_product_matching_row({
+        "productnumber": "000BLT-46",
+        "product_name": "HC CPU",
+        "crm_sold_qty": 10,
+        "crm_sold_tl": 100,
+        "usage_source": "Loki",
+        "infra_total": 20,
+        "infra_used": 5,
+        "infra_tables": ["nutanix_vm_metrics"],
+    })
+    assert not (set(prepared) & dropped)
+
+
+def test_search_no_longer_probes_the_dropped_usage_source_field():
+    """usage_source üretilmiyorsa onda arama yapmak sessiz ölü koddur."""
+    rows = [{
+        "productnumber": "000BLT-46",
+        "product_name": "HC CPU",
+        "usage_source": "Loki",
+        "matching_rule": "cpu total",
+    }]
+    assert filter_product_matching_rows(rows, "all", "loki") == []
+    assert filter_product_matching_rows(rows, "all", "cpu total") == rows
