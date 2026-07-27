@@ -10,7 +10,10 @@ from urllib.parse import quote, urlencode
 
 import httpx
 
-from shared.customer.cache_keys import CUSTOMER_ASSETS_CACHE_VERSION
+from shared.customer.cache_keys import (
+    CUSTOMER_ASSETS_CACHE_VERSION,
+    UNMAPPED_PAYLOAD_CACHE_VERSION,
+)
 from src.services import cache_service as _api_response_cache
 
 logger = logging.getLogger(__name__)
@@ -830,9 +833,19 @@ _EMPTY_UNMAPPED = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count":
                     "ambiguous_count": 0}
 
 
+def _unmapped_resources_ck(tr: Optional[dict]) -> str:
+    # Same version token as the service, so a payload-shape bump invalidates this
+    # front-end copy too. The prefix stays "api:unmapped_resources:" so the
+    # invalidation in _invalidate_customer_views_cache keeps matching.
+    return (
+        f"api:unmapped_resources:{UNMAPPED_PAYLOAD_CACHE_VERSION}:"
+        f"{_serialize_tr_cache_key(tr)}"
+    )
+
+
 def get_unmapped_resources(tr: Optional[dict]) -> dict:
     """Resources (VMs and NetBackup policies) belonging to no customer — Eşleşmeyen Veriler."""
-    ck = f"api:unmapped_resources:{_serialize_tr_cache_key(tr)}"
+    ck = _unmapped_resources_ck(tr)
 
     def fetch() -> dict:
         data = _get_json(

@@ -42,7 +42,7 @@ from app.services.customer_mapping_resolver import (
 )
 from app.utils.cluster_match import build_cluster_arch_map
 from app.utils.time_range import cache_time_ranges, default_time_range, time_range_to_bounds
-from shared.customer.cache_keys import customer_assets_cache_key
+from shared.customer.cache_keys import customer_assets_cache_key, unmapped_payload_cache_key
 from shared.backup.policy_classification import classify_netbackup_policy
 from shared.backup.unique_jobs import (
     aggregate_unique_jobs,
@@ -531,7 +531,7 @@ class CustomerService:
         if tr.get("anchor_latest"):
             tr = self._smart_1h_tr(tr)
         start, end = time_range_to_bounds(tr)
-        cache_key = f"unmapped_resources:{start.isoformat()}:{end.isoformat()}"
+        cache_key = unmapped_payload_cache_key(start.isoformat(), end.isoformat())
         try:
             return cache.run_singleflight(
                 cache_key,
