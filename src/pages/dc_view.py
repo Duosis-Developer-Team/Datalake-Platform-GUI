@@ -616,6 +616,179 @@ def _section_title(title: str, subtitle: str | None = None):
     )
 
 
+# ---------------------------------------------------------------------------
+# Licensed OS (TASK-81, moved from the standalone /licensed-os page)
+# ---------------------------------------------------------------------------
+
+_LICENSED_OS_ARCH_LABELS: tuple[tuple[str, str, str], ...] = (
+    ("classic", "Klasik Mimari", "blue"),
+    ("hyperconverged", "Hyperconverged Mimari", "teal"),
+    ("pure_nutanix", "Pure Nutanix (AHV)", "cyan"),
+    ("power", "Power Mimari", "grape"),
+)
+
+# Only families we resell a licence for. free/unknown are shown as context, not
+# as a licence position.
+_LICENSED_OS_FAMILIES: tuple[tuple[str, str, str], ...] = (
+    ("windows", "Windows", "#4318FF"),
+    ("rhel", "RHEL", "#E03131"),
+    ("suse", "SUSE", "#2F9E44"),
+)
+
+
+def _licensed_os_arch(payload: dict | None, key: str) -> dict:
+    return ((payload or {}).get("architectures") or {}).get(key) or {}
+
+
+def _licensed_os_family_row(label: str, color: str, detected: int, sold: int | None):
+    """One family line: detected, and — where CRM resolved — sold and the gap."""
+    cells = [
+        dmc.Group(gap=6, children=[
+            html.Span(style={
+                "width": "8px", "height": "8px", "borderRadius": "50%",
+                "backgroundColor": color, "display": "inline-block",
+            }),
+            dmc.Text(label, size="sm", fw=600, c="#2B3674"),
+        ]),
+        dmc.Text(f"{detected:,}", size="sm", fw=700, c="#2B3674"),
+    ]
+    if sold is not None:
+        gap = detected - sold
+        cells.append(dmc.Text(f"{sold:,}", size="sm", c="#A3AED0"))
+        cells.append(
+            dmc.Text(
+                f"{gap:+,}",
+                size="sm",
+                fw=700,
+                c="#E03131" if gap > 0 else "#A3AED0",
+            )
+        )
+    return dmc.Group(justify="space-between", children=cells)
+
+
+def _licensed_os_no_telemetry_note(instances: int):
+    return dmc.Alert(
+        f"{instances:,} sanal makine için işletim sistemi telemetrisi yok — "
+        "AHV hiçbir kaynakta guest OS bildirmiyor. Bu makineler lisans "
+        "sayımına dahil edilmedi.",
+        color="gray",
+        variant="light",
+        title="OS telemetrisi yok",
+    )
+
+
+def build_licensed_os_card(payload: dict | None, arch_key: str):
+    """One architecture's licensed-OS card, for its own Virtualization sub-tab."""
+    label = next((lbl for k, lbl, _c in _LICENSED_OS_ARCH_LABELS if k == arch_key), arch_key)
+    block = _licensed_os_arch(payload, arch_key)
+    instances = int(block.get("instances", 0) or 0)
+
+    if arch_key == "pure_nutanix" or "families" not in block:
+        body: list = [_licensed_os_no_telemetry_note(instances)] if instances else [
+            dmc.Text("Bu mimaride makine yok.", size="sm", c="#A3AED0")
+        ]
+    else:
+        fams = block.get("families") or {}
+        # Detected only. A licence is not sold "for Classic" — CRM has no
+        # architecture dimension — so the sold column lives on the combined panel.
+        body = [
+            _licensed_os_family_row(lbl, color, int(fams.get(key, 0) or 0), None)
+            for key, lbl, color in _LICENSED_OS_FAMILIES
+        ]
+        body.append(
+            dmc.Text(
+                f"Toplam {instances:,} makine · "
+                f"{int(fams.get('free', 0) or 0):,} ücretsiz · "
+                f"{int(fams.get('unknown', 0) or 0):,} sınıflandırılamadı",
+                size="xs",
+                c="#A3AED0",
+                mt="xs",
+            )
+        )
+
+    return dmc.Card(
+        [
+            _section_title(f"{label} — Lisanslı OS", "Tespit edilen lisanslı işletim sistemleri"),
+            dmc.Stack(gap=6, mt="sm", children=body),
+        ],
+        withBorder=True, padding="md", radius="md", mt="md",
+    )
+
+
+def build_licensed_os_panel(payload: dict | None):
+    """The combined Lisanslı OS sub-tab: every architecture side by side.
+
+    Sold counts appear only here and only as a total, labelled as an estimate:
+    CRM sells a licence to a customer, not to a datacenter, so the DC figure is
+    that customer's quantity split by their VM footprint in this DC.
+    """
+    data = payload or {}
+    sold = data.get("sold") or None
+    sold_fams = (sold or {}).get("families") or {}
+    totals = (data.get("totals") or {}).get("families") or {}
+
+    header = ["Hizmet", "Kullanılan"]
+    if sold:
+        header += ["Satılan (tahmini)", "Ekstra Kullanım"]
+
+    summary_rows = [
+        _licensed_os_family_row(
+            lbl, color,
+            int(totals.get(key, 0) or 0),
+            int(sold_fams.get(key, 0) or 0) if sold else None,
+        )
+        for key, lbl, color in _LICENSED_OS_FAMILIES
+    ]
+
+    summary = dmc.Card(
+        [
+            _section_title(
+                "Tüm mimariler",
+                "CRM'de satılan lisans müşteri bazındadır; DC'ye müşterinin bu "
+                "DC'deki makine payına göre dağıtılmış tahmini değerdir."
+                if sold else
+                "CRM eşleştirmesi çözülemedi — bu DC için satılan lisans gösterilemiyor.",
+            ),
+            dmc.Group(justify="space-between", mt="sm", children=[
+                dmc.Text(h, size="xs", fw=700, c="#A3AED0") for h in header
+            ]),
+            dmc.Stack(gap=6, mt=4, children=summary_rows),
+        ],
+        withBorder=True, padding="md", radius="md",
+    )
+
+    per_arch = []
+    for key, label, color in _LICENSED_OS_ARCH_LABELS:
+        block = _licensed_os_arch(data, key)
+        instances = int(block.get("instances", 0) or 0)
+        if key == "pure_nutanix":
+            detail = [
+                dmc.Text(
+                    f"{instances:,} makine · OS telemetrisi yok",
+                    size="sm", c="#A3AED0", fw=600,
+                )
+            ]
+        else:
+            fams = block.get("families") or {}
+            detail = [
+                _licensed_os_family_row(lbl, fcolor, int(fams.get(fkey, 0) or 0), None)
+                for fkey, lbl, fcolor in _LICENSED_OS_FAMILIES
+            ]
+            detail.append(dmc.Text(f"Toplam {instances:,} makine", size="xs", c="#A3AED0", mt=4))
+        per_arch.append(
+            dmc.Card(
+                [dmc.Text(label, fw=700, size="sm", c=color), dmc.Stack(gap=6, mt="xs", children=detail)],
+                withBorder=True, padding="md", radius="md",
+            )
+        )
+
+    children: list = [summary, dmc.SimpleGrid(cols={"base": 1, "sm": 2, "lg": 4}, spacing="md", children=per_arch)]
+    no_telemetry = int((data.get("totals") or {}).get("no_os_telemetry", 0) or 0)
+    if no_telemetry:
+        children.append(_licensed_os_no_telemetry_note(no_telemetry))
+    return dmc.Stack(gap="lg", children=children)
+
+
 def _format_tl(value: float) -> str:
     """Format a TL amount with thousands separators and short suffix for large numbers."""
     if value <= 0:
@@ -1772,6 +1945,7 @@ def _build_virt_subtab_stack(
     san_bottleneck,
     show_virt_hosts: bool,
     content_mode: str = "full",
+    licensed_os: dict | None = None,
 ) -> list:
     """Build one Virt nested tab stack (compute + sellable + optional hosts).
 
@@ -1780,6 +1954,8 @@ def _build_virt_subtab_stack(
                            heavy content is deferred to the populate_virt_nested_tab
                            callback on first tab switch.  Power is always full.
     """
+    if tab == "licensed_os":
+        return [build_licensed_os_panel(licensed_os)]
     if tab == "classic":
         panel_children = (
             _build_compute_tab(classic, "Classic Compute", color="blue", slug="classic")
@@ -1802,6 +1978,7 @@ def _build_virt_subtab_stack(
                 children=html.Div(id="classic-virt-panel", children=panel_children),
             ),
             html.Div(id="sellable-classic-card", children=sellable_children),
+            build_licensed_os_card(licensed_os, "classic") if licensed_os else None,
             _build_hosts_panel_shell("classic", "blue") if show_virt_hosts else None,
         ]
     if tab == "hyperconv":
@@ -1826,6 +2003,7 @@ def _build_virt_subtab_stack(
                 children=html.Div(id="hyperconv-virt-panel", children=panel_children),
             ),
             html.Div(id="sellable-hyperconv-card", children=sellable_children),
+            build_licensed_os_card(licensed_os, "hyperconverged") if licensed_os else None,
             _build_hosts_panel_shell("hyperconv", "teal") if show_virt_hosts else None,
         ]
     card = _build_sellable_inline_kpi(
@@ -1835,6 +2013,7 @@ def _build_virt_subtab_stack(
     return [
         _build_power_tab(power, energy, storage_capacity, storage_performance, san_bottleneck),
         html.Div(id="sellable-power-card", children=_sellable_card_children(card)),
+        build_licensed_os_card(licensed_os, "power") if licensed_os else None,
     ]
 
 
@@ -1880,6 +2059,7 @@ def build_virt_nested_subtab_panel(
             "storage_performance": storage_performance,
             "san_bottleneck": san_bottleneck,
             "show_virt_hosts": bool(ctx.get("show_virt_hosts")),
+            "licensed_os": api.get_dc_licensed_os(dc_id, tr),
         }
         stack = _build_virt_subtab_stack(active_tab, **stack_kwargs)
         panel = dmc.Stack(gap="lg", children=[c for c in stack if c is not None])
@@ -5493,6 +5673,9 @@ def build_dc_view(
     show_classic = has_classic and _sec("sub:dc_view:virt:classic")
     show_hyperconv = has_hyperconv and _sec("sub:dc_view:virt:hyperconv")
     show_power_inner = has_power and _sec("sub:dc_view:virt:power")
+    # Not gated on has_* : the licensed-OS tab is meaningful even for a DC whose
+    # compute metrics are thin, and its own "no data" state is explicit.
+    show_licensed_os = _sec("sub:dc_view:virt:licensed_os")
     show_virt_hosts = _sec("sub:dc_view:virt:hosts")
     show_summary_sellable = _sec("sub:dc_view:summary:sellable")
     virt_order = [
@@ -5514,6 +5697,10 @@ def build_dc_view(
         "storage_performance": storage_performance,
         "san_bottleneck": san_bottleneck,
         "show_virt_hosts": show_virt_hosts,
+        # Detected licensed guests for this DC. Fetched once and shared by the
+        # combined "Lisanslı OS" sub-tab and the per-architecture cards, so the
+        # numbers on both can never disagree.
+        "licensed_os": api.get_dc_licensed_os(str(dc_id), tr) if _tab_eager(eager_tabs, "virt") else None,
     }
     virt_total_children: list = []
     if _tab_eager(eager_tabs, "virt"):
@@ -5624,11 +5811,13 @@ def build_dc_view(
                                             dmc.TabsTab("Klasik Mimari", value="classic") if show_classic else None,
                                             dmc.TabsTab("Hyperconverged Mimari", value="hyperconv") if show_hyperconv else None,
                                             dmc.TabsTab("Power Mimari", value="power") if show_power_inner else None,
+                                            dmc.TabsTab("Lisanslı OS", value="licensed_os") if show_licensed_os else None,
                                         ]
                                     ),
                                     _virt_nested_tab_panel("classic", show_classic),
                                     _virt_nested_tab_panel("hyperconv", show_hyperconv),
                                     _virt_nested_tab_panel("power", show_power_inner),
+                                    _virt_nested_tab_panel("licensed_os", show_licensed_os),
                                 ],
                             ),
                         ],

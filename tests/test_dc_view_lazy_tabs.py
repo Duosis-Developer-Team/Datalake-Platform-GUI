@@ -412,7 +412,9 @@ def test_build_virt_subtab_stack_power_renders():
             show_virt_hosts=False,
         )
 
-    assert len(stack) == 2
+    # compute tab + sellable card + the optional licensed-OS card slot (None here,
+    # since no licensed_os payload was passed; callers filter Nones out).
+    assert [c for c in stack if c is not None] == stack[:2]
     assert getattr(stack[0], "id", None) == "power-stub"
 
 

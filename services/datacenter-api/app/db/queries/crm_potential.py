@@ -67,6 +67,24 @@ GROUP BY d.productid, d.product_name, COALESCE(NULLIF(TRIM(d.uomid_name), ''), '
 ORDER BY sold_amount_tl DESC NULLS LAST;
 """
 
+# Licensed-OS attribution needs the quantity kept per CRM account (so it can be
+# split across the DCs that account occupies), and uses the entitlement baseline
+# statecode 0,1,3,4 — every order in production currently sits at 0, so the
+# 12-month realized filter above would return nothing. Matches the baseline
+# customer-api /sales/resource-compliance uses (ADR-0016).
+# Params: (accountids[],)
+SOLD_QTY_BY_ACCOUNT_AND_PRODUCT = """
+SELECT so.customerid,
+       d.productid,
+       SUM(d.quantity)::double precision AS sold_qty
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (0, 1, 3, 4)
+  AND  so.ordernumber LIKE 'PRJ-%%'
+GROUP BY so.customerid, d.productid;
+"""
+
 # ---------------------------------------------------------------------------
 # Nutanix capacity proxy per DC name (unchanged).
 # ---------------------------------------------------------------------------
@@ -173,6 +191,24 @@ WEBUI_ALIAS_ACCOUNTIDS_FOR_TENANTS = """
 SELECT crm_accountid
 FROM   gui_crm_customer_alias
 WHERE  lower(trim(coalesce(netbox_musteri_value, ''))) = ANY(%s);
+"""
+
+# Same lookup, but keeps the tenant value so the caller can map a CRM account back
+# to the NetBox tenant it came from. Needed when quantities have to be attributed
+# per tenant (licensed-OS DC allocation), not just summed across a DC.
+WEBUI_ALIAS_ACCOUNTS_WITH_TENANT = """
+SELECT crm_accountid,
+       lower(trim(coalesce(netbox_musteri_value, ''))) AS tenant_value
+FROM   gui_crm_customer_alias
+WHERE  lower(trim(coalesce(netbox_musteri_value, ''))) = ANY(%s);
+"""
+
+# productid -> page_key, operator override winning over the generated seed.
+WEBUI_PRODUCT_PAGE_KEYS = """
+SELECT COALESCE(o.productid, s.productid)          AS productid,
+       COALESCE(o.page_key, s.page_key, 'other')   AS page_key
+FROM       gui_crm_service_mapping_seed s
+FULL JOIN  gui_crm_service_mapping_override o ON o.productid = s.productid;
 """
 
 WEBUI_RESOLVE_ACCOUNTID_BY_DISPLAY_NAME = """
