@@ -2031,15 +2031,20 @@ Yeni kodun canlı veriyle ürettiği dağılımı ölç. Bu adım yalnızca öl�
 
 ```bash
 cat > /tmp/verify_backup_split.py <<'PY'
-import sys
+import os, sys
 sys.path.insert(0, "/app")
 import psycopg2, psycopg2.extras
 from collections import Counter
 from shared.customer.backup_policy import build_policy_index
 from shared.customer.unmapped_classifier import classify_unmapped_policies
 
-c = psycopg2.connect(host="10.134.16.6", port=5000, dbname="bulutlake",
-                     user="bulutlake", password="BulutLakePas24", connect_timeout=10)
+# Credentials come from the container's own environment — never hard-code them
+# into a script that gets written to disk and copied around.
+c = psycopg2.connect(
+    host=os.environ["DB_HOST"], port=int(os.environ.get("DB_PORT", 5432)),
+    dbname=os.environ["DB_NAME"], user=os.environ["DB_USER"],
+    password=os.environ["DB_PASS"], connect_timeout=10,
+)
 cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 cur.execute("""SELECT DISTINCT policyname AS name FROM public.raw_netbackup_jobs_metrics
                WHERE starttime > now() - interval '7 days' AND policyname IS NOT NULL""")
