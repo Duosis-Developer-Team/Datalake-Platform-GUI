@@ -1,6 +1,12 @@
 """Colocation potential renders as its own line, never folded into the
 virtualization min-max range."""
-from src.pages.datacenters import _colocation_sales_line, _dc_sellable_ribbon
+from unittest.mock import patch
+
+from src.pages.datacenters import (
+    _colocation_potential,
+    _colocation_sales_line,
+    _dc_sellable_ribbon,
+)
 
 
 def _texts(component):
@@ -50,3 +56,36 @@ def test_virtualization_ribbon_label_unchanged():
 
     assert "Potential Sales (Virtualization)" in texts
     assert "Potential Sales (Colocation)" not in texts
+
+
+def test_colocation_potential_fans_out_per_dc_calls_via_parallel_execute():
+    """Per-DC get_colocation calls must be routed through parallel_execute —
+    the codebase's existing N-DC fan-out helper (used at dc_view.py's
+    batch1/batch2 and datacenters_virt_sellable.py's warm pool) — rather than
+    a bare serial loop, so a cold/expired cache doesn't block render for one
+    HTTP round trip per DC in sequence."""
+    calls: list[list[str]] = []
+
+    def fake_parallel_execute(tasks):
+        calls.append(sorted(tasks.keys()))
+        return {key: fn() for key, fn in tasks.items()}
+
+    responses = {
+        "*": {"aggregate": {"unit_price_tl": 1000.0, "free_u_potential_tl": 5_000_000.0}},
+        "DC11": {"aggregate": {"free_u_potential_tl": 2_000_000.0}},
+        "DC13": {"aggregate": {"free_u_potential_tl": 3_000_000.0}},
+    }
+
+    with patch(
+        "src.pages.datacenters.parallel_execute", side_effect=fake_parallel_execute
+    ) as mock_parallel_execute, patch(
+        "src.pages.datacenters.api.get_colocation", side_effect=lambda code: responses[code]
+    ):
+        total, by_dc = _colocation_potential(["DC11", "DC13"])
+
+    # Exactly one fan-out call carrying both DC codes — not one call per DC,
+    # which would just relabel the same serial loop the fix was meant to end.
+    assert mock_parallel_execute.call_count == 1
+    assert calls == [["DC11", "DC13"]]
+    assert total == 5_000_000.0
+    assert by_dc == {"DC11": 2_000_000.0, "DC13": 3_000_000.0}

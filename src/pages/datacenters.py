@@ -23,6 +23,7 @@ from src.utils.datacenters_virt_sellable import (
     refresh_virt_sellable_cache,
     resolve_virt_sellable_for_dcs,
 )
+from src.utils.api_parallel import parallel_execute
 from src.utils.format_units import fmt_tl, fmt_tl_range
 from src.utils.virt_sellable_aggregate import VIRT_SELLABLE_FAMILY_LABELS
 from shared.display.static_energy import STATIC_TOTAL_ENERGY_KW
@@ -140,7 +141,7 @@ def _colocation_sales_line(colo_tl: float | None, *, loading: bool = False):
     Returns None when there is nothing to show, so callers can omit the row.
     """
     if loading:
-        headline, tip_value = "…", "Hesaplanıyor"
+        headline, tip_value = "…", "Calculating"
     elif not colo_tl:
         return None
     else:
@@ -665,7 +666,10 @@ def _colocation_potential(dc_codes) -> tuple[float, dict[str, float]]:
     The all-DC total comes from the "*" aggregate, which de-duplicates those
     shared racks. It is therefore SMALLER than the sum of the per-DC values, by
     design. api_client caches these calls with single-flight, so the per-DC
-    fetches are cheap once warm.
+    fetches are cheap once warm — but on a cold/expired cache they are real
+    HTTP round trips, so the N per-DC calls are fanned out via
+    parallel_execute (same pattern as dc_view.py's batch1/batch2 and
+    datacenters_virt_sellable.py's warm pool) rather than issued serially.
 
     Returns (0.0, {}) when the price is unresolved — the caller renders nothing
     rather than a misleading zero.
@@ -674,15 +678,17 @@ def _colocation_potential(dc_codes) -> tuple[float, dict[str, float]]:
     total_agg = total_payload.get("aggregate") or {}
     if total_agg.get("unit_price_tl") is None:
         return 0.0, {}
+    codes = list(dict.fromkeys(
+        str(code or "").strip() for code in dc_codes if str(code or "").strip()
+    ))
     by_dc: dict[str, float] = {}
-    for code in dc_codes:
-        code = str(code or "").strip()
-        if not code:
-            continue
-        agg = (api.get_colocation(code) or {}).get("aggregate") or {}
-        value = agg.get("free_u_potential_tl")
-        if value:
-            by_dc[code] = float(value)
+    if codes:
+        results = parallel_execute({code: (lambda c=code: api.get_colocation(c)) for code in codes})
+        for code, payload in results.items():
+            agg = (payload or {}).get("aggregate") or {}
+            value = agg.get("free_u_potential_tl")
+            if value:
+                by_dc[code] = float(value)
     return float(total_agg.get("free_u_potential_tl") or 0.0), by_dc
 
 
