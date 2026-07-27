@@ -222,6 +222,59 @@ TDD; her faz kendi testleriyle:
 - `tests/test_customer_view_perspective.py` — customer perspektifinde Source/Cluster
   kolonlarının olmadığı (yeni).
 
+---
+
+## Sonuç (2026-07-27, tamamlandı)
+
+| Commit | Kapsam |
+|---|---|
+| `9c6b7633` | Faz 0 — lisans paneli ayrımı, çift sayım düzeltmesi, `shared/licensing/os_source.py` |
+| `319f53c5` | Faz 1 — customer-api guest OS + overusage satırı |
+| `becbf32c` | Faz 2 — Customer View OS kolonu + perspektif gizleme |
+| `145020c3` | Faz 3 — DC View "Lisanslı OS" + DC-CRM atfı |
+| `9a6a087d` | Faz 4 — CRM Inventory "Os" satırları |
+
+### Plandan sapmalar
+
+- **DC-CRM atfı yapıldı** (planda "opsiyonel" idi). İki hata düzeltilmesi gerekti:
+  mevcut hat NetBox `site_name` (şehir seviyesi) kullandığı için DC kodunda 0
+  tenant dönüyordu; ve DC-scoped ile global tenant sayımları farklı dedupe
+  ettiği için bir tenant DC13'te 350, platform genelinde 342 görünüyordu (payı
+  %100'ün üstünde). İkisi de düzeltildi, 5 DC'de 0 ihlal doğrulandı.
+- **CRM Inventory panelleri NetBox'tan besleniyor**, `vm_metrics`'ten değil —
+  platform toplamı iddiasında olan bir satır Nutanix-only 5.800 makineyi
+  kaçıramaz (Windows 4.956 vs 8.061).
+- **Detection SQL `shared/licensing/os_sql.py`'a taşındı** — üç yüzeyin aynı
+  envanter için üç farklı sayı göstermemesi için.
+- **Power OS eklendi** (planda yoktu): `lpar_details_ostype`, 383 SUSE LPAR.
+
+### Canlı doğrulanan sayılar
+
+Müşteri (needle çözümlemesiyle): GAMA 88 Windows tespit / 62 satılan;
+ANKUTSAN 68 / 44; 4A Kozmetik 29 makinenin 17'si AHV → OS yok.
+
+DC13: klasik 952 Windows / 157 RHEL / 86 SUSE · hyperconverged 2.458 / 171 / 52 ·
+power 193 SUSE · 812 AHV makine OS telemetrisi yok.
+
+Platform: Windows 8.061 · SUSE 802 · RHEL 523 · ücretsiz 5.820 · bilinmiyor 4.963.
+
+### Test durumu
+
+Yeni: 44 (GUI shared/DC) + 27 (customer-api) + 12 (datacenter-api).
+Pre-existing kırmızılar (base commit `034f12dc`'de de kırmızı, dokunulmadı):
+customer-api 1 (`test_sellable_service` host fallback), datacenter-api 2,
+GUI 13 (`test_dc_view_visibility` 7, `test_network_eager_load` 2,
+`test_dc_view_capacity_table` 2, `test_dc_view_lazy_tabs` 2 — hepsi `FakeApi`
+fixture drift'i).
+
+### Yapılmadı
+
+- Migration'lar yerel webui-db'ye uygulandı ve doğrulandı; **prod'a uygulanmadı**.
+- Hiçbir şey push edilmedi, main'e merge edilmedi.
+- `/licensed-os` sayfası deep-link olarak duruyor ama müşteri seçimi hâlâ eski
+  isim-eşleştirme yolunu kullanıyor (H1). Customer View artık onu kullanmıyor;
+  sayfanın kendisi ayrı bir temizlik işi.
+
 ## Bilinçli kabul edilen sınırlar
 
 - Pure Nutanix (AHV) 1.483 VM: OS bilinmiyor, "telemetri yok" olarak gösterilir.
