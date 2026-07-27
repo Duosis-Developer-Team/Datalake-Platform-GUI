@@ -232,3 +232,13 @@ WHERE  crm_accountid = %s
   AND enabled = TRUE
 ORDER BY priority, id;
 """
+
+# CRM accounts that have at least one project order — the candidate set for
+# tenant name matching when no manual alias exists.
+CRM_PROJECT_ACCOUNTS = """
+SELECT DISTINCT a.accountid, a.name
+FROM   discovery_crm_accounts a
+JOIN   discovery_crm_salesorders so ON so.customerid = a.accountid
+WHERE  so.ordernumber LIKE 'PRJ-%%'
+  AND  TRIM(COALESCE(a.name, '')) <> '';
+"""

@@ -17,28 +17,49 @@ for the whole platform.
 """
 from __future__ import annotations
 
-# Params: (dc_wildcard, start_ts, end_ts)
+# Params: (dc_wildcard, dc_wildcard, start_ts, end_ts)
 # DISTINCT ON because vm_metrics writes every 15 minutes — without it a 7-day
 # window counts the same guest hundreds of times.
+#
+# Power state is joined in from NetBox: vm_metrics has no such column, and a
+# licence position is read differently depending on whether the guest is live
+# (31,548 poweredOn / 11,214 poweredOff platform-wide on 2026-07-27). The join is
+# scoped to the same DC so it stays small.
 VM_OS_BY_DC = """
-SELECT DISTINCT ON (vmname)
-    cluster,
-    vmname,
-    guest_os
-FROM public.vm_metrics
-WHERE datacenter ILIKE %s
-  AND LEFT(vmname, 1) <> '_'
-  AND "timestamp" BETWEEN %s AND %s
-ORDER BY vmname, "timestamp" DESC
+WITH nb AS (
+    SELECT DISTINCT ON (lower(name))
+        lower(name)  AS vm_key,
+        status_value
+    FROM public.discovery_netbox_virtualization_vm
+    WHERE COALESCE(cluster_name, '') ILIKE %s
+    ORDER BY lower(name), (status_value = 'poweredOn') DESC
+),
+vm AS (
+    SELECT DISTINCT ON (vmname)
+        cluster,
+        vmname,
+        guest_os
+    FROM public.vm_metrics
+    WHERE datacenter ILIKE %s
+      AND LEFT(vmname, 1) <> '_'
+      AND "timestamp" BETWEEN %s AND %s
+    ORDER BY vmname, "timestamp" DESC
+)
+SELECT vm.cluster, vm.vmname, vm.guest_os, nb.status_value
+FROM vm
+LEFT JOIN nb ON nb.vm_key = lower(vm.vmname)
 """
 
 # Params: (dc_wildcard, start_ts, end_ts)
 # Values seen live: 'Linux - SUSE' (300 LPARs), 'Linux', 'AIX', 'AIX/Linux',
 # 'Unknown'. Server names carry the DC, LPAR names do not.
+# lpar_details_state is the Power equivalent of a power state ('Running' /
+# 'Not Activated').
 POWER_OS_BY_DC = """
 SELECT DISTINCT ON (lparname)
     lparname,
-    lpar_details_ostype
+    lpar_details_ostype,
+    lpar_details_state
 FROM public.ibm_lpar_general
 WHERE lpar_details_servername LIKE %s
   AND LEFT(lparname, 1) <> '_'

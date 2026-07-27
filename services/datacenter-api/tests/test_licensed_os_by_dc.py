@@ -26,13 +26,18 @@ def test_dc_vm_os_query_is_scoped_by_datacenter_and_time():
     sql = loq.VM_OS_BY_DC
     assert "public.vm_metrics" in sql
     assert "datacenter ILIKE %s" in sql
-    assert _count_placeholders(sql) == 3   # dc pattern + start + end
+    assert _count_placeholders(sql) == 4   # netbox dc pattern + dc pattern + start + end
 
 
 def test_dc_vm_os_query_returns_the_cluster_so_the_arch_split_can_be_applied():
     sql = loq.VM_OS_BY_DC
     assert "cluster" in sql
     assert "guest_os" in sql
+
+
+def test_dc_queries_expose_power_state_for_the_running_only_view():
+    assert "status_value" in loq.VM_OS_BY_DC
+    assert "lpar_details_state" in loq.POWER_OS_BY_DC
 
 
 def test_dc_vm_os_query_dedupes_to_one_row_per_vm():

@@ -667,13 +667,59 @@ def _licensed_os_family_row(label: str, color: str, detected: int, sold: int | N
 
 
 def _licensed_os_no_telemetry_note(instances: int):
+    """Why the number is missing, and whose job it is to fix.
+
+    "Telemetri yok" on its own reads as a fault in this platform. It is not: a
+    hypervisor does not know what runs inside a guest unless an agent inside the
+    guest tells it. VMware Tools is installed almost everywhere, which is why the
+    VMware side is ~99% identified; on AHV the equivalent is Nutanix Guest Tools,
+    and on these VMs it is missing — so Nutanix itself does not know either.
+    Nothing here can be queried differently to recover it.
+    """
     return dmc.Alert(
-        f"{instances:,} sanal makine için işletim sistemi telemetrisi yok — "
-        "AHV hiçbir kaynakta guest OS bildirmiyor. Bu makineler lisans "
-        "sayımına dahil edilmedi.",
         color="gray",
         variant="light",
-        title="OS telemetrisi yok",
+        title="OS telemetrisi yok — bu makineler lisans sayımına dahil edilmedi",
+        children=dmc.Stack(gap=4, children=[
+            dmc.Text(
+                f"{instances:,} sanal makinenin işletim sistemi hiçbir kaynakta kayıtlı değil.",
+                size="sm",
+            ),
+            dmc.Text(
+                "Sebep: bir hipervizör, misafir makinenin içinde ne çalıştığını ancak "
+                "makinenin içine kurulan bir ajan söylerse bilir. VMware tarafında bu ajan "
+                "(VMware Tools) neredeyse her makinede kurulu olduğu için OS biliniyor. "
+                "Nutanix AHV tarafındaki karşılığı NGT (Nutanix Guest Tools) ve bu "
+                "makinelerde kurulu değil — dolayısıyla Nutanix'in kendisi de bilmiyor.",
+                size="xs", c="#A3AED0",
+            ),
+            dmc.Text(
+                "Yapılması gereken: bu makinelere NGT kurulması (sistem yönetimi işi). "
+                "Kurulduğunda Nutanix OS bilgisini bildirmeye başlar, mevcut toplayıcı onu "
+                "alır ve bu ekran kendiliğinden dolar — burada kod değişikliği gerekmiyor.",
+                size="xs", c="#2B3674", fw=600,
+            ),
+        ]),
+    )
+
+
+def _licensed_os_match_note(sold: dict | None) -> str:
+    """State how each customer was tied to a CRM account.
+
+    The alias table is an operator's recorded decision; a name match is this
+    platform guessing. Both feed the same number, so the reader has to be told the
+    mix — otherwise a guessed attribution reads as a confirmed one.
+    """
+    counts = (sold or {}).get("tenant_match") or {}
+    alias = int(counts.get("alias", 0) or 0)
+    by_name = int(counts.get("name", 0) or 0)
+    if not alias and not by_name:
+        return ""
+    if not by_name:
+        return f" Müşteri eşleşmesi: {alias:,} tanımlı eşleme."
+    return (
+        f" Müşteri eşleşmesi: {alias:,} tanımlı eşleme, {by_name:,} isim tahmini "
+        "(tanımlı eşleme Ayarlar'dan girilebilir)."
     )
 
 
@@ -716,18 +762,42 @@ def build_licensed_os_card(payload: dict | None, arch_key: str):
 
 
 def build_licensed_os_panel(payload: dict | None):
-    """The combined Lisanslı OS sub-tab: every architecture side by side.
+    """The combined Lisanslı OS sub-tab.
+
+    The payload carries both the all-guests and the running-only tallies, so the
+    scope toggle re-renders from a Store instead of re-querying.
+    """
+    return dmc.Stack(gap="md", children=[
+        dcc.Store(id="dc-licensed-os-payload", data=payload or {}),
+        dmc.SegmentedControl(
+            id="dc-licensed-os-scope",
+            data=[{"label": "Tümü", "value": "all"},
+                  {"label": "Sadece çalışan", "value": "running"}],
+            value="all", size="sm",
+        ),
+        html.Div(id="dc-licensed-os-body", children=build_licensed_os_body(payload, "all")),
+    ])
+
+
+def build_licensed_os_body(payload: dict | None, scope: str = "all"):
+    """Every architecture side by side, for one scope.
+
+    ``scope="all"`` counts every guest — a switched-off Windows VM still needs a
+    licence. ``scope="running"`` counts only guests reported as powered on, which
+    is what an operator wants when reconciling against live usage.
 
     Sold counts appear only here and only as a total, labelled as an estimate:
     CRM sells a licence to a customer, not to a datacenter, so the DC figure is
     that customer's quantity split by their VM footprint in this DC.
     """
     data = payload or {}
+    running = scope == "running"
+    fam_key = "families_running" if running else "families"
     sold = data.get("sold") or None
     sold_fams = (sold or {}).get("families") or {}
-    totals = (data.get("totals") or {}).get("families") or {}
+    totals = (data.get("totals") or {}).get(fam_key) or {}
 
-    header = ["Hizmet", "Kullanılan"]
+    header = ["Hizmet", "Çalışan" if running else "Kullanılan"]
     if sold:
         header += ["Satılan (tahmini)", "Ekstra Kullanım"]
 
@@ -743,11 +813,18 @@ def build_licensed_os_panel(payload: dict | None):
     summary = dmc.Card(
         [
             _section_title(
-                "Tüm mimariler",
-                "CRM'de satılan lisans müşteri bazındadır; DC'ye müşterinin bu "
-                "DC'deki makine payına göre dağıtılmış tahmini değerdir."
-                if sold else
-                "CRM eşleştirmesi çözülemedi — bu DC için satılan lisans gösterilemiyor.",
+                "Tüm mimariler" + (" — sadece çalışan makineler" if running else ""),
+                (
+                    "CRM'de satılan lisans müşteri bazındadır; DC'ye müşterinin bu "
+                    "DC'deki makine payına göre dağıtılmış tahmini değerdir."
+                    + _licensed_os_match_note(sold)
+                    if sold else
+                    "CRM eşleştirmesi çözülemedi — bu DC için satılan lisans gösterilemiyor."
+                ) + (
+                    " Kapalı makineler de lisans gerektirir; bu görünüm yalnızca "
+                    "anlık kullanımı gösterir."
+                    if running else ""
+                ),
             ),
             dmc.Group(justify="space-between", mt="sm", children=[
                 dmc.Text(h, size="xs", fw=700, c="#A3AED0") for h in header
@@ -769,7 +846,7 @@ def build_licensed_os_panel(payload: dict | None):
                 )
             ]
         else:
-            fams = block.get("families") or {}
+            fams = block.get(fam_key) or block.get("families") or {}
             detail = [
                 _licensed_os_family_row(lbl, fcolor, int(fams.get(fkey, 0) or 0), None)
                 for fkey, lbl, fcolor in _LICENSED_OS_FAMILIES

@@ -122,3 +122,63 @@ def test_empty_payload_renders_without_raising():
 
 def test_unknown_architecture_key_does_not_raise():
     assert build_licensed_os_card(_PAYLOAD, "nope") is not None
+
+
+# --- powered-on toggle + the AHV note ---------------------------------------
+
+def test_panel_offers_an_all_vs_running_toggle():
+    rendered = _text(build_licensed_os_panel(_PAYLOAD))
+    assert "dc-licensed-os-scope" in rendered
+
+
+def test_running_scope_renders_the_running_tally():
+    from src.pages.dc_view import build_licensed_os_body
+
+    payload = {
+        **_PAYLOAD,
+        "totals": {**_PAYLOAD["totals"], "families_running": {"windows": 2900, "rhel": 300, "suse": 400}},
+    }
+    assert "2,900" in _text(build_licensed_os_body(payload, "running"))
+    assert "3,363" in _text(build_licensed_os_body(payload, "all"))
+
+
+def test_ahv_note_explains_the_cause_and_the_fix_not_just_the_absence():
+    """"No telemetry" alone reads as a platform bug. It is not: Nutanix does not
+    report guest OS for these VMs because NGT is not installed on them, which is a
+    sysadmin action, not a code change. The screen has to say so or the finding
+    gets filed against the wrong team."""
+    rendered = _text(build_licensed_os_panel(_PAYLOAD))
+    assert "NGT" in rendered
+    assert "Nutanix Guest Tools" in rendered
+
+
+def test_ahv_note_is_absent_when_there_are_no_such_guests():
+    payload = {
+        **_PAYLOAD,
+        "architectures": {**_PAYLOAD["architectures"], "pure_nutanix": {"instances": 0, "no_os_telemetry": 0}},
+        "totals": {**_PAYLOAD["totals"], "no_os_telemetry": 0},
+    }
+    assert "NGT" not in _text(build_licensed_os_panel(payload))
+
+
+def test_panel_says_how_the_crm_match_was_made():
+    """Some tenants are hand-mapped, most are matched by name. A reader has to be
+    able to tell a recorded decision from a guess."""
+    payload = {**_PAYLOAD, "sold": {
+        "families": {"windows": 1294, "rhel": 0, "suse": 6},
+        "method": "vm_footprint_share",
+        "tenant_match": {"alias": 12, "name": 340},
+    }}
+    rendered = _text(build_licensed_os_panel(payload)).lower()
+    assert "12" in rendered and "340" in rendered
+    assert "isim" in rendered      # name-matched, i.e. a guess
+
+
+def test_all_alias_matches_are_not_presented_as_guesses():
+    payload = {**_PAYLOAD, "sold": {
+        "families": {"windows": 1294, "rhel": 0, "suse": 6},
+        "method": "vm_footprint_share",
+        "tenant_match": {"alias": 40, "name": 0},
+    }}
+    rendered = _text(build_licensed_os_panel(payload)).lower()
+    assert "isim tahmini" not in rendered

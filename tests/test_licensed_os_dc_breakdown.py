@@ -101,3 +101,55 @@ def test_rows_with_no_cluster_name_fall_to_hyperconverged():
     out = build_dc_breakdown([(None, "orphan", "Microsoft Windows Server 2022 (64-bit)")], [], 0)
     assert out["architectures"]["hyperconverged"]["families"]["windows"] == 1
     assert out["architectures"]["classic"]["instances"] == 0
+
+
+# --- powered-on vs all -------------------------------------------------------
+
+_VMS_WITH_STATE = [
+    ("DC13-KM-CLS", "km-on", "Microsoft Windows Server 2022 (64-bit)", "poweredOn"),
+    ("DC13-KM-CLS", "km-off", "Microsoft Windows Server 2016 (64-bit)", "poweredOff"),
+    ("DC13-G16-CLS", "hc-on", "SUSE Linux Enterprise 15 (64-bit)", "poweredOn"),
+    ("DC13-G16-CLS", "hc-none", "Red Hat Enterprise Linux 9 (64-bit)", None),
+]
+_LPARS_WITH_STATE = [
+    ("lpar-run", "Linux - SUSE", "Running"),
+    ("lpar-off", "Linux - SUSE", "Not Activated"),
+]
+
+
+def test_running_only_tally_excludes_powered_off_guests():
+    """A powered-off Windows VM still needs a licence, so it counts in the default
+    view — but an operator reconciling against live usage needs the running-only
+    number too."""
+    out = build_dc_breakdown(_VMS_WITH_STATE, _LPARS_WITH_STATE, 0)
+    classic = out["architectures"]["classic"]
+    assert classic["families"]["windows"] == 2
+    assert classic["families_running"]["windows"] == 1
+
+
+def test_running_only_tally_covers_power_lpars():
+    power = build_dc_breakdown([], _LPARS_WITH_STATE, 0)["architectures"]["power"]
+    assert power["families"]["suse"] == 2
+    assert power["families_running"]["suse"] == 1
+
+
+def test_guest_with_unknown_power_state_is_not_counted_as_running():
+    """Absent state is not evidence of running — it must not inflate the number an
+    operator treats as 'live'."""
+    hyper = build_dc_breakdown(_VMS_WITH_STATE, [], 0)["architectures"]["hyperconverged"]
+    assert hyper["families"]["rhel"] == 1
+    assert hyper["families_running"]["rhel"] == 0
+
+
+def test_totals_carry_both_tallies():
+    out = build_dc_breakdown(_VMS_WITH_STATE, _LPARS_WITH_STATE, 0)
+    assert out["totals"]["families"]["windows"] == 2
+    assert out["totals"]["families_running"]["windows"] == 1
+    assert out["totals"]["families_running"]["suse"] == 2   # 1 hyperconv + 1 power
+
+
+def test_rows_without_a_state_column_still_work():
+    """Older three-column rows must not break — power state is optional."""
+    out = build_dc_breakdown(_VMS, _LPARS, 0)
+    assert out["architectures"]["classic"]["families_running"]["windows"] == 0
+    assert out["architectures"]["classic"]["families"]["windows"] == 2

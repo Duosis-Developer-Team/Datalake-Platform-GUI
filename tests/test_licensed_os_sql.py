@@ -19,8 +19,21 @@ def test_no_stray_percent_signs_anywhere():
 
 
 def test_vm_metrics_query_is_dc_and_time_scoped():
-    assert _placeholders(os_sql.VM_OS_BY_DC) == 3
+    # dc pattern for the NetBox power-state join + dc pattern, start, end for vm_metrics
+    assert _placeholders(os_sql.VM_OS_BY_DC) == 4
     assert "datacenter ILIKE %s" in os_sql.VM_OS_BY_DC
+
+
+def test_vm_metrics_query_carries_power_state():
+    """vm_metrics has no power column, so it is joined in from NetBox — a licence
+    position reads differently for a guest that is switched off."""
+    sql = os_sql.VM_OS_BY_DC
+    assert "status_value" in sql
+    assert "discovery_netbox_virtualization_vm" in sql
+
+
+def test_power_query_carries_lpar_state():
+    assert "lpar_details_state" in os_sql.POWER_OS_BY_DC
 
 
 def test_power_query_is_server_and_time_scoped():

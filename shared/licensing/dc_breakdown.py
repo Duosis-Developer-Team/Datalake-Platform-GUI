@@ -32,9 +32,26 @@ from .os_source import (
 _MAX_UNKNOWN_SAMPLES = 50
 
 
-def _add(tally: dict[str, int], raw: str | None, unknown: dict[str, None]) -> None:
+#: States that count as "this guest is live right now". Anything else — including
+#: a missing value — is not treated as running: absent state is not evidence.
+_RUNNING_STATES = frozenset({"poweredon", "running"})
+
+
+def _is_running(state: str | None) -> bool:
+    return (state or "").strip().lower() in _RUNNING_STATES
+
+
+def _add(
+    tally: dict[str, int],
+    raw: str | None,
+    unknown: dict[str, None],
+    running_tally: dict[str, int] | None = None,
+    state: str | None = None,
+) -> None:
     fam = classify(raw).family
     tally[fam] = tally.get(fam, 0) + 1
+    if running_tally is not None and _is_running(state):
+        running_tally[fam] = running_tally.get(fam, 0) + 1
     if fam == "unknown":
         label = (raw or "").strip()
         # A blank is missing telemetry, not an unrecognised string — there is
@@ -59,12 +76,18 @@ def build_dc_breakdown(
         ARCH_HYPERCONVERGED: empty_tally(),
         ARCH_POWER: empty_tally(),
     }
+    running: dict[str, dict[str, int]] = {
+        ARCH_CLASSIC: empty_tally(),
+        ARCH_HYPERCONVERGED: empty_tally(),
+        ARCH_POWER: empty_tally(),
+    }
     counts: dict[str, int] = {ARCH_CLASSIC: 0, ARCH_HYPERCONVERGED: 0, ARCH_POWER: 0}
     # dict-as-ordered-set: keeps first-seen order so the review list is stable.
     unknown: dict[str, None] = {}
 
     for row in vm_rows or ():
         cluster, _vmname, guest_os = row[0], row[1], row[2]
+        state = row[3] if len(row) > 3 else None
         bucket = arch_bucket(cluster)
         # A KM/non-KM VM can never be pure-Nutanix: vm_metrics only sees what
         # vCenter manages. Guard anyway so a stray AHV-named cluster cannot
@@ -72,20 +95,24 @@ def build_dc_breakdown(
         if bucket == ARCH_PURE_NUTANIX:
             bucket = ARCH_HYPERCONVERGED
         counts[bucket] += 1
-        _add(buckets[bucket], guest_os, unknown)
+        _add(buckets[bucket], guest_os, unknown, running[bucket], state)
 
     for row in power_rows or ():
         ostype = row[1] if len(row) > 1 else None
+        state = row[2] if len(row) > 2 else None
         counts[ARCH_POWER] += 1
-        _add(buckets[ARCH_POWER], ostype, unknown)
+        _add(buckets[ARCH_POWER], ostype, unknown, running[ARCH_POWER], state)
 
-    totals = empty_tally()
+    totals, totals_running = empty_tally(), empty_tally()
     for tally in buckets.values():
         for fam, n in tally.items():
             totals[fam] = totals.get(fam, 0) + n
+    for tally in running.values():
+        for fam, n in tally.items():
+            totals_running[fam] = totals_running.get(fam, 0) + n
 
     ahv = max(int(ahv_vm_count or 0), 0)
-    return _breakdown_payload(buckets, counts, totals, ahv, list(unknown))
+    return _breakdown_payload(buckets, running, counts, totals, totals_running, ahv, list(unknown))
 
 
 def attribute_licences_to_dc(
@@ -124,19 +151,29 @@ def attribute_licences_to_dc(
     return {fam: int(round(v)) for fam, v in out.items()}
 
 
-def _breakdown_payload(buckets, counts, totals, ahv, unknown_samples) -> dict[str, Any]:
+def _breakdown_payload(buckets, running, counts, totals, totals_running, ahv, unknown_samples) -> dict[str, Any]:
     return {
         "architectures": {
-            ARCH_CLASSIC: {"instances": counts[ARCH_CLASSIC], "families": buckets[ARCH_CLASSIC]},
+            ARCH_CLASSIC: {
+                "instances": counts[ARCH_CLASSIC],
+                "families": buckets[ARCH_CLASSIC],
+                "families_running": running[ARCH_CLASSIC],
+            },
             ARCH_HYPERCONVERGED: {
                 "instances": counts[ARCH_HYPERCONVERGED],
                 "families": buckets[ARCH_HYPERCONVERGED],
+                "families_running": running[ARCH_HYPERCONVERGED],
             },
             ARCH_PURE_NUTANIX: {"instances": ahv, "no_os_telemetry": ahv},
-            ARCH_POWER: {"instances": counts[ARCH_POWER], "families": buckets[ARCH_POWER]},
+            ARCH_POWER: {
+                "instances": counts[ARCH_POWER],
+                "families": buckets[ARCH_POWER],
+                "families_running": running[ARCH_POWER],
+            },
         },
         "totals": {
             "families": totals,
+            "families_running": totals_running,
             "licensed": sum(totals.get(f, 0) for f in LICENSED_FAMILIES),
             "instances": sum(counts.values()),
             "no_os_telemetry": ahv,
