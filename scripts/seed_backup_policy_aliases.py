@@ -6,9 +6,18 @@ account — 'avro' addresses both AVROMED and AVRORA LLC. The spreadsheet
 resolves exactly those, so it is loaded as ground truth alongside the
 heuristic rather than instead of it.
 
+Candidates are always decided against the FULL CRM roster (api.get_crm_accounts()),
+never the project-customer subset (api.get_crm_aliases()) — restricting the pool
+up front manufactures false single matches: 'Sabancı' has 5 real candidates, but
+only one carries a PRJ-* sales order, so a project-scoped lookup finds exactly
+one and calls it resolved. Project membership only decides whether a genuinely
+unambiguous match may be WRITTEN (an alias on a non-project account is invisible
+on the Customer Aliases admin page — see resolve_accounts() below).
+
 Idempotent: rules already present are not rewritten. Rows that cannot be
-resolved to a CRM account are reported by name, never dropped in silence —
-a silent skip is indistinguishable from a successful seed.
+resolved to a CRM account, resolve to more than one, or resolve to exactly one
+non-project account, are reported by name, never dropped in silence — a silent
+skip is indistinguishable from a successful seed.
 
 Usage:
     ./.venv/bin/python -m scripts.seed_backup_policy_aliases <xlsx> [--apply]
@@ -21,6 +30,7 @@ import argparse
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Iterable
 
 from shared.customer.unmapped_classifier import norm
 
@@ -33,9 +43,20 @@ _HEADER_CELLS = {"musteri adi", "policy adi"}
 
 @dataclass
 class SeedPlan:
-    matched: list[tuple[str, str, list[str]]] = field(default_factory=list)
+    # (accountid, sheet_name, crm_account_name, tokens) — exactly one full-roster
+    # candidate AND that candidate is a project customer. Writable.
+    matched: list[tuple[str, str, str, list[str]]] = field(default_factory=list)
+    # sheet names with zero full-roster candidates.
     not_found: list[str] = field(default_factory=list)
+    # (sheet_name, [crm_account_name, ...]) — 2+ full-roster candidates. Needs a human.
     ambiguous: list[tuple[str, list[str]]] = field(default_factory=list)
+    # (accountid, sheet_name, crm_account_name, tokens) — exactly one full-roster
+    # candidate, but it carries no PRJ-* sales order, so it is invisible on the
+    # Customer Aliases admin page (SalesService.get_all_aliases() only ever
+    # iterates project rows + the legacy alias index — no third loop for
+    # orphaned mappings). Real customer, correctly identified, but the alias
+    # system cannot address it yet. Reported, never written.
+    not_addressable: list[tuple[str, str, str, list[str]]] = field(default_factory=list)
 
 
 def parse_sheet_rows(raw_rows) -> list[tuple[str, list[str]]]:
@@ -59,12 +80,24 @@ def parse_sheet_rows(raw_rows) -> list[tuple[str, list[str]]]:
     return out
 
 
-def resolve_accounts(sheet_rows, crm_accounts) -> SeedPlan:
-    """Match short sheet names to full CRM legal names.
+def resolve_accounts(sheet_rows, crm_accounts, project_account_ids: Iterable[str]) -> SeedPlan:
+    """Match short sheet names against the FULL CRM roster, then gate writes.
+
+    `crm_accounts` must be the full roster (api.get_crm_accounts(), backed by
+    discovery_crm_accounts) — NOT the project-customer subset api.get_crm_aliases()
+    returns. Candidates are decided against that full set first; only after
+    ambiguity has already been resolved does `project_account_ids` narrow the
+    result to what may actually be written. Deciding project membership before
+    counting candidates would silently manufacture false single matches: e.g.
+    'Sabancı' has 5 real candidates and only one carries a PRJ-* sales order —
+    scoping the pool to project customers up front finds exactly one of them
+    and calls it resolved, when the real answer is "ambiguous, ask a human."
 
     Uses the same Turkish folding as the classifier so this path and the
     runtime path cannot disagree about what two names being "the same" means.
     """
+    project_ids = {str(a).strip() for a in (project_account_ids or ()) if str(a).strip()}
+
     by_key: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for acc in crm_accounts:
         name = str(acc.get("name") or "").strip()
@@ -76,6 +109,14 @@ def resolve_accounts(sheet_rows, crm_accounts) -> SeedPlan:
     for sheet_name, tokens in sheet_rows:
         key = norm(sheet_name)
         exact = by_key.get(key, [])
+        # Startswith fallback for short sheet names ('Aksular' -> 'AKSULAR GIDA
+        # SANAYİ A.Ş.'). This is a wide net on purpose — 'Azer' alone starts 5
+        # full-roster account names in production, AZERSUN HOLDİNG among them.
+        # That is now SAFE: excess candidates land in `ambiguous`, never picked
+        # for the caller. Do NOT tighten this to shrink a large ambiguous
+        # count — narrowing the candidate pool (e.g. to project customers, as
+        # this function used to) is exactly what hid that real ambiguity
+        # behind a false single match before.
         candidates = exact or [
             entry
             for k, entries in by_key.items()
@@ -88,17 +129,26 @@ def resolve_accounts(sheet_rows, crm_accounts) -> SeedPlan:
             plan.ambiguous.append((sheet_name, sorted(c[0] for c in candidates)))
         else:
             name, accountid = candidates[0]
-            plan.matched.append((accountid, name, tokens))
+            if accountid in project_ids:
+                plan.matched.append((accountid, sheet_name, name, tokens))
+            else:
+                plan.not_addressable.append((accountid, sheet_name, name, tokens))
     return plan
 
 
 def format_report(plan: SeedPlan) -> str:
     lines = [
-        f"Matched:    {len(plan.matched)} customers",
-        f"Not found:  {len(plan.not_found)} customers",
-        f"Ambiguous:  {len(plan.ambiguous)} customers",
+        f"Matched:         {len(plan.matched)} customers",
+        f"Not found:       {len(plan.not_found)} customers",
+        f"Ambiguous:       {len(plan.ambiguous)} customers",
+        f"Not addressable: {len(plan.not_addressable)} customers",
         "",
     ]
+    if plan.matched:
+        lines.append("Matched (sheet name -> CRM account; written on --apply) — check these by eye:")
+        for _accountid, sheet_name, crm_name, tokens in plan.matched:
+            lines.append(f"  - {sheet_name} -> {crm_name} [{', '.join(tokens)}]")
+        lines.append("")
     if plan.not_found:
         lines.append("No CRM account for these sheet names:")
         lines += [f"  - {n}" for n in plan.not_found]
@@ -107,6 +157,15 @@ def format_report(plan: SeedPlan) -> str:
         lines.append("These sheet names match more than one CRM account (pick one by hand):")
         for sheet_name, names in plan.ambiguous:
             lines.append(f"  - {sheet_name}: {', '.join(names)}")
+        lines.append("")
+    if plan.not_addressable:
+        lines.append(
+            "These sheet names resolve to exactly one real CRM account, but it has no "
+            "PRJ-* sales order, so an alias on it would be invisible on the Customer "
+            "Aliases admin page. Not written:"
+        )
+        for _accountid, sheet_name, crm_name, tokens in plan.not_addressable:
+            lines.append(f"  - {sheet_name} -> {crm_name} [{', '.join(tokens)}]")
         lines.append("")
     return "\n".join(lines)
 
@@ -129,7 +188,7 @@ def apply_plan(plan: SeedPlan) -> tuple[int, int]:
     aliases = api.get_crm_aliases() or []
     accounts_written = rules_added = 0
 
-    for accountid, account_name, tokens in plan.matched:
+    for accountid, _sheet_name, account_name, tokens in plan.matched:
         alias = find_alias(aliases, accountid)
         mappings = list((alias or {}).get("source_mappings") or [])
         added_here = 0
@@ -168,11 +227,16 @@ def main(argv: list[str] | None = None) -> int:
     from src.services import api_client as api
 
     sheet_rows = load_sheet(args.xlsx)
-    crm_accounts = [
-        {"name": a.get("crm_account_name"), "accountid": a.get("crm_accountid")}
+    # Full roster for candidate-matching (must NOT be scoped to project customers —
+    # see resolve_accounts()'s docstring for why that manufactures false matches).
+    crm_accounts = api.get_crm_accounts() or []
+    # Separately: which of those accounts are actually writable today.
+    project_account_ids = {
+        str(a.get("crm_accountid") or "").strip()
         for a in (api.get_crm_aliases() or [])
-    ]
-    plan = resolve_accounts(sheet_rows, crm_accounts)
+        if a.get("crm_accountid")
+    }
+    plan = resolve_accounts(sheet_rows, crm_accounts, project_account_ids)
 
     print(f"Sheet rows: {len(sheet_rows)}")
     print(format_report(plan))

@@ -2404,6 +2404,22 @@ def delete_crm_service_mapping_override(productid: str) -> dict[str, Any]:
     return out if isinstance(out, dict) else {}
 
 
+def get_crm_accounts() -> list:
+    """Full CRM account roster (discovery_crm_accounts), not just project customers.
+
+    get_crm_aliases() below is scoped to accounts with a PRJ-* sales order; a
+    real account with zero orders (e.g. AVRORA LLC) is invisible there. Name-
+    matching code that needs to know every real candidate for a short name —
+    so it can tell a true single match from one that only looks single because
+    the candidate pool was pre-narrowed — must use this instead.
+    """
+    def fetch() -> list:
+        data = _get_json(_get_client_cust(), "/api/v1/crm/accounts")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_accounts", fetch, [])
+
+
 def get_crm_aliases() -> list:
     ck = "api:crm_aliases"
 

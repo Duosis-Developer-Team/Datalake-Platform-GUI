@@ -27,6 +27,25 @@ def test_list_aliases_returns_mappings(mock_customer_service):
     assert "source_mappings" in body[0]
 
 
+def test_list_crm_accounts_returns_full_roster(mock_customer_service):
+    """/crm/accounts must return the FULL roster, including accounts with zero
+    PRJ-* sales orders — /crm/aliases only covers project customers, and code
+    that decides name-match ambiguity needs to see every real account or it
+    silently manufactures false single matches (the 'Sabancı' bug)."""
+    client, _svc = mock_customer_service
+    sales = MagicMock()
+    sales.get_crm_accounts.return_value = [
+        {"name": "AKSULAR GIDA SANAYİ A.Ş.", "accountid": "acc-aksu"},
+        {"name": "AVRORA LLC", "accountid": "acc-avrora"},  # zero sales orders
+    ]
+    client.app.state.sales = sales
+    resp = client.get("/api/v1/crm/accounts")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {"name": "AVRORA LLC", "accountid": "acc-avrora"} in body
+    sales.get_crm_accounts.assert_called_once()
+
+
 def test_save_source_mappings_endpoint(mock_customer_service):
     client, _svc = mock_customer_service
     sales = MagicMock()

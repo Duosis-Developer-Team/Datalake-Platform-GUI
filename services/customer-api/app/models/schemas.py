@@ -145,6 +145,20 @@ class SourceMappingSaveResult(BaseModel):
     cache_warning: Optional[str] = None
 
 
+class CrmAccountRow(BaseModel):
+    """One row of the FULL CRM account roster (discovery_crm_accounts).
+
+    Distinct from CustomerAlias/CustomerAliasWithMappings: those come from
+    /crm/aliases, which is scoped to accounts with a PRJ-* sales order. This
+    is every CRM account, including ones with zero orders — callers that need
+    to detect ambiguity (e.g. "Sabancı" resolving to 5 different legal
+    entities) must check against this full set, not the project-scoped one.
+    """
+
+    name: str
+    accountid: str
+
+
 class SalesEfficiencyByCategoryRow(BaseModel):
     model_config = {"extra": "allow"}
 

@@ -1,7 +1,37 @@
 Sheet rows: 172
-Matched:    33 customers
-Not found:  137 customers
-Ambiguous:  2 customers
+Matched:         27 customers
+Not found:       60 customers
+Ambiguous:       16 customers
+Not addressable: 69 customers
+
+Matched (sheet name -> CRM account; written on --apply) — check these by eye:
+  - ABC Deterjan -> ABC DETERJAN SANAYİ VE TİCARET A.Ş. [abc-dete]
+  - Alisan lojistik -> ALIŞAN LOJİSTİK [alis, alis-logo]
+  - Alkim Kağıt -> ALKİM KAĞIT TİC. SAN. A.Ş. [alki-kagi]
+  - Ankutsan -> ANKUTSAN GERİ DÖNÜŞÜM SANAYİ VE TİCARET A.Ş. [anku-bw, anku-mii, anku]
+  - aslan yapı -> ASLAN YAPI VE TİCARET A.Ş. [asla]
+  - atik nakit -> ATIK NAKİT [atik nakit]
+  - Ayakkabı Dünyası -> AYAKKABI DÜNYASI KUNDURA SANAYİ VE TİCARET ANONİM ŞİRKETİ [ayak-duny]
+  - başarsoft -> BAŞARSOFT BİLGİ TEKNOLOJİLERİ ANONİM ŞİRKETİ [basa-soft]
+  - baykaralar -> BAYKARALAR OTOMOTİV SANAYİ VE TİC. LTD. ŞTİ. [bayka]
+  - Boyner -> BOYNER BÜYÜK MAĞAZACILIK A.Ş. [boyner]
+  - comodif -> COMODIF TEKNOLOJİ HİZMETLERİ ANONİM ŞİRKETİ [como-dif]
+  - Easy-IT -> EASYIT BİLGİ SİSTEMLERİ VE TİCARET [easy-it]
+  - Emlak Konut -> EMLAK KONUT ASANSÖR SİSTEMLERİ SANAYİ VE TİCARET ANONİM ŞİRKETİ [emla-konu]
+  - Enka -> ENKA PAZARLAMA İHRACAT İTHALAT A.Ş. [enka]
+  - Gama Enerji -> GAMA ENERJİ A.Ş. [gama-ener]
+  - Hemel -> HEMEL BOYA KİMYA SAN. A.Ş. [heme]
+  - Improva -> IMPROVA BİLİŞİM DANIŞMANLIK HİZMETLERİ TİCARET LTD. ŞTİ. [impr]
+  - Inter media -> INTER MEDIA SAY. GÖRÜNTÜ VE BİL. İŞL. SİST. LTD. ŞTİ. [inter-media]
+  - İpragaz -> İPRAGAZ A.Ş [ipra]
+  - Kibar Holding -> KİBAR HOLDİNG ANONİM ŞİRKETİ [kiba-hold]
+  - Loman -> LOMAN SYS BİLİŞİM TEKNOLOJİLERİ SANAYİ VE TİCARET LİMİTED ŞİRKETİ [loma]
+  - Lota Ayakkabı -> LOTA AYAKKABI VE DERİ SAN. TİC. A.Ş. [lota-ayak]
+  - Maxion wheels -> MAXION WHEELS ( JANTAŞ ) [maxio-wheels]
+  - Mbis -> MBIS [mbis-arg, mbis]
+  - Mudatech -> MUDATECH BEYAZ EŞYA SANAYİ VE TİCARET ANONİM ŞİRKETİ [muda-tech]
+  - Noqnoq -> NOQNOQ YAZILIM BİLGİ TEKNOLOJİLERİ SANAYİ VE TİCARET ANONİM ŞİRKETİ [noq]
+  - opontia elektronik -> OPONTİA ELEKTRONİK TİCARET VE YATIRIM A.Ş. [opon]
 
 No CRM account for these sheet names:
   - Affinitybox
@@ -9,141 +39,149 @@ No CRM account for these sheet names:
   - Akasya Maden
   - Aksular
   - alternacx
-  - Arabam.com
   - Infina-arkas
-  - Avrora
-  - axata
   - aygün medikal
-  - Azmusebat
   - BackUp
-  - Bayegan
   - Bizim Toptan
   - Bony Çorap
-  - Brus
   - Çağrı Market
-  - Çapa Medikal
   - Çelebi Holding
   - Ceyza AVM
   - codexsan
   - cs-smart message
-  - Cits
-  - çimsa
   - Çizmeci Time
-  - cloud expert
-  - comind
-  - cozmopol
   - cs aktek
   - dagtech
-  - Demirören
-  - Deni
-  - dias portföy
-  - Doğadan
   - Dsciene
-  - ECS elektrik
-  - Ekol Lojistik
-  - Emaa Sigorta
-  - english home
   - Engin LTD
-  - Eren Perakende
-  - Felece
   - fr_dc
   - forte milsoft
   - Fuddy Kurye
-  - Gateway holding
   - Gama Holding
   - Gezginler Alemi
   - Güler Gümrük
   - Gürsel Turizm
-  - Hasel
-  - hd holding
   - henka
   - Indorama
-  - Interzoon
   - istanbul telekom
   - İste Gelsin
-  - Joe the juice
   - johnsons&johnsons
   - Kale Clamp
-  - Kale Holding
-  - Kale Kilit
-  - Kaplanlar
-  - KLV İnşaat
-  - Kosifler
-  - Kuçükoğlu Holding
-  - Lastikcim
   - lesaffre
   - makine takım
-  - Marubeni Dağıtım
-  - Mavi
-  - Memorial
-  - Menderes Tekstil
-  - Metamin
   - Milangaz
-  - Milhans
   - Mobiltel
   - Modern Ambalaj
   - Movu
   - Musixen
-  - murr elektronik
-  - My Medikal
-  - Nef
   - Nmq
   - nova packaging
-  - novator
   - Norm Digital
   - offline kasa
-  - Ozak Global
-  - Polisan
-  - Proj-e
   - Pros
-  - Reds
-  - Rönesans Holding
   - Scotty
   - Semak Makine
-  - Serim Bilgisayar
-  - Shotton
   - Simfer
-  - Sisal Şans
   - Soz Teks
-  - Spro
-  - Tab İlaç
-  - temsa
-  - teknosa
   - This is cober
-  - Thos
-  - Togg
   - Tosyalı Angola
-  - Tota
   - Toyz Shop
-  - Tübitak
-  - Türev Yazılım
   - Türkiye İhracatçılar Meclisi
-  - Turk Onay
-  - Turkon
   - Univera Nestle
-  - uludağ içecek
-  - Uget
   - Valensas
-  - V-Count
-  - Vefa İlaç
-  - Vektora
-  - Veyseloğlu
   - Warmhause
-  - Yataş
-  - Yedas
-  - yemekpos
-  - Yılgenci
   - Yk
-  - Yontem bilisim
-  - Zen Pırlanta
   - Zorlu Enerji
-  - Zorlu Holding
   - Zorlu İstanbul
   - Zorlu Manisa
-  - Zorlu Tekstil
 
 These sheet names match more than one CRM account (pick one by hand):
   - Arikan: ARIKAN MAĞAZACILIK A.Ş., ARIKAN SAAT ANONİM ŞİRKETİ
-  - consulta: CONSULTA SERBEST MUHASEBECİLİK MALİ MÜŞAVİRLİK VE BAĞIMSIZ DENETİM ANONİM ŞİRKETİ, CONSULTA YEMİNLİ MALİ MÜŞAVİRLİK ANONİM ŞİRKETİ, CONSULTA YÖNETİM VE TEKNOLOJİ DANIŞMANLIĞI ANONİM ŞİRKETİ, CONSULTA İŞ VE SOSYAL GÜVENLİK MEVZUATI DANIŞMANLIK HİZMETLERİ ANONİM ŞİRKETİ
+  - Aselsan: ASELSAN A.Ş., ASELSANNET ELEKTRONİK VE HABERLEŞME SİSTEMLERİ SAN. TİC. İNŞAAT VE TAAHHÜT LTD.ŞTİ.
+  - axata: AXATA, AXATA
+  - Azer: AZERBAYCAN TEST TEKLİFLER, AZERIS, AZERSUN HOLDİNG MMC, AZERİS, Azerbaycan KÜÇÜK VE ORTA İŞLETMELERİN GELİŞİMİ AJANSI (KOBİA)
+  - Bayegan: BAYEGAN (ICT BULUT), BAYEGAN DIŞ TİC. A.Ş.
+  - Brus: BRUSA KOLTUK, BRUSA KOLTUK VE İÇ TRİM TEKNOLOJİLERİ SAN.VE TİC.A.Ş.
+  - consulta: CONSULTA SERBEST MUHASEBECİLİK MALİ MÜŞAVİRLİK VE BAĞIMSIZ DENETİM ANONİM ŞİRKETİ, CONSULTA YEMİNLİ MALİ MÜŞAVİRLİK ANONİM ŞİRKETİ, CONSULTA YÖNETİM VE TEKNOLOJİ DANIŞMANLIĞI ANONİM ŞİRKETİ, CONSULTA İLETİŞİM VE MARKA YÖNETİM HİZMETLERİ TİCARET LİMİTED ŞİRKETİ, CONSULTA İŞ VE SOSYAL GÜVENLİK MEVZUATI DANIŞMANLIK HİZMETLERİ ANONİM ŞİRKETİ
+  - Demirören: DEMİRÖREN MEDYA YATIRIMLARI TİC. A.Ş., DEMİRÖREN TEKNOLOJİ ANONİM ŞİRKETİ, DEMİRÖREN YATIRIM HOLDİNG ANONİM ŞİRKETİ, DEMİRÖREN YAYINCILIK VE GAZETECELİK A.Ş.
+  - Eska: ESKA VALVE A.Ş., ESKABABA
+  - İsbir: İŞBİR SENTETİK, İŞBİR SÜNGER SANAYİ A.Ş.
+  - Mavi: MAVİ BİLİŞİM VE DANIŞMANLIK HİZ. LTD. ŞTİ., MAVİ GİYİM SANAYİ VE TİCARET ANONİM ŞİRKETİ
+  - Memorial: MEMORIAL, MEMORİAL
+  - Polisan: POLİSAN HOLDİNG A.Ş, POLİSAN KANSAİ BOYA SANAYİ VE TİCARET A.Ş.
+  - Sabancı: SABANCI ARF, SABANCI DX, SABANCI DİJİTAL TEKNOLOJİ HİZMETLERİ A.Ş., SABANCI ÜNİVERSİTESİ, SABANCIDX
+  - Turk Onay: TÜRK ONAY ÖDEME SİSTEMLERİ, TÜRKONAY ÖDEME SİSTEMLERİ
+  - Turkon: TURKON GRUP HOLDİNG A.Ş., TURKON KONTEYNER TAŞIMACILIK VE DENİZCİLİK A.Ş., TURKON LOJİSTİK ANONİM ŞİRKETİ, TÜRK ONAY ÖDEME SİSTEMLERİ, TÜRKONAY ÖDEME SİSTEMLERİ
+
+These sheet names resolve to exactly one real CRM account, but it has no PRJ-* sales order, so an alias on it would be invisible on the Customer Aliases admin page. Not written:
+  - Arabam.com -> ARABAM COM İNTERNET VE BİLGİ HİZMETLERİ A.Ş. [arab-com]
+  - Avrora -> AVRORA LLC [avro, avrora]
+  - Azmusebat -> AZMÜSEBAT ÇELİK SANAYİ VE TİCARET ANONİM ŞİRKETİ [azmu, azmu-asebat]
+  - Çapa Medikal -> ÇAPA MEDİKAL  SAN. VE TİC. A.Ş. [capa-medi]
+  - Cits -> CITS [cits-cosku]
+  - çimsa -> ÇİMSA [cims]
+  - cloud expert -> CLOUD EXPERT BİLGİ TEKNOLOJİLERİ ANONİM ŞİRKETİ [clou-expe]
+  - comind -> CO-MİND AL [comi]
+  - cozmopol -> COZMOPOL [cozmo]
+  - Deni -> DENIM VILLAGE [deni-villa]
+  - dias portföy -> DİAS PORTFÖY YÖNETİMİ ANONİM ŞİRKETİ [dias-port]
+  - Doğadan -> DOĞADAN GIDA ÜRÜNLERİ SAN. VE PAZ. AŞ (ANADOLU HOLDİNG) [dogadan, doga-tarim, doga]
+  - ECS elektrik -> E.C.S. ELEKTRİK ENJEKSİYON VE KABLO SİSTEMLERİ SAN. VE TİC. A.Ş. [ecs-elek]
+  - Ekol Lojistik -> EKOL LOJİSTİK A.Ş. [ekol-loji]
+  - Emaa Sigorta -> EMAA SİGORTA A.Ş. [ema]
+  - english home -> ENGLİSH  HOME (EHM) [eng-home]
+  - Eren Perakende -> EREN PERAKENDE VE TEKSTİL ANONİM ŞİRKETİ [eren-mode, eren-pera]
+  - Felece -> FELECE TEKNOLOJİ ANONİM ŞİRKETİ [fele]
+  - Gateway holding -> GATEWAY HOLDING FORTIUS [gate, gwplan, visa01, ema-agito, ema-base, ema-sigo]
+  - Hasel -> HASEL İSTİF MAKİNALARI SAN. VE TİC. A.Ş. [hase]
+  - hd holding -> HD HOLDING [hd-hold]
+  - Infotec -> INFOTEC [info-atla]
+  - Interzoon -> INTERZOON [inter-zoon]
+  - Joe the juice -> JOE&THEJUİCETURKİYE [joe]
+  - Kale Holding -> KALE HOLDİNG [kale-hold]
+  - Kale Kilit -> KALE KİLİT VE KALIP SANAYİ A.Ş. [kale-kili]
+  - Kaplanlar -> KAPLANLAR [kapl-ads, kapl]
+  - KLV İnşaat -> KLV İNŞAAT [klv-insa]
+  - Kosifler -> KOSİFLER OTO SERVİS VE TİC. A.Ş. [kosi]
+  - Kuçükoğlu Holding -> KÜÇÜKOĞLU HOLDİNG ANONİM ŞİRKETİ [kucu-oglu]
+  - Lastikcim -> LASTİKCİMCOM [lasti-com]
+  - Marubeni Dağıtım -> MARUBENİ DAĞITIM VE SERVİS A.Ş. [maru-dagi]
+  - Menderes Tekstil -> MENDERES TEKSTİL SAN. VE TİC. A.Ş. [mend-teks]
+  - Metamin -> METAMİN MÜMESSİLLİK SANAYİ VE TİCARET ANONİM ŞİRKETİ [meta]
+  - Milhans -> MİLHANS GIDA VE TARIM ÜRÜNLERİ SAN. VE TİC. A.Ş [milh]
+  - murr elektronik -> MURR ELEKTRONİK [murr]
+  - My Medikal -> MY MEDİKAL VE MEDİKAL A.Ş. [my-medi]
+  - Nef -> NEF [nef-clou]
+  - novator -> NOVATORSOFT [nova-tor]
+  - Ozak Global -> ÖZAK GLOBAL HOLDİNG A.Ş. [ozak-glob]
+  - Proj-e -> PROJE TEKNOLOJİ YAZILIM A.Ş. [proj-e]
+  - Reds -> RED STAR HAVACILIK HİZMETLERİ ANONİM ŞİRKETİ [reds]
+  - Rönesans Holding -> RÖNESANS HOLDİNG [rone-hold, rone]
+  - Serim Bilgisayar -> SERİM BİLGİSAYAR [seri-bilgi, seri]
+  - Shotton -> SHOTTON [shot]
+  - Sisal Şans -> SİSAL ŞANS İNTERAKTİF HİZMETLER VE ŞANS OYUNLARI YAT. A.Ş. [sisa-sans]
+  - Spro -> SPRO TEKNOLOJİ ANONİM ŞİRKETİ [spro]
+  - Tab İlaç -> TAB İLAÇ SANAYİ ANONİM ŞİRKETİ [tab-ilac]
+  - temsa -> TEMSA [temsa, tma]
+  - teknosa -> TEKNOSA [tekno-ads, tekno-car, tekno-po, tekno-solm, tekno-slt]
+  - Thos -> THOS HUKUK OTOMASYON SİSTEMLERİ YAZILIM A.Ş. [thos]
+  - Togg -> TOGG-TÜRKİYENİN OTOMOBİL GİRİŞİM GRUBU SANAYİ VE TİCARET A.Ş. [togg-ads, togg-bw, togg]
+  - Tota -> TOTAL HAVACILIK [tota]
+  - Tübitak -> TÜBİTAK-SAGE [tubi-sage]
+  - Türev Yazılım -> TÜREV YAZILIM [turev-yzl]
+  - uludağ içecek -> ULUDAĞ İÇECEK TÜRK ANONİM ŞİRKETİ [ulud]
+  - Uget -> UGETAM [uget-fior, uget-fiori, uget-srm, uget]
+  - V-Count -> V-COUNT TEKNOLOJİ [vcou, v-count]
+  - Vefa İlaç -> VEFA İLAÇ SANAYİ VE TİCARET ANONİM ŞİRKETİ [vefa-ilac]
+  - Vektora -> VEKTORA YAZILIM TEKNOLOJILERI A.Ş [vekt-bw]
+  - Veyseloğlu -> VEYSELOĞLU [veys-sap, veys]
+  - Yataş -> YATAŞ [yata]
+  - Yedas -> YEDAŞ [yedas]
+  - yemekpos -> YEMEKPOS [yeme-pos]
+  - Yılgenci -> YILGENCİ SANAYİ VE TİCARET A.Ş. [yilg]
+  - Yontem bilisim -> YÖNTEM BİLİŞİM TURİZM SANAYİ TİCARET LTD. ŞTİ. [yont-bili]
+  - Zen Pırlanta -> ZEN PIRLANTA [zen]
+  - Zorlu Holding -> ZORLU HOLDİNG A.Ş. [zorl-hold, zorlu_holding, zorlu_holding]
+  - Zorlu Tekstil -> ZORLU TEKSTİL TİCARET VE SANAYİ A.Ş. [zorl-teks]
 
 Dry run — nothing written. Re-run with --apply to seed.

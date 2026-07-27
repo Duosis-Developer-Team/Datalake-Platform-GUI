@@ -12,6 +12,7 @@ Routes:
   GET /customers/{customer_name}/sales/catalog-valuation
   GET /customers/{customer_name}/sales/service-breakdown
   GET /crm/aliases
+  GET /crm/accounts
   PUT /crm/aliases/{crm_accountid}
 """
 from __future__ import annotations
@@ -26,6 +27,7 @@ from app.core.time_filter import TimeFilter
 
 from app.models.schemas import (
     CatalogValuationRow,
+    CrmAccountRow,
     CustomerAlias,
     CustomerAliasUpdate,
     CustomerAliasWithMappings,
@@ -155,6 +157,17 @@ def sales_service_breakdown(
 def list_aliases(svc: SalesService = Depends(get_sales_service)):
     """Return CRM project customers with legacy alias fields and source mappings."""
     return svc.get_all_aliases()
+
+
+@router.get("/crm/accounts", response_model=List[CrmAccountRow])
+def list_crm_accounts(svc: SalesService = Depends(get_sales_service)):
+    """Full CRM account roster, not just the PRJ-* project-order subset /crm/aliases returns.
+
+    Consumers that need to know every real candidate a short name could mean
+    (e.g. detecting that 'Sabancı' matches 5 legal entities, not 1) must use
+    this instead of /crm/aliases.
+    """
+    return svc.get_crm_accounts()
 
 
 @router.get("/crm/internal-alias", response_model=CustomerAliasWithMappings)

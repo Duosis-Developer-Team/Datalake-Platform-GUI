@@ -619,6 +619,23 @@ class SalesService:
         out.sort(key=lambda r: str(r.get("crm_account_name") or "").casefold())
         return out
 
+    def get_crm_accounts(self) -> List[Dict[str, Any]]:
+        """Every CRM account (discovery_crm_accounts), not just project customers.
+
+        get_all_aliases() only ever returns accounts with a PRJ-* sales order
+        (plus the legacy webui alias index) — real accounts with zero orders,
+        like a customer who has NetBackup capacity but no active sales order
+        yet, are invisible there. Callers that need the true candidate pool
+        for name-matching (so real ambiguity is not narrowed away to a false
+        single match) must use this instead.
+        """
+        from app.db.queries import unmapped as uq
+
+        return [
+            r for r in self._run_query(uq.CRM_ACCOUNT_NAMES, ())
+            if r.get("name") and r.get("accountid")
+        ]
+
     def list_source_mappings_for_account(self, crm_accountid: str) -> list[dict[str, Any]]:
         if not self._webui or not self._webui.is_available:
             return []
