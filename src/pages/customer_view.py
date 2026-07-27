@@ -3493,9 +3493,21 @@ def _register_tab_callback(tab: str) -> None:
     @callback(
         Output(f"cust-tab-body-{tab}", "children"),
         Input("customer-view-ctx", "data"),
+        Input("customer-main-tabs", "value"),
         prevent_initial_call=False,
     )
-    def _fill(ctx, _tab=tab):
+    def _fill(ctx, active_tab, _tab=tab):
+        # Only the tab the user is looking at fetches. Every one of the eight
+        # bodies used to fill on any ctx write, so opening one customer ran eight
+        # renders at once against a gunicorn pool of eight threads — the page
+        # blocked itself and read as "loading forever". A hidden tab keeps its
+        # placeholder and fills when it is first selected.
+        #
+        # Falls back to rendering when the tab value is missing rather than
+        # blanking: an unrendered body is the failure mode that hung the DC View
+        # lazy tabs (813d6ea6), so absence of a value must not mean "skip".
+        if active_tab and str(active_tab) != _tab:
+            return dash.no_update
         return _render_tab_body(_tab, ctx)
 
 
