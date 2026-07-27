@@ -1168,6 +1168,7 @@ class InventoryOverviewService:
             crm_only_panels.append(row)
 
         panel_rows = _drop_hidden_families(panel_rows)
+        crm_only_panels = _drop_hidden_families(crm_only_panels)
         panel_rows.sort(key=lambda r: (-float(r.get("crm_sold_tl") or 0), r.get("service_label") or ""))
 
         families_map: dict[str, list[dict[str, Any]]] = defaultdict(list)

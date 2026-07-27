@@ -1272,3 +1272,70 @@ def test_hidden_family_rows_are_dropped_before_families_and_summary():
     assert [r["family"] for r in kept] == ["virt_power_hana", "virt_classic"]
     assert sum(float(r["crm_sold_tl"]) for r in kept) == 75.0
 
+
+def test_hidden_family_dropped_from_crm_only_panels_and_summary():
+    """A CRM-entitled virt_power product with no matching infra panel goes
+    through _build_entitled_only_row and lands in crm_only_panels — a list
+    built in parallel to panel_rows. It must be filtered there too, so the
+    CRM-only KPI and CRM-only accordion section agree with the families
+    table and never show virt_power. virt_power_hana in the same shape must
+    still come through untouched.
+    """
+    sellable = MagicMock()
+    sellable.is_available = True
+    sellable.compute_all_panels.return_value = []  # no infra panel for either product
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._count_unmapped_products.return_value = 0
+    sellable.compute_site_scoped_panels.return_value = []
+    _stub_netbackup_metrics(sellable)
+
+    sales = MagicMock()
+    sales._run_query.return_value = [
+        {
+            "productid": "p-power",
+            "product_name": "Power CPU",
+            "entitled_qty": 40.0,
+            "entitled_amount_tl": 400.0,
+            "resource_unit": "Core",
+        },
+        {
+            "productid": "p-hana",
+            "product_name": "Power HANA CPU",
+            "entitled_qty": 10.0,
+            "entitled_amount_tl": 100.0,
+            "resource_unit": "Core",
+        },
+    ]
+
+    mapping = {
+        "p-power": {
+            "category_code": "virt_power_cpu",
+            "category_label": "Power CPU",
+            "resource_unit": "Core",
+            "source": "yaml",
+        },
+        "p-hana": {
+            "category_code": "virt_power_hana_cpu",
+            "category_label": "Power HANA CPU",
+            "resource_unit": "Core",
+            "source": "yaml",
+        },
+    }
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=MagicMock(is_available=True, run_rows=_webui_rows),
+        config=MagicMock(get_calc_dict=lambda: {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}),
+        crm_redis=None,
+    )
+    svc._load_product_mapping = MagicMock(return_value=mapping)
+
+    payload = svc.compute_inventory_overview("*")
+
+    crm_only_keys = {r["panel_key"] for r in payload["crm_only_panels"]}
+    assert "virt_power_cpu" not in crm_only_keys
+    assert "virt_power_hana_cpu" in crm_only_keys
+    assert payload["summary"]["crm_only_count"] == len(payload["crm_only_panels"])
+    assert payload["summary"]["crm_only_count"] == 1
+
