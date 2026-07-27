@@ -1,8 +1,9 @@
-"""Eşleşmeyen Veriler (Unmapped data customer) — Phase 1: VMs.
+"""Eşleşmeyen Veriler (Unmapped data customer): VMs and NetBackup policies.
 
-A synthetic, resource-focused customer page: every VM that matches no customer
-at all, split into an actionable *alias_gap* worklist (a real customer's VM that
-just needs a mapping rule) and true *orphan* resources. Deliberately lightweight
+A synthetic, resource-focused customer page: every VM (Sanallaştırma tab) and
+backup policy (Backup tab) matching no customer at all, split into an
+actionable *alias_gap* worklist, true *orphan* resources, and *ambiguous* ones
+matching more than one customer (no action offered). Deliberately lightweight
 — it does NOT go through the heavy customer-view (no CRM / billing / SLA here).
 """
 from __future__ import annotations

@@ -519,9 +519,9 @@ class CustomerService:
     def get_unmapped_resources(self, time_range: dict | None = None) -> dict:
         """Resources claimed by NO customer — the reverse of per-customer queries.
 
-        Phase 1: VMs. Cached + single-flighted; the classification is Python-side
-        (no leading-wildcard scan). Failure returns the empty payload, never 5xx —
-        an orphan report must never break the customers page.
+        VMs and NetBackup policies. Cached + single-flighted; the classification
+        is Python-side (no leading-wildcard scan). Failure returns the empty
+        payload, never 5xx — an orphan report must never break the customers page.
         """
         empty = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0,
                  "ambiguous_count": 0}

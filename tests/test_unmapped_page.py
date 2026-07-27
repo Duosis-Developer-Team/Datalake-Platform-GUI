@@ -4,6 +4,27 @@ backend, and it always offers a visible way back to the customers list.
 """
 from unittest.mock import patch
 
+
+def _walk(node):
+    if node is None:
+        return
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _walk(item)
+        return
+    yield node
+    children = getattr(node, "children", None)
+    if children is not None:
+        yield from _walk(children)
+
+
+def _find_by_id(component, target_id):
+    for node in _walk(component):
+        if getattr(node, "id", None) == target_id:
+            return node
+    return None
+
+
 _PAYLOAD = {
     "rows": [
         {"name": "Acme_Kilit-Web01", "guessed_owner": "Örnek Kilit A.Ş.",
@@ -26,6 +47,17 @@ def _render(payload=_PAYLOAD):
 
     with patch("src.services.api_client.get_unmapped_resources", return_value=payload):
         return str(page.build_layout({"preset": "7d", "start": "2026-07-10", "end": "2026-07-16"}))
+
+
+def _build_body(payload):
+    """The live component tree build_body() produces — not its string repr —
+    so a test can inspect a specific DataTable's own `data`, not text that
+    happens to appear somewhere in the whole rendered page.
+    """
+    from src.pages import unmapped_resources as page
+
+    with patch("src.services.api_client.get_unmapped_resources", return_value=payload):
+        return page.build_body({"preset": "7d", "start": "2026-07-10", "end": "2026-07-16"})
 
 
 def test_page_offers_a_visible_way_back_to_customers():
@@ -114,11 +146,25 @@ def test_backup_tab_renders_next_to_virtualization():
 
 
 def test_backup_rows_do_not_leak_into_the_virtualization_table():
-    """Her sekme yalnızca kendi kaynağını gösterir."""
-    from src.pages.unmapped_resources import _table_rows
+    """Her sekme yalnızca kendi kaynağını gösterir.
 
-    vm_only = _table_rows([r for r in _MIXED_PAYLOAD["rows"] if r["kind"] == "vm"])
-    assert [r["name"] for r in vm_only] == ["Acme_Kilit-Web01"]
+    Exercises build_body()'s own kind-based split (src/pages/unmapped_resources.py
+    vm_rows/backup_rows comprehensions), not a filter re-derived here: it locates
+    the two rendered DataTables by their table_id() and reads each one's own
+    `data`, so a leak in build_body's split — e.g. both tables getting every
+    row — is directly observable via the row content, not just via which text
+    strings appear somewhere in the page.
+    """
+    from src.pages.unmapped_resources import table_id
+
+    body = _build_body(_MIXED_PAYLOAD)
+    vm_table = _find_by_id(body, table_id("vm"))
+    backup_table = _find_by_id(body, table_id("backup"))
+
+    assert {r["name"] for r in vm_table.data} == {"Acme_Kilit-Web01"}
+    assert {r["name"] for r in backup_table.data} == {
+        "abc-dete-s4hana-prd-log", "avro-CLAVRDB01-H",
+    }
 
 
 def test_ambiguous_rows_are_labelled_and_offer_no_action():

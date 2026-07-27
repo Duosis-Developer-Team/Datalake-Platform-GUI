@@ -796,7 +796,7 @@ _EMPTY_UNMAPPED = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count":
 
 
 def get_unmapped_resources(tr: Optional[dict]) -> dict:
-    """Resources (Phase 1: VMs) belonging to no customer — Eşleşmeyen Veriler."""
+    """Resources (VMs and NetBackup policies) belonging to no customer — Eşleşmeyen Veriler."""
     ck = f"api:unmapped_resources:{_serialize_tr_cache_key(tr)}"
 
     def fetch() -> dict:
