@@ -2498,6 +2498,27 @@ def _invalidate_customer_views_cache() -> None:
     _api_response_cache.delete("api:customer_overview")
 
 
+def get_crm_account_source_mappings(crm_accountid: str) -> list[dict[str, Any]]:
+    """One account's OWN source mappings — deliberately uncached.
+
+    Two reasons this must not go through _api_cache_get_with_stale like the
+    list reads above:
+
+    1. get_crm_aliases() is scoped to project customers (accounts with a PRJ-*
+       sales order) plus the legacy alias index. An account outside that set
+       reads back there as "no mappings" even when it has several, and since
+       put_crm_source_mappings REPLACES an account's whole mapping set, a
+       read-modify-write built on that list silently deletes those rules.
+    2. This read feeds a write. cache_service defaults to a per-process
+       backend, so _invalidate_customer_views_cache() only clears the worker
+       that performed the write — a cached read here would hand a second
+       worker a pre-write snapshot and lose the first write's rules.
+    """
+    enc = quote(crm_accountid, safe="")
+    data = _get_json(_get_client_cust(), f"/api/v1/crm/aliases/{enc}/source-mappings")
+    return data if isinstance(data, list) else []
+
+
 def put_crm_source_mappings(
     crm_accountid: str,
     *,
@@ -2505,7 +2526,21 @@ def put_crm_source_mappings(
     mappings: Optional[list[dict[str, Any]]] = None,
     notes: Optional[str] = None,
 ) -> tuple[list[dict[str, Any]], Optional[str]]:
-    """Save source mappings. Returns (mappings, cache_warning)."""
+    """Save source mappings. Returns (mappings, cache_warning).
+
+    REPLACE-ALL, not append: whatever is sent becomes the account's complete
+    mapping set. Callers must read the account's current mappings with
+    get_crm_account_source_mappings() (never the project-scoped
+    get_crm_aliases()) and send the union.
+
+    KNOWN LIMIT — cross-process lost update. Read-modify-write over a
+    replace-all endpoint is only atomic within one worker. Two operators on
+    two workers can both read the same snapshot and the second PUT then drops
+    the first's rules. Closing this needs server-side merge semantics (or a
+    per-account version token) in customer-api; it is deliberately NOT worked
+    around here, because a client-side retry loop would only narrow the window
+    while making the failure harder to see.
+    """
     enc = quote(crm_accountid, safe="")
     body = {
         "crm_account_name": crm_account_name,

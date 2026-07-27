@@ -46,6 +46,59 @@ def test_list_crm_accounts_returns_full_roster(mock_customer_service):
     sales.get_crm_accounts.assert_called_once()
 
 
+def test_get_source_mappings_reads_one_account_regardless_of_project_membership(
+    mock_customer_service,
+):
+    """The read half of the read-modify-write on this path.
+
+    GET /crm/aliases is scoped to project customers, so a caller resolving an
+    account's current mappings there gets [] for any account without a PRJ-*
+    sales order — and the PUT on this same path replaces the WHOLE mapping set,
+    so that empty read deletes the rules the account already had. This endpoint
+    asks the service for that one account directly, so project membership never
+    enters into it.
+    """
+    client, _svc = mock_customer_service
+    sales = MagicMock()
+    sales.list_source_mappings_for_account.return_value = [
+        {
+            "id": 7,
+            "crm_accountid": "acc-orphan",
+            "crm_account_name": "AVRORA LLC",
+            "data_source": "backup_netbackup",
+            "match_method": "prefix",
+            "match_value": "avro",
+            "enabled": True,
+            "priority": 100,
+            "source": "manual",
+        }
+    ]
+    sales.get_all_aliases.return_value = []  # not a project customer
+    client.app.state.sales = sales
+
+    resp = client.get("/api/v1/crm/aliases/acc-orphan/source-mappings")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [m["match_value"] for m in body] == ["avro"]
+    sales.list_source_mappings_for_account.assert_called_once_with("acc-orphan")
+    sales.get_all_aliases.assert_not_called()
+
+
+def test_get_source_mappings_for_an_account_with_none_is_an_empty_list(
+    mock_customer_service,
+):
+    client, _svc = mock_customer_service
+    sales = MagicMock()
+    sales.list_source_mappings_for_account.return_value = []
+    client.app.state.sales = sales
+
+    resp = client.get("/api/v1/crm/aliases/acc-empty/source-mappings")
+
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
 def test_save_source_mappings_endpoint(mock_customer_service):
     client, _svc = mock_customer_service
     sales = MagicMock()

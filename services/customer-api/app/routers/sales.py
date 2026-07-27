@@ -13,6 +13,8 @@ Routes:
   GET /customers/{customer_name}/sales/service-breakdown
   GET /crm/aliases
   GET /crm/accounts
+  GET /crm/aliases/{crm_accountid}/source-mappings
+  PUT /crm/aliases/{crm_accountid}/source-mappings
   PUT /crm/aliases/{crm_accountid}
 """
 from __future__ import annotations
@@ -32,6 +34,7 @@ from app.models.schemas import (
     CustomerAliasUpdate,
     CustomerAliasWithMappings,
     CustomerServiceSalesSlice,
+    CustomerSourceMapping,
     CustomerSourceMappingUpdate,
     ResourceComplianceResponse,
     SalesEfficiencyByCategoryRow,
@@ -199,6 +202,26 @@ def validate_source_mappings(mappings: List[dict]) -> None:
                     f"'{data_source}'; allowed: {list(alias_match.allowed_methods(data_source))}"
                 ),
             )
+
+
+@router.get(
+    "/crm/aliases/{crm_accountid}/source-mappings",
+    response_model=List[CustomerSourceMapping],
+)
+def get_source_mappings(
+    crm_accountid: str,
+    svc: SalesService = Depends(get_sales_service),
+):
+    """One account's source mappings, whether or not it is a project customer.
+
+    GET /crm/aliases is scoped to accounts carrying a PRJ-* sales order (plus the
+    legacy alias index), so an account outside that set reads back there as
+    "no mappings" even when it has several. Any read-modify-write caller MUST
+    use this endpoint instead: the PUT on this same path REPLACES the account's
+    whole mapping set, so resolving `existing` against /crm/aliases deletes every
+    rule an out-of-scope account already carries.
+    """
+    return svc.list_source_mappings_for_account(crm_accountid)
 
 
 @router.put("/crm/aliases/{crm_accountid}/source-mappings", response_model=SourceMappingSaveResult)
