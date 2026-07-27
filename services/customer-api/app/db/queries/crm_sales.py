@@ -280,16 +280,32 @@ GROUP BY d.productid, d.product_name, COALESCE(NULLIF(TRIM(d.uomid_name), ''), '
 ORDER BY entitled_amount_tl DESC NULLS LAST;
 """
 
+# priceperunit is stored in the ORDER's currency, so it has to be converted before
+# it can be called a lira price. 19 customers bill in USD and 3 in EUR
+# (2026-07-27); averaging their prices as though they were already TL made every
+# TL figure on their pages roughly 40x too small (the Dynamics USD rate is 0.025).
+# This price feeds overage_loss_tl on every compliance row, not just the licence
+# ones. The fx join is inner: a line whose currency has no active rate cannot be
+# converted, and counting it as lira is the very bug being fixed.
 SALES_ENTITLED_UNIT_PRICE_BY_PRODUCT = """
+WITH fx AS (
+    SELECT DISTINCT ON (transactioncurrency_text)
+           transactioncurrency_text AS ccy,
+           NULLIF(exchangerate, 0)  AS rate
+    FROM   discovery_crm_pricelevels
+    WHERE  statecode = 0
+    ORDER BY transactioncurrency_text, modifiedon DESC
+)
 SELECT
     d.productid,
     CASE
         WHEN SUM(d.quantity) > 0
-        THEN SUM(d.priceperunit * d.quantity) / SUM(d.quantity)
+        THEN SUM((d.priceperunit / fx.rate) * d.quantity) / SUM(d.quantity)
         ELSE NULL
     END::double precision AS weighted_unit_price
 FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+JOIN   fx ON fx.ccy = d.transactioncurrency_text
 WHERE  so.customerid = ANY(%s)
   AND  so.statecode IN (0, 1, 3, 4)
   AND  so.ordernumber LIKE 'PRJ-%%'
