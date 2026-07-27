@@ -96,8 +96,12 @@ _RULES: tuple[_Rule, ...] = (
     _Rule("license_microsoft_csp",            contains_all=("CSP -", "Microsoft")),
     _Rule("license_microsoft_csp",            contains_all=("CSP -", "Office")),
     _Rule("license_microsoft_csp",            contains_all=("CSP -", "Exchange")),
+    # The Windows *OS* licence is its own panel: it is the only Microsoft SKU whose
+    # quantity is comparable with a detected Windows VM count (UoM "per VM"). The
+    # `SPLA -` bucket below carries SQL Server 2-core packs and RDS User CALs, which
+    # are per-core / per-seat and must never be added to an OS licence total.
+    _Rule("license_windows_os",               equals=("MS Windows Lisans",)),
     _Rule("license_microsoft_spla",           starts_with=("SPLA -", "SPLA-")),
-    _Rule("license_microsoft_spla",           equals=("MS Windows Lisans",)),
 
     # ----- Other licenses -----
     _Rule("license_redhat",                   starts_with=("CCSP-RH", "CCSP-MCT")),

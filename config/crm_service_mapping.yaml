@@ -163,6 +163,12 @@ pages:
     gui_tab_binding: "network.loadbalancer"
 
   # ---- Licensing ----
+  # Windows guest-OS licence, billed per VM — the only Microsoft SKU comparable
+  # with a detected Windows VM count. Kept apart from SPLA (per-core / per-seat).
+  license_windows_os:
+    label: "MS Windows Lisans"
+    resource_unit: "per VM"
+    gui_tab_binding: "licensing.os"
   license_microsoft_csp:
     label: "Microsoft CSP / M365"
     resource_unit: "per User"
