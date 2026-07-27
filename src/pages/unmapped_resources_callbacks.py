@@ -15,11 +15,58 @@ from dash.exceptions import PreventUpdate
 
 from src.pages import unmapped_resources as page
 from src.services import api_client as api
-from src.utils.crm_source_mapping_ui import find_alias, merge_source_mapping
+from src.utils.crm_source_mapping_ui import merge_source_mapping
 
 logger = logging.getLogger(__name__)
 
 _STATUS_COLOR = {"saved": "teal", "exists": "blue", "warning": "yellow", "error": "red"}
+
+
+def _account_name_from(mappings: list[dict], fallback) -> str | None:
+    """Prefer the name the account's existing rules already carry.
+
+    save_source_mappings stamps crm_account_name onto every row it writes, so
+    reusing it keeps one account from ending up with two spellings of its name.
+    """
+    for m in mappings or []:
+        name = str(m.get("crm_account_name") or "").strip()
+        if name:
+            return name
+    return fallback
+
+
+def _is_addressable_on_aliases_page(account_id: str) -> bool | None:
+    """Is this account visible on the Customer Aliases admin page?
+
+    Writing a source mapping never creates a gui_crm_customer_alias row, and
+    SalesService._build_all_aliases() only iterates project customers plus the
+    legacy alias index — it has no third loop for orphan source-mappings. So a
+    rule written against an account with no PRJ-* sales order is saved and
+    active, but permanently invisible on that admin page. The operator has to
+    be told which of the two happened.
+
+    Probed BEFORE the write on purpose: put_crm_source_mappings drops the
+    cached alias list, so probing afterwards would force a cold refetch of all
+    ~354 project customers on every single click. Project membership is decided
+    by sales orders and is not changed by this write, so the answer is the same
+    either side of it. Returns None when the probe itself failed — the write
+    must not be blocked by a cosmetic lookup.
+    """
+    try:
+        aliases = api.get_crm_aliases() or []
+    except Exception:  # noqa: BLE001
+        logger.warning("addressability probe failed account=%s", account_id, exc_info=True)
+        return None
+    return any(str(a.get("crm_accountid") or "") == account_id for a in aliases)
+
+
+def _where_sentence(addressable: bool | None, owner_name) -> str:
+    if addressable is True:
+        return f"Kural, Müşteri Alias ekranında {owner_name} altında görünür."
+    if addressable is False:
+        return ("Bu müşterinin CRM proje kaydı bulunmadığı için kural Müşteri Alias "
+                "ekranında görünmez; kural yine de geçerlidir.")
+    return ""
 
 
 def apply_alias_suggestion(row: dict) -> tuple[str, str]:
@@ -47,28 +94,38 @@ def apply_alias_suggestion(row: dict) -> tuple[str, str]:
     }
 
     try:
-        alias = find_alias(api.get_crm_aliases() or [], account_id)
-        existing = list((alias or {}).get("source_mappings") or [])
+        # This account's OWN mappings, uncached. NOT get_crm_aliases(): that is
+        # scoped to project customers, and guessed_owner_id comes from the full
+        # discovery_crm_accounts roster — for an account outside the project set
+        # it would read back as "no mappings", and since the PUT below replaces
+        # the whole set, the previous click's rule would be deleted.
+        existing = list(api.get_crm_account_source_mappings(account_id) or [])
         # The save endpoint replaces every mapping this account has, so the
         # union has to go out; sending the bare new rule would delete the rest.
         merged, needs_write = merge_source_mapping(existing, entry)
         if not needs_write:
             return "exists", f"‘{alias_value}’ kuralı bu müşteride zaten ekli."
 
+        addressable = _is_addressable_on_aliases_page(account_id)
         _, cache_warning = api.put_crm_source_mappings(
             account_id,
-            crm_account_name=(alias or {}).get("crm_account_name") or row.get("guessed_owner"),
+            crm_account_name=_account_name_from(existing, row.get("guessed_owner")),
             mappings=merged,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("alias suggestion failed account=%s value=%s", account_id, alias_value)
         return "error", f"Kaydedilemedi: {exc}"
 
+    owner_name = row.get("guessed_owner") or account_id
+    saved = f"‘{alias_value}’ kuralı {owner_name} müşterisine eklendi."
+    where = _where_sentence(addressable, owner_name)
     if cache_warning:
         # The DB write committed before the cache drop was attempted, so this
         # is a warning about staleness, not a failed save.
-        return "warning", f"Kaydedildi, ancak önbellek temizlenemedi: {cache_warning}"
-    return "saved", f"‘{alias_value}’ kuralı {row.get('guessed_owner')} müşterisine eklendi."
+        return "warning", " ".join(
+            p for p in (saved, where, f"Ancak önbellek temizlenemedi: {cache_warning}") if p
+        )
+    return "saved", " ".join(p for p in (saved, where) if p)
 
 
 def _notification(status: str, message: str) -> dmc.Alert:
