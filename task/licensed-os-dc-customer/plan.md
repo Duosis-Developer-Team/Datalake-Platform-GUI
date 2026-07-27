@@ -271,9 +271,23 @@ fixture drift'i).
 
 - Migration'lar yerel webui-db'ye uygulandı ve doğrulandı; **prod'a uygulanmadı**.
 - Hiçbir şey push edilmedi, main'e merge edilmedi.
-- `/licensed-os` sayfası deep-link olarak duruyor ama müşteri seçimi hâlâ eski
-  isim-eşleştirme yolunu kullanıyor (H1). Customer View artık onu kullanmıyor;
-  sayfanın kendisi ayrı bir temizlik işi.
+- Prod migration ve push dışında bir şey kalmadı.
+
+### Ek: standalone sayfa tamamen kaldırıldı (`8c1e...`, kullanıcı düzeltmesi)
+
+İlk turda `/licensed-os` rotasını deep-link diye bırakmıştım; kullanıcı sayfanın
+tamamen kalkması gerektiğini hatırlattı. Silinenler: `src/pages/licensed_os.py`,
+app.py rotası + import, `page:licensed_os` izni, `permission_service` eşlemesi,
+`tests/test_licensed_os_page.py`.
+
+Kaybolmaması gerekenler taşındı:
+- **Sınıflandırılamayan OS listesi** → DC View › Lisanslı OS sekmesine
+  (`build_dc_breakdown` artık `unknown_samples` üretiyor). Bu liste kural
+  tablosunun nasıl genişletileceğini gösteriyor; olmazsa `unknown` kalıcı olur.
+- **Topoloji ağacı** zaten Admin › Integrations › HMDL coverage'da da kullanılıyor,
+  öksüz kalmadı.
+- **Billing sekmesindeki lisans paneli** artık compliance satırlarından besleniyor;
+  datacenter-api'nin bozuk per-customer ucunu (H1) çağıran son yol da kapandı.
 
 ## Bilinçli kabul edilen sınırlar
 

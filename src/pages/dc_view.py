@@ -786,6 +786,27 @@ def build_licensed_os_panel(payload: dict | None):
     no_telemetry = int((data.get("totals") or {}).get("no_os_telemetry", 0) or 0)
     if no_telemetry:
         children.append(_licensed_os_no_telemetry_note(no_telemetry))
+
+    # Guest-OS strings the rule table does not recognise. Reviewing these is how
+    # `unknown` shrinks; without the list it stays unknown forever.
+    samples = data.get("unknown_samples") or []
+    if samples:
+        children.append(
+            dmc.Card(
+                [
+                    _section_title(
+                        "Sınıflandırılamayan işletim sistemleri",
+                        "Bu metinler kural tablosunda karşılık bulmadı — lisanslı sayılmadılar. "
+                        "Bir tanesi lisanslı bir aileye aitse shared/licensing/os_classifier.py'a kural eklenmeli.",
+                    ),
+                    dmc.Stack(
+                        gap=2, mt="sm",
+                        children=[dmc.Text(f"• {s}", size="xs", c="#2B3674") for s in samples],
+                    ),
+                ],
+                withBorder=True, padding="md", radius="md",
+            )
+        )
     return dmc.Stack(gap="lg", children=children)
 
 

@@ -17,10 +17,9 @@ NAV_ITEM_SPECS: list[tuple[str, str, str, str]] = [
     ),
     ("/customers", "Customer View", "solar:users-group-rounded-bold-duotone", "page:customer_view"),
     ("/crm/inventory-overview", "CRM Inventory", "solar:chart-2-bold-duotone", "page:dashboard_crm_inventory"),
-    # Licensed OS is NOT a sidebar entry: a licence gap is a fact about one
-    # datacenter's estate, so it lives at DC View › Virtualization › Lisanslı OS
-    # (and per customer on Customer View). The /licensed-os route is kept for
-    # existing deep links.
+    # There is no Licensed OS entry: the standalone page was removed. A licence
+    # gap is a fact about one datacenter's estate, so it lives at
+    # DC View › Virtualization › Lisanslı OS, and per customer on Customer View.
     ("/query-explorer", "Query Explorer", "solar:code-square-bold-duotone", "page:query_explorer"),
 ]
 

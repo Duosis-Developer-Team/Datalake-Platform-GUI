@@ -94,6 +94,22 @@ def test_pure_nutanix_card_states_the_gap():
     assert "telemetri" in card or "telemetry" in card
 
 
+def test_unclassified_os_strings_are_listed_for_manual_review():
+    """This list used to live on the standalone /licensed-os page. It is how the
+    classifier's rule table gets extended, so it moved here rather than dying with
+    the page."""
+    payload = {**_PAYLOAD, "unknown_samples": ["Other Linux (64-bit)", "Other (64-bit)"]}
+    rendered = _text(build_licensed_os_panel(payload))
+    assert "Other Linux (64-bit)" in rendered
+    assert "Other (64-bit)" in rendered
+
+
+def test_no_review_block_when_everything_was_classified():
+    rendered = _text(build_licensed_os_panel({**_PAYLOAD, "unknown_samples": []}))
+    assert "manual review" not in rendered.lower()
+    assert "sınıflandırılamayan" not in rendered.lower()
+
+
 def test_empty_payload_renders_without_raising():
     for build in (
         lambda: build_licensed_os_panel({}),

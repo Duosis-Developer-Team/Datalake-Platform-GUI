@@ -2555,15 +2555,33 @@ def _merge_licensed_os_rows(eff_by_cat: list | None, detected_families: dict | N
     return kept
 
 
-def _eff_rows_with_licensed_os(customer_name: str, eff_by_cat: list | None, tr: dict | None = None) -> list:
-    """Best-effort merge of detected licensed-OS counts into eff_by_cat, scoped
-    to the Sold-vs-used panel only. Any failure (empty/raising detected fetch)
-    degrades gracefully to the original rows so Customer View never breaks.
-    tr is passed through so the detected counts respect the selected period
-    (without it the API falls back to the last 7 days — see the licensed_os page fix)."""
+def _detected_families_from_compliance(compliance_payload: dict | None) -> dict[str, int]:
+    """Read the detected guest counts back off the compliance rows.
+
+    They are computed in customer-api from the VM lists this page renders
+    (app/utils/licensed_os.py). Reading them here rather than re-fetching keeps
+    the Billing panel and the summary overusage table on one number — and avoids
+    the datacenter-api per-customer endpoint, which matches a VM *name* against
+    the customer's full CRM legal name and so resolves almost nothing.
+    """
+    out: dict[str, int] = {}
+    for row in ((compliance_payload or {}).get("rows") or []):
+        code = str(row.get("category_code") or "")
+        family = next(
+            (f for f, codes in FAMILY_TO_SOLD_CATEGORIES.items() if code in codes),
+            None,
+        )
+        if family is not None and row.get("detected") is not None:
+            out[family] = int(row.get("detected") or 0)
+    return out
+
+
+def _eff_rows_with_licensed_os(eff_by_cat: list | None, compliance_payload: dict | None = None) -> list:
+    """Merge detected licensed-OS counts into eff_by_cat for the Sold-vs-used
+    panel. Degrades to the original rows if anything is missing, so Customer View
+    never breaks on a partial payload."""
     try:
-        detected_families = api.get_licensed_os_summary(customer=customer_name, tr=tr).get("families", {}) or {}
-        return _merge_licensed_os_rows(eff_by_cat, detected_families)
+        return _merge_licensed_os_rows(eff_by_cat, _detected_families_from_compliance(compliance_payload))
     except Exception:
         return eff_by_cat
 
@@ -2775,7 +2793,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
                 s3_data,
                 sales_summary=sales_summary,
                 crm_eff_panel=build_sold_vs_used_stack(
-                    _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(name, eff_by_cat, tr=time_range))
+                    _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(eff_by_cat, compliance_payload))
                 ),
                 customer_name=name,
                 service_breakdown=service_breakdown,
@@ -2918,6 +2936,10 @@ def render_billing_tab(name: str, tr: dict | None, project: str | None = ALL_PRO
     totals = resources.get("totals", {}) or {}
     assets = resources.get("assets", {}) or {}
     eff_by_cat = api.get_customer_efficiency_by_category(name, tr)
+    # Carries the detected licensed-guest counts (and is the only entitlement path
+    # hydrated in production — efficiency-by-category filters on statecode 3/4,
+    # which no live order has).
+    compliance_payload = api.get_customer_resource_compliance(name, "virtualization", tr)
     active_orders = api.get_customer_sales_active_orders(name)
     active_items = api.get_customer_sales_active_items(name)
     sales_items = api.get_customer_sales_items(name)
@@ -2936,7 +2958,7 @@ def render_billing_tab(name: str, tr: dict | None, project: str | None = ALL_PRO
         api.get_customer_s3_vaults(name, tr),
         sales_summary=sales_summary,
         crm_eff_panel=build_sold_vs_used_stack(
-            _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(name, eff_by_cat, tr=tr))
+            _crm_rows_outside_virt_backup(_eff_rows_with_licensed_os(eff_by_cat, compliance_payload))
         ),
         customer_name=name,
         service_breakdown=api.get_customer_sales_service_breakdown(name),

@@ -27,9 +27,20 @@ from .os_source import (
 )
 
 
-def _add(tally: dict[str, int], raw: str | None) -> None:
+#: Cap on the manual-review list. It exists to be read by a human deciding which
+#: rule to add next, so it is a sample, not a dump.
+_MAX_UNKNOWN_SAMPLES = 50
+
+
+def _add(tally: dict[str, int], raw: str | None, unknown: dict[str, None]) -> None:
     fam = classify(raw).family
     tally[fam] = tally.get(fam, 0) + 1
+    if fam == "unknown":
+        label = (raw or "").strip()
+        # A blank is missing telemetry, not an unrecognised string — there is
+        # nothing for a human to classify, so it is not worth reviewing.
+        if label and len(unknown) < _MAX_UNKNOWN_SAMPLES:
+            unknown.setdefault(label, None)
 
 
 def build_dc_breakdown(
@@ -49,6 +60,8 @@ def build_dc_breakdown(
         ARCH_POWER: empty_tally(),
     }
     counts: dict[str, int] = {ARCH_CLASSIC: 0, ARCH_HYPERCONVERGED: 0, ARCH_POWER: 0}
+    # dict-as-ordered-set: keeps first-seen order so the review list is stable.
+    unknown: dict[str, None] = {}
 
     for row in vm_rows or ():
         cluster, _vmname, guest_os = row[0], row[1], row[2]
@@ -59,12 +72,12 @@ def build_dc_breakdown(
         if bucket == ARCH_PURE_NUTANIX:
             bucket = ARCH_HYPERCONVERGED
         counts[bucket] += 1
-        _add(buckets[bucket], guest_os)
+        _add(buckets[bucket], guest_os, unknown)
 
     for row in power_rows or ():
         ostype = row[1] if len(row) > 1 else None
         counts[ARCH_POWER] += 1
-        _add(buckets[ARCH_POWER], ostype)
+        _add(buckets[ARCH_POWER], ostype, unknown)
 
     totals = empty_tally()
     for tally in buckets.values():
@@ -72,7 +85,7 @@ def build_dc_breakdown(
             totals[fam] = totals.get(fam, 0) + n
 
     ahv = max(int(ahv_vm_count or 0), 0)
-    return _breakdown_payload(buckets, counts, totals, ahv)
+    return _breakdown_payload(buckets, counts, totals, ahv, list(unknown))
 
 
 def attribute_licences_to_dc(
@@ -111,7 +124,7 @@ def attribute_licences_to_dc(
     return {fam: int(round(v)) for fam, v in out.items()}
 
 
-def _breakdown_payload(buckets, counts, totals, ahv) -> dict[str, Any]:
+def _breakdown_payload(buckets, counts, totals, ahv, unknown_samples) -> dict[str, Any]:
     return {
         "architectures": {
             ARCH_CLASSIC: {"instances": counts[ARCH_CLASSIC], "families": buckets[ARCH_CLASSIC]},
@@ -128,4 +141,5 @@ def _breakdown_payload(buckets, counts, totals, ahv) -> dict[str, Any]:
             "instances": sum(counts.values()),
             "no_os_telemetry": ahv,
         },
+        "unknown_samples": unknown_samples,
     }

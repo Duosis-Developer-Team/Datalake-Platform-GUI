@@ -71,6 +71,31 @@ def test_empty_input_produces_a_zeroed_but_complete_shape():
     assert out["architectures"]["classic"]["families"]["windows"] == 0
 
 
+def test_unclassified_os_strings_are_sampled_for_manual_review():
+    """4,963 guests platform-wide carry an OS string the rule table does not
+    recognise ("Other Linux (64-bit)", "Other (64-bit)"...). Surfacing samples is
+    how the classifier gets extended; hiding them makes 'unknown' permanent."""
+    out = build_dc_breakdown(_VMS, _LPARS, 0)
+    samples = out["unknown_samples"]
+    assert "Other Linux (64-bit)" in samples
+    assert "Unknown" in samples          # from the Power ostype column
+    # Classified guests must never appear.
+    assert not any("Windows" in s for s in samples)
+
+
+def test_unknown_samples_are_deduped_and_bounded():
+    rows = [("DC13-G16-CLS", f"vm{i}", "Other Linux (64-bit)") for i in range(200)]
+    rows += [("DC13-G16-CLS", f"x{i}", f"Weird OS {i}") for i in range(200)]
+    samples = build_dc_breakdown(rows, [], 0)["unknown_samples"]
+    assert samples.count("Other Linux (64-bit)") == 1
+    assert len(samples) <= 50            # a review list, not a data dump
+
+
+def test_guests_with_no_os_string_are_not_sampled():
+    """A blank is missing telemetry, not an unrecognised string — nothing to review."""
+    assert build_dc_breakdown([("c", "vm", None), ("c", "vm2", "  ")], [], 0)["unknown_samples"] == []
+
+
 def test_rows_with_no_cluster_name_fall_to_hyperconverged():
     # Mirrors the billing split: anything not matching KM is hyperconverged.
     out = build_dc_breakdown([(None, "orphan", "Microsoft Windows Server 2022 (64-bit)")], [], 0)
