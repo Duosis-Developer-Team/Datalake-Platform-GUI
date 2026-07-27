@@ -37,7 +37,9 @@ superseded and the codebase says so:
   `discovery_netbox_virtualization_vm`. These names now survive only in that comment.
 
 Of the 65 tables the platform actually reads, **55 are fresh, 9 read as dead, 1 unknown**.
-Two of the 9 are the comment-only VMware pair above, so the true figure is **7**.
+Two of the 9 are the comment-only VMware pair above, so the curated monitored set is
+**63 tables** and the true dead figure is **7**. The unmonitored bucket therefore holds
+**96**.
 
 **40 alerts → 7.**
 
@@ -133,7 +135,7 @@ discover_specs (159 tables)
         │
         ├─ MONITORED? ──no──►  unmonitored[]   (no alert, collapsed in UI)
         │
-       yes (65)
+       yes (63)
         │
    compute_freshness  ──►  per-table status
         │
@@ -144,8 +146,11 @@ discover_specs (159 tables)
 
 ## Error handling
 
-- A table in `MONITORED` that discovery cannot find (renamed, dropped) surfaces once as an
-  `unknown` flow member rather than vanishing — a stale curation entry must be visible.
+- A table in `MONITORED` that discovery cannot find (renamed, dropped) is reported by name
+  in `data_missing` rather than vanishing — a stale curation entry must be visible, or the
+  set rots silently. It is reported, not counted: a name that resolves to no table is a
+  curation defect, not a data outage, and must not inflate the alert count the change set
+  out to shrink.
 - A flow whose members are all `unknown` reports `unknown`, not `ok`. Absence of data is not
   health.
 - The GUI keeps its existing "computing" state; flow rollup happens server-side in the
@@ -157,7 +162,7 @@ discover_specs (159 tables)
   `MONITORED` entry resolves to a family.
 - Rollup: N dead tables in one flow yield exactly 1 alert; flow age equals the oldest dead
   member; a fresh member does not clear a dead sibling.
-- Counts: with the 2026-07-27 fixture, `data_counts.alert` is 2 and `unmonitored` holds 94.
+- Counts: with the 2026-07-27 fixture, `data_counts.alert` is 2 and `unmonitored` holds 96.
 - Fallback: a table with no declared flow rolls up under its family and still alerts.
 - GUI: an alerting flow renders one row; its table detail is present but not expanded;
   the unmonitored section renders collapsed.
