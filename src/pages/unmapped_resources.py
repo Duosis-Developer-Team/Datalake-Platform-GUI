@@ -8,12 +8,16 @@ matching more than one customer (no action offered). Deliberately lightweight
 """
 from __future__ import annotations
 
+import logging
+
 from dash import dash_table, dcc, html
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 
 from src.services import api_client as api
 from src.utils.time_range import default_time_range
+
+logger = logging.getLogger(__name__)
 
 ACCOUNT_NAME = "Eşleşmeyen Veriler"
 
@@ -31,10 +35,50 @@ BODY_ID = "unmapped-body"
 TOAST_ID = "unmapped-toast"
 STORE_ID = "unmapped-store"
 
+# Writing a CRM alias rule changes customer attribution, which feeds billing and
+# capacity reporting. /unmapped-resources maps to NO page code of its own
+# (src/auth/permission_service.py), so the router's can_view gate never runs
+# here — this page is reachable with page:customer_view alone. The write is
+# therefore gated on the permission that guards the Customer Aliases admin page,
+# the only other place the same rule can be created.
+ALIAS_WRITE_PERMISSION = "page:settings_crm_aliases"
 
 def table_id(kind: str) -> dict[str, str]:
     """Pattern-matching id so one callback serves every source tab."""
     return {"type": "unmapped-table", "kind": kind}
+
+
+def can_write_alias_rules() -> bool:
+    """May the current request's user create CRM alias rules?
+
+    Mirrors the convention used by the other write paths (src/auth/routes.py
+    `_perm_edit`, src/pages/settings/iam/teams_callbacks.py): read the user id
+    that src/auth/middleware.py hydrates onto flask.g — it is populated for
+    /_dash* callback POSTs too — and ask permission_service for can_edit.
+
+    Fail-closed: no request context, no session user, or a permission lookup
+    that blew up all mean "no". A write that changes billing attribution must
+    not fall open when the check itself is unavailable.
+    """
+    from src.auth.config import AUTH_DISABLED
+
+    if AUTH_DISABLED:
+        return True
+    try:
+        from flask import g, has_request_context
+
+        uid = getattr(g, "auth_user_id", None) if has_request_context() else None
+    except Exception:  # noqa: BLE001 — no Flask context at all (background warm)
+        return False
+    if uid is None:
+        return False
+    try:
+        from src.auth.permission_service import can_edit
+
+        return bool(can_edit(int(uid), ALIAS_WRITE_PERMISSION))
+    except Exception:  # noqa: BLE001
+        logger.exception("alias-write permission check failed uid=%s", uid)
+        return False
 
 
 def find_payload_row(store: dict, row_key: str | None) -> dict | None:
@@ -75,12 +119,16 @@ def _kpi(label: str, value, icon: str, accent: str) -> dmc.Paper:
     )
 
 
-def _table_rows(rows: list[dict]) -> list[dict]:
+def _table_rows(rows: list[dict], *, can_write: bool = True) -> list[dict]:
     out: list[dict] = []
     for r in rows:
         kind = r.get("kind") or "vm"
-        actionable = bool(r.get("reason") == "alias_gap" and r.get("guessed_owner_id")
-                          and r.get("suggested_alias"))
+        # can_write is the UI half of the permission gate: a user who cannot
+        # create alias rules must not be offered a link that the callback will
+        # only refuse. The callback re-checks — this is presentation, not the
+        # security boundary.
+        actionable = bool(can_write and r.get("reason") == "alias_gap"
+                          and r.get("guessed_owner_id") and r.get("suggested_alias"))
         reason_key = r.get("reason") or ""
         if reason_key == "ambiguous":
             reason = f"Belirsiz ({int(r.get('candidate_count') or 0)} aday)"
@@ -154,6 +202,7 @@ def build_layout(tr: dict | None = None, visible_sections=None) -> html.Div:
 def build_body(tr: dict | None = None) -> list:
     """KPIs, hint and tables — re-rendered after a successful alias write."""
     tr = tr or default_time_range()
+    can_write = can_write_alias_rules()
     try:
         data = api.get_unmapped_resources(tr)
     except Exception:
@@ -194,8 +243,10 @@ def build_body(tr: dict | None = None) -> list:
                         rightSection=dmc.Badge(str(len(backup_rows)), size="xs",
                                                variant="light", color="indigo")),
         ]),
-        dmc.TabsPanel(value="virt", pt="md", children=_vm_table(vm_rows)),
-        dmc.TabsPanel(value="backup", pt="md", children=_backup_table(backup_rows)),
+        dmc.TabsPanel(value="virt", pt="md",
+                      children=_vm_table(vm_rows, can_write=can_write)),
+        dmc.TabsPanel(value="backup", pt="md",
+                      children=_backup_table(backup_rows, can_write=can_write)),
     ])
 
     return [
@@ -207,7 +258,7 @@ def build_body(tr: dict | None = None) -> list:
 
 
 def _table_shell(rows: list[dict], *, kind: str, name_header: str,
-                 source_header: str, hint: str) -> html.Div:
+                 source_header: str, hint: str, can_write: bool = True) -> html.Div:
     """The card + DataTable both source tabs share.
 
     Only the two headers and the hint differ between them, so the styling
@@ -220,7 +271,7 @@ def _table_shell(rows: list[dict], *, kind: str, name_header: str,
         dmc.Text(hint, size="xs", c="#A3AED0", mb="sm"),
         dash_table.DataTable(
             id=table_id(kind),
-            data=_table_rows(rows),
+            data=_table_rows(rows, can_write=can_write),
             columns=[
                 {"name": "TAHMİNİ SAHİP", "id": "guessed_owner"},
                 {"name": name_header, "id": "name"},
@@ -269,24 +320,26 @@ def _table_shell(rows: list[dict], *, kind: str, name_header: str,
     ])
 
 
-def _vm_table(rows: list[dict]) -> html.Div:
+def _vm_table(rows: list[dict], *, can_write: bool = True) -> html.Div:
     if not rows:
         return dmc.Alert(color="teal", variant="light", title="Eşleşmeyen makine yok",
                          children="Seçili zaman aralığında hiçbir sahipsiz sanal makine bulunamadı.")
     return _table_shell(
         rows, kind="vm", name_header="MAKİNE ADI", source_header="PLATFORM",
+        can_write=can_write,
         hint="Sütun başlıklarından filtreleyin, başlığa tıklayarak sıralayın. "
              "Amber satırlar alias eklenerek bir müşteriye bağlanabilir.",
     )
 
 
-def _backup_table(rows: list[dict]) -> html.Div:
+def _backup_table(rows: list[dict], *, can_write: bool = True) -> html.Div:
     if not rows:
         return dmc.Alert(color="teal", variant="light", title="Eşleşmeyen backup yok",
                          children="Seçili zaman aralığında sahipsiz bir yedekleme "
                                   "politikası bulunamadı.")
     return _table_shell(
         rows, kind="backup", name_header="POLICY ADI", source_header="KAYNAK",
+        can_write=can_write,
         hint="Policy adları ‘müşteri-workload-ortam-tip’ standardına göre eşleştirilir. "
              "‘Belirsiz’ satırlarda aynı önek birden fazla müşteriye uyar; doğru "
              "müşteriyi Müşteri Alias ekranından seçin.",

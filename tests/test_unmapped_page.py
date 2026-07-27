@@ -42,22 +42,30 @@ _PAYLOAD = {
 }
 
 
-def _render(payload=_PAYLOAD):
+_TR = {"preset": "7d", "start": "2026-07-10", "end": "2026-07-16"}
+
+
+def _render(payload=_PAYLOAD, *, can_write=True):
     from src.pages import unmapped_resources as page
 
-    with patch("src.services.api_client.get_unmapped_resources", return_value=payload):
-        return str(page.build_layout({"preset": "7d", "start": "2026-07-10", "end": "2026-07-16"}))
+    with patch("src.services.api_client.get_unmapped_resources", return_value=payload), \
+         patch.object(page, "can_write_alias_rules", return_value=can_write):
+        return str(page.build_layout(_TR))
 
 
-def _build_body(payload):
+def _build_body(payload, *, can_write=True):
     """The live component tree build_body() produces — not its string repr —
     so a test can inspect a specific DataTable's own `data`, not text that
     happens to appear somewhere in the whole rendered page.
+
+    can_write_alias_rules() is patched because it is fail-closed outside a
+    Flask request context: unpatched, every table here would render actionless.
     """
     from src.pages import unmapped_resources as page
 
-    with patch("src.services.api_client.get_unmapped_resources", return_value=payload):
-        return page.build_body({"preset": "7d", "start": "2026-07-10", "end": "2026-07-16"})
+    with patch("src.services.api_client.get_unmapped_resources", return_value=payload), \
+         patch.object(page, "can_write_alias_rules", return_value=can_write):
+        return page.build_body(_TR)
 
 
 def test_page_offers_a_visible_way_back_to_customers():
@@ -83,7 +91,8 @@ def test_page_renders_when_the_backend_is_down():
     from src.pages import unmapped_resources as page
 
     with patch("src.services.api_client.get_unmapped_resources",
-               side_effect=RuntimeError("customer-api down")):
+               side_effect=RuntimeError("customer-api down")), \
+         patch.object(page, "can_write_alias_rules", return_value=True):
         out = str(page.build_layout({"preset": "7d"}))
     assert "Müşterilere dön" in out
     assert "Toplam eşleşmeyen" in out
@@ -177,6 +186,40 @@ def test_ambiguous_rows_are_labelled_and_offer_no_action():
     assert by_name["avro-CLAVRDB01-H"]["reason"] == "Belirsiz (2 aday)"
     assert by_name["avro-CLAVRDB01-H"]["action"] == ""
     assert by_name["abc-dete-s4hana-prd-log"]["action"] == "Alias ekle"
+
+
+def test_the_action_is_not_offered_to_a_user_who_may_not_write_aliases():
+    """The UI half of the permission gate. Rendering a link the callback will
+    only refuse advertises a capability the user does not have; the callback
+    remains the boundary that actually enforces it."""
+    from src.pages.unmapped_resources import table_id
+
+    body = _build_body(_MIXED_PAYLOAD, can_write=False)
+    vm_table = _find_by_id(body, table_id("vm"))
+    backup_table = _find_by_id(body, table_id("backup"))
+
+    assert {r["action"] for r in vm_table.data} == {""}
+    assert {r["action"] for r in backup_table.data} == {""}
+
+
+def test_the_action_is_offered_to_a_user_who_may_write_aliases():
+    from src.pages.unmapped_resources import ACTION_LABEL, table_id
+
+    body = _build_body(_MIXED_PAYLOAD, can_write=True)
+    vm_table = _find_by_id(body, table_id("vm"))
+
+    assert ACTION_LABEL in {r["action"] for r in vm_table.data}
+
+
+def test_alias_writes_are_gated_on_the_customer_aliases_page_permission():
+    """Not a new permission of its own: the same code that guards
+    /administration/integrations/crm/aliases (src/pages/settings/shell.py),
+    which is the only other place this rule can be created."""
+    from src.pages.settings.shell import CRM_INT_TABS
+    from src.pages.unmapped_resources import ALIAS_WRITE_PERMISSION
+
+    codes = {code for path, _label, code in CRM_INT_TABS if path.endswith("/crm/aliases")}
+    assert codes == {ALIAS_WRITE_PERMISSION}
 
 
 def test_ambiguous_kpi_appears_only_when_there_are_ambiguous_rows():

@@ -19,7 +19,13 @@ from src.utils.crm_source_mapping_ui import merge_source_mapping
 
 logger = logging.getLogger(__name__)
 
-_STATUS_COLOR = {"saved": "teal", "exists": "blue", "warning": "yellow", "error": "red"}
+_STATUS_COLOR = {"saved": "teal", "exists": "blue", "warning": "yellow",
+                 "denied": "orange", "error": "red"}
+
+DENIED_MESSAGE = (
+    "Bu işlem için yetkiniz yok: CRM alias kuralı eklemek "
+    "‘Ayarlar › CRM › Müşteri Alias’ düzenleme yetkisi gerektirir."
+)
 
 
 def _account_name_from(mappings: list[dict], fallback) -> str | None:
@@ -176,6 +182,15 @@ def _on_action_cell(active_cells, viewport_data, table_ids, store):
     payload_row = page.find_payload_row(store or {}, row_key)
     if not payload_row:
         raise PreventUpdate
+
+    # The security boundary. Blanking the action cell for a user without the
+    # permission is only cosmetic: a DataTable's `data` is client-side, so
+    # nothing stops a crafted callback payload from claiming an action label.
+    # Re-checked here, server-side, before anything is written.
+    if not page.can_write_alias_rules():
+        logger.warning("alias write refused (no %s) row=%s",
+                       page.ALIAS_WRITE_PERMISSION, row_key)
+        return no_update, _notification("denied", DENIED_MESSAGE)
 
     status, message = apply_alias_suggestion(payload_row)
     if status in ("error", "exists"):

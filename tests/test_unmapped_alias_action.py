@@ -189,3 +189,91 @@ def test_a_backend_failure_is_reported_not_raised():
     assert status == "error"
     assert message
 
+
+# ---------------------------------------------------------------------------
+# _on_action_cell — the click dispatcher, where the write is gated.
+# Follows the callback-testing pattern from test_crm_aliases_save_callback.py:
+# patch the module-level ctx and call the function directly.
+# ---------------------------------------------------------------------------
+
+_VM_ID = {"type": "unmapped-table", "kind": "vm"}
+_BACKUP_ID = {"type": "unmapped-table", "kind": "backup"}
+
+_STORE = {
+    "time_range": {"preset": "7d"},
+    "rows": [_PAYLOAD_ROW, _BACKUP_PAYLOAD_ROW],
+}
+
+_VM_VIEWPORT = [{"row_key": "vm::Acme_Kilit-Web01", "action": "Alias ekle"}]
+_BACKUP_VIEWPORT = [
+    {"row_key": "backup::abc-dete-s4hana-prd-log", "action": "Alias ekle"},
+    {"row_key": "backup::avro-CLAVRDB01-H", "action": ""},
+]
+
+
+class _FakeCtx:
+    def __init__(self, triggered_id):
+        self.triggered_id = triggered_id
+
+
+def _dispatch(triggered_id, active_cells, *, can_write=True, apply_return=("saved", "ok")):
+    """Call _on_action_cell with both tables present. Returns (result, apply_mock)."""
+    from src.pages import unmapped_resources_callbacks as cb
+
+    with patch.object(cb, "ctx", _FakeCtx(triggered_id)), \
+         patch.object(cb.page, "can_write_alias_rules", return_value=can_write), \
+         patch.object(cb.page, "build_body", return_value=["BODY"]) as body, \
+         patch.object(cb, "apply_alias_suggestion", return_value=apply_return) as apply_mock:
+        result = cb._on_action_cell(
+            active_cells,
+            [_VM_VIEWPORT, _BACKUP_VIEWPORT],
+            [_VM_ID, _BACKUP_ID],
+            _STORE,
+        )
+    apply_mock.build_body = body
+    return result, apply_mock
+
+
+def test_a_user_without_the_alias_permission_cannot_write():
+    """/unmapped-resources maps to no page code, so the router's can_view gate
+    never runs here — page:customer_view alone reaches this callback. Creating
+    a CRM alias rule changes customer attribution and feeds billing, and is
+    guarded by page:settings_crm_aliases everywhere else."""
+    from dash import no_update
+    from src.pages import unmapped_resources_callbacks as cb
+
+    (body, toast), apply_mock = _dispatch(
+        _VM_ID, [{"row": 0, "column_id": "action"}, None], can_write=False
+    )
+
+    apply_mock.assert_not_called()
+    assert body is no_update
+    assert cb.DENIED_MESSAGE in str(toast.children)
+    assert toast.color == "orange"
+
+
+def test_the_permission_check_is_not_reachable_around_the_apply_call():
+    """The refusal must come from the callback, not from the action cell being
+    blank: DataTable `data` is client-side, so a crafted payload can claim any
+    action label it likes."""
+    from src.pages import unmapped_resources_callbacks as cb
+
+    forged = [{"row_key": "vm::Acme_Kilit-Web01", "action": "Alias ekle"}]
+    # Every backend read the write path needs is stubbed to succeed, so the PUT
+    # is reached the moment the gate stops holding — nothing else is standing
+    # between this click and a written rule.
+    with patch.object(cb, "ctx", _FakeCtx(_VM_ID)), \
+         patch.object(cb.page, "can_write_alias_rules", return_value=False), \
+         patch.object(cb.page, "build_body", return_value=["BODY"]), \
+         patch("src.services.api_client.get_crm_account_source_mappings", return_value=[]), \
+         patch("src.services.api_client.get_crm_aliases", return_value=[]), \
+         patch("src.services.api_client.put_crm_source_mappings",
+               return_value=([], None)) as put:
+        _body, _toast = cb._on_action_cell(
+            [{"row": 0, "column_id": "action"}, None],
+            [forged, _BACKUP_VIEWPORT],
+            [_VM_ID, _BACKUP_ID],
+            _STORE,
+        )
+
+    put.assert_not_called()
