@@ -234,6 +234,21 @@ def _dispatch(triggered_id, active_cells, *, can_write=True, apply_return=("save
     return result, apply_mock
 
 
+def test_a_successful_save_rebuilds_on_the_tab_the_click_came_from():
+    """build_body() constructs dmc.Tabs(value=...), so a save on the Backup tab
+    used to reset the operator to Sanallaştırma."""
+    _result, apply_mock = _dispatch(_BACKUP_ID, [None, {"row": 0, "column_id": "action"}])
+
+    apply_mock.build_body.assert_called_once()
+    assert apply_mock.build_body.call_args.args[1] == "backup"
+
+
+def test_a_save_from_the_virtualization_tab_rebuilds_on_virt():
+    _result, apply_mock = _dispatch(_VM_ID, [{"row": 0, "column_id": "action"}, None])
+
+    assert apply_mock.build_body.call_args.args[1] == "virt"
+
+
 def test_a_user_without_the_alias_permission_cannot_write():
     """/unmapped-resources maps to no page code, so the router's can_view gate
     never runs here — page:customer_view alone reaches this callback. Creating

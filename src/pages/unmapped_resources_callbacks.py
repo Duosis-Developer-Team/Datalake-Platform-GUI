@@ -198,4 +198,7 @@ def _on_action_cell(active_cells, viewport_data, table_ids, store):
         # cost a refetch and lose the operator's sort/filter state.
         return no_update, _notification(status, message)
 
-    return page.build_body(store.get("time_range")), _notification(status, message)
+    # Rebuild on the tab the click came from: build_body defaults to "virt", so
+    # a save made on Backup used to throw the operator back to Sanallaştırma.
+    active_tab = page.tab_value_for_kind(ctx.triggered_id.get("kind"))
+    return page.build_body(store.get("time_range"), active_tab), _notification(status, message)

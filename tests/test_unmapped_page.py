@@ -53,7 +53,7 @@ def _render(payload=_PAYLOAD, *, can_write=True):
         return str(page.build_layout(_TR))
 
 
-def _build_body(payload, *, can_write=True):
+def _build_body(payload, *, active_tab=None, can_write=True):
     """The live component tree build_body() produces — not its string repr —
     so a test can inspect a specific DataTable's own `data`, not text that
     happens to appear somewhere in the whole rendered page.
@@ -65,7 +65,9 @@ def _build_body(payload, *, can_write=True):
 
     with patch("src.services.api_client.get_unmapped_resources", return_value=payload), \
          patch.object(page, "can_write_alias_rules", return_value=can_write):
-        return page.build_body(_TR)
+        if active_tab is None:
+            return page.build_body(_TR)
+        return page.build_body(_TR, active_tab)
 
 
 def test_page_offers_a_visible_way_back_to_customers():
@@ -186,6 +188,26 @@ def test_ambiguous_rows_are_labelled_and_offer_no_action():
     assert by_name["avro-CLAVRDB01-H"]["reason"] == "Belirsiz (2 aday)"
     assert by_name["avro-CLAVRDB01-H"]["action"] == ""
     assert by_name["abc-dete-s4hana-prd-log"]["action"] == "Alias ekle"
+
+
+def _tabs(body):
+    """The dmc.Tabs node inside a build_body() result."""
+    import dash_mantine_components as dmc
+
+    for node in _walk(body):
+        if isinstance(node, dmc.Tabs):
+            return node
+    raise AssertionError("no dmc.Tabs in the body")
+
+
+def test_the_body_opens_on_virtualization_by_default():
+    assert _tabs(_build_body(_MIXED_PAYLOAD)).value == "virt"
+
+
+def test_the_body_can_be_rebuilt_with_the_backup_tab_active():
+    """A successful save returns a freshly built body. Built with the default
+    it reset the operator from Backup back to Sanallaştırma on every write."""
+    assert _tabs(_build_body(_MIXED_PAYLOAD, active_tab="backup")).value == "backup"
 
 
 def test_the_action_is_not_offered_to_a_user_who_may_not_write_aliases():

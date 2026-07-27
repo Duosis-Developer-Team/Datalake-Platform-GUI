@@ -43,6 +43,16 @@ STORE_ID = "unmapped-store"
 # the only other place the same rule can be created.
 ALIAS_WRITE_PERMISSION = "page:settings_crm_aliases"
 
+# DataTable ids use the payload's `kind` ("vm" / "backup"); the Tabs use their
+# own values. One map so the two never drift.
+TAB_FOR_KIND = {"vm": "virt", "backup": "backup"}
+DEFAULT_TAB = "virt"
+
+
+def tab_value_for_kind(kind: str | None) -> str:
+    return TAB_FOR_KIND.get(str(kind or ""), DEFAULT_TAB)
+
+
 def table_id(kind: str) -> dict[str, str]:
     """Pattern-matching id so one callback serves every source tab."""
     return {"type": "unmapped-table", "kind": kind}
@@ -199,9 +209,15 @@ def build_layout(tr: dict | None = None, visible_sections=None) -> html.Div:
     ])
 
 
-def build_body(tr: dict | None = None) -> list:
-    """KPIs, hint and tables — re-rendered after a successful alias write."""
+def build_body(tr: dict | None = None, active_tab: str | None = None) -> list:
+    """KPIs, hint and tables — re-rendered after a successful alias write.
+
+    `active_tab` survives that re-render: a save made on the Backup tab used to
+    drop the operator back on Sanallaştırma because this function always built
+    the Tabs with value="virt". Default is unchanged for the initial render.
+    """
     tr = tr or default_time_range()
+    active_tab = active_tab or DEFAULT_TAB
     can_write = can_write_alias_rules()
     try:
         data = api.get_unmapped_resources(tr)
@@ -234,7 +250,7 @@ def build_body(tr: dict | None = None) -> list:
     kpis = dmc.SimpleGrid(cols={"base": 1, "sm": len(kpi_cards)}, spacing="md", mb="md",
                           children=kpi_cards)
 
-    tabs = dmc.Tabs(value="virt", children=[
+    tabs = dmc.Tabs(value=active_tab, children=[
         dmc.TabsList([
             dmc.TabsTab("Sanallaştırma", value="virt",
                         rightSection=dmc.Badge(str(len(vm_rows)), size="xs",
