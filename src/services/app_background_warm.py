@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 # backend overview/summary caches hot, instead of only re-warming on navigation every 15 min.
 _WARM_INTERVAL_SECONDS = int(os.getenv("APP_WARM_INTERVAL_SECONDS", "240") or "240")
 _MAX_DC_WORKERS = 2
+# Network warm costs 4 backend calls per DC; cap the per-cycle fan-out.
+_MAX_NETWORK_DCS = int(os.getenv("APP_WARM_NETWORK_DCS", "6") or "6")
 
 _lock = threading.Lock()
 _in_flight = False
@@ -100,6 +102,45 @@ def _warm_dc_and_availability_sla(dc_rows: list, tr: dict) -> int:
                 warmed += 1
     except Exception:
         logger.debug("background warm dc/availability sla failed", exc_info=True)
+    return warmed
+
+
+def _warm_dc_network(dc_rows: list, tr: dict) -> int:
+    """Warm the unfiltered default network view per DC.
+
+    scheduler_service.warm_dc_network_caches does this, but start_scheduler is
+    never called from the app (only from tests), so nothing has ever populated
+    these keys: the whole platform held 7 network cache entries, all for one DC.
+    Warming from the common loop — which already runs — is what makes the
+    network panels hit a warm cache instead of a cold Zabbix query.
+
+    Bounded to _MAX_NETWORK_DCS because each DC costs four backend calls; the
+    goal is to keep the default view warm, not to precompute every filter combo.
+    """
+    from src.services import api_client as api
+
+    if _should_pause() or not dc_rows:
+        return 0
+    codes = [
+        str(r.get("id") or r.get("dc_code") or r.get("code") or "").strip()
+        for r in dc_rows
+        if isinstance(r, dict)
+    ]
+    warmed = 0
+    with api.warm_mode():
+        for dc in [c for c in codes if c][:_MAX_NETWORK_DCS]:
+            if _should_pause():
+                break
+            try:
+                filters = api.get_dc_network_filters(dc, tr)
+                if not (filters or {}).get("manufacturers"):
+                    continue  # DC has no network devices — nothing to warm
+                api.get_dc_network_port_summary(dc, tr)
+                api.get_dc_network_95th_percentile(dc, tr, top_n=20)
+                api.get_dc_network_interface_table(dc, tr, page=1, page_size=50)
+                warmed += 1
+            except Exception:
+                logger.debug("background warm network failed dc=%s", dc, exc_info=True)
     return warmed
 
 
@@ -259,7 +300,9 @@ def warm_common(time_range: dict | None = None) -> dict:
     from src.utils.time_range import default_time_range
 
     tr = time_range or default_time_range()
-    stats: dict = {"home": False, "dc_avail_sla": 0, "customer_view": 0, "unmapped": False}
+    stats: dict = {
+        "home": False, "dc_avail_sla": 0, "customer_view": 0, "unmapped": False, "network": 0,
+    }
     if _should_pause():
         return stats
     _warm_home_bundle(tr)
@@ -269,6 +312,7 @@ def warm_common(time_range: dict | None = None) -> dict:
     except Exception:
         dc_rows = []
     stats["dc_avail_sla"] = _warm_dc_and_availability_sla(dc_rows, tr)
+    stats["network"] = _warm_dc_network(dc_rows, tr)
     # customer-view has no other server-side warm timer; seed the warmed customers
     # here so their cache stays hot even with no active browser session.
     if not _should_pause() and WARMED_CUSTOMERS:

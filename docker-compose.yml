@@ -151,6 +151,23 @@ services:
       FARO_API_KEY: ${FARO_API_KEY:-}
       # Cold customer-api queries can exceed 20s; allow cache population before empty fallback.
       API_INTERACTIVE_READ_TIMEOUT: ${API_INTERACTIVE_READ_TIMEOUT:-45}
+      # Freshness window for GUI api:* cache entries. A stale entry is refetched
+      # SYNCHRONOUSLY inside the user's request, so this value is the interval at
+      # which someone pays the cold-fetch wait. It was 300s while the background
+      # warm runs every 240s — a 1.25x ratio, so a single missed warm cycle put a
+      # user on the blocking path. ADR-0007 Decision 2 prescribes TTL = 4x the
+      # refresh interval; 900/240 = 3.75x restores that margin.
+      #
+      # 900s is still far fresher than the sources: measured 2026-07-27, the CRM
+      # (discovery_crm_*) and NetBox inventory tables are truncate-and-reload ONCE
+      # PER DAY, and Zabbix network metrics land every 15 min. The screens render
+      # 7-day aggregates on top of that. Shortening this below the source cadence
+      # buys no freshness, only waiting.
+      API_CACHE_SWR_TTL: ${API_CACHE_SWR_TTL:-900}
+      # Background warm cadence. Must stay well under API_CACHE_SWR_TTL or entries
+      # expire between cycles and users land on the synchronous refetch.
+      APP_WARM_INTERVAL_SECONDS: ${APP_WARM_INTERVAL_SECONDS:-240}
+      APP_COMMON_WARM_INTERVAL_SECONDS: ${APP_COMMON_WARM_INTERVAL_SECONDS:-240}
     volumes:
       - ./data:/app/data
     networks:
