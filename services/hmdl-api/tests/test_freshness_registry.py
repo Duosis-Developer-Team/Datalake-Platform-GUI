@@ -38,3 +38,49 @@ def test_resolve_applies_override():
     spec = fr.resolve("raw_vmware_datastore_metrics_agg",
                       ["collection_timestamp"], default_warn=26, default_dead=50)
     assert spec["label"] == "VMware Datastore Metrics"   # from OVERRIDES
+
+
+def test_is_monitored_covers_tables_the_platform_reads():
+    # Read by datacenter-api / customer-api / crm-engine queries.
+    assert fr.is_monitored("cluster_metrics")
+    assert fr.is_monitored("raw_vmware_datastore_metrics_agg")
+    assert fr.is_monitored("discovery_crm_accounts")
+    assert fr.is_monitored("raw_netbackup_jobs_metrics")
+
+
+def test_monitored_holds_only_base_tables():
+    # discover_specs filters table_type = 'BASE TABLE'. A view in MONITORED could
+    # never be discovered and would sit in data_missing forever, reporting a
+    # curation defect that isn't one. raw_zabbix_network_interface_metrics_v is
+    # the live network source but it IS a view — out of this framework's reach.
+    assert not fr.is_monitored("raw_zabbix_network_interface_metrics_v")
+
+
+def test_is_monitored_drops_tables_no_service_queries():
+    # Superseded by raw_zabbix_network_interface_metrics_v.
+    assert not fr.is_monitored("zabbix_network_interface_metrics")
+    # Whole Panduit PDU family: collected, never read.
+    assert not fr.is_monitored("raw_panduit_pdu_inventory")
+    assert not fr.is_monitored("raw_panduit_pdu_metrics_outlet")
+    # VMware collection stopped 2026-03-12; licensed_os.py mentions these in a
+    # COMMENT only, and the live source is discovery_netbox_virtualization_vm.
+    assert not fr.is_monitored("raw_vmware_vm_config")
+    assert not fr.is_monitored("raw_vmware_vm_runtime")
+
+
+def test_resolve_marks_monitored_flag():
+    monitored = fr.resolve(
+        "cluster_metrics", ["collection_time"], default_warn=26.0, default_dead=50.0
+    )
+    assert monitored["monitored"] is True
+
+    unmonitored = fr.resolve(
+        "raw_panduit_pdu_inventory", ["collection_time"], default_warn=26.0, default_dead=50.0
+    )
+    # Still resolved — it must remain visible in the unmonitored bucket, not vanish.
+    assert unmonitored is not None
+    assert unmonitored["monitored"] is False
+
+
+def test_resolve_still_drops_excluded_tables():
+    assert fr.resolve("loki_devices", ["collection_time"], default_warn=26.0, default_dead=50.0) is None
