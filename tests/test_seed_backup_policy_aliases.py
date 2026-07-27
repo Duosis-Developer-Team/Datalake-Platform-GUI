@@ -215,3 +215,26 @@ def test_apply_plan_second_run_writes_nothing():
     assert accounts_written == 0
     assert rules_added == 0
     mock_put.assert_not_called()
+
+
+def test_apply_plan_never_writes_ambiguous_or_not_addressable_rows():
+    """apply_plan() must only ever act on plan.matched. Today that holds because
+    the loop iterates plan.matched alone — but that guarantee is exactly the
+    kind that quietly breaks when someone later "improves" the loop to also
+    handle the other buckets. Writing a not_addressable row would create a
+    mapping the Customer Aliases admin page cannot show (invisible orphan);
+    writing an ambiguous row would attribute a policy to the wrong customer.
+    Neither bucket should reach put_crm_source_mappings at all.
+    """
+    plan = SeedPlan(
+        matched=[],
+        ambiguous=[("Sabancı", ["SABANCI ARF", "SABANCI DX", "SABANCI ÜNİVERSİTESİ"])],
+        not_addressable=[("acc-1", "Avrora", "AVRORA LLC", ["avro", "avrora"])],
+    )
+    with patch("src.services.api_client.get_crm_aliases", return_value=[]), \
+         patch("src.services.api_client.put_crm_source_mappings") as mock_put:
+        accounts_written, rules_added = apply_plan(plan)
+
+    assert accounts_written == 0
+    assert rules_added == 0
+    mock_put.assert_not_called()
