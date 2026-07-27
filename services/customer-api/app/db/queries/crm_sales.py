@@ -464,11 +464,26 @@ SELECT 'discovery_crm_salesorderdetails',
 # orders are the only price source there is.
 # ---------------------------------------------------------------------------
 
+# Amounts are converted to TL first. `extendedamount` is stored in the ORDER's
+# currency, and the same product is sold in more than one: MS Windows Lisans has
+# 287 TL lines, 7 USD and 2 EUR (2026-07-27). Summing them raw produced 446.63
+# "TL"; converting via the Dynamics rate (TL = amount / exchangerate) gives the
+# real 471.41 TL. The inner join drops lines whose currency has no active rate —
+# a line we cannot convert must not be averaged in as if it were TL.
 PLATFORM_UNIT_PRICE_BY_PRODUCT = """
+WITH fx AS (
+    SELECT DISTINCT ON (transactioncurrency_text)
+           transactioncurrency_text AS ccy,
+           NULLIF(exchangerate, 0)  AS rate
+    FROM   discovery_crm_pricelevels
+    WHERE  statecode = 0
+    ORDER BY transactioncurrency_text, modifiedon DESC
+)
 SELECT d.productid,
-       (SUM(d.extendedamount) / NULLIF(SUM(d.quantity), 0))::double precision AS unit_price_tl
+       (SUM(d.extendedamount / fx.rate) / NULLIF(SUM(d.quantity), 0))::double precision AS unit_price_tl
 FROM   discovery_crm_salesorderdetails d
 JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+JOIN   fx ON fx.ccy = d.transactioncurrency_text
 WHERE  so.statecode IN (0, 1, 3, 4)
   AND  so.ordernumber LIKE 'PRJ-%%'
   AND  d.quantity > 0
