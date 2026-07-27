@@ -84,3 +84,43 @@ def test_resolve_marks_monitored_flag():
 
 def test_resolve_still_drops_excluded_tables():
     assert fr.resolve("loki_devices", ["collection_time"], default_warn=26.0, default_dead=50.0) is None
+
+
+def test_flow_of_groups_the_datastore_tables():
+    assert fr.flow_of("raw_vmware_datastore_metrics_agg") == "vmware_datastore"
+    assert fr.flow_of("raw_vmware_datastore_host_mount") == "vmware_datastore"
+
+
+def test_flow_of_groups_hypervisor_performance_across_vendors():
+    # One rollup job feeds all three; they stopped within a day of each other.
+    for table in (
+        "vmware_host_performance_metrics",
+        "vmware_vm_performance_metrics",
+        "nutanix_host_performance_metrics",
+        "nutanix_vm_performance_metrics",
+        "ibm_lpar_performance_metrics",
+    ):
+        assert fr.flow_of(table) == "hypervisor_performance"
+
+
+def test_flow_of_returns_none_for_unclassified_table():
+    assert fr.flow_of("cluster_metrics") is None
+
+
+def test_every_flow_member_is_monitored():
+    for key, flow in fr.FLOWS.items():
+        for table in flow["tables"]:
+            assert fr.is_monitored(table), f"{table} in flow {key} is not monitored"
+
+
+def test_no_table_belongs_to_two_flows():
+    seen: set[str] = set()
+    for flow in fr.FLOWS.values():
+        for table in flow["tables"]:
+            assert table not in seen, f"{table} is in more than one flow"
+            seen.add(table)
+
+
+def test_every_flow_has_a_turkish_label():
+    for key, flow in fr.FLOWS.items():
+        assert flow["label"].strip(), f"flow {key} has no label"

@@ -79,6 +79,40 @@ MONITORED = frozenset({
     "zabbix_storage_device_metrics", "zabbix_storage_disk_metrics",
 })
 
+# Collection flows: which collector writes which tables. One dead collector is
+# one incident, however many tables it feeds — the page used to render a dead
+# collector as N alerts (all 10 raw_panduit_* tables stopped in the same minute).
+#
+# `label` is what a customer reads. It names the DATA, not the table: a customer
+# looking at "Raw Vmware Datastore Metrics Agg" has no way to know it is the
+# storage figure on their overview.
+#
+# A table with no flow rolls up under its family, so an unclassified table
+# degrades to the previous grouping rather than disappearing.
+FLOWS: dict[str, dict] = {
+    "vmware_datastore": {
+        "label": "Depolama kullanım verisi",
+        "tables": frozenset({
+            "raw_vmware_datastore_metrics_agg",
+            "raw_vmware_datastore_host_mount",
+        }),
+    },
+    "hypervisor_performance": {
+        "label": "Sunucu performans verisi",
+        "tables": frozenset({
+            "vmware_host_performance_metrics",
+            "vmware_vm_performance_metrics",
+            "nutanix_host_performance_metrics",
+            "nutanix_vm_performance_metrics",
+            "ibm_lpar_performance_metrics",
+        }),
+    },
+}
+
+_FLOW_BY_TABLE: dict[str, str] = {
+    table: key for key, flow in FLOWS.items() for table in flow["tables"]
+}
+
 # name-prefix -> friendly family (first match wins; order matters)
 _FAMILY_PREFIXES = [
     ("discovery_netbox", "NetBox"),
@@ -137,6 +171,11 @@ def is_excluded(table: str) -> bool:
 def is_monitored(table: str) -> bool:
     """True when at least one service queries this table (see MONITORED)."""
     return table in MONITORED
+
+
+def flow_of(table: str) -> str | None:
+    """Flow key that writes this table, or None when it is unclassified."""
+    return _FLOW_BY_TABLE.get(table)
 
 
 def family_of(table: str) -> str:
