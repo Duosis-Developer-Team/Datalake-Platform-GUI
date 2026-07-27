@@ -38,7 +38,14 @@ def _swatch_label(color: str, text: str):
 def build_colocation_summary(aggregate: dict, customer_count: int | None = None):
     """KPI tiles + stacked used-U bar. Reads total_u/used_u/free_u/rack_count and
     the optional external_u/internal_u/untagged_u/external_customer_count split.
-    The bar is hidden when the split is absent/zero."""
+    The bar is hidden when the split is absent/zero.
+
+    A fifth "Free U Potential" tile renders only when the aggregate carries
+    unit_price_tl/free_u_potential_tl keys at all (the DC Colocation tab
+    always sets them; the Floor Map's get_dc_racks_occupancy summary never
+    does, since that path never resolves a price). When the keys are present
+    but the price is unresolved (None), the tile still renders with a — and
+    an "unavailable" tooltip, which is accurate for that caller."""
     agg = aggregate or {}
     total_u = int(agg.get("total_u") or 0)
     used_u = int(agg.get("used_u") or 0)
@@ -51,6 +58,14 @@ def build_colocation_summary(aggregate: dict, customer_count: int | None = None)
                 else (agg.get("external_customer_count") or 0))
     base = ext + intn + unt
 
+    # A price-info tile is only meaningful if the caller's aggregate actually
+    # carries price keys. The DC Colocation tab always sets both (even when
+    # the resolved value is None); the Floor Map's get_dc_racks_occupancy
+    # summary carries neither — no price resolution happens on that path.
+    # Absent keys means "never asked", which must render as the plain
+    # four-tile card, not a permanently-dash fifth tile with a tooltip that
+    # (falsely, on that caller) claims the price is unavailable.
+    has_price_info = "unit_price_tl" in agg or "free_u_potential_tl" in agg
     potential = agg.get("free_u_potential_tl")
     unit_price = agg.get("unit_price_tl")
     price_source = agg.get("price_source") or "unavailable"
@@ -62,13 +77,16 @@ def build_colocation_summary(aggregate: dict, customer_count: int | None = None)
         price_tip = (f"Free U x {unit_price:,.2f} TL per U ({origin}). "
                      "Potential at list price — not billed revenue.")
 
-    tiles = dmc.SimpleGrid(cols=5, spacing="md", children=[
+    tile_nodes = [
         _tile("Total U", f"{total_u:,}"),
         _tile("Used U", f"{used_u:,}"),
         _tile("Free U", f"{free_u:,}"),
         _tile("Racks", f"{racks:,}"),
-        _tile_with_tip("Free U Potential", fmt_tl(potential), price_tip),
-    ])
+    ]
+    if has_price_info:
+        tile_nodes.append(_tile_with_tip("Free U Potential", fmt_tl(potential), price_tip))
+
+    tiles = dmc.SimpleGrid(cols=len(tile_nodes), spacing="md", children=tile_nodes)
 
     children = [tiles]
     if base > 0:

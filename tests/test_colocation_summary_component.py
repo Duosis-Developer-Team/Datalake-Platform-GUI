@@ -73,10 +73,44 @@ def test_free_u_potential_tile_renders_dash_when_price_unresolved():
     assert any("Shown as — rather than 0" in t for t in texts)
 
 
-def test_free_u_potential_tile_absent_keys_do_not_crash():
-    texts = _texts(build_colocation_summary({"total_u": 10, "used_u": 4, "free_u": 6}))
+def test_free_u_potential_tile_absent_when_price_keys_absent():
+    """Fix 2: the Floor Map feeds get_dc_racks_occupancy()["summary"], which
+    carries no unit_price_tl/free_u_potential_tl keys at all (no price
+    resolution happens on that path). That is "never asked", not "asked and
+    unresolved" — the card must render its original four tiles with no
+    fifth tile and no false "price unavailable" tooltip."""
+    component = build_colocation_summary({"total_u": 10, "used_u": 4, "free_u": 6, "rack_count": 2})
+    texts = _texts(component)
+
+    assert "Free U Potential" not in texts
+    assert not any("Colocation unit price unavailable" in t for t in texts)
+    assert component.children[0].cols == 4
+
+
+def test_free_u_potential_tile_present_when_price_keys_present_and_resolved():
+    """Keys present + a resolved price: five tiles, value rendered (DC
+    Colocation tab caller)."""
+    agg = {"total_u": 10, "used_u": 4, "free_u": 6, "rack_count": 2,
+           "unit_price_tl": 100.0, "free_u_potential_tl": 600.0, "price_source": "crm"}
+    component = build_colocation_summary(agg)
+    texts = _texts(component)
 
     assert "Free U Potential" in texts
+    assert component.children[0].cols == 5
+
+
+def test_free_u_potential_tile_dash_when_price_keys_present_but_none():
+    """Keys present but the price resolved to None: five tiles, — rendered,
+    and the "unavailable" tooltip is accurate here (the caller did ask)."""
+    agg = {"total_u": 10, "used_u": 4, "free_u": 6, "rack_count": 2,
+           "unit_price_tl": None, "free_u_potential_tl": None, "price_source": "unavailable"}
+    component = build_colocation_summary(agg)
+    texts = _texts(component)
+
+    assert "Free U Potential" in texts
+    assert "—" in texts
+    assert any("Colocation unit price unavailable" in t for t in texts)
+    assert component.children[0].cols == 5
 
 
 def test_free_u_potential_tooltip_names_crm_price_source():
