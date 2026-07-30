@@ -15,6 +15,9 @@
 - **Run Python via the main checkout's interpreter.** Worktrees have no own `.venv`:
   `/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.venv/bin/python`. Python 3.11 is required; the system `python3` is 3.9 and fails on `X | Y` type syntax. Every `pytest` command below assumes this interpreter. Export it once per shell:
   `PY=/Users/namlisarac/Desktop/Work/Datalake/Datalake-Platform-GUI/.venv/bin/python`
+- **Service tests need `PYTHONPATH` set; the bare `cd services/<svc> && pytest` form does not work here.** Service modules import both `app.*` (the service directory) and `shared.*` (the repo root), and this repo has no `pytest.ini`, `conftest.py`, or `pyproject.toml` supplying either. CI gets away with `cd services/datacenter-api && pytest tests/` because its environment differs. Locally, always use:
+  `cd services/<svc> && PYTHONPATH=.:../.. $PY -m pytest tests/... -q`
+  This is pre-existing and affects untouched tests too — verified by running `tests/test_compute_fast_path.py`, which fails identically without it. Do not "fix" it by editing tracked files. GUI-root tests (`tests/...`) need no `PYTHONPATH` and run from the worktree root.
 - **Time window is unchanged: 7 days.** `default_time_range()` returns `end = today`, `start = today - 6 days`. Do not introduce a 30-day window, a new window parameter, or a window selector.
 - **Storage gets no average of its own.** Never add an avg branch to the storage arm of `host_raw_headroom`. Storage's avg cell must come only from the triple-min unit count.
 - **The threshold formula is untouched.** `apply_threshold(total, allocated, pct)` and `apply_utilization_gate(...)` keep their current bodies. Only the `allocated` argument differs per track.
@@ -105,7 +108,10 @@ class TestClassicHostCpuPeak:
 class TestClassicHostAvg:
     def test_averages_across_window_not_latest_snapshot(self):
         sql = vq.CLASSIC_HOST_AVG
-        assert "DISTINCT ON" not in sql
+        # The guard is against picking ONE row per host, which would defeat the
+        # average. A DISTINCT ON inside a cluster-identity CTE is fine (and is
+        # what the Nutanix variants do), so assert on the per-host key only.
+        assert "DISTINCT ON (vmhost)" not in sql
         assert "AVG(cpu_ghz_used)" in sql
         assert "AVG(cpu_ghz_capacity)" in sql
         assert "AVG(memory_used_gb)" in sql
@@ -130,7 +136,12 @@ class TestNutanixHostCpuPeak:
 class TestNutanixHostAvg:
     def test_averages_and_converts_both_units(self):
         sql = nq.NUTANIX_HOST_AVG
-        assert "DISTINCT ON" not in sql
+        # DISTINCT ON (cluster_uuid) in the dc_clusters CTE is legitimate --
+        # it resolves cluster identity, exactly as NUTANIX_HOST_MEM_PEAK does.
+        # What must NOT appear is a per-host DISTINCT ON, which would collapse
+        # the window to a single row and defeat the average.
+        assert "DISTINCT ON (host_name)" not in sql
+        assert "DISTINCT ON (cluster_uuid)" in sql
         assert "AVG(" in sql
         assert "GROUP BY h.host_name" in sql
         assert "1000000000.0" in sql, "Hz -> GHz"
@@ -142,7 +153,7 @@ class TestNutanixHostAvg:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd services/datacenter-api && $PY -m pytest tests/test_host_avg_peak_queries.py -q`
+Run: `cd services/datacenter-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_host_avg_peak_queries.py -q`
 Expected: FAIL — `AttributeError: module 'app.db.queries.vmware' has no attribute 'CLASSIC_HOST_CPU_PEAK'`
 
 - [ ] **Step 3: Add the classic queries**
@@ -276,8 +287,8 @@ GROUP BY h.host_name
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd services/datacenter-api && $PY -m pytest tests/test_host_avg_peak_queries.py -q`
-Expected: PASS (13 tests)
+Run: `cd services/datacenter-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_host_avg_peak_queries.py -q`
+Expected: PASS (9 tests)
 
 - [ ] **Step 6: Commit**
 
@@ -385,7 +396,7 @@ class TestApplyHostCpuPeak:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd services/datacenter-api && $PY -m pytest tests/test_host_avg_enrichment.py -q`
+Run: `cd services/datacenter-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_host_avg_enrichment.py -q`
 Expected: FAIL — `AttributeError: type object 'DCService' has no attribute '_host_avg_map'`
 
 - [ ] **Step 3: Add the three helpers**
@@ -458,8 +469,8 @@ Then, immediately after `_apply_host_mem_peak` (which ends at line 1580):
 
 - [ ] **Step 4: Run helper tests to verify they pass**
 
-Run: `cd services/datacenter-api && $PY -m pytest tests/test_host_avg_enrichment.py -q`
-Expected: PASS (10 tests)
+Run: `cd services/datacenter-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_host_avg_enrichment.py -q`
+Expected: PASS (9 tests)
 
 - [ ] **Step 5: Wire the queries into the classic fetch**
 
@@ -533,7 +544,7 @@ And replace line 1786:
 
 - [ ] **Step 7: Run the datacenter-api suite**
 
-Run: `cd services/datacenter-api && $PY -m pytest tests/ -q`
+Run: `cd services/datacenter-api && PYTHONPATH=.:../.. $PY -m pytest tests/ -q`
 Expected: PASS — no new failures versus the pre-task run of the same command. Record the count.
 
 - [ ] **Step 8: Commit**
@@ -762,12 +773,12 @@ def _normalize_ram_track(ram_track: str) -> str:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `$PY -m pytest tests/test_host_sellable_avg_track.py -q`
-Expected: PASS (13 tests)
+Expected: PASS (12 tests)
 
 - [ ] **Step 5: Check the CPU max change against existing expectations**
 
 Run: `$PY -m pytest tests/test_host_sellable.py tests/test_host_aggregate.py tests/test_sellable_constraint_viz.py -q`
-and `cd services/customer-api && $PY -m pytest tests/test_host_based_computation.py -q`
+and `cd services/customer-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_host_based_computation.py -q`
 
 Expected: PASS. If a test fails **because** CPU max now uses a peak, that is the intended correction — update the fixture's expected number and note it in the commit body. Do not revert the behaviour. If a test fails for any other reason, stop and investigate.
 
@@ -1135,7 +1146,7 @@ Expected: PASS (6 tests)
 - [ ] **Step 7: Run the whole sellable surface**
 
 Run: `$PY -m pytest tests/ -q -k "sellable or host_aggregate or virt" --ignore=tests/test_backup_sidebar_helpers.py`
-and `cd services/customer-api && $PY -m pytest tests/ -q`
+and `cd services/customer-api && PYTHONPATH=.:../.. $PY -m pytest tests/ -q`
 
 Expected: only the known baseline failure `test_virt_sellable_aggregate.py::test_aggregate_virt_sellable_panels_totals` (repaired in Task 9). Any other failure is yours.
 
@@ -1229,7 +1240,7 @@ def test_ram_avg_cap_falls_back_to_current_cap():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd services/customer-api && $PY -m pytest tests/test_host_units_avg_fields.py -q`
+Run: `cd services/customer-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_host_units_avg_fields.py -q`
 Expected: FAIL — `AttributeError: type object 'SellableService' has no attribute '_normalize_host_unit'`
 
 - [ ] **Step 3: Extract the per-host normalization into a testable helper**
@@ -1316,12 +1327,12 @@ No test seam is needed: `_normalize_host_unit` is a static method and the test c
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd services/customer-api && $PY -m pytest tests/test_host_units_avg_fields.py -q`
-Expected: PASS (1 test)
+Run: `cd services/customer-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_host_units_avg_fields.py -q`
+Expected: PASS (3 tests)
 
 - [ ] **Step 5: Verify the extraction changed no behaviour**
 
-Run: `cd services/customer-api && $PY -m pytest tests/ -q`
+Run: `cd services/customer-api && PYTHONPATH=.:../.. $PY -m pytest tests/ -q`
 Expected: same result as before this task. The extraction must be behaviour-preserving.
 
 - [ ] **Step 6: Commit**
@@ -1425,7 +1436,7 @@ Method names verified against the source: serialization is the static `_panel_su
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd services/customer-api && $PY -m pytest tests/test_sellable_avg_api_contract.py -q`
+Run: `cd services/customer-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_sellable_avg_api_contract.py -q`
 Expected: FAIL — `KeyError: 'sellable_avg_qty'`
 
 - [ ] **Step 3: Serialize and hydrate the field**
@@ -1479,12 +1490,12 @@ Finally add both keys to the returned dict (lines 517-525):
 
 - [ ] **Step 6: Run test to verify it passes**
 
-Run: `cd services/customer-api && $PY -m pytest tests/test_sellable_avg_api_contract.py -q`
-Expected: PASS (7 tests)
+Run: `cd services/customer-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_sellable_avg_api_contract.py -q`
+Expected: PASS (6 tests)
 
 - [ ] **Step 7: Run the customer-api suite**
 
-Run: `cd services/customer-api && $PY -m pytest tests/ -q`
+Run: `cd services/customer-api && PYTHONPATH=.:../.. $PY -m pytest tests/ -q`
 Expected: no new failures.
 
 - [ ] **Step 8: Commit**
