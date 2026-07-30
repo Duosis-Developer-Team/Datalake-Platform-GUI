@@ -267,18 +267,18 @@ def _rack_fill_info(occupied_u, total_u):
     """Occupancy summary for the hover popup: occupied/total/free/pct + label."""
     total = int(total_u or 0)
     if occupied_u is None:
-        return {"occupied": None, "total": total, "free": None, "pct": None, "label": "Bilinmiyor"}
+        return {"occupied": None, "total": total, "free": None, "pct": None, "label": "Unknown"}
     occ = max(int(occupied_u), 0)
     free = max(total - occ, 0)
     pct = round(occ / total * 100) if total else 0
     if occ == 0:
-        label = "Tamamen boş"
+        label = "Fully free"
     elif pct > 80:
-        label = "Çok dolu"
+        label = "Nearly full"
     elif pct >= 50:
-        label = "Orta"
+        label = "Moderate"
     else:
-        label = "Satılabilir alan var"
+        label = "Space available"
     return {"occupied": occ, "total": total, "free": free, "pct": pct, "label": label}
 
 

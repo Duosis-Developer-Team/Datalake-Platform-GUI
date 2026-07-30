@@ -2120,7 +2120,7 @@ def show_rack_detail(click_data, dc_store):
         _ext = []
     if _ext:
         tenant_badges = dmc.Group(gap=6, mb="sm", children=[
-            dmc.Text("Dedike:", size="xs", c="#667085", fw=600),
+            dmc.Text("Dedicated:", size="xs", c="#667085", fw=600),
             *[dmc.Badge(t, color="grape", variant="light", size="sm") for t in _ext],
         ])
 

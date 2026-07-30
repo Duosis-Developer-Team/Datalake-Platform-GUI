@@ -3,7 +3,7 @@
 Color by sellable free space: turquoise = fully empty active rack (prime
 sellable); active -> <50% green, 50-80% orange, >80% red; non-active/closed ->
 dark gray; unknown occupancy -> near-white. _rack_fill_info gives
-occupied/total/free/pct + a Turkish status label.
+occupied/total/free/pct + an English status label.
 """
 from src.pages import floor_map as fm
 
@@ -42,11 +42,11 @@ def test_color_by_fill_threshold_boundaries():
 
 
 def test_rack_fill_info_labels():
-    assert fm._rack_fill_info(0, 47)["label"] == "Tamamen boş"
-    assert fm._rack_fill_info(10, 47)["label"] == "Satılabilir alan var"
-    assert fm._rack_fill_info(30, 47)["label"] == "Orta"
-    assert fm._rack_fill_info(45, 47)["label"] == "Çok dolu"
-    assert fm._rack_fill_info(None, 47)["label"] == "Bilinmiyor"
+    assert fm._rack_fill_info(0, 47)["label"] == "Fully free"
+    assert fm._rack_fill_info(10, 47)["label"] == "Space available"
+    assert fm._rack_fill_info(30, 47)["label"] == "Moderate"
+    assert fm._rack_fill_info(45, 47)["label"] == "Nearly full"
+    assert fm._rack_fill_info(None, 47)["label"] == "Unknown"
 
 
 def test_rack_fill_info_free_and_pct():

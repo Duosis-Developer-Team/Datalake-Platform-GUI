@@ -13,9 +13,9 @@ def test_figure_hover_has_occupancy_fields_when_occupancy_given():
     fig = fm.build_floor_map_figure(_racks(), dc_id="DC13-a", occupancy={"104": 35})
     row = fig.data[0].customdata[0]
     assert len(row) >= 12
-    assert "35/47U" in row[9]      # doluluk string
+    assert "35/47U" in row[9]      # occupancy string
     assert row[10] == "12U"         # free (sellable)
-    assert row[11] == "Orta"        # label (74% -> orange/Orta)
+    assert row[11] == "Moderate"    # label (74% -> orange/Moderate)
 
 
 def test_figure_uses_fill_color_for_full_active_rack():
