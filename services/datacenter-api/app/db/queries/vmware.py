@@ -850,6 +850,56 @@ WHERE cap_gb > 0
 ORDER BY vmhost, (used_gb / NULLIF(cap_gb, 0)) DESC, used_gb DESC
 """
 
+# Per-host CPU peak within time range (classic KM). Mirrors CLASSIC_HOST_MEM_PEAK:
+# picks the single worst-utilisation timestamp per host and reports used/cap from
+# that row. Replaces the previous behaviour where the "max" CPU track read the
+# LATEST sample from CLASSIC_HOST_ROWS.
+# Params: (dc_pattern, cluster_filter[], cluster_filter[], start_ts, end_ts)
+CLASSIC_HOST_CPU_PEAK = """
+WITH ts_agg AS (
+    SELECT vmhost,
+           "timestamp",
+           COALESCE(cpu_ghz_used, 0)     AS used_ghz,
+           COALESCE(cpu_ghz_capacity, 0) AS cap_ghz
+    FROM public.vmhost_metrics
+    WHERE datacenter ILIKE %s
+      AND cluster ILIKE '%%KM%%'
+      AND (cardinality(%s::text[]) = 0 OR cluster = ANY(%s::text[]))
+      AND "timestamp" BETWEEN %s AND %s
+)
+SELECT DISTINCT ON (vmhost)
+    vmhost,
+    used_ghz,
+    cap_ghz,
+    COALESCE(100.0 * used_ghz / NULLIF(cap_ghz, 0), 0) AS util_pct
+FROM ts_agg
+WHERE cap_ghz > 0
+ORDER BY vmhost, (used_ghz / NULLIF(cap_ghz, 0)) DESC, used_ghz DESC
+"""
+
+# Per-host CPU + RAM average across the whole time range (classic KM).
+# Averages used AND capacity separately so a mid-window capacity change does not
+# distort the ratio. No DISTINCT ON: every sample in the window contributes.
+# Params: (dc_pattern, cluster_filter[], cluster_filter[], start_ts, end_ts)
+CLASSIC_HOST_AVG = """
+SELECT
+    vmhost,
+    COALESCE(AVG(cpu_ghz_used), 0)                       AS cpu_used_ghz_avg,
+    COALESCE(AVG(cpu_ghz_capacity), 0)                   AS cpu_cap_ghz_avg,
+    COALESCE(100.0 * AVG(cpu_ghz_used)
+             / NULLIF(AVG(cpu_ghz_capacity), 0), 0)      AS cpu_util_pct_avg,
+    COALESCE(AVG(memory_used_gb), 0)                     AS mem_used_gb_avg,
+    COALESCE(AVG(memory_capacity_gb), 0)                 AS mem_cap_gb_avg,
+    COALESCE(100.0 * AVG(memory_used_gb)
+             / NULLIF(AVG(memory_capacity_gb), 0), 0)    AS mem_util_pct_avg
+FROM public.vmhost_metrics
+WHERE datacenter ILIKE %s
+  AND cluster ILIKE '%%KM%%'
+  AND (cardinality(%s::text[]) = 0 OR cluster = ANY(%s::text[]))
+  AND "timestamp" BETWEEN %s AND %s
+GROUP BY vmhost
+"""
+
 # Per-host VM allocation aggregate (vCPU / RAM / storage provisioned by VMs on
 # each host). Sales CPU rule: 1 vCPU = 1 GHz (applied in Python).
 # Params: (dc_pattern, start_ts, end_ts, cluster_filter[], cluster_filter[])

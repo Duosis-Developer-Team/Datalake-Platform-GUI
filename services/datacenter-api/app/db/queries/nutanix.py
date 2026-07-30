@@ -355,6 +355,73 @@ WHERE cap_bytes > 0
 ORDER BY host_name, used_bytes DESC, (used_bytes / NULLIF(cap_bytes, 0)) DESC
 """
 
+# Per-host CPU peak from nutanix_host_metrics (hyperconverged scope). Mirrors
+# NUTANIX_HOST_MEM_PEAK. Note the source column is cpu_usage_avg — that is the
+# only CPU usage column Nutanix exposes, so "peak" here means the timestamp at
+# which that averaged value was highest.
+# Params: (dc_code, cluster_filter[], cluster_filter[], start_ts, end_ts)
+NUTANIX_HOST_CPU_PEAK = """
+WITH dc_clusters AS (
+    SELECT DISTINCT ON (cluster_uuid)
+        cluster_uuid::text AS cluster_uuid,
+        cluster_name
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND (cardinality(%s::text[]) = 0 OR cluster_name = ANY(%s::text[]))
+      AND collection_time >= NOW() - INTERVAL '7 days'
+    ORDER BY cluster_uuid, collection_time DESC
+),
+ts_agg AS (
+    SELECT h.host_name,
+           h.collectiontime,
+           COALESCE(h.cpu_usage_avg, 0)         AS used_hz,
+           COALESCE(h.total_cpu_capacity, 0)    AS cap_hz
+    FROM public.nutanix_host_metrics h
+    INNER JOIN dc_clusters c ON h.cluster_uuid::text = c.cluster_uuid
+    WHERE h.collectiontime BETWEEN %s AND %s
+)
+SELECT DISTINCT ON (host_name)
+    host_name,
+    COALESCE(used_hz / 1000000000.0, 0),
+    COALESCE(cap_hz / 1000000000.0, 0),
+    COALESCE(100.0 * used_hz / NULLIF(cap_hz, 0), 0)
+FROM ts_agg
+WHERE cap_hz > 0
+ORDER BY host_name, (used_hz / NULLIF(cap_hz, 0)) DESC, used_hz DESC
+"""
+
+# Per-host CPU + RAM average across the whole time range (hyperconverged).
+# Hz -> GHz and bytes -> GB conversions happen in SQL, matching
+# NUTANIX_HOST_MEM_PEAK, so the Python layer treats classic and Nutanix rows
+# identically.
+# Params: (dc_code, cluster_filter[], cluster_filter[], start_ts, end_ts)
+NUTANIX_HOST_AVG = """
+WITH dc_clusters AS (
+    SELECT DISTINCT ON (cluster_uuid)
+        cluster_uuid::text AS cluster_uuid,
+        cluster_name
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND (cardinality(%s::text[]) = 0 OR cluster_name = ANY(%s::text[]))
+      AND collection_time >= NOW() - INTERVAL '7 days'
+    ORDER BY cluster_uuid, collection_time DESC
+)
+SELECT
+    h.host_name,
+    COALESCE(AVG(h.cpu_usage_avg) / 1000000000.0, 0)              AS cpu_used_ghz_avg,
+    COALESCE(AVG(h.total_cpu_capacity) / 1000000000.0, 0)         AS cpu_cap_ghz_avg,
+    COALESCE(100.0 * AVG(h.cpu_usage_avg)
+             / NULLIF(AVG(h.total_cpu_capacity), 0), 0)           AS cpu_util_pct_avg,
+    COALESCE(AVG(h.memory_usage_avg) / 1073741824.0, 0)           AS mem_used_gb_avg,
+    COALESCE(AVG(h.total_memory_capacity) / 1073741824.0, 0)      AS mem_cap_gb_avg,
+    COALESCE(100.0 * AVG(h.memory_usage_avg)
+             / NULLIF(AVG(h.total_memory_capacity), 0), 0)        AS mem_util_pct_avg
+FROM public.nutanix_host_metrics h
+INNER JOIN dc_clusters c ON h.cluster_uuid::text = c.cluster_uuid
+WHERE h.collectiontime BETWEEN %s AND %s
+GROUP BY h.host_name
+"""
+
 # Per-host VM allocation aggregate (vCPU / RAM provisioned by Nutanix VMs on
 # each host). Sales CPU rule: 1 vCPU = 1 GHz (applied in Python).
 # Params: (dc_code, cluster_filter[], cluster_filter[], start_ts, end_ts)

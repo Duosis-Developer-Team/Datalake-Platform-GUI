@@ -286,6 +286,38 @@ def annotate_panel_constraint_metadata(panels: Iterable[PanelResult]) -> list[Pa
 # ---------------------------------------------------------------------------
 
 
+def _first_present_h(host: dict, *keys: str) -> float:
+    """First key present on ``host``, honouring a genuine ``0.0``. Mirrors
+    ``host_sellable._first_present``. Plain ``or`` chaining would make a real
+    zero average fall through to the peak and understate headroom, or make a
+    *missing* average read as an idle host and overstate it."""
+    for k in keys:
+        v = host.get(k)
+        if v is not None:
+            return float(v)
+    return 0.0
+
+
+def _cpu_max_raw_h(host: dict, cpu_threshold_pct: float) -> float:
+    """CPU max-track raw headroom for one host. Mirrors
+    ``host_sellable._cpu_max_headroom``; used to clamp the avg branch below so
+    a per-host average can never invert the family's ``n_avg >= n_max``."""
+    cpu_total = float(host.get("cpu_total") or 0.0)
+    cpu_alloc = float(host.get("cpu_used_ghz_peak") or host.get("cpu_used_ghz") or 0.0)
+    cpu_util = float(host.get("cpu_peak_util_pct") or host.get("cpu_util_pct") or 0.0)
+    return apply_utilization_gate(cpu_total, cpu_alloc, cpu_util, cpu_threshold_pct)
+
+
+def _ram_max_raw_h(host: dict, ram_threshold_pct: float) -> float:
+    """RAM max-track raw headroom for one host. Mirrors
+    ``host_sellable._ram_max_headroom``; used to clamp the avg branch below so
+    a per-host average can never invert the family's ``n_avg >= n_max``."""
+    ram_total = float(host.get("mem_cap_gb_at_peak") or host.get("ram_peak_total") or 0.0)
+    ram_alloc = float(host.get("mem_used_gb_peak") or host.get("ram_peak_used") or 0.0)
+    ram_util = float(host.get("mem_peak_util_pct") or host.get("ram_peak_util_pct") or 0.0)
+    return apply_utilization_gate(ram_total, ram_alloc, ram_util, ram_threshold_pct)
+
+
 def host_effective_units(
     hosts: "Iterable[dict]",
     ratio: ResourceRatio,
@@ -302,9 +334,12 @@ def host_effective_units(
     ``cpu_track`` selects which CPU allocation basis to use:
       - ``effective`` — ``cpu_total`` / ``cpu_alloc`` (sales GHz rule)
       - ``physical``  — ``cpu_total_phys`` / ``cpu_alloc_phys`` (vCPU × host GHz)
+      - ``max``       — per-host window peak (``cpu_used_ghz_peak``)
+      - ``avg``       — per-host window average (``cpu_used_ghz_avg``)
     ``ram_track`` selects RAM basis:
       - ``physical`` — per-host VM-configured RAM allocation
       - ``max``      — per-host max RAM (``mem_cap_gb_at_peak`` / ``mem_used_gb_peak``)
+      - ``avg``      — per-host average RAM (``mem_cap_gb_avg`` / ``mem_used_gb_avg``)
     """
     if ratio.cpu_per_unit <= 0 or ratio.ram_gb_per_unit <= 0:
         return 0.0
@@ -315,22 +350,54 @@ def host_effective_units(
             cpu_alloc = float(h.get("cpu_alloc_phys") or 0.0)
             ghz = float(h.get("ghz_per_core") or 1.0)
             cpu_den = ratio.cpu_per_unit * ghz if ghz > 0 else ratio.cpu_per_unit
+            cpu_util = float(h.get("cpu_util_pct") or 0.0)
+        elif cpu_track == "max":
+            cpu_total = float(h.get("cpu_total") or 0.0)
+            cpu_alloc = float(h.get("cpu_used_ghz_peak") or h.get("cpu_used_ghz") or 0.0)
+            cpu_den = ratio.cpu_per_unit * max(effective_ghz_per_unit, 1e-9)
+            cpu_util = float(h.get("cpu_peak_util_pct") or h.get("cpu_util_pct") or 0.0)
+        elif cpu_track == "avg":
+            cpu_total = float(h.get("cpu_total") or 0.0)
+            cpu_alloc = _first_present_h(
+                h, "cpu_used_ghz_avg", "cpu_used_ghz_peak", "cpu_used_ghz"
+            )
+            cpu_den = ratio.cpu_per_unit * max(effective_ghz_per_unit, 1e-9)
+            cpu_util = _first_present_h(
+                h, "cpu_avg_util_pct", "cpu_peak_util_pct", "cpu_util_pct"
+            )
         else:
             cpu_total = float(h.get("cpu_total") or 0.0)
             cpu_alloc = float(h.get("cpu_alloc") or 0.0)
             cpu_den = ratio.cpu_per_unit * max(effective_ghz_per_unit, 1e-9)
+            cpu_util = float(h.get("cpu_util_pct") or 0.0)
         raw_cpu = apply_utilization_gate(
             cpu_total,
             cpu_alloc,
-            float(h.get("cpu_util_pct") or 0.0),
+            cpu_util,
             cpu_threshold_pct,
         )
+        if cpu_track == "avg":
+            # Average used can never truly exceed peak used, so any inversion
+            # (capacity drift, a ratio-selected peak row) is a data artefact;
+            # clamp at this host's own max-track contribution -- mirrors the
+            # clamp in host_sellable.host_raw_headroom.
+            raw_cpu = max(raw_cpu, _cpu_max_raw_h(h, cpu_threshold_pct))
         if ram_track in ("max", "peak"):
             ram_total = float(
                 h.get("mem_cap_gb_at_peak") or h.get("ram_peak_total") or 0.0
             )
             ram_alloc = float(h.get("mem_used_gb_peak") or h.get("ram_peak_used") or 0.0)
             ram_util = float(h.get("mem_peak_util_pct") or h.get("ram_peak_util_pct") or 0.0)
+        elif ram_track == "avg":
+            ram_total = _first_present_h(
+                h, "mem_cap_gb_avg", "mem_cap_gb_at_peak", "ram_total"
+            )
+            ram_alloc = _first_present_h(
+                h, "mem_used_gb_avg", "mem_used_gb_peak", "mem_peak_used"
+            )
+            ram_util = _first_present_h(
+                h, "mem_avg_util_pct", "mem_peak_util_pct", "ram_util_pct"
+            )
         else:
             ram_total = float(h.get("ram_total") or 0.0)
             ram_alloc = float(h.get("ram_alloc") or 0.0)
@@ -341,6 +408,11 @@ def host_effective_units(
             ram_util,
             ram_threshold_pct,
         )
+        if ram_track == "avg":
+            # Same clamp as CPU above, for the RAM arm: the avg denominator can
+            # differ from the max-track denominator (mem_cap_gb_avg vs
+            # mem_cap_gb_at_peak), which alone can invert the ordering.
+            raw_ram = max(raw_ram, _ram_max_raw_h(h, ram_threshold_pct))
         n_total += min(raw_cpu / cpu_den, raw_ram / ratio.ram_gb_per_unit)
     return n_total
 
@@ -393,18 +465,30 @@ def constrain_by_ratio_per_host_dual(
         ram_track="max",
         effective_ghz_per_unit=effective_ghz_per_unit,
     )
+    n_cpu_avg = host_effective_units(
+        hosts,
+        ratio,
+        cpu_threshold_pct=cpu_threshold_pct,
+        ram_threshold_pct=ram_threshold_pct,
+        cpu_track="avg",
+        ram_track="avg",
+        effective_ghz_per_unit=effective_ghz_per_unit,
+    )
+    n_ram_avg = n_cpu_avg
 
     out: list[PanelResult] = []
     for p in panel_list:
         if p.resource_kind == "cpu":
             constrained_eff = n_cpu_eff * ratio.cpu_per_unit
             constrained_max = n_cpu_max * ratio.cpu_per_unit
+            constrained_avg = n_cpu_avg * ratio.cpu_per_unit
             ratio_bound = constrained_eff + 1e-6 < p.sellable_raw
             out.append(
                 replace(
                     p,
                     sellable_allocation=constrained_eff,
                     sellable_max_util=constrained_max,
+                    sellable_avg_util=constrained_avg,
                     sellable_effective=constrained_eff,
                     sellable_physical=None,
                     sellable_constrained=constrained_eff,
@@ -428,6 +512,7 @@ def constrain_by_ratio_per_host_dual(
                     sellable_effective=constrained_max,
                     sellable_allocation=constrained_phys,
                     sellable_max_util=constrained_max,
+                    sellable_avg_util=n_ram_avg * ratio.ram_gb_per_unit,
                     sellable_constrained=constrained_phys,
                     ratio_bound=ratio_bound,
                     computation_mode="host_based",
@@ -512,6 +597,9 @@ def constrain_by_ratio_per_host_triple_dual(
     n_ram_max, host_stor_max = _accumulate("max", "max", False)
     _, host_stor_max_shared = _accumulate("max", "max", True)
 
+    n_cpu_avg, host_stor_avg = _accumulate("avg", "avg", False)
+    n_ram_avg = n_cpu_avg
+
     stor_lo_alloc, stor_hi_alloc = aggregate_family_storage_range(
         host_stor_alloc,
         shared_pools or [],
@@ -524,6 +612,7 @@ def constrain_by_ratio_per_host_triple_dual(
     )
     stor_constrained_alloc = sum(r.stor_constrained_min for r in host_stor_alloc)
     stor_constrained_max = sum(r.stor_constrained_min for r in host_stor_max)
+    stor_constrained_avg = sum(r.stor_constrained_min for r in host_stor_avg)
 
     if cluster_storage_raw_gb is not None:
         n_bn_alloc = min(n_cpu_alloc, n_ram_alloc) if n_ram_alloc > 0 else n_cpu_alloc
@@ -532,6 +621,9 @@ def constrain_by_ratio_per_host_triple_dual(
         stor_cap_max = max(n_bn_max, 0.0) * ratio.storage_gb_per_unit
         stor_constrained_alloc = min(max(cluster_storage_raw_gb, 0.0), stor_cap_alloc)
         stor_constrained_max = min(max(cluster_storage_raw_gb, 0.0), stor_cap_max)
+        n_bn_avg = min(n_cpu_avg, n_ram_avg) if n_ram_avg > 0 else n_cpu_avg
+        stor_cap_avg = max(n_bn_avg, 0.0) * ratio.storage_gb_per_unit
+        stor_constrained_avg = min(max(cluster_storage_raw_gb, 0.0), stor_cap_avg)
         stor_lo_alloc = stor_constrained_alloc
         stor_lo_max = stor_constrained_max
         stor_hi_alloc = min(
@@ -551,6 +643,12 @@ def constrain_by_ratio_per_host_triple_dual(
         compute_cap_max = max(n_bn_max, 0.0) * ratio.storage_gb_per_unit
         pool_alloc = stor_constrained_alloc
         pool_max = stor_constrained_max
+        n_bn_avg = min(n_cpu_avg, n_ram_avg) if n_ram_avg > 0 else n_cpu_avg
+        compute_cap_avg = max(n_bn_avg, 0.0) * ratio.storage_gb_per_unit
+        pool_avg = stor_constrained_avg
+        stor_constrained_avg = (
+            min(max(pool_avg, 0.0), compute_cap_avg) if compute_cap_avg > 0 else 0.0
+        )
         stor_lo_alloc = ibm_lo
         stor_lo_max = ibm_lo
         if ibm_hi > ibm_lo + 1e-6:
@@ -572,6 +670,8 @@ def constrain_by_ratio_per_host_triple_dual(
     cpu_max_val = n_cpu_max * ratio.cpu_per_unit
     ram_alloc_val = n_ram_alloc * ratio.ram_gb_per_unit
     ram_max_val = n_ram_max * ratio.ram_gb_per_unit
+    cpu_avg_val = n_cpu_avg * ratio.cpu_per_unit
+    ram_avg_val = n_ram_avg * ratio.ram_gb_per_unit
     _ = n_phys, host_stor_alloc_shared, host_stor_max_shared
 
     out: list[PanelResult] = []
@@ -583,6 +683,7 @@ def constrain_by_ratio_per_host_triple_dual(
                     p,
                     sellable_allocation=cpu_alloc_val,
                     sellable_max_util=cpu_max_val,
+                    sellable_avg_util=cpu_avg_val,
                     sellable_effective=cpu_alloc_val,
                     sellable_physical=None,
                     sellable_constrained=cpu_alloc_val,
@@ -603,6 +704,7 @@ def constrain_by_ratio_per_host_triple_dual(
                     sellable_physical=ram_alloc_val,
                     sellable_allocation=ram_alloc_val,
                     sellable_max_util=ram_max_val,
+                    sellable_avg_util=ram_avg_val,
                     sellable_effective=ram_max_val,
                     sellable_constrained=ram_alloc_val,
                     ratio_bound=ratio_bound,
@@ -620,6 +722,7 @@ def constrain_by_ratio_per_host_triple_dual(
                     sellable_max=stor_hi_out,
                     sellable_allocation=stor_constrained_alloc,
                     sellable_max_util=stor_constrained_max,
+                    sellable_avg_util=stor_constrained_avg,
                     ratio_bound=ratio_bound,
                     computation_mode="host_based",
                     constraint_reason="ratio_bound" if ratio_bound else "none",
@@ -711,6 +814,11 @@ def constrain_by_ratio_dual_cpu_cluster(
                     p,
                     sellable_allocation=constrained_alloc,
                     sellable_max_util=constrained_max,
+                    # No averages exist at cluster granularity -- _extract_utilization_pct
+                    # reads peak only. Per the global rule (no average for a resource means
+                    # use that resource's peak), avg equals max here: never below, never
+                    # oversold, and no em-dash beside a real Max figure.
+                    sellable_avg_util=constrained_max,
                     sellable_effective=constrained_alloc,
                     sellable_physical=None,
                     sellable_constrained=constrained_alloc,
@@ -733,6 +841,7 @@ def constrain_by_ratio_dual_cpu_cluster(
                     sellable_physical=constrained_alloc,
                     sellable_allocation=constrained_alloc,
                     sellable_max_util=constrained_max,
+                    sellable_avg_util=constrained_max,
                     sellable_effective=constrained_max,
                     sellable_constrained=constrained_alloc,
                     ratio_bound=ratio_bound,
@@ -761,6 +870,7 @@ def constrain_by_ratio_dual_cpu_cluster(
                         sellable_max=constrained_max if constrained_max > constrained_alloc + 1e-6 else None,
                         sellable_allocation=constrained_alloc,
                         sellable_max_util=constrained_max,
+                        sellable_avg_util=constrained_max,
                         ratio_bound=ratio_bound,
                     )
                 )

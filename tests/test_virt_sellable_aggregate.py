@@ -20,16 +20,36 @@ def test_total_potential_tl_sums():
 
 
 def test_aggregate_virt_sellable_panels_totals():
+    """A panel with no sellable capacity contributes no TL.
+
+    aggregate_virt_sellable_panels zeroes potential_tl when
+    sellable_constrained <= 1e-9 -- revenue that can never be billed must not
+    inflate the total. The epsilon rather than a bare 0 guards against float
+    dust from upstream ratio arithmetic. The 'other' panel below has no
+    sellable_constrained at all, so it defaults to 0.0, trips the guard, and its
+    7.0 TL is dropped: 10.0 + 3.0 = 13.0.
+    """
     panels = [
         {"resource_kind": "cpu", "potential_tl": 10.0, "sellable_constrained": 5.0, "display_unit": "Core"},
         {"resource_kind": "ram", "potential_tl": 3.0, "sellable_constrained": 100.0},
         {"resource_kind": "other", "potential_tl": 7.0},
     ]
     total_tl, by_kind, has_known = aggregate_virt_sellable_panels(panels)
-    assert total_tl == 20.0
+    assert total_tl == 13.0
     assert has_known is True
     assert float(by_kind["cpu"]["tl"]) == 10.0
     assert float(by_kind["ram"]["tl"]) == 3.0
+
+
+def test_aggregate_counts_tl_when_panel_has_sellable_capacity():
+    """Same shape, but the third panel is sellable -- so its TL counts."""
+    panels = [
+        {"resource_kind": "cpu", "potential_tl": 10.0, "sellable_constrained": 5.0, "display_unit": "Core"},
+        {"resource_kind": "ram", "potential_tl": 3.0, "sellable_constrained": 100.0},
+        {"resource_kind": "other", "potential_tl": 7.0, "sellable_constrained": 1.0},
+    ]
+    total_tl, _, _ = aggregate_virt_sellable_panels(panels)
+    assert total_tl == 20.0
 
 
 def test_prepare_virt_sellable_panels_merges_power():

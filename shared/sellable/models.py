@@ -85,9 +85,12 @@ class PanelResult:
     sellable_max: float | None = None
     potential_tl_min: float | None = None
     potential_tl_max: float | None = None
-    # Allocation vs max-utilization sellable tracks (payload v4+).
+    # Allocation vs max-utilization vs avg-utilization sellable tracks.
+    # Ordering invariant: allocation <= max_util <= avg_util, because
+    # allocated >= peak used >= average used.
     sellable_allocation: float | None = None
     sellable_max_util: float | None = None
+    sellable_avg_util: float | None = None
     # Legacy dual-track aliases (CPU: effective=allocation; RAM: physical=allocation, effective=max).
     sellable_physical: float | None = None
     sellable_effective: float | None = None

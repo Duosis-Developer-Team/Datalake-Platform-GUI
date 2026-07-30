@@ -157,22 +157,6 @@ def _sellable_zero_hint(reason: str) -> str:
     return _ZERO_SELLABLE_HINTS.get((reason or "").strip(), "kapasite/oran kısıtı")
 
 
-def _mean(a: Any, b: Any) -> float | None:
-    """Mean of two optional numerics. Returns the present one if only one is set,
-    None if neither is."""
-    vals = []
-    for v in (a, b):
-        if v is None:
-            continue
-        try:
-            vals.append(float(v))
-        except (TypeError, ValueError):
-            continue
-    if not vals:
-        return None
-    return sum(vals) / len(vals)
-
-
 def _fmt_dedup_note(row: dict[str, Any], unit: str) -> str:
     """Annotation for NetBackup-style rows: logical (pre-dedup) size + dedup factor.
 
@@ -295,6 +279,8 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
     sellable_max_qty = row.get("sellable_max_qty")
     potential_tl_alloc = row.get("potential_tl_alloc")
     potential_tl_max = row.get("potential_tl_max")
+    sellable_avg_qty = row.get("sellable_avg_qty")
+    potential_tl_avg = row.get("potential_tl_avg")
 
     if profile in ("dual_track", "allocation_only") and has_infra:
         try:
@@ -375,9 +361,7 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
             sellable_max_qty, unit, potential_tl_max,
         ) if profile == "dual_track" else "—\n—",
         "sellable_avg_fmt": shared.fmt_qty_tl_block(
-            _mean(sellable_alloc_qty, sellable_max_qty),
-            unit,
-            _mean(potential_tl_alloc, potential_tl_max),
+            sellable_avg_qty, unit, potential_tl_avg,
         ) if profile == "dual_track" else "—\n—",
         "unit_price_fmt": _fmt_unit_price(unit_price_display, unit),
         "status": status,
