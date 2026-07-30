@@ -1970,6 +1970,20 @@ def get_dc_racks_occupancy(dc_code: str) -> dict:
     return _api_cache_get_with_stale(ck, fetch, empty)
 
 
+def get_dc_racks_load(dc_code: str) -> dict:
+    """Per-rack workload for the Floor Map's Load lens. Mirrors
+    get_dc_racks_occupancy: same cache-with-stale wrapper, same empty shape."""
+    enc = quote(dc_code, safe="")
+    empty = {"racks": [], "summary": {}}
+    ck = f"api:dc_racks_load:{enc}"
+
+    def fetch() -> dict:
+        data = _get_json(_get_client_dc(), f"/api/v1/datacenters/{enc}/racks/load")
+        return data if isinstance(data, dict) else empty
+
+    return _api_cache_get_with_stale(ck, fetch, empty)
+
+
 def get_colocation(dc_code: str) -> dict:
     enc = quote(dc_code, safe="")
     empty = {"aggregate": {}, "customers": [], "racks": []}
