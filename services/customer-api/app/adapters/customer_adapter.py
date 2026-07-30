@@ -743,6 +743,7 @@ class CustomerAdapter:
                         },
                         "policy_types": {"image": [], "application": []},
                     },
+                    "license_compliance": [],
                 },
             },
         }

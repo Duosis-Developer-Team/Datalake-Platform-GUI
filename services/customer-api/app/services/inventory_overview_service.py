@@ -153,22 +153,72 @@ def _value_tl_from_catalog_price(
 def _apply_netbackup_inventory_fields(
     row: dict[str, Any],
     metrics: dict[str, float],
+    *,
+    under_pct: float = 80.0,
+    over_pct: float = 110.0,
 ) -> dict[str, Any]:
-    """Enrich NetBackup row with physical free and dedup savings (display TB)."""
+    """Enrich NetBackup row with dual-basis used (PreDedup) and PostDedup cost.
+
+    K-01: customer billable ``used_qty`` = PreDedup; PostDedup is cost-only.
+    """
     if not row.get("has_infra_source"):
         return row
     row = dict(row)
+    has_price = bool(row.get("has_price"))
+    unit_price = row.get("unit_price_tl")
+    pre = _bytes_to_tb(metrics.get("pre_dedup_bytes", 0.0))
+    post = _bytes_to_tb(metrics.get("used_post_dedup_bytes", 0.0))
+    if post <= 0.0 and row.get("used_qty") is not None:
+        try:
+            post = float(row.get("used_qty") or 0.0)
+        except (TypeError, ValueError):
+            post = 0.0
+
     row["inventory_free_mode"] = "physical"
     row["free_qty"] = _bytes_to_tb(metrics.get("available_bytes", 0.0))
-    row["pre_dedup_qty"] = _bytes_to_tb(metrics.get("pre_dedup_bytes", 0.0))
+    row["pre_dedup_qty"] = pre
+    row["post_dedup_qty"] = post
     row["dedup_savings_qty"] = _bytes_to_tb(metrics.get("dedup_savings_bytes", 0.0))
     row["dedup_savings_pct"] = float(metrics.get("dedup_savings_pct") or 0.0)
     row["dedup_factor"] = float(metrics.get("dedup_factor") or 0.0)
     row["free_tl"] = _value_tl_from_catalog_price(
         row.get("free_qty"),
-        unit_price_tl=row.get("unit_price_tl"),
-        has_price=bool(row.get("has_price")),
+        unit_price_tl=unit_price,
+        has_price=has_price,
     )
+    row["post_dedup_tl"] = _value_tl_from_catalog_price(
+        post,
+        unit_price_tl=unit_price,
+        has_price=has_price,
+    )
+    margin_qty = max(pre - post, 0.0)
+    row["dedup_margin_tl"] = _value_tl_from_catalog_price(
+        margin_qty,
+        unit_price_tl=unit_price,
+        has_price=has_price,
+    )
+
+    # Billable inventory used = PreDedup when jobs transfer data is present.
+    if pre > 0.0:
+        row["used_qty"] = pre
+        row["used_tl"] = _value_tl_from_catalog_price(
+            pre,
+            unit_price_tl=unit_price,
+            has_price=has_price,
+        )
+        crm_sold = float(row.get("crm_sold_qty") or 0.0)
+        row["delta_used_vs_crm"] = pre - crm_sold
+        row["overage_qty"] = max(0.0, pre - crm_sold)
+        row["efficiency_pct"] = (
+            round((pre / crm_sold) * 100.0, 2) if crm_sold > 0 else None
+        )
+        row["status"] = panel_inventory_status(
+            crm_sold_qty=crm_sold,
+            used_qty=pre,
+            has_infra_source=True,
+            under_pct=under_pct,
+            over_pct=over_pct,
+        )
     return row
 
 
@@ -1137,7 +1187,12 @@ class InventoryOverviewService:
                 over_pct=over_pct,
             )
             if row.get("panel_key") == "backup_netbackup_storage":
-                row = _apply_netbackup_inventory_fields(row, netbackup_metrics)
+                row = _apply_netbackup_inventory_fields(
+                    row,
+                    netbackup_metrics,
+                    under_pct=under_pct,
+                    over_pct=over_pct,
+                )
             panel_rows.append(row)
             if row.get("infra_binding") == "crm_only":
                 crm_only_panels.append(row)
@@ -1160,7 +1215,12 @@ class InventoryOverviewService:
                 over_pct=over_pct,
             )
             if row.get("panel_key") == "backup_netbackup_storage":
-                row = _apply_netbackup_inventory_fields(row, netbackup_metrics)
+                row = _apply_netbackup_inventory_fields(
+                    row,
+                    netbackup_metrics,
+                    under_pct=under_pct,
+                    over_pct=over_pct,
+                )
             _upsert_inventory_row(panel_rows, crm_only_panels, row)
 
         for panel_key, bucket in entitled_by_panel.items():

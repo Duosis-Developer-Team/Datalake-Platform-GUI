@@ -36,6 +36,18 @@ _INVENTORY_VIRT_FAMILIES = frozenset({
 
 _PHYSICAL_FREE_FAMILIES = frozenset({"storage_s3", "backup_netbackup"})
 
+_NETBACKUP_COLUMNS = [
+    {"name": "Service", "id": "service_label"},
+    {"name": "Unit", "id": "display_unit"},
+    {"name": "CRM Sold", "id": "crm_sold_fmt"},
+    {"name": "Total", "id": "total_fmt"},
+    {"name": "PreDedup", "id": "pre_dedup_fmt"},
+    {"name": "PostDedup (Cost)", "id": "post_dedup_fmt"},
+    {"name": "Dedup Savings %", "id": "dedup_savings_fmt"},
+    {"name": "Free", "id": "free_fmt"},
+    {"name": "Birim Fiyat", "id": "unit_price_fmt"},
+]
+
 _DUAL_TRACK_COLUMNS = [
     {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
     {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
@@ -60,6 +72,7 @@ _LEFT_COLS = frozenset({
 
 _NUMERIC_COLS = frozenset({
     "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
+    "pre_dedup_fmt", "post_dedup_fmt", "dedup_savings_fmt",
     "sellable_alloc_fmt", "sellable_max_fmt", "sellable_avg_fmt", "unit_price_fmt",
     "entitled_qty", "entitled_amount_tl",
 })
@@ -118,6 +131,8 @@ def columns_for_family(
 ) -> list[dict[str, str]]:
     """Return DataTable columns for a family sellable profile."""
     profile = (family or "standard").strip()
+    if profile == "backup_netbackup":
+        return list(_NETBACKUP_COLUMNS)
     if profile in _PHYSICAL_FREE_FAMILIES:
         profile = "standard"
         hide_used = False
@@ -335,6 +350,47 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         if dedup_note:
             total_fmt = f"{total_fmt}\n{dedup_note}"
 
+    # K-01: NetBackup billable used = PreDedup; PostDedup is cost column.
+    is_netbackup = family == "backup_netbackup" or str(row.get("panel_key") or "").startswith(
+        "backup_netbackup"
+    )
+    pre_qty = row.get("pre_dedup_qty")
+    if is_netbackup and has_infra and pre_qty is not None:
+        billable_used = pre_qty
+    else:
+        billable_used = row.get("used_qty")
+
+    post_qty = row.get("post_dedup_qty")
+    post_tl = row.get("post_dedup_tl")
+    dedup_pct = row.get("dedup_savings_pct")
+    dedup_margin_tl = row.get("dedup_margin_tl")
+
+    if is_netbackup and has_infra:
+        pre_fmt = shared.fmt_qty_tl_block(
+            billable_used,
+            unit,
+            used_tl,
+            qty_missing="—",
+        )
+        post_fmt = shared.fmt_qty_tl_block(
+            post_qty, unit, post_tl, qty_missing="—",
+        )
+        if dedup_pct is None:
+            savings_fmt = "—"
+        else:
+            try:
+                pct_line = f"{float(dedup_pct):,.1f}%"
+            except (TypeError, ValueError):
+                pct_line = "—"
+            margin_line = (
+                shared.fmt_tl(dedup_margin_tl) if dedup_margin_tl is not None else "—"
+            )
+            savings_fmt = f"{pct_line}\n{margin_line}"
+    else:
+        pre_fmt = "—\n—"
+        post_fmt = "—\n—"
+        savings_fmt = "—"
+
     return {
         "panel_key": row.get("panel_key") or "",
         "service_label": service_label,
@@ -346,10 +402,15 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
             "—\n—"
             if hide_used
             else shared.fmt_qty_tl_block(
-                row.get("used_qty"), unit, used_tl,
+                billable_used,
+                unit,
+                used_tl,
                 qty_missing="—",
             ) if has_infra else "—\n—"
         ),
+        "pre_dedup_fmt": pre_fmt if has_infra else "—\n—",
+        "post_dedup_fmt": post_fmt if has_infra else "—\n—",
+        "dedup_savings_fmt": savings_fmt if has_infra else "—",
         "free_fmt": shared.fmt_qty_tl_block(
             free_display_qty, unit, free_tl,
             qty_missing="—",
@@ -486,6 +547,11 @@ def build_report_table(
     if family in _PHYSICAL_FREE_FAMILIES:
         row_hide_used = False
         profile = "standard"
+    if family == "backup_netbackup" or any(
+        str(r.get("family") or "") == "backup_netbackup" for r in rows
+    ):
+        profile = "backup_netbackup"
+        row_hide_used = False
     columns = columns_for_family(profile or family, hide_used=row_hide_used)
     if include_family:
         columns = [_FLAT_EXTRA_COLUMN, *columns]

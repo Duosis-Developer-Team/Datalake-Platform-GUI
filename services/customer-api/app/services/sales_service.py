@@ -324,6 +324,53 @@ class SalesService:
             return []
         return self._run_query(sq.SALES_ITEMS_ACTIVE, (account_ids,))
 
+    def get_backup_license_compliance(
+        self,
+        customer_name: str,
+        *,
+        time_range: dict | None = None,
+        backup_totals: dict | None = None,
+        backup_assets: dict | None = None,
+    ) -> List[Dict[str, Any]]:
+        """Evaluate Veeam/Zerto license OK/NO from backup usage + active CRM sold SKUs.
+
+        Prefer caller-supplied backup totals/assets (avoids re-entering customer
+        resource load when attaching to the same bundle).
+        """
+        from app.services.backup_license_service import (
+            BACKUP_LICENSE_PRODUCTNUMBERS,
+            build_backup_license_compliance,
+        )
+
+        totals = backup_totals
+        assets = backup_assets
+        if totals is None or assets is None:
+            bundle = self._customer_infra_bundle(customer_name, time_range)
+            totals = totals if totals is not None else (bundle.get("totals") or {}).get("backup")
+            assets = assets if assets is not None else (bundle.get("assets") or {}).get("backup")
+
+        sold_rows: List[Dict[str, Any]] = []
+        account_ids = self._resolve_account_ids(customer_name)
+        if account_ids:
+            try:
+                sold_rows = self._run_query(
+                    sq.SALES_BACKUP_LICENSE_SOLD_ACTIVE,
+                    (account_ids, list(BACKUP_LICENSE_PRODUCTNUMBERS)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "backup license sold query failed for %s: %s",
+                    customer_name,
+                    exc,
+                )
+                sold_rows = []
+
+        return build_backup_license_compliance(
+            backup_totals=totals if isinstance(totals, dict) else {},
+            backup_assets=assets if isinstance(assets, dict) else {},
+            sold_rows=sold_rows,
+        )
+
     # ------------------------------------------------------------------
     # /customers/{name}/sales/service-breakdown
     # ------------------------------------------------------------------

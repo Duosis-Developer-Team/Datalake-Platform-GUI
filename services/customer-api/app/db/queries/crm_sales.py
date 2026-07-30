@@ -113,6 +113,22 @@ SALES_ITEMS_ACTIVE = _SALES_ITEMS_SELECT.format(
     order_by="so.createdon DESC NULLS LAST, d.extendedamount DESC NULLS LAST",
 )
 
+# Active-order sold qty for backup license SKUs (000BLT-144/145/147/148/169).
+SALES_BACKUP_LICENSE_SOLD_ACTIVE = """
+SELECT
+    p.productnumber                         AS productnumber,
+    SUM(d.quantity)::double precision       AS sold_qty
+FROM   discovery_crm_salesorderdetails d
+JOIN   discovery_crm_salesorders so ON so.salesorderid = d.salesorderid
+JOIN   discovery_crm_products p ON p.productid = d.productid
+WHERE  so.customerid = ANY(%s)
+  AND  so.statecode IN (0, 1)
+  AND  so.ordernumber LIKE 'PRJ-%%'
+  AND  p.productnumber = ANY(%s)
+GROUP BY p.productnumber
+ORDER BY sold_qty DESC NULLS LAST;
+"""
+
 # ---------------------------------------------------------------------------
 # /customers/{name}/sales/active-orders — order headers for open orders
 # ---------------------------------------------------------------------------

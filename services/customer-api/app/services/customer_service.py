@@ -457,13 +457,81 @@ class CustomerService:
         arch = self._get_cluster_arch_map(tr)
         search_name = self.resolve_infra_search_name(customer_name)
         source_patterns = self.resolve_source_patterns(customer_name)
-        return self._customer.fetch(
+        result = self._customer.fetch(
             customer_name,
             tr,
             managed_nutanix_clusters=arch.get("managed_nutanix") or [],
             pure_nutanix_clusters=arch.get("pure_nutanix") or [],
             infra_search_name=search_name,
             source_patterns=source_patterns,
+        )
+        try:
+            self._attach_backup_license_compliance(customer_name, result)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "backup license_compliance attach failed for %s: %s",
+                customer_name,
+                exc,
+            )
+        return result
+
+    def _attach_backup_license_compliance(
+        self,
+        customer_name: str,
+        bundle: dict[str, Any],
+    ) -> None:
+        """Attach assets.backup.license_compliance for Summary/Backup GUI (K-03)."""
+        from app.services.backup_license_service import (
+            BACKUP_LICENSE_PRODUCTNUMBERS,
+            attach_license_compliance_to_bundle,
+            build_backup_license_compliance,
+        )
+
+        sold_rows: list[dict[str, Any]] = []
+        datalake_lookup = None
+        if self._pool is not None:
+            datalake_lookup = make_datalake_account_lookup(
+                self._get_connection, self._run_row
+            )
+        account_ids = resolve_crm_account_ids(
+            customer_name,
+            webui=self._webui,
+            datalake_account_lookup=datalake_lookup,
+        )
+        if account_ids:
+            try:
+                sold_rows = self._run_query(
+                    crm_sq.SALES_BACKUP_LICENSE_SOLD_ACTIVE,
+                    (account_ids, list(BACKUP_LICENSE_PRODUCTNUMBERS)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "backup license sold query failed for %s: %s",
+                    customer_name,
+                    exc,
+                )
+                sold_rows = []
+
+        totals = (bundle.get("totals") or {}).get("backup") if isinstance(bundle, dict) else {}
+        assets = (bundle.get("assets") or {}).get("backup") if isinstance(bundle, dict) else {}
+        compliance = build_backup_license_compliance(
+            backup_totals=totals if isinstance(totals, dict) else {},
+            backup_assets=assets if isinstance(assets, dict) else {},
+            sold_rows=sold_rows,
+        )
+        attach_license_compliance_to_bundle(bundle, compliance)
+
+    def get_backup_license_compliance(self, customer_name: str) -> list[dict[str, Any]]:
+        """Return license_compliance rows for a customer (Summary/Backup surfaces)."""
+        bundle = self.get_customer_resources(customer_name) or {}
+        backup = ((bundle.get("assets") or {}).get("backup") or {})
+        existing = backup.get("license_compliance")
+        if isinstance(existing, list):
+            return existing
+        self._attach_backup_license_compliance(customer_name, bundle)
+        return list(
+            (((bundle.get("assets") or {}).get("backup") or {}).get("license_compliance"))
+            or []
         )
 
     def get_customer_resources(self, customer_name: str, time_range: dict | None = None, *, cache_ttl: int | None = None) -> dict:

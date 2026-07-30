@@ -701,11 +701,13 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
         "unit_price_tl": 230.0,
         "used_qty": 5.0,
         "free_qty": 999.0,
+        "crm_sold_qty": 10.0,
     }
     tb = 1024.0 ** 4
     metrics = {
         "available_bytes": 100.0 * tb,
         "pre_dedup_bytes": 50.0 * tb,
+        "used_post_dedup_bytes": 5.0 * tb,
         "dedup_savings_bytes": 45.0 * tb,
         "dedup_savings_pct": 90.0,
         "dedup_factor": 10.0,
@@ -713,11 +715,17 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
     out = _apply_netbackup_inventory_fields(row, metrics)
     assert out["free_qty"] == 100.0
     assert out["pre_dedup_qty"] == 50.0
+    assert out["post_dedup_qty"] == 5.0
+    assert out["used_qty"] == 50.0  # billable = PreDedup
+    assert out["used_tl"] == 11500.0
+    assert out["post_dedup_tl"] == 1150.0
+    assert out["dedup_margin_tl"] == 10350.0
     assert out["dedup_savings_qty"] == 45.0
     assert out["dedup_savings_pct"] == 90.0
     assert out["dedup_factor"] == 10.0
     assert out["inventory_free_mode"] == "physical"
     assert out["free_tl"] == 23000.0
+    assert out["efficiency_pct"] == 500.0
 
 
 def test_global_only_panel_netbackup_enriched_free_qty():
@@ -787,11 +795,13 @@ def test_global_only_panel_netbackup_enriched_free_qty():
     payload = svc.compute_inventory_overview("*")
     nb = next(p for p in payload["panels"] if p["panel_key"] == "backup_netbackup_storage")
     assert nb["total"] == 5000.0
-    assert nb["used_qty"] == 1000.0
+    assert nb["used_qty"] == 5000.0  # PreDedup billable
+    assert nb["post_dedup_qty"] == 1000.0
     assert nb["free_qty"] == 300.0
     assert nb["pre_dedup_qty"] == 5000.0
     assert nb["dedup_savings_pct"] == 80.0
     assert nb["free_tl"] == 69000.0
+    assert nb["dedup_margin_tl"] == 920000.0  # (5000-1000)*230
 
 
 def test_site_scoped_panels_not_summed_across_dcs():

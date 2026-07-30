@@ -175,12 +175,15 @@ def test_prepare_service_row_netbackup_used_qty_tl_only():
         crm_sold_qty=58.0,
         crm_sold_tl=23246.0,
         total=44069.0,
-        used_qty=1229.0,
-        used_tl=1720.0,
+        used_qty=411.0,
+        used_tl=94530.0,
         pre_dedup_qty=411.0,
+        post_dedup_qty=5.0,
+        post_dedup_tl=1150.0,
         dedup_savings_qty=406.0,
         dedup_savings_pct=98.8,
         dedup_factor=81.8,
+        dedup_margin_tl=93380.0,
         free_qty=42115.0,
         free_tl=58961.0,
         inventory_free_mode="physical",
@@ -189,7 +192,11 @@ def test_prepare_service_row_netbackup_used_qty_tl_only():
     assert "23,246 TL" in row["crm_sold_fmt"]
     assert "44,069 TB" in row["total_fmt"]
     assert "23,246 TL" not in row["total_fmt"]
-    assert row["used_fmt"] == "1,229 TB\n1,720 TL"
+    assert row["used_fmt"] == "411 TB\n94,530 TL"
+    assert row["pre_dedup_fmt"] == "411 TB\n94,530 TL"
+    assert row["post_dedup_fmt"] == "5 TB\n1,150 TL"
+    assert "98.8%" in row["dedup_savings_fmt"]
+    assert "93,380 TL" in row["dedup_savings_fmt"]
     assert "Pre:" not in row["used_fmt"]
     assert "Saved:" not in row["used_fmt"]
     assert "Dedup:" not in row["used_fmt"]
@@ -207,8 +214,15 @@ def test_columns_for_family_netbackup_includes_used():
     cols = columns_for_family("backup_netbackup")
     col_ids = [c["id"] for c in cols]
     assert col_ids == [
-        "service_label", "display_unit", "crm_sold_fmt", "total_fmt", "used_fmt",
-        "free_fmt", "unit_price_fmt",
+        "service_label",
+        "display_unit",
+        "crm_sold_fmt",
+        "total_fmt",
+        "pre_dedup_fmt",
+        "post_dedup_fmt",
+        "dedup_savings_fmt",
+        "free_fmt",
+        "unit_price_fmt",
     ]
 
 
