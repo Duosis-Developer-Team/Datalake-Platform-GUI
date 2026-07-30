@@ -547,9 +547,9 @@ def build_report_table(
     if family in _PHYSICAL_FREE_FAMILIES:
         row_hide_used = False
         profile = "standard"
-    if family == "backup_netbackup" or any(
-        str(r.get("family") or "") == "backup_netbackup" for r in rows
-    ):
+    # Grouped NetBackup accordion uses dual Pre/Post columns. Do NOT force this
+    # profile on mixed flat tables (keeps Sellable Alloc/Max columns — main regression).
+    if family == "backup_netbackup":
         profile = "backup_netbackup"
         row_hide_used = False
     columns = columns_for_family(profile or family, hide_used=row_hide_used)
