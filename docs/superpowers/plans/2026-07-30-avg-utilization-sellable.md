@@ -1094,7 +1094,8 @@ from shared.sellable.models import PanelResult, ResourceRatio
 
 def _ratio() -> ResourceRatio:
     # 1 unit = 1 vCPU + 2 GB RAM + 100 GB storage (the Hyperconverged shape).
-    return ResourceRatio(cpu_per_unit=1.0, ram_gb_per_unit=2.0, storage_gb_per_unit=100.0)
+    return ResourceRatio(family="virt_classic", cpu_per_unit=1.0,
+                         ram_gb_per_unit=2.0, storage_gb_per_unit=100.0)
 
 
 def _panels() -> list[PanelResult]:
