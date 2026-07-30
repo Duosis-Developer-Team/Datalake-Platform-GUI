@@ -1,5 +1,10 @@
 """API/snapshot contract for the avg sellable track."""
-from app.services.inventory_overview_service import _sellable_track_fields
+from unittest.mock import MagicMock
+
+from app.services.inventory_overview_service import (
+    InventoryOverviewService,
+    _sellable_track_fields,
+)
 from shared.sellable.models import PanelResult
 
 
@@ -8,6 +13,23 @@ def _panel(**kw) -> PanelResult:
                 resource_kind="cpu", display_unit="vCPU",
                 unit_price_tl=100.0, has_price=True, has_infra_source=True)
     return PanelResult(**{**base, **kw})
+
+
+def _entitled_only_row() -> dict:
+    """Build a real _build_entitled_only_row() row. None of its dependencies
+    (`_resolve_labels`, `_enrich_row`) touch `self._sellable` / `_sales` /
+    `_webui`, so plain MagicMocks are enough -- no need to reproduce the
+    heavier compute_inventory_overview() fixture from
+    test_inventory_overview_service.py."""
+    svc = InventoryOverviewService(
+        sellable=MagicMock(), sales=MagicMock(), webui=MagicMock(is_available=False),
+    )
+    return svc._build_entitled_only_row(
+        "p1",
+        {"entitled_qty": 10.0, "entitled_amount_tl": 500.0, "resource_unit": "Adet"},
+        panel_defs={},
+        service_pages={},
+    )
 
 
 class TestTrackFields:
@@ -76,3 +98,25 @@ class TestPowerFamiliesUnaffected:
         SellableService._apply_allocation_only_pricing(p)
         assert p.sellable_max_util is None
         assert p.sellable_avg_util is None
+
+
+class TestRowShapeUniformity:
+    def test_entitled_only_rows_carry_the_avg_keys(self):
+        """Rows built for CRM-entitled products with no infra panel must have the
+        same shape as rows built from a panel -- keys present and None, never
+        absent."""
+        row = _entitled_only_row()
+        assert "sellable_avg_qty" in row
+        assert row["sellable_avg_qty"] is None
+        assert "potential_tl_avg" in row
+        assert row["potential_tl_avg"] is None
+
+    def test_track_field_key_sets_match_between_both_row_builders(self):
+        """The two row builders must agree on the track-key set."""
+        entitled_row = _entitled_only_row()
+        track_fields_row = _sellable_track_fields(_panel(), has_infra=False, hide_used=True)
+        track_keys = {"sellable_alloc_qty", "sellable_max_qty", "sellable_avg_qty",
+                      "potential_tl_alloc", "potential_tl_max", "potential_tl_avg"}
+        for key in track_keys:
+            assert key in entitled_row, f"{key} missing from _build_entitled_only_row"
+            assert key in track_fields_row, f"{key} missing from _sellable_track_fields"

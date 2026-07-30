@@ -1055,8 +1055,10 @@ class InventoryOverviewService:
             "sellable_profile": _family_sellable_profile(family_key),
             "sellable_alloc_qty": None,
             "sellable_max_qty": None,
+            "sellable_avg_qty": None,
             "potential_tl_alloc": None,
             "potential_tl_max": None,
+            "potential_tl_avg": None,
         }
         return self._enrich_row(
             base,
