@@ -748,10 +748,96 @@ class TestStorageUnaffected:
 
 
 class TestGateStillApplies:
-    def test_avg_track_blocked_when_average_exceeds_threshold(self):
-        host = {**HOST, "cpu_used_ghz_avg": 95.0, "cpu_avg_util_pct": 95.0}
+    def test_avg_track_blocked_when_both_tracks_exceed_threshold(self):
+        """Average used can never truly exceed peak used, so a fixture that
+        blocks avg must block max too -- otherwise the clamp (correctly) lifts
+        avg back to the max value and the test would assert a physical
+        impossibility."""
+        host = {**HOST,
+                "cpu_used_ghz_avg": 95.0, "cpu_avg_util_pct": 95.0,
+                "cpu_used_ghz_peak": 97.0, "cpu_peak_util_pct": 97.0}
+        assert host_raw_headroom(host, resource="cpu", threshold_pct=80.0,
+                                 cpu_track="max") == 0.0
         assert host_raw_headroom(host, resource="cpu", threshold_pct=80.0,
                                  cpu_track="avg") == 0.0
+
+    def test_utilisation_argument_is_wired_to_the_matching_track(self):
+        """The util argument must come from the same track as the used value.
+        Without this, zeroing either branch's util leaves every other test green.
+        Here the used value alone would not trip the gate -- only the
+        utilisation percentage does."""
+        host = {"cpu_cap_ghz": 100.0, "cpu_alloc_ghz": 10.0,
+                "cpu_used_ghz": 10.0, "cpu_used_pct": 10.0,
+                "cpu_used_ghz_peak": 10.0, "cpu_peak_util_pct": 95.0,
+                "cpu_used_ghz_avg": 8.0, "cpu_avg_util_pct": 95.0}
+        assert host_raw_headroom(host, resource="cpu", threshold_pct=80.0,
+                                 cpu_track="max") == 0.0
+        assert host_raw_headroom(host, resource="cpu", threshold_pct=80.0,
+                                 cpu_track="avg") == 0.0
+
+
+class TestInvariantUnderDataPathologies:
+    """Three shapes that broke n_avg >= n_max before the clamp existed. Each was
+    reproduced against the pre-clamp code; they are the regression net."""
+
+    def test_ram_capacity_drift_does_not_invert_the_ordering(self):
+        """Collector emitted memory_capacity_gb = 0 rows for part of the window.
+        CLASSIC_HOST_AVG has no `cap > 0` filter while CLASSIC_HOST_MEM_PEAK
+        does, so average capacity lands below peak capacity and shrinks avg
+        headroom multiplicatively. Pre-clamp: max 109.600 vs avg 76.720."""
+        host = {"mem_cap_gb_at_peak": 512.0, "mem_used_gb_peak": 300.0,
+                "mem_peak_util_pct": 58.6,
+                "mem_cap_gb_avg": 358.4, "mem_used_gb_avg": 210.0,
+                "mem_avg_util_pct": 58.6,
+                "mem_cap_gb": 512.0, "mem_alloc_gb": 300.0, "mem_used_pct": 58.6}
+        mx = host_raw_headroom(host, resource="ram", threshold_pct=80.0,
+                               ram_track="max")
+        avg = host_raw_headroom(host, resource="ram", threshold_pct=80.0,
+                                ram_track="avg")
+        assert avg >= mx
+
+    def test_genuine_zero_average_used_is_honoured_not_skipped(self):
+        """COALESCE(AVG(memory_used_gb), 0) yields a real 0.0 when every usage
+        sample is NULL while capacity still averages fine. An `or` chain
+        discarded that zero and paired average capacity with peak used.
+        Pre-clamp: max 109.600 vs avg 20.000."""
+        host = {"mem_cap_gb_at_peak": 512.0, "mem_used_gb_peak": 300.0,
+                "mem_peak_util_pct": 58.6,
+                "mem_cap_gb_avg": 400.0, "mem_used_gb_avg": 0.0,
+                "mem_avg_util_pct": 0.0,
+                "mem_cap_gb": 512.0, "mem_alloc_gb": 300.0, "mem_used_pct": 58.6}
+        mx = host_raw_headroom(host, resource="ram", threshold_pct=80.0,
+                               ram_track="max")
+        avg = host_raw_headroom(host, resource="ram", threshold_pct=80.0,
+                                ram_track="avg")
+        assert avg >= mx
+        # The zero is honoured: headroom reflects 0 used against avg capacity,
+        # i.e. at least the full thresholded average capacity.
+        assert avg >= 400.0 * 0.8 - 1e-9
+
+    def test_ratio_selected_cpu_peak_does_not_invert_the_ordering(self):
+        """*_CPU_PEAK picks the highest-utilisation row, not the highest-usage
+        row, so with varying capacity the average used can exceed the peak used
+        against a shared denominator. Pre-clamp: max 152.000 vs avg 106.000."""
+        host = {"cpu_cap_ghz": 200.0, "cpu_used_ghz_peak": 8.0,
+                "cpu_peak_util_pct": 80.0,
+                "cpu_used_ghz_avg": 54.0, "cpu_avg_util_pct": 51.4,
+                "cpu_alloc_ghz": 100.0, "cpu_used_ghz": 8.0, "cpu_used_pct": 80.0}
+        mx = host_raw_headroom(host, resource="cpu", threshold_pct=80.0,
+                               cpu_track="max")
+        avg = host_raw_headroom(host, resource="cpu", threshold_pct=80.0,
+                                cpu_track="avg")
+        assert avg >= mx
+
+    def test_idle_host_with_zero_cpu_average_gets_full_credit(self):
+        """A genuinely idle host must be credited for its idleness, not have its
+        real 0.0 average discarded in favour of its peak."""
+        host = {"cpu_cap_ghz": 100.0, "cpu_alloc_ghz": 10.0,
+                "cpu_used_ghz": 10.0, "cpu_used_pct": 10.0,
+                "cpu_used_ghz_peak": 40.0, "cpu_peak_util_pct": 40.0,
+                "cpu_used_ghz_avg": 0.0, "cpu_avg_util_pct": 0.0}
+        assert host_raw_headroom(host, resource="cpu", threshold_pct=80.0,
+                                 cpu_track="avg") == 80.0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -761,82 +847,105 @@ Expected: FAIL — `test_max_track_uses_window_peak_not_latest_sample` gets `50.
 
 - [ ] **Step 3: Rewrite the CPU and RAM arms of `host_raw_headroom`**
 
-In `shared/sellable/host_sellable.py`, replace the `cpu` and `ram` blocks (lines 99-125) with:
+In `shared/sellable/host_sellable.py`, first add two module-level helpers above `host_raw_headroom` — one presence test, and one extracted max-track computation per resource. The max helpers keep their existing `or` chains verbatim so max-track numbers do not shift beyond the intended CPU peak correction:
+
+```python
+def _first_present(host: dict, *keys: str) -> float:
+    """First key actually present on ``host``, honouring a genuine ``0.0``.
+
+    The avg enricher omits a metric group entirely when it has no data, so
+    ``is not None`` is the correct presence signal. Plain ``or`` chaining would
+    make a real zero average fall through to the peak, pairing an *average*
+    capacity against a *peak* usage — which understates headroom badly.
+    """
+    for k in keys:
+        v = host.get(k)
+        if v is not None:
+            return float(v)
+    return 0.0
+
+
+def _cpu_max_headroom(host: dict, threshold_pct: float) -> float:
+    """CPU headroom on the max track: real window peak, else the latest sample."""
+    cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
+    used = float(host.get("cpu_used_ghz_peak") or host.get("cpu_used_ghz") or 0.0)
+    util = float(
+        host.get("cpu_peak_util_pct")
+        or host.get("cpu_used_pct")
+        or host.get("cpu_util_pct")
+        or 0.0
+    )
+    return apply_utilization_gate(cap, used, util, threshold_pct)
+
+
+def _ram_max_headroom(host: dict, threshold_pct: float) -> float:
+    """RAM headroom on the max track: peak used against capacity-at-peak."""
+    cap = float(
+        host.get("mem_cap_gb_at_peak")
+        or host.get("mem_peak_total")
+        or host.get("mem_cap_gb")
+        or host.get("ram_total")
+        or 0.0
+    )
+    used = float(host.get("mem_used_gb_peak") or host.get("mem_peak_used") or 0.0)
+    util = float(host.get("mem_peak_util_pct") or host.get("mem_used_pct") or 0.0)
+    return apply_utilization_gate(cap, used, util, threshold_pct)
+```
+
+Then replace the `cpu` and `ram` blocks of `host_raw_headroom` with:
 
 ```python
     if resource == "cpu":
-        cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
         if cpu_track == "physical":
+            cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
             alloc = float(host.get("cpu_alloc_ghz_physical") or host.get("cpu_alloc_phys") or 0.0)
             util = float(host.get("cpu_used_pct") or host.get("cpu_util_pct") or 0.0)
-        elif cpu_track == "max":
-            # Real window peak; falls back to the latest sample when the peak
-            # query returned nothing for this host.
-            alloc = float(host.get("cpu_used_ghz_peak") or host.get("cpu_used_ghz") or 0.0)
-            util = float(
-                host.get("cpu_peak_util_pct")
-                or host.get("cpu_used_pct")
-                or host.get("cpu_util_pct")
-                or 0.0
+            return apply_utilization_gate(cap, alloc, util, threshold_pct)
+        if cpu_track == "max":
+            return _cpu_max_headroom(host, threshold_pct)
+        if cpu_track == "avg":
+            # Average used, falling back per resource to the peak then the
+            # latest sample. Clamped at the max track: average used can never
+            # truly exceed peak used, so any inversion is a data artefact
+            # (capacity drift, a ratio-selected peak row, a COALESCEd zero) and
+            # must not drag the avg track below max. See Global Constraints.
+            cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
+            used = _first_present(
+                host, "cpu_used_ghz_avg", "cpu_used_ghz_peak", "cpu_used_ghz"
             )
-        elif cpu_track == "avg":
-            # No average for this host: fall back to its peak, then to the
-            # latest sample. Peak used >= average used, so the fallback can
-            # never claim more headroom than a real average would -- and the
-            # host still contributes, keeping n_avg >= n_max.
-            alloc = float(
-                host.get("cpu_used_ghz_avg")
-                or host.get("cpu_used_ghz_peak")
-                or host.get("cpu_used_ghz")
-                or 0.0
+            util = _first_present(
+                host, "cpu_avg_util_pct", "cpu_peak_util_pct", "cpu_used_pct", "cpu_util_pct"
             )
-            util = float(
-                host.get("cpu_avg_util_pct")
-                or host.get("cpu_peak_util_pct")
-                or host.get("cpu_used_pct")
-                or 0.0
+            return max(
+                apply_utilization_gate(cap, used, util, threshold_pct),
+                _cpu_max_headroom(host, threshold_pct),
             )
-        else:
-            alloc = float(host.get("cpu_alloc_ghz") or host.get("cpu_alloc") or 0.0)
-            util = float(host.get("cpu_used_pct") or host.get("cpu_util_pct") or 0.0)
+        cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
+        alloc = float(host.get("cpu_alloc_ghz") or host.get("cpu_alloc") or 0.0)
+        util = float(host.get("cpu_used_pct") or host.get("cpu_util_pct") or 0.0)
         return apply_utilization_gate(cap, alloc, util, threshold_pct)
 
     if resource == "ram":
         if ram_track == "max":
-            cap = float(
-                host.get("mem_cap_gb_at_peak")
-                or host.get("mem_peak_total")
-                or host.get("mem_cap_gb")
-                or host.get("ram_total")
-                or 0.0
-            )
-            used = float(host.get("mem_used_gb_peak") or host.get("mem_peak_used") or 0.0)
-            util = float(host.get("mem_peak_util_pct") or host.get("mem_used_pct") or 0.0)
-            return apply_utilization_gate(cap, used, util, threshold_pct)
+            return _ram_max_headroom(host, threshold_pct)
         if ram_track == "avg":
-            # Same peak-then-latest fallback as the CPU arm, for the same
-            # reason: a host with no average must not contribute less than it
-            # contributes to the max track.
-            used = float(
-                host.get("mem_used_gb_avg")
-                or host.get("mem_used_gb_peak")
-                or host.get("mem_peak_used")
-                or 0.0
+            # Note the denominator differs from the max track by design (RAM's
+            # max arm uses capacity-at-peak), so average capacity dipping below
+            # peak capacity can invert the ordering on its own -- the clamp is
+            # what makes the invariant hold unconditionally.
+            cap = _first_present(
+                host, "mem_cap_gb_avg", "mem_cap_gb_at_peak", "mem_cap_gb", "ram_total"
             )
-            cap = float(
-                host.get("mem_cap_gb_avg")
-                or host.get("mem_cap_gb_at_peak")
-                or host.get("mem_cap_gb")
-                or host.get("ram_total")
-                or 0.0
+            used = _first_present(
+                host, "mem_used_gb_avg", "mem_used_gb_peak", "mem_peak_used"
             )
-            util = float(
-                host.get("mem_avg_util_pct")
-                or host.get("mem_peak_util_pct")
-                or host.get("mem_used_pct")
-                or 0.0
+            util = _first_present(
+                host, "mem_avg_util_pct", "mem_peak_util_pct", "mem_used_pct"
             )
-            return apply_utilization_gate(cap, used, util, threshold_pct)
+            return max(
+                apply_utilization_gate(cap, used, util, threshold_pct),
+                _ram_max_headroom(host, threshold_pct),
+            )
         cap = float(host.get("mem_cap_gb") or host.get("ram_total") or 0.0)
         alloc = float(host.get("mem_alloc_gb") or host.get("ram_alloc") or 0.0)
         util = float(host.get("mem_used_pct") or host.get("ram_util_pct") or 0.0)
@@ -861,7 +970,7 @@ def _normalize_ram_track(ram_track: str) -> str:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `$PY -m pytest tests/test_host_sellable_avg_track.py -q`
-Expected: PASS (14 tests)
+Expected: PASS (19 tests)
 
 - [ ] **Step 5: Check the CPU max change against existing expectations**
 
