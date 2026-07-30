@@ -1620,21 +1620,31 @@ LIMIT 20
     def _apply_host_avg(payload: dict, avg: dict[str, float] | None) -> dict:
         """Attach per-host CPU+RAM window averages.
 
-        No-op when the metric is absent or entirely zero: writing 0 would make
-        the avg sellable track read the host as completely idle and offer the
-        whole machine for sale.
+        CPU and memory presence are scored independently, because the SQL wraps
+        every average in COALESCE(..., 0) and so cannot distinguish "genuinely
+        zero" from "no rows". A host with good CPU averages and NULL memory
+        columns must NOT receive mem_*_avg = 0: downstream that would make the
+        host contribute zero units to n_avg and could pull a family's avg
+        column below its max column. Writing only the present group lets
+        host_raw_headroom fall back to that resource's peak instead.
         """
         if not avg:
             return payload
-        if not any(float(v or 0) > 0 for v in avg.values()):
+        cpu_keys = ("cpu_used_ghz_avg", "cpu_cap_ghz_avg", "cpu_avg_util_pct")
+        mem_keys = ("mem_used_gb_avg", "mem_cap_gb_avg", "mem_avg_util_pct")
+        cpu_present = any(float(avg.get(k) or 0) > 0 for k in cpu_keys)
+        mem_present = any(float(avg.get(k) or 0) > 0 for k in mem_keys)
+        if not cpu_present and not mem_present:
             return payload
         out = dict(payload)
-        out["cpu_used_ghz_avg"] = round(float(avg.get("cpu_used_ghz_avg") or 0), 2)
-        out["cpu_cap_ghz_avg"] = round(float(avg.get("cpu_cap_ghz_avg") or 0), 2)
-        out["cpu_avg_util_pct"] = round(float(avg.get("cpu_avg_util_pct") or 0), 1)
-        out["mem_used_gb_avg"] = round(float(avg.get("mem_used_gb_avg") or 0), 2)
-        out["mem_cap_gb_avg"] = round(float(avg.get("mem_cap_gb_avg") or 0), 2)
-        out["mem_avg_util_pct"] = round(float(avg.get("mem_avg_util_pct") or 0), 1)
+        if cpu_present:
+            out["cpu_used_ghz_avg"] = round(float(avg.get("cpu_used_ghz_avg") or 0), 2)
+            out["cpu_cap_ghz_avg"] = round(float(avg.get("cpu_cap_ghz_avg") or 0), 2)
+            out["cpu_avg_util_pct"] = round(float(avg.get("cpu_avg_util_pct") or 0), 1)
+        if mem_present:
+            out["mem_used_gb_avg"] = round(float(avg.get("mem_used_gb_avg") or 0), 2)
+            out["mem_cap_gb_avg"] = round(float(avg.get("mem_cap_gb_avg") or 0), 2)
+            out["mem_avg_util_pct"] = round(float(avg.get("mem_avg_util_pct") or 0), 1)
         return out
 
     @staticmethod

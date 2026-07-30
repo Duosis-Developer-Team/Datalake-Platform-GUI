@@ -46,6 +46,31 @@ class TestApplyHostAvg:
             "mem_used_gb_avg": 0.0, "mem_cap_gb_avg": 0.0, "mem_avg_util_pct": 0.0,
         })
         assert "cpu_used_ghz_avg" not in out
+        assert "mem_used_gb_avg" not in out
+
+    def test_writes_only_the_group_that_has_data(self):
+        """The SQL COALESCEs missing averages to 0, so a host with NULL memory
+        columns arrives with mem_*_avg == 0 beside a good CPU average. Writing
+        those zeros would make the host contribute 0 units to n_avg downstream
+        and could pull a family's avg column below its max column. Only the
+        present group may be written, so host_raw_headroom can fall back to the
+        absent resource's peak."""
+        out = DatabaseService._apply_host_avg({"host": "esx01"}, {
+            "cpu_used_ghz_avg": 12.0, "cpu_cap_ghz_avg": 40.0, "cpu_avg_util_pct": 30.0,
+            "mem_used_gb_avg": 0.0, "mem_cap_gb_avg": 0.0, "mem_avg_util_pct": 0.0,
+        })
+        assert out["cpu_used_ghz_avg"] == 12.0
+        assert "mem_used_gb_avg" not in out
+        assert "mem_cap_gb_avg" not in out
+        assert "mem_avg_util_pct" not in out
+
+    def test_writes_memory_group_when_only_memory_has_data(self):
+        out = DatabaseService._apply_host_avg({"host": "esx01"}, {
+            "cpu_used_ghz_avg": 0.0, "cpu_cap_ghz_avg": 0.0, "cpu_avg_util_pct": 0.0,
+            "mem_used_gb_avg": 100.0, "mem_cap_gb_avg": 512.0, "mem_avg_util_pct": 19.5,
+        })
+        assert out["mem_used_gb_avg"] == 100.0
+        assert "cpu_used_ghz_avg" not in out
 
     def test_does_not_mutate_input(self):
         payload = {"host": "esx01"}
