@@ -7766,10 +7766,15 @@ JOIN latest l
         Racks whose devices carry no metrics are returned with load_pct=None so
         the UI can render "Not monitored" rather than a misleading 0%.
 
-        `summary.total_racks` is the DC's full rack count (same denominator
-        as get_dc_racks_occupancy's summary), not len(racks) in the response --
-        `racks` only lists racks with at least one active NetBox device, since
-        aggregate_rack_load has no way to report on a rack it never saw.
+        `summary.total_racks` is the DC's full rack count (from get_dc_racks),
+        not len(racks) in the response -- `racks` only lists racks with at
+        least one active NetBox device, since aggregate_rack_load has no way
+        to report on a rack it never saw. This is NOT guaranteed to match
+        get_dc_racks_occupancy's summary.rack_count: that field comes from a
+        different SQL path (coloc_occ.occupancy_rows, matched by a `%code%`
+        LIKE pattern), and per-DC vs. all-DC rack queries in this codebase
+        are already known to disagree by design in some cases -- don't
+        assume the two denominators reconcile.
         """
         empty = {"racks": [], "summary": {"monitored_racks": 0, "total_racks": 0}}
         if not dc_code or not dc_code.strip():

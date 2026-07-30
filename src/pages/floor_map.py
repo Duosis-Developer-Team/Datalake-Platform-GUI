@@ -239,7 +239,18 @@ def build_load_coverage_note(summary):
     """
     monitored = (summary or {}).get("monitored_racks")
     total = (summary or {}).get("total_racks")
-    if monitored is None or total is None:
+    # `not total` -- not `total is None` -- on purpose: get_dc_racks_load's
+    # OperationalError handler returns HTTP 200 with a genuine, truthy
+    # {"monitored_racks": 0, "total_racks": 0} dict on a DB blip (a normal
+    # condition here, e.g. the rack list still served from a stale cache
+    # while the load query itself fails), so `total_racks is None` never
+    # fires for that path and "0 of 0" would print as if it were real
+    # coverage. A DC that genuinely has zero racks never reaches this note --
+    # build_recolored_floor_map_figure returns (None, None) before the Load
+    # lens is ever drawn -- so total_racks == 0 here unambiguously means the
+    # backend could not tell us, not that it told us zero. Do not "tighten"
+    # this back to an identity check.
+    if monitored is None or not total:
         text = "Load data unavailable — could not reach the load endpoint."
     else:
         text = f"Load data: {monitored} of {total} racks monitored"

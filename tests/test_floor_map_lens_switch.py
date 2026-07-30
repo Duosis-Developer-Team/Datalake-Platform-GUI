@@ -203,6 +203,30 @@ def test_recolor_floor_map_says_unavailable_not_zero_of_zero_on_fetch_failure():
     assert "0 of 0" not in note_text
 
 
+def test_recolor_floor_map_says_unavailable_for_a_truthy_zero_summary():
+    # get_dc_racks_load's OperationalError handler doesn't raise or return
+    # None on a DB blip -- it returns HTTP 200 with a genuine, truthy
+    # {"monitored_racks": 0, "total_racks": 0} dict (dc_service.py's `empty`
+    # fallback), and the rack list can still be served from a stale cache
+    # while that happens. `payload.get("summary") or None` in _fetch_rack_load
+    # does NOT catch this (the dict is truthy), so this must be caught
+    # downstream in build_load_coverage_note instead. Patches
+    # api_client.get_dc_racks_load directly (not _fetch_rack_load) so the
+    # exact backend payload shape flows through the real code, matching how
+    # this was actually reproduced.
+    import app as app_module
+
+    backend_payload = {"racks": [], "summary": {"monitored_racks": 0, "total_racks": 0}}
+    with patch("src.services.api_client.get_dc_racks", return_value={"racks": RACKS}), \
+         patch.object(fm, "_fetch_rack_occupancy", return_value={}), \
+         patch("src.services.api_client.get_dc_racks_load", return_value=backend_payload):
+        _, legend_children = app_module.recolor_floor_map(1, "load", None, {"dc_id": "DC13"})
+
+    note_text = str(legend_children[1])
+    assert "unavailable" in note_text
+    assert "0 of 0" not in note_text
+
+
 def test_recolor_floor_map_omits_the_coverage_note_for_the_colocation_lens():
     import app as app_module
 

@@ -66,6 +66,25 @@ def test_coloc_legend_has_no_unmonitored_tooltip():
     assert fm._UNMONITORED_TOOLTIP not in coloc
 
 
+def test_load_coverage_note_treats_truthy_zero_total_as_unavailable():
+    # total_racks=0 is a real, non-None value get_dc_racks_load's own
+    # DB-outage fallback returns (HTTP 200, not an exception) -- it is not a
+    # "no summary" sentinel. `not total` must catch it; `total is None`
+    # alone would not, and would print "Load data: 0 of 0 racks monitored"
+    # as if that were real coverage. A DC that genuinely has zero racks
+    # never reaches this function (build_recolored_floor_map_figure returns
+    # (None, None) first), so total_racks == 0 here always means the
+    # backend could not answer.
+    note = str(fm.build_load_coverage_note({"monitored_racks": 0, "total_racks": 0}))
+    assert "unavailable" in note
+    assert "0 of 0" not in note
+
+
+def test_load_coverage_note_reports_real_nonzero_coverage():
+    note = str(fm.build_load_coverage_note({"monitored_racks": 38, "total_racks": 214}))
+    assert "38 of 214 racks monitored" in note
+
+
 def test_load_hover_device_counts_fall_back_to_unknown_not_zero():
     # aggregate_rack_load always sets monitored_devices/total_devices
     # alongside a real load_pct, so this path can't fire today -- but the
