@@ -1619,9 +1619,9 @@ The enclosing method is long and the host-unit construction is the part under te
     def _normalize_host_unit(
         h: dict,
         *,
-        cpu_conv: "dict | None",
-        ram_conv: "dict | None",
-        sto_conv: "dict | None",
+        cpu_conv: "UnitConversion | None",
+        ram_conv: "UnitConversion | None",
+        sto_conv: "UnitConversion | None",
     ) -> dict:
         """Normalize one host row into panel display units for the sellable engine.
 
@@ -1682,6 +1682,17 @@ Then rewrite the loop body at lines 2120-2158 to use it, keeping the running sum
             mc, ma = hu["ram_total"], hu["ram_alloc"]
             stor_cap, stor_alloc = hu["stor_cap_gb"], hu["stor_provisioned_gb"]
             stor_util = hu["stor_used_pct"]
+            # These seven are read by code further down the SAME loop, after the
+            # `if family == "virt_hyperconverged":` block. Dropping them raises
+            # NameError on the first real call -- the extraction is only
+            # behaviour-preserving if they stay bound.
+            cpu_util = hu["cpu_used_pct"]
+            cap_ghz = hu["cpu_total_phys"]
+            alloc_phys = hu["cpu_alloc_phys"]
+            ram_util = hu["mem_used_pct"]
+            peak_cap = hu["mem_cap_gb_at_peak"]
+            peak_used = hu["mem_used_gb_peak"]
+            peak_util = hu["mem_peak_util_pct"]
             cpu_total += hc
             cpu_alloc += ha
             ram_total += mc
