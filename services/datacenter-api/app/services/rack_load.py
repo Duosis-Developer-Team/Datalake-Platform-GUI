@@ -36,6 +36,21 @@ def _pct(used: Any, capacity: Any) -> float | None:
         return None
 
 
+def _to_float(value: Any) -> float | None:
+    """Coerce to float, or None when `value` is None/non-numeric.
+
+    Unlike `value or 0`, a missing reading stays None instead of collapsing
+    into an arithmetic zero -- callers need to tell "didn't report" apart from
+    "reported zero" before doing arithmetic with the result.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_metric_index(
     vmware_rows: Sequence[Sequence[Any]] = (),
     nutanix_rows: Sequence[Sequence[Any]] = (),
@@ -66,9 +81,20 @@ def build_metric_index(
         _put(r[0], _pct(r[1], r[2]), _pct(r[3], r[4]), "nutanix")
     for r in ibm_rows or ():
         # IBM reports AVAILABLE memory, not used -- used = total - available.
-        total_mem = float(r[3] or 0)
-        available = float(r[4] or 0)
-        _put(r[0], _pct(r[1], r[2]), _pct(total_mem - available, total_mem), "ibm")
+        # A None total or available means that counter did not report and must
+        # not be coerced into an arithmetic zero: `available or 0` would turn a
+        # missing available reading into used = total - 0 = total, a false
+        # 100%-full result that is worse than the false-0% shape -- it would
+        # paint a healthy rack as saturated. Only compute when both sides are
+        # genuinely numeric; a real available=0.0 still yields a true 100%.
+        total_mem = _to_float(r[3])
+        available = _to_float(r[4])
+        ram_pct = (
+            _pct(total_mem - available, total_mem)
+            if total_mem is not None and available is not None
+            else None
+        )
+        _put(r[0], _pct(r[1], r[2]), ram_pct, "ibm")
 
     return index
 

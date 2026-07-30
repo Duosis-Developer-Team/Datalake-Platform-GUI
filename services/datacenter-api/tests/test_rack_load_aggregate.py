@@ -106,3 +106,21 @@ def test_rack_mixing_monitored_and_unmonitored_devices():
     assert rows[0]["monitored_devices"] == 1
     assert rows[0]["total_devices"] == 3
     assert rows[0]["hottest_device"] == "host-1"
+
+
+def test_ibm_null_available_memory_is_unknown_not_full():
+    # available=None must not compute used = total - 0 = total (a false 100%).
+    index = build_metric_index([], [], [("pwr-1", 4.0, 10.0, 200.0, None)])
+    assert index["pwr-1"]["ram_pct"] is None
+    assert index["pwr-1"]["cpu_pct"] == 40.0
+
+
+def test_ibm_null_total_memory_is_unknown():
+    index = build_metric_index([], [], [("pwr-1", 4.0, 10.0, None, 50.0)])
+    assert index["pwr-1"]["ram_pct"] is None
+
+
+def test_ibm_zero_available_memory_is_a_true_full_reading():
+    # A real zero must survive the guard: this host genuinely has no free memory.
+    index = build_metric_index([], [], [("pwr-1", 4.0, 10.0, 200.0, 0.0)])
+    assert index["pwr-1"]["ram_pct"] == 100.0
