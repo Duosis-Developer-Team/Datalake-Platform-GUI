@@ -21,6 +21,14 @@ def test_closed_beats_load():
         assert fm._color_by_load(status, 95.0) == fm.LOAD_PALETTE["closed"]
 
 
+def test_closed_beats_unmonitored_too():
+    # The guard order is the point: a closed rack is gray whether its load is
+    # hot, cold, or absent. Checking None first would flip this to near-white
+    # and every other test in this file would still pass.
+    for status in ("inactive", "planned", "closed"):
+        assert fm._color_by_load(status, None) == fm.LOAD_PALETTE["closed"]
+
+
 def test_load_palette_has_no_turquoise_idle_step():
     # A 0% reading is far more often a silent collector than idle hardware.
     assert "empty" not in fm.LOAD_PALETTE
