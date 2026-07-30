@@ -778,8 +778,9 @@ def build_recolored_floor_map_figure(dc_id, lens="coloc", highlight=None):
 
 
 def build_colocation_customer_panel(coloc: dict):
-    """Rack-level CRM allocation + potential, rendered in the floor map's right
-    column when no rack is selected.
+    """Rack-level CRM allocation + potential, rendered full-width below the
+    floor map. It is a standing section, not a rack-detail state: clicking a
+    rack no longer replaces it.
 
     Column semantics, header wording and the potential-not-billed framing are
     taken verbatim from dc_view.build_colocation_tab: the two screens read the
@@ -863,9 +864,20 @@ def build_colocation_customer_panel(coloc: dict):
         int_table = dmc.Text("No internal (Bulutistan) colocation racks in this DC.",
                              size="xs", c="#98A2B3")
 
+    # Side by side, not stacked: this renders full-width below the map, and a
+    # 5-column table stretched across the whole page reads worse than two
+    # tables that each get room for their headers. Stacks below `lg`.
     return html.Div(id="fm-coloc-panel", children=[
-        dmc.Stack(gap="lg", children=[
-            html.Div([
+        dmc.Group(gap="xs", align="center", mb="md", children=[
+            dmc.ThemeIcon(
+                DashIconify(icon="solar:users-group-rounded-bold-duotone", width=16),
+                size="md", radius="md", variant="light", color="violet",
+            ),
+            dmc.Text("Colocation — Customers & Potential", fw=700, size="sm",
+                     c="#101828"),
+        ]),
+        dmc.Grid(gutter="xl", children=[
+            dmc.GridCol(span={"base": 12, "lg": 7}, children=[
                 dmc.Text("Dedicated Customers", fw=700, size="sm", c="#101828"),
                 dmc.Text("Rack allocation (NetBox role + tenant/tag/description) · "
                          "Potential at list price for Allocated U, not billed revenue",
@@ -874,7 +886,7 @@ def build_colocation_customer_panel(coloc: dict):
                          size="xs", c="#98A2B3", mb="xs"),
                 html.Div(style={"overflowX": "auto"}, children=alloc_table),
             ]),
-            html.Div([
+            dmc.GridCol(span={"base": 12, "lg": 5}, children=[
                 dmc.Text("Internal Resources", fw=700, size="sm", c="#101828"),
                 dmc.Text("Bulutistan-owned rack footprint · Potential at list price, "
                          "not billed revenue — opportunity cost of self-occupied U",
@@ -910,10 +922,11 @@ def build_floor_map_layout(dc_id, dc_name, racks, *, show_colocation: bool = Fal
     """Build the floor map page.
 
     `show_colocation` gates the rack-level CRM customer/potential panel in the
-    right column: it carries named customers and TL figures, so it must be an
-    explicit opt-in (default False = today's empty state) rather than
-    something a caller can leak by omission. app.py resolves this from the
-    existing sec:dc_view:colocation permission -- see advance_to_floor_map.
+    full-width section below the map: it carries named customers and TL
+    figures, so it must be an explicit opt-in (default False = section absent)
+    rather than something a caller can leak by omission. app.py resolves this
+    from the existing sec:dc_view:colocation permission -- see
+    advance_to_floor_map.
     """
     active_count   = sum(1 for r in racks if (r.get("status") or "").lower() == "active")
     planned_count  = sum(1 for r in racks if (r.get("status") or "").lower() == "planned")
@@ -928,9 +941,37 @@ def build_floor_map_layout(dc_id, dc_name, racks, *, show_colocation: bool = Fal
         _coloc_summary = {}
     colocation_strip = build_colocation_summary(_coloc_summary)
 
+    # The right column belongs to rack details and nothing else. The customer
+    # panel used to share it, which meant a five-column money table rendered
+    # into a ~380px column -- every header wrapped onto three lines -- and
+    # clicking a rack replaced the panel, so the two fought over one slot.
+    # It now has its own full-width section below the map.
+    right_column_children = [
+        html.Div(
+            className="floor-map-detail-empty",
+            children=[
+                html.Div(
+                    className="fm-empty-icon-wrap",
+                    children=[
+                        DashIconify(
+                            icon="solar:server-square-linear",
+                            width=36, color="#D0D5DD",
+                        ),
+                    ],
+                ),
+                dmc.Text("Click a rack to inspect",
+                         c="#98A2B3", size="sm",
+                         mt="md", fw=500),
+                dmc.Text("Hover over racks to preview details",
+                         c="#D0D5DD", size="xs", mt=4),
+            ],
+        )
+    ]
+
     # The customer/potential panel is only fetched when it will actually be
     # shown: a caller without sec:dc_view:colocation shouldn't pay for (or
     # have this process handle) commercial data it will never render.
+    coloc_section = None
     if show_colocation:
         try:
             _coloc = api.get_colocation(dc_id) or {}
@@ -938,29 +979,11 @@ def build_floor_map_layout(dc_id, dc_name, racks, *, show_colocation: bool = Fal
             _logger.warning("build_floor_map_layout: get_colocation failed for %s", dc_id,
                             exc_info=True)
             _coloc = {}
-        right_column_children = [build_colocation_customer_panel(_coloc)]
-    else:
-        right_column_children = [
-            html.Div(
-                className="floor-map-detail-empty",
-                children=[
-                    html.Div(
-                        className="fm-empty-icon-wrap",
-                        children=[
-                            DashIconify(
-                                icon="solar:server-square-linear",
-                                width=36, color="#D0D5DD",
-                            ),
-                        ],
-                    ),
-                    dmc.Text("Click a rack to inspect",
-                             c="#98A2B3", size="sm",
-                             mt="md", fw=500),
-                    dmc.Text("Hover over racks to preview details",
-                             c="#D0D5DD", size="xs", mt=4),
-                ],
-            )
-        ]
+        coloc_section = html.Div(
+            className="nexus-card",
+            style={"padding": "20px", "marginTop": "16px"},
+            children=[build_colocation_customer_panel(_coloc)],
+        )
 
     halls = {}
     for r in racks:
@@ -1118,5 +1141,10 @@ def build_floor_map_layout(dc_id, dc_name, racks, *, show_colocation: bool = Fal
                     ),
                 ],
             ),
+
+            # ── Colocation customers & potential (full-width, below the map).
+            # None for callers without sec:dc_view:colocation -- Dash renders
+            # a None child as nothing.
+            coloc_section,
         ],
     )
