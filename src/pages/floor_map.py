@@ -222,6 +222,28 @@ def _fetch_rack_occupancy(dc_id, racks):
     return occupancy
 
 
+def _fetch_rack_load(dc_id, racks):
+    """{rack_name -> load row} from the bulk load endpoint, restricted to the
+    racks this floor map draws. Degrades to {} (every rack "not monitored") if
+    the call fails, matching _fetch_rack_occupancy's guarded shape."""
+    from src.services import api_client as api
+
+    wanted = {str(r.get("name") or "").strip() for r in racks if str(r.get("name") or "").strip()}
+    if not wanted:
+        return {}
+    try:
+        payload = api.get_dc_racks_load(dc_id or "") or {}
+    except Exception:
+        _logger.warning("_fetch_rack_load: bulk load call failed for dc_id=%s", dc_id, exc_info=True)
+        return {}
+    out = {}
+    for row in payload.get("racks", []) or []:
+        name = str(row.get("rack_name") or "").strip()
+        if name in wanted:
+            out[name] = row
+    return out
+
+
 def _external_rack_tenants(tenants):
     """External (non-Bulutistan) tenants occupying a rack, order-preserved, deduped."""
     from shared.colocation.occupancy import is_internal_tenant
@@ -323,7 +345,8 @@ def _hall_dimensions(hall_racks):
 # ── Accumulator-based rack collector (avoids O(N²) add_shape calls) ─────────
 
 def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
-                  rx, ry, status, name, rack_data, dc_id="", occupancy=None):
+                  rx, ry, status, name, rack_data, dc_id="", occupancy=None,
+                  load=None, lens="coloc", highlight=None):
     """Append shape dicts and hover point data to accumulator lists."""
     rid       = rack_data.get("id") or ""
     u         = rack_data.get("u_height") or 0
@@ -333,8 +356,16 @@ def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
     serial    = rack_data.get("serial") or "—"
     led_fill  = "#ECFDF3" if status == "active" else "rgba(255,255,255,0.65)"
 
-    # Phase 1 (no occupancy yet) keeps the status color; phase 2 colors by fill.
-    if occupancy is None:
+    # Phase 1 (no data yet) keeps the status color; phase 2 colors by the lens.
+    load_row = (load or {}).get(name) or {}
+    load_pct = load_row.get("load_pct")
+    if lens == "load":
+        occupied_u = occupancy.get(name) if occupancy else None
+        if load is None:
+            fill, dark = _color(status)
+        else:
+            fill, dark = _color_by_load(status, load_pct)
+    elif occupancy is None:
         fill, dark = _color(status)
         occupied_u = None
     else:
@@ -355,6 +386,11 @@ def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
     shapes.append(dict(
         type="rect", x0=rx, y0=ry, x1=rx+RACK_W, y1=ry+RACK_H,
         fillcolor=fill, line=dict(color=dark, width=1.3)))
+    if highlight and name in highlight:
+        shapes.append(dict(
+            type="rect", x0=rx-1.5, y0=ry-1.5, x1=rx+RACK_W+1.5, y1=ry+RACK_H+1.5,
+            fillcolor="rgba(0,0,0,0)",
+            line=dict(color="#4318FF", width=2.5)))
     shapes.append(dict(
         type="rect", x0=rx+1.5, y0=ry+RACK_H*0.52, x1=rx+RACK_W-1.5, y1=ry+RACK_H-1.5,
         fillcolor="rgba(255,255,255,0.15)", line=dict(color="rgba(0,0,0,0)", width=0)))
@@ -369,12 +405,19 @@ def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
     hover_x.append(rx + RACK_W / 2)
     hover_y.append(ry + RACK_H / 2 + 2)
     hover_text.append(name[:6])
+    if load_pct is None:
+        load_str = "Not monitored" if load is not None else "—"
+    else:
+        load_str = (f"{load_pct:.0f}% "
+                    f"({load_row.get('monitored_devices', 0)}/"
+                    f"{load_row.get('total_devices', 0)} devices)")
     hover_cd.append([rid, name, status, u, pwr, rh, rack_type, serial, dc_id,
-                     doluluk_str, free_str, info["label"]])
+                     doluluk_str, free_str, info["label"], load_str])
 
 
 def _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_cd,
-                       hx, hy, hall_name, dims, dc_id="", occupancy=None):
+                       hx, hy, hall_name, dims, dc_id="", occupancy=None,
+                       load=None, lens="coloc", highlight=None):
     """Collect hall background, label, aisle, and all rack shapes into accumulator lists."""
     zw = dims["zone_w"]
     zh = dims["zone_h"]
@@ -445,7 +488,8 @@ def _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_
             status = (rack.get("status") or "unknown").lower()
             _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
                           rx, ry_base, status, str(rack.get("name") or "?"), rack,
-                          dc_id=dc_id, occupancy=occupancy)
+                          dc_id=dc_id, occupancy=occupancy,
+                          load=load, lens=lens, highlight=highlight)
 
     for i, rack in enumerate(ungridded):
         ci = i % n_ung_per_row
@@ -455,17 +499,23 @@ def _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_
         status = (rack.get("status") or "unknown").lower()
         _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
                       rx, ry_base, status, str(rack.get("name") or "?"), rack,
-                      dc_id=dc_id, occupancy=occupancy)
+                      dc_id=dc_id, occupancy=occupancy,
+                      load=load, lens=lens, highlight=highlight)
 
 
 # ── Main figure builder ─────────────────────────────────────────────────────
 
-def build_floor_map_figure(racks, dc_id="", occupancy=None):
+def build_floor_map_figure(racks, dc_id="", occupancy=None, load=None,
+                           lens="coloc", highlight=None):
     # ── Cache lookup ─────────────────────────────────────────────────────────
-    # occupancy is part of the fingerprint so a phase-1 (status) figure is never
-    # served in place of a phase-2 (fill-colored) one, and vice versa.
+    # occupancy/load/lens/highlight are all part of the fingerprint: a figure
+    # built for one lens must never be served for the other.
     occ_fp = "|".join(f"{k}:{v}" for k, v in sorted(occupancy.items())) if occupancy else ""
-    fp = _rack_fingerprint(dc_id, racks) + "::" + occ_fp
+    load_fp = "|".join(f"{k}:{(v or {}).get('load_pct')}"
+                       for k, v in sorted((load or {}).items())) if load else ""
+    hl_fp = ",".join(sorted(highlight)) if highlight else ""
+    fp = (_rack_fingerprint(dc_id, racks) + "::" + occ_fp
+          + "::" + load_fp + "::" + lens + "::" + hl_fp)
     cached = _FIG_CACHE.get(fp)
     if cached is not None:
         _logger.debug("floor_map figure cache HIT dc=%s racks=%d", dc_id, len(racks))
@@ -552,7 +602,8 @@ def build_floor_map_figure(racks, dc_id="", occupancy=None):
         hy_from_top = FLOOR_PAD + sum(row_heights[:gr]) + HALL_ROW_GAP * gr
         hy = floor_h - hy_from_top - dims["zone_h"]
         _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_cd,
-                           hx, hy, hall_name, dims, dc_id=dc_id, occupancy=occupancy)
+                           hx, hy, hall_name, dims, dc_id=dc_id, occupancy=occupancy,
+                           load=load, lens=lens, highlight=highlight)
 
     # ── Build figure — set shapes/annotations in bulk (O(N) not O(N²)) ──────
     fig = go.Figure()
@@ -570,9 +621,9 @@ def build_floor_map_figure(racks, dc_id="", occupancy=None):
                 "<b>%{customdata[1]}</b><br>"
                 "Hall: %{customdata[5]}<br>"
                 "Status: %{customdata[2]}<br>"
-                "Doluluk: %{customdata[9]}<br>"
-                "Boş (satılabilir): %{customdata[10]}<br>"
-                "Durum: %{customdata[11]}<br>"
+                "Occupancy: %{customdata[9]}<br>"
+                "Free (sellable): %{customdata[10]}<br>"
+                "Load: %{customdata[12]}<br>"
                 "Power: %{customdata[4]}<br>"
                 "Type: %{customdata[6]}"
                 "<extra></extra>"
@@ -609,17 +660,21 @@ def build_floor_map_figure(racks, dc_id="", occupancy=None):
     return fig
 
 
-def build_recolored_floor_map_figure(dc_id):
-    """Phase 2: fetch racks + per-rack occupancy and return the fill-colored
-    figure the phase-2 callback swaps in after the fast status-colored paint.
-    Returns None if the DC has no racks."""
+def build_recolored_floor_map_figure(dc_id, lens="coloc", highlight=None):
+    """Phase 2 / lens switch: fetch racks plus whichever payload the active lens
+    needs, and return the recoloured figure. Returns None if the DC has no racks."""
     from src.services import api_client as api
 
     racks = (api.get_dc_racks(dc_id or "") or {}).get("racks", [])
     if not racks:
         return None
+    if lens == "load":
+        return build_floor_map_figure(racks, dc_id=dc_id,
+                                      load=_fetch_rack_load(dc_id, racks),
+                                      lens="load", highlight=highlight)
     occupancy = _fetch_rack_occupancy(dc_id, racks)
-    return build_floor_map_figure(racks, dc_id=dc_id, occupancy=occupancy)
+    return build_floor_map_figure(racks, dc_id=dc_id, occupancy=occupancy,
+                                  lens="coloc", highlight=highlight)
 
 
 # ── Layout builder ──────────────────────────────────────────────────────────
@@ -684,6 +739,9 @@ def build_floor_map_layout(dc_id, dc_name, racks):
     return html.Div(
         className="floor-map-page",
         children=[
+            # Populated in Task 7 (colocation customer selection); stays None until then.
+            dcc.Store(id="fm-selected-customer", data=None),
+
             # ── Header
             html.Div(
                 className="floor-map-header",
@@ -732,6 +790,21 @@ def build_floor_map_layout(dc_id, dc_name, racks):
                     dmc.GridCol(
                         span=8,
                         children=[
+                            dmc.Group(justify="space-between", align="center", mb="xs",
+                                      children=[
+                                dmc.SegmentedControl(
+                                    id="floor-map-lens",
+                                    value="coloc",
+                                    data=[{"label": "Colocation", "value": "coloc"},
+                                          {"label": "Load", "value": "load"}],
+                                    size="xs", radius="md",
+                                ),
+                                dmc.Text(
+                                    "Colocation — rack space by U · Load — CPU/RAM of the "
+                                    "rack's monitored hosts",
+                                    size="xs", c="#98A2B3",
+                                ),
+                            ]),
                             dmc.Paper(
                                 radius="xl",
                                 className="floor-map-canvas-wrap",
@@ -751,33 +824,8 @@ def build_floor_map_layout(dc_id, dc_name, racks):
                                     ),
                                 ],
                             ),
-                            # Legend — fill-based (color by U-occupancy)
-                            dmc.Group(
-                                gap="lg", mt="sm", px="sm",
-                                children=[
-                                    *[
-                                        dmc.Group(gap=6, align="center", children=[
-                                            html.Div(
-                                                className="fm-legend-swatch",
-                                                style={"backgroundColor": FILL_PALETTE[key][0]},
-                                            ),
-                                            dmc.Text(label, size="xs", c="#667085"),
-                                        ])
-                                        for key, label in (
-                                            ("empty", "Tamamen boş (satılabilir)"),
-                                            ("green", "Satılabilir alan var"),
-                                            ("orange", "Orta"),
-                                            ("red", "Çok dolu"),
-                                            ("closed", "Kapalı / Pasif"),
-                                            ("unknown", "Bilinmiyor"),
-                                        )
-                                    ],
-                                    dmc.Text(
-                                        "Scroll to zoom · Drag to pan · Click rack to inspect",
-                                        size="xs", c="#98A2B3", ml="auto",
-                                    ),
-                                ],
-                            ),
+                            html.Div(id="floor-map-legend", children=[
+                                build_lens_legend("coloc")], style={"marginTop": "8px"}),
                         ],
                     ),
                     dmc.GridCol(

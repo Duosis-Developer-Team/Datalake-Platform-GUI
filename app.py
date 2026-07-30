@@ -1950,19 +1950,27 @@ def _detail_row(icon, label, value):
 
 @app.callback(
     dash.Output("floor-map-graph", "figure"),
+    dash.Output("floor-map-legend", "children"),
     dash.Input("floor-map-occupancy-interval", "n_intervals"),
+    dash.Input("floor-map-lens", "value"),
+    dash.Input("fm-selected-customer", "data"),
     dash.State("selected-building-dc-store", "data"),
     prevent_initial_call=True,
 )
-def recolor_floor_map_by_fill(n_intervals, dc_store):
-    """Phase 2: after the fast status-colored paint, recolor racks by U-fill."""
+def recolor_floor_map(n_intervals, lens, selected_customer, dc_store):
+    """Phase-2 recolor and lens switching share one callback: two callbacks
+    writing the same figure would race and the loser's colours would win."""
     dc_id = (dc_store or {}).get("dc_id", "")
-    if not n_intervals or not dc_id:
-        return dash.no_update
-    from src.pages.floor_map import build_recolored_floor_map_figure
+    if not dc_id:
+        return dash.no_update, dash.no_update
 
-    fig = build_recolored_floor_map_figure(dc_id)
-    return fig if fig is not None else dash.no_update
+    from src.pages.floor_map import build_lens_legend, build_recolored_floor_map_figure
+
+    lens = lens or "coloc"
+    highlight = set((selected_customer or {}).get("racks") or [])
+    fig = build_recolored_floor_map_figure(dc_id, lens=lens, highlight=highlight)
+    legend = build_lens_legend(lens)
+    return (fig if fig is not None else dash.no_update), legend
 
 
 @app.callback(
