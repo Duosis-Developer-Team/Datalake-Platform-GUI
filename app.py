@@ -243,7 +243,21 @@ def _periodic_common_warm() -> None:
         time_module.sleep(interval)
 
 
-threading.Thread(target=_periodic_common_warm, daemon=True).start()
+def _background_warm_enabled() -> bool:
+    """True unless APP_DISABLE_BACKGROUND_WARM is set to a value other than
+    "0"/"false" (case-insensitive). A tiny pure predicate so the guard below can
+    be unit-tested without actually starting the thread."""
+    return os.environ.get("APP_DISABLE_BACKGROUND_WARM", "").strip().lower() in ("", "0", "false")
+
+
+# _periodic_common_warm calls warm_common() immediately, before its first sleep.
+# That means simply importing this module starts a background caller of
+# warm_common() for the rest of the process — in a test session, that caller
+# can race a test that monkeypatches warm_common's internals (e.g.
+# tests/test_warm_common.py), landing an extra call mid-assertion. Production
+# never sets APP_DISABLE_BACKGROUND_WARM, so production behaviour is unchanged.
+if _background_warm_enabled():
+    threading.Thread(target=_periodic_common_warm, daemon=True).start()
 
 _sidebar = html.Div(
     id="sidebar-shell",
