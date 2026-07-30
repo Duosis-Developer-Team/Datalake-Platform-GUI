@@ -122,7 +122,7 @@ _NETBACKUP_DC_POOL_TIMEOUT: float = float(os.getenv("SELLABLE_NETBACKUP_DC_TIMEO
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 10
+SELLABLE_PAYLOAD_VERSION: int = 11
 
 # Site-scoped S3 panels map to datalake pool_name prefixes (not city substrings).
 _SITE_SCOPED_PANEL_PATTERNS: dict[str, str] = {
@@ -1799,6 +1799,7 @@ SELECT _tot, _alloc FROM latest
                     sellable_constrained=sellable_raw,
                     sellable_allocation=None,
                     sellable_max_util=None,
+                    sellable_avg_util=None,
                     sellable_physical=None,
                     sellable_effective=None,
                     potential_tl_physical=None,
@@ -2085,9 +2086,9 @@ SELECT _tot, _alloc FROM latest
     def _normalize_host_unit(
         h: dict,
         *,
-        cpu_conv: "dict | None",
-        ram_conv: "dict | None",
-        sto_conv: "dict | None",
+        cpu_conv: "UnitConversion | None",
+        ram_conv: "UnitConversion | None",
+        sto_conv: "UnitConversion | None",
     ) -> dict:
         """Normalize one host row into panel display units for the sellable engine.
 
@@ -2095,13 +2096,20 @@ SELECT _tot, _alloc FROM latest
         through the ``**h`` spread unconverted because host_raw_headroom's CPU
         arm uses cpu_cap_ghz as its denominator. RAM peak and RAM average are
         converted here, mirroring each other.
+
+        The ``mem_*_avg`` trio is written only when the source host actually
+        carries a RAM average (``mem_used_gb_avg`` or ``mem_cap_gb_avg`` is not
+        None). A missing RAM average must stay absent so that downstream
+        ``_first_present`` (host_sellable.py) falls back to the RAM peak
+        instead of reading a fabricated ``0.0`` used against a real capacity --
+        which would otherwise manufacture idle headroom out of missing data.
         """
         ghz = float(h.get("ghz_per_core") or 1.0)
         cap_ghz = float(h.get("cpu_cap_ghz") or 0.0)
         alloc_sales = float(h.get("cpu_alloc_ghz") or 0.0)
         alloc_phys = float(h.get("cpu_alloc_ghz_physical") or alloc_sales * ghz)
         ram_util = float(h.get("mem_used_pct") or 0.0)
-        return {
+        out = {
             **h,
             "cpu_total": convert_unit(cap_ghz, cpu_conv),
             "cpu_alloc": convert_unit(alloc_sales, cpu_conv),
@@ -2119,19 +2127,23 @@ SELECT _tot, _alloc FROM latest
                 float(h.get("mem_cap_gb_at_peak") or h.get("mem_cap_gb") or 0.0), ram_conv
             ),
             "mem_peak_util_pct": float(h.get("mem_peak_util_pct") or ram_util),
-            "mem_used_gb_avg": convert_unit(
-                float(h.get("mem_used_gb_avg") or 0.0), ram_conv
-            ),
-            "mem_cap_gb_avg": convert_unit(
-                float(h.get("mem_cap_gb_avg") or h.get("mem_cap_gb") or 0.0), ram_conv
-            ),
-            "mem_avg_util_pct": float(h.get("mem_avg_util_pct") or 0.0),
             "stor_cap_gb": convert_unit(float(h.get("stor_cap_gb") or 0.0), sto_conv),
             "stor_provisioned_gb": convert_unit(
                 float(h.get("stor_provisioned_gb") or 0.0), sto_conv
             ),
             "stor_used_pct": float(h.get("stor_used_pct") or 0.0),
         }
+        mem_used_avg = h.get("mem_used_gb_avg")
+        mem_cap_avg = h.get("mem_cap_gb_avg")
+        if mem_used_avg is not None or mem_cap_avg is not None:
+            if mem_used_avg is not None:
+                out["mem_used_gb_avg"] = convert_unit(float(mem_used_avg), ram_conv)
+            out["mem_cap_gb_avg"] = convert_unit(
+                float(mem_cap_avg if mem_cap_avg is not None else h.get("mem_cap_gb") or 0.0),
+                ram_conv,
+            )
+            out["mem_avg_util_pct"] = float(h.get("mem_avg_util_pct") or 0.0)
+        return out
 
     def _apply_host_based_constraints(
         self,

@@ -308,6 +308,54 @@ is a measurement to take once the stack is up, not something to fill in now.
 7. **Attach the resulting table to the PR**, alongside this document, closing criterion 4
    and the production half of criteria 1–2.
 
+### 5.4 The CPU max correction is a gate-cliff, not a taper — blast radius
+
+The CPU max correction is larger than "a window peak is at least as high as the last
+sample." `host_sellable._cpu_max_headroom` now feeds `cpu_peak_util_pct` into
+`apply_utilization_gate`, and that gate is a step function: once utilisation exceeds the
+threshold it zeroes headroom **entirely**, it does not taper it down proportionally. So
+**any host that touched the threshold even once in the 7-day window now yields zero on the
+max track**, regardless of how idle that host is right now. And because all three resource
+rows in a family share one host-derived unit count, all three of that family's Max cells
+collapse together when this fires on the binding resource.
+
+**Measured** (reproduced directly against this branch's code, not estimated):
+
+```python
+from shared.sellable.host_sellable import host_raw_headroom
+host = {"cpu_cap_ghz": 100.0, "cpu_total": 100.0,
+        "cpu_used_ghz": 40.0, "cpu_used_pct": 40.0,
+        "cpu_used_ghz_peak": 85.0, "cpu_peak_util_pct": 85.0}
+host_raw_headroom(host, resource="cpu", threshold_pct=80.0, cpu_track="max")
+```
+
+A 100 GHz host currently at 40% utilisation, with one 85% sample somewhere in its 7-day
+window and an 80% threshold, goes from **40.0 GHz** of max headroom (what the old
+"latest sample" logic would have shown, since the latest sample is 40%) to **0.0 GHz**
+under the corrected window-peak logic — a cliff, not a taper, triggered by a single
+transient sample the host may not even be experiencing anymore.
+
+The direction is defensible (the invariant is unharmed, and a real peak *did* occur) and
+this is not a bug in the fix itself — but nobody knows **how many hosts** this zeroes,
+because criterion 4 (the production before/after table) is deferred with no live stack (§5
+above). This document does not estimate that count; it is called out here so it is not
+mistaken for a low-impact rounding change when the production read finally happens.
+
+**Two additional screens display this number and were not otherwise mentioned in this
+document** — both are two-track (Alloc/Max only) by design, so they will not show a
+mismatched em-dash the way the three-track CRM report could, but their **Max figures move**
+by the same mechanism described above:
+
+- `src/pages/dc_view.py:2339` — `_dual_track_sums`'s `max_key = "sellable_max_util"`, summed
+  into the DC-level "Max" column total.
+- `src/pages/dc_summary_sellable.py:240,244` — `cpu_max = cpu.get("sellable_max_util")` and
+  `ram_max = ram.get("sellable_max_util")`, the per-family summary cards' Max figures.
+
+**Bottom line:** the CPU max correction must **not** be considered shipped — in the sense
+of "verified against real data" — until the §5.3 production steps have actually been run
+against a live stack and the resulting before/after table is attached to the PR. Unit-level
+correctness (this document, §2–§4) is not a substitute for that production read.
+
 ---
 
 ## 6. Clamped-row count — cannot be computed now, method recorded for later
@@ -334,6 +382,23 @@ up:
   `sellable_max_util` fields per panel — inspect one row's payload shape first
   (`SELECT payload FROM gui_panel_result_snapshot LIMIT 1;`) before writing a bulk query,
   since the exact nesting is a JSON array of panels per snapshot row, not flat columns.
+- **Second check — outlier ratio, not just equality (added at final review).** The
+  equality count above only detects the clamp direction: a *dead* average pipeline. Every
+  defect found in this branch's final review was the opposite failure mode — an
+  **overstatement** — and the equality count is structurally blind to that direction: a row
+  where `avg_qty` is inflated relative to `max_qty` still shows `avg != max`, so it never
+  appears in the "all rows clamped" alarm above. Add, from the same JSON pull: for every
+  `dual_track` row with `has_infra_source`, compute `avg_qty / max_qty` (skip rows where
+  `max_qty` is `None` or `<= 0`) and count rows where the ratio exceeds **2×** and,
+  separately, where it exceeds **3×**, grouped by `dc_code` and `family` (not just a single
+  fleet-wide count — a host-level inflation surfaces as an outlier at the family level
+  within one DC, and a fleet-wide grouping would average it away). There is no fixed
+  threshold in the design spec for what ratio is "too high" (the six family-level scenarios
+  in §3 range up to `avg/alloc ≈ 11.46`, which is `alloc`-relative, not `max`-relative, so it
+  is not a usable baseline for this check) — treat any DC/family that lands in the 2×
+  bucket as worth a manual read of its host rows, and anything in the 3× bucket as worth
+  raising as a finding before treating the branch as fully verified in production, the same
+  way an all-clamped fleet is raised below.
 - **Interpretation, per the plan's own guardrail:** a handful of clamped rows is normal —
   hosts with a genuine collector gap correctly falling back to their peak. **If every
   dual-track row in a DC (or across all DCs) comes back `avg == max`, that means the
@@ -420,8 +485,8 @@ Carried forward from the ledger (`progress.md`), none touched in this branch:
 | 2 | 3 | The util-discrimination test sets peak util == avg util (95/95 in the fixture), so it proves util is load-bearing but would not catch a regression that wired util from the wrong track. | Deferred — test-quality gap, follow-up test recommended (differing peak/avg util values). |
 | 3 | 3 | The `max(avg_calc, max_calc)` clamp can mask a dead avg pipeline — see §6, now mitigated by this document's clamped-row-count requirement. | Mitigated by this task; not a code gap. |
 | 4 | 5 | Storage panels in the `constrain_by_ratio_per_host_dual` generic branch get neither `max_util` nor `avg_util` (both stay `None`) — pre-existing (the `max_util` gap predates this branch), renders a consistent em-dash in both columns. | Accepted gap, recorded in the plan's Global Constraints, not fixed. |
-| 5 | 5 | `test_genuine_zero_cpu_average_is_honoured` does not discriminate — its fixture yields identical results against the pre-fix code, so it would still pass if the fix were reverted. | Deferred — test-quality gap only. |
-| 6 | 6 | `_normalize_host_unit`'s `conv` parameters are annotated `dict | None` but the actual values are `UnitConversion` instances. Quoted forward refs, no runtime effect, no type checker wired into CI. | Cosmetic, deferred. |
+| 5 | 5 | `test_genuine_zero_cpu_average_is_honoured` does not discriminate — its fixture yields identical results against the pre-fix code, so it would still pass if the fix were reverted. | **Fixed in final review** — strengthened with exact-value assertions (`n_max == 0.0`, `n_avg == 80.0`) alongside the original `n_avg > n_max`, in `tests/test_sellable_avg_unit_count.py`. |
+| 6 | 6 | `_normalize_host_unit`'s `conv` parameters are annotated `dict | None` but the actual values are `UnitConversion` instances. Quoted forward refs, no runtime effect, no type checker wired into CI. | **Fixed in final review** — annotations corrected to `UnitConversion | None` in `services/customer-api/app/services/sellable_service.py`. |
 | 7 | 6 | `test_cpu_avg_and_peak_pass_through_unconverted` passes `cpu_conv=None`, and `convert_unit(x, None)` is the identity function — so the test would not catch a regression that added an explicit `convert_unit(..., cpu_conv)` call for the CPU avg/peak fields. Only bites once a CPU panel's display unit differs from GHz. | Deferred — test-quality gap. |
 | 8 | 7 | `sellable_service.py`'s `_panel_summary_dict` (~line 3217) carries `potential_tl_max` with no `potential_tl_avg` sibling. Feeds the `compute_summary` / `DashboardSummary` rollup endpoint, **not** the by-track capacity report this branch targets — no task in the plan extends that endpoint. | Deferred — different consumer, note for whoever wires avg into the summary path later. |
 

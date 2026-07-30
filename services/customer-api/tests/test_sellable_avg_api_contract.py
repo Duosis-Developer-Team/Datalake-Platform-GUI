@@ -100,6 +100,38 @@ class TestPowerFamiliesUnaffected:
         assert p.sellable_avg_util is None
 
 
+class TestRefreshGroupSellableFromTotalsClearsAvg:
+    def test_all_three_tracks_cleared_not_just_alloc_and_max(self):
+        """C2 regression: _refresh_group_sellable_from_totals resets a panel to
+        the raw gate-only computation, so every previously-populated track
+        must go back to None. Before the fix, sellable_avg_util was left out
+        of the replace() call, so a panel that entered with
+        allocation=200, max_util=5108, avg_util=7420 came back as
+        allocation=None, max_util=None, avg_util=7420.0 -- a live number with
+        no basis rendered beside two em-dashes."""
+        from app.services.sellable_service import SellableService
+
+        panel = _panel(
+            total=10000.0, allocated=200.0, threshold_pct=80.0,
+            sellable_allocation=200.0, sellable_max_util=5108.0,
+            sellable_avg_util=7420.0,
+            sellable_physical=200.0, sellable_effective=5108.0,
+            potential_tl_min=1000.0, potential_tl_max=5000.0,
+        )
+        out = SellableService._refresh_group_sellable_from_totals([panel])
+        refreshed = out[0]
+        assert refreshed.sellable_allocation is None
+        assert refreshed.sellable_max_util is None
+        assert refreshed.sellable_avg_util is None, (
+            "sellable_avg_util must be cleared alongside sellable_max_util, "
+            "not left stale"
+        )
+        assert refreshed.sellable_physical is None
+        assert refreshed.sellable_effective is None
+        assert refreshed.potential_tl_min is None
+        assert refreshed.potential_tl_max is None
+
+
 class TestRowShapeUniformity:
     def test_entitled_only_rows_carry_the_avg_keys(self):
         """Rows built for CRM-entitled products with no infra panel must have the

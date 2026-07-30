@@ -298,6 +298,26 @@ def _first_present_h(host: dict, *keys: str) -> float:
     return 0.0
 
 
+def _cpu_max_raw_h(host: dict, cpu_threshold_pct: float) -> float:
+    """CPU max-track raw headroom for one host. Mirrors
+    ``host_sellable._cpu_max_headroom``; used to clamp the avg branch below so
+    a per-host average can never invert the family's ``n_avg >= n_max``."""
+    cpu_total = float(host.get("cpu_total") or 0.0)
+    cpu_alloc = float(host.get("cpu_used_ghz_peak") or host.get("cpu_used_ghz") or 0.0)
+    cpu_util = float(host.get("cpu_peak_util_pct") or host.get("cpu_util_pct") or 0.0)
+    return apply_utilization_gate(cpu_total, cpu_alloc, cpu_util, cpu_threshold_pct)
+
+
+def _ram_max_raw_h(host: dict, ram_threshold_pct: float) -> float:
+    """RAM max-track raw headroom for one host. Mirrors
+    ``host_sellable._ram_max_headroom``; used to clamp the avg branch below so
+    a per-host average can never invert the family's ``n_avg >= n_max``."""
+    ram_total = float(host.get("mem_cap_gb_at_peak") or host.get("ram_peak_total") or 0.0)
+    ram_alloc = float(host.get("mem_used_gb_peak") or host.get("ram_peak_used") or 0.0)
+    ram_util = float(host.get("mem_peak_util_pct") or host.get("ram_peak_util_pct") or 0.0)
+    return apply_utilization_gate(ram_total, ram_alloc, ram_util, ram_threshold_pct)
+
+
 def host_effective_units(
     hosts: "Iterable[dict]",
     ratio: ResourceRatio,
@@ -356,6 +376,12 @@ def host_effective_units(
             cpu_util,
             cpu_threshold_pct,
         )
+        if cpu_track == "avg":
+            # Average used can never truly exceed peak used, so any inversion
+            # (capacity drift, a ratio-selected peak row) is a data artefact;
+            # clamp at this host's own max-track contribution -- mirrors the
+            # clamp in host_sellable.host_raw_headroom.
+            raw_cpu = max(raw_cpu, _cpu_max_raw_h(h, cpu_threshold_pct))
         if ram_track in ("max", "peak"):
             ram_total = float(
                 h.get("mem_cap_gb_at_peak") or h.get("ram_peak_total") or 0.0
@@ -382,6 +408,11 @@ def host_effective_units(
             ram_util,
             ram_threshold_pct,
         )
+        if ram_track == "avg":
+            # Same clamp as CPU above, for the RAM arm: the avg denominator can
+            # differ from the max-track denominator (mem_cap_gb_avg vs
+            # mem_cap_gb_at_peak), which alone can invert the ordering.
+            raw_ram = max(raw_ram, _ram_max_raw_h(h, ram_threshold_pct))
         n_total += min(raw_cpu / cpu_den, raw_ram / ratio.ram_gb_per_unit)
     return n_total
 

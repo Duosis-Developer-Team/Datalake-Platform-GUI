@@ -175,6 +175,9 @@ class TestHostEffectiveUnitsAvgHardening:
         assert n_avg == n_max
 
     def test_genuine_zero_cpu_average_is_honoured(self):
+        # Non-discriminating as originally written (only `n_avg > n_max`, true
+        # for many wrong implementations too) -- strengthened with the exact
+        # values so a future regression that shifts either number is caught.
         from shared.sellable.computation import host_effective_units
         h = {"cpu_total": 100.0, "cpu_alloc": 10.0, "cpu_util_pct": 10.0,
              "cpu_used_ghz_avg": 0.0, "cpu_avg_util_pct": 0.0,
@@ -189,3 +192,58 @@ class TestHostEffectiveUnitsAvgHardening:
                                      ram_threshold_pct=80.0,
                                      cpu_track="max", ram_track="max")
         assert n_avg > n_max
+        assert n_max == 0.0
+        assert n_avg == 80.0
+
+    def test_ram_capacity_drift_does_not_invert_the_family_unit_count(self):
+        """I4: same RAM-capacity-drift shape as
+        test_host_sellable_avg_track.py's
+        test_ram_capacity_drift_does_not_invert_the_ordering (mem_cap_gb_avg
+        358.4 < mem_cap_gb_at_peak 512), but exercised through
+        host_effective_units directly rather than host_raw_headroom -- this
+        function builds its avg arm inline and, unlike host_raw_headroom, had
+        no clamp of its own. CPU capacity/usage is set huge and flat so CPU
+        never binds the per-host min; only the RAM arm is under test.
+        Pre-fix: n_max=54.800 vs n_avg=38.360 (a real inversion)."""
+        from shared.sellable.computation import host_effective_units
+        h = {"cpu_total": 100000.0, "cpu_used_ghz_peak": 1.0, "cpu_peak_util_pct": 1.0,
+             "cpu_used_ghz_avg": 1.0, "cpu_avg_util_pct": 1.0,
+             "mem_cap_gb_at_peak": 512.0, "mem_used_gb_peak": 300.0,
+             "mem_peak_util_pct": 58.6,
+             "mem_cap_gb_avg": 358.4, "mem_used_gb_avg": 210.0,
+             "mem_avg_util_pct": 58.6}
+        n_max = host_effective_units([h], _ratio(), cpu_threshold_pct=80.0,
+                                     ram_threshold_pct=80.0,
+                                     cpu_track="max", ram_track="max")
+        n_avg = host_effective_units([h], _ratio(), cpu_threshold_pct=80.0,
+                                     ram_threshold_pct=80.0,
+                                     cpu_track="avg", ram_track="avg")
+        assert abs(n_max - 54.8) < 1e-6
+        assert n_avg >= n_max
+        assert abs(n_avg - 54.8) < 1e-6  # clamped up to the max-track floor
+
+    def test_ratio_selected_cpu_peak_does_not_invert_the_family_unit_count(self):
+        """I4: same ratio-selected-peak shape as
+        test_host_sellable_avg_track.py's
+        test_ratio_selected_cpu_peak_does_not_invert_the_ordering
+        (cpu_used_ghz_avg 54 > cpu_used_ghz_peak 8, because *_CPU_PEAK
+        selects the highest-utilisation row, not the highest-usage row).
+        RAM capacity/usage is set huge and flat so RAM never binds; only the
+        CPU arm is under test. This is verbatim the number from the original
+        Task 3 finding: pre-fix n_max=152.000 vs n_avg=106.000."""
+        from shared.sellable.computation import host_effective_units
+        h = {"cpu_total": 200.0, "cpu_used_ghz_peak": 8.0, "cpu_peak_util_pct": 80.0,
+             "cpu_used_ghz_avg": 54.0, "cpu_avg_util_pct": 51.4,
+             "mem_cap_gb_at_peak": 100000.0, "mem_used_gb_peak": 1.0,
+             "mem_peak_util_pct": 1.0,
+             "mem_cap_gb_avg": 100000.0, "mem_used_gb_avg": 1.0,
+             "mem_avg_util_pct": 1.0}
+        n_max = host_effective_units([h], _ratio(), cpu_threshold_pct=80.0,
+                                     ram_threshold_pct=80.0,
+                                     cpu_track="max", ram_track="max")
+        n_avg = host_effective_units([h], _ratio(), cpu_threshold_pct=80.0,
+                                     ram_threshold_pct=80.0,
+                                     cpu_track="avg", ram_track="avg")
+        assert abs(n_max - 152.0) < 1e-6
+        assert n_avg >= n_max
+        assert abs(n_avg - 152.0) < 1e-6  # clamped up to the max-track floor
