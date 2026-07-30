@@ -286,6 +286,18 @@ def annotate_panel_constraint_metadata(panels: Iterable[PanelResult]) -> list[Pa
 # ---------------------------------------------------------------------------
 
 
+def _first_present_h(host: dict, *keys: str) -> float:
+    """First key present on ``host``, honouring a genuine ``0.0``. Mirrors
+    ``host_sellable._first_present``. Plain ``or`` chaining would make a real
+    zero average fall through to the peak and understate headroom, or make a
+    *missing* average read as an idle host and overstate it."""
+    for k in keys:
+        v = host.get(k)
+        if v is not None:
+            return float(v)
+    return 0.0
+
+
 def host_effective_units(
     hosts: "Iterable[dict]",
     ratio: ResourceRatio,
@@ -326,9 +338,13 @@ def host_effective_units(
             cpu_util = float(h.get("cpu_peak_util_pct") or h.get("cpu_util_pct") or 0.0)
         elif cpu_track == "avg":
             cpu_total = float(h.get("cpu_total") or 0.0)
-            cpu_alloc = float(h.get("cpu_used_ghz_avg") or 0.0)
+            cpu_alloc = _first_present_h(
+                h, "cpu_used_ghz_avg", "cpu_used_ghz_peak", "cpu_used_ghz"
+            )
             cpu_den = ratio.cpu_per_unit * max(effective_ghz_per_unit, 1e-9)
-            cpu_util = float(h.get("cpu_avg_util_pct") or 0.0)
+            cpu_util = _first_present_h(
+                h, "cpu_avg_util_pct", "cpu_peak_util_pct", "cpu_util_pct"
+            )
         else:
             cpu_total = float(h.get("cpu_total") or 0.0)
             cpu_alloc = float(h.get("cpu_alloc") or 0.0)
@@ -347,9 +363,15 @@ def host_effective_units(
             ram_alloc = float(h.get("mem_used_gb_peak") or h.get("ram_peak_used") or 0.0)
             ram_util = float(h.get("mem_peak_util_pct") or h.get("ram_peak_util_pct") or 0.0)
         elif ram_track == "avg":
-            ram_total = float(h.get("mem_cap_gb_avg") or h.get("ram_total") or 0.0)
-            ram_alloc = float(h.get("mem_used_gb_avg") or 0.0)
-            ram_util = float(h.get("mem_avg_util_pct") or 0.0)
+            ram_total = _first_present_h(
+                h, "mem_cap_gb_avg", "mem_cap_gb_at_peak", "ram_total"
+            )
+            ram_alloc = _first_present_h(
+                h, "mem_used_gb_avg", "mem_used_gb_peak", "mem_peak_used"
+            )
+            ram_util = _first_present_h(
+                h, "mem_avg_util_pct", "mem_peak_util_pct", "ram_util_pct"
+            )
         else:
             ram_total = float(h.get("ram_total") or 0.0)
             ram_alloc = float(h.get("ram_alloc") or 0.0)
@@ -761,6 +783,11 @@ def constrain_by_ratio_dual_cpu_cluster(
                     p,
                     sellable_allocation=constrained_alloc,
                     sellable_max_util=constrained_max,
+                    # No averages exist at cluster granularity -- _extract_utilization_pct
+                    # reads peak only. Per the global rule (no average for a resource means
+                    # use that resource's peak), avg equals max here: never below, never
+                    # oversold, and no em-dash beside a real Max figure.
+                    sellable_avg_util=constrained_max,
                     sellable_effective=constrained_alloc,
                     sellable_physical=None,
                     sellable_constrained=constrained_alloc,
@@ -783,6 +810,7 @@ def constrain_by_ratio_dual_cpu_cluster(
                     sellable_physical=constrained_alloc,
                     sellable_allocation=constrained_alloc,
                     sellable_max_util=constrained_max,
+                    sellable_avg_util=constrained_max,
                     sellable_effective=constrained_max,
                     sellable_constrained=constrained_alloc,
                     ratio_bound=ratio_bound,
@@ -811,6 +839,7 @@ def constrain_by_ratio_dual_cpu_cluster(
                         sellable_max=constrained_max if constrained_max > constrained_alloc + 1e-6 else None,
                         sellable_allocation=constrained_alloc,
                         sellable_max_util=constrained_max,
+                        sellable_avg_util=constrained_max,
                         ratio_bound=ratio_bound,
                     )
                 )
