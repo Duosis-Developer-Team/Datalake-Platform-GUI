@@ -22,9 +22,15 @@
 - **Storage gets no average of its own.** Never add an avg branch to the storage arm of `host_raw_headroom`. Storage's avg cell must come only from the triple-min unit count.
 - **The threshold formula is untouched.** `apply_threshold(total, allocated, pct)` and `apply_utilization_gate(...)` keep their current bodies. Only the `allocated` argument differs per track.
 - **Each resource's `avg` branch mirrors that same resource's `max` branch.** CPU max uses the *current* capacity as its denominator, so CPU avg does too. RAM max uses capacity-at-peak, so RAM avg uses average capacity. Do not "harmonize" the two resources — that would change existing max numbers beyond the intended CPU fix.
-- **Missing average data must never become `0` — but "no hosts at all" must.** These are two different situations and the plan requires opposite answers:
-  - *A host exists but its average metric is absent.* Never write `0`: a zero used-value reads as "this machine is idle, sell all of it". The enricher no-ops (Task 2), and `host_raw_headroom`'s `avg` arm returns `0.0` **headroom** for that host (Task 3) — claiming nothing rather than everything. At the panel level `sellable_avg_util` stays `None` when no track was computed at all, so the GUI renders `—`.
-  - *There are no host rows whatsoever.* Then `sellable_avg_util` is `0.0`, not `None` (Task 5's empty-hosts fallback). "No hosts" is a known answer — nothing is sellable — not missing data, and `—` would wrongly suggest the figure is unavailable.
+- **A host with no average for a resource falls back to that resource's PEAK, per resource.** This rule was revised during execution after the Task 2 review; it replaces an earlier "claim zero headroom" rule that was unsafe for a different reason. Three cases, three different answers:
+  - *A host exists but its average metric is absent for one resource.* Use that host's **peak** value for that resource in the `avg` track. This is conservative in both directions that matter: peak used ≥ average used, so it can never claim more headroom than a true average would; and the host still contributes, so `n_avg` is not silently dragged down.
+
+    Why not zero: the SQL wraps every average in `COALESCE(..., 0)`, so a host whose memory columns are NULL across the whole window arrives with `mem_used_gb_avg = 0.0` beside a perfectly good CPU average. Treating that as "claim no headroom" makes the host contribute **0 units** through the triple-min, pulling the family's `n_avg` below `n_max` — which reproduces the exact defect this whole branch exists to fix (avg reading lower than max). Falling back to peak keeps `n_avg >= n_max` true by construction: a host with no average contributes exactly what it contributes to the max track, never less.
+
+    Because zero and absent are indistinguishable after `COALESCE`, Task 2's enricher must write only the metric groups that actually have data, so "absent" reaches Task 3 as a missing key rather than as `0.0`.
+  - *A host has neither an average nor a peak for a resource.* Then it falls through to the latest-sample value, which is what the `max` track used before this branch — still never more headroom than the max track.
+  - *There are no host rows whatsoever.* Then `sellable_avg_util` is `0.0`, not `None` (Task 5's empty-hosts fallback). "No hosts" is a known answer — nothing is sellable — not missing data, and `—` would wrongly suggest the figure is unavailable. At the panel level `sellable_avg_util` stays `None` only when no track was computed at all, and the GUI renders that as `—`.
+- **`n_avg >= n_max` must hold for every family, under every data-completeness scenario.** This is the invariant the reported defect violated. Any change that can make a host contribute less to `n_avg` than to `n_max` is wrong, however conservative it looks in isolation.
 - **The SQL tests in Task 1 assert query shape, deliberately.** There is no test database in this repo, so a round-trip test is not available. The risk being guarded is a malformed query — averaging the wrong column, keeping a `DISTINCT ON` that defeats the average, a placeholder-count mismatch against the parameter tuple. Shape assertions catch exactly those. Do not rewrite them as mocked-cursor tests, and do not treat them as vacuous.
 - **Naming, exactly as written:** field `sellable_avg_util` (PanelResult, serialized payload), host payload fields `cpu_used_ghz_avg` / `cpu_cap_ghz_avg` / `cpu_avg_util_pct` / `cpu_used_ghz_peak` / `cpu_cap_ghz_at_peak` / `cpu_peak_util_pct` / `mem_used_gb_avg` / `mem_cap_gb_avg` / `mem_avg_util_pct`, API fields `sellable_avg_qty` / `potential_tl_avg`, track literal `"avg"`.
 - **No DB migration.** `gui_panel_result_snapshot` stores a single `payload jsonb`; new keys need no DDL.
@@ -371,6 +377,31 @@ class TestApplyHostAvg:
             "mem_used_gb_avg": 0.0, "mem_cap_gb_avg": 0.0, "mem_avg_util_pct": 0.0,
         })
         assert "cpu_used_ghz_avg" not in out
+        assert "mem_used_gb_avg" not in out
+
+    def test_writes_only_the_group_that_has_data(self):
+        """The SQL COALESCEs missing averages to 0, so a host with NULL memory
+        columns arrives with mem_*_avg == 0 beside a good CPU average. Writing
+        those zeros would make the host contribute 0 units to n_avg downstream
+        and could pull a family's avg column below its max column. Only the
+        present group may be written, so host_raw_headroom can fall back to the
+        absent resource's peak."""
+        out = DatabaseService._apply_host_avg({"host": "esx01"}, {
+            "cpu_used_ghz_avg": 12.0, "cpu_cap_ghz_avg": 40.0, "cpu_avg_util_pct": 30.0,
+            "mem_used_gb_avg": 0.0, "mem_cap_gb_avg": 0.0, "mem_avg_util_pct": 0.0,
+        })
+        assert out["cpu_used_ghz_avg"] == 12.0
+        assert "mem_used_gb_avg" not in out
+        assert "mem_cap_gb_avg" not in out
+        assert "mem_avg_util_pct" not in out
+
+    def test_writes_memory_group_when_only_memory_has_data(self):
+        out = DatabaseService._apply_host_avg({"host": "esx01"}, {
+            "cpu_used_ghz_avg": 0.0, "cpu_cap_ghz_avg": 0.0, "cpu_avg_util_pct": 0.0,
+            "mem_used_gb_avg": 100.0, "mem_cap_gb_avg": 512.0, "mem_avg_util_pct": 19.5,
+        })
+        assert out["mem_used_gb_avg"] == 100.0
+        assert "cpu_used_ghz_avg" not in out
 
     def test_does_not_mutate_input(self):
         payload = {"host": "esx01"}
@@ -449,28 +480,38 @@ Then, immediately after `_apply_host_mem_peak` (which ends at line 1580):
     def _apply_host_avg(payload: dict, avg: dict[str, float] | None) -> dict:
         """Attach per-host CPU+RAM window averages.
 
-        No-op when the metric is absent or entirely zero: writing 0 would make
-        the avg sellable track read the host as completely idle and offer the
-        whole machine for sale.
+        CPU and memory presence are scored independently, because the SQL wraps
+        every average in COALESCE(..., 0) and so cannot distinguish "genuinely
+        zero" from "no rows". A host with good CPU averages and NULL memory
+        columns must NOT receive mem_*_avg = 0: downstream that would make the
+        host contribute zero units to n_avg and could pull a family's avg
+        column below its max column. Writing only the present group lets
+        host_raw_headroom fall back to that resource's peak instead.
         """
         if not avg:
             return payload
-        if not any(float(v or 0) > 0 for v in avg.values()):
+        cpu_keys = ("cpu_used_ghz_avg", "cpu_cap_ghz_avg", "cpu_avg_util_pct")
+        mem_keys = ("mem_used_gb_avg", "mem_cap_gb_avg", "mem_avg_util_pct")
+        cpu_present = any(float(avg.get(k) or 0) > 0 for k in cpu_keys)
+        mem_present = any(float(avg.get(k) or 0) > 0 for k in mem_keys)
+        if not cpu_present and not mem_present:
             return payload
         out = dict(payload)
-        out["cpu_used_ghz_avg"] = round(float(avg.get("cpu_used_ghz_avg") or 0), 2)
-        out["cpu_cap_ghz_avg"] = round(float(avg.get("cpu_cap_ghz_avg") or 0), 2)
-        out["cpu_avg_util_pct"] = round(float(avg.get("cpu_avg_util_pct") or 0), 1)
-        out["mem_used_gb_avg"] = round(float(avg.get("mem_used_gb_avg") or 0), 2)
-        out["mem_cap_gb_avg"] = round(float(avg.get("mem_cap_gb_avg") or 0), 2)
-        out["mem_avg_util_pct"] = round(float(avg.get("mem_avg_util_pct") or 0), 1)
+        if cpu_present:
+            out["cpu_used_ghz_avg"] = round(float(avg.get("cpu_used_ghz_avg") or 0), 2)
+            out["cpu_cap_ghz_avg"] = round(float(avg.get("cpu_cap_ghz_avg") or 0), 2)
+            out["cpu_avg_util_pct"] = round(float(avg.get("cpu_avg_util_pct") or 0), 1)
+        if mem_present:
+            out["mem_used_gb_avg"] = round(float(avg.get("mem_used_gb_avg") or 0), 2)
+            out["mem_cap_gb_avg"] = round(float(avg.get("mem_cap_gb_avg") or 0), 2)
+            out["mem_avg_util_pct"] = round(float(avg.get("mem_avg_util_pct") or 0), 1)
         return out
 ```
 
 - [ ] **Step 4: Run helper tests to verify they pass**
 
 Run: `cd services/datacenter-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_host_avg_enrichment.py -q`
-Expected: PASS (9 tests)
+Expected: PASS (11 tests)
 
 - [ ] **Step 5: Wire the queries into the classic fetch**
 
@@ -639,11 +680,36 @@ class TestCpuTracks:
         avg = host_raw_headroom(HOST, cpu_track="avg", **kw)
         assert alloc < mx < avg
 
-    def test_avg_track_is_zero_without_avg_data(self):
-        """No avg metric -> no headroom claimed. Never the full machine."""
-        host = {"cpu_cap_ghz": 100.0, "cpu_alloc_ghz": 70.0}
+    def test_avg_track_falls_back_to_peak_when_no_average(self):
+        """No CPU average -> use the peak. Never more headroom than the max
+        track would give, and the host still contributes so n_avg >= n_max."""
+        host = {k: v for k, v in HOST.items() if k != "cpu_used_ghz_avg"}
+        avg = host_raw_headroom(host, resource="cpu", threshold_pct=80.0,
+                                cpu_track="avg")
+        mx = host_raw_headroom(host, resource="cpu", threshold_pct=80.0,
+                               cpu_track="max")
+        assert avg == mx == 40.0
+
+    def test_avg_track_falls_back_to_latest_when_no_average_and_no_peak(self):
+        host = {"cpu_cap_ghz": 100.0, "cpu_alloc_ghz": 70.0,
+                "cpu_used_ghz": 30.0, "cpu_used_pct": 30.0}
         assert host_raw_headroom(host, resource="cpu", threshold_pct=80.0,
-                                 cpu_track="avg") == 0.0
+                                 cpu_track="avg") == 50.0
+
+    def test_avg_never_claims_more_than_max_on_any_data_shape(self):
+        """The load-bearing invariant, checked across completeness scenarios."""
+        shapes = [
+            HOST,
+            {k: v for k, v in HOST.items() if k != "cpu_used_ghz_avg"},
+            {k: v for k, v in HOST.items()
+             if k not in ("cpu_used_ghz_avg", "cpu_used_ghz_peak")},
+        ]
+        for h in shapes:
+            avg = host_raw_headroom(h, resource="cpu", threshold_pct=80.0,
+                                    cpu_track="avg")
+            mx = host_raw_headroom(h, resource="cpu", threshold_pct=80.0,
+                                   cpu_track="max")
+            assert avg >= mx, h.get("cpu_used_ghz_avg")
 
 
 class TestRamTracks:
@@ -714,12 +780,22 @@ In `shared/sellable/host_sellable.py`, replace the `cpu` and `ram` blocks (lines
                 or 0.0
             )
         elif cpu_track == "avg":
-            # No fallback: without an average we claim no headroom rather than
-            # treating the host as idle.
-            alloc = float(host.get("cpu_used_ghz_avg") or 0.0)
-            if alloc <= 0.0:
-                return 0.0
-            util = float(host.get("cpu_avg_util_pct") or 0.0)
+            # No average for this host: fall back to its peak, then to the
+            # latest sample. Peak used >= average used, so the fallback can
+            # never claim more headroom than a real average would -- and the
+            # host still contributes, keeping n_avg >= n_max.
+            alloc = float(
+                host.get("cpu_used_ghz_avg")
+                or host.get("cpu_used_ghz_peak")
+                or host.get("cpu_used_ghz")
+                or 0.0
+            )
+            util = float(
+                host.get("cpu_avg_util_pct")
+                or host.get("cpu_peak_util_pct")
+                or host.get("cpu_used_pct")
+                or 0.0
+            )
         else:
             alloc = float(host.get("cpu_alloc_ghz") or host.get("cpu_alloc") or 0.0)
             util = float(host.get("cpu_used_pct") or host.get("cpu_util_pct") or 0.0)
@@ -738,16 +814,28 @@ In `shared/sellable/host_sellable.py`, replace the `cpu` and `ram` blocks (lines
             util = float(host.get("mem_peak_util_pct") or host.get("mem_used_pct") or 0.0)
             return apply_utilization_gate(cap, used, util, threshold_pct)
         if ram_track == "avg":
-            used = float(host.get("mem_used_gb_avg") or 0.0)
-            if used <= 0.0:
-                return 0.0
+            # Same peak-then-latest fallback as the CPU arm, for the same
+            # reason: a host with no average must not contribute less than it
+            # contributes to the max track.
+            used = float(
+                host.get("mem_used_gb_avg")
+                or host.get("mem_used_gb_peak")
+                or host.get("mem_peak_used")
+                or 0.0
+            )
             cap = float(
                 host.get("mem_cap_gb_avg")
+                or host.get("mem_cap_gb_at_peak")
                 or host.get("mem_cap_gb")
                 or host.get("ram_total")
                 or 0.0
             )
-            util = float(host.get("mem_avg_util_pct") or 0.0)
+            util = float(
+                host.get("mem_avg_util_pct")
+                or host.get("mem_peak_util_pct")
+                or host.get("mem_used_pct")
+                or 0.0
+            )
             return apply_utilization_gate(cap, used, util, threshold_pct)
         cap = float(host.get("mem_cap_gb") or host.get("ram_total") or 0.0)
         alloc = float(host.get("mem_alloc_gb") or host.get("ram_alloc") or 0.0)
@@ -773,7 +861,7 @@ def _normalize_ram_track(ram_track: str) -> str:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `$PY -m pytest tests/test_host_sellable_avg_track.py -q`
-Expected: PASS (12 tests)
+Expected: PASS (14 tests)
 
 - [ ] **Step 5: Check the CPU max change against existing expectations**
 
@@ -984,6 +1072,42 @@ class TestEmptyHostsFallback:
         assert out["cpu"].sellable_avg_util == 0.0
         assert out["ram"].sellable_avg_util == 0.0
 
+class TestPartialAvgData:
+    def test_host_missing_ram_average_still_keeps_avg_above_max(self):
+        """The regression this branch's own review uncovered.
+
+        The SQL wraps averages in COALESCE(..., 0), so a host whose memory
+        columns are NULL across the window arrives with mem_used_gb_avg == 0
+        beside a good CPU average. If that host contributed 0 units to n_avg,
+        the family's avg column could sink below its max column -- reproducing
+        the very defect being fixed. The peak fallback prevents it.
+        """
+        h = {k: v for k, v in _host().items() if k != "mem_used_gb_avg"}
+        out = _by_kind(constrain_by_ratio_per_host_triple_dual(
+            _panels(), _ratio(), [h],
+            cpu_threshold_pct=80.0, ram_threshold_pct=80.0, storage_threshold_pct=85.0,
+        ))
+        for kind in ("cpu", "ram", "storage"):
+            p = out[kind]
+            assert p.sellable_avg_util >= p.sellable_max_util, kind
+            assert p.sellable_avg_util > 0.0, kind
+
+    def test_mixed_fleet_one_host_without_averages(self):
+        """A fleet where only some hosts have averages must still satisfy the
+        invariant -- this is the realistic collector-gap shape."""
+        good = _host()
+        gap = {k: v for k, v in _host().items()
+               if k not in ("mem_used_gb_avg", "cpu_used_ghz_avg")}
+        gap["host"] = "esx02"
+        out = _by_kind(constrain_by_ratio_per_host_triple_dual(
+            _panels(), _ratio(), [good, gap],
+            cpu_threshold_pct=80.0, ram_threshold_pct=80.0, storage_threshold_pct=85.0,
+        ))
+        for kind in ("cpu", "ram", "storage"):
+            assert out[kind].sellable_avg_util >= out[kind].sellable_max_util, kind
+
+
+class TestEmptyHostsFallbackContinued:
     def test_dual_path_populates_avg_directly(self):
         out = _by_kind(constrain_by_ratio_per_host_dual(
             _panels(), _ratio(), [_host()],
@@ -1141,7 +1265,7 @@ and pass `sellable_avg_util=cpu_avg_val`, `sellable_avg_util=ram_avg_val`, `sell
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `$PY -m pytest tests/test_sellable_avg_unit_count.py -q`
-Expected: PASS (6 tests)
+Expected: PASS (8 tests)
 
 - [ ] **Step 7: Run the whole sellable surface**
 
