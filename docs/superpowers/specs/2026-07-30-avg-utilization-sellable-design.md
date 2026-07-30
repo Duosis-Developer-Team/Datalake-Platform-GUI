@@ -217,6 +217,13 @@ The two constraint entry points use different helpers and both need the third tr
   n_ram_avg = host_effective_units(hosts, ratio, cpu_track="avg", ram_track="avg", ...)
   ```
 
+  This second path is **not dead code** — `triple_dual` delegates to it when `hosts` is
+  empty (`computation.py:466-476`), which yields an all-zero result. Two gotchas there:
+  `host_effective_units` has **no CPU `max` branch at all** (any track other than
+  `physical` falls into the `effective` branch reading `cpu_total`/`cpu_alloc`), and it
+  reads RAM peak fields inline rather than via `host_raw_headroom`. Add explicit `max` and
+  `avg` CPU branches so the two entry points agree instead of diverging silently.
+
 `PanelResult` (`models.py`) gains `sellable_avg_util: float | None = None`, populated for
 cpu / ram / storage exactly as `sellable_max_util` is.
 
@@ -230,8 +237,13 @@ argument differs per track — which is the whole point of Can's model.
   serialisation (`:3178`), and snapshot hydration (`:2991`).
 - `inventory_overview_service.py:505`: expose the avg quantity and its TL alongside
   `max_qty`.
-- Snapshot table `gui_panel_result_snapshot`: new nullable column. Existing rows read
-  back as `None`, which the GUI renders as `—` rather than a wrong number.
+- Snapshot: **no migration needed.** `gui_panel_result_snapshot` stores the panel as a
+  single `payload jsonb` column (`UPSERT_PANEL_RESULT_SNAPSHOT`,
+  `app/db/queries/sellable.py:405`), so a new serialised key flows in without DDL.
+  Hydration (`sellable_service.py:2991`) uses the
+  `float(d["k"]) if d.get("k") is not None else None` pattern, which already tolerates
+  payloads written before the key existed — those rows read back as `None`, and the GUI
+  renders `—` rather than a wrong number.
 - Power families keep the allocation-only profile — `sellable_avg_util` stays `None`
   there, mirroring how `sellable_max_util` is nulled at `:2380`.
 
