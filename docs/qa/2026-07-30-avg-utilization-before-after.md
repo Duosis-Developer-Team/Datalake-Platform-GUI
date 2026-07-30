@@ -229,10 +229,23 @@ All three assertions held.
 ## 5. Production measurement — BLOCKED (environment)
 
 **Status: cannot be taken.** Checked directly on this machine: the Docker daemon is
-running (29.2.1) but **no containers are up**, and ports `5000`, `8000`–`8003`, and `8050`
-are all closed. There is no live customer-api / datacenter-api / crm-engine / GUI stack to
-read a before/after number from. Per the task constraints, this is reported as an explicit
-gap — **no number has been estimated, extrapolated, or modelled** in its place.
+running (29.2.1) but **no containers are up**. Verified with `lsof -iTCP:<port>
+-sTCP:LISTEN` and `nc -z 127.0.0.1 <port>` (a `/dev/tcp` probe used earlier gave a false
+"closed" reading for one port — see the correction below): the real compose-stack app
+ports — `8000`–`8003`, `8050`, plus the DB-tier ports `5432`, `6379`, `27017` — are all
+genuinely closed. There is no live customer-api / datacenter-api / crm-engine / GUI stack
+to read a before/after number from. Per the task constraints, this is reported as an
+explicit gap — **no number has been estimated, extrapolated, or modelled** in its place.
+
+**Correction (fix round 1):** port `5000` is **not** closed — `lsof -iTCP:5000
+-sTCP:LISTEN` shows macOS ControlCenter (AirPlay Receiver) listening on it
+(`TCP *:commplex-main (LISTEN)`), and `nc -z 127.0.0.1 5000` succeeds. This does not change
+the "no live stack" conclusion above, because port 5000 is **not one of the compose
+stack's app ports** (`docker-compose.yml` maps `datacenter-api`→8000, `customer-api`→8001,
+`query-api`→8002, `crm-engine`→8070, GUI→8050; nothing in the stack listens on 5000). Port
+5000 matters only for the test-suite hang in the Appendix, where it's the reason
+`psycopg2`'s TCP connect *succeeds* against `localhost:5000` while the Postgres handshake
+never completes — see the corrected explanation there.
 
 ### 5.1 What is missing
 
@@ -464,11 +477,26 @@ $PY -m pytest tests/ -q \
 The literal command from the plan
 (`$PY -m pytest tests/ -q --ignore=tests/test_backup_sidebar_helpers.py
 --ignore=tests/test_zabbix_query_deduplication.py`, no third ignore) hangs on this
-machine. Root cause (documented in the ledger since Task 8, independently confirmed here):
-`tests/test_dc_summary_arch_usage.py` constructs an **un-mocked** `DatabaseService()`,
-which reads `DB_HOST`/`DB_PASS` from `.env` (loaded via `load_dotenv()` at import time,
-`src/auth/config.py`) and tries to open a real `psycopg2` connection pool — a call that
-never returns quickly in this sandboxed environment.
+machine. **Corrected root cause (fix round 1 — my first pass mis-cited the mechanism):**
+`tests/test_dc_summary_arch_usage.py` constructs an **un-mocked** `DatabaseService()`.
+`tests/conftest.py:6-7` runs
+
+```python
+os.environ.setdefault("DB_HOST", "localhost")
+os.environ.setdefault("DB_PASS", "test-secret")
+```
+
+at collection time, and `setdefault` wins over `.env`'s real value because
+`load_dotenv()` does not override an already-set variable by default — so
+`DatabaseService.__init__` (`src/services/db_service.py:151-152`) resolves `DB_HOST` to
+`localhost`, not the real `10.134.16.6` from `.env`. macOS ControlCenter (AirPlay
+Receiver) is listening on `localhost:5000` (§5's correction), so `psycopg2`'s TCP connect
+**succeeds** immediately — but the receiving process speaks AirPlay, not the Postgres
+wire protocol, so the handshake never completes and the call hangs indefinitely instead of
+failing fast. (My first pass attributed this to `src/auth/config.py` reading
+`DB_HOST`/`DB_PASS` via `load_dotenv()`; verified directly, that file only reads
+`AUTH_DB_HOST`/`AUTH_DB_PORT`/`AUTH_DB_PASS` — an unrelated database — and never touches
+`DB_HOST`/`DB_PASS` at all. That citation was wrong; this paragraph replaces it.)
 
 Two ways I confirmed this, neither committed anywhere:
 
