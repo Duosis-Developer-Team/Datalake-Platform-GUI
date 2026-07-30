@@ -1655,8 +1655,22 @@ def build_zerto_license_panel(license_payload: dict | None) -> html.Div | None:
     )
 
 
-def build_veeam_license_panel(crm_license_payload: dict | None) -> html.Div | None:
-    """Render Veeam license from CRM sold reference when data exists; else None."""
+def build_veeam_license_panel(
+    crm_license_payload: dict | None,
+    *,
+    license_compliance: list | None = None,
+) -> html.Div | None:
+    """Render license compliance cards when usage exists; else CRM sold reference.
+
+    Prefer ``assets.backup.license_compliance`` (K-03). Fall back to CRM sold
+    rows only when no usage-based compliance signal is available.
+    """
+    from src.components.backup_license_compliance import build_license_compliance_cards
+
+    compliance_panel = build_license_compliance_cards(license_compliance)
+    if compliance_panel is not None:
+        return html.Div(style={"marginTop": "16px"}, children=compliance_panel)
+
     data = crm_license_payload or {}
     sold_qty = data.get("sold_qty")
     rows = data.get("rows") or []

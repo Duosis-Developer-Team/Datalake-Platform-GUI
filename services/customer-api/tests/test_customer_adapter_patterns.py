@@ -46,3 +46,22 @@ def test_empty_source_patterns_falls_back():
     resolved = build_resolved_patterns([])
     out = _adapter()._resolve_patterns(resolved, "storage_ibm", "%Boyner%")
     assert out == ["%Boyner%"]
+
+
+def test_resolve_patterns_returns_all_netbackup_patterns():
+    rules = [
+        MappingRule(data_source="backup_netbackup", match_method="contains", match_value="Acme"),
+        MappingRule(data_source="backup_netbackup", match_method="prefix", match_value="AcmeCorp"),
+    ]
+    resolved = build_resolved_patterns(rules)
+    out = _adapter()._resolve_patterns(resolved, "backup_netbackup", "%fallback%")
+    assert out == ["%Acme%", "AcmeCorp%"]
+
+
+def test_resolve_patterns_backup_nutanix():
+    rules = [
+        MappingRule(data_source="backup_nutanix", match_method="contains", match_value="Acme"),
+    ]
+    resolved = build_resolved_patterns(rules)
+    out = _adapter()._resolve_patterns(resolved, "backup_nutanix", "%fallback%")
+    assert out == ["%Acme%"]

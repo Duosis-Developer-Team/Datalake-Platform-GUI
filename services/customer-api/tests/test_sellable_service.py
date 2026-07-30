@@ -454,6 +454,7 @@ from app.services.sellable_service import (  # noqa: E402  (grouping for clarity
 def test_family_compute_endpoint_covers_virt_classic_and_hyperconverged():
     assert _FAMILY_COMPUTE_ENDPOINT["virt_classic"] == "classic"
     assert _FAMILY_COMPUTE_ENDPOINT["virt_hyperconverged"] == "hyperconverged"
+    assert _FAMILY_COMPUTE_ENDPOINT["backup_netbackup"] == "backup-netbackup"
 
 
 def test_resource_kind_to_compute_fields_maps_cpu_ram_storage():

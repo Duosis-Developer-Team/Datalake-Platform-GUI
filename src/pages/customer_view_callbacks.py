@@ -4,7 +4,7 @@ from __future__ import annotations
 from urllib.parse import parse_qs
 
 import dash
-from dash import Input, Output, State, callback, ctx
+from dash import ALL, Input, Output, State, callback, ctx
 from dash.exceptions import PreventUpdate
 
 from src.components.customer_loading import LOADING_STAGE_MESSAGES
@@ -38,6 +38,52 @@ def sync_customer_active_tab(active_tab):
     if not active_tab:
         raise PreventUpdate
     return active_tab
+
+
+@callback(
+    Output("customer-backup-category-tab-store", "data"),
+    Input("customer-backup-category-tabs", "value"),
+    prevent_initial_call=True,
+)
+def sync_customer_backup_category_store(value):
+    """Mirror nested Backup category Tabs into an always-present Store."""
+    if value is None:
+        raise PreventUpdate
+    return value
+
+
+@callback(
+    Output("customer-backup-category-tabs", "value"),
+    Input("customer-backup-category-tab-store", "data"),
+    prevent_initial_call=False,
+)
+def apply_customer_backup_category(store_val):
+    """Apply deeplink / store category onto nested Backup tabs when mounted."""
+    if not store_val:
+        raise PreventUpdate
+    return store_val
+
+
+@callback(
+    Output("customer-main-tabs", "value", allow_duplicate=True),
+    Output("customer-view-active-tab", "data", allow_duplicate=True),
+    Output("customer-backup-category-tab-store", "data", allow_duplicate=True),
+    Input({"type": "customer-backup-deeplink", "category": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def deeplink_summary_to_backup(n_clicks_list):
+    """Summary Backup KPI control → Backup tab + Image/Application/Replication category."""
+    if not n_clicks_list or not any(n_clicks_list):
+        raise PreventUpdate
+    trig = ctx.triggered_id
+    if not isinstance(trig, dict) or trig.get("type") != "customer-backup-deeplink":
+        raise PreventUpdate
+    if not ctx.triggered or not ctx.triggered[0].get("value"):
+        raise PreventUpdate
+    category = str(trig.get("category") or "image").strip().lower() or "image"
+    if category not in ("image", "application", "replication"):
+        category = "image"
+    return "backup", "backup", category
 
 
 @callback(

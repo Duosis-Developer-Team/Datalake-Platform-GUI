@@ -3,7 +3,16 @@ from src.utils.crm_source_mapping_ui import MATCH_METHOD_OPTIONS, method_options
 
 
 def test_method_options_exclude_id_exact_for_name_sources():
-    for source in ("virtualization", "netbox_vm_customer", "backup_veeam", "s3_icos", "itsm_servicecore"):
+    for source in (
+        "virtualization",
+        "netbox_vm_customer",
+        "backup_veeam",
+        "backup_zerto",
+        "backup_netbackup",
+        "backup_nutanix",
+        "s3_icos",
+        "itsm_servicecore",
+    ):
         values = [o["value"] for o in method_options_for_source(source)]
         assert "id_exact" not in values, f"{source} must not offer id_exact"
         assert values == ["contains", "prefix", "suffix", "exact"]

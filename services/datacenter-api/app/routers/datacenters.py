@@ -329,6 +329,24 @@ def hyperconv_compute_filtered(
     return db.get_hyperconv_metrics_filtered(dc_code, selected, tf.to_dict())
 
 
+@router.get("/datacenters/{dc_code}/compute/backup-netbackup", response_model=dict[str, Any])
+def backup_netbackup_compute(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    clusters: Optional[str] = Query(
+        None,
+        description="Ignored for NetBackup disk pools; kept for /compute/{kind} contract parity",
+    ),
+):
+    """DC NetBackup sellable capacity (pool usable + used; PostDedup / pool-used semantics).
+
+    Returns the same storage field names as classic/hyperconverged compute
+    (``stor_cap`` TB, ``stor_provisioned_gb`` GB, ``stor_pct``).
+    """
+    return db.get_backup_netbackup_compute(dc_code, tf.to_dict())
+
+
 @router.get("/datacenters/{dc_code}/compute/classic/hosts", response_model=dict[str, Any])
 def classic_compute_hosts(
     dc_code: str,

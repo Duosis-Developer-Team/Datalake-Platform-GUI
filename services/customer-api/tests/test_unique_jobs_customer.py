@@ -178,6 +178,31 @@ def test_fetch_customer_unique_jobs_zerto_merges_all_patterns_and_dedups():
     assert out["totals"]["total_jobs"] == 2
 
 
+def test_fetch_customer_unique_jobs_netbackup_passes_all_patterns():
+    svc = _make_service()
+    seen_params: list = []
+    nbu_row = (
+        "t1", "t2", "j1", "Pol1", "VMWARE", "BACKUP", 0,
+        "Acme-vm", "client", "media", 1000, 2.0, 100,
+    )
+
+    def fake_run_rows(cur, sql, params=None):
+        if sql == cq.CUSTOMER_NETBACKUP_UNIQUE_JOBS_LATEST:
+            seen_params.append(params)
+            return [nbu_row]
+        return []
+
+    with patch.object(svc, "_get_connection", return_value=_ConnCtx()), \
+         patch.object(svc, "_run_rows", side_effect=fake_run_rows), \
+         patch.object(svc, "_unique_jobs_patterns", return_value=["%Acme%", "%AcmeCorp%"]):
+        out = svc._fetch_customer_unique_jobs("Acme", "netbackup", "start", "end")
+
+    assert len(seen_params) == 1
+    assert seen_params[0][0] == ["%Acme%", "%AcmeCorp%"]
+    assert out["rows"]
+    assert out["vendor"] == "netbackup"
+
+
 def test_fetch_customer_unique_jobs_unknown_vendor_returns_empty():
     svc = _make_service()
     out = svc._fetch_customer_unique_jobs("Acme", "bogus", "start", "end")

@@ -70,6 +70,7 @@ products:
     usage_source: Loki - Virutal Machines
     matching_rule: Nutanix Backup imaj policy x gün x total hyperconverged disk
     match_status: capacity
+    panel_key: backup_image_hyperconverged
     family: backup_nutanix
     infra_tables: [nutanix_snapshot_schedule, nutanix_snapshot_schedule_metrics]
 
@@ -107,13 +108,13 @@ products:
     family: virt_classic
     infra_tables: [vm_metrics]
 
-  # ---- NetBackup (Classic image) ----
+  # ---- NetBackup (Classic image / application panels) ----
   "000BLT-203":
     name: Klasik Mimari İmaj Yedekleme (Veritas Netbackup)
     usage_source: netbackup
     matching_rule: Netbackup imaj backuplar
     match_status: capacity
-    panel_key: backup_netbackup_storage
+    panel_key: backup_netbackup_image
     family: backup_netbackup
     infra_tables: [raw_netbackup_disk_pools_metrics, raw_netbackup_jobs_metrics]
   "000BLT-142":
@@ -121,7 +122,7 @@ products:
     usage_source: netbackup
     matching_rule: netbackuptan alınan uygulama yedekleri
     match_status: capacity
-    panel_key: backup_netbackup_storage
+    panel_key: backup_netbackup_application
     family: backup_netbackup
     infra_tables: [raw_netbackup_jobs_metrics]
 

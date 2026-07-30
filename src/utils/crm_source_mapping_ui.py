@@ -5,7 +5,7 @@ from shared.customer import match as alias_match
 
 UI_COLUMNS: list[tuple[str, str, tuple[str, ...]]] = [
     ("virtualization", "Virtualization", ("virtualization", "netbox_vm_customer")),
-    ("backup", "Backup & Replication", ("backup_veeam", "backup_zerto", "backup_netbackup")),
+    ("backup", "Backup & Replication", ("backup_veeam", "backup_zerto", "backup_netbackup", "backup_nutanix")),
     ("physical_device", "Physical Device", ("physical_device",)),
     ("storage", "Storage", ("storage_ibm",)),
     ("s3", "S3", ("s3_icos",)),

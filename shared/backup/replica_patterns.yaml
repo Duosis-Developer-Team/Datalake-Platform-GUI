@@ -1,0 +1,71 @@
+# Global DR / replica VM name patterns.
+# Seed for Administration → Platform → Backup Mapping (Veeam / Zerto separators).
+#
+# Classification order (same as CRM-Inventory-Infra-Matching):
+#   1) silinecek exclude  → internal / silinecek report (not billable, not replica)
+#   2) DR / replica patterns → backup / replication resource pool
+#   3) remainder → billable virtualization
+#
+# Operators may later override these via Platform Backup Mapping UI / webui DB;
+# this YAML remains the default seed when no override is loaded.
+#
+# Match methods align with gui_crm_customer_source_mapping style:
+#   suffix | contains | regex (future)
+
+version: 1
+
+# Step 1 — exclude before replica classification (case-insensitive contains).
+silinecek:
+  - id: silinecek_contains
+    match: contains
+    value: silinecek
+    case_insensitive: true
+
+# Step 2 — DR / replica pool (any match → replica bucket).
+replica_patterns:
+  # Suffixes (case-insensitive)
+  - id: suffix_dr
+    match: suffix
+    value: _DR
+    case_insensitive: true
+  - id: suffix_drc
+    match: suffix
+    value: _DRC
+    case_insensitive: true
+  - id: suffix_replica
+    match: suffix
+    value: _replica
+    case_insensitive: true
+  - id: suffix_replika
+    match: suffix
+    value: _replika
+    case_insensitive: true
+
+  # Embedded -dr- / _dr_ (also -dr_ / _dr- via classifier regex)
+  - id: embedded_dr_hyphen
+    match: contains
+    value: "-dr-"
+    case_insensitive: true
+  - id: embedded_dr_underscore
+    match: contains
+    value: "_dr_"
+    case_insensitive: true
+
+  # Broad contains (covers residual replica/replika tokens)
+  - id: contains_replica
+    match: contains
+    value: replica
+    case_insensitive: true
+  - id: contains_replika
+    match: contains
+    value: replika
+    case_insensitive: true
+
+# Documentary: vendor counter reconciliation targets (Platform separators).
+vendor_reconciliation:
+  veeam:
+    description: Compare replica pool size to SUM(objects_count) for type=VSphereReplica
+    metric: objects_count
+  zerto:
+    description: Compare replica pool size to SUM(vmscount) across VPGs
+    metric: vmscount

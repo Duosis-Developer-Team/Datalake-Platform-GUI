@@ -72,8 +72,10 @@ from src.pages.customer_view_perspective import (
     PERSPECTIVE_MANAGER,
     default_perspective,
     effective_perspective,
+    include_sold_vs_used as perspective_include_sold_vs_used,
     perspective_access,
     show_perspective_switch,
+    show_post_dedup as perspective_show_post_dedup,
 )
 
 
@@ -1673,34 +1675,64 @@ def _tab_zerto(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div
     return dmc.Stack(gap="lg", children=body_z)
 
 
-def _tab_netbackup(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div | None = None):
+def _tab_netbackup(
+    backup_assets: dict,
+    backup_totals: dict,
+    crm_eff_panel: html.Div | None = None,
+    *,
+    show_post_dedup: bool = True,
+):
     nb = backup_assets.get("netbackup", {}) or {}
-    pre_gib    = float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0)
-    post_gib   = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
+    pre_gib = float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0)
+    post_gib = float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0)
     dedup_fact = nb.get("deduplication_factor", "1x")
+    margin = max(pre_gib - post_gib, 0.0)
 
     head_nb = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
-    kpi_nb = _build_metrics_grid(
-        [
+    if show_post_dedup:
+        kpi_items = [
             (pre_gib, "Pre-dedup (GiB)", f"{pre_gib:.2f}", "mdi:database-lock-outline", "indigo"),
             (post_gib, "Stored (GiB)", f"{post_gib:.2f}", "mdi:database-arrow-down-outline", "teal"),
-            (dedup_fact if dedup_fact not in (None, "1x", "1.0x") else None, "Dedup factor", dedup_fact, "mdi:percent-outline", "orange"),
-        ],
-        cols=3,
-    )
+            (
+                dedup_fact if dedup_fact not in (None, "1x", "1.0x") else None,
+                "Dedup factor",
+                dedup_fact,
+                "mdi:percent-outline",
+                "orange",
+            ),
+            (margin if pre_gib > 0 else None, "Dedup margin (GiB)", f"{margin:.2f}", "mdi:chart-areaspline", "grape"),
+        ]
+        cols = 4
+    else:
+        kpi_items = [
+            (pre_gib, "Pre-dedup (GiB)", f"{pre_gib:.2f}", "mdi:database-lock-outline", "indigo"),
+        ]
+        cols = 1
+    kpi_nb = _build_metrics_grid(kpi_items, cols=cols)
     body_nb = head_nb + ([kpi_nb] if kpi_nb is not None else [])
+    table_rows = [html.Tr([html.Td("Pre-Dedup Size"), html.Td(f"{pre_gib:.2f} GiB")])]
+    if show_post_dedup:
+        table_rows.extend(
+            [
+                html.Tr([html.Td("Post-Dedup Size"), html.Td(f"{post_gib:.2f} GiB")]),
+                html.Tr([html.Td("Dedup Ratio"), html.Td(dedup_fact)]),
+                html.Tr([html.Td("Dedup Margin"), html.Td(f"{margin:.2f} GiB")]),
+            ]
+        )
     body_nb.append(
-        _section_card("Billing Summary",
-            "Total backup data transferred vs. stored after deduplication",
+        _section_card(
+            "Billing Summary",
+            (
+                "Total backup data transferred vs. stored after deduplication"
+                if show_post_dedup
+                else "Billable backup data transferred (pre-dedup)"
+            ),
             dmc.Table(
-                striped=True, highlightOnHover=True,
+                striped=True,
+                highlightOnHover=True,
                 children=[
                     html.Thead(html.Tr([html.Th("Metric"), html.Th("Value")])),
-                    html.Tbody([
-                        html.Tr([html.Td("Pre-Dedup Size"),  html.Td(f"{pre_gib:.2f} GiB")]),
-                        html.Tr([html.Td("Post-Dedup Size"), html.Td(f"{post_gib:.2f} GiB")]),
-                        html.Tr([html.Td("Dedup Ratio"),     html.Td(dedup_fact)]),
-                    ]),
+                    html.Tbody(table_rows),
                 ],
             ),
         )
@@ -1715,18 +1747,22 @@ def _tab_netbackup_category(
     *,
     title: str,
     subtitle: str,
+    show_post_dedup: bool = True,
 ):
     """NetBackup image or application billing breakdown for Customer View."""
+    from src.components.backup_license_compliance import netbackup_category_table_rows
+
     nb = backup_assets.get("netbackup", {}) or {}
     cat = nb.get(category) or {}
     pre_gib = float(cat.get("pre_dedup_size_gib", 0) or 0)
     post_gib = float(cat.get("post_dedup_size_gib", 0) or 0)
     dedup_fact = cat.get("deduplication_factor", "1x")
     policy_types = (nb.get("policy_types") or {}).get(category) or []
+    margin = max(pre_gib - post_gib, 0.0)
 
     head = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
-    kpi = _build_metrics_grid(
-        [
+    if show_post_dedup:
+        kpi_items = [
             (pre_gib, "Pre-dedup (GiB)", f"{pre_gib:.2f}", "mdi:database-lock-outline", "indigo"),
             (post_gib, "Stored (GiB)", f"{post_gib:.2f}", "mdi:database-arrow-down-outline", "teal"),
             (
@@ -1736,32 +1772,43 @@ def _tab_netbackup_category(
                 "mdi:percent-outline",
                 "orange",
             ),
-        ],
-        cols=3,
-    )
+            (margin if pre_gib > 0 else None, "Dedup margin (GiB)", f"{margin:.2f}", "mdi:chart-areaspline", "grape"),
+        ]
+        cols = 4
+    else:
+        kpi_items = [
+            (pre_gib, "Pre-dedup (GiB)", f"{pre_gib:.2f}", "mdi:database-lock-outline", "indigo"),
+        ]
+        cols = 1
+    kpi = _build_metrics_grid(kpi_items, cols=cols)
     body = head + ([kpi] if kpi is not None else [])
+    table_rows = [
+        html.Tr([html.Td(label), html.Td(value)])
+        for label, value in netbackup_category_table_rows(
+            pre_gib=pre_gib,
+            post_gib=post_gib,
+            dedup_fact=dedup_fact,
+            show_post_dedup=show_post_dedup,
+        )
+    ]
+    table_rows.append(
+        html.Tr(
+            [
+                html.Td("Policy types"),
+                html.Td(", ".join(policy_types) if policy_types else "—"),
+            ]
+        )
+    )
     body.append(
         _section_card(
             title,
-            subtitle,
+            subtitle if show_post_dedup else "Billable pre-dedup capacity for this category",
             dmc.Table(
                 striped=True,
                 highlightOnHover=True,
                 children=[
                     html.Thead(html.Tr([html.Th("Metric"), html.Th("Value")])),
-                    html.Tbody(
-                        [
-                            html.Tr([html.Td("Pre-Dedup Size"), html.Td(f"{pre_gib:.2f} GiB")]),
-                            html.Tr([html.Td("Post-Dedup Size"), html.Td(f"{post_gib:.2f} GiB")]),
-                            html.Tr([html.Td("Dedup Ratio"), html.Td(dedup_fact)]),
-                            html.Tr(
-                                [
-                                    html.Td("Policy types"),
-                                    html.Td(", ".join(policy_types) if policy_types else "—"),
-                                ]
-                            ),
-                        ]
-                    ),
+                    html.Tbody(table_rows),
                 ],
             ),
         )
@@ -2265,10 +2312,25 @@ def _build_backup_tabs(
     eff_by_cat: list | None,
     *,
     include_sold_vs_used: bool,
+    show_post_dedup: bool = True,
     nutanix_payload: dict | None = None,
+    initial_category: str | None = None,
 ) -> html.Div:
     """Backup category tabs (Image / Application / Replication); sold-vs-used optional."""
+    from src.components.backup_license_compliance import (
+        build_license_compliance_strip,
+        filter_netbackup_efficiency_rows,
+    )
+
     backup_tab_defs: list[tuple[str, str, html.Div]] = []
+
+    def _eff_panel_for_netbackup(category: str) -> html.Div | None:
+        if not include_sold_vs_used:
+            return None
+        rows = filter_netbackup_efficiency_rows(
+            eff_by_cat, category, allow_legacy_fallback=True
+        )
+        return build_sold_vs_used_stack(rows)
 
     def _eff_panel(scope: str) -> html.Div | None:
         if not include_sold_vs_used:
@@ -2296,9 +2358,10 @@ def _build_backup_tabs(
                 _tab_netbackup_category(
                     backup_assets,
                     "image",
-                    crm_eff_panel=_eff_panel("backup.netbackup"),
+                    crm_eff_panel=_eff_panel_for_netbackup("image"),
                     title="Classic Image Backup (NetBackup VMWARE)",
                     subtitle="Image backup transferred vs. stored after deduplication",
+                    show_post_dedup=show_post_dedup,
                 )
             )
         if has_nutanix:
@@ -2322,21 +2385,24 @@ def _build_backup_tabs(
             _tab_netbackup_category(
                 backup_assets,
                 "application",
-                crm_eff_panel=_eff_panel("backup.netbackup"),
+                crm_eff_panel=_eff_panel_for_netbackup("application"),
                 title="Application Backup (NetBackup)",
                 subtitle="Application / DB policy types transferred vs. stored",
+                show_post_dedup=show_post_dedup,
             )
             if app_has_split
             else _tab_netbackup(
                 backup_assets,
                 backup_totals,
-                crm_eff_panel=_eff_panel("backup.netbackup"),
+                crm_eff_panel=_eff_panel_for_netbackup("application"),
+                show_post_dedup=show_post_dedup,
             )
         )
         backup_tab_defs.append(("application", "Application Backup", app_panel))
 
     has_veeam = backup_vendor_has_data(backup_totals, backup_assets, "veeam")
     has_zerto = backup_vendor_has_data(backup_totals, backup_assets, "zerto")
+    license_rows = backup_assets.get("license_compliance") or []
     if has_veeam or has_zerto:
         repl_children: list = []
         if has_veeam:
@@ -2348,12 +2414,6 @@ def _build_backup_tabs(
                 )
             )
             repl_children.append(build_unique_jobs_inventory_section("veeam", scope="customer"))
-            if include_sold_vs_used:
-                veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.veeam")
-                if veeam_lic is None:
-                    veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "backup.veeam")
-                if veeam_lic is not None:
-                    repl_children.append(veeam_lic)
         if has_zerto:
             repl_children.append(
                 _tab_zerto(
@@ -2363,20 +2423,40 @@ def _build_backup_tabs(
                 )
             )
             repl_children.append(build_unique_jobs_inventory_section("zerto", scope="customer"))
-            if include_sold_vs_used:
-                zerto_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.zerto")
-                if zerto_lic is not None:
-                    repl_children.append(zerto_lic)
+        # License compliance cards (K-03) — prefer assets.backup.license_compliance.
+        from src.components.backup_panel import build_veeam_license_panel
+
+        lic_panel = build_veeam_license_panel(None, license_compliance=license_rows)
+        if lic_panel is None and include_sold_vs_used:
+            veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.veeam")
+            if veeam_lic is None:
+                veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "backup.veeam")
+            if veeam_lic is not None:
+                repl_children.append(veeam_lic)
+            zerto_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.zerto")
+            if zerto_lic is not None:
+                repl_children.append(zerto_lic)
+        elif lic_panel is not None:
+            repl_children.append(lic_panel)
         backup_tab_defs.append(
             ("replication", "Replication", dmc.Stack(gap="lg", children=repl_children))
         )
 
+    head: list = [build_license_compliance_strip(license_rows)]
+    # Avoid empty strip taking space
+    if not getattr(head[0], "children", None):
+        head = []
+
     if backup_tab_defs:
-        return dmc.Tabs(
+        tab_values = {v for v, _label, _panel in backup_tab_defs}
+        preferred = (initial_category or "").strip().lower()
+        default_value = preferred if preferred in tab_values else backup_tab_defs[0][0]
+        tabs = dmc.Tabs(
+            id="customer-backup-category-tabs",
             color="green",
             variant="outline",
             radius="md",
-            value=backup_tab_defs[0][0],
+            value=default_value,
             children=[
                 dmc.TabsList(
                     children=[dmc.TabsTab(label, value=value) for value, label, _panel in backup_tab_defs]
@@ -2387,12 +2467,14 @@ def _build_backup_tabs(
                 ],
             ],
         )
-    return dmc.Alert(
+        return dmc.Stack(gap="lg", children=head + [tabs])
+    empty = dmc.Alert(
         color="gray",
         variant="light",
         title="No backup services",
         children="No billable backup vendor data for this customer in the selected period.",
     )
+    return dmc.Stack(gap="lg", children=head + [empty]) if head else empty
 
 
 def _build_virt_content(
@@ -2796,6 +2878,8 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
 
     def _sections_for(perspective: str) -> dict:
         is_mgr = perspective == PERSPECTIVE_MANAGER
+        sold_vs = perspective_include_sold_vs_used(perspective)
+        post_ok = perspective_show_post_dedup(perspective)
         sections = {
             "summary": _tab_summary(name, perspective=perspective, **summary_kwargs),
             "virt": _build_virt_content(
@@ -2806,7 +2890,11 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
             ),
             "avail": avail_panel,
             "backup": _build_backup_tabs(
-                backup_assets, backup_totals, eff_by_cat, include_sold_vs_used=is_mgr,
+                backup_assets,
+                backup_totals,
+                eff_by_cat,
+                include_sold_vs_used=sold_vs,
+                show_post_dedup=post_ok,
                 nutanix_payload=api.get_customer_nutanix_snapshots(name, time_range),
             ),
             "itsm": itsm_panel,
@@ -2901,7 +2989,13 @@ def render_virtualization_tab(name: str, tr: dict | None, perspective: str):
     )
 
 
-def render_backup_tab(name: str, tr: dict | None, perspective: str):
+def render_backup_tab(
+    name: str,
+    tr: dict | None,
+    perspective: str,
+    *,
+    initial_category: str | None = None,
+):
     """Backup tab — customer resources (backup assets/totals) + efficiency rows."""
     resources = api.get_customer_resources(name, tr)
     totals = resources.get("totals", {}) or {}
@@ -2910,8 +3004,10 @@ def render_backup_tab(name: str, tr: dict | None, perspective: str):
         assets.get("backup", {}) or {},
         totals.get("backup", {}) or {},
         api.get_customer_efficiency_by_category(name, tr),
-        include_sold_vs_used=(perspective == PERSPECTIVE_MANAGER),
+        include_sold_vs_used=perspective_include_sold_vs_used(perspective),
+        show_post_dedup=perspective_show_post_dedup(perspective),
         nutanix_payload=api.get_customer_nutanix_snapshots(name, tr),
+        initial_category=initial_category,
     )
 
 
@@ -3467,6 +3563,7 @@ def render_customer_shell(
                 id="customer-view-ctx",
                 data={"customer": chosen, "perspective": perspective, "tr": tr},
             ),
+            dcc.Store(id="customer-backup-category-tab-store", data="image"),
             html.Div(
                 id="cust-as-of-stamp",
                 style={
@@ -3490,6 +3587,26 @@ def render_customer_shell(
 
 
 def _register_tab_callback(tab: str) -> None:
+    if tab == "backup":
+        @callback(
+            Output("cust-tab-body-backup", "children"),
+            Input("customer-view-ctx", "data"),
+            State("customer-backup-category-tab-store", "data"),
+            prevent_initial_call=False,
+        )
+        def _fill_backup(ctx_data, category):
+            ctx_data = ctx_data or {}
+            customer = (ctx_data.get("customer") or "").strip()
+            if not customer:
+                return dash.no_update
+            return render_backup_tab(
+                customer,
+                ctx_data.get("tr"),
+                ctx_data.get("perspective") or PERSPECTIVE_MANAGER,
+                initial_category=category,
+            )
+        return
+
     @callback(
         Output(f"cust-tab-body-{tab}", "children"),
         Input("customer-view-ctx", "data"),
@@ -3607,6 +3724,7 @@ def build_customer_layout_shell(
         ),
         dcc.Store(id="customer-view-perspective-store", data=None),
         dcc.Store(id="customer-view-active-tab", data="summary"),
+        dcc.Store(id="customer-backup-category-tab-store", data="image"),
         dcc.Store(id="customer-export-store", data=None),
         dcc.Download(id="customer-export-download"),
         html.Div(

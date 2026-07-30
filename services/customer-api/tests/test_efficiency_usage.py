@@ -84,6 +84,88 @@ def test_resolve_zerto_storage_uses_protected_gb():
     assert used == 4096.0
 
 
+def test_resolve_netbackup_image_uses_pre_dedup():
+    """K-01: image panel efficiency used = PreDedup (not PostDedup)."""
+    assets = {
+        "backup": {
+            "netbackup": {
+                "pre_dedup_size_gib": 900.0,
+                "post_dedup_size_gib": 100.0,
+                "image": {
+                    "pre_dedup_size_gib": 400.0,
+                    "post_dedup_size_gib": 50.0,
+                },
+                "application": {
+                    "pre_dedup_size_gib": 500.0,
+                    "post_dedup_size_gib": 50.0,
+                },
+            }
+        }
+    }
+    totals = {"backup": {"netbackup_pre_dedup_gib": 900.0, "netbackup_post_dedup_gib": 100.0}}
+    used, note = resolve_used_quantity(
+        category_code="backup_netbackup_image",
+        resource_unit="TB",
+        assets=assets,
+        totals=totals,
+    )
+    assert used == 400.0
+    assert note is None
+
+
+def test_resolve_netbackup_image_falls_back_to_totals_pre_dedup():
+    assets = {"backup": {"netbackup": {}}}
+    totals = {"backup": {"netbackup_pre_dedup_gib": 777.0, "netbackup_post_dedup_gib": 11.0}}
+    used, _ = resolve_used_quantity(
+        category_code="backup_netbackup_image",
+        resource_unit="TB",
+        assets=assets,
+        totals=totals,
+    )
+    assert used == 777.0
+
+
+def test_resolve_netbackup_application_uses_pre_dedup():
+    assets = {
+        "backup": {
+            "netbackup": {
+                "application": {
+                    "pre_dedup_size_gib": 321.0,
+                    "post_dedup_size_gib": 40.0,
+                }
+            }
+        }
+    }
+    totals = {"backup": {"netbackup_pre_dedup_gib": 900.0, "netbackup_post_dedup_gib": 100.0}}
+    used, _ = resolve_used_quantity(
+        category_code="backup_netbackup_application",
+        resource_unit="TB",
+        assets=assets,
+        totals=totals,
+    )
+    assert used == 321.0
+
+
+def test_resolve_netbackup_legacy_uses_pre_dedup_not_post():
+    """Legacy backup_netbackup bucket uses totals PreDedup (customer semantics)."""
+    assets = {
+        "backup": {
+            "netbackup": {
+                "pre_dedup_size_gib": 900.0,
+                "post_dedup_size_gib": 100.0,
+            }
+        }
+    }
+    totals = {"backup": {"netbackup_pre_dedup_gib": 900.0, "netbackup_post_dedup_gib": 100.0}}
+    used, _ = resolve_used_quantity(
+        category_code="backup_netbackup",
+        resource_unit="TB",
+        assets=assets,
+        totals=totals,
+    )
+    assert used == 900.0
+
+
 def test_resolve_unmatched_returns_zero():
     """Products with NULL category_code surface as zero usage (no panel)."""
     used, note = resolve_used_quantity(

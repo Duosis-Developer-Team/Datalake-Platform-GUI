@@ -4095,6 +4095,34 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             "rows": rows_out,
         }
 
+    def get_backup_netbackup_compute(self, dc_code: str, time_range: dict | None = None) -> dict:
+        """Compute-shaped NetBackup pool capacity for sellable (PostDedup / pool used).
+
+        Aligns with ``/compute/{kind}`` field names used by customer-api sellable:
+        ``stor_cap`` (TB usable), ``stor_provisioned_gb`` (GB used), ``stor_pct``.
+        """
+        pools = self.get_dc_netbackup_pools(dc_code, time_range)
+        rows = pools.get("rows") or []
+        usable_bytes = sum(int(r.get("usablesizebytes") or 0) for r in rows)
+        used_bytes = sum(int(r.get("usedcapacitybytes") or 0) for r in rows)
+        bytes_per_tb = 1024.0 ** 4
+        bytes_per_gb = 1024.0 ** 3
+        stor_cap = round(usable_bytes / bytes_per_tb, 3)
+        stor_used = round(used_bytes / bytes_per_tb, 3)
+        stor_provisioned_gb = round(used_bytes / bytes_per_gb, 2)
+        stor_pct = round((used_bytes / usable_bytes * 100.0) if usable_bytes > 0 else 0.0, 1)
+        section = _empty_compute_section()
+        section.update(
+            {
+                "stor_cap": stor_cap,
+                "stor_used": stor_used,
+                "stor_provisioned_gb": stor_provisioned_gb,
+                "stor_pct": stor_pct,
+                "pools": list(pools.get("pools") or []),
+            }
+        )
+        return section
+
     def _fetch_dc_zerto_sites(self, dc_code: str, start_ts, end_ts) -> dict:
         """Fetch latest Zerto site metrics for a DC and time range."""
         with self._get_connection() as conn:

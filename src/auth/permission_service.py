@@ -162,6 +162,10 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
             return "page:settings_crm_resource_ratios"
         if admin_p.startswith("/administration/integrations/crm/unit-conversions"):
             return "page:settings_crm_unit_conversions"
+        if admin_p.startswith("/administration/integrations/crm/backup"):
+            return "page:settings_platform_backup_mapping"
+        if admin_p.startswith("/administration/platform/backup-mapping"):
+            return "page:settings_platform_backup_mapping"
         if admin_p.startswith("/administration/crm/service-mapping"):
             return "page:settings_service_mapping"
         if admin_p.rstrip("/") == "/administration/integrations":
@@ -170,6 +174,8 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
             return "grp:settings"
         if admin_p.startswith("/administration/integrations"):
             return "page:settings_integrations"
+        if admin_p.startswith("/administration/platform"):
+            return "page:settings_platform_backup_mapping"
         return "grp:settings"
     return "page:overview"
 

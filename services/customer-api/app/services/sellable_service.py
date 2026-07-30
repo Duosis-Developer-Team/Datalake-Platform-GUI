@@ -220,9 +220,11 @@ _REDIS_FIELD_UNITS: dict[tuple[str, str], str] = {
 # Sellable card and Capacity Planning numbers.
 
 # Maps panel family → datacenter-api compute endpoint kind.
+# backup_netbackup uses /compute/backup-netbackup (pool usable + used; PostDedup semantics).
 _FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
     "virt_classic":         "classic",
     "virt_hyperconverged":  "hyperconverged",
+    "backup_netbackup":     "backup-netbackup",
 }
 
 # Families whose CPU/RAM sellable is computed host-by-host (ADR: host-based
@@ -1097,7 +1099,7 @@ SELECT _tot, _alloc FROM latest
         except Exception:  # noqa: BLE001
             logger.exception(
                 "SellableService: NetBackup inventory aggregate failed (panel=%s)",
-                "backup_netbackup_storage",
+                getattr(src, "panel_key", "backup_netbackup"),
             )
             return 0.0, 0.0
 
@@ -1217,7 +1219,8 @@ SELECT _tot, _alloc FROM latest
             return float(src.manual_total or 0.0), float(src.manual_allocated or 0.0)
         if self._bare_table_name(src.source_table) == "raw_ibm_storage_system":
             return self._query_ibm_storage_string_totals(src, dc_code)
-        if src.panel_key == "backup_netbackup_storage":
+        # Image / application / legacy storage panels share pool capacity path.
+        if (src.panel_key or "").startswith("backup_netbackup"):
             return self._query_netbackup_storage_totals(src, dc_code)
         if src.panel_key == "dc_hosting_u":
             return self._query_colocation_totals(src, dc_code)

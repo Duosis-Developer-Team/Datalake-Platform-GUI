@@ -741,7 +741,13 @@ class CustomerService:
         try:
             rp = self.resolve_source_patterns(name)
             seen: set[str] = set()
-            for src in ("virtualization", "backup_veeam", "backup_zerto", "backup_netbackup"):
+            for src in (
+                "virtualization",
+                "backup_veeam",
+                "backup_zerto",
+                "backup_netbackup",
+                "backup_nutanix",
+            ):
                 for p in rp.ilike_patterns(src):
                     if p not in seen:
                         seen.add(p)
@@ -1888,11 +1894,11 @@ class CustomerService:
     def _fetch_customer_unique_jobs(self, customer_name: str, vendor: str, start_ts, end_ts) -> dict:
         """Latest-per-identity rows for a customer (one vendor), pattern-filtered + normalized.
 
-        Mirrors CustomerAdapter's `_resolve_patterns` usage: Veeam/NetBackup use
-        only the first (highest-priority) resolved pattern, same as
-        `_customer.fetch()` does for `veeam_pattern` / `netbackup_workload_pattern`.
-        Zerto merges every resolved pattern (dedup by VPG id) since a customer's
-        VPGs can be named after more than one source naming convention.
+        Mirrors CustomerAdapter's `_resolve_patterns` usage: Veeam uses only the
+        first (highest-priority) resolved pattern. NetBackup and Zerto merge every
+        resolved pattern (NetBackup via ``ILIKE ANY``; Zerto by looping + VPG id
+        dedupe) since a customer's workloads/VPGs can follow more than one naming
+        convention.
         """
         sql_map = {
             "veeam": cq.CUSTOMER_VEEAM_UNIQUE_JOBS_LATEST,
@@ -1904,14 +1910,13 @@ class CustomerService:
             return {"rows": [], "totals": aggregate_unique_jobs([], vendor), "as_of": "", "vendor": vendor}
 
         patterns = self._unique_jobs_patterns(customer_name, vendor)
-        query_patterns = patterns if vendor == "zerto" else patterns[:1]
 
         rows: list[dict] = []
         seen_ids: set[str] = set()
         with self._get_connection() as conn:
             with conn.cursor() as cur:
-                for pattern in query_patterns:
-                    raw = self._run_rows(cur, sql, (pattern, start_ts, end_ts))
+                if vendor == "netbackup":
+                    raw = self._run_rows(cur, sql, (patterns, start_ts, end_ts))
                     for r in raw or []:
                         mapped = self._map_unique_row(vendor, r)
                         dedupe_key = str(mapped.get("id") or mapped.get("jobid") or "")
@@ -1920,6 +1925,18 @@ class CustomerService:
                                 continue
                             seen_ids.add(dedupe_key)
                         rows.append(mapped)
+                else:
+                    query_patterns = patterns if vendor == "zerto" else patterns[:1]
+                    for pattern in query_patterns:
+                        raw = self._run_rows(cur, sql, (pattern, start_ts, end_ts))
+                        for r in raw or []:
+                            mapped = self._map_unique_row(vendor, r)
+                            dedupe_key = str(mapped.get("id") or mapped.get("jobid") or "")
+                            if dedupe_key:
+                                if dedupe_key in seen_ids:
+                                    continue
+                                seen_ids.add(dedupe_key)
+                            rows.append(mapped)
 
         normalized = normalize_unique_job_rows(rows)
         return {

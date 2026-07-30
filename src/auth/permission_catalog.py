@@ -454,10 +454,17 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 sort_order=65,
             ),
             _n(
-                "page:settings_crm_backup",
-                "CRM backup multipliers",
+                "page:settings_platform_backup_mapping",
+                "Platform Backup Mapping",
                 "config",
-                route_pattern="/administration/integrations/crm/backup",
+                route_pattern="/administration/platform/backup-mapping",
+                sort_order=68,
+            ),
+            _n(
+                "page:settings_crm_backup",
+                "CRM backup multipliers (alias → Platform Backup Mapping)",
+                "config",
+                route_pattern="/administration/platform/backup-mapping",
                 sort_order=67,
             ),
             _n(

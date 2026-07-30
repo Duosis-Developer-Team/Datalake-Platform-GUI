@@ -39,3 +39,13 @@ def effective_perspective(requested: str | None, access: dict[str, bool]) -> str
     if choice == PERSPECTIVE_MANAGER and access.get("manager"):
         return PERSPECTIVE_MANAGER
     return default_perspective(access)
+
+
+def include_sold_vs_used(perspective: str | None) -> bool:
+    """CRM sold-vs-used gauges are manager-only on Backup / Virt detail tabs."""
+    return (perspective or PERSPECTIVE_MANAGER) == PERSPECTIVE_MANAGER
+
+
+def show_post_dedup(perspective: str | None) -> bool:
+    """PostDedup + dedup margin are manager-only (K-01 / K-06)."""
+    return (perspective or PERSPECTIVE_MANAGER) == PERSPECTIVE_MANAGER

@@ -62,9 +62,13 @@ def policy_types_for_category(
     return sorted(set(out), key=lambda s: s.upper())
 
 
-@lru_cache(maxsize=1)
-def load_policy_panel_mapping() -> dict[str, Any]:
+@lru_cache(maxsize=8)
+def load_policy_panel_mapping(path: str | None = None) -> dict[str, Any]:
     """Load policytype → panel mapping from YAML (cached).
+
+    Optional ``path`` supports a future DB-export / Platform Backup Mapping
+    override file; when omitted, the packaged ``policy_panel_mapping.yaml``
+    default is used.
 
     Falls back to the default ``VMWARE`` → image mapping when the file is
     missing or unreadable. Structure::
@@ -83,11 +87,12 @@ def load_policy_panel_mapping() -> dict[str, Any]:
     except ImportError:
         return default
 
-    if not _MAPPING_PATH.is_file():
+    mapping_path = Path(path) if path else _MAPPING_PATH
+    if not mapping_path.is_file():
         return default
 
     try:
-        raw = yaml.safe_load(_MAPPING_PATH.read_text(encoding="utf-8")) or {}
+        raw = yaml.safe_load(mapping_path.read_text(encoding="utf-8")) or {}
     except OSError:
         return default
 

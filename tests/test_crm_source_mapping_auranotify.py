@@ -24,6 +24,11 @@ def test_auranotify_is_last_column():
     assert UI_COLUMNS[-1][2] == ("auranotify",)
 
 
+def test_backup_column_includes_nutanix_source():
+    backup = next(col for col in UI_COLUMNS if col[0] == "backup")
+    assert backup[2] == ("backup_veeam", "backup_zerto", "backup_netbackup", "backup_nutanix")
+
+
 def test_auranotify_entry_loads_into_its_section():
     state = build_editor_state(_alias_with_auranotify())
     assert state["sections"]["auranotify"][0]["match_value"] == "1498"

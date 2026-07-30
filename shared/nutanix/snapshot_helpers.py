@@ -156,3 +156,58 @@ def aggregate_snapshots(rows: list[dict]) -> dict:
         "schedule_type_breakdown": sched,
         "state_breakdown": state,
     }
+
+
+def estimate_formula_gb(
+    retention_rp: int | float | None,
+    protected_disk_gb: int | float | None,
+) -> float:
+    """Estimate Nutanix snapshot capacity: retention RP count × protected disk GB.
+
+    Matches the ops / Excel framing for HC image backup (policy retention × disk).
+    Non-positive inputs yield 0.0.
+    """
+    try:
+        rp = int(retention_rp or 0)
+    except (TypeError, ValueError):
+        rp = 0
+    try:
+        disk = float(protected_disk_gb or 0.0)
+    except (TypeError, ValueError):
+        disk = 0.0
+    if rp <= 0 or disk <= 0:
+        return 0.0
+    return float(rp) * disk
+
+
+def compare_formula_vs_actual(
+    formula_gb: int | float | None,
+    actual_snapshot_gb: int | float | None,
+) -> dict:
+    """Compare formula estimate to measured snapshot size.
+
+    Returns ratio (actual / formula), delta, and a coarse status. ``ratio`` is
+    ``None`` when formula is zero (undefined).
+    """
+    try:
+        formula = float(formula_gb or 0.0)
+    except (TypeError, ValueError):
+        formula = 0.0
+    try:
+        actual = float(actual_snapshot_gb or 0.0)
+    except (TypeError, ValueError):
+        actual = 0.0
+    ratio = (actual / formula) if formula > 0 else None
+    if formula <= 0:
+        status = "n/a"
+    elif ratio is not None and abs(ratio - 1.0) <= 0.05:
+        status = "match"
+    else:
+        status = "mismatch"
+    return {
+        "formula_gb": formula,
+        "actual_snapshot_gb": actual,
+        "ratio": ratio,
+        "delta_gb": actual - formula,
+        "status": status,
+    }

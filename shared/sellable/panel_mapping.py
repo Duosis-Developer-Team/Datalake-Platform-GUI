@@ -72,8 +72,15 @@ _RULES: tuple[_Rule, ...] = (
     _Rule("backup_zerto_replication_ram",     contains_all=("Zerto Replication", "RAM")),
     _Rule("backup_zerto_replication_storage", contains_all=("Zerto Replication", "Disk")),
 
-    # ----- Backup: NetBackup, image, offsite, remote -----
-    _Rule("backup_netbackup_storage",         contains_all=("Veritas",)),  # NetBackup or Netbackup name
+    # ----- Backup: NetBackup image / application (specific before legacy) -----
+    _Rule("backup_netbackup_image",           contains_all=("İmaj", "Veritas")),
+    _Rule("backup_netbackup_image",           contains_all=("İmaj", "NetBackup")),
+    _Rule("backup_netbackup_image",           contains_all=("İmaj Yedekleme", "Veritas")),
+    _Rule("backup_netbackup_image",           contains_all=("İmaj Yedekleme", "NetBackup")),
+    _Rule("backup_netbackup_application",     contains_all=("Uygulama", "Veritas")),
+    _Rule("backup_netbackup_application",     contains_all=("Uygulama", "NetBackup")),
+    # Legacy NetBackup catch-all (fallback after image/application specifics)
+    _Rule("backup_netbackup_storage",         contains_all=("Veritas",)),
     _Rule("backup_netbackup_storage",         contains_all=("NetBackup",)),
     _Rule("backup_image_hyperconverged",      contains_all=("Hyperconverged", "İmaj Yedekleme")),
     _Rule("backup_offsite_s3",                contains_all=("Offsite Backup", "S3")),

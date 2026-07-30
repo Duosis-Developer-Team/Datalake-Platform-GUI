@@ -11,6 +11,7 @@ from shared.backup.policy_classification import (
     policy_types_for_category,
 )
 from shared.licensing.os_source import tally_vm_list, with_os_family
+from shared.nutanix import snapshot_helpers as nsnap
 from shared.vmware.host_cpu_ghz import (
     DEFAULT_HOST_CPU_GHZ,
     NETBOX_HOST_CPU_STRINGS,
@@ -84,24 +85,11 @@ class CustomerAdapter:
         storage_patterns = self._resolve_patterns(source_patterns, "storage_ibm", fallback)
         storage_like_pattern = storage_patterns[0]
         netbackup_patterns = self._resolve_patterns(source_patterns, "backup_netbackup", fallback)
-        # COLUMN ASYMMETRY — this pattern is matched against workloaddisplayname
-        # (cq.CUSTOMER_NETBACKUP_UNIQUE_JOBS_LATEST -> db/queries/customer.py,
-        # "WHERE workloaddisplayname ILIKE %s"). The same backup_netbackup rules
-        # are DECIDED on policyname by shared/customer/unmapped_classifier.py
-        # (classify_unmapped_policies -> backup_policy.guess_policy_owner).
-        #
-        # The two sides key on different columns. Measured over 7 days of live
-        # data, only 1,935 of 4,561 distinct (policyname, workloaddisplayname)
-        # pairs have a workload name starting with the policy's first segment.
-        # So a rule added from the Eşleşmeyen Veriler worklist removes the row
-        # there without necessarily attributing the backup here.
-        #
-        # Second, narrower limit: only patterns[0] is used, so a customer with
-        # several netbackup rules ('aksu' and 'aksular') contributes just the
-        # first one to this query — unlike the classifier, which tries them all.
-        # Both are known and deliberately left alone; fixing either changes
-        # customer-visible attribution and needs a product decision.
-        netbackup_workload_pattern = netbackup_patterns[0]
+        # COLUMN ASYMMETRY — summary/unique-jobs match workloaddisplayname (ILIKE ANY
+        # over all enabled backup_netbackup patterns). Unmapped classifier decides on
+        # policyname. The two sides key on different columns; fixing attribution is a
+        # product decision (see Unmapped alias lessons).
+        nutanix_snap_patterns = self._resolve_patterns(source_patterns, "backup_nutanix", fallback)
         zerto_patterns = self._resolve_patterns(source_patterns, "backup_zerto", fallback)
         zerto_name_like = zerto_patterns[0]
 
@@ -414,7 +402,7 @@ class CustomerAdapter:
                 netbackup_summary_row = self._run_row(
                     cur,
                     cq.CUSTOMER_NETBACKUP_BACKUP_SUMMARY,
-                    (netbackup_workload_pattern, start_ts, end_ts),
+                    (netbackup_patterns, start_ts, end_ts),
                 )
                 netbackup_pre_dedup_gib = (
                     float(netbackup_summary_row[0] or 0.0) if netbackup_summary_row else 0.0
@@ -442,7 +430,7 @@ class CustomerAdapter:
                     cat_rows = self._run_rows(
                         cur,
                         cq.CUSTOMER_NETBACKUP_BACKUP_SUMMARY_BY_CATEGORY,
-                        (image_policy_types, netbackup_workload_pattern, start_ts, end_ts),
+                        (image_policy_types, netbackup_patterns, start_ts, end_ts),
                     )
                     for r in cat_rows or []:
                         if not r or not r[0]:
@@ -467,7 +455,7 @@ class CustomerAdapter:
                     pt_rows = self._run_rows(
                         cur,
                         cq.CUSTOMER_NETBACKUP_POLICY_TYPES,
-                        (netbackup_workload_pattern, start_ts, end_ts),
+                        (netbackup_patterns, start_ts, end_ts),
                     )
                     netbackup_policy_types_all = [
                         str(r[0]) for r in (pt_rows or []) if r and r[0] is not None
@@ -487,6 +475,26 @@ class CustomerAdapter:
                         "application", netbackup_policy_types_all, mapping=mapping
                     ),
                 }
+
+                nutanix_snap_rows: list[dict] = []
+                nutanix_snap_totals: dict = nsnap.aggregate_snapshots([])
+                nutanix_snap_as_of = ""
+                try:
+                    raw_snaps = self._run_rows(
+                        cur,
+                        cq.CUSTOMER_NUTANIX_SNAPSHOTS_BY_CUSTOMER,
+                        (nutanix_snap_patterns, nutanix_snap_patterns, start_ts, end_ts),
+                    )
+                    nutanix_snap_rows, nutanix_snap_as_of = nsnap.enrich_snapshot_rows(
+                        raw_snaps, None
+                    )
+                    nutanix_snap_totals = nsnap.aggregate_snapshots(nutanix_snap_rows)
+                except Exception as exc:
+                    from app.services.customer_service import _is_fatal_db_error
+
+                    if _is_fatal_db_error(exc):
+                        raise
+                    logger.warning("CUSTOMER_NUTANIX_SNAPSHOTS_BY_CUSTOMER failed: %s", exc)
 
                 zerto_protected_vms = int(
                     self._run_value(
@@ -626,6 +634,11 @@ class CustomerAdapter:
                     "application": netbackup_by_category["application"],
                     "policy_types": netbackup_policy_types,
                 },
+                "nutanix": {
+                    "rows": nutanix_snap_rows,
+                    "totals": nutanix_snap_totals,
+                    "as_of": nutanix_snap_as_of,
+                },
             },
         }
 
@@ -742,6 +755,18 @@ class CustomerAdapter:
                             "deduplication_factor": "1x",
                         },
                         "policy_types": {"image": [], "application": []},
+                    },
+                    "nutanix": {
+                        "rows": [],
+                        "totals": {
+                            "total_snapshots": 0,
+                            "total_size_bytes": 0,
+                            "protected_vms": 0,
+                            "missing_entities": 0,
+                            "schedule_type_breakdown": {},
+                            "state_breakdown": {},
+                        },
+                        "as_of": "",
                     },
                     "license_compliance": [],
                 },

@@ -9,6 +9,11 @@ from dash import html
 
 from src.components.crm_sales_panel import format_crm_money
 from src.components.sold_vs_used_panel import build_compliance_issue_table
+from src.components.backup_license_compliance import (
+    build_backup_kpi_strip,
+    build_license_compliance_strip,
+    build_netbackup_kpi_defs,
+)
 from src.services import product_catalog as pc
 from src.utils.visibility import (
     asset_has_usage,
@@ -18,6 +23,7 @@ from src.utils.visibility import (
     filter_overusage_rows,
     is_meaningful_value,
 )
+from src.pages.customer_view_perspective import show_post_dedup as _show_post_dedup
 
 
 def aggregate_sla_categories(dc_sla_items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -339,6 +345,16 @@ def build_customer_summary_panel(
     perspective: str = "manager",
 ) -> html.Div:
     """Single unified summary card: header, compact signals, problems list."""
+    backup_assets = (assets or {}).get("backup") or {}
+    license_rows = backup_assets.get("license_compliance") if isinstance(backup_assets, dict) else None
+    license_strip = build_license_compliance_strip(license_rows)
+    post_ok = _show_post_dedup(perspective)
+    backup_kpi = build_backup_kpi_strip(
+        build_netbackup_kpi_defs(efficiency_rows, backup_assets, show_post_dedup=post_ok),
+        show_post_dedup=post_ok,
+        include_deeplink=True,
+    )
+
     if perspective == "customer":
         signal_defs = _build_usage_signal_defs(
             totals=totals,
@@ -348,6 +364,10 @@ def build_customer_summary_panel(
         )
         signal_strip = build_summary_signal_strip(signal_defs)
         body_children: list = []
+        if getattr(license_strip, "children", None):
+            body_children.append(license_strip)
+        if getattr(backup_kpi, "children", None):
+            body_children.append(backup_kpi)
         if signal_strip is not None:
             body_children.append(
                 dmc.Stack(
@@ -453,6 +473,10 @@ def build_customer_summary_panel(
         )
 
     body_children: list = []
+    if getattr(license_strip, "children", None):
+        body_children.append(license_strip)
+    if getattr(backup_kpi, "children", None):
+        body_children.append(backup_kpi)
     if signal_strip is not None:
         body_children.append(
             dmc.Stack(
@@ -474,7 +498,7 @@ def build_customer_summary_panel(
         )
     )
 
-    if not signal_strip and not overusage_rows and not low_availability:
+    if not signal_strip and not overusage_rows and not low_availability and not getattr(license_strip, "children", None) and not getattr(backup_kpi, "children", None):
         return dmc.Alert(
             color="gray",
             variant="light",

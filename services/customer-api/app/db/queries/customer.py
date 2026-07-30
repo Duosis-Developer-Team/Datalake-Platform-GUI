@@ -580,13 +580,14 @@ SELECT
 FROM latest_vdisk_stats
 """
 
+# Params: (workload_patterns[], start_ts, end_ts) — OR of all enabled alias patterns.
 CUSTOMER_NETBACKUP_BACKUP_SUMMARY = """
 WITH filtered AS (
     SELECT
         kilobytestransferred,
         dedupratio
     FROM public.raw_netbackup_jobs_metrics
-    WHERE workloaddisplayname ILIKE %s
+    WHERE workloaddisplayname ILIKE ANY(%s)
       AND jobtype = 'BACKUP'
       AND percentcomplete = 100
       AND collection_timestamp BETWEEN %s AND %s
@@ -602,7 +603,7 @@ FROM filtered
 """
 
 # Category-split NetBackup billing summary (image vs application).
-# Params: (workload_pattern, start_ts, end_ts, image_policy_types[])
+# Params: (image_policy_types[], workload_patterns[], start_ts, end_ts)
 # image_policy_types is a text[] of policy types classified as image (e.g. {'VMWARE'}).
 CUSTOMER_NETBACKUP_BACKUP_SUMMARY_BY_CATEGORY = """
 WITH filtered AS (
@@ -615,7 +616,7 @@ WITH filtered AS (
             ELSE 'application'
         END AS category
     FROM public.raw_netbackup_jobs_metrics
-    WHERE workloaddisplayname ILIKE %s
+    WHERE workloaddisplayname ILIKE ANY(%s)
       AND jobtype = 'BACKUP'
       AND percentcomplete = 100
       AND collection_timestamp BETWEEN %s AND %s
@@ -634,11 +635,11 @@ ORDER BY category
 """
 
 # Distinct policy types for a customer NetBackup workload (for UI MultiSelect).
-# Params: (workload_pattern, start_ts, end_ts)
+# Params: (workload_patterns[], start_ts, end_ts)
 CUSTOMER_NETBACKUP_POLICY_TYPES = """
 SELECT DISTINCT COALESCE(NULLIF(policytype, ''), 'Unknown') AS policytype
 FROM public.raw_netbackup_jobs_metrics
-WHERE workloaddisplayname ILIKE %s
+WHERE workloaddisplayname ILIKE ANY(%s)
   AND jobtype = 'BACKUP'
   AND percentcomplete = 100
   AND collection_timestamp BETWEEN %s AND %s
@@ -1289,7 +1290,7 @@ ORDER BY id, collection_timestamp DESC
 
 # NetBackup unique jobs for a customer workload (latest per policy + workload;
 # BACKUP jobs only).
-# Params: (workload_pattern, start_ts, end_ts)
+# Params: (workload_patterns[], start_ts, end_ts) — OR of all enabled alias patterns.
 CUSTOMER_NETBACKUP_UNIQUE_JOBS_LATEST = """
 SELECT DISTINCT ON (policyname, COALESCE(workloaddisplayname, ''))
     starttime,
@@ -1306,8 +1307,33 @@ SELECT DISTINCT ON (policyname, COALESCE(workloaddisplayname, ''))
     dedupratio,
     percentcomplete
 FROM public.raw_netbackup_jobs_metrics
-WHERE workloaddisplayname ILIKE %s
+WHERE workloaddisplayname ILIKE ANY(%s)
   AND starttime BETWEEN %s AND %s
   AND UPPER(COALESCE(jobtype, '')) = 'BACKUP'
 ORDER BY policyname, COALESCE(workloaddisplayname, ''), starttime DESC
+"""
+
+# Nutanix snapshots for a customer — same filter as datacenter-api
+# SNAPSHOTS_BY_CUSTOMER_LATEST (protection_domain OR vm_names).
+# Params: (like_patterns[], like_patterns[], start_ts, end_ts)
+# Column order MUST match shared.nutanix.snapshot_helpers.enrich_snapshot_rows.
+CUSTOMER_NUTANIX_SNAPSHOTS_BY_CUSTOMER = """
+SELECT DISTINCT ON (snapshot_id)
+    nutanix_ip,
+    protection_domain_name,
+    state,
+    vm_names,
+    missing_entities_entity_name,
+    missing_entities_entity_type,
+    schedule_type,
+    schedule_local_max_snapshots,
+    size_in_bytes,
+    to_timestamp(schedule_start_times_in_usecs / 1000000.0) AS start_time,
+    to_timestamp(snapshot_create_time_usecs / 1000000.0)    AS create_time,
+    to_timestamp(snapshot_expiry_time_usecs / 1000000.0)    AS expiry_time,
+    snapshot_id
+FROM public.nutanix_snapshot_schedule_metrics
+WHERE (protection_domain_name ILIKE ANY(%s) OR vm_names ILIKE ANY(%s))
+  AND collection_time BETWEEN %s AND %s
+ORDER BY snapshot_id, collection_time DESC
 """

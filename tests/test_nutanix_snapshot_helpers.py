@@ -101,5 +101,31 @@ class TestEnrichAndAggregate(unittest.TestCase):
         self.assertEqual(agg["schedule_type_breakdown"], {})
 
 
+class TestFormulaHelpers(unittest.TestCase):
+    def test_estimate_formula_gb(self):
+        from shared.nutanix.snapshot_helpers import estimate_formula_gb
+
+        self.assertEqual(estimate_formula_gb(7, 100.0), 700.0)
+        self.assertEqual(estimate_formula_gb(0, 100.0), 0.0)
+        self.assertEqual(estimate_formula_gb(7, 0), 0.0)
+        self.assertEqual(estimate_formula_gb(None, 50), 0.0)
+
+    def test_compare_formula_vs_actual(self):
+        from shared.nutanix.snapshot_helpers import compare_formula_vs_actual
+
+        close = compare_formula_vs_actual(700.0, 710.0)
+        self.assertAlmostEqual(close["ratio"], 710.0 / 700.0)
+        self.assertEqual(close["status"], "match")
+        self.assertAlmostEqual(close["delta_gb"], 10.0)
+
+        mismatch = compare_formula_vs_actual(100.0, 200.0)
+        self.assertEqual(mismatch["status"], "mismatch")
+        self.assertEqual(mismatch["ratio"], 2.0)
+
+        na = compare_formula_vs_actual(0, 50)
+        self.assertIsNone(na["ratio"])
+        self.assertEqual(na["status"], "n/a")
+
+
 if __name__ == "__main__":
     unittest.main()

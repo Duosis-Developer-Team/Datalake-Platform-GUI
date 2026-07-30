@@ -53,6 +53,31 @@ class TestComputeFastPath(unittest.TestCase):
         self.assertEqual(out["hosts"], 9)
         mock_details.assert_called_once()
 
+    def test_get_backup_netbackup_compute_maps_pool_bytes(self):
+        svc = DatabaseService.__new__(DatabaseService)
+        usable = 2 * (1024 ** 4)  # 2 TB
+        used = 512 * (1024 ** 3)  # 512 GB
+        pools = {
+            "pools": ["Pool-A"],
+            "rows": [
+                {"usablesizebytes": usable, "usedcapacitybytes": used},
+            ],
+        }
+        with patch.object(svc, "get_dc_netbackup_pools", return_value=pools):
+            out = svc.get_backup_netbackup_compute("DC13", {})
+        self.assertEqual(out["stor_cap"], 2.0)
+        self.assertEqual(out["stor_provisioned_gb"], 512.0)
+        self.assertAlmostEqual(out["stor_pct"], 25.0)
+        self.assertEqual(out["pools"], ["Pool-A"])
+
+    def test_get_backup_netbackup_compute_empty_pools(self):
+        svc = DatabaseService.__new__(DatabaseService)
+        with patch.object(svc, "get_dc_netbackup_pools", return_value={"pools": [], "rows": []}):
+            out = svc.get_backup_netbackup_compute("DC13", {})
+        self.assertEqual(out["stor_cap"], 0.0)
+        self.assertEqual(out["stor_provisioned_gb"], 0.0)
+        self.assertEqual(out["stor_pct"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

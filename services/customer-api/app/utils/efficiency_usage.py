@@ -136,7 +136,24 @@ def resolve_used_quantity(
         return float(backup_totals.get("zerto_protected_vms", 0) or 0), None
 
     if _norm(cc).startswith("backup_netbackup"):
-        return float(backup_totals.get("netbackup_post_dedup_gib", 0) or 0), None
+        # K-01: customer efficiency sold/used uses PreDedup. PostDedup remains on
+        # assets.backup.netbackup[.image|.application].post_dedup_size_gib for
+        # manager/cost paths — not selected here as efficiency used.
+        nb = (bassets.get("netbackup") or {}) if isinstance(bassets, dict) else {}
+        cc_n = _norm(cc)
+        if cc_n.endswith("_image"):
+            image = (nb.get("image") or {}) if isinstance(nb, dict) else {}
+            val = image.get("pre_dedup_size_gib") if isinstance(image, dict) else None
+            if val is None:
+                val = backup_totals.get("netbackup_pre_dedup_gib", 0)
+            return float(val or 0), None
+        if cc_n.endswith("_application"):
+            app = (nb.get("application") or {}) if isinstance(nb, dict) else {}
+            return float(
+                (app.get("pre_dedup_size_gib") if isinstance(app, dict) else 0) or 0
+            ), None
+        # Legacy backup_netbackup / backup_netbackup_storage
+        return float(backup_totals.get("netbackup_pre_dedup_gib", 0) or 0), None
 
     if _norm(cc).startswith("backup_"):
         vol = bassets.get("storage") or {}

@@ -114,7 +114,7 @@ def build_layout(search: str | None = None) -> html.Div:
     )
 
     section_row = dmc.SimpleGrid(
-        cols=2,
+        cols={"base": 1, "md": 3},
         spacing="lg",
         children=[
             section_nav_card(
@@ -133,6 +133,13 @@ def build_layout(search: str | None = None) -> html.Div:
                     "LDAP ● " + ("connected" if ldap_ok else "offline"),
                     "AuraNotify ● " + ("configured" if aura_ok else "not set"),
                 ],
+            ),
+            section_nav_card(
+                "Platform",
+                "Backup Mapping — NetBackup Image/App policies, Veeam/Zerto separators, multipliers.",
+                f"{ADMIN_PREFIX}/platform/backup-mapping",
+                icon="solar:cloud-storage-bold-duotone",
+                badges=["YAML seed", "ADR-0030"],
             ),
         ],
     )
