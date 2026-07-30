@@ -46,3 +46,35 @@ def test_legends_are_english_and_lens_specific():
     for text in (coloc, load):
         for turkish in ("Tamamen boş", "Çok dolu", "Bilinmiyor", "Kapalı"):
             assert turkish not in text
+
+
+def test_not_monitored_legend_entry_explains_customer_owned_hardware():
+    # "Not monitored" is the Load lens's largest, permanent category:
+    # customer-owned colocation racks are never monitored by Bulutistan, on
+    # principle, not as a temporary gap. That needs to be visible somewhere
+    # near the swatch, not just known tribal knowledge.
+    load = str(fm.build_lens_legend("load"))
+    assert "customer" in load.lower()
+    assert "Bulutistan" in load
+
+
+def test_coloc_legend_has_no_unmonitored_tooltip():
+    # The tooltip is Load-specific copy; the Colocation legend's "Unknown"
+    # swatch means something different (occupancy not yet fetched) and must
+    # not pick up load-lens wording.
+    coloc = str(fm.build_lens_legend("coloc"))
+    assert fm._UNMONITORED_TOOLTIP not in coloc
+
+
+def test_load_hover_device_counts_fall_back_to_unknown_not_zero():
+    # aggregate_rack_load always sets monitored_devices/total_devices
+    # alongside a real load_pct, so this path can't fire today -- but the
+    # fallback for a missing key must still read "unknown" (this file's
+    # established em-dash convention), never a confident "0", consistent
+    # with the rest of the hover text (doluluk_str/free_str/pwr/rh/...).
+    racks = [{"id": "R1", "name": "104", "status": "active", "u_height": 47, "hall_name": "DH7"}]
+    load = {"104": {"load_pct": 42.0}}  # monitored_devices/total_devices missing
+    fig = fm.build_floor_map_figure(racks, dc_id="DC13-load-fallback", load=load, lens="load")
+    load_str = fig.data[0].customdata[0][12]
+    assert load_str == "42% (—/— devices)"
+    assert "0/0 devices" not in load_str

@@ -64,6 +64,18 @@ def test_colocation_lens_is_unchanged_by_the_lens_parameter():
     assert _fills(before) == _fills(after)
 
 
+def test_empty_load_dict_is_not_a_cache_hit_for_none_load():
+    # Same collision as occupancy={} vs occupancy=None (see
+    # test_floor_map_figure_fill.py), for the load fingerprint field: load={}
+    # (fetched, nothing usable) must not be served the load=None (phase 1,
+    # not fetched) figure back from cache.
+    fig_none = fm.build_floor_map_figure(RACKS, dc_id="DC13-load-fp", load=None, lens="load")
+    fig_empty = fm.build_floor_map_figure(RACKS, dc_id="DC13-load-fp", load={}, lens="load")
+    assert fig_none is not fig_empty
+    assert fm.LOAD_PALETTE["unmonitored"][0] in _fills(fig_empty)
+    assert fm.STATUS_FILL["active"] in _fills(fig_none)
+
+
 def test_figure_cache_does_not_serve_one_lens_for_the_other():
     # Same dc_id, same occupancy, same load, passed to BOTH calls -- lens is
     # the only thing that varies. Since production now fetches both payloads
@@ -108,26 +120,95 @@ def test_hover_is_complete_in_both_lenses():
     with patch("src.services.api_client.get_dc_racks", return_value={"racks": racks}), \
          patch.object(fm, "_fetch_rack_occupancy", return_value={"104": 10}), \
          patch.object(fm, "_fetch_rack_load",
-                      return_value={"104": {"load_pct": 30.0, "monitored_devices": 1,
-                                             "total_devices": 1}}):
-        load_fig = fm.build_recolored_floor_map_figure("DC13-hover-load", lens="load")
-        coloc_fig = fm.build_recolored_floor_map_figure("DC13-hover-coloc", lens="coloc")
+                      return_value=({"104": {"load_pct": 30.0, "monitored_devices": 1,
+                                              "total_devices": 1}},
+                                    {"monitored_racks": 1, "total_racks": 1})):
+        load_fig, load_summary = fm.build_recolored_floor_map_figure("DC13-hover-load", lens="load")
+        coloc_fig, _ = fm.build_recolored_floor_map_figure("DC13-hover-coloc", lens="coloc")
 
     load_cd = load_fig.data[0].customdata[0]
     assert load_cd[9] != "—"    # Occupancy is real even though the Load lens is active
+    assert load_summary == {"monitored_racks": 1, "total_racks": 1}
 
     coloc_cd = coloc_fig.data[0].customdata[0]
     assert coloc_cd[12] != "—"  # Load is real even though the Colocation lens is active
 
 
 def test_fetch_rack_load_degrades_to_empty_when_the_api_fails():
+    # Failure is (`{}`, None) -- not (`{}`, {"monitored_racks": 0, ...}) --
+    # so the caller can say "load data unavailable" rather than a misleading
+    # "0 of 0 racks monitored".
     with patch("src.services.api_client.get_dc_racks_load", side_effect=RuntimeError):
-        assert fm._fetch_rack_load("DC13", RACKS) == {}
+        assert fm._fetch_rack_load("DC13", RACKS) == ({}, None)
 
 
 def test_fetch_rack_load_keeps_only_requested_racks():
     payload = {"racks": [{"rack_name": "104", "load_pct": 50.0},
-                         {"rack_name": "999", "load_pct": 90.0}]}
+                         {"rack_name": "999", "load_pct": 90.0}],
+               "summary": {"monitored_racks": 2, "total_racks": 2}}
     with patch("src.services.api_client.get_dc_racks_load", return_value=payload):
-        result = fm._fetch_rack_load("DC13", RACKS)
+        result, summary = fm._fetch_rack_load("DC13", RACKS)
     assert set(result) == {"104"}
+    assert summary == {"monitored_racks": 2, "total_racks": 2}
+
+
+def test_fetch_rack_load_carries_the_summary_through():
+    # The endpoint's coverage summary must survive the fetch unmodified --
+    # dropping it is exactly the bug this function exists to not have.
+    payload = {"racks": [], "summary": {"monitored_racks": 38, "total_racks": 214}}
+    with patch("src.services.api_client.get_dc_racks_load", return_value=payload):
+        _, summary = fm._fetch_rack_load("DC13", RACKS)
+    assert summary == {"monitored_racks": 38, "total_racks": 214}
+
+
+def test_fetch_rack_load_summary_is_none_when_the_payload_has_no_summary():
+    payload = {"racks": []}
+    with patch("src.services.api_client.get_dc_racks_load", return_value=payload):
+        _, summary = fm._fetch_rack_load("DC13", RACKS)
+    assert summary is None
+
+
+# ── app.py: recolor_floor_map's Load-lens coverage note ─────────────────────
+#
+# The load endpoint returns a monitored_racks/total_racks summary that used
+# to be dropped on the floor. Without it, "the load endpoint is down" (every
+# rack near-white) and "coverage is genuinely thin" (also every rack
+# near-white) look identical on the map. recolor_floor_map now surfaces it
+# as a one-line note beside the legend, but only while the Load lens is
+# active -- the Colocation lens has no use for load coverage numbers.
+
+def test_recolor_floor_map_shows_coverage_note_for_the_load_lens():
+    import app as app_module
+
+    with patch("src.services.api_client.get_dc_racks", return_value={"racks": RACKS}), \
+         patch.object(fm, "_fetch_rack_occupancy", return_value={}), \
+         patch.object(fm, "_fetch_rack_load",
+                      return_value=({}, {"monitored_racks": 38, "total_racks": 214})):
+        _, legend_children = app_module.recolor_floor_map(1, "load", None, {"dc_id": "DC13"})
+
+    assert len(legend_children) == 2
+    assert "38 of 214 racks monitored" in str(legend_children[1])
+
+
+def test_recolor_floor_map_says_unavailable_not_zero_of_zero_on_fetch_failure():
+    import app as app_module
+
+    with patch("src.services.api_client.get_dc_racks", return_value={"racks": RACKS}), \
+         patch.object(fm, "_fetch_rack_occupancy", return_value={}), \
+         patch.object(fm, "_fetch_rack_load", return_value=({}, None)):
+        _, legend_children = app_module.recolor_floor_map(1, "load", None, {"dc_id": "DC13"})
+
+    note_text = str(legend_children[1])
+    assert "unavailable" in note_text
+    assert "0 of 0" not in note_text
+
+
+def test_recolor_floor_map_omits_the_coverage_note_for_the_colocation_lens():
+    import app as app_module
+
+    with patch("src.services.api_client.get_dc_racks", return_value={"racks": RACKS}), \
+         patch.object(fm, "_fetch_rack_occupancy", return_value={}), \
+         patch.object(fm, "_fetch_rack_load", return_value=({}, None)):
+        _, legend_children = app_module.recolor_floor_map(1, "coloc", None, {"dc_id": "DC13"})
+
+    assert len(legend_children) == 1

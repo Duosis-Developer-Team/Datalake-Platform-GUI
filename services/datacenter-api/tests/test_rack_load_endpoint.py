@@ -253,6 +253,33 @@ def test_load_cache_hit_short_circuits_without_touching_the_db():
     sf.assert_not_called()
 
 
+def test_total_racks_counts_racks_with_no_devices_too():
+    # aggregate_rack_load only ever sees racks that appear in device_rows --
+    # i.e. racks with at least one active NetBox device -- so total_racks
+    # must come from the DC's full rack list, not len(rows). The design's own
+    # example is {"monitored_racks": 38, "total_racks": 214}: most of a DC's
+    # racks having no device rows at all is the normal case, not an edge one.
+    svc = _svc_no_db()
+    rows_by_sql = {
+        q.DEVICES_BY_RACK_NAMES: [("104", "esx-13-01")],
+        q.VMWARE_HOST_LATEST: [],
+        q.NUTANIX_HOST_LATEST: [],
+        q.IBM_SERVER_LATEST: [],
+    }
+    fake_conn = _FakeConn(_FakeCursor(rows_by_sql))
+    # The DC has 3 racks; only "104" has any NetBox device attached, so
+    # aggregate_rack_load's output (`rows`) will contain exactly one rack.
+    all_racks = [{"name": "104"}, {"name": "105"}, {"name": "106"}]
+    with patch("app.services.dc_service.cache.get", return_value=None), \
+         patch("app.services.dc_service.cache.run_singleflight",
+               side_effect=lambda key, fn, ttl=None: fn()), \
+         patch.object(svc, "_get_connection", return_value=fake_conn), \
+         patch.object(svc, "get_dc_racks", return_value={"racks": all_racks}):
+        result = svc.get_dc_racks_load("DC13")
+    assert len(result["racks"]) == 1
+    assert result["summary"] == {"monitored_racks": 0, "total_racks": 3}
+
+
 def test_load_operational_error_returns_empty_payload():
     svc = _svc_no_db()
     with patch("app.services.dc_service.cache.get", return_value=None), \

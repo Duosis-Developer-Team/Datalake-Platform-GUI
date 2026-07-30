@@ -7765,6 +7765,11 @@ JOIN latest l
 
         Racks whose devices carry no metrics are returned with load_pct=None so
         the UI can render "Not monitored" rather than a misleading 0%.
+
+        `summary.total_racks` is the DC's full rack count (same denominator
+        as get_dc_racks_occupancy's summary), not len(racks) in the response --
+        `racks` only lists racks with at least one active NetBox device, since
+        aggregate_rack_load has no way to report on a rack it never saw.
         """
         empty = {"racks": [], "summary": {"monitored_racks": 0, "total_racks": 0}}
         if not dc_code or not dc_code.strip():
@@ -7802,7 +7807,13 @@ JOIN latest l
             )
             return {"racks": rows,
                     "summary": {"monitored_racks": monitored,
-                                "total_racks": len(rows)}}
+                                # len(rack_names), not len(rows): aggregate_rack_load
+                                # only ever returns racks that have at least one
+                                # active NetBox device, so len(rows) silently drops
+                                # every device-less rack from the DC's own total --
+                                # the exact coverage number this summary exists to
+                                # report honestly.
+                                "total_racks": len(rack_names)}}
 
         try:
             return cache.run_singleflight(cache_key, _fetch, ttl=21600)

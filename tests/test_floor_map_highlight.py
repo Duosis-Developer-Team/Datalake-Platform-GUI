@@ -63,6 +63,18 @@ def test_highlighted_racks_get_an_outline_on_the_figure():
     assert len(outlines) == 1
 
 
+def test_empty_highlight_set_is_not_a_cache_hit_for_none_highlight():
+    # Same collision as occupancy={} vs occupancy=None (see
+    # test_floor_map_figure_fill.py), for the highlight fingerprint field:
+    # highlight=set() (a customer was toggled off) must get its own cache
+    # entry, not the highlight=None (no selection made yet) figure back.
+    racks = [{"id": "R1", "name": "104", "status": "active",
+              "u_height": 47, "hall_name": "DH7"}]
+    fig_none = fm.build_floor_map_figure(racks, dc_id="DC13-hl-fp", highlight=None)
+    fig_empty = fm.build_floor_map_figure(racks, dc_id="DC13-hl-fp", highlight=set())
+    assert fig_none is not fig_empty
+
+
 # ── app.py: select_colocation_customer callback ─────────────────────────────
 #
 # Fires on a pattern-matching Input over every customer row. Dash delivers

@@ -38,6 +38,20 @@ def test_rack_fill_info_labels_are_english():
     assert fm._rack_fill_info(5, 47)["label"] == "Space available"
 
 
+def test_occupancy_hover_uses_english_percent_order():
+    # Word screening alone (LAYOUT_TURKISH above) can't catch this: "(%26)"
+    # is the Turkish percent-before-number convention, and it contains no
+    # Turkish words or Turkish-only characters -- only the digit/percent-sign
+    # order is wrong. Assert the format directly so it can't silently drift
+    # back the way it did once already.
+    racks = [{"id": "R1", "name": "104", "status": "active",
+              "u_height": 47, "hall_name": "DH7"}]
+    fig = fm.build_floor_map_figure(racks, dc_id="DC13-pct-format", occupancy={"104": 12})
+    occupancy_str = fig.data[0].customdata[0][9]
+    assert "(26%)" in occupancy_str
+    assert "(%26)" not in occupancy_str
+
+
 def test_floor_map_layout_carries_no_turkish_copy():
     # show_colocation=True so the customer panel (the other place copy could
     # hide) is actually rendered into the string being searched, not skipped.

@@ -2052,13 +2052,17 @@ def recolor_floor_map(n_intervals, lens, selected_customer, dc_store):
     if not dc_id:
         return dash.no_update, dash.no_update
 
-    from src.pages.floor_map import build_lens_legend, build_recolored_floor_map_figure
+    from src.pages.floor_map import (
+        build_lens_legend, build_load_coverage_note, build_recolored_floor_map_figure,
+    )
 
     lens = lens or "coloc"
     highlight = set((selected_customer or {}).get("racks") or [])
-    fig = build_recolored_floor_map_figure(dc_id, lens=lens, highlight=highlight)
-    legend = build_lens_legend(lens)
-    return (fig if fig is not None else dash.no_update), legend
+    fig, load_summary = build_recolored_floor_map_figure(dc_id, lens=lens, highlight=highlight)
+    legend_children = [build_lens_legend(lens)]
+    if lens == "load":
+        legend_children.append(build_load_coverage_note(load_summary))
+    return (fig if fig is not None else dash.no_update), legend_children
 
 
 @app.callback(
