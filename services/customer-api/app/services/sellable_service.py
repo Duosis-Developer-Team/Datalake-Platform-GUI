@@ -2081,6 +2081,58 @@ SELECT _tot, _alloc FROM latest
             logger.warning("compute fetch failed dc=%s family=%s url=%s", dc_code, family, url)
             return None
 
+    @staticmethod
+    def _normalize_host_unit(
+        h: dict,
+        *,
+        cpu_conv: "dict | None",
+        ram_conv: "dict | None",
+        sto_conv: "dict | None",
+    ) -> dict:
+        """Normalize one host row into panel display units for the sellable engine.
+
+        Raw CPU fields (cpu_cap_ghz, cpu_used_ghz*, cpu_used_ghz_avg) pass
+        through the ``**h`` spread unconverted because host_raw_headroom's CPU
+        arm uses cpu_cap_ghz as its denominator. RAM peak and RAM average are
+        converted here, mirroring each other.
+        """
+        ghz = float(h.get("ghz_per_core") or 1.0)
+        cap_ghz = float(h.get("cpu_cap_ghz") or 0.0)
+        alloc_sales = float(h.get("cpu_alloc_ghz") or 0.0)
+        alloc_phys = float(h.get("cpu_alloc_ghz_physical") or alloc_sales * ghz)
+        ram_util = float(h.get("mem_used_pct") or 0.0)
+        return {
+            **h,
+            "cpu_total": convert_unit(cap_ghz, cpu_conv),
+            "cpu_alloc": convert_unit(alloc_sales, cpu_conv),
+            "cpu_total_phys": cap_ghz,
+            "cpu_alloc_phys": alloc_phys,
+            "ghz_per_core": ghz,
+            "ram_total": convert_unit(float(h.get("mem_cap_gb") or 0.0), ram_conv),
+            "ram_alloc": convert_unit(float(h.get("mem_alloc_gb") or 0.0), ram_conv),
+            "cpu_used_pct": float(h.get("cpu_used_pct") or 0.0),
+            "mem_used_pct": ram_util,
+            "mem_used_gb_peak": convert_unit(
+                float(h.get("mem_used_gb_peak") or 0.0), ram_conv
+            ),
+            "mem_cap_gb_at_peak": convert_unit(
+                float(h.get("mem_cap_gb_at_peak") or h.get("mem_cap_gb") or 0.0), ram_conv
+            ),
+            "mem_peak_util_pct": float(h.get("mem_peak_util_pct") or ram_util),
+            "mem_used_gb_avg": convert_unit(
+                float(h.get("mem_used_gb_avg") or 0.0), ram_conv
+            ),
+            "mem_cap_gb_avg": convert_unit(
+                float(h.get("mem_cap_gb_avg") or h.get("mem_cap_gb") or 0.0), ram_conv
+            ),
+            "mem_avg_util_pct": float(h.get("mem_avg_util_pct") or 0.0),
+            "stor_cap_gb": convert_unit(float(h.get("stor_cap_gb") or 0.0), sto_conv),
+            "stor_provisioned_gb": convert_unit(
+                float(h.get("stor_provisioned_gb") or 0.0), sto_conv
+            ),
+            "stor_used_pct": float(h.get("stor_used_pct") or 0.0),
+        }
+
     def _apply_host_based_constraints(
         self,
         group: "list[PanelResult]",
@@ -2118,44 +2170,21 @@ SELECT _tot, _alloc FROM latest
         cluster_storage_raw_gb: float | None = None
 
         for h in host_rows:
-            ghz = float(h.get("ghz_per_core") or 1.0)
-            cap_ghz = float(h.get("cpu_cap_ghz") or 0.0)
-            alloc_sales = float(h.get("cpu_alloc_ghz") or 0.0)
-            alloc_phys = float(h.get("cpu_alloc_ghz_physical") or alloc_sales * ghz)
-            hc = convert_unit(cap_ghz, cpu_conv)
-            ha = convert_unit(alloc_sales, cpu_conv)
-            mc = convert_unit(float(h.get("mem_cap_gb") or 0.0), ram_conv)
-            ma = convert_unit(float(h.get("mem_alloc_gb") or 0.0), ram_conv)
-            cpu_util = float(h.get("cpu_used_pct") or 0.0)
-            ram_util = float(h.get("mem_used_pct") or 0.0)
-            peak_used = convert_unit(float(h.get("mem_used_gb_peak") or 0.0), ram_conv)
-            peak_cap = convert_unit(
-                float(h.get("mem_cap_gb_at_peak") or h.get("mem_cap_gb") or 0.0),
-                ram_conv,
+            hu = self._normalize_host_unit(
+                h, cpu_conv=cpu_conv, ram_conv=ram_conv, sto_conv=sto_conv
             )
-            peak_util = float(h.get("mem_peak_util_pct") or ram_util)
-            stor_cap = convert_unit(float(h.get("stor_cap_gb") or 0.0), sto_conv)
-            stor_alloc = convert_unit(float(h.get("stor_provisioned_gb") or 0.0), sto_conv)
-            stor_util = float(h.get("stor_used_pct") or 0.0)
-
-            host_units.append({
-                **h,
-                "cpu_total": hc,
-                "cpu_alloc": ha,
-                "cpu_total_phys": cap_ghz,
-                "cpu_alloc_phys": alloc_phys,
-                "ghz_per_core": ghz,
-                "ram_total": mc,
-                "ram_alloc": ma,
-                "cpu_used_pct": cpu_util,
-                "mem_used_pct": ram_util,
-                "mem_used_gb_peak": peak_used,
-                "mem_cap_gb_at_peak": peak_cap,
-                "mem_peak_util_pct": peak_util,
-                "stor_cap_gb": stor_cap,
-                "stor_provisioned_gb": stor_alloc,
-                "stor_used_pct": stor_util,
-            })
+            host_units.append(hu)
+            hc, ha = hu["cpu_total"], hu["cpu_alloc"]
+            mc, ma = hu["ram_total"], hu["ram_alloc"]
+            stor_cap, stor_alloc = hu["stor_cap_gb"], hu["stor_provisioned_gb"]
+            stor_util = hu["stor_used_pct"]
+            cpu_util = hu["cpu_used_pct"]
+            cap_ghz = hu["cpu_total_phys"]
+            alloc_phys = hu["cpu_alloc_phys"]
+            ram_util = hu["mem_used_pct"]
+            peak_cap = hu["mem_cap_gb_at_peak"]
+            peak_used = hu["mem_used_gb_peak"]
+            peak_util = hu["mem_peak_util_pct"]
             cpu_total += hc
             cpu_alloc += ha
             ram_total += mc
