@@ -1728,6 +1728,45 @@ def view_controller(mode, dc_store, pathname):
     return shown, hidden, hidden, True, dash.no_update, dc_label
 
 
+def _resolve_show_colocation() -> bool:
+    """Whether the current caller may see colocation customer names / TL
+    potential -- gates both the floor map's customer panel
+    (advance_to_floor_map) and the rack-detail dedicated-customer tenant
+    badges (show_rack_detail).
+
+    Rides on the existing sec:dc_view:colocation permission under
+    page:dc_view rather than a new node under page:global_view: this repo
+    has a recorded incident where a freshly added sub-node had no permission
+    rows yet and, because permissions inherit downward, that silently
+    WIDENED access instead of restricting it. The Floor Map (and its rack
+    detail panel) is a view mode inside /global-view (page:global_view), not
+    its own page, so the section set the router computes for that pathname
+    does not include the dc_view colocation code -- it is looked up
+    explicitly against page:dc_view here. Any failure to resolve the
+    permission must hide the data, never reveal it, so only the lookup
+    itself is guarded: an import failure here would be a deploy-breaking bug
+    that should surface loudly, not a per-request condition to degrade on.
+    """
+    from flask import g, has_request_context
+
+    from src.auth.config import AUTH_DISABLED
+    from src.auth.permission_service import get_visible_sections
+
+    if AUTH_DISABLED:
+        return True
+    uid = getattr(g, "auth_user_id", None) if has_request_context() else None
+    if uid is None:
+        return False
+    try:
+        return "sec:dc_view:colocation" in get_visible_sections(int(uid), "page:dc_view")
+    except Exception:
+        _log.warning(
+            "_resolve_show_colocation: permission check failed for uid=%s",
+            uid, exc_info=True,
+        )
+        return False
+
+
 @app.callback(
     dash.Output("current-view-mode", "data", allow_duplicate=True),
     dash.Output("floor-map-layer", "children"),
@@ -1757,40 +1796,7 @@ def advance_to_floor_map(n_intervals, dc_store, current_mode, time_range):
     dc_name = _fmt_name(_meta.get("name"), _meta.get("description")) or dc_store.get("dc_name", dc_id)
     racks = racks_resp.get("racks", [])
 
-    # The floor map's colocation customer panel carries named customers and
-    # TL figures. It rides on the existing sec:dc_view:colocation permission
-    # rather than a new node under page:global_view: this repo has a recorded
-    # incident where a freshly added sub-node had no permission rows yet and,
-    # because permissions inherit downward, that silently WIDENED access
-    # instead of restricting it. The Floor Map is a view mode inside
-    # /global-view (page:global_view), not its own page, so the section set
-    # the router computed for this pathname does not include the dc_view
-    # colocation code -- it must be looked up explicitly against page:dc_view.
-    # Any failure to resolve the permission must hide the panel, never reveal
-    # it, so the whole lookup is wrapped and degrades to False.
-    from flask import g, has_request_context
-
-    from src.auth.config import AUTH_DISABLED
-
-    if AUTH_DISABLED:
-        show_colocation = True
-    else:
-        uid = getattr(g, "auth_user_id", None) if has_request_context() else None
-        if uid is None:
-            show_colocation = False
-        else:
-            try:
-                from src.auth.permission_service import get_visible_sections
-
-                show_colocation = "sec:dc_view:colocation" in get_visible_sections(
-                    int(uid), "page:dc_view"
-                )
-            except Exception:
-                _log.warning(
-                    "advance_to_floor_map: colocation permission check failed for uid=%s",
-                    uid, exc_info=True,
-                )
-                show_colocation = False
+    show_colocation = _resolve_show_colocation()
 
     from src.pages.floor_map import build_floor_map_layout
     layout = build_floor_map_layout(dc_id, dc_name, racks, show_colocation=show_colocation)
@@ -2044,19 +2050,26 @@ def show_rack_detail(click_data, dc_store):
     devices = devices_resp.get("devices", [])
 
     # Dedicated-customer badges — external colocation tenants occupying this
-    # rack, from the bulk occupancy payload. Degrades to no badges if the
-    # occupancy call fails or the rack isn't present in the response.
-    from src.pages.floor_map import _external_rack_tenants
-
+    # rack, from the bulk occupancy payload. Names only, no TL figures, but
+    # still commercial identity: gated on the same sec:dc_view:colocation
+    # permission as the floor map's customer panel (Task 6 fix round 1) --
+    # otherwise a user without that permission could learn a customer's name
+    # by clicking a rack, making the panel's gate decorative. Denied callers
+    # skip the occupancy/tenant lookup entirely, not just its rendering.
     tenant_badges = None
-    try:
-        _occ = (api.get_dc_racks_occupancy(dc_id or "") or {}).get("racks", [])
-        _tenants = next(
-            (r.get("tenants") for r in _occ if str(r.get("rack_name")) == str(name)), []
-        ) or []
-        _ext = _external_rack_tenants(_tenants)
-    except Exception:
-        _log.warning("show_rack_detail: occupancy tenant lookup failed for rack %s", name, exc_info=True)
+    if _resolve_show_colocation():
+        from src.pages.floor_map import _external_rack_tenants
+
+        try:
+            _occ = (api.get_dc_racks_occupancy(dc_id or "") or {}).get("racks", [])
+            _tenants = next(
+                (r.get("tenants") for r in _occ if str(r.get("rack_name")) == str(name)), []
+            ) or []
+            _ext = _external_rack_tenants(_tenants)
+        except Exception:
+            _log.warning("show_rack_detail: occupancy tenant lookup failed for rack %s", name, exc_info=True)
+            _ext = []
+    else:
         _ext = []
     if _ext:
         tenant_badges = dmc.Group(gap=6, mb="sm", children=[

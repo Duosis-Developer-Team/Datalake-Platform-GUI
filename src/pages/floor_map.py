@@ -718,10 +718,12 @@ def build_colocation_customer_panel(coloc: dict):
             name = c.get("customer", "")
             if name == UNATTRIBUTED:
                 name_cell = dmc.Tooltip(
-                    label=("Ownership ambiguous in NetBox: some racks have no "
-                           "resolvable tenant/tag/description; others carry two "
-                           "colocation rows naming different customers. Real "
-                           "customer footprint, not free space."),
+                    label=("Ownership ambiguous in NetBox: some of these racks "
+                           "have no resolvable tenant/tag/description; others "
+                           "carry two colocation-role rows naming different "
+                           "customers for the same rack, and the conflict was "
+                           "left unresolved rather than guessed at. This is "
+                           "real customer footprint, not free space."),
                     position="top", withArrow=True, multiline=True, w=260,
                     children=dmc.Group(gap=4, wrap="nowrap", children=[
                         dmc.Text(name, size="xs"),
