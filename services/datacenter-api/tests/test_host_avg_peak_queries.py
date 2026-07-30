@@ -48,6 +48,7 @@ class TestNutanixHostCpuPeak:
         assert "DISTINCT ON (host_name)" in sql
         assert "1000000000.0" in sql, "Hz must be converted to GHz in SQL"
         assert "public.nutanix_host_metrics" in sql
+        assert "ORDER BY host_name, (used_hz / NULLIF(cap_hz, 0)) DESC" in sql
 
     def test_placeholder_count_matches_mem_peak(self):
         assert nq.NUTANIX_HOST_CPU_PEAK.count("%s") == nq.NUTANIX_HOST_MEM_PEAK.count("%s")
@@ -63,6 +64,10 @@ class TestNutanixHostAvg:
         assert "DISTINCT ON (host_name)" not in sql
         assert "DISTINCT ON (cluster_uuid)" in sql
         assert "AVG(" in sql
+        assert "AVG(h.cpu_usage_avg)" in sql
+        assert "AVG(h.total_cpu_capacity)" in sql
+        assert "AVG(h.memory_usage_avg)" in sql
+        assert "AVG(h.total_memory_capacity)" in sql
         assert "GROUP BY h.host_name" in sql
         assert "1000000000.0" in sql, "Hz -> GHz"
         assert "1073741824.0" in sql, "bytes -> GB"
