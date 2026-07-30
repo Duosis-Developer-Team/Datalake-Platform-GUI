@@ -44,9 +44,19 @@ def test_highlighted_racks_get_an_outline_on_the_figure():
     # dicts: they support attribute access (s.line.color) but not .get(),
     # matching the existing tests/test_floor_map_figure_fill.py and
     # tests/test_floor_map_lens_switch.py.
+    #
+    # A second, non-highlighted rack ("210") is required here: with only one
+    # rack in the fixture, "outline the selected rack" and "outline every
+    # rack" both produce exactly one outline, so `len(outlines) == 1` cannot
+    # tell a correct membership check (`if highlight and name in highlight`)
+    # apart from a broken one that outlines unconditionally
+    # (`if highlight`). With two racks and only "104" in `highlight`, the
+    # broken version would produce two outlines instead of one.
     racks = [{"id": "R1", "name": "104", "status": "active",
+              "u_height": 47, "hall_name": "DH7"},
+             {"id": "R2", "name": "210", "status": "active",
               "u_height": 47, "hall_name": "DH7"}]
-    fig = fm.build_floor_map_figure(racks, dc_id="DC13", occupancy={"104": 20},
+    fig = fm.build_floor_map_figure(racks, dc_id="DC13", occupancy={"104": 20, "210": 20},
                                     highlight={"104"})
     outlines = [s for s in fig.layout.shapes
                 if s.line and s.line.color == "#4318FF"]
@@ -174,5 +184,12 @@ def test_back_to_colocation_panel_allowed_user_gets_the_panel():
         mock_api.get_colocation.return_value = {"allocation": ALLOCATION}
         result = app_module.back_to_colocation_panel(1, {"dc_id": "DC13"})
 
-    assert "fm-coloc-panel" in str(result)
+    # "fm-coloc-panel" alone is set unconditionally by
+    # build_colocation_customer_panel regardless of whether the allocation
+    # table actually rendered any rows, so it can't distinguish a working
+    # panel from an empty/broken one. Assert real content from the mocked
+    # ALLOCATION too.
+    txt = str(result)
+    assert "fm-coloc-panel" in txt
+    assert "BOYNER" in txt
     mock_api.get_colocation.assert_called_once_with("DC13")
