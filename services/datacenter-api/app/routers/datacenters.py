@@ -369,6 +369,12 @@ def dc_racks_occupancy(dc_code: str, db: DatabaseService = Depends(get_db)):
     return db.get_dc_racks_occupancy(dc_code)
 
 
+@router.get("/datacenters/{dc_code}/racks/load", response_model=dict[str, Any])
+def dc_racks_load(dc_code: str, db: DatabaseService = Depends(get_db)):
+    """Bulk per-rack workload (max CPU/RAM of the rack's monitored devices)."""
+    return db.get_dc_racks_load(dc_code)
+
+
 @router.get("/datacenters/{dc_code}/physical-inventory", response_model=dict[str, Any])
 def physical_inventory_dc(dc_code: str, db: DatabaseService = Depends(get_db)):
     return db.get_physical_inventory_dc(dc_code)

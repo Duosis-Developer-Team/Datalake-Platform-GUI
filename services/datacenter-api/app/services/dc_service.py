@@ -20,6 +20,8 @@ from app.db.queries import nutanix_snapshot as nsq
 from app.db.queries import brocade as brq, ibm_storage as isq
 from app.db.queries import zabbix_network as znq, zabbix_storage as zsq
 from app.db.queries import discovery_rack as drq
+from app.db.queries import rack_load as rl_q
+from app.services.rack_load import aggregate_rack_load, build_metric_index
 from shared.colocation import occupancy as coloc_occ
 from app.db.queries import crm_potential as crm_q
 from app.db.queries import crm_network_pricing as net_price_q
@@ -7754,6 +7756,58 @@ JOIN latest l
             return cache.run_singleflight(cache_key, _fetch, ttl=21600)
         except OperationalError as exc:
             logger.error("DB unavailable for get_dc_racks_occupancy(%s): %s", code, exc)
+            return empty
+
+    def get_dc_racks_load(self, dc_code: str) -> dict:
+        """Per-rack workload (max CPU/RAM utilisation of the rack's monitored
+        devices) for a DC. Mirrors get_dc_racks_occupancy's shape and its 6h
+        singleflight cache.
+
+        Racks whose devices carry no metrics are returned with load_pct=None so
+        the UI can render "Not monitored" rather than a misleading 0%.
+        """
+        empty = {"racks": [], "summary": {"monitored_racks": 0, "total_racks": 0}}
+        if not dc_code or not dc_code.strip():
+            return empty
+        code = dc_code.strip()
+        cache_key = f"dc_racks_load:{code}"
+        cached_val = cache.get(cache_key)
+        if cached_val is not None:
+            return cached_val
+
+        def _fetch():
+            racks = (self.get_dc_racks(code) or {}).get("racks", [])
+            rack_names = [str(r.get("name") or "").strip() for r in racks]
+            rack_names = [n for n in rack_names if n]
+            if not rack_names:
+                return empty
+            tr = default_time_range()
+            start_ts, end_ts = tr["start"], tr["end"]
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    device_rows = self._run_rows(
+                        cur, rl_q.DEVICES_BY_RACK_NAMES, (rack_names,))
+                    vmware_rows = self._run_rows(
+                        cur, rl_q.VMWARE_HOST_LATEST, (start_ts, end_ts))
+                    nutanix_rows = self._run_rows(
+                        cur, rl_q.NUTANIX_HOST_LATEST, (start_ts, end_ts))
+                    ibm_rows = self._run_rows(
+                        cur, rl_q.IBM_SERVER_LATEST, (start_ts, end_ts))
+            index = build_metric_index(vmware_rows, nutanix_rows, ibm_rows)
+            rows = aggregate_rack_load(device_rows, index)
+            monitored = sum(1 for r in rows if r["monitored_devices"] > 0)
+            logger.info(
+                "rack load dc=%s racks=%d monitored=%d devices=%d metrics=%d",
+                code, len(rows), monitored, len(device_rows or []), len(index),
+            )
+            return {"racks": rows,
+                    "summary": {"monitored_racks": monitored,
+                                "total_racks": len(rows)}}
+
+        try:
+            return cache.run_singleflight(cache_key, _fetch, ttl=21600)
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_dc_racks_load(%s): %s", code, exc)
             return empty
 
     def get_colocation_aggregate(self) -> dict:
