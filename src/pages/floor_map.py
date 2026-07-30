@@ -53,7 +53,7 @@ STATUS_DARK   = {"active": "#027A48", "planned": "#175CD3", "inactive": "#B42318
 
 # ── Minimal TTL/LRU cache (no external dependency) ──────────────────────────
 class _FigureCache:
-    """Thread-safe LRU+TTL cache for Plotly figures. maxsize=20, ttl=300s."""
+    """Thread-safe LRU+TTL cache for Plotly figures. maxsize=60, ttl=300s."""
 
     def __init__(self, maxsize: int = 20, ttl: float = 300.0):
         self._maxsize = maxsize
@@ -83,7 +83,12 @@ class _FigureCache:
                 self._store.popitem(last=False)
 
 
-_FIG_CACHE = _FigureCache(maxsize=20, ttl=300)
+# Sized for ~23 pre-warmed DCs (see global_view_prefetch.py) x up to 2 lens
+# variants (coloc/load) each, plus headroom for the per-customer-selection
+# highlight variants the colocation-revenue task adds on top of that. 20 was
+# right when there was one figure per DC; it is not enough for multiple
+# variants per DC without evicting entries before they are ever reused.
+_FIG_CACHE = _FigureCache(maxsize=60, ttl=300)
 
 # Fingerprint fields that affect layout or visuals
 _FP_FIELDS = ("id", "name", "status", "u_height", "hall_name", "facility_id", "last_observed")
@@ -511,8 +516,14 @@ def build_floor_map_figure(racks, dc_id="", occupancy=None, load=None,
     # occupancy/load/lens/highlight are all part of the fingerprint: a figure
     # built for one lens must never be served for the other.
     occ_fp = "|".join(f"{k}:{v}" for k, v in sorted(occupancy.items())) if occupancy else ""
-    load_fp = "|".join(f"{k}:{(v or {}).get('load_pct')}"
-                       for k, v in sorted((load or {}).items())) if load else ""
+    # monitored_devices/total_devices are in the fingerprint too, not just
+    # load_pct: two payloads can agree on load_pct but differ in device
+    # counts, and the hover text ("m/t devices") reads those counts directly.
+    load_fp = "|".join(
+        f"{k}:{(v or {}).get('load_pct')}:{(v or {}).get('monitored_devices')}:"
+        f"{(v or {}).get('total_devices')}"
+        for k, v in sorted((load or {}).items())
+    ) if load else ""
     hl_fp = ",".join(sorted(highlight)) if highlight else ""
     fp = (_rack_fingerprint(dc_id, racks) + "::" + occ_fp
           + "::" + load_fp + "::" + lens + "::" + hl_fp)
@@ -623,6 +634,7 @@ def build_floor_map_figure(racks, dc_id="", occupancy=None, load=None,
                 "Status: %{customdata[2]}<br>"
                 "Occupancy: %{customdata[9]}<br>"
                 "Free (sellable): %{customdata[10]}<br>"
+                "Condition: %{customdata[11]}<br>"
                 "Load: %{customdata[12]}<br>"
                 "Power: %{customdata[4]}<br>"
                 "Type: %{customdata[6]}"
@@ -661,20 +673,21 @@ def build_floor_map_figure(racks, dc_id="", occupancy=None, load=None,
 
 
 def build_recolored_floor_map_figure(dc_id, lens="coloc", highlight=None):
-    """Phase 2 / lens switch: fetch racks plus whichever payload the active lens
-    needs, and return the recoloured figure. Returns None if the DC has no racks."""
+    """Phase 2 / lens switch: fetch racks plus BOTH occupancy and load payloads
+    (each 6h-cached server-side, so fetching the one the inactive lens doesn't
+    need is cheap) and return the recoloured figure. `lens` only selects which
+    payload drives the fill colour -- it must never decide which hover rows
+    exist, or every tooltip loses half its fields in whichever lens isn't
+    active. Returns None if the DC has no racks."""
     from src.services import api_client as api
 
     racks = (api.get_dc_racks(dc_id or "") or {}).get("racks", [])
     if not racks:
         return None
-    if lens == "load":
-        return build_floor_map_figure(racks, dc_id=dc_id,
-                                      load=_fetch_rack_load(dc_id, racks),
-                                      lens="load", highlight=highlight)
     occupancy = _fetch_rack_occupancy(dc_id, racks)
+    load = _fetch_rack_load(dc_id, racks)
     return build_floor_map_figure(racks, dc_id=dc_id, occupancy=occupancy,
-                                  lens="coloc", highlight=highlight)
+                                  load=load, lens=lens, highlight=highlight)
 
 
 # ── Layout builder ──────────────────────────────────────────────────────────
