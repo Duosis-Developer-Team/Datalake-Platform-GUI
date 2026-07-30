@@ -10,7 +10,13 @@ SUMMARIES = [{"id": "DC13", "site_name": "ISTANBUL", "name": "DC13",
 def test_globe_points_carry_load_not_health():
     point = gv._build_globe_data(SUMMARIES)[0]
     assert point["load"] == 70.0
-    assert "health" not in point
+    # `health` is a deliberate, temporary alias — NOT an oversight. The
+    # committed dash_globe_component.min.js bundle still reads `.health`
+    # (the source DashGlobe.react.js was updated to read `.load`, but the
+    # pre-built bundle was not rebuilt). Do not delete this alias, and do
+    # not "clean up" the duplicate, until the bundle has been rebuilt and
+    # committed. See the matching comment in _build_globe_data.
+    assert point["health"] == point["load"]
 
 
 def test_dead_plotly_globe_and_its_fabricated_ping_are_gone():

@@ -274,6 +274,17 @@ def _build_globe_data(summaries):
             "vm_count": dc.get("vm_count", 0) or 0,
             "host_count": dc.get("host_count", 0) or 0,
             "load": round(load, 1),
+            # DEPRECATED ALIAS — do not remove without rebuilding the JS bundle.
+            # DashGlobe.react.js (the source) already reads only `load`, but the
+            # committed, pre-built dash_globe_component/dash_globe_component/
+            # dash_globe_component.min.js still reads `.health` off this same
+            # dict (confirmed via `grep -o ".\{30\}\.health.\{30\}"` on the
+            # .min.js — it contains `e.health`). Deleting this key without first
+            # running `npm run build` in dash_globe_component/ and committing
+            # the regenerated .min.js will silently regress the globe popup's
+            # "Avg Load" row to an em dash in production. Delete this line only
+            # in the same commit that ships the rebuilt bundle.
+            "health": round(load, 1),
             "coloc_total_u": int(dc.get("coloc_total_u") or 0),
             "coloc_used_u": int(dc.get("coloc_used_u") or 0),
             "coloc_free_u": int(dc.get("coloc_free_u") or 0),
