@@ -11,11 +11,25 @@ def test_build_recolored_figure_colors_by_fill():
     racks = [{"id": "R1", "name": "104", "status": "active", "u_height": 47, "hall_name": "DH7"}]
     with patch("src.services.api_client.get_dc_racks", return_value={"racks": racks}), \
          patch.object(fm, "_fetch_rack_occupancy", return_value={"104": 45}):  # ~96% -> red
-        fig = fm.build_recolored_floor_map_figure("DC13-r")
+        fig, _ = fm.build_recolored_floor_map_figure("DC13-r")
     fills = [s.fillcolor for s in fig.layout.shapes]
     assert fm.FILL_PALETTE["red"][0] in fills
 
 
 def test_build_recolored_figure_none_when_no_racks():
     with patch("src.services.api_client.get_dc_racks", return_value={"racks": []}):
-        assert fm.build_recolored_floor_map_figure("DC13-empty") is None
+        assert fm.build_recolored_floor_map_figure("DC13-empty") == (None, None)
+
+
+def test_build_recolored_figure_returns_the_load_summary_alongside_the_figure():
+    # build_recolored_floor_map_figure is the real call site for both the
+    # figure and the coverage summary the Load lens legend note reads --
+    # dropping the summary here would silently defeat that note regardless
+    # of how correct _fetch_rack_load itself is.
+    racks = [{"id": "R1", "name": "104", "status": "active", "u_height": 47, "hall_name": "DH7"}]
+    with patch("src.services.api_client.get_dc_racks", return_value={"racks": racks}), \
+         patch.object(fm, "_fetch_rack_occupancy", return_value={}), \
+         patch.object(fm, "_fetch_rack_load",
+                      return_value=({}, {"monitored_racks": 1, "total_racks": 1})):
+        _, load_summary = fm.build_recolored_floor_map_figure("DC13-summary", lens="load")
+    assert load_summary == {"monitored_racks": 1, "total_racks": 1}

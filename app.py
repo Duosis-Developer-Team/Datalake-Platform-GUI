@@ -243,7 +243,21 @@ def _periodic_common_warm() -> None:
         time_module.sleep(interval)
 
 
-threading.Thread(target=_periodic_common_warm, daemon=True).start()
+def _background_warm_enabled() -> bool:
+    """True unless APP_DISABLE_BACKGROUND_WARM is set to a value other than
+    "0"/"false" (case-insensitive). A tiny pure predicate so the guard below can
+    be unit-tested without actually starting the thread."""
+    return os.environ.get("APP_DISABLE_BACKGROUND_WARM", "").strip().lower() in ("", "0", "false")
+
+
+# _periodic_common_warm calls warm_common() immediately, before its first sleep.
+# That means simply importing this module starts a background caller of
+# warm_common() for the rest of the process — in a test session, that caller
+# can race a test that monkeypatches warm_common's internals (e.g.
+# tests/test_warm_common.py), landing an extra call mid-assertion. Production
+# never sets APP_DISABLE_BACKGROUND_WARM, so production behaviour is unchanged.
+if _background_warm_enabled():
+    threading.Thread(target=_periodic_common_warm, daemon=True).start()
 
 _sidebar = html.Div(
     id="sidebar-shell",
@@ -1728,6 +1742,45 @@ def view_controller(mode, dc_store, pathname):
     return shown, hidden, hidden, True, dash.no_update, dc_label
 
 
+def _resolve_show_colocation() -> bool:
+    """Whether the current caller may see colocation customer names / TL
+    potential -- gates both the floor map's customer panel
+    (advance_to_floor_map) and the rack-detail dedicated-customer tenant
+    badges (show_rack_detail).
+
+    Rides on the existing sec:dc_view:colocation permission under
+    page:dc_view rather than a new node under page:global_view: this repo
+    has a recorded incident where a freshly added sub-node had no permission
+    rows yet and, because permissions inherit downward, that silently
+    WIDENED access instead of restricting it. The Floor Map (and its rack
+    detail panel) is a view mode inside /global-view (page:global_view), not
+    its own page, so the section set the router computes for that pathname
+    does not include the dc_view colocation code -- it is looked up
+    explicitly against page:dc_view here. Any failure to resolve the
+    permission must hide the data, never reveal it, so only the lookup
+    itself is guarded: an import failure here would be a deploy-breaking bug
+    that should surface loudly, not a per-request condition to degrade on.
+    """
+    from flask import g, has_request_context
+
+    from src.auth.config import AUTH_DISABLED
+    from src.auth.permission_service import get_visible_sections
+
+    if AUTH_DISABLED:
+        return True
+    uid = getattr(g, "auth_user_id", None) if has_request_context() else None
+    if uid is None:
+        return False
+    try:
+        return "sec:dc_view:colocation" in get_visible_sections(int(uid), "page:dc_view")
+    except Exception:
+        _log.warning(
+            "_resolve_show_colocation: permission check failed for uid=%s",
+            uid, exc_info=True,
+        )
+        return False
+
+
 @app.callback(
     dash.Output("current-view-mode", "data", allow_duplicate=True),
     dash.Output("floor-map-layer", "children"),
@@ -1756,12 +1809,15 @@ def advance_to_floor_map(n_intervals, dc_store, current_mode, time_range):
     _meta = _info.get("meta", {})
     dc_name = _fmt_name(_meta.get("name"), _meta.get("description")) or dc_store.get("dc_name", dc_id)
     racks = racks_resp.get("racks", [])
+
+    show_colocation = _resolve_show_colocation()
+
     from src.pages.floor_map import build_floor_map_layout
-    layout = build_floor_map_layout(dc_id, dc_name, racks)
+    layout = build_floor_map_layout(dc_id, dc_name, racks, show_colocation=show_colocation)
     elapsed_ms = round((time_module.perf_counter() - t0) * 1000, 1)
     _log.info(
-        "advance_to_floor_map dc=%s racks=%d is_warm=%s elapsed_ms=%.1f",
-        dc_id, len(racks), warm, elapsed_ms,
+        "advance_to_floor_map dc=%s racks=%d is_warm=%s elapsed_ms=%.1f show_colocation=%s",
+        dc_id, len(racks), warm, elapsed_ms, show_colocation,
     )
     return "floor_map", layout
 
@@ -1949,24 +2005,68 @@ def _detail_row(icon, label, value):
 
 
 @app.callback(
-    dash.Output("floor-map-graph", "figure"),
-    dash.Input("floor-map-occupancy-interval", "n_intervals"),
+    dash.Output("fm-selected-customer", "data"),
+    dash.Input({"type": "fm-coloc-customer-row", "index": ALL}, "n_clicks"),
+    dash.State("fm-selected-customer", "data"),
     dash.State("selected-building-dc-store", "data"),
     prevent_initial_call=True,
 )
-def recolor_floor_map_by_fill(n_intervals, dc_store):
-    """Phase 2: after the fast status-colored paint, recolor racks by U-fill."""
-    dc_id = (dc_store or {}).get("dc_id", "")
-    if not n_intervals or not dc_id:
-        return dash.no_update
-    from src.pages.floor_map import build_recolored_floor_map_figure
+def select_colocation_customer(n_clicks_list, current, dc_store):
+    """Clicking a customer row outlines that customer's racks on the map.
 
-    fig = build_recolored_floor_map_figure(dc_id)
-    return fig if fig is not None else dash.no_update
+    This is a pattern-matching Input over every row id: it can be invoked by
+    a crafted request regardless of whether the row was ever rendered in the
+    caller's browser, so the permission check happens here too, not just in
+    the row's rendering (build_colocation_customer_panel). A denied caller
+    gets no update and never reaches api.get_colocation.
+    """
+    if not _resolve_show_colocation():
+        return dash.no_update
+    if not any(n_clicks_list or []):
+        return dash.no_update
+    triggered = dash.callback_context.triggered_id
+    if not triggered:
+        return dash.no_update
+    customer = triggered.get("index")
+    dc_id = (dc_store or {}).get("dc_id", "")
+
+    from src.pages.floor_map import resolve_customer_highlight
+
+    allocation = (api.get_colocation(dc_id) or {}).get("allocation", []) or []
+    return resolve_customer_highlight(customer, allocation, current=current)
 
 
 @app.callback(
-    dash.Output("floor-map-rack-detail", "children"),
+    dash.Output("floor-map-graph", "figure"),
+    dash.Output("floor-map-legend", "children"),
+    dash.Input("floor-map-occupancy-interval", "n_intervals"),
+    dash.Input("floor-map-lens", "value"),
+    dash.Input("fm-selected-customer", "data"),
+    dash.State("selected-building-dc-store", "data"),
+    prevent_initial_call=True,
+)
+def recolor_floor_map(n_intervals, lens, selected_customer, dc_store):
+    """Phase-2 recolor and lens switching share one callback: two callbacks
+    writing the same figure would race and the loser's colours would win."""
+    dc_id = (dc_store or {}).get("dc_id", "")
+    if not dc_id:
+        return dash.no_update, dash.no_update
+
+    from src.pages.floor_map import (
+        build_lens_legend, build_load_coverage_note, build_recolored_floor_map_figure,
+    )
+
+    lens = lens or "coloc"
+    highlight = set((selected_customer or {}).get("racks") or [])
+    fig, load_summary = build_recolored_floor_map_figure(dc_id, lens=lens, highlight=highlight)
+    legend_children = [build_lens_legend(lens)]
+    if lens == "load":
+        legend_children.append(build_load_coverage_note(load_summary))
+    return (fig if fig is not None else dash.no_update), legend_children
+
+
+@app.callback(
+    dash.Output("floor-map-rack-detail", "children", allow_duplicate=True),
     dash.Input("floor-map-graph", "clickData"),
     dash.State("selected-building-dc-store", "data"),
     prevent_initial_call=True,
@@ -2000,28 +2100,54 @@ def show_rack_detail(click_data, dc_store):
     devices = devices_resp.get("devices", [])
 
     # Dedicated-customer badges — external colocation tenants occupying this
-    # rack, from the bulk occupancy payload. Degrades to no badges if the
-    # occupancy call fails or the rack isn't present in the response.
-    from src.pages.floor_map import _external_rack_tenants
-
+    # rack, from the bulk occupancy payload. Names only, no TL figures, but
+    # still commercial identity: gated on the same sec:dc_view:colocation
+    # permission as the floor map's customer panel (Task 6 fix round 1) --
+    # otherwise a user without that permission could learn a customer's name
+    # by clicking a rack, making the panel's gate decorative. Denied callers
+    # skip the occupancy/tenant lookup entirely, not just its rendering.
+    show_colocation = _resolve_show_colocation()
     tenant_badges = None
-    try:
-        _occ = (api.get_dc_racks_occupancy(dc_id or "") or {}).get("racks", [])
-        _tenants = next(
-            (r.get("tenants") for r in _occ if str(r.get("rack_name")) == str(name)), []
-        ) or []
-        _ext = _external_rack_tenants(_tenants)
-    except Exception:
-        _log.warning("show_rack_detail: occupancy tenant lookup failed for rack %s", name, exc_info=True)
+    if show_colocation:
+        from src.pages.floor_map import _external_rack_tenants
+
+        try:
+            _occ = (api.get_dc_racks_occupancy(dc_id or "") or {}).get("racks", [])
+            _tenants = next(
+                (r.get("tenants") for r in _occ if str(r.get("rack_name")) == str(name)), []
+            ) or []
+            _ext = _external_rack_tenants(_tenants)
+        except Exception:
+            _log.warning("show_rack_detail: occupancy tenant lookup failed for rack %s", name, exc_info=True)
+            _ext = []
+    else:
         _ext = []
     if _ext:
         tenant_badges = dmc.Group(gap=6, mb="sm", children=[
-            dmc.Text("Dedike:", size="xs", c="#667085", fw=600),
+            dmc.Text("Dedicated:", size="xs", c="#667085", fw=600),
             *[dmc.Badge(t, color="grape", variant="light", size="sm") for t in _ext],
         ])
 
+    # ── Back-to-customers button — only rendered for callers entitled to see
+    # the colocation customer panel. This Div renders unconditionally for
+    # every user; if the button rendered unconditionally too, an unentitled
+    # user could click it and reach back_to_colocation_panel, which builds
+    # the very panel Task 6 hid. Gating the button AND re-checking in the
+    # restore callback below are both required -- neither alone closes the
+    # hole (a crafted click event bypasses a client-side-only gate).
+    back_button = (
+        dmc.Button(
+            "Back to customers",
+            id="fm-back-to-customers",
+            variant="subtle", color="gray", size="xs", mb="xs",
+            leftSection=DashIconify(icon="solar:arrow-left-linear", width=14),
+        )
+        if show_colocation else None
+    )
+
     return html.Div(
         children=[
+            back_button,
             # ── Status color bar at top
             html.Div(style={
                 "height": "4px",
@@ -2115,6 +2241,31 @@ def show_rack_detail(click_data, dc_store):
             ),
         ],
     )
+
+
+@app.callback(
+    dash.Output("floor-map-rack-detail", "children", allow_duplicate=True),
+    dash.Input("fm-back-to-customers", "n_clicks"),
+    dash.State("selected-building-dc-store", "data"),
+    prevent_initial_call=True,
+)
+def back_to_colocation_panel(n_clicks, dc_store):
+    """Restore the customer/potential panel from the rack-detail column.
+
+    The button that fires this is only rendered for entitled callers
+    (show_rack_detail), but a crafted n_clicks event on
+    "fm-back-to-customers" could reach this callback regardless of what the
+    browser actually rendered -- so the permission check is re-done here too,
+    not just at render time.
+    """
+    if not n_clicks:
+        return dash.no_update
+    if not _resolve_show_colocation():
+        return dash.no_update
+    from src.pages.floor_map import build_colocation_customer_panel
+
+    dc_id = (dc_store or {}).get("dc_id", "")
+    return build_colocation_customer_panel(api.get_colocation(dc_id) or {})
 
 
 @app.callback(

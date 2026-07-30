@@ -22,6 +22,8 @@ import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 
 from src.components.colocation_summary import build_colocation_summary
+from src.utils.format_units import fmt_tl
+from shared.colocation.allocation import UNATTRIBUTED
 
 _logger = logging.getLogger(__name__)
 
@@ -53,7 +55,9 @@ STATUS_DARK   = {"active": "#027A48", "planned": "#175CD3", "inactive": "#B42318
 
 # ── Minimal TTL/LRU cache (no external dependency) ──────────────────────────
 class _FigureCache:
-    """Thread-safe LRU+TTL cache for Plotly figures. maxsize=20, ttl=300s."""
+    """Thread-safe LRU+TTL cache for Plotly figures. Defaults to maxsize=20,
+    ttl=300s; see _FIG_CACHE below for the maxsize this module actually
+    instantiates it with."""
 
     def __init__(self, maxsize: int = 20, ttl: float = 300.0):
         self._maxsize = maxsize
@@ -83,7 +87,12 @@ class _FigureCache:
                 self._store.popitem(last=False)
 
 
-_FIG_CACHE = _FigureCache(maxsize=20, ttl=300)
+# Sized for ~23 pre-warmed DCs (see global_view_prefetch.py) x up to 2 lens
+# variants (coloc/load) each, plus headroom for the per-customer-selection
+# highlight variants the colocation-revenue task adds on top of that. 20 was
+# right when there was one figure per DC; it is not enough for multiple
+# variants per DC without evicting entries before they are ever reused.
+_FIG_CACHE = _FigureCache(maxsize=60, ttl=300)
 
 # Fingerprint fields that affect layout or visuals
 _FP_FIELDS = ("id", "name", "status", "u_height", "hall_name", "facility_id", "last_observed")
@@ -133,6 +142,121 @@ def _color_by_fill(status, occupied_u, total_u):
     return FILL_PALETTE["green"]
 
 
+# ── Load palette (colour by CPU/RAM utilisation of the rack's hosts) ────────
+# Same 50/80 steps as FILL_PALETTE so a colour learned in one lens reads the
+# same way in the other. No turquoise "idle" step on purpose: a 0% reading is
+# far more often a silent collector than genuinely idle hardware, and painting
+# that as prime capacity would invent good news.
+LOAD_PALETTE = {
+    "green":       ("#17B26A", "#027A48"),   # light load (<50%)
+    "orange":      ("#F79009", "#B54708"),   # moderate (50-80%)
+    "red":         ("#F04438", "#B42318"),   # heavy (>80%)
+    "closed":      ("#475467", "#344054"),   # non-active / closed
+    "unmonitored": ("#F2F4F7", "#D0D5DD"),   # no device in this rack has metrics
+}
+
+_COLOC_LEGEND = (
+    ("empty",   "Fully free (sellable)"),
+    ("green",   "Space available"),
+    ("orange",  "Moderate"),
+    ("red",     "Nearly full"),
+    ("closed",  "Closed / inactive"),
+    ("unknown", "Unknown"),
+)
+
+_LOAD_LEGEND = (
+    ("green",       "Light load"),
+    ("orange",      "Moderate load"),
+    ("red",         "Heavy load"),
+    ("closed",      "Closed / inactive"),
+    ("unmonitored", "Not monitored"),
+)
+
+# "Not monitored" is the Load lens's largest, permanent category: customer-
+# owned colocation hardware is never monitored, because Bulutistan does not
+# have agents or credentials on equipment it does not manage. That is a fact
+# about the world, not a gap waiting to be closed by future collector work.
+_UNMONITORED_TOOLTIP = (
+    "Bulutistan does not monitor customer-owned colocation hardware -- we have "
+    "no agents or credentials on equipment we do not manage. Racks holding only "
+    "customer equipment will always show here, not just until the next collector fix."
+)
+
+
+def _color_by_load(status, load_pct):
+    """(fill, dark) for the Load lens. Closed is checked before load so a closed
+    rack with a hot host is gray, mirroring _color_by_fill's ordering. A None
+    load is "not monitored" -- never rendered as a healthy 0%."""
+    if (status or "").lower() in _NON_ACTIVE_STATUSES:
+        return LOAD_PALETTE["closed"]
+    if load_pct is None:
+        return LOAD_PALETTE["unmonitored"]
+    if load_pct > 80:
+        return LOAD_PALETTE["red"]
+    if load_pct >= 50:
+        return LOAD_PALETTE["orange"]
+    return LOAD_PALETTE["green"]
+
+
+def build_lens_legend(lens: str):
+    """Swatch legend for the active lens. Each lens ships its own labels: the
+    shared 50/80 steps mean different things (U occupancy vs CPU/RAM). The
+    Load lens's "Not monitored" swatch carries a tooltip: it is the largest
+    category on that lens and, for customer-owned racks, a permanent one."""
+    palette = LOAD_PALETTE if lens == "load" else FILL_PALETTE
+    entries = _LOAD_LEGEND if lens == "load" else _COLOC_LEGEND
+    swatches = []
+    for key, label in entries:
+        swatch = dmc.Group(gap=6, align="center", children=[
+            html.Div(className="fm-legend-swatch",
+                     style={"backgroundColor": palette[key][0]}),
+            dmc.Text(label, size="xs", c="#667085"),
+        ])
+        if lens == "load" and key == "unmonitored":
+            swatch = dmc.Tooltip(
+                label=_UNMONITORED_TOOLTIP,
+                position="top", withArrow=True, multiline=True, w=260,
+                children=swatch,
+            )
+        swatches.append(swatch)
+    return dmc.Group(gap="lg", px="sm", children=[
+        *swatches,
+        dmc.Text("Scroll to zoom · Drag to pan · Click rack to inspect",
+                 size="xs", c="#98A2B3", ml="auto"),
+    ])
+
+
+def build_load_coverage_note(summary):
+    """One-line Load-lens coverage readout, rendered beside the legend.
+
+    Without this, "the load endpoint is down" (every rack near-white) and
+    "coverage is genuinely thin" (also every rack near-white, e.g. 38 of 214
+    racks monitored) are visually identical on the map. `summary` is the
+    `monitored_racks`/`total_racks` dict from the bulk load endpoint, or None
+    when the fetch failed outright or didn't return usable counts -- in
+    either case this says so explicitly rather than printing a misleading
+    "0 of 0".
+    """
+    monitored = (summary or {}).get("monitored_racks")
+    total = (summary or {}).get("total_racks")
+    # `not total` -- not `total is None` -- on purpose: get_dc_racks_load's
+    # OperationalError handler returns HTTP 200 with a genuine, truthy
+    # {"monitored_racks": 0, "total_racks": 0} dict on a DB blip (a normal
+    # condition here, e.g. the rack list still served from a stale cache
+    # while the load query itself fails), so `total_racks is None` never
+    # fires for that path and "0 of 0" would print as if it were real
+    # coverage. A DC that genuinely has zero racks never reaches this note --
+    # build_recolored_floor_map_figure returns (None, None) before the Load
+    # lens is ever drawn -- so total_racks == 0 here unambiguously means the
+    # backend could not tell us, not that it told us zero. Do not "tighten"
+    # this back to an identity check.
+    if monitored is None or not total:
+        text = "Load data unavailable — could not reach the load endpoint."
+    else:
+        text = f"Load data: {monitored} of {total} racks monitored"
+    return dmc.Text(text, size="xs", c="#98A2B3", px="sm", mt=4)
+
+
 def _fetch_rack_occupancy(dc_id, racks):
     """{rack_name -> occupied_u} for the given racks, from the bulk colocation
     occupancy endpoint (real used-U via the shared canonical SQL). One call
@@ -157,6 +281,38 @@ def _fetch_rack_occupancy(dc_id, racks):
     return occupancy
 
 
+def _fetch_rack_load(dc_id, racks):
+    """(by_rack, summary) from the bulk load endpoint, restricted to the racks
+    this floor map draws. Degrades to ({}, None) (every rack "not monitored",
+    coverage explicitly unknown rather than a misleading 0/0) if the call
+    fails, matching _fetch_rack_occupancy's guarded shape.
+
+    `summary` is the endpoint's own monitored_racks/total_racks coverage
+    dict, carried through (not dropped) so the caller can render "N of M
+    racks monitored" beside the Load lens legend -- without it, "the load
+    endpoint is down" and "coverage is genuinely thin" both just look like
+    every rack painted near-white, and nobody can tell which one they're
+    looking at.
+    """
+    from src.services import api_client as api
+
+    wanted = {str(r.get("name") or "").strip() for r in racks if str(r.get("name") or "").strip()}
+    if not wanted:
+        return {}, None
+    try:
+        payload = api.get_dc_racks_load(dc_id or "") or {}
+    except Exception:
+        _logger.warning("_fetch_rack_load: bulk load call failed for dc_id=%s", dc_id, exc_info=True)
+        return {}, None
+    out = {}
+    for row in payload.get("racks", []) or []:
+        name = str(row.get("rack_name") or "").strip()
+        if name in wanted:
+            out[name] = row
+    summary = payload.get("summary") or None
+    return out, summary
+
+
 def _external_rack_tenants(tenants):
     """External (non-Bulutistan) tenants occupying a rack, order-preserved, deduped."""
     from shared.colocation.occupancy import is_internal_tenant
@@ -173,18 +329,18 @@ def _rack_fill_info(occupied_u, total_u):
     """Occupancy summary for the hover popup: occupied/total/free/pct + label."""
     total = int(total_u or 0)
     if occupied_u is None:
-        return {"occupied": None, "total": total, "free": None, "pct": None, "label": "Bilinmiyor"}
+        return {"occupied": None, "total": total, "free": None, "pct": None, "label": "Unknown"}
     occ = max(int(occupied_u), 0)
     free = max(total - occ, 0)
     pct = round(occ / total * 100) if total else 0
     if occ == 0:
-        label = "Tamamen boş"
+        label = "Fully free"
     elif pct > 80:
-        label = "Çok dolu"
+        label = "Nearly full"
     elif pct >= 50:
-        label = "Orta"
+        label = "Moderate"
     else:
-        label = "Satılabilir alan var"
+        label = "Space available"
     return {"occupied": occ, "total": total, "free": free, "pct": pct, "label": label}
 
 
@@ -258,7 +414,8 @@ def _hall_dimensions(hall_racks):
 # ── Accumulator-based rack collector (avoids O(N²) add_shape calls) ─────────
 
 def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
-                  rx, ry, status, name, rack_data, dc_id="", occupancy=None):
+                  rx, ry, status, name, rack_data, dc_id="", occupancy=None,
+                  load=None, lens="coloc", highlight=None):
     """Append shape dicts and hover point data to accumulator lists."""
     rid       = rack_data.get("id") or ""
     u         = rack_data.get("u_height") or 0
@@ -268,8 +425,16 @@ def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
     serial    = rack_data.get("serial") or "—"
     led_fill  = "#ECFDF3" if status == "active" else "rgba(255,255,255,0.65)"
 
-    # Phase 1 (no occupancy yet) keeps the status color; phase 2 colors by fill.
-    if occupancy is None:
+    # Phase 1 (no data yet) keeps the status color; phase 2 colors by the lens.
+    load_row = (load or {}).get(name) or {}
+    load_pct = load_row.get("load_pct")
+    if lens == "load":
+        occupied_u = occupancy.get(name) if occupancy else None
+        if load is None:
+            fill, dark = _color(status)
+        else:
+            fill, dark = _color_by_load(status, load_pct)
+    elif occupancy is None:
         fill, dark = _color(status)
         occupied_u = None
     else:
@@ -279,7 +444,9 @@ def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
     if info["occupied"] is None:
         doluluk_str, free_str = "—", "—"
     else:
-        doluluk_str = f"{info['occupied']}/{info['total']}U (%{info['pct']})"
+        # English percent convention is "N%", not the Turkish "%N" this used
+        # to render (a leftover of the pre-relabel copy).
+        doluluk_str = f"{info['occupied']}/{info['total']}U ({info['pct']}%)"
         free_str = f"{info['free']}U"
 
     # 5 shapes per rack — appended to list (set once in bulk later)
@@ -290,6 +457,11 @@ def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
     shapes.append(dict(
         type="rect", x0=rx, y0=ry, x1=rx+RACK_W, y1=ry+RACK_H,
         fillcolor=fill, line=dict(color=dark, width=1.3)))
+    if highlight and name in highlight:
+        shapes.append(dict(
+            type="rect", x0=rx-1.5, y0=ry-1.5, x1=rx+RACK_W+1.5, y1=ry+RACK_H+1.5,
+            fillcolor="rgba(0,0,0,0)",
+            line=dict(color="#4318FF", width=2.5)))
     shapes.append(dict(
         type="rect", x0=rx+1.5, y0=ry+RACK_H*0.52, x1=rx+RACK_W-1.5, y1=ry+RACK_H-1.5,
         fillcolor="rgba(255,255,255,0.15)", line=dict(color="rgba(0,0,0,0)", width=0)))
@@ -304,12 +476,26 @@ def _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
     hover_x.append(rx + RACK_W / 2)
     hover_y.append(ry + RACK_H / 2 + 2)
     hover_text.append(name[:6])
+    if load_pct is None:
+        load_str = "Not monitored" if load is not None else "—"
+    else:
+        # aggregate_rack_load always sets both counts alongside a real
+        # load_pct, so this key is never actually missing today -- but a
+        # missing key must still render "—" (unknown), not a confident "0",
+        # the same convention the rest of this file uses for unresolved
+        # values. `.get(key, 0)` would have silently done the latter.
+        monitored_devices = load_row.get("monitored_devices")
+        total_devices = load_row.get("total_devices")
+        monitored_str = "—" if monitored_devices is None else str(int(monitored_devices))
+        total_str = "—" if total_devices is None else str(int(total_devices))
+        load_str = f"{load_pct:.0f}% ({monitored_str}/{total_str} devices)"
     hover_cd.append([rid, name, status, u, pwr, rh, rack_type, serial, dc_id,
-                     doluluk_str, free_str, info["label"]])
+                     doluluk_str, free_str, info["label"], load_str])
 
 
 def _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_cd,
-                       hx, hy, hall_name, dims, dc_id="", occupancy=None):
+                       hx, hy, hall_name, dims, dc_id="", occupancy=None,
+                       load=None, lens="coloc", highlight=None):
     """Collect hall background, label, aisle, and all rack shapes into accumulator lists."""
     zw = dims["zone_w"]
     zh = dims["zone_h"]
@@ -380,7 +566,8 @@ def _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_
             status = (rack.get("status") or "unknown").lower()
             _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
                           rx, ry_base, status, str(rack.get("name") or "?"), rack,
-                          dc_id=dc_id, occupancy=occupancy)
+                          dc_id=dc_id, occupancy=occupancy,
+                          load=load, lens=lens, highlight=highlight)
 
     for i, rack in enumerate(ungridded):
         ci = i % n_ung_per_row
@@ -390,17 +577,39 @@ def _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_
         status = (rack.get("status") or "unknown").lower()
         _collect_rack(shapes, hover_x, hover_y, hover_text, hover_cd,
                       rx, ry_base, status, str(rack.get("name") or "?"), rack,
-                      dc_id=dc_id, occupancy=occupancy)
+                      dc_id=dc_id, occupancy=occupancy,
+                      load=load, lens=lens, highlight=highlight)
 
 
 # ── Main figure builder ─────────────────────────────────────────────────────
 
-def build_floor_map_figure(racks, dc_id="", occupancy=None):
+def build_floor_map_figure(racks, dc_id="", occupancy=None, load=None,
+                           lens="coloc", highlight=None):
     # ── Cache lookup ─────────────────────────────────────────────────────────
-    # occupancy is part of the fingerprint so a phase-1 (status) figure is never
-    # served in place of a phase-2 (fill-colored) one, and vice versa.
-    occ_fp = "|".join(f"{k}:{v}" for k, v in sorted(occupancy.items())) if occupancy else ""
-    fp = _rack_fingerprint(dc_id, racks) + "::" + occ_fp
+    # occupancy/load/lens/highlight are all part of the fingerprint: a figure
+    # built for one lens must never be served for the other. Each field must
+    # also tell None (not fetched / phase 1) apart from {} or set() (fetched,
+    # came back with nothing usable) -- both were previously falsy and
+    # collapsed to the same "" fingerprint, so a phase-1 figure (status
+    # colours) built with occupancy=None could be handed back verbatim as the
+    # phase-2 result for occupancy={}, which should render every rack
+    # "unknown" (near-white) instead. "none" can only collide with real data
+    # if a rack/customer were literally named "none" with no other entries --
+    # not a real key shape in this domain -- so a plain sentinel string is
+    # enough without adding a separate presence flag.
+    occ_fp = "none" if occupancy is None else "|".join(
+        f"{k}:{v}" for k, v in sorted(occupancy.items()))
+    # monitored_devices/total_devices are in the fingerprint too, not just
+    # load_pct: two payloads can agree on load_pct but differ in device
+    # counts, and the hover text ("m/t devices") reads those counts directly.
+    load_fp = "none" if load is None else "|".join(
+        f"{k}:{(v or {}).get('load_pct')}:{(v or {}).get('monitored_devices')}:"
+        f"{(v or {}).get('total_devices')}"
+        for k, v in sorted(load.items())
+    )
+    hl_fp = "none" if highlight is None else ",".join(sorted(highlight))
+    fp = (_rack_fingerprint(dc_id, racks) + "::" + occ_fp
+          + "::" + load_fp + "::" + lens + "::" + hl_fp)
     cached = _FIG_CACHE.get(fp)
     if cached is not None:
         _logger.debug("floor_map figure cache HIT dc=%s racks=%d", dc_id, len(racks))
@@ -487,7 +696,8 @@ def build_floor_map_figure(racks, dc_id="", occupancy=None):
         hy_from_top = FLOOR_PAD + sum(row_heights[:gr]) + HALL_ROW_GAP * gr
         hy = floor_h - hy_from_top - dims["zone_h"]
         _collect_hall_zone(shapes, annotations, hover_x, hover_y, hover_text, hover_cd,
-                           hx, hy, hall_name, dims, dc_id=dc_id, occupancy=occupancy)
+                           hx, hy, hall_name, dims, dc_id=dc_id, occupancy=occupancy,
+                           load=load, lens=lens, highlight=highlight)
 
     # ── Build figure — set shapes/annotations in bulk (O(N) not O(N²)) ──────
     fig = go.Figure()
@@ -505,9 +715,10 @@ def build_floor_map_figure(racks, dc_id="", occupancy=None):
                 "<b>%{customdata[1]}</b><br>"
                 "Hall: %{customdata[5]}<br>"
                 "Status: %{customdata[2]}<br>"
-                "Doluluk: %{customdata[9]}<br>"
-                "Boş (satılabilir): %{customdata[10]}<br>"
-                "Durum: %{customdata[11]}<br>"
+                "Occupancy: %{customdata[9]}<br>"
+                "Free (sellable): %{customdata[10]}<br>"
+                "Condition: %{customdata[11]}<br>"
+                "Load: %{customdata[12]}<br>"
                 "Power: %{customdata[4]}<br>"
                 "Type: %{customdata[6]}"
                 "<extra></extra>"
@@ -544,22 +755,166 @@ def build_floor_map_figure(racks, dc_id="", occupancy=None):
     return fig
 
 
-def build_recolored_floor_map_figure(dc_id):
-    """Phase 2: fetch racks + per-rack occupancy and return the fill-colored
-    figure the phase-2 callback swaps in after the fast status-colored paint.
-    Returns None if the DC has no racks."""
+def build_recolored_floor_map_figure(dc_id, lens="coloc", highlight=None):
+    """Phase 2 / lens switch: fetch racks plus BOTH occupancy and load payloads
+    (each 6h-cached server-side, so fetching the one the inactive lens doesn't
+    need is cheap) and return (figure, load_summary). `lens` only selects
+    which payload drives the fill colour -- it must never decide which hover
+    rows exist, or every tooltip loses half its fields in whichever lens
+    isn't active. `load_summary` is the load endpoint's own coverage dict
+    (monitored_racks/total_racks), or None on fetch failure -- callers use it
+    to render a "N of M racks monitored" line beside the Load lens legend.
+    Returns (None, None) if the DC has no racks."""
     from src.services import api_client as api
 
     racks = (api.get_dc_racks(dc_id or "") or {}).get("racks", [])
     if not racks:
-        return None
+        return None, None
     occupancy = _fetch_rack_occupancy(dc_id, racks)
-    return build_floor_map_figure(racks, dc_id=dc_id, occupancy=occupancy)
+    load, load_summary = _fetch_rack_load(dc_id, racks)
+    fig = build_floor_map_figure(racks, dc_id=dc_id, occupancy=occupancy,
+                                 load=load, lens=lens, highlight=highlight)
+    return fig, load_summary
+
+
+def build_colocation_customer_panel(coloc: dict):
+    """Rack-level CRM allocation + potential, rendered in the floor map's right
+    column when no rack is selected.
+
+    Column semantics, header wording and the potential-not-billed framing are
+    taken verbatim from dc_view.build_colocation_tab: the two screens read the
+    same payload, and two labels for one number is how they drift apart.
+    """
+    agg = (coloc or {}).get("aggregate", {}) or {}
+    allocation = (coloc or {}).get("allocation", []) or []
+    internal = (coloc or {}).get("internal", []) or []
+    unit_price = agg.get("unit_price_tl")
+
+    def _potential(u):
+        # An unresolved price propagates as None (renders "—"), never prices
+        # allocated space at 0.
+        if unit_price is None:
+            return None
+        return float(u or 0) * float(unit_price)
+
+    if allocation:
+        rows = []
+        for c in allocation:
+            name = c.get("customer", "")
+            if name == UNATTRIBUTED:
+                name_cell = dmc.Tooltip(
+                    label=("Ownership ambiguous in NetBox: some of these racks "
+                           "have no resolvable tenant/tag/description; others "
+                           "carry two colocation-role rows naming different "
+                           "customers for the same rack, and the conflict was "
+                           "left unresolved rather than guessed at. This is "
+                           "real customer footprint, not free space."),
+                    position="top", withArrow=True, multiline=True, w=260,
+                    children=dmc.Group(gap=4, wrap="nowrap", children=[
+                        dmc.Text(name, size="xs"),
+                        DashIconify(icon="solar:info-circle-bold-duotone",
+                                    width=13, style={"color": "#F79009"}),
+                    ]),
+                )
+            else:
+                name_cell = dmc.Text(name, size="xs")
+            rows.append(html.Tr(
+                id={"type": "fm-coloc-customer-row", "index": name},
+                n_clicks=0,
+                style={"cursor": "pointer"},
+                children=[
+                    html.Td(name_cell),
+                    html.Td(f"{int(c.get('rack_count') or 0):,}"),
+                    html.Td(f"{int(c.get('allocated_u') or 0):,}"),
+                    html.Td(fmt_tl(_potential(c.get("allocated_u")))),
+                    html.Td(f"{int(c.get('used_u') or 0):,}"),
+                ]))
+        alloc_table = dmc.Table(
+            striped=True, highlightOnHover=True, verticalSpacing=4,
+            children=[
+                html.Thead(html.Tr([html.Th(h) for h in (
+                    "Customer", "Racks", "Allocated U",
+                    "Potential (TL) — Allocated", "Used U")])),
+                html.Tbody(rows),
+            ])
+    else:
+        alloc_table = dmc.Text(
+            "No dedicated (external customer) colocation racks in this DC.",
+            size="xs", c="#98A2B3")
+
+    if internal:
+        int_rows = [
+            html.Tr([
+                html.Td(dmc.Text(r.get("tenant", ""), size="xs")),
+                html.Td(", ".join(r.get("racks", []) or [])),
+                html.Td(f"{int(r.get('used_u') or 0):,}"),
+                html.Td(fmt_tl(r.get("potential_tl"))),
+            ])
+            for r in internal
+        ]
+        int_table = dmc.Table(
+            striped=True, highlightOnHover=True, verticalSpacing=4,
+            children=[
+                html.Thead(html.Tr([html.Th(h) for h in (
+                    "Resource", "Rack", "Used U", "Potential (TL) — Used")])),
+                html.Tbody(int_rows),
+            ])
+    else:
+        int_table = dmc.Text("No internal (Bulutistan) colocation racks in this DC.",
+                             size="xs", c="#98A2B3")
+
+    return html.Div(id="fm-coloc-panel", children=[
+        dmc.Stack(gap="lg", children=[
+            html.Div([
+                dmc.Text("Dedicated Customers", fw=700, size="sm", c="#101828"),
+                dmc.Text("Rack allocation (NetBox role + tenant/tag/description) · "
+                         "Potential at list price for Allocated U, not billed revenue",
+                         size="xs", c="#667085", mb="xs"),
+                dmc.Text("Select a customer to highlight their racks on the map.",
+                         size="xs", c="#98A2B3", mb="xs"),
+                html.Div(style={"overflowX": "auto"}, children=alloc_table),
+            ]),
+            html.Div([
+                dmc.Text("Internal Resources", fw=700, size="sm", c="#101828"),
+                dmc.Text("Bulutistan-owned rack footprint · Potential at list price, "
+                         "not billed revenue — opportunity cost of self-occupied U",
+                         size="xs", c="#667085", mb="xs"),
+                html.Div(style={"overflowX": "auto"}, children=int_table),
+            ]),
+        ]),
+    ])
+
+
+def resolve_customer_highlight(customer, allocation, current=None):
+    """Which racks to outline when a customer row is clicked.
+
+    Returns None -- clear -- when the same customer is clicked again (toggle
+    off), when the name is unknown, or when the customer holds no racks.
+    Selecting a second customer replaces the first rather than merging: two
+    highlighted customers cannot be told apart by a single outline colour.
+    """
+    if not customer:
+        return None
+    if (current or {}).get("customer") == customer:
+        return None
+    for row in allocation or []:
+        if row.get("customer") == customer:
+            racks = [r for r in (row.get("racks") or []) if r]
+            return {"customer": customer, "racks": racks} if racks else None
+    return None
 
 
 # ── Layout builder ──────────────────────────────────────────────────────────
 
-def build_floor_map_layout(dc_id, dc_name, racks):
+def build_floor_map_layout(dc_id, dc_name, racks, *, show_colocation: bool = False):
+    """Build the floor map page.
+
+    `show_colocation` gates the rack-level CRM customer/potential panel in the
+    right column: it carries named customers and TL figures, so it must be an
+    explicit opt-in (default False = today's empty state) rather than
+    something a caller can leak by omission. app.py resolves this from the
+    existing sec:dc_view:colocation permission -- see advance_to_floor_map.
+    """
     active_count   = sum(1 for r in racks if (r.get("status") or "").lower() == "active")
     planned_count  = sum(1 for r in racks if (r.get("status") or "").lower() == "planned")
     inactive_count = len(racks) - active_count - planned_count
@@ -572,6 +927,40 @@ def build_floor_map_layout(dc_id, dc_name, racks):
     except Exception:  # noqa: BLE001
         _coloc_summary = {}
     colocation_strip = build_colocation_summary(_coloc_summary)
+
+    # The customer/potential panel is only fetched when it will actually be
+    # shown: a caller without sec:dc_view:colocation shouldn't pay for (or
+    # have this process handle) commercial data it will never render.
+    if show_colocation:
+        try:
+            _coloc = api.get_colocation(dc_id) or {}
+        except Exception:  # noqa: BLE001
+            _logger.warning("build_floor_map_layout: get_colocation failed for %s", dc_id,
+                            exc_info=True)
+            _coloc = {}
+        right_column_children = [build_colocation_customer_panel(_coloc)]
+    else:
+        right_column_children = [
+            html.Div(
+                className="floor-map-detail-empty",
+                children=[
+                    html.Div(
+                        className="fm-empty-icon-wrap",
+                        children=[
+                            DashIconify(
+                                icon="solar:server-square-linear",
+                                width=36, color="#D0D5DD",
+                            ),
+                        ],
+                    ),
+                    dmc.Text("Click a rack to inspect",
+                             c="#98A2B3", size="sm",
+                             mt="md", fw=500),
+                    dmc.Text("Hover over racks to preview details",
+                             c="#D0D5DD", size="xs", mt=4),
+                ],
+            )
+        ]
 
     halls = {}
     for r in racks:
@@ -619,6 +1008,13 @@ def build_floor_map_layout(dc_id, dc_name, racks):
     return html.Div(
         className="floor-map-page",
         children=[
+            # Holds {"customer": name, "racks": [...]} for the colocation
+            # customer currently highlighted on the map, or None when nothing
+            # is selected. Written by app.py's select_colocation_customer
+            # when a customer row is clicked, and read by recolor_floor_map
+            # to outline that customer's racks.
+            dcc.Store(id="fm-selected-customer", data=None),
+
             # ── Header
             html.Div(
                 className="floor-map-header",
@@ -667,6 +1063,21 @@ def build_floor_map_layout(dc_id, dc_name, racks):
                     dmc.GridCol(
                         span=8,
                         children=[
+                            dmc.Group(justify="space-between", align="center", mb="xs",
+                                      children=[
+                                dmc.SegmentedControl(
+                                    id="floor-map-lens",
+                                    value="coloc",
+                                    data=[{"label": "Colocation", "value": "coloc"},
+                                          {"label": "Load", "value": "load"}],
+                                    size="xs", radius="md",
+                                ),
+                                dmc.Text(
+                                    "Colocation — rack space by U · Load — CPU/RAM of the "
+                                    "rack's monitored hosts",
+                                    size="xs", c="#98A2B3",
+                                ),
+                            ]),
                             dmc.Paper(
                                 radius="xl",
                                 className="floor-map-canvas-wrap",
@@ -679,40 +1090,19 @@ def build_floor_map_layout(dc_id, dc_name, racks):
                                         style={"height": "560px"},
                                     ),
                                     # Phase 2: fires once shortly after the fast
-                                    # status-colored paint to recolor racks by fill.
+                                    # status-colored first paint. Drives
+                                    # recolor_floor_map, which also handles
+                                    # lens switching and customer-highlight
+                                    # outlines -- not just the initial fill
+                                    # recolor.
                                     dcc.Interval(
                                         id="floor-map-occupancy-interval",
                                         interval=400, max_intervals=1,
                                     ),
                                 ],
                             ),
-                            # Legend — fill-based (color by U-occupancy)
-                            dmc.Group(
-                                gap="lg", mt="sm", px="sm",
-                                children=[
-                                    *[
-                                        dmc.Group(gap=6, align="center", children=[
-                                            html.Div(
-                                                className="fm-legend-swatch",
-                                                style={"backgroundColor": FILL_PALETTE[key][0]},
-                                            ),
-                                            dmc.Text(label, size="xs", c="#667085"),
-                                        ])
-                                        for key, label in (
-                                            ("empty", "Tamamen boş (satılabilir)"),
-                                            ("green", "Satılabilir alan var"),
-                                            ("orange", "Orta"),
-                                            ("red", "Çok dolu"),
-                                            ("closed", "Kapalı / Pasif"),
-                                            ("unknown", "Bilinmiyor"),
-                                        )
-                                    ],
-                                    dmc.Text(
-                                        "Scroll to zoom · Drag to pan · Click rack to inspect",
-                                        size="xs", c="#98A2B3", ml="auto",
-                                    ),
-                                ],
-                            ),
+                            html.Div(id="floor-map-legend", children=[
+                                build_lens_legend("coloc")], style={"marginTop": "8px"}),
                         ],
                     ),
                     dmc.GridCol(
@@ -722,27 +1112,7 @@ def build_floor_map_layout(dc_id, dc_name, racks):
                                 id="floor-map-rack-detail",
                                 radius="xl", p="lg",
                                 className="floor-map-detail-panel",
-                                children=[
-                                    html.Div(
-                                        className="floor-map-detail-empty",
-                                        children=[
-                                            html.Div(
-                                                className="fm-empty-icon-wrap",
-                                                children=[
-                                                    DashIconify(
-                                                        icon="solar:server-square-linear",
-                                                        width=36, color="#D0D5DD",
-                                                    ),
-                                                ],
-                                            ),
-                                            dmc.Text("Click a rack to inspect",
-                                                     c="#98A2B3", size="sm",
-                                                     mt="md", fw=500),
-                                            dmc.Text("Hover over racks to preview details",
-                                                     c="#D0D5DD", size="xs", mt=4),
-                                        ],
-                                    )
-                                ],
+                                children=right_column_children,
                             ),
                         ],
                     ),

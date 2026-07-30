@@ -40,7 +40,7 @@ const DashGlobe = ({ id, setProps, pointsData, focusRegion, height }) => {
 
     const buildMarker = useCallback((d) => {
         const status = (d.status || 'unknown').toLowerCase();
-        // Use health-based color from Python if available, fall back to status color
+        // Use load-based color from Python if available, fall back to status color
         const color  = d.color || STATUS_COLOR[status] || STATUS_COLOR.unknown;
 
         const el = document.createElement('div');
@@ -62,7 +62,7 @@ const DashGlobe = ({ id, setProps, pointsData, focusRegion, height }) => {
             const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
             const vmCount   = d.vm_count   != null ? d.vm_count   : '—';
             const hostCount = d.host_count != null ? d.host_count : '—';
-            const health    = d.health     != null ? `${Math.round(d.health)}%` : '—';
+            const load      = d.load       != null ? `${Math.round(d.load)}%` : '—';
 
             popupRef.current = new maplibregl.Popup({
                 closeButton: false,
@@ -91,7 +91,7 @@ const DashGlobe = ({ id, setProps, pointsData, focusRegion, height }) => {
                         </div>
                         <div class="dc-popup-stat-item">
                             <span class="dc-stat-label">Avg Load</span>
-                            <span class="dc-stat-value">${health}</span>
+                            <span class="dc-stat-value">${load}</span>
                         </div>
                     </div>
                 </div>
