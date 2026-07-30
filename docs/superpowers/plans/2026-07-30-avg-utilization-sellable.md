@@ -2167,6 +2167,7 @@ Create `docs/qa/2026-07-30-avg-utilization-before-after.md` with:
 - **A clamped-row count.** The avg track is floored at the max track (Task 3), which guarantees the ordering invariant but can also hide a dead average-data pipeline: if the averages stopped flowing, every avg cell would silently collapse to its max value and still look monotonic and healthy. So count the rows where `avg == max` and report it. A handful is normal (hosts with collector gaps, correctly falling back). **All of them means the average data is not reaching the engine at all** — in which case the reported defect is not actually fixed, only masked, and the finding must be raised rather than shipped. Name the affected DCs and families.
 - A one-paragraph note for Can: which numbers moved, why (CPU max now uses a real window peak rather than the latest sample), and confirmation that the window is still 7 days.
 - The two open questions from the spec, restated: window 7 vs 30, and awareness of the CPU max correction.
+- **One copy question for the product owner.** `crm_inventory_report.py:299-306` appends `(Satılabilir 0 — <reason>)` to a service label when the **allocation** quantity is zero. Because `alloc <= max <= avg`, a row can legitimately carry that hint beside positive Max and Ort. figures. This is pre-existing — it already applies to the Max column — but the third column makes it more visible. Do **not** change the logic in this branch; note any rows where it occurs and ask what the label should say.
 
 - [ ] **Step 4: Commit**
 
