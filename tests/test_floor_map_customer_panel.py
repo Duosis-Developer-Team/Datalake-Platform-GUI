@@ -102,13 +102,45 @@ def _build_layout(show_colocation=None):
     return layout, mock_coloc
 
 
+def _find_by_id(node, target_id):
+    """Depth-first search for the component with `target_id`, or None."""
+    if getattr(node, "id", None) == target_id:
+        return node
+    children = getattr(node, "children", None)
+    if children is None:
+        return None
+    if not isinstance(children, (list, tuple)):
+        children = [children]
+    for child in children:
+        found = _find_by_id(child, target_id)
+        if found is not None:
+            return found
+    return None
+
+
 def test_panel_renders_when_show_colocation_is_true():
     layout, mock_coloc = _build_layout(show_colocation=True)
     txt = str(layout)
     assert "fm-coloc-panel" in txt
     assert "BOYNER" in txt
-    assert "Click a rack to inspect" not in txt
     mock_coloc.assert_called_once()
+
+
+def test_panel_lives_below_the_map_not_inside_the_rack_detail_column():
+    # The panel used to render into the ~380px rack-detail column, where a
+    # five-column money table wrapped every header onto three lines and a
+    # rack click replaced the panel outright. It belongs in its own
+    # full-width section; the right column keeps its own empty state.
+    layout, _ = _build_layout(show_colocation=True)
+
+    rack_detail = _find_by_id(layout, "floor-map-rack-detail")
+    assert rack_detail is not None, "rack-detail column disappeared"
+    assert _find_by_id(rack_detail, "fm-coloc-panel") is None, \
+        "customer panel is back inside the rack-detail column"
+    assert "Click a rack to inspect" in str(rack_detail)
+
+    # ...and it is still on the page, outside that column.
+    assert _find_by_id(layout, "fm-coloc-panel") is not None
 
 
 def test_empty_state_renders_when_show_colocation_is_false():

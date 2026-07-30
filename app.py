@@ -2128,26 +2128,10 @@ def show_rack_detail(click_data, dc_store):
             *[dmc.Badge(t, color="grape", variant="light", size="sm") for t in _ext],
         ])
 
-    # ── Back-to-customers button — only rendered for callers entitled to see
-    # the colocation customer panel. This Div renders unconditionally for
-    # every user; if the button rendered unconditionally too, an unentitled
-    # user could click it and reach back_to_colocation_panel, which builds
-    # the very panel Task 6 hid. Gating the button AND re-checking in the
-    # restore callback below are both required -- neither alone closes the
-    # hole (a crafted click event bypasses a client-side-only gate).
-    back_button = (
-        dmc.Button(
-            "Back to customers",
-            id="fm-back-to-customers",
-            variant="subtle", color="gray", size="xs", mb="xs",
-            leftSection=DashIconify(icon="solar:arrow-left-linear", width=14),
-        )
-        if show_colocation else None
-    )
-
+    # No back-to-customers button: the customer panel is a standing full-width
+    # section below the map, so rack detail never displaces it.
     return html.Div(
         children=[
-            back_button,
             # ── Status color bar at top
             html.Div(style={
                 "height": "4px",
@@ -2241,31 +2225,6 @@ def show_rack_detail(click_data, dc_store):
             ),
         ],
     )
-
-
-@app.callback(
-    dash.Output("floor-map-rack-detail", "children", allow_duplicate=True),
-    dash.Input("fm-back-to-customers", "n_clicks"),
-    dash.State("selected-building-dc-store", "data"),
-    prevent_initial_call=True,
-)
-def back_to_colocation_panel(n_clicks, dc_store):
-    """Restore the customer/potential panel from the rack-detail column.
-
-    The button that fires this is only rendered for entitled callers
-    (show_rack_detail), but a crafted n_clicks event on
-    "fm-back-to-customers" could reach this callback regardless of what the
-    browser actually rendered -- so the permission check is re-done here too,
-    not just at render time.
-    """
-    if not n_clicks:
-        return dash.no_update
-    if not _resolve_show_colocation():
-        return dash.no_update
-    from src.pages.floor_map import build_colocation_customer_panel
-
-    dc_id = (dc_store or {}).get("dc_id", "")
-    return build_colocation_customer_panel(api.get_colocation(dc_id) or {})
 
 
 @app.callback(

@@ -136,72 +136,29 @@ def test_select_colocation_customer_denied_user_gets_no_update_and_no_fetch():
     mock_api.get_colocation.assert_not_called()
 
 
-# ── app.py: show_rack_detail's "Back to customers" button ───────────────────
+# ── show_rack_detail owns the right column alone ────────────────────────────
 #
-# The button must only render for entitled callers -- otherwise an
-# unentitled user could click it and reach back_to_colocation_panel, which
-# renders the very panel Task 6 hid.
+# The customer panel used to render into "floor-map-rack-detail" and be
+# swapped back in by a "Back to customers" button. It now has its own
+# full-width section below the map, so rack detail must carry neither the
+# panel nor a route back to it -- a re-added button would fire at a callback
+# that no longer exists.
 
 def _rack_click_data(rack_name="104"):
     customdata = ["R1", rack_name, "active", 47, "220V", "DH7", "Cabinet", "SN1"]
     return {"points": [{"customdata": customdata}]}
 
 
-def test_show_rack_detail_omits_back_button_when_resolver_denies():
+def test_rack_detail_carries_neither_the_panel_nor_a_route_back_to_it():
     import app as app_module
 
-    with patch.object(app_module, "api") as mock_api, \
-         patch.object(app_module, "_resolve_show_colocation", return_value=False):
-        mock_api.get_rack_devices.return_value = {"devices": []}
-        mock_api.get_dc_racks_occupancy.return_value = {"racks": []}
-        result = app_module.show_rack_detail(_rack_click_data(), {"dc_id": "DC13"})
-
-    assert "fm-back-to-customers" not in str(result)
-
-
-def test_show_rack_detail_includes_back_button_when_resolver_allows():
-    import app as app_module
-
+    # The entitled path is the one that used to render both.
     with patch.object(app_module, "api") as mock_api, \
          patch.object(app_module, "_resolve_show_colocation", return_value=True):
         mock_api.get_rack_devices.return_value = {"devices": []}
         mock_api.get_dc_racks_occupancy.return_value = {"racks": []}
-        result = app_module.show_rack_detail(_rack_click_data(), {"dc_id": "DC13"})
+        txt = str(app_module.show_rack_detail(_rack_click_data(), {"dc_id": "DC13"}))
 
-    assert "fm-back-to-customers" in str(result)
-
-
-# ── Permission gating: back_to_colocation_panel ─────────────────────────────
-#
-# Even if a denied user's browser never rendered the button, a crafted
-# n_clicks event on "fm-back-to-customers" would still reach this callback.
-# It must re-check the resolver itself before building the customer panel.
-
-def test_back_to_colocation_panel_denied_user_gets_no_update_and_no_fetch():
-    import app as app_module
-
-    with patch.object(app_module, "api") as mock_api, \
-         patch.object(app_module, "_resolve_show_colocation", return_value=False):
-        result = app_module.back_to_colocation_panel(1, {"dc_id": "DC13"})
-
-    assert result is dash.no_update
-    mock_api.get_colocation.assert_not_called()
-
-
-def test_back_to_colocation_panel_allowed_user_gets_the_panel():
-    import app as app_module
-
-    with patch.object(app_module, "api") as mock_api, \
-         patch.object(app_module, "_resolve_show_colocation", return_value=True):
-        mock_api.get_colocation.return_value = {"allocation": ALLOCATION}
-        result = app_module.back_to_colocation_panel(1, {"dc_id": "DC13"})
-
-    # "fm-coloc-panel" alone is set unconditionally by
-    # build_colocation_customer_panel regardless of whether the allocation
-    # table actually rendered any rows, so it can't distinguish a working
-    # panel from an empty/broken one. Assert real content from the mocked
-    # ALLOCATION too.
-    txt = str(result)
-    assert "fm-coloc-panel" in txt
-    assert "BOYNER" in txt
-    mock_api.get_colocation.assert_called_once_with("DC13")
+    assert "fm-back-to-customers" not in txt
+    assert "fm-coloc-panel" not in txt
+    assert not hasattr(app_module, "back_to_colocation_panel")
