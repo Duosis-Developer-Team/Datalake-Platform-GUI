@@ -133,6 +133,71 @@ def _color_by_fill(status, occupied_u, total_u):
     return FILL_PALETTE["green"]
 
 
+# ── Load palette (colour by CPU/RAM utilisation of the rack's hosts) ────────
+# Same 50/80 steps as FILL_PALETTE so a colour learned in one lens reads the
+# same way in the other. No turquoise "idle" step on purpose: a 0% reading is
+# far more often a silent collector than genuinely idle hardware, and painting
+# that as prime capacity would invent good news.
+LOAD_PALETTE = {
+    "green":       ("#17B26A", "#027A48"),   # light load (<50%)
+    "orange":      ("#F79009", "#B54708"),   # moderate (50-80%)
+    "red":         ("#F04438", "#B42318"),   # heavy (>80%)
+    "closed":      ("#475467", "#344054"),   # non-active / closed
+    "unmonitored": ("#F2F4F7", "#D0D5DD"),   # no device in this rack has metrics
+}
+
+_COLOC_LEGEND = (
+    ("empty",   "Fully free (sellable)"),
+    ("green",   "Space available"),
+    ("orange",  "Moderate"),
+    ("red",     "Nearly full"),
+    ("closed",  "Closed / inactive"),
+    ("unknown", "Unknown"),
+)
+
+_LOAD_LEGEND = (
+    ("green",       "Light load"),
+    ("orange",      "Moderate load"),
+    ("red",         "Heavy load"),
+    ("closed",      "Closed / inactive"),
+    ("unmonitored", "Not monitored"),
+)
+
+
+def _color_by_load(status, load_pct):
+    """(fill, dark) for the Load lens. Closed is checked before load so a closed
+    rack with a hot host is gray, mirroring _color_by_fill's ordering. A None
+    load is "not monitored" -- never rendered as a healthy 0%."""
+    if (status or "").lower() in _NON_ACTIVE_STATUSES:
+        return LOAD_PALETTE["closed"]
+    if load_pct is None:
+        return LOAD_PALETTE["unmonitored"]
+    if load_pct > 80:
+        return LOAD_PALETTE["red"]
+    if load_pct >= 50:
+        return LOAD_PALETTE["orange"]
+    return LOAD_PALETTE["green"]
+
+
+def build_lens_legend(lens: str):
+    """Swatch legend for the active lens. Each lens ships its own labels: the
+    shared 50/80 steps mean different things (U occupancy vs CPU/RAM)."""
+    palette = LOAD_PALETTE if lens == "load" else FILL_PALETTE
+    entries = _LOAD_LEGEND if lens == "load" else _COLOC_LEGEND
+    return dmc.Group(gap="lg", px="sm", children=[
+        *[
+            dmc.Group(gap=6, align="center", children=[
+                html.Div(className="fm-legend-swatch",
+                         style={"backgroundColor": palette[key][0]}),
+                dmc.Text(label, size="xs", c="#667085"),
+            ])
+            for key, label in entries
+        ],
+        dmc.Text("Scroll to zoom · Drag to pan · Click rack to inspect",
+                 size="xs", c="#98A2B3", ml="auto"),
+    ])
+
+
 def _fetch_rack_occupancy(dc_id, racks):
     """{rack_name -> occupied_u} for the given racks, from the bulk colocation
     occupancy endpoint (real used-U via the shared canonical SQL). One call
