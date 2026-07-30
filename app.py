@@ -1756,12 +1756,48 @@ def advance_to_floor_map(n_intervals, dc_store, current_mode, time_range):
     _meta = _info.get("meta", {})
     dc_name = _fmt_name(_meta.get("name"), _meta.get("description")) or dc_store.get("dc_name", dc_id)
     racks = racks_resp.get("racks", [])
+
+    # The floor map's colocation customer panel carries named customers and
+    # TL figures. It rides on the existing sec:dc_view:colocation permission
+    # rather than a new node under page:global_view: this repo has a recorded
+    # incident where a freshly added sub-node had no permission rows yet and,
+    # because permissions inherit downward, that silently WIDENED access
+    # instead of restricting it. The Floor Map is a view mode inside
+    # /global-view (page:global_view), not its own page, so the section set
+    # the router computed for this pathname does not include the dc_view
+    # colocation code -- it must be looked up explicitly against page:dc_view.
+    # Any failure to resolve the permission must hide the panel, never reveal
+    # it, so the whole lookup is wrapped and degrades to False.
+    from flask import g, has_request_context
+
+    from src.auth.config import AUTH_DISABLED
+
+    if AUTH_DISABLED:
+        show_colocation = True
+    else:
+        uid = getattr(g, "auth_user_id", None) if has_request_context() else None
+        if uid is None:
+            show_colocation = False
+        else:
+            try:
+                from src.auth.permission_service import get_visible_sections
+
+                show_colocation = "sec:dc_view:colocation" in get_visible_sections(
+                    int(uid), "page:dc_view"
+                )
+            except Exception:
+                _log.warning(
+                    "advance_to_floor_map: colocation permission check failed for uid=%s",
+                    uid, exc_info=True,
+                )
+                show_colocation = False
+
     from src.pages.floor_map import build_floor_map_layout
-    layout = build_floor_map_layout(dc_id, dc_name, racks)
+    layout = build_floor_map_layout(dc_id, dc_name, racks, show_colocation=show_colocation)
     elapsed_ms = round((time_module.perf_counter() - t0) * 1000, 1)
     _log.info(
-        "advance_to_floor_map dc=%s racks=%d is_warm=%s elapsed_ms=%.1f",
-        dc_id, len(racks), warm, elapsed_ms,
+        "advance_to_floor_map dc=%s racks=%d is_warm=%s elapsed_ms=%.1f show_colocation=%s",
+        dc_id, len(racks), warm, elapsed_ms, show_colocation,
     )
     return "floor_map", layout
 

@@ -22,6 +22,8 @@ import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 
 from src.components.colocation_summary import build_colocation_summary
+from src.utils.format_units import fmt_tl
+from shared.colocation.allocation import UNATTRIBUTED
 
 _logger = logging.getLogger(__name__)
 
@@ -690,9 +692,123 @@ def build_recolored_floor_map_figure(dc_id, lens="coloc", highlight=None):
                                   load=load, lens=lens, highlight=highlight)
 
 
+def build_colocation_customer_panel(coloc: dict):
+    """Rack-level CRM allocation + potential, rendered in the floor map's right
+    column when no rack is selected.
+
+    Column semantics, header wording and the potential-not-billed framing are
+    taken verbatim from dc_view.build_colocation_tab: the two screens read the
+    same payload, and two labels for one number is how they drift apart.
+    """
+    agg = (coloc or {}).get("aggregate", {}) or {}
+    allocation = (coloc or {}).get("allocation", []) or []
+    internal = (coloc or {}).get("internal", []) or []
+    unit_price = agg.get("unit_price_tl")
+
+    def _potential(u):
+        # An unresolved price propagates as None (renders "—"), never prices
+        # allocated space at 0.
+        if unit_price is None:
+            return None
+        return float(u or 0) * float(unit_price)
+
+    if allocation:
+        rows = []
+        for c in allocation:
+            name = c.get("customer", "")
+            if name == UNATTRIBUTED:
+                name_cell = dmc.Tooltip(
+                    label=("Ownership ambiguous in NetBox: some racks have no "
+                           "resolvable tenant/tag/description; others carry two "
+                           "colocation rows naming different customers. Real "
+                           "customer footprint, not free space."),
+                    position="top", withArrow=True, multiline=True, w=260,
+                    children=dmc.Group(gap=4, wrap="nowrap", children=[
+                        dmc.Text(name, size="xs"),
+                        DashIconify(icon="solar:info-circle-bold-duotone",
+                                    width=13, style={"color": "#F79009"}),
+                    ]),
+                )
+            else:
+                name_cell = dmc.Text(name, size="xs")
+            rows.append(html.Tr(
+                id={"type": "fm-coloc-customer-row", "index": name},
+                n_clicks=0,
+                style={"cursor": "pointer"},
+                children=[
+                    html.Td(name_cell),
+                    html.Td(f"{int(c.get('rack_count') or 0):,}"),
+                    html.Td(f"{int(c.get('allocated_u') or 0):,}"),
+                    html.Td(fmt_tl(_potential(c.get("allocated_u")))),
+                    html.Td(f"{int(c.get('used_u') or 0):,}"),
+                ]))
+        alloc_table = dmc.Table(
+            striped=True, highlightOnHover=True, verticalSpacing=4,
+            children=[
+                html.Thead(html.Tr([html.Th(h) for h in (
+                    "Customer", "Racks", "Allocated U",
+                    "Potential (TL) — Allocated", "Used U")])),
+                html.Tbody(rows),
+            ])
+    else:
+        alloc_table = dmc.Text(
+            "No dedicated (external customer) colocation racks in this DC.",
+            size="xs", c="#98A2B3")
+
+    if internal:
+        int_rows = [
+            html.Tr([
+                html.Td(dmc.Text(r.get("tenant", ""), size="xs")),
+                html.Td(", ".join(r.get("racks", []) or [])),
+                html.Td(f"{int(r.get('used_u') or 0):,}"),
+                html.Td(fmt_tl(r.get("potential_tl"))),
+            ])
+            for r in internal
+        ]
+        int_table = dmc.Table(
+            striped=True, highlightOnHover=True, verticalSpacing=4,
+            children=[
+                html.Thead(html.Tr([html.Th(h) for h in (
+                    "Resource", "Rack", "Used U", "Potential (TL) — Used")])),
+                html.Tbody(int_rows),
+            ])
+    else:
+        int_table = dmc.Text("No internal (Bulutistan) colocation racks in this DC.",
+                             size="xs", c="#98A2B3")
+
+    return html.Div(id="fm-coloc-panel", children=[
+        dmc.Stack(gap="lg", children=[
+            html.Div([
+                dmc.Text("Dedicated Customers", fw=700, size="sm", c="#101828"),
+                dmc.Text("Rack allocation (NetBox role + tenant/tag/description) · "
+                         "Potential at list price for Allocated U, not billed revenue",
+                         size="xs", c="#667085", mb="xs"),
+                dmc.Text("Select a customer to highlight their racks on the map.",
+                         size="xs", c="#98A2B3", mb="xs"),
+                html.Div(style={"overflowX": "auto"}, children=alloc_table),
+            ]),
+            html.Div([
+                dmc.Text("Internal Resources", fw=700, size="sm", c="#101828"),
+                dmc.Text("Bulutistan-owned rack footprint · Potential at list price, "
+                         "not billed revenue — opportunity cost of self-occupied U",
+                         size="xs", c="#667085", mb="xs"),
+                html.Div(style={"overflowX": "auto"}, children=int_table),
+            ]),
+        ]),
+    ])
+
+
 # ── Layout builder ──────────────────────────────────────────────────────────
 
-def build_floor_map_layout(dc_id, dc_name, racks):
+def build_floor_map_layout(dc_id, dc_name, racks, *, show_colocation: bool = False):
+    """Build the floor map page.
+
+    `show_colocation` gates the rack-level CRM customer/potential panel in the
+    right column: it carries named customers and TL figures, so it must be an
+    explicit opt-in (default False = today's empty state) rather than
+    something a caller can leak by omission. app.py resolves this from the
+    existing sec:dc_view:colocation permission -- see advance_to_floor_map.
+    """
     active_count   = sum(1 for r in racks if (r.get("status") or "").lower() == "active")
     planned_count  = sum(1 for r in racks if (r.get("status") or "").lower() == "planned")
     inactive_count = len(racks) - active_count - planned_count
@@ -705,6 +821,40 @@ def build_floor_map_layout(dc_id, dc_name, racks):
     except Exception:  # noqa: BLE001
         _coloc_summary = {}
     colocation_strip = build_colocation_summary(_coloc_summary)
+
+    # The customer/potential panel is only fetched when it will actually be
+    # shown: a caller without sec:dc_view:colocation shouldn't pay for (or
+    # have this process handle) commercial data it will never render.
+    if show_colocation:
+        try:
+            _coloc = api.get_colocation(dc_id) or {}
+        except Exception:  # noqa: BLE001
+            _logger.warning("build_floor_map_layout: get_colocation failed for %s", dc_id,
+                            exc_info=True)
+            _coloc = {}
+        right_column_children = [build_colocation_customer_panel(_coloc)]
+    else:
+        right_column_children = [
+            html.Div(
+                className="floor-map-detail-empty",
+                children=[
+                    html.Div(
+                        className="fm-empty-icon-wrap",
+                        children=[
+                            DashIconify(
+                                icon="solar:server-square-linear",
+                                width=36, color="#D0D5DD",
+                            ),
+                        ],
+                    ),
+                    dmc.Text("Click a rack to inspect",
+                             c="#98A2B3", size="sm",
+                             mt="md", fw=500),
+                    dmc.Text("Hover over racks to preview details",
+                             c="#D0D5DD", size="xs", mt=4),
+                ],
+            )
+        ]
 
     halls = {}
     for r in racks:
@@ -848,27 +998,7 @@ def build_floor_map_layout(dc_id, dc_name, racks):
                                 id="floor-map-rack-detail",
                                 radius="xl", p="lg",
                                 className="floor-map-detail-panel",
-                                children=[
-                                    html.Div(
-                                        className="floor-map-detail-empty",
-                                        children=[
-                                            html.Div(
-                                                className="fm-empty-icon-wrap",
-                                                children=[
-                                                    DashIconify(
-                                                        icon="solar:server-square-linear",
-                                                        width=36, color="#D0D5DD",
-                                                    ),
-                                                ],
-                                            ),
-                                            dmc.Text("Click a rack to inspect",
-                                                     c="#98A2B3", size="sm",
-                                                     mt="md", fw=500),
-                                            dmc.Text("Hover over racks to preview details",
-                                                     c="#D0D5DD", size="xs", mt=4),
-                                        ],
-                                    )
-                                ],
+                                children=right_column_children,
                             ),
                         ],
                     ),
