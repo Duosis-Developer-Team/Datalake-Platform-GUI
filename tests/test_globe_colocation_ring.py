@@ -70,7 +70,7 @@ def test_build_dc_info_card_renders_kolokasyon_ring_with_data():
     assert card is not None
     texts = _find_texts(card)
     assert "Colocation" in texts
-    assert "904U boş" in texts
+    assert "904U free" in texts
     assert "75%" in texts
 
     # The stat grid grew from 3 rings + 1 text tile (cols=4) to 4 rings +
@@ -93,7 +93,7 @@ def test_build_dc_info_card_renders_when_coloc_fetch_fails():
     assert card is not None
     texts = _find_texts(card)
     assert "Colocation" in texts
-    assert "0U boş" in texts
+    assert "0U free" in texts
     assert "0%" in texts
 
 
@@ -105,4 +105,4 @@ def test_build_dc_info_card_renders_when_coloc_summary_empty():
     assert card is not None
     texts = _find_texts(card)
     assert "Colocation" in texts
-    assert "0U boş" in texts
+    assert "0U free" in texts

@@ -1,8 +1,6 @@
 import logging
 import math
-import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import plotly.graph_objects as go
 import dash
 from dash import html, dcc, callback, Input, Output, State
 import dash_mantine_components as dmc
@@ -258,8 +256,8 @@ def _build_globe_data(summaries):
         stats = dc.get("stats", {})
         cpu_pct = stats.get("used_cpu_pct", 0.0)
         ram_pct = stats.get("used_ram_pct", 0.0)
-        health = (cpu_pct + ram_pct) / 2.0
-        color = "#F04438" if health >= 70 else ("#F79009" if health >= 40 else "#17B26A")
+        load = (cpu_pct + ram_pct) / 2.0
+        color = "#F04438" if load >= 70 else ("#F79009" if load >= 40 else "#17B26A")
         capacity = max(dc.get("vm_count", 0) or 0, (dc.get("host_count", 0) or 0) * 5)
         # Using a square root for more pronounced but controlled scaling, smaller base size
         size = round(min(0.07, max(0.015, 0.015 + math.sqrt(capacity) * 0.0012)), 4)
@@ -275,232 +273,12 @@ def _build_globe_data(summaries):
             "color": color,
             "vm_count": dc.get("vm_count", 0) or 0,
             "host_count": dc.get("host_count", 0) or 0,
-            "health": round(health, 1),
+            "load": round(load, 1),
             "coloc_total_u": int(dc.get("coloc_total_u") or 0),
             "coloc_used_u": int(dc.get("coloc_used_u") or 0),
             "coloc_free_u": int(dc.get("coloc_free_u") or 0),
         })
     return data
-
-
-def _health_colors(health_value):
-    if health_value >= 70:
-        return {
-            "pin": "#E85347",
-            "pin_rgba": "rgba(232, 83, 71, 0.95)",
-            "halo": "rgba(232, 83, 71, 0.18)",
-            "shadow": "rgba(120, 30, 20, 0.35)",
-            "gradient": "rgba(255, 180, 170, 0.90)",
-        }
-    if health_value >= 40:
-        return {
-            "pin": "#FFB547",
-            "pin_rgba": "rgba(255, 181, 71, 0.95)",
-            "halo": "rgba(255, 181, 71, 0.18)",
-            "shadow": "rgba(140, 100, 20, 0.35)",
-            "gradient": "rgba(255, 230, 180, 0.90)",
-        }
-    return {
-        "pin": "#05CD99",
-        "pin_rgba": "rgba(5, 205, 153, 0.95)",
-        "halo": "rgba(5, 205, 153, 0.18)",
-        "shadow": "rgba(2, 90, 60, 0.35)",
-        "gradient": "rgba(150, 245, 220, 0.90)",
-    }
-
-
-def _create_map_figure(df):
-    fig = go.Figure()
-
-    if df.empty:
-        fig.update_layout(
-            uirevision="globe",
-            geo=dict(
-                resolution=50,
-                projection_type="orthographic",
-                showland=True,
-                landcolor="#EEF2FB",
-                showsubunits=True,
-                subunitcolor="rgba(67, 24, 255, 0.08)",
-                subunitwidth=0.4,
-                showocean=True,
-                oceancolor="#C8D8F0",
-                showcountries=True,
-                countrycolor="rgba(67, 24, 255, 0.30)",
-                countrywidth=1.0,
-                showcoastlines=True,
-                coastlinecolor="rgba(40, 100, 200, 0.70)",
-                coastlinewidth=1.2,
-                showlakes=True,
-                lakecolor="#B8CCE8",
-                showrivers=True,
-                rivercolor="rgba(60, 130, 210, 0.40)",
-                riverwidth=0.6,
-                framecolor="rgba(67, 24, 255, 0.15)",
-                framewidth=1.5,
-                lonaxis=dict(showgrid=True, gridcolor="rgba(67, 24, 255, 0.05)", gridwidth=0.3, dtick=30),
-                lataxis=dict(showgrid=True, gridcolor="rgba(67, 24, 255, 0.05)", gridwidth=0.3, dtick=30),
-                projection_rotation=dict(lon=28.96, lat=41.01, roll=0),
-                projection_scale=1.0,
-                bgcolor="rgba(0,0,0,0)",
-            ),
-            transition=dict(duration=400, easing="cubic-in-out"),
-            margin=dict(l=0, r=0, t=0, b=0),
-            height=600,
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            showlegend=False,
-        )
-        return fig
-
-    color_maps = [_health_colors(h) for h in df["health"]]
-
-    shadow_colors = [c["shadow"] for c in color_maps]
-    halo_colors = [c["halo"] for c in color_maps]
-    pin_colors = [c["pin"] for c in color_maps]
-    pin_rgba_colors = [c["pin_rgba"] for c in color_maps]
-    gradient_colors = [c["gradient"] for c in color_maps]
-
-    def get_dynamic_sizes(row):
-        total_infrastructure = row.get("vm_count", 0) + row.get("host_count", 0)
-        # Dynamic scale factor using square root to smooth out enormous variances (e.g., 0 to 5000)
-        scale_factor = math.sqrt(total_infrastructure)
-        
-        # Base sizes + scalable increments
-        pin = max(10, min(45, 10 + (scale_factor * 0.7)))
-        halo = max(24, min(90, 24 + (scale_factor * 1.6)))
-        shadow = max(8, min(32, pin * 0.65))
-        
-        return halo, pin, shadow
-
-    sizes = [get_dynamic_sizes(row) for _, row in df.iterrows()]
-    halo_sizes = [size[0] for size in sizes]
-    pin_sizes = [size[1] for size in sizes]
-    shadow_sizes = [size[2] for size in sizes]
-
-    ping_values = [random.randint(8, 180) for _ in range(len(df))]
-
-    hover_template = (
-        "<b style='font-size:15px;color:#2B3674;'>%{customdata[1]}</b><br>"
-        "<span style='color:#7B8EC8;'>━━━━━━━━━━━━━━━━━━━</span><br>"
-        "📍 <span style='color:#A3AED0;'>%{customdata[2]}</span><br>"
-        "💻 <b>%{customdata[3]:,}</b> VMs  ·  🖥️ <b>%{customdata[4]:,}</b> Hosts<br>"
-        "⚡ Health: <b>%{customdata[5]:.1f}%%</b><br>"
-        "<span style='color:#7B8EC8;'>━━━━━━━━━━━━━━━━━━━</span><br>"
-        "🏓 <span style='color:#A3AED0;'>Ping: </span><b>%{customdata[6]}ms</b>"
-        " · <span style='color:#05CD99;'>Active Route</span>"
-        "<extra></extra>"
-    )
-
-    customdata_vals = []
-    for i, (_, row) in enumerate(df.iterrows()):
-        customdata_vals.append([
-            row["id"], format_dc_display_name(row.get("name"), row.get("description")) or row["id"], row["location"],
-            row["vm_count"], row["host_count"], row["health"],
-            ping_values[i], row.get("site_name", ""),
-        ])
-
-    fig.add_trace(go.Scattergeo(
-        lat=df["lat"] - 0.3,
-        lon=df["lon"] + 0.15,
-        mode="markers",
-        marker=dict(
-            size=shadow_sizes,
-            color=shadow_colors,
-            opacity=0.3,
-            symbol="circle",
-        ),
-        hoverinfo="skip",
-        name="",
-    ))
-
-    fig.add_trace(go.Scattergeo(
-        lat=df["lat"],
-        lon=df["lon"],
-        mode="markers",
-        marker=dict(
-            size=halo_sizes,
-            color=halo_colors,
-            opacity=0.5,
-            symbol="circle",
-        ),
-        hoverinfo="skip",
-        name="",
-    ))
-
-    fig.add_trace(go.Scattergeo(
-        lat=df["lat"],
-        lon=df["lon"],
-        mode="markers",
-        marker=dict(
-            size=pin_sizes,
-            color=pin_colors,
-            opacity=1.0,
-            symbol="circle",
-            gradient=dict(
-                type="radial",
-                color=gradient_colors,
-            ),
-            line=dict(
-                width=2,
-                color=pin_rgba_colors,
-            ),
-        ),
-        customdata=customdata_vals,
-        hovertemplate=hover_template,
-        hoverlabel=dict(
-            bgcolor="rgba(255, 255, 255, 0.92)",
-            bordercolor="rgba(67, 24, 255, 0.25)",
-            font=dict(
-                family="DM Sans, sans-serif",
-                size=13,
-                color="#2B3674",
-            ),
-            align="left",
-        ),
-        name="",
-    ))
-
-    fig.update_layout(
-        uirevision="globe",
-        geo=dict(
-            resolution=50,
-            projection_type="orthographic",
-            showland=True,
-            landcolor="#EEF2FB",
-            showsubunits=True,
-            subunitcolor="rgba(67, 24, 255, 0.08)",
-            subunitwidth=0.4,
-            showocean=True,
-            oceancolor="#C8D8F0",
-            showcountries=True,
-            countrycolor="rgba(67, 24, 255, 0.30)",
-            countrywidth=1.0,
-            showcoastlines=True,
-            coastlinecolor="rgba(40, 100, 200, 0.70)",
-            coastlinewidth=1.2,
-            showlakes=True,
-            lakecolor="#B8CCE8",
-            showrivers=True,
-            rivercolor="rgba(60, 130, 210, 0.40)",
-            riverwidth=0.6,
-            framecolor="rgba(67, 24, 255, 0.15)",
-            framewidth=1.5,
-            lonaxis=dict(showgrid=True, gridcolor="rgba(67, 24, 255, 0.05)", gridwidth=0.3, dtick=30),
-            lataxis=dict(showgrid=True, gridcolor="rgba(67, 24, 255, 0.05)", gridwidth=0.3, dtick=30),
-            projection_rotation=dict(lon=28.96, lat=41.01, roll=0),
-            projection_scale=1.0,
-            bgcolor="rgba(0,0,0,0)",
-        ),
-        transition=dict(duration=400, easing="cubic-in-out"),
-        margin=dict(l=0, r=0, t=0, b=0),
-        height=600,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=False,
-    )
-
-    return fig
 
 
 def _pct_color(v):
@@ -513,15 +291,15 @@ def _pct_color(v):
 
 def _build_region_menu(summaries):
     region_dc_counts = {}
-    region_health = {}
+    region_load = {}
     for dc in summaries:
         sn = (dc.get("site_name") or "").upper().strip()
         region_dc_counts[sn] = region_dc_counts.get(sn, 0) + 1
         stats = dc.get("stats", {})
         cpu = stats.get("used_cpu_pct", 0.0)
         ram = stats.get("used_ram_pct", 0.0)
-        region_health.setdefault(sn, []).append((cpu + ram) / 2.0)
-    avg_health = {k: sum(v) / len(v) for k, v in region_health.items() if v}
+        region_load.setdefault(sn, []).append((cpu + ram) / 2.0)
+    avg_load = {k: sum(v) / len(v) for k, v in region_load.items() if v}
 
     items = []
     for group_name, group_data in REGION_HIERARCHY.items():
@@ -532,7 +310,7 @@ def _build_region_menu(summaries):
             group_total += count
             flag_icon = site_data.get("flag")
             left_section = DashIconify(icon=flag_icon, width=18) if flag_icon else None
-            avg = avg_health.get(site_key, 0)
+            avg = avg_load.get(site_key, 0)
             children_components.append(
                 dmc.NavLink(
                     id={"type": "region-nav", "region": site_key},
@@ -627,8 +405,8 @@ def build_region_detail_panel(region, tr):
         storage_used = intel.get("storage_used", 0.0)
         storage_pct = round(storage_used / storage_cap * 100, 1) if storage_cap > 0 else 0.0
 
-        health_val = (cpu_pct + ram_pct) / 2.0
-        health_color = "red" if health_val >= 70 else ("orange" if health_val >= 40 else "teal")
+        load_val = (cpu_pct + ram_pct) / 2.0
+        load_color = "red" if load_val >= 70 else ("orange" if load_val >= 40 else "teal")
 
         total_kw = float(energy.get("total_kw", 0.0) or 0.0)
         total_hosts = intel.get("hosts", 0) + power.get("hosts", 0)
@@ -662,7 +440,7 @@ def build_region_detail_panel(region, tr):
                         mb="sm",
                         children=[
                             dmc.Text(dc_name, fw=700, size="md", c="#2B3674"),
-                            dmc.Badge(f"{health_val:.0f}% Health", color=health_color, variant="light", size="sm"),
+                            dmc.Badge(f"{load_val:.0f}% Load", color=load_color, variant="light", size="sm"),
                         ],
                     ),
                     dmc.SimpleGrid(
@@ -1140,8 +918,8 @@ def build_dc_info_card(dc_id, tr, site_name=""):
     coloc_free = int(_coloc.get("free_u") or 0)
     coloc_pct = round(coloc_used / coloc_total * 100) if coloc_total else 0
 
-    health_val = (cpu_pct + ram_pct) / 2.0
-    health_color = "red" if health_val >= 70 else ("orange" if health_val >= 40 else "teal")
+    load_val = (cpu_pct + ram_pct) / 2.0
+    load_color = "red" if load_val >= 70 else ("orange" if load_val >= 40 else "teal")
     total_kw = float(energy.get("total_kw", 0.0) or 0.0)
     total_hosts = intel.get("hosts", 0) + power.get("hosts", 0)
     total_vms = intel.get("vms", 0) + power.get("lpar_count", 0)
@@ -1195,7 +973,7 @@ def build_dc_info_card(dc_id, tr, site_name=""):
                             ),
                         ],
                     ),
-                    dmc.Badge(f"{health_val:.0f}% Health", color=health_color, variant="light", size="md"),
+                    dmc.Badge(f"{load_val:.0f}% Load", color=load_color, variant="light", size="md"),
                 ],
             ),
             dmc.Divider(my="md", color="rgba(67, 24, 255, 0.08)"),
@@ -1226,7 +1004,7 @@ def build_dc_info_card(dc_id, tr, site_name=""):
                             sections=[{"value": coloc_pct, "color": _pct_color(coloc_pct)}],
                             label=dmc.Text(f"{coloc_pct:.0f}%", ta="center", fw=700, size="sm")),
                         dmc.Text("Colocation", size="xs", fw=600, c="#A3AED0"),
-                        dmc.Text(f"{coloc_free}U boş", size="xs", c="#667085"),
+                        dmc.Text(f"{coloc_free}U free", size="xs", c="#667085"),
                     ]),
                     dmc.Stack(gap=6, justify="center", children=[
                         dmc.Group(gap="xs", children=[
