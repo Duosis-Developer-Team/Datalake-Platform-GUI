@@ -1884,10 +1884,60 @@ Finally add both keys to the returned dict (lines 517-525):
         "potential_tl_avg": potential_tl_avg,
 ```
 
+- [ ] **Step 5b: Give `_build_entitled_only_row` the same two keys**
+
+`_sellable_track_fields` is not the only place that builds a row of these keys. `_build_entitled_only_row` (`inventory_overview_service.py`, the `base` dict around line 1033-1060) constructs rows for CRM-entitled products that have no matching infra panel, and it already carries `"sellable_max_qty": None` and `"potential_tl_max": None`. Its rows are appended into both `panel_rows` and `crm_only_panels`, which flow straight into the API payload alongside rows built the other way.
+
+Git history shows `sellable_max_qty` and `potential_tl_max` were added to **both** this dict and `_sellable_track_fields`' early return in the same commit, so the two move in lockstep. Add the avg pair here too:
+
+```python
+            "sellable_max_qty": None,
+            "sellable_avg_qty": None,
+```
+
+```python
+            "potential_tl_max": None,
+            "potential_tl_avg": None,
+```
+
+Without this, rows from this path are missing the keys **entirely** while every other row in the same array has them present-and-`None`. The GUI reads with `.get()`, so Python will not raise — but a caller that distinguishes "absent" from "null" sees two different shapes in one array, and that distinction between "not computed" and "nothing sellable" is the whole point of this task.
+
+Add to `services/customer-api/tests/test_sellable_avg_api_contract.py`:
+
+```python
+class TestRowShapeUniformity:
+    def test_entitled_only_rows_carry_the_avg_keys(self):
+        """Rows built for CRM-entitled products with no infra panel must have the
+        same shape as rows built from a panel -- keys present and None, never
+        absent."""
+        from app.services.inventory_overview_service import _build_entitled_only_row
+        import inspect
+        src = inspect.getsource(_build_entitled_only_row)
+        assert '"sellable_avg_qty"' in src
+        assert '"potential_tl_avg"' in src
+
+    def test_track_field_key_sets_match_between_both_row_builders(self):
+        """The two row builders must agree on the track-key set."""
+        from app.services.inventory_overview_service import (
+            _build_entitled_only_row,
+            _sellable_track_fields,
+        )
+        import inspect
+        track_keys = {"sellable_alloc_qty", "sellable_max_qty", "sellable_avg_qty",
+                      "potential_tl_alloc", "potential_tl_max", "potential_tl_avg"}
+        entitled_src = inspect.getsource(_build_entitled_only_row)
+        fields_src = inspect.getsource(_sellable_track_fields)
+        for key in track_keys:
+            assert f'"{key}"' in entitled_src, f"{key} missing from _build_entitled_only_row"
+            assert f'"{key}"' in fields_src, f"{key} missing from _sellable_track_fields"
+```
+
+These assert on source text rather than calling the function, because `_build_entitled_only_row` takes CRM-entitlement arguments whose construction is not worth reproducing for a shape check. If you can call it cheaply with real arguments, prefer that and assert on the returned dict's keys instead — a behavioural assertion beats a source-text one.
+
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `cd services/customer-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_sellable_avg_api_contract.py -q`
-Expected: PASS (8 tests)
+Expected: PASS (10 tests)
 
 - [ ] **Step 7: Run the customer-api suite**
 
