@@ -1509,6 +1509,28 @@ LIMIT 20
             out[key] = (float(r[1] or 0), float(r[2] or 0), float(r[3] or 0))
         return out
 
+    @staticmethod
+    def _host_avg_map(rows) -> dict[str, dict[str, float]]:
+        """Index per-host CPU+RAM window averages by short hostname.
+
+        Row shape (see CLASSIC_HOST_AVG / NUTANIX_HOST_AVG):
+        (host, cpu_used_ghz, cpu_cap_ghz, cpu_pct, mem_used_gb, mem_cap_gb, mem_pct)
+        """
+        out: dict[str, dict[str, float]] = {}
+        for r in rows or []:
+            if not r or not r[0]:
+                continue
+            key = str(r[0]).strip().lower().split(".")[0]
+            out[key] = {
+                "cpu_used_ghz_avg": float(r[1] or 0),
+                "cpu_cap_ghz_avg": float(r[2] or 0),
+                "cpu_avg_util_pct": float(r[3] or 0),
+                "mem_used_gb_avg": float(r[4] or 0),
+                "mem_cap_gb_avg": float(r[5] or 0),
+                "mem_avg_util_pct": float(r[6] or 0),
+            }
+        return out
+
     _BYTES_PER_GB = 1024 ** 3
 
     def _build_km_storage_context(self, dc_code: str, time_range: dict) -> dict[str, Any]:
@@ -1577,6 +1599,42 @@ LIMIT 20
         out["mem_used_gb_peak"] = round(used, 2)
         out["mem_cap_gb_at_peak"] = round(cap, 2)
         out["mem_peak_util_pct"] = round(pct, 1)
+        return out
+
+    @staticmethod
+    def _apply_host_cpu_peak(payload: dict, peak: tuple[float, float, float] | None) -> dict:
+        """Attach per-host CPU window peak. No-op when absent, so the sellable
+        max track falls back to the latest sample rather than to zero."""
+        if not peak:
+            return payload
+        used, cap, pct = peak
+        if used <= 0 and cap <= 0:
+            return payload
+        out = dict(payload)
+        out["cpu_used_ghz_peak"] = round(used, 2)
+        out["cpu_cap_ghz_at_peak"] = round(cap, 2)
+        out["cpu_peak_util_pct"] = round(pct, 1)
+        return out
+
+    @staticmethod
+    def _apply_host_avg(payload: dict, avg: dict[str, float] | None) -> dict:
+        """Attach per-host CPU+RAM window averages.
+
+        No-op when the metric is absent or entirely zero: writing 0 would make
+        the avg sellable track read the host as completely idle and offer the
+        whole machine for sale.
+        """
+        if not avg:
+            return payload
+        if not any(float(v or 0) > 0 for v in avg.values()):
+            return payload
+        out = dict(payload)
+        out["cpu_used_ghz_avg"] = round(float(avg.get("cpu_used_ghz_avg") or 0), 2)
+        out["cpu_cap_ghz_avg"] = round(float(avg.get("cpu_cap_ghz_avg") or 0), 2)
+        out["cpu_avg_util_pct"] = round(float(avg.get("cpu_avg_util_pct") or 0), 1)
+        out["mem_used_gb_avg"] = round(float(avg.get("mem_used_gb_avg") or 0), 2)
+        out["mem_cap_gb_avg"] = round(float(avg.get("mem_cap_gb_avg") or 0), 2)
+        out["mem_avg_util_pct"] = round(float(avg.get("mem_avg_util_pct") or 0), 1)
         return out
 
     @staticmethod
@@ -1675,6 +1733,16 @@ LIMIT 20
                         vq.CLASSIC_HOST_MEM_PEAK,
                         (dc_wc, empty_clusters, empty_clusters, start_ts, end_ts),
                     )
+                    cpu_peak_rows = self._run_rows(
+                        cur,
+                        vq.CLASSIC_HOST_CPU_PEAK,
+                        (dc_wc, empty_clusters, empty_clusters, start_ts, end_ts),
+                    )
+                    avg_rows = self._run_rows(
+                        cur,
+                        vq.CLASSIC_HOST_AVG,
+                        (dc_wc, empty_clusters, empty_clusters, start_ts, end_ts),
+                    )
                     host_map = self._load_host_ghz_map(cur)
         except OperationalError as exc:
             logger.error("DB unavailable for get_classic_host_rows(%s): %s", dc_code, exc)
@@ -1682,6 +1750,8 @@ LIMIT 20
 
         alloc_map = self._host_alloc_map(alloc_rows)
         peak_map = self._host_mem_peak_map(peak_rows)
+        cpu_peak_map = self._host_mem_peak_map(cpu_peak_rows)
+        avg_map = self._host_avg_map(avg_rows)
         storage_ctx = self._build_km_storage_context(dc_code, time_range)
         default_ghz = self._get_default_host_cpu_ghz()
         hosts = []
@@ -1702,6 +1772,8 @@ LIMIT 20
                 ghz_per_core=ghz,
             )
             payload = self._apply_host_mem_peak(payload, peak_map.get(key))
+            payload = self._apply_host_cpu_peak(payload, cpu_peak_map.get(key))
+            payload = self._apply_host_avg(payload, avg_map.get(key))
             payload = self._apply_km_storage_to_host(payload, storage_ctx)
             hosts.append(payload)
         hosts.sort(key=lambda h: (h["cluster"], h["host"]))
@@ -1748,6 +1820,16 @@ LIMIT 20
                         nq.NUTANIX_HOST_MEM_PEAK,
                         (dc_code, empty_clusters, empty_clusters, start_ts, end_ts),
                     )
+                    cpu_peak_rows = self._run_rows(
+                        cur,
+                        nq.NUTANIX_HOST_CPU_PEAK,
+                        (dc_code, empty_clusters, empty_clusters, start_ts, end_ts),
+                    )
+                    avg_rows = self._run_rows(
+                        cur,
+                        nq.NUTANIX_HOST_AVG,
+                        (dc_code, empty_clusters, empty_clusters, start_ts, end_ts),
+                    )
                     host_map = self._load_host_ghz_map(cur)
         except OperationalError as exc:
             logger.error("DB unavailable for get_hyperconv_host_rows(%s): %s", dc_code, exc)
@@ -1757,6 +1839,8 @@ LIMIT 20
         _bytes_per_gb = 1024 ** 3
         alloc_map = self._host_alloc_map(alloc_rows)
         peak_map = self._host_mem_peak_map(peak_rows)
+        cpu_peak_map = self._host_mem_peak_map(cpu_peak_rows)
+        avg_map = self._host_avg_map(avg_rows)
         default_ghz = self._get_default_host_cpu_ghz()
         hosts = []
         for r in host_rows or []:
@@ -1784,6 +1868,8 @@ LIMIT 20
             if payload["vm_count"] == 0:
                 payload["vm_count"] = int(r[8] or 0)
             payload = self._apply_host_mem_peak(payload, peak_map.get(key))
+            payload = self._apply_host_cpu_peak(payload, cpu_peak_map.get(key))
+            payload = self._apply_host_avg(payload, avg_map.get(key))
             hosts.append(payload)
         hosts.sort(key=lambda h: (h["cluster"], h["host"]))
         return finalize_host_payload(
