@@ -74,12 +74,14 @@ def host_storage_free_gb(host: dict, *, include_shared: bool) -> float:
 
 
 def _normalize_cpu_track(cpu_track: str) -> str:
-    """Map legacy ``peak`` track name to ``max``."""
+    """Map legacy ``peak`` track name to ``max``. Known tracks:
+    ``effective`` (allocation), ``physical``, ``max`` (window peak), ``avg``."""
     return "max" if cpu_track == "peak" else cpu_track
 
 
 def _normalize_ram_track(ram_track: str) -> str:
-    """Map legacy ``peak`` track name to ``max``."""
+    """Map legacy ``peak`` track name to ``max``. Known tracks:
+    ``physical`` (allocation), ``max`` (window peak), ``avg``."""
     return "max" if ram_track == "peak" else ram_track
 
 
@@ -100,11 +102,37 @@ def host_raw_headroom(
         cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
         if cpu_track == "physical":
             alloc = float(host.get("cpu_alloc_ghz_physical") or host.get("cpu_alloc_phys") or 0.0)
+            util = float(host.get("cpu_used_pct") or host.get("cpu_util_pct") or 0.0)
         elif cpu_track == "max":
-            alloc = float(host.get("cpu_used_ghz") or 0.0)
+            # Real window peak; falls back to the latest sample when the peak
+            # query returned nothing for this host.
+            alloc = float(host.get("cpu_used_ghz_peak") or host.get("cpu_used_ghz") or 0.0)
+            util = float(
+                host.get("cpu_peak_util_pct")
+                or host.get("cpu_used_pct")
+                or host.get("cpu_util_pct")
+                or 0.0
+            )
+        elif cpu_track == "avg":
+            # No average for this host: fall back to its peak, then to the
+            # latest sample. Peak used >= average used, so the fallback can
+            # never claim more headroom than a real average would -- and the
+            # host still contributes, keeping n_avg >= n_max.
+            alloc = float(
+                host.get("cpu_used_ghz_avg")
+                or host.get("cpu_used_ghz_peak")
+                or host.get("cpu_used_ghz")
+                or 0.0
+            )
+            util = float(
+                host.get("cpu_avg_util_pct")
+                or host.get("cpu_peak_util_pct")
+                or host.get("cpu_used_pct")
+                or 0.0
+            )
         else:
             alloc = float(host.get("cpu_alloc_ghz") or host.get("cpu_alloc") or 0.0)
-        util = float(host.get("cpu_used_pct") or host.get("cpu_util_pct") or 0.0)
+            util = float(host.get("cpu_used_pct") or host.get("cpu_util_pct") or 0.0)
         return apply_utilization_gate(cap, alloc, util, threshold_pct)
 
     if resource == "ram":
@@ -118,6 +146,30 @@ def host_raw_headroom(
             )
             used = float(host.get("mem_used_gb_peak") or host.get("mem_peak_used") or 0.0)
             util = float(host.get("mem_peak_util_pct") or host.get("mem_used_pct") or 0.0)
+            return apply_utilization_gate(cap, used, util, threshold_pct)
+        if ram_track == "avg":
+            # Same peak-then-latest fallback as the CPU arm, for the same
+            # reason: a host with no average must not contribute less than it
+            # contributes to the max track.
+            used = float(
+                host.get("mem_used_gb_avg")
+                or host.get("mem_used_gb_peak")
+                or host.get("mem_peak_used")
+                or 0.0
+            )
+            cap = float(
+                host.get("mem_cap_gb_avg")
+                or host.get("mem_cap_gb_at_peak")
+                or host.get("mem_cap_gb")
+                or host.get("ram_total")
+                or 0.0
+            )
+            util = float(
+                host.get("mem_avg_util_pct")
+                or host.get("mem_peak_util_pct")
+                or host.get("mem_used_pct")
+                or 0.0
+            )
             return apply_utilization_gate(cap, used, util, threshold_pct)
         cap = float(host.get("mem_cap_gb") or host.get("ram_total") or 0.0)
         alloc = float(host.get("mem_alloc_gb") or host.get("ram_alloc") or 0.0)
