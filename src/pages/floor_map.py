@@ -830,12 +830,18 @@ def build_colocation_customer_panel(coloc: dict):
                     html.Td(fmt_tl(_potential(c.get("allocated_u")))),
                     html.Td(f"{int(c.get('used_u') or 0):,}"),
                 ]))
+        # Explicit widths: at full page width an auto-laid-out table pushes the
+        # numeric columns far away from the customer they belong to.
         alloc_table = dmc.Table(
             striped=True, highlightOnHover=True, verticalSpacing=4,
             children=[
-                html.Thead(html.Tr([html.Th(h) for h in (
-                    "Customer", "Racks", "Allocated U",
-                    "Potential (TL) — Allocated", "Used U")])),
+                html.Thead(html.Tr([
+                    html.Th("Customer", style={"width": "34%"}),
+                    html.Th("Racks", style={"width": "10%"}),
+                    html.Th("Allocated U", style={"width": "14%"}),
+                    html.Th("Potential (TL) — Allocated", style={"width": "24%"}),
+                    html.Th("Used U", style={"width": "12%"}),
+                ])),
                 html.Tbody(rows),
             ])
     else:
@@ -847,7 +853,11 @@ def build_colocation_customer_panel(coloc: dict):
         int_rows = [
             html.Tr([
                 html.Td(dmc.Text(r.get("tenant", ""), size="xs")),
-                html.Td(", ".join(r.get("racks", []) or [])),
+                # A team can hold 20+ racks. Let the list wrap inside its cell
+                # instead of stretching the row until the table needs a
+                # horizontal scrollbar and the money columns fall off-screen.
+                html.Td(", ".join(r.get("racks", []) or []),
+                        style={"whiteSpace": "normal", "wordBreak": "break-word"}),
                 html.Td(f"{int(r.get('used_u') or 0):,}"),
                 html.Td(fmt_tl(r.get("potential_tl"))),
             ])
@@ -856,19 +866,35 @@ def build_colocation_customer_panel(coloc: dict):
         int_table = dmc.Table(
             striped=True, highlightOnHover=True, verticalSpacing=4,
             children=[
-                html.Thead(html.Tr([html.Th(h) for h in (
-                    "Resource", "Rack", "Used U", "Potential (TL) — Used")])),
+                html.Thead(html.Tr([
+                    html.Th("Resource", style={"width": "22%"}),
+                    html.Th("Rack"),
+                    html.Th("Used U", style={"width": "12%"}),
+                    html.Th("Potential (TL) — Used", style={"width": "20%"}),
+                ])),
                 html.Tbody(int_rows),
             ])
     else:
         int_table = dmc.Text("No internal (Bulutistan) colocation racks in this DC.",
                              size="xs", c="#98A2B3")
 
-    # Side by side, not stacked: this renders full-width below the map, and a
-    # 5-column table stretched across the whole page reads worse than two
-    # tables that each get room for their headers. Stacks below `lg`.
+    def _subsection(title, subtitle, hint, table):
+        return html.Div(children=[
+            dmc.Group(gap=8, align="center", mb=2, children=[
+                dmc.Text(title, fw=700, size="sm", c="#101828"),
+            ]),
+            dmc.Text(subtitle, size="xs", c="#667085"),
+            *( [dmc.Text(hint, size="xs", c="#98A2B3", mt=2)] if hint else [] ),
+            html.Div(style={"overflowX": "auto", "marginTop": "10px"},
+                     children=table),
+        ])
+
+    # Stacked, each table at full page width. Side by side, both tables were
+    # narrow enough to need horizontal scrollbars -- "Used U" and the rack
+    # lists fell off-screen, which is the same squeeze that pushed this panel
+    # out of the right column in the first place.
     return html.Div(id="fm-coloc-panel", children=[
-        dmc.Group(gap="xs", align="center", mb="md", children=[
+        dmc.Group(gap="xs", align="center", mb="lg", children=[
             dmc.ThemeIcon(
                 DashIconify(icon="solar:users-group-rounded-bold-duotone", width=16),
                 size="md", radius="md", variant="light", color="violet",
@@ -876,23 +902,22 @@ def build_colocation_customer_panel(coloc: dict):
             dmc.Text("Colocation — Customers & Potential", fw=700, size="sm",
                      c="#101828"),
         ]),
-        dmc.Grid(gutter="xl", children=[
-            dmc.GridCol(span={"base": 12, "lg": 7}, children=[
-                dmc.Text("Dedicated Customers", fw=700, size="sm", c="#101828"),
-                dmc.Text("Rack allocation (NetBox role + tenant/tag/description) · "
-                         "Potential at list price for Allocated U, not billed revenue",
-                         size="xs", c="#667085", mb="xs"),
-                dmc.Text("Select a customer to highlight their racks on the map.",
-                         size="xs", c="#98A2B3", mb="xs"),
-                html.Div(style={"overflowX": "auto"}, children=alloc_table),
-            ]),
-            dmc.GridCol(span={"base": 12, "lg": 5}, children=[
-                dmc.Text("Internal Resources", fw=700, size="sm", c="#101828"),
-                dmc.Text("Bulutistan-owned rack footprint · Potential at list price, "
-                         "not billed revenue — opportunity cost of self-occupied U",
-                         size="xs", c="#667085", mb="xs"),
-                html.Div(style={"overflowX": "auto"}, children=int_table),
-            ]),
+        dmc.Stack(gap=0, children=[
+            _subsection(
+                "Dedicated Customers",
+                "Rack allocation (NetBox role + tenant/tag/description) · "
+                "Potential at list price for Allocated U, not billed revenue",
+                "Select a customer to highlight their racks on the map.",
+                alloc_table,
+            ),
+            dmc.Divider(my="xl", color="#EAECF0"),
+            _subsection(
+                "Internal Resources",
+                "Bulutistan-owned rack footprint · Potential at list price, "
+                "not billed revenue — opportunity cost of self-occupied U",
+                None,
+                int_table,
+            ),
         ]),
     ])
 
