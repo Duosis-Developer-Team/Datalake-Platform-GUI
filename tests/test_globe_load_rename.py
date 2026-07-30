@@ -21,12 +21,24 @@ def test_globe_points_carry_load_not_health():
 
 def test_dead_plotly_globe_and_its_fabricated_ping_are_gone():
     # _create_map_figure has been unreachable since the MapLibre migration
-    # (3eb55fe8) and generated random "Ping: N ms" values for a hover popup.
+    # (3eb55fe8) and generated random "Ping: N ms" values for a hover popup,
+    # presenting fabricated latency as if it were real telemetry.
     assert not hasattr(gv, "_create_map_figure")
     assert not hasattr(gv, "_health_colors")
     source = inspect.getsource(gv)
-    assert "random" not in source
-    assert "Ping" not in source
+    # Bans the specific RNG call that manufactured the fake latency numbers.
+    # A bare "random" substring ban is too broad — it would false-positive on
+    # any legitimate future identifier/docstring containing that substring
+    # (e.g. "randomize", "randomised"), inviting someone to just delete the
+    # assertion instead of fixing their code.
+    assert "random.randint" not in source
+    # Bans the fabricated hover row's literal text, case-insensitively. A
+    # case-sensitive "Ping" ban gives false confidence: a reintroduced fake
+    # value written as lowercase "ping" would sail straight through while
+    # this test stayed green — exactly the regression this guards against.
+    lowered_source = source.lower()
+    assert "ping:" not in lowered_source
+    assert "active route" not in lowered_source
 
 
 def test_badges_say_load_not_health():
