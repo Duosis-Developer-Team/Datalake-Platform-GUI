@@ -165,6 +165,7 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
             single = dict(group[0])
             single["family"] = "virt_power"
             single["sellable_max_util"] = None
+            single["sellable_avg_util"] = None
             out.append(single)
             continue
         merged = dict(group[0])
@@ -174,6 +175,7 @@ def merge_power_panels_for_summary(panels: list[dict]) -> list[dict]:
         for field in infra_fields:
             merged[field] = max(float(g.get(field) or 0.0) for g in group)
         merged["sellable_max_util"] = None
+        merged["sellable_avg_util"] = None
         merged["ratio_bound"] = any(bool(g.get("ratio_bound")) for g in group)
         merged["gate_blocked"] = any(bool(g.get("gate_blocked")) for g in group)
         merged["constraint_reason"] = _merge_constraint_reason(group)

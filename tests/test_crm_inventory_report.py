@@ -56,12 +56,26 @@ def test_dual_track_has_sellable_average_column():
     assert "sellable_avg_fmt" not in [c["id"] for c in columns_for_family("allocation_only")]
 
 
-def test_prepare_service_row_sellable_average():
-    """Sellable (Ort.) = mean of alloc and max-util, in qty and TL."""
+def test_prepare_service_row_sellable_average_uses_real_avg_field():
+    """Sellable (Ort.) comes from the avg-utilization track, NOT from the mean
+    of alloc and max. Average utilization is below peak utilization, so the avg
+    track must yield MORE sellable capacity than the max track -- the defect
+    Can reported was avg reading lower than max."""
+    row = prepare_service_row(_sample_row(
+        inventory_hide_used=True,
+        sellable_avg_qty=30.0,
+        potential_tl_avg=45000.0,
+    ))
+    assert "30 vCPU" in row["sellable_avg_fmt"]
+    assert "45,000 TL" in row["sellable_avg_fmt"]
+    # The old placeholder would have produced the mean of 18 and 22.
+    assert "20 vCPU" not in row["sellable_avg_fmt"]
+
+
+def test_sellable_average_absent_renders_em_dash():
+    """No avg data must render as em-dash, never 0 and never a mean."""
     row = prepare_service_row(_sample_row(inventory_hide_used=True))
-    # alloc 18 / max 22 -> avg 20 ; tl alloc 27,000 / max 33,000 -> avg 30,000
-    assert "20 vCPU" in row["sellable_avg_fmt"]
-    assert "30,000 TL" in row["sellable_avg_fmt"]
+    assert row["sellable_avg_fmt"].startswith("—")
 
 
 def test_zero_sellable_hint_maps_reason():
