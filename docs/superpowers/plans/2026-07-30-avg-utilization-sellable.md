@@ -1077,7 +1077,19 @@ git commit -m "feat(sellable): add PanelResult.sellable_avg_util"
 - Consumes: `host_raw_headroom` tracks (Task 3), `PanelResult.sellable_avg_util` (Task 4).
 - Produces: every `PanelResult` returned by either constraint function carries `sellable_avg_util` for `resource_kind` in `{cpu, ram, storage}`. Storage's value is `n_avg * ratio.storage_gb_per_unit`, derived through the triple-min — never from a storage-specific average.
 
-`constrain_by_ratio_per_host_triple_dual` is the only path used in production (`sellable_service.py:2256`); `constrain_by_ratio_per_host_dual` is its empty-hosts fallback (`computation.py:466`). Both must set the field so the fallback returns `0.0` rather than `None`, which the GUI would render as `—` and look like missing data instead of "no hosts".
+There are **three** constraint entry points, not two, and all three must set the field:
+
+| Function | Role | Avg source |
+|---|---|---|
+| `constrain_by_ratio_per_host_triple_dual` (`computation.py:441`) | the host-based production path (`sellable_service.py:2256`) | real per-host averages via `_accumulate("avg","avg")` |
+| `constrain_by_ratio_per_host_dual` (`computation.py:348`) | empty-hosts fallback for the above (`computation.py:466`) | zero, via `host_effective_units` over an empty list |
+| `constrain_by_ratio_dual_cpu_cluster` (`computation.py:683`) | **cluster-level fallback when host rows are unavailable** (`sellable_service.py:2365`, via `_apply_cluster_fallback_dual`) | no averages exist at this granularity — see below |
+
+The third was missed in the original plan and surfaced in the Task 5 review. It is live, not theoretical: it fires whenever host rows are unavailable, which is exactly what a collector gap produces. It already sets `sellable_max_util` in three places, so without the avg field those panels would render **a real number in the Max column beside an em-dash in the Ort. column** — the precise failure the field's `None` default is meant to prevent.
+
+`_extract_utilization_pct` reads only *peak* utilisation from the compute payload, so there is no cluster-level average to compute from. Apply the established rule — no average for a resource means use that resource's peak — at cluster granularity: set `sellable_avg_util` to the same `constrained_max` already assigned to `sellable_max_util`. That keeps the invariant (avg == max, never below), never oversells, and removes the em-dash. Task 10's clamped-row count will surface these panels as `avg == max`, which is the correct signal: this DC had no host data.
+
+The empty-hosts fallback must return `0.0` rather than `None`, because `0.0` is a known answer — nothing is sellable — whereas `None` renders as `—` and would wrongly read as "figure unavailable".
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1372,10 +1384,130 @@ Then add the derived values near line 571:
 
 and pass `sellable_avg_util=cpu_avg_val`, `sellable_avg_util=ram_avg_val`, `sellable_avg_util=stor_constrained_avg` into the three existing `replace(...)` calls for `cpu`, `ram` and `storage` respectively.
 
+- [ ] **Step 5b: Harden `host_effective_units`' avg branch, and cover the third entry point**
+
+Two gaps the Task 5 review found. Both are small; both matter.
+
+**(a) `host_effective_units`' avg branch repeats the anti-pattern Task 3 removed.** Its `or` chain cannot distinguish a genuine `0.0` from a missing key, and it has no clamp against the max track — so a host with a near-saturated peak but no average at all reads as fully idle and fabricates headroom out of missing data. Task 3 fixed exactly this in `host_raw_headroom`; mirror it here.
+
+Add a module-level helper mirroring `host_sellable._first_present`:
+
+```python
+def _first_present_h(host: dict, *keys: str) -> float:
+    # First key present on `host`, honouring a genuine 0.0. Mirrors
+    # host_sellable._first_present. Plain `or` chaining would make a real zero
+    # average fall through to the peak and understate headroom, or make a
+    # *missing* average read as an idle host and overstate it.
+    for k in keys:
+        v = host.get(k)
+        if v is not None:
+            return float(v)
+    return 0.0
+```
+
+Use it for the `avg` CPU selection:
+
+```python
+        elif cpu_track == "avg":
+            cpu_total = float(h.get("cpu_total") or 0.0)
+            cpu_alloc = _first_present_h(
+                h, "cpu_used_ghz_avg", "cpu_used_ghz_peak", "cpu_used_ghz"
+            )
+            cpu_den = ratio.cpu_per_unit * max(effective_ghz_per_unit, 1e-9)
+            cpu_util = _first_present_h(
+                h, "cpu_avg_util_pct", "cpu_peak_util_pct", "cpu_util_pct"
+            )
+```
+
+and for the `avg` RAM selection:
+
+```python
+        elif ram_track == "avg":
+            ram_total = _first_present_h(
+                h, "mem_cap_gb_avg", "mem_cap_gb_at_peak", "ram_total"
+            )
+            ram_alloc = _first_present_h(
+                h, "mem_used_gb_avg", "mem_used_gb_peak", "mem_peak_used"
+            )
+            ram_util = _first_present_h(
+                h, "mem_avg_util_pct", "mem_peak_util_pct", "ram_util_pct"
+            )
+```
+
+**(b) `constrain_by_ratio_dual_cpu_cluster` never sets the avg field.** In each of the three `replace(...)` calls that assign `sellable_max_util=constrained_max`, add alongside it:
+
+```python
+                    sellable_avg_util=constrained_max,
+```
+
+with this comment at the first occurrence:
+
+```python
+        # No averages exist at cluster granularity -- _extract_utilization_pct
+        # reads peak only. Per the global rule (no average for a resource means
+        # use that resource's peak), avg equals max here: never below, never
+        # oversold, and no em-dash beside a real Max figure.
+```
+
+Add these tests to `tests/test_sellable_avg_unit_count.py`:
+
+```python
+class TestClusterFallbackEntryPoint:
+    def test_cluster_fallback_sets_avg_equal_to_max(self):
+        # The third entry point fires when host rows are unavailable -- what a
+        # collector gap produces. Without the avg field these panels render a
+        # real number in Max beside an em-dash in Ort.
+        from shared.sellable.computation import constrain_by_ratio_dual_cpu_cluster
+        out = {p.resource_kind: p for p in constrain_by_ratio_dual_cpu_cluster(
+            _panels(), _ratio(),
+            cpu_raw_physical=800.0, cpu_raw_effective=800.0, cpu_raw_max=900.0,
+            ram_raw_physical=1600.0, ram_raw_peak=1800.0,
+        )}
+        for kind in ("cpu", "ram"):
+            assert out[kind].sellable_avg_util is not None, kind
+            assert out[kind].sellable_avg_util == out[kind].sellable_max_util, kind
+
+
+class TestHostEffectiveUnitsAvgHardening:
+    def test_missing_cpu_average_does_not_fabricate_idle_headroom(self):
+        # A near-saturated host with no average must not read as idle.
+        from shared.sellable.computation import host_effective_units
+        h = {"cpu_total": 100.0, "cpu_alloc": 90.0, "cpu_util_pct": 90.0,
+             "cpu_used_ghz_peak": 90.0, "cpu_peak_util_pct": 90.0,
+             "ram_total": 512.0, "ram_alloc": 400.0, "ram_util_pct": 78.0,
+             "mem_cap_gb_at_peak": 512.0, "mem_used_gb_peak": 400.0,
+             "mem_peak_util_pct": 78.0}
+        n_avg = host_effective_units([h], _ratio(), cpu_threshold_pct=95.0,
+                                     ram_threshold_pct=95.0,
+                                     cpu_track="avg", ram_track="avg")
+        n_max = host_effective_units([h], _ratio(), cpu_threshold_pct=95.0,
+                                     ram_threshold_pct=95.0,
+                                     cpu_track="max", ram_track="max")
+        assert n_avg == n_max
+
+    def test_genuine_zero_cpu_average_is_honoured(self):
+        from shared.sellable.computation import host_effective_units
+        h = {"cpu_total": 100.0, "cpu_alloc": 10.0, "cpu_util_pct": 10.0,
+             "cpu_used_ghz_avg": 0.0, "cpu_avg_util_pct": 0.0,
+             "cpu_used_ghz_peak": 40.0, "cpu_peak_util_pct": 40.0,
+             "ram_total": 512.0, "ram_alloc": 100.0, "ram_util_pct": 20.0,
+             "mem_cap_gb_avg": 512.0, "mem_used_gb_avg": 100.0,
+             "mem_avg_util_pct": 20.0}
+        n_avg = host_effective_units([h], _ratio(), cpu_threshold_pct=80.0,
+                                     ram_threshold_pct=80.0,
+                                     cpu_track="avg", ram_track="avg")
+        n_max = host_effective_units([h], _ratio(), cpu_threshold_pct=80.0,
+                                     ram_threshold_pct=80.0,
+                                     cpu_track="max", ram_track="max")
+        assert n_avg > n_max
+```
+
+**Check `constrain_by_ratio_dual_cpu_cluster`'s real signature before writing the test call** and match its parameter names exactly — the names above are the plan author's expectation, not verified against source.
+
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `$PY -m pytest tests/test_sellable_avg_unit_count.py -q`
-Expected: PASS (8 tests)
+Expected: PASS (11 tests)
 
 - [ ] **Step 7: Run the whole sellable surface**
 
