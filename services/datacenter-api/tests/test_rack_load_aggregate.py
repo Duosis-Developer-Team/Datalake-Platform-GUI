@@ -75,3 +75,34 @@ def test_ibm_memory_is_derived_from_available_not_used():
 def test_racks_are_returned_sorted_by_name():
     rows = aggregate_rack_load([("110", "a"), ("104", "b")], {})
     assert [r["rack_name"] for r in rows] == ["104", "110"]
+
+
+def test_null_metric_with_valid_capacity_is_unknown_not_idle():
+    # A collector outage on one counter must not read as idle capacity.
+    index = build_metric_index([("h1", None, 100.0, 32.0, 64.0)], [], [])
+    assert index["h1"]["cpu_pct"] is None
+    assert index["h1"]["ram_pct"] == 50.0
+    rows = aggregate_rack_load([("104", "h1")], index)
+    assert rows[0]["load_pct"] == 50.0      # falls back to the counter that reported
+    assert rows[0]["monitored_devices"] == 1
+
+
+def test_a_genuine_zero_reading_is_still_zero():
+    index = build_metric_index([("h1", 0.0, 100.0, 0.0, 100.0)], [], [])
+    assert index["h1"]["cpu_pct"] == 0.0
+    assert index["h1"]["ram_pct"] == 0.0
+    rows = aggregate_rack_load([("104", "h1")], index)
+    assert rows[0]["load_pct"] == 0.0
+    assert rows[0]["monitored_devices"] == 1
+
+
+def test_rack_mixing_monitored_and_unmonitored_devices():
+    # A rack holding one host and two switches: counted as monitored, and the
+    # host's load is the rack's load.
+    index = build_metric_index([("host-1", 88.0, 100.0, 10.0, 100.0)], [], [])
+    rows = aggregate_rack_load(
+        [("104", "host-1"), ("104", "switch-1"), ("104", "pdu-1")], index)
+    assert rows[0]["load_pct"] == 88.0
+    assert rows[0]["monitored_devices"] == 1
+    assert rows[0]["total_devices"] == 3
+    assert rows[0]["hottest_device"] == "host-1"

@@ -16,12 +16,22 @@ from typing import Any, Iterable, Sequence
 
 
 def _pct(used: Any, capacity: Any) -> float | None:
-    """used/capacity as a percentage, or None when capacity is absent/zero."""
+    """used/capacity as a percentage, or None when used/capacity is absent/zero.
+
+    A missing `used` reading (None, or not coercible to a float) means that
+    counter did not report -- e.g. a collector outage on CPU while memory and
+    capacity still report. That must surface as None ("unknown"), never as a
+    numeric 0.0 ("idle") -- `used or 0` would silently coerce None to 0. A
+    genuine 0 reading must still round-trip as 0.0, so the None check happens
+    before any arithmetic.
+    """
+    if used is None:
+        return None
     try:
         cap = float(capacity or 0)
         if cap <= 0:
             return None
-        return round(float(used or 0) / cap * 100, 1)
+        return round(float(used) / cap * 100, 1)
     except (TypeError, ValueError):
         return None
 
