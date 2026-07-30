@@ -1737,7 +1737,7 @@ RAM peak fields already get. CPU avg/peak need no conversion: they ride the
 
 **Interfaces:**
 - Consumes: `PanelResult.sellable_avg_util` (Tasks 4, 5).
-- Produces: payload key `sellable_avg_util` (snapshot JSONB + API), and `_panel_pricing_fields` keys `sellable_avg_qty` and `potential_tl_avg`. Consumed by Task 8.
+- Produces: payload key `sellable_avg_util` (snapshot JSONB + API), and `_sellable_track_fields` keys `sellable_avg_qty` and `potential_tl_avg`. Consumed by Task 8.
 
 No migration: `gui_panel_result_snapshot` is a single `payload jsonb` column, and hydration's `d.get(...)`-with-`None` idiom already tolerates payloads written before the key existed.
 
@@ -1747,7 +1747,7 @@ Create `services/customer-api/tests/test_sellable_avg_api_contract.py`:
 
 ```python
 """API/snapshot contract for the avg sellable track."""
-from app.services.inventory_overview_service import _panel_pricing_fields
+from app.services.inventory_overview_service import _sellable_track_fields
 from shared.sellable.models import PanelResult
 
 
@@ -1758,29 +1758,38 @@ def _panel(**kw) -> PanelResult:
     return PanelResult(**{**base, **kw})
 
 
-class TestPricingFields:
+class TestTrackFields:
     def test_exposes_avg_qty_and_tl(self):
-        out = _panel_pricing_fields(
+        out = _sellable_track_fields(
             _panel(sellable_allocation=10.0, sellable_max_util=40.0,
                    sellable_avg_util=55.0, potential_tl_min=1000.0,
                    potential_tl_max=4000.0),
-            hide_used=True,
+            has_infra=True, hide_used=True,
         )
         assert out["sellable_avg_qty"] == 55.0
         assert out["potential_tl_avg"] == 55.0 * 100.0
 
     def test_avg_is_none_when_track_absent(self):
-        """Missing avg must render as em-dash, not as 0 and not as a mean."""
-        out = _panel_pricing_fields(
+        # Missing avg must render as an em-dash, not as 0 and not as a mean.
+        out = _sellable_track_fields(
             _panel(sellable_allocation=10.0, sellable_max_util=40.0),
-            hide_used=True,
+            has_infra=True, hide_used=True,
         )
         assert out["sellable_avg_qty"] is None
         assert out["potential_tl_avg"] is None
 
     def test_no_infra_source_returns_none_avg(self):
-        out = _panel_pricing_fields(_panel(has_infra_source=False), hide_used=True)
+        out = _sellable_track_fields(_panel(), has_infra=False, hide_used=True)
         assert out["sellable_avg_qty"] is None
+        assert out["potential_tl_avg"] is None
+
+    def test_avg_tl_is_none_without_a_price(self):
+        # A quantity with no unit price must not produce a TL figure.
+        out = _sellable_track_fields(
+            _panel(sellable_avg_util=55.0, has_price=False),
+            has_infra=True, hide_used=True,
+        )
+        assert out["sellable_avg_qty"] == 55.0
         assert out["potential_tl_avg"] is None
 
 
@@ -1793,11 +1802,18 @@ class TestSerializationRoundTrip:
         assert restored.sellable_avg_util == 55.0
 
     def test_legacy_payload_without_avg_hydrates_to_none(self):
-        """Snapshots written before this change must not break."""
+        # Snapshots written before this change must not break.
         from app.services.sellable_service import SellableService
         payload = SellableService._panel_summary_dict(_panel(sellable_avg_util=55.0))
         del payload["sellable_avg_util"]
         assert SellableService._panel_result_from_dict(payload).sellable_avg_util is None
+
+    def test_zero_avg_hydrates_as_zero_not_none(self):
+        # 0.0 means "nothing sellable"; None means "not computed". The
+        # `is not None` idiom must keep them distinct.
+        from app.services.sellable_service import SellableService
+        payload = SellableService._panel_summary_dict(_panel(sellable_avg_util=0.0))
+        assert SellableService._panel_result_from_dict(payload).sellable_avg_util == 0.0
 
 
 class TestPowerFamiliesUnaffected:
@@ -1810,7 +1826,9 @@ class TestPowerFamiliesUnaffected:
         assert p.sellable_avg_util is None
 ```
 
-Method names verified against the source: serialization is the static `_panel_summary_dict` (the dict literal at line 3165), hydration is the static `_panel_result_from_dict` (the `PanelResult(...)` construction at line 2975), and `_apply_allocation_only_pricing` is a `@staticmethod` — all three are callable on the class without an instance.
+Method names verified against source: `_sellable_track_fields(panel, *, has_infra, hide_used=False)` at `inventory_overview_service.py:485` — its **only** call site is line 959, which passes `has_infra=panel.has_infra_source`. Serialization is the static `_panel_summary_dict`; hydration is the static `_panel_result_from_dict`; `_apply_allocation_only_pricing` is also static — all three callable on the class without an instance.
+
+**Do not rename `_sellable_track_fields`, and do not drop its `has_infra` parameter** even though it duplicates `panel.has_infra_source`. That is unrelated refactoring: it buys nothing functional, touches a call site for no reason, and adds noise to a diff that exists for a different purpose.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1869,7 +1887,7 @@ Finally add both keys to the returned dict (lines 517-525):
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `cd services/customer-api && PYTHONPATH=.:../.. $PY -m pytest tests/test_sellable_avg_api_contract.py -q`
-Expected: PASS (6 tests)
+Expected: PASS (8 tests)
 
 - [ ] **Step 7: Run the customer-api suite**
 
@@ -2115,7 +2133,7 @@ git commit -m "docs(qa): before/after evidence for the avg utilization track"
 
 **Not covered by any task, deliberately.** The two non-goals (window selector, DC13 KM storage freshness) and the 25 out-of-scope baseline failures.
 
-**Type consistency.** `sellable_avg_util` is the `PanelResult` field and payload key throughout (Tasks 4, 5, 7, 8). `sellable_avg_qty` / `potential_tl_avg` are the API and GUI names throughout (Tasks 7, 8) — the rename happens once, in `_panel_pricing_fields`, mirroring how `sellable_max_util` becomes `sellable_max_qty` today. The track literal is `"avg"` in every call site. `_host_avg_map` returns `dict[str, dict[str, float]]` in Task 2 and is consumed as a dict in the same task.
+**Type consistency.** `sellable_avg_util` is the `PanelResult` field and payload key throughout (Tasks 4, 5, 7, 8). `sellable_avg_qty` / `potential_tl_avg` are the API and GUI names throughout (Tasks 7, 8) — the rename happens once, in `_sellable_track_fields`, mirroring how `sellable_max_util` becomes `sellable_max_qty` today. The track literal is `"avg"` in every call site. `_host_avg_map` returns `dict[str, dict[str, float]]` in Task 2 and is consumed as a dict in the same task.
 
 **Names verified against source, no assumptions left.** Serialization `_panel_summary_dict` and hydration `_panel_result_from_dict` (both `@staticmethod` on `SellableService`); `convert_unit(value, conv)` takes a `UnitConversion` dataclass with `factor` / `operation`, `None` meaning identity; `_sample_row(**kwargs)` in `tests/test_crm_inventory_report.py:15` does `base.update(kwargs)`, so Task 8's new row keys pass straight through with no allow-list to extend.
 
