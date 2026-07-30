@@ -23,9 +23,11 @@ def test_aggregate_virt_sellable_panels_totals():
     """A panel with no sellable capacity contributes no TL.
 
     aggregate_virt_sellable_panels zeroes potential_tl when
-    sellable_constrained <= 0 -- revenue that can never be billed must not
-    inflate the total. The 'other' panel below has no sellable_constrained, so
-    its 7.0 TL is dropped: 10.0 + 3.0 = 13.0.
+    sellable_constrained <= 1e-9 -- revenue that can never be billed must not
+    inflate the total. The epsilon rather than a bare 0 guards against float
+    dust from upstream ratio arithmetic. The 'other' panel below has no
+    sellable_constrained at all, so it defaults to 0.0, trips the guard, and its
+    7.0 TL is dropped: 10.0 + 3.0 = 13.0.
     """
     panels = [
         {"resource_kind": "cpu", "potential_tl": 10.0, "sellable_constrained": 5.0, "display_unit": "Core"},
