@@ -2407,6 +2407,7 @@ SELECT _tot, _alloc FROM latest
         """Power families: single allocation track (payload v5)."""
         panel.computation_mode = "power_allocation_only"
         panel.sellable_max_util = None
+        panel.sellable_avg_util = None
         panel.sellable_physical = None
         panel.sellable_effective = None
         panel.potential_tl_physical = None
@@ -3020,6 +3021,9 @@ SELECT _tot, _alloc FROM latest
             sellable_max_util=(
                 float(d["sellable_max_util"]) if d.get("sellable_max_util") is not None else None
             ),
+            sellable_avg_util=(
+                float(d["sellable_avg_util"]) if d.get("sellable_avg_util") is not None else None
+            ),
             sellable_physical=(
                 float(d["sellable_physical"]) if d.get("sellable_physical") is not None else None
             ),
@@ -3205,6 +3209,7 @@ SELECT _tot, _alloc FROM latest
             "sellable_max": panel.sellable_max,
             "sellable_allocation": panel.sellable_allocation,
             "sellable_max_util": panel.sellable_max_util,
+            "sellable_avg_util": panel.sellable_avg_util,
             "sellable_physical": panel.sellable_physical,
             "sellable_effective": panel.sellable_effective,
             "potential_tl": panel.potential_tl,

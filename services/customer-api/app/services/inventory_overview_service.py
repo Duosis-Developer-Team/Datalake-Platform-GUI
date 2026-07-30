@@ -496,8 +496,10 @@ def _sellable_track_fields(
             "sellable_profile": _family_sellable_profile(panel.family),
             "sellable_alloc_qty": None,
             "sellable_max_qty": None,
+            "sellable_avg_qty": None,
             "potential_tl_alloc": None,
             "potential_tl_max": None,
+            "potential_tl_avg": None,
         }
     unit_price = float(panel.unit_price_tl or 0.0)
     used = float(panel.allocated or 0.0)
@@ -507,10 +509,16 @@ def _sellable_track_fields(
         alloc_qty = panel.sellable_effective
     if max_qty is None and panel.resource_kind == "ram" and panel.sellable_effective is not None:
         max_qty = panel.sellable_effective
+    avg_qty = panel.sellable_avg_util
     potential_tl_alloc = panel.potential_tl_min
     if potential_tl_alloc is None and panel.potential_tl is not None:
         potential_tl_alloc = panel.potential_tl
     potential_tl_max = panel.potential_tl_max
+    potential_tl_avg = (
+        compute_potential_tl(avg_qty, unit_price)
+        if avg_qty is not None and panel.has_price
+        else None
+    )
     used_tl = None
     if not hide_used and panel.has_price:
         used_tl = compute_potential_tl(used, unit_price)
@@ -520,8 +528,10 @@ def _sellable_track_fields(
         "sellable_profile": _family_sellable_profile(panel.family),
         "sellable_alloc_qty": alloc_qty,
         "sellable_max_qty": max_qty,
+        "sellable_avg_qty": avg_qty,
         "potential_tl_alloc": potential_tl_alloc,
         "potential_tl_max": potential_tl_max,
+        "potential_tl_avg": potential_tl_avg,
     }
 
 
