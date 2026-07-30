@@ -2005,6 +2005,38 @@ def _detail_row(icon, label, value):
 
 
 @app.callback(
+    dash.Output("fm-selected-customer", "data"),
+    dash.Input({"type": "fm-coloc-customer-row", "index": ALL}, "n_clicks"),
+    dash.State("fm-selected-customer", "data"),
+    dash.State("selected-building-dc-store", "data"),
+    prevent_initial_call=True,
+)
+def select_colocation_customer(n_clicks_list, current, dc_store):
+    """Clicking a customer row outlines that customer's racks on the map.
+
+    This is a pattern-matching Input over every row id: it can be invoked by
+    a crafted request regardless of whether the row was ever rendered in the
+    caller's browser, so the permission check happens here too, not just in
+    the row's rendering (build_colocation_customer_panel). A denied caller
+    gets no update and never reaches api.get_colocation.
+    """
+    if not _resolve_show_colocation():
+        return dash.no_update
+    if not any(n_clicks_list or []):
+        return dash.no_update
+    triggered = dash.callback_context.triggered_id
+    if not triggered:
+        return dash.no_update
+    customer = triggered.get("index")
+    dc_id = (dc_store or {}).get("dc_id", "")
+
+    from src.pages.floor_map import resolve_customer_highlight
+
+    allocation = (api.get_colocation(dc_id) or {}).get("allocation", []) or []
+    return resolve_customer_highlight(customer, allocation, current=current)
+
+
+@app.callback(
     dash.Output("floor-map-graph", "figure"),
     dash.Output("floor-map-legend", "children"),
     dash.Input("floor-map-occupancy-interval", "n_intervals"),
@@ -2030,7 +2062,7 @@ def recolor_floor_map(n_intervals, lens, selected_customer, dc_store):
 
 
 @app.callback(
-    dash.Output("floor-map-rack-detail", "children"),
+    dash.Output("floor-map-rack-detail", "children", allow_duplicate=True),
     dash.Input("floor-map-graph", "clickData"),
     dash.State("selected-building-dc-store", "data"),
     prevent_initial_call=True,
@@ -2070,8 +2102,9 @@ def show_rack_detail(click_data, dc_store):
     # otherwise a user without that permission could learn a customer's name
     # by clicking a rack, making the panel's gate decorative. Denied callers
     # skip the occupancy/tenant lookup entirely, not just its rendering.
+    show_colocation = _resolve_show_colocation()
     tenant_badges = None
-    if _resolve_show_colocation():
+    if show_colocation:
         from src.pages.floor_map import _external_rack_tenants
 
         try:
@@ -2091,8 +2124,26 @@ def show_rack_detail(click_data, dc_store):
             *[dmc.Badge(t, color="grape", variant="light", size="sm") for t in _ext],
         ])
 
+    # ── Back-to-customers button — only rendered for callers entitled to see
+    # the colocation customer panel. This Div renders unconditionally for
+    # every user; if the button rendered unconditionally too, an unentitled
+    # user could click it and reach back_to_colocation_panel, which builds
+    # the very panel Task 6 hid. Gating the button AND re-checking in the
+    # restore callback below are both required -- neither alone closes the
+    # hole (a crafted click event bypasses a client-side-only gate).
+    back_button = (
+        dmc.Button(
+            "Back to customers",
+            id="fm-back-to-customers",
+            variant="subtle", color="gray", size="xs", mb="xs",
+            leftSection=DashIconify(icon="solar:arrow-left-linear", width=14),
+        )
+        if show_colocation else None
+    )
+
     return html.Div(
         children=[
+            back_button,
             # ── Status color bar at top
             html.Div(style={
                 "height": "4px",
@@ -2186,6 +2237,31 @@ def show_rack_detail(click_data, dc_store):
             ),
         ],
     )
+
+
+@app.callback(
+    dash.Output("floor-map-rack-detail", "children", allow_duplicate=True),
+    dash.Input("fm-back-to-customers", "n_clicks"),
+    dash.State("selected-building-dc-store", "data"),
+    prevent_initial_call=True,
+)
+def back_to_colocation_panel(n_clicks, dc_store):
+    """Restore the customer/potential panel from the rack-detail column.
+
+    The button that fires this is only rendered for entitled callers
+    (show_rack_detail), but a crafted n_clicks event on
+    "fm-back-to-customers" could reach this callback regardless of what the
+    browser actually rendered -- so the permission check is re-done here too,
+    not just at render time.
+    """
+    if not n_clicks:
+        return dash.no_update
+    if not _resolve_show_colocation():
+        return dash.no_update
+    from src.pages.floor_map import build_colocation_customer_panel
+
+    dc_id = (dc_store or {}).get("dc_id", "")
+    return build_colocation_customer_panel(api.get_colocation(dc_id) or {})
 
 
 @app.callback(

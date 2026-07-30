@@ -800,6 +800,25 @@ def build_colocation_customer_panel(coloc: dict):
     ])
 
 
+def resolve_customer_highlight(customer, allocation, current=None):
+    """Which racks to outline when a customer row is clicked.
+
+    Returns None -- clear -- when the same customer is clicked again (toggle
+    off), when the name is unknown, or when the customer holds no racks.
+    Selecting a second customer replaces the first rather than merging: two
+    highlighted customers cannot be told apart by a single outline colour.
+    """
+    if not customer:
+        return None
+    if (current or {}).get("customer") == customer:
+        return None
+    for row in allocation or []:
+        if row.get("customer") == customer:
+            racks = [r for r in (row.get("racks") or []) if r]
+            return {"customer": customer, "racks": racks} if racks else None
+    return None
+
+
 # ── Layout builder ──────────────────────────────────────────────────────────
 
 def build_floor_map_layout(dc_id, dc_name, racks, *, show_colocation: bool = False):
