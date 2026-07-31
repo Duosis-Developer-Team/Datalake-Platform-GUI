@@ -2002,16 +2002,31 @@ SELECT _tot, _alloc FROM latest
                     if refresh_from_totals
                     else group
                 )
-                # Dedicated backup/replication storage must not be zeroed by
-                # compute ratio when CPU/RAM sellable is gated or alternate-min.
-                decouple = (
-                    {"storage"}
-                    if fam in _SKIP_STORAGE_RATIO_CAP_FAMILIES
-                    else None
-                )
-                new_group = constrain_by_ratio(
-                    source_group, ratio, decouple_resource_kinds=decouple,
-                )
+                if fam in _SKIP_STORAGE_RATIO_CAP_FAMILIES:
+                    # Dedicated storage (NetBackup / Veeam DS / Zerto sites): do not
+                    # zero disk via compute ratio. Ratio-bind CPU/RAM only when present.
+                    # (decouple_resource_kinds={'storage'} zeros storage — Power semantics.)
+                    compute_only = [
+                        p for p in source_group
+                        if (p.resource_kind or "").lower() != "storage"
+                    ]
+                    storage_only = [
+                        p for p in source_group
+                        if (p.resource_kind or "").lower() == "storage"
+                    ]
+                    new_group = (
+                        constrain_by_ratio(compute_only, ratio, decouple_resource_kinds=None)
+                        if compute_only
+                        else []
+                    )
+                    for sto in storage_only:
+                        sto.sellable_constrained = float(sto.sellable_raw or 0.0)
+                        sto.ratio_bound = False
+                        new_group.append(sto)
+                else:
+                    new_group = constrain_by_ratio(
+                        source_group, ratio, decouple_resource_kinds=None,
+                    )
 
             if fam in _STORAGE_RANGE_FAMILIES and range_inputs and not host_based_ok:
                 self._apply_storage_range(new_group, fam, range_inputs, unit_lookup)
