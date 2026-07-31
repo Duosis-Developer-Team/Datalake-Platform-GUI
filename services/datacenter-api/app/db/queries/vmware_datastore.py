@@ -64,6 +64,28 @@ WHERE datacenter_name ILIKE ('%%' || %s || '%%')
 ORDER BY datastore_moid, collection_timestamp::timestamptz DESC
 """
 
+# --- Veeam replication datastores (excluded from virt KM sellable) ---
+# Same DC / Nutanix blacklist as DATASTORE_METRICS, but ONLY names matching veeam
+# (the set virt excludes). Used for backup_veeam_replication_storage capacity.
+# Params: (dc_code, start_ts, end_ts)
+DATASTORE_METRICS_VEEAM_REPLICATION = """
+SELECT DISTINCT ON (datastore_moid)
+    datastore_moid,
+    datastore_name,
+    datacenter_name,
+    capacity_bytes,
+    free_bytes,
+    used_bytes
+FROM public.raw_vmware_datastore_metrics_agg
+WHERE datacenter_name ILIKE ('%%' || %s || '%%')
+  AND datacenter_name NOT ILIKE '%%Nutanix%%'
+  AND datastore_name NOT ILIKE '%%NTNX%%'
+  AND datastore_name ILIKE '%%veeam%%'
+  AND datastore_name NOT ILIKE '%%NBU%%'
+  AND collection_timestamp::timestamptz BETWEEN %s AND %s
+ORDER BY datastore_moid, collection_timestamp::timestamptz DESC
+"""
+
 # --- Datastore ↔ host mount mapping (latest per datastore+host) ---
 # Scoped to the datastores present in this DC's metrics snapshot.
 DATASTORE_HOST_MOUNTS = """

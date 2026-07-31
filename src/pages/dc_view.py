@@ -1956,7 +1956,7 @@ def _backup_inline_sellable_blocks(
     content_mode: str = "full",
     include: tuple[str, ...] = (),
 ) -> list:
-    """Inline sellable KPI cards for Backup / Replication category panels."""
+    """Virt-parity sellable detail cards for Backup / Replication category panels."""
     if (content_mode or "full").strip().lower() != "full" or not dc_id:
         return []
     specs = {
@@ -1965,24 +1965,28 @@ def _backup_inline_sellable_blocks(
             "green",
             None,
             "sellable-backup-netbackup-card",
+            "Image and Application share one disk pool (min = half free, max = full free).",
         ),
         "backup_image": (
             "Nutanix Image Backup — Sellable Potential",
             "teal",
             hyperconv_clusters or None,
             "sellable-backup-image-card",
+            "Nutanix-backed storage headroom for image backup.",
         ),
         "backup_veeam_replication": (
             "Veeam Replication — Sellable Potential",
             "violet",
             classic_clusters or None,
             "sellable-backup-veeam-card",
+            "CPU/RAM share virt host free (alternate min=0). Storage is dedicated veeam datastores.",
         ),
         "backup_zerto_replication": (
             "Zerto Replication — Sellable Potential",
             "grape",
             classic_clusters or None,
             "sellable-backup-zerto-card",
+            "CPU/RAM share virt host free (alternate min=0). Storage uses Zerto site/VPG metrics.",
         ),
     }
     out: list = []
@@ -1990,7 +1994,7 @@ def _backup_inline_sellable_blocks(
         spec = specs.get(fam)
         if not spec:
             continue
-        title, color, clusters, cid = spec
+        title, color, clusters, cid, subtitle = spec
         card = _build_sellable_inline_kpi(
             dc_id,
             fam,
@@ -1998,6 +2002,7 @@ def _backup_inline_sellable_blocks(
             color=color,
             selected_clusters=clusters,
             container_id=cid,
+            subtitle=subtitle,
         )
         if card is None:
             continue
@@ -2262,6 +2267,7 @@ def _build_sellable_inline_kpi(
     color: str = "violet",
     selected_clusters: list[str] | None = None,
     container_id: str | None = None,
+    subtitle: str | None = None,
 ) -> html.Div | None:
     """Inline 'Sellable Potential' card for a sub-tab (Faz 6).
 
@@ -2503,6 +2509,12 @@ def _build_sellable_inline_kpi(
             f"Allocation: {_fmt_unit(cpu.get('allocation', 0), cpu['unit'])} · "
             f"Max: {_fmt_unit(cpu.get('max_util', 0), cpu['unit'])}"
         )
+    elif bool(cpu.get("has_range")) and abs(float(cpu["max"]) - float(cpu["min"])) > 1e-6:
+        cpu_short = fmt_tl_range(float(cpu.get("tl_min") or 0), float(cpu.get("tl_max") or 0))
+        cpu_full = (
+            f"Alternate pool min–max: {_fmt_unit(cpu['min'], cpu['unit'])} – "
+            f"{_fmt_unit(cpu['max'], cpu['unit'])}"
+        )
     ram_short, ram_full = fmt_tl_for_card(ram["tl"], constrained=ram.get("allocation", ram["constrained"]))
     if ram_has_dual:
         alloc_s, _ = fmt_tl_for_card(ram.get("tl_alloc", 0), constrained=ram.get("allocation", 0))
@@ -2512,6 +2524,12 @@ def _build_sellable_inline_kpi(
         ram_full = (
             f"Allocation: {_fmt_unit(ram.get('allocation', 0), ram['unit'])} · "
             f"Max: {_fmt_unit(ram.get('max_util', 0), ram['unit'])}"
+        )
+    elif bool(ram.get("has_range")) and abs(float(ram["max"]) - float(ram["min"])) > 1e-6:
+        ram_short = fmt_tl_range(float(ram.get("tl_min") or 0), float(ram.get("tl_max") or 0))
+        ram_full = (
+            f"Alternate pool min–max: {_fmt_unit(ram['min'], ram['unit'])} – "
+            f"{_fmt_unit(ram['max'], ram['unit'])}"
         )
     stor_short, stor_full = fmt_tl_for_card(stor["tl"], constrained=stor["constrained"])
     # Storage range display: "X – Y" when IBM-shared capacity yields a range.
@@ -2546,7 +2564,11 @@ def _build_sellable_inline_kpi(
             (
                 f"Alloc {_fmt_unit(cpu.get('allocation', 0), cpu['unit'])} | Max {_fmt_unit(cpu.get('max_util', 0), cpu['unit'])}"
                 if cpu_has_dual
-                else _fmt_unit(cpu["constrained"], cpu["unit"])
+                else (
+                    f"{cpu['min']:,.0f} – {cpu['max']:,.0f} {cpu['unit']}"
+                    if bool(cpu.get("has_range")) and abs(float(cpu["max"]) - float(cpu["min"])) > 1e-6
+                    else _fmt_unit(cpu["constrained"], cpu["unit"])
+                )
             ),
             cpu_short,
             cpu_full,
@@ -2557,7 +2579,11 @@ def _build_sellable_inline_kpi(
             (
                 f"Alloc {_fmt_unit(ram.get('allocation', 0), ram['unit'])} | Max {_fmt_unit(ram.get('max_util', 0), ram['unit'])}"
                 if ram_has_dual
-                else _fmt_unit(ram["constrained"], ram["unit"])
+                else (
+                    f"{ram['min']:,.0f} – {ram['max']:,.0f} {ram['unit']}"
+                    if bool(ram.get("has_range")) and abs(float(ram["max"]) - float(ram["min"])) > 1e-6
+                    else _fmt_unit(ram["constrained"], ram["unit"])
+                )
             ),
             ram_short,
             ram_full,
@@ -2596,6 +2622,15 @@ def _build_sellable_inline_kpi(
             None,
         )
         sub_lines.extend(sellable_constraint_badges(panel_row, kind_label=kind.upper()))
+        if panel_row and panel_row.get("gate_blocked"):
+            sub_lines.append(
+                dmc.Badge(
+                    f"{kind.upper()} utilization gate (≥ threshold) — sellable zeroed",
+                    color="red",
+                    variant="light",
+                    size="sm",
+                )
+            )
 
     from src.utils.sellable_power_hints import power_sellable_constraint_hints
 
@@ -2617,7 +2652,11 @@ def _build_sellable_inline_kpi(
         "className": "nexus-card",
         "style": {"padding": "20px"},
         "children": [
-            _section_title(title, "Constrained sellable headroom (ratio-aware) and TL potential"),
+            _section_title(
+                title,
+                subtitle
+                or "Constrained sellable headroom (ratio-aware) and TL potential",
+            ),
             html.Div(
                 style={
                     "display": "grid",
@@ -6253,15 +6292,26 @@ def build_dc_view(
                                     dmc.TabsPanel(
                                         value="application",
                                         pt="lg",
-                                        children=build_application_backup_section(
-                                            nb_data=nb_data,
-                                            policy_type_options=list(
-                                                load_policy_panel_mapping().get(
-                                                    "application_policy_types"
-                                                )
-                                                or []
-                                            ),
-                                            content_mode=backup_content_mode,
+                                        children=html.Div(
+                                            children=[
+                                                *_backup_inline_sellable_blocks(
+                                                    str(dc_id),
+                                                    classic_clusters=classic_clusters or None,
+                                                    hyperconv_clusters=hyperconv_clusters or None,
+                                                    content_mode=backup_content_mode,
+                                                    include=("backup_netbackup",),
+                                                ),
+                                                build_application_backup_section(
+                                                    nb_data=nb_data,
+                                                    policy_type_options=list(
+                                                        load_policy_panel_mapping().get(
+                                                            "application_policy_types"
+                                                        )
+                                                        or []
+                                                    ),
+                                                    content_mode=backup_content_mode,
+                                                ),
+                                            ],
                                         ),
                                     )
                                     if has_application

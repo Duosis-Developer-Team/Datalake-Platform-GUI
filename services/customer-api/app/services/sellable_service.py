@@ -233,7 +233,24 @@ _FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
 }
 
 # Replication sellable competes with virt free capacity (primary vs alternate pool).
+# Only CPU/RAM — storage is dedicated (Veeam datastores / Zerto site metrics).
 _REPLICATION_ALTERNATE_FAMILIES: frozenset[str] = frozenset({
+    "backup_veeam_replication",
+    "backup_zerto_replication",
+})
+_REPLICATION_ALTERNATE_KINDS: frozenset[str] = frozenset({"cpu", "ram"})
+
+# Storage-only backup families must not run apply_storage_ratio_cap (no CPU/RAM →
+# false compute_bottleneck zeroing).
+_STORAGE_ONLY_BACKUP_FAMILIES: frozenset[str] = frozenset({
+    "backup_netbackup",
+    "backup_image",
+})
+
+# Families that may use /compute without an explicit cluster list (DC-wide).
+_CLUSTERLESS_COMPUTE_FAMILIES: frozenset[str] = frozenset({
+    "backup_netbackup",
+    "backup_image",
     "backup_veeam_replication",
     "backup_zerto_replication",
 })
@@ -1590,19 +1607,26 @@ SELECT _tot, _alloc FROM latest
         return self._extract_allocated_from_payload(payload, src, dc_code)
 
     def _fetch_raw_compute_response(
-        self, dc_code: str, family: str, clusters: list[str]
+        self, dc_code: str, family: str, clusters: list[str] | None = None
     ) -> "dict | None":
-        """Fetch the raw /compute/{kind}?clusters=... JSON once per family.
+        """Fetch the raw /compute/{kind} JSON once per family.
 
         Called from ``compute_all_panels`` so the same response is shared by all
         resource_kind panels (cpu/ram/storage) of the same family — 3 HTTP calls
-        → 1 HTTP call per family when clusters are provided.
+        → 1 HTTP call per family when clusters are provided. Clusterless families
+        (NetBackup / Nutanix image / replication) omit the clusters query param.
         """
         kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
-        if not kind or not clusters or not dc_code or dc_code == "*" or not self._dc_api_url:
+        if not kind or not dc_code or dc_code == "*" or not self._dc_api_url:
             return None
-        csv = ",".join(c for c in clusters if c)
-        url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}?clusters={csv}"
+        cl = [c for c in (clusters or []) if c]
+        if not cl and family not in _CLUSTERLESS_COMPUTE_FAMILIES:
+            return None
+        if cl:
+            csv = ",".join(cl)
+            url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}?clusters={csv}"
+        else:
+            url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
         try:
             resp = httpx.get(url, timeout=15.0)
             resp.raise_for_status()
@@ -1610,6 +1634,25 @@ SELECT _tot, _alloc FROM latest
             return data if isinstance(data, dict) else None
         except Exception:
             logger.exception("compute raw fetch failed dc=%s family=%s url=%s", dc_code, family, url)
+            return None
+
+    def _fetch_veeam_datastore_storage(self, dc_code: str) -> "dict | None":
+        """Fetch Veeam replication storage from virt-excluded veeam datastores."""
+        if not dc_code or dc_code == "*" or not self._dc_api_url:
+            return None
+        url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/backup-veeam-storage"
+        try:
+            resp = httpx.get(url, timeout=15.0)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+            # Prefer datastore totals when present; empty DS falls through to infra.
+            if float(data.get("stor_cap") or 0) <= 0 and int(data.get("datastore_count") or 0) <= 0:
+                return None
+            return data
+        except Exception:
+            logger.exception("veeam datastore storage fetch failed dc=%s url=%s", dc_code, url)
             return None
 
     @staticmethod
@@ -1965,7 +2008,7 @@ SELECT _tot, _alloc FROM latest
                 if sto_p is not None:
                     sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
 
-            if not host_based_ok:
+            if not host_based_ok and fam not in _STORAGE_ONLY_BACKUP_FAMILIES:
                 new_group = apply_storage_ratio_cap(new_group, ratio)
             new_group = annotate_panel_constraint_metadata(new_group)
 
@@ -2043,10 +2086,20 @@ SELECT _tot, _alloc FROM latest
         _set(app, rng["b_min"], rng["b_max"])
 
     def _apply_replication_alternate_ranges(self, results: list[PanelResult]) -> None:
-        """Replication as alternate claimant on host free (virt remains primary)."""
-        note = "Replication alternate pool: min=0, max=host free (competes with virt)"
+        """Replication CPU/RAM as alternate claimant on host free (virt remains primary).
+
+        Storage is NOT shared with virt — Veeam uses dedicated datastores; Zerto uses
+        site/VPG metrics. Only cpu/ram panels get primary-vs-alternate ranges.
+        """
+        note = (
+            "Replication alternate pool (CPU/RAM only): min=0, max=host free "
+            "(competes with virt; storage is dedicated)"
+        )
         for panel in results:
             if panel.family not in _REPLICATION_ALTERNATE_FAMILIES:
+                continue
+            kind = (panel.resource_kind or "").lower()
+            if kind not in _REPLICATION_ALTERNATE_KINDS:
                 continue
             free = 0.0
             if panel.sellable_raw is not None and float(panel.sellable_raw) > 0:
@@ -2758,25 +2811,63 @@ SELECT _tot, _alloc FROM latest
         # card exactly.
         compute_metrics = None
         util_pct: float | None = None
-        if selected_clusters and panel.family in _FAMILY_COMPUTE_ENDPOINT:
+        raw: dict | None = None
+        kind_l = (panel.resource_kind or "").lower()
+
+        # Veeam replication storage: virt-excluded veeam-named datastores.
+        if (
+            panel.family == "backup_veeam_replication"
+            and kind_l == "storage"
+            and bool(dc_code)
+            and dc_code != "*"
+        ):
+            veeam_raw = self._fetch_veeam_datastore_storage(dc_code)
+            if veeam_raw is not None:
+                compute_metrics = self._extract_compute_metrics(veeam_raw, "storage")
+                if compute_metrics is not None:
+                    raw = veeam_raw
+                    has_infra = True
+                    util_pct = self._extract_utilization_pct(raw, "storage")
+                    notes.append("via datacenter-api/compute/backup-veeam-storage (veeam datastores)")
+
+        # Replication storage must NOT use classic host storage from backup-replication.
+        use_compute = (
+            panel.family in _FAMILY_COMPUTE_ENDPOINT
+            and bool(dc_code)
+            and dc_code != "*"
+            and compute_metrics is None
+            and not (
+                panel.family in _REPLICATION_ALTERNATE_FAMILIES
+                and kind_l == "storage"
+            )
+        )
+        clusters_for_compute = [c for c in (selected_clusters or []) if c]
+        allow_clusterless = panel.family in _CLUSTERLESS_COMPUTE_FAMILIES
+        if use_compute and (clusters_for_compute or allow_clusterless):
             # Reuse a per-family raw response when compute_all_panels pre-fetched it.
-            raw: dict | None = None
             if compute_response_cache is not None:
-                key = (dc_code, panel.family, tuple(c for c in selected_clusters if c))
+                key = (dc_code, panel.family, tuple(clusters_for_compute))
                 if key in compute_response_cache:
                     raw = compute_response_cache[key]
                 else:
-                    raw = self._fetch_raw_compute_response(dc_code, panel.family, list(selected_clusters))
+                    raw = self._fetch_raw_compute_response(
+                        dc_code, panel.family, clusters_for_compute or None,
+                    )
                     compute_response_cache[key] = raw
                 if raw is not None:
                     compute_metrics = self._extract_compute_metrics(raw, panel.resource_kind)
             if compute_metrics is None and raw is None:
-                compute_metrics = self._fetch_compute_metrics_for_clusters(
-                    dc_code=dc_code,
-                    family=panel.family,
-                    resource_kind=panel.resource_kind,
-                    clusters=selected_clusters,
-                )
+                if clusters_for_compute:
+                    compute_metrics = self._fetch_compute_metrics_for_clusters(
+                        dc_code=dc_code,
+                        family=panel.family,
+                        resource_kind=panel.resource_kind,
+                        clusters=clusters_for_compute,
+                    )
+                elif allow_clusterless:
+                    raw = self._fetch_raw_compute_response(dc_code, panel.family, None)
+                    if raw is not None:
+                        compute_metrics = self._extract_compute_metrics(raw, panel.resource_kind)
 
         if compute_metrics is not None:
             cap, used, source_unit = compute_metrics
@@ -2789,11 +2880,18 @@ SELECT _tot, _alloc FROM latest
                 panel_key=panel.panel_key, side="allocated", notes=notes,
             )
             has_infra = True
-            util_pct = self._extract_utilization_pct(raw, panel.resource_kind)
-            notes.append(
-                f"cluster-scoped via datacenter-api/compute/{_FAMILY_COMPUTE_ENDPOINT[panel.family]} "
-                f"({len(selected_clusters)} cluster)"
-            )
+            if util_pct is None:
+                util_pct = self._extract_utilization_pct(raw, panel.resource_kind)
+            if not any("via datacenter-api/compute/" in n for n in notes):
+                scope_note = (
+                    f"{len(clusters_for_compute)} cluster"
+                    if clusters_for_compute
+                    else "DC-wide"
+                )
+                notes.append(
+                    f"via datacenter-api/compute/{_FAMILY_COMPUTE_ENDPOINT[panel.family]} "
+                    f"({scope_note})"
+                )
         elif not has_infra:
             notes.append("infra-source missing — configure in Settings")
             total_disp = 0.0

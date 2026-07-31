@@ -468,14 +468,27 @@ def build_backup_sellable_block(*, panels: list[dict] | None = None) -> html.Div
         fam_panels = grouped.get(fam) or []
         if not fam_panels:
             continue
-        tl = sum(float(p.get("potential_tl") or 0) for p in fam_panels)
+        tl_min = 0.0
+        tl_max = 0.0
+        gate_blocked = False
+        for p in fam_panels:
+            lo = p.get("potential_tl_min")
+            hi = p.get("potential_tl_max")
+            base = float(p.get("potential_tl") or 0)
+            tl_min += float(lo) if lo is not None else base
+            tl_max += float(hi) if hi is not None else base
+            if p.get("gate_blocked"):
+                gate_blocked = True
         kinds = sorted({
             (p.get("resource_kind") or "other").lower() for p in fam_panels
         })
+        sub = ", ".join(k.upper() for k in kinds) or "sellable"
+        if gate_blocked:
+            sub = f"{sub} · utilization gate"
         cards.append(_exec_kpi(
             _BACKUP_FAMILY_LABELS.get(fam, fam),
-            fmt_tl(tl),
-            ", ".join(k.upper() for k in kinds) or "sellable",
+            fmt_tl_range(tl_min, tl_max),
+            sub,
             "solar:cloud-storage-bold-duotone",
             "green",
         ))
@@ -487,7 +500,7 @@ def build_backup_sellable_block(*, panels: list[dict] | None = None) -> html.Div
         children=[
             _section_title(
                 "Backup & Replication — Sellable",
-                "NetBackup, Nutanix image, Veeam / Zerto replication headroom",
+                "NetBackup, Nutanix image, Veeam / Zerto replication headroom (min–max TL)",
             ),
             dmc.SimpleGrid(
                 cols={"base": 1, "md": min(4, len(cards))},

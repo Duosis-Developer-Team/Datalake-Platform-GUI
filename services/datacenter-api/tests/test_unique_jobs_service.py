@@ -121,6 +121,8 @@ def test_fetch_dc_unique_jobs_veeam_filters_by_source_ip_dc_map():
         if sql is bq.VEEAM_UNIQUE_JOBS_LATEST:
             return veeam_rows
         if sql is bq.VEEAM_IP_TO_DC_SEED:
+            # Seed is latest-per-IP and takes no time-window params.
+            assert params in (None, (), [])
             return seed_rows
         return []
 
@@ -130,6 +132,13 @@ def test_fetch_dc_unique_jobs_veeam_filters_by_source_ip_dc_map():
     assert out["vendor"] == "veeam"
     assert out["totals"]["total_jobs"] == 1
     assert out["rows"][0]["status"] == "success"  # normalize_unique_job_rows lowercases
+
+
+def test_veeam_ip_to_dc_seed_sql_has_no_time_bind():
+    """Seed must not require a jobs time window (DC13 miss when windows diverge)."""
+    assert "%s" not in bq.VEEAM_IP_TO_DC_SEED
+    assert "DISTINCT ON (source_ip)" in bq.VEEAM_IP_TO_DC_SEED
+    assert "collection_time DESC" in bq.VEEAM_IP_TO_DC_SEED
 
 
 def test_fetch_dc_unique_jobs_zerto_prefers_source_site_falls_back_to_target_and_host():

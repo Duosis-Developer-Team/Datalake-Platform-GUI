@@ -78,14 +78,20 @@ GROUP BY 1, 2, 3, 4
 ORDER BY 1, 2, 3, 4
 """
 
-# Veeam IP → DC seed: pull (source_ip, host_name) pairs whose host_name
-# encodes the DC (e.g. 'Dc13-VeemConsule.blt.vc').
-# Params: (start_ts, end_ts)
+# Veeam IP → DC seed: latest host_name per source_ip (DC encoded in host_name,
+# e.g. 'Dc13-VeemConsule.blt.vc'). No time-window filter — repositories may not
+# be refreshed inside every jobs query window, which previously dropped DC13
+# attribution when seed and sessions windows did not overlap.
+# Params: none (callers may still pass unused bounds for API compatibility).
 VEEAM_IP_TO_DC_SEED = """
-SELECT DISTINCT source_ip, host_name
+SELECT DISTINCT ON (source_ip)
+    source_ip,
+    host_name
 FROM public.raw_veeam_repositories_states
-WHERE collection_time BETWEEN %s AND %s
+WHERE source_ip IS NOT NULL
   AND host_name IS NOT NULL
+  AND btrim(host_name) <> ''
+ORDER BY source_ip, collection_time DESC NULLS LAST
 """
 
 

@@ -109,7 +109,7 @@ def _dedupe_virt_replication_tl(panels: list[dict]) -> list[tuple[str, float, fl
         (p.get("resource_kind") or "").lower()
         for p in panels
         if (p.get("family") in _VIRT_COMPUTE_FAMILIES or p.get("family") in _REPLICATION_FAMILIES)
-        and (p.get("resource_kind") or "").lower() in ("cpu", "ram", "storage")
+        and (p.get("resource_kind") or "").lower() in ("cpu", "ram")
     })
     for kind in kinds:
         virt = [

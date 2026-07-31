@@ -590,7 +590,7 @@ def test_apply_netbackup_shared_pool_ranges_splits_image_and_app():
 
 
 def test_apply_replication_alternate_ranges_zeros_min():
-    """Replication alternate: min=0, max=host free."""
+    """Replication alternate: min=0, max=host free (CPU/RAM only)."""
     svc = _make_svc_with_redis()
     panel = PanelResult(
         panel_key="backup_veeam_replication_cpu",
@@ -612,7 +612,72 @@ def test_apply_replication_alternate_ranges_zeros_min():
     assert panel.sellable_raw == 60.0
     assert panel.potential_tl_min == 0.0
     assert panel.potential_tl_max == 300.0
-    assert any("alternate pool" in n for n in (panel.notes or []))
+    assert any("CPU/RAM only" in n for n in (panel.notes or []))
+
+
+def test_apply_replication_alternate_ranges_skips_storage():
+    """Replication storage is dedicated — not primary-vs-alternate with virt."""
+    svc = _make_svc_with_redis()
+    panel = PanelResult(
+        panel_key="backup_veeam_replication_storage",
+        label="Veeam Replication Storage",
+        family="backup_veeam_replication",
+        resource_kind="storage",
+        display_unit="GB",
+        total=1000.0,
+        allocated=400.0,
+        sellable_raw=600.0,
+        sellable_constrained=600.0,
+        unit_price_tl=2.0,
+        has_price=True,
+    )
+    svc._apply_replication_alternate_ranges([panel])
+    assert panel.sellable_min is None
+    assert panel.sellable_max is None
+    assert panel.sellable_constrained == 600.0
+    assert panel.sellable_raw == 600.0
+
+
+def test_storage_only_backup_skips_ratio_cap():
+    """NetBackup/image must not be zeroed by compute_bottleneck ratio-cap."""
+    from app.services.sellable_service import _STORAGE_ONLY_BACKUP_FAMILIES
+
+    assert "backup_netbackup" in _STORAGE_ONLY_BACKUP_FAMILIES
+    assert "backup_image" in _STORAGE_ONLY_BACKUP_FAMILIES
+
+    panel = PanelResult(
+        panel_key="backup_netbackup_image",
+        label="NetBackup Image",
+        family="backup_netbackup",
+        resource_kind="storage",
+        display_unit="TB",
+        total=100.0,
+        allocated=20.0,
+        sellable_raw=80.0,
+        sellable_constrained=80.0,
+        unit_price_tl=484.0,
+        has_price=True,
+        has_infra_source=True,
+    )
+    svc = _make_svc_with_redis()
+    svc.list_ratios = lambda: [
+        ResourceRatio(
+            family="backup_netbackup",
+            cpu_per_unit=1.0,
+            ram_gb_per_unit=8.0,
+            storage_gb_per_unit=100.0,
+        )
+    ]  # type: ignore[method-assign]
+    svc._build_unit_lookup = lambda: {}  # type: ignore[method-assign]
+    svc._get_sellable_calc_config = lambda: {  # type: ignore[method-assign]
+        "effective_ghz_per_unit": 1.0,
+        "physical_price_unit": "GHz",
+        "power_core_to_ghz": 3.3,
+    }
+    out = svc._apply_family_constraints_to_results([panel], "DC13")
+    # Shared-pool ranges may rewrite min/max, but must not ratio-cap to zero.
+    assert float(out[0].sellable_constrained or 0) > 0 or float(out[0].sellable_max or 0) > 0
+    assert float(out[0].potential_tl_max or out[0].potential_tl or 0) > 0
 
 
 def test_fetch_compute_metrics_returns_none_when_no_clusters():

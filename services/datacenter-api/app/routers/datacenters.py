@@ -354,9 +354,22 @@ def backup_replication_compute(
     db: DatabaseService = Depends(get_db),
     clusters: Optional[str] = Query(None, description="Comma-separated classic cluster names; empty = all"),
 ):
-    """Veeam/Zerto alternate sellable capacity from the classic host pool."""
+    """Veeam/Zerto alternate sellable CPU/RAM from the classic host pool.
+
+    Storage is not included (dedicated Veeam datastores / Zerto site metrics).
+    """
     selected = [c.strip() for c in clusters.split(",") if c.strip()] if clusters else None
     return db.get_backup_replication_compute(dc_code, selected, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/compute/backup-veeam-storage", response_model=dict[str, Any])
+def backup_veeam_storage_compute(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+):
+    """Veeam replication storage from virt-excluded ``veeam``-named datastores."""
+    return db.get_veeam_replication_datastore_compute(dc_code, tf.to_dict())
 
 
 @router.get("/datacenters/{dc_code}/compute/backup-nutanix", response_model=dict[str, Any])

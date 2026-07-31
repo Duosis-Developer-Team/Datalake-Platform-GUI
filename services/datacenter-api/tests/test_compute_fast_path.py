@@ -87,12 +87,54 @@ class TestComputeFastPath(unittest.TestCase):
             "mem_alloc_gb_vm": 256.0,
             "stor_cap": 20.0,
             "stor_provisioned_gb": 10240.0,
+            "stor_pct": 50.0,
         }
         with patch.object(svc, "get_classic_metrics_filtered", return_value=classic) as get_classic:
             out = svc.get_backup_replication_compute("DC13", ["KM-1"], {"preset": "7d"})
 
-        self.assertIs(out, classic)
+        self.assertEqual(out["cpu_cap"], 100.0)
+        self.assertEqual(out["mem_cap"], 512.0)
+        self.assertEqual(out["stor_cap"], 0.0)
+        self.assertEqual(out["stor_provisioned_gb"], 0.0)
+        self.assertEqual(out["stor_pct"], 0.0)
+        self.assertTrue(any("CPU/RAM only" in n for n in out.get("notes") or []))
         get_classic.assert_called_once_with("DC13", ["KM-1"], {"preset": "7d"})
+
+    def test_get_veeam_replication_datastore_compute_sums_bytes(self):
+        svc = DatabaseService.__new__(DatabaseService)
+        _tb = 1024 ** 4
+        rows = [
+            ("moid-1", "DC13-veeam-repo1", "DC13-KM", 2 * _tb, 0.5 * _tb, 1.5 * _tb),
+            ("moid-2", "other-veeam-ds", "DC13-KM", 1 * _tb, 0.2 * _tb, 0.8 * _tb),
+        ]
+
+        class _Cur:
+            pass
+
+        class _Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def cursor(self):
+                return _Ctx()
+
+        class _Ctx:
+            def __enter__(self):
+                return _Cur()
+
+            def __exit__(self, *a):
+                return False
+
+        with patch.object(svc, "_get_connection", return_value=_Conn()), \
+             patch.object(svc, "_run_rows", return_value=rows):
+            out = svc.get_veeam_replication_datastore_compute("DC13", {"preset": "7d"})
+
+        self.assertAlmostEqual(out["stor_cap"], 3.0)
+        self.assertEqual(out["datastore_count"], 2)
+        self.assertEqual(out["source"], "vmware_datastore_veeam")
 
     def test_get_backup_nutanix_compute_reuses_hyperconv_metrics(self):
         svc = DatabaseService.__new__(DatabaseService)
