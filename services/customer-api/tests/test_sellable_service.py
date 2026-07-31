@@ -640,10 +640,15 @@ def test_apply_replication_alternate_ranges_skips_storage():
 
 def test_storage_only_backup_skips_ratio_cap():
     """NetBackup/image must not be zeroed by compute_bottleneck ratio-cap."""
-    from app.services.sellable_service import _STORAGE_ONLY_BACKUP_FAMILIES
+    from app.services.sellable_service import (
+        _SKIP_STORAGE_RATIO_CAP_FAMILIES,
+        _STORAGE_ONLY_BACKUP_FAMILIES,
+    )
 
     assert "backup_netbackup" in _STORAGE_ONLY_BACKUP_FAMILIES
     assert "backup_image" in _STORAGE_ONLY_BACKUP_FAMILIES
+    assert "backup_veeam_replication" in _SKIP_STORAGE_RATIO_CAP_FAMILIES
+    assert "backup_zerto_replication" in _SKIP_STORAGE_RATIO_CAP_FAMILIES
 
     panel = PanelResult(
         panel_key="backup_netbackup_image",

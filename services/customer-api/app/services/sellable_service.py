@@ -240,8 +240,18 @@ _REPLICATION_ALTERNATE_FAMILIES: frozenset[str] = frozenset({
 })
 _REPLICATION_ALTERNATE_KINDS: frozenset[str] = frozenset({"cpu", "ram"})
 
-# Storage-only backup families must not run apply_storage_ratio_cap (no CPU/RAM →
-# false compute_bottleneck zeroing).
+# Families that must not run apply_storage_ratio_cap:
+# - storage-only backup (no CPU/RAM → false compute_bottleneck)
+# - replication (storage is dedicated Veeam DS / Zerto sites; not tied to
+#   replication CPU/RAM alternate pool which is often gated/zero)
+_SKIP_STORAGE_RATIO_CAP_FAMILIES: frozenset[str] = frozenset({
+    "backup_netbackup",
+    "backup_image",
+    "backup_veeam_replication",
+    "backup_zerto_replication",
+})
+
+# Alias kept for tests / call sites that check storage-only NetBackup/image.
 _STORAGE_ONLY_BACKUP_FAMILIES: frozenset[str] = frozenset({
     "backup_netbackup",
     "backup_image",
@@ -2008,7 +2018,7 @@ SELECT _tot, _alloc FROM latest
                 if sto_p is not None:
                     sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
 
-            if not host_based_ok and fam not in _STORAGE_ONLY_BACKUP_FAMILIES:
+            if not host_based_ok and fam not in _SKIP_STORAGE_RATIO_CAP_FAMILIES:
                 new_group = apply_storage_ratio_cap(new_group, ratio)
             new_group = annotate_panel_constraint_metadata(new_group)
 
