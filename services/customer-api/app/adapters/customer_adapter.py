@@ -57,6 +57,26 @@ class CustomerAdapter:
                 return patterns
         return [fallback]
 
+    @staticmethod
+    def session_types_from_unique_job_rows(rows: list | tuple | None) -> list[dict]:
+        """Build Sessions-by-Type rows from ``CUSTOMER_VEEAM_UNIQUE_JOBS_LATEST`` tuples.
+
+        Column index 3 is ``type`` (Backup / VSphereReplica / …). Used when
+        ``raw_veeam_sessions`` has no matching rows but jobs_states does.
+        """
+        type_counts: dict[str, int] = {}
+        for r in rows or []:
+            if not r or len(r) < 4 or r[3] is None:
+                continue
+            job_type = str(r[3]).strip()
+            if not job_type:
+                continue
+            type_counts[job_type] = type_counts.get(job_type, 0) + 1
+        return [
+            {"type": t, "count": c}
+            for t, c in sorted(type_counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+
     def _enrich_customer_vm_list(self, cursor, vm_list: list[dict]) -> list[dict]:
         def _loader():
             return self._run_rows(cursor, NETBOX_HOST_CPU_STRINGS)
@@ -81,7 +101,6 @@ class CustomerAdapter:
         vm_pattern = vm_patterns[0]
         lpar_pattern = vm_pattern
         veeam_patterns = self._resolve_patterns(source_patterns, "backup_veeam", fallback)
-        veeam_pattern = veeam_patterns[0]
         storage_patterns = self._resolve_patterns(source_patterns, "storage_ibm", fallback)
         storage_like_pattern = storage_patterns[0]
         netbackup_patterns = self._resolve_patterns(source_patterns, "backup_netbackup", fallback)
@@ -91,7 +110,6 @@ class CustomerAdapter:
         # product decision (see Unmapped alias lessons).
         nutanix_snap_patterns = self._resolve_patterns(source_patterns, "backup_nutanix", fallback)
         zerto_patterns = self._resolve_patterns(source_patterns, "backup_zerto", fallback)
-        zerto_name_like = zerto_patterns[0]
 
         managed = list(managed_nutanix_clusters or [])
         pure = list(pure_nutanix_clusters or [])
@@ -380,24 +398,47 @@ class CustomerAdapter:
                 power_disk_total = sum(float(row.get("disk_gb") or 0.0) for row in power_vm_list)
 
                 veeam_defined_sessions = int(
-                    self._run_value(cur, cq.CUSTOMER_VEEAM_DEFINED_SESSIONS, (veeam_pattern,)) or 0
+                    self._run_value(cur, cq.CUSTOMER_VEEAM_DEFINED_SESSIONS, (veeam_patterns,)) or 0
                 )
                 veeam_type_rows = self._run_rows(
-                    cur, cq.CUSTOMER_VEEAM_SESSION_TYPES, (veeam_pattern,)
+                    cur, cq.CUSTOMER_VEEAM_SESSION_TYPES, (veeam_patterns,)
                 )
                 veeam_types = [
-                    {"type": r[0], "count": int(r[1] or 0)}
+                    {"type": str(r[0]).strip() or "Unknown", "count": int(r[1] or 0)}
                     for r in (veeam_type_rows or [])
                     if r and r[0] is not None
                 ]
                 veeam_platform_rows = self._run_rows(
-                    cur, cq.CUSTOMER_VEEAM_SESSION_PLATFORMS, (veeam_pattern,)
+                    cur, cq.CUSTOMER_VEEAM_SESSION_PLATFORMS, (veeam_patterns,)
                 )
                 veeam_platforms = [
-                    {"platform": r[0], "count": int(r[1] or 0)}
+                    {"platform": str(r[0]).strip() or "Unknown", "count": int(r[1] or 0)}
                     for r in (veeam_platform_rows or [])
                     if r and r[0] is not None
                 ]
+                if not veeam_types:
+                    try:
+                        unique_job_rows = self._run_rows(
+                            cur,
+                            cq.CUSTOMER_VEEAM_UNIQUE_JOBS_LATEST,
+                            (veeam_patterns, start_ts, end_ts),
+                        )
+                        veeam_types = self.session_types_from_unique_job_rows(
+                            unique_job_rows or []
+                        )
+                    except Exception as exc:
+                        from app.services.customer_service import _is_fatal_db_error
+
+                        if _is_fatal_db_error(exc):
+                            raise
+                        logger.warning(
+                            "Veeam session_types fallback from unique jobs failed: %s",
+                            exc,
+                        )
+                # Sessions table can be empty while jobs_states still has rows —
+                # keep the Sessions by Type KPI in sync with the fallback inventory.
+                if veeam_defined_sessions == 0 and veeam_types:
+                    veeam_defined_sessions = sum(int(t.get("count") or 0) for t in veeam_types)
 
                 netbackup_summary_row = self._run_row(
                     cur,
@@ -500,7 +541,7 @@ class CustomerAdapter:
                     self._run_value(
                         cur,
                         cq.CUSTOMER_ZERTO_PROTECTED_VMS,
-                        (start_ts, end_ts, zerto_name_like),
+                        (start_ts, end_ts, zerto_patterns),
                     )
                     or 0
                 )
@@ -508,20 +549,8 @@ class CustomerAdapter:
                 zerto_provisioned_rows = self._run_rows(
                     cur,
                     cq.CUSTOMER_ZERTO_PROVISIONED_STORAGE,
-                    (zerto_name_like,),
+                    (zerto_patterns,),
                 )
-                if len(zerto_patterns) > 1:
-                    merged_rows = list(zerto_provisioned_rows or [])
-                    for extra_pattern in zerto_patterns[1:]:
-                        merged_rows.extend(
-                            self._run_rows(
-                                cur,
-                                cq.CUSTOMER_ZERTO_PROVISIONED_STORAGE,
-                                (extra_pattern,),
-                            )
-                            or []
-                        )
-                    zerto_provisioned_rows = merged_rows
                 zerto_vpgs = [
                     {
                         "name": r[0],

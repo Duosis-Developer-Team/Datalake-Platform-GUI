@@ -65,6 +65,12 @@ def test_backup_vendor_has_data():
     assert backup_vendor_has_data(totals, assets, "zerto") is True
 
 
+def test_backup_vendor_has_data_veeam_from_session_types_fallback():
+    totals = {"veeam_defined_sessions": 0}
+    assets = {"veeam": {"session_types": [{"type": "Backup", "count": 2}]}}
+    assert backup_vendor_has_data(totals, assets, "veeam") is True
+
+
 def test_filter_compliance_rows_for_display():
     rows = [
         {"status": "no_usage", "entitled_qty": 0, "used_qty": 0, "overage_qty": 0},

@@ -107,6 +107,8 @@ def test_aggregate_zerto_collapses_type_to_vpg_bucket():
     agg = aggregate_unique_jobs(_zerto_rows(), "zerto")
     assert agg["total_jobs"] == 3
     assert agg["by_type"] == {"vpg": 3}
+    assert agg["total_vms"] == 6
+    assert agg["by_site"] == {"DC14-Site02-V10": 3, "DC13-Site01": 3}
     # Zerto status is a raw int enum in this generic aggregator (vendor-specific
     # normalization to success/failed happens upstream in dc_service); we only
     # lowercase whatever is present.
@@ -129,6 +131,9 @@ def test_aggregate_empty_rows():
         assert agg["total_jobs"] == 0
         assert agg["by_status"] == {}
         assert agg["by_type"] == {}
+        if vendor == "zerto":
+            assert agg["by_site"] == {}
+            assert agg["total_vms"] == 0
 
 
 def test_aggregate_unknown_vendor_falls_back_gracefully():

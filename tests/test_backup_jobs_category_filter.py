@@ -13,10 +13,10 @@ def _sample_payload():
     return {
         "vendor": "netbackup",
         "series": [
-            {"period": "2026-01-01", "status": "success", "policy_type": "VMWARE", "category": "image", "count": 10},
-            {"period": "2026-01-01", "status": "failed", "policy_type": "VMWARE", "category": "image", "count": 2},
-            {"period": "2026-01-01", "status": "success", "policy_type": "SAP", "category": "application", "count": 5},
-            {"period": "2026-01-01", "status": "success", "policy_type": "SQL_SERVER", "category": "application", "count": 3},
+            {"period": "2026-01-01", "status": "success", "job_type": "BACKUP", "policy_type": "VMWARE", "category": "image", "count": 10},
+            {"period": "2026-01-01", "status": "failed", "job_type": "BACKUP", "policy_type": "VMWARE", "category": "image", "count": 2},
+            {"period": "2026-01-01", "status": "success", "job_type": "BACKUP", "policy_type": "SAP", "category": "application", "count": 5},
+            {"period": "2026-01-01", "status": "success", "job_type": "BACKUP", "policy_type": "SQL_SERVER", "category": "application", "count": 3},
         ],
         "totals": {"total": 20},
         "policy_types": {"image": ["VMWARE"], "application": ["SAP", "SQL_SERVER"]},
@@ -77,6 +77,7 @@ def test_apply_job_filters_recomputes_totals():
     assert filtered["totals"]["total"] == 12
     assert filtered["totals"]["success"] == 10
     assert filtered["totals"]["failed"] == 2
+    assert filtered["totals"]["by_job_type"] == {"BACKUP": 12}
 
 
 def test_apply_job_filters_policy_and_category():

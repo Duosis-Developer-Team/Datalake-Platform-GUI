@@ -10,9 +10,8 @@ from dash import html
 from src.components.crm_sales_panel import format_crm_money
 from src.components.sold_vs_used_panel import build_compliance_issue_table
 from src.components.backup_license_compliance import (
-    build_backup_kpi_strip,
     build_license_compliance_strip,
-    build_netbackup_kpi_defs,
+    license_compliance_to_overusage_rows,
 )
 from src.services import product_catalog as pc
 from src.utils.visibility import (
@@ -23,7 +22,6 @@ from src.utils.visibility import (
     filter_overusage_rows,
     is_meaningful_value,
 )
-from src.pages.customer_view_perspective import show_post_dedup as _show_post_dedup
 
 
 def aggregate_sla_categories(dc_sla_items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -230,6 +228,29 @@ def _build_signal_defs(
     return billable + satisfaction
 
 
+def merge_overusage_with_license_rows(
+    overusage_rows: list[dict[str, Any]] | None,
+    license_rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Append Veeam/Zerto license issue rows onto resource overusage rows."""
+    base = list(overusage_rows or [])
+    license_issue_rows = license_compliance_to_overusage_rows(license_rows)
+    if not license_issue_rows:
+        return base
+    seen = {
+        str(r.get("category_code") or r.get("category_label") or "").lower()
+        for r in base
+    }
+    for row in license_issue_rows:
+        key = str(row.get("category_code") or row.get("category_label") or "").lower()
+        if key and key in seen:
+            continue
+        base.append(row)
+        if key:
+            seen.add(key)
+    return base
+
+
 def build_summary_problems_section(
     *,
     overusage_rows: list[dict[str, Any]] | None,
@@ -348,12 +369,6 @@ def build_customer_summary_panel(
     backup_assets = (assets or {}).get("backup") or {}
     license_rows = backup_assets.get("license_compliance") if isinstance(backup_assets, dict) else None
     license_strip = build_license_compliance_strip(license_rows)
-    post_ok = _show_post_dedup(perspective)
-    backup_kpi = build_backup_kpi_strip(
-        build_netbackup_kpi_defs(efficiency_rows, backup_assets, show_post_dedup=post_ok),
-        show_post_dedup=post_ok,
-        include_deeplink=True,
-    )
 
     if perspective == "customer":
         signal_defs = _build_usage_signal_defs(
@@ -366,8 +381,6 @@ def build_customer_summary_panel(
         body_children: list = []
         if getattr(license_strip, "children", None):
             body_children.append(license_strip)
-        if getattr(backup_kpi, "children", None):
-            body_children.append(backup_kpi)
         if signal_strip is not None:
             body_children.append(
                 dmc.Stack(
@@ -417,7 +430,10 @@ def build_customer_summary_panel(
     compliance_summary = (compliance_payload or {}).get("summary") or {}
     compliance_rows = (compliance_payload or {}).get("rows") or []
     overusage_source = compliance_rows if compliance_rows else (efficiency_rows or [])
-    overusage_rows = filter_overusage_rows(overusage_source)
+    overusage_rows = merge_overusage_with_license_rows(
+        filter_overusage_rows(overusage_source),
+        license_rows if isinstance(license_rows, list) else None,
+    )
     total_overage_loss = compute_total_overage_loss_tl(compliance_payload, efficiency_rows)
     has_overuse = bool(compliance_summary.get("has_overuse")) or bool(overusage_rows) or total_overage_loss > 0
     low_availability = collect_low_availability_services(service_breakdown, sla_categories)
@@ -475,8 +491,6 @@ def build_customer_summary_panel(
     body_children: list = []
     if getattr(license_strip, "children", None):
         body_children.append(license_strip)
-    if getattr(backup_kpi, "children", None):
-        body_children.append(backup_kpi)
     if signal_strip is not None:
         body_children.append(
             dmc.Stack(
@@ -498,7 +512,7 @@ def build_customer_summary_panel(
         )
     )
 
-    if not signal_strip and not overusage_rows and not low_availability and not getattr(license_strip, "children", None) and not getattr(backup_kpi, "children", None):
+    if not signal_strip and not overusage_rows and not low_availability and not getattr(license_strip, "children", None):
         return dmc.Alert(
             color="gray",
             variant="light",

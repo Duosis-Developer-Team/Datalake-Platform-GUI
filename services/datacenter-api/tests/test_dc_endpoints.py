@@ -165,3 +165,42 @@ def test_dc_s3_pools_endpoint_delegates_to_db(client, mock_db):
     assert r.status_code == 200
     assert r.json()["pools"] == ["pool-a"]
     mock_db.get_dc_s3_pools.assert_called_once()
+
+
+def test_backup_replication_compute_endpoint_delegates_classic_capacity(client, mock_db):
+    expected = {
+        "cpu_cap": 100.0,
+        "cpu_alloc_ghz_sales": 50.0,
+        "mem_cap": 512.0,
+        "mem_alloc_gb_vm": 256.0,
+        "stor_cap": 20.0,
+        "stor_provisioned_gb": 10240.0,
+    }
+    mock_db.get_backup_replication_compute.return_value = expected
+
+    r = client.get("/api/v1/datacenters/DC11/compute/backup-replication?clusters=KM-1,KM-2")
+
+    assert r.status_code == 200
+    assert r.json() == expected
+    args = mock_db.get_backup_replication_compute.call_args[0]
+    assert args[0] == "DC11"
+    assert args[1] == ["KM-1", "KM-2"]
+    assert args[2]["preset"] == "7d"
+
+
+def test_backup_nutanix_compute_endpoint_delegates_hyperconv_capacity(client, mock_db):
+    expected = {
+        "stor_cap": 42.0,
+        "stor_provisioned_gb": 21504.0,
+        "stor_pct": 50.0,
+    }
+    mock_db.get_backup_nutanix_compute.return_value = expected
+
+    r = client.get("/api/v1/datacenters/DC11/compute/backup-nutanix?clusters=NTNX-1")
+
+    assert r.status_code == 200
+    assert r.json() == expected
+    args = mock_db.get_backup_nutanix_compute.call_args[0]
+    assert args[0] == "DC11"
+    assert args[1] == ["NTNX-1"]
+    assert args[2]["preset"] == "7d"

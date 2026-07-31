@@ -347,6 +347,30 @@ def backup_netbackup_compute(
     return db.get_backup_netbackup_compute(dc_code, tf.to_dict())
 
 
+@router.get("/datacenters/{dc_code}/compute/backup-replication", response_model=dict[str, Any])
+def backup_replication_compute(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    clusters: Optional[str] = Query(None, description="Comma-separated classic cluster names; empty = all"),
+):
+    """Veeam/Zerto alternate sellable capacity from the classic host pool."""
+    selected = [c.strip() for c in clusters.split(",") if c.strip()] if clusters else None
+    return db.get_backup_replication_compute(dc_code, selected, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/compute/backup-nutanix", response_model=dict[str, Any])
+def backup_nutanix_compute(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    clusters: Optional[str] = Query(None, description="Comma-separated Nutanix cluster names; empty = all"),
+):
+    """Nutanix image-backup sellable capacity from hyperconverged storage."""
+    selected = [c.strip() for c in clusters.split(",") if c.strip()] if clusters else None
+    return db.get_backup_nutanix_compute(dc_code, selected, tf.to_dict())
+
+
 @router.get("/datacenters/{dc_code}/compute/classic/hosts", response_model=dict[str, Any])
 def classic_compute_hosts(
     dc_code: str,

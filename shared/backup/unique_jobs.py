@@ -114,6 +114,9 @@ def aggregate_unique_jobs(rows: list[dict], vendor: str) -> dict:
             "total_jobs": int,
             "by_status": {status: count},   # status lowercased
             "by_type": {type: count},
+            # zerto only:
+            "by_site": {source_site: sum(vmscount)},
+            "total_vms": int,
             # netbackup only:
             "by_category": {"image": count, "application": count},
             "by_policy_type": {policytype: count},
@@ -128,6 +131,8 @@ def aggregate_unique_jobs(rows: list[dict], vendor: str) -> dict:
     by_type: dict[str, int] = {}
     by_category: dict[str, int] = {}
     by_policy_type: dict[str, int] = {}
+    by_site: dict[str, int] = {}
+    total_vms = 0
 
     type_field = _TYPE_FIELD.get(vendor_key) if vendor_key in _SUPPORTED_VENDORS else None
     total = 0
@@ -141,6 +146,13 @@ def aggregate_unique_jobs(rows: list[dict], vendor: str) -> dict:
 
         if vendor_key == VENDOR_ZERTO:
             type_label = "vpg"
+            site = _normalize_bucket_label(row.get("source_site") or row.get("target_site"))
+            try:
+                vms = int(row.get("vmscount") or 0)
+            except (TypeError, ValueError):
+                vms = 0
+            by_site[site] = by_site.get(site, 0) + vms
+            total_vms += vms
         elif type_field:
             type_label = _normalize_bucket_label(row.get(type_field))
         else:
@@ -161,6 +173,9 @@ def aggregate_unique_jobs(rows: list[dict], vendor: str) -> dict:
     if vendor_key == VENDOR_NETBACKUP:
         result["by_category"] = by_category
         result["by_policy_type"] = by_policy_type
+    if vendor_key == VENDOR_ZERTO:
+        result["by_site"] = by_site
+        result["total_vms"] = total_vms
     return result
 
 

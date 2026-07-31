@@ -1496,6 +1496,34 @@ LIMIT 20
         self._set_compute_cached(cache_key, section)
         return section
 
+    def get_backup_replication_compute(
+        self,
+        dc_code: str,
+        selected_clusters: list[str] | None,
+        time_range: dict | None = None,
+    ) -> dict:
+        """Return classic host capacity for Veeam/Zerto replication sellable.
+
+        Replication is an alternate claimant of the classic host pool, so it
+        must use the same capacity, allocation, and optional cluster scope as
+        ``/compute/classic``.
+        """
+        return self.get_classic_metrics_filtered(dc_code, selected_clusters, time_range)
+
+    def get_backup_nutanix_compute(
+        self,
+        dc_code: str,
+        selected_clusters: list[str] | None,
+        time_range: dict | None = None,
+    ) -> dict:
+        """Return Nutanix-backed capacity for image-backup sellable.
+
+        Snapshot inventory measures protected data, not the capacity available
+        to sell. Reuse hyperconverged compute so storage headroom and optional
+        cluster scope stay aligned with the Capacity Planning source of truth.
+        """
+        return self.get_hyperconv_metrics_filtered(dc_code, selected_clusters, time_range)
+
     # ------------------------------------------------------------------
     # Host-level compute rows (DC view Hosts panel + host-based sellable)
     # ------------------------------------------------------------------
@@ -4806,6 +4834,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             "success_rate": 0.0,
             "avg_per_period": 0.0,
             "period_count": 0,
+            "by_job_type": {},
         }
         payload = {
             "vendor": vendor,
@@ -4833,6 +4862,13 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         success_rate = (success / total * 100.0) if total else 0.0
         period_count = len({p.get("period") for p in series if p.get("period")})
         avg_per_period = (total / period_count) if period_count else 0.0
+        by_job_type: dict[str, int] = {}
+        for point in series or []:
+            jt = point.get("job_type")
+            if jt is None or jt == "":
+                jt = "Unknown"
+            jt = str(jt)
+            by_job_type[jt] = by_job_type.get(jt, 0) + int(point.get("count", 0) or 0)
         return {
             "total": total,
             "success": success,
@@ -4842,6 +4878,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             "success_rate": round(success_rate, 2),
             "avg_per_period": round(avg_per_period, 2),
             "period_count": period_count,
+            "by_job_type": by_job_type,
         }
 
     @staticmethod
@@ -5091,7 +5128,9 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                 continue
             status = self._normalize_zerto_status(status_int)
             period_key = period.date().isoformat() if hasattr(period, "date") else str(period)
-            key = (period_key, status, f"status_{status_int}")
+            # VPGs have no distinct job-type column; expose a stable "vpg" bucket so
+            # Job Type grouping / by_job_type totals populate when status data exists.
+            key = (period_key, status, "vpg")
             bucket = per_dc_collapsed.setdefault(dc.upper(), {})
             bucket[key] = bucket.get(key, 0) + int(cnt or 0)
 

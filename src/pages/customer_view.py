@@ -2318,7 +2318,9 @@ def _build_backup_tabs(
 ) -> html.Div:
     """Backup category tabs (Image / Application / Replication); sold-vs-used optional."""
     from src.components.backup_license_compliance import (
+        build_backup_kpi_strip,
         build_license_compliance_strip,
+        build_netbackup_kpi_defs,
         filter_netbackup_efficiency_rows,
     )
 
@@ -2442,10 +2444,21 @@ def _build_backup_tabs(
             ("replication", "Replication", dmc.Stack(gap="lg", children=repl_children))
         )
 
-    head: list = [build_license_compliance_strip(license_rows)]
-    # Avoid empty strip taking space
-    if not getattr(head[0], "children", None):
-        head = []
+    head: list = []
+    license_strip = build_license_compliance_strip(license_rows)
+    if getattr(license_strip, "children", None):
+        head.append(license_strip)
+    # Manager-only NetBackup Pre/Post/margin sold-vs-used strip (removed from Summary).
+    if include_sold_vs_used:
+        backup_kpi = build_backup_kpi_strip(
+            build_netbackup_kpi_defs(
+                eff_by_cat, backup_assets, show_post_dedup=show_post_dedup
+            ),
+            show_post_dedup=show_post_dedup,
+            include_deeplink=True,
+        )
+        if getattr(backup_kpi, "children", None):
+            head.append(backup_kpi)
 
     if backup_tab_defs:
         tab_values = {v for v, _label, _panel in backup_tab_defs}

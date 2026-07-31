@@ -525,33 +525,37 @@ WHERE vmhost ILIKE %s AND "timestamp" BETWEEN %s AND %s
 ORDER BY vmhost, "timestamp" DESC
 """
 
+# Params: (name_patterns[],) — OR of all enabled Veeam alias patterns.
 CUSTOMER_VEEAM_DEFINED_SESSIONS = """
 SELECT
     COUNT(DISTINCT name) AS "Defined Sessions"
 FROM public.raw_veeam_sessions
-WHERE name ILIKE %s
+WHERE name ILIKE ANY(%s)
 """
 
+# Params: (name_patterns[],)
 CUSTOMER_VEEAM_SESSION_TYPES = """
 SELECT
-    session_type AS "Session Type",
+    COALESCE(NULLIF(session_type, ''), 'Unknown') AS "Session Type",
     COUNT(DISTINCT name) AS "Defined Session Count"
 FROM public.raw_veeam_sessions
-WHERE name ILIKE %s
-GROUP BY session_type
+WHERE name ILIKE ANY(%s)
+GROUP BY COALESCE(NULLIF(session_type, ''), 'Unknown')
 ORDER BY "Defined Session Count" DESC
 """
 
+# Params: (name_patterns[],)
 CUSTOMER_VEEAM_SESSION_PLATFORMS = """
 SELECT
-    platform_name AS "Platform",
+    COALESCE(NULLIF(platform_name, ''), 'Unknown') AS "Platform",
     COUNT(DISTINCT name) AS "Defined Session Count"
 FROM public.raw_veeam_sessions
-WHERE name ILIKE %s
-GROUP BY platform_name
+WHERE name ILIKE ANY(%s)
+GROUP BY COALESCE(NULLIF(platform_name, ''), 'Unknown')
 ORDER BY "Defined Session Count" DESC
 """
 
+# Params: (start_ts, end_ts, name_patterns[])
 CUSTOMER_ZERTO_PROTECTED_VMS = """
 WITH ranked_records AS (
     SELECT
@@ -559,7 +563,7 @@ WITH ranked_records AS (
         ROW_NUMBER() OVER(PARTITION BY id ORDER BY collection_timestamp DESC) AS rn
     FROM public.raw_zerto_vpg_metrics
     WHERE collection_timestamp BETWEEN %s AND %s
-      AND name LIKE %s
+      AND name ILIKE ANY(%s)
 )
 SELECT
     COALESCE(SUM(vmscount), 0) AS "Protected Total VMs"
@@ -646,13 +650,14 @@ WHERE workloaddisplayname ILIKE ANY(%s)
 ORDER BY 1
 """
 
+# Params: (name_patterns[],)
 CUSTOMER_ZERTO_PROVISIONED_STORAGE = """
 WITH latest AS (
     SELECT DISTINCT ON (name)
         name,
         provisioned_storage_mb
     FROM public.raw_zerto_vpg_metrics
-    WHERE name ILIKE %s
+    WHERE name ILIKE ANY(%s)
       AND collection_timestamp >= NOW() - INTERVAL '30 days'
     ORDER BY name, provisioned_storage_mb DESC
 )
@@ -1248,7 +1253,7 @@ LIMIT 1
 # =============================================================================
 
 # Veeam unique jobs for a customer (latest per job id).
-# Params: (name_pattern, start_ts, end_ts)
+# Params: (name_patterns[], start_ts, end_ts)
 CUSTOMER_VEEAM_UNIQUE_JOBS_LATEST = """
 SELECT DISTINCT ON (id)
     collection_time,
@@ -1263,13 +1268,13 @@ SELECT DISTINCT ON (id)
     workload,
     source_ip
 FROM public.raw_veeam_jobs_states
-WHERE name ILIKE %s
+WHERE name ILIKE ANY(%s)
   AND collection_time BETWEEN %s AND %s
 ORDER BY id, collection_time DESC
 """
 
 # Zerto unique VPGs for a customer (latest per VPG id).
-# Params: (name_pattern, start_ts, end_ts)
+# Params: (name_patterns[], start_ts, end_ts) — OR of all enabled alias patterns.
 CUSTOMER_ZERTO_UNIQUE_VPGS_LATEST = """
 SELECT DISTINCT ON (id)
     collection_timestamp,
@@ -1283,7 +1288,7 @@ SELECT DISTINCT ON (id)
     used_storage_mb,
     zerto_host
 FROM public.raw_zerto_vpg_metrics
-WHERE name ILIKE %s
+WHERE name ILIKE ANY(%s)
   AND collection_timestamp BETWEEN %s AND %s
 ORDER BY id, collection_timestamp DESC
 """

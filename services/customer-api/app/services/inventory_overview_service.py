@@ -71,6 +71,16 @@ _INVENTORY_CRM_VISIBLE_FAMILIES: frozenset[str] = frozenset({
     _S3_MERGE_TARGET,
     *_INVENTORY_VIRT_FAMILIES,
     "backup_netbackup",
+    "backup_veeam_replication",
+    "backup_zerto_replication",
+    "backup_image",
+    "backup_remote",
+})
+
+_NETBACKUP_INVENTORY_PANEL_KEYS: frozenset[str] = frozenset({
+    "backup_netbackup_image",
+    "backup_netbackup_application",
+    "backup_netbackup_storage",
 })
 
 # Families rendered nowhere on /crm/inventory-overview. virt_power shares the
@@ -1186,7 +1196,7 @@ class InventoryOverviewService:
                 under_pct=under_pct,
                 over_pct=over_pct,
             )
-            if row.get("panel_key") == "backup_netbackup_storage":
+            if row.get("panel_key") in _NETBACKUP_INVENTORY_PANEL_KEYS:
                 row = _apply_netbackup_inventory_fields(
                     row,
                     netbackup_metrics,
@@ -1214,7 +1224,7 @@ class InventoryOverviewService:
                 under_pct=under_pct,
                 over_pct=over_pct,
             )
-            if row.get("panel_key") == "backup_netbackup_storage":
+            if row.get("panel_key") in _NETBACKUP_INVENTORY_PANEL_KEYS:
                 row = _apply_netbackup_inventory_fields(
                     row,
                     netbackup_metrics,

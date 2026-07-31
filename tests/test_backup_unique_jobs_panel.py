@@ -25,6 +25,36 @@ def test_build_unique_jobs_visuals_empty_totals():
     assert status is not None
 
 
+def test_build_unique_jobs_visuals_shows_sessions_by_type_for_veeam():
+    from src.components.backup_unique_jobs_panel import _type_breakdown_for_vendor
+
+    totals = {
+        "total_jobs": 3,
+        "by_status": {"success": 2, "failed": 1},
+        "by_type": {"Backup": 2, "VSphereReplica": 1},
+    }
+    breakdown, title = _type_breakdown_for_vendor(totals, "veeam")
+    assert title == "SESSIONS BY TYPE"
+    assert breakdown == {"Backup": 2, "VSphereReplica": 1}
+    _, _, panel = build_unique_jobs_visuals(totals, "veeam")
+    assert panel is not None
+
+
+def test_build_unique_jobs_visuals_shows_vm_distribution_for_zerto():
+    from src.components.backup_unique_jobs_panel import _type_breakdown_for_vendor
+
+    totals = {
+        "total_jobs": 2,
+        "by_status": {"success": 2},
+        "by_type": {"vpg": 2},
+        "by_site": {"DC13-Site01": 5, "DC14-Site02": 3},
+        "total_vms": 8,
+    }
+    breakdown, title = _type_breakdown_for_vendor(totals, "zerto")
+    assert title == "VM DISTRIBUTION"
+    assert breakdown["DC13-Site01"] == 5
+
+
 def test_build_unique_jobs_inventory_section_layout():
     panel = build_unique_jobs_inventory_section(
         "veeam",

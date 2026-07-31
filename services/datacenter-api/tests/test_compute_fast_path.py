@@ -78,6 +78,35 @@ class TestComputeFastPath(unittest.TestCase):
         self.assertEqual(out["stor_provisioned_gb"], 0.0)
         self.assertEqual(out["stor_pct"], 0.0)
 
+    def test_get_backup_replication_compute_reuses_classic_metrics(self):
+        svc = DatabaseService.__new__(DatabaseService)
+        classic = {
+            "cpu_cap": 100.0,
+            "cpu_alloc_ghz_sales": 60.0,
+            "mem_cap": 512.0,
+            "mem_alloc_gb_vm": 256.0,
+            "stor_cap": 20.0,
+            "stor_provisioned_gb": 10240.0,
+        }
+        with patch.object(svc, "get_classic_metrics_filtered", return_value=classic) as get_classic:
+            out = svc.get_backup_replication_compute("DC13", ["KM-1"], {"preset": "7d"})
+
+        self.assertIs(out, classic)
+        get_classic.assert_called_once_with("DC13", ["KM-1"], {"preset": "7d"})
+
+    def test_get_backup_nutanix_compute_reuses_hyperconv_metrics(self):
+        svc = DatabaseService.__new__(DatabaseService)
+        hyperconv = {
+            "stor_cap": 42.0,
+            "stor_provisioned_gb": 21504.0,
+            "stor_pct": 50.0,
+        }
+        with patch.object(svc, "get_hyperconv_metrics_filtered", return_value=hyperconv) as get_hyperconv:
+            out = svc.get_backup_nutanix_compute("DC13", ["NTNX-1"], {"preset": "7d"})
+
+        self.assertIs(out, hyperconv)
+        get_hyperconv.assert_called_once_with("DC13", ["NTNX-1"], {"preset": "7d"})
+
 
 if __name__ == "__main__":
     unittest.main()

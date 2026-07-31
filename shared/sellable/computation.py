@@ -947,3 +947,50 @@ def compute_storage_range(
         "power_min": max(ibm_free - ibm_ds_free, 0.0),
         "power_max": ibm_free,
     }
+
+
+def compute_fully_shared_pool_range(shared_free: float) -> dict[str, float]:
+    """Equal claimants of one pool (e.g. NetBackup Image vs Application).
+
+    Neither side has exclusive capacity. Conservative min splits the free pool
+    in half; optimistic max assigns the full free pool to either product
+    (IBM-style competing demand with distinct unit prices applied by the caller).
+    """
+    shared = max(float(shared_free or 0.0), 0.0)
+    half = shared / 2.0
+    return {
+        "a_min": half,
+        "a_max": shared,
+        "b_min": half,
+        "b_max": shared,
+    }
+
+
+def compute_primary_vs_alternate_pool_range(shared_free: float) -> dict[str, float]:
+    """Primary owns free capacity by default; alternate can take all of it.
+
+    Virtualization (primary) vs replication (alternate) on the same host free
+    CPU/RAM/Disk — mirrors IBM Power full free vs KM max-on-shared:
+
+      primary   min = max = shared_free
+      alternate min = 0, max = shared_free
+
+    Aggregate TL: lo = primary_lo + alternate_lo, hi = max(primary_hi, alternate_hi).
+    """
+    shared = max(float(shared_free or 0.0), 0.0)
+    return {
+        "primary_min": shared,
+        "primary_max": shared,
+        "alternate_min": 0.0,
+        "alternate_max": shared,
+    }
+
+
+def dedupe_shared_pool_tl(
+    lo_a: float,
+    hi_a: float,
+    lo_b: float,
+    hi_b: float,
+) -> tuple[float, float]:
+    """IBM-style TL band merge for two panels claiming one shared pool."""
+    return float(lo_a) + float(lo_b), max(float(hi_a), float(hi_b))

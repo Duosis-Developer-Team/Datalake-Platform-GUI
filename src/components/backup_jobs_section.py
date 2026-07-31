@@ -116,6 +116,10 @@ def apply_job_filters(
     success_rate = (success / total * 100.0) if total else 0.0
     period_count = len({p.get("period") for p in series if p.get("period")})
     avg_per_period = (total / period_count) if period_count else 0.0
+    by_job_type: dict[str, int] = {}
+    for p in series:
+        jt = str(p.get("job_type") or "Unknown")
+        by_job_type[jt] = by_job_type.get(jt, 0) + int(p.get("count", 0) or 0)
     filtered["totals"] = {
         "total": total,
         "success": success,
@@ -125,6 +129,7 @@ def apply_job_filters(
         "success_rate": round(success_rate, 2),
         "avg_per_period": round(avg_per_period, 2),
         "period_count": period_count,
+        "by_job_type": by_job_type,
     }
     return filtered
 

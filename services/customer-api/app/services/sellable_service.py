@@ -221,11 +221,28 @@ _REDIS_FIELD_UNITS: dict[tuple[str, str], str] = {
 
 # Maps panel family → datacenter-api compute endpoint kind.
 # backup_netbackup uses /compute/backup-netbackup (pool usable + used; PostDedup semantics).
+# Replication families use the dedicated classic-host-pool alias endpoint.
+# backup_image uses the dedicated Nutanix-backed storage endpoint.
 _FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
-    "virt_classic":         "classic",
-    "virt_hyperconverged":  "hyperconverged",
-    "backup_netbackup":     "backup-netbackup",
+    "virt_classic":              "classic",
+    "virt_hyperconverged":       "hyperconverged",
+    "backup_netbackup":          "backup-netbackup",
+    "backup_veeam_replication":  "backup-replication",
+    "backup_zerto_replication":  "backup-replication",
+    "backup_image":              "backup-nutanix",
 }
+
+# Replication sellable competes with virt free capacity (primary vs alternate pool).
+_REPLICATION_ALTERNATE_FAMILIES: frozenset[str] = frozenset({
+    "backup_veeam_replication",
+    "backup_zerto_replication",
+})
+
+# NetBackup Image + Application share one disk pool (fully shared min/max).
+_NETBACKUP_SHARED_PANEL_KEYS: frozenset[str] = frozenset({
+    "backup_netbackup_image",
+    "backup_netbackup_application",
+})
 
 # Families whose CPU/RAM sellable is computed host-by-host (ADR: host-based
 # CRM calculation). Each host is evaluated on its own min(CPU, RAM) ratio
@@ -285,7 +302,9 @@ from shared.sellable.computation import (
     apply_storage_ratio_cap,
     apply_threshold,
     apply_utilization_gate,
+    compute_fully_shared_pool_range,
     compute_potential_tl,
+    compute_primary_vs_alternate_pool_range,
     compute_storage_range,
     constrain_by_ratio,
     constrain_by_ratio_dual_cpu_cluster,
@@ -1979,8 +1998,73 @@ SELECT _tot, _alloc FROM latest
                         new.potential_tl = new.potential_tl_min or 0.0
                 constrained.append(new)
 
+        self._apply_netbackup_shared_pool_ranges(constrained)
+        self._apply_replication_alternate_ranges(constrained)
+
         constrained.sort(key=lambda p: (p.family, p.resource_kind, p.panel_key))
         return constrained
+
+    def _apply_netbackup_shared_pool_ranges(self, results: list[PanelResult]) -> None:
+        """IBM-style fully shared pool between NetBackup Image and Application."""
+        image = next((p for p in results if p.panel_key == "backup_netbackup_image"), None)
+        app = next((p for p in results if p.panel_key == "backup_netbackup_application"), None)
+        if image is None and app is None:
+            return
+
+        def _free(panel: PanelResult | None) -> float:
+            if panel is None:
+                return 0.0
+            if panel.sellable_max is not None:
+                return max(float(panel.sellable_max), 0.0)
+            if panel.sellable_constrained is not None and float(panel.sellable_constrained) > 0:
+                return max(float(panel.sellable_constrained), 0.0)
+            if panel.sellable_raw is not None and float(panel.sellable_raw) > 0:
+                return max(float(panel.sellable_raw), 0.0)
+            return max(float(panel.total or 0.0) - float(panel.allocated or 0.0), 0.0)
+
+        shared_free = max(_free(image), _free(app))
+        rng = compute_fully_shared_pool_range(shared_free)
+        note = "NetBackup shared pool: Image/App IBM-style min=half free, max=full free"
+
+        def _set(panel: PanelResult | None, lo: float, hi: float) -> None:
+            if panel is None:
+                return
+            panel.sellable_min = lo
+            panel.sellable_max = hi
+            panel.sellable_constrained = lo
+            panel.sellable_raw = hi
+            panel.potential_tl_min = compute_potential_tl(lo, panel.unit_price_tl)
+            panel.potential_tl_max = compute_potential_tl(hi, panel.unit_price_tl)
+            panel.potential_tl = panel.potential_tl_min or 0.0
+            if note not in (panel.notes or []):
+                panel.notes = [*(panel.notes or []), note]
+
+        _set(image, rng["a_min"], rng["a_max"])
+        _set(app, rng["b_min"], rng["b_max"])
+
+    def _apply_replication_alternate_ranges(self, results: list[PanelResult]) -> None:
+        """Replication as alternate claimant on host free (virt remains primary)."""
+        note = "Replication alternate pool: min=0, max=host free (competes with virt)"
+        for panel in results:
+            if panel.family not in _REPLICATION_ALTERNATE_FAMILIES:
+                continue
+            free = 0.0
+            if panel.sellable_raw is not None and float(panel.sellable_raw) > 0:
+                free = max(float(panel.sellable_raw), 0.0)
+            elif panel.sellable_constrained is not None and float(panel.sellable_constrained) > 0:
+                free = max(float(panel.sellable_constrained), 0.0)
+            else:
+                free = max(float(panel.total or 0.0) - float(panel.allocated or 0.0), 0.0)
+            rng = compute_primary_vs_alternate_pool_range(free)
+            panel.sellable_min = rng["alternate_min"]
+            panel.sellable_max = rng["alternate_max"]
+            panel.sellable_constrained = panel.sellable_min
+            panel.sellable_raw = panel.sellable_max
+            panel.potential_tl_min = compute_potential_tl(panel.sellable_min, panel.unit_price_tl)
+            panel.potential_tl_max = compute_potential_tl(panel.sellable_max, panel.unit_price_tl)
+            panel.potential_tl = panel.potential_tl_min or 0.0
+            if note not in (panel.notes or []):
+                panel.notes = [*(panel.notes or []), note]
 
     def recompute_family_constraints(
         self,

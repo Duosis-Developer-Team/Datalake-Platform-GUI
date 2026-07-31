@@ -71,6 +71,57 @@ def license_status_badge(status: str | None) -> dmc.Badge:
     )
 
 
+def license_compliance_to_overusage_rows(
+    rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Map Veeam/Zerto license_compliance rows into Summary overusage table shape.
+
+    Keeps rows with usage that are either unsold or over sold quantity so they
+    pass ``filter_overusage_rows`` (sold / used / loss / status columns).
+    """
+    out: list[dict[str, Any]] = []
+    for r in rows or []:
+        category = str(r.get("category") or "").strip()
+        if category not in CATEGORY_LABELS:
+            continue
+        try:
+            usage = float(r.get("usage_qty") or 0)
+        except (TypeError, ValueError):
+            usage = 0.0
+        try:
+            sold = float(r.get("sold_qty") or 0)
+        except (TypeError, ValueError):
+            sold = 0.0
+        status = str(r.get("status") or "").lower()
+        overage = max(0.0, usage - sold)
+        if status == "unsold_usage" and usage > 0:
+            table_status = "unsold_usage"
+            if overage <= 0:
+                overage = usage
+        elif overage > 0:
+            table_status = "over"
+        else:
+            continue
+
+        loss = r.get("overage_loss_tl")
+        if loss is None:
+            loss = r.get("loss")
+        out.append(
+            {
+                "category_code": category,
+                "category_label": CATEGORY_LABELS.get(category, category),
+                "entitled_qty": sold,
+                "sold_qty": sold,
+                "used_qty": usage,
+                "overage_qty": overage,
+                "overage_loss_tl": loss,
+                "status": table_status,
+                "resource_unit": str(r.get("resource_unit") or ""),
+            }
+        )
+    return out
+
+
 def _row_matches_netbackup_category(row: dict[str, Any], category: str) -> bool:
     cat = (category or "").strip().lower()
     needle = f"backup_netbackup_{cat}"

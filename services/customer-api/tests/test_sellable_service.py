@@ -28,6 +28,7 @@ from app.services.sellable_service import (
     _VM_TABLE_DC_SECTION,
     _VM_TABLE_GLOBAL_SECTION,
 )
+from shared.sellable.computation import apply_utilization_gate
 from shared.sellable.models import (
     InfraSource,
     PanelDefinition,
@@ -451,10 +452,13 @@ from app.services.sellable_service import (  # noqa: E402  (grouping for clarity
 )
 
 
-def test_family_compute_endpoint_covers_virt_classic_and_hyperconverged():
+def test_family_compute_endpoint_covers_virt_and_backup_families():
     assert _FAMILY_COMPUTE_ENDPOINT["virt_classic"] == "classic"
     assert _FAMILY_COMPUTE_ENDPOINT["virt_hyperconverged"] == "hyperconverged"
     assert _FAMILY_COMPUTE_ENDPOINT["backup_netbackup"] == "backup-netbackup"
+    assert _FAMILY_COMPUTE_ENDPOINT["backup_veeam_replication"] == "backup-replication"
+    assert _FAMILY_COMPUTE_ENDPOINT["backup_zerto_replication"] == "backup-replication"
+    assert _FAMILY_COMPUTE_ENDPOINT["backup_image"] == "backup-nutanix"
 
 
 def test_resource_kind_to_compute_fields_maps_cpu_ram_storage():
@@ -496,10 +500,32 @@ def test_fetch_compute_metrics_returns_none_for_unknown_family():
     svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
     assert svc._fetch_compute_metrics_for_clusters(
         dc_code="IST1",
-        family="backup_zerto_replication",
+        family="network_firewall",
         resource_kind="cpu",
         clusters=["A"],
     ) is None
+
+
+def test_fetch_compute_metrics_hits_backup_replication_endpoint():
+    """Mapped replication family must call /compute/backup-replication."""
+    svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "cpu_cap": 100.0, "cpu_alloc_ghz_sales": 40.0,
+        "mem_cap": 200.0, "mem_alloc_gb_vm": 80.0,
+        "stor_cap": 10.0, "stor_provisioned_gb": 1024.0,
+    }
+    with patch("app.services.sellable_service.httpx.get", return_value=mock_resp) as mock_get:
+        result = svc._fetch_compute_metrics_for_clusters(
+            dc_code="DC13",
+            family="backup_zerto_replication",
+            resource_kind="cpu",
+            clusters=["KM-1"],
+        )
+    assert result is not None
+    assert result[0] == 100.0
+    assert "/datacenters/DC13/compute/backup-replication" in mock_get.call_args[0][0]
 
 
 def test_fetch_compute_metrics_returns_none_when_no_clusters():
@@ -1935,8 +1961,12 @@ def test_netbackup_bytes_to_tb_magnitude_under_ceiling():
     assert not notes
 
 
-def test_recompute_family_constraints_global_host_fallback_uses_star_compute():
-    """Global inventory must not keep inflated per-DC SUM when host_rows are unavailable."""
+def test_recompute_family_constraints_global_host_fallback_keeps_precomputed_totals():
+    """Global inventory must not recurse into compute_all_panels when host_rows are unavailable.
+
+    Uses precomputed panel totals + constrain_by_ratio instead (avoids infinite
+    re-entry when infra_dc_codes is empty).
+    """
     inflated_cpu = PanelResult(
         panel_key="virt_hyperconverged_cpu",
         label="HC CPU",
@@ -1953,22 +1983,6 @@ def test_recompute_family_constraints_global_host_fallback_uses_star_compute():
         has_price=True,
         computation_mode="aggregated",
     )
-    global_cpu = PanelResult(
-        panel_key="virt_hyperconverged_cpu",
-        label="HC CPU",
-        family="virt_hyperconverged",
-        resource_kind="cpu",
-        display_unit="vCPU",
-        dc_code="*",
-        total=12_000.0,
-        allocated=8_000.0,
-        threshold_pct=80.0,
-        sellable_raw=0.0,
-        sellable_constrained=0.0,
-        has_infra_source=True,
-        has_price=True,
-        computation_mode="aggregated",
-    )
 
     svc = SellableService.__new__(SellableService)
     svc.list_ratios = MagicMock(return_value=[RATIO])  # type: ignore[method-assign]
@@ -1977,14 +1991,19 @@ def test_recompute_family_constraints_global_host_fallback_uses_star_compute():
         return_value={"effective_ghz_per_unit": 1.0, "physical_price_unit": "GHz", "power_core_to_ghz": 3.3},
     )
     svc._fetch_host_rows_multi = MagicMock(return_value=(None, "unavailable", []))  # type: ignore[method-assign]
-    svc.compute_all_panels = MagicMock(return_value=[global_cpu])  # type: ignore[method-assign]
+    svc.compute_all_panels = MagicMock(return_value=[])  # type: ignore[method-assign]
 
     out = svc.recompute_family_constraints(
         [inflated_cpu],
         dc_code="*",
         infra_dc_codes=["DC1", "DC2", "DC3"],
     )
-    svc.compute_all_panels.assert_called_once_with(dc_code="*", family="virt_hyperconverged")
+    svc.compute_all_panels.assert_not_called()
     cpu = next(p for p in out if p.panel_key == "virt_hyperconverged_cpu")
-    assert cpu.total == 12_000.0
-    assert cpu.total != inflated_cpu.total
+    # Precomputed totals preserved; sellable refreshed from total/allocated/threshold.
+    assert cpu.total == inflated_cpu.total
+    expected_raw = apply_utilization_gate(
+        inflated_cpu.total, inflated_cpu.allocated, None, 80.0,
+    )
+    assert cpu.sellable_raw == expected_raw
+    assert cpu.sellable_constrained == expected_raw

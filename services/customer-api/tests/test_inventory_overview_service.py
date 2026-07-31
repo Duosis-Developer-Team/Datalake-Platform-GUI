@@ -72,22 +72,45 @@ def _panel_defs_default(**overrides) -> dict[str, dict]:
         "backup_zerto_replication_cpu": {
             "panel_key": "backup_zerto_replication_cpu",
             "family": "backup_zerto_replication",
-            "inventory_visible": False,
+            "inventory_visible": True,
             "inventory_merge_target": None,
         },
         "backup_veeam_replication_ram": {
             "panel_key": "backup_veeam_replication_ram",
             "family": "backup_veeam_replication",
-            "inventory_visible": False,
+            "inventory_visible": True,
             "inventory_merge_target": None,
         },
         "backup_netbackup_storage": {
             "panel_key": "backup_netbackup_storage",
             "family": "backup_netbackup",
+            "inventory_visible": False,
+            "inventory_merge_target": None,
+        },
+        "backup_netbackup_image": {
+            "panel_key": "backup_netbackup_image",
+            "family": "backup_netbackup",
             "inventory_visible": True,
             "inventory_merge_target": None,
         },
-        "storage_s3_ankara": {
+        "backup_netbackup_application": {
+            "panel_key": "backup_netbackup_application",
+            "family": "backup_netbackup",
+            "inventory_visible": True,
+            "inventory_merge_target": None,
+        },
+        "backup_image_hyperconverged": {
+            "panel_key": "backup_image_hyperconverged",
+            "family": "backup_image",
+            "inventory_visible": True,
+            "inventory_merge_target": None,
+        },
+        "backup_remote_nutanix": {
+            "panel_key": "backup_remote_nutanix",
+            "family": "backup_remote",
+            "inventory_visible": True,
+            "inventory_merge_target": None,
+        },        "storage_s3_ankara": {
             "panel_key": "storage_s3_ankara",
             "family": "storage_s3",
             "inventory_visible": True,
@@ -143,11 +166,21 @@ def _stub_netbackup_metrics(sellable: MagicMock) -> None:
 
 def test_inventory_panel_hidden_replication_families():
     defs = _panel_defs_default()
-    assert _inventory_panel_hidden("backup_zerto_replication_cpu", defs)
-    assert _inventory_panel_hidden("backup_veeam_replication_ram", defs)
-    assert not _inventory_panel_hidden("backup_netbackup_storage", defs)
+    assert not _inventory_panel_hidden("backup_zerto_replication_cpu", defs)
+    assert not _inventory_panel_hidden("backup_veeam_replication_ram", defs)
+    assert _inventory_panel_hidden("backup_netbackup_storage", defs)
+    assert not _inventory_panel_hidden("backup_netbackup_image", defs)
     assert not _inventory_panel_hidden("storage_s3_ankara", defs)
     assert _inventory_panel_hidden("storage_s3", defs)
+
+
+def test_crm_visible_families_include_backup_replication_image_remote():
+    from app.services.inventory_overview_service import _INVENTORY_CRM_VISIBLE_FAMILIES
+
+    assert "backup_veeam_replication" in _INVENTORY_CRM_VISIBLE_FAMILIES
+    assert "backup_zerto_replication" in _INVENTORY_CRM_VISIBLE_FAMILIES
+    assert "backup_image" in _INVENTORY_CRM_VISIBLE_FAMILIES
+    assert "backup_remote" in _INVENTORY_CRM_VISIBLE_FAMILIES
 
 
 def test_merge_s3_site_entitled_sums_buckets():
@@ -205,12 +238,13 @@ def test_build_merged_s3_panel_uses_max_node_metrics():
     assert merged.sellable_constrained > 0.0
 
 
-def test_replication_panels_excluded_from_inventory_overview():
+def test_replication_panels_included_in_inventory_overview():
     sellable = MagicMock()
     sellable.is_available = True
     sellable.compute_all_panels.return_value = [
         _panel(panel_key="backup_zerto_replication_cpu", family="backup_zerto_replication"),
         _panel(panel_key="backup_veeam_replication_ram", family="backup_veeam_replication"),
+        _panel(panel_key="backup_netbackup_image", family="backup_netbackup"),
         _panel(panel_key="backup_netbackup_storage", family="backup_netbackup"),
     ]
     sellable.recompute_family_constraints.side_effect = _recompute_panels
@@ -247,9 +281,10 @@ def test_replication_panels_excluded_from_inventory_overview():
     svc._load_product_mapping = MagicMock(return_value=mapping)
     payload = svc.compute_inventory_overview("*")
     keys = {p["panel_key"] for p in payload["panels"]}
-    assert "backup_zerto_replication_cpu" not in keys
-    assert "backup_veeam_replication_ram" not in keys
-    assert "backup_netbackup_storage" in keys
+    assert "backup_zerto_replication_cpu" in keys
+    assert "backup_veeam_replication_ram" in keys
+    assert "backup_netbackup_image" in keys
+    assert "backup_netbackup_storage" not in keys
 
 
 def test_aggregate_entitled_by_panel_key_maps_products():
@@ -734,8 +769,8 @@ def test_global_only_panel_netbackup_enriched_free_qty():
     sellable.is_available = True
 
     global_panel = _panel(
-        panel_key="backup_netbackup_storage",
-        label="NetBackup Storage",
+        panel_key="backup_netbackup_image",
+        label="NetBackup — Image",
         family="backup_netbackup",
         resource_kind="storage",
         display_unit="GB",
@@ -775,7 +810,7 @@ def test_global_only_panel_netbackup_enriched_free_qty():
         if "FROM   gui_panel_infra_source" in sql and "DISTINCT dc_code" in sql:
             return [{"dc_code": "ANK"}, {"dc_code": "IST"}]
         if "NOT EXISTS" in sql and "filter_clause IS NULL" in sql:
-            return [{"panel_key": "backup_netbackup_storage"}]
+            return [{"panel_key": "backup_netbackup_image"}]
         return _webui_rows(sql)
 
     webui = MagicMock()
@@ -793,7 +828,7 @@ def test_global_only_panel_netbackup_enriched_free_qty():
         crm_redis=None,
     )
     payload = svc.compute_inventory_overview("*")
-    nb = next(p for p in payload["panels"] if p["panel_key"] == "backup_netbackup_storage")
+    nb = next(p for p in payload["panels"] if p["panel_key"] == "backup_netbackup_image")
     assert nb["total"] == 5000.0
     assert nb["used_qty"] == 5000.0  # PreDedup billable
     assert nb["post_dedup_qty"] == 1000.0

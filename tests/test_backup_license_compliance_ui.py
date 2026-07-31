@@ -239,5 +239,72 @@ def test_summary_panel_includes_license_strip_not_on_empty():
     text = str(panel)
     assert "Backup license compliance" in text
     assert "No license" in text
+    assert "Veeam Backup" in text
+    assert "Resource overusage" in text
+    # NetBackup sold-vs-used KPI strip stays on Backup tab only — not Summary.
+    assert "Backup — sold vs used" not in text
+    assert "Open in Backup" not in text
+
+
+def test_backup_tabs_manager_keeps_sold_vs_used_kpi_strip():
+    """Backup tab (manager) must keep Pre/Post sold-vs-used KPI strip removed from Summary."""
+    from src.pages.customer_view import _build_backup_tabs
+
+    panel = _build_backup_tabs(
+        {
+            "netbackup": {
+                "image": {"pre_dedup_size_gib": 10.0, "post_dedup_size_gib": 4.0},
+                "application": {"pre_dedup_size_gib": 0.0, "post_dedup_size_gib": 0.0},
+            },
+            "license_compliance": [],
+        },
+        {"netbackup_pre_dedup_gib": 10.0, "netbackup_post_dedup_gib": 4.0},
+        [
+            {
+                "gui_tab_binding": "backup.netbackup.image",
+                "category_code": "backup_netbackup_image",
+                "category_label": "NetBackup — Image",
+                "sold_qty": 8.0,
+                "used_qty": 10.0,
+            }
+        ],
+        include_sold_vs_used=True,
+        show_post_dedup=True,
+    )
+    text = str(panel)
     assert "Backup — sold vs used" in text
-    assert "Open in Backup" in text
+    assert "Used (pre)" in text
+    assert "Post" in text
+    assert "Margin" in text
+
+    cust = _build_backup_tabs(
+        {
+            "netbackup": {
+                "image": {"pre_dedup_size_gib": 10.0, "post_dedup_size_gib": 4.0},
+            },
+            "license_compliance": [],
+        },
+        {},
+        [],
+        include_sold_vs_used=False,
+        show_post_dedup=False,
+    )
+    assert "Backup — sold vs used" not in str(cust)
+
+
+def test_license_compliance_to_overusage_rows_maps_unsold():
+    from src.components.backup_license_compliance import license_compliance_to_overusage_rows
+
+    rows = license_compliance_to_overusage_rows(
+        [
+            {"category": "veeam_backup", "status": "unsold_usage", "usage_qty": 4, "sold_qty": 0},
+            {"category": "zerto", "status": "ok", "usage_qty": 2, "sold_qty": 3},
+            {"category": "veeam_replication", "status": "ok", "usage_qty": 5, "sold_qty": 2},
+        ]
+    )
+    assert len(rows) == 2
+    by_cat = {r["category_code"]: r for r in rows}
+    assert by_cat["veeam_backup"]["status"] == "unsold_usage"
+    assert by_cat["veeam_backup"]["used_qty"] == 4
+    assert by_cat["veeam_replication"]["status"] == "over"
+    assert by_cat["veeam_replication"]["overage_qty"] == 3

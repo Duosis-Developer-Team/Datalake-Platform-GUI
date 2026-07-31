@@ -8,9 +8,12 @@ from __future__ import annotations
 from shared.sellable.computation import (
     apply_threshold,
     apply_utilization_gate,
+    compute_fully_shared_pool_range,
     compute_potential_tl,
+    compute_primary_vs_alternate_pool_range,
     constrain_by_ratio,
     convert_unit,
+    dedupe_shared_pool_tl,
 )
 from shared.sellable.models import PanelResult, ResourceRatio, UnitConversion
 
@@ -252,3 +255,61 @@ def test_compute_potential_tl_basic_multiplication():
 def test_compute_potential_tl_negative_inputs_collapse_to_zero():
     assert compute_potential_tl(-5.0, 100.0) == 0.0
     assert compute_potential_tl(5.0, -100.0) == 0.0
+
+
+# ------------------------------------- shared-pool range helpers (backup / repl)
+
+
+def test_compute_fully_shared_pool_range_splits_half_and_full():
+    """NetBackup Image/App: each side min=half free, max=full free."""
+    assert compute_fully_shared_pool_range(100.0) == {
+        "a_min": 50.0,
+        "a_max": 100.0,
+        "b_min": 50.0,
+        "b_max": 100.0,
+    }
+
+
+def test_compute_fully_shared_pool_range_clamps_negative_and_none():
+    assert compute_fully_shared_pool_range(-10.0) == {
+        "a_min": 0.0,
+        "a_max": 0.0,
+        "b_min": 0.0,
+        "b_max": 0.0,
+    }
+    assert compute_fully_shared_pool_range(None) == {  # type: ignore[arg-type]
+        "a_min": 0.0,
+        "a_max": 0.0,
+        "b_min": 0.0,
+        "b_max": 0.0,
+    }
+
+
+def test_compute_primary_vs_alternate_pool_range_virt_owns_free():
+    """Virt (primary) keeps full free; replication (alternate) min=0 max=free."""
+    assert compute_primary_vs_alternate_pool_range(80.0) == {
+        "primary_min": 80.0,
+        "primary_max": 80.0,
+        "alternate_min": 0.0,
+        "alternate_max": 80.0,
+    }
+
+
+def test_compute_primary_vs_alternate_pool_range_clamps_negative():
+    assert compute_primary_vs_alternate_pool_range(-5.0) == {
+        "primary_min": 0.0,
+        "primary_max": 0.0,
+        "alternate_min": 0.0,
+        "alternate_max": 0.0,
+    }
+
+
+def test_dedupe_shared_pool_tl_sums_lo_and_takes_max_hi():
+    """IBM-style TL merge: lo = a_lo + b_lo, hi = max(a_hi, b_hi)."""
+    assert dedupe_shared_pool_tl(10.0, 100.0, 20.0, 80.0) == (30.0, 100.0)
+    assert dedupe_shared_pool_tl(10.0, 50.0, 20.0, 80.0) == (30.0, 80.0)
+
+
+def test_dedupe_shared_pool_tl_with_zero_alternate():
+    """Virt primary + replication alternate (alternate min=0) → lo=primary_lo."""
+    assert dedupe_shared_pool_tl(500.0, 500.0, 0.0, 500.0) == (500.0, 500.0)

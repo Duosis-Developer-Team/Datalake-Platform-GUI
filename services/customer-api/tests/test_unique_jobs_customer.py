@@ -130,16 +130,16 @@ def test_unique_jobs_patterns_swallows_resolver_errors():
 # ---------------------------------------------------------------------------
 
 
-def test_fetch_customer_unique_jobs_veeam_uses_first_pattern_only():
+def test_fetch_customer_unique_jobs_veeam_passes_all_patterns():
     svc = _make_service()
     veeam_rows = [
         ("t1", "j1", "Acme-Job1", "Backup", "Success", "Success", "t1", 1, "s1", "vm", "10.0.0.1"),
     ]
-    seen_patterns: list[str] = []
+    seen_params: list = []
 
     def fake_run_rows(cur, sql, params=None):
         if sql == cq.CUSTOMER_VEEAM_UNIQUE_JOBS_LATEST:
-            seen_patterns.append(params[0])
+            seen_params.append(params)
             return veeam_rows
         return []
 
@@ -148,25 +148,23 @@ def test_fetch_customer_unique_jobs_veeam_uses_first_pattern_only():
          patch.object(svc, "_unique_jobs_patterns", return_value=["%Acme%", "%AcmeCorp%"]):
         out = svc._fetch_customer_unique_jobs("Acme", "veeam", "start", "end")
 
-    assert seen_patterns == ["%Acme%"]  # only the first (highest-priority) pattern is queried
+    assert len(seen_params) == 1
+    assert seen_params[0][0] == ["%Acme%", "%AcmeCorp%"]
     assert [r["id"] for r in out["rows"]] == ["j1"]
     assert out["vendor"] == "veeam"
 
 
-def test_fetch_customer_unique_jobs_zerto_merges_all_patterns_and_dedups():
+def test_fetch_customer_unique_jobs_zerto_passes_all_patterns():
     svc = _make_service()
+    seen_params: list = []
 
     def fake_run_rows(cur, sql, params=None):
         if sql == cq.CUSTOMER_ZERTO_UNIQUE_VPGS_LATEST:
-            pattern = params[0]
-            if pattern == "%Acme%":
-                return [("t1", "v1", "Acme-App1", 1, 2, "DC13-Site01", "DC14", 100, 50, "zh1")]
-            if pattern == "%AcmeCorp%":
-                # v1 re-appears under the second pattern (should be deduped) + a new v2
-                return [
-                    ("t1", "v1", "Acme-App1", 1, 2, "DC13-Site01", "DC14", 100, 50, "zh1"),
-                    ("t2", "v2", "AcmeCorp-App2", 1, 1, "DC13-Site01", "DC14", 100, 50, "zh2"),
-                ]
+            seen_params.append(params)
+            return [
+                ("t1", "v1", "Acme-App1", 1, 2, "DC13-Site01", "DC14", 100, 50, "zh1"),
+                ("t2", "v2", "AcmeCorp-App2", 1, 1, "DC13-Site01", "DC14", 100, 50, "zh2"),
+            ]
         return []
 
     with patch.object(svc, "_get_connection", return_value=_ConnCtx()), \
@@ -174,8 +172,11 @@ def test_fetch_customer_unique_jobs_zerto_merges_all_patterns_and_dedups():
          patch.object(svc, "_unique_jobs_patterns", return_value=["%Acme%", "%AcmeCorp%"]):
         out = svc._fetch_customer_unique_jobs("Acme", "zerto", "start", "end")
 
+    assert len(seen_params) == 1
+    assert seen_params[0][0] == ["%Acme%", "%AcmeCorp%"]
     assert {r["id"] for r in out["rows"]} == {"v1", "v2"}
     assert out["totals"]["total_jobs"] == 2
+    assert "ILIKE ANY(%s)" in cq.CUSTOMER_ZERTO_UNIQUE_VPGS_LATEST
 
 
 def test_fetch_customer_unique_jobs_netbackup_passes_all_patterns():

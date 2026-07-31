@@ -317,6 +317,13 @@ def test_filter_job_stats_payload_noop_when_no_filters_given():
     assert out is payload
 
 
+def test_totals_from_series_includes_by_job_type():
+    series = _sample_veeam_job_stats_payload()["series"]
+    totals = DatabaseService._totals_from_series(series)
+    assert totals["by_job_type"] == {"Full": 15, "Incremental": 8}
+    assert totals["total"] == 23
+
+
 def test_filter_job_stats_payload_by_status_and_job_type():
     payload = _sample_veeam_job_stats_payload()
     out = DatabaseService._filter_job_stats_payload(payload, statuses=["success"], job_types=["Full"])

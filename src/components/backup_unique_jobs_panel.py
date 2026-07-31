@@ -172,14 +172,14 @@ def _status_donut(by_status: dict) -> go.Figure:
     return fig
 
 
-def _status_list_panel(by_status: dict) -> html.Div:
-    rows = sorted((by_status or {}).items(), key=lambda kv: (-int(kv[1] or 0), kv[0]))
+def _breakdown_list_panel(breakdown: dict, title: str, empty_label: str = "No data") -> html.Div:
+    rows = sorted((breakdown or {}).items(), key=lambda kv: (-int(kv[1] or 0), str(kv[0])))
     children = [
         html.Div(
             style={"borderBottom": "1px solid #F4F7FE", "paddingBottom": "12px"},
             children=[
                 html.Span(
-                    "STATUS BREAKDOWN",
+                    title,
                     style={
                         "fontSize": "0.7rem",
                         "fontWeight": 700,
@@ -193,16 +193,16 @@ def _status_list_panel(by_status: dict) -> html.Div:
     ]
     if not rows:
         children.append(
-            dmc.Text("No status data", size="sm", c="dimmed")
+            dmc.Text(empty_label, size="sm", c="dimmed")
         )
-    for status, count in rows[:8]:
+    for label, count in rows[:8]:
         children.append(
             dmc.Group(
                 gap="xs",
                 align="center",
                 justify="space-between",
                 children=[
-                    dmc.Badge(str(status), variant="light", color="gray", size="sm"),
+                    dmc.Badge(str(label), variant="light", color="gray", size="sm"),
                     html.Span(
                         str(count),
                         style={"fontSize": "1.1rem", "fontWeight": 800, "color": "#2B3674"},
@@ -223,6 +223,26 @@ def _status_list_panel(by_status: dict) -> html.Div:
     )
 
 
+def _status_list_panel(by_status: dict) -> html.Div:
+    return _breakdown_list_panel(by_status, "STATUS BREAKDOWN", "No status data")
+
+
+def _type_breakdown_for_vendor(totals: dict, vendor: str) -> tuple[dict, str]:
+    """Secondary panel data: Sessions by Type / policy types / VM distribution."""
+    totals = totals or {}
+    if vendor == "zerto":
+        by_site = totals.get("by_site") or {}
+        if by_site:
+            return by_site, "VM DISTRIBUTION"
+        return totals.get("by_type") or {}, "TYPE BREAKDOWN"
+    if vendor == "netbackup":
+        by_policy = totals.get("by_policy_type") or {}
+        if by_policy:
+            return by_policy, "POLICY TYPE BREAKDOWN"
+        return totals.get("by_type") or {}, "TYPE BREAKDOWN"
+    return totals.get("by_type") or {}, "SESSIONS BY TYPE"
+
+
 def build_unique_jobs_kpis(totals: dict, vendor: str) -> html.Div:
     totals = totals or {}
     by_status = totals.get("by_status") or {}
@@ -232,13 +252,20 @@ def build_unique_jobs_kpis(totals: dict, vendor: str) -> html.Div:
     type_count = len(totals.get("by_type") or {})
     if vendor == "netbackup":
         type_count = len(totals.get("by_policy_type") or {})
+    fourth_label = "Types" if vendor != "zerto" else "VMs"
+    if vendor == "zerto":
+        fourth_value = int(totals.get("total_vms", 0) or 0)
+        if fourth_value <= 0:
+            fourth_value = total
+    else:
+        fourth_value = type_count
     cards = [
         _kpi_card("Total Jobs", f"{total:,}", "solar:folder-with-files-bold-duotone", "#4318FF"),
         _kpi_card("Success", f"{success:,}", "solar:check-circle-bold-duotone", "#05CD99"),
         _kpi_card("Failed", f"{failed:,}", "solar:close-circle-bold-duotone", "#EE5D50"),
         _kpi_card(
-            "Types" if vendor != "zerto" else "VPGs",
-            f"{type_count if vendor != 'zerto' else total:,}",
+            fourth_label,
+            f"{fourth_value:,}",
             "solar:widget-bold-duotone",
             "#FFB547",
         ),
@@ -251,10 +278,11 @@ def build_unique_jobs_kpis(totals: dict, vendor: str) -> html.Div:
 
 def build_unique_jobs_visuals(totals: dict, vendor: str) -> tuple[html.Div, html.Div, html.Div]:
     totals = totals or {}
+    breakdown, breakdown_title = _type_breakdown_for_vendor(totals, vendor)
     return (
         build_unique_jobs_kpis(totals, vendor),
         _gauge_card(_status_donut(totals.get("by_status") or {})),
-        _status_list_panel(totals.get("by_status") or {}),
+        _breakdown_list_panel(breakdown, breakdown_title),
     )
 
 
