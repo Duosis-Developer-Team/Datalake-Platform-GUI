@@ -528,6 +528,93 @@ def test_fetch_compute_metrics_hits_backup_replication_endpoint():
     assert "/datacenters/DC13/compute/backup-replication" in mock_get.call_args[0][0]
 
 
+def test_fetch_compute_metrics_hits_backup_nutanix_endpoint():
+    """Mapped image family must call /compute/backup-nutanix."""
+    svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "cpu_cap": 50.0, "cpu_alloc_ghz_sales": 10.0,
+        "mem_cap": 100.0, "mem_alloc_gb_vm": 40.0,
+        "stor_cap": 5.0, "stor_provisioned_gb": 512.0,
+    }
+    with patch("app.services.sellable_service.httpx.get", return_value=mock_resp) as mock_get:
+        result = svc._fetch_compute_metrics_for_clusters(
+            dc_code="DC13",
+            family="backup_image",
+            resource_kind="storage",
+            clusters=["NTNX-1"],
+        )
+    assert result is not None
+    assert result[0] == 5.0
+    assert "/datacenters/DC13/compute/backup-nutanix" in mock_get.call_args[0][0]
+
+
+def test_apply_netbackup_shared_pool_ranges_splits_image_and_app():
+    """Image/App share one free pool: min=half, max=full (IBM-style)."""
+    svc = _make_svc_with_redis()
+    image = PanelResult(
+        panel_key="backup_netbackup_image",
+        label="NetBackup Image",
+        family="backup_netbackup",
+        resource_kind="storage",
+        display_unit="TB",
+        total=200.0,
+        allocated=100.0,
+        sellable_raw=100.0,
+        sellable_constrained=100.0,
+        unit_price_tl=10.0,
+        has_price=True,
+    )
+    app = PanelResult(
+        panel_key="backup_netbackup_application",
+        label="NetBackup Application",
+        family="backup_netbackup",
+        resource_kind="storage",
+        display_unit="TB",
+        total=200.0,
+        allocated=100.0,
+        sellable_raw=80.0,
+        sellable_constrained=80.0,
+        unit_price_tl=20.0,
+        has_price=True,
+    )
+    svc._apply_netbackup_shared_pool_ranges([image, app])
+    assert image.sellable_min == 50.0
+    assert image.sellable_max == 100.0
+    assert app.sellable_min == 50.0
+    assert app.sellable_max == 100.0
+    assert image.potential_tl_min == 500.0
+    assert image.potential_tl_max == 1000.0
+    assert any("shared pool" in n for n in (image.notes or []))
+
+
+def test_apply_replication_alternate_ranges_zeros_min():
+    """Replication alternate: min=0, max=host free."""
+    svc = _make_svc_with_redis()
+    panel = PanelResult(
+        panel_key="backup_veeam_replication_cpu",
+        label="Veeam Replication CPU",
+        family="backup_veeam_replication",
+        resource_kind="cpu",
+        display_unit="GHz",
+        total=100.0,
+        allocated=40.0,
+        sellable_raw=60.0,
+        sellable_constrained=60.0,
+        unit_price_tl=5.0,
+        has_price=True,
+    )
+    svc._apply_replication_alternate_ranges([panel])
+    assert panel.sellable_min == 0.0
+    assert panel.sellable_max == 60.0
+    assert panel.sellable_constrained == 0.0
+    assert panel.sellable_raw == 60.0
+    assert panel.potential_tl_min == 0.0
+    assert panel.potential_tl_max == 300.0
+    assert any("alternate pool" in n for n in (panel.notes or []))
+
+
 def test_fetch_compute_metrics_returns_none_when_no_clusters():
     svc = _make_svc_with_redis(dc_redis=None, dc_api_url="http://dc-api:8000")
     assert svc._fetch_compute_metrics_for_clusters(
