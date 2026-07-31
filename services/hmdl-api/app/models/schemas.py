@@ -170,6 +170,7 @@ class TargetRow(BaseModel):
     platform_status: str | None = None
     last_distributed_at: datetime | None = None
     last_check_status: str | None = None
+    last_check_at: datetime | None = None
     tenant_name: str | None = None
     manufacturer: str | None = None
     extra: dict[str, Any] | None = None
@@ -302,6 +303,8 @@ class ClusterCoverageRow(BaseModel):
     source: str
     cluster_name: str | None = None
     dc: str
+    parent_name: str | None = None
+    expected_source: str | None = None
     collected: bool
     expected: bool
     is_live: bool
@@ -314,6 +317,7 @@ class ClusterCoverageRow(BaseModel):
 class IbmHostCoverageRow(BaseModel):
     servername: str | None = None
     dc: str
+    expected_source: str | None = None
     collected: bool
     expected: bool
     is_live: bool
@@ -323,15 +327,109 @@ class IbmHostCoverageRow(BaseModel):
     target_issues: list[CoverageTargetIssue] = Field(default_factory=list)
 
 
+VcenterCoverageStatus = Literal["live", "partial", "missing", "extra", "stale", "unknown"]
+
+
+class VcenterCoverageRow(BaseModel):
+    source: str
+    parent_name: str | None = None
+    dc: str
+    expected_clusters: int = 0
+    collected_clusters: int = 0
+    live_clusters: int = 0
+    status: VcenterCoverageStatus = "unknown"
+    checked_at: datetime | None = None
+
+
+class BackupEndpointCoverageRow(BaseModel):
+    source: str
+    endpoint_ip: str | None = None
+    endpoint_name: str | None = None
+    dc: str
+    collected: bool
+    expected: bool
+    expected_source: str | None = None
+    network_ok: bool | None = None
+    is_live: bool
+    last_collected: datetime | None = None
+    status: CoverageStatus
+    reason: str
+    checked_at: datetime | None = None
+
+
+class VcenterCoverageBucket(BaseModel):
+    total: int = 0
+    live: int = 0
+    partial: int = 0
+    missing: int = 0
+    stale: int = 0
+    extra: int = 0
+
+
 class CoverageSummary(BaseModel):
     cluster: dict[str, CoverageBucket] = Field(default_factory=dict)
     ibm_host: CoverageBucket = Field(default_factory=CoverageBucket)
+    vcenter: VcenterCoverageBucket = Field(default_factory=VcenterCoverageBucket)
+    backup_endpoint: dict[str, CoverageBucket] = Field(default_factory=dict)
 
 
 class CoverageResponse(BaseModel):
     summary: CoverageSummary
     clusters: list[ClusterCoverageRow]
     ibm_hosts: list[IbmHostCoverageRow]
+    vcenters: list[VcenterCoverageRow] = Field(default_factory=list)
+    backup_endpoints: list[BackupEndpointCoverageRow] = Field(default_factory=list)
     locations: list[str] = Field(default_factory=list)
     dc_filter: str | None = None
     source_filter: str | None = None
+
+
+# --- Ingest freshness (TASK-M1 / coverage_endpoint) ---
+
+IngestVerdict = Literal[
+    "healthy",
+    "no_network",
+    "network_ok_no_data",
+    "stale",
+    "unmatched",
+]
+
+
+class IngestHealthSummary(BaseModel):
+    healthy: int = 0
+    no_network: int = 0
+    network_ok_no_data: int = 0
+    stale: int = 0
+    unmatched: int = 0
+    total: int = 0
+
+
+class IngestHealthRow(BaseModel):
+    endpoint_ip: str
+    collector_type: str
+    proxy_id: str = ""
+    entity_name: str | None = None
+    dc_code: str | None = None
+    tenant_name: str | None = None
+    network_access: bool = False
+    check_status: str | None = None
+    last_check_at: datetime | None = None
+    match_mode: str | None = None
+    match_key: str | None = None
+    bridge_via: str | None = None
+    bridge_resolved: str | None = None
+    last_ingest_at: datetime | None = None
+    ingest_age_hours: float | None = None
+    ingest_stale: bool = False
+    stale_after_hours: int = 6
+    verdict: IngestVerdict
+    detail_message: str = ""
+    checked_at: datetime | None = None
+
+
+class IngestHealthResponse(BaseModel):
+    summary: IngestHealthSummary
+    items: list[IngestHealthRow]
+    dc_filter: str | None = None
+    collector_type_filter: str | None = None
+    verdict_filter: str | None = None

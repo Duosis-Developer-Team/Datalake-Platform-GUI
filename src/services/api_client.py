@@ -3295,9 +3295,16 @@ def get_hmdl_locations() -> dict[str, Any]:
 
 
 _EMPTY_HMDL_COVERAGE: dict[str, Any] = {
-    "summary": {"cluster": {}, "ibm_host": {"total": 0, "collected": 0, "missing": 0, "live": 0}},
+    "summary": {
+        "cluster": {},
+        "ibm_host": {"total": 0, "collected": 0, "missing": 0, "live": 0},
+        "vcenter": {"total": 0, "live": 0, "partial": 0, "missing": 0, "stale": 0, "extra": 0},
+        "backup_endpoint": {},
+    },
     "clusters": [],
     "ibm_hosts": [],
+    "vcenters": [],
+    "backup_endpoints": [],
     "locations": [],
     "dc_filter": None,
     "source_filter": None,
@@ -3309,7 +3316,7 @@ def get_hmdl_coverage(
     *,
     source: str | None = None,
 ) -> dict[str, Any]:
-    """Datalake coverage report: cluster/host present-absent + X/Y summary + reason."""
+    """Datalake coverage report: cluster/host/vcenter/backup present-absent + summary."""
     params: dict[str, str] = {}
     if dc:
         params["dc"] = dc.strip().upper()
@@ -3321,6 +3328,62 @@ def get_hmdl_coverage(
     except _HTTP_ERRORS as exc:
         logger.warning("hmdl-api coverage unavailable: %s", exc)
         return _clone(_EMPTY_HMDL_COVERAGE)
+
+
+def get_hmdl_runs(limit: int = 20) -> dict[str, Any]:
+    """Recent collector sync runs from hmdl-api."""
+    try:
+        data = _get_json(
+            _get_client_hmdl(),
+            "/api/v1/collectors/runs",
+            params={"limit": str(max(1, min(int(limit), 100)))},
+        )
+        return data if isinstance(data, dict) else {"items": []}
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api runs unavailable: %s", exc)
+        return {"items": []}
+
+
+_EMPTY_HMDL_INGEST_HEALTH: dict[str, Any] = {
+    "summary": {
+        "healthy": 0,
+        "no_network": 0,
+        "network_ok_no_data": 0,
+        "stale": 0,
+        "unmatched": 0,
+        "total": 0,
+    },
+    "items": [],
+    "dc_filter": None,
+    "collector_type_filter": None,
+    "verdict_filter": None,
+}
+
+
+def get_hmdl_ingest_health(
+    dc: str | None = None,
+    *,
+    collector_type: str | None = None,
+    verdict: str | None = None,
+) -> dict[str, Any]:
+    """Per-collector-IP ingest freshness (TASK-M1)."""
+    params: dict[str, str] = {}
+    if dc:
+        params["dc"] = dc.strip().upper()
+    if collector_type:
+        params["collector_type"] = collector_type.strip()
+    if verdict:
+        params["verdict"] = verdict.strip()
+    try:
+        data = _get_json(
+            _get_client_hmdl(),
+            "/api/v1/collectors/ingest-health",
+            params=params or None,
+        )
+        return data if isinstance(data, dict) else _clone(_EMPTY_HMDL_INGEST_HEALTH)
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api ingest-health unavailable: %s", exc)
+        return _clone(_EMPTY_HMDL_INGEST_HEALTH)
 
 
 def get_hmdl_awx_config() -> dict[str, Any]:

@@ -6,7 +6,11 @@ from dash import ALL, Input, Output, State, callback, ctx, no_update
 
 from src.pages.settings.admin_routes import ADMIN_PREFIX
 from src.services import api_client as api
-from src.utils.hmdl_sync_ui import build_coverage_section, build_targets_table
+from src.utils.hmdl_sync_ui import (
+    build_coverage_section,
+    build_ingest_health_section,
+    build_targets_table,
+)
 
 
 @callback(
@@ -99,6 +103,21 @@ def refresh_hmdl_coverage(dc, source):
 
 
 @callback(
+    Output("hmdl-ingest-content", "children"),
+    Input("hmdl-ingest-dc", "value"),
+    Input("hmdl-ingest-type", "value"),
+    Input("hmdl-ingest-verdict", "value"),
+)
+def refresh_hmdl_ingest(dc, collector_type, verdict):
+    data = api.get_hmdl_ingest_health(
+        dc or None,
+        collector_type=collector_type or None,
+        verdict=verdict or None,
+    )
+    return build_ingest_health_section(data)
+
+
+@callback(
     Output("url", "search", allow_duplicate=True),
     Input("hmdl-coverage-dc", "value"),
     State("url", "pathname"),
@@ -109,3 +128,25 @@ def hmdl_coverage_dc_changed(dc_code, pathname):
         return no_update
     dc = (dc_code or "").strip().upper()
     return f"?dc={dc}" if dc else ""
+
+
+@callback(
+    Output("url", "search", allow_duplicate=True),
+    Input("hmdl-ingest-dc", "value"),
+    Input("hmdl-ingest-type", "value"),
+    Input("hmdl-ingest-verdict", "value"),
+    State("url", "pathname"),
+    prevent_initial_call=True,
+)
+def hmdl_ingest_filters_changed(dc_code, collector_type, verdict, pathname):
+    if not pathname or not str(pathname).startswith(f"{ADMIN_PREFIX}/integrations/hmdl/ingest-health"):
+        return no_update
+    parts: list[str] = []
+    dc = (dc_code or "").strip().upper()
+    if dc:
+        parts.append(f"dc={dc}")
+    if collector_type:
+        parts.append(f"type={collector_type}")
+    if verdict:
+        parts.append(f"verdict={verdict}")
+    return ("?" + "&".join(parts)) if parts else ""

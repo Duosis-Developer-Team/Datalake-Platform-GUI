@@ -370,6 +370,13 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 sort_order=59,
             ),
             _n(
+                "page:settings_hmdl_ingest_health",
+                "HMDL Ingest Health",
+                "config",
+                route_pattern="/administration/integrations/hmdl/ingest-health",
+                sort_order=59,
+            ),
+            _n(
                 "page:settings_hmdl_config",
                 "HMDL netbox-zabbix run configuration",
                 "config",

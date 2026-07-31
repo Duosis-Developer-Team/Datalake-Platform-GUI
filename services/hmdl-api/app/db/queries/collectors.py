@@ -408,6 +408,7 @@ def _fetch_dc_targets(
             t.extra,
             t.last_distributed_at,
             t.last_check_status,
+            t.last_check_at,
             t.tenant_name,
             t.manufacturer,
             cd.conf_key
@@ -447,6 +448,7 @@ def _fetch_dc_targets(
                 "platform_status": ps,
                 "last_distributed_at": r.get("last_distributed_at"),
                 "last_check_status": r.get("last_check_status"),
+                "last_check_at": r.get("last_check_at"),
                 "tenant_name": r.get("tenant_name"),
                 "manufacturer": r.get("manufacturer"),
                 "extra": r.get("extra") if isinstance(r.get("extra"), dict) else None,
