@@ -22,6 +22,10 @@ def test_potential_sales_info_text_lists_service_groups():
     for group in psa.POTENTIAL_SALES_SERVICE_GROUPS:
         assert group in text
     assert "Colocation" in text
+    assert "How capacity is calculated:" in text
+    assert "NetBackup" in text
+    assert "License headroom is not included" in text
+    assert "Nutanix" in text
 
 
 def test_platform_total_includes_colocation_tl():

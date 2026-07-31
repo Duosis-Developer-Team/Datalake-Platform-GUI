@@ -1898,8 +1898,13 @@ def build_replication_section(
     has_veeam: bool = False,
     has_zerto: bool = False,
     content_mode: str = "full",
+    show_licenses: bool = False,
 ) -> html.Div:
-    """Replication category: Veeam + Zerto (+ licenses when data exists)."""
+    """Replication category: Veeam + Zerto.
+
+    Licenses are deferred (no reliable datalake source yet). Pass
+    ``show_licenses=True`` only when an external license feed is wired.
+    """
     mode = (content_mode or "full").strip().lower()
     if mode == "shell":
         has_zerto = True
@@ -1918,8 +1923,16 @@ def build_replication_section(
             children="No Veeam or Zerto infrastructure data for this datacenter.",
         )
 
-    zerto_license_panel = None if mode == "shell" else build_zerto_license_panel(zerto_license)
-    veeam_license_panel = None if mode == "shell" else build_veeam_license_panel(veeam_license)
+    zerto_license_panel = (
+        None
+        if (mode == "shell" or not show_licenses)
+        else build_zerto_license_panel(zerto_license)
+    )
+    veeam_license_panel = (
+        None
+        if (mode == "shell" or not show_licenses)
+        else build_veeam_license_panel(veeam_license)
+    )
 
     panels = []
     if has_zerto:
@@ -1929,16 +1942,27 @@ def build_replication_section(
                 children=build_zerto_panel(zerto_data or {}, None, content_mode=mode),
             )
         ]
-        if zerto_license_panel is not None:
+        if show_licenses and zerto_license_panel is not None:
             zerto_children.append(zerto_license_panel)
-        elif mode != "shell" and (zerto_data or {}).get("sites"):
-            # Usage present but license payload empty — still show required note
+        elif show_licenses and mode != "shell" and (zerto_data or {}).get("sites"):
             zerto_children.append(
                 dmc.Alert(
                     color="grape",
                     variant="light",
                     title="License required",
                     children="Zerto usage is present; license metrics were not returned for this DC.",
+                )
+            )
+        elif mode != "shell":
+            zerto_children.append(
+                dmc.Alert(
+                    color="gray",
+                    variant="light",
+                    title="Licenses deferred",
+                    children=(
+                        "License compliance will come from an external data source. "
+                        "Sellable capacity below does not include license headroom."
+                    ),
                 )
             )
         panels.append(dmc.TabsPanel(value="zerto", pt="lg", children=html.Div(children=zerto_children)))
@@ -1949,17 +1973,17 @@ def build_replication_section(
                 children=build_veeam_panel(veeam_data or {}, None, content_mode=mode),
             )
         ]
-        if veeam_license_panel is not None:
+        if show_licenses and veeam_license_panel is not None:
             veeam_children.append(veeam_license_panel)
         elif mode != "shell":
             veeam_children.append(
                 dmc.Alert(
                     color="gray",
                     variant="light",
-                    title="Veeam license",
+                    title="Licenses deferred",
                     children=(
-                        "Veeam license is managed at customer level via CRM sold. "
-                        "No DC-scoped license inventory in datalake."
+                        "Veeam license inventory is not in sellable scope yet. "
+                        "Replica vs Backup jobs use session_type / jobs.type."
                     ),
                 )
             )

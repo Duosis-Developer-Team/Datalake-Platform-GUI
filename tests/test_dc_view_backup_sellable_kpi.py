@@ -30,7 +30,7 @@ def test_backup_inline_sellable_blocks_shell_mode_empty(dc_view_module):
 def test_backup_inline_sellable_blocks_calls_kpi_for_families(dc_view_module):
     calls: list[tuple] = []
 
-    def fake_kpi(dc_id, fam, title, color="violet", selected_clusters=None, container_id=None):
+    def fake_kpi(dc_id, fam, title, color="violet", selected_clusters=None, container_id=None, subtitle=None):
         calls.append((dc_id, fam, title, color, selected_clusters, container_id))
         return MagicMock(name=f"card-{fam}")
 

@@ -1501,18 +1501,32 @@ LIMIT 20
         dc_code: str,
         selected_clusters: list[str] | None,
         time_range: dict | None = None,
+        *,
+        architecture: str = "classic",
     ) -> dict:
-        """Return classic host CPU/RAM for Veeam/Zerto replication sellable.
+        """Return host CPU/RAM for Veeam/Zerto replication sellable.
 
-        Replication is an alternate claimant of the classic **compute** pool
-        (CPU/RAM only). Storage is dedicated: Veeam uses virt-excluded
-        ``veeam`` datastores (``get_veeam_replication_datastore_compute``);
-        Zerto uses site/VPG metrics via the infra path. Classic host storage
-        fields are zeroed so callers never treat KM free disk as replication
-        storage.
+        Replication is an alternate claimant of the virt **compute** pool
+        (CPU/RAM only). Storage is dedicated: Veeam uses non-NetBackup VMware
+        datastores (``get_veeam_replication_datastore_compute``); Zerto uses
+        non-Veeam/non-NetBackup VMware datastores plus site/VPG metrics.
+        Host storage fields are zeroed so callers never treat KM free disk as
+        replication storage from this endpoint.
+
+        ``architecture``: ``classic`` (default) or ``hyperconverged``.
         """
-        classic = self.get_classic_metrics_filtered(dc_code, selected_clusters, time_range)
-        out = dict(classic or {})
+        arch = (architecture or "classic").strip().lower()
+        if arch in ("hyperconverged", "hyperconv", "hc"):
+            section = self.get_hyperconv_metrics_filtered(
+                dc_code, selected_clusters, time_range
+            )
+            source_note = "replication compute from hyperconverged host/cluster pool"
+        else:
+            section = self.get_classic_metrics_filtered(
+                dc_code, selected_clusters, time_range
+            )
+            source_note = "replication compute from classic host pool"
+        out = dict(section or {})
         out["stor_cap"] = 0.0
         out["stor_provisioned_gb"] = 0.0
         out["stor_pct"] = 0.0
@@ -1520,20 +1534,55 @@ LIMIT 20
         note = "replication compute is CPU/RAM only; storage is dedicated"
         if note not in notes:
             notes.append(note)
+        if source_note not in notes:
+            notes.append(source_note)
         out["notes"] = notes
+        out["architecture"] = (
+            "hyperconverged" if arch in ("hyperconverged", "hyperconv", "hc") else "classic"
+        )
         return out
+
+    def _sum_datastore_storage_rows(self, rows: list, *, source: str) -> dict:
+        _bytes_per_tb = 1024 ** 4
+        _bytes_per_gb = 1024 ** 3
+        cap_bytes = 0.0
+        used_bytes = 0.0
+        names: list[str] = []
+        for row in rows or []:
+            if not row:
+                continue
+            name = str(row[1] or "").strip()
+            if name:
+                names.append(name)
+            cap_bytes += float(row[3] or 0)
+            used_bytes += float(row[5] or 0)
+
+        stor_cap = round(cap_bytes / _bytes_per_tb, 3) if cap_bytes else 0.0
+        stor_used_tb = used_bytes / _bytes_per_tb if used_bytes else 0.0
+        stor_provisioned_gb = round(used_bytes / _bytes_per_gb, 3) if used_bytes else 0.0
+        stor_pct = (
+            round(100.0 * stor_used_tb / stor_cap, 1) if stor_cap > 0 else 0.0
+        )
+        return {
+            "stor_cap": stor_cap,
+            "stor_provisioned_gb": stor_provisioned_gb,
+            "stor_pct": stor_pct,
+            "datastore_count": len(rows or []),
+            "datastores": names[:50],
+            "source": source,
+        }
 
     def get_veeam_replication_datastore_compute(
         self,
         dc_code: str,
         time_range: dict | None = None,
+        *,
+        include_nutanix: bool = False,
     ) -> dict:
-        """Sum capacity/used for VMware datastores whose names match ``veeam``.
+        """Sum capacity/used for Veeam-eligible VMware datastores (all except NetBackup).
 
-        These datastores are excluded from virt KM sellable; attribute them to
-        ``backup_veeam_replication_storage`` so the pool is not left unsold.
-        Returns the same storage field names as other ``/compute`` endpoints
-        (``stor_cap`` TB, ``stor_provisioned_gb`` GB, ``stor_pct``).
+        When ``include_nutanix`` is True (HC path), add Nutanix cluster storage
+        free capacity for VMs that can use Nutanix disks under VMware management.
         """
         from app.db.queries import vmware_datastore as dsq
 
@@ -1556,35 +1605,82 @@ LIMIT 20
             )
             rows = []
 
-        _bytes_per_tb = 1024 ** 4
-        _bytes_per_gb = 1024 ** 3
-        cap_bytes = 0.0
-        used_bytes = 0.0
-        names: list[str] = []
-        for row in rows:
-            if not row:
-                continue
-            # (moid, name, dc_name, capacity_bytes, free_bytes, used_bytes)
-            name = str(row[1] or "").strip()
-            if name:
-                names.append(name)
-            cap_bytes += float(row[3] or 0)
-            used_bytes += float(row[5] or 0)
+        out = self._sum_datastore_storage_rows(rows, source="vmware_datastore_veeam_eligible")
+        notes = [
+            "Veeam storage: all classic VMware datastores except NetBackup",
+        ]
+        if include_nutanix:
+            nut = self.get_backup_nutanix_compute(dc_code, None, time_range) or {}
+            nut_cap = float(nut.get("stor_cap") or 0.0)
+            nut_prov = float(nut.get("stor_provisioned_gb") or 0.0)
+            if nut_cap > 0:
+                out["stor_cap"] = round(float(out.get("stor_cap") or 0.0) + nut_cap, 3)
+                out["stor_provisioned_gb"] = round(
+                    float(out.get("stor_provisioned_gb") or 0.0) + nut_prov, 3
+                )
+                used_tb = float(out.get("stor_provisioned_gb") or 0.0) / 1024.0
+                cap = float(out.get("stor_cap") or 0.0)
+                out["stor_pct"] = round(100.0 * used_tb / cap, 1) if cap > 0 else 0.0
+                out["nutanix_stor_cap_tb"] = nut_cap
+                notes.append(
+                    "HC: Nutanix disks included when VMware-managed HC VMs use Veeam"
+                )
+            out["source"] = "vmware_plus_nutanix_veeam_eligible"
+        out["notes"] = notes
+        return out
 
-        stor_cap = round(cap_bytes / _bytes_per_tb, 3) if cap_bytes else 0.0
-        stor_used_tb = used_bytes / _bytes_per_tb if used_bytes else 0.0
-        stor_provisioned_gb = round(used_bytes / _bytes_per_gb, 3) if used_bytes else 0.0
-        stor_pct = (
-            round(100.0 * stor_used_tb / stor_cap, 1) if stor_cap > 0 else 0.0
-        )
-        return {
-            "stor_cap": stor_cap,
-            "stor_provisioned_gb": stor_provisioned_gb,
-            "stor_pct": stor_pct,
-            "datastore_count": len(rows),
-            "datastores": names[:50],
-            "source": "vmware_datastore_veeam",
-        }
+    def get_zerto_replication_datastore_compute(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        *,
+        include_nutanix: bool = False,
+    ) -> dict:
+        """Sum capacity/used for Zerto-eligible VMware datastores (except Veeam+NetBackup)."""
+        from app.db.queries import vmware_datastore as dsq
+
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        rows: list = []
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        dsq.DATASTORE_METRICS_ZERTO_REPLICATION,
+                        (dc_code, start_ts, end_ts),
+                    ) or []
+        except OperationalError as exc:
+            logger.warning(
+                "get_zerto_replication_datastore_compute failed for %s: %s",
+                dc_code,
+                exc,
+            )
+            rows = []
+
+        out = self._sum_datastore_storage_rows(rows, source="vmware_datastore_zerto_eligible")
+        notes = [
+            "Zerto storage: classic VMware datastores except Veeam and NetBackup",
+        ]
+        if include_nutanix:
+            nut = self.get_backup_nutanix_compute(dc_code, None, time_range) or {}
+            nut_cap = float(nut.get("stor_cap") or 0.0)
+            nut_prov = float(nut.get("stor_provisioned_gb") or 0.0)
+            if nut_cap > 0:
+                out["stor_cap"] = round(float(out.get("stor_cap") or 0.0) + nut_cap, 3)
+                out["stor_provisioned_gb"] = round(
+                    float(out.get("stor_provisioned_gb") or 0.0) + nut_prov, 3
+                )
+                used_tb = float(out.get("stor_provisioned_gb") or 0.0) / 1024.0
+                cap = float(out.get("stor_cap") or 0.0)
+                out["stor_pct"] = round(100.0 * used_tb / cap, 1) if cap > 0 else 0.0
+                out["nutanix_stor_cap_tb"] = nut_cap
+                notes.append(
+                    "HC: Nutanix disks included when VMware-managed HC VMs use Zerto"
+                )
+            out["source"] = "vmware_plus_nutanix_zerto_eligible"
+        out["notes"] = notes
+        return out
 
     def get_backup_nutanix_compute(
         self,

@@ -352,14 +352,20 @@ def backup_replication_compute(
     dc_code: str,
     tf: TimeFilter = Depends(),
     db: DatabaseService = Depends(get_db),
-    clusters: Optional[str] = Query(None, description="Comma-separated classic cluster names; empty = all"),
+    clusters: Optional[str] = Query(None, description="Comma-separated cluster names; empty = all"),
+    architecture: Optional[str] = Query(
+        "classic",
+        description="classic (default) or hyperconverged host pool for replication CPU/RAM",
+    ),
 ):
-    """Veeam/Zerto alternate sellable CPU/RAM from the classic host pool.
+    """Veeam/Zerto alternate sellable CPU/RAM from classic or HC host pool.
 
-    Storage is not included (dedicated Veeam datastores / Zerto site metrics).
+    Storage is not included (dedicated Veeam/Zerto-eligible datastore pools).
     """
     selected = [c.strip() for c in clusters.split(",") if c.strip()] if clusters else None
-    return db.get_backup_replication_compute(dc_code, selected, tf.to_dict())
+    return db.get_backup_replication_compute(
+        dc_code, selected, tf.to_dict(), architecture=architecture or "classic"
+    )
 
 
 @router.get("/datacenters/{dc_code}/compute/backup-veeam-storage", response_model=dict[str, Any])
@@ -367,9 +373,31 @@ def backup_veeam_storage_compute(
     dc_code: str,
     tf: TimeFilter = Depends(),
     db: DatabaseService = Depends(get_db),
+    include_nutanix: bool = Query(
+        False,
+        description="When true, add Nutanix disk capacity for HC Veeam path",
+    ),
 ):
-    """Veeam replication storage from virt-excluded ``veeam``-named datastores."""
-    return db.get_veeam_replication_datastore_compute(dc_code, tf.to_dict())
+    """Veeam replication storage: all VMware datastores except NetBackup."""
+    return db.get_veeam_replication_datastore_compute(
+        dc_code, tf.to_dict(), include_nutanix=include_nutanix
+    )
+
+
+@router.get("/datacenters/{dc_code}/compute/backup-zerto-storage", response_model=dict[str, Any])
+def backup_zerto_storage_compute(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    include_nutanix: bool = Query(
+        False,
+        description="When true, add Nutanix disk capacity for HC Zerto path",
+    ),
+):
+    """Zerto replication storage: VMware datastores except Veeam and NetBackup."""
+    return db.get_zerto_replication_datastore_compute(
+        dc_code, tf.to_dict(), include_nutanix=include_nutanix
+    )
 
 
 @router.get("/datacenters/{dc_code}/compute/backup-nutanix", response_model=dict[str, Any])

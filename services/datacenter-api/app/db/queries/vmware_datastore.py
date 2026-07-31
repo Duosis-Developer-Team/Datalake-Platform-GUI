@@ -64,9 +64,9 @@ WHERE datacenter_name ILIKE ('%%' || %s || '%%')
 ORDER BY datastore_moid, collection_timestamp::timestamptz DESC
 """
 
-# --- Veeam replication datastores (excluded from virt KM sellable) ---
-# Same DC / Nutanix blacklist as DATASTORE_METRICS, but ONLY names matching veeam
-# (the set virt excludes). Used for backup_veeam_replication_storage capacity.
+# --- Veeam replication-eligible datastores (all classic VMware except NetBackup) ---
+# Plan: Veeam may use every VMware datastore except NetBackup. Virt still excludes
+# NBU + veeam-named from KM sellable; this pool feeds backup_veeam_*_storage.
 # Params: (dc_code, start_ts, end_ts)
 DATASTORE_METRICS_VEEAM_REPLICATION = """
 SELECT DISTINCT ON (datastore_moid)
@@ -80,8 +80,29 @@ FROM public.raw_vmware_datastore_metrics_agg
 WHERE datacenter_name ILIKE ('%%' || %s || '%%')
   AND datacenter_name NOT ILIKE '%%Nutanix%%'
   AND datastore_name NOT ILIKE '%%NTNX%%'
-  AND datastore_name ILIKE '%%veeam%%'
   AND datastore_name NOT ILIKE '%%NBU%%'
+  AND datastore_name NOT ILIKE '%%netbackup%%'
+  AND collection_timestamp::timestamptz BETWEEN %s AND %s
+ORDER BY datastore_moid, collection_timestamp::timestamptz DESC
+"""
+
+# --- Zerto replication-eligible datastores (classic VMware except Veeam + NetBackup) ---
+# Params: (dc_code, start_ts, end_ts)
+DATASTORE_METRICS_ZERTO_REPLICATION = """
+SELECT DISTINCT ON (datastore_moid)
+    datastore_moid,
+    datastore_name,
+    datacenter_name,
+    capacity_bytes,
+    free_bytes,
+    used_bytes
+FROM public.raw_vmware_datastore_metrics_agg
+WHERE datacenter_name ILIKE ('%%' || %s || '%%')
+  AND datacenter_name NOT ILIKE '%%Nutanix%%'
+  AND datastore_name NOT ILIKE '%%NTNX%%'
+  AND datastore_name NOT ILIKE '%%NBU%%'
+  AND datastore_name NOT ILIKE '%%netbackup%%'
+  AND datastore_name NOT ILIKE '%%veeam%%'
   AND collection_timestamp::timestamptz BETWEEN %s AND %s
 ORDER BY datastore_moid, collection_timestamp::timestamptz DESC
 """

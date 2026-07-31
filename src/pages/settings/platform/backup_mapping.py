@@ -1,8 +1,8 @@
-"""Platform — Backup Mapping (NetBackup Image/App, Veeam/Zerto separators, multipliers).
+"""Platform — Backup Mapping (NetBackup Image/App, name-pattern buckets, multipliers).
 
 Seeded from packaged YAML under ``shared/backup/``. Persist / DB override is not
-wired yet; MultiSelects and pattern tables are editable in the UI for review but
-Save actions stay disabled until a backend lands (ADR-0030).
+wired yet; pattern tables are editable in the UI for review but Save actions
+stay disabled until a backend lands.
 """
 from __future__ import annotations
 
@@ -18,8 +18,9 @@ from src.utils.ui_tokens import card_style, section_header, settings_page_shell
 
 
 _SNAPSHOT_TABLE_ID = "pbm-snapshot-table"
-_VEEAM_TABLE_ID = "pbm-veeam-patterns-table"
-_ZERTO_TABLE_ID = "pbm-zerto-patterns-table"
+_VEEAM_DR_TABLE_ID = "pbm-veeam-dr-patterns-table"
+_ALTRA_TABLE_ID = "pbm-altra-patterns-table"
+_CUSTOM_TABLE_ID = "pbm-custom-patterns-table"
 _SILINECEK_TABLE_ID = "pbm-silinecek-table"
 
 
@@ -75,6 +76,36 @@ def _pattern_columns() -> list[dict[str, str]]:
     ]
 
 
+def _pattern_table_paper(
+    *,
+    title: str,
+    description: str,
+    table_id: str,
+    rows: list[dict[str, Any]],
+    editable: bool = True,
+) -> dmc.Paper:
+    styles = _table_style()
+    return dmc.Paper(
+        **card_style(),
+        mb="md",
+        children=[
+            dmc.Title(title, order=5, mb="xs"),
+            dmc.Text(description, size="xs", c="dimmed", mb="sm"),
+            dash_table.DataTable(
+                id=table_id,
+                data=rows,
+                columns=_pattern_columns(),
+                page_size=20,
+                filter_action="native",
+                sort_action="native",
+                editable=editable,
+                row_deletable=editable,
+                **styles,
+            ),
+        ],
+    )
+
+
 def _image_app_panel(mapping: dict[str, Any]) -> html.Div:
     options = _policy_options(mapping)
     image_values = [str(t) for t in (mapping.get("image_policy_types") or [])]
@@ -107,13 +138,6 @@ def _image_app_panel(mapping: dict[str, Any]) -> html.Div:
                                     dmc.Text("Image panel policy types", fw=700, size="sm", c="#2B3674"),
                                 ],
                             ),
-                            dmc.Text(
-                                "NetBackup policy types rendered under Backup Image "
-                                "(CRM inventory / efficiency image basis).",
-                                size="xs",
-                                c="dimmed",
-                                mb="sm",
-                            ),
                             dmc.MultiSelect(
                                 id="pbm-image-policy-types",
                                 label="image_policy_types",
@@ -122,7 +146,6 @@ def _image_app_panel(mapping: dict[str, Any]) -> html.Div:
                                 searchable=True,
                                 clearable=True,
                                 size="sm",
-                                placeholder="Select policy types…",
                             ),
                         ],
                     ),
@@ -137,13 +160,6 @@ def _image_app_panel(mapping: dict[str, Any]) -> html.Div:
                                     dmc.Text("Application panel policy types", fw=700, size="sm", c="#2B3674"),
                                 ],
                             ),
-                            dmc.Text(
-                                "Documentary / UI seed list. Runtime classification still "
-                                "treats any type not in Image as Application.",
-                                size="xs",
-                                c="dimmed",
-                                mb="sm",
-                            ),
                             dmc.MultiSelect(
                                 id="pbm-application-policy-types",
                                 label="application_policy_types",
@@ -152,7 +168,6 @@ def _image_app_panel(mapping: dict[str, Any]) -> html.Div:
                                 searchable=True,
                                 clearable=True,
                                 size="sm",
-                                placeholder="Select policy types…",
                             ),
                         ],
                     ),
@@ -175,71 +190,126 @@ def _image_app_panel(mapping: dict[str, Any]) -> html.Div:
     )
 
 
-def _vendor_panel(
-    *,
-    vendor: str,
-    title: str,
-    description: str,
-    patterns: dict[str, Any],
-    table_id: str,
-) -> html.Div:
-    vendor_cfg = (patterns.get("vendor_reconciliation") or {}).get(vendor) or {}
-    metric = str(vendor_cfg.get("metric") or "—")
-    vendor_desc = str(vendor_cfg.get("description") or description)
-    replica_rows = _pattern_rows(patterns.get("replica_patterns"))
-    silinecek_rows = _pattern_rows(patterns.get("silinecek"))
-    styles = _table_style()
+def _silinecek_paper(patterns: dict[str, Any]) -> dmc.Paper:
+    return _pattern_table_paper(
+        title="Exclude before classification (silinecek)",
+        description="Matched names are excluded from billable and all replica pools.",
+        table_id=_SILINECEK_TABLE_ID,
+        rows=_pattern_rows(patterns.get("silinecek")),
+    )
 
+
+def _veeam_dr_panel(patterns: dict[str, Any]) -> html.Div:
+    vendor = (patterns.get("vendor_reconciliation") or {}).get("veeam") or {}
     return html.Div(
         [
             dmc.Alert(
-                f"{vendor_desc} Metric key: ``{metric}``. "
-                "Patterns are the shared YAML seed from ``replica_patterns.yaml``; "
-                "DB override is not wired yet.",
-                title=f"{title} separator seed",
+                str(vendor.get("description") or "")
+                + " Default seeds: ``_DR``, ``_DRC``, embedded ``-dr-`` / ``_dr_``. "
+                "Veeam Replica vs Backup is also split via session_type / jobs.type. "
+                "Save/DB persist is not wired yet — edit the YAML seed for now.",
+                title="Veeam DR name patterns (default)",
                 color="violet",
+                variant="light",
+                mb="md",
+            ),
+            _silinecek_paper(patterns),
+            _pattern_table_paper(
+                title="Veeam DR patterns",
+                description="Name matches → veeam_dr bucket (Veeam replication).",
+                table_id=_VEEAM_DR_TABLE_ID,
+                rows=_pattern_rows(patterns.get("veeam_dr_patterns")),
+            ),
+        ]
+    )
+
+
+def _altra_panel(patterns: dict[str, Any]) -> html.Div:
+    vendor = (patterns.get("vendor_reconciliation") or {}).get("altra") or {}
+    return html.Div(
+        [
+            dmc.Alert(
+                str(vendor.get("description") or "")
+                + " Default seeds: ``_replica``, ``_replika``, contains replica/replika. "
+                "CRM service matching for Altra is deferred. Save disabled for now.",
+                title="Altra / external replica patterns",
+                color="grape",
+                variant="light",
+                mb="md",
+            ),
+            _pattern_table_paper(
+                title="Altra / external replica patterns",
+                description="Name matches → altra_replica bucket (external DR / Cloud Connect style).",
+                table_id=_ALTRA_TABLE_ID,
+                rows=_pattern_rows(patterns.get("altra_replica_patterns")),
+            ),
+        ]
+    )
+
+
+def _custom_panel(patterns: dict[str, Any]) -> html.Div:
+    return html.Div(
+        [
+            dmc.Alert(
+                "Non-standard operator patterns (e.g. ALT-TRA-DER, ALT-TRA-DISASTER). "
+                "Empty by default. Add rows here when Save/DB override lands; until then "
+                "edit ``replica_patterns.yaml`` custom_patterns.",
+                title="Custom name patterns",
+                color="orange",
+                variant="light",
+                mb="md",
+            ),
+            _pattern_table_paper(
+                title="Custom patterns",
+                description="Name matches → custom bucket (treated as replica-like).",
+                table_id=_CUSTOM_TABLE_ID,
+                rows=_pattern_rows(patterns.get("custom_patterns")),
+            ),
+            dmc.Group(
+                justify="flex-end",
+                children=[
+                    dmc.Button(
+                        "Save patterns",
+                        id="pbm-patterns-save",
+                        size="sm",
+                        disabled=True,
+                        leftSection=DashIconify(icon="solar:diskette-bold-duotone", width=16),
+                    ),
+                ],
+            ),
+        ]
+    )
+
+
+def _zerto_panel(patterns: dict[str, Any]) -> html.Div:
+    vendor = (patterns.get("vendor_reconciliation") or {}).get("zerto") or {}
+    return html.Div(
+        [
+            dmc.Alert(
+                str(vendor.get("description") or "")
+                + " Zerto VMs are identified from ``raw_zerto_vm_metrics`` / VPG matrix — "
+                "not from VM name patterns. This tab is read-only documentation.",
+                title="Zerto — vendor matrix (read-only)",
+                color="blue",
                 variant="light",
                 mb="md",
             ),
             dmc.Paper(
                 **card_style(),
-                mb="md",
                 children=[
-                    dmc.Title("Exclude before replica (silinecek)", order=5, mb="xs"),
+                    dmc.Title("Zerto identification", order=5, mb="xs"),
                     dmc.Text(
-                        "Matched names are excluded from billable and replica pools.",
+                        "Protected VMs come from Zerto VPG / VM metrics. "
+                        "Reconcile against SUM(vmscount). Architecture (classic vs "
+                        "hyperconverged) is derived from cluster / Nutanix mirror rules.",
+                        size="sm",
+                        c="#2B3674",
+                    ),
+                    dmc.Text(
+                        f"Metric key: ``{vendor.get('metric') or 'vmscount'}``",
                         size="xs",
                         c="dimmed",
-                        mb="sm",
-                    ),
-                    dash_table.DataTable(
-                        id=f"{_SILINECEK_TABLE_ID}-{vendor}",
-                        data=silinecek_rows,
-                        columns=_pattern_columns(),
-                        page_size=10,
-                        **styles,
-                    ),
-                ],
-            ),
-            dmc.Paper(
-                **card_style(),
-                children=[
-                    dmc.Title("DR / replica name patterns", order=5, mb="xs"),
-                    dmc.Text(
-                        "Any match classifies the VM into the replica resource pool "
-                        f"(shared seed; {title} counter used for reconciliation).",
-                        size="xs",
-                        c="dimmed",
-                        mb="sm",
-                    ),
-                    dash_table.DataTable(
-                        id=table_id,
-                        data=replica_rows,
-                        columns=_pattern_columns(),
-                        page_size=20,
-                        filter_action="native",
-                        sort_action="native",
-                        **styles,
+                        mt="sm",
                     ),
                 ],
             ),
@@ -254,8 +324,7 @@ def _multipliers_panel() -> html.Div:
         [
             dmc.Alert(
                 "Nutanix snapshot multipliers for Platform sellable capacity. "
-                "Nothing is persisted yet — inputs are inert and Save is disabled. "
-                "Backend will follow the Resource ratios / calc-config pattern.",
+                "Nothing is persisted yet — inputs are inert and Save is disabled.",
                 title="Platform multipliers — preview only",
                 color="orange",
                 variant="light",
@@ -263,90 +332,8 @@ def _multipliers_panel() -> html.Div:
             ),
             dmc.Paper(
                 **card_style(),
-                mb="md",
-                children=[
-                    dmc.Group(
-                        justify="space-between",
-                        mb="sm",
-                        children=[
-                            dmc.Title("Add / update multiplier", order=5),
-                            dmc.Button(
-                                "Reset form",
-                                id="pbm-bkp-reset",
-                                size="xs",
-                                variant="subtle",
-                                color="gray",
-                                disabled=True,
-                            ),
-                        ],
-                    ),
-                    dmc.Grid(
-                        gutter="sm",
-                        children=[
-                            dmc.GridCol(
-                                span={"base": 12, "md": 3},
-                                children=dmc.TextInput(
-                                    id="pbm-bkp-family",
-                                    label="family",
-                                    size="xs",
-                                    placeholder="virt_hyperconverged",
-                                    disabled=True,
-                                ),
-                            ),
-                            dmc.GridCol(
-                                span={"base": 12, "md": 2},
-                                children=dmc.TextInput(
-                                    id="pbm-bkp-dc",
-                                    label="dc_code",
-                                    size="xs",
-                                    value="*",
-                                    disabled=True,
-                                ),
-                            ),
-                            dmc.GridCol(
-                                span={"base": 12, "md": 3},
-                                children=dmc.NumberInput(
-                                    id="pbm-bkp-multiplier",
-                                    label="snapshot multiplier",
-                                    size="xs",
-                                    value=1.0,
-                                    min=0,
-                                    step=0.1,
-                                    disabled=True,
-                                ),
-                            ),
-                            dmc.GridCol(
-                                span={"base": 12, "md": 2},
-                                children=dmc.Button(
-                                    "Save",
-                                    id="pbm-bkp-save",
-                                    size="xs",
-                                    disabled=True,
-                                ),
-                            ),
-                            dmc.GridCol(
-                                span={"base": 12, "md": 12},
-                                children=dmc.TextInput(
-                                    id="pbm-bkp-notes",
-                                    label="notes",
-                                    size="xs",
-                                    disabled=True,
-                                ),
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-            dmc.Paper(
-                **card_style(),
                 children=[
                     dmc.Title("Nutanix snapshot sources", order=5, mb="xs"),
-                    dmc.Text(
-                        "Columns are a proposal. No snapshot query is wired yet.",
-                        size="xs",
-                        c="dimmed",
-                        mb="sm",
-                    ),
                     dash_table.DataTable(
                         id=_SNAPSHOT_TABLE_ID,
                         data=[],
@@ -356,7 +343,6 @@ def _multipliers_panel() -> html.Div:
                             {"name": "snapshots", "id": "snapshots", "type": "numeric"},
                             {"name": "raw_gb", "id": "raw_gb", "type": "numeric"},
                             {"name": "multiplier", "id": "multiplier", "type": "numeric"},
-                            {"name": "updated_by", "id": "updated_by"},
                         ],
                         page_size=20,
                         **styles,
@@ -374,6 +360,19 @@ def _multipliers_panel() -> html.Div:
     )
 
 
+def _tab(label: str, icon: str, value: str) -> dmc.TabsTab:
+    return dmc.TabsTab(
+        dmc.Group(
+            gap=6,
+            children=[
+                DashIconify(icon=icon, width=16),
+                label,
+            ],
+        ),
+        value=value,
+    )
+
+
 def build_layout(search: str | None = None) -> html.Div:
     _ = search
     mapping = load_policy_panel_mapping()
@@ -384,8 +383,9 @@ def build_layout(search: str | None = None) -> html.Div:
             [
                 section_header(
                     "Backup Mapping",
-                    "Platform controls for NetBackup Image vs Application policy mapping, "
-                    "Veeam / Zerto replica separators, and Nutanix snapshot multipliers.",
+                    "Platform controls for NetBackup Image vs Application, "
+                    "Veeam DR / Altra / custom name patterns, Zerto matrix notes, "
+                    "and Nutanix snapshot multipliers.",
                     icon="solar:cloud-storage-bold-duotone",
                 ),
                 dmc.Paper(
@@ -399,97 +399,20 @@ def build_layout(search: str | None = None) -> html.Div:
                             children=[
                                 dmc.TabsList(
                                     children=[
-                                        dmc.TabsTab(
-                                            dmc.Group(
-                                                gap=6,
-                                                children=[
-                                                    DashIconify(
-                                                        icon="solar:layers-minimalistic-bold-duotone",
-                                                        width=16,
-                                                    ),
-                                                    "Image vs Application",
-                                                ],
-                                            ),
-                                            value="image-app",
-                                        ),
-                                        dmc.TabsTab(
-                                            dmc.Group(
-                                                gap=6,
-                                                children=[
-                                                    DashIconify(
-                                                        icon="solar:server-square-cloud-bold-duotone",
-                                                        width=16,
-                                                    ),
-                                                    "Veeam separator",
-                                                ],
-                                            ),
-                                            value="veeam",
-                                        ),
-                                        dmc.TabsTab(
-                                            dmc.Group(
-                                                gap=6,
-                                                children=[
-                                                    DashIconify(
-                                                        icon="solar:restart-bold-duotone",
-                                                        width=16,
-                                                    ),
-                                                    "Zerto separator",
-                                                ],
-                                            ),
-                                            value="zerto",
-                                        ),
-                                        dmc.TabsTab(
-                                            dmc.Group(
-                                                gap=6,
-                                                children=[
-                                                    DashIconify(
-                                                        icon="solar:chart-bold-duotone",
-                                                        width=16,
-                                                    ),
-                                                    "Multipliers",
-                                                ],
-                                            ),
-                                            value="multipliers",
-                                        ),
+                                        _tab("Image vs Application", "solar:layers-minimalistic-bold-duotone", "image-app"),
+                                        _tab("Veeam DR patterns", "solar:server-square-cloud-bold-duotone", "veeam-dr"),
+                                        _tab("Altra / external replica", "solar:global-bold-duotone", "altra"),
+                                        _tab("Custom patterns", "solar:pen-new-square-bold-duotone", "custom"),
+                                        _tab("Zerto (read-only)", "solar:restart-bold-duotone", "zerto"),
+                                        _tab("Multipliers", "solar:chart-bold-duotone", "multipliers"),
                                     ]
                                 ),
-                                dmc.TabsPanel(
-                                    value="image-app",
-                                    pt="md",
-                                    children=_image_app_panel(mapping),
-                                ),
-                                dmc.TabsPanel(
-                                    value="veeam",
-                                    pt="md",
-                                    children=_vendor_panel(
-                                        vendor="veeam",
-                                        title="Veeam",
-                                        description=(
-                                            "Compare replica pool size to Veeam "
-                                            "VSphereReplica object counts."
-                                        ),
-                                        patterns=patterns,
-                                        table_id=_VEEAM_TABLE_ID,
-                                    ),
-                                ),
-                                dmc.TabsPanel(
-                                    value="zerto",
-                                    pt="md",
-                                    children=_vendor_panel(
-                                        vendor="zerto",
-                                        title="Zerto",
-                                        description=(
-                                            "Compare replica pool size to Zerto VPG VM counts."
-                                        ),
-                                        patterns=patterns,
-                                        table_id=_ZERTO_TABLE_ID,
-                                    ),
-                                ),
-                                dmc.TabsPanel(
-                                    value="multipliers",
-                                    pt="md",
-                                    children=_multipliers_panel(),
-                                ),
+                                dmc.TabsPanel(value="image-app", pt="md", children=_image_app_panel(mapping)),
+                                dmc.TabsPanel(value="veeam-dr", pt="md", children=_veeam_dr_panel(patterns)),
+                                dmc.TabsPanel(value="altra", pt="md", children=_altra_panel(patterns)),
+                                dmc.TabsPanel(value="custom", pt="md", children=_custom_panel(patterns)),
+                                dmc.TabsPanel(value="zerto", pt="md", children=_zerto_panel(patterns)),
+                                dmc.TabsPanel(value="multipliers", pt="md", children=_multipliers_panel()),
                             ],
                         ),
                     ],

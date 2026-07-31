@@ -221,7 +221,7 @@ _REDIS_FIELD_UNITS: dict[tuple[str, str], str] = {
 
 # Maps panel family → datacenter-api compute endpoint kind.
 # backup_netbackup uses /compute/backup-netbackup (pool usable + used; PostDedup semantics).
-# Replication families use the dedicated classic-host-pool alias endpoint.
+# Replication families use the dedicated host-pool alias endpoint (classic or HC).
 # backup_image uses the dedicated Nutanix-backed storage endpoint.
 _FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
     "virt_classic":              "classic",
@@ -229,26 +229,42 @@ _FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
     "backup_netbackup":          "backup-netbackup",
     "backup_veeam_replication":  "backup-replication",
     "backup_zerto_replication":  "backup-replication",
+    "backup_veeam_replication_classic": "backup-replication",
+    "backup_zerto_replication_classic": "backup-replication",
+    "backup_veeam_replication_hyperconverged": "backup-replication",
+    "backup_zerto_replication_hyperconverged": "backup-replication",
     "backup_image":              "backup-nutanix",
 }
 
+_REPLICATION_HC_FAMILIES: frozenset[str] = frozenset({
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
+
 # Replication sellable competes with virt free capacity (primary vs alternate pool).
-# Only CPU/RAM — storage is dedicated (Veeam datastores / Zerto site metrics).
+# Only CPU/RAM — storage is dedicated (Veeam/Zerto-eligible datastores).
 _REPLICATION_ALTERNATE_FAMILIES: frozenset[str] = frozenset({
     "backup_veeam_replication",
     "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
 })
 _REPLICATION_ALTERNATE_KINDS: frozenset[str] = frozenset({"cpu", "ram"})
 
 # Families that must not run apply_storage_ratio_cap:
 # - storage-only backup (no CPU/RAM → false compute_bottleneck)
-# - replication (storage is dedicated Veeam DS / Zerto sites; not tied to
-#   replication CPU/RAM alternate pool which is often gated/zero)
+# - replication (storage is dedicated; not tied to CPU/RAM alternate pool)
 _SKIP_STORAGE_RATIO_CAP_FAMILIES: frozenset[str] = frozenset({
     "backup_netbackup",
     "backup_image",
     "backup_veeam_replication",
     "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
 })
 
 # Alias kept for tests / call sites that check storage-only NetBackup/image.
@@ -263,6 +279,10 @@ _CLUSTERLESS_COMPUTE_FAMILIES: frozenset[str] = frozenset({
     "backup_image",
     "backup_veeam_replication",
     "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
 })
 
 # NetBackup Image + Application share one disk pool (fully shared min/max).
@@ -1637,6 +1657,14 @@ SELECT _tot, _alloc FROM latest
             url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}?clusters={csv}"
         else:
             url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
+        if family in _REPLICATION_ALTERNATE_FAMILIES and kind == "backup-replication":
+            arch = (
+                "hyperconverged"
+                if family in _REPLICATION_HC_FAMILIES
+                else "classic"
+            )
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}architecture={arch}"
         try:
             resp = httpx.get(url, timeout=15.0)
             resp.raise_for_status()
@@ -1646,23 +1674,52 @@ SELECT _tot, _alloc FROM latest
             logger.exception("compute raw fetch failed dc=%s family=%s url=%s", dc_code, family, url)
             return None
 
-    def _fetch_veeam_datastore_storage(self, dc_code: str) -> "dict | None":
-        """Fetch Veeam replication storage from virt-excluded veeam datastores."""
+    def _fetch_veeam_datastore_storage(
+        self, dc_code: str, *, include_nutanix: bool = False
+    ) -> "dict | None":
+        """Fetch Veeam replication storage (all VMware DS except NetBackup)."""
         if not dc_code or dc_code == "*" or not self._dc_api_url:
             return None
-        url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/backup-veeam-storage"
+        flag = "true" if include_nutanix else "false"
+        url = (
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/backup-veeam-storage"
+            f"?include_nutanix={flag}"
+        )
         try:
             resp = httpx.get(url, timeout=15.0)
             resp.raise_for_status()
             data = resp.json()
             if not isinstance(data, dict):
                 return None
-            # Prefer datastore totals when present; empty DS falls through to infra.
             if float(data.get("stor_cap") or 0) <= 0 and int(data.get("datastore_count") or 0) <= 0:
                 return None
             return data
         except Exception:
             logger.exception("veeam datastore storage fetch failed dc=%s url=%s", dc_code, url)
+            return None
+
+    def _fetch_zerto_datastore_storage(
+        self, dc_code: str, *, include_nutanix: bool = False
+    ) -> "dict | None":
+        """Fetch Zerto-eligible VMware storage (except Veeam + NetBackup)."""
+        if not dc_code or dc_code == "*" or not self._dc_api_url:
+            return None
+        flag = "true" if include_nutanix else "false"
+        url = (
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/backup-zerto-storage"
+            f"?include_nutanix={flag}"
+        )
+        try:
+            resp = httpx.get(url, timeout=15.0)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+            if float(data.get("stor_cap") or 0) <= 0 and int(data.get("datastore_count") or 0) <= 0:
+                return None
+            return data
+        except Exception:
+            logger.exception("zerto datastore storage fetch failed dc=%s url=%s", dc_code, url)
             return None
 
     @staticmethod
@@ -2846,21 +2903,72 @@ SELECT _tot, _alloc FROM latest
         raw: dict | None = None
         kind_l = (panel.resource_kind or "").lower()
 
-        # Veeam replication storage: virt-excluded veeam-named datastores.
+        # Veeam replication storage: all VMware DS except NetBackup (+ Nutanix on HC).
         if (
-            panel.family == "backup_veeam_replication"
+            panel.family in (
+                "backup_veeam_replication",
+                "backup_veeam_replication_classic",
+                "backup_veeam_replication_hyperconverged",
+            )
             and kind_l == "storage"
             and bool(dc_code)
             and dc_code != "*"
         ):
-            veeam_raw = self._fetch_veeam_datastore_storage(dc_code)
+            include_ntnx = panel.family in _REPLICATION_HC_FAMILIES or (
+                panel.family == "backup_veeam_replication"
+            )
+            # Legacy combined family: classic DS only (no Nutanix) to avoid double-count;
+            # architecture-specific families set include_ntnx explicitly.
+            if panel.family == "backup_veeam_replication":
+                include_ntnx = False
+            elif panel.family == "backup_veeam_replication_classic":
+                include_ntnx = False
+            else:
+                include_ntnx = True
+            veeam_raw = self._fetch_veeam_datastore_storage(
+                dc_code, include_nutanix=include_ntnx
+            )
             if veeam_raw is not None:
                 compute_metrics = self._extract_compute_metrics(veeam_raw, "storage")
                 if compute_metrics is not None:
                     raw = veeam_raw
                     has_infra = True
                     util_pct = self._extract_utilization_pct(raw, "storage")
-                    notes.append("via datacenter-api/compute/backup-veeam-storage (veeam datastores)")
+                    notes.append(
+                        "via datacenter-api/compute/backup-veeam-storage "
+                        "(VMware DS except NetBackup"
+                        + (", +Nutanix" if include_ntnx else "")
+                        + ")"
+                    )
+
+        # Zerto replication storage: VMware DS except Veeam+NetBackup (+ Nutanix on HC).
+        if (
+            compute_metrics is None
+            and panel.family in (
+                "backup_zerto_replication",
+                "backup_zerto_replication_classic",
+                "backup_zerto_replication_hyperconverged",
+            )
+            and kind_l == "storage"
+            and bool(dc_code)
+            and dc_code != "*"
+        ):
+            include_ntnx = panel.family in _REPLICATION_HC_FAMILIES
+            zerto_raw = self._fetch_zerto_datastore_storage(
+                dc_code, include_nutanix=include_ntnx
+            )
+            if zerto_raw is not None:
+                compute_metrics = self._extract_compute_metrics(zerto_raw, "storage")
+                if compute_metrics is not None:
+                    raw = zerto_raw
+                    has_infra = True
+                    util_pct = self._extract_utilization_pct(raw, "storage")
+                    notes.append(
+                        "via datacenter-api/compute/backup-zerto-storage "
+                        "(VMware DS except Veeam+NetBackup"
+                        + (", +Nutanix" if include_ntnx else "")
+                        + ")"
+                    )
 
         # Replication storage must NOT use classic host storage from backup-replication.
         use_compute = (

@@ -49,3 +49,16 @@ def test_defined_sessions_synced_from_fallback_type_counts():
         defined = sum(int(t.get("count") or 0) for t in types)
     assert defined == 2
     assert {t["type"] for t in types} == {"Backup", "VSphereReplica"}
+
+
+def test_partition_veeam_session_types():
+    rows = [
+        {"type": "Backup", "count": 2},
+        {"type": "VSphereReplica", "count": 1},
+        {"type": "ReplicaJob", "count": 3},
+        {"type": "Unknown", "count": 1},
+    ]
+    buckets = CustomerAdapter.partition_veeam_session_types(rows)
+    assert {r["type"] for r in buckets["backup"]} == {"Backup"}
+    assert {r["type"] for r in buckets["replica"]} == {"VSphereReplica", "ReplicaJob"}
+    assert {r["type"] for r in buckets["other"]} == {"Unknown"}

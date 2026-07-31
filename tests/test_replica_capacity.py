@@ -41,6 +41,8 @@ def test_sum_replica_resources_groups_classic_and_hc_by_cluster():
     ]
     out = sum_replica_resources(rows)
     assert out["replica_vm_count"] == 2
+    assert out["by_name_bucket"]["veeam_dr"] == 1
+    assert out["by_name_bucket"]["altra_replica"] == 1
     assert out["classic"]["by_cluster"]["KM-1"]["vm_count"] == 1
     assert out["classic"]["by_cluster"]["KM-1"]["cpu"] == 4.0
     assert out["hyperconverged"]["by_cluster"]["HC-A"]["disk_gb"] == 200.0

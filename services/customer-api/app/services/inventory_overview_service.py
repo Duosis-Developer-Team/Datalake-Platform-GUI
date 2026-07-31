@@ -73,6 +73,10 @@ _INVENTORY_CRM_VISIBLE_FAMILIES: frozenset[str] = frozenset({
     "backup_netbackup",
     "backup_veeam_replication",
     "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
     "backup_image",
     "backup_remote",
 })

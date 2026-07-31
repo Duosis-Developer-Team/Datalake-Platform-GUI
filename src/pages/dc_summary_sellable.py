@@ -48,6 +48,10 @@ _BACKUP_FAMILY_LABELS = {
     "backup_netbackup": "NetBackup",
     "backup_veeam_replication": "Veeam Replication",
     "backup_zerto_replication": "Zerto Replication",
+    "backup_veeam_replication_classic": "Veeam Replication Classic",
+    "backup_veeam_replication_hyperconverged": "Veeam Replication HC",
+    "backup_zerto_replication_classic": "Zerto Replication Classic",
+    "backup_zerto_replication_hyperconverged": "Zerto Replication HC",
     "backup_image": "Nutanix Image Backup",
 }
 

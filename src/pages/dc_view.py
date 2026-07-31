@@ -1979,14 +1979,44 @@ def _backup_inline_sellable_blocks(
             "violet",
             classic_clusters or None,
             "sellable-backup-veeam-card",
-            "CPU/RAM share virt host free (alternate min=0). Storage is dedicated veeam datastores.",
+            "CPU/RAM share virt host free (alternate min=0 … max=free). "
+            "Storage: all VMware datastores except NetBackup (dedicated).",
+        ),
+        "backup_veeam_replication_classic": (
+            "Veeam Replication Classic — Sellable",
+            "violet",
+            classic_clusters or None,
+            "sellable-backup-veeam-classic-card",
+            "Classic host pool alternate. Storage: VMware DS except NetBackup.",
+        ),
+        "backup_veeam_replication_hyperconverged": (
+            "Veeam Replication HC — Sellable",
+            "violet",
+            hyperconv_clusters or None,
+            "sellable-backup-veeam-hc-card",
+            "HC host pool alternate. Storage: VMware DS except NetBackup + Nutanix disks.",
         ),
         "backup_zerto_replication": (
             "Zerto Replication — Sellable Potential",
             "grape",
             classic_clusters or None,
             "sellable-backup-zerto-card",
-            "CPU/RAM share virt host free (alternate min=0). Storage uses Zerto site/VPG metrics.",
+            "CPU/RAM share virt host free (alternate min=0 … max=free). "
+            "Storage: VMware DS except Veeam+NetBackup (dedicated).",
+        ),
+        "backup_zerto_replication_classic": (
+            "Zerto Replication Classic — Sellable",
+            "grape",
+            classic_clusters or None,
+            "sellable-backup-zerto-classic-card",
+            "Classic host pool alternate. Storage: VMware DS except Veeam+NetBackup.",
+        ),
+        "backup_zerto_replication_hyperconverged": (
+            "Zerto Replication HC — Sellable",
+            "grape",
+            hyperconv_clusters or None,
+            "sellable-backup-zerto-hc-card",
+            "HC host pool alternate. Storage: VMware DS except Veeam+NetBackup + Nutanix disks.",
         ),
     }
     out: list = []
@@ -2297,6 +2327,10 @@ def _build_sellable_inline_kpi(
         "virt_hyperconverged",
         "backup_veeam_replication",
         "backup_zerto_replication",
+        "backup_veeam_replication_classic",
+        "backup_zerto_replication_classic",
+        "backup_veeam_replication_hyperconverged",
+        "backup_zerto_replication_hyperconverged",
         "backup_image",
     })
     panels: list[dict] = []
@@ -6327,6 +6361,10 @@ def build_dc_view(
                                                     hyperconv_clusters=hyperconv_clusters or None,
                                                     content_mode=backup_content_mode,
                                                     include=(
+                                                        "backup_veeam_replication_classic",
+                                                        "backup_veeam_replication_hyperconverged",
+                                                        "backup_zerto_replication_classic",
+                                                        "backup_zerto_replication_hyperconverged",
                                                         "backup_veeam_replication",
                                                         "backup_zerto_replication",
                                                     ),
@@ -6334,10 +6372,12 @@ def build_dc_view(
                                                 build_replication_section(
                                                     veeam_data=veeam_data,
                                                     zerto_data=zerto_data,
-                                                    zerto_license=zerto_license_data,
+                                                    zerto_license=None,
+                                                    veeam_license=None,
                                                     has_veeam=has_veeam,
                                                     has_zerto=has_zerto,
                                                     content_mode=backup_content_mode,
+                                                    show_licenses=False,
                                                 ),
                                             ],
                                         ),

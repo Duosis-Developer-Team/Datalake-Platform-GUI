@@ -27,12 +27,17 @@ from src.utils.virt_sellable_aggregate import (
 POTENTIAL_SALES_SERVICE_GROUPS: tuple[str, ...] = (
     "Virtualization (Classic, Hyperconverged, Power)",
     "Backup (NetBackup Image / Application, Nutanix Snapshots)",
-    "Replication (Veeam, Zerto)",
+    "Replication (Veeam / Zerto — classic and hyperconverged SKUs)",
     "Colocation / Physical (rack-U)",
 )
 
 BACKUP_SELLABLE_FAMILIES: tuple[str, ...] = (
     "backup_netbackup",
+    "backup_veeam_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_classic",
+    "backup_zerto_replication_hyperconverged",
+    # Legacy combined families (still in DB until migration remaps everything)
     "backup_veeam_replication",
     "backup_zerto_replication",
     "backup_image",
@@ -46,11 +51,27 @@ _NETBACKUP_PANEL_KEYS = frozenset({
 _REPLICATION_FAMILIES = frozenset({
     "backup_veeam_replication",
     "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
 })
 
 _VIRT_COMPUTE_FAMILIES = frozenset({
     "virt_classic",
     "virt_hyperconverged",
+})
+
+_REPLICATION_CLASSIC_FAMILIES = frozenset({
+    "backup_veeam_replication",
+    "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+})
+
+_REPLICATION_HC_FAMILIES = frozenset({
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
 })
 
 
@@ -65,8 +86,10 @@ def collect_backup_sellable_panels(
 
     def _fetch(family: str) -> list[dict]:
         kwargs: dict[str, Any] = {"dc_code": str(dc_id), "family": family}
-        if family in ("backup_veeam_replication", "backup_zerto_replication"):
+        if family in _REPLICATION_CLASSIC_FAMILIES:
             kwargs["clusters"] = classic_clusters
+        elif family in _REPLICATION_HC_FAMILIES:
+            kwargs["clusters"] = hyperconv_clusters
         elif family == "backup_image":
             kwargs["clusters"] = hyperconv_clusters
         chunk = api.get_sellable_by_panel(**kwargs) or []
@@ -234,13 +257,32 @@ def collect_platform_sellable_panels(
 
 
 def potential_sales_info_text() -> str:
-    """English tooltip body listing examined service groups."""
-    lines = ["Potential Sales includes sellable headroom across:"]
+    """English tooltip body explaining Potential Sales calculation rules."""
+    lines = [
+        "Potential Sales includes sellable headroom across:",
+    ]
     for group in POTENTIAL_SALES_SERVICE_GROUPS:
         lines.append(f"• {group}")
-    lines.append(
-        "Shared pools use IBM-style min–max bands (virt↔replication host free; "
-        "NetBackup Image↔Application disk pool). Colocation free rack-U is included."
+    lines.extend(
+        [
+            "",
+            "How capacity is calculated:",
+            "• Virtualization CPU/RAM is primary on the host pool; "
+            "Veeam/Zerto replication CPU/RAM is an alternate claimant "
+            "(min=0 if virt sells all free, max=full free if replication sells all).",
+            "• NetBackup Image and Application share one disk pool "
+            "(IBM-style min=half free, max=full free).",
+            "• Veeam replication storage uses all VMware datastores except NetBackup "
+            "(dedicated; not shared with virt). On hyperconverged, Nutanix disks "
+            "are included when VMware-managed HC VMs use Veeam.",
+            "• Zerto replication storage uses VMware datastores except Veeam and "
+            "NetBackup (dedicated). On hyperconverged, Nutanix disks are included "
+            "when VMware-managed HC VMs use Zerto.",
+            "• Classic vs Hyperconverged CRM SKUs map to separate sellable families "
+            "(cluster ILIKE %KM% → classic; otherwise HC / Nutanix mirror).",
+            "• Colocation free rack-U is included.",
+            "• License headroom is not included yet (external data source planned).",
+        ]
     )
     return "\n".join(lines)
 

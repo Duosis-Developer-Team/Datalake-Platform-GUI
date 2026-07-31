@@ -77,6 +77,29 @@ class CustomerAdapter:
             for t, c in sorted(type_counts.items(), key=lambda item: (-item[1], item[0]))
         ]
 
+    @staticmethod
+    def partition_veeam_session_types(
+        session_types: list[dict] | None,
+    ) -> dict[str, list[dict]]:
+        """Split Sessions-by-Type rows into replica / backup / other buckets.
+
+        Uses ``classify_veeam_session_or_job_type`` on each row's ``type``
+        (session_type primary, jobs.type fallback already merged upstream).
+        """
+        from shared.backup.replica_classifier import classify_veeam_session_or_job_type
+
+        buckets: dict[str, list[dict]] = {
+            "replica": [],
+            "backup": [],
+            "other": [],
+        }
+        for row in session_types or []:
+            if not isinstance(row, dict):
+                continue
+            label = classify_veeam_session_or_job_type(str(row.get("type") or ""))
+            buckets[label].append(row)
+        return buckets
+
     def _enrich_customer_vm_list(self, cursor, vm_list: list[dict]) -> list[dict]:
         def _loader():
             return self._run_rows(cursor, NETBOX_HOST_CPU_STRINGS)
@@ -440,6 +463,8 @@ class CustomerAdapter:
                 if veeam_defined_sessions == 0 and veeam_types:
                     veeam_defined_sessions = sum(int(t.get("count") or 0) for t in veeam_types)
 
+                veeam_type_buckets = self.partition_veeam_session_types(veeam_types)
+
                 netbackup_summary_row = self._run_row(
                     cur,
                     cq.CUSTOMER_NETBACKUP_BACKUP_SUMMARY,
@@ -645,6 +670,7 @@ class CustomerAdapter:
                 "veeam": {
                     "defined_sessions": veeam_defined_sessions,
                     "session_types": veeam_types,
+                    "session_type_buckets": veeam_type_buckets,
                     "platforms": veeam_platforms,
                 },
                 "zerto": {

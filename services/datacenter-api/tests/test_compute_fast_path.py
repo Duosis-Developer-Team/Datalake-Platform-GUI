@@ -134,7 +134,7 @@ class TestComputeFastPath(unittest.TestCase):
 
         self.assertAlmostEqual(out["stor_cap"], 3.0)
         self.assertEqual(out["datastore_count"], 2)
-        self.assertEqual(out["source"], "vmware_datastore_veeam")
+        self.assertEqual(out["source"], "vmware_datastore_veeam_eligible")
 
     def test_get_backup_nutanix_compute_reuses_hyperconv_metrics(self):
         svc = DatabaseService.__new__(DatabaseService)

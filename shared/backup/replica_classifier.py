@@ -3,6 +3,17 @@
 No database access. Defaults mirror ``replica_patterns.yaml`` (Platform Backup
 Mapping seed). Callers may pass an explicit ``patterns`` dict for tests or a
 future DB override export.
+
+Buckets (v2)::
+
+    silinecek → excluded
+    veeam_dr → Veeam DR / replication name patterns
+    altra_replica → external Altra / Cloud Connect style replicas
+    custom → operator non-standard patterns
+    billable → remainder
+
+Legacy ``replica`` is not returned; use ``is_replica_like`` / ``filter_replica_names``.
+Zerto VMs are identified from vendor tables, not name patterns.
 """
 from __future__ import annotations
 
@@ -11,49 +22,65 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
-VmBucket = Literal["silinecek", "replica", "billable"]
+VmBucket = Literal["silinecek", "veeam_dr", "altra_replica", "custom", "billable"]
+
+_REPLICA_LIKE: frozenset[str] = frozenset({"veeam_dr", "altra_replica", "custom"})
 
 _PATTERNS_PATH = Path(__file__).resolve().parent / "replica_patterns.yaml"
 
-# Built-in defaults (keep in sync with replica_patterns.yaml).
+# Built-in defaults (keep in sync with replica_patterns.yaml when YAML missing).
 _SILINECEK_RE = re.compile(r"silinecek", re.IGNORECASE)
-_SUFFIX_RE = re.compile(r"(_dr|_drc|_replica|_replika)$", re.IGNORECASE)
-_EMBEDDED_DR_RE = re.compile(r"[_-]dr[_-]", re.IGNORECASE)
-_CONTAINS_REPLICA_RE = re.compile(r"replica|replika", re.IGNORECASE)
+_VEEAM_DR_SUFFIX_RE = re.compile(r"(_dr|_drc)$", re.IGNORECASE)
+_VEEAM_DR_EMBEDDED_RE = re.compile(r"[_-]dr[_-]", re.IGNORECASE)
+_ALTRA_SUFFIX_RE = re.compile(r"(_replica|_replika)$", re.IGNORECASE)
+_ALTRA_CONTAINS_RE = re.compile(r"replica|replika", re.IGNORECASE)
+
+
+def is_replica_like(bucket: str | None) -> bool:
+    """True for veeam_dr / altra_replica / custom (name-based replica pools)."""
+    return (bucket or "") in _REPLICA_LIKE
 
 
 def classify_vm_name(
     name: str | None,
     patterns: dict[str, Any] | None = None,
 ) -> VmBucket:
-    """Return ``silinecek``, ``replica``, or ``billable`` for a VM name.
+    """Return silinecek, veeam_dr, altra_replica, custom, or billable.
 
-    Order: silinecek exclude first, then DR/replica patterns, else billable.
-    Empty / None names are ``billable`` (nothing to classify as replica).
+    Order: silinecek → veeam_dr → altra_replica → custom → billable.
+    Empty / None names are ``billable``.
     """
     raw = (name or "").strip()
     if not raw:
         return "billable"
 
     if patterns is None:
-        if _SILINECEK_RE.search(raw):
-            return "silinecek"
-        if _is_replica_name(raw):
-            return "replica"
-        return "billable"
+        return _classify_builtin(raw)
 
     if _matches_silinecek(raw, patterns):
         return "silinecek"
-    if _matches_replica(raw, patterns):
-        return "replica"
+    if _matches_bucket(raw, patterns, "veeam_dr_patterns"):
+        return "veeam_dr"
+    if _matches_bucket(raw, patterns, "altra_replica_patterns"):
+        return "altra_replica"
+    if _matches_bucket(raw, patterns, "custom_patterns"):
+        return "custom"
+    # Legacy flat replica_patterns (v1 seed) → treat as veeam_dr first-match
+    # then altra via value heuristics is too fragile; map all to veeam_dr for
+    # backward compat only when no v2 keys present.
+    if _legacy_flat_replica(patterns) and _matches_bucket(raw, patterns, "replica_patterns"):
+        return _legacy_bucket_for_name(raw)
     return "billable"
 
 
 def filter_replica_names(
     names: Iterable[str | None],
     patterns: dict[str, Any] | None = None,
+    *,
+    buckets: Iterable[str] | None = None,
 ) -> list[str]:
-    """Return names classified as ``replica`` (order preserved, empties dropped)."""
+    """Return names classified into replica-like buckets (order preserved)."""
+    allowed = set(buckets) if buckets is not None else set(_REPLICA_LIKE)
     out: list[str] = []
     for name in names:
         if name is None:
@@ -61,28 +88,43 @@ def filter_replica_names(
         text = str(name).strip()
         if not text:
             continue
-        if classify_vm_name(text, patterns=patterns) == "replica":
+        if classify_vm_name(text, patterns=patterns) in allowed:
             out.append(text)
     return out
 
 
 def reconcile_vendor_counts(
-    replica_vm_count: int | float | None,
-    veeam_objects: int | float | None,
-    zerto_vms: int | float | None,
+    replica_vm_count: int | float | None = None,
+    veeam_objects: int | float | None = None,
+    zerto_vms: int | float | None = None,
+    *,
+    veeam_dr_count: int | float | None = None,
+    altra_count: int | float | None = None,
 ) -> dict[str, Any]:
-    """Compare name-based replica pool size to Veeam + Zerto vendor counters.
+    """Compare name-based pools to Veeam + Zerto vendor counters.
 
-    ``gap`` = replica pool − (veeam objects + zerto VMs). Non-zero gap means
-    leakage or double-count; status is ``ok`` only when gap is zero.
+    Prefer ``veeam_dr_count`` + ``altra_count``. When only ``replica_vm_count``
+    is passed (legacy), it is treated as the combined name-based pool.
+
+    ``gap`` = name_pool − (veeam objects + zerto VMs). Altra names are included
+    in the name pool but have no vendor counter yet (expected gap contribution).
     """
-    replica = int(replica_vm_count or 0)
     veeam = int(veeam_objects or 0)
     zerto = int(zerto_vms or 0)
+    veeam_dr = int(veeam_dr_count) if veeam_dr_count is not None else None
+    altra = int(altra_count) if altra_count is not None else None
+
+    if veeam_dr is not None or altra is not None:
+        name_pool = int(veeam_dr or 0) + int(altra or 0)
+    else:
+        name_pool = int(replica_vm_count or 0)
+
     vendor_total = veeam + zerto
-    gap = replica - vendor_total
+    gap = name_pool - vendor_total
     return {
-        "replica_vm_count": replica,
+        "replica_vm_count": name_pool,
+        "veeam_dr_count": int(veeam_dr or 0) if veeam_dr is not None else None,
+        "altra_count": int(altra or 0) if altra is not None else None,
         "veeam_objects": veeam,
         "zerto_vms": zerto,
         "vendor_total": vendor_total,
@@ -91,28 +133,59 @@ def reconcile_vendor_counts(
     }
 
 
-def _is_replica_name(name: str) -> bool:
-    return bool(
-        _SUFFIX_RE.search(name)
-        or _EMBEDDED_DR_RE.search(name)
-        or _CONTAINS_REPLICA_RE.search(name)
+def classify_veeam_session_or_job_type(value: str | None) -> Literal["replica", "backup", "other"]:
+    """Map Veeam session_type or jobs.type to replica / backup / other.
+
+    session_type examples: ReplicaJob, BackupJob, …
+    jobs.type examples: VSphereReplica, Backup, …
+    """
+    raw = (value or "").strip().lower()
+    if not raw:
+        return "other"
+    if "replica" in raw:
+        return "replica"
+    if "backup" in raw:
+        return "backup"
+    return "other"
+
+
+def _classify_builtin(name: str) -> VmBucket:
+    if _SILINECEK_RE.search(name):
+        return "silinecek"
+    if _VEEAM_DR_SUFFIX_RE.search(name) or _VEEAM_DR_EMBEDDED_RE.search(name):
+        return "veeam_dr"
+    if _ALTRA_SUFFIX_RE.search(name) or _ALTRA_CONTAINS_RE.search(name):
+        return "altra_replica"
+    return "billable"
+
+
+def _legacy_flat_replica(patterns: dict[str, Any]) -> bool:
+    has_v2 = bool(
+        patterns.get("veeam_dr_patterns")
+        or patterns.get("altra_replica_patterns")
+        or patterns.get("custom_patterns")
     )
+    return (not has_v2) and bool(patterns.get("replica_patterns"))
+
+
+def _legacy_bucket_for_name(name: str) -> VmBucket:
+    """When only v1 replica_patterns matched, split by builtin heuristics."""
+    builtin = _classify_builtin(name)
+    if builtin in ("veeam_dr", "altra_replica"):
+        return builtin
+    return "veeam_dr"
 
 
 def _matches_silinecek(name: str, patterns: dict[str, Any]) -> bool:
     for rule in patterns.get("silinecek") or []:
         if _rule_matches(name, rule):
             return True
-    # Fallback when override omits silinecek block
     return bool(_SILINECEK_RE.search(name))
 
 
-def _matches_replica(name: str, patterns: dict[str, Any]) -> bool:
-    rules = patterns.get("replica_patterns") or []
-    if not rules:
-        return _is_replica_name(name)
-    for rule in rules:
-        if _rule_matches(name, rule):
+def _matches_bucket(name: str, patterns: dict[str, Any], key: str) -> bool:
+    for rule in patterns.get(key) or []:
+        if isinstance(rule, dict) and _rule_matches(name, rule):
             return True
     return False
 
@@ -140,7 +213,7 @@ def load_replica_patterns(path: str | None = None) -> dict[str, Any]:
     """Load replica pattern seed YAML (optional path for override / tests)."""
     mapping_path = Path(path) if path else _PATTERNS_PATH
     default: dict[str, Any] = {
-        "version": 1,
+        "version": 2,
         "silinecek": [
             {
                 "id": "silinecek_contains",
@@ -149,7 +222,10 @@ def load_replica_patterns(path: str | None = None) -> dict[str, Any]:
                 "case_insensitive": True,
             }
         ],
-        "replica_patterns": [],
+        "veeam_dr_patterns": [],
+        "altra_replica_patterns": [],
+        "custom_patterns": [],
+        "replica_patterns": [],  # legacy
     }
     try:
         import yaml
