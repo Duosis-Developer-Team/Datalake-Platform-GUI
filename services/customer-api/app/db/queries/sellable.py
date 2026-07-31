@@ -115,6 +115,28 @@ ORDER BY (dc_code = '*') ASC
 LIMIT 1;
 """
 
+LIST_STORAGE_COUPLINGS = """
+SELECT family, dc_code, mode, notes, updated_by, updated_at
+FROM   gui_family_storage_coupling
+ORDER BY family, dc_code;
+"""
+
+UPSERT_STORAGE_COUPLING = """
+INSERT INTO gui_family_storage_coupling
+    (family, dc_code, mode, notes, updated_by, updated_at)
+VALUES (%s,%s,%s,%s,%s, NOW())
+ON CONFLICT (family, dc_code) DO UPDATE SET
+    mode       = EXCLUDED.mode,
+    notes      = COALESCE(EXCLUDED.notes, gui_family_storage_coupling.notes),
+    updated_by = EXCLUDED.updated_by,
+    updated_at = NOW();
+"""
+
+DELETE_STORAGE_COUPLING = """
+DELETE FROM gui_family_storage_coupling
+WHERE family = %s AND dc_code = %s AND dc_code <> '*';
+"""
+
 UPSERT_RATIO = """
 INSERT INTO gui_panel_resource_ratio
     (family, dc_code, cpu_per_unit, ram_gb_per_unit, storage_gb_per_unit,
