@@ -108,7 +108,7 @@ def test_virt_sellable_tl_for_dc_uses_by_panel_path():
         "src.utils.datacenters_virt_sellable.api.get_hyperconv_cluster_list",
         return_value=["HC-1"],
     ), patch(
-        "src.utils.datacenters_virt_sellable.collect_virt_sellable_panels",
+        "src.utils.datacenters_virt_sellable.collect_platform_sellable_panels",
         return_value=panels,
     ) as mock_collect:
         entry = dvs._virt_sellable_tl_for_dc("DC11", family_workers=2, tr={"preset": "30d"})
@@ -128,7 +128,7 @@ def test_virt_sellable_tl_for_dc_returns_range_when_storage_has_bounds():
         },
     ]
     with patch(
-        "src.utils.datacenters_virt_sellable.collect_virt_sellable_panels",
+        "src.utils.datacenters_virt_sellable.collect_platform_sellable_panels",
         return_value=panels,
     ):
         entry = dvs._virt_sellable_tl_for_dc("DC13", family_workers=1)
@@ -140,7 +140,7 @@ def test_virt_sellable_tl_for_dc_returns_range_when_storage_has_bounds():
 def test_virt_sellable_tl_for_dc_does_not_use_summary_light():
     """Regression: list warm path must not call get_sellable_summary_light."""
     with patch(
-        "src.utils.datacenters_virt_sellable.collect_virt_sellable_panels",
+        "src.utils.datacenters_virt_sellable.collect_platform_sellable_panels",
         return_value=[{"potential_tl": 100.0}],
     ), patch(
         "src.services.api_client.get_sellable_summary_light",

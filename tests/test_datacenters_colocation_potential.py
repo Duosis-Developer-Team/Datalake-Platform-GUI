@@ -1,5 +1,4 @@
-"""Colocation potential renders as its own line, never folded into the
-virtualization min-max range."""
+"""Colocation potential is demoted; unified Potential Sales includes colo TL."""
 from unittest.mock import patch
 
 from src.pages.datacenters import (
@@ -7,6 +6,7 @@ from src.pages.datacenters import (
     _colocation_sales_line,
     _dc_sellable_ribbon,
 )
+from src.utils.format_units import fmt_tl_range
 
 
 def _texts(component):
@@ -31,7 +31,7 @@ def _texts(component):
 def test_colocation_line_renders_single_value_not_a_range():
     texts = _texts(_colocation_sales_line(16_167_802.0))
 
-    assert "Potential Sales (Colocation)" in texts
+    assert "Colocation (in Potential Sales)" in texts
     assert "16.17 Milyon TL" in texts
     assert not any("–" in t and "Milyon" in t for t in texts)
 
@@ -44,18 +44,31 @@ def test_colocation_line_absent_when_no_value():
 def test_colocation_line_shows_loading_state():
     texts = _texts(_colocation_sales_line(None, loading=True))
 
-    assert "Potential Sales (Colocation)" in texts
+    assert "Colocation (in Potential Sales)" in texts
     assert "…" in texts
 
 
-def test_virtualization_ribbon_label_unchanged():
+def test_unified_ribbon_label_and_no_separate_colo_kpi():
     texts = _texts(_dc_sellable_ribbon(
         1_000_000.0, virt_tl_min=574_800.0, virt_tl_max=1_910_000.0,
         total_portfolio_tl=10_000_000.0,
     ))
 
-    assert "Potential Sales (Virtualization)" in texts
+    assert "Potential Sales" in texts
+    assert "Potential Sales (Virtualization)" not in texts
     assert "Potential Sales (Colocation)" not in texts
+
+
+def test_ribbon_folds_colo_into_min_max():
+    texts = _texts(_dc_sellable_ribbon(
+        1_000_000.0,
+        virt_tl_min=1_000_000.0,
+        virt_tl_max=1_000_000.0,
+        total_portfolio_tl=5_000_000.0,
+        colo_tl=500_000.0,
+    ))
+    expected = fmt_tl_range(1_500_000.0, 1_500_000.0)
+    assert expected in texts
 
 
 def test_colocation_potential_fans_out_per_dc_calls_via_parallel_execute():
@@ -78,14 +91,12 @@ def test_colocation_potential_fans_out_per_dc_calls_via_parallel_execute():
 
     with patch(
         "src.pages.datacenters.parallel_execute", side_effect=fake_parallel_execute
-    ) as mock_parallel_execute, patch(
-        "src.pages.datacenters.api.get_colocation", side_effect=lambda code: responses[code]
+    ), patch(
+        "src.pages.datacenters.api.get_colocation",
+        side_effect=lambda code: responses[code],
     ):
         total, by_dc = _colocation_potential(["DC11", "DC13"])
 
-    # Exactly one fan-out call carrying both DC codes — not one call per DC,
-    # which would just relabel the same serial loop the fix was meant to end.
-    assert mock_parallel_execute.call_count == 1
-    assert calls == [["DC11", "DC13"]]
     assert total == 5_000_000.0
     assert by_dc == {"DC11": 2_000_000.0, "DC13": 3_000_000.0}
+    assert calls == [["DC11", "DC13"]]

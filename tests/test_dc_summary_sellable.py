@@ -128,7 +128,7 @@ def test_build_summary_sellable_section_with_mock_summary():
     ]
 
     with patch(
-        "src.pages.dc_summary_sellable._resolve_virt_panels",
+        "src.pages.dc_summary_sellable._resolve_platform_panels",
         return_value=virt_panels,
     ):
         block = build_summary_sellable_section("DC13", summary)
@@ -156,8 +156,29 @@ def test_executive_strip_uses_virt_panels_not_full_crm_rollup():
         virt_panels=panels,
     )
     text = str(strip)
-    assert "Virt tab parity" in text
+    assert "Potential Sales" in text
     assert "9" not in text or "Milyon" not in text
+
+
+def test_executive_strip_merges_colocation_tl():
+    panels = [
+        {
+            "family": "virt_classic",
+            "resource_kind": "cpu",
+            "potential_tl": 1000.0,
+            "potential_tl_min": 1000.0,
+            "potential_tl_max": 1000.0,
+            "has_infra_source": True,
+        },
+    ]
+    strip = build_sellable_executive_strip(
+        {},
+        panels=panels,
+        colocation_tl=500.0,
+    )
+    text = str(strip)
+    # 1000 + 500 colo → 1.5 Bin TL range
+    assert "1.5" in text or "1,500" in text
 
 
 def test_merge_power_panels_collapses_hana_into_power():

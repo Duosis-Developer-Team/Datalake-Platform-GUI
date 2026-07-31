@@ -29,8 +29,9 @@ def _sample_sellable():
     }
 
 
+@patch("src.pages.dc_summary_sellable.collect_platform_sellable_panels", return_value=[])
 @patch("src.pages.dc_summary_sellable.collect_virt_sellable_panels", return_value=[])
-def test_summary_tab_order_combined_infrastructure_first(_mock_panels):
+def test_summary_tab_order_combined_infrastructure_first(_mock_virt, _mock_platform):
     tab = _build_summary_tab(_sample_dc_data(), {"preset": "7d"}, dc_id="DC13", sellable_summary=_sample_sellable())
     stack = tab
     children = stack.children
@@ -38,8 +39,9 @@ def test_summary_tab_order_combined_infrastructure_first(_mock_panels):
     assert "Combined Infrastructure" in str(first_card)
 
 
+@patch("src.pages.dc_summary_sellable.collect_platform_sellable_panels", return_value=[])
 @patch("src.pages.dc_summary_sellable.collect_virt_sellable_panels", return_value=[])
-def test_summary_tab_excludes_legacy_sections(_mock_panels):
+def test_summary_tab_excludes_legacy_sections(_mock_virt, _mock_platform):
     tab = _build_summary_tab(_sample_dc_data(), {"preset": "7d"}, dc_id="DC13", sellable_summary=_sample_sellable())
     rendered = str(tab)
     assert "Infrastructure Capacity" not in rendered
@@ -49,9 +51,12 @@ def test_summary_tab_excludes_legacy_sections(_mock_panels):
 
 
 def test_summary_includes_sellable_executive():
-    with patch("src.pages.dc_summary_sellable.collect_virt_sellable_panels", return_value=[]):
+    with patch("src.pages.dc_summary_sellable.collect_platform_sellable_panels", return_value=[]), patch(
+        "src.pages.dc_summary_sellable.collect_virt_sellable_panels", return_value=[]
+    ):
         tab = _build_summary_tab(
             _sample_dc_data(), {"preset": "7d"}, dc_id="DC13", sellable_summary=_sample_sellable()
         )
     assert "Sellable Executive Summary" in str(tab)
+    assert "Potential Sales" in str(tab)
     assert "Sanallaştırma — Compute" in str(tab) or "Sanallaştırma compute sellable" in str(tab)

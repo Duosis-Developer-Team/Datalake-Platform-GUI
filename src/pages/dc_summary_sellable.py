@@ -16,12 +16,17 @@ from src.components.sellable_constraint_viz import (
     sellable_constraint_bar,
 )
 from src.utils.format_units import fmt_tl, fmt_tl_range, smart_cpu, smart_memory, smart_storage
+from src.utils.platform_sellable_aggregate import (
+    BACKUP_SELLABLE_FAMILIES,
+    collect_platform_sellable_panels,
+    platform_total_potential_range,
+    potential_sales_info_text,
+)
 from src.utils.virt_sellable_aggregate import (
     collect_virt_sellable_panels,
     merge_power_panels_for_summary,
     virt_constrained_loss_tl,
     virt_tab_cluster_scope,
-    virt_total_potential_range,
 )
 
 _BRAND = "#4318FF"
@@ -38,6 +43,12 @@ _VIRT_FAMILY_LABELS = {
     "virt_hyperconverged": "Hyperconverged",
     "virt_power": "Power",
     "virt_power_hana": "Power HANA",
+}
+_BACKUP_FAMILY_LABELS = {
+    "backup_netbackup": "NetBackup",
+    "backup_veeam_replication": "Veeam Replication",
+    "backup_zerto_replication": "Zerto Replication",
+    "backup_image": "Nutanix Image Backup",
 }
 
 
@@ -131,6 +142,54 @@ def _group_panels_by_family(panels: list[dict]) -> dict[str, list[dict]]:
     return grouped
 
 
+def _virt_panels_only(panels: list[dict]) -> list[dict]:
+    return [
+        p for p in (panels or [])
+        if isinstance(p, dict) and str(p.get("family") or "").startswith("virt_")
+    ]
+
+
+def _backup_panels_only(panels: list[dict]) -> list[dict]:
+    backup_fams = set(BACKUP_SELLABLE_FAMILIES)
+    return [
+        p for p in (panels or [])
+        if isinstance(p, dict) and (p.get("family") or "") in backup_fams
+    ]
+
+
+def _resolve_platform_panels(
+    dc_id: str,
+    summary: dict | None,
+    *,
+    classic_clusters: list[str] | None = None,
+    hyperconv_clusters: list[str] | None = None,
+) -> list[dict]:
+    """Prefer platform by-panel API (virt + backup); fall back to virt / summary."""
+    classic, hyperconv = virt_tab_cluster_scope(classic_clusters, hyperconv_clusters)
+    try:
+        panels = collect_platform_sellable_panels(str(dc_id), classic, hyperconv)
+        if panels:
+            return panels
+    except Exception:
+        pass
+    try:
+        panels = collect_virt_sellable_panels(str(dc_id), classic, hyperconv)
+        if panels:
+            return panels
+    except Exception:
+        pass
+    if not summary:
+        return []
+    out: list[dict] = []
+    for fam in _VIRT_COMPUTE_FAMILIES | _VIRT_STORAGE_FAMILIES | set(BACKUP_SELLABLE_FAMILIES):
+        for p in _family_panels(summary, fam):
+            row = dict(p)
+            row.setdefault("family", fam)
+            out.append(row)
+    return out
+
+
+# Backward-compatible virt-only resolver (cluster-scope tests / callers).
 def _resolve_virt_panels(
     dc_id: str,
     summary: dict | None,
@@ -138,7 +197,6 @@ def _resolve_virt_panels(
     classic_clusters: list[str] | None = None,
     hyperconv_clusters: list[str] | None = None,
 ) -> list[dict]:
-    """Prefer by-panel API (Virt tab parity); fall back to summary rollup."""
     classic, hyperconv = virt_tab_cluster_scope(classic_clusters, hyperconv_clusters)
     try:
         panels = collect_virt_sellable_panels(str(dc_id), classic, hyperconv)
@@ -161,38 +219,50 @@ def build_sellable_executive_strip(
     summary: dict | None = None,
     *,
     virt_panels: list[dict] | None = None,
+    panels: list[dict] | None = None,
+    colocation_tl: float | None = None,
 ) -> html.Div:
-    """Executive KPI strip for Summary tab (virt-scoped, Virt tab parity)."""
-    panels = virt_panels or []
-    _, tl_min, tl_max = virt_total_potential_range(panels)
-    constrained_loss = virt_constrained_loss_tl(panels)
+    """Executive KPI strip for Summary tab (platform Potential Sales)."""
+    panel_rows = panels if panels is not None else (virt_panels or [])
+    _, tl_min, tl_max = platform_total_potential_range(
+        panel_rows, colocation_tl=colocation_tl,
+    )
+    constrained_loss = virt_constrained_loss_tl(_virt_panels_only(panel_rows))
     if tl_max <= 1e-6 and tl_min <= 1e-6:
         constrained_loss = 0.0
     mapped_count = sum(
-        1 for p in panels if p.get("has_infra_source") or p.get("has_price")
+        1 for p in panel_rows if p.get("has_infra_source") or p.get("has_price")
     )
     modes = {
         p.get("family"): p.get("computation_mode")
-        for p in panels
+        for p in panel_rows
         if p.get("computation_mode")
     }
     if not modes and summary:
         modes = summary.get("computation_modes") or {}
     mode_badge = ", ".join(f"{k}: {v}" for k, v in modes.items()) or "aggregate"
     unmapped = (summary or {}).get("unmapped_product_count") or 0
-    breakdown = constraint_breakdown_text(panels)
+    breakdown = constraint_breakdown_text(_virt_panels_only(panel_rows))
+    info = potential_sales_info_text()
     exec_strip = dmc.SimpleGrid(cols={"base": 1, "sm": 2, "lg": 4}, spacing="md", children=[
-        _exec_kpi(
-            "Total Potential",
-            _fmt_tl_range(tl_min, tl_max),
-            breakdown or "Classic + Hyperconverged + Power (Virt tab parity)",
-            "solar:wallet-money-bold-duotone",
-            "grape",
+        dmc.Tooltip(
+            label=info,
+            position="bottom",
+            withArrow=True,
+            multiline=True,
+            w=360,
+            children=_exec_kpi(
+                "Potential Sales",
+                _fmt_tl_range(tl_min, tl_max),
+                breakdown or "Virt + Backup + Replication + Colocation",
+                "solar:wallet-money-bold-duotone",
+                "grape",
+            ),
         ),
         _exec_kpi(
             "Constrained Loss",
             _fmt_tl(constrained_loss),
-            "Ratio-bound kayıp (sanallaştırma)",
+            "Ratio-bound loss (virtualization)",
             "solar:chart-2-bold-duotone",
             "orange",
         ),
@@ -214,7 +284,7 @@ def build_sellable_executive_strip(
     return html.Div(className="nexus-card", style={"padding": "20px"}, children=[
         _section_title(
             "Sellable Executive Summary",
-            "Satılabilir kapasite ve TL potansiyeli — yönetici özeti",
+            "Potential Sales — platform sellable headroom (min–max TL)",
         ),
         exec_strip,
     ])
@@ -387,13 +457,54 @@ def build_virt_storage_block(summary: dict | None = None, *, panels: list[dict] 
     )
 
 
+def build_backup_sellable_block(*, panels: list[dict] | None = None) -> html.Div | None:
+    """Backup / Replication sellable family tiles for Summary."""
+    backup = _backup_panels_only(panels or [])
+    if not backup:
+        return None
+    grouped = _group_panels_by_family(backup)
+    cards = []
+    for fam in BACKUP_SELLABLE_FAMILIES:
+        fam_panels = grouped.get(fam) or []
+        if not fam_panels:
+            continue
+        tl = sum(float(p.get("potential_tl") or 0) for p in fam_panels)
+        kinds = sorted({
+            (p.get("resource_kind") or "other").lower() for p in fam_panels
+        })
+        cards.append(_exec_kpi(
+            _BACKUP_FAMILY_LABELS.get(fam, fam),
+            fmt_tl(tl),
+            ", ".join(k.upper() for k in kinds) or "sellable",
+            "solar:cloud-storage-bold-duotone",
+            "green",
+        ))
+    if not cards:
+        return None
+    return html.Div(
+        className="nexus-card",
+        style={"padding": "20px", "marginTop": "16px"},
+        children=[
+            _section_title(
+                "Backup & Replication — Sellable",
+                "NetBackup, Nutanix image, Veeam / Zerto replication headroom",
+            ),
+            dmc.SimpleGrid(
+                cols={"base": 1, "md": min(4, len(cards))},
+                spacing="md",
+                mt="md",
+                children=cards,
+            ),
+        ],
+    )
+
+
 def build_colocation_sellable_entry(coloc_aggregate: dict | None):
     """Physical — Colocation sellable entry: free rack-U and its TL value.
 
-    Returns None when there is no colocation data for this DC, so the caller can
-    omit the card entirely rather than render an empty one. This value is never
-    summed into the virtualization total: colocation potential runs 8-28x larger
-    (measured 2026-07-27) and would swamp it.
+    Returns None when there is no colocation data for this DC. The TL figure is
+    also folded into the executive Potential Sales range via
+    ``platform_total_potential_range(..., colocation_tl=...)``.
     """
     agg = coloc_aggregate or {}
     free_u = agg.get("free_u")
@@ -418,9 +529,10 @@ def build_colocation_sellable_entry(coloc_aggregate: dict | None):
         note_icon = "solar:danger-triangle-bold"
     else:
         price_sub = f"{sellable_free_u:,} U × {unit_price:,.2f} TL"
-        note = ("Potential at list price — not billed revenue. Counts only free U in racks "
-                "that are not allocated to a colocation customer: free space inside a "
-                "customer's own rack belongs to them and cannot be sold to anyone else.")
+        note = ("Included in Potential Sales above. Potential at list price — not billed "
+                "revenue. Counts only free U in racks that are not allocated to a "
+                "colocation customer: free space inside a customer's own rack belongs "
+                "to them and cannot be sold to anyone else.")
         note_color = "blue"
         note_icon = "solar:info-circle-bold"
 
@@ -469,28 +581,29 @@ def build_summary_sellable_section(
     *,
     classic_clusters: list[str] | None = None,
     hyperconv_clusters: list[str] | None = None,
+    coloc_aggregate: dict | None = None,
 ) -> html.Div | None:
-    """Sellable blocks for DC Summary tab (executive + virt compute/storage)."""
+    """Sellable blocks for DC Summary tab (executive + virt + backup + colo detail)."""
     if not dc_id:
         return None
     data: dict = summary if isinstance(summary, dict) else {}
-    virt_panels = merge_power_panels_for_summary(
-        _resolve_virt_panels(
+    platform_panels = merge_power_panels_for_summary(
+        _resolve_platform_panels(
             str(dc_id),
             data or None,
             classic_clusters=classic_clusters,
             hyperconv_clusters=hyperconv_clusters,
         )
     )
-    if not virt_panels and not data:
+    if not platform_panels and not data:
         try:
             data = api.get_sellable_summary_light(dc_code=str(dc_id)) or {}
         except Exception:
             return html.Div(children=[
                 dmc.Alert("Sellable özeti yüklenemedi.", color="red", radius="md"),
             ])
-        virt_panels = merge_power_panels_for_summary(
-            _resolve_virt_panels(
+        platform_panels = merge_power_panels_for_summary(
+            _resolve_platform_panels(
                 str(dc_id),
                 data,
                 classic_clusters=classic_clusters,
@@ -498,16 +611,36 @@ def build_summary_sellable_section(
             )
         )
 
-    if not virt_panels and not data:
+    if not platform_panels and not data and not (coloc_aggregate or {}).get("free_u"):
         return None
+
+    colo_tl = None
+    if coloc_aggregate:
+        raw = coloc_aggregate.get("free_u_potential_tl")
+        if raw is not None:
+            try:
+                colo_tl = float(raw)
+            except (TypeError, ValueError):
+                colo_tl = None
+
+    virt_panels = _virt_panels_only(platform_panels)
+    children: list[Any] = [
+        build_sellable_executive_strip(
+            data, panels=platform_panels, colocation_tl=colo_tl,
+        ),
+        html.Div(style={"marginTop": "16px"}, children=build_virt_compute_block(panels=virt_panels)),
+        build_virt_storage_block(panels=virt_panels),
+    ]
+    backup_block = build_backup_sellable_block(panels=platform_panels)
+    if backup_block is not None:
+        children.append(backup_block)
+    colo_entry = build_colocation_sellable_entry(coloc_aggregate)
+    if colo_entry is not None:
+        children.append(colo_entry)
 
     return html.Div(
         id="dc-summary-sellable-root",
-        children=[
-            build_sellable_executive_strip(data, virt_panels=virt_panels),
-            html.Div(style={"marginTop": "16px"}, children=build_virt_compute_block(panels=virt_panels)),
-            build_virt_storage_block(panels=virt_panels),
-        ],
+        children=children,
     )
 
 
@@ -517,6 +650,7 @@ def build_summary_sellable_children(
     *,
     classic_clusters: list[str] | None = None,
     hyperconv_clusters: list[str] | None = None,
+    coloc_aggregate: dict | None = None,
 ) -> list:
     """Return sellable section children for Dash callback updates."""
     block = build_summary_sellable_section(
@@ -524,6 +658,7 @@ def build_summary_sellable_children(
         summary,
         classic_clusters=classic_clusters,
         hyperconv_clusters=hyperconv_clusters,
+        coloc_aggregate=coloc_aggregate,
     )
     if block is None:
         return [dmc.Alert("Sellable verisi yok.", color="gray", radius="md")]

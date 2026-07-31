@@ -1948,6 +1948,63 @@ def _sellable_card_children(card: html.Div | None) -> list:
     return list(children) if children else []
 
 
+def _backup_inline_sellable_blocks(
+    dc_id: str,
+    *,
+    classic_clusters: list[str] | None = None,
+    hyperconv_clusters: list[str] | None = None,
+    content_mode: str = "full",
+    include: tuple[str, ...] = (),
+) -> list:
+    """Inline sellable KPI cards for Backup / Replication category panels."""
+    if (content_mode or "full").strip().lower() != "full" or not dc_id:
+        return []
+    specs = {
+        "backup_netbackup": (
+            "NetBackup — Sellable Potential",
+            "green",
+            None,
+            "sellable-backup-netbackup-card",
+        ),
+        "backup_image": (
+            "Nutanix Image Backup — Sellable Potential",
+            "teal",
+            hyperconv_clusters or None,
+            "sellable-backup-image-card",
+        ),
+        "backup_veeam_replication": (
+            "Veeam Replication — Sellable Potential",
+            "violet",
+            classic_clusters or None,
+            "sellable-backup-veeam-card",
+        ),
+        "backup_zerto_replication": (
+            "Zerto Replication — Sellable Potential",
+            "grape",
+            classic_clusters or None,
+            "sellable-backup-zerto-card",
+        ),
+    }
+    out: list = []
+    for fam in include:
+        spec = specs.get(fam)
+        if not spec:
+            continue
+        title, color, clusters, cid = spec
+        card = _build_sellable_inline_kpi(
+            dc_id,
+            fam,
+            title,
+            color=color,
+            selected_clusters=clusters,
+            container_id=cid,
+        )
+        if card is None:
+            continue
+        out.append(card)
+    return out
+
+
 def _build_virt_total_sellable_children(
     dc_id: str,
     classic_clusters: list[str] | None,
@@ -2229,13 +2286,20 @@ def _build_sellable_inline_kpi(
             return html.Div(id=container_id)
         return None
 
+    _cluster_scoped = frozenset({
+        "virt_classic",
+        "virt_hyperconverged",
+        "backup_veeam_replication",
+        "backup_zerto_replication",
+        "backup_image",
+    })
     panels: list[dict] = []
     for fam in families:
         try:
             chunk = api.get_sellable_by_panel(
                 dc_code=str(dc_id),
                 family=fam,
-                clusters=selected_clusters if fam in ("virt_classic", "virt_hyperconverged") else None,
+                clusters=selected_clusters if fam in _cluster_scoped else None,
             ) or []
             if isinstance(chunk, list):
                 panels.extend(chunk)
@@ -2616,18 +2680,14 @@ def _build_summary_tab(
             sellable_summary,
             classic_clusters=classic_clusters,
             hyperconv_clusters=hyperconv_clusters,
+            coloc_aggregate=coloc_aggregate,
         )
-        # Physical — Colocation is a sibling entry, never summed into the
-        # virtualization sellable total (potential runs 8-28x larger and would
-        # swamp it). Appended to the same block so it sits alongside the
-        # virtualization families rather than as a separate section.
-        colo_entry = build_colocation_sellable_entry(coloc_aggregate)
         if sellable_block is not None:
-            if colo_entry is not None:
-                sellable_block.children = list(sellable_block.children) + [colo_entry]
             summary_children.append(sellable_block)
-        elif colo_entry is not None:
-            summary_children.append(colo_entry)
+        else:
+            colo_entry = build_colocation_sellable_entry(coloc_aggregate)
+            if colo_entry is not None:
+                summary_children.append(colo_entry)
 
     return dmc.Stack(gap="lg", children=summary_children)
 
@@ -6148,33 +6208,44 @@ def build_dc_view(
                                     dmc.TabsPanel(
                                         value="image",
                                         pt="lg",
-                                        children=build_image_backup_section(
-                                            nb_data=nb_data,
-                                            policy_type_options=list(
-                                                load_policy_panel_mapping().get(
-                                                    "image_policy_types"
-                                                )
-                                                or ["VMWARE"]
-                                            ),
-                                            nutanix_panel=(
-                                                build_nutanix_panel_shell()
-                                                if backup_content_mode == "shell"
-                                                else (
-                                                    html.Div(
-                                                        id="backup-nutanix-panel",
-                                                        children=build_nutanix_snapshot_panel(
-                                                            nutanix_data,
-                                                            table=nutanix_table,
-                                                            missing=nutanix_missing,
-                                                        ),
-                                                    )
-                                                    if has_nutanix_backup
-                                                    else None
-                                                )
-                                            ),
-                                            has_netbackup=has_netbackup,
-                                            has_nutanix=has_nutanix_backup,
-                                            content_mode=backup_content_mode,
+                                        children=html.Div(
+                                            children=[
+                                                *_backup_inline_sellable_blocks(
+                                                    str(dc_id),
+                                                    classic_clusters=classic_clusters or None,
+                                                    hyperconv_clusters=hyperconv_clusters or None,
+                                                    content_mode=backup_content_mode,
+                                                    include=("backup_netbackup", "backup_image"),
+                                                ),
+                                                build_image_backup_section(
+                                                    nb_data=nb_data,
+                                                    policy_type_options=list(
+                                                        load_policy_panel_mapping().get(
+                                                            "image_policy_types"
+                                                        )
+                                                        or ["VMWARE"]
+                                                    ),
+                                                    nutanix_panel=(
+                                                        build_nutanix_panel_shell()
+                                                        if backup_content_mode == "shell"
+                                                        else (
+                                                            html.Div(
+                                                                id="backup-nutanix-panel",
+                                                                children=build_nutanix_snapshot_panel(
+                                                                    nutanix_data,
+                                                                    table=nutanix_table,
+                                                                    missing=nutanix_missing,
+                                                                ),
+                                                            )
+                                                            if has_nutanix_backup
+                                                            else None
+                                                        )
+                                                    ),
+                                                    has_netbackup=has_netbackup,
+                                                    has_nutanix=has_nutanix_backup,
+                                                    content_mode=backup_content_mode,
+                                                ),
+                                            ],
                                         ),
                                     )
                                     if has_image
@@ -6198,13 +6269,27 @@ def build_dc_view(
                                     dmc.TabsPanel(
                                         value="replication",
                                         pt="lg",
-                                        children=build_replication_section(
-                                            veeam_data=veeam_data,
-                                            zerto_data=zerto_data,
-                                            zerto_license=zerto_license_data,
-                                            has_veeam=has_veeam,
-                                            has_zerto=has_zerto,
-                                            content_mode=backup_content_mode,
+                                        children=html.Div(
+                                            children=[
+                                                *_backup_inline_sellable_blocks(
+                                                    str(dc_id),
+                                                    classic_clusters=classic_clusters or None,
+                                                    hyperconv_clusters=hyperconv_clusters or None,
+                                                    content_mode=backup_content_mode,
+                                                    include=(
+                                                        "backup_veeam_replication",
+                                                        "backup_zerto_replication",
+                                                    ),
+                                                ),
+                                                build_replication_section(
+                                                    veeam_data=veeam_data,
+                                                    zerto_data=zerto_data,
+                                                    zerto_license=zerto_license_data,
+                                                    has_veeam=has_veeam,
+                                                    has_zerto=has_zerto,
+                                                    content_mode=backup_content_mode,
+                                                ),
+                                            ],
                                         ),
                                     )
                                     if has_replication

@@ -1,4 +1,4 @@
-"""Datacenters list: Potential Sales (Virtualization) ribbon helper."""
+"""Datacenters list: Potential Sales ribbon helper."""
 from __future__ import annotations
 
 from src.pages.datacenters import _dc_sellable_ribbon, _potential_sales_display
@@ -32,8 +32,23 @@ def test_sellable_ribbon_renders_virt_tl_and_label():
     el = _dc_sellable_ribbon(12000.0, total_portfolio_tl=24000.0)
     assert el is not None
     texts = _collect_text_nodes(el)
-    assert "Potential Sales (Virtualization)" in texts
+    assert "Potential Sales" in texts
+    assert "Potential Sales (Virtualization)" not in texts
     assert "12.0 Bin TL" in texts
+
+
+def test_sellable_ribbon_merges_colo_into_range():
+    el = _dc_sellable_ribbon(
+        1_000_000.0,
+        virt_tl_min=1_000_000.0,
+        virt_tl_max=1_000_000.0,
+        total_portfolio_tl=3_000_000.0,
+        colo_tl=500_000.0,
+    )
+    texts = _collect_text_nodes(el)
+    expected = fmt_tl_range(1_500_000.0, 1_500_000.0)
+    assert expected in texts
+    assert "Potential Sales (Colocation)" not in texts
 
 
 def test_sellable_ribbon_renders_range_when_min_max_differ():

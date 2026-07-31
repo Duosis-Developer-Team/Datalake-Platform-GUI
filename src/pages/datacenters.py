@@ -25,7 +25,7 @@ from src.utils.datacenters_virt_sellable import (
 )
 from src.utils.api_parallel import parallel_execute
 from src.utils.format_units import fmt_tl, fmt_tl_range
-from src.utils.virt_sellable_aggregate import VIRT_SELLABLE_FAMILY_LABELS
+from src.utils.platform_sellable_aggregate import potential_sales_info_text
 from shared.display.static_energy import STATIC_TOTAL_ENERGY_KW
 
 _LOG = logging.getLogger(__name__)
@@ -131,18 +131,13 @@ def _potential_sales_display(
 
 
 def _colocation_sales_line(colo_tl: float | None, *, loading: bool = False):
-    """Colocation potential as its own line — a single value, not a range.
+    """Optional demoted colocation line (detail only — not the primary KPI).
 
-    Sellable free rack-U (free U OUTSIDE colocation-allocated racks — see
-    aggregate["sellable_free_u"]) is an exact count and the unit price is a
-    single figure, so no interval exists. Free U *inside* a customer's own
-    rack is excluded: it belongs to that customer, not to the platform's
-    sellable pool (design doc section 3). Kept separate from the
-    virtualization range because colocation potential measured 8-28x larger
-    per DC (2026-07-27); summing them would erase every movement in the
-    virtualization signal.
+    Prefer merging colo into the unified Potential Sales range via
+    ``platform_total_potential_range(..., colocation_tl=...)``. This helper
+    remains for callers that still want a secondary rack-U breakdown.
 
-    Returns None when there is nothing to show, so callers can omit the row.
+    Returns None when there is nothing to show.
     """
     if loading:
         headline, tip_value = "…", "Calculating"
@@ -152,10 +147,10 @@ def _colocation_sales_line(colo_tl: float | None, *, loading: bool = False):
         headline = fmt_tl(colo_tl)
         tip_value = f"{float(colo_tl):,.0f} TL"
     return dmc.Tooltip(
-        label=(f"Potential Sales (Colocation): {tip_value}\n"
+        label=(f"Colocation (included in Potential Sales): {tip_value}\n"
                "Sellable free rack-U (outside colocation-allocated racks) x "
                "the CRM per-U colocation price. Potential at list "
-               "price — not billed revenue. Not included in the virtualization range."),
+               "price — not billed revenue."),
         position="bottom",
         withArrow=True,
         multiline=True,
@@ -165,7 +160,7 @@ def _colocation_sales_line(colo_tl: float | None, *, loading: bool = False):
             gap="xs",
             mt=6,
             children=[
-                dmc.Text("Potential Sales (Colocation)", size="xs", fw=600, c="#A3AED0"),
+                dmc.Text("Colocation (in Potential Sales)", size="xs", fw=600, c="#A3AED0"),
                 dmc.Text(
                     headline,
                     size="xs",
@@ -267,12 +262,15 @@ def _dc_sellable_ribbon(
     loading: bool = False,
     colo_tl: float | None = None,
 ) -> html.Div:
-    """Compact virtualization-derived sellable TL strip + share of portfolio progress."""
+    """Compact Potential Sales strip (platform sellable + colo) + portfolio share."""
+    colo = float(colo_tl or 0.0)
     if loading:
         pot_short, pot_full = "…", "Hesaplanıyor"
+        headline_tl = 0.0
     else:
-        lo = float(virt_tl_min if virt_tl_min is not None else virt_tl)
-        hi = float(virt_tl_max if virt_tl_max is not None else virt_tl)
+        lo = float(virt_tl_min if virt_tl_min is not None else virt_tl) + colo
+        hi = float(virt_tl_max if virt_tl_max is not None else virt_tl) + colo
+        headline_tl = float(virt_tl or 0.0) + colo
         pot_short = fmt_tl_range(lo, hi)
         pot_full = (
             f"{lo:,.0f} – {hi:,.0f} TL"
@@ -281,21 +279,21 @@ def _dc_sellable_ribbon(
         )
     tot = float(total_portfolio_tl or 0.0)
     pct = (
-        min(100.0, max(0.0, (virt_tl / tot) * 100.0))
+        min(100.0, max(0.0, (headline_tl / tot) * 100.0))
         if tot > 1e-9
         else 0.0
     )
     tip = (
-        f"Potential Sales (Virtualization): {pot_short} ({pot_full})\n"
-        f"Share of all DCs (by virt sellable TL): {pct:.1f}%\n"
-        f"Sources: {', '.join(VIRT_SELLABLE_FAMILY_LABELS)}"
+        f"Potential Sales: {pot_short} ({pot_full})\n"
+        f"Share of all DCs (by sellable TL): {pct:.1f}%\n"
+        f"{potential_sales_info_text()}"
     )
-    ribbon = dmc.Tooltip(
+    return dmc.Tooltip(
         label=tip,
         position="bottom",
         withArrow=True,
         multiline=True,
-        w=320,
+        w=360,
         children=html.Div(
             style={"marginTop": "6px"},
             children=[
@@ -304,7 +302,7 @@ def _dc_sellable_ribbon(
                     gap="xs",
                     mb=4,
                     children=[
-                        dmc.Text("Potential Sales (Virtualization)", size="xs", fw=600, c="#A3AED0"),
+                        dmc.Text("Potential Sales", size="xs", fw=600, c="#A3AED0"),
                         dmc.Text(
                             pot_short,
                             size="xs",
@@ -318,10 +316,6 @@ def _dc_sellable_ribbon(
             ],
         ),
     )
-    colo_line = _colocation_sales_line(colo_tl, loading=loading)
-    if colo_line is None:
-        return ribbon
-    return html.Div(children=[ribbon, colo_line])
 
 
 def _dc_vault_card(
@@ -725,6 +719,10 @@ def build_datacenters(time_range=None, visible_sections=None):
     total_colo_potential_tl, colo_potential_by_dc = _colocation_potential(
         [d.get("id") for d in datacenters]
     )
+    colo_total = float(total_colo_potential_tl or 0.0)
+    unified_min = total_potential_tl_min + colo_total
+    unified_max = total_potential_tl_max + colo_total
+    unified_portfolio = total_potential_tl + colo_total
 
     # ── Export rows ──
     export_rows = []
@@ -769,38 +767,19 @@ def build_datacenters(time_range=None, visible_sections=None):
             _summary_kpi("solar:bolt-bold-duotone",                 "Total Power", f"{total_power:.1f} kW","yellow"),
             (lambda short, full: _summary_kpi(
                 "solar:money-bag-bold-duotone",
-                "Potential Sales (Virtualization)",
+                "Potential Sales",
                 short,
                 "indigo",
                 tooltip=(
-                    f"Total potential (all DCs): {full if not virt_loading else '—'}\n"
-                    "Sum of crm-engine sellable potential_tl for virtualization families: "
-                    f"{', '.join(VIRT_SELLABLE_FAMILY_LABELS)}."
+                    f"{potential_sales_info_text()}\n\n"
+                    f"Total potential (all DCs): {full if not virt_loading else '—'}"
                 ),
                 allow_wrap=True,
             ))(*_potential_sales_display(
-                total_potential_tl_min,
-                total_potential_tl_max,
+                unified_min,
+                unified_max,
                 loading=virt_loading,
             )),
-            _summary_kpi(
-                "solar:box-bold-duotone",
-                "Potential Sales (Colocation)",
-                fmt_tl(total_colo_potential_tl or None),
-                "cyan",
-                tooltip=(
-                    "Total colocation potential (all DCs): "
-                    f"{f'{total_colo_potential_tl:,.0f} TL' if total_colo_potential_tl else '—'}\n"
-                    "Sellable free rack-U (outside colocation-allocated racks) x the "
-                    "CRM per-U colocation price. Potential at list "
-                    "price — not billed revenue. Not summed into the virtualization "
-                    "figure beside it.\n"
-                    "Total is smaller than the sum of the per-DC card values by design: "
-                    "some racks are registered under two DC labels at once, and this "
-                    "total de-duplicates them while each per-DC card does not."
-                ),
-                allow_wrap=True,
-            ),
         ],
         )]
     )
@@ -978,7 +957,7 @@ def build_datacenters(time_range=None, visible_sections=None):
                             virt_tl=virt_tl_by_dc.get(str(dc.get("id", "")), 0.0),
                             virt_tl_min=virt_tl_min_by_dc.get(str(dc.get("id", ""))),
                             virt_tl_max=virt_tl_max_by_dc.get(str(dc.get("id", ""))),
-                            total_virt_tl=total_potential_tl,
+                            total_virt_tl=unified_portfolio,
                             virt_loading=loading_by_dc.get(str(dc.get("id", "")), virt_loading),
                             colo_potential_by_dc=colo_potential_by_dc,
                         ),
@@ -1115,6 +1094,10 @@ def poll_virt_sellable_refresh(_n, state, time_range):
     total_colo_potential_tl, colo_potential_by_dc = _colocation_potential(
         [d.get("id") for d in datacenters]
     )
+    colo_total = float(total_colo_potential_tl or 0.0)
+    unified_min = total_potential_tl_min + colo_total
+    unified_max = total_potential_tl_max + colo_total
+    unified_portfolio = total_potential_tl + colo_total
 
     total_hosts = sum(dc.get("host_count", 0) for dc in datacenters)
     total_vms = sum(dc.get("vm_count", 0) for dc in datacenters)
@@ -1133,34 +1116,15 @@ def poll_virt_sellable_refresh(_n, state, time_range):
             _summary_kpi("solar:bolt-bold-duotone", "Total Power", f"{total_power:.1f} kW", "yellow"),
             (lambda short, full: _summary_kpi(
                 "solar:money-bag-bold-duotone",
-                "Potential Sales (Virtualization)",
+                "Potential Sales",
                 short,
                 "indigo",
                 tooltip=(
-                    f"Total potential (all DCs): {full}\n"
-                    "Sum of crm-engine sellable potential_tl for virtualization families: "
-                    f"{', '.join(VIRT_SELLABLE_FAMILY_LABELS)}."
+                    f"{potential_sales_info_text()}\n\n"
+                    f"Total potential (all DCs): {full}"
                 ),
                 allow_wrap=True,
-            ))(*_potential_sales_display(total_potential_tl_min, total_potential_tl_max)),
-            _summary_kpi(
-                "solar:box-bold-duotone",
-                "Potential Sales (Colocation)",
-                fmt_tl(total_colo_potential_tl or None),
-                "cyan",
-                tooltip=(
-                    "Total colocation potential (all DCs): "
-                    f"{f'{total_colo_potential_tl:,.0f} TL' if total_colo_potential_tl else '—'}\n"
-                    "Sellable free rack-U (outside colocation-allocated racks) x the "
-                    "CRM per-U colocation price. Potential at list "
-                    "price — not billed revenue. Not summed into the virtualization "
-                    "figure beside it.\n"
-                    "Total is smaller than the sum of the per-DC card values by design: "
-                    "some racks are registered under two DC labels at once, and this "
-                    "total de-duplicates them while each per-DC card does not."
-                ),
-                allow_wrap=True,
-            ),
+            ))(*_potential_sales_display(unified_min, unified_max)),
         ],
     )
 
@@ -1179,7 +1143,7 @@ def poll_virt_sellable_refresh(_n, state, time_range):
                     virt_tl=virt_tl_by_dc.get(str(dc.get("id", "")), 0.0),
                     virt_tl_min=virt_tl_min_by_dc.get(str(dc.get("id", ""))),
                     virt_tl_max=virt_tl_max_by_dc.get(str(dc.get("id", ""))),
-                    total_virt_tl=total_potential_tl,
+                    total_virt_tl=unified_portfolio,
                     virt_loading=loading_by_dc.get(str(dc.get("id", "")), False),
                     colo_potential_by_dc=colo_potential_by_dc,
                 ),

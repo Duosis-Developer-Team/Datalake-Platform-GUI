@@ -8,11 +8,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, TypedDict
 
 from src.services import api_client as api
-from src.utils.virt_sellable_aggregate import (
-    collect_virt_sellable_panels,
-    virt_tab_cluster_scope,
-    virt_total_potential_range,
+from src.utils.platform_sellable_aggregate import (
+    collect_platform_sellable_panels,
+    platform_total_potential_range,
 )
+from src.utils.virt_sellable_aggregate import virt_tab_cluster_scope
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,11 @@ def _virt_sellable_tl_for_dc(
     family_workers: int,
     tr: dict | None = None,
 ) -> VirtTlEntry:
-    """Resolve virt sellable TL via per-family by-panel (same path as DC detail Virt tab)."""
+    """Resolve platform sellable TL (virt + backup/replication) via by-panel APIs.
+
+    Colocation free-U TL is merged at the Data Centers UI layer (separate fetch
+    with shared-rack dedupe), not here.
+    """
     tr = tr or {}
     try:
         classic_raw = api.get_classic_cluster_list(str(dc_id), tr) or []
@@ -60,13 +64,13 @@ def _virt_sellable_tl_for_dc(
     except Exception:
         classic_raw, hyperconv_raw = [], []
     classic, hyperconv = virt_tab_cluster_scope(classic_raw, hyperconv_raw)
-    panels = collect_virt_sellable_panels(
+    panels = collect_platform_sellable_panels(
         str(dc_id),
         classic,
         hyperconv,
         max_family_workers=family_workers,
     )
-    total, lo, hi = virt_total_potential_range(panels)
+    total, lo, hi = platform_total_potential_range(panels)
     return {"tl": total, "tl_min": lo, "tl_max": hi}
 
 
