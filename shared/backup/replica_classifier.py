@@ -133,20 +133,72 @@ def reconcile_vendor_counts(
     }
 
 
-def classify_veeam_session_or_job_type(value: str | None) -> Literal["replica", "backup", "other"]:
+def classify_veeam_session_or_job_type(
+    value: str | None,
+    mapping: dict[str, Any] | None = None,
+) -> Literal["replica", "backup", "other"]:
     """Map Veeam session_type or jobs.type to replica / backup / other.
 
-    session_type examples: ReplicaJob, BackupJob, …
-    jobs.type examples: VSphereReplica, Backup, …
+    When ``mapping`` (or loaded YAML) lists exact type strings under
+    ``veeam_replication_session_types`` / ``veeam_backup_session_types``, those
+    win. Otherwise builtin contains heuristics apply.
     """
-    raw = (value or "").strip().lower()
+    raw = (value or "").strip()
     if not raw:
         return "other"
-    if "replica" in raw:
+
+    cfg = mapping if mapping is not None else load_veeam_session_mapping()
+    rep = {
+        str(t).strip().casefold()
+        for t in (cfg.get("veeam_replication_session_types") or [])
+        if str(t).strip()
+    }
+    bak = {
+        str(t).strip().casefold()
+        for t in (cfg.get("veeam_backup_session_types") or [])
+        if str(t).strip()
+    }
+    key = raw.casefold()
+    if key in rep:
         return "replica"
-    if "backup" in raw:
+    if key in bak:
+        return "backup"
+    # Builtin fallback for unlisted types
+    if "replica" in key:
+        return "replica"
+    if "backup" in key:
         return "backup"
     return "other"
+
+
+@lru_cache(maxsize=8)
+def load_veeam_session_mapping(path: str | None = None) -> dict[str, Any]:
+    """Load Veeam session_type → replication/backup seed YAML."""
+    mapping_path = Path(path) if path else (
+        Path(__file__).resolve().parent / "veeam_session_mapping.yaml"
+    )
+    default: dict[str, Any] = {
+        "version": 1,
+        "veeam_replication_session_types": ["ReplicaJob", "VSphereReplica", "Replica"],
+        "veeam_backup_session_types": ["BackupJob", "Backup", "BackupCopyJob"],
+    }
+    try:
+        import yaml
+    except ImportError:
+        return default
+    if not mapping_path.is_file():
+        return default
+    try:
+        raw = yaml.safe_load(mapping_path.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return default
+    if not isinstance(raw, dict):
+        return default
+    return raw
+
+
+def clear_veeam_session_mapping_cache() -> None:
+    load_veeam_session_mapping.cache_clear()
 
 
 def _classify_builtin(name: str) -> VmBucket:

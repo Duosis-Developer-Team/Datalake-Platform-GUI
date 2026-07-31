@@ -39,6 +39,11 @@ from app.utils.time_range import (
 )
 from app.utils.format_units import smart_cpu, smart_memory, smart_storage
 from shared.backup.policy_classification import classify_netbackup_policy
+from shared.backup.replica_classifier import classify_vm_name, is_replica_like
+from shared.backup.nutanix_intersection import (
+    intersect_hc_nutanix_names,
+    sum_nutanix_disk_for_names,
+)
 from shared.backup.unique_jobs import (
     aggregate_unique_jobs,
     filter_unique_job_rows,
@@ -1572,6 +1577,92 @@ LIMIT 20
             "source": source,
         }
 
+    def _hc_nutanix_disk_for_replication(
+        self,
+        dc_code: str,
+        time_range: dict | None,
+        *,
+        vendor: str,
+    ) -> dict[str, float | int]:
+        """Sum Nutanix disk for VMware ∩ Nutanix ∩ vendor-protected VMs (HC replication).
+
+        Veeam uses name-bucket replica-like names from the VMware∩Nutanix overlap
+        until object-level Veeam VM names exist. Zerto uses ``raw_zerto_vm_metrics``.
+        """
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        dc_pattern = f"%{dc_code}%"
+        nutanix_rows: list[dict] = []
+        vmware_names: list[str] = []
+        vendor_names: list[str] = []
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    nut_rows = self._run_rows(
+                        cur,
+                        nq.NUTANIX_VM_DISK_ROWS,
+                        (dc_code, start_ts, end_ts, start_ts, end_ts),
+                    ) or []
+                    nutanix_rows = [
+                        {"name": str(r[0]), "disk_gb": float(r[1] or 0.0)}
+                        for r in nut_rows
+                        if r and r[0]
+                    ]
+                    vmware_names = [
+                        str(r[0])
+                        for r in (
+                            self._run_rows(
+                                cur,
+                                vq.DC_HYPERCONV_VMWARE_VM_NAMES,
+                                (dc_pattern, start_ts, end_ts),
+                            )
+                            or []
+                        )
+                        if r and r[0]
+                    ]
+
+                    vendor_key = (vendor or "").strip().lower()
+                    nx_name_list = [r["name"] for r in nutanix_rows]
+                    if vendor_key == "zerto":
+                        raw_z = self._run_rows(
+                            cur,
+                            bq.ZERTO_VM_NAMES_DISTINCT,
+                            (start_ts, end_ts),
+                        ) or []
+                        filtered = self._filter_rows_for_dc_by_name_and_host(
+                            raw_z,
+                            dc_code,
+                            name_index=0,
+                            host_index=1,
+                        )
+                        vendor_names = [str(r[0]) for r in filtered if r and r[0]]
+                    elif vendor_key == "veeam":
+                        nx_fold = {str(n).strip().casefold() for n in nx_name_list if str(n).strip()}
+                        vendor_names = [
+                            n
+                            for n in vmware_names
+                            if str(n).strip().casefold() in nx_fold
+                            and is_replica_like(classify_vm_name(n))
+                        ]
+                    else:
+                        return {"disk_gb": 0.0, "vm_count": 0}
+        except OperationalError as exc:
+            logger.warning(
+                "_hc_nutanix_disk_for_replication failed for %s/%s: %s",
+                dc_code,
+                vendor,
+                exc,
+            )
+            return {"disk_gb": 0.0, "vm_count": 0}
+
+        matched = intersect_hc_nutanix_names(
+            vmware_names,
+            nx_name_list,
+            vendor_names,
+        )
+        return sum_nutanix_disk_for_names(nutanix_rows, matched)
+
     def get_veeam_replication_datastore_compute(
         self,
         dc_code: str,
@@ -1610,9 +1701,12 @@ LIMIT 20
             "Veeam storage: all classic VMware datastores except NetBackup",
         ]
         if include_nutanix:
-            nut = self.get_backup_nutanix_compute(dc_code, None, time_range) or {}
-            nut_cap = float(nut.get("stor_cap") or 0.0)
-            nut_prov = float(nut.get("stor_provisioned_gb") or 0.0)
+            nut = self._hc_nutanix_disk_for_replication(
+                dc_code, time_range, vendor="veeam"
+            )
+            nut_disk_gb = float(nut.get("disk_gb") or 0.0)
+            nut_cap = round(nut_disk_gb / 1024.0, 3) if nut_disk_gb > 0 else 0.0
+            nut_prov = round(nut_disk_gb, 3) if nut_disk_gb > 0 else 0.0
             if nut_cap > 0:
                 out["stor_cap"] = round(float(out.get("stor_cap") or 0.0) + nut_cap, 3)
                 out["stor_provisioned_gb"] = round(
@@ -1622,8 +1716,9 @@ LIMIT 20
                 cap = float(out.get("stor_cap") or 0.0)
                 out["stor_pct"] = round(100.0 * used_tb / cap, 1) if cap > 0 else 0.0
                 out["nutanix_stor_cap_tb"] = nut_cap
+                out["nutanix_intersection_vm_count"] = int(nut.get("vm_count") or 0)
                 notes.append(
-                    "HC: Nutanix disks included when VMware-managed HC VMs use Veeam"
+                    "HC: Nutanix disk from VMware∩Nutanix∩Veeam-replica name intersection"
                 )
             out["source"] = "vmware_plus_nutanix_veeam_eligible"
         out["notes"] = notes
@@ -1663,9 +1758,12 @@ LIMIT 20
             "Zerto storage: classic VMware datastores except Veeam and NetBackup",
         ]
         if include_nutanix:
-            nut = self.get_backup_nutanix_compute(dc_code, None, time_range) or {}
-            nut_cap = float(nut.get("stor_cap") or 0.0)
-            nut_prov = float(nut.get("stor_provisioned_gb") or 0.0)
+            nut = self._hc_nutanix_disk_for_replication(
+                dc_code, time_range, vendor="zerto"
+            )
+            nut_disk_gb = float(nut.get("disk_gb") or 0.0)
+            nut_cap = round(nut_disk_gb / 1024.0, 3) if nut_disk_gb > 0 else 0.0
+            nut_prov = round(nut_disk_gb, 3) if nut_disk_gb > 0 else 0.0
             if nut_cap > 0:
                 out["stor_cap"] = round(float(out.get("stor_cap") or 0.0) + nut_cap, 3)
                 out["stor_provisioned_gb"] = round(
@@ -1675,10 +1773,43 @@ LIMIT 20
                 cap = float(out.get("stor_cap") or 0.0)
                 out["stor_pct"] = round(100.0 * used_tb / cap, 1) if cap > 0 else 0.0
                 out["nutanix_stor_cap_tb"] = nut_cap
+                out["nutanix_intersection_vm_count"] = int(nut.get("vm_count") or 0)
                 notes.append(
-                    "HC: Nutanix disks included when VMware-managed HC VMs use Zerto"
+                    "HC: Nutanix disk from VMware∩Nutanix∩Zerto VM intersection"
                 )
             out["source"] = "vmware_plus_nutanix_zerto_eligible"
+
+        notes.append(
+            "Zerto storage primary: VMware datastore pools; site metrics are "
+            "inventory context only (not added to sellable stor_cap)"
+        )
+        ds_cap = float(out.get("stor_cap") or 0.0)
+        try:
+            sites_data = self._fetch_dc_zerto_sites(dc_code, start_ts, end_ts)
+            site_rows = sites_data.get("rows") or []
+            site_prov_gb = round(
+                sum(float(r.get("provisioned_storage_mb") or 0.0) / 1024.0 for r in site_rows),
+                3,
+            )
+            site_used_gb = round(
+                sum(float(r.get("used_storage_mb") or 0.0) / 1024.0 for r in site_rows),
+                3,
+            )
+            if ds_cap < 0.001 and (site_prov_gb > 0 or site_used_gb > 0):
+                out["site_provisioned_gb"] = site_prov_gb
+                out["site_used_gb"] = site_used_gb
+                out["site_count"] = len(site_rows)
+                notes.append(
+                    f"Site context: {len(site_rows)} Zerto site(s) report "
+                    f"{site_prov_gb:.1f} GB provisioned / {site_used_gb:.1f} GB used "
+                    "(not merged into sellable stor_cap)"
+                )
+        except OperationalError as exc:
+            logger.warning(
+                "get_zerto_replication_datastore_compute site context failed for %s: %s",
+                dc_code,
+                exc,
+            )
         out["notes"] = notes
         return out
 

@@ -60,6 +60,7 @@ from src.components.colocation_summary import build_colocation_summary
 from src.components.sellable_constraint_viz import (
     fmt_tl_for_card,
     sellable_constraint_badges,
+    sellable_minmax_tape,
 )
 from src.components.header import create_detail_header
 from src.components.s3_panel import build_dc_s3_panel
@@ -69,7 +70,8 @@ from src.components.backup_panel import (
     build_netbackup_panel,
     build_nutanix_panel_shell,
     build_nutanix_snapshot_panel,
-    build_replication_section,
+    build_veeam_category_section,
+    build_zerto_category_section,
     build_veeam_panel,
     build_zerto_panel,
 )
@@ -2700,6 +2702,40 @@ def _build_sellable_inline_kpi(
                     "marginTop": "12px",
                 },
                 children=cards,
+            ),
+            # IBM-style min–max tape when alternate/shared capacity yields a range
+            *(
+                [
+                    sellable_minmax_tape(
+                        float(cpu["min"]),
+                        float(cpu["max"]),
+                        unit=str(cpu.get("unit") or "vCPU"),
+                    )
+                ]
+                if bool(cpu.get("has_range")) and abs(float(cpu["max"]) - float(cpu["min"])) > 1e-6
+                else []
+            ),
+            *(
+                [
+                    sellable_minmax_tape(
+                        float(ram["min"]),
+                        float(ram["max"]),
+                        unit=str(ram.get("unit") or "GB"),
+                    )
+                ]
+                if bool(ram.get("has_range")) and abs(float(ram["max"]) - float(ram["min"])) > 1e-6
+                else []
+            ),
+            *(
+                [
+                    sellable_minmax_tape(
+                        float(stor["min"]),
+                        float(stor["max"]),
+                        unit=str(stor.get("unit") or "GB"),
+                    )
+                ]
+                if stor_has_range
+                else []
             ),
             dmc.Group(gap="xs", style={"marginTop": "10px"}, children=sub_lines) if sub_lines else None,
         ],
@@ -6033,7 +6069,6 @@ def build_dc_view(
         has_nutanix_backup = True
         has_image = True
         has_application = True
-        has_replication = True
         has_backup = True
     else:
         has_zerto = bool(zerto_data.get("sites"))
@@ -6043,8 +6078,7 @@ def build_dc_view(
         has_nutanix_backup = bool(nutanix_data.get("rows"))
         has_image = has_netbackup or has_nutanix_backup
         has_application = has_netbackup
-        has_replication = has_zerto or has_veeam or has_zerto_license
-        has_backup = has_image or has_application or has_replication
+        has_backup = has_image or has_application or has_zerto or has_veeam or has_zerto_license
 
     # S3 presence already computed above
     # has_s3 = bool(s3_data.get("pools"))
@@ -6242,7 +6276,7 @@ def build_dc_view(
                     ),
                 ) if show_virt else None,
 
-                # Backup & Replication (category tabs: Image / Application / Replication)
+                # Backup & Replication (category tabs: Image / Application / Veeam / Zerto)
                 dmc.TabsPanel(
                     value="backup",
                     children=(
@@ -6262,7 +6296,9 @@ def build_dc_view(
                                     if has_image
                                     else "application"
                                     if has_application
-                                    else "replication"
+                                    else "veeam"
+                                    if has_veeam
+                                    else "zerto"
                                 ),
                                 children=[
                                     dmc.TabsList(
@@ -6273,8 +6309,11 @@ def build_dc_view(
                                             dmc.TabsTab("Application Backup", value="application")
                                             if has_application
                                             else None,
-                                            dmc.TabsTab("Replication", value="replication")
-                                            if has_replication
+                                            dmc.TabsTab("Veeam", value="veeam")
+                                            if has_veeam
+                                            else None,
+                                            dmc.TabsTab("Zerto", value="zerto")
+                                            if has_zerto
                                             else None,
                                         ]
                                     ),
@@ -6351,7 +6390,7 @@ def build_dc_view(
                                     if has_application
                                     else None,
                                     dmc.TabsPanel(
-                                        value="replication",
+                                        value="veeam",
                                         pt="lg",
                                         children=html.Div(
                                             children=[
@@ -6363,26 +6402,46 @@ def build_dc_view(
                                                     include=(
                                                         "backup_veeam_replication_classic",
                                                         "backup_veeam_replication_hyperconverged",
-                                                        "backup_zerto_replication_classic",
-                                                        "backup_zerto_replication_hyperconverged",
                                                         "backup_veeam_replication",
-                                                        "backup_zerto_replication",
                                                     ),
                                                 ),
-                                                build_replication_section(
+                                                build_veeam_category_section(
                                                     veeam_data=veeam_data,
-                                                    zerto_data=zerto_data,
-                                                    zerto_license=None,
                                                     veeam_license=None,
-                                                    has_veeam=has_veeam,
-                                                    has_zerto=has_zerto,
                                                     content_mode=backup_content_mode,
                                                     show_licenses=False,
                                                 ),
                                             ],
                                         ),
                                     )
-                                    if has_replication
+                                    if has_veeam
+                                    else None,
+                                    dmc.TabsPanel(
+                                        value="zerto",
+                                        pt="lg",
+                                        children=html.Div(
+                                            children=[
+                                                *_backup_inline_sellable_blocks(
+                                                    str(dc_id),
+                                                    classic_clusters=classic_clusters or None,
+                                                    hyperconv_clusters=hyperconv_clusters or None,
+                                                    content_mode=backup_content_mode,
+                                                    include=(
+                                                        "backup_zerto_replication_classic",
+                                                        "backup_zerto_replication_hyperconverged",
+                                                        "backup_zerto_replication",
+                                                    ),
+                                                ),
+                                                build_zerto_category_section(
+                                                    zerto_data=zerto_data,
+                                                    zerto_license=None,
+                                                    content_mode=backup_content_mode,
+                                                    show_licenses=False,
+                                                ),
+                                            ],
+                                        ),
+                                    )
+                                    if has_zerto
                                     else None,
                                 ],
                             ),
@@ -6608,7 +6667,8 @@ def build_dc_view_layout_shell(dc_id, time_range=None, visible_sections=None):
             # which are absent until the Backup lazy tab mounts).
             dcc.Store(id="backup-category-tab-store", data="image"),
             dcc.Store(id="backup-image-tab-store", data="km"),
-            dcc.Store(id="backup-replication-tab-store", data=None),
+            # Veeam nested mode: replication | backup (wired from backup-veeam-mode-tabs).
+            dcc.Store(id="backup-replication-tab-store", data="replication"),
             # One-shot deferral so unique-jobs start after job-stats (stampede guard).
             dcc.Interval(
                 id="backup-uj-defer",

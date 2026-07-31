@@ -10,6 +10,7 @@ from shared.backup.policy_classification import (
     load_policy_panel_mapping,
     policy_types_for_category,
 )
+from shared.backup.vm_role import annotate_vm_roles, sum_billable_virt_resources
 from shared.licensing.os_source import tally_vm_list, with_os_family
 from shared.nutanix import snapshot_helpers as nsnap
 from shared.vmware.host_cpu_ghz import (
@@ -106,6 +107,17 @@ class CustomerAdapter:
 
         host_map = cached_host_map(_loader, default_ghz=DEFAULT_HOST_CPU_GHZ)
         return enrich_customer_vm_cpu_list(vm_list, host_map, default_ghz=DEFAULT_HOST_CPU_GHZ)
+
+    @staticmethod
+    def _apply_vm_roles_and_billable_totals(
+        vm_list: list[dict],
+        *,
+        zerto_names: list[str] | None = None,
+    ) -> tuple[list[dict], dict[str, float | int]]:
+        """Annotate VM roles and recompute virt sold totals excluding replicas."""
+        annotated = annotate_vm_roles(vm_list, zerto_names=zerto_names)
+        totals = sum_billable_virt_resources(annotated)
+        return annotated, totals
 
     def fetch(
         self,
@@ -242,9 +254,19 @@ class CustomerAdapter:
                     if r and r[0]
                 ]
                 classic_vm_list = self._enrich_customer_vm_list(cur, classic_vm_list)
-                classic_cpu_real = sum_cpu_real_total(classic_vm_list)
-                classic_cpu_used_avg = sum_cpu_used_ghz_avg_total(classic_vm_list)
-                classic_cpu_used_max = sum_cpu_used_ghz_max_total(classic_vm_list)
+                classic_vm_list, classic_virt = self._apply_vm_roles_and_billable_totals(
+                    classic_vm_list
+                )
+                classic_vm_count = int(classic_virt.get("vm_count") or 0)
+                classic_cpu = float(classic_virt.get("cpu") or 0.0)
+                classic_mem_gb = float(classic_virt.get("memory_gb") or 0.0)
+                classic_disk_gb = float(classic_virt.get("disk_gb") or 0.0)
+                billable_classic = [
+                    r for r in classic_vm_list if r.get("virt_billable") is not False
+                ]
+                classic_cpu_real = sum_cpu_real_total(billable_classic)
+                classic_cpu_used_avg = sum_cpu_used_ghz_avg_total(billable_classic)
+                classic_cpu_used_max = sum_cpu_used_ghz_max_total(billable_classic)
 
                 # --- Hyperconverged (non-KM VMware + all Nutanix, filtered by vm_name only) ---
                 hc_params = (
@@ -310,9 +332,15 @@ class CustomerAdapter:
                     if r and r[0]
                 ]
                 hc_vm_list = self._enrich_customer_vm_list(cur, hc_vm_list)
-                hc_cpu_real = sum_cpu_real_total(hc_vm_list)
-                hc_cpu_used_avg = sum_cpu_used_ghz_avg_total(hc_vm_list)
-                hc_cpu_used_max = sum_cpu_used_ghz_max_total(hc_vm_list)
+                hc_vm_list, hc_virt = self._apply_vm_roles_and_billable_totals(hc_vm_list)
+                hc_total = int(hc_virt.get("vm_count") or 0)
+                hc_cpu = float(hc_virt.get("cpu") or 0.0)
+                hc_mem_gb = float(hc_virt.get("memory_gb") or 0.0)
+                hc_disk_gb = float(hc_virt.get("disk_gb") or 0.0)
+                billable_hc = [r for r in hc_vm_list if r.get("virt_billable") is not False]
+                hc_cpu_real = sum_cpu_real_total(billable_hc)
+                hc_cpu_used_avg = sum_cpu_used_ghz_avg_total(billable_hc)
+                hc_cpu_used_max = sum_cpu_used_ghz_max_total(billable_hc)
 
                 # --- Pure Nutanix (AHV-only clusters, cluster lookup uses latest — no time filter) ---
                 pure_params = (pure, vm_pattern, start_ts, end_ts)

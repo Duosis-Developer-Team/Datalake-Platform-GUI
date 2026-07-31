@@ -32,6 +32,20 @@ ORDER BY id, collection_timestamp DESC
 
 # Latest Zerto site metrics per site ID within a given time range.
 # Params: (start_ts, end_ts)
+# Distinct Zerto protected VM names in a time window (DC filter applied in Python).
+# Params: (start_ts, end_ts)
+# Returns: (vm_name, zerto_host)
+ZERTO_VM_NAMES_DISTINCT = """
+SELECT DISTINCT ON (COALESCE(NULLIF(TRIM(vm_name), ''), NULLIF(TRIM(name), '')))
+    COALESCE(NULLIF(TRIM(vm_name), ''), NULLIF(TRIM(name), '')) AS vm_name,
+    zerto_host
+FROM public.raw_zerto_vm_metrics
+WHERE collection_timestamp BETWEEN %s AND %s
+  AND COALESCE(NULLIF(TRIM(vm_name), ''), NULLIF(TRIM(name), '')) IS NOT NULL
+ORDER BY COALESCE(NULLIF(TRIM(vm_name), ''), NULLIF(TRIM(name), '')),
+         collection_timestamp DESC
+"""
+
 ZERTO_SITES_LATEST = """
 SELECT DISTINCT ON (id)
     collection_timestamp,

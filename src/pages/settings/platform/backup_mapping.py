@@ -13,7 +13,7 @@ import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 
 from shared.backup.policy_classification import load_policy_panel_mapping
-from shared.backup.replica_classifier import load_replica_patterns
+from shared.backup.replica_classifier import load_replica_patterns, load_veeam_session_mapping
 from src.utils.ui_tokens import card_style, section_header, settings_page_shell
 
 
@@ -360,6 +360,85 @@ def _multipliers_panel() -> html.Div:
     )
 
 
+def _veeam_session_types_panel(session_cfg: dict[str, Any]) -> html.Div:
+    """Backup Configuration: which Veeam session/job types are Replication vs Backup."""
+    rep_vals = [str(t) for t in (session_cfg.get("veeam_replication_session_types") or [])]
+    bak_vals = [str(t) for t in (session_cfg.get("veeam_backup_session_types") or [])]
+    options = sorted(
+        {v for v in (rep_vals + bak_vals) if v},
+        key=lambda s: s.casefold(),
+    )
+    data = [{"value": o, "label": o} for o in options]
+    # Allow operators to type known extras even before Save/DB
+    for extra in ("ReplicaJob", "VSphereReplica", "BackupJob", "Backup", "BackupCopyJob"):
+        if extra not in {d["value"] for d in data}:
+            data.append({"value": extra, "label": extra})
+
+    return html.Div(
+        [
+            dmc.Alert(
+                "Exact session_type / jobs.type strings listed here classify Veeam "
+                "work as Replication or Backup on the DC Backup → Veeam tab. "
+                "Seed: ``shared/backup/veeam_session_mapping.yaml``. "
+                "Save/DB persist is disabled — edit the YAML for now.",
+                title="Veeam session types — Backup Configuration",
+                color="cyan",
+                variant="light",
+                mb="md",
+            ),
+            dmc.SimpleGrid(
+                cols={"base": 1, "md": 2},
+                spacing="md",
+                children=[
+                    dmc.Paper(
+                        **card_style(),
+                        children=[
+                            dmc.Text("Replication session types", fw=700, size="sm", c="#2B3674", mb="sm"),
+                            dmc.MultiSelect(
+                                id="pbm-veeam-replication-session-types",
+                                data=data,
+                                value=rep_vals,
+                                searchable=True,
+                                clearable=True,
+                                size="sm",
+                                placeholder="Select replication types…",
+                            ),
+                        ],
+                    ),
+                    dmc.Paper(
+                        **card_style(),
+                        children=[
+                            dmc.Text("Backup session types", fw=700, size="sm", c="#2B3674", mb="sm"),
+                            dmc.MultiSelect(
+                                id="pbm-veeam-backup-session-types",
+                                data=data,
+                                value=bak_vals,
+                                searchable=True,
+                                clearable=True,
+                                size="sm",
+                                placeholder="Select backup types…",
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            dmc.Group(
+                justify="flex-end",
+                mt="md",
+                children=[
+                    dmc.Button(
+                        "Save session mapping",
+                        id="pbm-veeam-session-save",
+                        size="sm",
+                        disabled=True,
+                        leftSection=DashIconify(icon="solar:diskette-bold-duotone", width=16),
+                    ),
+                ],
+            ),
+        ]
+    )
+
+
 def _tab(label: str, icon: str, value: str) -> dmc.TabsTab:
     return dmc.TabsTab(
         dmc.Group(
@@ -377,6 +456,7 @@ def build_layout(search: str | None = None) -> html.Div:
     _ = search
     mapping = load_policy_panel_mapping()
     patterns = load_replica_patterns()
+    session_cfg = load_veeam_session_mapping()
 
     return html.Div(
         settings_page_shell(
@@ -384,6 +464,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 section_header(
                     "Backup Mapping",
                     "Platform controls for NetBackup Image vs Application, "
+                    "Veeam session types (Backup Configuration), "
                     "Veeam DR / Altra / custom name patterns, Zerto matrix notes, "
                     "and Nutanix snapshot multipliers.",
                     icon="solar:cloud-storage-bold-duotone",
@@ -400,6 +481,7 @@ def build_layout(search: str | None = None) -> html.Div:
                                 dmc.TabsList(
                                     children=[
                                         _tab("Image vs Application", "solar:layers-minimalistic-bold-duotone", "image-app"),
+                                        _tab("Veeam session types", "solar:settings-bold-duotone", "veeam-sessions"),
                                         _tab("Veeam DR patterns", "solar:server-square-cloud-bold-duotone", "veeam-dr"),
                                         _tab("Altra / external replica", "solar:global-bold-duotone", "altra"),
                                         _tab("Custom patterns", "solar:pen-new-square-bold-duotone", "custom"),
@@ -408,6 +490,11 @@ def build_layout(search: str | None = None) -> html.Div:
                                     ]
                                 ),
                                 dmc.TabsPanel(value="image-app", pt="md", children=_image_app_panel(mapping)),
+                                dmc.TabsPanel(
+                                    value="veeam-sessions",
+                                    pt="md",
+                                    children=_veeam_session_types_panel(session_cfg),
+                                ),
                                 dmc.TabsPanel(value="veeam-dr", pt="md", children=_veeam_dr_panel(patterns)),
                                 dmc.TabsPanel(value="altra", pt="md", children=_altra_panel(patterns)),
                                 dmc.TabsPanel(value="custom", pt="md", children=_custom_panel(patterns)),

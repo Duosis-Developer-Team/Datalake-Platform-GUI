@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from app.services.dc_service import DatabaseService
 
@@ -135,6 +135,91 @@ class TestComputeFastPath(unittest.TestCase):
         self.assertAlmostEqual(out["stor_cap"], 3.0)
         self.assertEqual(out["datastore_count"], 2)
         self.assertEqual(out["source"], "vmware_datastore_veeam_eligible")
+
+    def test_get_veeam_replication_include_nutanix_uses_intersection(self):
+        svc = DatabaseService.__new__(DatabaseService)
+        _tb = 1024 ** 4
+        rows = [
+            ("moid-1", "DC13-veeam-repo1", "DC13-KM", 1 * _tb, 0.2 * _tb, 0.8 * _tb),
+        ]
+
+        class _Cur:
+            pass
+
+        class _Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def cursor(self):
+                return _Ctx()
+
+        class _Ctx:
+            def __enter__(self):
+                return _Cur()
+
+            def __exit__(self, *a):
+                return False
+
+        nut = {"disk_gb": 2048.0, "vm_count": 2}
+        with patch.object(svc, "_get_connection", return_value=_Conn()), \
+             patch.object(svc, "_run_rows", return_value=rows), \
+             patch.object(svc, "_hc_nutanix_disk_for_replication", return_value=nut) as get_nut:
+            out = svc.get_veeam_replication_datastore_compute(
+                "DC13", {"preset": "7d"}, include_nutanix=True
+            )
+
+        get_nut.assert_called_once_with("DC13", {"preset": "7d"}, vendor="veeam")
+        self.assertAlmostEqual(out["stor_cap"], 3.0)  # 1 TB DS + 2 TB Nutanix
+        self.assertEqual(out["nutanix_intersection_vm_count"], 2)
+        self.assertTrue(
+            any("intersection" in n.lower() for n in out.get("notes") or [])
+        )
+
+    def test_get_zerto_replication_attaches_site_context_when_ds_empty(self):
+        svc = DatabaseService.__new__(DatabaseService)
+
+        class _Cur:
+            pass
+
+        class _Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def cursor(self):
+                return _Ctx()
+
+        class _Ctx:
+            def __enter__(self):
+                return _Cur()
+
+            def __exit__(self, *a):
+                return False
+
+        sites = {
+            "sites": ["DC13-site"],
+            "rows": [
+                {
+                    "provisioned_storage_mb": 1024 * 1024,
+                    "used_storage_mb": 512 * 1024,
+                }
+            ],
+        }
+        with patch.object(type(svc), "dc_list", new_callable=PropertyMock, return_value=["DC13"]), \
+             patch.object(svc, "_get_connection", return_value=_Conn()), \
+             patch.object(svc, "_run_rows", return_value=[]), \
+             patch.object(svc, "_fetch_dc_zerto_sites", return_value=sites):
+            out = svc.get_zerto_replication_datastore_compute("DC13", {"preset": "7d"})
+
+        self.assertAlmostEqual(out.get("site_provisioned_gb"), 1024.0)
+        self.assertAlmostEqual(out.get("site_used_gb"), 512.0)
+        self.assertEqual(out.get("stor_cap"), 0.0)
+        self.assertTrue(any("site context" in n.lower() for n in out.get("notes") or []))
 
     def test_get_backup_nutanix_compute_reuses_hyperconv_metrics(self):
         svc = DatabaseService.__new__(DatabaseService)

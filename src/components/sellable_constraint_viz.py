@@ -162,6 +162,68 @@ def sellable_constraint_badges(panel: dict[str, Any] | None, *, kind_label: str 
     return badges
 
 
+def sellable_minmax_tape(
+    lo: float,
+    hi: float,
+    *,
+    unit: str = "GB",
+    subtitle: str = "sell all free → max; sell none → min",
+) -> html.Div:
+    """IBM-style min–max sellable band (gradient tape + English subtitle)."""
+    low = float(lo or 0)
+    high = float(hi or 0)
+    if high < low:
+        low, high = high, low
+    min_pct = 0.0 if high <= 1e-9 else min(100.0, 100.0 * low / high)
+
+    return html.Div(
+        style={"marginTop": "10px"},
+        children=[
+            html.Div(
+                style={
+                    "position": "relative",
+                    "height": "12px",
+                    "borderRadius": "8px",
+                    "background": "#E9EDF7",
+                    "overflow": "hidden",
+                },
+                children=[
+                    html.Div(
+                        style={
+                            "width": "100%",
+                            "height": "100%",
+                            "background": (
+                                "linear-gradient(90deg, #A3AED0 0%, #4318FF 55%, #05CD99 100%)"
+                            ),
+                            "opacity": 0.9,
+                        }
+                    ),
+                    html.Div(
+                        style={
+                            "position": "absolute",
+                            "left": f"{min_pct}%",
+                            "top": 0,
+                            "bottom": 0,
+                            "width": "2px",
+                            "background": "#2B3674",
+                        }
+                    ),
+                ],
+            ),
+            dmc.Group(
+                gap="md",
+                mt=6,
+                justify="space-between",
+                children=[
+                    dmc.Text(f"Min {low:,.0f} {unit}", size="xs", c="dimmed"),
+                    dmc.Text(subtitle, size="xs", c="#4318FF", fw=600),
+                    dmc.Text(f"Max {high:,.0f} {unit}", size="xs", c="dimmed"),
+                ],
+            ),
+        ],
+    )
+
+
 def storage_capacity_text(panel: dict[str, Any] | None) -> str:
     """Format storage sellable as range or single constrained value."""
     if not panel:

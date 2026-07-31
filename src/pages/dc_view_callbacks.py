@@ -251,10 +251,15 @@ def sync_backup_image_tab_store(value):
 
 @callback(
     Output("backup-replication-tab-store", "data"),
-    Input("backup-replication-tabs", "value"),
+    Input("backup-veeam-mode-tabs", "value"),
     prevent_initial_call=True,
 )
 def sync_backup_replication_tab_store(value):
+    """Mirror Veeam Replication|Backup nested tabs into the shell Store.
+
+    Store id kept for job-stats / unique-jobs Inputs; value is now
+    replication|backup (legacy zerto|veeam nested tab values no longer used).
+    """
     if value is None:
         raise dash.exceptions.PreventUpdate
     return value

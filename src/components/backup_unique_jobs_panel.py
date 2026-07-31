@@ -631,7 +631,8 @@ def _make_dc_callback(vendor: str, category: str | None = None) -> None:
             category=_category,
             backup_category_tab=backup_category_tab,
             backup_image_tab=backup_image_tab,
-            backup_replication_tab=backup_replication_tab,
+            # Unique-jobs sits above Veeam mode tabs; do not gate on replication|backup.
+            backup_replication_tab=None,
         ):
             return (dash.no_update,) * 6
         page = int(page or 1)

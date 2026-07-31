@@ -28,3 +28,13 @@ def test_zerto_replication_classic_vs_hc():
         classify("Hyperconverged Mimari Zerto Replication Disk - SSD")
         == "backup_zerto_replication_hyperconverged_storage"
     )
+    assert (
+        classify("Hyperconverged Mimari Zerto Replication RAM")
+        == "backup_zerto_replication_hyperconverged_ram"
+    )
+
+
+def test_legacy_replication_keys_still_classify():
+    """Legacy combined keys remain fallback when architecture is absent."""
+    assert classify("Veeam Replication vCpu") == "backup_veeam_replication_cpu"
+    assert classify("Zerto Replication RAM") == "backup_zerto_replication_ram"

@@ -523,16 +523,15 @@ def should_skip_fetch(
         return False
 
     if vendor == "zerto":
-        if cat_tab != "replication":
-            return True
-        if backup_replication_tab and backup_replication_tab != "zerto":
+        if cat_tab != "zerto":
             return True
         return False
 
     if vendor == "veeam":
-        if cat_tab != "replication":
+        if cat_tab != "veeam":
             return True
-        if backup_replication_tab and backup_replication_tab != "veeam":
+        # Job Statistics live under the Replication sub-tab only.
+        if backup_replication_tab and backup_replication_tab not in ("replication", "veeam"):
             return True
         return False
 
