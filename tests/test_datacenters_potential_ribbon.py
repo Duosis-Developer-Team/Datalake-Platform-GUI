@@ -1,7 +1,11 @@
 """Datacenters list: Potential Sales ribbon helper."""
 from __future__ import annotations
 
-from src.pages.datacenters import _dc_sellable_ribbon, _potential_sales_display
+from src.pages.datacenters import (
+    _dc_sellable_ribbon,
+    _merge_platform_range_with_colo,
+    _potential_sales_display,
+)
 from src.utils.format_units import fmt_tl_range
 
 
@@ -51,6 +55,15 @@ def test_sellable_ribbon_merges_colo_into_range():
     assert "Potential Sales (Colocation)" not in texts
 
 
+def test_merge_platform_range_with_colo_uses_platform_total():
+    total, lo, hi = _merge_platform_range_with_colo(
+        1_000.0, 900.0, 1_100.0, colocation_tl=200.0,
+    )
+    assert total == 1_200.0
+    assert lo == 1_100.0
+    assert hi == 1_300.0
+
+
 def test_sellable_ribbon_renders_range_when_min_max_differ():
     el = _dc_sellable_ribbon(
         1_500_000.0,
@@ -78,5 +91,5 @@ def test_potential_sales_display_range():
 
 def test_potential_sales_display_loading():
     short, full = _potential_sales_display(0.0, 0.0, loading=True)
-    assert short == "Hesaplanıyor…"
+    assert short == "Calculating…"
     assert full == "—"

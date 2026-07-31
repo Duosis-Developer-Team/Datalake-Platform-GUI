@@ -25,7 +25,10 @@ from src.utils.datacenters_virt_sellable import (
 )
 from src.utils.api_parallel import parallel_execute
 from src.utils.format_units import fmt_tl, fmt_tl_range
-from src.utils.platform_sellable_aggregate import potential_sales_info_text
+from src.utils.platform_sellable_aggregate import (
+    platform_total_potential_range,
+    potential_sales_info_text,
+)
 from shared.display.static_energy import STATIC_TOTAL_ENERGY_KW
 
 _LOG = logging.getLogger(__name__)
@@ -119,7 +122,7 @@ def _potential_sales_display(
 ) -> tuple[str, str]:
     """Format Potential Sales headline + tooltip (min–max TL range)."""
     if loading:
-        return "Hesaplanıyor…", "—"
+        return "Calculating…", "—"
     lo = float(tl_min or 0.0)
     hi = float(tl_max or 0.0)
     short = fmt_tl_range(lo, hi)
@@ -128,6 +131,29 @@ def _potential_sales_display(
     else:
         full = f"{lo:,.0f} TL"
     return short, full
+
+
+def _merge_platform_range_with_colo(
+    tl: float,
+    tl_min: float,
+    tl_max: float,
+    *,
+    colocation_tl: float | None = None,
+) -> tuple[float, float, float]:
+    """Fold colo into a pre-aggregated platform range via platform_total_potential_range.
+
+    Per-DC sellable is already computed with ``platform_total_potential_range(panels)``
+    (no colo). Overview totals therefore pass a synthetic panel so colo merges through
+    the same ``colocation_tl=`` path used by DC Summary.
+    """
+    synth = [{
+        "family": "_preaggregated_platform",
+        "resource_kind": "other",
+        "potential_tl": float(tl or 0.0),
+        "potential_tl_min": float(tl_min if tl_min is not None else tl or 0.0),
+        "potential_tl_max": float(tl_max if tl_max is not None else tl or 0.0),
+    }]
+    return platform_total_potential_range(synth, colocation_tl=colocation_tl)
 
 
 def _colocation_sales_line(colo_tl: float | None, *, loading: bool = False):
@@ -263,14 +289,15 @@ def _dc_sellable_ribbon(
     colo_tl: float | None = None,
 ) -> html.Div:
     """Compact Potential Sales strip (platform sellable + colo) + portfolio share."""
-    colo = float(colo_tl or 0.0)
     if loading:
-        pot_short, pot_full = "…", "Hesaplanıyor"
+        pot_short, pot_full = "…", "Calculating"
         headline_tl = 0.0
     else:
-        lo = float(virt_tl_min if virt_tl_min is not None else virt_tl) + colo
-        hi = float(virt_tl_max if virt_tl_max is not None else virt_tl) + colo
-        headline_tl = float(virt_tl or 0.0) + colo
+        lo_in = float(virt_tl_min if virt_tl_min is not None else virt_tl)
+        hi_in = float(virt_tl_max if virt_tl_max is not None else virt_tl)
+        headline_tl, lo, hi = _merge_platform_range_with_colo(
+            float(virt_tl or 0.0), lo_in, hi_in, colocation_tl=colo_tl,
+        )
         pot_short = fmt_tl_range(lo, hi)
         pot_full = (
             f"{lo:,.0f} – {hi:,.0f} TL"
@@ -720,9 +747,12 @@ def build_datacenters(time_range=None, visible_sections=None):
         [d.get("id") for d in datacenters]
     )
     colo_total = float(total_colo_potential_tl or 0.0)
-    unified_min = total_potential_tl_min + colo_total
-    unified_max = total_potential_tl_max + colo_total
-    unified_portfolio = total_potential_tl + colo_total
+    unified_portfolio, unified_min, unified_max = _merge_platform_range_with_colo(
+        total_potential_tl,
+        total_potential_tl_min,
+        total_potential_tl_max,
+        colocation_tl=colo_total,
+    )
 
     # ── Export rows ──
     export_rows = []
@@ -1095,9 +1125,12 @@ def poll_virt_sellable_refresh(_n, state, time_range):
         [d.get("id") for d in datacenters]
     )
     colo_total = float(total_colo_potential_tl or 0.0)
-    unified_min = total_potential_tl_min + colo_total
-    unified_max = total_potential_tl_max + colo_total
-    unified_portfolio = total_potential_tl + colo_total
+    unified_portfolio, unified_min, unified_max = _merge_platform_range_with_colo(
+        total_potential_tl,
+        total_potential_tl_min,
+        total_potential_tl_max,
+        colocation_tl=colo_total,
+    )
 
     total_hosts = sum(dc.get("host_count", 0) for dc in datacenters)
     total_vms = sum(dc.get("vm_count", 0) for dc in datacenters)
