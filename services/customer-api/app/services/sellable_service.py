@@ -2002,8 +2002,15 @@ SELECT _tot, _alloc FROM latest
                     if refresh_from_totals
                     else group
                 )
+                # Dedicated backup/replication storage must not be zeroed by
+                # compute ratio when CPU/RAM sellable is gated or alternate-min.
+                decouple = (
+                    {"storage"}
+                    if fam in _SKIP_STORAGE_RATIO_CAP_FAMILIES
+                    else None
+                )
                 new_group = constrain_by_ratio(
-                    source_group, ratio, decouple_resource_kinds=None,
+                    source_group, ratio, decouple_resource_kinds=decouple,
                 )
 
             if fam in _STORAGE_RANGE_FAMILIES and range_inputs and not host_based_ok:
