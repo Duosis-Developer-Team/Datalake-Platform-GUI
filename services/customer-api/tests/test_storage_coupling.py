@@ -218,6 +218,27 @@ def test_bulk_upsert_is_one_transaction():
     assert {params[4] for _sql, params in statements} == {"arca"}
 
 
+def test_upsert_never_sends_a_bare_null_into_the_not_null_notes_column():
+    """Postgres builds the proposed row before ON CONFLICT, so a NULL note is a 500.
+
+    The board saves modes without touching notes, i.e. it always sends None.
+    """
+    from pathlib import Path
+
+    import app.db.queries.sellable as sq
+
+    migration = (
+        Path(__file__).resolve().parents[1] / "migrations" / "webui" / "037_family_storage_coupling.sql"
+    ).read_text(encoding="utf-8")
+    notes_col = next(line for line in migration.splitlines() if line.strip().startswith("notes"))
+    assert "NOT NULL" in notes_col
+
+    insert_values = sq.UPSERT_STORAGE_COUPLING.split("ON CONFLICT")[0]
+    assert "COALESCE(%s,'')" in insert_values
+    # ...and an empty note must not wipe the seeded explanation on update.
+    assert "NULLIF(EXCLUDED.notes, '')" in sq.UPSERT_STORAGE_COUPLING
+
+
 def test_bulk_upsert_rejects_the_whole_board_on_a_bad_row():
     svc = SellableService.__new__(SellableService)
     webui = MagicMock()

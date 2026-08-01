@@ -121,13 +121,16 @@ FROM   gui_family_storage_coupling
 ORDER BY family, dc_code;
 """
 
+# ``notes`` is NOT NULL, so the proposed row is coalesced before the conflict
+# arbiter ever runs; NULLIF then keeps the seeded explanation when the board
+# saves a mode without touching the note.
 UPSERT_STORAGE_COUPLING = """
 INSERT INTO gui_family_storage_coupling
     (family, dc_code, mode, notes, updated_by, updated_at)
-VALUES (%s,%s,%s,%s,%s, NOW())
+VALUES (%s,%s,%s,COALESCE(%s,''),%s, NOW())
 ON CONFLICT (family, dc_code) DO UPDATE SET
     mode       = EXCLUDED.mode,
-    notes      = COALESCE(EXCLUDED.notes, gui_family_storage_coupling.notes),
+    notes      = COALESCE(NULLIF(EXCLUDED.notes, ''), gui_family_storage_coupling.notes),
     updated_by = EXCLUDED.updated_by,
     updated_at = NOW();
 """
