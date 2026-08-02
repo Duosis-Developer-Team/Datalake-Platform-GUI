@@ -2995,6 +2995,7 @@ SELECT _tot, _alloc FROM latest
                 p.sellable_physical = None
                 p.sellable_effective = cpu_raw_sum
                 p.sellable_allocation = cpu_raw_sum
+                p.has_infra_source = True
                 p.gate_blocked = utilization_gate_blocked(
                     cpu_total, cpu_alloc,
                     max((float(h.get("cpu_used_pct") or 0.0) for h in host_units), default=0.0),
@@ -3008,6 +3009,7 @@ SELECT _tot, _alloc FROM latest
                 p.sellable_raw = ram_raw_phys_sum
                 p.sellable_physical = ram_raw_phys_sum
                 p.sellable_effective = ram_raw_peak_sum
+                p.has_infra_source = True
                 p.gate_blocked = utilization_gate_blocked(
                     ram_total, ram_alloc,
                     max((float(h.get("mem_used_pct") or 0.0) for h in host_units), default=0.0),
@@ -3018,6 +3020,7 @@ SELECT _tot, _alloc FROM latest
                 p.total = stor_total
                 p.allocated = stor_prov
                 p.sellable_raw = stor_raw_sum
+                p.has_infra_source = True
                 if family == "virt_hyperconverged":
                     p.notes = [*p.notes, note, "Nutanix cluster pool (deduped per cluster)"]
                 else:
@@ -3975,9 +3978,15 @@ SELECT _tot, _alloc FROM latest
         selected_clusters: list[str] | None = None,
         family: str | None = None,
         force_recompute: bool = False,
+        infra_dc_codes: list[str] | None = None,
     ) -> list[PanelResult]:
         fam_key = self._snapshot_family_key(family)
         clusters_csv = self._clusters_csv(selected_clusters)
+        # Multi-DC host path (global inventory HOST_DUAL) must not poison the
+        # plain dc='*' family cache that sellable-potential UI reads.
+        host_multi_dc = bool(
+            infra_dc_codes and any(c and c != "*" for c in infra_dc_codes)
+        )
 
         # 1. Tier-1 Redis result cache lookup.
         cache_key = self._result_cache_key(dc_code, selected_clusters, family)
@@ -3988,13 +3997,13 @@ SELECT _tot, _alloc FROM latest
                 fam_key,
                 clusters_csv,
             )
-        else:
+        elif not host_multi_dc:
             cached = self._result_cache_get(cache_key)
             if cached is not None:
                 return cached
 
         # 2. Tier-2 durable webui-db snapshot (repopulate Redis on hit).
-        if not force_recompute:
+        if not force_recompute and not host_multi_dc:
             db_cached = self._snapshot_db_get(dc_code or "*", fam_key, clusters_csv)
             if db_cached is not None:
                 self._result_cache_set(cache_key, db_cached)
@@ -4005,8 +4014,9 @@ SELECT _tot, _alloc FROM latest
         if family:
             defs = [d for d in defs if d.family == family]
         if not defs:
-            self._result_cache_set(cache_key, [])
-            self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, [])
+            if not host_multi_dc:
+                self._result_cache_set(cache_key, [])
+                self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, [])
             return []
 
         # 4. Bulk-load WebUI metadata in 3 queries instead of N×3 round-trips.
@@ -4048,10 +4058,12 @@ SELECT _tot, _alloc FROM latest
             results,
             dc_code or "*",
             selected_clusters=selected_clusters,
+            infra_dc_codes=infra_dc_codes,
         )
 
-        self._result_cache_set(cache_key, constrained)
-        self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, constrained)
+        if not host_multi_dc:
+            self._result_cache_set(cache_key, constrained)
+            self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, constrained)
         if family:
             total_tl = sum(r.potential_tl for r in constrained)
             logger.info(

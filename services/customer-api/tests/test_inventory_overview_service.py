@@ -722,6 +722,83 @@ def test_global_inventory_virt_family_not_summed_per_dc():
     assert "virt_classic" in star_family_calls
 
 
+def test_global_inventory_host_dual_passes_infra_dc_codes():
+    """HOST_DUAL family compute must receive infra_dc_codes so host_rows are fetched."""
+    sellable = MagicMock()
+    sellable.is_available = True
+    star_kwargs: list[dict] = []
+
+    def _compute(dc_code="*", **kwargs):
+        family = kwargs.get("family")
+        if dc_code == "*":
+            star_kwargs.append(dict(kwargs))
+            if family == "backup_veeam_replication_classic":
+                return [
+                    _panel(
+                        panel_key="backup_veeam_replication_classic_cpu",
+                        label="Veeam Classic CPU",
+                        family="backup_veeam_replication_classic",
+                        total=5326.0,
+                        allocated=100.0,
+                        sellable_constrained=50.0,
+                        has_infra_source=True,
+                        computation_mode="host_based",
+                    ),
+                ]
+            if family in ("virt_classic", "virt_hyperconverged"):
+                return [
+                    _panel(
+                        panel_key=f"{family}_cpu",
+                        label=f"{family} CPU",
+                        family=family,
+                        total=100.0,
+                        allocated=40.0,
+                        sellable_constrained=20.0,
+                        has_infra_source=True,
+                    ),
+                ]
+            return []
+        return []
+
+    sellable.compute_all_panels.side_effect = _compute
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._count_unmapped_products.return_value = 0
+    sellable.compute_site_scoped_panels.return_value = []
+    _stub_netbackup_metrics(sellable)
+
+    sales = MagicMock()
+    sales._run_query.return_value = []
+
+    def _webui_rows_multi(sql: str):
+        if "FROM   gui_panel_infra_source" in sql and "DISTINCT dc_code" in sql:
+            return [{"dc_code": "DC13"}, {"dc_code": "DC14"}]
+        return _webui_rows(sql)
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = _webui_rows_multi
+
+    config = MagicMock()
+    config.get_calc_dict.return_value = {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=webui,
+        config=config,
+        crm_redis=None,
+    )
+    payload = svc.compute_inventory_overview("*")
+    repl_calls = [
+        kw for kw in star_kwargs
+        if kw.get("family") == "backup_veeam_replication_classic"
+    ]
+    assert repl_calls, "expected HOST_DUAL compute for veeam classic"
+    assert repl_calls[0].get("infra_dc_codes") == ["DC13", "DC14"]
+    families = {f["family"] for f in payload.get("families") or []}
+    assert "replication" in families
+
+
 def test_value_tl_from_catalog_price():
     assert _value_tl_from_catalog_price(775.0, unit_price_tl=762.0, has_price=True) == 590550.0
     assert _value_tl_from_catalog_price(775.0, unit_price_tl=0.0, has_price=True) is None
