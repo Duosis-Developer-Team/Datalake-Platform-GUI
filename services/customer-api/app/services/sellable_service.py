@@ -336,6 +336,46 @@ def _coupling_to_triple_override(mode: str) -> bool | None:
     return None
 
 
+def _host_cluster_name(host: dict) -> str:
+    """Cluster a host row belongs to, as the compute API spells it."""
+    for key in ("cluster", "cluster_name", "cluster_id"):
+        value = host.get(key)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def _validate_coupling_row(
+    family, dc_code, scope_kind, scope_key, mode,
+) -> tuple[str, str, str, str, str]:
+    """Normalise and check one coupling row before it reaches the DB.
+
+    The table's CHECK constraints reject a family row with a key (or a cluster
+    row without one); catching it here turns a 500 into a clear 400 and keeps
+    the two spellings of "the family default" from ever both existing.
+    """
+    family = str(family or "").strip()
+    if not family:
+        raise ValueError("family is required")
+    dc_code = str(dc_code or "*").strip() or "*"
+    scope_kind = str(scope_kind or "family").strip().lower()
+    if scope_kind not in STORAGE_COUPLING_SCOPES:
+        raise ValueError(f"invalid coupling scope: {scope_kind!r}")
+    scope_key = str(scope_key or "").strip()
+    if scope_kind == "family":
+        scope_key = ""
+    elif not scope_key:
+        raise ValueError("cluster-scoped coupling needs a cluster name")
+    elif dc_code == "*":
+        # Cluster names are DC-local; a global cluster rule would silently apply
+        # to any DC that happens to reuse the name.
+        raise ValueError("cluster-scoped coupling needs a concrete dc_code")
+    mode = str(mode or "auto").strip().lower()
+    if mode not in STORAGE_COUPLING_MODES:
+        raise ValueError(f"invalid coupling mode: {mode!r}")
+    return family, dc_code, scope_kind, scope_key, mode
+
+
 # virt_power_hana shares IBM Power infrastructure with virt_power.
 _POWER_HANA_INFRA_ALIASES: dict[str, str] = {
     "virt_power_hana_cpu": "virt_power_cpu",
@@ -357,6 +397,7 @@ from app.services.webui_db import WebuiPool
 from shared.colocation import occupancy as coloc_occ
 from shared.licensing import os_sql
 from shared.sellable.computation import (
+    StorageInTripleOverride,
     annotate_panel_constraint_metadata,
     apply_storage_ratio_cap,
     apply_threshold,
@@ -375,6 +416,7 @@ from shared.sellable.computation import (
 )
 from shared.sellable.models import (
     STORAGE_COUPLING_MODES,
+    STORAGE_COUPLING_SCOPES,
     DashboardSummary,
     FamilyAggregate,
     InfraSource,
@@ -521,24 +563,77 @@ class SellableService:
                 mode=(r.get("mode") or "auto"),
                 notes=r.get("notes"),
                 updated_by=r.get("updated_by"),
+                # Pre-038 databases have neither column; treat those rows as
+                # family-scoped so an un-migrated DB keeps working.
+                scope_kind=(r.get("scope_kind") or "family"),
+                scope_key=(r.get("scope_key") or ""),
             )
             for r in rows
         ]
 
-    def _build_coupling_lookup(self) -> dict[tuple[str, str], str]:
-        """``(family, dc_code) -> mode`` map, used to resolve per-DC overrides."""
-        return {(c.family, c.dc_code): c.mode for c in self.list_storage_couplings()}
+    def _build_coupling_lookup(self) -> dict[tuple[str, str, str, str], str]:
+        """``(family, dc_code, scope_kind, scope_key) -> mode`` map."""
+        return {
+            (c.family, c.dc_code, c.scope_kind, c.scope_key): c.mode
+            for c in self.list_storage_couplings()
+        }
 
     def resolve_storage_coupling(
         self,
         family: str,
         dc_code: str = "*",
-        lookup: "dict[tuple[str, str], str] | None" = None,
+        lookup: "dict[tuple[str, str, str, str], str] | None" = None,
+        *,
+        cluster: str = "",
     ) -> str:
-        """Per-DC row wins over the ``'*'`` default; missing rows mean ``auto``."""
+        """Most specific scope wins; missing rows mean ``auto``.
+
+        Order: this DC's cluster row, this DC's family row, the ``'*'`` family
+        row. A cluster row at ``'*'`` is deliberately not consulted — cluster
+        names are DC-local, so a global cluster rule would be a coincidence.
+        """
         table = self._build_coupling_lookup() if lookup is None else lookup
-        mode = table.get((family, dc_code)) or table.get((family, "*")) or "auto"
-        return mode if mode in STORAGE_COUPLING_MODES else "auto"
+        candidates: list[tuple[str, str, str, str]] = []
+        if cluster and dc_code and dc_code != "*":
+            candidates.append((family, dc_code, "cluster", cluster))
+        candidates.append((family, dc_code, "family", ""))
+        candidates.append((family, "*", "family", ""))
+        for key in candidates:
+            mode = table.get(key)
+            if mode in STORAGE_COUPLING_MODES:
+                return mode
+        return "auto"
+
+    def build_host_coupling_resolver(
+        self,
+        family: str,
+        dc_code: str,
+        lookup: "dict[tuple[str, str, str, str], str]",
+    ):
+        """Per-host ``storage_in_triple`` override honouring cluster scope.
+
+        Returns None when the family has no cluster rows in this DC, so the
+        common case still passes a plain bool/None down to the computation layer
+        and nothing changes for callers that never used cluster scope.
+        """
+        cluster_rows = {
+            key[3]: mode
+            for key, mode in lookup.items()
+            if key[0] == family and key[1] == dc_code and key[2] == "cluster"
+        }
+        family_mode = self.resolve_storage_coupling(family, dc_code, lookup)
+        if not cluster_rows or not dc_code or dc_code == "*":
+            return _coupling_to_triple_override(family_mode)
+
+        family_override = _coupling_to_triple_override(family_mode)
+
+        def _resolve(host: dict) -> bool | None:
+            mode = cluster_rows.get(_host_cluster_name(host))
+            if mode in STORAGE_COUPLING_MODES:
+                return _coupling_to_triple_override(mode)
+            return family_override
+
+        return _resolve
 
     def upsert_storage_coupling(
         self,
@@ -548,14 +643,17 @@ class SellableService:
         mode: str = "auto",
         notes: str | None = None,
         updated_by: str = "ui",
+        scope_kind: str = "family",
+        scope_key: str = "",
     ) -> None:
-        if mode not in STORAGE_COUPLING_MODES:
-            raise ValueError(f"invalid coupling mode: {mode!r}")
+        family, dc_code, scope_kind, scope_key, mode = _validate_coupling_row(
+            family, dc_code, scope_kind, scope_key, mode,
+        )
         if not self._webui.is_available:
             raise RuntimeError("WebUI configuration DB not available")
         self._webui.execute(
             sq.UPSERT_STORAGE_COUPLING,
-            (family, dc_code or "*", mode, notes, updated_by),
+            (family, dc_code, scope_kind, scope_key, mode, notes, updated_by),
         )
 
     def upsert_storage_couplings(
@@ -569,17 +667,20 @@ class SellableService:
             raise RuntimeError("WebUI configuration DB not available")
         statements: list[tuple[str, tuple]] = []
         for row in rows:
-            mode = str(row.get("mode") or "auto")
-            if mode not in STORAGE_COUPLING_MODES:
-                raise ValueError(f"invalid coupling mode: {mode!r}")
-            family = str(row.get("family") or "").strip()
-            if not family:
-                raise ValueError("family is required")
+            family, dc_code, scope_kind, scope_key, mode = _validate_coupling_row(
+                row.get("family"),
+                row.get("dc_code"),
+                row.get("scope_kind"),
+                row.get("scope_key"),
+                row.get("mode"),
+            )
             statements.append((
                 sq.UPSERT_STORAGE_COUPLING,
                 (
                     family,
-                    str(row.get("dc_code") or "*"),
+                    dc_code,
+                    scope_kind,
+                    scope_key,
                     mode,
                     row.get("notes"),
                     updated_by,
@@ -590,11 +691,23 @@ class SellableService:
         self._webui.execute_all(statements)
         return len(statements)
 
-    def delete_storage_coupling(self, family: str, dc_code: str) -> None:
-        """Drop a per-DC override so the family falls back to its ``'*'`` row."""
+    def delete_storage_coupling(
+        self,
+        family: str,
+        dc_code: str,
+        *,
+        scope_kind: str = "family",
+        scope_key: str = "",
+    ) -> None:
+        """Drop an override so the scope falls back to the next one up."""
+        family, dc_code, scope_kind, scope_key, _ = _validate_coupling_row(
+            family, dc_code, scope_kind, scope_key, "auto",
+        )
         if not self._webui.is_available:
             raise RuntimeError("WebUI configuration DB not available")
-        self._webui.execute(sq.DELETE_STORAGE_COUPLING, (family, dc_code))
+        self._webui.execute(
+            sq.DELETE_STORAGE_COUPLING, (family, dc_code, scope_kind, scope_key),
+        )
 
     def list_unit_conversions(self) -> list[UnitConversion]:
         if not self._webui.is_available:
@@ -2137,7 +2250,11 @@ SELECT _tot, _alloc FROM latest
                     effective_ghz_per_unit=effective_ghz,
                     storage_pools=storage_pools,
                     range_inputs=range_inputs if fam == "virt_classic" else None,
-                    storage_in_triple_override=_coupling_to_triple_override(coupling_mode),
+                    # Cluster rules live below the family, so the override has to
+                    # be resolved per host rather than once per family.
+                    storage_in_triple_override=self.build_host_coupling_resolver(
+                        fam, dc_code, coupling_lookup,
+                    ),
                 )
             elif fam in _HOST_BASED_FAMILIES and dc_code == "*":
                 # Do NOT call compute_all_panels(dc_code="*", family=fam) here:
@@ -2215,6 +2332,10 @@ SELECT _tot, _alloc FROM latest
                 if sto_p is not None:
                     sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
 
+            # Only the family mode drives the family-wide storage cap. A cluster
+            # rule narrows the per-host min() inside the host loop above; letting
+            # it also flip this cap would apply one cluster's decision to the
+            # whole family's storage panel.
             cap_storage = not host_based_ok and fam not in _SKIP_STORAGE_RATIO_CAP_FAMILIES
             if coupling_mode == "separate":
                 # Storage is sized from its own pool — the compute bottleneck
@@ -2231,6 +2352,18 @@ SELECT _tot, _alloc FROM latest
                 for p in new_group:
                     if p.resource_kind == "storage":
                         p.notes = [*p.notes, f"storage coupling: {label} (operator setting)"]
+            cluster_overrides = sorted(
+                key[3]
+                for key in coupling_lookup
+                if key[0] == fam and key[1] == dc_code and key[2] == "cluster"
+            )
+            if cluster_overrides and host_based_ok:
+                for p in new_group:
+                    if p.resource_kind == "storage":
+                        p.notes = [
+                            *p.notes,
+                            "cluster coupling overrides: " + ", ".join(cluster_overrides),
+                        ]
             new_group = annotate_panel_constraint_metadata(new_group)
 
             for new in new_group:
@@ -2519,7 +2652,7 @@ SELECT _tot, _alloc FROM latest
         effective_ghz_per_unit: float = 1.0,
         storage_pools: list[dict] | None = None,
         range_inputs: dict | None = None,
-        storage_in_triple_override: bool | None = None,
+        storage_in_triple_override: StorageInTripleOverride = None,
     ) -> "list[PanelResult]":
         """Recompute CPU/RAM/Storage from per-host rows (triple min + dual tracks)."""
         _ = dc_code, clusters

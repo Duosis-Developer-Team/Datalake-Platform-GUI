@@ -116,9 +116,9 @@ LIMIT 1;
 """
 
 LIST_STORAGE_COUPLINGS = """
-SELECT family, dc_code, mode, notes, updated_by, updated_at
+SELECT family, dc_code, scope_kind, scope_key, mode, notes, updated_by, updated_at
 FROM   gui_family_storage_coupling
-ORDER BY family, dc_code;
+ORDER BY family, dc_code, scope_kind, scope_key;
 """
 
 # ``notes`` is NOT NULL, so the proposed row is coalesced before the conflict
@@ -126,18 +126,24 @@ ORDER BY family, dc_code;
 # saves a mode without touching the note.
 UPSERT_STORAGE_COUPLING = """
 INSERT INTO gui_family_storage_coupling
-    (family, dc_code, mode, notes, updated_by, updated_at)
-VALUES (%s,%s,%s,COALESCE(%s,''),%s, NOW())
-ON CONFLICT (family, dc_code) DO UPDATE SET
+    (family, dc_code, scope_kind, scope_key, mode, notes, updated_by, updated_at)
+VALUES (%s,%s,%s,%s,%s,COALESCE(%s,''),%s, NOW())
+ON CONFLICT (family, dc_code, scope_kind, scope_key) DO UPDATE SET
     mode       = EXCLUDED.mode,
     notes      = COALESCE(NULLIF(EXCLUDED.notes, ''), gui_family_storage_coupling.notes),
     updated_by = EXCLUDED.updated_by,
     updated_at = NOW();
 """
 
+# A family row at dc_code='*' is the last fallback before 'auto' and must survive
+# an "inherit" drop; every other scope may be deleted so it falls back one level.
 DELETE_STORAGE_COUPLING = """
 DELETE FROM gui_family_storage_coupling
-WHERE family = %s AND dc_code = %s AND dc_code <> '*';
+WHERE family = %s
+  AND dc_code = %s
+  AND scope_kind = %s
+  AND scope_key = %s
+  AND NOT (dc_code = '*' AND scope_kind = 'family');
 """
 
 UPSERT_RATIO = """

@@ -3098,12 +3098,27 @@ def put_storage_couplings(
     return out if isinstance(out, dict) else {}
 
 
-def delete_storage_coupling(family: str, dc_code: str) -> dict[str, Any]:
-    """Drop a per-DC override so the family falls back to its ``'*'`` row."""
+def delete_storage_coupling(
+    family: str,
+    dc_code: str,
+    *,
+    scope_kind: str = "family",
+    scope_key: str = "",
+) -> dict[str, Any]:
+    """Drop an override so the scope falls back to the next one up.
+
+    A DC family row falls back to the ``'*'`` row; a cluster row falls back to
+    its family.
+    """
     enc = quote(str(family), safe="")
+    query = "&".join([
+        f"dc_code={quote(str(dc_code), safe='')}",
+        f"scope_kind={quote(str(scope_kind), safe='')}",
+        f"scope_key={quote(str(scope_key), safe='')}",
+    ])
     out = _delete_json(
         _get_client_crm(),
-        f"/api/v1/crm/storage-coupling/{enc}?dc_code={quote(str(dc_code), safe='')}",
+        f"/api/v1/crm/storage-coupling/{enc}?{query}",
     )
     _api_response_cache.delete("api:crm_storage_coupling")
     _invalidate_sellable_caches()

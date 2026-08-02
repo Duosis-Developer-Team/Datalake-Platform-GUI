@@ -19,9 +19,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .models import PanelResult, ResourceRatio, UnitConversion
+
+#: Operator override for a host's ``storage_in_triple`` decision. ``True`` merges
+#: the host's storage into its compute min(), ``False`` pulls it out, ``None``
+#: defers to the built-in per-host rule. A callable is resolved per host, which is
+#: how a cluster-scoped rule reaches only the hosts of that cluster.
+StorageInTripleOverride = bool | Callable[[dict], "bool | None"] | None
 
 
 def convert_unit(value: float | int | None, conv: UnitConversion | None) -> float:
@@ -538,13 +544,17 @@ def constrain_by_ratio_per_host_triple_dual(
     unit_price_tl: float = 0.0,
     ibm_storage_range: tuple[float, float] | None = None,
     cluster_storage_raw_gb: float | None = None,
-    storage_in_triple_override: bool | None = None,
+    storage_in_triple_override: StorageInTripleOverride = None,
 ) -> list[PanelResult]:
     """Host-based triple min(CPU, RAM, Storage) with dual CPU/RAM tracks.
 
     ``storage_in_triple_override`` forces the operator's compute/storage
     coupling: True keeps every host's storage inside the min() (merged),
     False pulls it out (separate pool). None keeps the built-in per-host rule.
+
+    Pass a callable to decide per host — a cluster-scoped rule returns True/False
+    for hosts of that cluster and None for the rest, so untouched clusters keep
+    the built-in behaviour instead of inheriting a neighbour's override.
     """
     from .host_sellable import (
         HostSellableResult,
@@ -552,6 +562,11 @@ def constrain_by_ratio_per_host_triple_dual(
         compute_host_sellable_units,
         host_storage_in_triple,
     )
+
+    def _override_for(host: dict) -> bool | None:
+        if callable(storage_in_triple_override):
+            return storage_in_triple_override(host)
+        return storage_in_triple_override
 
     panel_list = list(panels)
     if not hosts:
@@ -574,6 +589,7 @@ def constrain_by_ratio_per_host_triple_dual(
         n_sum = 0.0
         results: list[HostSellableResult] = []
         for h in hosts:
+            override = _override_for(h)
             result = compute_host_sellable_units(
                 h,
                 ratio,
@@ -585,8 +601,8 @@ def constrain_by_ratio_per_host_triple_dual(
                 effective_ghz_per_unit=effective_ghz_per_unit,
                 storage_include_shared=storage_shared,
                 storage_in_triple=(
-                    storage_in_triple_override
-                    if storage_in_triple_override is not None
+                    override
+                    if override is not None
                     else (cluster_storage_raw_gb is None and host_storage_in_triple(h))
                 ),
                 unit_price_tl=unit_price_tl,

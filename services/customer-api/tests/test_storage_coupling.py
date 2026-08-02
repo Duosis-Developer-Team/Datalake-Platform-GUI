@@ -214,8 +214,12 @@ def test_bulk_upsert_is_one_transaction():
     assert saved == 2
     webui.execute_all.assert_called_once()
     statements = webui.execute_all.call_args[0][0]
+    # (family, dc_code, scope_kind, scope_key, mode, notes, updated_by)
     assert [params[0] for _sql, params in statements] == ["virt_classic", "virt_hyperconverged"]
-    assert {params[4] for _sql, params in statements} == {"arca"}
+    assert {params[2] for _sql, params in statements} == {"family"}
+    assert {params[3] for _sql, params in statements} == {""}
+    assert [params[4] for _sql, params in statements] == ["separate", "merged"]
+    assert {params[6] for _sql, params in statements} == {"arca"}
 
 
 def test_upsert_never_sends_a_bare_null_into_the_not_null_notes_column():
@@ -251,3 +255,171 @@ def test_bulk_upsert_rejects_the_whole_board_on_a_bad_row():
             {"family": "virt_power", "dc_code": "*", "mode": "merged-ish"},
         ])
     webui.execute_all.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# cluster scope (migration 038)
+# ---------------------------------------------------------------------------
+
+
+def _host(name: str, cluster: str, *, pooled: bool) -> dict:
+    """One compute-API host row, with the fields the coupling path reads."""
+    return {
+        "host": name,
+        "cluster": cluster,
+        "cpu_cap": 100.0,
+        "mem_cap": 800.0,
+        "stor_cap_gb": 50_000.0,
+        "storage_cluster_pool": pooled,
+    }
+
+
+def test_cluster_row_beats_family_row_in_the_same_dc():
+    svc = _make_svc([
+        StorageCoupling(family="virt_classic", dc_code="*", mode="merged"),
+        StorageCoupling(family="virt_classic", dc_code="DC13", mode="merged"),
+        StorageCoupling(
+            family="virt_classic", dc_code="DC13", mode="separate",
+            scope_kind="cluster", scope_key="DC13-KM-CLS-NVME",
+        ),
+    ])
+    assert svc.resolve_storage_coupling(
+        "virt_classic", "DC13", cluster="DC13-KM-CLS-NVME",
+    ) == "separate"
+    # A sibling cluster with no row of its own still follows the family.
+    assert svc.resolve_storage_coupling(
+        "virt_classic", "DC13", cluster="DC13-KM2-CLS-NVME",
+    ) == "merged"
+
+
+def test_cluster_rows_are_scoped_to_their_own_dc():
+    """Cluster names are DC-local; a DC13 rule must not leak into DC14."""
+    svc = _make_svc([
+        StorageCoupling(
+            family="virt_classic", dc_code="DC13", mode="separate",
+            scope_kind="cluster", scope_key="SHARED-NAME",
+        ),
+    ])
+    assert svc.resolve_storage_coupling("virt_classic", "DC14", cluster="SHARED-NAME") == "auto"
+
+
+def test_resolver_is_a_plain_value_when_no_cluster_rows_exist():
+    """The common case must not pay for a per-host callable."""
+    svc = _make_svc([StorageCoupling(family="virt_classic", dc_code="DC13", mode="merged")])
+    lookup = svc._build_coupling_lookup()
+    assert svc.build_host_coupling_resolver("virt_classic", "DC13", lookup) is True
+
+
+def test_resolver_decides_per_host_when_a_cluster_row_exists():
+    svc = _make_svc([
+        StorageCoupling(family="virt_classic", dc_code="DC13", mode="merged"),
+        StorageCoupling(
+            family="virt_classic", dc_code="DC13", mode="separate",
+            scope_kind="cluster", scope_key="DC13-KM-CLS-NVME",
+        ),
+    ])
+    resolve = svc.build_host_coupling_resolver(
+        "virt_classic", "DC13", svc._build_coupling_lookup(),
+    )
+    assert callable(resolve)
+    assert resolve(_host("esx01", "DC13-KM-CLS-NVME", pooled=False)) is False
+    assert resolve(_host("esx09", "DC13-KM2-CLS-NVME", pooled=False)) is True
+
+
+def test_resolver_falls_back_to_auto_for_untouched_clusters_when_family_is_auto():
+    """An override on one cluster must not drag its siblings out of 'auto'."""
+    svc = _make_svc([
+        StorageCoupling(
+            family="virt_hyperconverged", dc_code="DC13", mode="merged",
+            scope_kind="cluster", scope_key="DC13-G12-SSD",
+        ),
+    ])
+    resolve = svc.build_host_coupling_resolver(
+        "virt_hyperconverged", "DC13", svc._build_coupling_lookup(),
+    )
+    assert resolve(_host("ntx01", "DC13-G12-SSD", pooled=True)) is True
+    # None = "keep host_storage_in_triple deciding", i.e. the built-in rule.
+    assert resolve(_host("ntx09", "DC13-G14-HYBRID", pooled=True)) is None
+
+
+def test_callable_override_reaches_only_its_own_cluster():
+    """End-to-end through the computation layer, not just the resolver."""
+    from shared.sellable.computation import constrain_by_ratio_per_host_triple_dual
+
+    ratio = ResourceRatio(
+        family="virt_classic", cpu_per_unit=1.0, ram_gb_per_unit=8.0,
+        storage_gb_per_unit=100.0,
+    )
+    hosts = [
+        _host("a1", "CLS-A", pooled=True),
+        _host("b1", "CLS-B", pooled=True),
+    ]
+    seen: list[str] = []
+
+    def override(host: dict) -> bool | None:
+        seen.append(str(host.get("cluster")))
+        return True if host.get("cluster") == "CLS-A" else None
+
+    constrain_by_ratio_per_host_triple_dual(
+        _panels(), ratio, hosts, storage_in_triple_override=override,
+    )
+    assert set(seen) == {"CLS-A", "CLS-B"}
+
+
+def test_cluster_scope_requires_a_concrete_dc_and_a_name():
+    svc = SellableService.__new__(SellableService)
+    webui = MagicMock()
+    webui.is_available = True
+    svc._webui = webui
+
+    with pytest.raises(ValueError):
+        # cluster scope without a cluster name
+        svc.upsert_storage_coupling(
+            "virt_classic", dc_code="DC13", mode="merged", scope_kind="cluster",
+        )
+    with pytest.raises(ValueError):
+        # cluster names are DC-local, so '*' would apply to every DC
+        svc.upsert_storage_coupling(
+            "virt_classic", dc_code="*", mode="merged",
+            scope_kind="cluster", scope_key="DC13-KM-CLS-NVME",
+        )
+    with pytest.raises(ValueError):
+        svc.upsert_storage_coupling("virt_classic", scope_kind="rack")
+    webui.execute.assert_not_called()
+
+
+def test_family_scope_never_carries_a_key():
+    """Two spellings of the family default would make resolution arbitrary."""
+    svc = SellableService.__new__(SellableService)
+    webui = MagicMock()
+    webui.is_available = True
+    svc._webui = webui
+
+    svc.upsert_storage_coupling(
+        "virt_classic", dc_code="DC13", mode="merged",
+        scope_kind="family", scope_key="leftover-from-the-ui",
+    )
+    params = webui.execute.call_args[0][1]
+    assert params[2] == "family"
+    assert params[3] == ""
+
+
+def test_delete_keeps_the_global_family_default():
+    """The '*' family row is the last fallback before 'auto'."""
+    import app.db.queries.sellable as sq
+
+    assert "NOT (dc_code = '*' AND scope_kind = 'family')" in sq.DELETE_STORAGE_COUPLING
+
+
+def test_pre_038_rows_are_read_as_family_scoped():
+    """An un-migrated DB has neither column and must still resolve."""
+    svc = SellableService.__new__(SellableService)
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.return_value = [
+        {"family": "virt_classic", "dc_code": "*", "mode": "merged"},
+    ]
+    svc._webui = webui
+    (row,) = svc.list_storage_couplings()
+    assert (row.scope_kind, row.scope_key) == ("family", "")
+    assert svc.resolve_storage_coupling("virt_classic", "DC13") == "merged"

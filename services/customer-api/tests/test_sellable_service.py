@@ -763,7 +763,10 @@ def test_compute_panel_uses_dc_api_when_clusters_passed():
     assert result.total == 200.0
     assert result.allocated == 50.0
     assert result.sellable_raw == 160.0 - 50.0
-    assert any("cluster-scoped" in n for n in result.notes)
+    # The note names the endpoint and how wide the read was, so a DC-wide number
+    # can never be mistaken for a cluster-scoped one.
+    assert any("via datacenter-api/compute/hyperconverged" in n for n in result.notes)
+    assert any("2 cluster" in n for n in result.notes)
 
 
 def test_compute_panel_falls_back_to_db_when_no_clusters():

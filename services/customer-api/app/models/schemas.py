@@ -504,6 +504,8 @@ class StorageCouplingRow(BaseModel):
     mode: str = "auto"           # auto | merged | separate
     notes: Optional[str] = None
     updated_by: Optional[str] = None
+    scope_kind: str = "family"   # family | cluster
+    scope_key: str = ""          # cluster name when scope_kind='cluster'
 
 
 class StorageCouplingUpsert(BaseModel):
@@ -511,6 +513,8 @@ class StorageCouplingUpsert(BaseModel):
     dc_code: str = "*"
     mode: str = "auto"
     notes: Optional[str] = None
+    scope_kind: str = "family"
+    scope_key: str = ""
 
 
 class StorageCouplingBulkUpsert(BaseModel):

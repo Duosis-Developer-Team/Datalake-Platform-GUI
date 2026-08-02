@@ -18,7 +18,8 @@ Routes:
 
     GET    /crm/storage-coupling                              -> compute/storage coupling rows
     PUT    /crm/storage-coupling                              -> save the whole board
-    DELETE /crm/storage-coupling/{family}?dc_code=            -> drop a per-DC override
+    DELETE /crm/storage-coupling/{family}?dc_code=&scope_kind=&scope_key=
+                                                              -> drop a per-DC or per-cluster override
 
     GET  /crm/unit-conversions
     PUT  /crm/unit-conversions/{from_unit}/{to_unit}
@@ -380,16 +381,33 @@ def upsert_storage_couplings(
 def delete_storage_coupling(
     family: str,
     request: Request,
-    dc_code: str = Query(..., description="per-DC override to drop; '*' is not deletable"),
+    dc_code: str = Query(..., description="scope to drop; the '*' family row is not deletable"),
+    scope_kind: str = Query("family", description="'family' or 'cluster'"),
+    scope_key: str = Query("", description="cluster name when scope_kind='cluster'"),
     svc: SellableService = Depends(_sellable),
 ):
-    if not dc_code or dc_code == "*":
+    # The '*' family row is the last fallback before 'auto'; deleting it would
+    # leave per-DC rows with nothing to inherit from.
+    if scope_kind == "family" and (not dc_code or dc_code == "*"):
         raise HTTPException(status_code=400, detail="the '*' default row cannot be deleted")
-    svc.delete_storage_coupling(family, dc_code)
+    try:
+        svc.delete_storage_coupling(
+            family, dc_code, scope_kind=scope_kind, scope_key=scope_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     sellable: SellableService | None = getattr(request.app.state, "sellable", None)
     if sellable is not None:
         sellable.invalidate_result_cache()
-    return {"status": "ok", "family": family, "dc_code": dc_code}
+    return {
+        "status": "ok",
+        "family": family,
+        "dc_code": dc_code,
+        "scope_kind": scope_kind,
+        "scope_key": scope_key,
+    }
 
 
 # ---------------------------------------------------------------------------

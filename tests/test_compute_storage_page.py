@@ -161,13 +161,15 @@ def test_save_sends_only_the_moved_families(api_rows):
     }
     with patch("src.services.api_client.put_storage_couplings", return_value={"status": "ok"}) as put, \
          patch("src.services.api_client.delete_storage_coupling") as delete:
-        page._save(1, state, "*")
+        page._save(1, state, "*", False)
 
     delete.assert_not_called()
     rows = put.call_args[0][0]
     assert rows == [
-        {"family": "virt_classic", "dc_code": "*", "mode": "merged"},
-        {"family": "virt_power", "dc_code": "*", "mode": "separate"},
+        {"family": "virt_classic", "dc_code": "*", "scope_kind": "family", "scope_key": "",
+         "mode": "merged"},
+        {"family": "virt_power", "dc_code": "*", "scope_kind": "family", "scope_key": "",
+         "mode": "separate"},
     ]
 
 
@@ -175,18 +177,18 @@ def test_save_deletes_the_override_when_a_card_goes_back_to_inherit(api_rows):
     state = dict.fromkeys(page._FALLBACK_FAMILIES, "inherit")
     with patch("src.services.api_client.put_storage_couplings") as put, \
          patch("src.services.api_client.delete_storage_coupling") as delete:
-        page._save(1, state, "DC13")
+        page._save(1, state, "DC13", False)
 
     put.assert_not_called()
     # Only virt_classic actually had a DC13 row; the rest were already inheriting.
-    delete.assert_called_once_with("virt_classic", "DC13")
+    delete.assert_called_once_with("virt_classic", "DC13", scope_kind="family", scope_key="")
 
 
 def test_save_without_changes_touches_nothing(api_rows):
     state = page._mode_map(page._load_rows()[0], "*")
     with patch("src.services.api_client.put_storage_couplings") as put, \
          patch("src.services.api_client.delete_storage_coupling") as delete:
-        msg, *_ = page._save(1, state, "*")
+        msg, *_ = page._save(1, state, "*", False)
 
     put.assert_not_called()
     delete.assert_not_called()
@@ -197,9 +199,125 @@ def test_save_surfaces_the_api_error_instead_of_raising(api_rows):
     state = {"virt_classic": "separate"}
     with patch("src.services.api_client.put_storage_couplings", side_effect=RuntimeError("503 unavailable")), \
          patch("src.services.api_client.delete_storage_coupling"):
-        msg, *_ = page._save(1, state, "*")
+        msg, *_ = page._save(1, state, "*", False)
 
     assert "503 unavailable" in str(msg.children)
+
+
+# ---------------------------------------------------------------------------
+# cluster detail (migration 038)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def api_clusters():
+    """Two host-based families with clusters in DC13."""
+    with patch("src.services.api_client.get_classic_cluster_list", return_value=["CL-A"]), \
+         patch("src.services.api_client.get_hyperconv_cluster_list", return_value=["HCI-1", "HCI-2"]):
+        yield
+
+
+def test_clusters_are_never_offered_for_the_global_scope(api_clusters):
+    """Cluster names are DC-local, so a '*' cluster rule would be ambiguous."""
+    assert page._clusters_for("*") == []
+    assert page._clusters_for("DC13") == [
+        ("virt_classic", "CL-A"),
+        ("virt_hyperconverged", "HCI-1"),
+        ("virt_hyperconverged", "HCI-2"),
+    ]
+
+
+def test_cluster_key_round_trips_names_containing_a_colon():
+    key = page._cluster_key("virt_classic", "DC13:CL-A")
+    assert page._split_cluster_key(key) == ("virt_classic", "DC13:CL-A")
+    assert page._split_cluster_key("virt_classic") is None
+
+
+def test_detail_board_has_one_card_per_cluster(api_rows, api_clusters):
+    rows, _ = page._load_rows()
+    board = page._board(rows, "DC13", detail=True, clusters=page._clusters_for("DC13"))
+    keys = {c.__getattribute__("data-card-key") for c in _cards(board)}
+    assert keys == {
+        "cluster:virt_classic:CL-A",
+        "cluster:virt_hyperconverged:HCI-1",
+        "cluster:virt_hyperconverged:HCI-2",
+    }
+    # Every cluster starts on 'inherit' — no cluster rows exist yet.
+    modes = [b.__getattribute__("data-mode") for b in _zone_bodies(board)]
+    assert modes == ["inherit", "auto", "merged", "separate"]
+
+
+def test_detail_board_explains_itself_when_a_dc_has_no_clusters(api_rows):
+    with patch("src.services.api_client.get_classic_cluster_list", return_value=[]), \
+         patch("src.services.api_client.get_hyperconv_cluster_list", return_value=[]):
+        board = page._board(page._load_rows()[0], "DC14", detail=True, clusters=[])
+    assert "No clusters" in str(board.title)
+
+
+def test_cluster_cards_show_the_family_rule_they_would_override(api_rows, api_clusters):
+    rows, _ = page._load_rows()
+    board = page._board(rows, "DC13", detail=True, clusters=page._clusters_for("DC13"))
+    labels = {
+        c.__getattribute__("data-card-key"): str(c.children[1].children)
+        for c in _cards(board)
+    }
+    # virt_classic has its own DC13 row (separate); hyperconverged falls back to '*' (merged).
+    assert "separate" in labels["cluster:virt_classic:CL-A"]
+    assert "merged" in labels["cluster:virt_hyperconverged:HCI-1"]
+
+
+def test_save_writes_cluster_scoped_rows(api_rows, api_clusters):
+    state = {
+        "cluster:virt_classic:CL-A": "merged",
+        "cluster:virt_hyperconverged:HCI-1": "inherit",  # unchanged, no row exists
+    }
+    with patch("src.services.api_client.put_storage_couplings", return_value={"status": "ok"}) as put, \
+         patch("src.services.api_client.delete_storage_coupling") as delete:
+        page._save(1, state, "DC13", True)
+
+    delete.assert_not_called()
+    assert put.call_args[0][0] == [
+        {"family": "virt_classic", "dc_code": "DC13", "scope_kind": "cluster",
+         "scope_key": "CL-A", "mode": "merged"},
+    ]
+
+
+def test_save_deletes_a_cluster_row_dropped_back_to_inherit(api_clusters):
+    rows = list(_ROWS) + [
+        {"family": "virt_classic", "dc_code": "DC13", "scope_kind": "cluster", "scope_key": "CL-A",
+         "mode": "merged", "notes": "", "updated_by": "arca", "updated_at": "2026-07-31T10:00:00+00:00"},
+    ]
+    with patch("src.services.api_client.get_storage_couplings", return_value=rows), \
+         patch("src.services.api_client.get_hmdl_locations", return_value={"items": []}), \
+         patch("src.services.api_client.put_storage_couplings") as put, \
+         patch("src.services.api_client.delete_storage_coupling") as delete:
+        page._save(1, {"cluster:virt_classic:CL-A": "inherit"}, "DC13", True)
+
+    put.assert_not_called()
+    delete.assert_called_once_with(
+        "virt_classic", "DC13", scope_kind="cluster", scope_key="CL-A"
+    )
+
+
+def test_saving_the_family_board_never_touches_cluster_rows(api_rows, api_clusters):
+    """The store can only ever hold one granularity; guard against a stale one."""
+    state = {"cluster:virt_classic:CL-A": "merged", "virt_classic": "merged"}
+    with patch("src.services.api_client.put_storage_couplings", return_value={"status": "ok"}) as put, \
+         patch("src.services.api_client.delete_storage_coupling") as delete:
+        page._save(1, state, "DC13", False)
+
+    delete.assert_not_called()
+    assert put.call_args[0][0] == [
+        {"family": "virt_classic", "dc_code": "DC13", "scope_kind": "family", "scope_key": "",
+         "mode": "merged"},
+    ]
+
+
+def test_detail_switch_is_disabled_and_reset_when_scope_goes_global(api_rows, api_clusters):
+    _board, _state, disabled, checked = page._switch_scope("*")
+    assert disabled is True and checked is False
+    _board, _state, disabled, checked = page._switch_scope("DC13")
+    assert disabled is False and checked is False
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +334,8 @@ def test_drag_and_drop_assets_match_the_layout_hooks():
     assert page._STORE_ID in js
     assert "data-coupling-card" in js
     assert "data-coupling-zone-body" in js
+    # Cluster cards share a family, so the store must key off the card key.
+    assert "data-card-key" in js
     assert "dash_clientside" in js and "set_props" in js
     # Keyboard fallback for operators who cannot drag.
     assert "ArrowLeft" in js and "ArrowRight" in js

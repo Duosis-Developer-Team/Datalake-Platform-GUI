@@ -6,8 +6,10 @@
  * so the handlers survive Dash re-rendering the board (scope change, save,
  * reset) without any re-attach step.
  *
- * The board publishes `{family: mode}` into the `csc-board-state` dcc.Store via
- * `dash_clientside.set_props`; the Save callback reads that Store.
+ * The board publishes `{card key: mode}` into the `csc-board-state` dcc.Store
+ * via `dash_clientside.set_props`; the Save callback reads that Store. The card
+ * key is the family name on the environment board and `cluster:<family>:<name>`
+ * on the cluster-detail board, so one card per row of the rule table.
  */
 (function () {
     "use strict";
@@ -27,7 +29,11 @@
         return zoneBody.querySelectorAll(CARD_SEL);
     }
 
-    /** Read the DOM, refresh the visual state, push `{family: mode}` to Dash. */
+    function keyOf(card) {
+        return card.getAttribute("data-card-key") || card.getAttribute("data-family") || "";
+    }
+
+    /** Read the DOM, refresh the visual state, push `{card key: mode}` to Dash. */
     function publish() {
         var root = board();
         if (!root) {
@@ -40,7 +46,7 @@
                 return;
             }
             var mode = body.getAttribute("data-mode");
-            state[card.getAttribute("data-family")] = mode;
+            state[keyOf(card)] = mode;
             card.classList.toggle("csc-card--dirty", mode !== card.getAttribute("data-initial-mode"));
         });
 
@@ -74,10 +80,10 @@
         if (!card || !zoneBody || card.closest(BODY_SEL) === zoneBody) {
             return false;
         }
-        var family = card.getAttribute("data-family") || "";
+        var key = keyOf(card);
         var before = null;
         Array.prototype.forEach.call(cardsIn(zoneBody), function (other) {
-            if (before === null && (other.getAttribute("data-family") || "") > family) {
+            if (before === null && keyOf(other) > key) {
                 before = other;
             }
         });
@@ -95,7 +101,7 @@
         if (ev.dataTransfer) {
             ev.dataTransfer.effectAllowed = "move";
             // Firefox refuses to start a drag without payload.
-            ev.dataTransfer.setData("text/plain", card.getAttribute("data-family") || "");
+            ev.dataTransfer.setData("text/plain", keyOf(card));
         }
     });
 
