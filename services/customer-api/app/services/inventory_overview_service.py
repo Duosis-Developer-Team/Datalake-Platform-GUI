@@ -1044,6 +1044,7 @@ class InventoryOverviewService:
                 dc_code="*",
                 family=fam,
                 force_recompute=force_recompute,
+                infra_dc_codes=dc_codes,
             ):
                 if panel.has_infra_source:
                     merged[panel.panel_key] = panel
