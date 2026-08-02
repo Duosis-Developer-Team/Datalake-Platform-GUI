@@ -38,6 +38,11 @@ class _Rule:
 
 # Rules are evaluated top-to-bottom; first match wins.
 _RULES: tuple[_Rule, ...] = (
+    # ----- DR virt SKUs → Replication (before general virt rules) -----
+    _Rule("backup_replication_cpu", contains_all=("Intel CPU", "- DR")),
+    _Rule("backup_replication_ram", contains_all=("Intel RAM", "- DR")),
+    _Rule("backup_replication_storage", contains_all=("Intel Disk", "- DR")),
+
     # ----- Hyperconverged Mimari (Nutanix) -----
     _Rule("virt_hyperconverged_cpu",     contains_all=("Hyperconverged Mimari", "Intel CPU")),
     _Rule("virt_hyperconverged_ram",     contains_all=("Hyperconverged Mimari", "Intel RAM")),

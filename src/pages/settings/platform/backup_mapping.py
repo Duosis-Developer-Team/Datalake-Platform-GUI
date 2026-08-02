@@ -361,16 +361,21 @@ def _multipliers_panel() -> html.Div:
 
 
 def _veeam_session_types_panel(session_cfg: dict[str, Any]) -> html.Div:
-    """Backup Configuration: which Veeam session/job types are Replication vs Backup."""
+    """Backup Configuration: Veeam session types → Replication / Image / Application."""
     rep_vals = [str(t) for t in (session_cfg.get("veeam_replication_session_types") or [])]
-    bak_vals = [str(t) for t in (session_cfg.get("veeam_backup_session_types") or [])]
+    img_vals = [str(t) for t in (session_cfg.get("veeam_image_backup_session_types") or [])]
+    if not img_vals:
+        img_vals = [str(t) for t in (session_cfg.get("veeam_backup_session_types") or [])]
+    app_vals = [str(t) for t in (session_cfg.get("veeam_application_backup_session_types") or [])]
     options = sorted(
-        {v for v in (rep_vals + bak_vals) if v},
+        {v for v in (rep_vals + img_vals + app_vals) if v},
         key=lambda s: s.casefold(),
     )
     data = [{"value": o, "label": o} for o in options]
-    # Allow operators to type known extras even before Save/DB
-    for extra in ("ReplicaJob", "VSphereReplica", "BackupJob", "Backup", "BackupCopyJob"):
+    for extra in (
+        "ReplicaJob", "VSphereReplica", "BackupJob", "Backup", "BackupCopyJob",
+        "SqlBackup", "OracleBackup", "SapBackup", "ExchangeBackup", "ApplicationBackup",
+    ):
         if extra not in {d["value"] for d in data}:
             data.append({"value": extra, "label": extra})
 
@@ -378,8 +383,8 @@ def _veeam_session_types_panel(session_cfg: dict[str, Any]) -> html.Div:
         [
             dmc.Alert(
                 "Exact session_type / jobs.type strings listed here classify Veeam "
-                "work as Replication or Backup on the DC Backup → Veeam tab. "
-                "Seed: ``shared/backup/veeam_session_mapping.yaml``. "
+                "work as Replication, Image Backup, or Application Backup "
+                "(DC Backup tabs). Seed: ``shared/backup/veeam_session_mapping.yaml``. "
                 "Save/DB persist is disabled — edit the YAML for now.",
                 title="Veeam session types — Backup Configuration",
                 color="cyan",
@@ -387,13 +392,13 @@ def _veeam_session_types_panel(session_cfg: dict[str, Any]) -> html.Div:
                 mb="md",
             ),
             dmc.SimpleGrid(
-                cols={"base": 1, "md": 2},
+                cols={"base": 1, "md": 3},
                 spacing="md",
                 children=[
                     dmc.Paper(
                         **card_style(),
                         children=[
-                            dmc.Text("Replication session types", fw=700, size="sm", c="#2B3674", mb="sm"),
+                            dmc.Text("Replication", fw=700, size="sm", c="#2B3674", mb="sm"),
                             dmc.MultiSelect(
                                 id="pbm-veeam-replication-session-types",
                                 data=data,
@@ -408,15 +413,30 @@ def _veeam_session_types_panel(session_cfg: dict[str, Any]) -> html.Div:
                     dmc.Paper(
                         **card_style(),
                         children=[
-                            dmc.Text("Backup session types", fw=700, size="sm", c="#2B3674", mb="sm"),
+                            dmc.Text("Image Backup", fw=700, size="sm", c="#2B3674", mb="sm"),
                             dmc.MultiSelect(
-                                id="pbm-veeam-backup-session-types",
+                                id="pbm-veeam-image-backup-session-types",
                                 data=data,
-                                value=bak_vals,
+                                value=img_vals,
                                 searchable=True,
                                 clearable=True,
                                 size="sm",
-                                placeholder="Select backup types…",
+                                placeholder="Select image backup types…",
+                            ),
+                        ],
+                    ),
+                    dmc.Paper(
+                        **card_style(),
+                        children=[
+                            dmc.Text("Application Backup", fw=700, size="sm", c="#2B3674", mb="sm"),
+                            dmc.MultiSelect(
+                                id="pbm-veeam-application-backup-session-types",
+                                data=data,
+                                value=app_vals,
+                                searchable=True,
+                                clearable=True,
+                                size="sm",
+                                placeholder="Select application backup types…",
                             ),
                         ],
                     ),

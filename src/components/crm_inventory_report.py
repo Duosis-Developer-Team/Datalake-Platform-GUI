@@ -124,6 +124,16 @@ _TABLE_STYLE_HEADER = {
 }
 
 
+_COMPARISON_ONLY_COLUMNS = [
+    {"name": "Service", "id": "service_label"},
+    {"name": "Unit", "id": "display_unit"},
+    {"name": "CRM Sold", "id": "crm_sold_fmt"},
+    {"name": "Total", "id": "total_fmt"},
+    {"name": "Used", "id": "used_fmt"},
+    {"name": "Δ Used vs CRM", "id": "delta_fmt"},
+]
+
+
 def columns_for_family(
     family: str | None,
     *,
@@ -131,6 +141,8 @@ def columns_for_family(
 ) -> list[dict[str, str]]:
     """Return DataTable columns for a family sellable profile."""
     profile = (family or "standard").strip()
+    if profile == "comparison_only":
+        return [*list(_COMPARISON_ONLY_COLUMNS), dict(_UNIT_PRICE_COLUMN)]
     if profile == "backup_netbackup":
         return list(_NETBACKUP_COLUMNS)
     if profile in _PHYSICAL_FREE_FAMILIES:
@@ -549,6 +561,9 @@ def build_report_table(
         profile = "standard"
     # Grouped NetBackup accordion uses dual Pre/Post columns. Do NOT force this
     # profile on mixed flat tables (keeps Sellable Alloc/Max columns — main regression).
+    if family in ("image_backup", "application_backup", "replication"):
+        # Top-level inventory groups — profile already chosen by accordion builder
+        row_hide_used = False
     if family == "backup_netbackup":
         profile = "backup_netbackup"
         row_hide_used = False
@@ -609,7 +624,17 @@ def _family_crm_tl(panels: list[dict[str, Any]]) -> float:
 
 
 def _family_sellable_profile(family: dict[str, Any], panels: list[dict[str, Any]]) -> str:
+    if any(
+        str(p.get("panel_key") or "").startswith("backup_netbackup")
+        or str(p.get("family") or "") == "backup_netbackup"
+        for p in (panels or [])
+    ):
+        return "backup_netbackup"
+    if family.get("sellable_profile") == "comparison_only":
+        return "comparison_only"
     if panels:
+        if all(str(p.get("sellable_profile") or "") == "comparison_only" for p in panels):
+            return "comparison_only"
         return str(panels[0].get("sellable_profile") or "standard")
     return "standard"
 

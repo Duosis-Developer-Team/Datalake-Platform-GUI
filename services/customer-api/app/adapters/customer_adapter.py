@@ -92,13 +92,26 @@ class CustomerAdapter:
         buckets: dict[str, list[dict]] = {
             "replica": [],
             "backup": [],
+            "image_backup": [],
+            "application_backup": [],
             "other": [],
         }
         for row in session_types or []:
             if not isinstance(row, dict):
                 continue
             label = classify_veeam_session_or_job_type(str(row.get("type") or ""))
-            buckets[label].append(row)
+            if label == "backup":
+                buckets["backup"].append(row)
+                buckets["image_backup"].append(row)
+            elif label == "image_backup":
+                buckets["image_backup"].append(row)
+                buckets["backup"].append(row)
+            elif label == "application_backup":
+                buckets["application_backup"].append(row)
+            elif label in buckets:
+                buckets[label].append(row)
+            else:
+                buckets["other"].append(row)
         return buckets
 
     def _enrich_customer_vm_list(self, cursor, vm_list: list[dict]) -> list[dict]:
