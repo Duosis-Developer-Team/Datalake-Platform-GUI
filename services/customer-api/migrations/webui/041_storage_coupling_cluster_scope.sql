@@ -1,4 +1,4 @@
--- 038_storage_coupling_cluster_scope.sql
+-- 041_storage_coupling_cluster_scope.sql
 -- Widen the compute/storage coupling rule from family-only to (family, cluster).
 --
 -- Why: the built-in 'auto' rule is finer than a family. `host_storage_in_triple`
