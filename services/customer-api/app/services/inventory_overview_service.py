@@ -848,16 +848,19 @@ def _sellable_track_fields(
     if max_qty is None and panel.resource_kind == "ram" and panel.sellable_effective is not None:
         max_qty = panel.sellable_effective
     avg_qty = panel.sellable_avg_util
-    # Replication: Alloc TL = triad qty × price (not alternate min=0 from Potential Sales).
+    # Replication: triad TL = qty × price (not IBM alternate min/max from Potential Sales).
     if panel.family in _REPLICATION_ALLOCATION_FAMILIES and panel.has_price:
         potential_tl_alloc = (
             compute_potential_tl(alloc_qty, unit_price) if alloc_qty is not None else None
+        )
+        potential_tl_max = (
+            compute_potential_tl(max_qty, unit_price) if max_qty is not None else None
         )
     else:
         potential_tl_alloc = panel.potential_tl_min
         if potential_tl_alloc is None and panel.potential_tl is not None:
             potential_tl_alloc = panel.potential_tl
-    potential_tl_max = panel.potential_tl_max
+        potential_tl_max = panel.potential_tl_max
     potential_tl_avg = (
         compute_potential_tl(avg_qty, unit_price)
         if avg_qty is not None and panel.has_price

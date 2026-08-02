@@ -955,6 +955,11 @@ def test_replication_free_uses_crm_sold_not_allocation():
     track = _sellable_track_fields(panel, has_infra=True)
     assert track["sellable_alloc_qty"] == 509.0
     assert track["potential_tl_alloc"] == pytest.approx(509.0 * 37.47)
+    # Max util TL must use triad max_qty, not alternate potential_tl_max (alloc×price).
+    assert track["sellable_max_qty"] == 100.0
+    assert track["potential_tl_max"] == pytest.approx(100.0 * 37.47)
+    assert track["potential_tl_avg"] == pytest.approx(200.0 * 37.47)
+    assert track["potential_tl_max"] != pytest.approx(panel.potential_tl_max)
 
     sellable = MagicMock()
     sellable.is_available = True
@@ -999,6 +1004,7 @@ def test_replication_free_uses_crm_sold_not_allocation():
     assert row["used_qty"] == 19047.0
     assert row["used_is_allocation"] is True
     assert row["potential_tl_alloc"] == pytest.approx(509.0 * 37.47)
+    assert row["potential_tl_max"] == pytest.approx(100.0 * 37.47)
     assert row["data_quality"] == "suspect"
 
 
