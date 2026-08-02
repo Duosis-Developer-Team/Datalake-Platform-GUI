@@ -226,6 +226,7 @@ _REDIS_FIELD_UNITS: dict[tuple[str, str], str] = {
 _FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
     "virt_classic":              "classic",
     "virt_hyperconverged":       "hyperconverged",
+    "virt_power":                "power",
     "backup_netbackup":          "backup-netbackup",
     "backup_veeam_replication":  "backup-replication",
     "backup_zerto_replication":  "backup-replication",
@@ -296,7 +297,34 @@ _NETBACKUP_SHARED_PANEL_KEYS: frozenset[str] = frozenset({
 # constraint and the family unit count is the sum across hosts. Storage is
 # excluded from the per-host min() and handled by the architecture-aware
 # storage range model below.
-_HOST_BASED_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_hyperconverged"})
+#
+# virt_power joined this set once datacenter-api grew /compute/power/hosts: an
+# IBM frame bounds its partitions exactly like a hypervisor host bounds its VMs,
+# so one DC-wide min() was wrong in both directions -- it hid per-frame
+# bottlenecks, and a single over-threshold DC total zeroed every frame in it.
+# Measured 2026-08-02 that gate was blocking DC11, DC13 and DC15 outright.
+_HOST_BASED_FAMILIES: frozenset[str] = frozenset({
+    "virt_classic", "virt_hyperconverged", "virt_power",
+})
+
+# Host-based families whose STORAGE panel still comes from the aggregate path.
+# Power frames report no storage of their own: the arrays behind them also serve
+# the classic ESXi estate, so free space is not attributable per frame. The
+# storage panel therefore keeps its [min, max] range model and the compute
+# bottleneck reaches it through apply_storage_ratio_cap instead of the per-host
+# min().
+_HOST_COMPUTE_ONLY_FAMILIES: frozenset[str] = frozenset({"virt_power"})
+
+# Families whose host rows are DC-wide and carry no cluster. Passing the caller's
+# cluster filter would match nothing and silently drop the family to the cluster
+# fallback; the aggregate path ignored the filter for these too.
+_CLUSTERLESS_HOST_ROW_FAMILIES: frozenset[str] = frozenset({"virt_power"})
+
+# CPU capacity unit of a family's host rows. Power frames report cores (procunits
+# x 8) because the virt_power ratio is expressed in cores; everything else
+# reports GHz. host_raw_headroom reads cpu_cap_ghz raw, so this drives the
+# conversion to the panel's display unit and nothing else.
+_FAMILY_HOST_CPU_UNIT: dict[str, str] = {"virt_power": "Core"}
 
 # Power families: allocation track only (no max/utilization dual track except CPU util gate).
 _ALLOCATION_ONLY_FAMILIES: frozenset[str] = frozenset({"virt_power", "virt_power_hana"})
@@ -2228,19 +2256,33 @@ SELECT _tot, _alloc FROM latest
             host_based_ok = False
 
             if fam in _HOST_BASED_FAMILIES:
+                host_clusters = (
+                    None if fam in _CLUSTERLESS_HOST_ROW_FAMILIES else selected_clusters
+                )
                 if dc_code == "*" and global_host_dcs:
                     host_rows, host_status, storage_pools = self._fetch_host_rows_multi(
-                        global_host_dcs, fam, selected_clusters,
+                        global_host_dcs, fam, host_clusters,
                     )
                 elif dc_code and dc_code != "*":
                     host_rows, host_status, storage_pools = self._fetch_host_rows(
-                        dc_code, fam, selected_clusters,
+                        dc_code, fam, host_clusters,
                     )
+
+            # Power's storage panel stays on the aggregate branch (see
+            # _HOST_COMPUTE_ONLY_FAMILIES): handing it to the host path would
+            # overwrite its totals with the frames' zeros and skip the range.
+            storage_host_based = host_based_ok
+            deferred_storage: list[PanelResult] = []
 
             if host_rows:
                 host_based_ok = True
+                host_group = group
+                if fam in _HOST_COMPUTE_ONLY_FAMILIES:
+                    host_group = [p for p in group if p.resource_kind != "storage"]
+                    deferred_storage = [p for p in group if p.resource_kind == "storage"]
+                storage_host_based = host_based_ok and not deferred_storage
                 new_group = self._apply_host_based_constraints(
-                    group,
+                    host_group,
                     ratio,
                     host_rows,
                     unit_lookup,
@@ -2250,12 +2292,31 @@ SELECT _tot, _alloc FROM latest
                     effective_ghz_per_unit=effective_ghz,
                     storage_pools=storage_pools,
                     range_inputs=range_inputs if fam == "virt_classic" else None,
+                    host_cpu_unit=_FAMILY_HOST_CPU_UNIT.get(fam, "GHz"),
                     # Cluster rules live below the family, so the override has to
                     # be resolved per host rather than once per family.
                     storage_in_triple_override=self.build_host_coupling_resolver(
                         fam, dc_code, coupling_lookup,
                     ),
                 )
+                if refresh_from_totals and deferred_storage:
+                    # Global inventory hands us pre-merged panels with
+                    # sellable_raw zeroed (_merge_panel_results); the aggregate
+                    # branch rebuilds it from the summed totals and the deferred
+                    # storage panel needs the same treatment, or it caps from 0.
+                    deferred_storage = self._refresh_group_sellable_from_totals(
+                        deferred_storage,
+                        computation_mode=deferred_storage[0].computation_mode
+                        or "aggregated",
+                    )
+                for sto in deferred_storage:
+                    # Hand the panel back unbound; _apply_storage_range and
+                    # apply_storage_ratio_cap below give it the same treatment
+                    # the aggregate branch would have, now driven by the
+                    # host-based compute bottleneck.
+                    sto.sellable_constrained = float(sto.sellable_raw or 0.0)
+                    sto.ratio_bound = False
+                    new_group.append(sto)
             elif fam in _HOST_BASED_FAMILIES and dc_code == "*":
                 # Do NOT call compute_all_panels(dc_code="*", family=fam) here:
                 # that re-enters this method and recurses forever when
@@ -2320,13 +2381,13 @@ SELECT _tot, _alloc FROM latest
                         source_group, ratio, decouple_resource_kinds=None,
                     )
 
-            if fam in _STORAGE_RANGE_FAMILIES and range_inputs and not host_based_ok:
+            if fam in _STORAGE_RANGE_FAMILIES and range_inputs and not storage_host_based:
                 self._apply_storage_range(new_group, fam, range_inputs, unit_lookup)
             elif (
                 fam in _STORAGE_RANGE_FAMILIES
                 and needs_range
                 and range_inputs is None
-                and not host_based_ok
+                and not storage_host_based
             ):
                 sto_p = next((p for p in new_group if p.resource_kind == "storage"), None)
                 if sto_p is not None:
@@ -2336,7 +2397,7 @@ SELECT _tot, _alloc FROM latest
             # rule narrows the per-host min() inside the host loop above; letting
             # it also flip this cap would apply one cluster's decision to the
             # whole family's storage panel.
-            cap_storage = not host_based_ok and fam not in _SKIP_STORAGE_RATIO_CAP_FAMILIES
+            cap_storage = not storage_host_based and fam not in _SKIP_STORAGE_RATIO_CAP_FAMILIES
             if coupling_mode == "separate":
                 # Storage is sized from its own pool — the compute bottleneck
                 # must not cap it.
@@ -2652,9 +2713,15 @@ SELECT _tot, _alloc FROM latest
         effective_ghz_per_unit: float = 1.0,
         storage_pools: list[dict] | None = None,
         range_inputs: dict | None = None,
+        host_cpu_unit: str = "GHz",
         storage_in_triple_override: StorageInTripleOverride = None,
     ) -> "list[PanelResult]":
-        """Recompute CPU/RAM/Storage from per-host rows (triple min + dual tracks)."""
+        """Recompute CPU/RAM/Storage from per-host rows (triple min + dual tracks).
+
+        ``host_cpu_unit`` is the unit the rows' CPU capacity is actually in --
+        GHz for hypervisor hosts, ``Core`` for IBM Power frames -- and is what
+        the panel's display unit is converted *from*.
+        """
         _ = dc_code, clusters
         by_kind = {p.resource_kind: p for p in group}
         cpu_p = by_kind.get("cpu")
@@ -2663,7 +2730,7 @@ SELECT _tot, _alloc FROM latest
         if cpu_p is None or ram_p is None:
             return constrain_by_ratio(group, ratio)
 
-        cpu_conv = self._lookup_conversion(unit_lookup, "GHz", cpu_p.display_unit)
+        cpu_conv = self._lookup_conversion(unit_lookup, host_cpu_unit, cpu_p.display_unit)
         ram_conv = self._lookup_conversion(unit_lookup, "GB", ram_p.display_unit)
         sto_conv = self._lookup_conversion(unit_lookup, "GB", sto_p.display_unit) if sto_p else None
 

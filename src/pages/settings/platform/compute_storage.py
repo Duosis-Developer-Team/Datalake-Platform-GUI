@@ -71,9 +71,11 @@ _FAMILY_LABELS: dict[str, str] = {
     "virt_power_hana": "SAP HANA — Power",
 }
 
-# Families whose sellable is computed host-by-host, mapped to the cluster-list
-# API that feeds the detail board. Cluster rules only bite here: every other
-# family is aggregated, so there is no host row to attach a cluster rule to.
+# Families that both compute sellable host-by-host AND group their hosts into
+# clusters, mapped to the cluster-list API that feeds the detail board. A cluster
+# rule only bites where both hold: an aggregated family has no host row to attach
+# it to, and virt_power -- host-based since /compute/power/hosts -- has no
+# clusters, because an IBM frame stands alone.
 _CLUSTER_SOURCES: dict[str, str] = {
     "virt_classic": "classic",
     "virt_hyperconverged": "hyperconverged",
