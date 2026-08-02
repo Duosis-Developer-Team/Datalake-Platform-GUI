@@ -35,8 +35,35 @@ _INVENTORY_CACHE_TTL_SEC = float(os.getenv("INVENTORY_OVERVIEW_CACHE_TTL", "600"
 _INVENTORY_REDIS_PREFIX = "crm:inventory_overview:"
 _INVENTORY_DC_PARALLELISM = max(1, int(os.getenv("INVENTORY_DC_PARALLELISM", "4") or "4"))
 
-_HOST_DUAL_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_hyperconverged"})
+# Dual-track sellable profile (allocation / max util / avg util) for inventory UI.
+_HOST_DUAL_PROFILE_FAMILIES: frozenset[str] = frozenset({
+    "virt_classic",
+    "virt_hyperconverged",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+    "backup_veeam_replication",
+    "backup_zerto_replication",
+})
+# Global inventory: recompute these via host-based multi-DC path (not Σ DC aggregates).
+_HOST_DUAL_FAMILIES: frozenset[str] = frozenset({
+    "virt_classic",
+    "virt_hyperconverged",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
 _ALLOC_ONLY_FAMILIES: frozenset[str] = frozenset({"virt_power", "virt_power_hana"})
+_REPLICATION_ALLOCATION_FAMILIES: frozenset[str] = frozenset({
+    "backup_veeam_replication",
+    "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
 _INVENTORY_VIRT_FAMILIES: frozenset[str] = frozenset({
     "virt_classic",
     "virt_hyperconverged",
@@ -705,6 +732,8 @@ def _assess_data_quality(
     if panel.panel_key in LICENCE_OS_PANEL_FAMILIES:
         return None, None
     if panel.family not in _INVENTORY_VIRT_FAMILIES and allocated > total > 0:
+        if panel.family in _REPLICATION_ALLOCATION_FAMILIES:
+            return "suspect", "allocation_exceeds_total"
         return "suspect", "used_exceeds_total"
     if crm > total > 0 and panel.family not in _INVENTORY_VIRT_FAMILIES:
         return "suspect", "crm_exceeds_total"
@@ -723,7 +752,7 @@ def _assess_data_quality(
 
 def _family_sellable_profile(family_key: str) -> str:
     """Column profile for inventory report sellable tracks."""
-    if family_key in _HOST_DUAL_FAMILIES:
+    if family_key in _HOST_DUAL_PROFILE_FAMILIES:
         return "dual_track"
     if family_key in _ALLOC_ONLY_FAMILIES:
         return "allocation_only"
@@ -1154,6 +1183,7 @@ class InventoryOverviewService:
             service_pages=service_pages,
         )
         hide_used = family_key in _INVENTORY_VIRT_FAMILIES
+        used_is_allocation = family_key in _REPLICATION_ALLOCATION_FAMILIES
         if hide_used:
             used_out = None
             free_out = (
@@ -1211,8 +1241,11 @@ class InventoryOverviewService:
                 if key in entitled:
                     crm_fields[key] = entitled[key]
         data_quality, suspect_reason = _assess_data_quality(panel, crm_sold=crm_sold)
+        # Replication Free = capacity headroom (total − allocation), never sellable min.
         inventory_free_mode = (
-            "physical" if family_key in _PHYSICAL_FREE_FAMILIES else "standard"
+            "physical" if family_key in _PHYSICAL_FREE_FAMILIES
+            else "capacity" if used_is_allocation
+            else "standard"
         )
         track_fields = _sellable_track_fields(
             panel, has_infra=panel.has_infra_source, hide_used=hide_used,
@@ -1224,6 +1257,11 @@ class InventoryOverviewService:
                 unit_price_tl=panel.unit_price_tl,
                 has_price=panel.has_price,
             )
+        elif inventory_free_mode == "capacity" and panel.has_infra_source and panel.has_price:
+            free_tl_out = compute_potential_tl(free_out, panel.unit_price_tl)
+        # Surface IBM-style alternate min/max on replication rows.
+        sellable_min = panel.sellable_min if used_is_allocation else None
+        sellable_max = panel.sellable_max if used_is_allocation else None
         base = {
             "panel_key": panel.panel_key,
             "label": service_label,
@@ -1234,7 +1272,10 @@ class InventoryOverviewService:
             "crm_sold_qty": crm_sold,
             "crm_sold_tl": crm_sold_tl,
             "used_qty": used_out,
+            "used_is_allocation": used_is_allocation,
             "sellable_qty": sellable_out,
+            "sellable_min_qty": sellable_min,
+            "sellable_max_qty": sellable_max,
             "free_qty": free_out,
             "free_tl": free_tl_out,
             "potential_tl": panel.potential_tl,

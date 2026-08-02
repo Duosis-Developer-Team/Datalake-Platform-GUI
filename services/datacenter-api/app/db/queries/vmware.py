@@ -789,6 +789,35 @@ SELECT
 FROM latest
 """
 
+# Named VM allocation rows for replica/Zerto exclusion from virt sellable.
+# Params: (dc_pattern, start_ts, end_ts)
+# Returns: (vmname, number_of_cpus, total_memory_capacity_gb)
+CLASSIC_VM_ALLOCATION_NAMED = """
+SELECT DISTINCT ON (vmname)
+    vmname,
+    COALESCE(number_of_cpus, 0),
+    COALESCE(total_memory_capacity_gb, 0)
+FROM public.vm_metrics
+WHERE datacenter ILIKE %s
+  AND cluster ILIKE '%%KM%%'
+  AND LEFT(vmname, 1) <> '_'
+  AND timestamp BETWEEN %s AND %s
+ORDER BY vmname, timestamp DESC
+"""
+
+HYPERCONV_VMWARE_VM_ALLOCATION_NAMED = """
+SELECT DISTINCT ON (vmname)
+    vmname,
+    COALESCE(number_of_cpus, 0),
+    COALESCE(total_memory_capacity_gb, 0)
+FROM public.vm_metrics
+WHERE datacenter ILIKE %s
+  AND cluster NOT ILIKE '%%KM%%'
+  AND LEFT(vmname, 1) <> '_'
+  AND timestamp BETWEEN %s AND %s
+ORDER BY vmname, timestamp DESC
+"""
+
 HYPERCONV_VMWARE_VM_ALLOCATION_ROWS = """
 WITH latest AS (
     SELECT DISTINCT ON (vmname)

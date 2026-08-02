@@ -347,6 +347,22 @@ def backup_netbackup_compute(
     return db.get_backup_netbackup_compute(dc_code, tf.to_dict())
 
 
+@router.get("/datacenters/{dc_code}/compute/replica-allocation", response_model=dict[str, Any])
+def replica_allocation_offset(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    architecture: Optional[str] = Query(
+        "classic",
+        description="classic (VMware KM) or hyperconverged (Nutanix SoT)",
+    ),
+):
+    """Non-billable virt allocation (replica/Zerto) to subtract from virt sellable."""
+    return db.get_replica_allocation_offset(
+        dc_code, tf.to_dict(), architecture=architecture or "classic"
+    )
+
+
 @router.get("/datacenters/{dc_code}/compute/backup-replication", response_model=dict[str, Any])
 def backup_replication_compute(
     dc_code: str,
@@ -378,7 +394,11 @@ def backup_veeam_storage_compute(
         description="When true, add Nutanix disk capacity for HC Veeam path",
     ),
 ):
-    """Veeam replication storage: all VMware datastores except NetBackup."""
+    """Veeam replication **sellable** storage: eligible VMware DS except NetBackup.
+
+    Sellable pool is broader than current Veeam repositories (demand can open
+    new capacity from remaining eligible datastores). CRM Sold stays on inventory.
+    """
     return db.get_veeam_replication_datastore_compute(
         dc_code, tf.to_dict(), include_nutanix=include_nutanix
     )

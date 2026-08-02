@@ -25,7 +25,17 @@ def test_product_matching_service_merges_sold_and_panels():
     class _FakeDb:
         _pool = object()
 
-        def _run_query(self, _sql, _params=None):
+        def _run_query(self, sql, _params=None):
+            text = str(sql or "")
+            if "discovery_crm_products" in text and "salesorder" not in text.lower():
+                return [
+                    {
+                        "productid": "p-catalog",
+                        "product_name": "Catalog Only SKU",
+                        "product_number": "00998-CATALOG",
+                        "default_unit": "Adet",
+                    }
+                ]
             return [
                 {
                     "productnumber": "000BLT-46",
@@ -62,6 +72,10 @@ def test_product_matching_service_merges_sold_and_panels():
     assert hc["infra_total"] == 200.0
     assert hc["match_status"] == "capacity"
     orphan = by_pn["00999-ORPHAN"]
-    assert orphan["match_status"] == "documented"
+    assert orphan["match_status"] == "crm_only"
     assert "not yet in matching registry" in orphan["notes"]
+    catalog = by_pn["00998-CATALOG"]
+    assert catalog["match_status"] == "crm_only"
+    assert catalog["crm_sold_qty"] == 0.0
     assert payload["summary"]["with_sold_count"] >= 2
+    assert payload["summary"]["product_count"] >= 3

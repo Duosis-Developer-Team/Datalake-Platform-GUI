@@ -1,4 +1,4 @@
-"""CRM product ↔ infrastructure matching for Inventory overview (ADR-0024)."""
+"""CRM product ↔ infrastructure matching for Inventory overview (ADR-0024 / ADR-0032 §41)."""
 from __future__ import annotations
 
 import logging
@@ -11,7 +11,11 @@ logger = logging.getLogger(__name__)
 
 
 class ProductMatchingService:
-    """Join matching registry + global CRM sold + optional inventory panel totals."""
+    """Join matching registry + full CRM catalog + sold + optional inventory panels.
+
+    Checklist mode: every CRM product appears (matched or not). No default
+    row drops for inventory_visible or registry status.
+    """
 
     def __init__(self, customer_svc: Any, inventory_svc: Any | None = None):
         self._db = customer_svc
@@ -28,6 +32,7 @@ class ProductMatchingService:
     ) -> dict[str, Any]:
         registry = load_product_matching_registry()
         sold_rows = self._load_sold_by_productnumber()
+        catalog_rows = self._load_all_products()
         sold_by_pn: dict[str, dict[str, Any]] = {}
         for row in sold_rows:
             pn = str(row.get("productnumber") or "").strip()
@@ -47,13 +52,18 @@ class ProductMatchingService:
         )
 
         products: list[dict[str, Any]] = []
-        # Registry entries (with or without sales)
+        seen: set[str] = set()
+
+        # 1) Registry entries (with or without sales)
         for pn, meta in sorted(registry.items(), key=lambda kv: kv[0]):
             sold = sold_by_pn.pop(pn, None)
             products.append(self._build_row(meta, sold, panels))
+            seen.add(pn)
 
-        # Sold products not yet in registry
+        # 2) Sold products not yet in registry
         for pn, sold in sorted(sold_by_pn.items(), key=lambda kv: -float(kv[1].get("sold_qty") or 0)):
+            if pn in seen:
+                continue
             products.append(
                 self._build_row(
                     {
@@ -61,7 +71,7 @@ class ProductMatchingService:
                         "name": str(sold.get("product_name") or pn),
                         "usage_source": "",
                         "matching_rule": "",
-                        "match_status": "documented",
+                        "match_status": "crm_only",
                         "panel_key": None,
                         "family": "",
                         "infra_tables": [],
@@ -71,13 +81,44 @@ class ProductMatchingService:
                     panels,
                 )
             )
+            seen.add(pn)
+
+        # 3) Full CRM catalog remainder (zero sold, unmatched) — checklist completeness
+        for cat in catalog_rows:
+            pn = str(cat.get("product_number") or cat.get("productnumber") or "").strip()
+            if not pn or pn in seen:
+                continue
+            products.append(
+                self._build_row(
+                    {
+                        "productnumber": pn,
+                        "name": str(cat.get("product_name") or pn),
+                        "usage_source": "",
+                        "matching_rule": "",
+                        "match_status": "crm_only",
+                        "panel_key": None,
+                        "family": "",
+                        "infra_tables": [],
+                        "notes": "CRM catalog product (no active sold qty / not in registry)",
+                    },
+                    {
+                        "productnumber": pn,
+                        "product_name": cat.get("product_name"),
+                        "resource_unit": cat.get("default_unit") or "Adet",
+                        "sold_qty": 0.0,
+                        "sold_amount_tl": 0.0,
+                    },
+                    panels,
+                )
+            )
+            seen.add(pn)
 
         summary = self._summarize(products)
         return {
             "products": products,
             "summary": summary,
             "registry_version": 1,
-            "methodology": "ADR-0024",
+            "methodology": "ADR-0024+ADR-0032-checklist",
         }
 
     def _load_sold_by_productnumber(self) -> list[dict[str, Any]]:
@@ -85,6 +126,13 @@ class ProductMatchingService:
             return list(self._db._run_query(sq.SALES_SOLD_BY_PRODUCTNUMBER_GLOBAL, ()) or [])
         except Exception:
             logger.exception("SALES_SOLD_BY_PRODUCTNUMBER_GLOBAL failed")
+            return []
+
+    def _load_all_products(self) -> list[dict[str, Any]]:
+        try:
+            return list(self._db._run_query(sq.ALL_PRODUCTS, ()) or [])
+        except Exception:
+            logger.exception("ALL_PRODUCTS failed for product matching checklist")
             return []
 
     def _panel_lookup(self, *, force_recompute: bool) -> dict[str, dict[str, Any]]:
@@ -129,7 +177,9 @@ class ProductMatchingService:
             "family": meta.get("family") or "",
             "infra_tables": list(meta.get("infra_tables") or []),
             "notes": meta.get("notes") or "",
-            "in_registry": bool(meta.get("matching_rule") or meta.get("usage_source") or meta.get("panel_key")),
+            "in_registry": bool(
+                meta.get("matching_rule") or meta.get("usage_source") or meta.get("panel_key")
+            ),
             "infra_total": None,
             "infra_used": None,
             "infra_free": None,
@@ -160,4 +210,5 @@ class ProductMatchingService:
             "capacity_count": by_status.get("capacity", 0),
             "documented_count": by_status.get("documented", 0),
             "customer_phase_count": by_status.get("sold_noted_customer_phase", 0),
+            "crm_only_count": by_status.get("crm_only", 0),
         }
