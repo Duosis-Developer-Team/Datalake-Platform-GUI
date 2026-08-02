@@ -820,6 +820,7 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
         "available_bytes": 100.0 * tb,
         "pre_dedup_bytes": 50.0 * tb,
         "used_post_dedup_bytes": 5.0 * tb,
+        "used_pool_bytes": 12.0 * tb,
         "dedup_savings_bytes": 45.0 * tb,
         "dedup_savings_pct": 90.0,
         "dedup_factor": 10.0,
@@ -838,6 +839,9 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
     assert out["inventory_free_mode"] == "physical"
     assert out["free_tl"] == 23000.0
     assert out["efficiency_pct"] == 500.0
+    assert out["pool_used_qty"] == 12.0
+    assert "Pool used: 12.0 TB" in out["used_compare_note"]
+    assert "Jobs PostDedup: 5.0 TB" in out["used_compare_note"]
 
 
 def test_global_only_panel_netbackup_enriched_free_qty():

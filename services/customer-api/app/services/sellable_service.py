@@ -1382,31 +1382,58 @@ SELECT _tot, _alloc FROM latest
         }
 
     def _fetch_netbackup_pool_bytes(self) -> dict[str, float]:
-        """Pool capacity bytes — prefer datacenter-api per-DC path, else SQL fallback."""
-        pools = self._aggregate_netbackup_pools_via_dc_api()
-        if pools is not None:
-            return pools
+        """Pool capacity bytes across all DCs (usable / used / available).
+
+        Prefer datacenter-api per-DC sum for DC View parity, but if the SQL
+        global DISTINCT ON host+name total is materially larger (partial DC-api
+        failures), use SQL so CRM Inventory Total is platform-wide.
+        """
+        api_pools = self._aggregate_netbackup_pools_via_dc_api()
+        sql_pools: dict[str, float] | None = None
         try:
-            return self._aggregate_netbackup_pools_via_sql_fallback()
+            sql_pools = self._aggregate_netbackup_pools_via_sql_fallback()
         except Exception:  # noqa: BLE001
             logger.exception("SellableService: NetBackup SQL pool fallback failed")
+        if api_pools is None and sql_pools is None:
             return {
                 "total_bytes": 0.0,
                 "used_pool_bytes": 0.0,
                 "available_bytes": 0.0,
             }
+        if api_pools is None:
+            return sql_pools or {
+                "total_bytes": 0.0,
+                "used_pool_bytes": 0.0,
+                "available_bytes": 0.0,
+            }
+        if sql_pools is None:
+            return api_pools
+        api_total = float(api_pools.get("total_bytes") or 0.0)
+        sql_total = float(sql_pools.get("total_bytes") or 0.0)
+        if sql_total > api_total * 1.05:
+            logger.warning(
+                "SellableService: NetBackup pool SQL total_bytes=%.0f exceeds "
+                "DC-api total_bytes=%.0f — using SQL for platform-wide Total",
+                sql_total,
+                api_total,
+            )
+            return sql_pools
+        return api_pools
 
     def _fetch_netbackup_jobs_dedup_summary(self) -> tuple[float, float]:
-        """Pre/post dedup GiB from finished BACKUP jobs in the default 7d window."""
+        """Pre/post from finished BACKUP jobs (all time until retention exists).
+
+        Pre = SUM(kilobytestransferred) — job transfer, not a native pre_dedup column.
+        Post = SUM(transfer / dedupratio) — estimated on-disk footprint.
+        """
         _gib = 1024.0 ** 3
-        start_ts, end_ts = time_range_to_bounds(default_time_range())
         try:
             with self._svc._get_connection() as conn:
                 with conn.cursor() as cur:
                     dedup_row = self._svc._run_row(
                         cur,
-                        sq.GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY,
-                        (start_ts, end_ts),
+                        sq.GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY_ALL,
+                        (),
                     )
         except Exception:  # noqa: BLE001
             logger.exception("SellableService: NetBackup jobs dedup summary failed")
@@ -1416,6 +1443,40 @@ SELECT _tot, _alloc FROM latest
         pre_gib = float(dedup_row[0] or 0.0)
         post_gib = float(dedup_row[1] or 0.0)
         return pre_gib * _gib, post_gib * _gib
+
+    def list_netbackup_jobs_disk_footprint(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        """Per finished BACKUP job: transfer, dedupratio, on-disk footprint.
+
+        Retention filter deferred — currently all percentcomplete=100 rows.
+        """
+        lim = max(1, min(int(limit or 500), 5000))
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._svc._run_rows(
+                        cur,
+                        sq.GLOBAL_NETBACKUP_JOBS_DISK_FOOTPRINT,
+                        (lim,),
+                    )
+        except Exception:  # noqa: BLE001
+            logger.exception("SellableService: NetBackup jobs disk footprint failed")
+            return []
+        out: list[dict[str, Any]] = []
+        for r in rows or []:
+            if isinstance(r, dict):
+                out.append(r)
+            elif isinstance(r, (list, tuple)) and len(r) >= 8:
+                out.append({
+                    "jobid": r[0],
+                    "jobtype": r[1],
+                    "policyname": r[2],
+                    "policytype": r[3],
+                    "kilobytestransferred": r[4],
+                    "dedupratio": r[5],
+                    "footprint_kb": r[6],
+                    "collection_timestamp": r[7],
+                })
+        return out
 
     def _query_netbackup_storage_totals(
         self,
@@ -1492,7 +1553,7 @@ SELECT _tot, _alloc FROM latest
         return value, value
 
     def get_netbackup_inventory_metrics(self) -> dict[str, float]:
-        """Global NetBackup pool capacity (DC-api path), physical free, jobs dedup (7d)."""
+        """Global NetBackup pool capacity, physical free, jobs transfer/post-dedup."""
         zero = {
             "total_bytes": 0.0,
             "used_pool_bytes": 0.0,
@@ -2041,6 +2102,88 @@ SELECT _tot, _alloc FROM latest
             logger.exception("zerto datastore storage fetch failed dc=%s url=%s", dc_code, url)
             return None
 
+    def _aggregate_replication_storage_multi(
+        self,
+        family: str,
+        dc_codes: list[str],
+    ) -> tuple[float, float, float | None] | None:
+        """Sum Veeam/Zerto DS storage across DCs for global inventory HOST_DUAL."""
+        codes = [c for c in (dc_codes or []) if c and c != "*"]
+        if not codes:
+            return None
+        include_ntnx = family in _REPLICATION_HC_FAMILIES
+        is_veeam = family.startswith("backup_veeam_replication")
+        is_zerto = family.startswith("backup_zerto_replication")
+        if not is_veeam and not is_zerto:
+            return None
+        total = 0.0
+        allocated = 0.0
+        util_weighted = 0.0
+        weight = 0.0
+        ok = 0
+        for code in codes:
+            raw = (
+                self._fetch_veeam_datastore_storage(code, include_nutanix=include_ntnx)
+                if is_veeam
+                else self._fetch_zerto_datastore_storage(code, include_nutanix=include_ntnx)
+            )
+            metrics = self._extract_compute_metrics(raw, "storage") if raw else None
+            if metrics is None:
+                continue
+            cap, used, _unit = metrics
+            total += cap
+            allocated += used
+            util = self._extract_utilization_pct(raw, "storage")
+            if util is not None and cap > 0:
+                util_weighted += util * cap
+                weight += cap
+            ok += 1
+        if ok == 0 or total <= 0:
+            return None
+        util_pct = (util_weighted / weight) if weight > 0 else None
+        return total, allocated, util_pct
+
+    def _apply_replication_storage_multi(
+        self,
+        storage_panels: list[PanelResult],
+        family: str,
+        dc_codes: list[str],
+        unit_lookup: dict,
+    ) -> list[PanelResult]:
+        """Fill deferred replication storage panels from multi-DC DS endpoints."""
+        if not storage_panels:
+            return storage_panels
+        agg = self._aggregate_replication_storage_multi(family, dc_codes)
+        if agg is None:
+            return storage_panels
+        # Endpoint stor_cap / provisioned are in TB (see _RESOURCE_KIND_TO_COMPUTE_FIELDS).
+        total_tb, alloc_tb, util_pct = agg
+        include_ntnx = family in _REPLICATION_HC_FAMILIES
+        vendor = "veeam" if family.startswith("backup_veeam") else "zerto"
+        note = (
+            f"via datacenter-api/compute/backup-{vendor}-storage "
+            f"(multi-DC n={len([c for c in dc_codes if c and c != '*'])}"
+            + (", +Nutanix" if include_ntnx else "")
+            + ")"
+        )
+        out: list[PanelResult] = []
+        for sto in storage_panels:
+            conv = self._lookup_conversion(unit_lookup, "TB", sto.display_unit)
+            total_disp = convert_unit(total_tb, conv) if conv else total_tb
+            alloc_disp = convert_unit(alloc_tb, conv) if conv else alloc_tb
+            sto.total = total_disp
+            sto.allocated = alloc_disp
+            sto.has_infra_source = True
+            sto.sellable_raw = apply_utilization_gate(
+                total_disp, alloc_disp, util_pct, sto.threshold_pct,
+            )
+            sto.sellable_constrained = float(sto.sellable_raw or 0.0)
+            sto.potential_tl = compute_potential_tl(sto.sellable_constrained, sto.unit_price_tl)
+            sto.computation_mode = "aggregated"
+            sto.notes = [*(sto.notes or []), note]
+            out.append(sto)
+        return out
+
     @staticmethod
     def _extract_compute_metrics(
         raw: dict, resource_kind: str
@@ -2380,7 +2523,15 @@ SELECT _tot, _alloc FROM latest
                     new_group = self._subtract_replica_allocation_from_virt(
                         new_group, dc_code, fam,
                     )
-                if refresh_from_totals and deferred_storage:
+                if (
+                    fam in _REPLICATION_HOST_SOURCE_FAMILY
+                    and deferred_storage
+                    and global_host_dcs
+                ):
+                    deferred_storage = self._apply_replication_storage_multi(
+                        deferred_storage, fam, global_host_dcs, unit_lookup,
+                    )
+                elif refresh_from_totals and deferred_storage:
                     # Global inventory hands us pre-merged panels with
                     # sellable_raw zeroed (_merge_panel_results); the aggregate
                     # branch rebuilds it from the summed totals and the deferred
@@ -2412,6 +2563,13 @@ SELECT _tot, _alloc FROM latest
                 refreshed = self._refresh_group_sellable_from_totals(
                     group, computation_mode="aggregated",
                 )
+                if fam in _REPLICATION_HOST_SOURCE_FAMILY and global_host_dcs:
+                    sto_panels = [p for p in refreshed if p.resource_kind == "storage"]
+                    other = [p for p in refreshed if p.resource_kind != "storage"]
+                    sto_panels = self._apply_replication_storage_multi(
+                        sto_panels, fam, global_host_dcs, unit_lookup,
+                    )
+                    refreshed = other + sto_panels
                 new_group = constrain_by_ratio(
                     refreshed, ratio, decouple_resource_kinds=None,
                 )

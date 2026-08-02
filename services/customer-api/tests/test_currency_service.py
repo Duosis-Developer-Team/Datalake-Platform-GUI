@@ -31,6 +31,14 @@ def test_tl_passthrough_no_db_call():
         assert svc._get_connection.call_count == 0
 
 
+def test_turkish_lira_and_try_passthrough():
+    with _mock_conn([]) as svc:
+        cs = CurrencyService(svc)
+        assert cs.to_tl(37.47, "Turkish Lira") == 37.47
+        assert cs.to_tl(10.0, "TRY") == 10.0
+        assert svc._get_connection.call_count == 0
+
+
 def test_usd_to_tl_uses_rate():
     """rate stored as base_per_foreign -> tl = amount / rate."""
     with _mock_conn([("USD", 0.025), ("EUR", 0.022)]) as svc:

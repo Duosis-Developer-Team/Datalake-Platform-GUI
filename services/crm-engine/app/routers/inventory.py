@@ -76,3 +76,23 @@ def get_inventory_matching(
 ):
     """CRM product ↔ infrastructure matching rows (ADR-0024 registry + sold)."""
     return matching.compute_product_matching(force_recompute=force_recompute)
+
+
+@router.get("/crm/netbackup/jobs-disk-footprint", response_model=dict)
+def get_netbackup_jobs_disk_footprint(
+    request: Request,
+    limit: int = 500,
+):
+    """Per finished BACKUP job: transfer, dedupratio, estimated on-disk footprint.
+
+    Retention filter deferred — currently percentcomplete=100 only.
+    """
+    sellable = getattr(request.app.state, "sellable", None)
+    if sellable is None or not getattr(sellable, "is_available", False):
+        raise HTTPException(status_code=503, detail="SellableService not available")
+    rows = sellable.list_netbackup_jobs_disk_footprint(limit=limit)
+    return {
+        "jobs": rows,
+        "count": len(rows),
+        "note": "footprint_kb = kilobytestransferred / dedupratio; retention filter deferred",
+    }

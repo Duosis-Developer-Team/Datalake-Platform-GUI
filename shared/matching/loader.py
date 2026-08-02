@@ -39,6 +39,7 @@ def load_product_matching_registry() -> dict[str, dict[str, Any]]:
             "panel_key": (str(entry["panel_key"]).strip() if entry.get("panel_key") else None),
             "family": str(entry.get("family") or ""),
             "infra_tables": [str(t) for t in (entry.get("infra_tables") or [])],
+            "infra_columns": [str(c) for c in (entry.get("infra_columns") or [])],
             "notes": str(entry.get("notes") or ""),
         }
     return out

@@ -51,13 +51,14 @@ class ProductMatchingService:
             force_recompute=force_recompute
         )
 
+        infra_by_panel = self._load_infra_source_columns()
         products: list[dict[str, Any]] = []
         seen: set[str] = set()
 
         # 1) Registry entries (with or without sales)
         for pn, meta in sorted(registry.items(), key=lambda kv: kv[0]):
             sold = sold_by_pn.pop(pn, None)
-            products.append(self._build_row(meta, sold, panels))
+            products.append(self._build_row(meta, sold, panels, infra_by_panel))
             seen.add(pn)
 
         # 2) Sold products not yet in registry
@@ -75,10 +76,12 @@ class ProductMatchingService:
                         "panel_key": None,
                         "family": "",
                         "infra_tables": [],
+                        "infra_columns": [],
                         "notes": "Sold SKU not yet in matching registry",
                     },
                     sold,
                     panels,
+                    infra_by_panel,
                 )
             )
             seen.add(pn)
@@ -99,6 +102,7 @@ class ProductMatchingService:
                         "panel_key": None,
                         "family": "",
                         "infra_tables": [],
+                        "infra_columns": [],
                         "notes": "CRM catalog product (no active sold qty / not in registry)",
                     },
                     {
@@ -109,6 +113,7 @@ class ProductMatchingService:
                         "sold_amount_tl": 0.0,
                     },
                     panels,
+                    infra_by_panel,
                 )
             )
             seen.add(pn)
@@ -153,17 +158,62 @@ class ProductMatchingService:
                 out[key] = row
         return out
 
+    def _load_infra_source_columns(self) -> dict[str, dict[str, Any]]:
+        """panel_key → tables/columns from gui_panel_infra_source (approved binding)."""
+        webui = getattr(self._inventory, "_webui", None) if self._inventory else None
+        if webui is None or not getattr(webui, "is_available", False):
+            return {}
+        try:
+            rows = webui.run_rows(
+                """
+                SELECT panel_key, source_table, total_column,
+                       allocated_table, allocated_column
+                FROM   gui_panel_infra_source
+                WHERE  source_table IS NOT NULL
+                ORDER BY panel_key, (dc_code = '*') DESC
+                """,
+            )
+        except Exception:
+            logger.exception("gui_panel_infra_source load for product matching failed")
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows or []:
+            key = str(r.get("panel_key") or "").strip()
+            if not key or key in out:
+                continue
+            tables: list[str] = []
+            columns: list[str] = []
+            for t in (r.get("source_table"), r.get("allocated_table")):
+                if t and str(t) not in tables:
+                    tables.append(str(t))
+            for c in (r.get("total_column"), r.get("allocated_column")):
+                if c and str(c) not in columns:
+                    columns.append(str(c))
+            out[key] = {"infra_tables": tables, "infra_columns": columns}
+        return out
+
     @staticmethod
     def _build_row(
         meta: dict[str, Any],
         sold: dict[str, Any] | None,
         panel_by_key: dict[str, dict[str, Any]],
+        infra_by_panel: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         panel_key = meta.get("panel_key")
         panel = panel_by_key.get(panel_key) if panel_key else None
         sold_qty = float((sold or {}).get("sold_qty") or 0)
         sold_tl = float((sold or {}).get("sold_amount_tl") or 0)
         unit = str((sold or {}).get("resource_unit") or "")
+        tables = list(meta.get("infra_tables") or [])
+        columns = list(meta.get("infra_columns") or [])
+        live = (infra_by_panel or {}).get(str(panel_key or ""))
+        if live:
+            for t in live.get("infra_tables") or []:
+                if t not in tables:
+                    tables.append(t)
+            for c in live.get("infra_columns") or []:
+                if c not in columns:
+                    columns.append(c)
         row: dict[str, Any] = {
             "productnumber": meta["productnumber"],
             "product_name": meta.get("name") or (sold or {}).get("product_name") or meta["productnumber"],
@@ -175,7 +225,8 @@ class ProductMatchingService:
             "match_status": meta.get("match_status") or "documented",
             "panel_key": panel_key,
             "family": meta.get("family") or "",
-            "infra_tables": list(meta.get("infra_tables") or []),
+            "infra_tables": tables,
+            "infra_columns": columns,
             "notes": meta.get("notes") or "",
             "in_registry": bool(
                 meta.get("matching_rule") or meta.get("usage_source") or meta.get("panel_key")
@@ -192,6 +243,13 @@ class ProductMatchingService:
             row["panel_status"] = panel.get("status")
             if not row["resource_unit"]:
                 row["resource_unit"] = str(panel.get("display_unit") or "")
+            # Approved capacity match with live infra binding → green fill signal
+            if (
+                row["match_status"] == "capacity"
+                and panel.get("has_infra_source")
+                and (tables or columns)
+            ):
+                row["match_approved"] = True
         return row
 
     @staticmethod

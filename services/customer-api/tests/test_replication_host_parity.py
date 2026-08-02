@@ -256,6 +256,8 @@ def test_recompute_with_infra_dcs_flips_replication_has_infra():
     )
     svc._apply_replication_alternate_ranges = lambda group: group  # type: ignore[method-assign]
     svc._refresh_group_sellable_from_totals = lambda group, **kw: group  # type: ignore[method-assign]
+    svc._dc_api_url = "http://dc-api"  # type: ignore[attr-defined]
+    svc._apply_replication_storage_multi = lambda panels, *a, **k: panels  # type: ignore[method-assign]
 
     out = svc.recompute_family_constraints(
         [cpu, ram, sto],

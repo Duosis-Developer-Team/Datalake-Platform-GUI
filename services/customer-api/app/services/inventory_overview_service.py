@@ -387,13 +387,19 @@ def _apply_netbackup_inventory_fields(
         except (TypeError, ValueError):
             post = 0.0
 
+    pool_used = _bytes_to_tb(metrics.get("used_pool_bytes", 0.0))
     row["inventory_free_mode"] = "physical"
     row["free_qty"] = _bytes_to_tb(metrics.get("available_bytes", 0.0))
+    row["pool_used_qty"] = pool_used
     row["pre_dedup_qty"] = pre
     row["post_dedup_qty"] = post
     row["dedup_savings_qty"] = _bytes_to_tb(metrics.get("dedup_savings_bytes", 0.0))
     row["dedup_savings_pct"] = float(metrics.get("dedup_savings_pct") or 0.0)
     row["dedup_factor"] = float(metrics.get("dedup_factor") or 0.0)
+    # Compare disk-pool used vs job PostDedup footprint (not averaged).
+    row["used_compare_note"] = (
+        f"Pool used: {pool_used:,.1f} TB · Jobs PostDedup: {post:,.1f} TB"
+    )
     row["free_tl"] = _value_tl_from_catalog_price(
         row.get("free_qty"),
         unit_price_tl=unit_price,
