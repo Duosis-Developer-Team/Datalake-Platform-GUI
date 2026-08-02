@@ -113,8 +113,9 @@ def test_reconcile_handles_none():
 def test_classify_veeam_session_or_job_type():
     assert classify_veeam_session_or_job_type("ReplicaJob") == "replica"
     assert classify_veeam_session_or_job_type("VSphereReplica") == "replica"
-    assert classify_veeam_session_or_job_type("BackupJob") == "backup"
-    assert classify_veeam_session_or_job_type("Backup") == "backup"
+    assert classify_veeam_session_or_job_type("BackupJob") == "image_backup"
+    assert classify_veeam_session_or_job_type("Backup") == "image_backup"
+    assert classify_veeam_session_or_job_type("SqlBackup") == "application_backup"
     assert classify_veeam_session_or_job_type("Unknown") == "other"
     assert classify_veeam_session_or_job_type(None) == "other"
 
