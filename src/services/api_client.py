@@ -3075,6 +3075,41 @@ def put_resource_ratio(
     return out if isinstance(out, dict) else {}
 
 
+def get_storage_couplings() -> list:
+    """Compute/storage coupling rows (family x dc_code)."""
+
+    def fetch() -> list:
+        data = _get_json(_get_client_crm(), "/api/v1/crm/storage-coupling")
+        return data if isinstance(data, list) else []
+
+    return _api_cache_get_with_stale("api:crm_storage_coupling", fetch, [])
+
+
+def put_storage_couplings(
+    rows: list[dict[str, Any]],
+    *,
+    updated_by: Optional[str] = None,
+) -> dict[str, Any]:
+    """Save the whole coupling board; invalidates the sellable caches."""
+    body = {"rows": rows, "updated_by": updated_by}
+    out = _put_json(_get_client_crm(), "/api/v1/crm/storage-coupling", body)
+    _api_response_cache.delete("api:crm_storage_coupling")
+    _invalidate_sellable_caches()
+    return out if isinstance(out, dict) else {}
+
+
+def delete_storage_coupling(family: str, dc_code: str) -> dict[str, Any]:
+    """Drop a per-DC override so the family falls back to its ``'*'`` row."""
+    enc = quote(str(family), safe="")
+    out = _delete_json(
+        _get_client_crm(),
+        f"/api/v1/crm/storage-coupling/{enc}?dc_code={quote(str(dc_code), safe='')}",
+    )
+    _api_response_cache.delete("api:crm_storage_coupling")
+    _invalidate_sellable_caches()
+    return out if isinstance(out, dict) else {}
+
+
 def get_unit_conversions() -> list:
     def fetch() -> list:
         data = _get_json(_get_client_crm(), "/api/v1/crm/unit-conversions")

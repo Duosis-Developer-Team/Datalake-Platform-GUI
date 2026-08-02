@@ -461,6 +461,13 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 sort_order=68,
             ),
             _n(
+                "page:settings_platform_compute_storage",
+                "Platform Compute / Storage coupling",
+                "config",
+                route_pattern="/administration/platform/compute-storage",
+                sort_order=69,
+            ),
+            _n(
                 "page:settings_crm_backup",
                 "CRM backup multipliers (alias → Platform Backup Mapping)",
                 "config",

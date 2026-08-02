@@ -324,6 +324,18 @@ _RESOURCE_KIND_TO_UTIL_FIELDS: dict[str, tuple[str, ...]] = {
     "storage": ("stor_pct", "stor_alloc_vm_pct"),
 }
 
+def _coupling_to_triple_override(mode: str) -> bool | None:
+    """Map a coupling mode onto the per-host ``storage_in_triple`` decision.
+
+    ``auto`` returns None so ``host_storage_in_triple`` keeps deciding per host.
+    """
+    if mode == "merged":
+        return True
+    if mode == "separate":
+        return False
+    return None
+
+
 # virt_power_hana shares IBM Power infrastructure with virt_power.
 _POWER_HANA_INFRA_ALIASES: dict[str, str] = {
     "virt_power_hana_cpu": "virt_power_cpu",
@@ -362,6 +374,7 @@ from shared.sellable.computation import (
     utilization_gate_blocked,
 )
 from shared.sellable.models import (
+    STORAGE_COUPLING_MODES,
     DashboardSummary,
     FamilyAggregate,
     InfraSource,
@@ -369,6 +382,7 @@ from shared.sellable.models import (
     PanelDefinition,
     PanelResult,
     ResourceRatio,
+    StorageCoupling,
     UnitConversion,
 )
 
@@ -484,6 +498,103 @@ class SellableService:
             storage_gb_per_unit=float(row["storage_gb_per_unit"]),
             notes=row.get("notes"),
         )
+
+    def list_storage_couplings(self) -> list[StorageCoupling]:
+        """Every compute/storage coupling row (family x dc_code).
+
+        Never raises: the sellable pipeline must keep its built-in behaviour when
+        the config DB (or migration 037) is missing.
+        """
+        webui = getattr(self, "_webui", None)
+        if webui is None or not webui.is_available:
+            return []
+        try:
+            rows = webui.run_rows(sq.LIST_STORAGE_COUPLINGS)
+        except Exception:
+            # Table lands with migration 037; older DBs keep the built-in behaviour.
+            logger.warning("gui_family_storage_coupling unavailable — coupling defaults to auto")
+            return []
+        return [
+            StorageCoupling(
+                family=r["family"],
+                dc_code=r["dc_code"],
+                mode=(r.get("mode") or "auto"),
+                notes=r.get("notes"),
+                updated_by=r.get("updated_by"),
+            )
+            for r in rows
+        ]
+
+    def _build_coupling_lookup(self) -> dict[tuple[str, str], str]:
+        """``(family, dc_code) -> mode`` map, used to resolve per-DC overrides."""
+        return {(c.family, c.dc_code): c.mode for c in self.list_storage_couplings()}
+
+    def resolve_storage_coupling(
+        self,
+        family: str,
+        dc_code: str = "*",
+        lookup: "dict[tuple[str, str], str] | None" = None,
+    ) -> str:
+        """Per-DC row wins over the ``'*'`` default; missing rows mean ``auto``."""
+        table = self._build_coupling_lookup() if lookup is None else lookup
+        mode = table.get((family, dc_code)) or table.get((family, "*")) or "auto"
+        return mode if mode in STORAGE_COUPLING_MODES else "auto"
+
+    def upsert_storage_coupling(
+        self,
+        family: str,
+        *,
+        dc_code: str = "*",
+        mode: str = "auto",
+        notes: str | None = None,
+        updated_by: str = "ui",
+    ) -> None:
+        if mode not in STORAGE_COUPLING_MODES:
+            raise ValueError(f"invalid coupling mode: {mode!r}")
+        if not self._webui.is_available:
+            raise RuntimeError("WebUI configuration DB not available")
+        self._webui.execute(
+            sq.UPSERT_STORAGE_COUPLING,
+            (family, dc_code or "*", mode, notes, updated_by),
+        )
+
+    def upsert_storage_couplings(
+        self,
+        rows: "list[dict]",
+        *,
+        updated_by: str = "ui",
+    ) -> int:
+        """Save a whole board in one transaction (drag-and-drop editor)."""
+        if not self._webui.is_available:
+            raise RuntimeError("WebUI configuration DB not available")
+        statements: list[tuple[str, tuple]] = []
+        for row in rows:
+            mode = str(row.get("mode") or "auto")
+            if mode not in STORAGE_COUPLING_MODES:
+                raise ValueError(f"invalid coupling mode: {mode!r}")
+            family = str(row.get("family") or "").strip()
+            if not family:
+                raise ValueError("family is required")
+            statements.append((
+                sq.UPSERT_STORAGE_COUPLING,
+                (
+                    family,
+                    str(row.get("dc_code") or "*"),
+                    mode,
+                    row.get("notes"),
+                    updated_by,
+                ),
+            ))
+        if not statements:
+            return 0
+        self._webui.execute_all(statements)
+        return len(statements)
+
+    def delete_storage_coupling(self, family: str, dc_code: str) -> None:
+        """Drop a per-DC override so the family falls back to its ``'*'`` row."""
+        if not self._webui.is_available:
+            raise RuntimeError("WebUI configuration DB not available")
+        self._webui.execute(sq.DELETE_STORAGE_COUPLING, (family, dc_code))
 
     def list_unit_conversions(self) -> list[UnitConversion]:
         if not self._webui.is_available:
@@ -2017,6 +2128,9 @@ SELECT _tot, _alloc FROM latest
 
         ratio_lookup = {(r.family, r.dc_code): r for r in self.list_ratios()}
         unit_lookup = self._build_unit_lookup()
+        # Operator-defined compute/storage coupling (Administration -> Platform ->
+        # Compute / Storage). Every family defaults to 'auto' = built-in behaviour.
+        coupling_lookup = self._build_coupling_lookup()
 
         range_inputs: dict | None = None
         needs_range = any(
@@ -2042,6 +2156,8 @@ SELECT _tot, _alloc FROM latest
                 or ratio_lookup.get((fam, "*"))
                 or ResourceRatio(family=fam)
             )
+
+            coupling_mode = self.resolve_storage_coupling(fam, dc_code, coupling_lookup)
 
             host_rows: list[dict] | None = None
             host_status = "unavailable"
@@ -2071,6 +2187,7 @@ SELECT _tot, _alloc FROM latest
                     effective_ghz_per_unit=effective_ghz,
                     storage_pools=storage_pools,
                     range_inputs=range_inputs if fam == "virt_classic" else None,
+                    storage_in_triple_override=_coupling_to_triple_override(coupling_mode),
                 )
             elif fam in _HOST_BASED_FAMILIES and dc_code == "*":
                 # Do NOT call compute_all_panels(dc_code="*", family=fam) here:
@@ -2109,8 +2226,9 @@ SELECT _tot, _alloc FROM latest
                     if refresh_from_totals
                     else group
                 )
-                if fam in _SKIP_STORAGE_RATIO_CAP_FAMILIES:
-                    # Dedicated storage (NetBackup / Veeam DS / Zerto sites): do not
+                if fam in _SKIP_STORAGE_RATIO_CAP_FAMILIES or coupling_mode == "separate":
+                    # Dedicated storage (NetBackup / Veeam DS / Zerto sites, or an
+                    # operator-forced 'separate' coupling): do not
                     # zero disk via compute ratio. Ratio-bind CPU/RAM only when present.
                     # (decouple_resource_kinds={'storage'} zeros storage — Power semantics.)
                     compute_only = [
@@ -2147,8 +2265,22 @@ SELECT _tot, _alloc FROM latest
                 if sto_p is not None:
                     sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
 
-            if not host_based_ok and fam not in _SKIP_STORAGE_RATIO_CAP_FAMILIES:
+            cap_storage = not host_based_ok and fam not in _SKIP_STORAGE_RATIO_CAP_FAMILIES
+            if coupling_mode == "separate":
+                # Storage is sized from its own pool — the compute bottleneck
+                # must not cap it.
+                cap_storage = False
+            elif coupling_mode == "merged":
+                # Forced merge: cap storage by the compute bottleneck even on the
+                # host-based path, where the built-in rule leaves it uncapped.
+                cap_storage = True
+            if cap_storage:
                 new_group = apply_storage_ratio_cap(new_group, ratio)
+            if coupling_mode != "auto":
+                label = "merged with compute" if coupling_mode == "merged" else "separate from compute"
+                for p in new_group:
+                    if p.resource_kind == "storage":
+                        p.notes = [*p.notes, f"storage coupling: {label} (operator setting)"]
             new_group = annotate_panel_constraint_metadata(new_group)
 
             for new in new_group:
@@ -2437,6 +2569,7 @@ SELECT _tot, _alloc FROM latest
         effective_ghz_per_unit: float = 1.0,
         storage_pools: list[dict] | None = None,
         range_inputs: dict | None = None,
+        storage_in_triple_override: bool | None = None,
     ) -> "list[PanelResult]":
         """Recompute CPU/RAM/Storage from per-host rows (triple min + dual tracks)."""
         _ = dc_code, clusters
@@ -2587,6 +2720,7 @@ SELECT _tot, _alloc FROM latest
             unit_price_tl=unit_price,
             ibm_storage_range=ibm_range,
             cluster_storage_raw_gb=cluster_storage_raw_gb,
+            storage_in_triple_override=storage_in_triple_override,
         )
 
     def _apply_cluster_fallback_dual(

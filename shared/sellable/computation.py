@@ -538,8 +538,14 @@ def constrain_by_ratio_per_host_triple_dual(
     unit_price_tl: float = 0.0,
     ibm_storage_range: tuple[float, float] | None = None,
     cluster_storage_raw_gb: float | None = None,
+    storage_in_triple_override: bool | None = None,
 ) -> list[PanelResult]:
-    """Host-based triple min(CPU, RAM, Storage) with dual CPU/RAM tracks."""
+    """Host-based triple min(CPU, RAM, Storage) with dual CPU/RAM tracks.
+
+    ``storage_in_triple_override`` forces the operator's compute/storage
+    coupling: True keeps every host's storage inside the min() (merged),
+    False pulls it out (separate pool). None keeps the built-in per-host rule.
+    """
     from .host_sellable import (
         HostSellableResult,
         aggregate_family_storage_range,
@@ -579,8 +585,9 @@ def constrain_by_ratio_per_host_triple_dual(
                 effective_ghz_per_unit=effective_ghz_per_unit,
                 storage_include_shared=storage_shared,
                 storage_in_triple=(
-                    cluster_storage_raw_gb is None
-                    and host_storage_in_triple(h)
+                    storage_in_triple_override
+                    if storage_in_triple_override is not None
+                    else (cluster_storage_raw_gb is None and host_storage_in_triple(h))
                 ),
                 unit_price_tl=unit_price_tl,
             )

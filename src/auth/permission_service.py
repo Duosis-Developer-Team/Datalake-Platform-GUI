@@ -166,6 +166,8 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
             return "page:settings_platform_backup_mapping"
         if admin_p.startswith("/administration/platform/backup-mapping"):
             return "page:settings_platform_backup_mapping"
+        if admin_p.startswith("/administration/platform/compute-storage"):
+            return "page:settings_platform_compute_storage"
         if admin_p.startswith("/administration/crm/service-mapping"):
             return "page:settings_service_mapping"
         if admin_p.rstrip("/") == "/administration/integrations":

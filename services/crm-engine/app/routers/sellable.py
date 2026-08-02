@@ -16,12 +16,17 @@ Routes:
     GET  /crm/resource-ratios                                 -> list per family/dc
     PUT  /crm/resource-ratios/{family}                        -> upsert (with optional dc_code)
 
+    GET    /crm/storage-coupling                              -> compute/storage coupling rows
+    PUT    /crm/storage-coupling                              -> save the whole board
+    DELETE /crm/storage-coupling/{family}?dc_code=            -> drop a per-DC override
+
     GET  /crm/unit-conversions
     PUT  /crm/unit-conversions/{from_unit}/{to_unit}
     DELETE /crm/unit-conversions/{from_unit}/{to_unit}
 """
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -36,6 +41,8 @@ from app.models.schemas import (
     PanelInfraSourceUpsert,
     ResourceRatioRow,
     ResourceRatioUpsert,
+    StorageCouplingBulkUpsert,
+    StorageCouplingRow,
     UnitConversionRow,
     UnitConversionUpsert,
 )
@@ -335,6 +342,54 @@ def upsert_ratio(
     if sellable is not None:
         sellable.invalidate_result_cache()
     return {"status": "ok", "family": family, "dc_code": body.dc_code or "*"}
+
+
+# ---------------------------------------------------------------------------
+# Compute / storage coupling
+# ---------------------------------------------------------------------------
+
+
+@router.get("/crm/storage-coupling", response_model=List[StorageCouplingRow])
+def list_storage_couplings(svc: SellableService = Depends(_sellable)):
+    return [asdict(c) for c in svc.list_storage_couplings()]
+
+
+@router.put("/crm/storage-coupling", response_model=dict)
+def upsert_storage_couplings(
+    body: StorageCouplingBulkUpsert,
+    request: Request,
+    svc: SellableService = Depends(_sellable),
+):
+    """Save the whole coupling board in one transaction."""
+    try:
+        saved = svc.upsert_storage_couplings(
+            [row.model_dump() for row in body.rows],
+            updated_by=body.updated_by or "settings-ui",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    sellable: SellableService | None = getattr(request.app.state, "sellable", None)
+    if sellable is not None:
+        sellable.invalidate_result_cache()
+    return {"status": "ok", "saved": saved}
+
+
+@router.delete("/crm/storage-coupling/{family}", response_model=dict)
+def delete_storage_coupling(
+    family: str,
+    request: Request,
+    dc_code: str = Query(..., description="per-DC override to drop; '*' is not deletable"),
+    svc: SellableService = Depends(_sellable),
+):
+    if not dc_code or dc_code == "*":
+        raise HTTPException(status_code=400, detail="the '*' default row cannot be deleted")
+    svc.delete_storage_coupling(family, dc_code)
+    sellable: SellableService | None = getattr(request.app.state, "sellable", None)
+    if sellable is not None:
+        sellable.invalidate_result_cache()
+    return {"status": "ok", "family": family, "dc_code": dc_code}
 
 
 # ---------------------------------------------------------------------------

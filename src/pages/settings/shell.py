@@ -38,6 +38,7 @@ from src.pages.settings.integrations import hmdl_config as hmdl_config_page
 from src.pages.settings.integrations import hmdl_automation_health as hmdl_automation_health_page
 from src.pages.settings.integrations import chatbot_logs as chatbot_logs_page
 from src.pages.settings.platform import backup_mapping as platform_backup_mapping_page
+from src.pages.settings.platform import compute_storage as platform_compute_storage_page
 from src.pages.settings import crm_service_mapping as crm_service_mapping_page
 from src.pages.settings.platform import versions as platform_versions_page
 
@@ -66,6 +67,7 @@ INT_TABS: list[tuple[str, str, str]] = [
 PLATFORM_TABS: list[tuple[str, str, str]] = [
     (f"{_A}/platform/versions", "Versions", "page:settings_platform_versions"),
     (f"{_A}/platform/backup-mapping", "Backup Mapping", "page:settings_platform_backup_mapping"),
+    (f"{_A}/platform/compute-storage", "Compute / Storage", "page:settings_platform_compute_storage"),
 ]
 
 HMDL_TABS: list[tuple[str, str, str]] = [
@@ -157,6 +159,10 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
     f"{_A}/platform/backup-mapping": (
         "page:settings_platform_backup_mapping",
         platform_backup_mapping_page.build_layout,
+    ),
+    f"{_A}/platform/compute-storage": (
+        "page:settings_platform_compute_storage",
+        platform_compute_storage_page.build_layout,
     ),
 }
 

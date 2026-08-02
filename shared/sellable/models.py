@@ -47,6 +47,36 @@ class ResourceRatio:
     notes: str | None = None
 
 
+#: Valid values for :attr:`StorageCoupling.mode`.
+STORAGE_COUPLING_MODES: tuple[str, ...] = ("auto", "merged", "separate")
+
+
+@dataclass(frozen=True)
+class StorageCoupling:
+    """Whether a family's storage is sized together with its compute.
+
+    ``merged``   — storage joins the compute constraint and is capped by the
+                   CPU/RAM bottleneck (hyperconverged semantics).
+    ``separate`` — storage is sized from its own pool, never ratio-capped
+                   (classic VMware + external SAN / IBM Power semantics).
+    ``auto``     — leave the built-in per-family behaviour untouched.
+    """
+
+    family: str
+    dc_code: str = "*"
+    mode: str = "auto"
+    notes: str | None = None
+    updated_by: str | None = None
+
+    @property
+    def is_merged(self) -> bool:
+        return self.mode == "merged"
+
+    @property
+    def is_separate(self) -> bool:
+        return self.mode == "separate"
+
+
 @dataclass(frozen=True)
 class UnitConversion:
     from_unit: str
