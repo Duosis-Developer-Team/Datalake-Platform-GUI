@@ -60,6 +60,10 @@ _FALLBACK_FAMILIES: tuple[str, ...] = (
     "virt_km",
     "virt_power",
     "virt_power_hana",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
 )
 
 _FAMILY_LABELS: dict[str, str] = {
@@ -69,6 +73,10 @@ _FAMILY_LABELS: dict[str, str] = {
     "virt_km": "Klasik Mimari (KM kümesi)",
     "virt_power": "IBM Power",
     "virt_power_hana": "SAP HANA — Power",
+    "backup_veeam_replication_classic": "Veeam Replication — Classic",
+    "backup_zerto_replication_classic": "Zerto Replication — Classic",
+    "backup_veeam_replication_hyperconverged": "Veeam Replication — HC",
+    "backup_zerto_replication_hyperconverged": "Zerto Replication — HC",
 }
 
 # Families that both compute sellable host-by-host AND group their hosts into
@@ -76,9 +84,14 @@ _FAMILY_LABELS: dict[str, str] = {
 # rule only bites where both hold: an aggregated family has no host row to attach
 # it to, and virt_power -- host-based since /compute/power/hosts -- has no
 # clusters, because an IBM frame stands alone.
+# Replication Classic/HC borrow the same cluster lists as their virt host SoT.
 _CLUSTER_SOURCES: dict[str, str] = {
     "virt_classic": "classic",
     "virt_hyperconverged": "hyperconverged",
+    "backup_veeam_replication_classic": "classic",
+    "backup_zerto_replication_classic": "classic",
+    "backup_veeam_replication_hyperconverged": "hyperconverged",
+    "backup_zerto_replication_hyperconverged": "hyperconverged",
 }
 
 # Overlaps the operator has to know about before setting a mode, shown on the
@@ -87,6 +100,18 @@ _FAMILY_WARNINGS: dict[str, str] = {
     "virt_km": "subset of Klasik Mimari — keep both consistent",
     "virt_power": "IBM storage is on shared arrays — separate in practice",
     "virt_power_hana": "shares IBM Power hardware with virt_power",
+    "backup_veeam_replication_classic": (
+        "host SoT from virt_classic; own ratios; storage separate by default"
+    ),
+    "backup_zerto_replication_classic": (
+        "host SoT from virt_classic; own ratios; storage separate by default"
+    ),
+    "backup_veeam_replication_hyperconverged": (
+        "host SoT from virt_hyperconverged; own ratios; storage separate by default"
+    ),
+    "backup_zerto_replication_hyperconverged": (
+        "host SoT from virt_hyperconverged; own ratios; storage separate by default"
+    ),
 }
 
 # (mode, title, subtitle, colour, icon)
@@ -232,13 +257,27 @@ def _scope_options(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     return options
 
 
+# Global (*) board fallback when no coupling row exists yet. Replication is
+# seeded as separate (043); keep the UI aligned before/without the migration.
+_DEFAULT_MODE_BY_FAMILY: dict[str, str] = {
+    "backup_veeam_replication_classic": "separate",
+    "backup_zerto_replication_classic": "separate",
+    "backup_veeam_replication_hyperconverged": "separate",
+    "backup_zerto_replication_hyperconverged": "separate",
+}
+
+
 def _mode_map(rows: list[dict[str, Any]], scope: str) -> dict[str, str]:
     """``family -> mode`` for one scope; ``inherit`` when no per-DC row exists."""
     explicit = {
         r["family"]: r["mode"] for r in _family_rows(rows) if r.get("dc_code") == scope
     }
-    fallback = _INHERIT if scope != _DEFAULT_SCOPE else "auto"
-    return {fam: explicit.get(fam, fallback) for fam in _families(rows)}
+    if scope != _DEFAULT_SCOPE:
+        return {fam: explicit.get(fam, _INHERIT) for fam in _families(rows)}
+    return {
+        fam: explicit.get(fam, _DEFAULT_MODE_BY_FAMILY.get(fam, "auto"))
+        for fam in _families(rows)
+    }
 
 
 def _cluster_mode_map(
@@ -430,9 +469,9 @@ def _board(
         if not cards:
             return dmc.Alert(
                 "No host-based clusters returned for this DC, so there is nothing to "
-                "set at cluster level. Klasik Mimari and Hyperconverged are the only "
-                "families computed host-by-host; the rest are aggregated and can only "
-                "be set at environment level.",
+                "set at cluster level. Klasik Mimari, Hyperconverged, and Replication "
+                "Classic/HC use the same cluster lists; other families are aggregated "
+                "and can only be set at environment level.",
                 title="No clusters to show",
                 color="gray",
                 variant="light",

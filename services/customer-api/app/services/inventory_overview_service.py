@@ -27,7 +27,7 @@ from shared.sellable.computation import (
     apply_utilization_gate,
     compute_potential_tl,
 )
-from shared.sellable.models import PanelResult
+from shared.sellable.models import PanelResult, ResourceRatio
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,19 @@ _REPLICATION_ALLOCATION_FAMILIES: frozenset[str] = frozenset({
     "backup_veeam_replication_hyperconverged",
     "backup_zerto_replication_hyperconverged",
 })
+# Inventory surfaces Resource Ratios + Compute/Storage coupling for Classic/HC.
+_REPLICATION_RATIO_SURFACE_FAMILIES: frozenset[str] = frozenset({
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
+_REPLICATION_RATIO_SHORT_LABELS: dict[str, str] = {
+    "backup_veeam_replication_classic": "Veeam Classic",
+    "backup_zerto_replication_classic": "Zerto Classic",
+    "backup_veeam_replication_hyperconverged": "Veeam HC",
+    "backup_zerto_replication_hyperconverged": "Zerto HC",
+}
 _INVENTORY_VIRT_FAMILIES: frozenset[str] = frozenset({
     "virt_classic",
     "virt_hyperconverged",
@@ -219,6 +232,65 @@ def _apply_comparison_only_fields(row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _format_resource_ratio(ratio: ResourceRatio) -> str:
+    def _n(v: float) -> str:
+        if abs(v - round(v)) < 1e-9:
+            return str(int(round(v)))
+        return f"{v:g}"
+
+    return (
+        f"{_n(float(ratio.cpu_per_unit))} : "
+        f"{_n(float(ratio.ram_gb_per_unit))} : "
+        f"{_n(float(ratio.storage_gb_per_unit))}"
+    )
+
+
+def _replication_config_fields(
+    family_key: str,
+    *,
+    dc_code: str,
+    ratio_lookup: dict[tuple[str, str], ResourceRatio],
+    coupling_mode: str | None,
+) -> dict[str, Any]:
+    """Attach active Resource Ratio + storage coupling for Classic/HC replication."""
+    if family_key not in _REPLICATION_RATIO_SURFACE_FAMILIES:
+        return {}
+    ratio = ratio_lookup.get((family_key, dc_code)) or ratio_lookup.get((family_key, "*"))
+    if ratio is None:
+        ratio = ResourceRatio(family=family_key)
+    mode = coupling_mode if coupling_mode in ("auto", "merged", "separate") else "auto"
+    return {
+        "resource_ratio": {
+            "cpu_per_unit": float(ratio.cpu_per_unit),
+            "ram_gb_per_unit": float(ratio.ram_gb_per_unit),
+            "storage_gb_per_unit": float(ratio.storage_gb_per_unit),
+        },
+        "resource_ratio_fmt": _format_resource_ratio(ratio),
+        "storage_coupling_mode": mode,
+        "resource_ratio_label": _REPLICATION_RATIO_SHORT_LABELS.get(family_key, family_key),
+    }
+
+
+def _summarize_replication_ratios(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One chip per Classic/HC family present in the Replication accordion."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        fam = str(row.get("family") or "")
+        if fam not in _REPLICATION_RATIO_SURFACE_FAMILIES or fam in seen:
+            continue
+        if not row.get("resource_ratio_fmt"):
+            continue
+        seen.add(fam)
+        out.append({
+            "family": fam,
+            "label": row.get("resource_ratio_label") or _REPLICATION_RATIO_SHORT_LABELS.get(fam, fam),
+            "resource_ratio_fmt": row.get("resource_ratio_fmt"),
+            "storage_coupling_mode": row.get("storage_coupling_mode") or "auto",
+        })
+    return out
+
+
 def _regroup_backup_families(families_out: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapse backup panel families into Image | Application | Replication."""
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -267,7 +339,7 @@ def _regroup_backup_families(families_out: list[dict[str, Any]]) -> list[dict[st
             continue
         label = _INVENTORY_GROUP_LABELS[gkey]
         rows_sorted = sorted(rows, key=lambda r: r.get("service_label") or "")
-        rebuilt.append({
+        entry: dict[str, Any] = {
             "family": gkey,
             "label": label,
             "family_label": label,
@@ -281,7 +353,10 @@ def _regroup_backup_families(families_out: list[dict[str, Any]]) -> list[dict[st
                 and all(_is_comparison_only_row(r) for r in rows_sorted)
                 else "standard"
             ),
-        })
+        }
+        if gkey == _INVENTORY_GROUP_REPLICATION:
+            entry["resource_ratio_summary"] = _summarize_replication_ratios(rows_sorted)
+        rebuilt.append(entry)
     # Keep non-backup families (virt, S3, …) after backup groups
     passthrough.sort(key=lambda f: (f.get("family_label") or f.get("family") or "").lower())
     return rebuilt + passthrough
@@ -1240,6 +1315,9 @@ class InventoryOverviewService:
         service_pages: dict[str, dict[str, Any]],
         under_pct: float,
         over_pct: float,
+        dc_code: str = "*",
+        ratio_lookup: dict[tuple[str, str], ResourceRatio] | None = None,
+        coupling_lookup: dict[tuple[str, str, str, str], str] | None = None,
     ) -> dict[str, Any]:
         crm_sold = float((entitled or {}).get("entitled_qty") or 0.0)
         crm_sold_tl = float((entitled or {}).get("entitled_amount_tl") or 0.0)
@@ -1371,6 +1449,18 @@ class InventoryOverviewService:
             **track_fields,
             **crm_fields,
         }
+        if family_key in _REPLICATION_RATIO_SURFACE_FAMILIES:
+            mode = self._sellable.resolve_storage_coupling(
+                family_key, dc_code or "*", coupling_lookup,
+            )
+            base.update(
+                _replication_config_fields(
+                    family_key,
+                    dc_code=dc_code or "*",
+                    ratio_lookup=ratio_lookup or {},
+                    coupling_mode=mode,
+                )
+            )
         return self._enrich_row(
             base,
             service_label=service_label,
@@ -1387,6 +1477,9 @@ class InventoryOverviewService:
         *,
         panel_defs: dict[str, dict[str, Any]],
         service_pages: dict[str, dict[str, Any]],
+        dc_code: str = "*",
+        ratio_lookup: dict[tuple[str, str], ResourceRatio] | None = None,
+        coupling_lookup: dict[tuple[str, str, str, str], str] | None = None,
     ) -> dict[str, Any]:
         service_label, family_key, family_label, display_unit = self._resolve_labels(
             panel_key,
@@ -1425,6 +1518,18 @@ class InventoryOverviewService:
             "potential_tl_max": None,
             "potential_tl_avg": None,
         }
+        if family_key in _REPLICATION_RATIO_SURFACE_FAMILIES:
+            mode = self._sellable.resolve_storage_coupling(
+                family_key, dc_code or "*", coupling_lookup,
+            )
+            base.update(
+                _replication_config_fields(
+                    family_key,
+                    dc_code=dc_code or "*",
+                    ratio_lookup=ratio_lookup or {},
+                    coupling_mode=mode,
+                )
+            )
         return self._enrich_row(
             base,
             service_label=service_label,
@@ -1464,6 +1569,20 @@ class InventoryOverviewService:
         ]
         mapping = self._load_product_mapping()
         panel_units = self._panel_unit_index(panels)
+        overview_dc = dc_code or "*"
+        try:
+            ratio_rows = list(self._sellable.list_ratios() or [])
+        except Exception:  # noqa: BLE001
+            ratio_rows = []
+        ratio_lookup: dict[tuple[str, str], ResourceRatio] = {
+            (r.family, r.dc_code): r
+            for r in ratio_rows
+            if getattr(r, "family", None)
+        }
+        try:
+            coupling_lookup = self._sellable._build_coupling_lookup()
+        except Exception:  # noqa: BLE001
+            coupling_lookup = {}
 
         entitled_raw = self._sales._run_query(sq.SALES_ENTITLED_RAW_GLOBAL, ())
         entitled_by_panel = aggregate_entitled_by_panel_key(
@@ -1500,6 +1619,9 @@ class InventoryOverviewService:
                 service_pages=service_pages,
                 under_pct=under_pct,
                 over_pct=over_pct,
+                dc_code=overview_dc,
+                ratio_lookup=ratio_lookup,
+                coupling_lookup=coupling_lookup,
             )
             if row.get("panel_key") in _NETBACKUP_INVENTORY_PANEL_KEYS:
                 row = _apply_netbackup_inventory_fields(
@@ -1528,6 +1650,9 @@ class InventoryOverviewService:
                 service_pages=service_pages,
                 under_pct=under_pct,
                 over_pct=over_pct,
+                dc_code=overview_dc,
+                ratio_lookup=ratio_lookup,
+                coupling_lookup=coupling_lookup,
             )
             if row.get("panel_key") in _NETBACKUP_INVENTORY_PANEL_KEYS:
                 row = _apply_netbackup_inventory_fields(
@@ -1557,6 +1682,9 @@ class InventoryOverviewService:
                 bucket,
                 panel_defs=panel_defs,
                 service_pages=service_pages,
+                dc_code=overview_dc,
+                ratio_lookup=ratio_lookup,
+                coupling_lookup=coupling_lookup,
             )
             panel_rows.append(row)
             crm_only_panels.append(row)

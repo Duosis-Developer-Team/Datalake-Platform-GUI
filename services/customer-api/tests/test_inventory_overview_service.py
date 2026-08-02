@@ -468,6 +468,9 @@ def _webui_rows(sql: str):
 def inventory_svc():
     sellable = MagicMock()
     sellable.is_available = True
+    sellable.list_ratios.return_value = []
+    sellable._build_coupling_lookup.return_value = {}
+    sellable.resolve_storage_coupling.return_value = "auto"
     sellable.compute_all_panels.return_value = [
         _panel(),
         _panel(
@@ -961,12 +964,24 @@ def test_replication_free_uses_crm_sold_not_allocation():
     assert track["potential_tl_avg"] == pytest.approx(200.0 * 37.47)
     assert track["potential_tl_max"] != pytest.approx(panel.potential_tl_max)
 
+    from shared.sellable.models import ResourceRatio
+
     sellable = MagicMock()
     sellable.is_available = True
     sellable.recompute_family_constraints.side_effect = lambda panels, **kw: panels
     sellable._count_unmapped_products.return_value = 0
     sellable.compute_site_scoped_panels.return_value = []
     sellable._fetch_datacenter_codes.return_value = []
+    sellable.list_ratios.return_value = [
+        ResourceRatio(
+            family="backup_veeam_replication_classic",
+            cpu_per_unit=1.0,
+            ram_gb_per_unit=4.0,
+            storage_gb_per_unit=50.0,
+        )
+    ]
+    sellable.resolve_storage_coupling.return_value = "separate"
+    sellable._build_coupling_lookup.return_value = {}
     _stub_netbackup_metrics(sellable)
     sellable.compute_all_panels.return_value = [panel]
 
@@ -999,6 +1014,16 @@ def test_replication_free_uses_crm_sold_not_allocation():
         service_pages={},
         under_pct=80.0,
         over_pct=110.0,
+        dc_code="*",
+        ratio_lookup={
+            ("backup_veeam_replication_classic", "*"): ResourceRatio(
+                family="backup_veeam_replication_classic",
+                cpu_per_unit=1.0,
+                ram_gb_per_unit=4.0,
+                storage_gb_per_unit=50.0,
+            )
+        },
+        coupling_lookup={},
     )
     assert row["free_qty"] == 8512.0
     assert row["used_qty"] == 19047.0
@@ -1006,6 +1031,13 @@ def test_replication_free_uses_crm_sold_not_allocation():
     assert row["potential_tl_alloc"] == pytest.approx(509.0 * 37.47)
     assert row["potential_tl_max"] == pytest.approx(100.0 * 37.47)
     assert row["data_quality"] == "suspect"
+    assert row["resource_ratio_fmt"] == "1 : 4 : 50"
+    assert row["storage_coupling_mode"] == "separate"
+    assert row["resource_ratio"] == {
+        "cpu_per_unit": 1.0,
+        "ram_gb_per_unit": 4.0,
+        "storage_gb_per_unit": 50.0,
+    }
 
 
 def test_global_only_panel_netbackup_enriched_free_qty():

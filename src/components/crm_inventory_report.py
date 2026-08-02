@@ -725,6 +725,33 @@ def build_family_accordion(
             )
         if issues:
             badges.append(dmc.Badge(f"{issues} issues", color="red", variant="light", size="sm"))
+        # Classic/HC replication: show active Resource Ratio + Compute/Storage mode.
+        ratio_summary = fam.get("resource_ratio_summary") or []
+        if not ratio_summary and family_key == "replication":
+            seen_fams: set[str] = set()
+            for row in filtered:
+                rf = str(row.get("family") or "")
+                fmt = row.get("resource_ratio_fmt")
+                if not fmt or rf in seen_fams:
+                    continue
+                seen_fams.add(rf)
+                ratio_summary.append({
+                    "label": row.get("resource_ratio_label") or rf,
+                    "resource_ratio_fmt": fmt,
+                    "storage_coupling_mode": row.get("storage_coupling_mode") or "auto",
+                })
+        for chip in ratio_summary:
+            label = chip.get("label") or "Ratio"
+            fmt = chip.get("resource_ratio_fmt") or ""
+            mode = chip.get("storage_coupling_mode") or "auto"
+            badges.append(
+                dmc.Badge(
+                    f"{label} {fmt} · {mode}",
+                    color="violet",
+                    variant="outline",
+                    size="xs",
+                )
+            )
         items.append(
             dmc.AccordionItem(
                 value=f"fam-{idx}",

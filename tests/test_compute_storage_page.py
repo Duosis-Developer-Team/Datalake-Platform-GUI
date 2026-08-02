@@ -100,6 +100,19 @@ def test_layout_renders_one_draggable_card_per_family(api_rows):
     assert all(c.tabIndex == 0 for c in cards)
 
 
+def test_replication_families_default_to_separate_without_rows(api_rows):
+    """UI matches migration 043 seed when the API has no replication coupling yet."""
+    rows, _ = page._load_rows()
+    modes = page._mode_map(rows, "*")
+    for fam in (
+        "backup_veeam_replication_classic",
+        "backup_zerto_replication_classic",
+        "backup_veeam_replication_hyperconverged",
+        "backup_zerto_replication_hyperconverged",
+    ):
+        assert modes[fam] == "separate"
+
+
 def test_default_scope_has_no_inherit_zone(api_rows):
     layout = page.build_layout()
     modes = [b.__getattribute__("data-mode") for b in _zone_bodies(layout)]
@@ -221,6 +234,12 @@ def test_clusters_are_never_offered_for_the_global_scope(api_clusters):
     """Cluster names are DC-local, so a '*' cluster rule would be ambiguous."""
     assert page._clusters_for("*") == []
     assert page._clusters_for("DC13") == [
+        ("backup_veeam_replication_classic", "CL-A"),
+        ("backup_veeam_replication_hyperconverged", "HCI-1"),
+        ("backup_veeam_replication_hyperconverged", "HCI-2"),
+        ("backup_zerto_replication_classic", "CL-A"),
+        ("backup_zerto_replication_hyperconverged", "HCI-1"),
+        ("backup_zerto_replication_hyperconverged", "HCI-2"),
         ("virt_classic", "CL-A"),
         ("virt_hyperconverged", "HCI-1"),
         ("virt_hyperconverged", "HCI-2"),
@@ -238,6 +257,12 @@ def test_detail_board_has_one_card_per_cluster(api_rows, api_clusters):
     board = page._board(rows, "DC13", detail=True, clusters=page._clusters_for("DC13"))
     keys = {c.__getattribute__("data-card-key") for c in _cards(board)}
     assert keys == {
+        "cluster:backup_veeam_replication_classic:CL-A",
+        "cluster:backup_veeam_replication_hyperconverged:HCI-1",
+        "cluster:backup_veeam_replication_hyperconverged:HCI-2",
+        "cluster:backup_zerto_replication_classic:CL-A",
+        "cluster:backup_zerto_replication_hyperconverged:HCI-1",
+        "cluster:backup_zerto_replication_hyperconverged:HCI-2",
         "cluster:virt_classic:CL-A",
         "cluster:virt_hyperconverged:HCI-1",
         "cluster:virt_hyperconverged:HCI-2",

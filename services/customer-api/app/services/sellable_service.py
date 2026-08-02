@@ -254,9 +254,11 @@ _REPLICATION_ALTERNATE_FAMILIES: frozenset[str] = frozenset({
 })
 _REPLICATION_ALTERNATE_KINDS: frozenset[str] = frozenset({"cpu", "ram"})
 
-# Families that must not run apply_storage_ratio_cap:
+# Families that must not run apply_storage_ratio_cap under built-in / auto:
 # - storage-only backup (no CPU/RAM → false compute_bottleneck)
-# - replication (storage is dedicated; not tied to CPU/RAM alternate pool)
+# - replication (dedicated DS pool; auto ≡ separate — ADR-0032)
+# Operator 'merged' on Compute / Storage still forces the cap below
+# (coupling_mode == "merged" → cap_storage = True).
 _SKIP_STORAGE_RATIO_CAP_FAMILIES: frozenset[str] = frozenset({
     "backup_netbackup",
     "backup_image",
@@ -2713,11 +2715,18 @@ SELECT _tot, _alloc FROM latest
                     if refresh_from_totals
                     else group
                 )
-                if fam in _SKIP_STORAGE_RATIO_CAP_FAMILIES or coupling_mode == "separate":
-                    # Dedicated storage (NetBackup / Veeam DS / Zerto sites, or an
-                    # operator-forced 'separate' coupling): do not
-                    # zero disk via compute ratio. Ratio-bind CPU/RAM only when present.
-                    # (decouple_resource_kinds={'storage'} zeros storage — Power semantics.)
+                # Dedicated storage (NetBackup / Veeam DS / Zerto) or operator
+                # 'separate': do not zero disk via compute ratio up-front.
+                # Classic/HC replication stays in _SKIP… for auto; 'merged' still
+                # applies apply_storage_ratio_cap after this branch.
+                skip_storage_in_ratio = (
+                    coupling_mode == "separate"
+                    or (
+                        fam in _SKIP_STORAGE_RATIO_CAP_FAMILIES
+                        and coupling_mode != "merged"
+                    )
+                )
+                if skip_storage_in_ratio:
                     compute_only = [
                         p for p in source_group
                         if (p.resource_kind or "").lower() != "storage"

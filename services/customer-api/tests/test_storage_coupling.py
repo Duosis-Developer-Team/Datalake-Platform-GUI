@@ -423,3 +423,97 @@ def test_pre_038_rows_are_read_as_family_scoped():
     (row,) = svc.list_storage_couplings()
     assert (row.scope_kind, row.scope_key) == ("family", "")
     assert svc.resolve_storage_coupling("virt_classic", "DC13") == "merged"
+
+
+# ---------------------------------------------------------------------------
+# Replication Classic/HC — independent ratios; coupling default separate
+# ---------------------------------------------------------------------------
+
+
+def _repl_panels(
+    cpu: float = 10.0, ram: float = 40.0, storage: float = 5000.0,
+) -> list[PanelResult]:
+    """backup_veeam_replication_classic at seed ratio 1:4:50."""
+
+    def _p(kind: str, raw: float, unit: str) -> PanelResult:
+        return PanelResult(
+            panel_key=f"backup_veeam_replication_classic_{kind}",
+            label=f"Veeam Classic {kind}",
+            family="backup_veeam_replication_classic",
+            resource_kind=kind,
+            display_unit=unit,
+            total=raw * 2,
+            allocated=raw,
+            sellable_raw=raw,
+            sellable_constrained=raw,
+            unit_price_tl=1.0,
+            has_price=True,
+            has_infra_source=True,
+        )
+
+    return [_p("cpu", cpu, "vCPU"), _p("ram", ram, "GB"), _p("storage", storage, "GB")]
+
+
+def _make_repl_svc(mode: str) -> SellableService:
+    """Host-based replication without host rows → fallback + family coupling."""
+    from shared.sellable.computation import constrain_by_ratio
+
+    fam = "backup_veeam_replication_classic"
+    svc = SellableService.__new__(SellableService)
+    svc._dc_redis = None
+    svc._dc_api_url = ""
+    svc.list_storage_couplings = lambda: [  # type: ignore[method-assign]
+        StorageCoupling(family=fam, dc_code="*", mode=mode),
+    ]
+    svc.list_ratios = lambda: [  # type: ignore[method-assign]
+        ResourceRatio(
+            family=fam,
+            cpu_per_unit=1.0,
+            ram_gb_per_unit=4.0,
+            storage_gb_per_unit=50.0,
+        )
+    ]
+    svc._build_unit_lookup = lambda: {}  # type: ignore[method-assign]
+    svc._get_sellable_calc_config = lambda: {  # type: ignore[method-assign]
+        "effective_ghz_per_unit": 1.0,
+        "physical_price_unit": "GHz",
+        "power_core_to_ghz": 3.3,
+    }
+    svc._fetch_host_rows = lambda *a, **k: ([], "unavailable", [])  # type: ignore[method-assign]
+
+    def _fallback(group, ratio, *a, **k):
+        compute = [p for p in group if (p.resource_kind or "").lower() != "storage"]
+        storage = [p for p in group if (p.resource_kind or "").lower() == "storage"]
+        out = constrain_by_ratio(compute, ratio, decouple_resource_kinds=None) if compute else []
+        for sto in storage:
+            sto.sellable_constrained = float(sto.sellable_raw or 0.0)
+            sto.ratio_bound = False
+            out.append(sto)
+        return out
+
+    svc._apply_cluster_fallback_dual = _fallback  # type: ignore[method-assign]
+    return svc
+
+
+def test_replication_separate_matches_auto_storage_uncapped():
+    """Seed default 'separate' keeps dedicated DS pool (status quo)."""
+    separate = _make_repl_svc("separate")._apply_family_constraints_to_results(
+        _repl_panels(), "DC13",
+    )
+    auto = _make_repl_svc("auto")._apply_family_constraints_to_results(
+        _repl_panels(), "DC13",
+    )
+    assert _storage_of(separate).sellable_constrained == pytest.approx(5000.0)
+    assert _storage_of(auto).sellable_constrained == pytest.approx(5000.0)
+
+
+def test_replication_merged_caps_storage_by_compute_ratio():
+    """Operator merged on Compute / Storage must override the hard skip."""
+    merged = _make_repl_svc("merged")._apply_family_constraints_to_results(
+        _repl_panels(), "DC13",
+    )
+    # n = min(10/1, 40/4) = 10 → storage cap 10 * 50 = 500 GB
+    assert _storage_of(merged).sellable_constrained == pytest.approx(500.0)
+    notes = " ".join(_storage_of(merged).notes)
+    assert "storage coupling" in notes
+    assert "merged" in notes
