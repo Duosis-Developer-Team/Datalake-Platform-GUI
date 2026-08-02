@@ -2105,7 +2105,8 @@ def test_query_netbackup_inventory_metrics_dedup_and_available():
     assert metrics["dedup_savings_bytes"] > 0
     assert metrics["dedup_factor"] == pytest.approx(4.0)
     svc_inner._run_row.assert_called_once()
-    assert len(svc_inner._run_row.call_args[0][2]) == 2  # start_ts, end_ts
+    # Inventory uses all finished BACKUP jobs until retention exists (no time window).
+    assert svc_inner._run_row.call_args[0][2] == ()
 
 
 def test_query_netbackup_storage_totals_pool_capacity_and_pool_used():
