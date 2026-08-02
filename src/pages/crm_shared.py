@@ -24,9 +24,16 @@ def fmt_unit(value: float | int | None, unit: str) -> str:
     if value is None:
         return "—"
     try:
-        return f"{float(value):,.0f} {unit}".strip()
+        v = float(value)
     except (TypeError, ValueError):
         return f"— {unit}".strip()
+    unit_l = (unit or "").strip().lower()
+    # Sub-TB values round to "0 TB" with ,.0f — show GB instead.
+    if unit_l == "tb" and 0 < abs(v) < 1.0:
+        return f"{v * 1024.0:,.1f} GB".strip()
+    if unit_l == "tb" and abs(v) < 10:
+        return f"{v:,.2f} {unit}".strip()
+    return f"{v:,.0f} {unit}".strip()
 
 
 def fmt_qty_tl_block(

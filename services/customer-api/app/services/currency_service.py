@@ -87,8 +87,9 @@ class CurrencyService:
         """
         if amount is None:
             return None
-        c = (currency or "TL").upper()
-        if c == "TL":
+        c = (currency or "TL").upper().strip()
+        # Dynamics catalogs often store "Turkish Lira" / TRY instead of "TL".
+        if c in ("TL", "TRY", "TURKISH LIRA", "TRL"):
             return float(amount)
         rate = self.get_rate(c)
         if not rate or rate == 0:

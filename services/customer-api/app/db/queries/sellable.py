@@ -234,7 +234,9 @@ SELECT ppl.amount, pl.transactioncurrency_text
 FROM   discovery_crm_productpricelevels ppl
 JOIN   discovery_crm_pricelevels        pl  ON pl.pricelevelid = ppl.pricelevelid
 WHERE  ppl.productid = %s
-ORDER BY (pl.transactioncurrency_text = 'TL') DESC,
+ORDER BY (
+           pl.transactioncurrency_text IN ('TL', 'Turkish Lira', 'TRY')
+         ) DESC,
          ppl.amount DESC
 LIMIT 1;
 """
@@ -481,6 +483,39 @@ FROM public.raw_netbackup_jobs_metrics
 WHERE jobtype = 'BACKUP'
   AND percentcomplete = 100
   AND collection_timestamp BETWEEN %s AND %s
+"""
+
+# Inventory Pre/Post until retention exists: all finished BACKUP jobs (no time window).
+# kilobytestransferred = job transfer (not a native pre_dedup column);
+# post = transfer / dedupratio ≈ on-disk footprint per job.
+GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY_ALL = """
+SELECT
+    COALESCE(SUM(kilobytestransferred) / 1024.0 / 1024.0 / 1024.0, 0) AS pre_dedup_gib,
+    COALESCE(
+        SUM(kilobytestransferred / NULLIF(dedupratio, 0))
+        / 1024.0 / 1024.0 / 1024.0,
+        0
+    ) AS post_dedup_gib
+FROM public.raw_netbackup_jobs_metrics
+WHERE jobtype = 'BACKUP'
+  AND percentcomplete = 100
+"""
+
+GLOBAL_NETBACKUP_JOBS_DISK_FOOTPRINT = """
+SELECT
+    jobid,
+    jobtype,
+    policyname,
+    policytype,
+    kilobytestransferred,
+    dedupratio,
+    (kilobytestransferred / NULLIF(dedupratio, 0)) AS footprint_kb,
+    collection_timestamp
+FROM public.raw_netbackup_jobs_metrics
+WHERE jobtype = 'BACKUP'
+  AND percentcomplete = 100
+ORDER BY collection_timestamp DESC
+LIMIT %s
 """
 
 GLOBAL_NETBACKUP_POOL_USED_BYTES = """

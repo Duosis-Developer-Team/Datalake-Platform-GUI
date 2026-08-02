@@ -54,7 +54,7 @@ _NETBACKUP_COLUMNS = [
     {"name": "Unit", "id": "display_unit"},
     {"name": "CRM Sold", "id": "crm_sold_fmt"},
     {"name": "Total", "id": "total_fmt"},
-    {"name": "PreDedup", "id": "pre_dedup_fmt"},
+    {"name": "Transfer (Pre)", "id": "pre_dedup_fmt"},
     {"name": "PostDedup (Cost)", "id": "post_dedup_fmt"},
     {"name": "Dedup Savings %", "id": "dedup_savings_fmt"},
     {"name": "Free", "id": "free_fmt"},
@@ -118,6 +118,7 @@ _PRODUCT_MATCHING_COLUMNS = [
     {"name": "Infra total", "id": "infra_total_fmt"},
     {"name": "Infra used", "id": "infra_used_fmt"},
     {"name": "Tables", "id": "infra_tables_fmt"},
+    {"name": "Columns", "id": "infra_columns_fmt"},
     {"name": "Notes", "id": "notes"},
 ]
 
@@ -187,9 +188,15 @@ def _fmt_qty(value: Any, unit: str) -> str:
     if value is None:
         return "—"
     try:
-        return f"{float(value):,.0f} {unit}".strip()
+        v = float(value)
     except (TypeError, ValueError):
         return "—"
+    unit_l = (unit or "").strip().lower()
+    if unit_l == "tb" and 0 < abs(v) < 1.0:
+        return f"{v * 1024.0:,.1f} GB".strip()
+    if unit_l == "tb" and abs(v) < 10:
+        return f"{v:,.2f} {unit}".strip()
+    return f"{v:,.0f} {unit}".strip()
 
 
 _ZERO_SELLABLE_HINTS = {
@@ -207,28 +214,19 @@ def _sellable_zero_hint(reason: str) -> str:
 
 
 def _fmt_dedup_note(row: dict[str, Any], unit: str) -> str:
-    """Annotation for NetBackup-style rows: logical (pre-dedup) size + dedup factor.
-
-    Answers "physical pool is 1.5 PB but ~5 PB is stored — where's the rest?": the
-    gap is deduplication, not missing capacity.
-    """
-    pre = row.get("pre_dedup_qty")
-    if pre is None:
-        return ""
+    """Annotation under Total: pool used vs jobs PostDedup (dual check)."""
+    note = str(row.get("used_compare_note") or "").strip()
+    if note:
+        return f"({note})"
+    # Fallback when overlay note missing
     try:
-        pre_f = float(pre)
+        pool_used = float(row.get("pool_used_qty") or 0.0)
+        post = float(row.get("post_dedup_qty") or 0.0)
     except (TypeError, ValueError):
         return ""
-    if pre_f <= 0:
+    if pool_used <= 0 and post <= 0:
         return ""
-    try:
-        factor_f = float(row.get("dedup_factor") or 0.0)
-    except (TypeError, ValueError):
-        factor_f = 0.0
-    parts = [f"Mantıksal: {pre_f:,.0f} {unit}".strip()]
-    if factor_f > 1.0:
-        parts.append(f"Dedup {factor_f:,.1f}×")
-    return "(" + " · ".join(parts) + ")"
+    return f"(Pool used: {pool_used:,.1f} {unit} · Jobs PostDedup: {post:,.1f} {unit})"
 
 
 def _crm_sold_unit_price(row: dict[str, Any]) -> float | None:
@@ -840,6 +838,7 @@ def prepare_product_matching_row(row: dict[str, Any]) -> dict[str, Any]:
         sold_fmt = str(sold_qty or "")
 
     tables = row.get("infra_tables") or []
+    columns = row.get("infra_columns") or []
     infra_total = row.get("infra_total")
     infra_used = row.get("infra_used")
     try:
@@ -854,6 +853,7 @@ def prepare_product_matching_row(row: dict[str, Any]) -> dict[str, Any]:
         **row,
         "crm_sold_fmt": sold_fmt,
         "infra_tables_fmt": ", ".join(str(t) for t in tables) if tables else "—",
+        "infra_columns_fmt": ", ".join(str(c) for c in columns) if columns else "—",
         "panel_key": row.get("panel_key") or "—",
         "matching_rule": row.get("matching_rule") or "—",
         "usage_source": row.get("usage_source") or "—",
@@ -960,6 +960,10 @@ def build_product_matching_section(
                             {
                                 "if": {"filter_query": '{match_status} = "capacity"'},
                                 "backgroundColor": "#F0FDF4",
+                            },
+                            {
+                                "if": {"filter_query": "{match_approved} = true"},
+                                "backgroundColor": "#DCFCE7",
                             },
                             {
                                 "if": {
