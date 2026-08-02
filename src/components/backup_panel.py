@@ -2096,6 +2096,49 @@ def build_zerto_category_section(
     return html.Div(children=children)
 
 
+def build_veeam_replication_only_section(
+    *,
+    veeam_data: dict | None = None,
+    veeam_license: dict | None = None,
+    content_mode: str = "full",
+    show_licenses: bool = False,
+) -> html.Div:
+    """Veeam under Replication tab — replication jobs only (Backup lives under Image/App)."""
+    mode = (content_mode or "full").strip().lower()
+    data = veeam_data or {}
+    children = [
+        dmc.Text(
+            "Veeam Replication — session/job types from Backup Mapping "
+            "(defaults: ReplicaJob, VSphereReplica).",
+            size="xs",
+            c="dimmed",
+            mb="sm",
+        ),
+        _unique_jobs_section("veeam", scope="dc"),
+        build_job_stats_section("veeam"),
+        _veeam_repos_capacity_block(data, content_mode=mode),
+    ]
+    if show_licenses:
+        license_panel = None if mode == "shell" else build_veeam_license_panel(veeam_license)
+        if license_panel is not None:
+            children.append(license_panel)
+    elif mode != "shell":
+        children.append(
+            dmc.Alert(
+                color="gray",
+                variant="light",
+                title="Licenses deferred",
+                children=(
+                    "Veeam license inventory is not in sellable scope yet. "
+                    "Image vs Application backup session types are configured under "
+                    "Platform → Backup Mapping."
+                ),
+                mt="md",
+            )
+        )
+    return html.Div(children=children)
+
+
 def build_replication_section(
     *,
     veeam_data: dict | None = None,
@@ -2107,39 +2150,63 @@ def build_replication_section(
     content_mode: str = "full",
     show_licenses: bool = False,
 ) -> html.Div:
-    """Legacy nested Veeam|Zerto under Replication — prefer peer category builders.
-
-    Kept for callers/tests that still pass the old API; renders peer sections stacked.
-    """
+    """Replication category: unified Veeam Replication + Zerto (Classic/HC is filter only)."""
     mode = (content_mode or "full").strip().lower()
     if mode == "shell":
         has_zerto = True
         has_veeam = True
-    parts: list = []
+    parts: list = [
+        dmc.Text(
+            "Replication — Veeam and Zerto (unified sellable families; "
+            "architecture Classic/HC is a filter, not a separate product card).",
+            size="sm",
+            c="#2B3674",
+            mb="md",
+        ),
+    ]
     if has_veeam:
         parts.append(
-            build_veeam_category_section(
-                veeam_data=veeam_data,
-                veeam_license=veeam_license,
-                content_mode=mode,
-                show_licenses=show_licenses,
+            dmc.Paper(
+                withBorder=True,
+                p="md",
+                radius="md",
+                mb="lg",
+                children=[
+                    dmc.Title("Veeam Replication", order=4, c="#2B3674", mb="sm"),
+                    build_veeam_replication_only_section(
+                        veeam_data=veeam_data,
+                        veeam_license=veeam_license,
+                        content_mode=mode,
+                        show_licenses=show_licenses,
+                    ),
+                ],
             )
         )
     if has_zerto:
         parts.append(
-            build_zerto_category_section(
-                zerto_data=zerto_data,
-                zerto_license=zerto_license,
-                content_mode=mode,
-                show_licenses=show_licenses,
+            dmc.Paper(
+                withBorder=True,
+                p="md",
+                radius="md",
+                mb="lg",
+                children=[
+                    dmc.Title("Zerto Replication", order=4, c="#2B3674", mb="sm"),
+                    build_zerto_category_section(
+                        zerto_data=zerto_data,
+                        zerto_license=zerto_license,
+                        content_mode=mode,
+                        show_licenses=show_licenses,
+                    ),
+                ],
             )
         )
-    if not parts:
-        return dmc.Alert(
-            color="gray",
-            variant="light",
-            title="No replication services",
-            children="No Veeam or Zerto infrastructure data for this datacenter.",
+    if not parts[1:]:
+        parts.append(
+            dmc.Alert(
+                "No Veeam or Zerto replication data for this datacenter.",
+                color="gray",
+                variant="light",
+            )
         )
     return html.Div(children=parts)
 

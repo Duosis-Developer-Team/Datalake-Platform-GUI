@@ -79,6 +79,8 @@ _INVENTORY_CRM_VISIBLE_FAMILIES: frozenset[str] = frozenset({
     "backup_zerto_replication_hyperconverged",
     "backup_image",
     "backup_remote",
+    "backup_offsite",
+    "backup_replication",
 })
 
 _NETBACKUP_INVENTORY_PANEL_KEYS: frozenset[str] = frozenset({
@@ -86,6 +88,176 @@ _NETBACKUP_INVENTORY_PANEL_KEYS: frozenset[str] = frozenset({
     "backup_netbackup_application",
     "backup_netbackup_storage",
 })
+
+# Top-level CRM Inventory accordion groups (ADR-0025 / backup IA).
+_INVENTORY_GROUP_IMAGE = "image_backup"
+_INVENTORY_GROUP_APPLICATION = "application_backup"
+_INVENTORY_GROUP_REPLICATION = "replication"
+_INVENTORY_GROUP_LABELS: dict[str, str] = {
+    _INVENTORY_GROUP_IMAGE: "Image Backup",
+    _INVENTORY_GROUP_APPLICATION: "Application Backup",
+    _INVENTORY_GROUP_REPLICATION: "Replication",
+}
+_INVENTORY_GROUP_ORDER: tuple[str, ...] = (
+    _INVENTORY_GROUP_IMAGE,
+    _INVENTORY_GROUP_APPLICATION,
+    _INVENTORY_GROUP_REPLICATION,
+)
+
+# Panel / family → inventory accordion group (backup & replication only).
+_PANEL_INVENTORY_GROUP: dict[str, str] = {
+    "backup_netbackup_image": _INVENTORY_GROUP_IMAGE,
+    "backup_image_hyperconverged": _INVENTORY_GROUP_IMAGE,
+    "backup_remote_nutanix": _INVENTORY_GROUP_IMAGE,
+    "backup_offsite_veeam": _INVENTORY_GROUP_IMAGE,
+    "backup_offsite_s3": _INVENTORY_GROUP_IMAGE,
+    "backup_veeam_image": _INVENTORY_GROUP_IMAGE,
+    "backup_netbackup_application": _INVENTORY_GROUP_APPLICATION,
+    "backup_netbackup_storage": _INVENTORY_GROUP_IMAGE,
+}
+_FAMILY_INVENTORY_GROUP: dict[str, str] = {
+    "backup_image": _INVENTORY_GROUP_IMAGE,
+    "backup_nutanix": _INVENTORY_GROUP_IMAGE,
+    "backup_remote": _INVENTORY_GROUP_IMAGE,
+    "backup_offsite": _INVENTORY_GROUP_IMAGE,
+    "backup_veeam": _INVENTORY_GROUP_IMAGE,
+    "backup_netbackup": _INVENTORY_GROUP_IMAGE,  # overridden per panel for application
+    "backup_veeam_replication": _INVENTORY_GROUP_REPLICATION,
+    "backup_zerto_replication": _INVENTORY_GROUP_REPLICATION,
+    "backup_veeam_replication_classic": _INVENTORY_GROUP_REPLICATION,
+    "backup_zerto_replication_classic": _INVENTORY_GROUP_REPLICATION,
+    "backup_veeam_replication_hyperconverged": _INVENTORY_GROUP_REPLICATION,
+    "backup_zerto_replication_hyperconverged": _INVENTORY_GROUP_REPLICATION,
+    "backup_replication": _INVENTORY_GROUP_REPLICATION,
+}
+
+# Nutanix snapshots: sold↔used comparison only (no sellable / Potential Sales).
+_COMPARISON_ONLY_FAMILIES: frozenset[str] = frozenset({
+    "backup_image",
+    "backup_nutanix",
+})
+_COMPARISON_ONLY_PANELS: frozenset[str] = frozenset({
+    "backup_image_hyperconverged",
+    "backup_remote_nutanix",
+})
+
+
+def _inventory_group_for_row(row: dict[str, Any]) -> str | None:
+    """Return Image/Application/Replication group key, or None for non-backup rows."""
+    panel_key = str(row.get("panel_key") or "")
+    if panel_key in _PANEL_INVENTORY_GROUP:
+        return _PANEL_INVENTORY_GROUP[panel_key]
+    family = str(row.get("family") or "")
+    if family == "backup_netbackup":
+        if panel_key == "backup_netbackup_application":
+            return _INVENTORY_GROUP_APPLICATION
+        return _INVENTORY_GROUP_IMAGE
+    if family in _FAMILY_INVENTORY_GROUP:
+        return _FAMILY_INVENTORY_GROUP[family]
+    if family.startswith("backup_veeam_replication") or family.startswith("backup_zerto"):
+        return _INVENTORY_GROUP_REPLICATION
+    if "DR" in str(row.get("service_label") or "") or panel_key.startswith("virt_") and "dr" in panel_key:
+        return None
+    return None
+
+
+def _is_comparison_only_row(row: dict[str, Any]) -> bool:
+    pk = str(row.get("panel_key") or "")
+    fam = str(row.get("family") or "")
+    return pk in _COMPARISON_ONLY_PANELS or fam in _COMPARISON_ONLY_FAMILIES
+
+
+def _apply_comparison_only_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Nutanix image: hide sellable framing; keep CRM sold vs used."""
+    if not _is_comparison_only_row(row):
+        return row
+    row = dict(row)
+    row["sellable_profile"] = "comparison_only"
+    row["sellable_qty"] = None
+    row["sellable_alloc_qty"] = None
+    row["sellable_max_qty"] = None
+    row["sellable_avg_qty"] = None
+    row["potential_tl"] = 0.0
+    row["potential_tl_alloc"] = None
+    row["potential_tl_max"] = None
+    row["potential_tl_avg"] = None
+    row["free_qty"] = None
+    row["free_tl"] = None
+    row["inventory_free_mode"] = "comparison"
+    notes = list(row.get("notes") or [])
+    note = "comparison_only: Nutanix snapshots are sold↔used (no sellable headroom)"
+    if note not in notes:
+        notes.append(note)
+    row["notes"] = notes
+    return row
+
+
+def _regroup_backup_families(families_out: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse backup panel families into Image | Application | Replication."""
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    passthrough: list[dict[str, Any]] = []
+    for fam in families_out:
+        panels = fam.get("panels") or []
+        if not panels:
+            continue
+        # If any panel maps to a backup inventory group, regroup those panels.
+        backup_panels = []
+        other_panels = []
+        for row in panels:
+            g = _inventory_group_for_row(row)
+            if g:
+                backup_panels.append((g, row))
+            else:
+                other_panels.append(row)
+        for g, row in backup_panels:
+            grouped[g].append(row)
+        if other_panels:
+            passthrough.append({
+                **fam,
+                "panels": other_panels,
+                "panel_count": len(other_panels),
+            })
+        elif not backup_panels:
+            passthrough.append(fam)
+
+    rebuilt: list[dict[str, Any]] = []
+    for gkey in _INVENTORY_GROUP_ORDER:
+        rows = grouped.get(gkey) or []
+        # Hide empty Offsite/Remote when no sold and no infra
+        rows = [
+            r for r in rows
+            if not (
+                str(r.get("panel_key") or "") in (
+                    "backup_remote_nutanix",
+                    "backup_offsite_veeam",
+                    "backup_offsite_s3",
+                )
+                and float(r.get("crm_sold_qty") or 0) <= 0
+                and not r.get("has_infra_source")
+            )
+        ]
+        if not rows:
+            continue
+        label = _INVENTORY_GROUP_LABELS[gkey]
+        rows_sorted = sorted(rows, key=lambda r: r.get("service_label") or "")
+        rebuilt.append({
+            "family": gkey,
+            "label": label,
+            "family_label": label,
+            "dc_code": rows_sorted[0].get("dc_code") or "*",
+            "panels": rows_sorted,
+            "panel_count": len(rows_sorted),
+            "has_infra": any(r.get("has_infra_source") for r in rows_sorted),
+            "sellable_profile": (
+                "comparison_only"
+                if gkey == _INVENTORY_GROUP_IMAGE
+                and all(_is_comparison_only_row(r) for r in rows_sorted)
+                else "standard"
+            ),
+        })
+    # Keep non-backup families (virt, S3, …) after backup groups
+    passthrough.sort(key=lambda f: (f.get("family_label") or f.get("family") or "").lower())
+    return rebuilt + passthrough
 
 # Families rendered nowhere on /crm/inventory-overview. virt_power shares the
 # same IBM Power infrastructure as virt_power_hana (see sellable_service:261),
@@ -233,6 +405,18 @@ def _apply_netbackup_inventory_fields(
             under_pct=under_pct,
             over_pct=over_pct,
         )
+
+    # PreDedup enrichment overwrites used via bytes→TB helpers; clear stale
+    # KiB→TB conversion false positives from sellable metadata mismatch.
+    notes = [
+        n for n in (row.get("notes") or [])
+        if "unit_conversion_missing" not in (n or "")
+    ]
+    row["notes"] = notes
+    if row.get("suspect_reason") == "unit_conversion_missing":
+        row["suspect_reason"] = None
+        if row.get("data_quality") == "suspect":
+            row["data_quality"] = None
     return row
 
 
@@ -1262,6 +1446,8 @@ class InventoryOverviewService:
 
         panel_rows = _drop_hidden_families(panel_rows)
         crm_only_panels = _drop_hidden_families(crm_only_panels)
+        panel_rows = [_apply_comparison_only_fields(r) for r in panel_rows]
+        crm_only_panels = [_apply_comparison_only_fields(r) for r in crm_only_panels]
         panel_rows.sort(key=lambda r: (-float(r.get("crm_sold_tl") or 0), r.get("service_label") or ""))
 
         families_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1285,6 +1471,7 @@ class InventoryOverviewService:
                 "has_infra": any(r.get("has_infra_source") for r in rows_sorted),
             })
         families_out.sort(key=lambda f: (f.get("family_label") or f.get("family") or "").lower())
+        families_out = _regroup_backup_families(families_out)
 
         mapped_ids = self._mapped_product_ids(mapping)
         bind_ids = mapped_ids if mapped_ids else ["__none__"]
