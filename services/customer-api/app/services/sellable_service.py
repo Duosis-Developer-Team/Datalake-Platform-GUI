@@ -303,17 +303,34 @@ _NETBACKUP_SHARED_PANEL_KEYS: frozenset[str] = frozenset({
 # so one DC-wide min() was wrong in both directions -- it hid per-frame
 # bottlenecks, and a single over-threshold DC total zeroed every frame in it.
 # Measured 2026-08-02 that gate was blocking DC11, DC13 and DC15 outright.
+#
+# Replication Classic/HC CPU/RAM must use the same host SoT as virt (ADR-0032 §37).
+_REPLICATION_HOST_SOURCE_FAMILY: dict[str, str] = {
+    "backup_veeam_replication_classic": "virt_classic",
+    "backup_zerto_replication_classic": "virt_classic",
+    "backup_veeam_replication_hyperconverged": "virt_hyperconverged",
+    "backup_zerto_replication_hyperconverged": "virt_hyperconverged",
+}
+
 _HOST_BASED_FAMILIES: frozenset[str] = frozenset({
-    "virt_classic", "virt_hyperconverged", "virt_power",
+    "virt_classic",
+    "virt_hyperconverged",
+    "virt_power",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
 })
 
 # Host-based families whose STORAGE panel still comes from the aggregate path.
-# Power frames report no storage of their own: the arrays behind them also serve
-# the classic ESXi estate, so free space is not attributable per frame. The
-# storage panel therefore keeps its [min, max] range model and the compute
-# bottleneck reaches it through apply_storage_ratio_cap instead of the per-host
-# min().
-_HOST_COMPUTE_ONLY_FAMILIES: frozenset[str] = frozenset({"virt_power"})
+# Power frames report no storage of their own; replication uses dedicated DS endpoints.
+_HOST_COMPUTE_ONLY_FAMILIES: frozenset[str] = frozenset({
+    "virt_power",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
 
 # Families whose host rows are DC-wide and carry no cluster. Passing the caller's
 # cluster filter would match nothing and silently drop the family to the cluster
@@ -2309,13 +2326,15 @@ SELECT _tot, _alloc FROM latest
                 host_clusters = (
                     None if fam in _CLUSTERLESS_HOST_ROW_FAMILIES else selected_clusters
                 )
+                # Replication Classic/HC borrows virt host rows for SoT parity.
+                host_fetch_family = _REPLICATION_HOST_SOURCE_FAMILY.get(fam, fam)
                 if dc_code == "*" and global_host_dcs:
                     host_rows, host_status, storage_pools = self._fetch_host_rows_multi(
-                        global_host_dcs, fam, host_clusters,
+                        global_host_dcs, host_fetch_family, host_clusters,
                     )
                 elif dc_code and dc_code != "*":
                     host_rows, host_status, storage_pools = self._fetch_host_rows(
-                        dc_code, fam, host_clusters,
+                        dc_code, host_fetch_family, host_clusters,
                     )
 
             # Power's storage panel stays on the aggregate branch (see
@@ -2331,24 +2350,36 @@ SELECT _tot, _alloc FROM latest
                     host_group = [p for p in group if p.resource_kind != "storage"]
                     deferred_storage = [p for p in group if p.resource_kind == "storage"]
                 storage_host_based = host_based_ok and not deferred_storage
+                host_math_family = _REPLICATION_HOST_SOURCE_FAMILY.get(fam, fam)
                 new_group = self._apply_host_based_constraints(
                     host_group,
                     ratio,
                     host_rows,
                     unit_lookup,
                     dc_code=dc_code,
-                    family=fam,
+                    family=host_math_family,
                     clusters=selected_clusters,
                     effective_ghz_per_unit=effective_ghz,
                     storage_pools=storage_pools,
-                    range_inputs=range_inputs if fam == "virt_classic" else None,
-                    host_cpu_unit=_FAMILY_HOST_CPU_UNIT.get(fam, "GHz"),
+                    range_inputs=range_inputs if host_math_family == "virt_classic" else None,
+                    host_cpu_unit=_FAMILY_HOST_CPU_UNIT.get(host_math_family, "GHz"),
                     # Cluster rules live below the family, so the override has to
                     # be resolved per host rather than once per family.
                     storage_in_triple_override=self.build_host_coupling_resolver(
                         fam, dc_code, coupling_lookup,
                     ),
                 )
+                if fam in _REPLICATION_HOST_SOURCE_FAMILY:
+                    parity_note = (
+                        f"replication compute from {host_math_family} host SoT (parity)"
+                    )
+                    for p in new_group:
+                        if p.resource_kind in ("cpu", "ram") and parity_note not in (p.notes or []):
+                            p.notes = [*(p.notes or []), parity_note]
+                if fam in ("virt_classic", "virt_hyperconverged") and dc_code and dc_code != "*":
+                    new_group = self._subtract_replica_allocation_from_virt(
+                        new_group, dc_code, fam,
+                    )
                 if refresh_from_totals and deferred_storage:
                     # Global inventory hands us pre-merged panels with
                     # sellable_raw zeroed (_merge_panel_results); the aggregate
@@ -2385,16 +2416,25 @@ SELECT _tot, _alloc FROM latest
                     refreshed, ratio, decouple_resource_kinds=None,
                 )
             elif fam in _HOST_BASED_FAMILIES:
+                fallback_family = _REPLICATION_HOST_SOURCE_FAMILY.get(fam, fam)
                 new_group = self._apply_cluster_fallback_dual(
                     group,
                     ratio,
                     dc_code,
-                    fam,
+                    fallback_family,
                     selected_clusters,
                     host_status=host_status,
                     effective_ghz_per_unit=effective_ghz,
                     decouple_resource_kinds=None,
                 )
+                if fam in _REPLICATION_HOST_SOURCE_FAMILY:
+                    parity_note = (
+                        f"replication compute from {fallback_family} "
+                        f"cluster_fallback (parity)"
+                    )
+                    for p in new_group:
+                        if p.resource_kind in ("cpu", "ram") and parity_note not in (p.notes or []):
+                            p.notes = [*(p.notes or []), parity_note]
             else:
                 source_group = (
                     self._refresh_group_sellable_from_totals(
@@ -2555,6 +2595,10 @@ SELECT _tot, _alloc FROM latest
 
         Storage is NOT shared with virt — Veeam uses dedicated datastores; Zerto uses
         site/VPG metrics. Only cpu/ram panels get primary-vs-alternate ranges.
+
+        Preserves host-based sellable_allocation / max_util / avg_util triad; only
+        sets IBM-style sellable_min/max. Does not force constrained=0 into inventory
+        Free (Free uses capacity headroom separately).
         """
         note = (
             "Replication alternate pool (CPU/RAM only): min=0, max=host free "
@@ -2567,7 +2611,9 @@ SELECT _tot, _alloc FROM latest
             if kind not in _REPLICATION_ALTERNATE_KINDS:
                 continue
             free = 0.0
-            if panel.sellable_raw is not None and float(panel.sellable_raw) > 0:
+            if panel.sellable_allocation is not None and float(panel.sellable_allocation) > 0:
+                free = max(float(panel.sellable_allocation), 0.0)
+            elif panel.sellable_raw is not None and float(panel.sellable_raw) > 0:
                 free = max(float(panel.sellable_raw), 0.0)
             elif panel.sellable_constrained is not None and float(panel.sellable_constrained) > 0:
                 free = max(float(panel.sellable_constrained), 0.0)
@@ -2577,12 +2623,85 @@ SELECT _tot, _alloc FROM latest
             panel.sellable_min = rng["alternate_min"]
             panel.sellable_max = rng["alternate_max"]
             panel.sellable_constrained = panel.sellable_min
-            panel.sellable_raw = panel.sellable_max
+            if panel.sellable_raw is None or float(panel.sellable_raw or 0) <= 0:
+                panel.sellable_raw = panel.sellable_max
+            if panel.sellable_allocation is None:
+                panel.sellable_allocation = panel.sellable_max
             panel.potential_tl_min = compute_potential_tl(panel.sellable_min, panel.unit_price_tl)
             panel.potential_tl_max = compute_potential_tl(panel.sellable_max, panel.unit_price_tl)
             panel.potential_tl = panel.potential_tl_min or 0.0
             if note not in (panel.notes or []):
                 panel.notes = [*(panel.notes or []), note]
+
+    def _subtract_replica_allocation_from_virt(
+        self,
+        group: list[PanelResult],
+        dc_code: str,
+        family: str,
+    ) -> list[PanelResult]:
+        """Reduce virt allocated by replica/Zerto VM allocation (ADR-0032 §40)."""
+        offset = self._fetch_replica_allocation_offset(dc_code, family)
+        if not offset:
+            return group
+        cpu_off = float(offset.get("cpu_vcpu") or 0.0)
+        ram_off = float(offset.get("ram_gb") or 0.0)
+        vm_count = int(offset.get("vm_count") or 0)
+        if cpu_off <= 0 and ram_off <= 0:
+            return group
+        note = (
+            f"replica/Zerto allocation excluded from virt sellable "
+            f"({vm_count} VMs; cpu={cpu_off:g} vCPU, ram={ram_off:g} GB)"
+        )
+        for p in group:
+            if p.resource_kind == "cpu" and cpu_off > 0:
+                before = float(p.allocated or 0.0)
+                p.allocated = max(before - cpu_off, 0.0)
+                delta = min(cpu_off, before)
+                if p.sellable_raw is not None:
+                    p.sellable_raw = float(p.sellable_raw) + delta
+                if p.sellable_allocation is not None:
+                    p.sellable_allocation = float(p.sellable_allocation) + delta
+                if p.sellable_constrained is not None:
+                    p.sellable_constrained = float(p.sellable_constrained) + delta
+                if note not in (p.notes or []):
+                    p.notes = [*(p.notes or []), note]
+            elif p.resource_kind == "ram" and ram_off > 0:
+                before = float(p.allocated or 0.0)
+                p.allocated = max(before - ram_off, 0.0)
+                delta = min(ram_off, before)
+                if p.sellable_raw is not None:
+                    p.sellable_raw = float(p.sellable_raw) + delta
+                if p.sellable_allocation is not None:
+                    p.sellable_allocation = float(p.sellable_allocation) + delta
+                if p.sellable_physical is not None:
+                    p.sellable_physical = float(p.sellable_physical) + delta
+                if p.sellable_constrained is not None:
+                    p.sellable_constrained = float(p.sellable_constrained) + delta
+                if note not in (p.notes or []):
+                    p.notes = [*(p.notes or []), note]
+        return group
+
+    def _fetch_replica_allocation_offset(
+        self, dc_code: str, family: str,
+    ) -> dict[str, float | int] | None:
+        """Fetch non-billable virt allocation totals from datacenter-api."""
+        if not self._dc_api_url or not dc_code or dc_code == "*":
+            return None
+        arch = "classic" if family == "virt_classic" else "hyperconverged"
+        url = (
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/"
+            f"replica-allocation?architecture={arch}&preset=30d"
+        )
+        try:
+            resp = httpx.get(url, timeout=60.0)
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, dict) else None
+        except Exception:
+            logger.warning(
+                "replica-allocation fetch failed dc=%s family=%s", dc_code, family,
+            )
+            return None
 
     def recompute_family_constraints(
         self,
@@ -3316,9 +3435,9 @@ SELECT _tot, _alloc FROM latest
                     util_pct = self._extract_utilization_pct(raw, "storage")
                     notes.append(
                         "via datacenter-api/compute/backup-veeam-storage "
-                        "(VMware DS except NetBackup"
+                        "(sellable: eligible VMware DS except NetBackup"
                         + (", +Nutanix" if include_ntnx else "")
-                        + ")"
+                        + "; not limited to current Veeam repositories)"
                     )
             if compute_metrics is None:
                 has_infra = False

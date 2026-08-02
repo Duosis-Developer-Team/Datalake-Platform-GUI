@@ -19,6 +19,19 @@ _BASE_COLUMNS = [
     {"name": "Free", "id": "free_fmt"},
 ]
 
+_REPLICATION_COLUMNS = [
+    {"name": "Service", "id": "service_label"},
+    {"name": "Unit", "id": "display_unit"},
+    {"name": "CRM Sold", "id": "crm_sold_fmt"},
+    {"name": "Total", "id": "total_fmt"},
+    {"name": "Allocated", "id": "used_fmt"},
+    {"name": "Free", "id": "free_fmt"},
+    {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
+    {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
+    {"name": "Sellable (Ort.)", "id": "sellable_avg_fmt"},
+    {"name": "Sellable min–max", "id": "sellable_range_fmt"},
+]
+
 _VIRT_BASE_COLUMNS = [
     {"name": "Service", "id": "service_label"},
     {"name": "Unit", "id": "display_unit"},
@@ -98,9 +111,14 @@ _PRODUCT_MATCHING_COLUMNS = [
     {"name": "Unit", "id": "resource_unit"},
     {"name": "CRM Sold", "id": "crm_sold_fmt"},
     {"name": "Status", "id": "match_status"},
+    {"name": "In registry", "id": "in_registry_fmt"},
     {"name": "Matching Rule", "id": "matching_rule"},
+    {"name": "Usage source", "id": "usage_source"},
     {"name": "Panel", "id": "panel_key"},
+    {"name": "Infra total", "id": "infra_total_fmt"},
+    {"name": "Infra used", "id": "infra_used_fmt"},
     {"name": "Tables", "id": "infra_tables_fmt"},
+    {"name": "Notes", "id": "notes"},
 ]
 
 _TABLE_STYLE_CELL = {
@@ -145,6 +163,10 @@ def columns_for_family(
         return [*list(_COMPARISON_ONLY_COLUMNS), dict(_UNIT_PRICE_COLUMN)]
     if profile == "backup_netbackup":
         return list(_NETBACKUP_COLUMNS)
+    if profile.startswith("backup_veeam_replication") or profile.startswith(
+        "backup_zerto_replication"
+    ):
+        return [*list(_REPLICATION_COLUMNS), dict(_UNIT_PRICE_COLUMN)]
     if profile in _PHYSICAL_FREE_FAMILIES:
         profile = "standard"
         hide_used = False
@@ -289,6 +311,7 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         reason_hint = {
             "crm_exceeds_total": "CRM sold exceeds infra total (check units)",
             "used_exceeds_total": "Used exceeds total capacity",
+            "allocation_exceeds_total": "Allocation exceeds capacity (oversubscription)",
             "unit_conversion_missing": "Unit conversion missing",
             "zero_used_with_capacity": "Zero used with positive capacity",
             "total_scale_anomaly": "Unusually large capacity value",
@@ -322,10 +345,14 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
     free_display_qty = row.get("free_qty")
     family = str(row.get("family") or "")
     free_mode = str(row.get("inventory_free_mode") or "standard")
+    is_replication = family.startswith("backup_veeam_replication") or family.startswith(
+        "backup_zerto_replication"
+    )
     use_physical_free = (
         free_mode == "physical"
         or family in _PHYSICAL_FREE_FAMILIES
     )
+    use_capacity_free = free_mode == "capacity" or is_replication
     if use_physical_free and has_infra:
         # Value physical Free at the CRM-sold implied unit price (same display unit as
         # free_qty), correcting the mis-scaled catalog price. Fall back to the
@@ -338,6 +365,15 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
                 free_tl = row.get("free_tl")
         else:
             free_tl = row.get("free_tl")
+    elif use_capacity_free and has_infra:
+        # Replication: Free = capacity headroom (total − allocation), not sellable min.
+        free_tl = row.get("free_tl")
+        unit_price_tl = row.get("unit_price_tl")
+        if free_tl is None and free_display_qty is not None and unit_price_tl not in (None, 0):
+            try:
+                free_tl = float(free_display_qty) * float(unit_price_tl)
+            except (TypeError, ValueError):
+                free_tl = None
     elif profile == "standard" and has_infra and not use_physical_free:
         sellable_qty = row.get("sellable_qty")
         if sellable_qty is not None:
@@ -429,13 +465,23 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         ) if has_infra else "—\n—",
         "sellable_alloc_fmt": shared.fmt_qty_tl_block(
             sellable_alloc_qty, unit, potential_tl_alloc,
-        ) if profile in ("dual_track", "allocation_only") else "—\n—",
+        ) if profile in ("dual_track", "allocation_only") or is_replication else "—\n—",
         "sellable_max_fmt": shared.fmt_qty_tl_block(
             sellable_max_qty, unit, potential_tl_max,
-        ) if profile == "dual_track" else "—\n—",
+        ) if profile == "dual_track" or is_replication else "—\n—",
         "sellable_avg_fmt": shared.fmt_qty_tl_block(
             sellable_avg_qty, unit, potential_tl_avg,
-        ) if profile == "dual_track" else "—\n—",
+        ) if profile == "dual_track" or is_replication else "—\n—",
+        "sellable_range_fmt": (
+            f"{_fmt_qty(row.get('sellable_min_qty'), unit)}\n"
+            f"– {_fmt_qty(row.get('sellable_max_qty'), unit)}"
+            if is_replication and has_infra
+            and (
+                row.get("sellable_min_qty") is not None
+                or row.get("sellable_max_qty") is not None
+            )
+            else "—\n—"
+        ),
         "unit_price_fmt": _fmt_unit_price(unit_price_display, unit),
         "status": status,
         "data_quality": data_quality,
@@ -444,6 +490,7 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "infra_binding": row.get("infra_binding") or "",
         "has_infra_source": has_infra,
         "inventory_free_mode": free_mode,
+        "used_is_allocation": bool(row.get("used_is_allocation") or is_replication),
     }
 
 
@@ -782,7 +829,7 @@ def build_crm_only_section(
 
 
 def prepare_product_matching_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Format product matching registry row for DataTable / export."""
+    """Format product matching checklist row — no column drops (ADR-0032 §41)."""
     sold_qty = row.get("crm_sold_qty")
     sold_tl = row.get("crm_sold_tl")
     try:
@@ -793,18 +840,28 @@ def prepare_product_matching_row(row: dict[str, Any]) -> dict[str, Any]:
         sold_fmt = str(sold_qty or "")
 
     tables = row.get("infra_tables") or []
-    out = {
+    infra_total = row.get("infra_total")
+    infra_used = row.get("infra_used")
+    try:
+        infra_total_fmt = "—" if infra_total is None else f"{float(infra_total):,.1f}"
+    except (TypeError, ValueError):
+        infra_total_fmt = str(infra_total or "—")
+    try:
+        infra_used_fmt = "—" if infra_used is None else f"{float(infra_used):,.1f}"
+    except (TypeError, ValueError):
+        infra_used_fmt = str(infra_used or "—")
+    return {
         **row,
         "crm_sold_fmt": sold_fmt,
         "infra_tables_fmt": ", ".join(str(t) for t in tables) if tables else "—",
         "panel_key": row.get("panel_key") or "—",
         "matching_rule": row.get("matching_rule") or "—",
+        "usage_source": row.get("usage_source") or "—",
+        "infra_total_fmt": infra_total_fmt,
+        "infra_used_fmt": infra_used_fmt,
+        "in_registry_fmt": "yes" if row.get("in_registry") else "no",
+        "notes": row.get("notes") or "",
     }
-    # Screen and export are both fed from this dict; dropping them here is what
-    # keeps them out of the downloaded workbook, not the column list above.
-    for key in ("usage_source", "infra_total", "infra_used"):
-        out.pop(key, None)
-    return out
 
 
 def filter_product_matching_rows(
@@ -824,6 +881,8 @@ def filter_product_matching_rows(
             if q in str(r.get("product_name") or "").casefold()
             or q in str(r.get("productnumber") or "").casefold()
             or q in str(r.get("matching_rule") or "").casefold()
+            or q in str(r.get("usage_source") or "").casefold()
+            or q in str(r.get("notes") or "").casefold()
         ]
     return out
 

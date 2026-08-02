@@ -1507,6 +1507,98 @@ LIMIT 20
         self._set_compute_cached(cache_key, section)
         return section
 
+    def get_replica_allocation_offset(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        *,
+        architecture: str = "classic",
+    ) -> dict:
+        """Sum CPU/RAM allocated to replica/Zerto VMs (exclude from virt sellable).
+
+        Classic = VMware KM VM rows (name-bucket replica + Zerto names).
+        HC = Nutanix VM SoT rows (same classifiers). Returns vCPU + RAM GB.
+        """
+        from shared.backup.vm_role import resolve_vm_role
+
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        arch = (architecture or "classic").strip().lower()
+        dc_pattern = f"%{dc_code}%"
+        cpu_vcpu = 0.0
+        ram_gb = 0.0
+        vm_count = 0
+        zerto_names: set[str] = set()
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    raw_z = self._run_rows(
+                        cur, bq.ZERTO_VM_NAMES_DISTINCT, (start_ts, end_ts),
+                    ) or []
+                    filtered_z = self._filter_rows_for_dc_by_name_and_host(
+                        raw_z, dc_code, name_index=0, host_index=1,
+                    )
+                    zerto_names = {
+                        str(r[0]).strip().casefold()
+                        for r in filtered_z
+                        if r and r[0]
+                    }
+
+                    if arch in ("hyperconverged", "hyperconv", "hc"):
+                        rows = self._run_rows(
+                            cur,
+                            nq.NUTANIX_VM_ALLOCATION_NAMED,
+                            (dc_code, start_ts, end_ts, start_ts, end_ts),
+                        ) or []
+                    else:
+                        rows = self._run_rows(
+                            cur,
+                            vq.CLASSIC_VM_ALLOCATION_NAMED,
+                            (dc_pattern, start_ts, end_ts),
+                        ) or []
+        except OperationalError as exc:
+            logger.warning(
+                "get_replica_allocation_offset failed for %s/%s: %s",
+                dc_code, arch, exc,
+            )
+            return {
+                "cpu_vcpu": 0.0,
+                "ram_gb": 0.0,
+                "vm_count": 0,
+                "architecture": (
+                    "hyperconverged"
+                    if arch in ("hyperconverged", "hyperconv", "hc")
+                    else "classic"
+                ),
+            }
+
+        for row in rows:
+            if not row or not row[0]:
+                continue
+            name = str(row[0])
+            role = resolve_vm_role(name, zerto_names=zerto_names)
+            if role in ("billable", "veeam_backup", "silinecek"):
+                continue
+            cpu_vcpu += float(row[1] or 0.0)
+            ram_gb += float(row[2] or 0.0)
+            vm_count += 1
+
+        return {
+            "cpu_vcpu": round(cpu_vcpu, 3),
+            "ram_gb": round(ram_gb, 3),
+            "vm_count": vm_count,
+            "architecture": (
+                "hyperconverged"
+                if arch in ("hyperconverged", "hyperconv", "hc")
+                else "classic"
+            ),
+            "notes": [
+                "Non-billable virt allocation (replica/Zerto/custom); "
+                "subtract from virt sellable allocated",
+            ],
+        }
+
     def get_backup_replication_compute(
         self,
         dc_code: str,
@@ -1523,6 +1615,10 @@ LIMIT 20
         non-Veeam/non-NetBackup VMware datastores plus site/VPG metrics.
         Host storage fields are zeroed so callers never treat KM free disk as
         replication storage from this endpoint.
+
+        Sellable CRM Inventory Classic/HC CPU/RAM prefer virt ``/hosts`` SoT
+        (bit-equal to virt_classic / virt_hyperconverged). This aggregate
+        endpoint remains for cluster fallback and diagnostics.
 
         ``architecture``: ``classic`` (default) or ``hyperconverged``.
         """
@@ -1704,7 +1800,11 @@ LIMIT 20
 
         out = self._sum_datastore_storage_rows(rows, source="vmware_datastore_veeam_eligible")
         notes = [
-            "Veeam storage: all classic VMware datastores except NetBackup",
+            "Veeam storage sellable: eligible VMware datastores except NetBackup "
+            "(new replication demand can open capacity from this pool; not limited "
+            "to current Veeam repositories)",
+            "Veeam storage sold/comparison: CRM Sold + repository/demand-opened "
+            "context on inventory rows",
         ]
         if include_nutanix:
             nut = self._hc_nutanix_disk_for_replication(
