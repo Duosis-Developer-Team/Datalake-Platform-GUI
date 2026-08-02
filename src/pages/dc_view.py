@@ -70,8 +70,7 @@ from src.components.backup_panel import (
     build_netbackup_panel,
     build_nutanix_panel_shell,
     build_nutanix_snapshot_panel,
-    build_veeam_category_section,
-    build_zerto_category_section,
+    build_replication_section,
     build_veeam_panel,
     build_zerto_panel,
 )
@@ -1969,56 +1968,21 @@ def _backup_inline_sellable_blocks(
             "sellable-backup-netbackup-card",
             "Image and Application share one disk pool (min = half free, max = full free).",
         ),
-        "backup_image": (
-            "Nutanix Image Backup — Sellable Potential",
-            "teal",
-            hyperconv_clusters or None,
-            "sellable-backup-image-card",
-            "Nutanix-backed storage headroom for image backup.",
-        ),
         "backup_veeam_replication": (
             "Veeam Replication — Sellable Potential",
             "violet",
-            classic_clusters or None,
+            None,
             "sellable-backup-veeam-card",
-            "CPU/RAM share virt host free (alternate min=0 … max=free). "
+            "CPU/RAM share virt host free (alternate min=0 … max=free; classic+HC). "
             "Storage: all VMware datastores except NetBackup (dedicated).",
-        ),
-        "backup_veeam_replication_classic": (
-            "Veeam Replication Classic — Sellable",
-            "violet",
-            classic_clusters or None,
-            "sellable-backup-veeam-classic-card",
-            "Classic host pool alternate. Storage: VMware DS except NetBackup.",
-        ),
-        "backup_veeam_replication_hyperconverged": (
-            "Veeam Replication HC — Sellable",
-            "violet",
-            hyperconv_clusters or None,
-            "sellable-backup-veeam-hc-card",
-            "HC host pool alternate. Storage: VMware DS except NetBackup + Nutanix disks.",
         ),
         "backup_zerto_replication": (
             "Zerto Replication — Sellable Potential",
             "grape",
-            classic_clusters or None,
+            None,
             "sellable-backup-zerto-card",
-            "CPU/RAM share virt host free (alternate min=0 … max=free). "
-            "Storage: VMware DS except Veeam+NetBackup (dedicated).",
-        ),
-        "backup_zerto_replication_classic": (
-            "Zerto Replication Classic — Sellable",
-            "grape",
-            classic_clusters or None,
-            "sellable-backup-zerto-classic-card",
-            "Classic host pool alternate. Storage: VMware DS except Veeam+NetBackup.",
-        ),
-        "backup_zerto_replication_hyperconverged": (
-            "Zerto Replication HC — Sellable",
-            "grape",
-            hyperconv_clusters or None,
-            "sellable-backup-zerto-hc-card",
-            "HC host pool alternate. Storage: VMware DS except Veeam+NetBackup + Nutanix disks.",
+            "CPU/RAM share virt host free (alternate min=0 … max=free; classic+HC). "
+            "Storage: VMware DS except Veeam+NetBackup (dedicated compute only).",
         ),
     }
     out: list = []
@@ -6069,6 +6033,7 @@ def build_dc_view(
         has_nutanix_backup = True
         has_image = True
         has_application = True
+        has_replication = True
         has_backup = True
     else:
         has_zerto = bool(zerto_data.get("sites"))
@@ -6078,7 +6043,8 @@ def build_dc_view(
         has_nutanix_backup = bool(nutanix_data.get("rows"))
         has_image = has_netbackup or has_nutanix_backup
         has_application = has_netbackup
-        has_backup = has_image or has_application or has_zerto or has_veeam or has_zerto_license
+        has_replication = has_zerto or has_veeam or has_zerto_license
+        has_backup = has_image or has_application or has_replication
 
     # S3 presence already computed above
     # has_s3 = bool(s3_data.get("pools"))
@@ -6296,9 +6262,7 @@ def build_dc_view(
                                     if has_image
                                     else "application"
                                     if has_application
-                                    else "veeam"
-                                    if has_veeam
-                                    else "zerto"
+                                    else "replication"
                                 ),
                                 children=[
                                     dmc.TabsList(
@@ -6309,11 +6273,8 @@ def build_dc_view(
                                             dmc.TabsTab("Application Backup", value="application")
                                             if has_application
                                             else None,
-                                            dmc.TabsTab("Veeam", value="veeam")
-                                            if has_veeam
-                                            else None,
-                                            dmc.TabsTab("Zerto", value="zerto")
-                                            if has_zerto
+                                            dmc.TabsTab("Replication", value="replication")
+                                            if has_replication
                                             else None,
                                         ]
                                     ),
@@ -6327,7 +6288,7 @@ def build_dc_view(
                                                     classic_clusters=classic_clusters or None,
                                                     hyperconv_clusters=hyperconv_clusters or None,
                                                     content_mode=backup_content_mode,
-                                                    include=("backup_netbackup", "backup_image"),
+                                                    include=("backup_netbackup",),
                                                 ),
                                                 build_image_backup_section(
                                                     nb_data=nb_data,
@@ -6390,7 +6351,7 @@ def build_dc_view(
                                     if has_application
                                     else None,
                                     dmc.TabsPanel(
-                                        value="veeam",
+                                        value="replication",
                                         pt="lg",
                                         children=html.Div(
                                             children=[
@@ -6400,48 +6361,23 @@ def build_dc_view(
                                                     hyperconv_clusters=hyperconv_clusters or None,
                                                     content_mode=backup_content_mode,
                                                     include=(
-                                                        "backup_veeam_replication_classic",
-                                                        "backup_veeam_replication_hyperconverged",
                                                         "backup_veeam_replication",
-                                                    ),
-                                                ),
-                                                build_veeam_category_section(
-                                                    veeam_data=veeam_data,
-                                                    veeam_license=None,
-                                                    content_mode=backup_content_mode,
-                                                    show_licenses=False,
-                                                ),
-                                            ],
-                                        ),
-                                    )
-                                    if has_veeam
-                                    else None,
-                                    dmc.TabsPanel(
-                                        value="zerto",
-                                        pt="lg",
-                                        children=html.Div(
-                                            children=[
-                                                *_backup_inline_sellable_blocks(
-                                                    str(dc_id),
-                                                    classic_clusters=classic_clusters or None,
-                                                    hyperconv_clusters=hyperconv_clusters or None,
-                                                    content_mode=backup_content_mode,
-                                                    include=(
-                                                        "backup_zerto_replication_classic",
-                                                        "backup_zerto_replication_hyperconverged",
                                                         "backup_zerto_replication",
                                                     ),
                                                 ),
-                                                build_zerto_category_section(
+                                                build_replication_section(
+                                                    veeam_data=veeam_data,
                                                     zerto_data=zerto_data,
-                                                    zerto_license=None,
+                                                    zerto_license=zerto_license_data,
+                                                    has_veeam=has_veeam,
+                                                    has_zerto=has_zerto or has_zerto_license,
                                                     content_mode=backup_content_mode,
                                                     show_licenses=False,
                                                 ),
                                             ],
                                         ),
                                     )
-                                    if has_zerto
+                                    if has_replication
                                     else None,
                                 ],
                             ),

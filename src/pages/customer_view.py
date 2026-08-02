@@ -2506,44 +2506,56 @@ def _build_backup_tabs(
     has_veeam = backup_vendor_has_data(backup_totals, backup_assets, "veeam")
     has_zerto = backup_vendor_has_data(backup_totals, backup_assets, "zerto")
     license_rows = backup_assets.get("license_compliance") or []
-    if has_veeam:
-        veeam_children: list = [
-            _tab_veeam(
-                backup_assets,
-                backup_totals,
-                crm_eff_panel=_eff_panel("backup.veeam"),
+    if has_veeam or has_zerto:
+        repl_children: list = [
+            dmc.Text(
+                "Replication — Veeam and Zerto (unified families; Classic/HC is filter only).",
+                size="sm",
+                c="#2B3674",
+                mb="md",
             ),
-            build_unique_jobs_inventory_section("veeam", scope="customer"),
         ]
-        from src.components.backup_panel import build_veeam_license_panel
+        if has_veeam:
+            repl_children.extend(
+                [
+                    dmc.Title("Veeam Replication", order=5, c="#2B3674", mb="sm"),
+                    _tab_veeam(
+                        backup_assets,
+                        backup_totals,
+                        crm_eff_panel=_eff_panel("backup.veeam"),
+                    ),
+                    build_unique_jobs_inventory_section("veeam", scope="customer"),
+                ]
+            )
+            from src.components.backup_panel import build_veeam_license_panel
 
-        lic_panel = build_veeam_license_panel(None, license_compliance=license_rows)
-        if lic_panel is None and include_sold_vs_used:
-            veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.veeam")
-            if veeam_lic is None:
-                veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "backup.veeam")
-            if veeam_lic is not None:
-                veeam_children.append(veeam_lic)
-        elif lic_panel is not None:
-            veeam_children.append(lic_panel)
+            lic_panel = build_veeam_license_panel(None, license_compliance=license_rows)
+            if lic_panel is None and include_sold_vs_used:
+                veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.veeam")
+                if veeam_lic is None:
+                    veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "backup.veeam")
+                if veeam_lic is not None:
+                    repl_children.append(veeam_lic)
+            elif lic_panel is not None:
+                repl_children.append(lic_panel)
+        if has_zerto:
+            repl_children.extend(
+                [
+                    dmc.Title("Zerto Replication", order=5, c="#2B3674", mb="sm", mt="lg"),
+                    _tab_zerto(
+                        backup_assets,
+                        backup_totals,
+                        crm_eff_panel=_eff_panel("backup.zerto"),
+                    ),
+                    build_unique_jobs_inventory_section("zerto", scope="customer"),
+                ]
+            )
+            if include_sold_vs_used:
+                zerto_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.zerto")
+                if zerto_lic is not None:
+                    repl_children.append(zerto_lic)
         backup_tab_defs.append(
-            ("veeam", "Veeam", dmc.Stack(gap="lg", children=veeam_children))
-        )
-    if has_zerto:
-        zerto_children: list = [
-            _tab_zerto(
-                backup_assets,
-                backup_totals,
-                crm_eff_panel=_eff_panel("backup.zerto"),
-            ),
-            build_unique_jobs_inventory_section("zerto", scope="customer"),
-        ]
-        if include_sold_vs_used:
-            zerto_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.zerto")
-            if zerto_lic is not None:
-                zerto_children.append(zerto_lic)
-        backup_tab_defs.append(
-            ("zerto", "Zerto", dmc.Stack(gap="lg", children=zerto_children))
+            ("replication", "Replication", dmc.Stack(gap="lg", children=repl_children))
         )
 
     head: list = []

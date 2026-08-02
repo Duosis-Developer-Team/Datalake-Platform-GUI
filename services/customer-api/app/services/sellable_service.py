@@ -1636,6 +1636,40 @@ SELECT _tot, _alloc FROM latest
         payload = self._load_dc_redis_payload(dc_code)
         return self._extract_allocated_from_payload(payload, src, dc_code)
 
+    @staticmethod
+    def _merge_compute_capacity(a: "dict | None", b: "dict | None") -> "dict | None":
+        """Sum numeric capacity fields from two /compute responses (classic + HC)."""
+        if not a and not b:
+            return None
+        if not a:
+            return dict(b) if isinstance(b, dict) else None
+        if not b:
+            return dict(a) if isinstance(a, dict) else None
+        out = dict(a)
+        for key in (
+            "cpu_cap",
+            "cpu_alloc_ghz_sales",
+            "mem_cap",
+            "mem_alloc_gb_vm",
+            "stor_cap",
+            "stor_provisioned_gb",
+        ):
+            try:
+                out[key] = float(a.get(key) or 0.0) + float(b.get(key) or 0.0)
+            except (TypeError, ValueError):
+                continue
+        notes: list[str] = []
+        for src in (a, b):
+            raw_notes = src.get("notes") if isinstance(src, dict) else None
+            if isinstance(raw_notes, list):
+                for n in raw_notes:
+                    if n and n not in notes:
+                        notes.append(str(n))
+        notes.append("unified replication compute: classic + hyperconverged host pools")
+        out["notes"] = notes
+        out["architecture"] = "unified"
+        return out
+
     def _fetch_raw_compute_response(
         self, dc_code: str, family: str, clusters: list[str] | None = None
     ) -> "dict | None":
@@ -1645,6 +1679,9 @@ SELECT _tot, _alloc FROM latest
         resource_kind panels (cpu/ram/storage) of the same family — 3 HTTP calls
         → 1 HTTP call per family when clusters are provided. Clusterless families
         (NetBackup / Nutanix image / replication) omit the clusters query param.
+
+        Unified Veeam/Zerto families sum classic + HC host pools (architecture
+        is UI filter only; Potential Sales uses one family card).
         """
         kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
         if not kind or not dc_code or dc_code == "*" or not self._dc_api_url:
@@ -1652,27 +1689,40 @@ SELECT _tot, _alloc FROM latest
         cl = [c for c in (clusters or []) if c]
         if not cl and family not in _CLUSTERLESS_COMPUTE_FAMILIES:
             return None
-        if cl:
-            csv = ",".join(cl)
-            url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}?clusters={csv}"
-        else:
-            url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
+
+        def _one(architecture: str | None = None) -> "dict | None":
+            if cl:
+                csv = ",".join(cl)
+                url = (
+                    f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
+                    f"?clusters={csv}"
+                )
+            else:
+                url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
+            if architecture and kind == "backup-replication":
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}architecture={architecture}"
+            try:
+                resp = httpx.get(url, timeout=15.0)
+                resp.raise_for_status()
+                data = resp.json()
+                return data if isinstance(data, dict) else None
+            except Exception:
+                logger.exception(
+                    "compute raw fetch failed dc=%s family=%s arch=%s url=%s",
+                    dc_code, family, architecture, url,
+                )
+                return None
+
         if family in _REPLICATION_ALTERNATE_FAMILIES and kind == "backup-replication":
-            arch = (
-                "hyperconverged"
-                if family in _REPLICATION_HC_FAMILIES
-                else "classic"
-            )
-            sep = "&" if "?" in url else "?"
-            url = f"{url}{sep}architecture={arch}"
-        try:
-            resp = httpx.get(url, timeout=15.0)
-            resp.raise_for_status()
-            data = resp.json()
-            return data if isinstance(data, dict) else None
-        except Exception:
-            logger.exception("compute raw fetch failed dc=%s family=%s url=%s", dc_code, family, url)
-            return None
+            if family in _REPLICATION_HC_FAMILIES:
+                return _one("hyperconverged")
+            if family.endswith("_classic"):
+                return _one("classic")
+            # Unified family: classic + HC
+            return self._merge_compute_capacity(_one("classic"), _one("hyperconverged"))
+
+        return _one(None)
 
     def _fetch_veeam_datastore_storage(
         self, dc_code: str, *, include_nutanix: bool = False
@@ -2903,7 +2953,9 @@ SELECT _tot, _alloc FROM latest
         raw: dict | None = None
         kind_l = (panel.resource_kind or "").lower()
 
-        # Veeam replication storage: all VMware DS except NetBackup (+ Nutanix on HC).
+        # Veeam replication storage: all VMware DS except NetBackup (+ Nutanix on HC/unified).
+        # Dedicated compute path only — never fall back to generic infra SUM.
+        skip_infra_fallback = False
         if (
             panel.family in (
                 "backup_veeam_replication",
@@ -2914,17 +2966,10 @@ SELECT _tot, _alloc FROM latest
             and bool(dc_code)
             and dc_code != "*"
         ):
+            skip_infra_fallback = True
             include_ntnx = panel.family in _REPLICATION_HC_FAMILIES or (
                 panel.family == "backup_veeam_replication"
             )
-            # Legacy combined family: classic DS only (no Nutanix) to avoid double-count;
-            # architecture-specific families set include_ntnx explicitly.
-            if panel.family == "backup_veeam_replication":
-                include_ntnx = False
-            elif panel.family == "backup_veeam_replication_classic":
-                include_ntnx = False
-            else:
-                include_ntnx = True
             veeam_raw = self._fetch_veeam_datastore_storage(
                 dc_code, include_nutanix=include_ntnx
             )
@@ -2940,8 +2985,15 @@ SELECT _tot, _alloc FROM latest
                         + (", +Nutanix" if include_ntnx else "")
                         + ")"
                     )
+            if compute_metrics is None:
+                has_infra = False
+                notes.append(
+                    "veeam storage: backup-veeam-storage unavailable; "
+                    "infra SUM fallback disabled"
+                )
 
         # Zerto replication storage: VMware DS except Veeam+NetBackup (+ Nutanix on HC).
+        # NEVER fall back to raw_zerto_site_metrics history SUM (inflates to billions TL).
         if (
             compute_metrics is None
             and panel.family in (
@@ -2953,7 +3005,11 @@ SELECT _tot, _alloc FROM latest
             and bool(dc_code)
             and dc_code != "*"
         ):
-            include_ntnx = panel.family in _REPLICATION_HC_FAMILIES
+            skip_infra_fallback = True
+            include_ntnx = (
+                panel.family in _REPLICATION_HC_FAMILIES
+                or panel.family == "backup_zerto_replication"
+            )
             zerto_raw = self._fetch_zerto_datastore_storage(
                 dc_code, include_nutanix=include_ntnx
             )
@@ -2968,6 +3024,30 @@ SELECT _tot, _alloc FROM latest
                         "(VMware DS except Veeam+NetBackup"
                         + (", +Nutanix" if include_ntnx else "")
                         + ")"
+                    )
+            if compute_metrics is None:
+                has_infra = False
+                notes.append(
+                    "zerto storage: backup-zerto-storage unavailable; "
+                    "raw_zerto_site_metrics fallback disabled"
+                )
+
+        # Also block known-bad Zerto site-metrics infra even when DC is global (*).
+        if (
+            kind_l == "storage"
+            and panel.family in (
+                "backup_zerto_replication",
+                "backup_zerto_replication_classic",
+                "backup_zerto_replication_hyperconverged",
+            )
+            and (src.source_table or "").strip().lower() == "raw_zerto_site_metrics"
+        ):
+            skip_infra_fallback = True
+            if compute_metrics is None:
+                has_infra = False
+                if not any("raw_zerto_site_metrics fallback disabled" in n for n in notes):
+                    notes.append(
+                        "zerto storage: raw_zerto_site_metrics fallback disabled"
                     )
 
         # Replication storage must NOT use classic host storage from backup-replication.
@@ -3032,8 +3112,11 @@ SELECT _tot, _alloc FROM latest
                     f"via datacenter-api/compute/{_FAMILY_COMPUTE_ENDPOINT[panel.family]} "
                     f"({scope_note})"
                 )
-        elif not has_infra:
-            notes.append("infra-source missing — configure in Settings")
+        elif not has_infra or skip_infra_fallback:
+            if not has_infra and not any(
+                "fallback disabled" in n or "infra-source missing" in n for n in notes
+            ):
+                notes.append("infra-source missing — configure in Settings")
             total_disp = 0.0
             alloc_disp = 0.0
         else:

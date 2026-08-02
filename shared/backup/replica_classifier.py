@@ -136,12 +136,13 @@ def reconcile_vendor_counts(
 def classify_veeam_session_or_job_type(
     value: str | None,
     mapping: dict[str, Any] | None = None,
-) -> Literal["replica", "backup", "other"]:
-    """Map Veeam session_type or jobs.type to replica / backup / other.
+) -> Literal["replica", "image_backup", "application_backup", "backup", "other"]:
+    """Map Veeam session_type or jobs.type to replication / image / application.
 
-    When ``mapping`` (or loaded YAML) lists exact type strings under
-    ``veeam_replication_session_types`` / ``veeam_backup_session_types``, those
-    win. Otherwise builtin contains heuristics apply.
+    Prefer ``veeam_image_backup_session_types`` /
+    ``veeam_application_backup_session_types``. Legacy ``veeam_backup_session_types``
+    still maps to ``backup`` (treated as image_backup by UI helpers).
+    Returns ``replica`` | ``image_backup`` | ``application_backup`` | ``backup`` | ``other``.
     """
     raw = (value or "").strip()
     if not raw:
@@ -153,6 +154,16 @@ def classify_veeam_session_or_job_type(
         for t in (cfg.get("veeam_replication_session_types") or [])
         if str(t).strip()
     }
+    img = {
+        str(t).strip().casefold()
+        for t in (cfg.get("veeam_image_backup_session_types") or [])
+        if str(t).strip()
+    }
+    app = {
+        str(t).strip().casefold()
+        for t in (cfg.get("veeam_application_backup_session_types") or [])
+        if str(t).strip()
+    }
     bak = {
         str(t).strip().casefold()
         for t in (cfg.get("veeam_backup_session_types") or [])
@@ -161,25 +172,50 @@ def classify_veeam_session_or_job_type(
     key = raw.casefold()
     if key in rep:
         return "replica"
+    if key in app:
+        return "application_backup"
+    if key in img:
+        return "image_backup"
     if key in bak:
         return "backup"
     # Builtin fallback for unlisted types
     if "replica" in key:
         return "replica"
+    if any(tok in key for tok in ("sql", "oracle", "sap", "exchange", "application")):
+        return "application_backup"
     if "backup" in key:
-        return "backup"
+        return "image_backup"
+    return "other"
+
+
+def veeam_session_backup_category(
+    value: str | None,
+    mapping: dict[str, Any] | None = None,
+) -> Literal["replication", "image", "application", "other"]:
+    """UI-facing bucket for Image | Application | Replication tabs."""
+    kind = classify_veeam_session_or_job_type(value, mapping)
+    if kind == "replica":
+        return "replication"
+    if kind in ("image_backup", "backup"):
+        return "image"
+    if kind == "application_backup":
+        return "application"
     return "other"
 
 
 @lru_cache(maxsize=8)
 def load_veeam_session_mapping(path: str | None = None) -> dict[str, Any]:
-    """Load Veeam session_type → replication/backup seed YAML."""
+    """Load Veeam session_type → replication/image/application seed YAML."""
     mapping_path = Path(path) if path else (
         Path(__file__).resolve().parent / "veeam_session_mapping.yaml"
     )
     default: dict[str, Any] = {
         "version": 1,
         "veeam_replication_session_types": ["ReplicaJob", "VSphereReplica", "Replica"],
+        "veeam_image_backup_session_types": ["BackupJob", "Backup", "BackupCopyJob"],
+        "veeam_application_backup_session_types": [
+            "SqlBackup", "OracleBackup", "SapBackup", "ExchangeBackup", "ApplicationBackup",
+        ],
         "veeam_backup_session_types": ["BackupJob", "Backup", "BackupCopyJob"],
     }
     try:

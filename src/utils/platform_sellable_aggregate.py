@@ -26,21 +26,17 @@ from src.utils.virt_sellable_aggregate import (
 # English info tooltip service groups for Potential Sales.
 POTENTIAL_SALES_SERVICE_GROUPS: tuple[str, ...] = (
     "Virtualization (Classic, Hyperconverged, Power)",
-    "Backup (NetBackup Image / Application, Nutanix Snapshots)",
-    "Replication (Veeam / Zerto — classic and hyperconverged SKUs)",
+    "Backup (NetBackup Image / Application — sold↔used for Nutanix snapshots)",
+    "Replication (Veeam / Zerto — unified families; architecture is filter only)",
     "Colocation / Physical (rack-U)",
 )
 
+# Potential Sales / sellable cards: one family per product line (no Classic/HC
+# duplicate cards, no Nutanix image sellable — snapshots are comparison-only).
 BACKUP_SELLABLE_FAMILIES: tuple[str, ...] = (
     "backup_netbackup",
-    "backup_veeam_replication_classic",
-    "backup_veeam_replication_hyperconverged",
-    "backup_zerto_replication_classic",
-    "backup_zerto_replication_hyperconverged",
-    # Legacy combined families (still in DB until migration remaps everything)
     "backup_veeam_replication",
     "backup_zerto_replication",
-    "backup_image",
 )
 
 _NETBACKUP_PANEL_KEYS = frozenset({
@@ -51,6 +47,7 @@ _NETBACKUP_PANEL_KEYS = frozenset({
 _REPLICATION_FAMILIES = frozenset({
     "backup_veeam_replication",
     "backup_zerto_replication",
+    # Legacy classic/HC keys may still appear in cached panel rows
     "backup_veeam_replication_classic",
     "backup_zerto_replication_classic",
     "backup_veeam_replication_hyperconverged",
@@ -63,8 +60,6 @@ _VIRT_COMPUTE_FAMILIES = frozenset({
 })
 
 _REPLICATION_CLASSIC_FAMILIES = frozenset({
-    "backup_veeam_replication",
-    "backup_zerto_replication",
     "backup_veeam_replication_classic",
     "backup_zerto_replication_classic",
 })
@@ -72,6 +67,11 @@ _REPLICATION_CLASSIC_FAMILIES = frozenset({
 _REPLICATION_HC_FAMILIES = frozenset({
     "backup_veeam_replication_hyperconverged",
     "backup_zerto_replication_hyperconverged",
+})
+
+_REPLICATION_UNIFIED_FAMILIES = frozenset({
+    "backup_veeam_replication",
+    "backup_zerto_replication",
 })
 
 
@@ -86,11 +86,14 @@ def collect_backup_sellable_panels(
 
     def _fetch(family: str) -> list[dict]:
         kwargs: dict[str, Any] = {"dc_code": str(dc_id), "family": family}
-        if family in _REPLICATION_CLASSIC_FAMILIES:
+        if family in _REPLICATION_UNIFIED_FAMILIES:
+            # Unified family: pass both scopes when available (API may ignore).
+            merged = list(classic_clusters or []) + list(hyperconv_clusters or [])
+            if merged:
+                kwargs["clusters"] = merged
+        elif family in _REPLICATION_CLASSIC_FAMILIES:
             kwargs["clusters"] = classic_clusters
         elif family in _REPLICATION_HC_FAMILIES:
-            kwargs["clusters"] = hyperconv_clusters
-        elif family == "backup_image":
             kwargs["clusters"] = hyperconv_clusters
         chunk = api.get_sellable_by_panel(**kwargs) or []
         return chunk if isinstance(chunk, list) else []
@@ -276,10 +279,10 @@ def potential_sales_info_text() -> str:
             "(dedicated; not shared with virt). On hyperconverged, Nutanix disks "
             "are included when VMware-managed HC VMs use Veeam.",
             "• Zerto replication storage uses VMware datastores except Veeam and "
-            "NetBackup (dedicated). On hyperconverged, Nutanix disks are included "
-            "when VMware-managed HC VMs use Zerto.",
-            "• Classic vs Hyperconverged CRM SKUs map to separate sellable families "
-            "(cluster ILIKE %KM% → classic; otherwise HC / Nutanix mirror).",
+            "NetBackup (dedicated compute path only — never raw site-metrics history).",
+            "• Classic vs Hyperconverged is a filter/breakdown only; sellable cards "
+            "use one Veeam Replication and one Zerto Replication family.",
+            "• Nutanix image snapshots are sold↔used comparison only (not sellable).",
             "• Colocation free rack-U is included.",
             "• License headroom is not included yet (external data source planned).",
         ]
