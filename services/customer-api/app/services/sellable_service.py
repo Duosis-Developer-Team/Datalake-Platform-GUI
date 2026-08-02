@@ -2967,9 +2967,10 @@ SELECT _tot, _alloc FROM latest
             and dc_code != "*"
         ):
             skip_infra_fallback = True
-            include_ntnx = panel.family in _REPLICATION_HC_FAMILIES or (
-                panel.family == "backup_veeam_replication"
-            )
+            include_ntnx = panel.family in _REPLICATION_HC_FAMILIES
+            # Unified family uses classic VMware DS pool (include_nutanix can 500 on some DCs).
+            if panel.family == "backup_veeam_replication":
+                include_ntnx = False
             veeam_raw = self._fetch_veeam_datastore_storage(
                 dc_code, include_nutanix=include_ntnx
             )
@@ -3006,10 +3007,8 @@ SELECT _tot, _alloc FROM latest
             and dc_code != "*"
         ):
             skip_infra_fallback = True
-            include_ntnx = (
-                panel.family in _REPLICATION_HC_FAMILIES
-                or panel.family == "backup_zerto_replication"
-            )
+            include_ntnx = panel.family in _REPLICATION_HC_FAMILIES
+            # Unified family: VMware DS except Veeam+NetBackup (include_nutanix can fail).
             zerto_raw = self._fetch_zerto_datastore_storage(
                 dc_code, include_nutanix=include_ntnx
             )
