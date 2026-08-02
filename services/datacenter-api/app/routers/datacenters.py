@@ -436,6 +436,21 @@ def hyperconv_compute_hosts(
     return db.get_hyperconv_host_rows(dc_code, selected, tf.to_dict())
 
 
+@router.get("/datacenters/{dc_code}/compute/power/hosts", response_model=dict[str, Any])
+def power_compute_hosts(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+):
+    """Per-frame CPU/RAM capacity, usage and LPAR allocation for IBM Power.
+
+    The frame is the host. CPU is reported in cores; storage is zero because the
+    arrays behind these frames are shared with the classic estate and free space
+    is not attributable per frame. No cluster filter: Power frames have none.
+    """
+    return db.get_power_host_rows(dc_code, None, tf.to_dict())
+
+
 @router.get("/datacenters/{dc_code}/racks", response_model=dict[str, Any])
 def dc_racks(dc_code: str, db: DatabaseService = Depends(get_db)):
     return db.get_dc_racks(dc_code)

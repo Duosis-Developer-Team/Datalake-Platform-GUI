@@ -77,6 +77,12 @@ _DC_CODE_RE = re.compile(r'(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)', re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 
+# IBM Power reports processor capacity in processing units; one procunit is a
+# whole physical core split 8 ways by the hypervisor. Every Power figure the GUI
+# and the sellable pipeline show is in cores, so the conversion lives here rather
+# than being spelled 8.0 at each call site.
+POWER_CORES_PER_PROCUNIT = 8.0
+
 # Fallback DC list used when loki_locations is unreachable.
 _FALLBACK_DC_LIST = [
     "AZ11", "DC11", "DC12", "DC13", "DC14", "DC15", "DC16", "DC17", "ICT11"
@@ -2239,6 +2245,149 @@ LIMIT 20
         clusters = sorted(c for c in (selected_clusters or []) if c)
         return self._slice_host_rows_payload(cached_val, clusters or None)
 
+    def _fetch_power_host_rows_all(self, dc_code: str, time_range: dict) -> dict:
+        """Load all IBM Power frames for a DC/time range as host rows.
+
+        A frame is the host: capacity from ibm_server_general, allocation from
+        rolling up its LPARs. Everything is emitted in the units the virt_power
+        panels display -- CPU in cores (procunits x 8), memory in GB.
+        """
+        start_ts, end_ts = time_range_to_bounds(time_range)
+        dc_wc = f"%{dc_code}%"
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    frame_rows = self._run_rows(
+                        cur, iq.POWER_HOST_ROWS, (dc_wc, start_ts, end_ts)
+                    )
+                    alloc_rows = self._run_rows(
+                        cur, iq.POWER_HOST_LPAR_ALLOCATION, (dc_wc, start_ts, end_ts)
+                    )
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_power_host_rows(%s): %s", dc_code, exc)
+            return finalize_host_payload({"hosts": [], "host_count": 0})
+
+        alloc_map = {
+            str(r[0] or "").strip(): {
+                "lpar_count": int(r[1] or 0),
+                "cpu_alloc_cores": float(r[2] or 0) * POWER_CORES_PER_PROCUNIT,
+                "mem_alloc_gb": float(r[3] or 0) / 1024.0,
+            }
+            for r in alloc_rows or []
+            if r and r[0]
+        }
+
+        hosts = []
+        for r in frame_rows or []:
+            frame = str(r[0] or "").strip()
+            if not frame:
+                continue
+            hosts.append(
+                self._power_host_row_payload(
+                    frame=frame,
+                    cpu_cap_cores=float(r[1] or 0) * POWER_CORES_PER_PROCUNIT,
+                    cpu_used_cores=float(r[2] or 0) * POWER_CORES_PER_PROCUNIT,
+                    mem_cap_gb=float(r[3] or 0) / 1024.0,
+                    mem_available_gb=float(r[4] or 0) / 1024.0,
+                    alloc=alloc_map.get(frame),
+                )
+            )
+        hosts.sort(key=lambda h: h["host"])
+        return finalize_host_payload({"hosts": hosts, "host_count": len(hosts)})
+
+    @staticmethod
+    def _power_host_row_payload(
+        *,
+        frame: str,
+        cpu_cap_cores: float,
+        cpu_used_cores: float,
+        mem_cap_gb: float,
+        mem_available_gb: float,
+        alloc: dict | None,
+    ) -> dict:
+        """Normalize one Power frame into the shared host-row shape.
+
+        Deliberate choices, because a frame is not a hypervisor host:
+
+        * ``cpu_cap_ghz`` / ``cpu_alloc_ghz`` carry **cores**, not GHz. The
+          sellable engine reads these raw fields as the CPU axis and the
+          virt_power ratio is expressed in cores, so converting to GHz here
+          would inflate the axis by ghz_per_core. ``ghz_per_core`` is therefore
+          1.0 and the physical CPU track equals the sales track.
+        * ``mem_used_gb`` is total - available, the frame's real memory
+          commitment including the firmware/hypervisor reserve, while
+          ``mem_alloc_gb`` is the LPAR roll-up. The first gates the frame, the
+          second sizes its headroom; the reserve sits between them (~2%).
+        * The HMC exposes one sample per frame, not a window, so the peak track
+          is set equal to the latest sample rather than left absent -- an absent
+          peak would read as zero usage against a real capacity and manufacture
+          headroom. No average trio is emitted for the same reason.
+        * Storage is zero on purpose. The arrays behind these frames also serve
+          the classic ESXi estate, so free space is not attributable per frame;
+          the virt_power storage panel keeps its aggregate [min, max] range.
+          ``stor_cap_gb`` of 0 drops storage out of the per-frame min(), and
+          ``km_shared_storage`` records why.
+        """
+        alloc = alloc or {}
+        cpu_alloc_cores = float(alloc.get("cpu_alloc_cores") or 0.0)
+        mem_alloc_gb = float(alloc.get("mem_alloc_gb") or 0.0)
+        mem_used_gb = max(mem_cap_gb - mem_available_gb, 0.0)
+        cpu_used_pct = round(100.0 * cpu_used_cores / cpu_cap_cores, 1) if cpu_cap_cores > 0 else 0.0
+        mem_used_pct = round(100.0 * mem_used_gb / mem_cap_gb, 1) if mem_cap_gb > 0 else 0.0
+        return {
+            "host": frame,
+            "cluster": "",
+            "vm_count": int(alloc.get("lpar_count") or 0),
+            "cpu_cap_ghz": round(cpu_cap_cores, 2),
+            "cpu_used_ghz": round(cpu_used_cores, 2),
+            "cpu_used_ghz_peak": round(cpu_used_cores, 2),
+            "cpu_used_pct": cpu_used_pct,
+            "cpu_peak_util_pct": cpu_used_pct,
+            "cpu_alloc_ghz": round(cpu_alloc_cores, 2),
+            "cpu_alloc_ghz_physical": round(cpu_alloc_cores, 2),
+            "cpu_alloc_pct": (
+                round(100.0 * cpu_alloc_cores / cpu_cap_cores, 1) if cpu_cap_cores > 0 else 0.0
+            ),
+            "ghz_per_core": 1.0,
+            "cpu_cap_cores": round(cpu_cap_cores, 2),
+            "mem_cap_gb": round(mem_cap_gb, 2),
+            "mem_used_gb": round(mem_used_gb, 2),
+            "mem_used_gb_peak": round(mem_used_gb, 2),
+            "mem_cap_gb_at_peak": round(mem_cap_gb, 2),
+            "mem_used_pct": mem_used_pct,
+            "mem_peak_util_pct": mem_used_pct,
+            "mem_alloc_gb": round(mem_alloc_gb, 2),
+            "mem_alloc_pct": (
+                round(100.0 * mem_alloc_gb / mem_cap_gb, 1) if mem_cap_gb > 0 else 0.0
+            ),
+            "stor_cap_gb": 0.0,
+            "stor_provisioned_gb": 0.0,
+            "stor_used_gb": 0.0,
+            "stor_used_pct": 0.0,
+            "km_shared_storage": True,
+        }
+
+    def get_power_host_rows(
+        self, dc_code: str, selected_clusters: list[str] | None = None, time_range: dict | None = None
+    ) -> dict:
+        """Per-frame compute capacity/usage/allocation for IBM Power.
+
+        Source: ibm_server_general (frame capacity + utilization) and
+        ibm_lpar_general (entitled procunits / logical memory per partition).
+        Cached per dc/time like the Classic and Hyperconverged host rows.
+        ``selected_clusters`` is accepted for signature parity and ignored:
+        Power frames carry no cluster, so filtering by one would return nothing.
+        """
+        _ = selected_clusters
+        tr = time_range or default_time_range()
+        cache_key = f"power_hosts_all:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is None:
+            cached_val = cache.run_singleflight(
+                cache_key, lambda: self._fetch_power_host_rows_all(dc_code, tr)
+            )
+        return self._slice_host_rows_payload(cached_val, None)
+
     # ------------------------------------------------------------------
     # Unit normalization & aggregation (shared by single + batch paths)
     # ------------------------------------------------------------------
@@ -2475,9 +2624,13 @@ LIMIT 20
                 "vios": int(power_vios or 0),
                 "lpar_count": int(power_lpar_count or 0),
                 "cpu_total_procunits": round(float(power_cpu[0] or 0), 2),
-                "cpu_total_cores": round(float(power_cpu[0] or 0) * 8.0, 2),
+                "cpu_total_cores": round(
+                    float(power_cpu[0] or 0) * POWER_CORES_PER_PROCUNIT, 2
+                ),
                 "cpu_available_procunits": round(float(power_cpu[1] or 0), 2),
-                "cpu_available_cores": round(float(power_cpu[1] or 0) * 8.0, 2),
+                "cpu_available_cores": round(
+                    float(power_cpu[1] or 0) * POWER_CORES_PER_PROCUNIT, 2
+                ),
                 "cpu_used": round(float(power_cpu[2] or 0), 2),
                 "cpu_assigned": round(float(power_cpu[3] or 0), 2),
                 "memory_total": round(float(power_mem[0] or 0) / 1024.0, 2),

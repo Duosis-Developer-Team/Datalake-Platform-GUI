@@ -62,6 +62,52 @@ SELECT
 FROM latest_per_server
 """
 
+# --- Per-frame rows (host-based sellable path) ---
+# For the sellable engine a Power frame plays the same role a hypervisor host
+# plays for VMware/Nutanix: capacity is bounded per frame, so sellable is
+# min(CPU, RAM) per frame summed, not one min() over DC-wide totals. Capacity
+# comes from the frame itself; allocation is the roll-up of its LPARs, which is
+# the source the virt_power panels declare (lpar_processor_entitledprocunits /
+# lpar_memory_logicalmem) — deliberately not the frame's own
+# physicalprocessorpool_assignedprocunits, which is the shared-pool size rather
+# than what is entitled to partitions.
+#
+# The LPAR roll-up dedupes to the latest sample per LPAR *before* grouping, so a
+# frame is not multiplied by how many times its partitions were sampled.
+# Params: (wildcard, start_ts, end_ts)
+
+POWER_HOST_ROWS = """
+SELECT DISTINCT ON (server_details_servername)
+    server_details_servername,
+    server_processor_totalprocunits,
+    server_processor_utilizedprocunits,
+    server_memory_totalmem,
+    server_memory_availablemem
+FROM public.ibm_server_general
+WHERE server_details_servername LIKE %s AND time BETWEEN %s AND %s
+ORDER BY server_details_servername, time DESC
+"""
+
+POWER_HOST_LPAR_ALLOCATION = """
+WITH latest_per_lpar AS (
+    SELECT DISTINCT ON (lparname)
+        lparname,
+        lpar_details_servername,
+        lpar_processor_entitledprocunits,
+        lpar_memory_logicalmem
+    FROM public.ibm_lpar_general
+    WHERE lpar_details_servername LIKE %s AND time BETWEEN %s AND %s
+    ORDER BY lparname, time DESC
+)
+SELECT
+    lpar_details_servername,
+    COUNT(*) AS lpar_count,
+    COALESCE(SUM(lpar_processor_entitledprocunits), 0) AS entitled_proc,
+    COALESCE(SUM(lpar_memory_logicalmem), 0) AS logical_mem
+FROM latest_per_lpar
+GROUP BY lpar_details_servername
+"""
+
 # --- Batch queries (lightweight — no regex) ---
 # These fetch raw rows; DC code extraction is done in Python to minimise
 # database CPU load and allow the queries to leverage simple time-range
