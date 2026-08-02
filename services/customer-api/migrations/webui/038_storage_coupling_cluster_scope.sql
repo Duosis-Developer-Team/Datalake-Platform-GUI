@@ -82,9 +82,13 @@ WHERE  family = 'virt_km'
   AND  updated_by = 'seed';
 
 UPDATE gui_family_storage_coupling
-SET    notes = 'IBM Power — compute is per-frame (ibm_server_general) but storage lives '
-               'on shared arrays (raw_ibm_storage_system) with no frame-to-array link, '
-               'so Power is separate from compute in practice.'
+SET    notes = 'IBM Power — compute is per-frame (ibm_server_general). A frame-to-array '
+               'link does exist (ibm_lpar_general.lparname -> '
+               'raw_ibm_storage_mdiskgrp_host_mapping.host_name, which is the LPAR name '
+               'plus a -NNNNNNNN suffix); it covers 34/36 frames and no frame spans two '
+               'arrays. What is not attributable is array FREE space: the same pools also '
+               'serve the KM/classic ESXi hosts, which is why virt_power carries a '
+               '[min, max] storage range. Power is separate from compute in practice.'
 WHERE  family = 'virt_power'
   AND  scope_kind = 'family'
   AND  updated_by = 'seed';
