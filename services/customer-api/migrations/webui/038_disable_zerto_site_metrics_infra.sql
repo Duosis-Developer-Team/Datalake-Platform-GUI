@@ -9,8 +9,7 @@ SET source_table = NULL,
     allocated_table = NULL,
     allocated_column = NULL,
     allocated_unit = NULL,
-    filter_column = NULL,
-    filter_pattern = NULL,
+    filter_clause = NULL,
     notes = COALESCE(notes, '') || CASE
         WHEN COALESCE(notes, '') = '' THEN 'disabled: use backup-zerto-storage compute (038)'
         WHEN notes LIKE '%backup-zerto-storage%' THEN ''
