@@ -2018,6 +2018,38 @@ def test_sum_netbackup_pool_rows():
     assert avail == 2100.0
 
 
+def test_fetch_netbackup_pool_bytes_keeps_api_when_sql_wildly_larger():
+    sellable = SellableService.__new__(SellableService)
+    sellable._aggregate_netbackup_pools_via_dc_api = MagicMock(return_value={
+        "total_bytes": 1_000.0,
+        "used_pool_bytes": 400.0,
+        "available_bytes": 600.0,
+    })
+    sellable._aggregate_netbackup_pools_via_sql_fallback = MagicMock(return_value={
+        "total_bytes": 10_000.0,
+        "used_pool_bytes": 4000.0,
+        "available_bytes": 6000.0,
+    })
+    out = sellable._fetch_netbackup_pool_bytes()
+    assert out["total_bytes"] == 1_000.0
+
+
+def test_fetch_netbackup_pool_bytes_prefers_sql_when_modestly_larger():
+    sellable = SellableService.__new__(SellableService)
+    sellable._aggregate_netbackup_pools_via_dc_api = MagicMock(return_value={
+        "total_bytes": 1_000.0,
+        "used_pool_bytes": 400.0,
+        "available_bytes": 600.0,
+    })
+    sellable._aggregate_netbackup_pools_via_sql_fallback = MagicMock(return_value={
+        "total_bytes": 2_500.0,
+        "used_pool_bytes": 900.0,
+        "available_bytes": 1600.0,
+    })
+    out = sellable._fetch_netbackup_pool_bytes()
+    assert out["total_bytes"] == 2_500.0
+
+
 def test_aggregate_netbackup_pools_via_dc_api_sums_all_dcs():
     svc = SellableService.__new__(SellableService)
     svc._dc_api_url = "http://dc-api:8000"

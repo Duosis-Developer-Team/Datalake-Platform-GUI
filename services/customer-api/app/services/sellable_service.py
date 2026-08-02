@@ -1410,7 +1410,15 @@ SELECT _tot, _alloc FROM latest
             return api_pools
         api_total = float(api_pools.get("total_bytes") or 0.0)
         sql_total = float(sql_pools.get("total_bytes") or 0.0)
-        if sql_total > api_total * 1.05:
+        # Prefer SQL only when DC-api looks under-counted (e.g. one DC) and SQL
+        # is modestly larger — not when SQL is wildly inflated (DISTINCT ON miss).
+        if api_total <= 0 and sql_total > 0:
+            return sql_pools
+        if (
+            api_total > 0
+            and sql_total > api_total * 1.05
+            and sql_total <= api_total * 4.0
+        ):
             logger.warning(
                 "SellableService: NetBackup pool SQL total_bytes=%.0f exceeds "
                 "DC-api total_bytes=%.0f — using SQL for platform-wide Total",
@@ -1418,6 +1426,13 @@ SELECT _tot, _alloc FROM latest
                 api_total,
             )
             return sql_pools
+        if sql_total > api_total * 4.0:
+            logger.warning(
+                "SellableService: NetBackup SQL total_bytes=%.0f >> DC-api "
+                "total_bytes=%.0f — keeping DC-api (SQL likely over-count)",
+                sql_total,
+                api_total,
+            )
         return api_pools
 
     def _fetch_netbackup_jobs_dedup_summary(self) -> tuple[float, float]:
@@ -2107,41 +2122,54 @@ SELECT _tot, _alloc FROM latest
         family: str,
         dc_codes: list[str],
     ) -> tuple[float, float, float | None] | None:
-        """Sum Veeam/Zerto DS storage across DCs for global inventory HOST_DUAL."""
+        """Sum Veeam/Zerto DS storage across DCs for global inventory HOST_DUAL.
+
+        HC prefers ``include_nutanix=true``; if every DC fails, fall back to
+        classic DS-only so Zerto/Veeam HC storage rows still get ``has_infra``.
+        """
         codes = [c for c in (dc_codes or []) if c and c != "*"]
         if not codes:
             return None
-        include_ntnx = family in _REPLICATION_HC_FAMILIES
         is_veeam = family.startswith("backup_veeam_replication")
         is_zerto = family.startswith("backup_zerto_replication")
         if not is_veeam and not is_zerto:
             return None
-        total = 0.0
-        allocated = 0.0
-        util_weighted = 0.0
-        weight = 0.0
-        ok = 0
-        for code in codes:
-            raw = (
-                self._fetch_veeam_datastore_storage(code, include_nutanix=include_ntnx)
-                if is_veeam
-                else self._fetch_zerto_datastore_storage(code, include_nutanix=include_ntnx)
-            )
-            metrics = self._extract_compute_metrics(raw, "storage") if raw else None
-            if metrics is None:
+        prefer_ntnx = family in _REPLICATION_HC_FAMILIES
+        for include_ntnx in ((True, False) if prefer_ntnx else (False,)):
+            total = 0.0
+            allocated = 0.0
+            util_weighted = 0.0
+            weight = 0.0
+            ok = 0
+            for code in codes:
+                raw = (
+                    self._fetch_veeam_datastore_storage(code, include_nutanix=include_ntnx)
+                    if is_veeam
+                    else self._fetch_zerto_datastore_storage(code, include_nutanix=include_ntnx)
+                )
+                metrics = self._extract_compute_metrics(raw, "storage") if raw else None
+                if metrics is None:
+                    continue
+                cap, used, _unit = metrics
+                total += cap
+                allocated += used
+                util = self._extract_utilization_pct(raw, "storage")
+                if util is not None and cap > 0:
+                    util_weighted += util * cap
+                    weight += cap
+                ok += 1
+            if ok == 0 or total <= 0:
                 continue
-            cap, used, _unit = metrics
-            total += cap
-            allocated += used
-            util = self._extract_utilization_pct(raw, "storage")
-            if util is not None and cap > 0:
-                util_weighted += util * cap
-                weight += cap
-            ok += 1
-        if ok == 0 or total <= 0:
-            return None
-        util_pct = (util_weighted / weight) if weight > 0 else None
-        return total, allocated, util_pct
+            util_pct = (util_weighted / weight) if weight > 0 else None
+            if prefer_ntnx and not include_ntnx:
+                logger.warning(
+                    "replication storage multi: HC family=%s Nutanix path empty; "
+                    "using classic DS-only across %d DC(s)",
+                    family,
+                    ok,
+                )
+            return total, allocated, util_pct
+        return None
 
     def _apply_replication_storage_multi(
         self,
@@ -2523,14 +2551,20 @@ SELECT _tot, _alloc FROM latest
                     new_group = self._subtract_replica_allocation_from_virt(
                         new_group, dc_code, fam,
                     )
-                if (
-                    fam in _REPLICATION_HOST_SOURCE_FAMILY
-                    and deferred_storage
-                    and global_host_dcs
-                ):
-                    deferred_storage = self._apply_replication_storage_multi(
-                        deferred_storage, fam, global_host_dcs, unit_lookup,
+                if fam in _REPLICATION_HOST_SOURCE_FAMILY and deferred_storage:
+                    storage_dcs = list(global_host_dcs) if global_host_dcs else (
+                        [dc_code] if dc_code and dc_code != "*" else []
                     )
+                    if storage_dcs:
+                        deferred_storage = self._apply_replication_storage_multi(
+                            deferred_storage, fam, storage_dcs, unit_lookup,
+                        )
+                    elif refresh_from_totals:
+                        deferred_storage = self._refresh_group_sellable_from_totals(
+                            deferred_storage,
+                            computation_mode=deferred_storage[0].computation_mode
+                            or "aggregated",
+                        )
                 elif refresh_from_totals and deferred_storage:
                     # Global inventory hands us pre-merged panels with
                     # sellable_raw zeroed (_merge_panel_results); the aggregate

@@ -28,6 +28,25 @@ def test_aggregate_replication_storage_multi_sums_dcs():
     _ = util  # optional util when stor_pct absent
 
 
+def test_aggregate_replication_storage_multi_hc_falls_back_without_nutanix():
+    svc = SellableService.__new__(SellableService)
+    svc._dc_api_url = "http://dc-api"  # type: ignore[attr-defined]
+
+    def _fetch(dc_code, *, include_nutanix=False):
+        if include_nutanix:
+            return None
+        return {"stor_cap": 800.0, "stor_provisioned_gb": 100.0 * 1024, "stor_used_pct": 10.0}
+
+    svc._fetch_zerto_datastore_storage = MagicMock(side_effect=_fetch)  # type: ignore[method-assign]
+    out = svc._aggregate_replication_storage_multi(
+        "backup_zerto_replication_hyperconverged",
+        ["DC13"],
+    )
+    assert out is not None
+    assert out[0] == 800.0
+    assert svc._fetch_zerto_datastore_storage.call_count >= 2
+
+
 def test_apply_replication_storage_multi_sets_has_infra():
     sto = PanelResult(
         panel_key="backup_veeam_replication_classic_storage",
