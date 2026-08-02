@@ -363,9 +363,56 @@ def _value_tl_from_catalog_price(
     return compute_potential_tl(float(qty), price)
 
 
+def _netbackup_job_metrics_for_panel(
+    metrics: dict[str, Any],
+    panel_key: str,
+) -> dict[str, float]:
+    """Pick Image/Application job slice; Total/Free stay on shared pool fields."""
+    by_cat = metrics.get("by_category") if isinstance(metrics, dict) else None
+    category: str | None = None
+    if panel_key == "backup_netbackup_image":
+        category = "image"
+    elif panel_key == "backup_netbackup_application":
+        category = "application"
+    slice_m: dict[str, Any] = {}
+    if category and isinstance(by_cat, dict):
+        raw = by_cat.get(category)
+        if isinstance(raw, dict):
+            slice_m = raw
+    return {
+        "pre_dedup_bytes": float(
+            slice_m.get("pre_dedup_bytes", metrics.get("pre_dedup_bytes", 0.0)) or 0.0
+        ),
+        "used_post_dedup_bytes": float(
+            slice_m.get(
+                "used_post_dedup_bytes",
+                metrics.get("used_post_dedup_bytes", 0.0),
+            )
+            or 0.0
+        ),
+        "dedup_savings_bytes": float(
+            slice_m.get(
+                "dedup_savings_bytes",
+                metrics.get("dedup_savings_bytes", 0.0),
+            )
+            or 0.0
+        ),
+        "dedup_savings_pct": float(
+            slice_m.get(
+                "dedup_savings_pct",
+                metrics.get("dedup_savings_pct", 0.0),
+            )
+            or 0.0
+        ),
+        "dedup_factor": float(
+            slice_m.get("dedup_factor", metrics.get("dedup_factor", 0.0)) or 0.0
+        ),
+    }
+
+
 def _apply_netbackup_inventory_fields(
     row: dict[str, Any],
-    metrics: dict[str, float],
+    metrics: dict[str, Any],
     *,
     under_pct: float = 80.0,
     over_pct: float = 110.0,
@@ -373,14 +420,17 @@ def _apply_netbackup_inventory_fields(
     """Enrich NetBackup row with dual-basis used (PreDedup) and PostDedup cost.
 
     K-01: customer billable ``used_qty`` = PreDedup; PostDedup is cost-only.
+    Total/Free/pool used = shared disk pool; Transfer/Post = Image or App jobs.
     """
     if not row.get("has_infra_source"):
         return row
     row = dict(row)
     has_price = bool(row.get("has_price"))
     unit_price = row.get("unit_price_tl")
-    pre = _bytes_to_tb(metrics.get("pre_dedup_bytes", 0.0))
-    post = _bytes_to_tb(metrics.get("used_post_dedup_bytes", 0.0))
+    panel_key = str(row.get("panel_key") or "")
+    job_m = _netbackup_job_metrics_for_panel(metrics, panel_key)
+    pre = _bytes_to_tb(job_m.get("pre_dedup_bytes", 0.0))
+    post = _bytes_to_tb(job_m.get("used_post_dedup_bytes", 0.0))
     if post <= 0.0 and row.get("used_qty") is not None:
         try:
             post = float(row.get("used_qty") or 0.0)
@@ -393,12 +443,17 @@ def _apply_netbackup_inventory_fields(
     row["pool_used_qty"] = pool_used
     row["pre_dedup_qty"] = pre
     row["post_dedup_qty"] = post
-    row["dedup_savings_qty"] = _bytes_to_tb(metrics.get("dedup_savings_bytes", 0.0))
-    row["dedup_savings_pct"] = float(metrics.get("dedup_savings_pct") or 0.0)
-    row["dedup_factor"] = float(metrics.get("dedup_factor") or 0.0)
-    # Compare disk-pool used vs job PostDedup footprint (not averaged).
+    row["dedup_savings_qty"] = _bytes_to_tb(job_m.get("dedup_savings_bytes", 0.0))
+    row["dedup_savings_pct"] = float(job_m.get("dedup_savings_pct") or 0.0)
+    row["dedup_factor"] = float(job_m.get("dedup_factor") or 0.0)
+    cat_label = (
+        "image" if panel_key == "backup_netbackup_image"
+        else "app" if panel_key == "backup_netbackup_application"
+        else "jobs"
+    )
+    # Shared pool used vs category job PostDedup footprint (not averaged).
     row["used_compare_note"] = (
-        f"Pool used: {pool_used:,.1f} TB · Jobs PostDedup: {post:,.1f} TB"
+        f"Pool used: {pool_used:,.1f} TB · {cat_label} PostDedup: {post:,.1f} TB"
     )
     row["free_tl"] = _value_tl_from_catalog_price(
         row.get("free_qty"),
@@ -771,7 +826,7 @@ def _sellable_track_fields(
     has_infra: bool,
     hide_used: bool = False,
 ) -> dict[str, Any]:
-    """Dual-track sellable quantities and TL for virtualization families."""
+    """Dual-track sellable quantities and TL for virtualization / replication families."""
     if not has_infra:
         return {
             "unit_price_tl": None,
@@ -793,9 +848,15 @@ def _sellable_track_fields(
     if max_qty is None and panel.resource_kind == "ram" and panel.sellable_effective is not None:
         max_qty = panel.sellable_effective
     avg_qty = panel.sellable_avg_util
-    potential_tl_alloc = panel.potential_tl_min
-    if potential_tl_alloc is None and panel.potential_tl is not None:
-        potential_tl_alloc = panel.potential_tl
+    # Replication: Alloc TL = triad qty × price (not alternate min=0 from Potential Sales).
+    if panel.family in _REPLICATION_ALLOCATION_FAMILIES and panel.has_price:
+        potential_tl_alloc = (
+            compute_potential_tl(alloc_qty, unit_price) if alloc_qty is not None else None
+        )
+    else:
+        potential_tl_alloc = panel.potential_tl_min
+        if potential_tl_alloc is None and panel.potential_tl is not None:
+            potential_tl_alloc = panel.potential_tl
     potential_tl_max = panel.potential_tl_max
     potential_tl_avg = (
         compute_potential_tl(avg_qty, unit_price)
@@ -1214,11 +1275,16 @@ class InventoryOverviewService:
             )
         else:
             used_out = used if panel.has_infra_source else None
-            free_out = (
-                max(float(total or 0) - used, 0.0)
-                if panel.has_infra_source and total is not None
-                else None
-            )
+            # Replication Free matches virt: Total − CRM Sold (not Total − allocation).
+            # Allocated column + oversub quality flag still surface allocation oversub.
+            if used_is_allocation and panel.has_infra_source and total is not None:
+                free_out = max(float(total or 0) - crm_sold, 0.0)
+            else:
+                free_out = (
+                    max(float(total or 0) - used, 0.0)
+                    if panel.has_infra_source and total is not None
+                    else None
+                )
             status = panel_inventory_status(
                 crm_sold_qty=crm_sold,
                 used_qty=used if panel.has_infra_source else 0.0,
@@ -1248,7 +1314,7 @@ class InventoryOverviewService:
                 if key in entitled:
                     crm_fields[key] = entitled[key]
         data_quality, suspect_reason = _assess_data_quality(panel, crm_sold=crm_sold)
-        # Replication Free = capacity headroom (total − allocation), never sellable min.
+        # Replication Free = Total − CRM Sold (virt parity); Allocated still shows allocation.
         inventory_free_mode = (
             "physical" if family_key in _PHYSICAL_FREE_FAMILIES
             else "capacity" if used_is_allocation

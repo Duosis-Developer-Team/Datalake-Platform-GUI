@@ -2085,12 +2085,17 @@ def test_aggregate_netbackup_pools_via_dc_api_sums_all_dcs():
 def test_query_netbackup_inventory_metrics_dedup_and_available():
     svc_inner = MagicMock()
     svc_inner._run_row.return_value = (512.0, 128.0)
+    svc_inner._run_rows.return_value = [
+        ("image", 400.0, 100.0),
+        ("application", 112.0, 28.0),
+    ]
     conn = MagicMock()
     svc_inner._get_connection.return_value.__enter__ = MagicMock(return_value=conn)
     svc_inner._get_connection.return_value.__exit__ = MagicMock(return_value=False)
 
     sellable = SellableService.__new__(SellableService)
     sellable._svc = svc_inner
+    sellable._netbackup_image_policy_types = MagicMock(return_value=["VMWARE"])
     sellable._fetch_netbackup_pool_bytes = MagicMock(return_value={
         "total_bytes": 5_000_000_000_000.0,
         "used_pool_bytes": 2_000_000_000_000.0,
@@ -2100,13 +2105,17 @@ def test_query_netbackup_inventory_metrics_dedup_and_available():
     assert metrics["total_bytes"] == 5_000_000_000_000.0
     assert metrics["used_pool_bytes"] == 2_000_000_000_000.0
     assert metrics["available_bytes"] == 3_000_000_000_000.0
+    # Flat totals prefer category sum when present
     assert metrics["pre_dedup_bytes"] == 512.0 * (1024.0 ** 3)
     assert metrics["used_post_dedup_bytes"] == 128.0 * (1024.0 ** 3)
     assert metrics["dedup_savings_bytes"] > 0
     assert metrics["dedup_factor"] == pytest.approx(4.0)
+    assert metrics["by_category"]["image"]["pre_dedup_bytes"] == 400.0 * (1024.0 ** 3)
+    assert metrics["by_category"]["application"]["pre_dedup_bytes"] == 112.0 * (1024.0 ** 3)
     svc_inner._run_row.assert_called_once()
     # Inventory uses all finished BACKUP jobs until retention exists (no time window).
     assert svc_inner._run_row.call_args[0][2] == ()
+    svc_inner._run_rows.assert_called()
 
 
 def test_query_netbackup_storage_totals_pool_capacity_and_pool_used():

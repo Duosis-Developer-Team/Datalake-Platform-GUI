@@ -81,6 +81,13 @@ def _panel_defs_default(**overrides) -> dict[str, dict]:
             "inventory_visible": True,
             "inventory_merge_target": None,
         },
+        "backup_veeam_replication_classic_cpu": {
+            "panel_key": "backup_veeam_replication_classic_cpu",
+            "family": "backup_veeam_replication_classic",
+            "inventory_visible": True,
+            "inventory_merge_target": None,
+            "label": "Veeam Replication Classic — CPU",
+        },
         "backup_netbackup_storage": {
             "panel_key": "backup_netbackup_storage",
             "family": "backup_netbackup",
@@ -153,14 +160,23 @@ def _panel_defs_default(**overrides) -> dict[str, dict]:
 
 
 def _stub_netbackup_metrics(sellable: MagicMock) -> None:
+    zero_cat = {
+        "pre_dedup_bytes": 0.0,
+        "used_post_dedup_bytes": 0.0,
+        "dedup_savings_bytes": 0.0,
+        "dedup_savings_pct": 0.0,
+        "dedup_factor": 0.0,
+    }
     sellable.get_netbackup_inventory_metrics.return_value = {
         "total_bytes": 0.0,
+        "used_pool_bytes": 0.0,
         "used_post_dedup_bytes": 0.0,
         "pre_dedup_bytes": 0.0,
         "available_bytes": 0.0,
         "dedup_savings_bytes": 0.0,
         "dedup_savings_pct": 0.0,
         "dedup_factor": 0.0,
+        "by_category": {"image": dict(zero_cat), "application": dict(zero_cat)},
     }
 
 
@@ -841,7 +857,149 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
     assert out["efficiency_pct"] == 500.0
     assert out["pool_used_qty"] == 12.0
     assert "Pool used: 12.0 TB" in out["used_compare_note"]
-    assert "Jobs PostDedup: 5.0 TB" in out["used_compare_note"]
+    assert "PostDedup: 5.0 TB" in out["used_compare_note"]
+
+
+def test_apply_netbackup_inventory_fields_splits_image_vs_application_jobs():
+    """Total/Free shared; Transfer/Post come from by_category slice."""
+    from app.services.inventory_overview_service import _apply_netbackup_inventory_fields
+
+    tb = 1024.0 ** 4
+    metrics = {
+        "available_bytes": 200.0 * tb,
+        "used_pool_bytes": 50.0 * tb,
+        "total_bytes": 250.0 * tb,
+        "pre_dedup_bytes": 100.0 * tb,
+        "used_post_dedup_bytes": 10.0 * tb,
+        "by_category": {
+            "image": {
+                "pre_dedup_bytes": 80.0 * tb,
+                "used_post_dedup_bytes": 8.0 * tb,
+                "dedup_savings_bytes": 72.0 * tb,
+                "dedup_savings_pct": 90.0,
+                "dedup_factor": 10.0,
+            },
+            "application": {
+                "pre_dedup_bytes": 20.0 * tb,
+                "used_post_dedup_bytes": 2.0 * tb,
+                "dedup_savings_bytes": 18.0 * tb,
+                "dedup_savings_pct": 90.0,
+                "dedup_factor": 10.0,
+            },
+        },
+    }
+    image = _apply_netbackup_inventory_fields(
+        {
+            "panel_key": "backup_netbackup_image",
+            "has_infra_source": True,
+            "has_price": True,
+            "unit_price_tl": 100.0,
+            "crm_sold_qty": 1.0,
+        },
+        metrics,
+    )
+    app = _apply_netbackup_inventory_fields(
+        {
+            "panel_key": "backup_netbackup_application",
+            "has_infra_source": True,
+            "has_price": True,
+            "unit_price_tl": 200.0,
+            "crm_sold_qty": 2.0,
+        },
+        metrics,
+    )
+    assert image["free_qty"] == app["free_qty"] == 200.0
+    assert image["pool_used_qty"] == app["pool_used_qty"] == 50.0
+    assert image["pre_dedup_qty"] == 80.0
+    assert app["pre_dedup_qty"] == 20.0
+    assert image["post_dedup_qty"] == 8.0
+    assert app["post_dedup_qty"] == 2.0
+    assert "image PostDedup" in image["used_compare_note"]
+    assert "app PostDedup" in app["used_compare_note"]
+
+
+def test_replication_free_uses_crm_sold_not_allocation():
+    """Replication Free = Total − CRM Sold; Alloc TL = sellable_allocation × price."""
+    from app.services.inventory_overview_service import (
+        _assess_data_quality,
+        _sellable_track_fields,
+    )
+
+    panel = PanelResult(
+        panel_key="backup_veeam_replication_classic_cpu",
+        label="CPU",
+        family="backup_veeam_replication_classic",
+        resource_kind="cpu",
+        display_unit="vCPU",
+        total=8512.0,
+        allocated=19047.0,
+        threshold_pct=85.0,
+        sellable_raw=509.0,
+        sellable_constrained=0.0,
+        sellable_allocation=509.0,
+        sellable_max_util=100.0,
+        sellable_avg_util=200.0,
+        sellable_min=0.0,
+        sellable_max=509.0,
+        potential_tl_min=0.0,
+        potential_tl_max=19072.23,
+        potential_tl=0.0,
+        has_infra_source=True,
+        has_price=True,
+        unit_price_tl=37.47,
+    )
+    quality, reason = _assess_data_quality(panel, crm_sold=0.0)
+    assert quality == "suspect"
+    assert reason == "allocation_exceeds_total"
+
+    track = _sellable_track_fields(panel, has_infra=True)
+    assert track["sellable_alloc_qty"] == 509.0
+    assert track["potential_tl_alloc"] == pytest.approx(509.0 * 37.47)
+
+    sellable = MagicMock()
+    sellable.is_available = True
+    sellable.recompute_family_constraints.side_effect = lambda panels, **kw: panels
+    sellable._count_unmapped_products.return_value = 0
+    sellable.compute_site_scoped_panels.return_value = []
+    sellable._fetch_datacenter_codes.return_value = []
+    _stub_netbackup_metrics(sellable)
+    sellable.compute_all_panels.return_value = [panel]
+
+    sales = MagicMock()
+    sales._run_query.return_value = []
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = _webui_rows
+    webui.run_one.return_value = None
+
+    config = MagicMock()
+    config.get_calc_dict.return_value = {
+        "efficiency.under_pct": 80.0,
+        "efficiency.over_pct": 110.0,
+    }
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=webui,
+        config=config,
+        crm_redis=None,
+    )
+    # Build row directly (avoid full overview merge)
+    row = svc._build_panel_row(
+        panel,
+        {"entitled_qty": 0.0, "entitled_amount_tl": 0.0, "product_names": []},
+        panel_defs=_panel_defs_default(),
+        service_pages={},
+        under_pct=80.0,
+        over_pct=110.0,
+    )
+    assert row["free_qty"] == 8512.0
+    assert row["used_qty"] == 19047.0
+    assert row["used_is_allocation"] is True
+    assert row["potential_tl_alloc"] == pytest.approx(509.0 * 37.47)
+    assert row["data_quality"] == "suspect"
 
 
 def test_global_only_panel_netbackup_enriched_free_qty():

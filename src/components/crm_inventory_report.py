@@ -214,7 +214,7 @@ def _sellable_zero_hint(reason: str) -> str:
 
 
 def _fmt_dedup_note(row: dict[str, Any], unit: str) -> str:
-    """Annotation under Total: pool used vs jobs PostDedup (dual check)."""
+    """Annotation under Total: shared pool used vs category Jobs PostDedup."""
     note = str(row.get("used_compare_note") or "").strip()
     if note:
         return f"({note})"
@@ -226,7 +226,13 @@ def _fmt_dedup_note(row: dict[str, Any], unit: str) -> str:
         return ""
     if pool_used <= 0 and post <= 0:
         return ""
-    return f"(Pool used: {pool_used:,.1f} {unit} · Jobs PostDedup: {post:,.1f} {unit})"
+    pk = str(row.get("panel_key") or "")
+    cat = (
+        "image" if pk == "backup_netbackup_image"
+        else "app" if pk == "backup_netbackup_application"
+        else "jobs"
+    )
+    return f"(Pool used: {pool_used:,.1f} {unit} · {cat} PostDedup: {post:,.1f} {unit})"
 
 
 def _crm_sold_unit_price(row: dict[str, Any]) -> float | None:
@@ -364,7 +370,7 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         else:
             free_tl = row.get("free_tl")
     elif use_capacity_free and has_infra:
-        # Replication: Free = capacity headroom (total − allocation), not sellable min.
+        # Replication: Free = Total − CRM Sold (virt parity); Allocated column is separate.
         free_tl = row.get("free_tl")
         unit_price_tl = row.get("unit_price_tl")
         if free_tl is None and free_display_qty is not None and unit_price_tl not in (None, 0):

@@ -1459,6 +1459,59 @@ SELECT _tot, _alloc FROM latest
         post_gib = float(dedup_row[1] or 0.0)
         return pre_gib * _gib, post_gib * _gib
 
+    def _netbackup_image_policy_types(self) -> list[str]:
+        """Policy types classified as Image (default VMWARE)."""
+        try:
+            from shared.backup.policy_classification import (
+                DEFAULT_NETBACKUP_IMAGE_POLICYTYPES,
+                load_policy_panel_mapping,
+            )
+
+            cfg = load_policy_panel_mapping()
+            types = [
+                str(t).strip().upper()
+                for t in (cfg.get("image_policy_types") or DEFAULT_NETBACKUP_IMAGE_POLICYTYPES)
+                if str(t).strip()
+            ]
+            return types or sorted(DEFAULT_NETBACKUP_IMAGE_POLICYTYPES)
+        except Exception:  # noqa: BLE001
+            logger.exception("SellableService: load NetBackup image_policy_types failed")
+            return ["VMWARE"]
+
+    def _fetch_netbackup_jobs_dedup_summary_by_category(self) -> dict[str, tuple[float, float]]:
+        """Pre/post GiB→bytes per Image/Application category (finished BACKUP jobs)."""
+        _gib = 1024.0 ** 3
+        empty = {"image": (0.0, 0.0), "application": (0.0, 0.0)}
+        image_types = self._netbackup_image_policy_types()
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._svc._run_rows(
+                        cur,
+                        sq.GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY_BY_CATEGORY,
+                        (image_types,),
+                    )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "SellableService: NetBackup jobs dedup summary by category failed",
+            )
+            return empty
+        out = dict(empty)
+        for r in rows or []:
+            if isinstance(r, dict):
+                cat = str(r.get("category") or "").strip().lower()
+                pre_gib = float(r.get("pre_dedup_gib") or 0.0)
+                post_gib = float(r.get("post_dedup_gib") or 0.0)
+            elif isinstance(r, (list, tuple)) and len(r) >= 3:
+                cat = str(r[0] or "").strip().lower()
+                pre_gib = float(r[1] or 0.0)
+                post_gib = float(r[2] or 0.0)
+            else:
+                continue
+            if cat in out:
+                out[cat] = (pre_gib * _gib, post_gib * _gib)
+        return out
+
     def list_netbackup_jobs_disk_footprint(self, *, limit: int = 500) -> list[dict[str, Any]]:
         """Per finished BACKUP job: transfer, dedupratio, on-disk footprint.
 
@@ -1567,9 +1620,23 @@ SELECT _tot, _alloc FROM latest
         value = float(detected or 0)
         return value, value
 
-    def get_netbackup_inventory_metrics(self) -> dict[str, float]:
-        """Global NetBackup pool capacity, physical free, jobs transfer/post-dedup."""
-        zero = {
+    @staticmethod
+    def _netbackup_category_slice(pre_bytes: float, post_bytes: float) -> dict[str, float]:
+        savings_bytes = max(pre_bytes - post_bytes, 0.0)
+        savings_pct = (savings_bytes / pre_bytes * 100.0) if pre_bytes > 0 else 0.0
+        dedup_factor = (pre_bytes / post_bytes) if post_bytes > 0 else 0.0
+        return {
+            "pre_dedup_bytes": pre_bytes,
+            "used_post_dedup_bytes": post_bytes,
+            "dedup_savings_bytes": savings_bytes,
+            "dedup_savings_pct": savings_pct,
+            "dedup_factor": dedup_factor,
+        }
+
+    def get_netbackup_inventory_metrics(self) -> dict[str, Any]:
+        """Global NetBackup pool (shared) + jobs Pre/Post by Image/Application category."""
+        zero_cat = self._netbackup_category_slice(0.0, 0.0)
+        zero: dict[str, Any] = {
             "total_bytes": 0.0,
             "used_pool_bytes": 0.0,
             "used_post_dedup_bytes": 0.0,
@@ -1578,9 +1645,14 @@ SELECT _tot, _alloc FROM latest
             "dedup_savings_bytes": 0.0,
             "dedup_savings_pct": 0.0,
             "dedup_factor": 0.0,
+            "by_category": {
+                "image": dict(zero_cat),
+                "application": dict(zero_cat),
+            },
         }
         try:
             pools = self._fetch_netbackup_pool_bytes()
+            by_cat_bytes = self._fetch_netbackup_jobs_dedup_summary_by_category()
             pre_bytes, post_bytes = self._fetch_netbackup_jobs_dedup_summary()
         except Exception:  # noqa: BLE001
             logger.exception(
@@ -1591,18 +1663,23 @@ SELECT _tot, _alloc FROM latest
         total_bytes = float(pools.get("total_bytes") or 0.0)
         used_pool_bytes = float(pools.get("used_pool_bytes") or 0.0)
         available_bytes = float(pools.get("available_bytes") or 0.0)
-        savings_bytes = max(pre_bytes - post_bytes, 0.0)
-        savings_pct = (savings_bytes / pre_bytes * 100.0) if pre_bytes > 0 else 0.0
-        dedup_factor = (pre_bytes / post_bytes) if post_bytes > 0 else 0.0
+        image_pre, image_post = by_cat_bytes.get("image", (0.0, 0.0))
+        app_pre, app_post = by_cat_bytes.get("application", (0.0, 0.0))
+        # Prefer category sum for flat totals when available; else all-jobs summary.
+        cat_pre = image_pre + app_pre
+        cat_post = image_post + app_post
+        if cat_pre <= 0.0 and cat_post <= 0.0:
+            cat_pre, cat_post = pre_bytes, post_bytes
+        flat = self._netbackup_category_slice(cat_pre, cat_post)
         return {
             "total_bytes": total_bytes,
             "used_pool_bytes": used_pool_bytes,
-            "used_post_dedup_bytes": post_bytes,
-            "pre_dedup_bytes": pre_bytes,
             "available_bytes": available_bytes,
-            "dedup_savings_bytes": savings_bytes,
-            "dedup_savings_pct": savings_pct,
-            "dedup_factor": dedup_factor,
+            **flat,
+            "by_category": {
+                "image": self._netbackup_category_slice(image_pre, image_post),
+                "application": self._netbackup_category_slice(app_pre, app_post),
+            },
         }
 
     def _query_total_allocated(

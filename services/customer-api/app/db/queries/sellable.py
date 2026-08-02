@@ -501,6 +501,35 @@ WHERE jobtype = 'BACKUP'
   AND percentcomplete = 100
 """
 
+# Params: (image_policy_types text[]) — e.g. {'VMWARE'}.
+# Image vs Application Transfer(Pre)/PostDedup for CRM Inventory (shared pool Total/Free).
+GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY_BY_CATEGORY = """
+WITH filtered AS (
+    SELECT
+        kilobytestransferred,
+        dedupratio,
+        CASE
+            WHEN UPPER(COALESCE(NULLIF(policytype, ''), '')) = ANY(%s)
+            THEN 'image'
+            ELSE 'application'
+        END AS category
+    FROM public.raw_netbackup_jobs_metrics
+    WHERE jobtype = 'BACKUP'
+      AND percentcomplete = 100
+)
+SELECT
+    category,
+    COALESCE(SUM(kilobytestransferred) / 1024.0 / 1024.0 / 1024.0, 0) AS pre_dedup_gib,
+    COALESCE(
+        SUM(kilobytestransferred / NULLIF(dedupratio, 0))
+        / 1024.0 / 1024.0 / 1024.0,
+        0
+    ) AS post_dedup_gib
+FROM filtered
+GROUP BY category
+ORDER BY category
+"""
+
 GLOBAL_NETBACKUP_JOBS_DISK_FOOTPRINT = """
 SELECT
     jobid,
