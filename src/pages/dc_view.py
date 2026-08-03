@@ -24,6 +24,12 @@ from src.utils.virt_sellable_aggregate import (
     virt_total_potential_range,
     VIRT_POWER_FAMILIES,
 )
+from src.utils.platform_sellable_aggregate import (
+    BACKUP_SELLABLE_FAMILIES,
+    collect_backup_sellable_panels,
+    platform_total_potential_range,
+    potential_sales_info_text,
+)
 from src.utils.api_parallel import parallel_execute
 from src.utils.time_range import default_time_range
 from src.utils.format_units import (
@@ -1006,6 +1012,7 @@ def _capacity_resource_table(rows: list[dict]):
                     ),
                     _metric_cell(row.get("allocation")),
                     _metric_cell(row.get("max_util")),
+                    _metric_cell(row.get("avg_util")),
                     html.Td(_capacity_alloc_bar(row["bar_pct"]), style=cell_style),
                 ]
             )
@@ -1025,8 +1032,10 @@ def _capacity_resource_table(rows: list[dict]):
                                 html.Th(
                                     dmc.Tooltip(
                                         label=(
-                                            "Sum of VM-configured resources (latest allocation snapshot). "
-                                            "May exceed 100% when RAM is overcommitted."
+                                            "Sales-basis allocation (1 vCPU = 1 GHz for CPU; "
+                                            "VM-configured RAM). Hyperconverged uses Nutanix SoT "
+                                            "(host-row summary when cluster filter is applied). "
+                                            "May exceed 100% under overcommit."
                                         ),
                                         children=html.Span("Physical allocation"),
                                     ),
@@ -1035,11 +1044,20 @@ def _capacity_resource_table(rows: list[dict]):
                                 html.Th(
                                     dmc.Tooltip(
                                         label=(
-                                            "Cluster-level peak RAM usage in the selected report period "
-                                            "(cluster_metrics time series). Sellable gate uses "
-                                            "max(allocation%, peak%)."
+                                            "Cluster-level peak usage in the selected report period. "
+                                            "Sellable gate uses max(allocation%, peak%)."
                                         ),
                                         children=html.Span("Max utilization"),
+                                    ),
+                                    style=header_style,
+                                ),
+                                html.Th(
+                                    dmc.Tooltip(
+                                        label=(
+                                            "Average utilization over the selected report period "
+                                            "(same basis as CRM Inventory Sellable Ort. track)."
+                                        ),
+                                        children=html.Span("Avg utilization"),
                                     ),
                                     style=header_style,
                                 ),
@@ -1088,6 +1106,10 @@ def _build_compute_capacity_rows(
                 smart_cpu(cpu_cap * cpu_max_pct / 100.0 if cpu_cap else 0),
                 cpu_max_pct,
             ),
+            "avg_util": (
+                smart_cpu(cpu_cap * cpu_pct / 100.0 if cpu_cap else 0),
+                cpu_pct,
+            ),
             "bar_pct": cpu_alloc_pct,
         },
         {
@@ -1098,6 +1120,10 @@ def _build_compute_capacity_rows(
                 smart_memory(mem_peak_gb),
                 mem_peak_pct,
             ),
+            "avg_util": (
+                smart_memory(mem_cap * mem_pct / 100.0 if mem_cap else 0),
+                mem_pct,
+            ),
             "bar_pct": mem_alloc_pct,
         },
         {
@@ -1105,6 +1131,7 @@ def _build_compute_capacity_rows(
             "total_str": smart_storage(stor_cap_gb),
             "allocation": (smart_storage(stor_provisioned_gb), stor_alloc_vm_pct),
             "max_util": (smart_storage(stor_used_gb), stor_pct),
+            "avg_util": (smart_storage(stor_used_gb), stor_pct),
             "bar_pct": stor_alloc_vm_pct,
         },
     ]
@@ -1196,7 +1223,12 @@ def _build_compute_tab(compute: dict, title: str, color: str = "indigo", is_powe
     stor_cap_gb  = stor_cap  * 1024
     stor_used_gb = stor_used * 1024
 
-    cpu_alloc_ghz = float(compute.get("cpu_alloc_ghz_vm", 0) or 0)
+    # Prefer sales-basis allocation (host summary / HC Nutanix SoT).
+    sales_alloc = compute.get("cpu_alloc_ghz_sales")
+    if sales_alloc is not None and float(sales_alloc or 0) > 0:
+        cpu_alloc_ghz = float(sales_alloc)
+    else:
+        cpu_alloc_ghz = float(compute.get("cpu_alloc_ghz_vm", 0) or 0)
     mem_alloc_gb  = float(compute.get("mem_alloc_gb_vm", 0) or 0)
     mem_used_gb_peak = float(compute.get("mem_used_gb_peak") or 0)
     cpu_alloc_pct = alloc_pct_float(cpu_alloc_ghz, cpu_cap)
@@ -2006,6 +2038,111 @@ def _backup_inline_sellable_blocks(
     return out
 
 
+def _build_backup_total_sellable_children(
+    dc_id: str,
+    classic_clusters: list[str] | None = None,
+    hyperconv_clusters: list[str] | None = None,
+) -> list:
+    """Top-level Backup & Replication sellable KPI (deduped platform backup panels)."""
+    classic, hyperconv = virt_tab_cluster_scope(classic_clusters, hyperconv_clusters)
+    panels = collect_backup_sellable_panels(
+        str(dc_id), classic, hyperconv,
+    )
+    total_tl, tl_min, tl_max = platform_total_potential_range(panels)
+    if total_tl <= 0 and tl_min <= 0 and tl_max <= 0:
+        return []
+
+    by_kind = {"cpu": 0.0, "ram": 0.0, "storage": 0.0}
+    for p in panels:
+        if not isinstance(p, dict):
+            continue
+        kind = (p.get("resource_kind") or "other").lower()
+        if kind in by_kind:
+            by_kind[kind] += float(p.get("potential_tl") or 0)
+
+    if abs(tl_max - tl_min) > 1e-6:
+        total_short = fmt_tl_range(tl_min, tl_max)
+        total_full = f"{tl_min:,.0f} – {tl_max:,.0f} TL"
+    else:
+        total_short = fmt_tl(tl_min)
+        total_full = f"{tl_min:,.0f} TL"
+
+    def _kpi(label, value_str, sub_short, sub_full, icon, c="green"):
+        card = html.Div(
+            className="nexus-card dc-kpi-card dc-stagger-1",
+            style={
+                "padding": "18px",
+                "display": "flex",
+                "alignItems": "center",
+                "justifyContent": "space-between",
+                "gap": "12px",
+                "minHeight": "140px",
+                "height": "100%",
+                "width": "100%",
+                "boxSizing": "border-box",
+            },
+            children=[
+                html.Div(
+                    style={"display": "flex", "flexDirection": "column", "minWidth": 0, "flex": "1 1 auto"},
+                    children=[
+                        html.Span(label, style={
+                            "color": "#A3AED0", "fontSize": "0.78rem", "fontWeight": 500,
+                            "letterSpacing": "0.02em", "textTransform": "uppercase",
+                        }),
+                        html.H3(value_str, style={
+                            "color": "#2B3674", "fontSize": "1.15rem", "fontWeight": 900,
+                            "margin": "6px 0 2px 0", "letterSpacing": "-0.02em",
+                        }),
+                        html.Span(sub_short, style={"color": "#4318FF", "fontSize": "0.78rem", "fontWeight": 700}),
+                    ],
+                ),
+                dmc.ThemeIcon(
+                    size=42, radius="xl", variant="light", color=c,
+                    children=DashIconify(icon=icon, width=22),
+                ),
+            ],
+        )
+        return html.Div(
+            style={"width": "100%", "height": "100%", "display": "flex", "flexDirection": "column"},
+            title=sub_full if sub_full and sub_full != sub_short else None,
+            children=card,
+        )
+
+    cards = [
+        _kpi("NetBackup / Storage TL", fmt_tl(by_kind["storage"]), "deduped Image+App", "Shared-pool NetBackup band", "solar:database-bold-duotone"),
+        _kpi("Replication CPU TL", fmt_tl(by_kind["cpu"]), "Veeam + Zerto", "CPU alternate vs virt", "solar:cpu-bold-duotone", c="violet"),
+        _kpi("Replication RAM TL", fmt_tl(by_kind["ram"]), "Veeam + Zerto", "RAM alternate vs virt", "solar:server-bold-duotone", c="violet"),
+        _kpi(
+            "Total Potential",
+            total_short,
+            "backup + replication",
+            f"{total_full}\n{potential_sales_info_text()}",
+            "solar:wallet-money-bold-duotone",
+            c="grape",
+        ),
+    ]
+    return [
+        html.Div(
+            "Backup & Replication — Total Sellable Potential",
+            style={"fontSize": "1.1rem", "fontWeight": 700, "color": "#2B3674", "marginBottom": "4px"},
+        ),
+        html.Div(
+            "Platform backup/replication panels with NetBackup and virt↔replication TL dedupe "
+            f"({', '.join(BACKUP_SELLABLE_FAMILIES)})",
+            style={"fontSize": "0.78rem", "color": "#A3AED0", "marginBottom": "12px"},
+        ),
+        html.Div(
+            style={
+                "display": "grid",
+                "gridTemplateColumns": "repeat(4, minmax(0, 1fr))",
+                "gap": "16px",
+                "alignItems": "stretch",
+            },
+            children=cards,
+        ),
+    ]
+
+
 def _build_virt_total_sellable_children(
     dc_id: str,
     classic_clusters: list[str] | None,
@@ -2407,6 +2544,7 @@ def _build_sellable_inline_kpi(
         rows = [p for p in panels if (p.get("resource_kind") or "").lower() == kind]
         alloc_key = "sellable_allocation"
         max_key = "sellable_max_util"
+        avg_key = "sellable_avg_util"
         alloc_sum = sum(
             float(p.get(alloc_key) or p.get("sellable_effective") or p.get("sellable_physical") or 0)
             for p in rows
@@ -2415,6 +2553,7 @@ def _build_sellable_inline_kpi(
             float(p.get(max_key) or p.get("sellable_effective") or p.get("sellable_constrained") or 0)
             for p in rows
         )
+        avg_sum = sum(float(p.get(avg_key) or 0) for p in rows)
         tl_alloc = sum(
             float(p.get("potential_tl_min") if p.get("potential_tl_min") is not None else p.get("potential_tl") or 0)
             for p in rows
@@ -2423,17 +2562,26 @@ def _build_sellable_inline_kpi(
             float(p.get("potential_tl_max") if p.get("potential_tl_max") is not None else p.get("potential_tl") or 0)
             for p in rows
         )
+        tl_avg = sum(
+            float(p.get("sellable_avg_util") or 0) * float(p.get("unit_price_tl") or 0)
+            for p in rows
+            if p.get("sellable_avg_util") is not None
+        )
         has_dual = any(
             (p.get(alloc_key) is not None or p.get("sellable_effective") is not None)
             and (p.get(max_key) is not None or p.get("sellable_effective") is not None)
             for p in rows
         )
+        has_avg = any(p.get(avg_key) is not None for p in rows)
         return {
             "alloc": alloc_sum,
             "max": max_sum,
+            "avg": avg_sum,
             "tl_alloc": tl_alloc,
             "tl_max": tl_max,
+            "tl_avg": tl_avg,
             "has_dual": has_dual,
+            "has_avg": has_avg,
         }
 
     cpu_dual = _dual_track_sums("cpu")
@@ -2443,13 +2591,17 @@ def _build_sellable_inline_kpi(
     if cpu_has_dual:
         cpu["allocation"] = float(cpu_dual["alloc"])
         cpu["max_util"] = float(cpu_dual["max"])
+        cpu["avg_util"] = float(cpu_dual["avg"]) if cpu_dual["has_avg"] else None
         cpu["tl_alloc"] = float(cpu_dual["tl_alloc"])
         cpu["tl_max"] = float(cpu_dual["tl_max"])
+        cpu["tl_avg"] = float(cpu_dual["tl_avg"]) if cpu_dual["has_avg"] else None
     if ram_has_dual:
         ram["allocation"] = float(ram_dual["alloc"])
         ram["max_util"] = float(ram_dual["max"])
+        ram["avg_util"] = float(ram_dual["avg"]) if ram_dual["has_avg"] else None
         ram["tl_alloc"] = float(ram_dual["tl_alloc"])
         ram["tl_max"] = float(ram_dual["tl_max"])
+        ram["tl_avg"] = float(ram_dual["tl_avg"]) if ram_dual["has_avg"] else None
 
     def _kpi_with_sub(
         label: str,
@@ -2509,6 +2661,8 @@ def _build_sellable_inline_kpi(
             f"Allocation: {_fmt_unit(cpu.get('allocation', 0), cpu['unit'])} · "
             f"Max: {_fmt_unit(cpu.get('max_util', 0), cpu['unit'])}"
         )
+        if cpu.get("avg_util") is not None:
+            cpu_full += f" · Ort.: {_fmt_unit(cpu.get('avg_util', 0), cpu['unit'])}"
     elif bool(cpu.get("has_range")) and abs(float(cpu["max"]) - float(cpu["min"])) > 1e-6:
         cpu_short = fmt_tl_range(float(cpu.get("tl_min") or 0), float(cpu.get("tl_max") or 0))
         cpu_full = (
@@ -2525,6 +2679,8 @@ def _build_sellable_inline_kpi(
             f"Allocation: {_fmt_unit(ram.get('allocation', 0), ram['unit'])} · "
             f"Max: {_fmt_unit(ram.get('max_util', 0), ram['unit'])}"
         )
+        if ram.get("avg_util") is not None:
+            ram_full += f" · Ort.: {_fmt_unit(ram.get('avg_util', 0), ram['unit'])}"
     elif bool(ram.get("has_range")) and abs(float(ram["max"]) - float(ram["min"])) > 1e-6:
         ram_short = fmt_tl_range(float(ram.get("tl_min") or 0), float(ram.get("tl_max") or 0))
         ram_full = (
@@ -2558,11 +2714,23 @@ def _build_sellable_inline_kpi(
         total_value = fmt_tl(tl_min)
         total_tooltip = f"{tl_min:,.0f} TL" if tl_min else "constrained × catalog price"
 
+    def _triad_label(kind_data: dict, unit: str) -> str:
+        if kind_data.get("avg_util") is not None:
+            return (
+                f"Alloc {_fmt_unit(kind_data.get('allocation', 0), unit)} | "
+                f"Max {_fmt_unit(kind_data.get('max_util', 0), unit)} | "
+                f"Ort. {_fmt_unit(kind_data.get('avg_util', 0), unit)}"
+            )
+        return (
+            f"Alloc {_fmt_unit(kind_data.get('allocation', 0), unit)} | "
+            f"Max {_fmt_unit(kind_data.get('max_util', 0), unit)}"
+        )
+
     cards = [
         _kpi_with_sub(
             "CPU Sellable",
             (
-                f"Alloc {_fmt_unit(cpu.get('allocation', 0), cpu['unit'])} | Max {_fmt_unit(cpu.get('max_util', 0), cpu['unit'])}"
+                _triad_label(cpu, cpu["unit"])
                 if cpu_has_dual
                 else (
                     f"{cpu['min']:,.0f} – {cpu['max']:,.0f} {cpu['unit']}"
@@ -2577,7 +2745,7 @@ def _build_sellable_inline_kpi(
         _kpi_with_sub(
             "RAM Sellable",
             (
-                f"Alloc {_fmt_unit(ram.get('allocation', 0), ram['unit'])} | Max {_fmt_unit(ram.get('max_util', 0), ram['unit'])}"
+                _triad_label(ram, ram["unit"])
                 if ram_has_dual
                 else (
                     f"{ram['min']:,.0f} – {ram['max']:,.0f} {ram['unit']}"
@@ -6242,7 +6410,7 @@ def build_dc_view(
                     ),
                 ) if show_virt else None,
 
-                # Backup & Replication (category tabs: Image / Application / Veeam / Zerto)
+                # Backup & Replication (category tabs: Image / Application / Replication)
                 dmc.TabsPanel(
                     value="backup",
                     children=(
@@ -6252,6 +6420,21 @@ def build_dc_view(
                         id="dc-tab-backup-root",
                         style={"padding": "0 30px"},
                         children=[
+                            html.Div(
+                                id="sellable-backup-total-card",
+                                children=(
+                                    _build_backup_total_sellable_children(
+                                        str(dc_id),
+                                        classic_clusters or None,
+                                        hyperconv_clusters or None,
+                                    )
+                                    if (
+                                        backup_content_mode == "full"
+                                        and _sec("sub:dc_view:backup:total")
+                                    )
+                                    else []
+                                ),
+                            ),
                             dmc.Tabs(
                                 color="green",
                                 variant="outline",
@@ -6283,13 +6466,6 @@ def build_dc_view(
                                         pt="lg",
                                         children=html.Div(
                                             children=[
-                                                *_backup_inline_sellable_blocks(
-                                                    str(dc_id),
-                                                    classic_clusters=classic_clusters or None,
-                                                    hyperconv_clusters=hyperconv_clusters or None,
-                                                    content_mode=backup_content_mode,
-                                                    include=("backup_netbackup",),
-                                                ),
                                                 build_image_backup_section(
                                                     nb_data=nb_data,
                                                     policy_type_options=list(
@@ -6317,6 +6493,17 @@ def build_dc_view(
                                                     has_netbackup=has_netbackup,
                                                     has_nutanix=has_nutanix_backup,
                                                     content_mode=backup_content_mode,
+                                                    km_sellable=(
+                                                        _backup_inline_sellable_blocks(
+                                                            str(dc_id),
+                                                            classic_clusters=classic_clusters or None,
+                                                            hyperconv_clusters=hyperconv_clusters or None,
+                                                            content_mode=backup_content_mode,
+                                                            include=("backup_netbackup",),
+                                                        )
+                                                        if _sec("sub:dc_view:backup:netbackup")
+                                                        else []
+                                                    ),
                                                 ),
                                             ],
                                         ),
@@ -6328,12 +6515,16 @@ def build_dc_view(
                                         pt="lg",
                                         children=html.Div(
                                             children=[
-                                                *_backup_inline_sellable_blocks(
-                                                    str(dc_id),
-                                                    classic_clusters=classic_clusters or None,
-                                                    hyperconv_clusters=hyperconv_clusters or None,
-                                                    content_mode=backup_content_mode,
-                                                    include=("backup_netbackup",),
+                                                *(
+                                                    _backup_inline_sellable_blocks(
+                                                        str(dc_id),
+                                                        classic_clusters=classic_clusters or None,
+                                                        hyperconv_clusters=hyperconv_clusters or None,
+                                                        content_mode=backup_content_mode,
+                                                        include=("backup_netbackup",),
+                                                    )
+                                                    if _sec("sub:dc_view:backup:netbackup")
+                                                    else []
                                                 ),
                                                 build_application_backup_section(
                                                     nb_data=nb_data,
@@ -6355,24 +6546,39 @@ def build_dc_view(
                                         pt="lg",
                                         children=html.Div(
                                             children=[
-                                                *_backup_inline_sellable_blocks(
-                                                    str(dc_id),
-                                                    classic_clusters=classic_clusters or None,
-                                                    hyperconv_clusters=hyperconv_clusters or None,
-                                                    content_mode=backup_content_mode,
-                                                    include=(
-                                                        "backup_veeam_replication",
-                                                        "backup_zerto_replication",
-                                                    ),
-                                                ),
                                                 build_replication_section(
                                                     veeam_data=veeam_data,
                                                     zerto_data=zerto_data,
                                                     zerto_license=zerto_license_data,
-                                                    has_veeam=has_veeam,
-                                                    has_zerto=has_zerto or has_zerto_license,
+                                                    has_veeam=has_veeam and _sec("sub:dc_view:backup:veeam"),
+                                                    has_zerto=(
+                                                        (has_zerto or has_zerto_license)
+                                                        and _sec("sub:dc_view:backup:zerto")
+                                                    ),
                                                     content_mode=backup_content_mode,
                                                     show_licenses=False,
+                                                    veeam_sellable=(
+                                                        _backup_inline_sellable_blocks(
+                                                            str(dc_id),
+                                                            classic_clusters=classic_clusters or None,
+                                                            hyperconv_clusters=hyperconv_clusters or None,
+                                                            content_mode=backup_content_mode,
+                                                            include=("backup_veeam_replication",),
+                                                        )
+                                                        if _sec("sub:dc_view:backup:veeam")
+                                                        else []
+                                                    ),
+                                                    zerto_sellable=(
+                                                        _backup_inline_sellable_blocks(
+                                                            str(dc_id),
+                                                            classic_clusters=classic_clusters or None,
+                                                            hyperconv_clusters=hyperconv_clusters or None,
+                                                            content_mode=backup_content_mode,
+                                                            include=("backup_zerto_replication",),
+                                                        )
+                                                        if _sec("sub:dc_view:backup:zerto")
+                                                        else []
+                                                    ),
                                                 ),
                                             ],
                                         ),
@@ -6603,8 +6809,8 @@ def build_dc_view_layout_shell(dc_id, time_range=None, visible_sections=None):
             # which are absent until the Backup lazy tab mounts).
             dcc.Store(id="backup-category-tab-store", data="image"),
             dcc.Store(id="backup-image-tab-store", data="km"),
-            # Veeam nested mode: replication | backup (wired from backup-veeam-mode-tabs).
-            dcc.Store(id="backup-replication-tab-store", data="replication"),
+            # Replication nested vendor tab: veeam | zerto
+            dcc.Store(id="backup-replication-tab-store", data="veeam"),
             # One-shot deferral so unique-jobs start after job-stats (stampede guard).
             dcc.Interval(
                 id="backup-uj-defer",

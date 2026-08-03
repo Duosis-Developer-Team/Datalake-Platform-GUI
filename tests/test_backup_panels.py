@@ -216,6 +216,28 @@ class TestBackupPanelLayoutOrder(unittest.TestCase):
         self.assertLess(ids.index("backup-jobs-veeam-chart"), ids.index("backup-veeam-capacity"))
         self.assertLess(ids.index("backup-uj-dc-veeam-kpis"), ids.index("backup-veeam-capacity"))
 
+    def test_replication_section_nested_tabs_and_per_vendor_sellable(self):
+        veeam_card = MagicMock(name="veeam-sellable")
+        zerto_card = MagicMock(name="zerto-sellable")
+        with patch.object(
+            backup_panel, "build_veeam_replication_only_section", return_value=MagicMock()
+        ), patch.object(
+            backup_panel, "build_zerto_category_section", return_value=MagicMock()
+        ):
+            section = backup_panel.build_replication_section(
+                has_veeam=True,
+                has_zerto=True,
+                content_mode="shell",
+                veeam_sellable=[veeam_card],
+                zerto_sellable=[zerto_card],
+            )
+        rendered = str(section)
+        self.assertIn("backup-replication-tabs", rendered)
+        self.assertIn("Veeam", rendered)
+        self.assertIn("Zerto", rendered)
+        self.assertIn("veeam-sellable", rendered)
+        self.assertIn("zerto-sellable", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

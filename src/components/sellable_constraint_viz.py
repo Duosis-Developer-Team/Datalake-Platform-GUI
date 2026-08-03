@@ -159,7 +159,50 @@ def sellable_constraint_badges(panel: dict[str, Any] | None, *, kind_label: str 
                 f"{prefix}oran sınırı: {lost:,.0f} {unit} kayıp",
                 color="orange", variant="light", size="sm",
             ))
+
+    frag = host_fragment_positive_hint(panel, kind_label=kind_label)
+    if frag is not None:
+        badges.append(frag)
     return badges
+
+
+def host_fragment_positive_hint(
+    panel: dict[str, Any] | None,
+    *,
+    kind_label: str = "",
+) -> Any | None:
+    """Explain positive alloc-track sellable when the pool looks over-threshold.
+
+    Host-based SUM (ADR-0017) can still yield headroom on individual hosts even
+    when DC/cluster allocation% exceeds the CRM threshold — intentional, not a bug.
+    """
+    if not panel:
+        return None
+    if (panel.get("computation_mode") or "").lower() != "host_based":
+        return None
+    total = float(panel.get("total") or 0)
+    allocated = float(panel.get("allocated") or 0)
+    if total <= 0:
+        return None
+    threshold = float(panel.get("threshold_pct") or 80.0)
+    pool_pct = 100.0 * allocated / total
+    alloc_sellable = panel.get("sellable_allocation")
+    if alloc_sellable is None:
+        alloc_sellable = panel.get("sellable_constrained")
+    if float(alloc_sellable or 0) <= 1e-9:
+        return None
+    if pool_pct <= threshold + 1e-9:
+        return None
+    prefix = f"{kind_label} " if kind_label else ""
+    return dmc.Badge(
+        (
+            f"{prefix}havuz %{pool_pct:.0f} dolu (eşik %{threshold:.0f}); "
+            "pozitif değer = host-bazlı headroom SUM (ADR-0017)"
+        ),
+        color="blue",
+        variant="light",
+        size="sm",
+    )
 
 
 def sellable_minmax_tape(

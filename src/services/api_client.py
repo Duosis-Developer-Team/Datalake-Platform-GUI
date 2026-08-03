@@ -3004,7 +3004,8 @@ def get_sellable_by_panel(
         return data if isinstance(data, list) else []
 
     cluster_key = ",".join(cl) if cl else "*"
-    cache_key = f"api:sellable_by_panel:{dc_code}:{family or '*'}:{cluster_key}"
+    # v12: phantom-host guard + ordered TL bands (SELLABLE_PAYLOAD_VERSION)
+    cache_key = f"api:sellable_by_panel:v12:{dc_code}:{family or '*'}:{cluster_key}"
     return _api_cache_get_sellable_panels(cache_key, fetch, dc_code, family, cl)
 
 
