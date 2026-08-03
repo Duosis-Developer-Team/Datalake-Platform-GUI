@@ -388,6 +388,26 @@ def _fill_overview_content(pathname, time_range, visible_sections):
     return build_overview(tr, visible_sections=visible_sections)
 
 
+def _overview_totals(summaries: list[dict]) -> tuple[int, int, int]:
+    """(dc_count, total_hosts, total_vms) from the per-DC summary rows.
+
+    These three also arrive on /dashboard/overview, and that is where the KPI
+    strip used to read them — while the treemap and the DC table below it summed
+    these rows. Two cache keys, two independent expiries, so the same page showed
+    16.903 VMs at the top and 16.892 underneath. Both were real, seconds apart.
+    A shorter TTL cannot fix that: any two keys can land on opposite sides of a
+    refresh. Deriving from one source can.
+
+    Tolerant of missing counts on purpose — these rows are backend output, and a
+    KPI reading slightly low beats the Overview page raising on the render path.
+    """
+    return (
+        len(summaries),
+        sum(int(s.get("host_count") or 0) for s in summaries),
+        sum(int(s.get("vm_count") or 0) for s in summaries),
+    )
+
+
 def build_overview(time_range=None, visible_sections=None):
     """Build Overview page content for the given time range (used by app callback)."""
 
@@ -413,12 +433,26 @@ def build_overview(time_range=None, visible_sections=None):
     ibm_totals = data.get("ibm_totals", {})
     summaries = api.get_all_datacenters_summary(tr)
 
+    # Counts come from the per-DC rows, not from /dashboard/overview, even though
+    # that endpoint reports them too. The two are cached under separate keys and
+    # expire independently, so the page used to show one total in the KPI strip
+    # and a different one in the treemap and DC table directly below it —
+    # measured at 16.903 against 16.892. Both figures were real and seconds
+    # apart; the disagreement was the defect, and it is not fixable by shortening
+    # a TTL, because any two keys can always land on opposite sides of a refresh.
+    # One source for the same number is the only thing that closes it.
+    #
+    # Platforms and energy stay on the overview endpoint: the summary rows do not
+    # carry them, and deriving them would mean inventing them. Those two fields
+    # can still age separately from the rest of the page.
+    dc_count, total_hosts, total_vms = _overview_totals(summaries)
+
     # KPI strip (platforms = Nutanix + vCenter + IBM per DC, summed)
     kpis = [
-        metric_card("Data Centers", str(overview.get("dc_count", 0)), "solar:server-square-bold-duotone", "Sites"),
+        metric_card("Data Centers", str(dc_count), "solar:server-square-bold-duotone", "Sites"),
         metric_card("Platforms", f"{overview.get('total_platforms', 0):,}", "solar:box-bold-duotone", "Nutanix + vCenter + IBM"),
-        metric_card("Total Hosts", f"{overview.get('total_hosts', 0):,}", "material-symbols:dns-outline", "All platforms", color="teal"),
-        metric_card("Total VMs", f"{overview.get('total_vms', 0):,}", "material-symbols:laptop-mac-outline", "Virtual Machines", color="teal"),
+        metric_card("Total Hosts", f"{total_hosts:,}", "material-symbols:dns-outline", "All platforms", color="teal"),
+        metric_card("Total VMs", f"{total_vms:,}", "material-symbols:laptop-mac-outline", "Virtual Machines", color="teal"),
         metric_card("Total Energy", f"{overview.get('total_energy_kw', 0):,.0f} kW", "material-symbols:bolt-outline", "Daily average", color="orange"),
     ]
 
