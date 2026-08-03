@@ -8,6 +8,7 @@ from app import database as db
 from app.models import (
     RegisterDeploymentRequest,
     ReleaseChangeOut,
+    ReleaseNoteOut,
     ReleaseOut,
     ServiceDeploymentOut,
 )
@@ -38,6 +39,15 @@ def list_releases() -> list[ReleaseOut]:
         ORDER BY started_at DESC
         """
     )
+    # Sadece yayınlanmış alanlar seçiliyor. draft_headline / draft_body bilerek
+    # dışarıda: onaylanmamış taslak metin servisin sınırını geçmemeli.
+    notes = db.fetch_all(
+        """
+        SELECT release_id, headline, body, source, model,
+               generated_at
+        FROM release_notes
+        """
+    )
     changes_by_release: dict[int, list[ReleaseChangeOut]] = {}
     for c in changes:
         changes_by_release.setdefault(c["release_id"], []).append(
@@ -46,6 +56,15 @@ def list_releases() -> list[ReleaseOut]:
     deps_by_version: dict[str, list[ServiceDeploymentOut]] = {}
     for d in deps:
         deps_by_version.setdefault(d["version"], []).append(ServiceDeploymentOut(**d))
+    note_by_release: dict[int, ReleaseNoteOut] = {}
+    for n in notes:
+        note_by_release[n["release_id"]] = ReleaseNoteOut(
+            headline=n.get("headline"),
+            body=n.get("body") or {},
+            source=n.get("source") or "auto",
+            model=n.get("model"),
+            generated_at=n.get("generated_at"),
+        )
     out: list[ReleaseOut] = []
     for r in releases:
         out.append(
@@ -57,6 +76,7 @@ def list_releases() -> list[ReleaseOut]:
                 source=r["source"],
                 changes=changes_by_release.get(r["id"], []),
                 services=deps_by_version.get(r["version"], []),
+                note=note_by_release.get(r["id"]),
             )
         )
     return out

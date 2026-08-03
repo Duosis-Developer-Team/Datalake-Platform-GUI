@@ -82,7 +82,10 @@ def auto_summary_line(body: dict) -> str:
     parts = [f"{counts[k]} {words[k]}" for k in ("added", "fixed", "improved") if counts[k]]
     if not parts:
         return "Bu sürümde kullanıcıya dönük değişiklik yok."
-    return "Bu sürümde " + " ve ".join(parts) + " var."
+    # Türkçe liste: son iki öğe "ve" ile, öncekiler virgülle. Hepsini "ve" ile
+    # bağlamak üç kova dolduğunda "a ve b ve c" gibi okunuyordu.
+    listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " ve " + parts[-1]
+    return f"Bu sürümde {listed} var."
 
 
 def resolve_live_version(releases: list[dict], current: list[dict]) -> str | None:

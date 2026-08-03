@@ -128,6 +128,19 @@ def test_auto_summary_line_handles_empty_note():
     assert vv.auto_summary_line({"added": [], "fixed": [], "improved": []}).strip() != ""
 
 
+def test_three_buckets_read_as_a_turkish_list_not_a_chain_of_ve():
+    """Üç kova dolduğunda 'a ve b ve c' değil, 'a, b ve c' yazılmalı."""
+    body = {
+        "added": [{"shas": ["a1"], "text": "x"}],
+        "fixed": [{"shas": ["b2"], "text": "y"}],
+        "improved": [{"shas": ["c3"], "text": "z"}],
+    }
+    line = vv.auto_summary_line(body)
+    assert "ve" in line
+    assert " ve " not in line.replace(" ve 1 iyileştirme", ""), f"zincirlenmiş 've': {line}"
+    assert line == "Bu sürümde 1 yenilik, 1 düzeltme ve 1 iyileştirme var."
+
+
 # --- "Yayında" rozeti -----------------------------------------------------
 
 def test_live_version_comes_from_the_newest_deployment():
