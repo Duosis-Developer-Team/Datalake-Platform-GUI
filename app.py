@@ -108,6 +108,7 @@ def _register_frontend_deployment() -> None:
 _register_frontend_deployment()
 
 from src.auth.routes import auth_bp
+from src.auth import dash_gate
 from src.auth.middleware import register_middleware
 
 server.register_blueprint(auth_bp)
@@ -428,6 +429,12 @@ app.layout = dmc.MantineProvider(
         build_chatbot_shell(),
     ],
 )
+
+# Everything in the static layout above is the app shell: an unauthenticated
+# browser is allowed to run those callbacks so it can boot far enough to render
+# the login form (main-content.children). Page callbacks are denied until a
+# session exists — see src/auth/dash_gate.py.
+dash_gate.set_shell_component_ids(dash_gate.collect_component_ids(app.layout))
 
 # Chatbot widget callbacks (toggle panel, sync page context, send message).
 register_chatbot_callbacks(app)

@@ -6,13 +6,18 @@ import logging
 import os
 from typing import Any
 
-from flask import g, redirect, request, session
+from flask import g, jsonify, redirect, request, session
 from opentelemetry import trace
 
-from src.auth import service
+from src.auth import dash_gate, service
 from src.auth.config import AUTH_DISABLED, SESSION_COOKIE_NAME
 
 logger = logging.getLogger(__name__)
+
+# Only the callback transport carries data. The rest of /_dash* is shell
+# plumbing (layout skeleton, dependency graph, component bundles) and must stay
+# reachable or the browser cannot boot far enough to show the login form.
+DASH_CALLBACK_PATH = "/_dash-update-component"
 
 
 def _hydrate_g_from_session() -> None:
@@ -69,6 +74,20 @@ def register_middleware(app) -> None:
                     g.auth_user_id,
                     path,
                 )
+                return None
+            if path.startswith(DASH_CALLBACK_PATH):
+                # No session: the shell may still boot and render the login
+                # form, but page callbacks must not serve data. See
+                # src/auth/dash_gate.py for why the output id is the key.
+                body = request.get_json(silent=True)
+                if not dash_gate.is_public_callback_request(body):
+                    output = body.get("output") if isinstance(body, dict) else None
+                    logger.warning(
+                        "dash callback denied without session output=%s remote=%s",
+                        output,
+                        request.remote_addr,
+                    )
+                    return jsonify({"error": "session_expired"}), 401
             return None
 
         if _is_public_path(path):
