@@ -6,7 +6,7 @@ import logging
 
 from fastapi import APIRouter, Request
 
-from app.core.cache_backend import cache_flush_pattern, cache_stats
+from app.core.cache_backend import cache_stats
 from app.services import cache_service as cache
 from app.services.netbox_viz_filter import invalidate_exclusion_cache
 
@@ -17,10 +17,20 @@ router = APIRouter()
 
 @router.post("/admin/cache/refresh")
 def refresh_cache(request: Request) -> dict:
-    """Flush this service's Redis database and in-memory cache, then warm datacenter caches."""
+    """Warm datacenter caches in place, overwriting the previous values.
+
+    Deliberately does not flush first, matching customer-api and crm-engine.
+    The flush this used to start with cost nothing in data — every write here
+    goes through cache_set, which always applies settings.cache_ttl_seconds, so
+    it only removed entries that were about to expire anyway. What it did cost
+    was availability: from the DELETE until the last warm finished, minutes
+    later, every read was a miss. Callers either blocked on the database or gave
+    up and rendered empty, so an operator pressing "refresh cache" made the UI
+    worse for as long as the refresh ran. Warming over the top reaches the same
+    end state with the old values readable throughout.
+    """
     db = request.app.state.db
     logger.info("Admin cache refresh requested (datacenter-api).")
-    cache_flush_pattern("*")
     db.warm_cache()
     db.warm_additional_ranges()
     db.warm_s3_cache()

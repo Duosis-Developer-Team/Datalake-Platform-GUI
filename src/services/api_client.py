@@ -3334,10 +3334,18 @@ def _response_error_detail(resp: httpx.Response) -> Any:
 
 
 def refresh_platform_redis_caches() -> dict[str, Any]:
-    """Flush Redis-backed caches on backend services and clear the GUI HTTP response cache.
+    """Rewarm backend caches, then drop the GUI HTTP response cache.
 
     Calls datacenter-api, customer-api, and crm-engine ``POST /api/v1/admin/cache/refresh``.
     Uses an extended timeout because warming can take several minutes.
+
+    The GUI cache is dropped *last*, on purpose: the services warm in place and
+    keep serving their previous values while they do, so clearing first would
+    refill the GUI from backends that are not done yet and cache pre-refresh data
+    under a fresh timestamp. It is skipped entirely when no service reported
+    success — there is nothing new to pick up, so the cold window would be pure
+    loss, and the only thing the operator would observe is the pages that were
+    still rendering going blank.
     """
     timeout = httpx.Timeout(600.0, connect=30.0)
     headers = _auth_headers()
@@ -3364,13 +3372,16 @@ def refresh_platform_redis_caches() -> dict[str, Any]:
             out["services"][name] = {"ok": False, "error": str(exc)}
         except Exception as exc:
             out["services"][name] = {"ok": False, "error": str(exc)}
-    try:
-        # cache_service.clear() flushes the whole shared cache, which now
-        # includes the customer-availability and CRM-sales entries too.
-        _api_response_cache.clear()
-        out["gui_cache_cleared"] = True
-    except Exception as exc:
-        out["gui_cache_error"] = str(exc)
+    if any(entry.get("ok") for entry in out["services"].values()):
+        try:
+            # cache_service.clear() flushes the whole shared cache, which now
+            # includes the customer-availability and CRM-sales entries too.
+            _api_response_cache.clear()
+            out["gui_cache_cleared"] = True
+        except Exception as exc:
+            out["gui_cache_error"] = str(exc)
+    else:
+        out["gui_cache_error"] = "no service refreshed; kept the GUI cache rather than going cold for nothing"
     return out
 
 
