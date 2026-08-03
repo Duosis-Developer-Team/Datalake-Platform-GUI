@@ -118,7 +118,7 @@ Sürüm başına en fazla bir üretilmiş not.
 | `release_id` | int **UNIQUE** FK → `platform_releases(id)` ON DELETE CASCADE | sürüm başına tek not |
 | `headline` | text null | tek cümlelik özet |
 | `body` | jsonb NOT NULL | aşağıdaki yapı |
-| `status` | varchar(16) NOT NULL | `ok` \| `failed` |
+| `status` | varchar(16) NOT NULL | `draft` \| `ok` \| `failed` |
 | `model` | varchar(64) null | notu üreten model adı |
 | `input_fingerprint` | varchar(64) NOT NULL | notu besleyen sha kümesinin sha256'sı |
 | `generated_at` | timestamptz DEFAULT NOW() | |
@@ -135,6 +135,13 @@ Sürüm başına en fazla bir üretilmiş not.
                 "shas": ["ad6c78e"]}]
 }
 ```
+
+**`status` neden üç değerli:**
+- `draft` — üretildi ama **henüz onaylanmadı**. Panelde gösterilmez; sürüm o ana
+  kadar ham değişiklik listesiyle görünür.
+- `ok` — onaylandı, panelde görünür.
+- `failed` — üretilemedi ya da doğrulamadan hiçbir madde sağ çıkmadı. Panel ham
+  listeye düşer.
 
 **`input_fingerprint` neden var:** aynı sürüme sonradan commit eklenirse
 (gün içi ikinci deploy) parmak izi değişir; panel notun bayatladığını bilir ve
@@ -165,10 +172,39 @@ Kullanıcının çalıştırdığı tek komut.
   --pretty=format:%h%x1f%ad%x1f%s` — backfill script'iyle aynı format.
 - **Merge commit'lerini atar** (`--no-merges`); gürültü.
 - **Gönderir:** `POST /internal/platform/releases`, `X-Release-Token` header'ıyla.
-- **Yazdırır:** açılan/güncellenen sürüm, eklenen değişiklik sayısı, not durumu.
+  Sunucu sürümü açar, değişiklikleri yazar, notu **taslak olarak** üretir ve geri
+  döner. Taslak panelde görünmez.
+- **Gösterir ve sorar** — işin en önemli adımı. Üretilen notu terminale basar:
+
+  ```
+  2026.08.1 · 3 Ağustos 2026 · 7 commit
+
+  Neler Eklendi
+    • Colocation raporuna rack seviyesinde doluluk eklendi.
+    • Chatbot yanıtlarında streaming açıldı.
+
+  Neler Düzeltildi
+    • Customer view'da cache eskimesi giderildi.
+
+  Kaydedeyim mi? [e = evet / h = hayır / y = yeniden üret]
+  ```
+
+  - `e` → `POST .../note/confirm` — taslak `ok` olur, panelde görünür.
+  - `h` → `POST .../note/reject` — taslak silinir. Sürüm ve değişiklik kayıtları
+    **durur** (onlar git'ten gelen gerçekler, modelin ürünü değil); sürüm panelde
+    ham listesiyle görünür, notu sonra üretilebilir.
+  - `y` → `POST .../note/regenerate` — yeni taslak üretilir, tekrar sorulur.
+    Üst üste en fazla 3 deneme; sonra `h` gibi davranır ve durumu bildirir.
+- **`--yes`:** soruyu atlar, doğrudan onaylar. Acele edilen gün için.
 - **`--dry-run`:** hiçbir şey göndermez, ne göndereceğini basar.
+- Etkileşimli olmayan ortamda (TTY yok) `--yes` verilmemişse **taslakta bırakır ve
+  çıkar** — sessizce onaylamaz.
 - Yapılandırma: `RELEASE_INGEST_URL` ve `RELEASE_INGEST_TOKEN`, gitignore'lu local
   env dosyasından okunur (projenin local-env creds kuralı).
+
+**Neden onay adımı taslak üzerinden yürüyor:** onaylanan metin script'ten geri
+gönderilseydi, tokene sahip olan istediği metni panele yazdırabilirdi. Metin
+sunucuda kalır, script yalnızca "evet/hayır" der.
 
 ### 2. GUI ingest endpoint'i (yeni)
 
@@ -195,8 +231,20 @@ Davranış:
    `source='deploy'`.
 3. `release_changes` satırlarını yazar. `commit_sha` o sürümde zaten varsa atlar
    (script iki kere çalıştırılırsa kayıt ikizlenmez).
-4. Not üretimini çağırır (senkron; script'in çıktısında sonucu görmek istiyoruz).
-5. Döner: `{"version", "created", "changes_added", "note_status"}`.
+4. Not üretimini çağırır (senkron) ve sonucu **`status='draft'`** olarak yazar.
+5. Döner: `{"version", "created", "changes_added", "note_status", "note_body",
+   "dropped"}` — `dropped`, doğrulamada elenen madde sayısı ve gerekçeleri.
+
+**`POST /internal/platform/releases/{version}/note/confirm`** — taslağı `ok` yapar.
+Taslak yoksa 404, zaten `ok` ise 200 (idempotent).
+
+**`POST /internal/platform/releases/{version}/note/reject`** — taslak satırını
+siler. Sürüme ve değişikliklere dokunmaz.
+
+**`POST /internal/platform/releases/{version}/note/regenerate`** — yeni taslak
+üretir, döner. Var olan taslağın üzerine yazar.
+
+Dördü de aynı `X-Release-Token` kontrolünden geçer.
 
 **`GET /internal/platform/releases/last-sha`** — aynı token kontrolü; **en son
 eklenen** `release_changes` satırının `commit_sha` değerini döner (yoksa `null`).
@@ -212,10 +260,30 @@ LLM olmadan unit test edilebilir.
 - `build_payload(release) -> dict` — sürümün `release_changes` satırlarını
   chatbot-api'nin beklediği şekle çevirir.
 - `validate_note(raw, allowed_shas) -> tuple[dict, list[str]]` — **saf fonksiyon.**
-  - Her maddenin `shas` listesindeki her sha `allowed_shas` içinde mi bakar.
-  - Geçerli sha'sı kalmayan madde **silinir**, gerekçesiyle birlikte döner.
-  - Boş/`text`'i olmayan madde silinir.
-  - Bilinmeyen kova adı (`added`/`fixed`/`improved` dışı) atılır.
+  Kurallar bu sırayla uygulanır; her eleme gerekçesiyle birlikte döner:
+
+  1. **Bilinmeyen kova atılır.** `added` / `fixed` / `improved` dışındaki anahtarlar
+     yok sayılır.
+  2. **Sha doğrulaması.** Bir maddenin `shas` listesindeki her sha `allowed_shas`
+     içinde olmalı; olmayan sha listeden çıkarılır.
+  3. **Bir commit yalnızca bir maddede.** Daha önceki bir madde tarafından
+     kullanılmış sha, sonraki maddeden düşürülür (ilk gelen alır).
+     *Bunun sonucu:* madde sayısı commit sayısını **matematiksel olarak geçemez.*
+     Model tek commit'i üç maddeye bölerek not şişiremez.
+  4. **Uzunluk sınırı.** `text` 200 karakteri geçen madde silinir. Ortadan kesmek
+     bozuk görünür; bilgi zaten ham değişiklik listesinde duruyor.
+  5. **Metin temizliği.** `text` içinde sha benzeri token (7–40 haneli hex) veya
+     conventional-commit prefix'i (`feat:`, `fix(gui):` …) varsa **silinmez,
+     temizlenir**. Bu kozmetik bir kural.
+  6. **Boş madde silinir.** 2–5'ten sonra geçerli sha'sı kalmayan veya `text`'i
+     boşalan madde düşer.
+  7. **Hiçbir madde sağ çıkmazsa** → `failed`.
+
+  **Neden eleme, tümden reddetme değil:** madde başına sha zorunluluğu (2+3)
+  uydurmayı zaten madde düzeyinde kesiyor. Bir maddenin bozuk olması, doğru
+  yazılmış diğer üçünü çöpe atmayı gerektirmiyor. Hiçbir madde kalmadığında
+  `failed` devreye girip panel ham listeye düşüyor — yani en kötü durumda panel
+  bugünkü haline dönüyor, hiçbir zaman yanlış bilgi göstermiyor.
 - `generate_for_release(release_id) -> dict` — payload kur → `chatbot_client` çağır
   → `validate_note` → `release_notes` satırını yaz.
   - Tüm maddeler elenirse veya LLM hata verirse → `status='failed'`, `body` boş
@@ -250,6 +318,9 @@ Prompt sözleşmesi (system mesajı):
 - Türkçe cümle, İngilizce teknik terim.
 - Yalnızca `{"headline", "added", "fixed", "improved"}` anahtarlı JSON.
 - Her madde `{"text", "shas"}`; `shas` **girdide verilen sha'lardan** seçilecek.
+- **Bir commit yalnızca bir maddede kullanılacak.** İlgili commit'ler tek maddede
+  birleştirilecek, bölünmeyecek.
+- Bir madde tek cümle, en fazla 200 karakter.
 - Commit prefix'i ve sha metne yazılmayacak.
 - `chore`/`docs`/`build`/`ci` tipindekiler yazılmayacak — onlar sayıya girer.
 - Uygun madde yoksa kova boş bırakılacak; doldurmak için uydurulmayacak.
@@ -261,10 +332,19 @@ Prompt'a güvenmiyoruz; kod zorluyor:
 | Risk | Önlem | Nerede |
 |---|---|---|
 | Olmayan özellik yazması | Her madde sha alıntılamak zorunda; sha girdi kümesinde değilse madde silinir | `validate_note` |
+| Notu şişirmesi (1 commit → 5 madde) | Bir commit yalnızca bir maddede kullanılabilir; madde sayısı commit sayısını geçemez | `validate_note` |
+| Roman yazması | 200 karakteri geçen madde silinir | `validate_note` |
+| Sha / commit prefix'i sızdırması | Metin otomatik temizlenir | `validate_note` |
 | Sayıları uydurması | Rozet sayıları `release_changes` satırlarından kodda hesaplanır, modelden hiç alınmaz | `versions.py` |
 | Tümünü uydurması | Bütün maddeler elenirse `status='failed'` → panel ham listeye düşer | `generate_for_release` |
 | JSON yerine düzyazı | Parse hatası → `failed` → ham listeye düşer | chatbot-api router |
+| **Commit gerçek ama model yanlış yorumlamış** | **Onay adımı — not `draft` doğar, sen görüp onaylamadan panelde görünmez** | `new_release.py` + confirm endpoint |
 | Bayat not | `input_fingerprint` sha kümesiyle uyuşmuyorsa panel "güncellenmedi" işareti gösterir | `versions.py` |
+
+**Katmanların iş bölümü:** ilk dördü mekanik hataları kodla keser. Onay adımı ise
+kodun göremediği tek şeyi yakalar: commit gerçek, sha doğru, format düzgün, ama
+cümlenin anlamı yanlış. Bunu ancak insan görür — o yüzden varsayılan davranış
+sormaktır, `--yes` bilinçli bir tercihtir.
 
 ### 6. "Yeniden üret" butonu
 
@@ -276,6 +356,10 @@ Prompt'a güvenmiyoruz; kod zorluyor:
   yetmez (bkz. floor-map izin boşluğu dersi).
 - Callback modülü: `src/pages/settings/platform/versions_callbacks.py`,
   `app.py`'de `# noqa: F401` ile import edilir (mevcut settings callback deseni).
+- **Buradaki üretim taslak aşamasından geçmez, doğrudan `ok` yazar.** Gerekçe:
+  kullanıcı sonucu o anda ekranda görüyor ve beğenmezse butona tekrar basabiliyor;
+  script akışındaki "görmeden yayına girme" riski burada yok. Onay adımı,
+  arkasında insan olmayan otomatik yol içindir.
 
 ### 7. Geçmişin bir kereye mahsus yazılması
 
@@ -283,6 +367,11 @@ Prompt'a güvenmiyoruz; kod zorluyor:
 - Notu olmayan veya `status='failed'` olan sürümleri sırayla işler.
 - `--limit N` ve `--version X` ile parça parça çalıştırılabilir.
 - İdempotent: `--force` verilmedikçe `status='ok'` olan notu yeniden üretmez.
+- **`--preview`:** üretir, ekrana basar, **kaydetmez.** Prompt'u ayarlamak için
+  önce birkaç sürümde bununla bakılır.
+- Onay modeli: varsayılan olarak her sürümü tek tek sorar (script'le aynı `e/h/y`).
+  24 sürümü tek tek onaylamak istemiyorsan `--yes` ile toplu geçilir — ama önerilen
+  yol önce `--preview --limit 3` ile örneğe bakıp prompt'u bir kez ayarlamak.
 - Mevcut 24 sürüm / 835 değişiklik bu script'le bir kere geçirilir.
 
 ---
@@ -314,6 +403,10 @@ yerine `dmc.Paper` içinde üç kutu.
 
 **Teknik detaylar arkaya.** `sha 4f2a1b` satırları ("Service deployments" bloğu)
 en alta, kapalı bölüme iner.
+
+**Yalnızca `ok` notlar gösterilir.** `draft` ve `failed` durumundaki sürümler,
+notu hiç yokmuş gibi ham değişiklik listesiyle render edilir. Onaylanmamış hiçbir
+model çıktısı panelde görünmez.
 
 **İki durum işareti.** (a) Sürümün `input_fingerprint`'i o sürümün mevcut sha
 kümesiyle uyuşmuyorsa kartta sessiz bir "not güncellenmedi" işareti çıkar —
@@ -384,19 +477,33 @@ Yeni ortam değişkenleri:
   - Geçerli sha → madde korunur.
   - Uydurma sha → madde silinir.
   - Karışık sha (biri geçerli biri değil) → madde korunur, geçersiz sha atılır.
+  - **Aynı sha iki maddede → ikincisi düşer; iki commit'ten beş madde çıkamaz.**
+  - **201 karakterlik madde → silinir; 200 karakterlik madde → kalır.** (Sınır
+    değerleri açıkça test edilir.)
+  - **Metinde sha veya `feat(gui):` prefix'i → temizlenir, madde kalır.**
+  - **Temizlik sonrası metin boşalırsa → madde silinir.**
   - Tüm maddeler uydurma → boş sonuç + `failed`.
   - Bilinmeyen kova adı → atılır.
   - Boş `text` → atılır.
 - **Ingest endpoint'i:** token yok → 503/403; geçerli token → sürüm açılır; aynı
   commit iki kere → ikinci çağrıda `changes_added=0`; gün içi ikinci çağrı yeni
-  sürüm açmaz, mevcut günün sürümüne ekler.
+  sürüm açmaz, mevcut günün sürümüne ekler; **üretilen not `draft` doğar.**
+- **Onay akışı:** `confirm` → `ok`; ikinci kez `confirm` → 200, durum değişmez
+  (idempotent); `reject` → not satırı silinir ama `platform_releases` ve
+  `release_changes` **yerinde kalır**; `regenerate` → yeni taslak, eskisinin
+  üzerine yazar; taslak yokken `confirm` → 404.
+- **Script onay davranışı:** `e` → confirm çağrılır; `h` → reject çağrılır ve çıkış
+  kodu 0 (hata değil, tercih); `y` → regenerate; üst üste 3 `y` sonrası döngü
+  kırılır; `--yes` soruyu atlar; TTY yokken `--yes` verilmemişse taslakta bırakıp
+  çıkar ve **confirm çağırmaz**.
 - **CalVer/TRT sınırı:** TRT'de 23:50 ve ertesi gün 00:10 → **iki ayrı** sürüm.
   UTC ile TRT'nin ayrıştığı saatler açıkça test edilir.
 - **chatbot-api router:** LLM mock'lanır — geçerli JSON → 200 + not; bozuk çıktı →
   200 + `failed`; `LLMError` → 200 + `failed` (500 değil).
-- **Panel:** notu olan sürüm → notlar render edilir; `status='failed'` sürüm → ham
-  `release_changes` listesine düşer; hiç sürüm yok → mevcut boş durum korunur;
-  bayat `input_fingerprint` → güncellenmedi işareti.
+- **Panel:** `status='ok'` sürüm → notlar render edilir; **`status='draft'` sürüm →
+  not gösterilmez, ham listeye düşer**; `status='failed'` sürüm → ham listeye
+  düşer; hiç sürüm yok → mevcut boş durum korunur; bayat `input_fingerprint` →
+  güncellenmedi işareti.
 - **İzin:** `sec:settings_platform_versions:regenerate` olmayan kullanıcı callback'i
   doğrudan tetiklerse reddedilir (buton gizli olsa bile).
 - **Script:** `--dry-run` hiçbir HTTP isteği yapmaz; merge commit'leri listeye
@@ -409,12 +516,15 @@ Yeni ortam değişkenleri:
 3. **`validate_note` ve arkadaşları** — saf fonksiyonlar, testleriyle. (LLM yok.)
 4. **chatbot-api endpoint'i** — router + prompt + mock'lu testler.
 5. **`chatbot_client` + `create_service_token`** — GUI'den servise hat.
-6. **Ingest endpoint'i** — token kontrolü, CalVer/TRT, dedupe.
-7. **`scripts/new_release.py`** — uçtan uca ilk gerçek çalıştırma.
-8. **Panel yenilemesi** — düzen, renkler, arama, "Yayında" rozeti düzeltmesi.
-9. **"Yeniden üret" butonu** — izin düğümü + callback.
-10. **`scripts/regenerate_release_notes.py`** — mevcut 24 sürüm bir kere geçirilir.
-11. **k8s/compose yapılandırması** — `RELEASE_INGEST_TOKEN` bağlanır.
+6. **Ingest endpoint'i** — token kontrolü, CalVer/TRT, dedupe, taslak üretimi.
+7. **Onay endpoint'leri** — `confirm` / `reject` / `regenerate`.
+8. **`scripts/new_release.py`** — commit toplama + onay döngüsü; uçtan uca ilk
+   gerçek çalıştırma.
+9. **Panel yenilemesi** — düzen, renkler, arama, "Yayında" rozeti düzeltmesi.
+10. **"Yeniden üret" butonu** — izin düğümü + callback.
+11. **`scripts/regenerate_release_notes.py`** — önce `--preview` ile prompt ayarı,
+    sonra mevcut 24 sürüm bir kere geçirilir.
+12. **k8s/compose yapılandırması** — `RELEASE_INGEST_TOKEN` bağlanır.
 
 Adım 3'e kadar hiçbir LLM çağrısı gerekmiyor; doğrulama mantığı model olmadan
 tamamlanıp test edilebilir.
@@ -423,8 +533,10 @@ tamamlanıp test edilebilir.
 
 - **Not kalitesi ölçülemedi.** Modelin Türkçe cümle + İngilizce terim kuralına ne
   kadar uyacağı ilk gerçek üretime kadar bilinmiyor. Prompt ilk 24 sürümün
-  çıktısına bakılarak bir kez ayarlanacak; bunun için `--dry-run` benzeri bir
-  "üret ama yazma" modu regenerate script'inde bulunacak.
+  çıktısına bakılarak bir kez ayarlanacak; bunun için regenerate script'inde
+  `--preview` (üret, göster, kaydetme) modu var. Bu risk onay adımıyla
+  sınırlandırılmış durumda: kalite düşükse not panele hiç çıkmıyor, `y` ile
+  yeniden üretiliyor veya `h` ile atılıyor.
 - **Script çalıştırılmazsa sürüm kaydı düşmez.** Bilinçli kabul edilen zayıflık
   (Seçenek 1 kararı). Panelin en üstünde, en son kaydedilen commit ile `HEAD`
   arasında fark varsa **"kaydedilmemiş deploy var"** uyarısı gösterilir — ama bu
