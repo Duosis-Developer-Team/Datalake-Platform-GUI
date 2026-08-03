@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
+from tests.conftest import seed_cache_entry
 from src.services import api_client as api
 from src.services import cache_service as cache
 
@@ -41,8 +42,7 @@ def test_get_dc_availability_sla_items_stale_cache_is_refetched(monkeypatch):
     tr = {"start": "2026-01-01", "end": "2026-12-31", "preset": "year_2026"}
     ck = f"api:dc_svc_sla_items:{api._serialize_tr_cache_key(tr)}"
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
-    cache.set(ck, [{"group_name": "Premier - DC11", "availability_pct": 11.1}])  # old value
-    cache.set(api._fetched_ts_key(ck), time.time() - 100000)  # stale timestamp
+    seed_cache_entry(ck, [{"group_name": "Premier - DC11", "availability_pct": 11.1}], age_seconds=100000)  # old value
 
     with patch.object(
         api,

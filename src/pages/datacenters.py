@@ -23,6 +23,7 @@ from src.utils.datacenters_virt_sellable import (
     refresh_virt_sellable_cache,
     resolve_virt_sellable_for_dcs,
 )
+from src.components.degraded_notice import build_degraded_notice
 from src.utils.api_parallel import parallel_execute
 from src.utils.format_units import fmt_tl, fmt_tl_range
 from src.utils.platform_sellable_aggregate import (
@@ -727,6 +728,11 @@ def build_datacenters(time_range=None, visible_sections=None):
         return vs is None or code in vs
 
     datacenters = api.get_all_datacenters_summary(tr)
+    if api.is_degraded(datacenters):
+        # An empty list here is not "this platform has no datacenters" — it is
+        # the fallback the client returns when it never got an answer. Rendering
+        # it produces a page that looks like the estate was deleted.
+        return build_degraded_notice()
     sla_by_dc = api.get_sla_by_dc(tr)
 
     dc_ids: list[str] = [str(dc.get("id")) for dc in datacenters if dc.get("id") is not None]
@@ -1112,6 +1118,11 @@ def poll_virt_sellable_refresh(_n, state, time_range):
         raise dash.exceptions.PreventUpdate
 
     datacenters = api.get_all_datacenters_summary(tr)
+    if api.is_degraded(datacenters):
+        # This callback replaces KPIs already on screen and has no slot to put an
+        # error in, so overwriting them with the fallback would wipe a working
+        # render. Leave what is there and try again on the next tick.
+        raise dash.exceptions.PreventUpdate
     sla_by_dc = api.get_sla_by_dc(tr)
     virt_tl_by_dc = virt_state["virt_tl_by_dc"]
     virt_tl_min_by_dc = virt_state.get("virt_tl_min_by_dc") or {}

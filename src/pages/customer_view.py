@@ -35,6 +35,7 @@ from src.utils.export_helpers import (
     dash_send_pdf_workbook,
 )
 from src.utils.format_units import smart_storage, smart_memory, smart_cpu, pct_float, title_case
+from src.components.degraded_notice import build_degraded_notice
 from src.components.header import create_detail_header
 from src.pages.home import metric_card
 from src.components.s3_panel import build_customer_s3_panel
@@ -2823,6 +2824,33 @@ def _eff_rows_with_licensed_os(eff_by_cat: list | None, compliance_payload: dict
         return eff_by_cat
 
 
+def _degraded_customer_content(name: str) -> dict:
+    """The section map _customer_content returns, with the notice in every slot.
+
+    Every section gets its own copy rather than one shared instance: they land in
+    different tabs, and a notice on Summary alone leaves an operator who opened
+    Virt looking at a blank panel and drawing their own conclusion.
+    """
+    def notice():
+        return build_degraded_notice(f"{name} müşterisinin")
+
+    return {
+        "manager": {
+            "summary": notice(), "virt": notice(), "avail": notice(),
+            "backup": notice(), "billing": notice(), "itsm": notice(),
+            "s3": html.Div(), "phys_inv": notice(),
+        },
+        "customer": {
+            "summary": notice(), "virt": notice(), "avail": notice(),
+            "backup": notice(), "s3": html.Div(), "phys_inv": notice(),
+        },
+        "has_s3": False,
+        "has_phys_inv": False,
+        "customer_name": name,
+        "export_context": {},
+    }
+
+
 def _customer_content(customer_name: str, time_range: dict | None = None, *, only_perspective: str | None = None):
     # only_perspective builds just that perspective's summary/virt/backup (used by
     # the perspective toggle so it doesn't rebuild both). Data is shared-cached
@@ -2905,6 +2933,14 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
         active_items = f_active_items.result()
         service_breakdown = f_service_breakdown.result()
         sla_categories = aggregate_sla_categories(f_sla.result())
+
+    if api.is_degraded(data):
+        # Resources is the spine of this page: totals and assets feed the
+        # summary cards, the Virt tab and the backup tab. Without it every one
+        # of them would report the customer as owning nothing — the same shape
+        # a real churned customer produces, which is not a mistake worth
+        # risking on a billing-adjacent screen.
+        return _degraded_customer_content(name)
 
     vm_outage_counts = avail_bundle.get("vm_outage_counts") or {}
 

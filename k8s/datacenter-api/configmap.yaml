@@ -9,3 +9,9 @@ data:
   DB_USER: "infra_svc"
   REDIS_HOST: "bulutistan-redis"
   REDIS_PORT: "6379"
+  # This service's own database. db 0 is the frontend's
+  # (k8s/frontend/configmap.yaml REDIS_URL), and /admin/cache/refresh here
+  # flushes the whole db — sharing it wiped the frontend's cache.
+  # Set explicitly even though app/config.py now defaults to 3, so the
+  # ownership is visible where an operator would look for it.
+  REDIS_DB: "3"

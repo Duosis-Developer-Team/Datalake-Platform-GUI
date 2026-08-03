@@ -8,6 +8,7 @@ import time
 
 import httpx
 
+from tests.conftest import seed_cache_entry
 from src.services import api_client as api
 from src.services import cache_service
 
@@ -15,8 +16,7 @@ from src.services import cache_service
 def test_stale_entry_is_refetched_not_served(monkeypatch):
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
-    cache_service.set("k", {"v": 1})
-    cache_service.set(api._fetched_ts_key("k"), time.time() - 310)  # stale
+    seed_cache_entry("k", {"v": 1}, age_seconds=310)
     out = api._api_cache_get_with_stale("k", lambda: {"v": 2}, {})
     assert out == {"v": 2}, "stale entry must be refetched fresh, never served stale"
 
@@ -24,8 +24,7 @@ def test_stale_entry_is_refetched_not_served(monkeypatch):
 def test_fresh_entry_served_without_refetch(monkeypatch):
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
-    cache_service.set("k", {"v": 1})
-    cache_service.set(api._fetched_ts_key("k"), time.time() - 10)  # fresh
+    seed_cache_entry("k", {"v": 1}, age_seconds=10)
     called = []
 
     def fetch():
@@ -40,8 +39,7 @@ def test_fresh_entry_served_without_refetch(monkeypatch):
 def test_stale_served_as_last_good_only_on_hard_failure(monkeypatch):
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
-    cache_service.set("k", {"v": 1})
-    cache_service.set(api._fetched_ts_key("k"), time.time() - 310)  # stale
+    seed_cache_entry("k", {"v": 1}, age_seconds=310)
 
     def boom():
         raise httpx.ConnectError("backend down")
@@ -53,8 +51,7 @@ def test_stale_served_as_last_good_only_on_hard_failure(monkeypatch):
 def test_sellable_panels_stale_is_refetched(monkeypatch):
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
-    cache_service.set("kp", [{"panel_key": "old"}])
-    cache_service.set(api._fetched_ts_key("kp"), time.time() - 999)  # stale
+    seed_cache_entry("kp", [{"panel_key": "old"}], age_seconds=999)
     out = api._api_cache_get_sellable_panels(
         "kp", lambda: [{"panel_key": "new"}], "DC13", "virt_classic", None
     )

@@ -9,3 +9,7 @@ data:
   DB_USER: "customer_svc"
   REDIS_HOST: "bulutistan-redis"
   REDIS_PORT: "6379"
+  # Matches app/config.py's default; made explicit so the db-per-service
+  # split is readable from the manifests alone (frontend 0, customer-api 1,
+  # crm-engine 2, datacenter-api 3).
+  REDIS_DB: "1"

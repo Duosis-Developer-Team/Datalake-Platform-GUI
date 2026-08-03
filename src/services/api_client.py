@@ -140,11 +140,34 @@ _HTTP_TLS = threading.local()
 _inflight_lock = threading.Lock()
 _inflight: dict[str, threading.Event] = {}
 
-# Freshness (age) is tracked in the SHARED cache backend using wall-clock time
-# (see _fetched_ts_key / _mark_fetched / _swr_age) so every pod agrees on whether
-# an entry is fresh. Entries written directly via cache_service.set (warm jobs)
-# carry no timestamp and so read as "unknown age".
+# Freshness (age) is tracked in the SHARED cache backend using wall-clock time,
+# stored inside the entry itself (see _cache_store / _cache_load), so every pod
+# agrees on whether an entry is fresh. Warm jobs go through the same api_client
+# functions as user requests, so warm-written entries are timestamped too.
 _SWR_TTL_SECONDS = float(os.getenv("API_CACHE_SWR_TTL", "300") or "300")
+
+# How old a cached payload may be and still be handed back when the fetch fails.
+#
+# Past the freshness window a value is stale but still usable, and serving it
+# through a backend hiccup is deliberate — see the except arms below. What was
+# missing was the other end. Without a ceiling, an endpoint that starts 404ing
+# replays its last successful snapshot indefinitely, and the page renders it
+# normally: no error, no notice, nothing that distinguishes a live figure from
+# one that stopped being measured. That is not hypothetical — four CRM calls
+# point at a service that does not mount their routes (audit P1-6), so they 404
+# every time, forever.
+#
+# Four SWR windows (20 min by default) is the audit's number. It is long enough
+# that a restart or a slow query never blanks a working page, and short enough
+# that "the data is old" is still true rather than archaeology. Named and
+# env-tunable because how long a figure may go unrefreshed before a page stops
+# showing it is a product decision, not an implementation detail.
+# Written so that API_LAST_GOOD_MAX_AGE=0 means zero — "never serve a stale
+# payload after a failure" is a legitimate thing to want, and the usual
+# `float(...) or default` shape would quietly turn it back into 20 minutes.
+_LAST_GOOD_MAX_AGE_SECONDS = float(
+    os.getenv("API_LAST_GOOD_MAX_AGE") or (4 * _SWR_TTL_SECONDS)
+)
 
 # Cache observability (item 7): hit/miss/fetch counters + fetch timing, so we can
 # see the shared cache working (hit rate) and how slow the backend is on a miss.
@@ -203,9 +226,39 @@ def _new_http_transport() -> httpx.HTTPTransport:
 # 8s and returning empty — which never caches, so warm==cold and the UI shows zeros.
 # Connect stays short so a truly-unreachable backend still fails fast. Tunable via env.
 _INTERACTIVE_READ_TIMEOUT = float(os.getenv("API_INTERACTIVE_READ_TIMEOUT", "20") or "20")
+
+# Two different waits, deliberately two different numbers.
+#
+# _SHARED_RESULT_WAIT_SECONDS is the cross-pod half: how long a pod that lost the
+# `SET NX` lock waits for the winning pod to publish its result, and the TTL that
+# lock is held for. It has to outlast one fetch, or the lock expires while its
+# holder is still fetching and a second pod starts the same query — the stampede
+# this lock exists to prevent.
+#
+# _INFLIGHT_WAIT_SECONDS is the in-process half: how long a follower thread waits
+# on the leader's Event. It has to outlast the *leader*, and the leader's path is
+# not one fetch — a leader that loses the cross-pod lock first spends
+# _SHARED_RESULT_WAIT_SECONDS waiting for the other pod, and then fetches anyway
+# when nothing arrives. Both were one shared number, so followers expired exactly
+# one fetch before the leader returned, and returned the empty fallback instead:
+# fabricated zeros, rendered as data, replaced by the real values on the next
+# callback. That replacement is what users describe as the page going and coming
+# back. Waiting is not a cost here — the leader calls ev.set() the moment it has
+# an answer, so these are ceilings for the pathological case, not delays.
+#
+# _SHARED_LOCK_TTL_SECONDS is the lease on that lock, and it is deliberately a
+# third number rather than a reuse of the wait. The wait is "how long am I
+# willing to sit here"; the lease is "how long may the holder be presumed alive".
+# Set to the wait, they expire together: the lease could lapse at the instant the
+# fetch it protects returns, letting a second worker start the same query. The
+# lease only needs to outlast one fetch — if the holder dies mid-fetch, waiters
+# still give up on their own budget and fetch, so a longer lease costs
+# coalescing, never progress.
+_SHARED_RESULT_WAIT_SECONDS = max(25.0, _INTERACTIVE_READ_TIMEOUT + 5.0)
+_SHARED_LOCK_TTL_SECONDS = _SHARED_RESULT_WAIT_SECONDS + 10.0
 _INFLIGHT_WAIT_SECONDS = float(os.getenv("API_INFLIGHT_WAIT_SECONDS", "0") or "0")
 if _INFLIGHT_WAIT_SECONDS <= 0:
-    _INFLIGHT_WAIT_SECONDS = max(25.0, _INTERACTIVE_READ_TIMEOUT + 5.0)
+    _INFLIGHT_WAIT_SECONDS = _SHARED_RESULT_WAIT_SECONDS + _INTERACTIVE_READ_TIMEOUT + 5.0
 _INTERACTIVE_TIMEOUT = httpx.Timeout(
     _INTERACTIVE_READ_TIMEOUT, connect=5.0, read=_INTERACTIVE_READ_TIMEOUT,
     write=_INTERACTIVE_READ_TIMEOUT, pool=5.0,
@@ -281,6 +334,54 @@ def _get_client_crm() -> httpx.Client:
 
 def _clone(value: Any) -> Any:
     return deepcopy(value)
+
+
+# A payload the client fabricated because it never got an answer, as opposed to
+# an answer that happened to be empty. The two used to be identical on the wire —
+# both arrive at the page as a fully-shaped structure of zeros — so a page could
+# only render "0 hosts, 0 VMs, 0 kW" and hope the operator understood it meant
+# "unknown". In a capacity product that reads as an outage, and the numbers snap
+# back to normal on the next callback, which is the page "going and coming back".
+#
+# Only the no-answer paths are marked: a fetch that raised, or a follower whose
+# wait expired with nothing cached. A *measured* empty stays unmarked even though
+# it is equally uncacheable — a DC with genuinely no unmapped resources has been
+# answered, and putting an error banner on it would swap one lie for another.
+_DEGRADED_KEY = "_degraded"
+
+
+class _DegradedList(list):
+    """An empty list that remembers it was fabricated rather than measured.
+
+    A dict fallback carries the marker as a key; a list has nowhere to put one,
+    and get_all_datacenters_summary — the whole Datacenters page — returns a
+    list. The type is the marker. It compares equal to [], iterates like [], and
+    deep-copies back into itself, so nothing downstream needs to know it exists.
+    Only is_degraded looks.
+    """
+
+
+def is_degraded(value: Any) -> bool:
+    """True when `value` is a placeholder this module invented, not data.
+
+    The one supported way to ask. Pages must not test for the `_degraded` key or
+    the list subclass themselves — which of the two carries the marker depends on
+    the payload's shape, and that is not the caller's problem.
+    """
+    if isinstance(value, _DegradedList):
+        return True
+    return isinstance(value, dict) and value.get(_DEGRADED_KEY) is True
+
+
+def _degraded_fallback(empty_fallback: Any) -> Any:
+    """Clone `empty_fallback` and mark the copy as fabricated."""
+    out = _clone(empty_fallback)
+    if isinstance(out, dict):
+        out[_DEGRADED_KEY] = True
+        return out
+    if isinstance(out, list):
+        return _DegradedList(out)
+    return out
 
 
 def _build_time_params(tr: Optional[dict]) -> dict[str, str]:
@@ -412,18 +513,17 @@ def _api_cache_get_sellable_panels(
     """Cache sellable panels (even empty) with stale-while-revalidate, so DCs without a
     snapshot don't re-pay the CRM round-trip on every build. Transient empties self-heal
     via the SWR background refresh after _SWR_TTL_SECONDS."""
-    cached = _api_response_cache.get(cache_key)
-    if cached is not None and _is_fresh(cache_key):
+    cached, _age = _cache_load(cache_key)
+    if cached is not None and _age_is_fresh(_age):
         return _clone(cached)
     # Stale or miss: never serve stale — fetch fresh below. `cached` stays in the
     # cache and is returned as last-good only if the fetch hard-fails.
     try:
         out = fetch_normalized()
-        _api_response_cache.set(cache_key, out)
-        _mark_fetched(cache_key)
+        _cache_store(cache_key, out)
         return out
     except _HTTP_ERRORS:
-        hit = _api_response_cache.get(cache_key)
+        hit, _ = _cache_load(cache_key)
         if hit is not None:
             return _clone(hit)
         return []
@@ -458,8 +558,7 @@ def _schedule_inventory_swr_refresh(
             with warm_mode():
                 out = fetch_normalized()
             if _should_persist_inventory_cache(out):
-                _api_response_cache.set(cache_key, out)
-                _mark_fetched(cache_key)
+                _cache_store(cache_key, out)
         except _HTTP_ERRORS as exc:
             logger.warning(
                 "inventory SWR background refresh failed key=%s: %s",
@@ -483,8 +582,8 @@ def _api_cache_get_inventory_overview(
 ) -> dict:
     """True SWR for CRM inventory overview: serve fresh immediately; on stale serve
     cached payload and refresh in a background thread; on miss block on short fetch."""
-    cached = _api_response_cache.get(cache_key)
-    if cached is not None and _is_fresh(cache_key):
+    cached, _age = _cache_load(cache_key)
+    if cached is not None and _age_is_fresh(_age):
         _record_cache_hit()
         out = _clone(cached)
         if isinstance(out, dict):
@@ -513,8 +612,7 @@ def _api_cache_get_inventory_overview(
             _inflight[cache_key] = ev
     if not leader:
         ev.wait(timeout=_INFLIGHT_WAIT_SECONDS)
-        hit = _api_response_cache.get(cache_key)
-        return _clone(hit) if hit is not None else {}
+        return _last_good_or_empty(cache_key)
 
     try:
         t0 = time.time()
@@ -522,16 +620,12 @@ def _api_cache_get_inventory_overview(
             out = fetch_normalized()
             _record_cache_fetch(time.time() - t0)
             if _should_persist_inventory_cache(out):
-                _api_response_cache.set(cache_key, out)
-                _mark_fetched(cache_key)
+                _cache_store(cache_key, out)
             return out
         except _HTTP_ERRORS as exc:
             _record_cache_fetch(time.time() - t0, error=True)
             logger.warning("inventory overview fetch failed key=%s: %s", cache_key, exc)
-            hit = _api_response_cache.get(cache_key)
-            if hit is not None:
-                return _clone(hit)
-            return {}
+            return _last_good_or_empty(cache_key)
     finally:
         with _inflight_lock:
             _inflight.pop(cache_key, None)
@@ -546,21 +640,17 @@ def _api_cache_get_sellable_summary(
     """Cache sellable summary (even empty) with stale-while-revalidate, so DCs without a
     snapshot don't re-pay the CRM round-trip on every build. Transient empties self-heal
     via the SWR background refresh after _SWR_TTL_SECONDS."""
-    cached = _api_response_cache.get(cache_key)
-    if cached is not None and _is_fresh(cache_key):
+    cached, _age = _cache_load(cache_key)
+    if cached is not None and _age_is_fresh(_age):
         return _clone(cached)
     # Stale or miss: never serve stale — fetch fresh below. `cached` stays in the
     # cache and is returned as last-good only if the fetch hard-fails.
     try:
         out = fetch_normalized()
-        _api_response_cache.set(cache_key, out)
-        _mark_fetched(cache_key)
+        _cache_store(cache_key, out)
         return out
     except _HTTP_ERRORS:
-        hit = _api_response_cache.get(cache_key)
-        if hit is not None:
-            return _clone(hit)
-        return {}
+        return _last_good_or_empty(cache_key)
 
 
 _HTTP_ERRORS = (
@@ -579,38 +669,123 @@ def _serialize_tr_params(tr: Optional[dict]) -> str:
     return json.dumps(sorted(p.items()), separators=(",", ":"), ensure_ascii=False)
 
 
-def _fetched_ts_key(cache_key: str) -> str:
-    """Shared-cache key holding the wall-clock fetch time of `cache_key`."""
-    return f"api:__ts__:{cache_key}"
+# The fetch time travels inside the entry it describes. It used to live in a
+# second key (`api:__ts__:<key>`), which Redis evicted independently of the value
+# — and a value whose timestamp had been evicted read as "unknown age", which
+# _is_fresh treated as fresh. That froze the entry: never refetched again, so the
+# page kept rendering one snapshot while everything around it moved on. One entry
+# means eviction takes both halves or neither, and losing both is an ordinary
+# miss, which every caller here already handles.
+_SWR_STAMP = "__swr_fetched_at__"
 
 
-def _mark_fetched(cache_key: str) -> None:
-    """Record now() as the fetch time of cache_key in the shared cache (wall-clock)."""
-    _api_response_cache.set(_fetched_ts_key(cache_key), time.time())
+def _cache_store(cache_key: str, value: Any) -> None:
+    """Write `value` and the current wall-clock time as one cache entry."""
+    _api_response_cache.set(cache_key, {_SWR_STAMP: time.time(), "value": value})
 
 
-def _swr_age(cache_key: str) -> Optional[float]:
-    """Age (seconds) since this key was last fetched, from the shared timestamp,
-    or None if no timestamp exists (e.g. warm-written entries)."""
-    ts = _api_response_cache.get(_fetched_ts_key(cache_key))
-    return None if ts is None else (time.time() - ts)
+def _cache_load(cache_key: str) -> tuple[Any, Optional[float]]:
+    """Return ``(value, age_seconds)`` for `cache_key`.
+
+    age is None when the entry is absent, and also when it predates this format:
+    entries written by an earlier release are bare values with no recorded fetch
+    time. Unknown age counts as stale, so each of those costs one refetch.
+    """
+    raw = _api_response_cache.get(cache_key)
+    if raw is None:
+        return None, None
+    if isinstance(raw, dict) and _SWR_STAMP in raw:
+        try:
+            return raw.get("value"), time.time() - float(raw[_SWR_STAMP])
+        except (TypeError, ValueError):
+            return raw.get("value"), None
+    return raw, None
 
 
 def get_cache_as_of(cache_key: str) -> Optional[float]:
     """Wall-clock epoch seconds when `cache_key` was last fetched, or None if
     unknown. For the UI "as-of HH:MM" data-freshness stamp and age metrics."""
-    ts = _api_response_cache.get(_fetched_ts_key(cache_key))
-    return float(ts) if ts is not None else None
+    raw = _api_response_cache.get(cache_key)
+    if isinstance(raw, dict) and raw.get(_SWR_STAMP) is not None:
+        try:
+            return float(raw[_SWR_STAMP])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _age_is_fresh(age: Optional[float]) -> bool:
+    """Whether an age from _cache_load still counts as fresh.
+
+    Unknown age is stale. The opposite default is what let a value outlive its
+    timestamp and never refresh again; one extra fetch is the cheaper mistake.
+    """
+    if _SWR_TTL_SECONDS <= 0:
+        return True
+    return age is not None and age <= _SWR_TTL_SECONDS
+
+
+def _age_is_servable(age: Optional[float]) -> bool:
+    """Whether an age from _cache_load is young enough to serve as last-good.
+
+    Unknown age fails, for the same reason it fails _age_is_fresh: an entry
+    written before the timestamp format existed has no age to bound, and
+    treating it as young is precisely the unbounded replay this guards against.
+    """
+    return age is not None and age <= _LAST_GOOD_MAX_AGE_SECONDS
+
+
+def _servable_last_good(cache_key: str) -> Any:
+    """The cached payload if it is young enough to stand in for a live one, else
+    None — with a line in the log saying what was withheld and how old it was.
+
+    Every path in this module that hands back a cached payload after a failed
+    fetch goes through here, so the bound is one rule in one place rather than a
+    condition each branch has to remember. What the caller substitutes when this
+    returns None is the caller's business.
+    """
+    hit, age = _cache_load(cache_key)
+    if hit is None:
+        return None
+    if _age_is_servable(age):
+        # Real data, just old. Deliberately not marked degraded — marking it
+        # would replace a working page with an error card on every backend
+        # hiccup, which is its own kind of lie.
+        return _clone(hit)
+    logger.warning(
+        "API cache last-good for key=%s is %s old; reporting no data instead",
+        cache_key,
+        "of unknown age" if age is None else f"{age:.0f}s",
+    )
+    return None
+
+
+def _last_good_or_degraded(cache_key: str, empty_fallback: Any) -> Any:
+    """The cached payload if it is young enough to stand in for a live one,
+    otherwise a fallback that says so."""
+    hit = _servable_last_good(cache_key)
+    return hit if hit is not None else _degraded_fallback(empty_fallback)
+
+
+def _last_good_or_empty(cache_key: str) -> dict:
+    """Same bound, for the two caches whose pages cannot read a degraded marker.
+
+    P0-4 wired the degraded notice into five pages; the consumers of the
+    inventory overview and sellable summary caches are not among them, so a
+    marked payload would travel through them as if it were data and buy nothing.
+    Their existing answer for "nothing" is {}, so that is what they get past the
+    bound. The unbounded replay closes either way; the log line says why the
+    screen went empty. Teaching those pages the notice is a separate change.
+    """
+    hit = _servable_last_good(cache_key)
+    return hit if isinstance(hit, dict) else {}
 
 
 def _is_fresh(cache_key: str) -> bool:
-    """True if the cached entry may be served without a refetch: TTL disabled,
-    warm-written (no timestamp), or age within the freshness window. A stale entry
-    returns False so callers refetch — the no-stale rule (never serve stale)."""
-    if _SWR_TTL_SECONDS <= 0:
-        return True
-    age = _swr_age(cache_key)
-    return age is None or age <= _SWR_TTL_SECONDS
+    """True if the cached entry may be served without a refetch. Prefer
+    _cache_load + _age_is_fresh on hot paths — this re-reads the entry."""
+    _, age = _cache_load(cache_key)
+    return _age_is_fresh(age)
 
 
 def _serialize_tr_cache_key(tr: Optional[dict]) -> str:
@@ -630,6 +805,12 @@ def _serialize_tr_cache_key(tr: Optional[dict]) -> str:
 
 
 def _should_persist_api_cache(value: Any, empty_fallback: Any) -> bool:
+    # A degraded payload records that one call failed; it says nothing about the
+    # data. Caching it would serve that failure to every reader for the full TTL,
+    # and — worse — the entry would pass the freshness check, so the fabricated
+    # zeros would look newer than the real values they displaced.
+    if is_degraded(value):
+        return False
     if value == empty_fallback:
         return False
     if isinstance(value, dict) and not value:
@@ -644,11 +825,20 @@ def _should_persist_api_cache(value: Any, empty_fallback: Any) -> bool:
 def _prefer_stale_over_empty_fetch(
     cache_key: str,
     stale: Any,
+    stale_age: Optional[float],
     fresh: Any,
     empty_fallback: Any,
 ) -> Any:
-    """Keep empty/degraded fetches from masking a usable last-good entry."""
+    """Keep empty/degraded fetches from masking a usable last-good entry.
+
+    Bounded by age for the same reason the except arms are: an empty answer is
+    usually a backend still warming up, and preferring the previous one is right
+    for a few minutes. Past the bound it stops being right — an hours-old figure
+    does not outrank a current measurement just because the current one is zero.
+    """
     if _should_persist_api_cache(fresh, empty_fallback):
+        return fresh
+    if not _age_is_servable(stale_age):
         return fresh
     if stale is not None and _should_persist_api_cache(stale, empty_fallback):
         logger.warning(
@@ -661,12 +851,31 @@ def _prefer_stale_over_empty_fetch(
 
 
 def _wait_for_shared_result(cache_key: str, timeout: float) -> bool:
-    """Poll the shared cache for another pod's in-flight fetch result. Returns
-    True as soon as the key appears, False on timeout."""
+    """Poll the shared cache for another worker's in-flight fetch result. Returns
+    True as soon as a *fresh* entry appears, False on timeout.
+
+    Freshness is the whole condition, not a refinement of it. This is only ever
+    called by a caller that already loaded the key and rejected what it found as
+    stale — so a poll for "any entry" succeeded on its first iteration, on that
+    same rejected entry, and handed back the payload the freshness check had
+    just thrown out. With one worker that was invisible. With two behind one
+    Redis it means the worker that fetched answers with the new numbers and the
+    worker that lost the lock answers with the old ones, and which one a request
+    gets is down to the round-robin: the page changes value on reload with
+    nothing to explain it.
+    """
     deadline = time.time() + timeout
     while True:
-        if _api_response_cache.get(cache_key) is not None:
+        value, age = _cache_load(cache_key)
+        if value is not None and _age_is_fresh(age):
             return True
+        if not _api_response_cache.is_locked(cache_key):
+            # The holder let go without publishing anything, so its fetch failed
+            # (or its worker died). Sitting out the rest of the budget would add
+            # the full wait to every request for as long as the backend is down —
+            # which is when a page most needs to render at all. Give up now and
+            # let the caller try for itself.
+            return False
         if time.time() >= deadline:
             return False
         time.sleep(0.15)
@@ -680,8 +889,8 @@ def _api_cache_get_with_stale(
     """Return the cached payload while fresh; otherwise fetch fresh with single-
     flight coalescing (concurrent callers share one fetch). No-stale: a stale
     entry is refetched, and only returned as last-good if the fetch hard-fails."""
-    cached = _api_response_cache.get(cache_key)
-    if cached is not None and _is_fresh(cache_key):
+    cached, _age = _cache_load(cache_key)
+    if cached is not None and _age_is_fresh(_age):
         _record_cache_hit()
         return _clone(cached)
     # Stale or miss: never serve stale — fetch fresh below. `cached` stays in the
@@ -696,40 +905,42 @@ def _api_cache_get_with_stale(
             _inflight[cache_key] = ev
     if not leader:
         ev.wait(timeout=_INFLIGHT_WAIT_SECONDS)
-        hit = _api_response_cache.get(cache_key)
-        return _clone(hit) if hit is not None else _clone(empty_fallback)
+        # Waited out the leader with nothing to show. Say so rather than handing
+        # back zeros the page would draw as measurements — or a figure so old it
+        # amounts to the same thing.
+        return _last_good_or_degraded(cache_key, empty_fallback)
 
     # Per-process leader. Try the cross-pod lock so only ONE pod fetches this key;
     # other pods wait for its result in the shared cache (kills the stampede).
-    got_lock = _api_response_cache.try_acquire(cache_key, _INFLIGHT_WAIT_SECONDS)
+    lock_token = _api_response_cache.try_acquire(cache_key, _SHARED_LOCK_TTL_SECONDS)
     try:
-        if not got_lock:
-            if _wait_for_shared_result(cache_key, _INFLIGHT_WAIT_SECONDS):
-                hit = _api_response_cache.get(cache_key)
-                if hit is not None:
+        if not lock_token:
+            if _wait_for_shared_result(cache_key, _SHARED_RESULT_WAIT_SECONDS):
+                hit, age = _cache_load(cache_key)
+                # Re-checked rather than trusted: the entry can age out between
+                # the poll that saw it and this load.
+                if hit is not None and _age_is_fresh(age):
                     return _clone(hit)
             # No result before timeout — fetch ourselves as a fallback.
         t0 = time.time()
         try:
             out = fetch_normalized()
             _record_cache_fetch(time.time() - t0)
-            resolved = _prefer_stale_over_empty_fetch(cache_key, cached, out, empty_fallback)
+            resolved = _prefer_stale_over_empty_fetch(
+                cache_key, cached, _age, out, empty_fallback
+            )
             if resolved is out and _should_persist_api_cache(out, empty_fallback):
-                _api_response_cache.set(cache_key, out)
-                _mark_fetched(cache_key)
+                _cache_store(cache_key, out)
             if resolved is cached:
                 return _clone(resolved)
             return out
         except _HTTP_ERRORS as exc:
             _record_cache_fetch(time.time() - t0, error=True)
             logger.warning("API cache fetch failed for key=%s: %s", cache_key, exc)
-            hit = _api_response_cache.get(cache_key)
-            if hit is not None:
-                return _clone(hit)
-            return _clone(empty_fallback)
+            return _last_good_or_degraded(cache_key, empty_fallback)
     finally:
-        if got_lock:
-            _api_response_cache.release(cache_key)
+        if lock_token:
+            _api_response_cache.release(cache_key, lock_token)
         with _inflight_lock:
             _inflight.pop(cache_key, None)
         ev.set()
@@ -2142,10 +2353,17 @@ def _customer_availability_cache_key(customer_name: str, tr: Optional[dict]) -> 
 
 def get_auranotify_customer_options() -> list[dict[str, str]]:
     """Searchable options for the alias editor: label '<name> · id <id>', value '<id>'.
-    Cached; safe to call during page render."""
+    Cached; safe to call during page render.
+
+    This used to return any cached value without checking its age, so the first
+    successful fetch was the last: new AuraNotify customers never appeared in the
+    alias editor until the process restarted. It now ages out like every other
+    key, and keeps the previous list when a refetch comes back empty rather than
+    replacing a working editor with an empty dropdown.
+    """
     ck = "api:auranotify_customer_options"
-    cached = _api_response_cache.get(ck)
-    if cached is not None:
+    cached, _age = _cache_load(ck)
+    if cached is not None and _age_is_fresh(_age):
         return _clone(cached)
     from src.services import auranotify_client as aura
 
@@ -2158,7 +2376,10 @@ def get_auranotify_customer_options() -> list[dict[str, str]]:
         opts.append({"label": f"{name} · id {cid}", "value": str(cid)})
     opts.sort(key=lambda o: o["label"].casefold())
     if opts:
-        _api_response_cache.set(ck, opts)
+        _cache_store(ck, opts)
+        return _clone(opts)
+    if cached is not None:
+        return _clone(cached)
     return _clone(opts)
 
 
@@ -2255,10 +2476,14 @@ def get_dc_availability_sla_item(dc_code: str, dc_display_name: str, tr: Optiona
                 out = it
                 break
         if out is not None:
-            _api_response_cache.set(ck, out)
+            # Write-only last-good store: the happy path above always refetches,
+            # so this is read solely by the except branch. Stored in the same
+            # envelope as everything else so there is one entry format to reason
+            # about, not two.
+            _cache_store(ck, out)
         return deepcopy(out) if out is not None else None
     except Exception:
-        hit = _api_response_cache.get(ck)
+        hit, _ = _cache_load(ck)
         return deepcopy(hit) if isinstance(hit, dict) else None
 
 
@@ -2301,23 +2526,22 @@ def get_dc_availability_sla_items_for_dcs(
 
     status: Literal["ok", "empty", "error"] = "ok"
     items: list = []
-    prev_cached = _api_response_cache.get(ck)
+    prev_cached, _ = _cache_load(ck)
     try:
         if force_refresh:
             _api_response_cache.delete(ck)
-        cached = _api_response_cache.get(ck)
-        if cached is not None and isinstance(cached, list) and not force_refresh and _is_fresh(ck):
+        cached, _age = _cache_load(ck)
+        if cached is not None and isinstance(cached, list) and not force_refresh and _age_is_fresh(_age):
             items = cached
         else:
             items = fetch()
             if items:
-                _api_response_cache.set(ck, items)
-                _mark_fetched(ck)
+                _cache_store(ck, items)
         if not items:
             status = "empty"
     except _HTTP_ERRORS as exc:
         logger.warning("get_dc_availability_sla_items_for_dcs fetch failed: %s", exc)
-        hit = _api_response_cache.get(ck)
+        hit, _ = _cache_load(ck)
         if hit is None and isinstance(prev_cached, list):
             hit = prev_cached
         if hit is not None and isinstance(hit, list) and hit:
@@ -2327,7 +2551,7 @@ def get_dc_availability_sla_items_for_dcs(
             status = "error"
     except Exception as exc:
         logger.warning("get_dc_availability_sla_items_for_dcs unexpected error: %s", exc)
-        hit = _api_response_cache.get(ck)
+        hit, _ = _cache_load(ck)
         if hit is None and isinstance(prev_cached, list):
             hit = prev_cached
         if hit is not None and isinstance(hit, list) and hit:
@@ -2406,7 +2630,7 @@ def _crm_sales_cache_get(
     except _HTTP_ERRORS:
         if prev is not None:
             return _clone(prev[1])
-        return _clone(empty_fallback)
+        return _degraded_fallback(empty_fallback)
 
 
 def get_customer_sales_summary(name: str) -> dict:
@@ -2605,8 +2829,8 @@ def get_crm_aliases() -> list:
         data = _get_json(_get_client_cust(), "/api/v1/crm/aliases")
         return data if isinstance(data, list) else []
 
-    cached = _api_response_cache.get(ck)
-    if cached is not None and _is_fresh(ck):
+    cached, _age = _cache_load(ck)
+    if cached is not None and _age_is_fresh(_age):
         return _clone(cached)
     # Stale or miss: never serve stale — fetch fresh below.
 
@@ -2618,18 +2842,17 @@ def get_crm_aliases() -> list:
             _inflight[ck] = ev
     if not leader:
         ev.wait(timeout=_INFLIGHT_WAIT_SECONDS)
-        hit = _api_response_cache.get(ck)
+        hit, _ = _cache_load(ck)
         return _clone(hit) if hit is not None else []
 
     try:
         out = fetch()
         if _crm_aliases_response_cacheable(out):
-            _api_response_cache.set(ck, out)
-            _mark_fetched(ck)
+            _cache_store(ck, out)
         return out
     except _HTTP_ERRORS as exc:
         logger.warning("CRM aliases fetch failed: %s", exc)
-        hit = _api_response_cache.get(ck)
+        hit, _ = _cache_load(ck)
         if hit is not None:
             return _clone(hit)
         return []
@@ -3334,10 +3557,18 @@ def _response_error_detail(resp: httpx.Response) -> Any:
 
 
 def refresh_platform_redis_caches() -> dict[str, Any]:
-    """Flush Redis-backed caches on backend services and clear the GUI HTTP response cache.
+    """Rewarm backend caches, then drop the GUI HTTP response cache.
 
     Calls datacenter-api, customer-api, and crm-engine ``POST /api/v1/admin/cache/refresh``.
     Uses an extended timeout because warming can take several minutes.
+
+    The GUI cache is dropped *last*, on purpose: the services warm in place and
+    keep serving their previous values while they do, so clearing first would
+    refill the GUI from backends that are not done yet and cache pre-refresh data
+    under a fresh timestamp. It is skipped entirely when no service reported
+    success — there is nothing new to pick up, so the cold window would be pure
+    loss, and the only thing the operator would observe is the pages that were
+    still rendering going blank.
     """
     timeout = httpx.Timeout(600.0, connect=30.0)
     headers = _auth_headers()
@@ -3364,13 +3595,16 @@ def refresh_platform_redis_caches() -> dict[str, Any]:
             out["services"][name] = {"ok": False, "error": str(exc)}
         except Exception as exc:
             out["services"][name] = {"ok": False, "error": str(exc)}
-    try:
-        # cache_service.clear() flushes the whole shared cache, which now
-        # includes the customer-availability and CRM-sales entries too.
-        _api_response_cache.clear()
-        out["gui_cache_cleared"] = True
-    except Exception as exc:
-        out["gui_cache_error"] = str(exc)
+    if any(entry.get("ok") for entry in out["services"].values()):
+        try:
+            # cache_service.clear() flushes the whole shared cache, which now
+            # includes the customer-availability and CRM-sales entries too.
+            _api_response_cache.clear()
+            out["gui_cache_cleared"] = True
+        except Exception as exc:
+            out["gui_cache_error"] = str(exc)
+    else:
+        out["gui_cache_error"] = "no service refreshed; kept the GUI cache rather than going cold for nothing"
     return out
 
 

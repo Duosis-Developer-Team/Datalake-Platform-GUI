@@ -62,6 +62,7 @@ from src.components.charts import (
 )
 from src.components.charts import create_horizontal_bar_chart, create_premium_horizontal_bar_chart, create_capacity_area_chart, create_grouped_bar_chart, create_storage_breakdown_chart
 from src.components.dc_loading import build_dc_loading_shell, build_dc_tab_loading_shell
+from src.components.degraded_notice import build_degraded_notice
 from src.components.colocation_summary import build_colocation_summary
 from src.components.sellable_constraint_viz import (
     fmt_tl_for_card,
@@ -3524,6 +3525,12 @@ def _interface_table_rows(items: list, interface_scope: str | None = None) -> li
     return rows
 
 
+# Shown under the table while its switch is off. Deliberately not "0 interfaces":
+# an empty table with a count under it reads as "this DC has none", which is a
+# different claim from "nobody has asked for them yet".
+_NET_TABLE_OFF_HINT = "Arayüz tablosu kapalı — yüklemek için yukarıdaki anahtarı açın."
+
+
 def _build_network_interface_page(
     net_filters: dict,
     port_summary: dict,
@@ -3616,6 +3623,10 @@ def _build_network_interface_page(
     page_size_init = 50
     page_count_init = max(1, math.ceil(total_count / page_size_init)) if total_count else 1
     columns = _network_interface_table_columns(interface_scope)
+    # The switch tracks whether the table is loaded, not a saved preference.
+    # Built with no payload — which is now the normal case, see build_dc_view —
+    # it starts off and the table stays empty until someone flips it.
+    table_loaded = bool(items)
 
     return dmc.Stack(
         gap="lg",
@@ -3690,6 +3701,15 @@ def _build_network_interface_page(
                                     _section_title(table_title, table_subtitle),
                                 ]
                             ),
+                            dmc.Switch(
+                                id="net-interface-table-toggle",
+                                checked=table_loaded,
+                                label="Tabloyu yükle",
+                                description="Arayüz listesi ancak açıldığında sorgulanır",
+                                size="md",
+                                color="indigo",
+                                style={"marginBottom": "4px"},
+                            ),
                             html.Div(
                                 id="net-export-btn-wrap",
                                 style={"display": "block" if flags["show_export"] else "none"},
@@ -3731,7 +3751,11 @@ def _build_network_interface_page(
                     ),
                     dmc.Text(
                         id="net-interface-table-footer",
-                        children=f"Showing 1–{min(len(items), 50)} of {total_count:,} interfaces",
+                        children=(
+                            f"Showing 1–{min(len(items), 50)} of {total_count:,} interfaces"
+                            if table_loaded
+                            else _NET_TABLE_OFF_HINT
+                        ),
                         size="sm",
                         c="dimmed",
                         style={"marginTop": "8px", "marginBottom": "4px"},
@@ -5900,6 +5924,12 @@ def build_dc_view(
     batch1 = parallel_execute(batch1_tasks)
     _log_dc_build_phase(str(dc_id), "batch1", t_batch1, tasks=len(batch1_tasks))
     data = batch1["data"]
+    if api.is_degraded(data):
+        # The DC detail payload feeds every tab on this page. Without it the
+        # whole view is the client's own zeros — a datacenter reported as having
+        # no hosts, no VMs and no power draw, which is what an operator would
+        # page someone about at 3am.
+        return build_degraded_notice(f"Data Center {dc_id}")
     sla_by_dc = batch1["sla_by_dc"]
     s3_data = batch1.get("s3_data") or {"pools": []}
     classic_clusters = batch1.get("classic_clusters") or []
@@ -6039,22 +6069,23 @@ def build_dc_view(
     net_ms = 0.0
     if has_network and _tab_eager(eager_tabs, "network"):
         t_net = time.perf_counter()
-        net_batch = parallel_execute(
-            {
-                "port_summary": lambda: api.get_dc_network_port_summary(dc_id, tr),
-                "percentile": lambda: api.get_dc_network_95th_percentile(dc_id, tr, top_n=20),
-                "interface_table": lambda: api.get_dc_network_interface_table(
-                    dc_id, tr, page=1, page_size=50
-                ),
-                "interface_export": lambda: api.get_dc_network_interface_export(dc_id, tr),
-                "firewall": lambda: api.get_dc_network_firewall_summary(dc_id, tr),
-                "load_balancer": lambda: api.get_dc_network_load_balancer_summary(dc_id, tr),
-            }
-        )
+        # The interface table is not fetched here. It is the expensive half of
+        # this tab (thousands of rows on a real DC) and nobody opens the tab for
+        # it — update_net_interface_table pulls it when its switch goes on.
+        # The whole-DC export sheet is the one thing that still needs every
+        # interface up front, so it is fetched only when that sheet is built.
+        net_jobs = {
+            "port_summary": lambda: api.get_dc_network_port_summary(dc_id, tr),
+            "percentile": lambda: api.get_dc_network_95th_percentile(dc_id, tr, top_n=20),
+            "firewall": lambda: api.get_dc_network_firewall_summary(dc_id, tr),
+            "load_balancer": lambda: api.get_dc_network_load_balancer_summary(dc_id, tr),
+        }
+        if eager_tabs is None:
+            net_jobs["interface_export"] = lambda: api.get_dc_network_interface_export(dc_id, tr)
+        net_batch = parallel_execute(net_jobs)
         net_port_summary = net_batch["port_summary"]
         net_percentile = net_batch["percentile"]
-        net_interface_table = net_batch["interface_table"]
-        net_interface_export = net_batch["interface_export"]
+        net_interface_export = net_batch.get("interface_export") or {}
         net_firewall_data = net_batch["firewall"]
         net_lb_data = net_batch["load_balancer"]
         net_ms = round((time.perf_counter() - t_net) * 1000, 1)

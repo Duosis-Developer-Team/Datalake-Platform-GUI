@@ -54,8 +54,10 @@ from app.services.sellable_service import SellableService
 from app.services.tagging_service import TaggingService
 from app.services.webui_db import WebuiPool
 
-# Redis DB used by datacenter-api (default 0); crm-engine reads dc_details keys from it.
-_DATACENTER_REDIS_DB = int(os.getenv("DATACENTER_REDIS_DB", "0"))
+# Redis DB used by datacenter-api (default 3); crm-engine reads dc_details keys from it.
+# Keep in step with datacenter-api's Settings.redis_db — a mismatch does not raise,
+# it just misses every key and falls back to HTTP.
+_DATACENTER_REDIS_DB = int(os.getenv("DATACENTER_REDIS_DB", "3"))
 _DATACENTER_API_URL = os.getenv("DATACENTER_API_URL", "http://datacenter-api:8000")
 
 _dc_redis_client: _redis.Redis | None = None

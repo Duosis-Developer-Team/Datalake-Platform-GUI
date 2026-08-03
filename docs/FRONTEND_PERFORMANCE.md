@@ -12,7 +12,7 @@ Related: [PROD_ARCHITECTURE.md](PROD_ARCHITECTURE.md) | [CACHE_STRATEGY_COMPARIS
 |---|-----------|----------|--------|
 | 1 | 4 sequential blocking HTTP calls per customer page render | `src/pages/customer_view.py:1214-1228` | TTFB = sum of all 4 call durations |
 | 2 | `_build_customer_export_sheets` runs on every page load | `customer_view.py` | CPU + memory waste for users who never export |
-| 3 | Single gunicorn gthread worker (`--workers 1 --threads 4`) | `Dockerfile:32` | Long callbacks block all other requests on the same pod |
+| 3 | ~~Single gunicorn gthread worker~~ — now `--workers 2 --threads 8` (P0-7, 2026-08-03) | `Dockerfile` | Was: a `--max-requests` recycle took the whole pod down for ~196 s |
 | 4 | Per-process `cache_service` dict (512 keys max) | `src/services/cache_service.py` | Cache lost on restart; not shared across replicas |
 | 5 | No browser caching headers on Dash routes or API responses | ingress config | Every page navigation re-fetches all data |
 | 6 | No gzip/brotli on API JSON responses | ingress config | 5-10× payload size overhead |
@@ -183,9 +183,17 @@ Move all state-only interactions (no data fetch needed) to client-side callbacks
 
 ### 2.7 Gunicorn worker configuration
 
-**Current (`Dockerfile`):** `--workers 1 --threads 4`
+**Current (`Dockerfile`):** `--workers 2 --threads 8 --worker-class gthread` (raised from 1 worker in P0-7, 2026-08-03)
 
 **Target (prod):** `--workers 4 --threads 8 --worker-class gthread`
+
+The old blocker on going past one worker — "the per-process `cache_service` dict
+would fragment" — no longer applies: with `REDIS_URL` set, `cache_service`
+selects `RedisBackend`, so both the cache and the single-flight lock
+(`SET NX EX`) are shared across processes. It degrades to a per-process cache
+only if Redis is unreachable, and in that state a second worker can serve two
+different cached values for the same key. Watch the Redis connection, not the
+worker count.
 
 This requires the K8s pod CPU limit to be raised to ≥ 2 cores (currently 500m). With `workers=4` on a 2-core pod, Gunicorn can handle 4 concurrent callback chains in parallel; threads within each worker handle concurrent simple requests (health checks, static assets).
 
