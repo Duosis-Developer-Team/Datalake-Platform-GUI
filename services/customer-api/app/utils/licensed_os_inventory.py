@@ -1,8 +1,11 @@
 """Which detected guest-OS count backs each licence / OS-management panel.
 
-CRM Inventory Overview rendered every one of these rows as "(CRM entitled — infra
-telemetry pending)" because nothing was bound to them. The guest-OS tally is that
-missing telemetry.
+CRM Inventory Overview used to bind every one of these rows to guest-OS
+telemetry. ADR-0034 keeps that binding only for the three *licence* SKUs
+(``license_windows_os``, ``license_redhat``, ``license_suse``) under the
+unified ``OS Lisans`` accordion. Management-service panels (``mgmt_os_*``)
+are CRM-only on Inventory Overview (migration 045 nulls their infra source);
+this module still knows how to tally guests for DC View / Customer View.
 
 Each panel maps to the guests it is billed against:
 
@@ -17,7 +20,7 @@ Each panel maps to the guests it is billed against:
 
 Selling more licences than there are guests is over-licensing — a real commercial
 state, not a data fault. Callers must not flag these panels as suspect on
-`crm_sold > total`.
+``crm_sold > total``.
 """
 from __future__ import annotations
 

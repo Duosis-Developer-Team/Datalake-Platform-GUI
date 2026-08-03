@@ -102,6 +102,7 @@ _NUMERIC_COLS = frozenset({
     "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt", "unsold_fmt",
     "pre_dedup_fmt", "post_dedup_fmt", "dedup_savings_fmt",
     "sellable_alloc_fmt", "sellable_max_fmt", "sellable_avg_fmt", "unit_price_fmt",
+    "licence_detected_fmt", "licence_gap_fmt", "licence_gap_tl_fmt",
     "entitled_qty", "entitled_amount_tl",
 })
 
@@ -167,6 +168,21 @@ _COMPARISON_ONLY_COLUMNS = [
     {"name": "Δ Used vs CRM", "id": "delta_fmt"},
 ]
 
+_OS_LICENCE_COLUMNS = [
+    {"name": "Service", "id": "service_label"},
+    {"name": "Unit", "id": "display_unit"},
+    {"name": "Tespit Edilen", "id": "licence_detected_fmt"},
+    {"name": "CRM Sold", "id": "crm_sold_fmt"},
+    {"name": "Lisanslanmalı", "id": "licence_gap_fmt"},
+    {"name": "Birim Fiyat", "id": "unit_price_fmt"},
+    {"name": "Lisanslanmalı TL", "id": "licence_gap_tl_fmt"},
+]
+
+_OS_LICENCE_TOOLTIP = (
+    "Lisans satılabilir kapasite değildir; sayı vm_metrics.guest_os "
+    "(NetBox fallback) ile tespit edilen guest OS adedidir."
+)
+
 
 def columns_for_family(
     family: str | None,
@@ -175,6 +191,8 @@ def columns_for_family(
 ) -> list[dict[str, str]]:
     """Return DataTable columns for a family sellable profile."""
     profile = (family or "standard").strip()
+    if profile == "os_licence":
+        return list(_OS_LICENCE_COLUMNS)
     if profile == "comparison_only":
         return [*list(_COMPARISON_ONLY_COLUMNS), dict(_UNIT_PRICE_COLUMN)]
     if profile == "backup_netbackup":
@@ -583,6 +601,21 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "sellable_avg_fmt": shared.fmt_qty_tl_block(
             sellable_avg_qty, unit, potential_tl_avg,
         ) if profile == "dual_track" or is_replication else "—\n—",
+        "licence_detected_fmt": (
+            _fmt_qty(row.get("licence_detected_qty"), unit)
+            if profile == "os_licence"
+            else "—"
+        ),
+        "licence_gap_fmt": (
+            _fmt_qty(row.get("licence_gap_qty"), unit)
+            if profile == "os_licence"
+            else "—"
+        ),
+        "licence_gap_tl_fmt": (
+            shared.fmt_tl(row.get("licence_gap_tl"))
+            if profile == "os_licence"
+            else "—"
+        ),
         "unit_price_fmt": _fmt_unit_price(unit_price_display, unit),
         "status": status,
         "data_quality": data_quality,
@@ -718,6 +751,9 @@ def build_report_table(
     if family == "backup_netbackup":
         profile = "backup_netbackup"
         row_hide_used = False
+    if family == "os_licence":
+        profile = "os_licence"
+        row_hide_used = False
     columns = columns_for_family(profile or family, hide_used=row_hide_used)
     if include_family:
         columns = [_FLAT_EXTRA_COLUMN, *columns]
@@ -801,6 +837,43 @@ def _header_money_badges(panels: list[dict[str, Any]], *, profile: str) -> list[
             size="sm",
         )
     )
+    if profile == "os_licence":
+        gap_qty = 0.0
+        gap_tl = 0.0
+        any_gap_tl = False
+        for p in panels:
+            try:
+                gap_qty += float(p.get("licence_gap_qty") or 0.0)
+            except (TypeError, ValueError):
+                pass
+            raw_tl = p.get("licence_gap_tl")
+            if raw_tl is None:
+                continue
+            try:
+                gap_tl += float(raw_tl)
+                any_gap_tl = True
+            except (TypeError, ValueError):
+                continue
+        if gap_qty > 0:
+            badges.append(
+                dmc.Badge(
+                    f"Eksik lisans {gap_qty:,.0f} adet",
+                    color="red",
+                    variant="light",
+                    size="sm",
+                )
+            )
+        if any_gap_tl and gap_tl > 0:
+            badges.append(
+                dmc.Badge(
+                    f"Lisanslanmalı {shared.fmt_tl(gap_tl)}",
+                    color="indigo",
+                    variant="light",
+                    size="sm",
+                )
+            )
+        return badges
+
     is_netbackup = profile == "backup_netbackup" or any(
         str(p.get("panel_key") or "").startswith("backup_netbackup")
         or str(p.get("family") or "") == "backup_netbackup"
@@ -868,6 +941,8 @@ def _header_money_badges(panels: list[dict[str, Any]], *, profile: str) -> list[
 
 
 def _family_free_tooltip(*, profile: str, family_key: str) -> str:
+    if profile == "os_licence" or family_key == "os_licence":
+        return _OS_LICENCE_TOOLTIP
     if profile == "backup_netbackup" or family_key in ("image_backup", "application_backup"):
         return _NETBACKUP_FREE_TOOLTIP
     return _FREE_COLUMN_TOOLTIP
@@ -890,6 +965,8 @@ def _header_info_icon(label: str) -> Any:
 
 
 def _family_sellable_profile(family: dict[str, Any], panels: list[dict[str, Any]]) -> str:
+    if family.get("sellable_profile") == "os_licence" or str(family.get("family") or "") == "os_licence":
+        return "os_licence"
     if any(
         str(p.get("panel_key") or "").startswith("backup_netbackup")
         or str(p.get("family") or "") == "backup_netbackup"
@@ -901,6 +978,8 @@ def _family_sellable_profile(family: dict[str, Any], panels: list[dict[str, Any]
     if panels:
         if all(str(p.get("sellable_profile") or "") == "comparison_only" for p in panels):
             return "comparison_only"
+        if all(str(p.get("sellable_profile") or "") == "os_licence" for p in panels):
+            return "os_licence"
         return str(panels[0].get("sellable_profile") or "standard")
     return "standard"
 
