@@ -185,6 +185,22 @@ _COMPARISON_ONLY_PANELS: frozenset[str] = frozenset({
     "backup_remote_nutanix",
 })
 
+# OS licence SKUs collapsed into one inventory accordion (ADR-0034).
+# DB family keys stay license_os / license_redhat / license_other; only the
+# presentation group is unified. Management OS panels are not members.
+_INVENTORY_GROUP_OS_LICENCE = "os_licence"
+_INVENTORY_GROUP_OS_LICENCE_LABEL = "OS Lisans"
+_OS_LICENCE_PANEL_KEYS: frozenset[str] = frozenset({
+    "license_windows_os",
+    "license_redhat",
+    "license_suse",
+})
+_BACKUP_INVENTORY_GROUP_KEYS: frozenset[str] = frozenset({
+    _INVENTORY_GROUP_IMAGE,
+    _INVENTORY_GROUP_APPLICATION,
+    _INVENTORY_GROUP_REPLICATION,
+})
+
 
 def _inventory_group_for_row(row: dict[str, Any]) -> str | None:
     """Return Image/Application/Replication group key, or None for non-backup rows."""
@@ -230,6 +246,56 @@ def _apply_comparison_only_fields(row: dict[str, Any]) -> dict[str, Any]:
     row["inventory_free_mode"] = "comparison"
     notes = list(row.get("notes") or [])
     note = "comparison_only: Nutanix snapshots are sold↔used (no sellable headroom)"
+    if note not in notes:
+        notes.append(note)
+    row["notes"] = notes
+    return row
+
+
+def _is_os_licence_row(row: dict[str, Any]) -> bool:
+    return str(row.get("panel_key") or "") in _OS_LICENCE_PANEL_KEYS
+
+
+def _apply_os_licence_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Licence panels: detected vs sold gap — no sellable capacity framing."""
+    if not _is_os_licence_row(row):
+        return row
+    row = dict(row)
+    try:
+        detected = float(row.get("total") if row.get("total") is not None else 0.0)
+    except (TypeError, ValueError):
+        detected = 0.0
+    try:
+        sold = float(row.get("crm_sold_qty") or 0.0)
+    except (TypeError, ValueError):
+        sold = 0.0
+    gap = max(detected - sold, 0.0)
+    row["sellable_profile"] = "os_licence"
+    row["licence_detected_qty"] = detected
+    row["licence_gap_qty"] = gap
+    row["licence_gap_tl"] = _value_tl_from_catalog_price(
+        gap,
+        unit_price_tl=row.get("unit_price_tl"),
+        has_price=bool(row.get("has_price")),
+    )
+    row["sellable_qty"] = None
+    row["sellable_alloc_qty"] = None
+    row["sellable_max_qty"] = None
+    row["sellable_avg_qty"] = None
+    row["potential_tl"] = 0.0
+    row["potential_tl_alloc"] = None
+    row["potential_tl_max"] = None
+    row["potential_tl_avg"] = None
+    row["free_qty"] = None
+    row["free_tl"] = None
+    row["unsold_qty"] = None
+    row["unsold_tl"] = None
+    row["used_qty"] = None
+    row["inventory_free_mode"] = "licence_gap"
+    notes = list(row.get("notes") or [])
+    note = (
+        "os_licence: no sellable — quantity is detected guest OS count (ADR-0030)"
+    )
     if note not in notes:
         notes.append(note)
     row["notes"] = notes
@@ -364,6 +430,47 @@ def _regroup_backup_families(families_out: list[dict[str, Any]]) -> list[dict[st
     # Keep non-backup families (virt, S3, …) after backup groups
     passthrough.sort(key=lambda f: (f.get("family_label") or f.get("family") or "").lower())
     return rebuilt + passthrough
+
+
+def _regroup_os_licence_families(
+    families_out: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Collapse Windows / RHEL / SUSE licence panels into one OS Lisans group."""
+    backup_prefix: list[dict[str, Any]] = []
+    os_panels: list[dict[str, Any]] = []
+    passthrough: list[dict[str, Any]] = []
+    for fam in families_out:
+        fam_key = str(fam.get("family") or "")
+        if fam_key in _BACKUP_INVENTORY_GROUP_KEYS:
+            backup_prefix.append(fam)
+            continue
+        remaining: list[dict[str, Any]] = []
+        for row in fam.get("panels") or []:
+            if _is_os_licence_row(row):
+                os_panels.append(row)
+            else:
+                remaining.append(row)
+        if remaining:
+            passthrough.append({
+                **fam,
+                "panels": remaining,
+                "panel_count": len(remaining),
+                "has_infra": any(r.get("has_infra_source") for r in remaining),
+            })
+    if os_panels:
+        rows_sorted = sorted(os_panels, key=lambda r: r.get("service_label") or "")
+        passthrough.append({
+            "family": _INVENTORY_GROUP_OS_LICENCE,
+            "label": _INVENTORY_GROUP_OS_LICENCE_LABEL,
+            "family_label": _INVENTORY_GROUP_OS_LICENCE_LABEL,
+            "dc_code": rows_sorted[0].get("dc_code") or "*",
+            "panels": rows_sorted,
+            "panel_count": len(rows_sorted),
+            "has_infra": any(r.get("has_infra_source") for r in rows_sorted),
+            "sellable_profile": "os_licence",
+        })
+    passthrough.sort(key=lambda f: (f.get("family_label") or f.get("family") or "").lower())
+    return backup_prefix + passthrough
 
 # Families rendered nowhere on /crm/inventory-overview. virt_power shares the
 # same IBM Power infrastructure as virt_power_hana (see sellable_service:261),
@@ -1862,6 +1969,8 @@ class InventoryOverviewService:
         crm_only_panels = _drop_hidden_families(crm_only_panels)
         panel_rows = [_apply_comparison_only_fields(r) for r in panel_rows]
         crm_only_panels = [_apply_comparison_only_fields(r) for r in crm_only_panels]
+        panel_rows = [_apply_os_licence_fields(r) for r in panel_rows]
+        crm_only_panels = [_apply_os_licence_fields(r) for r in crm_only_panels]
         panel_rows.sort(key=lambda r: (-float(r.get("crm_sold_tl") or 0), r.get("service_label") or ""))
 
         families_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1886,6 +1995,7 @@ class InventoryOverviewService:
             })
         families_out.sort(key=lambda f: (f.get("family_label") or f.get("family") or "").lower())
         families_out = _regroup_backup_families(families_out)
+        families_out = _regroup_os_licence_families(families_out)
 
         mapped_ids = self._mapped_product_ids(mapping)
         bind_ids = mapped_ids if mapped_ids else ["__none__"]
