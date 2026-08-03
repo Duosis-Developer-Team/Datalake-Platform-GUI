@@ -32,6 +32,14 @@ def test_row_status():
     assert row_status(False, True, False) == "missing"
     assert row_status(True, False, False) == "extra"
     assert row_status(False, False, False) == "unknown"
+    assert row_status(False, True, False, is_offline=True) == "offline"
+
+
+def test_reason_text_stale_includes_clock():
+    from datetime import datetime, timezone
+
+    ts = datetime(2026, 8, 2, 3, 3, 1, tzinfo=timezone.utc)
+    assert reason_text("stale", ts, []) == "Bayat — son veri 02.08.2026 03:03"
 
 
 def test_reason_missing_with_target_issues():
@@ -43,6 +51,8 @@ def test_reason_missing_with_target_issues():
 
 def test_reason_missing_without_issues():
     assert "Toplanmıyor" in reason_text("missing", None, [])
+    assert "collector yok" in reason_text("missing", None, [], source="ibm")
+    assert "Offline" in reason_text("offline", None, [])
 
 
 def test_reason_live_and_extra():
@@ -54,4 +64,5 @@ def test_tally_accumulates():
     b = empty_bucket()
     tally(b, True, True, True)
     tally(b, False, True, False)
-    assert b == {"total": 2, "collected": 1, "missing": 1, "live": 1}
+    tally(b, False, True, False, is_offline=True)
+    assert b == {"total": 3, "collected": 1, "missing": 1, "live": 1, "offline": 1}

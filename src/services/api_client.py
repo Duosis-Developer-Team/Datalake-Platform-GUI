@@ -3702,9 +3702,34 @@ def get_hmdl_locations() -> dict[str, Any]:
 
 
 _EMPTY_HMDL_COVERAGE: dict[str, Any] = {
-    "summary": {"cluster": {}, "ibm_host": {"total": 0, "collected": 0, "missing": 0, "live": 0}},
+    "summary": {
+        "cluster": {},
+        "ibm_host": {"total": 0, "collected": 0, "missing": 0, "live": 0},
+        "vcenter": {
+            "total": 0,
+            "live": 0,
+            "partial": 0,
+            "missing": 0,
+            "stale": 0,
+            "extra": 0,
+            "offline": 0,
+        },
+        "ibm_hmc": {
+            "total": 0,
+            "live": 0,
+            "partial": 0,
+            "missing": 0,
+            "stale": 0,
+            "extra": 0,
+            "offline": 0,
+        },
+        "backup_endpoint": {},
+    },
     "clusters": [],
     "ibm_hosts": [],
+    "vcenters": [],
+    "ibm_hmcs": [],
+    "backup_endpoints": [],
     "locations": [],
     "dc_filter": None,
     "source_filter": None,
@@ -3716,7 +3741,7 @@ def get_hmdl_coverage(
     *,
     source: str | None = None,
 ) -> dict[str, Any]:
-    """Datalake coverage report: cluster/host present-absent + X/Y summary + reason."""
+    """Datalake coverage report: cluster/host/vcenter/backup present-absent + summary."""
     params: dict[str, str] = {}
     if dc:
         params["dc"] = dc.strip().upper()
@@ -3728,6 +3753,63 @@ def get_hmdl_coverage(
     except _HTTP_ERRORS as exc:
         logger.warning("hmdl-api coverage unavailable: %s", exc)
         return _clone(_EMPTY_HMDL_COVERAGE)
+
+
+def get_hmdl_runs(limit: int = 20) -> dict[str, Any]:
+    """Recent collector sync runs from hmdl-api."""
+    try:
+        data = _get_json(
+            _get_client_hmdl(),
+            "/api/v1/collectors/runs",
+            params={"limit": str(max(1, min(int(limit), 100)))},
+        )
+        return data if isinstance(data, dict) else {"items": []}
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api runs unavailable: %s", exc)
+        return {"items": []}
+
+
+_EMPTY_HMDL_PROBE_HEALTH: dict[str, Any] = {
+    "summary": {
+        "endpoints": 0,
+        "probes": 0,
+        "ok": 0,
+        "fail": 0,
+        "scripts": 0,
+        "last_probe_at": None,
+    },
+    "scripts": [],
+    "matrix": [],
+    "reasons": [],
+    "items": [],
+    "runner_errors": [],
+    "dcs": [],
+    "dc_filter": None,
+    "probe_filter": None,
+}
+
+
+def get_hmdl_probe_health(
+    dc: str | None = None,
+    *,
+    probe_id: str | None = None,
+) -> dict[str, Any]:
+    """Collector script healthcheck: which script fails on which endpoint, and why."""
+    params: dict[str, str] = {}
+    if dc:
+        params["dc"] = dc.strip().upper()
+    if probe_id:
+        params["probe_id"] = probe_id.strip()
+    try:
+        data = _get_json(
+            _get_client_hmdl(),
+            "/api/v1/collectors/probe-health",
+            params=params or None,
+        )
+        return data if isinstance(data, dict) else _clone(_EMPTY_HMDL_PROBE_HEALTH)
+    except _HTTP_ERRORS as exc:
+        logger.warning("hmdl-api probe-health unavailable: %s", exc)
+        return _clone(_EMPTY_HMDL_PROBE_HEALTH)
 
 
 def get_hmdl_awx_config() -> dict[str, Any]:

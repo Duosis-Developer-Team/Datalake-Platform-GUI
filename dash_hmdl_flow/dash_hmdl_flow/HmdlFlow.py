@@ -13,12 +13,20 @@ class HmdlFlow(Component):
         self,
         id=Component.UNDEFINED,
         topologyData=Component.UNDEFINED,
+        graphData=Component.UNDEFINED,
         hubDc=Component.UNDEFINED,
         height=Component.UNDEFINED,
         clickedNode=Component.UNDEFINED,
         **kwargs,
     ):
-        self._prop_names = ['id', 'topologyData', 'hubDc', 'height', 'clickedNode']
+        self._prop_names = [
+            'id',
+            'topologyData',
+            'graphData',
+            'hubDc',
+            'height',
+            'clickedNode',
+        ]
         self._valid_wildcard_attributes = []
         self.available_properties = self._prop_names
         self.available_wildcard_properties = []

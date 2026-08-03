@@ -13,12 +13,19 @@ MOCK_COVERAGE = {
             "vmware": {"total": 2, "collected": 1, "missing": 1, "live": 1},
         },
         "ibm_host": {"total": 1, "collected": 1, "missing": 0, "live": 1},
+        "vcenter": {"total": 1, "live": 0, "partial": 1, "missing": 0, "stale": 0, "extra": 0},
+        "backup_endpoint": {
+            "all": {"total": 1, "collected": 0, "missing": 1, "live": 0},
+            "veeam": {"total": 1, "collected": 0, "missing": 1, "live": 0},
+        },
     },
     "clusters": [
         {
             "source": "vmware",
             "cluster_name": "DC13-G3-CLS",
             "dc": "DC13",
+            "parent_name": "vc1dc13.blt.vc",
+            "expected_source": "loki",
             "collected": False,
             "expected": True,
             "is_live": False,
@@ -34,6 +41,7 @@ MOCK_COVERAGE = {
         {
             "servername": "G2HV12DC13",
             "dc": "DC13",
+            "expected_source": "loki",
             "collected": True,
             "expected": True,
             "is_live": True,
@@ -43,11 +51,39 @@ MOCK_COVERAGE = {
             "target_issues": [],
         }
     ],
+    "vcenters": [
+        {
+            "source": "vmware",
+            "parent_name": "vc1dc13.blt.vc",
+            "dc": "DC13",
+            "expected_clusters": 3,
+            "collected_clusters": 2,
+            "live_clusters": 2,
+            "status": "partial",
+            "checked_at": None,
+        }
+    ],
+    "backup_endpoints": [
+        {
+            "source": "veeam",
+            "endpoint_ip": "10.34.2.171",
+            "endpoint_name": "Equinix IL2-VeeamCC-DC13",
+            "dc": "DC13",
+            "collected": False,
+            "expected": True,
+            "expected_source": "both",
+            "network_ok": True,
+            "is_live": False,
+            "last_collected": None,
+            "status": "missing",
+            "reason": "Toplanmıyor (envanterde var, veri gelmiyor)",
+            "checked_at": None,
+        }
+    ],
     "locations": ["DC13"],
     "dc_filter": None,
     "source_filter": None,
 }
-
 
 @patch("app.db.queries.coverage.build_coverage", return_value=MOCK_COVERAGE)
 def test_coverage_endpoint(mock_build):

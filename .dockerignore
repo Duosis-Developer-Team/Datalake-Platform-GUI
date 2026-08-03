@@ -14,6 +14,8 @@ agent-transcripts/
 .cursor/
 terminals/
 mcps/
+node_modules/
+**/node_modules/
 
 
 # Local secret env files — never bake into images

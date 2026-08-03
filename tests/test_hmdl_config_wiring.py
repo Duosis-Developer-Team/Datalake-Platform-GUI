@@ -11,9 +11,14 @@ def test_shell_registers_hmdl_config_route():
     assert callable(builder)
 
 
-def test_hmdl_tabs_include_configuration():
+def test_shell_does_not_register_ingest_health_route():
+    assert "/administration/integrations/hmdl/ingest-health" not in shell._PAGE_BUILDERS
+
+
+def test_hmdl_tabs_include_configuration_without_ingest():
     hrefs = [h for h, _l, _c in shell.HMDL_TABS]
     assert "/administration/integrations/hmdl/config" in hrefs
+    assert "/administration/integrations/hmdl/ingest-health" not in hrefs
 
 
 def test_resolver_maps_config_path():
@@ -31,8 +36,6 @@ def test_resolver_still_maps_hmdl_overview():
 def test_permission_catalog_has_config_node():
     from src.auth.permission_catalog import build_default_permission_roots
 
-    roots = build_default_permission_roots()
-
     # NOTE: build_default_permission_roots() returns PermissionNode pydantic
     # models (src/auth/models.py), not dicts — the `_n(...)` helper in
     # permission_catalog.py constructs PermissionNode instances. Traverse via
@@ -42,5 +45,6 @@ def test_permission_catalog_has_config_node():
             yield n.code
             yield from _codes(n.children or [])
 
-    all_codes = set(_codes(roots))
+    all_codes = set(_codes(build_default_permission_roots()))
     assert "page:settings_hmdl_config" in all_codes
+    assert "page:settings_hmdl_ingest_health" not in all_codes

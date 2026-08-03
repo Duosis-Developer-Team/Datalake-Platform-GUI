@@ -13,6 +13,7 @@ from src.utils.hmdl_sync_ui import (
     CATEGORY_LABELS,
     build_diff_panel,
     build_environment_health_grid,
+    build_runs_strip,
     build_targets_table,
     category_chip,
     environment_status_badge,
@@ -242,6 +243,7 @@ def build_layout(search: str | None = None) -> html.Div:
                 ),
                 env_kpis,
                 env_overview,
+                build_runs_strip((api.get_hmdl_runs(limit=20) or {}).get("items") or []),
                 dmc.Divider(my="md", label=f"Detail — {selected_dc}"),
                 dmc.Group(
                     mb="md",

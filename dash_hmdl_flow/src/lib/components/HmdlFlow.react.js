@@ -107,9 +107,67 @@ function ProxyNode({ data }) {
     );
 }
 
+const COVERAGE_COLORS = {
+    live: SYNC_GREEN,
+    partial: '#F79009',
+    stale: '#F79009',
+    missing: SYNC_RED,
+    extra: NO_PROXY,
+    unknown: NO_PROXY,
+};
+
+const COVERAGE_LABELS = {
+    live: 'Canlı',
+    partial: 'Kısmi',
+    stale: 'Bayat',
+    missing: 'Yok',
+    extra: 'Envanter dışı',
+    unknown: '—',
+};
+
+function coverageColor(status) {
+    return COVERAGE_COLORS[String(status || 'unknown')] || NO_PROXY;
+}
+
+function CoverageNode({ data }) {
+    const color = coverageColor(data.status);
+    const isHub = data.isHub;
+    return (
+        <div
+            className={`hmdl-node hmdl-node-cov hmdl-node-cov-${data.kind || 'node'}${
+                isHub ? ' hmdl-node-hub' : ''
+            }${data.expanded ? ' hmdl-node-expanded' : ''}`}
+            style={isHub ? undefined : { borderColor: color }}
+        >
+            <Handle type="target" position={Position.Top} id="in" />
+            <Handle type="source" position={Position.Bottom} id="out" />
+            <div className="hmdl-node-title">{data.label}</div>
+            {!isHub && (
+                <div className="hmdl-badge" style={{ background: `${color}22`, color }}>
+                    {COVERAGE_LABELS[String(data.status || 'unknown')] || data.status}
+                </div>
+            )}
+            {data.sublabel && <div className="hmdl-node-sub">{data.sublabel}</div>}
+            {data.buttonLabel && data.onSelect && (
+                <button
+                    type="button"
+                    className="hmdl-sync-health-btn"
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        data.onSelect(data.selectValue);
+                    }}
+                >
+                    {data.buttonLabel}
+                </button>
+            )}
+        </div>
+    );
+}
+
 const nodeTypes = {
     dc: DcNode,
     proxy: ProxyNode,
+    coverage: CoverageNode,
 };
 
 function AnimatedEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }) {
@@ -291,7 +349,215 @@ function layoutTopology(topology, hubDc, expandedDcs, onSyncHealth) {
     return { nodes, edges };
 }
 
-const HmdlFlow = ({ id, setProps, topologyData, hubDc, height }) => {
+function layoutCoverage(graph, expandedIds, onSelect) {
+    const nodes = [];
+    const edges = [];
+    if (!graph || typeof graph !== 'object') {
+        return { nodes, edges };
+    }
+    const hub = graph.hub || {};
+    const roots = graph.nodes || [];
+    const cx = 520;
+    const cy = 360;
+
+    nodes.push({
+        id: '__hub__',
+        type: 'coverage',
+        position: { x: cx - NODE_W / 2, y: cy - NODE_H / 2 },
+        data: {
+            label: hub.label || 'Coverage',
+            sublabel: hub.sublabel || '',
+            kind: 'hub',
+            isHub: true,
+            status: 'live',
+            childCount: 0,
+        },
+        draggable: true,
+    });
+
+    const count = Math.max(roots.length, 1);
+    const radius = Math.max(320, ((NODE_W + 60) * count) / (2 * Math.PI));
+
+    const placeChildren = (parent, parentAngle, parentX, parentY, depth) => {
+        const children = parent.children || [];
+        if (!children.length) return;
+        const spreadStep = Math.min(0.42, 1.5 / children.length);
+        const distance = depth === 1 ? 230 : 190;
+        children.forEach((child, index) => {
+            const angle = parentAngle + (index - (children.length - 1) / 2) * spreadStep;
+            const x = parentX + distance * Math.cos(angle);
+            const y = parentY + distance * Math.sin(angle);
+            const expanded = expandedIds.has(child.id);
+            nodes.push({
+                id: child.id,
+                type: 'coverage',
+                position: { x, y },
+                data: {
+                    label: child.label,
+                    sublabel: child.sublabel || '',
+                    status: child.status,
+                    kind: child.kind || 'child',
+                    expanded,
+                    childCount: (child.children || []).length,
+                    buttonLabel: child.buttonLabel,
+                    selectValue: child.selectValue,
+                    onSelect: child.buttonLabel ? onSelect : null,
+                },
+                draggable: true,
+            });
+            edges.push({
+                id: `e-${parent.id || '__hub__'}-${child.id}`,
+                source: parent.id || '__hub__',
+                sourceHandle: 'out',
+                target: child.id,
+                targetHandle: 'in',
+                type: 'animated',
+                data: {
+                    stroke: coverageColor(child.status),
+                    animated: child.status === 'live',
+                },
+            });
+            if (expanded) {
+                placeChildren(child, angle, x, y, depth + 1);
+            }
+        });
+    };
+
+    roots.forEach((node, index) => {
+        const angle = (2 * Math.PI * index) / count - Math.PI / 2;
+        const x = cx + radius * Math.cos(angle) - NODE_W / 2;
+        const y = cy + radius * Math.sin(angle) - NODE_H / 2;
+        const expanded = expandedIds.has(node.id);
+        nodes.push({
+            id: node.id,
+            type: 'coverage',
+            position: { x, y },
+            data: {
+                label: node.label,
+                sublabel: node.sublabel || '',
+                status: node.status,
+                kind: node.kind || 'dc',
+                expanded,
+                childCount: (node.children || []).length,
+                buttonLabel: node.buttonLabel,
+                selectValue: node.selectValue,
+                onSelect: node.buttonLabel ? onSelect : null,
+            },
+            draggable: true,
+        });
+        edges.push({
+            id: `e-hub-${node.id}`,
+            source: '__hub__',
+            sourceHandle: 'out',
+            target: node.id,
+            targetHandle: 'in',
+            type: 'animated',
+            data: {
+                stroke: coverageColor(node.status),
+                animated: node.status === 'live',
+            },
+        });
+        if (expanded) {
+            placeChildren(node, angle, x + NODE_W / 2, y + NODE_H / 2, 1);
+        }
+    });
+
+    return { nodes, edges };
+}
+
+const CoverageFlow = ({ id, setProps, graphData, height }) => {
+    const [expandedIds, setExpandedIds] = useState(() => new Set());
+
+    const onSelect = useCallback(
+        (value) => {
+            if (!setProps || !value) return;
+            setProps({
+                clickedNode: {
+                    action: 'select-dc',
+                    nodeType: 'coverage',
+                    dcCode: String(value).toUpperCase(),
+                },
+            });
+        },
+        [setProps],
+    );
+
+    const layout = useMemo(
+        () => layoutCoverage(graphData, expandedIds, onSelect),
+        [graphData, expandedIds, onSelect],
+    );
+
+    const [nodes, setNodes, onNodesChange] = useNodesState(layout.nodes);
+    const [edges, setEdges, onEdgesChange] = useEdgesState(layout.edges);
+
+    useEffect(() => {
+        setNodes(layout.nodes);
+        setEdges(layout.edges);
+    }, [layout, setNodes, setEdges]);
+
+    const onNodeClick = useCallback((_event, node) => {
+        if (!node.data?.childCount) return;
+        setExpandedIds((prev) => {
+            const next = new Set(prev);
+            if (next.has(node.id)) {
+                next.delete(node.id);
+            } else {
+                next.add(node.id);
+            }
+            return next;
+        });
+    }, []);
+
+    return (
+        <div className="hmdl-flow-shell" style={{ height: height || 560 }} id={id}>
+            <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onNodeClick={onNodeClick}
+                nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
+                fitView
+                fitViewOptions={{ padding: 0.22 }}
+                minZoom={0.2}
+                maxZoom={1.5}
+                proOptions={{ hideAttribution: true }}
+            >
+                <Background gap={18} size={1} color="#ececf3" />
+                <Controls showInteractive={false} />
+                <MiniMap
+                    nodeStrokeWidth={2}
+                    pannable
+                    zoomable
+                    nodeColor={(n) => (n.data?.isHub ? PRIMARY : coverageColor(n.data?.status))}
+                />
+            </ReactFlow>
+            <div className="hmdl-legend">
+                <span className="hmdl-legend-item"><i style={{ background: SYNC_GREEN }} /> Canlı</span>
+                <span className="hmdl-legend-item"><i style={{ background: '#F79009' }} /> Kısmi / bayat</span>
+                <span className="hmdl-legend-item"><i style={{ background: SYNC_RED }} /> Veri yok</span>
+            </div>
+        </div>
+    );
+};
+
+const HmdlFlow = ({ id, setProps, topologyData, graphData, hubDc, height }) => {
+    if (graphData && Object.keys(graphData).length) {
+        return <CoverageFlow id={id} setProps={setProps} graphData={graphData} height={height} />;
+    }
+    return (
+        <TopologyFlow
+            id={id}
+            setProps={setProps}
+            topologyData={topologyData}
+            hubDc={hubDc}
+            height={height}
+        />
+    );
+};
+
+const TopologyFlow = ({ id, setProps, topologyData, hubDc, height }) => {
     const [expandedDcs, setExpandedDcs] = useState(() => new Set());
 
     const onSyncHealth = useCallback(
@@ -413,7 +679,6 @@ const HmdlFlow = ({ id, setProps, topologyData, hubDc, height }) => {
                 <span className="hmdl-legend-item"><i style={{ background: SYNC_GREEN }} /> Loki synced</span>
                 <span className="hmdl-legend-item"><i style={{ background: SYNC_RED }} /> Not synced</span>
                 <span className="hmdl-legend-item"><i style={{ background: NO_PROXY }} /> No configured proxy</span>
-                <span className="hmdl-legend-item hmdl-legend-hint">Click location to expand NiFi nodes</span>
             </div>
         </div>
     );
@@ -423,6 +688,7 @@ HmdlFlow.propTypes = {
     id: PropTypes.string,
     setProps: PropTypes.func,
     topologyData: PropTypes.object,
+    graphData: PropTypes.object,
     hubDc: PropTypes.string,
     height: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
     clickedNode: PropTypes.object,
@@ -430,8 +696,12 @@ HmdlFlow.propTypes = {
 
 HmdlFlow.defaultProps = {
     topologyData: {},
+    graphData: {},
     hubDc: 'DC13',
     height: 640,
 };
+
+TopologyFlow.propTypes = HmdlFlow.propTypes;
+CoverageFlow.propTypes = HmdlFlow.propTypes;
 
 export default HmdlFlow;

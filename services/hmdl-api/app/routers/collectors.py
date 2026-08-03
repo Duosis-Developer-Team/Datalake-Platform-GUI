@@ -8,11 +8,15 @@ from app.config import settings
 from app.db.queries import automation_health as ah_q
 from app.db.queries import collectors as q
 from app.db.queries import coverage as cov_q
+from app.db.queries import ingest_health as ih_q
+from app.db.queries import probe as probe_q
 from app.models.schemas import (
     AutomationHealthResponse,
     CoverageResponse,
     DcSummaryResponse,
+    IngestHealthResponse,
     LocationsResponse,
+    ProbeHealthResponse,
     ProxyDetailResponse,
     RunsResponse,
     SyncSummaryResponse,
@@ -91,3 +95,26 @@ def get_coverage(
 ):
     """Datalake coverage: per-cluster/host present-absent + X/Y summary + reason."""
     return cov_q.build_coverage(dc=dc, source=source)
+
+
+@router.get("/ingest-health", response_model=IngestHealthResponse)
+def get_ingest_health(
+    dc: str | None = Query(default=None),
+    collector_type: str | None = Query(default=None),
+    verdict: str | None = Query(default=None),
+):
+    """Collector ingest freshness (TASK-M1): network OK but data landing?"""
+    return ih_q.build_ingest_health(
+        dc=dc,
+        collector_type=collector_type,
+        verdict=verdict,
+    )
+
+
+@router.get("/probe-health", response_model=ProbeHealthResponse)
+def get_probe_health(
+    dc: str | None = Query(default=None),
+    probe_id: str | None = Query(default=None),
+):
+    """Collector script smoke results: which script fails on which endpoint, and why."""
+    return probe_q.build_probe_health(dc=dc, probe_id=probe_id)
