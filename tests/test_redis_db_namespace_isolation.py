@@ -73,6 +73,27 @@ def test_datacenter_api_default_redis_db_is_not_the_guis():
     assert match.group(1) != GUI_REDIS_DB
 
 
+def test_k8s_configmaps_declare_the_same_split_as_compose():
+    """Production reads the manifests, not docker-compose.yml.
+
+    datacenter-api's configmap set REDIS_HOST and REDIS_PORT but no REDIS_DB,
+    so prod silently inherited whatever app/config.py defaulted to — which is how
+    it ended up sharing db 0 with the frontend. Pinning it here keeps the two
+    descriptions of the same system from drifting apart again.
+    """
+    for service, expected in (("datacenter-api", "3"), ("customer-api", "1")):
+        text = (ROOT / f"k8s/{service}/configmap.yaml").read_text(encoding="utf-8")
+        match = re.search(r'^\s+REDIS_DB:\s*"?([0-9]+)"?', text, re.MULTILINE)
+        assert match is not None, f"k8s/{service} must declare REDIS_DB explicitly"
+        assert match.group(1) == expected
+        assert match.group(1) == _redis_db_of(service), "k8s and compose disagree"
+
+
+def test_k8s_frontend_keeps_db_zero():
+    text = (ROOT / "k8s/frontend/configmap.yaml").read_text(encoding="utf-8")
+    assert 'REDIS_URL: "redis://bulutistan-redis:6379/0"' in text
+
+
 def test_crm_engine_default_datacenter_db_matches_datacenter_api_default():
     dc_text = (ROOT / "services/datacenter-api/app/config.py").read_text(encoding="utf-8")
     crm_text = (ROOT / "services/crm-engine/app/main.py").read_text(encoding="utf-8")
