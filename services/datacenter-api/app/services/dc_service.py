@@ -1104,9 +1104,32 @@ LIMIT 20
             f"{tr.get('start', '')}:{tr.get('end', '')}:{cluster_part}"
         )
 
-    def _get_compute_cached(self, key: str) -> dict | None:
-        val, _stale = cache.get_with_stale(key)
-        return val if isinstance(val, dict) else None
+    def _compute_cached_or_revalidate(self, key: str, factory: Callable[[], dict]) -> dict | None:
+        """Cached section if there is one, refreshing it behind the request if stale.
+
+        This used to be `val, _stale = cache.get_with_stale(key)` — the flag
+        read and dropped. get_with_stale's contract is that a stale hit obliges
+        the caller to trigger a revalidate, and ten other call sites in this
+        file do; these two did not. The consequence was an entry that ran fresh
+        for 10 minutes, stale for 20 more with nothing ever recomputing it, and
+        then expired outright, so the next visitor paid a cold multi-query
+        fetch. On screen: half an hour of unchanging numbers, a hang, then
+        different numbers. A stale window is not a grace period if nothing uses
+        it to refresh.
+
+        Returns None on a total miss; the caller computes synchronously.
+        """
+        value, is_stale = cache.get_with_stale(key)
+        if not isinstance(value, dict):
+            return None
+        if is_stale:
+            self._trigger_async_swr_refresh(
+                key, factory,
+                fresh_ttl=self._COMPUTE_CACHE_FRESH_TTL,
+                stale_ttl=self._COMPUTE_CACHE_STALE_TTL,
+                label="compute_filtered",
+            )
+        return value
 
     def _set_compute_cached(self, key: str, value: dict) -> None:
         cache.set_with_stale(key, value, fresh_ttl=self._COMPUTE_CACHE_FRESH_TTL, stale_ttl=self._COMPUTE_CACHE_STALE_TTL)
@@ -1292,59 +1315,79 @@ LIMIT 20
 
         tr = self._anchored_tr(tr)
         cache_key = self._compute_cache_key("classic", dc_code, tr, selected_clusters)
-        cached = self._get_compute_cached(cache_key)
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        def _recompute() -> dict:
+            return self._fetch_classic_filtered(dc_code, selected_clusters, start_ts, end_ts)
+
+        cached = self._compute_cached_or_revalidate(cache_key, _recompute)
         if cached is not None:
             return cached
 
-        start_ts, end_ts = time_range_to_bounds(tr)
-        dc_wc = f"%{dc_code}%"
         try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    row = self._run_row(
-                        cur,
-                        vcq.CLASSIC_CPU_MEM_MERGED_FILTERED,
-                        (
-                            dc_wc,
-                            selected_clusters,
-                            start_ts,
-                            end_ts,
-                            dc_code,
-                            selected_clusters,
-                            start_ts,
-                            end_ts,
-                            selected_clusters,
-                        ),
-                    )
-                    avg30 = self._run_row(
-                        cur,
-                        vcq.CLASSIC_AVG30_MERGED_FILTERED,
-                        (
-                            dc_wc,
-                            selected_clusters,
-                            start_ts,
-                            end_ts,
-                            dc_code,
-                            selected_clusters,
-                            start_ts,
-                            end_ts,
-                            selected_clusters,
-                        ),
-                    )
-                    storage_vm = self.get_classic_storage_vm(
-                        cur, dc_wc, start_ts, end_ts, selected_clusters
-                    )
-                    mem_peak = self.get_classic_mem_peak_raw(
-                        cur, dc_wc, start_ts, end_ts, cluster_filter=selected_clusters
-                    )
-                    unit_prices = self.get_unit_prices_tl(cur, "klasik")
-                    ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(
-                        cur, dc_code, start_ts, end_ts
-                    )
-                    row = self._patch_classic_row_storage(row, ds_cap_gb, ds_used_gb)
+            section = _recompute()
         except OperationalError as exc:
             logger.error("DB unavailable for get_classic_metrics_filtered(%s): %s", dc_code, exc)
             return _empty_compute_section()
+        self._set_compute_cached(cache_key, section)
+        return section
+
+    def _fetch_classic_filtered(
+        self, dc_code: str, selected_clusters: list[str], start_ts, end_ts
+    ) -> dict:
+        """Build the Classic compute section for one window and cluster subset.
+
+        Raises OperationalError rather than degrading to an empty section: this
+        is also the background-revalidate factory, and a section of zeros
+        returned as a *value* would be written over the cached real numbers by
+        _trigger_async_swr_refresh. The synchronous caller catches it and
+        degrades without caching; the background caller logs and leaves the
+        stale entry alone.
+        """
+        dc_wc = f"%{dc_code}%"
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                row = self._run_row(
+                    cur,
+                    vcq.CLASSIC_CPU_MEM_MERGED_FILTERED,
+                    (
+                        dc_wc,
+                        selected_clusters,
+                        start_ts,
+                        end_ts,
+                        dc_code,
+                        selected_clusters,
+                        start_ts,
+                        end_ts,
+                        selected_clusters,
+                    ),
+                )
+                avg30 = self._run_row(
+                    cur,
+                    vcq.CLASSIC_AVG30_MERGED_FILTERED,
+                    (
+                        dc_wc,
+                        selected_clusters,
+                        start_ts,
+                        end_ts,
+                        dc_code,
+                        selected_clusters,
+                        start_ts,
+                        end_ts,
+                        selected_clusters,
+                    ),
+                )
+                storage_vm = self.get_classic_storage_vm(
+                    cur, dc_wc, start_ts, end_ts, selected_clusters
+                )
+                mem_peak = self.get_classic_mem_peak_raw(
+                    cur, dc_wc, start_ts, end_ts, cluster_filter=selected_clusters
+                )
+                unit_prices = self.get_unit_prices_tl(cur, "klasik")
+                ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(
+                    cur, dc_code, start_ts, end_ts
+                )
+                row = self._patch_classic_row_storage(row, ds_cap_gb, ds_used_gb)
 
         row = row or (0,) * 8
         avg30 = DatabaseService._normalize_avg30_row(avg30)
@@ -1389,6 +1432,9 @@ LIMIT 20
             "unit_prices": unit_prices,
             "sellable_multiplier": 3.3,
         })
+        # Best-effort enrichment: the section is already complete without it, so
+        # a DB blip here degrades one field rather than the whole panel. Kept as
+        # a swallow — unlike the fetch above, which must propagate.
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
@@ -1397,7 +1443,6 @@ LIMIT 20
                     )
         except OperationalError:
             pass
-        self._set_compute_cached(cache_key, section)
         return section
 
     def get_hyperconv_metrics_filtered(
@@ -1416,62 +1461,79 @@ LIMIT 20
 
         tr = self._anchored_tr(tr)
         cache_key = self._compute_cache_key("hyperconv", dc_code, tr, selected_clusters)
-        cached = self._get_compute_cached(cache_key)
+        start_ts, end_ts = time_range_to_bounds(tr)
+
+        def _recompute() -> dict:
+            return self._fetch_hyperconv_filtered(dc_code, selected_clusters, start_ts, end_ts)
+
+        cached = self._compute_cached_or_revalidate(cache_key, _recompute)
         if cached is not None:
             return cached
 
-        start_ts, end_ts = time_range_to_bounds(tr)
-        dc_wc = f"%{dc_code}%"
-        mem_peak = None
         try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    row = self._run_row(
-                        cur,
-                        vcq.HYPERCONV_CPU_MEM_MERGED_FILTERED,
-                        (
-                            dc_wc,
-                            selected_clusters,
-                            start_ts,
-                            end_ts,
-                            dc_code,
-                            selected_clusters,
-                            start_ts,
-                            end_ts,
-                            selected_clusters,
-                        ),
-                    )
-                    hc_avg30 = self._run_row(
-                        cur,
-                        vcq.HYPERCONV_AVG30_MERGED_FILTERED,
-                        (
-                            dc_wc,
-                            selected_clusters,
-                            start_ts,
-                            end_ts,
-                            dc_code,
-                            selected_clusters,
-                            start_ts,
-                            end_ts,
-                            selected_clusters,
-                        ),
-                    )
-                    n_host = self._run_value(
-                        cur, nq.HOST_COUNT_FILTERED, (dc_code, selected_clusters, start_ts, end_ts)
-                    )
-                    n_stor = self._run_row(
-                        cur, nq.STORAGE_FILTERED, (dc_code, selected_clusters, start_ts, end_ts)
-                    )
-                    storage_vm = self.get_hyperconv_storage_vm(
-                        cur, dc_code, start_ts, end_ts, selected_clusters
-                    )
-                    mem_peak = self.get_hyperconv_mem_peak_raw(
-                        cur, dc_wc, dc_code, start_ts, end_ts, cluster_filter=selected_clusters
-                    )
-                    unit_prices = self.get_unit_prices_tl(cur, "hyperconv")
+            section = _recompute()
         except OperationalError as exc:
             logger.error("DB unavailable for get_hyperconv_metrics_filtered(%s): %s", dc_code, exc)
             return _empty_compute_section()
+        self._set_compute_cached(cache_key, section)
+        return section
+
+    def _fetch_hyperconv_filtered(
+        self, dc_code: str, selected_clusters: list[str], start_ts, end_ts
+    ) -> dict:
+        """Build the Hyperconverged compute section for one window and subset.
+
+        Propagates OperationalError for the same reason as
+        _fetch_classic_filtered: it doubles as the revalidate factory, and a
+        zeroed section returned as a value would overwrite good cached numbers.
+        """
+        dc_wc = f"%{dc_code}%"
+        mem_peak = None
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                row = self._run_row(
+                    cur,
+                    vcq.HYPERCONV_CPU_MEM_MERGED_FILTERED,
+                    (
+                        dc_wc,
+                        selected_clusters,
+                        start_ts,
+                        end_ts,
+                        dc_code,
+                        selected_clusters,
+                        start_ts,
+                        end_ts,
+                        selected_clusters,
+                    ),
+                )
+                hc_avg30 = self._run_row(
+                    cur,
+                    vcq.HYPERCONV_AVG30_MERGED_FILTERED,
+                    (
+                        dc_wc,
+                        selected_clusters,
+                        start_ts,
+                        end_ts,
+                        dc_code,
+                        selected_clusters,
+                        start_ts,
+                        end_ts,
+                        selected_clusters,
+                    ),
+                )
+                n_host = self._run_value(
+                    cur, nq.HOST_COUNT_FILTERED, (dc_code, selected_clusters, start_ts, end_ts)
+                )
+                n_stor = self._run_row(
+                    cur, nq.STORAGE_FILTERED, (dc_code, selected_clusters, start_ts, end_ts)
+                )
+                storage_vm = self.get_hyperconv_storage_vm(
+                    cur, dc_code, start_ts, end_ts, selected_clusters
+                )
+                mem_peak = self.get_hyperconv_mem_peak_raw(
+                    cur, dc_wc, dc_code, start_ts, end_ts, cluster_filter=selected_clusters
+                )
+                unit_prices = self.get_unit_prices_tl(cur, "hyperconv")
 
         row = row or (0,) * 8
         n_stor = n_stor or (0, 0)
@@ -1522,6 +1584,7 @@ LIMIT 20
             "unit_prices": unit_prices,
             "sellable_multiplier": 3.3,
         })
+        # Best-effort enrichment; see _fetch_classic_filtered.
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
@@ -1531,7 +1594,6 @@ LIMIT 20
                     )
         except OperationalError:
             pass
-        self._set_compute_cached(cache_key, section)
         return section
 
     def get_replica_allocation_offset(

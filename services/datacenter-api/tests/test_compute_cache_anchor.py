@@ -88,7 +88,7 @@ class _Recorder:
         self.keys: list[str] = []
         self.starts: list[datetime] = []
 
-    def get_cached(self, key):
+    def get_cached(self, key, _factory=None):
         self.keys.append(key)
         return None  # always a miss, so the body runs every time
 
@@ -118,7 +118,7 @@ def _expected_anchored_start():
 
 def _drive(svc, method, tr, rec, latest_ts=LATEST_TS):
     """Call a *_metrics_filtered method with every DB touchpoint stubbed."""
-    with patch.object(svc, "_get_compute_cached", rec.get_cached), \
+    with patch.object(svc, "_compute_cached_or_revalidate", rec.get_cached), \
          patch.object(svc, "_set_compute_cached", rec.set_cached), \
          patch.object(svc, "_is_full_cluster_selection", return_value=False), \
          patch.object(svc, "_get_latest_data_ts", return_value=latest_ts), \
