@@ -1789,6 +1789,7 @@ def build_image_backup_section(
     has_netbackup: bool = False,
     has_nutanix: bool = False,
     content_mode: str = "full",
+    km_sellable: list | None = None,
 ) -> html.Div:
     """Image Backup category: Classic KM (NetBackup) + Hyperconverged (Nutanix)."""
     mode = (content_mode or "full").strip().lower()
@@ -1809,20 +1810,26 @@ def build_image_backup_section(
 
     panels = []
     if has_netbackup:
+        km_children: list = []
+        if km_sellable:
+            km_children.extend(km_sellable)
+        km_children.append(
+            html.Div(
+                id="backup-netbackup-panel-image",
+                children=build_netbackup_panel(
+                    nb_data or {},
+                    selected_pools,
+                    category="image",
+                    policy_type_options=policy_type_options,
+                    content_mode=mode,
+                ),
+            )
+        )
         panels.append(
             dmc.TabsPanel(
                 value="km",
                 pt="lg",
-                children=html.Div(
-                    id="backup-netbackup-panel-image",
-                    children=build_netbackup_panel(
-                        nb_data or {},
-                        selected_pools,
-                        category="image",
-                        policy_type_options=policy_type_options,
-                        content_mode=mode,
-                    ),
-                ),
+                children=html.Div(children=km_children),
             )
         )
     elif any(v == "km" for v, _ in tab_defs):
@@ -2149,64 +2156,93 @@ def build_replication_section(
     has_zerto: bool = False,
     content_mode: str = "full",
     show_licenses: bool = False,
+    veeam_sellable: list | None = None,
+    zerto_sellable: list | None = None,
 ) -> html.Div:
-    """Replication category: unified Veeam Replication + Zerto (Classic/HC is filter only)."""
+    """Replication category: nested Veeam | Zerto tabs (Image Backup pattern).
+
+    Sellable families stay unified (ADR-0032 #28); architecture Classic/HC remains
+    a filter. Nested tabs are presentation-only.
+    """
     mode = (content_mode or "full").strip().lower()
     if mode == "shell":
         has_zerto = True
         has_veeam = True
-    parts: list = [
-        dmc.Text(
-            "Replication — Veeam and Zerto (unified sellable families; "
-            "architecture Classic/HC is a filter, not a separate product card).",
-            size="sm",
-            c="#2B3674",
-            mb="md",
-        ),
-    ]
+
+    tab_defs: list[tuple[str, str]] = []
     if has_veeam:
-        parts.append(
-            dmc.Paper(
-                withBorder=True,
-                p="md",
-                radius="md",
-                mb="lg",
-                children=[
-                    dmc.Title("Veeam Replication", order=4, c="#2B3674", mb="sm"),
-                    build_veeam_replication_only_section(
-                        veeam_data=veeam_data,
-                        veeam_license=veeam_license,
-                        content_mode=mode,
-                        show_licenses=show_licenses,
-                    ),
-                ],
+        tab_defs.append(("veeam", "Veeam"))
+    if has_zerto:
+        tab_defs.append(("zerto", "Zerto"))
+    if not tab_defs:
+        return html.Div(
+            children=[
+                dmc.Alert(
+                    "No Veeam or Zerto replication data for this datacenter.",
+                    color="gray",
+                    variant="light",
+                )
+            ]
+        )
+
+    panels: list = []
+    if has_veeam:
+        veeam_children: list = list(veeam_sellable or [])
+        veeam_children.append(
+            build_veeam_replication_only_section(
+                veeam_data=veeam_data,
+                veeam_license=veeam_license,
+                content_mode=mode,
+                show_licenses=show_licenses,
+            )
+        )
+        panels.append(
+            dmc.TabsPanel(
+                value="veeam",
+                pt="lg",
+                children=html.Div(children=veeam_children),
             )
         )
     if has_zerto:
-        parts.append(
-            dmc.Paper(
-                withBorder=True,
-                p="md",
+        zerto_children: list = list(zerto_sellable or [])
+        zerto_children.append(
+            build_zerto_category_section(
+                zerto_data=zerto_data,
+                zerto_license=zerto_license,
+                content_mode=mode,
+                show_licenses=show_licenses,
+            )
+        )
+        panels.append(
+            dmc.TabsPanel(
+                value="zerto",
+                pt="lg",
+                children=html.Div(children=zerto_children),
+            )
+        )
+
+    return html.Div(
+        children=[
+            dmc.Text(
+                "Replication — Veeam and Zerto nested tabs (unified sellable families; "
+                "architecture Classic/HC is a filter, not a separate product card).",
+                size="sm",
+                c="#2B3674",
+                mb="md",
+            ),
+            dmc.Tabs(
+                color="violet",
+                variant="outline",
                 radius="md",
-                mb="lg",
+                id="backup-replication-tabs",
+                value=tab_defs[0][0],
                 children=[
-                    dmc.Title("Zerto Replication", order=4, c="#2B3674", mb="sm"),
-                    build_zerto_category_section(
-                        zerto_data=zerto_data,
-                        zerto_license=zerto_license,
-                        content_mode=mode,
-                        show_licenses=show_licenses,
+                    dmc.TabsList(
+                        children=[dmc.TabsTab(label, value=value) for value, label in tab_defs]
                     ),
+                    *panels,
                 ],
-            )
-        )
-    if not parts[1:]:
-        parts.append(
-            dmc.Alert(
-                "No Veeam or Zerto replication data for this datacenter.",
-                color="gray",
-                variant="light",
-            )
-        )
-    return html.Div(children=parts)
+            ),
+        ]
+    )
 

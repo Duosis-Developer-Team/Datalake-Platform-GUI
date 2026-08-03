@@ -337,9 +337,14 @@ def test_compute_primary_vs_alternate_pool_range_clamps_negative():
 
 
 def test_dedupe_shared_pool_tl_sums_lo_and_takes_max_hi():
-    """IBM-style TL merge: lo = a_lo + b_lo, hi = max(a_hi, b_hi)."""
+    """IBM-style TL merge: lo = a_lo + b_lo, hi = max(a_hi, b_hi, lo)."""
     assert dedupe_shared_pool_tl(10.0, 100.0, 20.0, 80.0) == (30.0, 100.0)
     assert dedupe_shared_pool_tl(10.0, 50.0, 20.0, 80.0) == (30.0, 80.0)
+
+
+def test_dedupe_shared_pool_tl_hi_never_below_sum_of_mins():
+    """When both mins exceed either max, merged hi floors at lo (no min > max)."""
+    assert dedupe_shared_pool_tl(30.0, 40.0, 25.0, 35.0) == (55.0, 55.0)
 
 
 def test_dedupe_shared_pool_tl_with_zero_alternate():

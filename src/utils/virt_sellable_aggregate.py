@@ -200,14 +200,22 @@ def prepare_virt_sellable_panels(
 
 
 def _panel_tl_bounds(panel: dict) -> tuple[float, float, float]:
+    """Return (headline_tl, band_lo, band_hi) with band_lo <= band_hi.
+
+    Track labels (potential_tl_min = allocation, potential_tl_max = max-util)
+    are preserved upstream; this only orders the display/merge band so a
+    reversed dual-track never paints min > max on Datacenters / Summary.
+    """
     tl = float(panel.get("potential_tl") or 0.0)
-    lo = float(panel.get("potential_tl_min") if panel.get("potential_tl_min") is not None else tl)
-    hi = float(panel.get("potential_tl_max") if panel.get("potential_tl_max") is not None else tl)
-    return tl, lo, hi
+    a = float(panel.get("potential_tl_min") if panel.get("potential_tl_min") is not None else tl)
+    b = float(panel.get("potential_tl_max") if panel.get("potential_tl_max") is not None else tl)
+    return tl, min(a, b), max(a, b)
 
 
 def _ibm_shared_storage_dedup_tl(panels: list[dict]) -> tuple[float | None, float | None]:
     """Dedupe classic KM + Power storage max TL when IBM pool is shared."""
+    from shared.sellable.computation import dedupe_shared_pool_tl
+
     classic = next(
         (
             p for p in panels
@@ -226,9 +234,7 @@ def _ibm_shared_storage_dedup_tl(panels: list[dict]) -> tuple[float | None, floa
         return None, None
     _, lo_c, hi_c = _panel_tl_bounds(classic)
     _, lo_p, hi_p = _panel_tl_bounds(power)
-    dedup_lo = lo_c + lo_p
-    dedup_hi = max(hi_c, hi_p)
-    return dedup_lo, dedup_hi
+    return dedupe_shared_pool_tl(lo_c, hi_c, lo_p, hi_p)
 
 
 def virt_total_potential_range(panels: list[dict]) -> tuple[float, float, float]:

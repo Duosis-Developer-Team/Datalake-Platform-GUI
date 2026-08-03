@@ -75,7 +75,36 @@ def test_virt_total_potential_range_ibm_storage_dedup():
     ]
     _, lo, hi = virt_total_potential_range(panels)
     assert lo == 10.0 + 5.0 + 40.0
-    assert hi == max(100.0, 80.0) + 60.0
+    assert hi == max(100.0, 80.0, 10.0 + 5.0) + 60.0
+    assert lo <= hi
+
+
+def test_panel_tl_bounds_orders_reversed_dual_track():
+    from src.utils.virt_sellable_aggregate import _panel_tl_bounds
+
+    tl, lo, hi = _panel_tl_bounds({
+        "potential_tl": 462076.0,
+        "potential_tl_min": 462076.0,
+        "potential_tl_max": 59713.0,
+    })
+    assert tl == 462076.0
+    assert lo == 59713.0
+    assert hi == 462076.0
+    assert lo <= hi
+
+
+def test_virt_total_potential_range_ibm_dedup_never_min_gt_max():
+    """IBM lo = sum of mins must not exceed merged hi when panel maxes are low."""
+    panels = [
+        {"family": "virt_classic", "resource_kind": "storage", "potential_tl": 30.0,
+         "potential_tl_min": 30.0, "potential_tl_max": 40.0},
+        {"family": "virt_power", "resource_kind": "storage", "potential_tl": 25.0,
+         "potential_tl_min": 25.0, "potential_tl_max": 35.0},
+    ]
+    _, lo, hi = virt_total_potential_range(panels)
+    assert lo == 55.0
+    assert hi == 55.0
+    assert lo <= hi
 
 
 def test_merge_power_clears_max_util():

@@ -122,7 +122,7 @@ _NETBACKUP_DC_POOL_TIMEOUT: float = float(os.getenv("SELLABLE_NETBACKUP_DC_TIMEO
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 11
+SELLABLE_PAYLOAD_VERSION: int = 12
 
 # Site-scoped S3 panels map to datalake pool_name prefixes (not city substrings).
 _SITE_SCOPED_PANEL_PATTERNS: dict[str, str] = {

@@ -523,15 +523,17 @@ def should_skip_fetch(
         return False
 
     if vendor == "zerto":
-        if cat_tab != "zerto":
+        if cat_tab != "replication":
+            return True
+        # Unset nested tab → allow both vendors (shell Store may lag mount).
+        if backup_replication_tab and backup_replication_tab not in ("zerto", "replication"):
             return True
         return False
 
     if vendor == "veeam":
-        if cat_tab != "veeam":
+        if cat_tab != "replication":
             return True
-        # Job Statistics live under the Replication sub-tab only.
-        if backup_replication_tab and backup_replication_tab not in ("replication", "veeam"):
+        if backup_replication_tab and backup_replication_tab not in ("veeam", "replication"):
             return True
         return False
 

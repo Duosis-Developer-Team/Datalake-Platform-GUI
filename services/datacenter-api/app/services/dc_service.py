@@ -969,33 +969,44 @@ LIMIT 20
         end_ts,
         cluster_filter: list[str] | None = None,
     ) -> dict:
+        """HC VM allocation SoT is Nutanix; VMware is management-plane fallback only.
+
+        ADR-0032 #35: do not sum VMware + Nutanix as a second capacity pool.
+        """
         dc_wc = f"%{dc_code}%"
-        vmw = self._compute_vmware_vm_allocation(
-            cursor, dc_wc, start_ts, end_ts, classic_km=False, cluster_filter=cluster_filter
-        )
         ntx = self._compute_nutanix_vm_allocation(
             cursor, dc_code, start_ts, end_ts, cluster_filter
         )
+        ntx_signal = (
+            float(ntx.get("cpu_alloc_ghz_sales") or 0)
+            + float(ntx.get("mem_alloc_gb_vm") or 0)
+            + float(ntx.get("stor_provisioned_gb") or 0)
+        )
+        if ntx_signal > 0:
+            return {
+                "stor_provisioned_gb": round(float(ntx.get("stor_provisioned_gb") or 0), 2),
+                "stor_actual_used_gb": round(float(ntx.get("stor_actual_used_gb") or 0), 2),
+                "cpu_alloc_ghz_vm": round(float(ntx.get("cpu_alloc_ghz_vm") or 0), 2),
+                "cpu_alloc_ghz_sales": round(float(ntx.get("cpu_alloc_ghz_sales") or 0), 2),
+                "mem_alloc_gb_vm": round(float(ntx.get("mem_alloc_gb_vm") or 0), 2),
+                "cpu_alloc_hosts_resolved": int(ntx.get("cpu_alloc_hosts_resolved") or 0),
+                "cpu_alloc_hosts_fallback_default": int(
+                    ntx.get("cpu_alloc_hosts_fallback_default") or 0
+                ),
+            }
+        vmw = self._compute_vmware_vm_allocation(
+            cursor, dc_wc, start_ts, end_ts, classic_km=False, cluster_filter=cluster_filter
+        )
         return {
-            "stor_provisioned_gb": round(
-                float(vmw.get("stor_provisioned_gb") or 0) + float(ntx.get("stor_provisioned_gb") or 0), 2
+            "stor_provisioned_gb": round(float(vmw.get("stor_provisioned_gb") or 0), 2),
+            "stor_actual_used_gb": round(float(vmw.get("stor_actual_used_gb") or 0), 2),
+            "cpu_alloc_ghz_vm": round(float(vmw.get("cpu_alloc_ghz_vm") or 0), 2),
+            "cpu_alloc_ghz_sales": round(float(vmw.get("cpu_alloc_ghz_sales") or 0), 2),
+            "mem_alloc_gb_vm": round(float(vmw.get("mem_alloc_gb_vm") or 0), 2),
+            "cpu_alloc_hosts_resolved": int(vmw.get("cpu_alloc_hosts_resolved") or 0),
+            "cpu_alloc_hosts_fallback_default": int(
+                vmw.get("cpu_alloc_hosts_fallback_default") or 0
             ),
-            "stor_actual_used_gb": round(
-                float(vmw.get("stor_actual_used_gb") or 0) + float(ntx.get("stor_actual_used_gb") or 0), 2
-            ),
-            "cpu_alloc_ghz_vm": round(
-                float(vmw.get("cpu_alloc_ghz_vm") or 0) + float(ntx.get("cpu_alloc_ghz_vm") or 0), 2
-            ),
-            "cpu_alloc_ghz_sales": round(
-                float(vmw.get("cpu_alloc_ghz_sales") or 0) + float(ntx.get("cpu_alloc_ghz_sales") or 0), 2
-            ),
-            "mem_alloc_gb_vm": round(
-                float(vmw.get("mem_alloc_gb_vm") or 0) + float(ntx.get("mem_alloc_gb_vm") or 0), 2
-            ),
-            "cpu_alloc_hosts_resolved": int(vmw.get("cpu_alloc_hosts_resolved") or 0)
-            + int(ntx.get("cpu_alloc_hosts_resolved") or 0),
-            "cpu_alloc_hosts_fallback_default": int(vmw.get("cpu_alloc_hosts_fallback_default") or 0)
-            + int(ntx.get("cpu_alloc_hosts_fallback_default") or 0),
         }
 
     @staticmethod
@@ -1074,8 +1085,9 @@ LIMIT 20
 
     @staticmethod
     def _compute_cache_key(kind: str, dc_code: str, tr: dict, clusters: list[str]) -> str:
+        # v2: HC allocation SoT is Nutanix-only (no VMware double-count)
         cluster_part = ",".join(sorted(clusters))
-        return f"compute:{kind}:{dc_code}:{tr.get('start', '')}:{tr.get('end', '')}:{cluster_part}"
+        return f"compute:v2:{kind}:{dc_code}:{tr.get('start', '')}:{tr.get('end', '')}:{cluster_part}"
 
     def _get_compute_cached(self, key: str) -> dict | None:
         val, _stale = cache.get_with_stale(key)

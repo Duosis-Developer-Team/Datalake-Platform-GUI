@@ -1109,5 +1109,12 @@ def dedupe_shared_pool_tl(
     lo_b: float,
     hi_b: float,
 ) -> tuple[float, float]:
-    """IBM-style TL band merge for two panels claiming one shared pool."""
-    return float(lo_a) + float(lo_b), max(float(hi_a), float(hi_b))
+    """IBM-style TL band merge for two panels claiming one shared pool.
+
+    ``lo = a_lo + b_lo``. Combined ``hi`` is at least ``max(a_hi, b_hi)`` and
+    also at least ``lo`` — when both claimants can realize their mins at once,
+    the merged max must not fall below that sum (avoids min > max bands).
+    """
+    lo = float(lo_a) + float(lo_b)
+    hi = max(float(hi_a), float(hi_b), lo)
+    return lo, hi

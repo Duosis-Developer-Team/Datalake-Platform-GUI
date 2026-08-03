@@ -77,6 +77,7 @@ def aggregate_hosts_compute(hosts: list[dict], *, dedupe_cluster_storage: bool =
         "cpu_cap": round(cpu_cap, 2),
         "cpu_used": round(cpu_used, 2),
         "cpu_alloc_ghz_vm": round(cpu_alloc, 2),
+        "cpu_alloc_ghz_sales": round(cpu_alloc, 2),
         "cpu_alloc_ghz_physical": round(cpu_alloc_phys, 2),
         "cpu_util_pct_max": round(cpu_util_max, 1),
         "cpu_pct_max": round(cpu_util_max, 1),
