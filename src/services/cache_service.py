@@ -6,10 +6,19 @@
 #   - InProcessBackend: the original per-process OrderedDict + LRU (default).
 #   - RedisBackend (added later): shared across pods.
 #
-# Cache entries never disappear until explicitly overwritten by fresh data.
-# TTL is only used as a staleness hint (not for eviction). InProcessBackend
-# eviction is LRU (OrderedDict + move_to_end on get/set) so interactive paths
-# (e.g. rack clicks) are not displaced by long global prefetch key streams.
+# Cache entries are not expired on a freshness schedule — staleness is decided by
+# the caller (api_client's SWR window), not by this layer. They are still bounded:
+# every Redis entry carries MAX_ENTRY_AGE_SECONDS so the server can reclaim memory
+# under `volatile-lru` instead of dropping arbitrary keys under `allkeys-lru`.
+#
+# That distinction is the whole point. An entry written without an expiry is not
+# "permanent" on a Redis with a maxmemory budget — it is merely evicted at a
+# moment nobody chose. Declaring the TTL puts the bound where it can be reasoned
+# about, and lets `volatile-lru` protect anything that genuinely must not vanish.
+#
+# InProcessBackend eviction is LRU (OrderedDict + move_to_end on get/set) so
+# interactive paths (e.g. rack clicks) are not displaced by long global prefetch
+# key streams.
 
 import logging
 import os
@@ -23,6 +32,14 @@ logger = logging.getLogger(__name__)
 
 # Room for global-view prefetch (many rack_device keys) without evicting MRU API keys.
 MAX_SIZE = 2048
+
+# Expiry stamped on every Redis entry. Deliberately far above the SWR window
+# (api_client._SWR_TTL_SECONDS, 300 s) — this is an eviction bound, not a
+# freshness one, and an entry that expired while it was still the best value we
+# had would leave the stale-over-empty fallback with nothing to serve. Bounded
+# all the same: six hours without a successful refresh means the upstream is
+# down, and a value that old should not be presented as data.
+MAX_ENTRY_AGE_SECONDS = int(os.environ.get("CACHE_MAX_ENTRY_AGE_SECONDS", "21600") or "21600")
 
 
 class InProcessBackend:
@@ -60,7 +77,9 @@ class InProcessBackend:
             self._cache.move_to_end(key, last=True)
             return val
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        # ttl is accepted so both backends share one interface; this cache is
+        # bounded by max_size + LRU instead, and dies with the process anyway.
         with self._lock:
             if key in self._cache:
                 self._cache[key] = value
@@ -134,9 +153,12 @@ class RedisBackend:
             logger.warning("Redis cache decode failed for %s: %s", key, exc)
             return None
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        # Always write an expiry: under `volatile-lru` a key with no TTL is
+        # never reclaimed, so writes would start failing with OOM once the
+        # budget filled. See MAX_ENTRY_AGE_SECONDS for why the default is long.
         try:
-            self._r.set(self._k(key), pickle.dumps(value))
+            self._r.set(self._k(key), pickle.dumps(value), ex=ttl or MAX_ENTRY_AGE_SECONDS)
         except Exception as exc:
             logger.warning("Redis cache SET failed for %s: %s", key, exc)
 
@@ -263,10 +285,15 @@ def get(key: str) -> Optional[Any]:
     return _backend.get(key)
 
 
-def set(key: str, value: Any) -> None:
-    """Store / overwrite a value in the cache."""
+def set(key: str, value: Any, ttl: Optional[int] = None) -> None:
+    """Store / overwrite a value in the cache.
+
+    ttl bounds how long Redis keeps the entry; omit it for the default
+    (MAX_ENTRY_AGE_SECONDS). It is an eviction bound, not a freshness one —
+    callers decide staleness themselves.
+    """
     _maybe_upgrade_backend()
-    _backend.set(key, value)
+    _backend.set(key, value, ttl=ttl)
     logger.debug("Cache SET: %s", key)
 
 

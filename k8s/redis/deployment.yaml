@@ -21,8 +21,13 @@ spec:
             - redis-server
             - --maxmemory
             - 256mb
+            # volatile-lru, not allkeys-lru: reclaim only keys that declared a
+            # TTL. allkeys-lru dropped live frontend cache keys under memory
+            # pressure, which the UI shows as a value vanishing between two
+            # renders. Every writer sets an expiry now (frontend via
+            # cache_service.MAX_ENTRY_AGE_SECONDS, the APIs via SETEX).
             - --maxmemory-policy
-            - allkeys-lru
+            - volatile-lru
           ports:
             - containerPort: 6379
           resources:

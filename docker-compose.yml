@@ -210,7 +210,13 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    # volatile-lru, not allkeys-lru: only entries that declared a TTL may be
+    # reclaimed. allkeys-lru silently dropped live GUI cache keys under memory
+    # pressure (measured: 427 dl:fecache:* keys -> 415), which the front end sees
+    # as a value disappearing between two renders. Every cache writer now sets an
+    # expiry — GUI via cache_service.MAX_ENTRY_AGE_SECONDS, the APIs via SETEX —
+    # so there is still plenty for Redis to reclaim.
+    command: redis-server --maxmemory 256mb --maxmemory-policy volatile-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
