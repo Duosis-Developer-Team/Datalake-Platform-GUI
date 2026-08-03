@@ -101,6 +101,9 @@ Bu yüzden host'a iki paket:
 `Backfilled N releases.` yazmalı. Script idempotent (`ON CONFLICT (version) DO
 NOTHING` + mevcut değişiklik satırı varsa atlama), iki kez çalıştırmak zararsız.
 
+**Bu tek seferlik.** Sonraki deploy'larda bu script'i değil, 8. bölümdeki
+`new_release.py`'yi çalıştır.
+
 DB ayarı gerekmiyor: `src/auth/config.py:11-15` varsayılanları `localhost:5433`
 ve compose auth-db'yi `5433:5432` ile host'a açıyor. Hedef `5433`, `5432` değil —
 `5432` başka bir Postgres.
@@ -140,8 +143,40 @@ tek başına bu davranışı değiştirmedi.
 Hiçbir hata kullanıcıya yansımaz: her yol deterministik nota düşer, `body` boş
 kalmaz.
 
-## Not: release ingest token gerekmiyor
+## 8. Sonraki deploy'lar — her seferinde ne yapılacak
+
+1-4. adımlar aynı (kod çek, image'ı yenile). **Backfill'i bir daha çalıştırma**;
+onun yerine yeni sürümü aç:
+
+    export RELEASE_INGEST_TOKEN=...     # panel için değil, yalnız bu script için
+    python3 scripts/new_release.py
+
+Script GUI'ye en son kaydedilen sha'yı sorar, o sha'dan `HEAD`'e kadarki
+commit'leri alır, sürümü açar, notu ürettirir ve terminalde onaya sunar:
+`e` yayınla / `h` reddet / `y` yeniden üret (en fazla 3 kez). Yeni commit yoksa
+"Yeni commit yok" deyip çıkar, boş sürüm açmaz.
+
+- `--yes`: soru sormadan onaylar.
+- TTY yoksa (CI) taslak **onaylanmadan** bırakılır ve panelde otomatik özet
+  görünür. Sessiz onay bilerek engellendi — insan onayı kuralını delerdi.
+- `--dry-run`: ağa çıkmaz, yalnız commit'leri listeler.
+
+Bu script hiç çalıştırılmazsa panelde yeni sürüm kartı oluşmaz. Panel'deki
+"Yeniden üret" düğmesi yalnızca DB'de zaten var olan sürümler için çalışır.
+
+### Backfill neden tekrar çalıştırılmaz
+
+- `write_releases` bir sürümün altında zaten değişiklik satırı varsa o sürümü
+  atlıyor (`scripts/backfill_platform_versions.py:104-107`). Yani aynı haftaya
+  düşen yeni commit'ler eklenmez; tekrar koşmak istediğin şeyi zaten yapmaz.
+- Sürüm numaraları (`YYYY.MM.N`) her koşuda tüm geçmiş haftalar sayılarak baştan
+  hesaplanıyor. Eski tarihli commit'ler taşıyan bir branch merge edilirse araya
+  yeni bir hafta girer, sonraki numaralar kayar ve aynı içerik ikinci kez farklı
+  numarayla yazılır.
+
+## Not: ilk deploy'da release ingest token gerekmiyor
 
 Üretme/onaylama döngüsünün tamamı panelde ve pod içinde kapanıyor. Token yalnızca
-release'i dışarıdan açan script'ler için (`scripts/new_release.py`,
-`scripts/regenerate_release_notes.py`). Bkz. `release-ingest-token.md`.
+release'i dışarıdan açan script'ler için gerekli (`scripts/new_release.py` —
+yani 8. bölüm —, `scripts/regenerate_release_notes.py`). Bkz.
+`release-ingest-token.md`.
