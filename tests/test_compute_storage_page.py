@@ -100,8 +100,8 @@ def test_layout_renders_one_draggable_card_per_family(api_rows):
     assert all(c.tabIndex == 0 for c in cards)
 
 
-def test_replication_families_default_to_separate_without_rows(api_rows):
-    """UI matches migration 043 seed when the API has no replication coupling yet."""
+def test_replication_families_default_to_merged_without_rows(api_rows):
+    """UI matches migration 044 default when the API has no replication coupling yet."""
     rows, _ = page._load_rows()
     modes = page._mode_map(rows, "*")
     for fam in (
@@ -110,7 +110,7 @@ def test_replication_families_default_to_separate_without_rows(api_rows):
         "backup_veeam_replication_hyperconverged",
         "backup_zerto_replication_hyperconverged",
     ):
-        assert modes[fam] == "separate"
+        assert modes[fam] == "merged"
 
 
 def test_default_scope_has_no_inherit_zone(api_rows):

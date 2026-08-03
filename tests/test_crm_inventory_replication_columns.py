@@ -9,6 +9,7 @@ def test_replication_columns_use_allocated_and_sellable_triad():
     ids = [c["id"] for c in cols]
     names = {c["id"]: c["name"] for c in cols}
     assert names["used_fmt"] == "Allocated"
+    assert "unsold_fmt" in ids
     assert "sellable_alloc_fmt" in ids
     assert "sellable_max_fmt" in ids
     assert "sellable_avg_fmt" in ids
@@ -25,6 +26,9 @@ def test_replication_free_uses_capacity_not_sellable_min():
             "used_qty": 60.0,
             "free_qty": 40.0,
             "free_tl": 400.0,
+            "unsold_qty": 70.0,
+            "unsold_tl": 700.0,
+            "crm_sold_qty": 30.0,
             "sellable_qty": 0.0,
             "sellable_alloc_qty": 30.0,
             "sellable_max_qty": 25.0,
@@ -38,15 +42,47 @@ def test_replication_free_uses_capacity_not_sellable_min():
             "has_infra_source": True,
             "has_price": True,
             "sellable_profile": "dual_track",
-            "inventory_free_mode": "capacity",
+            "inventory_free_mode": "infra",
             "used_is_allocation": True,
             "status": "ok",
         }
     )
     assert "40" in row["free_fmt"]
+    assert "70" in row["unsold_fmt"]
     assert "0 vCPU" not in row["free_fmt"].split("\n")[0] or "40" in row["free_fmt"]
     assert "30" in row["sellable_alloc_fmt"]
     assert row["used_is_allocation"] is True
+
+
+def test_replication_storage_triad_formats_from_constrained_fields():
+    row = prepare_service_row(
+        {
+            "service_label": "Veeam Replication Classic — Storage",
+            "family": "backup_veeam_replication_classic",
+            "display_unit": "GB",
+            "total": 10000.0,
+            "used_qty": 4000.0,
+            "free_qty": 6000.0,
+            "unsold_qty": 9000.0,
+            "sellable_alloc_qty": 2500.0,
+            "sellable_max_qty": 2500.0,
+            "sellable_avg_qty": 2500.0,
+            "potential_tl_alloc": 25000.0,
+            "potential_tl_max": 25000.0,
+            "potential_tl_avg": 25000.0,
+            "unit_price_tl": 10.0,
+            "has_infra_source": True,
+            "has_price": True,
+            "sellable_profile": "dual_track",
+            "inventory_free_mode": "infra",
+            "used_is_allocation": True,
+            "status": "ok",
+        }
+    )
+    assert "2,500 GB" in row["sellable_alloc_fmt"]
+    assert "2,500 GB" in row["sellable_max_fmt"]
+    assert "2,500 GB" in row["sellable_avg_fmt"]
+    assert "—" not in row["sellable_alloc_fmt"].split("\n")[0]
 
 
 def test_allocation_exceeds_hint():
@@ -61,7 +97,7 @@ def test_allocation_exceeds_hint():
             "has_infra_source": True,
             "has_price": False,
             "sellable_profile": "dual_track",
-            "inventory_free_mode": "capacity",
+            "inventory_free_mode": "infra",
             "data_quality": "suspect",
             "suspect_reason": "allocation_exceeds_total",
             "status": "ok",

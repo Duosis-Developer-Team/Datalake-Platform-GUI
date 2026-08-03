@@ -5,6 +5,7 @@ from typing import Any
 
 import dash_mantine_components as dmc
 from dash import dash_table, dcc, html
+from dash_iconify import DashIconify
 
 from src.pages import crm_shared as shared
 
@@ -17,6 +18,7 @@ _BASE_COLUMNS = [
     {"name": "Total", "id": "total_fmt"},
     {"name": "Used", "id": "used_fmt"},
     {"name": "Free", "id": "free_fmt"},
+    {"name": "Unsold", "id": "unsold_fmt"},
 ]
 
 _REPLICATION_COLUMNS = [
@@ -26,6 +28,7 @@ _REPLICATION_COLUMNS = [
     {"name": "Total", "id": "total_fmt"},
     {"name": "Allocated", "id": "used_fmt"},
     {"name": "Free", "id": "free_fmt"},
+    {"name": "Unsold", "id": "unsold_fmt"},
     {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
     {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
     {"name": "Sellable (Ort.)", "id": "sellable_avg_fmt"},
@@ -38,6 +41,7 @@ _VIRT_BASE_COLUMNS = [
     {"name": "CRM Sold", "id": "crm_sold_fmt"},
     {"name": "Total", "id": "total_fmt"},
     {"name": "Free", "id": "free_fmt"},
+    {"name": "Unsold", "id": "unsold_fmt"},
 ]
 
 _INVENTORY_VIRT_FAMILIES = frozenset({
@@ -54,12 +58,24 @@ _NETBACKUP_COLUMNS = [
     {"name": "Unit", "id": "display_unit"},
     {"name": "CRM Sold", "id": "crm_sold_fmt"},
     {"name": "Total", "id": "total_fmt"},
+    {"name": "Used", "id": "used_fmt"},
     {"name": "Transfer (Pre)", "id": "pre_dedup_fmt"},
     {"name": "PostDedup (Cost)", "id": "post_dedup_fmt"},
     {"name": "Dedup Savings %", "id": "dedup_savings_fmt"},
     {"name": "Free", "id": "free_fmt"},
+    {"name": "Unsold", "id": "unsold_fmt"},
     {"name": "Birim Fiyat", "id": "unit_price_fmt"},
 ]
+
+_FREE_COLUMN_TOOLTIP = (
+    "Free = altyapıdaki boş kapasite (Total − Allocated / pool available). "
+    "CRM Sold düşülmez. Unsold = Total − CRM Sold."
+)
+
+_NETBACKUP_FREE_TOOLTIP = (
+    "Free = boş havuz kapasitesi (available space). CRM Sold düşülmez. "
+    "Unsold = Total − CRM Sold."
+)
 
 _DUAL_TRACK_COLUMNS = [
     {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
@@ -77,14 +93,14 @@ _FLAT_EXTRA_COLUMN = {"name": "Family", "id": "family_label"}
 
 _FLAT_VIEW_FAMILY = "dual_track"
 
-INVENTORY_REPORT_SCHEMA_VERSION = "inventory-align-v2"
+INVENTORY_REPORT_SCHEMA_VERSION = "inventory-free-unsold-v3"
 
 _LEFT_COLS = frozenset({
     "service_label", "display_unit", "family_label", "product_name", "resource_unit",
 })
 
 _NUMERIC_COLS = frozenset({
-    "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt",
+    "crm_sold_fmt", "total_fmt", "used_fmt", "free_fmt", "unsold_fmt",
     "pre_dedup_fmt", "post_dedup_fmt", "dedup_savings_fmt",
     "sellable_alloc_fmt", "sellable_max_fmt", "sellable_avg_fmt", "unit_price_fmt",
     "entitled_qty", "entitled_amount_tl",
@@ -164,8 +180,10 @@ def columns_for_family(
         return [*list(_COMPARISON_ONLY_COLUMNS), dict(_UNIT_PRICE_COLUMN)]
     if profile == "backup_netbackup":
         return list(_NETBACKUP_COLUMNS)
-    if profile.startswith("backup_veeam_replication") or profile.startswith(
-        "backup_zerto_replication"
+    if (
+        profile == "replication"
+        or profile.startswith("backup_veeam_replication")
+        or profile.startswith("backup_zerto_replication")
     ):
         return [*list(_REPLICATION_COLUMNS), dict(_UNIT_PRICE_COLUMN)]
     if profile in _PHYSICAL_FREE_FAMILIES:
@@ -345,10 +363,10 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
             reason = str(row.get("sellable_constraint_reason") or "")
             service_label = f"{service_label}\n(Satılabilir 0 — {_sellable_zero_hint(reason)})"
 
-    free_tl = potential_tl if profile == "standard" and has_infra else None
     free_display_qty = row.get("free_qty")
+    unsold_display_qty = row.get("unsold_qty")
     family = str(row.get("family") or "")
-    free_mode = str(row.get("inventory_free_mode") or "standard")
+    free_mode = str(row.get("inventory_free_mode") or "infra")
     is_replication = family.startswith("backup_veeam_replication") or family.startswith(
         "backup_zerto_replication"
     )
@@ -356,72 +374,56 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         free_mode == "physical"
         or family in _PHYSICAL_FREE_FAMILIES
     )
-    use_capacity_free = free_mode == "capacity" or is_replication
-    if use_physical_free and has_infra:
-        # Value physical Free at the CRM-sold implied unit price (same display unit as
-        # free_qty), correcting the mis-scaled catalog price. Fall back to the
-        # service-provided free_tl only when there is no priced sale to derive from.
-        eff_price = _effective_unit_price(row, is_physical=True)
-        if free_display_qty is not None and eff_price not in (None, 0):
-            try:
-                free_tl = float(free_display_qty) * float(eff_price)
-            except (TypeError, ValueError):
-                free_tl = row.get("free_tl")
-        else:
-            free_tl = row.get("free_tl")
-    elif use_capacity_free and has_infra:
-        # Replication: Free = Total − CRM Sold (virt parity); Allocated column is separate.
-        free_tl = row.get("free_tl")
-        unit_price_tl = row.get("unit_price_tl")
-        if free_tl is None and free_display_qty is not None and unit_price_tl not in (None, 0):
-            try:
-                free_tl = float(free_display_qty) * float(unit_price_tl)
-            except (TypeError, ValueError):
-                free_tl = None
-    elif profile == "standard" and has_infra and not use_physical_free:
-        sellable_qty = row.get("sellable_qty")
-        if sellable_qty is not None:
-            free_display_qty = sellable_qty
-            free_tl = potential_tl
-    elif profile in ("dual_track", "allocation_only") and has_infra:
-        # Virt families report Free as raw headroom (total − CRM sold); monetize it at
-        # the panel unit price so the Free cell carries a TL value alongside the qty.
-        unit_price_tl = row.get("unit_price_tl")
-        if free_display_qty is not None and unit_price_tl not in (None, 0):
-            try:
-                free_tl = float(free_display_qty) * float(unit_price_tl)
-            except (TypeError, ValueError):
-                free_tl = None
+    # Free = infra empty. Physical panels prefer CRM-sold implied unit price
+    # (catalog free_tl / unit_price_tl can be mis-scaled for NetBackup / S3).
+    free_tl = row.get("free_tl")
+    if has_infra and free_display_qty is not None:
+        if use_physical_free:
+            eff_price = _effective_unit_price(row, is_physical=True)
+            if eff_price not in (None, 0):
+                try:
+                    free_tl = float(free_display_qty) * float(eff_price)
+                except (TypeError, ValueError):
+                    pass
+        elif free_tl is None:
+            eff_price = _effective_unit_price(row, is_physical=False)
+            if eff_price not in (None, 0):
+                try:
+                    free_tl = float(free_display_qty) * float(eff_price)
+                except (TypeError, ValueError):
+                    free_tl = None
+    unsold_tl = row.get("unsold_tl")
+    if has_infra and unsold_display_qty is not None:
+        if unsold_tl is None or use_physical_free:
+            price_for_unsold = _effective_unit_price(row, is_physical=use_physical_free)
+            if price_for_unsold not in (None, 0):
+                try:
+                    unsold_tl = float(unsold_display_qty) * float(price_for_unsold)
+                except (TypeError, ValueError):
+                    if unsold_tl is None:
+                        unsold_tl = None
     hide_used = bool(row.get("inventory_hide_used"))
 
     unit_price_display = _effective_unit_price(row, is_physical=use_physical_free)
 
+    # Total = capacity qty only (pool used / PostDedup move to Used for NetBackup).
     total_fmt = _fmt_qty(row.get("total"), unit) if has_infra else "—"
-    if has_infra:
-        dedup_note = _fmt_dedup_note(row, unit)
-        if dedup_note:
-            total_fmt = f"{total_fmt}\n{dedup_note}"
 
-    # K-01: NetBackup billable used = PreDedup; PostDedup is cost column.
     is_netbackup = family == "backup_netbackup" or str(row.get("panel_key") or "").startswith(
         "backup_netbackup"
     )
     pre_qty = row.get("pre_dedup_qty")
-    if is_netbackup and has_infra and pre_qty is not None:
-        billable_used = pre_qty
-    else:
-        billable_used = row.get("used_qty")
-
     post_qty = row.get("post_dedup_qty")
     post_tl = row.get("post_dedup_tl")
     dedup_pct = row.get("dedup_savings_pct")
     dedup_margin_tl = row.get("dedup_margin_tl")
 
     if is_netbackup and has_infra:
+        # Transfer = job Pre; Used = pool used (+ PostDedup note).
         pre_fmt = shared.fmt_qty_tl_block(
-            billable_used,
+            pre_qty,
             unit,
-            used_tl,
+            row.get("used_tl") if pre_qty is not None else None,
             qty_missing="—",
         )
         post_fmt = shared.fmt_qty_tl_block(
@@ -438,10 +440,26 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
                 shared.fmt_tl(dedup_margin_tl) if dedup_margin_tl is not None else "—"
             )
             savings_fmt = f"{pct_line}\n{margin_line}"
+        pool_used = row.get("pool_used_qty")
+        used_block = shared.fmt_qty_tl_block(
+            pool_used, unit, None, qty_missing="—",
+        )
+        used_note = _fmt_dedup_note(row, unit)
+        used_fmt = f"{used_block}\n{used_note}" if used_note else used_block
     else:
         pre_fmt = "—\n—"
         post_fmt = "—\n—"
         savings_fmt = "—"
+        used_fmt = (
+            "—\n—"
+            if hide_used
+            else shared.fmt_qty_tl_block(
+                row.get("used_qty"),
+                unit,
+                used_tl,
+                qty_missing="—",
+            ) if has_infra else "—\n—"
+        )
 
     return {
         "panel_key": row.get("panel_key") or "",
@@ -450,21 +468,16 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "display_unit": unit,
         "total_fmt": total_fmt,
         "crm_sold_fmt": _fmt_crm_sold_block(row, unit, crm_sold_tl),
-        "used_fmt": (
-            "—\n—"
-            if hide_used
-            else shared.fmt_qty_tl_block(
-                billable_used,
-                unit,
-                used_tl,
-                qty_missing="—",
-            ) if has_infra else "—\n—"
-        ),
+        "used_fmt": used_fmt,
         "pre_dedup_fmt": pre_fmt if has_infra else "—\n—",
         "post_dedup_fmt": post_fmt if has_infra else "—\n—",
         "dedup_savings_fmt": savings_fmt if has_infra else "—",
         "free_fmt": shared.fmt_qty_tl_block(
             free_display_qty, unit, free_tl,
+            qty_missing="—",
+        ) if has_infra else "—\n—",
+        "unsold_fmt": shared.fmt_qty_tl_block(
+            unsold_display_qty, unit, unsold_tl,
             qty_missing="—",
         ) if has_infra else "—\n—",
         "sellable_alloc_fmt": shared.fmt_qty_tl_block(
@@ -612,8 +625,11 @@ def build_report_table(
         profile = "standard"
     # Grouped NetBackup accordion uses dual Pre/Post columns. Do NOT force this
     # profile on mixed flat tables (keeps Sellable Alloc/Max columns — main regression).
-    if family in ("image_backup", "application_backup", "replication"):
-        # Top-level inventory groups — profile already chosen by accordion builder
+    if family in ("image_backup", "application_backup"):
+        profile = "backup_netbackup"
+        row_hide_used = False
+    if family == "replication":
+        profile = "replication"
         row_hide_used = False
     if family == "backup_netbackup":
         profile = "backup_netbackup"
@@ -674,6 +690,105 @@ def _family_crm_tl(panels: list[dict[str, Any]]) -> float:
     return sum(float(p.get("crm_sold_tl") or 0) for p in panels)
 
 
+def _sum_tl_field(panels: list[dict[str, Any]], key: str) -> float:
+    total = 0.0
+    any_val = False
+    for p in panels:
+        raw = p.get(key)
+        if raw is None:
+            continue
+        try:
+            total += float(raw)
+            any_val = True
+        except (TypeError, ValueError):
+            continue
+    return total if any_val else 0.0
+
+
+def _header_money_badges(panels: list[dict[str, Any]], *, profile: str) -> list[Any]:
+    """CRM Sold + Sellable track chips for the accordion control."""
+    badges: list[Any] = []
+    crm_tl = _family_crm_tl(panels)
+    badges.append(
+        dmc.Badge(
+            f"CRM Sold {shared.fmt_tl(crm_tl)}",
+            color="teal",
+            variant="light",
+            size="sm",
+        )
+    )
+    is_netbackup = profile == "backup_netbackup" or any(
+        str(p.get("panel_key") or "").startswith("backup_netbackup")
+        or str(p.get("family") or "") == "backup_netbackup"
+        for p in panels
+    )
+    if is_netbackup:
+        sellable_tl = _family_potential_tl(panels)
+        if sellable_tl <= 0:
+            sellable_tl = _sum_tl_field(panels, "free_tl")
+        if sellable_tl > 0:
+            badges.append(
+                dmc.Badge(
+                    f"Sellable {shared.fmt_tl(sellable_tl)}",
+                    color="indigo",
+                    variant="light",
+                    size="sm",
+                )
+            )
+        return badges
+
+    alloc_tl = _sum_tl_field(panels, "potential_tl_alloc")
+    max_tl = _sum_tl_field(panels, "potential_tl_max")
+    avg_tl = _sum_tl_field(panels, "potential_tl_avg")
+    has_dual = any(
+        p.get("sellable_alloc_qty") is not None
+        or p.get("sellable_max_qty") is not None
+        or p.get("sellable_avg_qty") is not None
+        or str(p.get("sellable_profile") or "") in ("dual_track", "allocation_only")
+        for p in panels
+    )
+    if has_dual or alloc_tl > 0 or max_tl > 0 or avg_tl > 0:
+        if alloc_tl > 0:
+            badges.append(
+                dmc.Badge(
+                    f"Sellable Alloc {shared.fmt_tl(alloc_tl)}",
+                    color="indigo",
+                    variant="light",
+                    size="sm",
+                )
+            )
+        if max_tl > 0:
+            badges.append(
+                dmc.Badge(
+                    f"Sellable Max {shared.fmt_tl(max_tl)}",
+                    color="violet",
+                    variant="light",
+                    size="sm",
+                )
+            )
+        if avg_tl > 0:
+            badges.append(
+                dmc.Badge(
+                    f"Sellable Ort. {shared.fmt_tl(avg_tl)}",
+                    color="cyan",
+                    variant="light",
+                    size="sm",
+                )
+            )
+    else:
+        pot = _family_potential_tl(panels)
+        if pot > 0:
+            badges.append(
+                dmc.Badge(
+                    f"Sellable {shared.fmt_tl(pot)}",
+                    color="indigo",
+                    variant="light",
+                    size="sm",
+                )
+            )
+    return badges
+
+
 def _family_sellable_profile(family: dict[str, Any], panels: list[dict[str, Any]]) -> str:
     if any(
         str(p.get("panel_key") or "").startswith("backup_netbackup")
@@ -706,50 +821,33 @@ def build_family_accordion(
             continue
         title = str(fam.get("family_label") or fam.get("label") or fam.get("family") or "Services")
         issues = _family_issue_count(filtered)
-        potential = _family_potential_tl(filtered)
-        crm_tl = _family_crm_tl(filtered)
         profile = _family_sellable_profile(fam, filtered)
         family_key = str(fam.get("family") or "")
-        badges = [
+        badges: list[Any] = [
             dmc.Badge(f"{len(filtered)} services", color="gray", variant="light", size="sm"),
-            dmc.Badge(
-                shared.fmt_tl(potential) if potential > 0 else shared.fmt_tl(crm_tl),
-                color="indigo",
-                variant="light",
-                size="sm",
-            ),
         ]
-        if potential <= 0 and crm_tl > 0:
-            badges.append(
-                dmc.Badge("CRM entitled", color="teal", variant="outline", size="xs"),
-            )
+        badges.extend(_header_money_badges(filtered, profile=profile))
         if issues:
             badges.append(dmc.Badge(f"{issues} issues", color="red", variant="light", size="sm"))
-        # Classic/HC replication: show active Resource Ratio + Compute/Storage mode.
-        ratio_summary = fam.get("resource_ratio_summary") or []
-        if not ratio_summary and family_key == "replication":
-            seen_fams: set[str] = set()
-            for row in filtered:
-                rf = str(row.get("family") or "")
-                fmt = row.get("resource_ratio_fmt")
-                if not fmt or rf in seen_fams:
-                    continue
-                seen_fams.add(rf)
-                ratio_summary.append({
-                    "label": row.get("resource_ratio_label") or rf,
-                    "resource_ratio_fmt": fmt,
-                    "storage_coupling_mode": row.get("storage_coupling_mode") or "auto",
-                })
-        for chip in ratio_summary:
-            label = chip.get("label") or "Ratio"
-            fmt = chip.get("resource_ratio_fmt") or ""
-            mode = chip.get("storage_coupling_mode") or "auto"
-            badges.append(
-                dmc.Badge(
-                    f"{label} {fmt} · {mode}",
-                    color="violet",
-                    variant="outline",
-                    size="xs",
+        # NetBackup Free column: info tooltip on the group title area.
+        control_children: list[Any] = [
+            dmc.Text(title, fw=600, size="sm"),
+            *badges,
+        ]
+        if profile == "backup_netbackup" or family_key in ("image_backup", "application_backup"):
+            control_children.append(
+                dmc.Tooltip(
+                    label=_NETBACKUP_FREE_TOOLTIP,
+                    multiline=True,
+                    w=280,
+                    withArrow=True,
+                    children=dmc.ThemeIcon(
+                        DashIconify(icon="solar:info-circle-bold-duotone", width=14),
+                        variant="light",
+                        color="gray",
+                        size="sm",
+                        radius="xl",
+                    ),
                 )
             )
         items.append(
@@ -757,10 +855,7 @@ def build_family_accordion(
                 value=f"fam-{idx}",
                 children=[
                     dmc.AccordionControl(
-                        children=dmc.Group(gap="xs", wrap="wrap", children=[
-                            dmc.Text(title, fw=600, size="sm"),
-                            *badges,
-                        ]),
+                        children=dmc.Group(gap="xs", wrap="wrap", children=control_children),
                     ),
                     dmc.AccordionPanel(
                         children=build_report_table(

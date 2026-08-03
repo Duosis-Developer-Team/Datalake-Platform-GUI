@@ -101,16 +101,16 @@ _FAMILY_WARNINGS: dict[str, str] = {
     "virt_power": "IBM storage is on shared arrays — separate in practice",
     "virt_power_hana": "shares IBM Power hardware with virt_power",
     "backup_veeam_replication_classic": (
-        "host SoT from virt_classic; own ratios; storage separate by default"
+        "host SoT from virt_classic; own ratios; storage merged with compute by default"
     ),
     "backup_zerto_replication_classic": (
-        "host SoT from virt_classic; own ratios; storage separate by default"
+        "host SoT from virt_classic; own ratios; storage merged with compute by default"
     ),
     "backup_veeam_replication_hyperconverged": (
-        "host SoT from virt_hyperconverged; own ratios; storage separate by default"
+        "host SoT from virt_hyperconverged; own ratios; storage merged with compute by default"
     ),
     "backup_zerto_replication_hyperconverged": (
-        "host SoT from virt_hyperconverged; own ratios; storage separate by default"
+        "host SoT from virt_hyperconverged; own ratios; storage merged with compute by default"
     ),
 }
 
@@ -260,10 +260,10 @@ def _scope_options(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
 # Global (*) board fallback when no coupling row exists yet. Replication is
 # seeded as separate (043); keep the UI aligned before/without the migration.
 _DEFAULT_MODE_BY_FAMILY: dict[str, str] = {
-    "backup_veeam_replication_classic": "separate",
-    "backup_zerto_replication_classic": "separate",
-    "backup_veeam_replication_hyperconverged": "separate",
-    "backup_zerto_replication_hyperconverged": "separate",
+    "backup_veeam_replication_classic": "merged",
+    "backup_zerto_replication_classic": "merged",
+    "backup_veeam_replication_hyperconverged": "merged",
+    "backup_zerto_replication_hyperconverged": "merged",
 }
 
 

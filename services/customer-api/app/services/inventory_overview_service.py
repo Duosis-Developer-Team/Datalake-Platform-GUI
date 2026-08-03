@@ -513,8 +513,17 @@ def _apply_netbackup_inventory_fields(
             post = 0.0
 
     pool_used = _bytes_to_tb(metrics.get("used_pool_bytes", 0.0))
+    total_qty = row.get("total")
+    try:
+        total_f = float(total_qty) if total_qty is not None else None
+    except (TypeError, ValueError):
+        total_f = None
+    crm_sold = float(row.get("crm_sold_qty") or 0.0)
     row["inventory_free_mode"] = "physical"
     row["free_qty"] = _bytes_to_tb(metrics.get("available_bytes", 0.0))
+    row["unsold_qty"] = (
+        max(total_f - crm_sold, 0.0) if total_f is not None else None
+    )
     row["pool_used_qty"] = pool_used
     row["pre_dedup_qty"] = pre
     row["post_dedup_qty"] = post
@@ -526,12 +535,17 @@ def _apply_netbackup_inventory_fields(
         else "app" if panel_key == "backup_netbackup_application"
         else "jobs"
     )
-    # Shared pool used vs category job PostDedup footprint (not averaged).
+    # Pool used + category PostDedup live under Used (not Total).
     row["used_compare_note"] = (
         f"Pool used: {pool_used:,.1f} TB · {cat_label} PostDedup: {post:,.1f} TB"
     )
     row["free_tl"] = _value_tl_from_catalog_price(
         row.get("free_qty"),
+        unit_price_tl=unit_price,
+        has_price=has_price,
+    )
+    row["unsold_tl"] = _value_tl_from_catalog_price(
+        row.get("unsold_qty"),
         unit_price_tl=unit_price,
         has_price=has_price,
     )
@@ -923,6 +937,19 @@ def _sellable_track_fields(
     if max_qty is None and panel.resource_kind == "ram" and panel.sellable_effective is not None:
         max_qty = panel.sellable_effective
     avg_qty = panel.sellable_avg_util
+    # Replication storage has no host dual tracks — surface constrained as the triad.
+    if (
+        panel.family in _REPLICATION_ALLOCATION_FAMILIES
+        and (panel.resource_kind or "").lower() == "storage"
+        and panel.sellable_constrained is not None
+    ):
+        constrained = float(panel.sellable_constrained)
+        if alloc_qty is None:
+            alloc_qty = constrained
+        if max_qty is None:
+            max_qty = constrained
+        if avg_qty is None:
+            avg_qty = constrained
     # Replication: triad TL = qty × price (not IBM alternate min/max from Potential Sales).
     if panel.family in _REPLICATION_ALLOCATION_FAMILIES and panel.has_price:
         potential_tl_alloc = (
@@ -1333,13 +1360,20 @@ class InventoryOverviewService:
         )
         hide_used = family_key in _INVENTORY_VIRT_FAMILIES
         used_is_allocation = family_key in _REPLICATION_ALLOCATION_FAMILIES
+        # Free = infra empty (Total − allocated). Unsold = Total − CRM Sold.
+        infra_used = used if panel.has_infra_source else None
+        free_out = (
+            max(float(total or 0) - float(infra_used or 0), 0.0)
+            if panel.has_infra_source and total is not None
+            else None
+        )
+        unsold_out = (
+            max(float(total or 0) - crm_sold, 0.0)
+            if panel.has_infra_source and total is not None
+            else None
+        )
         if hide_used:
             used_out = None
-            free_out = (
-                max(float(total or 0) - crm_sold, 0.0)
-                if panel.has_infra_source and total is not None
-                else None
-            )
             status = panel_inventory_status_virt(
                 crm_sold_qty=crm_sold,
                 total_qty=total,
@@ -1356,16 +1390,6 @@ class InventoryOverviewService:
             )
         else:
             used_out = used if panel.has_infra_source else None
-            # Replication Free matches virt: Total − CRM Sold (not Total − allocation).
-            # Allocated column + oversub quality flag still surface allocation oversub.
-            if used_is_allocation and panel.has_infra_source and total is not None:
-                free_out = max(float(total or 0) - crm_sold, 0.0)
-            else:
-                free_out = (
-                    max(float(total or 0) - used, 0.0)
-                    if panel.has_infra_source and total is not None
-                    else None
-                )
             status = panel_inventory_status(
                 crm_sold_qty=crm_sold,
                 used_qty=used if panel.has_infra_source else 0.0,
@@ -1395,24 +1419,25 @@ class InventoryOverviewService:
                 if key in entitled:
                     crm_fields[key] = entitled[key]
         data_quality, suspect_reason = _assess_data_quality(panel, crm_sold=crm_sold)
-        # Replication Free = Total − CRM Sold (virt parity); Allocated still shows allocation.
+        # Free is always infra empty; Unsold is commercial residual.
         inventory_free_mode = (
-            "physical" if family_key in _PHYSICAL_FREE_FAMILIES
-            else "capacity" if used_is_allocation
-            else "standard"
+            "physical" if family_key in _PHYSICAL_FREE_FAMILIES else "infra"
         )
         track_fields = _sellable_track_fields(
             panel, has_infra=panel.has_infra_source, hide_used=hide_used,
         )
         free_tl_out = None
-        if inventory_free_mode == "physical" and panel.has_infra_source:
-            free_tl_out = _value_tl_from_catalog_price(
-                free_out,
-                unit_price_tl=panel.unit_price_tl,
-                has_price=panel.has_price,
-            )
-        elif inventory_free_mode == "capacity" and panel.has_infra_source and panel.has_price:
-            free_tl_out = compute_potential_tl(free_out, panel.unit_price_tl)
+        unsold_tl_out = None
+        if panel.has_infra_source and panel.has_price:
+            if inventory_free_mode == "physical":
+                free_tl_out = _value_tl_from_catalog_price(
+                    free_out,
+                    unit_price_tl=panel.unit_price_tl,
+                    has_price=panel.has_price,
+                )
+            else:
+                free_tl_out = compute_potential_tl(free_out, panel.unit_price_tl)
+            unsold_tl_out = compute_potential_tl(unsold_out, panel.unit_price_tl)
         # Surface IBM-style alternate min/max on replication rows.
         sellable_min = panel.sellable_min if used_is_allocation else None
         sellable_max = panel.sellable_max if used_is_allocation else None
@@ -1432,6 +1457,8 @@ class InventoryOverviewService:
             "sellable_max_qty": sellable_max,
             "free_qty": free_out,
             "free_tl": free_tl_out,
+            "unsold_qty": unsold_out,
+            "unsold_tl": unsold_tl_out,
             "potential_tl": panel.potential_tl,
             "has_infra_source": panel.has_infra_source,
             "has_price": panel.has_price,
@@ -1500,6 +1527,8 @@ class InventoryOverviewService:
             "used_qty": None,
             "sellable_qty": None,
             "free_qty": None,
+            "unsold_qty": None,
+            "unsold_tl": None,
             "potential_tl": 0.0,
             "has_infra_source": False,
             "has_price": False,

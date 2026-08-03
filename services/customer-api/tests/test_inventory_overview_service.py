@@ -395,7 +395,9 @@ def test_build_panel_row_includes_dual_track_fields(inventory_svc):
     assert cpu["inventory_hide_used"] is True
     assert cpu["used_qty"] is None
     assert cpu["used_tl"] is None
-    assert cpu["free_qty"] == 70.0
+    assert cpu["free_qty"] == 60.0  # infra empty: total 100 − allocated 40
+    assert cpu["unsold_qty"] == 70.0  # Total − CRM Sold (30)
+    assert cpu["inventory_free_mode"] == "infra"
     assert cpu["unit_price_tl"] == 1500.0
     assert cpu["sellable_alloc_qty"] == 18.0
     assert cpu["sellable_max_qty"] == 22.0
@@ -545,7 +547,8 @@ def test_compute_inventory_overview_merges_panels(inventory_svc):
     assert cpu["crm_sold_qty"] == 30.0
     assert cpu["used_qty"] is None
     assert cpu["sellable_qty"] == 20.0
-    assert cpu["free_qty"] == 70.0
+    assert cpu["free_qty"] == 60.0
+    assert cpu["unsold_qty"] == 70.0
     assert cpu["service_label"] == "Klasik Mimari — CPU"
     assert cpu["family_label"] == "Klasik Mimari"
     assert cpu["infra_binding"] == "bound"
@@ -657,7 +660,9 @@ def test_global_inventory_aggregates_per_dc_infra():
     assert cpu["total"] == 150.0
     assert cpu["used_qty"] is None
     assert cpu["sellable_qty"] == 60.0
-    assert cpu["free_qty"] == 150.0
+    assert cpu["free_qty"] == 90.0  # infra empty: 150 − (40+20) allocated
+    # Fixture CRM seed maps classic CPU SKUs, not Power HANA — unsold = total.
+    assert cpu["unsold_qty"] == 150.0
     assert cpu["potential_tl"] == 90000.0
     assert cpu["has_infra_source"] is True
     assert cpu["computation_mode"] == "aggregated"
@@ -833,6 +838,7 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
         "used_qty": 5.0,
         "free_qty": 999.0,
         "crm_sold_qty": 10.0,
+        "total": 150.0,
     }
     tb = 1024.0 ** 4
     metrics = {
@@ -857,6 +863,8 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
     assert out["dedup_factor"] == 10.0
     assert out["inventory_free_mode"] == "physical"
     assert out["free_tl"] == 23000.0
+    assert out["unsold_qty"] == 140.0  # Total 150 − CRM Sold 10
+    assert out["unsold_tl"] == 32200.0
     assert out["efficiency_pct"] == 500.0
     assert out["pool_used_qty"] == 12.0
     assert "Pool used: 12.0 TB" in out["used_compare_note"]
@@ -919,10 +927,12 @@ def test_apply_netbackup_inventory_fields_splits_image_vs_application_jobs():
     assert app["post_dedup_qty"] == 2.0
     assert "image PostDedup" in image["used_compare_note"]
     assert "app PostDedup" in app["used_compare_note"]
+    assert image["unsold_qty"] is None  # no total on row
+    assert app["unsold_qty"] is None
 
 
 def test_replication_free_uses_crm_sold_not_allocation():
-    """Replication Free = Total − CRM Sold; Alloc TL = sellable_allocation × price."""
+    """Replication Free = infra empty; Unsold = Total − CRM Sold; Alloc TL = qty × price."""
     from app.services.inventory_overview_service import (
         _assess_data_quality,
         _sellable_track_fields,
@@ -1025,7 +1035,9 @@ def test_replication_free_uses_crm_sold_not_allocation():
         },
         coupling_lookup={},
     )
-    assert row["free_qty"] == 8512.0
+    assert row["free_qty"] == 0.0  # max(8512 − 19047, 0)
+    assert row["unsold_qty"] == 8512.0  # Total − CRM Sold 0
+    assert row["inventory_free_mode"] == "infra"
     assert row["used_qty"] == 19047.0
     assert row["used_is_allocation"] is True
     assert row["potential_tl_alloc"] == pytest.approx(509.0 * 37.47)
@@ -1038,6 +1050,37 @@ def test_replication_free_uses_crm_sold_not_allocation():
         "ram_gb_per_unit": 4.0,
         "storage_gb_per_unit": 50.0,
     }
+
+
+def test_replication_storage_sellable_triad_from_constrained():
+    """Replication storage without host tracks fills Alloc/Max/Ort from constrained."""
+    from app.services.inventory_overview_service import _sellable_track_fields
+
+    panel = PanelResult(
+        panel_key="backup_veeam_replication_classic_storage",
+        label="Storage",
+        family="backup_veeam_replication_classic",
+        resource_kind="storage",
+        display_unit="GB",
+        total=10000.0,
+        allocated=4000.0,
+        threshold_pct=85.0,
+        sellable_constrained=2500.0,
+        sellable_allocation=None,
+        sellable_max_util=None,
+        sellable_avg_util=None,
+        potential_tl=2500.0 * 10.0,
+        has_infra_source=True,
+        has_price=True,
+        unit_price_tl=10.0,
+    )
+    track = _sellable_track_fields(panel, has_infra=True)
+    assert track["sellable_alloc_qty"] == 2500.0
+    assert track["sellable_max_qty"] == 2500.0
+    assert track["sellable_avg_qty"] == 2500.0
+    assert track["potential_tl_alloc"] == pytest.approx(25000.0)
+    assert track["potential_tl_max"] == pytest.approx(25000.0)
+    assert track["potential_tl_avg"] == pytest.approx(25000.0)
 
 
 def test_global_only_panel_netbackup_enriched_free_qty():
@@ -1267,7 +1310,8 @@ def test_inventory_uses_datacenter_codes_when_infra_bindings_wildcard_only():
     cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
     assert cpu["total"] == 100.0
     assert cpu["used_qty"] is None
-    assert cpu["free_qty"] == 100.0
+    assert cpu["free_qty"] == 90.0  # infra empty: 100 − allocated 10
+    assert cpu["unsold_qty"] == 100.0  # no CRM sold
     sellable._fetch_datacenter_codes.assert_called_once()
 
 
