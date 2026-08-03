@@ -146,6 +146,29 @@ _inflight: dict[str, threading.Event] = {}
 # functions as user requests, so warm-written entries are timestamped too.
 _SWR_TTL_SECONDS = float(os.getenv("API_CACHE_SWR_TTL", "300") or "300")
 
+# How old a cached payload may be and still be handed back when the fetch fails.
+#
+# Past the freshness window a value is stale but still usable, and serving it
+# through a backend hiccup is deliberate — see the except arms below. What was
+# missing was the other end. Without a ceiling, an endpoint that starts 404ing
+# replays its last successful snapshot indefinitely, and the page renders it
+# normally: no error, no notice, nothing that distinguishes a live figure from
+# one that stopped being measured. That is not hypothetical — four CRM calls
+# point at a service that does not mount their routes (audit P1-6), so they 404
+# every time, forever.
+#
+# Four SWR windows (20 min by default) is the audit's number. It is long enough
+# that a restart or a slow query never blanks a working page, and short enough
+# that "the data is old" is still true rather than archaeology. Named and
+# env-tunable because how long a figure may go unrefreshed before a page stops
+# showing it is a product decision, not an implementation detail.
+# Written so that API_LAST_GOOD_MAX_AGE=0 means zero — "never serve a stale
+# payload after a failure" is a legitimate thing to want, and the usual
+# `float(...) or default` shape would quietly turn it back into 20 minutes.
+_LAST_GOOD_MAX_AGE_SECONDS = float(
+    os.getenv("API_LAST_GOOD_MAX_AGE") or (4 * _SWR_TTL_SECONDS)
+)
+
 # Cache observability (item 7): hit/miss/fetch counters + fetch timing, so we can
 # see the shared cache working (hit rate) and how slow the backend is on a miss.
 _metrics_lock = threading.Lock()
@@ -589,8 +612,7 @@ def _api_cache_get_inventory_overview(
             _inflight[cache_key] = ev
     if not leader:
         ev.wait(timeout=_INFLIGHT_WAIT_SECONDS)
-        hit, _ = _cache_load(cache_key)
-        return _clone(hit) if hit is not None else {}
+        return _last_good_or_empty(cache_key)
 
     try:
         t0 = time.time()
@@ -603,10 +625,7 @@ def _api_cache_get_inventory_overview(
         except _HTTP_ERRORS as exc:
             _record_cache_fetch(time.time() - t0, error=True)
             logger.warning("inventory overview fetch failed key=%s: %s", cache_key, exc)
-            hit, _ = _cache_load(cache_key)
-            if hit is not None:
-                return _clone(hit)
-            return {}
+            return _last_good_or_empty(cache_key)
     finally:
         with _inflight_lock:
             _inflight.pop(cache_key, None)
@@ -631,10 +650,7 @@ def _api_cache_get_sellable_summary(
         _cache_store(cache_key, out)
         return out
     except _HTTP_ERRORS:
-        hit, _ = _cache_load(cache_key)
-        if hit is not None:
-            return _clone(hit)
-        return {}
+        return _last_good_or_empty(cache_key)
 
 
 _HTTP_ERRORS = (
@@ -709,6 +725,62 @@ def _age_is_fresh(age: Optional[float]) -> bool:
     return age is not None and age <= _SWR_TTL_SECONDS
 
 
+def _age_is_servable(age: Optional[float]) -> bool:
+    """Whether an age from _cache_load is young enough to serve as last-good.
+
+    Unknown age fails, for the same reason it fails _age_is_fresh: an entry
+    written before the timestamp format existed has no age to bound, and
+    treating it as young is precisely the unbounded replay this guards against.
+    """
+    return age is not None and age <= _LAST_GOOD_MAX_AGE_SECONDS
+
+
+def _servable_last_good(cache_key: str) -> Any:
+    """The cached payload if it is young enough to stand in for a live one, else
+    None — with a line in the log saying what was withheld and how old it was.
+
+    Every path in this module that hands back a cached payload after a failed
+    fetch goes through here, so the bound is one rule in one place rather than a
+    condition each branch has to remember. What the caller substitutes when this
+    returns None is the caller's business.
+    """
+    hit, age = _cache_load(cache_key)
+    if hit is None:
+        return None
+    if _age_is_servable(age):
+        # Real data, just old. Deliberately not marked degraded — marking it
+        # would replace a working page with an error card on every backend
+        # hiccup, which is its own kind of lie.
+        return _clone(hit)
+    logger.warning(
+        "API cache last-good for key=%s is %s old; reporting no data instead",
+        cache_key,
+        "of unknown age" if age is None else f"{age:.0f}s",
+    )
+    return None
+
+
+def _last_good_or_degraded(cache_key: str, empty_fallback: Any) -> Any:
+    """The cached payload if it is young enough to stand in for a live one,
+    otherwise a fallback that says so."""
+    hit = _servable_last_good(cache_key)
+    return hit if hit is not None else _degraded_fallback(empty_fallback)
+
+
+def _last_good_or_empty(cache_key: str) -> dict:
+    """Same bound, for the two caches whose pages cannot read a degraded marker.
+
+    P0-4 wired the degraded notice into five pages; the consumers of the
+    inventory overview and sellable summary caches are not among them, so a
+    marked payload would travel through them as if it were data and buy nothing.
+    Their existing answer for "nothing" is {}, so that is what they get past the
+    bound. The unbounded replay closes either way; the log line says why the
+    screen went empty. Teaching those pages the notice is a separate change.
+    """
+    hit = _servable_last_good(cache_key)
+    return hit if isinstance(hit, dict) else {}
+
+
 def _is_fresh(cache_key: str) -> bool:
     """True if the cached entry may be served without a refetch. Prefer
     _cache_load + _age_is_fresh on hot paths — this re-reads the entry."""
@@ -753,11 +825,20 @@ def _should_persist_api_cache(value: Any, empty_fallback: Any) -> bool:
 def _prefer_stale_over_empty_fetch(
     cache_key: str,
     stale: Any,
+    stale_age: Optional[float],
     fresh: Any,
     empty_fallback: Any,
 ) -> Any:
-    """Keep empty/degraded fetches from masking a usable last-good entry."""
+    """Keep empty/degraded fetches from masking a usable last-good entry.
+
+    Bounded by age for the same reason the except arms are: an empty answer is
+    usually a backend still warming up, and preferring the previous one is right
+    for a few minutes. Past the bound it stops being right — an hours-old figure
+    does not outrank a current measurement just because the current one is zero.
+    """
     if _should_persist_api_cache(fresh, empty_fallback):
+        return fresh
+    if not _age_is_servable(stale_age):
         return fresh
     if stale is not None and _should_persist_api_cache(stale, empty_fallback):
         logger.warning(
@@ -824,10 +905,10 @@ def _api_cache_get_with_stale(
             _inflight[cache_key] = ev
     if not leader:
         ev.wait(timeout=_INFLIGHT_WAIT_SECONDS)
-        hit, _ = _cache_load(cache_key)
         # Waited out the leader with nothing to show. Say so rather than handing
-        # back zeros the page would draw as measurements.
-        return _clone(hit) if hit is not None else _degraded_fallback(empty_fallback)
+        # back zeros the page would draw as measurements — or a figure so old it
+        # amounts to the same thing.
+        return _last_good_or_degraded(cache_key, empty_fallback)
 
     # Per-process leader. Try the cross-pod lock so only ONE pod fetches this key;
     # other pods wait for its result in the shared cache (kills the stampede).
@@ -845,7 +926,9 @@ def _api_cache_get_with_stale(
         try:
             out = fetch_normalized()
             _record_cache_fetch(time.time() - t0)
-            resolved = _prefer_stale_over_empty_fetch(cache_key, cached, out, empty_fallback)
+            resolved = _prefer_stale_over_empty_fetch(
+                cache_key, cached, _age, out, empty_fallback
+            )
             if resolved is out and _should_persist_api_cache(out, empty_fallback):
                 _cache_store(cache_key, out)
             if resolved is cached:
@@ -854,12 +937,7 @@ def _api_cache_get_with_stale(
         except _HTTP_ERRORS as exc:
             _record_cache_fetch(time.time() - t0, error=True)
             logger.warning("API cache fetch failed for key=%s: %s", cache_key, exc)
-            hit, _ = _cache_load(cache_key)
-            if hit is not None:
-                # Last-good is real data, just old. Not degraded — marking it
-                # would blank a working page on every backend hiccup.
-                return _clone(hit)
-            return _degraded_fallback(empty_fallback)
+            return _last_good_or_degraded(cache_key, empty_fallback)
     finally:
         if lock_token:
             _api_response_cache.release(cache_key, lock_token)

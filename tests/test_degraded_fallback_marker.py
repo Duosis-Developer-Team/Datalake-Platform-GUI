@@ -186,11 +186,16 @@ def test_should_persist_refuses_a_degraded_list():
 
 def test_a_degraded_fetch_result_does_not_overwrite_last_good():
     """_prefer_stale_over_empty_fetch keys off the same guard, so a degraded
-    payload arriving from a nested call cannot evict a working cached value."""
+    payload arriving from a nested call cannot evict a working cached value.
+
+    The stale entry's age is now part of the decision (see
+    test_last_good_age_bound); zero stands for "just written", which is what
+    _cache_store above did.
+    """
     api._cache_store("api:dk9", {"rows": [{"id": 1}]})
 
     resolved = api._prefer_stale_over_empty_fetch(
-        "api:dk9", {"rows": [{"id": 1}]}, {"_degraded": True, "rows": []}, {"rows": []}
+        "api:dk9", {"rows": [{"id": 1}]}, 0.0, {"_degraded": True, "rows": []}, {"rows": []}
     )
 
     assert resolved == {"rows": [{"id": 1}]}

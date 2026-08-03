@@ -28,9 +28,13 @@ def test_empty_fetch_without_stale_returns_empty(monkeypatch):
 
 
 def test_prefer_stale_over_empty_fetch_helper():
+    """The stale entry's age is now an argument: preferring it over an empty
+    fetch only holds while it is young enough to still mean something (see
+    test_last_good_age_bound). A recent one is what this test is about."""
+    recent = 60.0
     empty = {"totals": {}, "assets": {}}
     stale = {"totals": {"vm_count": 1}, "assets": {}}
     fresh = {"totals": {}, "assets": {}}
-    assert api._prefer_stale_over_empty_fetch("key", stale, fresh, empty) is stale
+    assert api._prefer_stale_over_empty_fetch("key", stale, recent, fresh, empty) is stale
     good = {"totals": {"vm_count": 2}, "assets": {}}
-    assert api._prefer_stale_over_empty_fetch("key", stale, good, empty) is good
+    assert api._prefer_stale_over_empty_fetch("key", stale, recent, good, empty) is good
