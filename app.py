@@ -2742,6 +2742,7 @@ def update_net_kpis_and_charts(top_scope, switch_role, manufacturer, device_name
     dash.Input("net-interface-search", "value"),
     dash.Input("net-interface-table", "page_current"),
     dash.Input("net-interface-page-size", "value"),
+    dash.Input("net-interface-table-toggle", "checked"),
     dash.State("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
@@ -2753,6 +2754,7 @@ def update_net_interface_table(
     search_value,
     page_current,
     page_size_sel,
+    table_enabled,
     time_range,
     pathname,
 ):
@@ -2762,6 +2764,19 @@ def update_net_interface_table(
     top_scope = top_scope or "overview"
     if not _net_scope_is_interface_panel(top_scope):
         return [], dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    # This callback has no prevent_initial_call, so it runs on every render of
+    # the Network tab whether or not anyone wants the table. With the switch off
+    # it must come back without a query — that skip is the entire saving.
+    if not table_enabled:
+        return (
+            [],
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dc_view._NET_TABLE_OFF_HINT,
+        )
 
     triggered_id = _net_interface_table_triggered_id()
 
