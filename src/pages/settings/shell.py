@@ -1,4 +1,4 @@
-"""Administration area: IAM / Integrations / Platform navigation and permission-aware layout."""
+"""Administration area: IAM / Integrations navigation and permission-aware layout."""
 
 from __future__ import annotations
 
@@ -30,15 +30,14 @@ from src.pages.settings.integrations import crm_panels as crm_panels_page
 from src.pages.settings.integrations import crm_infra_sources as crm_infra_sources_page
 from src.pages.settings.integrations import crm_resource_ratios as crm_resource_ratios_page
 from src.pages.settings.integrations import crm_unit_conversions as crm_unit_conversions_page
+from src.pages.settings.integrations import crm_backup as crm_backup_page
 from src.pages.settings.integrations import netbox_visualization as netbox_visualization_page
 from src.pages.settings.integrations import hmdl_overview as hmdl_overview_page
 from src.pages.settings.integrations import hmdl_sync_health as hmdl_sync_health_page
 from src.pages.settings.integrations import hmdl_coverage as hmdl_coverage_page
-from src.pages.settings.integrations import hmdl_ingest_health as hmdl_ingest_health_page
 from src.pages.settings.integrations import hmdl_config as hmdl_config_page
 from src.pages.settings.integrations import hmdl_automation_health as hmdl_automation_health_page
 from src.pages.settings.integrations import chatbot_logs as chatbot_logs_page
-from src.pages.settings.platform import backup_mapping as platform_backup_mapping_page
 from src.pages.settings import crm_service_mapping as crm_service_mapping_page
 from src.pages.settings.platform import versions as platform_versions_page
 
@@ -66,7 +65,6 @@ INT_TABS: list[tuple[str, str, str]] = [
 
 PLATFORM_TABS: list[tuple[str, str, str]] = [
     (f"{_A}/platform/versions", "Versions", "page:settings_platform_versions"),
-    (f"{_A}/platform/backup-mapping", "Backup Mapping", "page:settings_platform_backup_mapping"),
 ]
 
 HMDL_TABS: list[tuple[str, str, str]] = [
@@ -74,7 +72,6 @@ HMDL_TABS: list[tuple[str, str, str]] = [
     (f"{_A}/integrations/hmdl/automation-health", "Automation Health", "page:settings_hmdl_automation_health"),
     (f"{_A}/integrations/hmdl/sync-health", "Datalake Sync Health", "page:settings_hmdl_sync_health"),
     (f"{_A}/integrations/hmdl/coverage", "Datalake Coverage", "page:settings_hmdl_coverage"),
-    (f"{_A}/integrations/hmdl/ingest-health", "Ingest Health", "page:settings_hmdl_ingest_health"),
     (f"{_A}/integrations/hmdl/config", "Configuration", "page:settings_hmdl_config"),
 ]
 
@@ -90,6 +87,7 @@ CRM_INT_TABS: list[tuple[str, str, str]] = [
     (f"{_A}/integrations/crm/thresholds", "Thresholds", "page:settings_crm_thresholds"),
     (f"{_A}/integrations/crm/price-overrides", "Price overrides", "page:settings_crm_price_overrides"),
     (f"{_A}/integrations/crm/calc-config", "Calc variables", "page:settings_crm_calc_config"),
+    (f"{_A}/integrations/crm/backup", "Backup", "page:settings_crm_backup"),
 ]
 
 LEGACY_REDIRECTS: dict[str, str] = {
@@ -104,7 +102,6 @@ LEGACY_REDIRECTS: dict[str, str] = {
     f"{_A}/crm/service-mapping": f"{_A}/integrations/crm/service-mapping",
     f"{_A}/customer-alias": f"{_A}/integrations/crm/aliases",
     f"{_A}/crm/product-categories": f"{_A}/integrations/crm/service-mapping",
-    f"{_A}/integrations/crm/backup": f"{_A}/platform/backup-mapping",
 }
 
 LEGACY_PREFIX_REDIRECTS: list[tuple[str, str]] = [
@@ -133,10 +130,6 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
     ),
     f"{_A}/integrations/hmdl/sync-health": ("page:settings_hmdl_sync_health", hmdl_sync_health_page.build_layout),
     f"{_A}/integrations/hmdl/coverage": ("page:settings_hmdl_coverage", hmdl_coverage_page.build_layout),
-    f"{_A}/integrations/hmdl/ingest-health": (
-        "page:settings_hmdl_ingest_health",
-        hmdl_ingest_health_page.build_layout,
-    ),
     f"{_A}/integrations/hmdl/config": ("page:settings_hmdl_config", hmdl_config_page.build_layout),
     f"{_A}/integrations/crm": ("page:settings_crm_overview", crm_overview_page.build_layout),
     f"{_A}/integrations/crm/service-mapping": ("page:settings_service_mapping", crm_service_mapping_page.build_layout),
@@ -152,6 +145,7 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
     f"{_A}/integrations/crm/infra-sources": ("page:settings_crm_infra_sources", crm_infra_sources_page.build_layout),
     f"{_A}/integrations/crm/resource-ratios": ("page:settings_crm_resource_ratios", crm_resource_ratios_page.build_layout),
     f"{_A}/integrations/crm/unit-conversions": ("page:settings_crm_unit_conversions", crm_unit_conversions_page.build_layout),
+    f"{_A}/integrations/crm/backup": ("page:settings_crm_backup", crm_backup_page.build_layout),
     f"{_A}/integrations/ldap": ("page:settings_ldap", ldap_page.build_layout),
     f"{_A}/integrations/auranotify": ("page:settings_auranotify", auranotify_page.build_layout),
     f"{_A}/integrations/netbox/visualization": (
@@ -160,10 +154,6 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
     ),
     f"{_A}/integrations/chatbot/logs": ("page:settings_chatbot_logs", chatbot_logs_page.build_layout),
     f"{_A}/platform/versions": ("page:settings_platform_versions", platform_versions_page.build_layout),
-    f"{_A}/platform/backup-mapping": (
-        "page:settings_platform_backup_mapping",
-        platform_backup_mapping_page.build_layout,
-    ),
 }
 
 
@@ -187,7 +177,6 @@ def has_any_settings_access(user_id: int) -> bool:
         + [c for _, _, c in CRM_INT_TABS]
         + [c for _, _, c in HMDL_TABS]
         + [c for _, _, c in PLATFORM_TABS]
-        + ["page:settings_crm_backup"]  # legacy alias for Backup Mapping
     )
     if any(can_view(user_id, c) for c in codes):
         return True
@@ -216,10 +205,7 @@ def first_allowed_platform_path(user_id: int) -> str | None:
     from src.auth.permission_service import can_view
 
     for href, _label, code in PLATFORM_TABS:
-        if can_view(user_id, code) or (
-            code == "page:settings_platform_backup_mapping"
-            and can_view(user_id, "page:settings_crm_backup")
-        ):
+        if can_view(user_id, code):
             return href
     return None
 
@@ -242,17 +228,6 @@ def _section_for_path(p: str) -> str:
     if p.startswith(f"{_A}/platform"):
         return "platform"
     return "overview"
-
-
-def _can_view_platform_tab(user_id: int, code: str) -> bool:
-    from src.auth.permission_service import can_view
-
-    if can_view(user_id, code):
-        return True
-    # Legacy CRM Backup permission still opens Platform Backup Mapping.
-    if code == "page:settings_platform_backup_mapping":
-        return can_view(user_id, "page:settings_crm_backup")
-    return False
 
 
 def _nav_btn_props(*, active: bool) -> dict:
@@ -519,34 +494,6 @@ def _sub_nav(user_id: int, current_path: str) -> html.Div | None:
                 )
 
         return html.Div(children=blocks)
-    if sec == "platform":
-        links = []
-        for href, label, code in PLATFORM_TABS:
-            if not _can_view_platform_tab(user_id, code):
-                continue
-            active = current_path.rstrip("/") == href.rstrip("/")
-            links.append(
-                dmc.Anchor(
-                    dmc.Button(
-                        label,
-                        variant="subtle" if not active else "light",
-                        color="indigo",
-                        size="xs",
-                        style={
-                            "borderBottom": "2px solid #552cf8" if active else "2px solid transparent",
-                            "borderRadius": 0,
-                        },
-                    ),
-                    href=href,
-                    underline=False,
-                )
-            )
-        if not links:
-            return None
-        return html.Div(
-            style={"borderBottom": "1px solid #eef1f4", "paddingBottom": "8px", "marginBottom": "16px"},
-            children=[dmc.Group(gap="xs", children=links)],
-        )
     return None
 
 
@@ -563,11 +510,7 @@ def _breadcrumb(current_path: str) -> str:
             return "Administration › Integrations › HMDL"
         return "Administration › Integrations"
     if sec == "platform":
-        if current_path.startswith(f"{_A}/platform/backup-mapping"):
-            return "Administration › Platform › Backup Mapping"
-        if current_path.startswith(f"{_A}/platform/versions"):
-            return "Administration › Platform › Versions"
-        return "Administration › Platform"
+        return "Administration › Platform › Versions"
     return "Administration"
 
 
@@ -577,8 +520,6 @@ def build_settings_page(pathname: str, user_id: int, search: str | None = None) 
     p = _normalize_path(pathname or _A)
     if p == f"{_A}/iam":
         p = first_allowed_iam_path(user_id) or _A
-    if p == f"{_A}/platform":
-        p = first_allowed_platform_path(user_id) or _A
 
     if not has_any_settings_access(user_id):
         return build_access_denied("You have no access to Administration.")
@@ -590,9 +531,6 @@ def build_settings_page(pathname: str, user_id: int, search: str | None = None) 
 
     if p == _A:
         if not (can_view(user_id, "grp:settings") or has_any_settings_access(user_id)):
-            return build_access_denied()
-    elif p.startswith(f"{_A}/platform"):
-        if not _can_view_platform_tab(user_id, code):
             return build_access_denied()
     elif not can_view(user_id, code):
         return build_access_denied()

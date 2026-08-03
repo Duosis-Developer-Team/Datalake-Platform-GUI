@@ -11,29 +11,20 @@ def test_shell_registers_hmdl_config_route():
     assert callable(builder)
 
 
-def test_shell_registers_hmdl_ingest_health_route():
-    assert "/administration/integrations/hmdl/ingest-health" in shell._PAGE_BUILDERS
-    code, builder = shell._PAGE_BUILDERS["/administration/integrations/hmdl/ingest-health"]
-    assert code == "page:settings_hmdl_ingest_health"
-    assert callable(builder)
+def test_shell_does_not_register_ingest_health_route():
+    assert "/administration/integrations/hmdl/ingest-health" not in shell._PAGE_BUILDERS
 
 
-def test_hmdl_tabs_include_configuration():
+def test_hmdl_tabs_include_configuration_without_ingest():
     hrefs = [h for h, _l, _c in shell.HMDL_TABS]
     assert "/administration/integrations/hmdl/config" in hrefs
-    assert "/administration/integrations/hmdl/ingest-health" in hrefs
+    assert "/administration/integrations/hmdl/ingest-health" not in hrefs
 
 
 def test_resolver_maps_config_path():
     assert resolve_pathname_to_page_code(
         "/administration/integrations/hmdl/config"
     ) == "page:settings_hmdl_config"
-
-
-def test_resolver_maps_ingest_health_path():
-    assert resolve_pathname_to_page_code(
-        "/administration/integrations/hmdl/ingest-health"
-    ) == "page:settings_hmdl_ingest_health"
 
 
 def test_resolver_still_maps_hmdl_overview():
@@ -56,4 +47,4 @@ def test_permission_catalog_has_config_node():
 
     all_codes = set(_codes(build_default_permission_roots()))
     assert "page:settings_hmdl_config" in all_codes
-    assert "page:settings_hmdl_ingest_health" in all_codes
+    assert "page:settings_hmdl_ingest_health" not in all_codes

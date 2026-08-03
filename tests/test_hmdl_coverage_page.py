@@ -27,10 +27,12 @@ def test_hmdl_coverage_page_builds(mock_locations, mock_coverage, mock_topo):
         "summary": {"cluster": {"all": {"total": 0, "collected": 0, "missing": 0, "live": 0}}},
         "clusters": [],
         "ibm_hosts": [],
+        "vcenters": [],
         "locations": ["DC13"],
     }
     layout = page.build_layout(search="?dc=DC13")
     assert layout is not None
+    mock_coverage.assert_called_once_with(dc="DC13", source="vmware")
 
 
 @patch("src.pages.settings.integrations.hmdl_coverage.api.get_vm_topology", return_value=_TOPO)
@@ -40,6 +42,8 @@ def test_coverage_page_has_topology_section(mock_locations, mock_coverage, mock_
     text = str(page.build_layout())
     assert "Envanter Topolojisi" in text
     assert "DC13" in text and "esx1" in text
+    assert "Virtualization" in text
+    assert "Backup" in text
 
 
 LOCATIONS = [
@@ -60,6 +64,13 @@ def test_parse_dc_keeps_all_locations_selected():
     assert page._parse_dc("?dc=") == ""
 
 
+def test_parse_product():
+    assert page._parse_product("?product=nutanix") == "nutanix"
+    assert page._parse_product("?product=ibm") == "ibm"
+    assert page._parse_product("") == "vmware"
+    assert page._parse_product("?product=foo") == "vmware"
+
+
 @patch("src.pages.settings.integrations.hmdl_coverage.api.get_vm_topology", return_value=_EMPTY_TOPO)
 @patch("src.pages.settings.integrations.hmdl_coverage.api.get_hmdl_coverage")
 @patch("src.pages.settings.integrations.hmdl_coverage.api.get_hmdl_locations")
@@ -69,9 +80,10 @@ def test_all_locations_queries_every_dc(mock_locations, mock_coverage, mock_topo
         "summary": {"cluster": {"all": {"total": 0, "collected": 0, "missing": 0, "live": 0}}},
         "clusters": [],
         "ibm_hosts": [],
+        "vcenters": [],
         "locations": ["AZ11", "DC13"],
     }
 
     page.build_layout(search="")
 
-    mock_coverage.assert_called_once_with(dc=None)
+    mock_coverage.assert_called_once_with(dc=None, source="vmware")

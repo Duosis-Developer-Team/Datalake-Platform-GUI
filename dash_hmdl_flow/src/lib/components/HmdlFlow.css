@@ -113,6 +113,64 @@
     background: #ede8ff;
 }
 
+.hmdl-node-cov {
+    min-width: 138px;
+    max-width: 190px;
+    cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.hmdl-node-cov:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 14px 30px rgba(85, 44, 248, 0.16);
+}
+
+.hmdl-node-cov .hmdl-node-title {
+    word-break: break-word;
+    line-height: 1.25;
+}
+
+.hmdl-node-cov-hub {
+    min-width: 172px;
+    padding: 16px 18px;
+    border: none;
+    background: linear-gradient(135deg, #4318ff 0%, #7551ff 100%);
+    box-shadow: 0 16px 36px rgba(67, 24, 255, 0.32);
+    cursor: default;
+}
+
+.hmdl-node-cov-hub .hmdl-node-title {
+    color: #ffffff;
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: 0.2px;
+}
+
+.hmdl-node-cov-hub .hmdl-node-sub {
+    color: rgba(255, 255, 255, 0.86);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+
+.hmdl-node-cov-dc .hmdl-node-title {
+    font-size: 14px;
+}
+
+.hmdl-node-cov-parent {
+    background: linear-gradient(180deg, #fbfaff 0%, #ffffff 100%);
+}
+
+.hmdl-node-cov-child {
+    min-width: 118px;
+    padding: 8px 10px;
+}
+
+.hmdl-node-cov-child .hmdl-node-title {
+    font-size: 12px;
+}
+
 @keyframes hmdl-flow-dash {
     to {
         stroke-dashoffset: -28;

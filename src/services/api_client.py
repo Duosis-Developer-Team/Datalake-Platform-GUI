@@ -3298,12 +3298,30 @@ _EMPTY_HMDL_COVERAGE: dict[str, Any] = {
     "summary": {
         "cluster": {},
         "ibm_host": {"total": 0, "collected": 0, "missing": 0, "live": 0},
-        "vcenter": {"total": 0, "live": 0, "partial": 0, "missing": 0, "stale": 0, "extra": 0},
+        "vcenter": {
+            "total": 0,
+            "live": 0,
+            "partial": 0,
+            "missing": 0,
+            "stale": 0,
+            "extra": 0,
+            "offline": 0,
+        },
+        "ibm_hmc": {
+            "total": 0,
+            "live": 0,
+            "partial": 0,
+            "missing": 0,
+            "stale": 0,
+            "extra": 0,
+            "offline": 0,
+        },
         "backup_endpoint": {},
     },
     "clusters": [],
     "ibm_hosts": [],
     "vcenters": [],
+    "ibm_hmcs": [],
     "backup_endpoints": [],
     "locations": [],
     "dc_filter": None,
@@ -3344,46 +3362,47 @@ def get_hmdl_runs(limit: int = 20) -> dict[str, Any]:
         return {"items": []}
 
 
-_EMPTY_HMDL_INGEST_HEALTH: dict[str, Any] = {
+_EMPTY_HMDL_PROBE_HEALTH: dict[str, Any] = {
     "summary": {
-        "healthy": 0,
-        "no_network": 0,
-        "network_ok_no_data": 0,
-        "stale": 0,
-        "unmatched": 0,
-        "total": 0,
+        "endpoints": 0,
+        "probes": 0,
+        "ok": 0,
+        "fail": 0,
+        "scripts": 0,
+        "last_probe_at": None,
     },
+    "scripts": [],
+    "matrix": [],
+    "reasons": [],
     "items": [],
+    "runner_errors": [],
+    "dcs": [],
     "dc_filter": None,
-    "collector_type_filter": None,
-    "verdict_filter": None,
+    "probe_filter": None,
 }
 
 
-def get_hmdl_ingest_health(
+def get_hmdl_probe_health(
     dc: str | None = None,
     *,
-    collector_type: str | None = None,
-    verdict: str | None = None,
+    probe_id: str | None = None,
 ) -> dict[str, Any]:
-    """Per-collector-IP ingest freshness (TASK-M1)."""
+    """Collector script healthcheck: which script fails on which endpoint, and why."""
     params: dict[str, str] = {}
     if dc:
         params["dc"] = dc.strip().upper()
-    if collector_type:
-        params["collector_type"] = collector_type.strip()
-    if verdict:
-        params["verdict"] = verdict.strip()
+    if probe_id:
+        params["probe_id"] = probe_id.strip()
     try:
         data = _get_json(
             _get_client_hmdl(),
-            "/api/v1/collectors/ingest-health",
+            "/api/v1/collectors/probe-health",
             params=params or None,
         )
-        return data if isinstance(data, dict) else _clone(_EMPTY_HMDL_INGEST_HEALTH)
+        return data if isinstance(data, dict) else _clone(_EMPTY_HMDL_PROBE_HEALTH)
     except _HTTP_ERRORS as exc:
-        logger.warning("hmdl-api ingest-health unavailable: %s", exc)
-        return _clone(_EMPTY_HMDL_INGEST_HEALTH)
+        logger.warning("hmdl-api probe-health unavailable: %s", exc)
+        return _clone(_EMPTY_HMDL_PROBE_HEALTH)
 
 
 def get_hmdl_awx_config() -> dict[str, Any]:

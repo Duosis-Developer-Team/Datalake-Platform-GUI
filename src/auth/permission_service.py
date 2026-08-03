@@ -92,6 +92,8 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
         return "page:customer_view"
     if p == "/query-explorer":
         return "page:query_explorer"
+    if p == "/licensed-os":
+        return "page:licensed_os"
     if p == "/login":
         return None
     from src.pages.settings.admin_routes import to_administration_path
@@ -136,8 +138,6 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
             return "page:settings_netbox_visualization"
         if admin_p.startswith("/administration/integrations/hmdl/coverage"):
             return "page:settings_hmdl_coverage"
-        if admin_p.startswith("/administration/integrations/hmdl/ingest-health"):
-            return "page:settings_hmdl_ingest_health"
         if admin_p.startswith("/administration/integrations/hmdl/sync-health"):
             return "page:settings_hmdl_sync_health"
         if admin_p.startswith("/administration/integrations/hmdl/config"):
@@ -164,10 +164,6 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
             return "page:settings_crm_resource_ratios"
         if admin_p.startswith("/administration/integrations/crm/unit-conversions"):
             return "page:settings_crm_unit_conversions"
-        if admin_p.startswith("/administration/integrations/crm/backup"):
-            return "page:settings_platform_backup_mapping"
-        if admin_p.startswith("/administration/platform/backup-mapping"):
-            return "page:settings_platform_backup_mapping"
         if admin_p.startswith("/administration/crm/service-mapping"):
             return "page:settings_service_mapping"
         if admin_p.rstrip("/") == "/administration/integrations":
@@ -176,8 +172,6 @@ def resolve_pathname_to_page_code(pathname: str | None) -> str | None:
             return "grp:settings"
         if admin_p.startswith("/administration/integrations"):
             return "page:settings_integrations"
-        if admin_p.startswith("/administration/platform"):
-            return "page:settings_platform_backup_mapping"
         return "grp:settings"
     return "page:overview"
 

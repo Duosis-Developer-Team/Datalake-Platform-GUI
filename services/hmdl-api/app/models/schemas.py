@@ -280,7 +280,7 @@ class AutomationHealthResponse(BaseModel):
 
 # --- Datalake coverage (cluster / IBM host present-absent) ---
 
-CoverageStatus = Literal["live", "stale", "missing", "extra", "unknown"]
+CoverageStatus = Literal["live", "stale", "missing", "extra", "offline", "unknown"]
 
 
 class CoverageTargetIssue(BaseModel):
@@ -297,6 +297,7 @@ class CoverageBucket(BaseModel):
     collected: int = 0
     missing: int = 0
     live: int = 0
+    offline: int = 0
 
 
 class ClusterCoverageRow(BaseModel):
@@ -304,6 +305,14 @@ class ClusterCoverageRow(BaseModel):
     cluster_name: str | None = None
     dc: str
     parent_name: str | None = None
+    # Resolved parent: `parent_key` joins to `VcenterCoverageRow.parent_key`.
+    parent_key: str | None = None
+    parent_display: str | None = None
+    parent_ip: str | None = None
+    # Discovery parent that lost to NetBox cluster_description (ADR-0031 §12).
+    parent_conflict_with: str | None = None
+    # Why no parent_key: no_hint | ambiguous | unknown_dc | unresolved_parent | no_collector.
+    unmatched_reason: str | None = None
     expected_source: str | None = None
     collected: bool
     expected: bool
@@ -317,28 +326,50 @@ class ClusterCoverageRow(BaseModel):
 class IbmHostCoverageRow(BaseModel):
     servername: str | None = None
     dc: str
+    parent_name: str | None = None
+    parent_ip: str | None = None
     expected_source: str | None = None
     collected: bool
     expected: bool
     is_live: bool
+    is_offline: bool = False
     last_collected: datetime | None = None
     status: CoverageStatus
     reason: str
     target_issues: list[CoverageTargetIssue] = Field(default_factory=list)
 
 
-VcenterCoverageStatus = Literal["live", "partial", "missing", "extra", "stale", "unknown"]
+VcenterCoverageStatus = Literal[
+    "live", "partial", "missing", "extra", "stale", "offline", "unknown"
+]
+ProbeStatus = Literal["ok", "partial", "fail", "unknown"]
+ProbeReasonCategory = Literal[
+    "ok", "script_missing", "auth", "network", "timeout", "no_data", "runner", "other"
+]
 
 
 class VcenterCoverageRow(BaseModel):
     source: str
     parent_name: str | None = None
+    parent_key: str | None = None
+    # "rollup" = AWX coverage_vcenter row; "endpoint" = synthesized from collector_target.
+    origin: Literal["rollup", "endpoint"] = "rollup"
+    endpoint_ip: str | None = None
+    endpoint_name: str | None = None
+    collector_check_status: str | None = None
+    collector_network_ok: bool | None = None
     dc: str
     expected_clusters: int = 0
     collected_clusters: int = 0
     live_clusters: int = 0
     status: VcenterCoverageStatus = "unknown"
     checked_at: datetime | None = None
+    # Collector script smoke for this endpoint IP (hmdl_datalake_collector_probe_log).
+    probe_ok: int | None = None
+    probe_total: int | None = None
+    probe_status: ProbeStatus | None = None
+    probe_reasons: str | None = None
+    probe_checked_at: datetime | None = None
 
 
 class BackupEndpointCoverageRow(BaseModel):
@@ -355,6 +386,32 @@ class BackupEndpointCoverageRow(BaseModel):
     status: CoverageStatus
     reason: str
     checked_at: datetime | None = None
+    # IP → collector_target (backup endpoints are already keyed by source IP).
+    collector_check_status: str | None = None
+    probe_ok: int | None = None
+    probe_total: int | None = None
+    probe_status: ProbeStatus | None = None
+    probe_reasons: str | None = None
+    probe_checked_at: datetime | None = None
+
+
+class IbmHmcCoverageRow(BaseModel):
+    """HMC (or 'unassigned' bucket) rollup over IBM Power hosts."""
+
+    hmc_name: str | None = None
+    endpoint_ip: str | None = None
+    dc: str
+    expected_hosts: int = 0
+    collected_hosts: int = 0
+    live_hosts: int = 0
+    offline_hosts: int = 0
+    status: VcenterCoverageStatus = "unknown"
+    collector_check_status: str | None = None
+    probe_ok: int | None = None
+    probe_total: int | None = None
+    probe_status: ProbeStatus | None = None
+    probe_reasons: str | None = None
+    probe_checked_at: datetime | None = None
 
 
 class VcenterCoverageBucket(BaseModel):
@@ -364,12 +421,14 @@ class VcenterCoverageBucket(BaseModel):
     missing: int = 0
     stale: int = 0
     extra: int = 0
+    offline: int = 0
 
 
 class CoverageSummary(BaseModel):
     cluster: dict[str, CoverageBucket] = Field(default_factory=dict)
     ibm_host: CoverageBucket = Field(default_factory=CoverageBucket)
     vcenter: VcenterCoverageBucket = Field(default_factory=VcenterCoverageBucket)
+    ibm_hmc: VcenterCoverageBucket = Field(default_factory=VcenterCoverageBucket)
     backup_endpoint: dict[str, CoverageBucket] = Field(default_factory=dict)
 
 
@@ -378,6 +437,7 @@ class CoverageResponse(BaseModel):
     clusters: list[ClusterCoverageRow]
     ibm_hosts: list[IbmHostCoverageRow]
     vcenters: list[VcenterCoverageRow] = Field(default_factory=list)
+    ibm_hmcs: list[IbmHmcCoverageRow] = Field(default_factory=list)
     backup_endpoints: list[BackupEndpointCoverageRow] = Field(default_factory=list)
     locations: list[str] = Field(default_factory=list)
     dc_filter: str | None = None
@@ -433,3 +493,93 @@ class IngestHealthResponse(BaseModel):
     dc_filter: str | None = None
     collector_type_filter: str | None = None
     verdict_filter: str | None = None
+
+
+# --- Collector script smoke (collector_probe_log) ---
+
+
+class ProbeHealthSummary(BaseModel):
+    endpoints: int = 0
+    probes: int = 0
+    ok: int = 0
+    fail: int = 0
+    scripts: int = 0
+    last_probe_at: datetime | None = None
+
+
+class ProbeScriptRow(BaseModel):
+    """One collector script (`probe_id`) across the fleet."""
+
+    probe_id: str
+    collector_type: str
+    product: str
+    bucket: str = ""
+    endpoints: int = 0
+    ok: int = 0
+    fail: int = 0
+    status: ProbeStatus = "unknown"
+    last_probe_at: datetime | None = None
+
+
+class ProbeMatrixCell(BaseModel):
+    probe_id: str
+    dc: str
+    ok: int = 0
+    fail: int = 0
+    total: int = 0
+    status: ProbeStatus = "unknown"
+    last_probe_at: datetime | None = None
+
+
+class ProbeReasonRow(BaseModel):
+    category: ProbeReasonCategory
+    reason: str
+    count: int = 0
+    probe_ids: list[str] = Field(default_factory=list)
+    dcs: list[str] = Field(default_factory=list)
+
+
+class ProbeEndpointRow(BaseModel):
+    probe_id: str
+    collector_type: str
+    product: str
+    bucket: str = ""
+    dc: str
+    proxy_id: str | None = None
+    target_host: str
+    entity_name: str | None = None
+    success: bool
+    reason: str = ""
+    reason_category: ProbeReasonCategory = "other"
+    exit_code: int | None = None
+    duration_sec: float | None = None
+    stdout_bytes: int | None = None
+    stderr_bytes: int | None = None
+    stdout_head: str | None = None
+    stderr_head: str | None = None
+    run_id: str = ""
+    awx_job_id: str | None = None
+    finished_at: datetime | None = None
+
+
+class ProbeRunnerError(BaseModel):
+    """Probe infrastructure fault (unparsable batch output), not a collector verdict."""
+
+    run_id: str
+    awx_job_id: str | None = None
+    dc: str
+    proxy_id: str | None = None
+    reason: str = ""
+    finished_at: datetime | None = None
+
+
+class ProbeHealthResponse(BaseModel):
+    summary: ProbeHealthSummary
+    scripts: list[ProbeScriptRow] = Field(default_factory=list)
+    matrix: list[ProbeMatrixCell] = Field(default_factory=list)
+    reasons: list[ProbeReasonRow] = Field(default_factory=list)
+    items: list[ProbeEndpointRow] = Field(default_factory=list)
+    runner_errors: list[ProbeRunnerError] = Field(default_factory=list)
+    dcs: list[str] = Field(default_factory=list)
+    dc_filter: str | None = None
+    probe_filter: str | None = None
