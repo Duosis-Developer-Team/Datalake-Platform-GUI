@@ -26,7 +26,7 @@ def test_concurrent_misses_fetch_once():
 
     assert calls["n"] == 1, f"expected single-flight (1 fetch), got {calls['n']}"
     assert all(r == {"v": 42} for r in results)
-    assert cache_service.get("coalesce-key") == {"v": 42}
+    assert api._cache_load("coalesce-key")[0] == {"v": 42}
 
 
 def test_different_keys_run_in_parallel():

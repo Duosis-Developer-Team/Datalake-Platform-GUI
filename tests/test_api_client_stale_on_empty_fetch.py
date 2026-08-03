@@ -1,6 +1,7 @@
 """Stale-while-error: empty fetch must not mask last-good cache entries."""
 import time
 
+from tests.conftest import seed_cache_entry
 from src.services import api_client as api
 from src.services import cache_service
 
@@ -9,13 +10,12 @@ def test_empty_fetch_serves_last_good_stale(monkeypatch):
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
     stale_payload = {"totals": {"vm_count": 4}, "assets": {"vm": []}}
-    cache_service.set("k", stale_payload)
-    cache_service.set(api._fetched_ts_key("k"), time.time() - 310)  # stale
+    seed_cache_entry("k", stale_payload, age_seconds=310)
 
     out = api._api_cache_get_with_stale("k", lambda: {"totals": {}, "assets": {}}, {"totals": {}, "assets": {}})
 
     assert out == stale_payload
-    assert cache_service.get("k") == stale_payload
+    assert api._cache_load("k")[0] == stale_payload
 
 
 def test_empty_fetch_without_stale_returns_empty(monkeypatch):

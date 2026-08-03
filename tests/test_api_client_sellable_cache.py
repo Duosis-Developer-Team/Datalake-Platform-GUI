@@ -5,6 +5,7 @@ every build); transient empties self-heal via the SWR background refresh after T
 The separate get_sellable_snapshot_meta probe was removed.
 """
 from unittest.mock import patch
+from tests.conftest import seed_cache_entry
 from src.services import api_client as api
 from src.services import cache_service
 
@@ -26,7 +27,7 @@ def test_empty_panels_are_cached_and_meta_not_probed(monkeypatch):
     assert out1 == [] and out2 == []
     assert calls["fetch"] == 1, "empty result must be cached -> fetch only once"
     assert meta.call_count == 0, "snapshot-meta probe must be gone"
-    assert cache_service.get("kp") == []
+    assert api._cache_load("kp")[0] == []
 
 
 def test_panels_data_cached_and_stamped(monkeypatch):
@@ -34,16 +35,16 @@ def test_panels_data_cached_and_stamped(monkeypatch):
     rows = [{"panel_key": "x", "potential_tl": 1200.0, "has_infra_source": True}]
     out = api._api_cache_get_sellable_panels("kd", lambda: rows, "DC13", "virt_classic", None)
     assert out == rows
-    assert cache_service.get("kd") == rows
-    assert cache_service.get(api._fetched_ts_key("kd")) is not None  # stamped for SWR
+    value, age = api._cache_load("kd")
+    assert value == rows
+    assert age is not None, "stamped for SWR, in the same entry as the value"
 
 
 def test_stale_panels_are_refetched_not_served(monkeypatch):
     import time as _t
     cache_service.clear()
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
-    cache_service.set("ks", [{"panel_key": "old"}])
-    cache_service.set(api._fetched_ts_key("ks"), _t.time() - 999)  # stale
+    seed_cache_entry("ks", [{"panel_key": "old"}], age_seconds=999)
     out = api._api_cache_get_sellable_panels(
         "ks", lambda: [{"panel_key": "fresh"}], "DC13", "virt_classic", None
     )
@@ -61,4 +62,4 @@ def test_empty_summary_is_cached(monkeypatch):
         api._api_cache_get_sellable_summary("ksum", fetch, "DC13")
     assert calls["fetch"] == 1
     assert meta.call_count == 0
-    assert cache_service.get("ksum") == {}
+    assert api._cache_load("ksum")[0] == {}
