@@ -38,6 +38,11 @@ def _is_public_path(path: str) -> bool:
         return True
     if path.startswith("/telemetry/"):
         return True
+    # Release-ingest routes authenticate with a shared token, not a session.
+    # Scoped to this prefix on purpose: a blanket /internal/ rule would make
+    # every future blueprint mounted there session-public by accident.
+    if path == "/internal/platform/releases" or path.startswith("/internal/platform/releases/"):
+        return True
     return False
 
 

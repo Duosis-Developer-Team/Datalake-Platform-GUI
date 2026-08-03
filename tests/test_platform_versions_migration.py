@@ -67,3 +67,25 @@ def test_migration_003_read_sql_nonempty():
     sql = m._read_migration_003_sql()
     assert "platform_releases" in sql
     assert "service_deployments" in sql
+
+
+def test_migration_v5_creates_release_notes_table(monkeypatch):
+    applied: set[int] = set()
+    executed: list[str] = []
+    monkeypatch.setattr(m, "_read_schema_sql", lambda: "CREATE TABLE IF NOT EXISTS schema_migrations ();")
+    monkeypatch.setattr(m, "_migration_v2_rename_settings", lambda cur: None)
+    monkeypatch.setattr(m, "_read_migration_002_sql", lambda: "")
+
+    m.run_auth_db_migrations(_Conn(applied, executed))
+
+    joined = " ".join(executed)
+    assert "release_notes" in joined
+    assert "input_fingerprint" in joined
+    assert "draft_body" in joined
+    assert 5 in applied
+
+
+def test_migration_004_read_sql_nonempty():
+    sql = m._read_migration_004_sql()
+    assert "release_notes" in sql
+    assert "ON DELETE CASCADE" in sql

@@ -49,6 +49,13 @@ def _read_migration_003_sql() -> str:
     return ""
 
 
+def _read_migration_004_sql() -> str:
+    p = _sql_dir() / "migrations" / "004_release_notes.sql"
+    if p.is_file():
+        return p.read_text(encoding="utf-8")
+    return ""
+
+
 def _exec_sql_statements(cur: Any, sql: str) -> None:
     """Run semicolon-separated statements (002 script has no string literals with ;)."""
 
@@ -158,5 +165,17 @@ def run_auth_db_migrations(conn: Any) -> None:
                 logger.info("Auth DB migration v4 applied (platform versioning)")
             else:
                 logger.warning("003 migration SQL missing; v4 not recorded")
+        cur.execute("SELECT 1 FROM schema_migrations WHERE version = 5")
+        if not cur.fetchone():
+            m004 = _read_migration_004_sql()
+            if m004.strip():
+                _exec_sql_statements(cur, m004)
+                cur.execute(
+                    """INSERT INTO schema_migrations (version, description)
+                       VALUES (5, 'release notes') ON CONFLICT (version) DO NOTHING"""
+                )
+                logger.info("Auth DB migration v5 applied (release notes)")
+            else:
+                logger.warning("004 migration SQL missing; v5 not recorded")
     finally:
         cur.close()

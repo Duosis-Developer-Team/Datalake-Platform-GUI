@@ -13,6 +13,9 @@ import os
 from typing import Any
 
 import httpx
+import requests
+
+from src.auth.api_jwt import create_service_token
 
 logger = logging.getLogger(__name__)
 
@@ -64,3 +67,44 @@ def send_chat_message(
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def generate_release_note(
+    payload: dict,
+    *,
+    strict: bool = False,
+    complaint: str | None = None,
+    model: str | None = None,
+    timeout: int = 60,
+) -> dict:
+    """chatbot-api'den release note ister.
+
+    Asla exception fırlatmaz; her yolda `status` anahtarı olan bir sözlük döner,
+    çünkü çağıran taraf başarısızlıkta merdivende ilerlemek zorunda.
+
+    Bu yol kullanıcı isteğine bağlı değil (script ve arka plan işleri de çağırır),
+    o yüzden oturum JWT'si yerine ``create_service_token()`` kullanılır.
+    """
+    body = dict(payload)
+    body["strict"] = bool(strict)
+    body["complaint"] = complaint
+    body["model"] = model
+    headers = {
+        "Authorization": f"Bearer {create_service_token()}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(
+            f"{CHATBOT_API_URL}/api/v1/release-notes/generate",
+            json=body,
+            headers=headers,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning("release note request failed: %s", exc)
+        return {"status": "failed", "detail": "transport"}
+    if not isinstance(data, dict) or "status" not in data:
+        return {"status": "failed", "detail": "shape"}
+    return data

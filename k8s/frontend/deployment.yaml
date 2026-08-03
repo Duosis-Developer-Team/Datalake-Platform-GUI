@@ -50,3 +50,7 @@ spec:
           envFrom:
             - configMapRef:
                 name: bulutistan-frontend-config
+            # Secret yoksa pod yine başlar; ingest endpoint'i kendini 503'e kapatır.
+            - secretRef:
+                name: release-ingest-secret
+                optional: true

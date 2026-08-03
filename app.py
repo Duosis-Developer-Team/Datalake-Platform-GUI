@@ -111,9 +111,11 @@ _register_frontend_deployment()
 from src.auth.routes import auth_bp
 from src.auth import dash_gate
 from src.auth.middleware import register_middleware
+from src.routes.release_ingest import register_release_ingest_routes
 
 server.register_blueprint(auth_bp)
 register_middleware(server)
+register_release_ingest_routes(server)  # /internal/platform/releases* (TASK-64)
 register_faro_routes(server)
 instrument_flask_server(server)
 
@@ -198,6 +200,7 @@ from src.pages.settings.integrations import netbox_visualization_callbacks  # no
 from src.pages.settings.integrations import hmdl_callbacks  # noqa: F401 — HMDL sync health filters
 from src.pages.settings.integrations import chatbot_logs_callbacks  # noqa: F401 — AI Assistant log viewer
 from src.pages.settings import dashboard_callbacks  # noqa: F401 — Settings overview (cache refresh)
+from src.pages.settings.platform import versions_callbacks  # noqa: F401 — Platform versions search
 from src.pages.settings.admin_routes import to_administration_path
 from src.components.chatbot import build_chatbot_shell, register_chatbot_callbacks
 

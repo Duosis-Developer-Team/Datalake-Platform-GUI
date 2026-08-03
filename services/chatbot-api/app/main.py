@@ -19,7 +19,7 @@ from app.telemetry import instrument_fastapi_app, setup_sdk
 setup_sdk()
 
 from app.core.logging import configure_logging  # noqa: E402
-from app.routers import chatbot, health  # noqa: E402
+from app.routers import chatbot, health, release_notes  # noqa: E402
 from app.services.api_clients import close_all  # noqa: E402
 
 configure_logging()
@@ -59,5 +59,8 @@ app.include_router(health.router, tags=["health"])
 # Chat — mounted under /api/v1/chatbot. Auth is enforced per-endpoint via the
 # verify_api_user dependency (which also yields the user id for audit).
 app.include_router(chatbot.router, prefix="/api/v1/chatbot", tags=["chatbot"])
+
+# Release notes — stateless LLM generation for the Platform Versions panel.
+app.include_router(release_notes.router, prefix="/api/v1/release-notes", tags=["release-notes"])
 
 instrument_fastapi_app(app)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -235,6 +237,16 @@ class ServiceDeploymentOut(BaseModel):
     started_at: str | None = None
 
 
+class ReleaseNoteOut(BaseModel):
+    """Yayınlanan release note. Taslak alanları (draft_*) bilerek dışarı verilmez."""
+
+    headline: str | None = None
+    body: dict = Field(default_factory=dict)
+    source: str = "auto"
+    model: str | None = None
+    generated_at: datetime | None = None
+
+
 class ReleaseOut(BaseModel):
     version: str
     released_at: str
@@ -243,6 +255,7 @@ class ReleaseOut(BaseModel):
     source: str = "deploy"
     changes: list[ReleaseChangeOut] = Field(default_factory=list)
     services: list[ServiceDeploymentOut] = Field(default_factory=list)
+    note: ReleaseNoteOut | None = None
 
 
 class RegisterDeploymentRequest(BaseModel):

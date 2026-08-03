@@ -26,6 +26,22 @@ def create_api_token(user_id: int) -> str:
     return jwt.encode(payload, _API_SECRET, algorithm=_ALGO)
 
 
+def create_service_token(subject: str = "release-bot") -> str:
+    """Kullanıcıya bağlı olmayan, arka plan işleri için token.
+
+    Karşı taraf (chatbot-api `core/api_auth.py`) yalnızca `sub`'ın dolu olmasına bakar,
+    DB'de kullanıcı aramaz; bu yüzden servis token'ı olduğu gibi geçerlidir.
+    """
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": subject,
+        "iat": now,
+        "exp": now + timedelta(minutes=_TTL_MIN),
+        "typ": "service",
+    }
+    return jwt.encode(payload, _API_SECRET, algorithm=_ALGO)
+
+
 def decode_api_token(token: str) -> dict | None:
     try:
         return jwt.decode(token, _API_SECRET, algorithms=[_ALGO])

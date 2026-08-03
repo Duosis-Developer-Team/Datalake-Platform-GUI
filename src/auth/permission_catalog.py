@@ -512,7 +512,21 @@ def build_default_permission_roots() -> list[PermissionNode]:
             ),
             _n("page:settings_auth", "Auth Settings", "config", route_pattern="/administration/iam/auth", sort_order=60),
             _n("page:settings_audit", "Audit Log", "config", route_pattern="/administration/iam/audit", sort_order=70),
-            _n("page:settings_platform_versions", "Platform Versions", "config", route_pattern="/administration/platform/versions", sort_order=80),
+            _n(
+                "page:settings_platform_versions",
+                "Platform Versions",
+                "config",
+                route_pattern="/administration/platform/versions",
+                sort_order=80,
+                children=[
+                    _n(
+                        "sec:settings_platform_versions:regenerate",
+                        "Release note yeniden üret",
+                        "action",
+                        sort_order=10,
+                    ),
+                ],
+            ),
         ],
     )
 
