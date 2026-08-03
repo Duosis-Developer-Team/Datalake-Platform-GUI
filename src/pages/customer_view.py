@@ -1840,8 +1840,12 @@ def _tab_netbackup_category(
     title: str,
     subtitle: str,
     show_post_dedup: bool = True,
+    sales_position: html.Div | None = None,
 ):
-    """NetBackup image or application billing breakdown for Customer View."""
+    """NetBackup image or application billing breakdown for Customer View.
+
+    Section order (aligned with Replication): Sales Position → KPI → Unique Jobs → detail table.
+    """
     from src.components.backup_license_compliance import netbackup_category_table_rows
 
     nb = backup_assets.get("netbackup", {}) or {}
@@ -1852,7 +1856,11 @@ def _tab_netbackup_category(
     policy_types = (nb.get("policy_types") or {}).get(category) or []
     margin = max(pre_gib - post_gib, 0.0)
 
-    head = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
+    body: list = []
+    if sales_position is not None and getattr(sales_position, "children", None):
+        body.append(sales_position)
+    if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None):
+        body.append(crm_eff_panel)
     if show_post_dedup:
         kpi_items = [
             (pre_gib, "Pre-dedup (GiB)", f"{pre_gib:.2f}", "mdi:database-lock-outline", "indigo"),
@@ -1873,7 +1881,17 @@ def _tab_netbackup_category(
         ]
         cols = 1
     kpi = _build_metrics_grid(kpi_items, cols=cols)
-    body = head + ([kpi] if kpi is not None else [])
+    if kpi is not None:
+        body.append(kpi)
+
+    body.append(
+        build_unique_jobs_inventory_section(
+            "netbackup",
+            category=category if category in ("image", "application") else None,
+            scope="customer",
+        )
+    )
+
     table_rows = [
         html.Tr([html.Td(label), html.Td(value)])
         for label, value in netbackup_category_table_rows(
@@ -1905,17 +1923,7 @@ def _tab_netbackup_category(
             ),
         )
     )
-    return dmc.Stack(
-        gap="lg",
-        children=body
-        + [
-            build_unique_jobs_inventory_section(
-                "netbackup",
-                category=category if category in ("image", "application") else None,
-                scope="customer",
-            )
-        ],
-    )
+    return dmc.Stack(gap="lg", children=body)
 
 
 def _crm_license_panel_from_efficiency(eff_by_cat: list | None, binding: str):
@@ -2414,7 +2422,12 @@ def _replica_notice_banner(replica_count: int) -> html.Div | None:
     )
 
 
-def _build_replica_machines_panel(replica_vm_list: list | None) -> html.Div:
+def _build_replica_machines_panel(
+    replica_vm_list: list | None,
+    *,
+    replication_resources: dict | None = None,
+    sales_position: html.Div | None = None,
+) -> html.Div:
     """DR / Replica Machines table for Backup → Replication."""
     rows = list(replica_vm_list or [])
     by_role: dict[str, int] = {}
@@ -2429,6 +2442,49 @@ def _build_replica_machines_panel(replica_vm_list: list | None) -> html.Div:
             for label, count in sorted(by_role.items(), key=lambda kv: (-kv[1], kv[0]))
         ],
     )
+    rollup_children: list = []
+    if sales_position is not None and getattr(sales_position, "children", None):
+        rollup_children.append(sales_position)
+    repl = replication_resources or {}
+    totals = repl.get("totals") or {}
+    unmapped_cpu = float((repl.get("altra_replica") or {}).get("cpu") or 0) + float(
+        (repl.get("custom") or {}).get("cpu") or 0
+    )
+    unmapped_ram = float((repl.get("altra_replica") or {}).get("memory_gb") or 0) + float(
+        (repl.get("custom") or {}).get("memory_gb") or 0
+    )
+    unmapped_disk = float((repl.get("altra_replica") or {}).get("disk_gb") or 0) + float(
+        (repl.get("custom") or {}).get("disk_gb") or 0
+    )
+    unmapped_vms = int((repl.get("altra_replica") or {}).get("vm_count") or 0) + int(
+        (repl.get("custom") or {}).get("vm_count") or 0
+    )
+    kpi = _build_metrics_grid(
+        [
+            (totals.get("vm_count"), "Replica VMs", f"{int(totals.get('vm_count') or 0):,}", "mdi:server", "violet"),
+            (totals.get("cpu"), "vCPU", f"{float(totals.get('cpu') or 0):,.1f}", "mdi:cpu-64-bit", "indigo"),
+            (totals.get("memory_gb"), "RAM (GiB)", f"{float(totals.get('memory_gb') or 0):,.1f}", "mdi:memory", "teal"),
+            (totals.get("disk_gb"), "Disk (GiB)", f"{float(totals.get('disk_gb') or 0):,.1f}", "mdi:harddisk", "grape"),
+        ],
+        cols=4,
+    )
+    if kpi is not None:
+        rollup_children.append(kpi)
+    if unmapped_vms > 0:
+        rollup_children.append(
+            dmc.Alert(
+                title="Unmapped replicas (Altra / custom)",
+                color="orange",
+                variant="light",
+                children=(
+                    f"{unmapped_vms} VM(s) · {unmapped_cpu:,.1f} vCPU · "
+                    f"{unmapped_ram:,.1f} GiB RAM · {unmapped_disk:,.1f} GiB disk — "
+                    "not mapped to a CRM replication family (ADR-0032 Altra deferred)."
+                ),
+            )
+        )
+    rollup_children.append(summary)
+
     spec = [
         _VmCol("VM Name", lambda r: html.Td(r.get("name"))),
         _VmCol(
@@ -2448,16 +2504,11 @@ def _build_replica_machines_panel(replica_vm_list: list | None) -> html.Div:
         _VmCol("RAM (GiB)", lambda r: _vm_metric_td(r.get("memory_gb", 0), suffix=" GiB"), numeric=True),
         _VmCol("Disk (GiB)", lambda r: _vm_metric_td(r.get("disk_gb", 0), suffix=" GiB"), numeric=True),
     ]
+    rollup_children.append(_vm_table_from_spec(rows, spec, show_infra_columns=True))
     return _section_card(
         "DR / Replica Machines",
         "Machines classified by name prefix/suffix or Zerto protection — excluded from Virtualization sellable totals",
-        dmc.Stack(
-            gap="md",
-            children=[
-                summary,
-                _vm_table_from_spec(rows, spec, show_infra_columns=True),
-            ],
-        ),
+        dmc.Stack(gap="md", children=rollup_children),
     )
 
 
@@ -2562,8 +2613,17 @@ def _build_backup_tabs(
         build_netbackup_kpi_defs,
         filter_netbackup_efficiency_rows,
     )
+    from src.components.backup_sales_position import (
+        build_netbackup_sales_position_from_kpi_def,
+        build_replication_sales_position_card,
+    )
+    from shared.backup.license_compliance import LICENSE_COMPLIANCE_ENABLED
 
     backup_tab_defs: list[tuple[str, str, html.Div]] = []
+    nb_kpi_defs = build_netbackup_kpi_defs(
+        eff_by_cat, backup_assets, show_post_dedup=show_post_dedup
+    )
+    nb_kpi_by_cat = {str(d.get("category")): d for d in nb_kpi_defs}
 
     def _eff_panel_for_netbackup(category: str) -> html.Div | None:
         if not include_sold_vs_used:
@@ -2578,6 +2638,21 @@ def _build_backup_tabs(
             return None
         return build_sold_vs_used_stack(filter_efficiency_rows(eff_by_cat, scope))
 
+    def _sold_for_binding(prefix: str, unit_hint: str) -> float:
+        rows = filter_efficiency_rows(eff_by_cat, prefix) or []
+        total = 0.0
+        for r in rows:
+            code = str(r.get("category_code") or "").lower()
+            if unit_hint == "cpu" and code.endswith("_cpu"):
+                total += float(r.get("sold_qty") or r.get("entitled_qty") or 0)
+            elif unit_hint == "ram" and code.endswith("_ram"):
+                total += float(r.get("sold_qty") or r.get("entitled_qty") or 0)
+            elif unit_hint == "disk" and (
+                code.endswith("_storage") or "storage" in code or "disk" in code
+            ):
+                total += float(r.get("sold_qty") or r.get("entitled_qty") or 0)
+        return total
+
     nb_assets = backup_assets.get("netbackup", {}) or {}
     nb_image = nb_assets.get("image") or {}
     nb_app = nb_assets.get("application") or {}
@@ -2591,10 +2666,18 @@ def _build_backup_tabs(
     if not has_nb_image and not has_nb_app and has_nb_legacy:
         has_nb_app = True
     has_nutanix = bool(nutanix_payload and nutanix_payload.get("rows"))
+    repl_resources = (backup_totals or {}).get("replication_resources") or {}
+    license_rows = backup_assets.get("license_compliance") or []
 
     if has_nb_image or has_nutanix:
         image_children: list = []
         if has_nb_image:
+            sp_image = None
+            if include_sold_vs_used:
+                sp_image = build_netbackup_sales_position_from_kpi_def(
+                    nb_kpi_by_cat.get("image"),
+                    dedup_ratio=str(nb_image.get("deduplication_factor") or "1x"),
+                )
             image_children.append(
                 _tab_netbackup_category(
                     backup_assets,
@@ -2603,6 +2686,7 @@ def _build_backup_tabs(
                     title="Classic Image Backup (NetBackup VMWARE)",
                     subtitle="Image backup transferred vs. stored after deduplication",
                     show_post_dedup=show_post_dedup,
+                    sales_position=sp_image,
                 )
             )
         if has_nutanix:
@@ -2622,80 +2706,157 @@ def _build_backup_tabs(
         app_has_split = float(nb_app.get("pre_dedup_size_gib", 0) or 0) > 0 or float(
             nb_app.get("post_dedup_size_gib", 0) or 0
         ) > 0
-        app_panel = (
-            _tab_netbackup_category(
+        sp_app = None
+        if include_sold_vs_used:
+            sp_app = build_netbackup_sales_position_from_kpi_def(
+                nb_kpi_by_cat.get("application"),
+                dedup_ratio=str(nb_app.get("deduplication_factor") or "1x"),
+            )
+        if app_has_split:
+            app_panel = _tab_netbackup_category(
                 backup_assets,
                 "application",
                 crm_eff_panel=_eff_panel_for_netbackup("application"),
                 title="Application Backup (NetBackup)",
                 subtitle="Application / DB policy types transferred vs. stored",
                 show_post_dedup=show_post_dedup,
+                sales_position=sp_app,
             )
-            if app_has_split
-            else _tab_netbackup(
-                backup_assets,
-                backup_totals,
-                crm_eff_panel=_eff_panel_for_netbackup("application"),
-                show_post_dedup=show_post_dedup,
+        else:
+            app_panel = dmc.Stack(
+                gap="lg",
+                children=[
+                    sp_app if sp_app is not None else html.Div(),
+                    _tab_netbackup(
+                        backup_assets,
+                        backup_totals,
+                        crm_eff_panel=_eff_panel_for_netbackup("application"),
+                        show_post_dedup=show_post_dedup,
+                    ),
+                ],
             )
-        )
         backup_tab_defs.append(("application", "Application Backup", app_panel))
 
     has_veeam = backup_vendor_has_data(backup_totals, backup_assets, "veeam")
     has_zerto = backup_vendor_has_data(backup_totals, backup_assets, "zerto")
-    license_rows = backup_assets.get("license_compliance") or []
     if has_veeam or has_zerto or replica_vm_list:
-        repl_children: list = [
-            dmc.Text(
-                "Replication — Veeam and Zerto (unified families; Classic/HC is filter only).",
-                size="sm",
-                c="#2B3674",
-                mb="md",
-            ),
-        ]
-        if has_veeam:
-            repl_children.extend(
-                [
-                    dmc.Title("Veeam Replication", order=5, c="#2B3674", mb="sm"),
-                    _tab_veeam(
-                        backup_assets,
-                        backup_totals,
-                        crm_eff_panel=_eff_panel("backup.veeam"),
-                    ),
-                    build_unique_jobs_inventory_section("veeam", scope="customer"),
-                ]
-            )
-            from src.components.backup_panel import build_veeam_license_panel
+        repl_tab_defs: list[tuple[str, str, html.Div]] = []
+        veeam_used = repl_resources.get("veeam_dr") or {}
+        zerto_used = repl_resources.get("zerto") or {}
 
-            lic_panel = build_veeam_license_panel(None, license_compliance=license_rows)
-            if lic_panel is None and include_sold_vs_used:
-                veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.veeam")
-                if veeam_lic is None:
-                    veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "backup.veeam")
-                if veeam_lic is not None:
-                    repl_children.append(veeam_lic)
-            elif lic_panel is not None:
-                repl_children.append(lic_panel)
-        if has_zerto:
-            repl_children.extend(
-                [
-                    dmc.Title("Zerto Replication", order=5, c="#2B3674", mb="sm", mt="lg"),
-                    _tab_zerto(
-                        backup_assets,
-                        backup_totals,
-                        crm_eff_panel=_eff_panel("backup.zerto"),
-                    ),
-                    build_unique_jobs_inventory_section("zerto", scope="customer"),
-                ]
+        if has_veeam:
+            veeam_sp = (
+                build_replication_sales_position_card(
+                    vendor="veeam",
+                    sold_cpu=_sold_for_binding("backup.veeam", "cpu"),
+                    sold_ram=_sold_for_binding("backup.veeam", "ram"),
+                    sold_disk=_sold_for_binding("backup.veeam", "disk"),
+                    used_cpu=float(veeam_used.get("cpu") or 0),
+                    used_ram=float(veeam_used.get("memory_gb") or 0),
+                    used_disk=float(veeam_used.get("disk_gb") or 0),
+                )
+                if include_sold_vs_used
+                else html.Div()
             )
-            if include_sold_vs_used:
+            veeam_children = [
+                veeam_sp,
+                _tab_veeam(
+                    backup_assets,
+                    backup_totals,
+                    crm_eff_panel=_eff_panel("backup.veeam"),
+                ),
+                build_unique_jobs_inventory_section("veeam", scope="customer"),
+            ]
+            if LICENSE_COMPLIANCE_ENABLED:
+                from src.components.backup_panel import build_veeam_license_panel
+
+                lic_panel = build_veeam_license_panel(None, license_compliance=license_rows)
+                if lic_panel is None and include_sold_vs_used:
+                    veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.veeam")
+                    if veeam_lic is None:
+                        veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "backup.veeam")
+                    if veeam_lic is not None:
+                        veeam_children.append(veeam_lic)
+                elif lic_panel is not None:
+                    veeam_children.append(lic_panel)
+            repl_tab_defs.append(("veeam", "Veeam", dmc.Stack(gap="lg", children=veeam_children)))
+
+        if has_zerto:
+            zerto_sp = (
+                build_replication_sales_position_card(
+                    vendor="zerto",
+                    sold_cpu=_sold_for_binding("backup.zerto", "cpu"),
+                    sold_ram=_sold_for_binding("backup.zerto", "ram"),
+                    sold_disk=_sold_for_binding("backup.zerto", "disk"),
+                    used_cpu=float(zerto_used.get("cpu") or 0),
+                    used_ram=float(zerto_used.get("memory_gb") or 0),
+                    used_disk=float(zerto_used.get("disk_gb") or 0),
+                )
+                if include_sold_vs_used
+                else html.Div()
+            )
+            zerto_children = [
+                zerto_sp,
+                _tab_zerto(
+                    backup_assets,
+                    backup_totals,
+                    crm_eff_panel=_eff_panel("backup.zerto"),
+                ),
+                build_unique_jobs_inventory_section("zerto", scope="customer"),
+            ]
+            if LICENSE_COMPLIANCE_ENABLED and include_sold_vs_used:
                 zerto_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.zerto")
                 if zerto_lic is not None:
-                    repl_children.append(zerto_lic)
+                    zerto_children.append(zerto_lic)
+            repl_tab_defs.append(("zerto", "Zerto", dmc.Stack(gap="lg", children=zerto_children)))
+
         if replica_vm_list:
-            repl_children.append(_build_replica_machines_panel(replica_vm_list))
+            repl_tab_defs.append(
+                (
+                    "dr-machines",
+                    "DR / Replica Machines",
+                    _build_replica_machines_panel(
+                        replica_vm_list,
+                        replication_resources=repl_resources,
+                    ),
+                )
+            )
+
+        nested_panels = [
+            dmc.TabsPanel(value=val, pt="md", children=panel)
+            for val, _label, panel in repl_tab_defs
+        ]
+        nested = dmc.Tabs(
+            id="customer-backup-replication-tabs",
+            color="violet",
+            variant="pills",
+            radius="md",
+            value=repl_tab_defs[0][0],
+            children=[
+                dmc.TabsList(
+                    children=[
+                        dmc.TabsTab(label, value=val) for val, label, _p in repl_tab_defs
+                    ]
+                ),
+                *nested_panels,
+            ],
+        )
         backup_tab_defs.append(
-            ("replication", "Replication", dmc.Stack(gap="lg", children=repl_children))
+            (
+                "replication",
+                "Replication",
+                dmc.Stack(
+                    gap="lg",
+                    children=[
+                        dmc.Text(
+                            "Replication — Veeam and Zerto (unified families; Classic/HC is filter only).",
+                            size="sm",
+                            c="#2B3674",
+                        ),
+                        nested,
+                    ],
+                ),
+            )
         )
 
     head: list = []
@@ -2708,11 +2869,9 @@ def _build_backup_tabs(
     # Manager-only NetBackup Pre/Post/margin sold-vs-used strip (removed from Summary).
     if include_sold_vs_used:
         backup_kpi = build_backup_kpi_strip(
-            build_netbackup_kpi_defs(
-                eff_by_cat, backup_assets, show_post_dedup=show_post_dedup
-            ),
+            nb_kpi_defs,
             show_post_dedup=show_post_dedup,
-            include_deeplink=True,
+            include_deeplink=False,
         )
         if getattr(backup_kpi, "children", None):
             head.append(backup_kpi)
@@ -3071,7 +3230,7 @@ def _customer_content(customer_name: str, time_range: dict | None = None, *, onl
             except Exception:
                 pass  # on-demand warm is best-effort; never block the page render
         # Compliance reads infra from Redis populated by /resources — run after resources, not in parallel.
-        compliance_payload = api.get_customer_resource_compliance(name, "virtualization", tr)
+        compliance_payload = api.get_customer_resource_compliance(name, "all", tr)
         avail_bundle = f_avail.result()
         s3_data = f_s3.result()
         phys_inv_devices = f_phys.result()
@@ -3401,7 +3560,7 @@ def render_summary_tab(name: str, tr: dict | None, perspective: str, project: st
         assets=assets,
         backup_totals=totals.get("backup", {}) or {},
         sales_summary=sales_summary,
-        compliance_payload=api.get_customer_resource_compliance(name, "virtualization", tr),
+        compliance_payload=api.get_customer_resource_compliance(name, "all", tr),
         efficiency_rows=api.get_customer_efficiency_by_category(name, tr),
         itsm_summary=api.get_customer_itsm_summary(name, tr),
         vm_outage_counts=vm_outage_counts,
@@ -3424,7 +3583,7 @@ def render_billing_tab(name: str, tr: dict | None, project: str | None = ALL_PRO
     # Carries the detected licensed-guest counts (and is the only entitlement path
     # hydrated in production — efficiency-by-category filters on statecode 3/4,
     # which no live order has).
-    compliance_payload = api.get_customer_resource_compliance(name, "virtualization", tr)
+    compliance_payload = api.get_customer_resource_compliance(name, "all", tr)
     active_orders = api.get_customer_sales_active_orders(name)
     active_items = api.get_customer_sales_active_items(name)
     sales_items = api.get_customer_sales_items(name)
@@ -3531,7 +3690,7 @@ def _build_export_context(name: str, tr: dict | None) -> dict:
         "itsm_summary": api.get_customer_itsm_summary(name, tr) or {},
         "itsm_extremes": api.get_customer_itsm_extremes(name, tr) or {},
         "itsm_tickets": api.get_customer_itsm_tickets(name, tr) or [],
-        "compliance_payload": api.get_customer_resource_compliance(name, "virtualization", tr) or {},
+        "compliance_payload": api.get_customer_resource_compliance(name, "all", tr) or {},
         "efficiency_rows": api.get_customer_efficiency_by_category(name, tr) or [],
         "sales_summary": api.get_customer_sales_summary(name) or {},
     }

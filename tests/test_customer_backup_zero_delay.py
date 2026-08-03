@@ -33,7 +33,7 @@ def _ids(node):
 
 
 def test_customer_assets_cache_version_bumped_for_replica_split():
-    assert CUSTOMER_ASSETS_CACHE_VERSION == "replica-split-v5"
+    assert CUSTOMER_ASSETS_CACHE_VERSION == "sales-position-v6"
 
 
 def test_shell_has_single_backup_category_store():

@@ -122,20 +122,96 @@ class CustomerAdapter:
         return enrich_customer_vm_cpu_list(vm_list, host_map, default_ghz=DEFAULT_HOST_CPU_GHZ)
 
     @staticmethod
+    def _empty_resource_bucket() -> dict[str, float | int]:
+        return {"vm_count": 0, "cpu": 0.0, "memory_gb": 0.0, "disk_gb": 0.0}
+
+    @classmethod
+    def _sum_replica_resources_by_role(
+        cls,
+        replica_vm_list: list[dict] | None,
+    ) -> dict[str, dict[str, float | int]]:
+        """Roll up replica/DR VM footprint by role (veeam_dr / zerto / altra / custom)."""
+        roles = ("veeam_dr", "zerto", "altra_replica", "custom")
+        out: dict[str, dict[str, float | int]] = {
+            role: cls._empty_resource_bucket() for role in roles
+        }
+        totals = cls._empty_resource_bucket()
+        for row in replica_vm_list or []:
+            role = str(row.get("role") or "custom").strip().lower()
+            if role not in out:
+                role = "custom"
+            bucket = out[role]
+            cpu = float(row.get("cpu") or 0.0)
+            mem = float(row.get("memory_gb") or 0.0)
+            disk = float(row.get("disk_gb") or 0.0)
+            bucket["vm_count"] = int(bucket["vm_count"]) + 1
+            bucket["cpu"] = float(bucket["cpu"]) + cpu
+            bucket["memory_gb"] = float(bucket["memory_gb"]) + mem
+            bucket["disk_gb"] = float(bucket["disk_gb"]) + disk
+            totals["vm_count"] = int(totals["vm_count"]) + 1
+            totals["cpu"] = float(totals["cpu"]) + cpu
+            totals["memory_gb"] = float(totals["memory_gb"]) + mem
+            totals["disk_gb"] = float(totals["disk_gb"]) + disk
+        for role, bucket in out.items():
+            out[role] = {
+                "vm_count": int(bucket["vm_count"]),
+                "cpu": round(float(bucket["cpu"]), 3),
+                "memory_gb": round(float(bucket["memory_gb"]), 3),
+                "disk_gb": round(float(bucket["disk_gb"]), 3),
+            }
+        out["totals"] = {
+            "vm_count": int(totals["vm_count"]),
+            "cpu": round(float(totals["cpu"]), 3),
+            "memory_gb": round(float(totals["memory_gb"]), 3),
+            "disk_gb": round(float(totals["disk_gb"]), 3),
+        }
+        return out
+
+    @classmethod
+    def _merge_replica_role_totals(
+        cls,
+        left: dict[str, dict[str, float | int]] | None,
+        right: dict[str, dict[str, float | int]] | None,
+    ) -> dict[str, dict[str, float | int]]:
+        roles = ("veeam_dr", "zerto", "altra_replica", "custom", "totals")
+        merged: dict[str, dict[str, float | int]] = {
+            role: cls._empty_resource_bucket() for role in roles
+        }
+        for src in (left or {}, right or {}):
+            for role in roles:
+                bucket = src.get(role) or {}
+                dest = merged[role]
+                dest["vm_count"] = int(dest["vm_count"]) + int(bucket.get("vm_count") or 0)
+                dest["cpu"] = float(dest["cpu"]) + float(bucket.get("cpu") or 0.0)
+                dest["memory_gb"] = float(dest["memory_gb"]) + float(
+                    bucket.get("memory_gb") or 0.0
+                )
+                dest["disk_gb"] = float(dest["disk_gb"]) + float(bucket.get("disk_gb") or 0.0)
+        for role, bucket in merged.items():
+            merged[role] = {
+                "vm_count": int(bucket["vm_count"]),
+                "cpu": round(float(bucket["cpu"]), 3),
+                "memory_gb": round(float(bucket["memory_gb"]), 3),
+                "disk_gb": round(float(bucket["disk_gb"]), 3),
+            }
+        return merged
+
+    @staticmethod
     def _apply_vm_roles_and_billable_totals(
         vm_list: list[dict],
         *,
         zerto_names: list[str] | None = None,
-    ) -> tuple[list[dict], list[dict], dict[str, float | int]]:
-        """Annotate VM roles; split billable virt vs replica/DR lists; recompute totals.
+    ) -> tuple[list[dict], list[dict], dict[str, float | int], dict[str, dict[str, float | int]]]:
+        """Annotate VM roles; split billable vs replica; return role replica totals.
 
-        Returns ``(billable_vm_list, replica_vm_list, billable_totals)``.
+        Returns ``(billable_vm_list, replica_vm_list, billable_totals, replica_by_role)``.
         """
         annotated = annotate_vm_roles(vm_list, zerto_names=zerto_names)
         billable = [r for r in annotated if r.get("virt_billable") is not False]
         replicas = [r for r in annotated if r.get("virt_billable") is False]
         totals = sum_billable_virt_resources(annotated)
-        return billable, replicas, totals
+        replica_by_role = CustomerAdapter._sum_replica_resources_by_role(replicas)
+        return billable, replicas, totals, replica_by_role
 
     def fetch(
         self,
@@ -278,7 +354,7 @@ class CustomerAdapter:
                     (start_ts, end_ts, zerto_patterns, start_ts, end_ts),
                 )
                 zerto_names = [str(r[0]) for r in (zerto_name_rows or []) if r and r[0]]
-                classic_vm_list, classic_replica_vm_list, classic_virt = (
+                classic_vm_list, classic_replica_vm_list, classic_virt, classic_replica_totals = (
                     self._apply_vm_roles_and_billable_totals(
                         classic_vm_list, zerto_names=zerto_names
                     )
@@ -356,7 +432,7 @@ class CustomerAdapter:
                     if r and r[0]
                 ]
                 hc_vm_list = self._enrich_customer_vm_list(cur, hc_vm_list)
-                hc_vm_list, hc_replica_vm_list, hc_virt = self._apply_vm_roles_and_billable_totals(
+                hc_vm_list, hc_replica_vm_list, hc_virt, hc_replica_totals = self._apply_vm_roles_and_billable_totals(
                     hc_vm_list, zerto_names=zerto_names
                 )
                 hc_total = int(hc_virt.get("vm_count") or 0)
@@ -775,6 +851,9 @@ class CustomerAdapter:
                 "netbackup_pre_dedup_gib": netbackup_pre_dedup_gib,
                 "netbackup_post_dedup_gib": netbackup_post_dedup_gib,
                 "zerto_provisioned_gib": zerto_provisioned_total_gib,
+                "replication_resources": self._merge_replica_role_totals(
+                    classic_replica_totals, hc_replica_totals
+                ),
             },
         }
 
@@ -812,6 +891,7 @@ class CustomerAdapter:
                     "netbackup_pre_dedup_gib": 0.0,
                     "netbackup_post_dedup_gib": 0.0,
                     "zerto_provisioned_gib": 0.0,
+                    "replication_resources": self._sum_replica_resources_by_role([]),
                 },
             },
             "assets": {

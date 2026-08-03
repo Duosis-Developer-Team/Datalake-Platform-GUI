@@ -67,9 +67,9 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
             },
             children=[
                 dmc.Text(f"{used:,.0f} {unit}".strip(), fw=700, size="xl", c="#E03131"),
-                dmc.Text("kullanımda, hiç satılmamış", size="sm", c="#A3AED0"),
+                dmc.Text("in use, nothing sold", size="sm", c="#A3AED0"),
                 dmc.Text(
-                    "Satış olmadığı için kullanım/satış oranı hesaplanamıyor.",
+                    "Used/sold ratio cannot be computed when there are no sales.",
                     size="xs", c="#A3AED0", mt="xs",
                 ),
             ],
@@ -129,6 +129,17 @@ def _one_row_card(r: dict[str, Any]) -> html.Div:
             c="#E03131",
             fw=600,
         )
+    else:
+        headroom = float(r.get("headroom_qty") or 0)
+        headroom_tl = r.get("headroom_tl")
+        if headroom > 0:
+            pot = f"{float(headroom_tl or 0):,.2f} TL" if headroom_tl is not None else "-"
+            overage_line = dmc.Text(
+                f"Headroom: {headroom:,.2f} {unit} · Potential: {pot}",
+                size="xs",
+                c="#12B886",
+                fw=600,
+            )
 
     detected_line = None
     if has_detected:
@@ -213,26 +224,40 @@ def build_compliance_issue_table(
     if not visible:
         return html.Div()
 
-    cols = ["Category", "Sold", "Used", "Overage", "Est. loss", "Status"]
+    cols = ["Category", "Sold", "Used", "Overage / Headroom", "Est. loss / Potential", "Status"]
 
     def _row(r: dict[str, Any]) -> html.Tr:
         unit = str(r.get("resource_unit") or "")
         sold = _compliance_qty(r, "sold")
         used = _compliance_qty(r, "used")
         overage = _compliance_qty(r, "overage_qty")
+        headroom = float(r.get("headroom_qty") or 0)
         loss = r.get("overage_loss_tl")
+        headroom_tl = r.get("headroom_tl")
         label = str(r.get("category_label") or r.get("category_code") or "Category")
 
         def _qty(v: float) -> str:
             return f"{v:,.2f} {unit}".strip() if unit else f"{v:,.2f}"
+
+        if overage > 0:
+            gap_cell = _qty(overage)
+            money_cell = format_crm_money(loss, currency) if loss is not None else "-"
+        elif headroom > 0:
+            gap_cell = f"Headroom {_qty(headroom)}"
+            money_cell = (
+                format_crm_money(headroom_tl, currency) if headroom_tl is not None else "-"
+            )
+        else:
+            gap_cell = _qty(0)
+            money_cell = "-"
 
         return html.Tr(
             [
                 html.Td(label),
                 html.Td(_qty(sold)),
                 html.Td(_qty(used)),
-                html.Td(_qty(overage)),
-                html.Td(format_crm_money(loss, currency) if loss is not None else "-"),
+                html.Td(gap_cell),
+                html.Td(money_cell),
                 html.Td(compliance_status_badge(str(r.get("status")))),
             ]
         )

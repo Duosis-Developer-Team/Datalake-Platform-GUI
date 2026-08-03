@@ -117,23 +117,27 @@ def resolve_used_quantity(
         return 0.0, None
 
     if _norm(cc).startswith("backup_veeam"):
+        repl = (backup_totals.get("replication_resources") or {}) if isinstance(backup_totals, dict) else {}
+        veeam = (repl.get("veeam_dr") or {}) if isinstance(repl, dict) else {}
         if _is_cpu_suffix(cc):
-            return float(backup_totals.get("veeam_protected_vcpus", 0) or 0), None
+            return float(veeam.get("cpu") or 0), None
+        if _is_ram_suffix(cc):
+            return float(veeam.get("memory_gb") or 0), None
         if _is_storage_suffix(cc):
-            vol = bassets.get("storage") or {}
-            return float(vol.get("veeam_repo_used_gb", 0) or backup_totals.get("veeam_repo_used_gb", 0) or 0), None
+            return float(veeam.get("disk_gb") or 0), None
         v = float(backup_totals.get("veeam_defined_sessions", 0) or 0)
         return v, None
 
     if _norm(cc).startswith("backup_zerto"):
+        repl = (backup_totals.get("replication_resources") or {}) if isinstance(backup_totals, dict) else {}
+        zerto = (repl.get("zerto") or {}) if isinstance(repl, dict) else {}
         if _is_storage_suffix(cc):
-            vol = bassets.get("storage") or {}
-            return float(vol.get("zerto_protected_gb", 0) or backup_totals.get("zerto_protected_gb", 0) or 0), None
+            return float(zerto.get("disk_gb") or 0), None
         if _is_ram_suffix(cc):
-            return float(backup_totals.get("zerto_protected_memory_gb", 0) or 0), None
+            return float(zerto.get("memory_gb") or 0), None
         if rk == "cpu" or _is_cpu_suffix(cc):
-            return float(backup_totals.get("zerto_protected_vms", 0) or 0) * 2.0, None
-        return float(backup_totals.get("zerto_protected_vms", 0) or 0), None
+            return float(zerto.get("cpu") or 0), None
+        return float(zerto.get("vm_count") or backup_totals.get("zerto_protected_vms", 0) or 0), None
 
     if _norm(cc).startswith("backup_netbackup"):
         # K-01: customer efficiency sold/used uses PreDedup. PostDedup remains on

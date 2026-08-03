@@ -6,10 +6,17 @@ Status model (Summary + Backup surfaces; not Billing):
 - usage > 0 and sold = 0 → ``unsold_usage`` (license NO)
 - usage = 0 and sold > 0 → ``crm_only``
 - usage = 0 and sold = 0 → ``no_usage``
+
+``LICENSE_COMPLIANCE_ENABLED`` gates UI surfaces (ADR-0032 #17 deferred).
+When False, strip/cards/overusage merge stay empty until an external license
+feed exists.
 """
 from __future__ import annotations
 
 from typing import Any, Literal
+
+# Deferred until an external license feed exists (ADR-0032 #17 / #62).
+LICENSE_COMPLIANCE_ENABLED = False
 
 LicenseStatus = Literal["ok", "unsold_usage", "crm_only", "no_usage"]
 

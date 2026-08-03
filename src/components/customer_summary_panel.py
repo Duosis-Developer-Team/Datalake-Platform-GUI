@@ -233,7 +233,11 @@ def merge_overusage_with_license_rows(
     license_rows: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
     """Append Veeam/Zerto license issue rows onto resource overusage rows."""
+    from shared.backup.license_compliance import LICENSE_COMPLIANCE_ENABLED
+
     base = list(overusage_rows or [])
+    if not LICENSE_COMPLIANCE_ENABLED:
+        return base
     license_issue_rows = license_compliance_to_overusage_rows(license_rows)
     if not license_issue_rows:
         return base

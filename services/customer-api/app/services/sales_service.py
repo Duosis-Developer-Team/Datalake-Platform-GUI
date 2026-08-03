@@ -43,7 +43,10 @@ from app.services.customer_mapping_resolver import (
 from app.utils.efficiency_usage import efficiency_status, resolve_used_quantity
 from app.utils.licensed_os import customer_os_tally
 from app.utils.usage_comparison import (
+    BACKUP_COMPARISON_CATEGORIES,
+    VIRT_COMPARISON_CATEGORIES,
     aggregate_entitled_by_category,
+    build_backup_compliance,
     build_licensed_os_compliance,
     build_virtualization_compliance,
     catalog_product_names_for_compliance,
@@ -518,7 +521,8 @@ class SalesService:
         scope: str = "virtualization",
         time_range: dict | None = None,
     ) -> Dict[str, Any]:
-        if scope != "virtualization":
+        scope_n = (scope or "virtualization").strip().lower()
+        if scope_n not in ("virtualization", "backup", "all"):
             return {
                 "scope": scope,
                 "rows": [],
@@ -528,7 +532,7 @@ class SalesService:
         account_ids = self._resolve_account_ids(customer_name)
         if not account_ids:
             return {
-                "scope": scope,
+                "scope": scope_n,
                 "rows": [],
                 "summary": self._empty_compliance_summary(),
             }
@@ -543,7 +547,15 @@ class SalesService:
 
         mapping = self._load_product_mapping()
         price_overrides, catalog_by_productid, catalog_by_name = self._load_catalog_price_indexes()
-        entitled_agg = aggregate_entitled_by_category(entitled_raw, mapping)
+
+        categories: list = []
+        if scope_n in ("virtualization", "all"):
+            categories.extend(VIRT_COMPARISON_CATEGORIES)
+        if scope_n in ("backup", "all"):
+            categories.extend(BACKUP_COMPARISON_CATEGORIES)
+        entitled_agg = aggregate_entitled_by_category(
+            entitled_raw, mapping, categories=categories
+        )
 
         bundle = self._customer_infra_bundle(customer_name, time_range)
         if not bundle:
@@ -557,41 +569,56 @@ class SalesService:
         over_pct = float(calc.get("efficiency.over_pct", 110.0))
 
         assets = (bundle or {}).get("assets") or {}
-        rows, summary = build_virtualization_compliance(
-            entitled_agg=entitled_agg,
-            assets=assets,
-            totals=bundle.get("totals") or {},
-            weighted_prices=weighted_prices,
-            price_overrides=price_overrides,
-            catalog_by_productid=catalog_by_productid,
-            catalog_by_name=catalog_by_name,
-            under_pct=under_pct,
-            over_pct=over_pct,
-        )
+        totals = (bundle or {}).get("totals") or {}
+        rows: list = []
 
-        # Licensed-OS lines ride the same payload: this endpoint is the only
-        # entitlement path that is actually hydrated in production (every CRM
-        # order sits at statecode 0, which efficiency-by-category filters out).
-        # Counted from the VM lists Customer View renders, so the overusage row
-        # and the VM table can never disagree.
-        rows = rows + build_licensed_os_compliance(
-            entitled_agg=entitled_agg,
-            detected=customer_os_tally(assets),
-            weighted_prices=weighted_prices,
-            price_overrides=price_overrides,
-            catalog_by_productid=catalog_by_productid,
-            catalog_by_name=catalog_by_name,
-            fallback_prices=self._platform_licence_prices(mapping),
-            under_pct=under_pct,
-            over_pct=over_pct,
-        )
+        if scope_n in ("virtualization", "all"):
+            virt_rows, _ = build_virtualization_compliance(
+                entitled_agg=entitled_agg,
+                assets=assets,
+                totals=totals,
+                weighted_prices=weighted_prices,
+                price_overrides=price_overrides,
+                catalog_by_productid=catalog_by_productid,
+                catalog_by_name=catalog_by_name,
+                under_pct=under_pct,
+                over_pct=over_pct,
+            )
+            rows.extend(virt_rows)
+            # Licensed-OS lines ride the virt payload.
+            rows = rows + build_licensed_os_compliance(
+                entitled_agg=entitled_agg,
+                detected=customer_os_tally(assets),
+                weighted_prices=weighted_prices,
+                price_overrides=price_overrides,
+                catalog_by_productid=catalog_by_productid,
+                catalog_by_name=catalog_by_name,
+                fallback_prices=self._platform_licence_prices(mapping),
+                under_pct=under_pct,
+                over_pct=over_pct,
+            )
+
+        if scope_n in ("backup", "all"):
+            backup_rows, _ = build_backup_compliance(
+                entitled_agg=entitled_agg,
+                assets=assets,
+                totals=totals,
+                weighted_prices=weighted_prices,
+                price_overrides=price_overrides,
+                catalog_by_productid=catalog_by_productid,
+                catalog_by_name=catalog_by_name,
+                under_pct=under_pct,
+                over_pct=over_pct,
+            )
+            rows.extend(backup_rows)
+
         summary = summarize_compliance(rows)
 
         if not bundle:
             summary = {**summary, "infra_cache_hit": False}
         else:
             summary = {**summary, "infra_cache_hit": True}
-        return {"scope": scope, "rows": rows, "summary": summary}
+        return {"scope": scope_n, "rows": rows, "summary": summary}
 
     # ------------------------------------------------------------------
     # /customers/{name}/sales/catalog-valuation — gui_crm_price_override + catalog

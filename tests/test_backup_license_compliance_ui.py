@@ -39,18 +39,29 @@ def test_license_badge_labels_and_colors():
 
 
 def test_build_license_compliance_strip_renders_ok_and_no_license():
-    strip = build_license_compliance_strip(
-        [
-            {"category": "veeam_backup", "status": "ok", "usage_qty": 3, "sold_qty": 3},
-            {"category": "zerto", "status": "unsold_usage", "usage_qty": 1, "sold_qty": 0},
-        ]
-    )
-    text = str(strip)
-    assert "Backup license compliance" in text
-    assert "OK" in text
-    assert "No license" in text
-    assert "Veeam Backup" in text
-    assert "Zerto" in text
+    from shared.backup import license_compliance as lc
+
+    rows = [
+        {"category": "veeam_backup", "status": "ok", "usage_qty": 3, "sold_qty": 3},
+        {"category": "zerto", "status": "unsold_usage", "usage_qty": 1, "sold_qty": 0},
+    ]
+    # Deferred by default.
+    assert lc.LICENSE_COMPLIANCE_ENABLED is False
+    hidden = build_license_compliance_strip(rows)
+    assert not getattr(hidden, "children", None)
+
+    was = lc.LICENSE_COMPLIANCE_ENABLED
+    lc.LICENSE_COMPLIANCE_ENABLED = True
+    try:
+        strip = build_license_compliance_strip(rows)
+        text = str(strip)
+        assert "Backup license compliance" in text
+        assert "OK" in text
+        assert "No license" in text
+        assert "Veeam Backup" in text
+        assert "Zerto" in text
+    finally:
+        lc.LICENSE_COMPLIANCE_ENABLED = was
 
 
 def test_build_license_compliance_strip_empty_when_no_usage():
@@ -160,10 +171,14 @@ def test_backup_kpi_strip_deeplink_and_perspective_copy():
             "has_signal": True,
         }
     ]
-    mgr = str(build_backup_kpi_strip(defs, show_post_dedup=True))
-    assert "Open in Backup" in mgr
+    # Backup tab default: no self-deeplink.
+    mgr = str(build_backup_kpi_strip(defs, show_post_dedup=True, include_deeplink=False))
+    assert "Open in Backup" not in mgr
     assert "Post" in mgr
     assert "Margin" in mgr
+
+    with_link = str(build_backup_kpi_strip(defs, show_post_dedup=True, include_deeplink=True))
+    assert "Open in Backup" in with_link
 
     cust = str(build_backup_kpi_strip(defs, show_post_dedup=False))
     assert "Used (pre)" in cust
@@ -203,47 +218,66 @@ def test_tab_netbackup_category_strips_post_for_customer():
 
 
 def test_summary_panel_includes_license_strip_not_on_empty():
+    from shared.backup import license_compliance as lc
     from src.components.customer_summary_panel import build_customer_summary_panel
 
-    panel = build_customer_summary_panel(
-        "Acme",
-        totals={"vms_total": 1},
-        assets={
-            "classic": {"vm_count": 1, "cpu_total": 2},
-            "backup": {
-                "license_compliance": [
-                    {
-                        "category": "veeam_backup",
-                        "status": "unsold_usage",
-                        "usage_qty": 4,
-                        "sold_qty": 0,
-                    }
-                ],
-                "netbackup": {
-                    "image": {"pre_dedup_size_gib": 1.0, "post_dedup_size_gib": 0.4},
-                },
+    assets = {
+        "classic": {"vm_count": 1, "cpu_total": 2},
+        "backup": {
+            "license_compliance": [
+                {
+                    "category": "veeam_backup",
+                    "status": "unsold_usage",
+                    "usage_qty": 4,
+                    "sold_qty": 0,
+                }
+            ],
+            "netbackup": {
+                "image": {"pre_dedup_size_gib": 1.0, "post_dedup_size_gib": 0.4},
             },
         },
+    }
+    efficiency_rows = [
+        {
+            "gui_tab_binding": "backup.netbackup",
+            "category_code": "backup_netbackup_image",
+            "category_label": "NetBackup — Image",
+            "sold_qty": 2.0,
+            "used_qty": 1.0,
+        }
+    ]
+
+    # Default: license compliance deferred / hidden.
+    panel_hidden = build_customer_summary_panel(
+        "Acme",
+        totals={"vms_total": 1},
+        assets=assets,
         backup_totals={},
         perspective="manager",
-        efficiency_rows=[
-            {
-                "gui_tab_binding": "backup.netbackup",
-                "category_code": "backup_netbackup_image",
-                "category_label": "NetBackup — Image",
-                "sold_qty": 2.0,
-                "used_qty": 1.0,
-            }
-        ],
+        efficiency_rows=efficiency_rows,
     )
-    text = str(panel)
-    assert "Backup license compliance" in text
-    assert "No license" in text
-    assert "Veeam Backup" in text
-    assert "Resource overusage" in text
-    # NetBackup sold-vs-used KPI strip stays on Backup tab only — not Summary.
-    assert "Backup — sold vs used" not in text
-    assert "Open in Backup" not in text
+    text_hidden = str(panel_hidden)
+    assert "Backup license compliance" not in text_hidden
+    assert "Open in Backup" not in text_hidden
+    assert "Backup — sold vs used" not in text_hidden
+
+    was = lc.LICENSE_COMPLIANCE_ENABLED
+    lc.LICENSE_COMPLIANCE_ENABLED = True
+    try:
+        panel = build_customer_summary_panel(
+            "Acme",
+            totals={"vms_total": 1},
+            assets=assets,
+            backup_totals={},
+            perspective="manager",
+            efficiency_rows=efficiency_rows,
+        )
+        text = str(panel)
+        assert "Backup license compliance" in text
+        assert "No license" in text
+        assert "Veeam Backup" in text
+    finally:
+        lc.LICENSE_COMPLIANCE_ENABLED = was
 
 
 def test_backup_tabs_manager_keeps_sold_vs_used_kpi_strip():

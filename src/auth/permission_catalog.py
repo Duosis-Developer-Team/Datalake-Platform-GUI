@@ -262,6 +262,16 @@ def build_default_permission_roots() -> list[PermissionNode]:
                             _n("sub:customer:backup:veeam", "Veeam", "sub_section"),
                             _n("sub:customer:backup:zerto", "Zerto", "sub_section"),
                             _n("sub:customer:backup:netbackup", "NetBackup", "sub_section"),
+                            _n(
+                                "sub:customer:backup:sales_position",
+                                "Sales Position",
+                                "sub_section",
+                            ),
+                            _n(
+                                "sub:customer:backup:license",
+                                "License Compliance",
+                                "sub_section",
+                            ),
                         ],
                     ),
                     _n("sec:customer:billing", "Billing", "section"),

@@ -11,7 +11,7 @@ def test_apply_vm_roles_splits_billable_and_replica():
         {"name": "AppVM01_DR", "cpu": 4, "memory_gb": 8, "disk_gb": 100},
         {"name": "ZertoProtected", "cpu": 2, "memory_gb": 4, "disk_gb": 50},
     ]
-    billable, replicas, totals = adapter._apply_vm_roles_and_billable_totals(
+    billable, replicas, totals, replica_by_role = adapter._apply_vm_roles_and_billable_totals(
         rows, zerto_names=["ZertoProtected"]
     )
     assert [r["name"] for r in billable] == ["AppVM01"]
@@ -21,6 +21,9 @@ def test_apply_vm_roles_splits_billable_and_replica():
     roles = {r["name"]: r["role"] for r in replicas}
     assert roles["AppVM01_DR"] == "veeam_dr"
     assert roles["ZertoProtected"] == "zerto"
+    assert replica_by_role["veeam_dr"]["vm_count"] == 1
+    assert replica_by_role["zerto"]["cpu"] == 2.0
+    assert replica_by_role["totals"]["vm_count"] == 2
 
 
 def test_customer_zerto_vm_names_sql_exists():

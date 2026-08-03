@@ -55,6 +55,66 @@ VIRT_COMPARISON_CATEGORIES: List[Dict[str, str]] = [
     },
 ]
 
+# Backup / replication categories for customer Resource Compliance (Sales Position).
+BACKUP_COMPARISON_CATEGORIES: List[Dict[str, str]] = [
+    {
+        "category_code": "backup_netbackup_image",
+        "category_label": "NetBackup Image — Pre-dedup",
+        "resource_unit": "GB",
+        "gui_tab_binding": "backup.netbackup.image",
+        "catalog_product_name": "Klasik Mimari NetBackup VMware",
+    },
+    {
+        "category_code": "backup_netbackup_application",
+        "category_label": "NetBackup Application — Pre-dedup",
+        "resource_unit": "GB",
+        "gui_tab_binding": "backup.netbackup.application",
+        "catalog_product_name": "Klasik Mimari NetBackup Application",
+    },
+    {
+        "category_code": "backup_veeam_replication_cpu",
+        "category_label": "Veeam Replication — CPU",
+        "resource_unit": "vCPU",
+        "gui_tab_binding": "backup.veeam",
+        "catalog_product_name": "Klasik Mimari Veeam Replication CPU",
+    },
+    {
+        "category_code": "backup_veeam_replication_ram",
+        "category_label": "Veeam Replication — RAM",
+        "resource_unit": "GB",
+        "gui_tab_binding": "backup.veeam",
+        "catalog_product_name": "Klasik Mimari Veeam Replication RAM",
+    },
+    {
+        "category_code": "backup_veeam_replication_storage",
+        "category_label": "Veeam Replication — Storage",
+        "resource_unit": "GB",
+        "gui_tab_binding": "backup.veeam",
+        "catalog_product_name": "Klasik Mimari Veeam Replication Disk - SSD",
+    },
+    {
+        "category_code": "backup_zerto_replication_cpu",
+        "category_label": "Zerto Replication — CPU",
+        "resource_unit": "vCPU",
+        "gui_tab_binding": "backup.zerto",
+        "catalog_product_name": "Klasik Mimari Zerto Replication CPU",
+    },
+    {
+        "category_code": "backup_zerto_replication_ram",
+        "category_label": "Zerto Replication — RAM",
+        "resource_unit": "GB",
+        "gui_tab_binding": "backup.zerto",
+        "catalog_product_name": "Klasik Mimari Zerto Replication RAM",
+    },
+    {
+        "category_code": "backup_zerto_replication_storage",
+        "category_label": "Zerto Replication — Storage",
+        "resource_unit": "GB",
+        "gui_tab_binding": "backup.zerto",
+        "catalog_product_name": "Klasik Mimari Zerto Replication Disk - SSD",
+    },
+]
+
 _CATALOG_PRODUCT_NAMES = sorted(
     {str(c["catalog_product_name"]) for c in VIRT_COMPARISON_CATEGORIES}
 )
@@ -93,16 +153,20 @@ def normalize_entitled_qty(
     return value
 
 
-def _category_index() -> Dict[str, Dict[str, str]]:
-    return {c["category_code"]: c for c in VIRT_COMPARISON_CATEGORIES}
+def _category_index(
+    categories: List[Dict[str, str]] | None = None,
+) -> Dict[str, Dict[str, str]]:
+    cats = categories or VIRT_COMPARISON_CATEGORIES
+    return {c["category_code"]: c for c in cats}
 
 
 def aggregate_entitled_by_category(
     entitled_raw: List[Dict[str, Any]],
     product_mapping: Dict[str, Dict[str, Any]],
+    categories: List[Dict[str, str]] | None = None,
 ) -> Dict[str, Dict[str, Any]]:
-    """Sum entitled quantities per virtualization page_key."""
-    idx = _category_index()
+    """Sum entitled quantities per comparison page_key (virt and/or backup)."""
+    idx = _category_index(categories)
     agg: Dict[str, Dict[str, Any]] = {}
 
     for row in entitled_raw or []:
@@ -376,6 +440,7 @@ def build_virtualization_compliance(
         used_qty = float(used_qty or 0)
 
         overage_qty = max(0.0, used_qty - entitled_qty)
+        headroom_qty = max(0.0, entitled_qty - used_qty)
         eff_pct: float | None
         if entitled_qty > 0:
             eff_pct = round((used_qty / entitled_qty) * 100.0, 2)
@@ -391,6 +456,7 @@ def build_virtualization_compliance(
             catalog_by_name=catalog_by_name,
         )
         overage_loss_tl = round(overage_qty * unit_price, 2)
+        headroom_tl = round(headroom_qty * unit_price, 2)
 
         status = compliance_row_status(
             entitled_qty=entitled_qty,
@@ -410,9 +476,95 @@ def build_virtualization_compliance(
             "entitled_amount_tl": round(float(entitled_bucket.get("entitled_amount_tl") or 0), 2),
             "used_qty": round(used_qty, 4),
             "overage_qty": round(overage_qty, 4),
+            "headroom_qty": round(headroom_qty, 4),
             "unit_price_tl": round(unit_price, 4),
             "price_source": price_source,
             "overage_loss_tl": overage_loss_tl,
+            "headroom_tl": headroom_tl,
+            "efficiency_pct": eff_pct,
+            "status": status,
+            "usage_note": note,
+        })
+
+    summary = summarize_compliance(rows)
+    return rows, summary
+
+
+def build_backup_compliance(
+    *,
+    entitled_agg: Dict[str, Dict[str, Any]],
+    assets: Dict[str, Any],
+    totals: Dict[str, Any],
+    weighted_prices: Dict[str, float],
+    price_overrides: Dict[str, float],
+    catalog_by_productid: Dict[str, float],
+    catalog_by_name: Dict[str, float],
+    under_pct: float = 80.0,
+    over_pct: float = 110.0,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Build compliance rows for NetBackup + Veeam/Zerto replication panels."""
+    rows: List[Dict[str, Any]] = []
+
+    for meta in BACKUP_COMPARISON_CATEGORIES:
+        cat_code = meta["category_code"]
+        entitled_bucket = entitled_agg.get(cat_code) or {}
+        entitled_qty = float(entitled_bucket.get("entitled_qty") or 0)
+        product_ids = list(entitled_bucket.get("product_ids") or [])
+
+        used_qty, note = resolve_used_quantity(
+            category_code=cat_code,
+            resource_unit=meta["resource_unit"],
+            assets=assets,
+            totals=totals,
+        )
+        used_qty = float(used_qty or 0)
+
+        # Skip silent empty categories (no entitlement and no usage).
+        if entitled_qty <= 0 and used_qty <= 0:
+            continue
+
+        overage_qty = max(0.0, used_qty - entitled_qty)
+        headroom_qty = max(0.0, entitled_qty - used_qty)
+        eff_pct: float | None
+        if entitled_qty > 0:
+            eff_pct = round((used_qty / entitled_qty) * 100.0, 2)
+        else:
+            eff_pct = None
+
+        unit_price, price_source = resolve_unit_price_tl(
+            category_code=cat_code,
+            product_ids=product_ids,
+            weighted_prices=weighted_prices,
+            price_overrides=price_overrides,
+            catalog_by_productid=catalog_by_productid,
+            catalog_by_name=catalog_by_name,
+        )
+        overage_loss_tl = round(overage_qty * unit_price, 2)
+        headroom_tl = round(headroom_qty * unit_price, 2)
+
+        status = compliance_row_status(
+            entitled_qty=entitled_qty,
+            used_qty=used_qty,
+            overage_qty=overage_qty,
+            efficiency_pct=eff_pct,
+            under_pct=under_pct,
+            over_pct=over_pct,
+        )
+
+        rows.append({
+            "category_code": cat_code,
+            "category_label": entitled_bucket.get("category_label") or meta["category_label"],
+            "gui_tab_binding": meta["gui_tab_binding"],
+            "resource_unit": meta["resource_unit"],
+            "entitled_qty": round(entitled_qty, 4),
+            "entitled_amount_tl": round(float(entitled_bucket.get("entitled_amount_tl") or 0), 2),
+            "used_qty": round(used_qty, 4),
+            "overage_qty": round(overage_qty, 4),
+            "headroom_qty": round(headroom_qty, 4),
+            "unit_price_tl": round(unit_price, 4),
+            "price_source": price_source,
+            "overage_loss_tl": overage_loss_tl,
+            "headroom_tl": headroom_tl,
             "efficiency_pct": eff_pct,
             "status": status,
             "usage_note": note,

@@ -236,6 +236,8 @@ def build_netbackup_kpi_defs(
         if show_post_dedup and used_pre > 0 and post_asset >= 0:
             savings_pct = round((1.0 - (post_asset / used_pre)) * 100.0, 1)
         has_signal = sold > 0 or used_pre > 0 or (show_post_dedup and post_asset > 0)
+        needs_to_sell = max(0.0, used_pre - sold)
+        headroom = max(0.0, sold - used_pre)
         defs.append(
             {
                 "category": cat,
@@ -245,6 +247,8 @@ def build_netbackup_kpi_defs(
                 "post": post_asset if show_post_dedup else None,
                 "margin": margin,
                 "savings_pct": savings_pct if show_post_dedup else None,
+                "needs_to_sell": needs_to_sell,
+                "headroom": headroom,
                 "has_signal": has_signal,
             }
         )
@@ -255,6 +259,10 @@ def build_license_compliance_strip(
     rows: list[dict[str, Any]] | None,
 ) -> html.Div:
     """Compact badge strip: green OK / red No license when usage exists."""
+    from shared.backup.license_compliance import LICENSE_COMPLIANCE_ENABLED
+
+    if not LICENSE_COMPLIANCE_ENABLED:
+        return html.Div()
     visible = visible_compliance_rows(rows)
     if not visible:
         return html.Div()
@@ -296,6 +304,10 @@ def build_license_compliance_cards(
     rows: list[dict[str, Any]] | None,
 ) -> html.Div | None:
     """Detailed compliance cards when usage exists (replaces CRM-only license table)."""
+    from shared.backup.license_compliance import LICENSE_COMPLIANCE_ENABLED
+
+    if not LICENSE_COMPLIANCE_ENABLED:
+        return None
     visible = visible_compliance_rows(rows)
     if not visible:
         return None
@@ -357,9 +369,9 @@ def build_backup_kpi_strip(
     kpi_defs: list[dict[str, Any]] | None,
     *,
     show_post_dedup: bool,
-    include_deeplink: bool = True,
+    include_deeplink: bool = False,
 ) -> html.Div:
-    """Summary Backup KPI strip with optional deeplink controls to Backup categories."""
+    """Backup sold-vs-used KPI strip (panel chrome). Deeplink optional for Summary."""
     tiles: list = []
     for d in kpi_defs or []:
         if not d.get("has_signal"):
@@ -416,6 +428,8 @@ def build_backup_kpi_strip(
         return html.Div()
 
     return html.Div(
+        className="nexus-card",
+        style={"padding": "16px 20px", "marginBottom": "12px"},
         children=[
             dmc.Text("Backup — sold vs used", size="sm", fw=700, c="#2B3674", mb="xs"),
             dmc.SimpleGrid(
@@ -423,7 +437,7 @@ def build_backup_kpi_strip(
                 spacing="md",
                 children=tiles,
             ),
-        ]
+        ],
     )
 
 
