@@ -136,11 +136,12 @@ def test_search_panel_forwards_the_flag():
 def test_filter_callback_draws_no_button_without_permission():
     seen: dict = {}
 
-    def _panel(releases, live, term, *, can_regenerate=False):
+    def _panel(releases, live, term, *, can_regenerate=False, pending=None):
         seen["flag"] = can_regenerate
         return "liste"
 
     with patch.object(cb, "can_edit", lambda uid, code: False), \
+         patch.object(cb.versions_crud, "pending_draft_notes", dict), \
          patch.object(cb.page, "load_releases", lambda: ([], None)), \
          patch.object(cb.vv, "search_panel", _panel):
         assert cb.filter_releases("", {"id": 5}) == "liste"
@@ -151,11 +152,12 @@ def test_filter_callback_draws_no_button_without_permission():
 def test_filter_callback_checks_the_regenerate_code():
     seen: dict = {}
 
-    def _panel(releases, live, term, *, can_regenerate=False):
+    def _panel(releases, live, term, *, can_regenerate=False, pending=None):
         seen["flag"] = can_regenerate
         return "liste"
 
     with patch.object(cb, "can_edit", lambda uid, code: code == CODE), \
+         patch.object(cb.versions_crud, "pending_draft_notes", dict), \
          patch.object(cb.page, "load_releases", lambda: ([], None)), \
          patch.object(cb.vv, "search_panel", _panel):
         cb.filter_releases("panel", {"id": 5})
@@ -166,11 +168,12 @@ def test_filter_callback_checks_the_regenerate_code():
 def test_filter_callback_draws_no_button_without_a_user():
     seen: dict = {}
 
-    def _panel(releases, live, term, *, can_regenerate=False):
+    def _panel(releases, live, term, *, can_regenerate=False, pending=None):
         seen["flag"] = can_regenerate
         return "liste"
 
     with patch.object(cb, "can_edit", lambda uid, code: True), \
+         patch.object(cb.versions_crud, "pending_draft_notes", dict), \
          patch.object(cb.page, "load_releases", lambda: ([], None)), \
          patch.object(cb.vv, "search_panel", _panel):
         cb.filter_releases("", None)
@@ -212,8 +215,9 @@ def test_callback_regenerates_for_the_clicked_version():
          patch.object(cb.ctx_helper, "triggered_version", lambda: "2026.08.1"), \
          patch.object(cb.versions_crud, "get_release_by_version", lambda v: {"id": 7}), \
          patch.object(cb.generator, "generate_for_release", lambda rid: seen.setdefault("rid", rid)), \
+         patch.object(cb.versions_crud, "pending_draft_notes", dict), \
          patch.object(cb.page, "load_releases", lambda: ([], None)), \
-         patch.object(cb.vv, "search_panel", lambda rels, live, t, *, can_regenerate=False: "yeni liste"):
+         patch.object(cb.vv, "search_panel", lambda rels, live, t, *, can_regenerate=False, pending=None: "yeni liste"):
         out = cb.regenerate_note([1], {"id": 5}, [{"type": "pv-regen", "version": "2026.08.1"}], "")
 
     assert seen["rid"] == 7
@@ -223,7 +227,7 @@ def test_callback_regenerates_for_the_clicked_version():
 def test_callback_keeps_the_search_term_after_regenerating():
     seen: dict = {}
 
-    def _panel(releases, live, term, *, can_regenerate=False):
+    def _panel(releases, live, term, *, can_regenerate=False, pending=None):
         seen["term"] = term
         return "yeni liste"
 
@@ -231,6 +235,7 @@ def test_callback_keeps_the_search_term_after_regenerating():
          patch.object(cb.ctx_helper, "triggered_version", lambda: "2026.08.1"), \
          patch.object(cb.versions_crud, "get_release_by_version", lambda v: {"id": 7}), \
          patch.object(cb.generator, "generate_for_release", lambda rid: None), \
+         patch.object(cb.versions_crud, "pending_draft_notes", dict), \
          patch.object(cb.page, "load_releases", lambda: ([], None)), \
          patch.object(cb.vv, "search_panel", _panel):
         cb.regenerate_note([1], {"id": 5}, [{"type": "pv-regen", "version": "2026.08.1"}], "panel")
@@ -261,6 +266,7 @@ def test_callback_still_redraws_when_generation_blows_up():
          patch.object(cb.ctx_helper, "triggered_version", lambda: "2026.08.1"), \
          patch.object(cb.versions_crud, "get_release_by_version", lambda v: {"id": 7}), \
          patch.object(cb.generator, "generate_for_release", _boom), \
+         patch.object(cb.versions_crud, "pending_draft_notes", dict), \
          patch.object(cb.page, "load_releases", lambda: ([], None)), \
-         patch.object(cb.vv, "search_panel", lambda rels, live, t, *, can_regenerate=False: "yeni liste"):
+         patch.object(cb.vv, "search_panel", lambda rels, live, t, *, can_regenerate=False, pending=None: "yeni liste"):
         assert cb.regenerate_note([1], {"id": 5}, [{"type": "pv-regen", "version": "2026.08.1"}], "") == "yeni liste"

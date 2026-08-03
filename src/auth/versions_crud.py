@@ -219,6 +219,26 @@ def set_draft_note(
     )
 
 
+def pending_draft_notes() -> dict[str, dict]:
+    """Onay bekleyen taslakları sürüm numarasına göre döndürür.
+
+    Anahtar `id` değil `version`: admin-api'nin `ReleaseOut` modelinde `id` alanı
+    yok (taslak alanları da bilerek yok), yani panel iki taşıma yolunda da ancak
+    sürüm numarası üzerinden eşleştirebiliyor.
+
+    Taslak metni buradan okunur, release listesinden değil. Böylece onaylanmamış
+    metin yalnızca yetkili kullanıcı için, tek ve açıkça kapılanmış bir yoldan
+    panele giriyor.
+    """
+    rows = db.fetch_all(
+        "SELECT pr.version, rn.release_id, rn.draft_headline, rn.draft_body, rn.model "
+        "FROM release_notes rn "
+        "JOIN platform_releases pr ON pr.id = rn.release_id "
+        "WHERE rn.draft_body IS NOT NULL"
+    )
+    return {str(r["version"]): dict(r) for r in rows}
+
+
 def confirm_draft_note(release_id: int) -> bool:
     """Taslağı yayına alır. Taslak yoksa hiçbir şey yazmaz ve False döner."""
     note = get_release_note(release_id)

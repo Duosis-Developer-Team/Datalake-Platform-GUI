@@ -179,8 +179,37 @@ def _count_badges(body: dict) -> dmc.Group | None:
     return dmc.Group(gap="xs", children=chips) if chips else None
 
 
+def _bucket_sections(body: dict) -> list:
+    """Kova başlıkları + maddeleri. Yayındaki not ve taslak aynı düzeni kullanır."""
+    sections: list = []
+    for key, _label, color, icon in BUCKETS:
+        items = (body or {}).get(key) or []
+        if not items:
+            continue
+        sections.append(
+            dmc.Stack(
+                gap=5,
+                children=[
+                    dmc.Group(
+                        gap=6,
+                        align="center",
+                        children=[
+                            DashIconify(icon=icon, width=14, color=f"var(--mantine-color-{color}-6)"),
+                            dmc.Text(
+                                _SECTION_LABELS[key], size="xs", fw=700, tt="none",
+                                c=f"var(--mantine-color-{color}-7)",
+                            ),
+                        ],
+                    ),
+                    *_bullet_rows(items, color),
+                ],
+            )
+        )
+    return sections
+
+
 def headline_block(rel: dict) -> dmc.Stack:
-    """Kartın gövdesi. Ham commit subject'i buraya asla girmez."""
+    """Kartın gövdesi. Ham commit subject'i ve taslak metin buraya asla girmez."""
     body = note_body(rel)
     source = note_source(rel)
     children: list = []
@@ -194,29 +223,7 @@ def headline_block(rel: dict) -> dmc.Stack:
         children.append(badges)
 
     if source == "model":
-        for key, _label, color, icon in BUCKETS:
-            items = body.get(key) or []
-            if not items:
-                continue
-            children.append(
-                dmc.Stack(
-                    gap=5,
-                    children=[
-                        dmc.Group(
-                            gap=6,
-                            align="center",
-                            children=[
-                                DashIconify(icon=icon, width=14, color=f"var(--mantine-color-{color}-6)"),
-                                dmc.Text(
-                                    _SECTION_LABELS[key], size="xs", fw=700, tt="none",
-                                    c=f"var(--mantine-color-{color}-7)",
-                                ),
-                            ],
-                        ),
-                        *_bullet_rows(items, color),
-                    ],
-                )
-            )
+        children.extend(_bucket_sections(body))
     else:
         children.append(dmc.Text(auto_summary_line(body), size="sm", c=ON_SURFACE))
         children.append(
@@ -283,10 +290,16 @@ def technical_section(rel: dict) -> dmc.Accordion:
     )
 
 
-def _version_line(rel: dict, *, live: bool, size: str) -> dmc.Group:
+def _version_line(rel: dict, *, live: bool, size: str, pending_draft: bool = False) -> dmc.Group:
     left = [dmc.Text(str(rel.get("version") or ""), fw=800, size=size, c=ON_SURFACE)]
     if live:
         left.append(dmc.Badge("Yayında", color="teal", variant="filled", size="sm", radius="sm"))
+    if pending_draft:
+        # Kapalı satırda da görünsün: onay bekleyen taslağı bulmak için satırları
+        # tek tek açmak gerekmesin.
+        left.append(
+            dmc.Badge("Taslak bekliyor", color="yellow", variant="light", size="sm", radius="sm")
+        )
     return dmc.Group(
         justify="space-between",
         align="center",
@@ -325,11 +338,108 @@ def _regenerate_row(rel: dict) -> dmc.Group:
     )
 
 
-def hero_card(rel: dict, *, live: bool = True, can_regenerate: bool = False) -> dmc.Paper:
+def confirm_button(version: str) -> dmc.Button:
+    return dmc.Button(
+        "Onayla ve yayına al",
+        id={"type": "pv-confirm", "version": str(version)},
+        variant="filled",
+        color="teal",
+        size="xs",
+        leftSection=DashIconify(icon="solar:check-circle-bold-duotone", width=14),
+    )
+
+
+def reject_button(version: str) -> dmc.Button:
+    return dmc.Button(
+        "Reddet",
+        id={"type": "pv-reject", "version": str(version)},
+        variant="subtle",
+        color="red",
+        size="xs",
+        leftSection=DashIconify(icon="solar:close-circle-bold-duotone", width=14),
+    )
+
+
+def draft_review_block(version: str, draft: dict) -> dmc.Paper:
+    """Onay bekleyen taslak + Onayla/Reddet düğmeleri.
+
+    Yalnızca yetkili kullanıcıya çizilir ve taslak metni yalnızca buradan görünür:
+    `headline_block` taslağa hiç bakmaz. Onaylanana kadar panelin geri kalanı
+    yayındaki (deterministik) notu göstermeye devam eder.
+    """
+    body = draft.get("draft_body")
+    body = body if isinstance(body, dict) else {}
+    children: list = [
+        dmc.Group(
+            justify="space-between",
+            align="center",
+            wrap="nowrap",
+            children=[
+                dmc.Group(
+                    gap=6,
+                    align="center",
+                    children=[
+                        DashIconify(
+                            icon="solar:pen-new-square-bold-duotone",
+                            width=15,
+                            color="var(--mantine-color-yellow-7)",
+                        ),
+                        dmc.Text(
+                            "ONAY BEKLEYEN TASLAK", size="xs", fw=700, tt="none",
+                            c="var(--mantine-color-yellow-8)",
+                        ),
+                    ],
+                ),
+                dmc.Text(str(draft.get("model") or ""), size="xs", c="dimmed", ff="monospace"),
+            ],
+        )
+    ]
+
+    headline = draft.get("draft_headline")
+    if headline:
+        children.append(dmc.Text(str(headline), fw=600, size="md", c=ON_SURFACE))
+
+    sections = _bucket_sections(body)
+    if sections:
+        children.extend(sections)
+    else:
+        children.append(dmc.Text("Taslak boş görünüyor.", size="sm", c="dimmed"))
+
+    children.append(
+        dmc.Text(
+            "Onaylamadan bu metin panelde görünmez; kullanıcılar otomatik özeti görür.",
+            size="xs",
+            c="dimmed",
+        )
+    )
+    children.append(
+        dmc.Group(
+            justify="flex-end",
+            gap="xs",
+            children=[reject_button(version), confirm_button(version)],
+        )
+    )
+    return dmc.Paper(
+        withBorder=True,
+        radius="md",
+        p="md",
+        style={
+            "borderColor": "var(--mantine-color-yellow-4)",
+            "background": "var(--mantine-color-yellow-0)",
+        },
+        children=dmc.Stack(gap=10, children=children),
+    )
+
+
+def hero_card(
+    rel: dict, *, live: bool = True, can_regenerate: bool = False, draft: dict | None = None
+) -> dmc.Paper:
     """Listenin başındaki büyük kart. `live=False` ise "Yayında" rozeti çizilmez."""
     children: list = [_version_line(rel, live=live, size="xl")]
     if can_regenerate:
         children.append(_regenerate_row(rel))
+    if draft:
+        children.append(draft_review_block(str(rel.get("version") or ""), draft))
     children.append(headline_block(rel))
     children.append(technical_section(rel))
     return dmc.Paper(
@@ -341,15 +451,22 @@ def hero_card(rel: dict, *, live: bool = True, can_regenerate: bool = False) -> 
     )
 
 
-def history_row(rel: dict, *, can_regenerate: bool = False) -> dmc.AccordionItem:
+def history_row(
+    rel: dict, *, can_regenerate: bool = False, draft: dict | None = None
+) -> dmc.AccordionItem:
     """Geçmiş sürüm — kapalı satır, açılınca notu gösterir."""
-    panel: list = [headline_block(rel), technical_section(rel)]
+    panel: list = []
+    if draft:
+        panel.append(draft_review_block(str(rel.get("version") or ""), draft))
+    panel.extend([headline_block(rel), technical_section(rel)])
     if can_regenerate:
         panel.append(_regenerate_row(rel))
     return dmc.AccordionItem(
         value=str(rel.get("version") or ""),
         children=[
-            dmc.AccordionControl(_version_line(rel, live=False, size="md")),
+            dmc.AccordionControl(
+                _version_line(rel, live=False, size="md", pending_draft=bool(draft))
+            ),
             dmc.AccordionPanel(dmc.Stack(gap=12, children=panel)),
         ],
     )
@@ -387,13 +504,27 @@ def stat_strip(releases: list[dict], live_version: str | None) -> dmc.Paper:
 
 
 def release_list(
-    releases: list[dict], live_version: str | None, *, can_regenerate: bool = False
+    releases: list[dict],
+    live_version: str | None,
+    *,
+    can_regenerate: bool = False,
+    pending: dict[str, dict] | None = None,
 ) -> html.Div:
-    """Hero kartı + ay ayraçlarıyla ayrılmış geçmiş satırları."""
+    """Hero kartı + ay ayraçlarıyla ayrılmış geçmiş satırları.
+
+    `pending` onay bekleyen taslakları sürüme göre taşır. Yetkisi olmayana taslak
+    hiç çizilmez — çağıran zaten boş sözlük gönderiyor, buradaki `can_regenerate`
+    kontrolü ikinci kat.
+    """
     if not releases:
         return html.Div(
             dmc.Text("Aramanla eşleşen sürüm yok.", size="sm", c="dimmed")
         )
+
+    def _draft(rel: dict) -> dict | None:
+        if not can_regenerate:
+            return None
+        return (pending or {}).get(str(rel.get("version") or "")) or None
 
     children: list = []
     hero_index = None
@@ -404,8 +535,9 @@ def release_list(
     hero_is_live = hero_index is not None
     if hero_index is None:
         hero_index = 0
+    hero = releases[hero_index]
     children.append(
-        hero_card(releases[hero_index], live=hero_is_live, can_regenerate=can_regenerate)
+        hero_card(hero, live=hero_is_live, can_regenerate=can_regenerate, draft=_draft(hero))
     )
 
     rest = [r for i, r in enumerate(releases) if i != hero_index]
@@ -427,7 +559,7 @@ def release_list(
                     color=_RAIL,
                 )
             )
-        items.append(history_row(rel, can_regenerate=can_regenerate))
+        items.append(history_row(rel, can_regenerate=can_regenerate, draft=_draft(rel)))
     if items:
         children.append(dmc.Accordion(variant="separated", chevronPosition="left", children=items))
 
@@ -440,18 +572,21 @@ def search_panel(
     term: str,
     *,
     can_regenerate: bool = False,
+    pending: dict[str, dict] | None = None,
 ) -> html.Div:
     """Arama sonucunun tamamı: onu özetleyen şerit + kartlar.
 
     `versions.render_list` ile aynı düzeni kurar; farkı, yetkiye göre "Yeniden üret"
-    düğmesini de çizebilmesidir. Şerit listeyle birlikte hesaplanır, böylece sayılar
-    hep ekranda duran release'leri anlatır.
+    düğmesini ve onay bekleyen taslakları da çizebilmesidir. Şerit listeyle birlikte
+    hesaplanır, böylece sayılar hep ekranda duran release'leri anlatır.
     """
     visible = [r for r in releases if matches_search(r, term)]
     shown_live = live_version if any(is_live(r, live_version) for r in visible) else None
     return html.Div(
         [
             stat_strip(visible, shown_live),
-            release_list(visible, shown_live, can_regenerate=can_regenerate),
+            release_list(
+                visible, shown_live, can_regenerate=can_regenerate, pending=pending
+            ),
         ]
     )
