@@ -36,6 +36,41 @@ from src.utils.export_helpers import (
 logger = logging.getLogger(__name__)
 
 
+def _stale_refresh_banner(payload: dict[str, Any]) -> html.Div | None:
+    if not payload.get("stale"):
+        return None
+    return dmc.Alert(
+        title="Showing last known inventory data",
+        color="yellow",
+        variant="light",
+        icon=DashIconify(icon="solar:clock-circle-bold-duotone", width=20),
+        mb="md",
+        children=dmc.Text(
+            "A fresh inventory snapshot is being loaded in the background.",
+            size="sm",
+        ),
+    )
+
+
+def _inventory_warming_alert() -> dmc.Alert:
+    return dmc.Alert(
+        title="Inventory warming",
+        color="blue",
+        variant="light",
+        icon=DashIconify(icon="solar:refresh-circle-bold-duotone", width=20),
+        children="Inventory overview is being prepared. Please retry in a moment.",
+    )
+
+
+def _is_inventory_warming_or_empty(payload: dict[str, Any]) -> bool:
+    if payload.get("error") == "inventory_warming":
+        return True
+    summary = payload.get("summary") or {}
+    if summary.get("panel_count"):
+        return False
+    return not (payload.get("panels") or payload.get("families"))
+
+
 def _unmapped_banner(summary: dict[str, Any], products: list[dict[str, Any]]) -> html.Div | None:
     count = int(summary.get("unmapped_entitled_count") or 0)
     catalog_unmapped = int(summary.get("unmapped_product_count") or 0)
@@ -99,6 +134,8 @@ def _fill_crm_inventory_content(pathname, visible_sections):
             color="red",
             children="Could not load CRM inventory overview. Please retry in a moment.",
         )
+    if _is_inventory_warming_or_empty(payload):
+        return _inventory_warming_alert()
     return build_layout_content(payload)
 
 
@@ -114,6 +151,7 @@ def build_layout_content(payload: dict[str, Any]) -> html.Div:
             dcc.Store(id="crm-inventory-store", data=payload),
             dcc.Download(id="crm-inventory-export-download"),
             dcc.Download(id="crm-inventory-export-pdf-download"),
+            _stale_refresh_banner(payload),
             build_inventory_shell(summary, unmapped),
             _unmapped_banner(summary, unmapped),
             html.Div(id="crm-inventory-report-body", children=report_sections),

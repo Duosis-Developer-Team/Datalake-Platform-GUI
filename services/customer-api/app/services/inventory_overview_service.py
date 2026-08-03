@@ -31,8 +31,12 @@ from shared.sellable.models import PanelResult, ResourceRatio
 
 logger = logging.getLogger(__name__)
 
-_INVENTORY_CACHE_TTL_SEC = float(os.getenv("INVENTORY_OVERVIEW_CACHE_TTL", "600") or "600")
+# TTL ≥ 4× scheduler refresh (15m) — CACHE_STRATEGY §4a / TASK-01.
+_INVENTORY_CACHE_TTL_SEC = float(os.getenv("INVENTORY_OVERVIEW_CACHE_TTL", "3600") or "3600")
 _INVENTORY_REDIS_PREFIX = "crm:inventory_overview:"
+_INVENTORY_LAST_GOOD_SUFFIX = ":last_good"
+_INVENTORY_LOCK_SUFFIX = ":lock"
+_INVENTORY_LOCK_TTL_SEC = int(os.getenv("INVENTORY_OVERVIEW_LOCK_TTL", "300") or "300")
 _INVENTORY_DC_PARALLELISM = max(1, int(os.getenv("INVENTORY_DC_PARALLELISM", "4") or "4"))
 
 # Dual-track sellable profile (allocation / max util / avg util) for inventory UI.
@@ -1584,21 +1588,141 @@ class InventoryOverviewService:
             panel=None,
         )
 
+    @staticmethod
+    def _annotate_cache(payload: dict[str, Any], status: str, *, stale: bool) -> dict[str, Any]:
+        out = dict(payload)
+        out["cache_status"] = status
+        out["stale"] = bool(stale)
+        return out
+
+    def _redis_get_json(self, key: str) -> dict[str, Any] | None:
+        if self._crm_redis is None:
+            return None
+        try:
+            raw = self._crm_redis.get(key)
+            if not raw:
+                return None
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        except Exception:  # noqa: BLE001
+            logger.debug("inventory overview redis get failed key=%s", key, exc_info=True)
+            return None
+
+    def write_inventory_cache(self, dc_code: str, payload: dict[str, Any]) -> None:
+        """Write primary + last_good shadow key (TTL×2). Never deletes before write."""
+        if self._crm_redis is None:
+            return
+        cache_key = f"{_INVENTORY_REDIS_PREFIX}{dc_code or '*'}"
+        last_good_key = f"{cache_key}{_INVENTORY_LAST_GOOD_SUFFIX}"
+        ttl = max(1, int(_INVENTORY_CACHE_TTL_SEC))
+        try:
+            body = json.dumps(payload, default=str)
+            self._crm_redis.setex(cache_key, ttl, body)
+            self._crm_redis.setex(last_good_key, ttl * 2, body)
+        except Exception:  # noqa: BLE001
+            logger.debug("inventory overview cache write failed", exc_info=True)
+
+    def _try_acquire_inventory_lock(self, cache_key: str) -> bool:
+        if self._crm_redis is None:
+            return True
+        lock_key = f"{cache_key}{_INVENTORY_LOCK_SUFFIX}"
+        try:
+            return bool(
+                self._crm_redis.set(lock_key, "1", nx=True, ex=_INVENTORY_LOCK_TTL_SEC)
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("inventory lock acquire failed", exc_info=True)
+            return True
+
+    def _release_inventory_lock(self, cache_key: str) -> None:
+        if self._crm_redis is None:
+            return
+        lock_key = f"{cache_key}{_INVENTORY_LOCK_SUFFIX}"
+        try:
+            self._crm_redis.delete(lock_key)
+        except Exception:  # noqa: BLE001
+            logger.debug("inventory lock release failed", exc_info=True)
+
     def compute_inventory_overview(
         self,
         dc_code: str = "*",
         *,
         force_recompute: bool = False,
+        bypass_cache_read: bool = False,
     ) -> dict[str, Any]:
-        cache_key = f"{_INVENTORY_REDIS_PREFIX}{dc_code or '*'}"
-        if not force_recompute and self._crm_redis is not None:
-            try:
-                raw = self._crm_redis.get(cache_key)
-                if raw:
-                    return json.loads(raw)
-            except Exception:  # noqa: BLE001
-                logger.debug("inventory overview cache read failed", exc_info=True)
+        """Build inventory overview with Redis primary + last_good + single-flight.
 
+        ``force_recompute`` forces sellable recompute and bypasses cache read.
+        ``bypass_cache_read`` rebuilds from sellable tiers without forcing sellable
+        recompute (soft warm / write-through).
+        """
+        cache_key = f"{_INVENTORY_REDIS_PREFIX}{dc_code or '*'}"
+        last_good_key = f"{cache_key}{_INVENTORY_LAST_GOOD_SUFFIX}"
+        skip_read = force_recompute or bypass_cache_read
+
+        if not skip_read:
+            primary = self._redis_get_json(cache_key)
+            if primary is not None:
+                return self._annotate_cache(primary, "hit", stale=False)
+
+            last_good = self._redis_get_json(last_good_key)
+            acquired = self._try_acquire_inventory_lock(cache_key)
+            if not acquired:
+                if last_good is not None:
+                    return self._annotate_cache(last_good, "stale", stale=True)
+                return self._annotate_cache(
+                    {
+                        "dc_code": dc_code or "*",
+                        "summary": {},
+                        "families": [],
+                        "panels": [],
+                        "crm_only_panels": [],
+                        "unmapped_products": [],
+                        "error": "inventory_warming",
+                    },
+                    "miss",
+                    stale=False,
+                )
+            try:
+                payload = self._build_inventory_overview(
+                    dc_code, force_recompute=False
+                )
+                self.write_inventory_cache(dc_code or "*", payload)
+                return self._annotate_cache(payload, "miss", stale=False)
+            except Exception:
+                logger.exception("inventory overview compute failed dc=%s", dc_code)
+                if last_good is not None:
+                    return self._annotate_cache(last_good, "stale", stale=True)
+                raise
+            finally:
+                self._release_inventory_lock(cache_key)
+
+        acquired = self._try_acquire_inventory_lock(cache_key)
+        if not acquired and not force_recompute:
+            last_good = self._redis_get_json(last_good_key) or self._redis_get_json(cache_key)
+            if last_good is not None:
+                return self._annotate_cache(last_good, "stale", stale=True)
+
+        try:
+            payload = self._build_inventory_overview(
+                dc_code, force_recompute=force_recompute
+            )
+            self.write_inventory_cache(dc_code or "*", payload)
+            return self._annotate_cache(
+                payload,
+                "miss" if force_recompute else "hit",
+                stale=False,
+            )
+        finally:
+            if acquired:
+                self._release_inventory_lock(cache_key)
+
+    def _build_inventory_overview(
+        self,
+        dc_code: str,
+        *,
+        force_recompute: bool = False,
+    ) -> dict[str, Any]:
         calc = self._config.get_calc_dict() if self._config else {}
         under_pct = float(calc.get("efficiency.under_pct", 80.0))
         over_pct = float(calc.get("efficiency.over_pct", 110.0))
@@ -1808,19 +1932,26 @@ class InventoryOverviewService:
             "unmapped_products": unmapped_products,
         }
 
-        if self._crm_redis is not None:
-            try:
-                self._crm_redis.setex(
-                    cache_key,
-                    int(_INVENTORY_CACHE_TTL_SEC),
-                    json.dumps(payload, default=str),
-                )
-            except Exception:  # noqa: BLE001
-                logger.debug("inventory overview cache write failed", exc_info=True)
-
         return payload
 
-    def warm_inventory_cache(self, dc_code: str = "*") -> dict[str, Any]:
-        """Prewarm Redis inventory overview cache (scheduler / admin refresh)."""
-        logger.info("inventory overview: warming cache dc=%s", dc_code or "*")
-        return self.compute_inventory_overview(dc_code=dc_code, force_recompute=True)
+    def warm_inventory_cache(
+        self,
+        dc_code: str = "*",
+        *,
+        force_recompute: bool = False,
+    ) -> dict[str, Any]:
+        """Prewarm Redis inventory overview (write-through; never deletes first).
+
+        Soft warm (default): rebuild from sellable tier caches without forcing
+        sellable recompute. Admin/explicit refresh may pass ``force_recompute=True``.
+        """
+        logger.info(
+            "inventory overview: warming cache dc=%s force_recompute=%s",
+            dc_code or "*",
+            force_recompute,
+        )
+        return self.compute_inventory_overview(
+            dc_code=dc_code,
+            force_recompute=force_recompute,
+            bypass_cache_read=True,
+        )

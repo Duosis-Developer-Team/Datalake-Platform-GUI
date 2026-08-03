@@ -210,10 +210,17 @@ _INTERACTIVE_TIMEOUT = httpx.Timeout(
     _INTERACTIVE_READ_TIMEOUT, connect=5.0, read=_INTERACTIVE_READ_TIMEOUT,
     write=_INTERACTIVE_READ_TIMEOUT, pool=5.0,
 )
-_INVENTORY_READ_TIMEOUT = float(os.getenv("API_INVENTORY_READ_TIMEOUT", "300") or "300")
+_INVENTORY_READ_TIMEOUT = float(os.getenv("API_INVENTORY_READ_TIMEOUT", "8") or "8")
+_INVENTORY_WARM_READ_TIMEOUT = float(
+    os.getenv("API_INVENTORY_WARM_READ_TIMEOUT", "300") or "300"
+)
 _INVENTORY_TIMEOUT = httpx.Timeout(
     _INVENTORY_READ_TIMEOUT, connect=10.0, read=_INVENTORY_READ_TIMEOUT,
     write=_INVENTORY_READ_TIMEOUT, pool=10.0,
+)
+_INVENTORY_WARM_TIMEOUT = httpx.Timeout(
+    _INVENTORY_WARM_READ_TIMEOUT, connect=10.0, read=_INVENTORY_WARM_READ_TIMEOUT,
+    write=_INVENTORY_WARM_READ_TIMEOUT, pool=10.0,
 )
 
 # Warm mode: fetches inside use the long inventory timeout so genuinely-slow cold
@@ -245,7 +252,7 @@ def _tls_client(attr: str, base_url: str) -> httpx.Client:
     if c is None:
         c = httpx.Client(
             base_url=base_url,
-            timeout=_INVENTORY_TIMEOUT if warm else _INTERACTIVE_TIMEOUT,
+            timeout=_INVENTORY_WARM_TIMEOUT if warm else _INTERACTIVE_TIMEOUT,
             transport=_new_http_transport(),
         )
         setattr(_HTTP_TLS, key, c)
@@ -420,6 +427,115 @@ def _api_cache_get_sellable_panels(
         if hit is not None:
             return _clone(hit)
         return []
+
+
+_inventory_swr_refresh_lock = threading.Lock()
+_inventory_swr_refreshing: set[str] = set()
+
+
+def _should_persist_inventory_cache(value: Any) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    if value.get("error") == "inventory_warming":
+        return False
+    summary = value.get("summary") or {}
+    if not value.get("panels") and not summary.get("panel_count"):
+        return False
+    return True
+
+
+def _schedule_inventory_swr_refresh(
+    cache_key: str,
+    fetch_normalized: Callable[[], dict],
+) -> None:
+    with _inventory_swr_refresh_lock:
+        if cache_key in _inventory_swr_refreshing:
+            return
+        _inventory_swr_refreshing.add(cache_key)
+
+    def _bg() -> None:
+        try:
+            with warm_mode():
+                out = fetch_normalized()
+            if _should_persist_inventory_cache(out):
+                _api_response_cache.set(cache_key, out)
+                _mark_fetched(cache_key)
+        except _HTTP_ERRORS as exc:
+            logger.warning(
+                "inventory SWR background refresh failed key=%s: %s",
+                cache_key,
+                exc,
+            )
+        finally:
+            with _inventory_swr_refresh_lock:
+                _inventory_swr_refreshing.discard(cache_key)
+
+    threading.Thread(
+        target=_bg,
+        daemon=True,
+        name=f"inv-swr-{cache_key[-24:]}",
+    ).start()
+
+
+def _api_cache_get_inventory_overview(
+    cache_key: str,
+    fetch_normalized: Callable[[], dict],
+) -> dict:
+    """True SWR for CRM inventory overview: serve fresh immediately; on stale serve
+    cached payload and refresh in a background thread; on miss block on short fetch."""
+    cached = _api_response_cache.get(cache_key)
+    if cached is not None and _is_fresh(cache_key):
+        _record_cache_hit()
+        out = _clone(cached)
+        if isinstance(out, dict):
+            out.setdefault("cache_status", "hit")
+            out.setdefault("stale", False)
+        return out if isinstance(out, dict) else {}
+
+    if cached is not None:
+        _record_cache_hit()
+        _schedule_inventory_swr_refresh(cache_key, fetch_normalized)
+        out = _clone(cached)
+        if isinstance(out, dict):
+            out = dict(out)
+            out["cache_status"] = "stale"
+            out["stale"] = True
+            return out
+        return {}
+
+    _record_cache_miss()
+
+    with _inflight_lock:
+        ev = _inflight.get(cache_key)
+        leader = ev is None
+        if leader:
+            ev = threading.Event()
+            _inflight[cache_key] = ev
+    if not leader:
+        ev.wait(timeout=_INFLIGHT_WAIT_SECONDS)
+        hit = _api_response_cache.get(cache_key)
+        return _clone(hit) if hit is not None else {}
+
+    try:
+        t0 = time.time()
+        try:
+            out = fetch_normalized()
+            _record_cache_fetch(time.time() - t0)
+            if _should_persist_inventory_cache(out):
+                _api_response_cache.set(cache_key, out)
+                _mark_fetched(cache_key)
+            return out
+        except _HTTP_ERRORS as exc:
+            _record_cache_fetch(time.time() - t0, error=True)
+            logger.warning("inventory overview fetch failed key=%s: %s", cache_key, exc)
+            hit = _api_response_cache.get(cache_key)
+            if hit is not None:
+                return _clone(hit)
+            return {}
+    finally:
+        with _inflight_lock:
+            _inflight.pop(cache_key, None)
+        ev.set()
 
 
 def _api_cache_get_sellable_summary(
@@ -2825,19 +2941,25 @@ def get_crm_inventory_overview(dc_code: str = "*", *, force_recompute: bool = Fa
         if force_recompute:
             params.append(("force_recompute", "true"))
         qs = urlencode(params)
+        timeout = (
+            _INVENTORY_WARM_TIMEOUT
+            if (_WARM_MODE.get() or force_recompute)
+            else _INVENTORY_TIMEOUT
+        )
         with httpx.Client(
             base_url=CRM_ENGINE_URL,
-            timeout=_INVENTORY_TIMEOUT,
+            timeout=timeout,
             transport=_new_http_transport(),
         ) as client:
             data = _get_json(client, f"/api/v1/crm/inventory-overview?{qs}")
         return data if isinstance(data, dict) else {}
 
     if force_recompute:
-        return fetch()
+        with warm_mode():
+            return fetch()
 
     cache_key = f"api:crm_inventory_overview:{dc_code}"
-    return _api_cache_get_sellable_summary(cache_key, fetch, dc_code)
+    return _api_cache_get_inventory_overview(cache_key, fetch)
 
 
 def _normalize_clusters_arg(clusters: Optional[list]) -> Optional[list[str]]:

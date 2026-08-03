@@ -1605,14 +1605,33 @@ def test_ensure_s3_site_panels_injects_missing_nodes():
     sellable.compute_site_scoped_panels.assert_called_once()
 
 
-def test_warm_inventory_cache_force_recomputes_and_writes_redis(inventory_svc):
+def test_warm_inventory_cache_soft_default_bypasses_cache_read(inventory_svc):
+    inventory_svc.compute_inventory_overview = MagicMock(
+        return_value={"dc_code": "*", "summary": {}},
+    )
+
+    result = inventory_svc.warm_inventory_cache("*")
+
+    inventory_svc.compute_inventory_overview.assert_called_once_with(
+        dc_code="*",
+        force_recompute=False,
+        bypass_cache_read=True,
+    )
+    assert result["dc_code"] == "*"
+
+
+def test_warm_inventory_cache_force_recompute_and_writes_redis(inventory_svc):
     redis = MagicMock()
     inventory_svc._crm_redis = redis
     inventory_svc.compute_inventory_overview = MagicMock(return_value={"dc_code": "*", "summary": {}})
 
-    result = inventory_svc.warm_inventory_cache("*")
+    result = inventory_svc.warm_inventory_cache("*", force_recompute=True)
 
-    inventory_svc.compute_inventory_overview.assert_called_once_with(dc_code="*", force_recompute=True)
+    inventory_svc.compute_inventory_overview.assert_called_once_with(
+        dc_code="*",
+        force_recompute=True,
+        bypass_cache_read=True,
+    )
     assert result["dc_code"] == "*"
 
 
