@@ -115,9 +115,17 @@ BACKUP_COMPARISON_CATEGORIES: List[Dict[str, str]] = [
     },
 ]
 
-_CATALOG_PRODUCT_NAMES = sorted(
-    {str(c["catalog_product_name"]) for c in VIRT_COMPARISON_CATEGORIES}
-)
+def _all_compliance_categories() -> List[Dict[str, str]]:
+    """Virt + backup + licensed-OS rows used for price/name resolution.
+
+    Defined as a function (not a module constant) so ``LICENSED_OS_CATEGORIES``
+    can live later in this file without forward-reference issues at import time.
+    """
+    return (
+        list(VIRT_COMPARISON_CATEGORIES)
+        + list(BACKUP_COMPARISON_CATEGORIES)
+        + list(LICENSED_OS_CATEGORIES)
+    )
 
 
 def _norm(s: str | None) -> str:
@@ -156,7 +164,9 @@ def normalize_entitled_qty(
 def _category_index(
     categories: List[Dict[str, str]] | None = None,
 ) -> Dict[str, Dict[str, str]]:
-    cats = categories or VIRT_COMPARISON_CATEGORIES
+    # Default must cover backup + licence families: unsold-usage rows have no
+    # product_ids, so resolve_unit_price_tl falls back to catalog_product_name.
+    cats = categories if categories is not None else _all_compliance_categories()
     return {c["category_code"]: c for c in cats}
 
 
@@ -722,7 +732,14 @@ def derive_catalog_overuse_status(
 
 
 def catalog_product_names_for_compliance() -> List[str]:
-    return list(_CATALOG_PRODUCT_NAMES)
+    """Catalog SKU names needed to price virt, backup, and licensed-OS rows."""
+    return sorted(
+        {
+            str(c["catalog_product_name"])
+            for c in _all_compliance_categories()
+            if c.get("catalog_product_name")
+        }
+    )
 
 
 def group_entitled_by_customer(

@@ -6,6 +6,8 @@ from app.utils.usage_comparison import (
     BACKUP_COMPARISON_CATEGORIES,
     aggregate_entitled_by_category,
     build_backup_compliance,
+    catalog_product_names_for_compliance,
+    resolve_unit_price_tl,
 )
 
 
@@ -94,3 +96,67 @@ def test_aggregate_entitled_accepts_backup_categories():
     agg = aggregate_entitled_by_category(raw, mapping, categories=BACKUP_COMPARISON_CATEGORIES)
     assert "backup_netbackup_image" in agg
     assert agg["backup_netbackup_image"]["entitled_qty"] == 10
+
+
+def test_catalog_product_names_include_backup_and_licence_skus():
+    names = catalog_product_names_for_compliance()
+    assert "Klasik Mimari NetBackup VMware" in names
+    assert "Klasik Mimari Veeam Replication CPU" in names
+    assert "MS Windows Lisans" in names
+    assert "SUSE Lisans Bedeli" in names
+    assert "Hyperconverged Mimari Intel CPU" in names
+
+
+def test_unsold_backup_uses_catalog_product_name_unit_price():
+    """Unsold usage has no product_ids — price must resolve via catalog SKU name."""
+    catalog = {
+        "Klasik Mimari NetBackup VMware": 12.5,
+        "Klasik Mimari Veeam Replication CPU": 100.0,
+    }
+    price, src = resolve_unit_price_tl(
+        category_code="backup_netbackup_image",
+        product_ids=[],
+        weighted_prices={},
+        price_overrides={},
+        catalog_by_productid={},
+        catalog_by_name=catalog,
+    )
+    assert price == 12.5
+    assert src == "catalog_name"
+
+    rows, _ = build_backup_compliance(
+        entitled_agg={},
+        assets={},
+        totals={
+            "backup": {
+                "netbackup_pre_dedup_gib": 100.0,
+                "replication_resources": {
+                    "veeam_dr": {"cpu": 4, "memory_gb": 0, "disk_gb": 0},
+                    "zerto": {"cpu": 0, "memory_gb": 0, "disk_gb": 0},
+                },
+            }
+        },
+        weighted_prices={},
+        price_overrides={},
+        catalog_by_productid={},
+        catalog_by_name=catalog,
+    )
+    by_code = {r["category_code"]: r for r in rows}
+    nb = by_code["backup_netbackup_image"]
+    assert nb["unit_price_tl"] == 12.5
+    assert nb["price_source"] == "catalog_name"
+    assert nb["overage_loss_tl"] == 1250.0
+    assert by_code["backup_veeam_replication_cpu"]["overage_loss_tl"] == 400.0
+
+
+def test_unsold_windows_licence_uses_catalog_product_name():
+    price, src = resolve_unit_price_tl(
+        category_code="license_windows_os",
+        product_ids=[],
+        weighted_prices={},
+        price_overrides={},
+        catalog_by_productid={},
+        catalog_by_name={"MS Windows Lisans": 446.63},
+    )
+    assert price == 446.63
+    assert src == "catalog_name"
