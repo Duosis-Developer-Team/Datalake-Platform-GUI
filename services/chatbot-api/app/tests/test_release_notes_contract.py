@@ -100,6 +100,25 @@ def test_system_prompt_caps_bullets_so_output_cannot_grow_with_commit_count(monk
     assert "en fazla 8 madde" in system
 
 
+def test_system_prompt_asks_for_customer_language_not_a_commit_translation(monkeypatch):
+    """İlk sürümde prompt "commit listesini nota çevir" diyordu ve model de aynen
+    çeviriyordu: panelde "Sellable çip başlıkları", "_kpi_strip sorunu", "Phase A/B
+    kapsama akışı" gibi maddeler çıkıyordu. Müşteri bunlardan bir şey anlamıyor.
+
+    Prompt artık okuyucuyu müşteri olarak tanımlıyor, iç terimleri yasaklıyor ve
+    her maddeyi "kullanıcı ne yapabiliyor" sorusuna bağlıyor.
+    """
+    fake = _mock_llm(monkeypatch, answer='{"added": [], "fixed": [], "improved": []}')
+    client.post("/api/v1/release-notes/generate", json=_REQ)
+    system = fake.seen[0][0]["content"]
+    assert "müşteri" in system
+    assert "ÇEVİRMEK değil" in system
+    assert "İÇ TERİM KULLANMA" in system
+    # Uydurma yasağı bu yeniden yazımda kaybolmamalı: müşteri diline çevirmek,
+    # olmayan sayı/iddia eklemek demek değil.
+    assert "YENİ BİLGİ EKLEYEMEZSİN" in system
+
+
 def test_unparsable_answer_is_logged_with_its_tail(monkeypatch, caplog):
     """Kuyruk loglanmazsa kesilme ile saçmalama ayırt edilemiyor.
 
