@@ -4,10 +4,15 @@
 
 ## Gerekli mi?
 
-Hayır — panel ve "Yeniden üret" düğmesi bu token'ı kullanmaz, o iş pod'un içinde
-sunucu tarafında koşar. Token yalnızca release'i **dışarıdan** açan script'ler için
-gerekli. Secret tanımlı değilse `/internal/platform/releases*` yolları 503 döner ve
-panelde hiçbir şey değişmez.
+Hayır. Not üretme ve onaylama döngüsünün tamamı panelde kapanıyor: "Yeniden üret"
+taslağı üretir, "Onayla ve yayına al" onu yayına alır, "Reddet" siler. Üçü de
+pod'un içinde, sunucu tarafında koşar ve token kullanmaz — yetkileri
+`sec:settings_platform_versions:regenerate` kodundan gelir.
+
+Token yalnızca release'i **dışarıdan** açan script'ler için gerekli
+(`scripts/new_release.py`, `scripts/regenerate_release_notes.py`). Secret tanımlı
+değilse `/internal/platform/releases*` yolları 503 döner ve panelde hiçbir şey
+değişmez.
 
 ## Üretme
 
