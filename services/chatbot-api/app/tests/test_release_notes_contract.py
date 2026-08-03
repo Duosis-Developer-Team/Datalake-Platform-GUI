@@ -25,9 +25,11 @@ def _mock_llm(monkeypatch, answer=None, error=None):
     class _FakeLLM:
         def __init__(self):
             self.seen = []
+            self.kwargs = {}
 
         def complete(self, messages, model=None, **kwargs):
             self.seen.append(messages)
+            self.kwargs = kwargs
             if error is not None:
                 raise error
             return LLMResult(answer=answer, model="gpt-oss-120b", usage={})
@@ -75,6 +77,41 @@ def test_generate_reports_failed_on_unparsable_answer(monkeypatch):
     assert r.status_code == 200
     assert r.json()["status"] == "failed"
     assert r.json()["detail"] == "unparsable"
+
+
+def test_generate_asks_for_enough_tokens_to_finish_the_json(monkeypatch):
+    """Kesilen çıktı `unparsable` diye görünür, `truncated` diye değil.
+
+    192 commit'lik bir sürümde 1200 token yetmiyor ve JSON yarım kalıyordu; üç
+    denemenin üçü de aynı sebeple düşüyordu. Sınırı burada sabitliyoruz ki bir
+    daha sessizce daraltılmasın.
+    """
+    fake = _mock_llm(monkeypatch, answer='{"added": [], "fixed": [], "improved": []}')
+    client.post("/api/v1/release-notes/generate", json=_REQ)
+    assert fake.kwargs["max_tokens"] >= 4000
+
+
+def test_system_prompt_caps_bullets_so_output_cannot_grow_with_commit_count(monkeypatch):
+    """Token sınırını yükseltmek tek başına yetmez: 192 maddelik bir not zaten
+    kullanıcıya bir şey anlatmaz. Asıl tavan kova başına madde sayısında."""
+    fake = _mock_llm(monkeypatch, answer='{"added": [], "fixed": [], "improved": []}')
+    client.post("/api/v1/release-notes/generate", json=_REQ)
+    system = fake.seen[0][0]["content"]
+    assert "en fazla 8 madde" in system
+
+
+def test_unparsable_answer_is_logged_with_its_tail(monkeypatch, caplog):
+    """Kuyruk loglanmazsa kesilme ile saçmalama ayırt edilemiyor.
+
+    Sunucuda `unparsable` gördüğümüzde elimizde sebebi gösterecek hiçbir şey yoktu.
+    """
+    truncated = '{"headline": "X", "added": [{"text": "yarım kalan madde'
+    _mock_llm(monkeypatch, answer=truncated)
+    with caplog.at_level("WARNING"):
+        data = client.post("/api/v1/release-notes/generate", json=_REQ).json()
+    assert data["detail"] == "unparsable"
+    assert "yarım kalan madde" in caplog.text
+    assert "chars=" in caplog.text
 
 
 def test_generate_reports_failed_on_llm_error(monkeypatch):

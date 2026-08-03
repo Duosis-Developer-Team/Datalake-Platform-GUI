@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 
 from fastapi import APIRouter, Depends
@@ -22,6 +23,12 @@ router = APIRouter()
 _BUCKETS = ("added", "fixed", "improved")
 _FENCE_RE = re.compile(r"```(?:json)?", re.IGNORECASE)
 
+# Çıktı kesilirse JSON yarım kalır ve `_parse_json` None döner — yani `max_tokens`
+# darsa hata "unparsable" diye görünür, "truncated" diye değil. 192 commit'lik bir
+# sürümde 1200 token yetmiyordu. Kova başına 8 maddelik tavanla birlikte bu sınır
+# artık gerçek bir tavan değil, yalnızca kaçak çıktıya karşı emniyet kemeri.
+_MAX_TOKENS = int(os.getenv("RELEASE_NOTE_MAX_TOKENS", "4000"))
+
 _SYSTEM = """Sen bir release note yazarısın. Sana bir sürümün commit listesi verilir;
 sen bunu son kullanıcının okuyacağı kısa bir nota çevirirsin.
 
@@ -35,7 +42,11 @@ Kurallar:
 - Bir commit'in ne yaptığını anlamıyorsan onu hiç yazma. Eksik not, yanlış nottan iyidir.
 - Metin Türkçe olsun; teknik terimleri (release, commit, panel, endpoint) İngilizce bırak.
 - Her madde en fazla 200 karakter, tek cümle; "feat:" gibi prefix içermesin.
-- headline: sürümü tek cümlede özetleyen Türkçe başlık, en fazla 80 karakter."""
+- headline: sürümü tek cümlede özetleyen Türkçe başlık, en fazla 80 karakter.
+- Her kova en fazla 8 madde. Commit sayısı bundan fazlaysa hepsini yazma:
+  kullanıcının ekranda göreceği değişiklikleri seç, birbirine yakın commit'leri
+  tek maddede birleştir (birleştirdiklerinin sha'larını aynı maddede topla).
+  Bu not bir changelog değil, kullanıcıya "ne değişti" diye anlatılan kısa bir özet."""
 
 _STRICT_SUFFIX = """
 
@@ -102,14 +113,23 @@ async def generate(
 
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     try:
-        result = get_llm_client().complete(messages, model=req.model, max_tokens=1200)
+        result = get_llm_client().complete(messages, model=req.model, max_tokens=_MAX_TOKENS)
     except LLMError as exc:
         logger.warning("release note generation failed (%s): %s", exc.error_type, exc.detail)
         return ReleaseNoteResponse(status="failed", detail=exc.error_type)
 
     parsed = _parse_json(result.answer)
     if parsed is None:
-        logger.warning("release note answer was not JSON")
+        # Cevabın uzunluğunu ve sonunu logla: `unparsable`'ın en sık sebebi çıktının
+        # `max_tokens`'ta kesilmesi ve JSON'un yarım kalması. Kuyruk kapanış ayracıyla
+        # bitmiyorsa sebep budur; bu bilgi olmadan hata teşhis edilemiyordu.
+        answer = result.answer or ""
+        logger.warning(
+            "release note answer was not JSON (model=%s, chars=%s, tail=%r)",
+            result.model,
+            len(answer),
+            answer[-120:],
+        )
         return ReleaseNoteResponse(status="failed", detail="unparsable")
 
     headline = parsed.get("headline")
