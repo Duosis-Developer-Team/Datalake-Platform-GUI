@@ -17,7 +17,6 @@ the registry allowlist is never bypassed.
 
 from __future__ import annotations
 
-import re
 from typing import Any, Optional
 
 from app.catalog import data_source_catalog, domain_catalog, metric_semantics

@@ -284,7 +284,7 @@ def _format_datacenter_ranking(outcome) -> str:
     )
 
     if ranked:
-        lines.append(f"\n| # | DC | Lokasyon | CPU % | RAM % | VM | Skor |")
+        lines.append("\n| # | DC | Lokasyon | CPU % | RAM % | VM | Skor |")
         lines.append("|---|-----|----------|------:|------:|---:|-----:|")
         for r in ranked[:15]:
             lines.append(

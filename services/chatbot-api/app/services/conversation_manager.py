@@ -43,7 +43,7 @@ def _summarize_older_turns(older: list[ChatMessage]) -> str:
         return _truncate_fallback(older)
 
     try:
-        from app.services.llm_client import LLMError, get_llm_client
+        from app.services.llm_client import get_llm_client
 
         transcript = redact_text(
             "\n".join(f"{m.role}: {m.content or ''}" for m in older)[-12000:]

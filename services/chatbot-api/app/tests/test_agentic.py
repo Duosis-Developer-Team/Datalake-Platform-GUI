@@ -147,7 +147,6 @@ GLOBAL_MEMORY_Q = (
 
 
 def test_global_memory_plan_does_not_use_dashboard(monkeypatch):
-    from app.services import query_planner
 
     plan = query_planner.plan(GLOBAL_MEMORY_Q, None, None)
     tools = [t["tool"] for t in plan.initial_tools]

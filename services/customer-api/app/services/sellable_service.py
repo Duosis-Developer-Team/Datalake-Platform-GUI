@@ -448,7 +448,6 @@ from shared.sellable.computation import (
     annotate_panel_constraint_metadata,
     apply_storage_dual_track_ratio_caps,
     apply_storage_ratio_cap,
-    apply_threshold,
     apply_utilization_gate,
     compute_fully_shared_pool_range,
     compute_potential_tl,
@@ -456,8 +455,6 @@ from shared.sellable.computation import (
     compute_storage_range,
     constrain_by_ratio,
     constrain_by_ratio_dual_cpu_cluster,
-    constrain_by_ratio_per_host,
-    constrain_by_ratio_per_host_dual,
     constrain_by_ratio_per_host_triple_dual,
     convert_unit,
     utilization_gate_blocked,
@@ -1559,6 +1556,8 @@ SELECT _tot, _alloc FROM latest
         Total / used: sum of pool ``usablesizebytes`` / ``usedcapacitybytes`` across all DCs,
         fetched with the same API and 7d time window as the DC NetBackup tab.
         """
+        # Panel adı `del`'den önce alınır: hata dalı `src`'ye dokunursa NameError olur.
+        panel_key = getattr(src, "panel_key", "backup_netbackup")
         del src, dc_code  # global panel; DC-scoped inventory uses wildcard merge only
         try:
             pools = self._fetch_netbackup_pool_bytes()
@@ -1566,7 +1565,7 @@ SELECT _tot, _alloc FROM latest
         except Exception:  # noqa: BLE001
             logger.exception(
                 "SellableService: NetBackup inventory aggregate failed (panel=%s)",
-                getattr(src, "panel_key", "backup_netbackup"),
+                panel_key,
             )
             return 0.0, 0.0
 

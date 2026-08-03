@@ -8,7 +8,7 @@ from typing import Any, Optional
 import httpx
 
 from app.config import settings
-from app.models.schemas import ChatResponse, ClarificationBlock, FrontendContext, ToolCallSummary
+from app.models.schemas import ChatResponse, FrontendContext, ToolCallSummary
 from app.services.audit_service import AuditRecord
 from app.services.redaction import redact_mapping, redact_text
 

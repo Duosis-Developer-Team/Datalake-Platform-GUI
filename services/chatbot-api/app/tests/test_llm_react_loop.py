@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock
 
-import pytest
 
 from app.config import settings
 from app.services import llm_react_loop, tool_registry

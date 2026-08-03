@@ -5,9 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 from app.db.queries import customer as cq
-from app.db.queries import service_mapping as smq
 from app.services import cache_service as cache
-from app.utils.service_sales_mapping import map_service_sales_lines
 from app.utils.time_range import default_time_range
 from shared.customer.cache_keys import customer_assets_cache_key
 

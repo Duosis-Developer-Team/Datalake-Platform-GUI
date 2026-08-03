@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.services import analysis_synthesizer, datacenter_ranking
-from app.services.evidence_evaluator import EvidenceEvaluation, evaluate
+from app.services.evidence_evaluator import evaluate
 from app.services.planner import IntentPlan
 from app.services.tool_registry import (
     _normalize_datacenter_summary_list,

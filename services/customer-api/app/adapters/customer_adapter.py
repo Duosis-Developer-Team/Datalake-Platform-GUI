@@ -4,14 +4,14 @@ import logging
 from typing import Callable
 
 from app.db.queries import customer as cq
-from app.services.customer_mapping_resolver import ResolvedSourcePatterns, dedupe_vm_rows, dedupe_zerto_vpgs
+from app.services.customer_mapping_resolver import ResolvedSourcePatterns, dedupe_zerto_vpgs
 from app.utils.time_range import default_time_range, time_range_to_bounds
 from shared.backup.policy_classification import (
     load_policy_panel_mapping,
     policy_types_for_category,
 )
 from shared.backup.vm_role import annotate_vm_roles, sum_billable_virt_resources
-from shared.licensing.os_source import tally_vm_list, with_os_family
+from shared.licensing.os_source import with_os_family
 from shared.nutanix import snapshot_helpers as nsnap
 from shared.vmware.host_cpu_ghz import (
     DEFAULT_HOST_CPU_GHZ,

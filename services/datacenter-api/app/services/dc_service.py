@@ -63,7 +63,6 @@ from shared.vmware.host_cpu_ghz import (
     cached_host_map,
     compute_cpu_overalloc_flags,
     enrich_customer_vm_cpu_list,
-    enrich_vm_cpu_sales_fields,
     resolve_host_ghz,
     sum_cpu_real_total,
 )
@@ -1380,9 +1379,6 @@ LIMIT 20
                 storage_vm = self.get_classic_storage_vm(
                     cur, dc_wc, start_ts, end_ts, selected_clusters
                 )
-                mem_peak = self.get_classic_mem_peak_raw(
-                    cur, dc_wc, start_ts, end_ts, cluster_filter=selected_clusters
-                )
                 unit_prices = self.get_unit_prices_tl(cur, "klasik")
                 ds_cap_gb, ds_used_gb = self._km_datastore_storage_gb(
                     cur, dc_code, start_ts, end_ts
@@ -1488,7 +1484,6 @@ LIMIT 20
         zeroed section returned as a value would overwrite good cached numbers.
         """
         dc_wc = f"%{dc_code}%"
-        mem_peak = None
         with self._get_connection() as conn:
             with conn.cursor() as cur:
                 row = self._run_row(
@@ -1529,9 +1524,6 @@ LIMIT 20
                 )
                 storage_vm = self.get_hyperconv_storage_vm(
                     cur, dc_code, start_ts, end_ts, selected_clusters
-                )
-                mem_peak = self.get_hyperconv_mem_peak_raw(
-                    cur, dc_wc, dc_code, start_ts, end_ts, cluster_filter=selected_clusters
                 )
                 unit_prices = self.get_unit_prices_tl(cur, "hyperconv")
 

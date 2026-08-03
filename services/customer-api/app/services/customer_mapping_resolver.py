@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Optional, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from app.utils.customer_needle import customer_to_email_needle
 from shared.customer import match as alias_match

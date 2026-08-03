@@ -30,7 +30,6 @@ from app.core.time_filter import TimeFilter
 from app.models.schemas import (
     CatalogValuationRow,
     CrmAccountRow,
-    CustomerAlias,
     CustomerAliasUpdate,
     CustomerAliasWithMappings,
     CustomerServiceSalesSlice,

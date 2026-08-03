@@ -11,7 +11,7 @@ import yaml
 
 from app.core.security import classify_intent
 from app.models.schemas import ChatMessage, FrontendContext
-from app.services import agent_loop, query_planner, scope_guard
+from app.services import agent_loop, query_planner
 from app.services.planner import IntentPlan
 from app.services.tool_registry import ToolResult
 

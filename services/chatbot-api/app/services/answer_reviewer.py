@@ -7,7 +7,6 @@ always comes from the synthesis LLM (or llm_client error message when LLM fails)
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from app.models.schemas import ResponseBlock
 
