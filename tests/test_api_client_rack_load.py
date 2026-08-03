@@ -34,10 +34,16 @@ def test_get_dc_racks_load_returns_empty_shape_when_the_backend_is_unreachable()
     # wrapper handles it: it logs the failure and falls back. A bare
     # RuntimeError is NOT handled, and must not be — an unexpected exception
     # type is a bug to surface, not a "no data" answer to swallow.
+    #
+    # The fallback now also says it is a fallback (P0-4). The shape assertion is
+    # per-key rather than whole-dict because the marker is part of the payload;
+    # floor_map only ever reads "racks" and "summary", so it is inert there.
     cache_service.clear()
     with patch.object(api, "_get_json", side_effect=httpx.ConnectError("down")):
         result = api.get_dc_racks_load("DC13")
-    assert result == {"racks": [], "summary": {}}
+    assert result["racks"] == []
+    assert result["summary"] == {}
+    assert api.is_degraded(result), "the caller must be able to tell this apart from zero racks"
 
 
 def test_an_unexpected_exception_type_is_not_swallowed():

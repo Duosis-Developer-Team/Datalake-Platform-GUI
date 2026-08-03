@@ -122,10 +122,13 @@ def test_equal_budgets_reproduce_the_fabricated_empty(monkeypatch):
         t.join(timeout=10)
 
     assert results["leader"] == {"vms": 4242}
-    assert results["follower"] == {"vms": 0}, (
-        "this is what the old single budget produced — zeros, then the real "
-        "number one callback later"
+    assert api.is_degraded(results["follower"]), (
+        "this is what the old single budget produced — the fallback, then the "
+        "real number one callback later. It is tagged degraded now (P0-4 part 2) "
+        "so the page renders a notice instead of the zeros, but the wasted trip "
+        "is the thing the split budget removes."
     )
+    assert results["follower"]["vms"] == 0
 
 
 def test_env_override_still_wins(monkeypatch):

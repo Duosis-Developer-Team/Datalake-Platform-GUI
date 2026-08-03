@@ -303,6 +303,54 @@ def _clone(value: Any) -> Any:
     return deepcopy(value)
 
 
+# A payload the client fabricated because it never got an answer, as opposed to
+# an answer that happened to be empty. The two used to be identical on the wire —
+# both arrive at the page as a fully-shaped structure of zeros — so a page could
+# only render "0 hosts, 0 VMs, 0 kW" and hope the operator understood it meant
+# "unknown". In a capacity product that reads as an outage, and the numbers snap
+# back to normal on the next callback, which is the page "going and coming back".
+#
+# Only the no-answer paths are marked: a fetch that raised, or a follower whose
+# wait expired with nothing cached. A *measured* empty stays unmarked even though
+# it is equally uncacheable — a DC with genuinely no unmapped resources has been
+# answered, and putting an error banner on it would swap one lie for another.
+_DEGRADED_KEY = "_degraded"
+
+
+class _DegradedList(list):
+    """An empty list that remembers it was fabricated rather than measured.
+
+    A dict fallback carries the marker as a key; a list has nowhere to put one,
+    and get_all_datacenters_summary — the whole Datacenters page — returns a
+    list. The type is the marker. It compares equal to [], iterates like [], and
+    deep-copies back into itself, so nothing downstream needs to know it exists.
+    Only is_degraded looks.
+    """
+
+
+def is_degraded(value: Any) -> bool:
+    """True when `value` is a placeholder this module invented, not data.
+
+    The one supported way to ask. Pages must not test for the `_degraded` key or
+    the list subclass themselves — which of the two carries the marker depends on
+    the payload's shape, and that is not the caller's problem.
+    """
+    if isinstance(value, _DegradedList):
+        return True
+    return isinstance(value, dict) and value.get(_DEGRADED_KEY) is True
+
+
+def _degraded_fallback(empty_fallback: Any) -> Any:
+    """Clone `empty_fallback` and mark the copy as fabricated."""
+    out = _clone(empty_fallback)
+    if isinstance(out, dict):
+        out[_DEGRADED_KEY] = True
+        return out
+    if isinstance(out, list):
+        return _DegradedList(out)
+    return out
+
+
 def _build_time_params(tr: Optional[dict]) -> dict[str, str]:
     if not tr:
         return {}
@@ -675,6 +723,12 @@ def _serialize_tr_cache_key(tr: Optional[dict]) -> str:
 
 
 def _should_persist_api_cache(value: Any, empty_fallback: Any) -> bool:
+    # A degraded payload records that one call failed; it says nothing about the
+    # data. Caching it would serve that failure to every reader for the full TTL,
+    # and — worse — the entry would pass the freshness check, so the fabricated
+    # zeros would look newer than the real values they displaced.
+    if is_degraded(value):
+        return False
     if value == empty_fallback:
         return False
     if isinstance(value, dict) and not value:
@@ -742,7 +796,9 @@ def _api_cache_get_with_stale(
     if not leader:
         ev.wait(timeout=_INFLIGHT_WAIT_SECONDS)
         hit, _ = _cache_load(cache_key)
-        return _clone(hit) if hit is not None else _clone(empty_fallback)
+        # Waited out the leader with nothing to show. Say so rather than handing
+        # back zeros the page would draw as measurements.
+        return _clone(hit) if hit is not None else _degraded_fallback(empty_fallback)
 
     # Per-process leader. Try the cross-pod lock so only ONE pod fetches this key;
     # other pods wait for its result in the shared cache (kills the stampede).
@@ -769,8 +825,10 @@ def _api_cache_get_with_stale(
             logger.warning("API cache fetch failed for key=%s: %s", cache_key, exc)
             hit, _ = _cache_load(cache_key)
             if hit is not None:
+                # Last-good is real data, just old. Not degraded — marking it
+                # would blank a working page on every backend hiccup.
                 return _clone(hit)
-            return _clone(empty_fallback)
+            return _degraded_fallback(empty_fallback)
     finally:
         if got_lock:
             _api_response_cache.release(cache_key)
@@ -2463,7 +2521,7 @@ def _crm_sales_cache_get(
     except _HTTP_ERRORS:
         if prev is not None:
             return _clone(prev[1])
-        return _clone(empty_fallback)
+        return _degraded_fallback(empty_fallback)
 
 
 def get_customer_sales_summary(name: str) -> dict:

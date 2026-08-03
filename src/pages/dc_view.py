@@ -62,6 +62,7 @@ from src.components.charts import (
 )
 from src.components.charts import create_horizontal_bar_chart, create_premium_horizontal_bar_chart, create_capacity_area_chart, create_grouped_bar_chart, create_storage_breakdown_chart
 from src.components.dc_loading import build_dc_loading_shell, build_dc_tab_loading_shell
+from src.components.degraded_notice import build_degraded_notice
 from src.components.colocation_summary import build_colocation_summary
 from src.components.sellable_constraint_viz import (
     fmt_tl_for_card,
@@ -5900,6 +5901,12 @@ def build_dc_view(
     batch1 = parallel_execute(batch1_tasks)
     _log_dc_build_phase(str(dc_id), "batch1", t_batch1, tasks=len(batch1_tasks))
     data = batch1["data"]
+    if api.is_degraded(data):
+        # The DC detail payload feeds every tab on this page. Without it the
+        # whole view is the client's own zeros — a datacenter reported as having
+        # no hosts, no VMs and no power draw, which is what an operator would
+        # page someone about at 3am.
+        return build_degraded_notice(f"Data Center {dc_id}")
     sla_by_dc = batch1["sla_by_dc"]
     s3_data = batch1.get("s3_data") or {"pools": []}
     classic_clusters = batch1.get("classic_clusters") or []

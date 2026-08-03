@@ -16,6 +16,7 @@ from src.utils.export_helpers import (
 from src.utils.time_range import default_time_range
 from src.utils.format_units import title_case
 from src.utils.dc_display import format_dc_display_name
+from src.components.degraded_notice import build_degraded_notice
 from src.components.charts import (
     create_energy_breakdown_chart,
     create_grouped_bar_chart,
@@ -397,6 +398,13 @@ def build_overview(time_range=None, visible_sections=None):
 
     tr = time_range or default_time_range()
     data = api.get_global_dashboard(tr)
+    if api.is_degraded(data):
+        # Nothing came back. Every figure below would be a zero this module
+        # invented, and the KPI strip presents them as measurements — during a
+        # backend outage Overview read as "all datacenters at zero", then
+        # corrected itself on the next callback. Return before spending the
+        # other dozen fetches on a page that cannot be trusted anyway.
+        return build_degraded_notice()
     overview = data.get("overview", {})
     platforms = data.get("platforms", {})
     energy_breakdown = data.get("energy_breakdown", {})
