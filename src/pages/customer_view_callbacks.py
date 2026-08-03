@@ -55,13 +55,23 @@ def sync_customer_backup_category_store(value):
 @callback(
     Output("customer-backup-category-tabs", "value"),
     Input("customer-backup-category-tab-store", "data"),
-    prevent_initial_call=False,
+    prevent_initial_call=True,
 )
 def apply_customer_backup_category(store_val):
-    """Apply deeplink / store category onto nested Backup tabs when mounted."""
+    """Apply deeplink / store category onto nested Backup tabs when mounted.
+
+    ``prevent_initial_call=True`` is required: the category Tabs only exist after
+    the Backup body renders. Firing on page open targeted a missing component.
+    """
     if not store_val:
         raise PreventUpdate
-    return store_val
+    category = str(store_val).strip().lower()
+    # Nested Backup tabs are Image | Application | Replication.
+    if category in ("veeam", "zerto", "replication"):
+        category = "replication"
+    if category not in ("image", "application", "replication"):
+        raise PreventUpdate
+    return category
 
 
 @callback(
@@ -72,7 +82,7 @@ def apply_customer_backup_category(store_val):
     prevent_initial_call=True,
 )
 def deeplink_summary_to_backup(n_clicks_list):
-    """Summary Backup KPI control → Backup tab + Image/Application/Veeam/Zerto category."""
+    """Summary Backup KPI control → Backup tab + Image/Application/Replication category."""
     if not n_clicks_list or not any(n_clicks_list):
         raise PreventUpdate
     trig = ctx.triggered_id
@@ -81,9 +91,9 @@ def deeplink_summary_to_backup(n_clicks_list):
     if not ctx.triggered or not ctx.triggered[0].get("value"):
         raise PreventUpdate
     category = str(trig.get("category") or "image").strip().lower() or "image"
-    if category == "replication":
-        category = "veeam"
-    if category not in ("image", "application", "veeam", "zerto"):
+    if category in ("veeam", "zerto"):
+        category = "replication"
+    if category not in ("image", "application", "replication"):
         category = "image"
     return "backup", "backup", category
 

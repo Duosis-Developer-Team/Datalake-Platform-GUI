@@ -1351,17 +1351,6 @@ def _tab_classic(
 
     spec = [
         _VmCol("VM Name", lambda r: html.Td(r.get("name"))),
-        _VmCol(
-            "Role",
-            lambda r: html.Td(
-                dmc.Badge(
-                    r.get("role_label") or "Billable",
-                    color=r.get("role_color") or "teal",
-                    variant="light",
-                    size="sm",
-                )
-            ),
-        ),
         _VmCol("Cluster", lambda r: html.Td(r.get("cluster", "-")), infra=True),
         _VmCol("İşletim Sistemi", _vm_os_td),
         *_usage_pct_cols(),
@@ -1431,17 +1420,6 @@ def _tab_hyperconv(
 
     spec = [
         _VmCol("VM Name", lambda r: html.Td(r.get("name"))),
-        _VmCol(
-            "Role",
-            lambda r: html.Td(
-                dmc.Badge(
-                    r.get("role_label") or "Billable",
-                    color=r.get("role_color") or "teal",
-                    variant="light",
-                    size="sm",
-                )
-            ),
-        ),
         _VmCol("Source", lambda r: html.Td(r.get("source", "-")), infra=True),
         _VmCol("Cluster", lambda r: html.Td(r.get("cluster", "-")), infra=True),
         _VmCol("İşletim Sistemi", _vm_os_td),
@@ -2408,6 +2386,151 @@ def _tab_itsm(
 # Main content block
 # ---------------------------------------------------------------------------
 
+def _replica_notice_banner(replica_count: int) -> html.Div | None:
+    n = int(replica_count or 0)
+    if n <= 0:
+        return None
+    return dmc.Alert(
+        color="violet",
+        variant="light",
+        title="Replica / DR machines moved",
+        children=(
+            f"{n:,} replica or DR machine(s) are listed under Backup → Replication "
+            "(DR / Replica Machines), not in this Virtualization inventory."
+        ),
+        mb="md",
+    )
+
+
+def _build_replica_machines_panel(replica_vm_list: list | None) -> html.Div:
+    """DR / Replica Machines table for Backup → Replication."""
+    rows = list(replica_vm_list or [])
+    by_role: dict[str, int] = {}
+    for r in rows:
+        label = str(r.get("role_label") or r.get("role") or "Replica")
+        by_role[label] = by_role.get(label, 0) + 1
+    summary = dmc.Group(
+        gap="xs",
+        mb="sm",
+        children=[
+            dmc.Badge(f"{label}: {count}", variant="light", color="violet", size="sm")
+            for label, count in sorted(by_role.items(), key=lambda kv: (-kv[1], kv[0]))
+        ],
+    )
+    spec = [
+        _VmCol("VM Name", lambda r: html.Td(r.get("name"))),
+        _VmCol(
+            "Role",
+            lambda r: html.Td(
+                dmc.Badge(
+                    r.get("role_label") or "Replica",
+                    color=r.get("role_color") or "violet",
+                    variant="light",
+                    size="sm",
+                )
+            ),
+        ),
+        _VmCol("Cluster", lambda r: html.Td(r.get("cluster") or r.get("source") or "—"), infra=True),
+        _VmCol("Host", lambda r: html.Td(r.get("vmhost") or "—"), infra=True),
+        _VmCol("vCPU", lambda r: _vm_metric_td(r.get("cpu", 0)), numeric=True),
+        _VmCol("RAM (GiB)", lambda r: _vm_metric_td(r.get("memory_gb", 0), suffix=" GiB"), numeric=True),
+        _VmCol("Disk (GiB)", lambda r: _vm_metric_td(r.get("disk_gb", 0), suffix=" GiB"), numeric=True),
+    ]
+    return _section_card(
+        "DR / Replica Machines",
+        "Machines classified by name prefix/suffix or Zerto protection — excluded from Virtualization sellable totals",
+        dmc.Stack(
+            gap="md",
+            children=[
+                summary,
+                _vm_table_from_spec(rows, spec, show_infra_columns=True),
+            ],
+        ),
+    )
+
+
+def _collect_customer_job_kpi_bundle(name: str, tr: dict | None) -> dict:
+    """Backup Jobs (Image+Application) vs Replication Jobs (Veeam+Zerto) + DC codes."""
+    from shared.backup.dc_attribution import collect_datacenter_codes
+
+    backup_jobs = 0
+    replication_jobs = 0
+    all_rows: list[dict] = []
+    for vendor in ("netbackup", "veeam", "zerto"):
+        try:
+            payload = api.get_customer_unique_jobs(name, vendor, tr) or {}
+        except Exception:  # noqa: BLE001 — KPI strip is best-effort
+            payload = {}
+        rows = list(payload.get("rows") or [])
+        totals = payload.get("totals") or {}
+        all_rows.extend(rows)
+        if vendor == "netbackup":
+            by_cat = totals.get("by_category") or {}
+            if by_cat:
+                backup_jobs += int(by_cat.get("image") or 0) + int(by_cat.get("application") or 0)
+            else:
+                backup_jobs += int(totals.get("total_jobs") or 0)
+        else:
+            replication_jobs += int(totals.get("total_jobs") or 0)
+    return {
+        "backup_jobs": backup_jobs,
+        "replication_jobs": replication_jobs,
+        "datacenters": collect_datacenter_codes(all_rows),
+    }
+
+
+def _build_customer_job_kpi_strip(job_kpis: dict | None) -> html.Div | None:
+    job_kpis = job_kpis or {}
+    backup_n = int(job_kpis.get("backup_jobs") or 0)
+    repl_n = int(job_kpis.get("replication_jobs") or 0)
+    dcs = list(job_kpis.get("datacenters") or [])
+    if backup_n <= 0 and repl_n <= 0 and not dcs:
+        return None
+    cards = [
+        html.Div(
+            className="nexus-card",
+            style={"padding": "16px 20px", "flex": "1", "minWidth": "180px"},
+            children=[
+                dmc.Text("Backup Jobs", size="xs", c="dimmed", tt="uppercase"),
+                dmc.Text(f"{backup_n:,}", fw=800, size="xl", c="#2B3674"),
+                dmc.Text("Image + Application (NetBackup)", size="xs", c="dimmed"),
+            ],
+        ),
+        html.Div(
+            className="nexus-card",
+            style={"padding": "16px 20px", "flex": "1", "minWidth": "180px"},
+            children=[
+                dmc.Text("Replication Jobs", size="xs", c="dimmed", tt="uppercase"),
+                dmc.Text(f"{repl_n:,}", fw=800, size="xl", c="#2B3674"),
+                dmc.Text("Veeam + Zerto", size="xs", c="dimmed"),
+            ],
+        ),
+    ]
+    if dcs:
+        cards.append(
+            html.Div(
+                className="nexus-card",
+                style={"padding": "16px 20px", "flex": "1", "minWidth": "180px"},
+                children=[
+                    dmc.Text("Datacenters", size="xs", c="dimmed", tt="uppercase"),
+                    dmc.Group(
+                        gap="xs",
+                        mt=4,
+                        children=[
+                            dmc.Badge(code, variant="light", color="indigo", size="sm")
+                            for code in dcs
+                        ],
+                    ),
+                    dmc.Text("Seen on unique jobs in period", size="xs", c="dimmed", mt=4),
+                ],
+            )
+        )
+    return html.Div(
+        style={"display": "flex", "gap": "12px", "flexWrap": "wrap"},
+        children=cards,
+    )
+
+
 def _build_backup_tabs(
     backup_assets: dict,
     backup_totals: dict,
@@ -2417,6 +2540,8 @@ def _build_backup_tabs(
     show_post_dedup: bool = True,
     nutanix_payload: dict | None = None,
     initial_category: str | None = None,
+    job_kpis: dict | None = None,
+    replica_vm_list: list | None = None,
 ) -> html.Div:
     """Backup category tabs (Image / Application / Replication); sold-vs-used optional."""
     from src.components.backup_license_compliance import (
@@ -2507,7 +2632,7 @@ def _build_backup_tabs(
     has_veeam = backup_vendor_has_data(backup_totals, backup_assets, "veeam")
     has_zerto = backup_vendor_has_data(backup_totals, backup_assets, "zerto")
     license_rows = backup_assets.get("license_compliance") or []
-    if has_veeam or has_zerto:
+    if has_veeam or has_zerto or replica_vm_list:
         repl_children: list = [
             dmc.Text(
                 "Replication — Veeam and Zerto (unified families; Classic/HC is filter only).",
@@ -2555,11 +2680,16 @@ def _build_backup_tabs(
                 zerto_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.zerto")
                 if zerto_lic is not None:
                     repl_children.append(zerto_lic)
+        if replica_vm_list:
+            repl_children.append(_build_replica_machines_panel(replica_vm_list))
         backup_tab_defs.append(
             ("replication", "Replication", dmc.Stack(gap="lg", children=repl_children))
         )
 
     head: list = []
+    job_strip = _build_customer_job_kpi_strip(job_kpis)
+    if job_strip is not None:
+        head.append(job_strip)
     license_strip = build_license_compliance_strip(license_rows)
     if getattr(license_strip, "children", None):
         head.append(license_strip)
@@ -2630,6 +2760,14 @@ def _build_virt_content(
     show_classic_tab = asset_has_usage(classic)
     show_hyperconv_tab = asset_has_usage(hyperconv)
     show_power_tab = asset_has_usage(power_asset, instance_keys=("lpar_count",))
+    replica_count = int(classic.get("replica_vm_count") or 0) + int(
+        hyperconv.get("replica_vm_count") or 0
+    )
+    if replica_count <= 0:
+        replica_count = len(classic.get("replica_vm_list") or []) + len(
+            hyperconv.get("replica_vm_list") or []
+        )
+    notice = _replica_notice_banner(replica_count)
 
     virt_tab_defs: list[tuple[str, str, html.Div]] = []
     if show_classic_tab:
@@ -2704,7 +2842,9 @@ def _build_virt_content(
             title="No virtualization assets",
             children="No provisioned compute instances were returned for this customer.",
         )
-    return html.Div([virt_body, _deleted_vms_panel(deleted_machines)])
+    return html.Div(
+        children=[c for c in (notice, virt_body, _deleted_vms_panel(deleted_machines)) if c is not None]
+    )
 
 
 def _crm_rows_outside_virt_backup(eff_rows: list | None) -> list:
@@ -3152,17 +3292,61 @@ def render_virtualization_tab(name: str, tr: dict | None, perspective: str):
     )
 
 
+def _build_backup_preparing_panel(customer_name: str) -> html.Div:
+    """Zero-delay miss shell: never block the request thread on a cold fetch."""
+    return html.Div(
+        id="cust-backup-preparing",
+        children=[
+            build_customer_tab_loading_shell("backup", customer_name),
+            dmc.Text(
+                "Preparing backup data in the background — this panel refreshes automatically.",
+                size="sm",
+                c="dimmed",
+                ta="center",
+                mt="md",
+            ),
+            dcc.Interval(
+                id="cust-backup-warm-retry",
+                interval=1500,
+                n_intervals=0,
+                max_intervals=40,
+            ),
+        ],
+    )
+
+
 def render_backup_tab(
     name: str,
     tr: dict | None,
     perspective: str,
     *,
     initial_category: str | None = None,
+    allow_cold_fetch: bool = False,
 ):
-    """Backup tab — customer resources (backup assets/totals) + efficiency rows."""
-    resources = api.get_customer_resources(name, tr)
+    """Backup tab — customer resources (backup assets/totals) + efficiency rows.
+
+    Zero-delay: by default only render from a fresh cache entry. On miss, return a
+    preparing shell and warm in the background so the gunicorn worker is never
+    held on a cold customer-resources round-trip.
+    """
+    resources = api.peek_customer_resources(name, tr)
+    if resources is None:
+        if not allow_cold_fetch:
+            try:
+                from src.services.app_background_warm import trigger_customer_view_warm
+
+                trigger_customer_view_warm(name, tr)
+            except Exception:  # noqa: BLE001 — warm is best-effort
+                pass
+            return _build_backup_preparing_panel(name)
+        resources = api.get_customer_resources(name, tr)
     totals = resources.get("totals", {}) or {}
     assets = resources.get("assets", {}) or {}
+    virt = assets.get("classic", {}) or {}
+    hc = assets.get("hyperconv", {}) or {}
+    replica_vm_list = list(virt.get("replica_vm_list") or []) + list(
+        hc.get("replica_vm_list") or []
+    )
     return _build_backup_tabs(
         assets.get("backup", {}) or {},
         totals.get("backup", {}) or {},
@@ -3171,6 +3355,8 @@ def render_backup_tab(
         show_post_dedup=perspective_show_post_dedup(perspective),
         nutanix_payload=api.get_customer_nutanix_snapshots(name, tr),
         initial_category=initial_category,
+        job_kpis=_collect_customer_job_kpi_bundle(name, tr),
+        replica_vm_list=replica_vm_list,
     )
 
 
@@ -3726,7 +3912,8 @@ def render_customer_shell(
                 id="customer-view-ctx",
                 data={"customer": chosen, "perspective": perspective, "tr": tr},
             ),
-            dcc.Store(id="customer-backup-category-tab-store", data="image"),
+            # customer-backup-category-tab-store lives in build_customer_layout_shell
+            # (outside page-root) so it survives Phase-B remounts — I-9 invariant.
             html.Div(
                 id="cust-as-of-stamp",
                 style={
@@ -3754,10 +3941,16 @@ def _register_tab_callback(tab: str) -> None:
         @callback(
             Output("cust-tab-body-backup", "children"),
             Input("customer-view-ctx", "data"),
+            Input("customer-main-tabs", "value"),
             State("customer-backup-category-tab-store", "data"),
             prevent_initial_call=False,
         )
-        def _fill_backup(ctx_data, category):
+        def _fill_backup(ctx_data, active_tab, category):
+            # Same active-tab guard as the other seven tabs — Backup used to
+            # fetch on every ctx write while the user was still on Summary,
+            # starving the gunicorn thread pool and reading as "loading forever".
+            if active_tab and str(active_tab) != "backup":
+                return dash.no_update
             ctx_data = ctx_data or {}
             customer = (ctx_data.get("customer") or "").strip()
             if not customer:
@@ -3793,6 +3986,35 @@ def _register_tab_callback(tab: str) -> None:
 
 for _t in ("summary", "virt", "avail", "backup", "billing", "itsm", "phys-inv", "s3"):
     _register_tab_callback(_t)
+
+
+@callback(
+    Output("cust-tab-body-backup", "children", allow_duplicate=True),
+    Input("cust-backup-warm-retry", "n_intervals"),
+    State("customer-view-ctx", "data"),
+    State("customer-backup-category-tab-store", "data"),
+    State("customer-main-tabs", "value"),
+    prevent_initial_call=True,
+)
+def _retry_backup_after_warm(n_intervals, ctx_data, category, active_tab):
+    """Re-probe cache after background warm; keep preparing shell until hit."""
+    if not n_intervals:
+        return dash.no_update
+    if active_tab and str(active_tab) != "backup":
+        return dash.no_update
+    ctx_data = ctx_data or {}
+    customer = (ctx_data.get("customer") or "").strip()
+    if not customer:
+        return dash.no_update
+    # Final attempt may cold-fetch so the panel never sticks forever.
+    allow_cold = int(n_intervals) >= 20
+    return render_backup_tab(
+        customer,
+        ctx_data.get("tr"),
+        ctx_data.get("perspective") or PERSPECTIVE_MANAGER,
+        initial_category=category,
+        allow_cold_fetch=allow_cold,
+    )
 
 
 @callback(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 # Bump when customer assets JSON shape changes (e.g. Real CPU enrichment fields).
 # v4: backup.netbackup gained image/application/policy_types (policy-based IA).
-CUSTOMER_ASSETS_CACHE_VERSION = "netbackup-policy-v4"
+CUSTOMER_ASSETS_CACHE_VERSION = "replica-split-v5"
 
 
 def customer_assets_cache_key(customer_name: str, start: str, end: str) -> str:

@@ -1990,9 +1990,12 @@ def _backup_inline_sellable_blocks(
     content_mode: str = "full",
     include: tuple[str, ...] = (),
 ) -> list:
-    """Virt-parity sellable detail cards for Backup / Replication category panels."""
-    if (content_mode or "full").strip().lower() != "full" or not dc_id:
-        return []
+    """Virt-parity sellable detail cards for Backup / Replication category panels.
+
+    Always mounts container Divs (even in shell mode) so async fill callbacks can
+    write children after Backup & Replication expands — without this the cards
+    stayed permanently empty on the lazy path.
+    """
     specs = {
         "backup_netbackup": (
             "NetBackup — Sellable Potential",
@@ -2019,11 +2022,15 @@ def _backup_inline_sellable_blocks(
         ),
     }
     out: list = []
+    mode = (content_mode or "full").strip().lower()
     for fam in include:
         spec = specs.get(fam)
         if not spec:
             continue
         title, color, clusters, cid, subtitle = spec
+        if mode != "full" or not dc_id:
+            out.append(html.Div(id=cid))
+            continue
         card = _build_sellable_inline_kpi(
             dc_id,
             fam,
@@ -2034,6 +2041,7 @@ def _backup_inline_sellable_blocks(
             subtitle=subtitle,
         )
         if card is None:
+            out.append(html.Div(id=cid))
             continue
         out.append(card)
     return out

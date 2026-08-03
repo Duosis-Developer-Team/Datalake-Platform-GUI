@@ -1141,6 +1141,20 @@ def get_customer_resources_as_of(name: str, tr: Optional[dict]) -> Optional[floa
     return get_cache_as_of(_customer_resources_ck(name, tr))
 
 
+def peek_customer_resources(name: str, tr: Optional[dict]) -> Optional[dict]:
+    """Return a fresh cached customer-resources payload without fetching.
+
+    Used by zero-delay tab fills: if this returns None the UI shows a preparing
+    shell and warms in the background instead of blocking on a cold DB round-trip.
+    """
+    cached, age = _cache_load(_customer_resources_ck(name, tr))
+    if cached is None or not _age_is_fresh(age):
+        return None
+    if not isinstance(cached, dict):
+        return None
+    return _clone(cached)
+
+
 def get_customer_resources(name: str, tr: Optional[dict]) -> dict:
     enc = quote(name, safe="")
     ck = _customer_resources_ck(name, tr)

@@ -20,8 +20,8 @@ from app.services.mapping_cache_invalidator import parse_customer_assets_key
         ),
         # Version token must not be pinned: a bump is already in flight.
         (
-            "customer_assets:netbackup-policy-v4:Boyner:2026-07-09:2026-07-16",
-            "netbackup-policy-v4",
+            "customer_assets:replica-split-v5:Boyner:2026-07-09:2026-07-16",
+            "replica-split-v5",
             "Boyner",
             False,
         ),

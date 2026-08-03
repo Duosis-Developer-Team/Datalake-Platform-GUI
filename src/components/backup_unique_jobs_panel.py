@@ -30,6 +30,7 @@ _NETBACKUP_CATEGORIES = ("image", "application")
 _COLUMN_SPECS: dict[str, list[tuple[str, str]]] = {
     "veeam": [
         ("name", "Name"),
+        ("dc", "DC"),
         ("type", "Type"),
         ("status", "Status"),
         ("last_result", "Last Result"),
@@ -40,6 +41,7 @@ _COLUMN_SPECS: dict[str, list[tuple[str, str]]] = {
     ],
     "zerto": [
         ("name", "VPG"),
+        ("dc", "DC"),
         ("status", "Status"),
         ("vmscount", "VMs"),
         ("source_site", "Source Site"),
@@ -50,6 +52,7 @@ _COLUMN_SPECS: dict[str, list[tuple[str, str]]] = {
     ],
     "netbackup": [
         ("policyname", "Policy"),
+        ("dc", "DC"),
         ("workloaddisplayname", "Workload"),
         ("policytype", "Policy Type"),
         ("category", "Category"),
@@ -501,21 +504,32 @@ def _extract_dc_id(pathname: str | None) -> str | None:
     return None
 
 
-def _extract_customer_name(pathname: str | None) -> str | None:
+def _extract_customer_name(pathname: str | None, search: str | None = None) -> str | None:
+    """Resolve customer name from Customer View URL.
+
+    Primary route is ``/customer-view?customer=Name`` (query string). Legacy path
+    forms ``/customer/<name>`` and ``/customers/<name>`` are still accepted.
+    """
+    from urllib.parse import parse_qs, unquote
+
+    if search:
+        params = parse_qs((search or "").lstrip("?"))
+        chosen = (params.get("customer", [""])[0] or "").strip()
+        if chosen:
+            return unquote(chosen)
     if not pathname:
         return None
     parts = [p for p in str(pathname).split("/") if p]
+    if "customer-view" in parts:
+        # Name lives in the query string — handled above.
+        return None
     if "customer" in parts:
         i = parts.index("customer")
         if i + 1 < len(parts):
-            from urllib.parse import unquote
-
             return unquote(parts[i + 1])
     if "customers" in parts:
         i = parts.index("customers")
         if i + 1 < len(parts) and parts[i + 1] not in ("list",):
-            from urllib.parse import unquote
-
             return unquote(parts[i + 1])
     return None
 
@@ -533,6 +547,7 @@ def _fetch_table_payload(
     types,
     platforms,
     active_tab: str | None,
+    url_search: str | None = None,
 ) -> dict | None:
     policy_types = (types or None) if vendor == "netbackup" else None
     type_filter = None if vendor == "netbackup" else (types or None)
@@ -554,7 +569,7 @@ def _fetch_table_payload(
             categories=categories,
             platforms=platforms or None,
         )
-    customer = _extract_customer_name(pathname)
+    customer = _extract_customer_name(pathname, url_search)
     if not customer:
         return None
     return api.get_customer_unique_jobs_table(
@@ -694,6 +709,7 @@ def _make_customer_callback(vendor: str, category: str | None = None) -> None:
         Input("app-time-range", "data"),
         State(f"backup-uj-{sid}-page", "data"),
         State("url", "pathname"),
+        State("url", "search"),
         prevent_initial_call=False,
     )
     def _update_customer(
@@ -706,6 +722,7 @@ def _make_customer_callback(vendor: str, category: str | None = None) -> None:
         tr,
         page,
         pathname,
+        url_search,
         _vendor=vendor,
         _category=category,
         _sid=sid,
@@ -731,6 +748,7 @@ def _make_customer_callback(vendor: str, category: str | None = None) -> None:
                 types=f_type,
                 platforms=f_platform,
                 active_tab="backup",
+                url_search=url_search,
             )
         except Exception:  # noqa: BLE001
             logger.exception("unique-jobs customer fetch failed (%s)", _vendor)

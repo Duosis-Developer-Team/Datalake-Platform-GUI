@@ -126,11 +126,16 @@ class CustomerAdapter:
         vm_list: list[dict],
         *,
         zerto_names: list[str] | None = None,
-    ) -> tuple[list[dict], dict[str, float | int]]:
-        """Annotate VM roles and recompute virt sold totals excluding replicas."""
+    ) -> tuple[list[dict], list[dict], dict[str, float | int]]:
+        """Annotate VM roles; split billable virt vs replica/DR lists; recompute totals.
+
+        Returns ``(billable_vm_list, replica_vm_list, billable_totals)``.
+        """
         annotated = annotate_vm_roles(vm_list, zerto_names=zerto_names)
+        billable = [r for r in annotated if r.get("virt_billable") is not False]
+        replicas = [r for r in annotated if r.get("virt_billable") is False]
         totals = sum_billable_virt_resources(annotated)
-        return annotated, totals
+        return billable, replicas, totals
 
     def fetch(
         self,
@@ -267,16 +272,22 @@ class CustomerAdapter:
                     if r and r[0]
                 ]
                 classic_vm_list = self._enrich_customer_vm_list(cur, classic_vm_list)
-                classic_vm_list, classic_virt = self._apply_vm_roles_and_billable_totals(
-                    classic_vm_list
+                zerto_name_rows = self._run_rows(
+                    cur,
+                    cq.CUSTOMER_ZERTO_VM_NAMES,
+                    (start_ts, end_ts, zerto_patterns, start_ts, end_ts),
+                )
+                zerto_names = [str(r[0]) for r in (zerto_name_rows or []) if r and r[0]]
+                classic_vm_list, classic_replica_vm_list, classic_virt = (
+                    self._apply_vm_roles_and_billable_totals(
+                        classic_vm_list, zerto_names=zerto_names
+                    )
                 )
                 classic_vm_count = int(classic_virt.get("vm_count") or 0)
                 classic_cpu = float(classic_virt.get("cpu") or 0.0)
                 classic_mem_gb = float(classic_virt.get("memory_gb") or 0.0)
                 classic_disk_gb = float(classic_virt.get("disk_gb") or 0.0)
-                billable_classic = [
-                    r for r in classic_vm_list if r.get("virt_billable") is not False
-                ]
+                billable_classic = classic_vm_list
                 classic_cpu_real = sum_cpu_real_total(billable_classic)
                 classic_cpu_used_avg = sum_cpu_used_ghz_avg_total(billable_classic)
                 classic_cpu_used_max = sum_cpu_used_ghz_max_total(billable_classic)
@@ -345,12 +356,14 @@ class CustomerAdapter:
                     if r and r[0]
                 ]
                 hc_vm_list = self._enrich_customer_vm_list(cur, hc_vm_list)
-                hc_vm_list, hc_virt = self._apply_vm_roles_and_billable_totals(hc_vm_list)
+                hc_vm_list, hc_replica_vm_list, hc_virt = self._apply_vm_roles_and_billable_totals(
+                    hc_vm_list, zerto_names=zerto_names
+                )
                 hc_total = int(hc_virt.get("vm_count") or 0)
                 hc_cpu = float(hc_virt.get("cpu") or 0.0)
                 hc_mem_gb = float(hc_virt.get("memory_gb") or 0.0)
                 hc_disk_gb = float(hc_virt.get("disk_gb") or 0.0)
-                billable_hc = [r for r in hc_vm_list if r.get("virt_billable") is not False]
+                billable_hc = hc_vm_list
                 hc_cpu_real = sum_cpu_real_total(billable_hc)
                 hc_cpu_used_avg = sum_cpu_used_ghz_avg_total(billable_hc)
                 hc_cpu_used_max = sum_cpu_used_ghz_max_total(billable_hc)
@@ -674,6 +687,8 @@ class CustomerAdapter:
                 "memory_gb": classic_mem_gb,
                 "disk_gb": classic_disk_gb,
                 "vm_list": classic_vm_list,
+                "replica_vm_list": classic_replica_vm_list,
+                "replica_vm_count": len(classic_replica_vm_list),
                 "deleted_vm_list": classic_deleted_vm_list,
             },
             "hyperconv": {
@@ -688,6 +703,8 @@ class CustomerAdapter:
                 "memory_gb": hc_mem_gb,
                 "disk_gb": hc_disk_gb,
                 "vm_list": hc_vm_list,
+                "replica_vm_list": hc_replica_vm_list,
+                "replica_vm_count": len(hc_replica_vm_list),
                 "deleted_vm_list": hc_deleted_vm_list,
             },
             "pure_nutanix": {

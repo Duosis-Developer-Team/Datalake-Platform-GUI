@@ -174,6 +174,7 @@ from src.components.access_denied import build_access_denied
 from src.components.virt_cluster_filter import normalize_virt_cluster_scope
 from src.pages.dc_view import (
     _bps_to_gbps,
+    _build_backup_total_sellable_children,
     _build_compute_tab,
     _build_hosts_panel_content,
     _hosts_panel_loader,
@@ -1426,6 +1427,95 @@ def update_virt_total_sellable_card(classic_clusters, hyperconv_clusters, pathna
     if not dc_id:
         return dash.no_update
     return _build_virt_total_sellable_children(dc_id, classic_clusters, hyperconv_clusters)
+
+
+@app.callback(
+    dash.Output("sellable-backup-total-card", "children"),
+    dash.Output("sellable-backup-netbackup-card", "children"),
+    dash.Output("sellable-backup-veeam-card", "children"),
+    dash.Output("sellable-backup-zerto-card", "children"),
+    dash.Input("backup-panels-ready", "data"),
+    dash.Input("app-time-range", "data"),
+    dash.Input("virt-classic-cluster-applied", "data"),
+    dash.Input("virt-hyperconv-cluster-applied", "data"),
+    dash.State("dc-main-tabs", "value"),
+    dash.State("url", "pathname"),
+    dash.State("dc-view-visible-sections", "data"),
+    prevent_initial_call=True,
+)
+def update_backup_sellable_cards(
+    panels_ready,
+    time_range,
+    classic_clusters,
+    hyperconv_clusters,
+    active_tab,
+    pathname,
+    visible_sections,
+):
+    """Fill Backup & Replication sellable cards after the lazy Backup tab mounts.
+
+    Shell mode used to leave these containers permanently empty — there was no
+    writer. Mirror the Virt sellable fill pattern (active-tab guard + RBAC).
+    """
+    if not panels_ready:
+        return (dash.no_update,) * 4
+    if (active_tab or "") != "backup":
+        return (dash.no_update,) * 4
+    dc_id = _dc_id_from_pathname(pathname)
+    if not dc_id:
+        return (dash.no_update,) * 4
+
+    vs = set(visible_sections or []) if visible_sections is not None else None
+
+    def _sec(code: str) -> bool:
+        return vs is None or code in vs
+
+    total_children = (
+        _build_backup_total_sellable_children(dc_id, classic_clusters, hyperconv_clusters)
+        if _sec("sub:dc_view:backup:total")
+        else []
+    )
+
+    def _inline(fam: str, title: str, color: str, cid: str, subtitle: str, rbac: str):
+        if not _sec(rbac):
+            return []
+        card = _build_sellable_inline_kpi(
+            dc_id,
+            fam,
+            title,
+            color=color,
+            container_id=cid,
+            subtitle=subtitle,
+        )
+        if card is None:
+            return []
+        return card.children if hasattr(card, "children") else [card]
+
+    nb = _inline(
+        "backup_netbackup",
+        "NetBackup — Sellable Potential",
+        "green",
+        "sellable-backup-netbackup-card",
+        "Image and Application share one disk pool (min = half free, max = full free).",
+        "sub:dc_view:backup:netbackup",
+    )
+    veeam = _inline(
+        "backup_veeam_replication",
+        "Veeam Replication — Sellable Potential",
+        "violet",
+        "sellable-backup-veeam-card",
+        "CPU/RAM share virt host free (alternate min=0 … max=free; classic+HC).",
+        "sub:dc_view:backup:veeam",
+    )
+    zerto = _inline(
+        "backup_zerto_replication",
+        "Zerto Replication — Sellable Potential",
+        "grape",
+        "sellable-backup-zerto-card",
+        "CPU/RAM share virt host free (alternate min=0 … max=free; classic+HC).",
+        "sub:dc_view:backup:zerto",
+    )
+    return total_children, nb, veeam, zerto
 
 
 @app.callback(
