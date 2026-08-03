@@ -1086,8 +1086,23 @@ LIMIT 20
     @staticmethod
     def _compute_cache_key(kind: str, dc_code: str, tr: dict, clusters: list[str]) -> str:
         # v2: HC allocation SoT is Nutanix-only (no VMware double-count)
+        # v3: anchor_latest is part of the key.
+        #
+        # Callers now anchor before they key, so start/end already describe the
+        # window that will be queried and the flag is mostly redundant. Mostly:
+        # _smart_1h_tr hands the range back untouched when it cannot resolve a
+        # latest ingested timestamp, and an anchored and an unanchored request
+        # would collapse onto one entry again — at exactly the moment the
+        # platform is unhealthy enough for that lookup to be failing.
+        #
+        # The bump orphans every entry written under v2. They expire on their
+        # own TTLs (10 min fresh / 30 min stale); nothing reads them meanwhile.
+        anchor_part = "a1" if tr.get("anchor_latest") else "a0"
         cluster_part = ",".join(sorted(clusters))
-        return f"compute:v2:{kind}:{dc_code}:{tr.get('start', '')}:{tr.get('end', '')}:{cluster_part}"
+        return (
+            f"compute:v3:{kind}:{dc_code}:{anchor_part}:"
+            f"{tr.get('start', '')}:{tr.get('end', '')}:{cluster_part}"
+        )
 
     def _get_compute_cached(self, key: str) -> dict | None:
         val, _stale = cache.get_with_stale(key)
@@ -1275,13 +1290,12 @@ LIMIT 20
             full = self.get_dc_details(dc_code, tr)
             return full.get("classic", _empty_compute_section())
 
+        tr = self._anchored_tr(tr)
         cache_key = self._compute_cache_key("classic", dc_code, tr, selected_clusters)
         cached = self._get_compute_cached(cache_key)
         if cached is not None:
             return cached
 
-        if tr.get("anchor_latest"):
-            tr = self._smart_1h_tr(tr)
         start_ts, end_ts = time_range_to_bounds(tr)
         dc_wc = f"%{dc_code}%"
         try:
@@ -1400,6 +1414,7 @@ LIMIT 20
             full = self.get_dc_details(dc_code, tr)
             return full.get("hyperconv", _empty_compute_section())
 
+        tr = self._anchored_tr(tr)
         cache_key = self._compute_cache_key("hyperconv", dc_code, tr, selected_clusters)
         cached = self._get_compute_cached(cache_key)
         if cached is not None:
@@ -3777,6 +3792,24 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         "3m": timedelta(days=90),
         "6m": timedelta(days=180),
     }
+
+    def _anchored_tr(self, tr: dict) -> dict:
+        """Apply anchor_latest if it is set, and keep the flag on the result.
+
+        `_smart_1h_tr` returns a freshly built dict that drops `anchor_latest`,
+        which is harmless where the anchor is applied and then only used to
+        derive SQL bounds. It is not harmless where the range is also used to
+        build a cache key: the anchored request would key as unanchored, and —
+        because _smart_1h_tr passes the range straight through when it cannot
+        resolve a latest timestamp — the request that failed to anchor would be
+        the one keyed as anchored. Exactly backwards.
+
+        Use this instead of the bare `if tr.get("anchor_latest")` idiom in any
+        method that keys off the range afterwards.
+        """
+        if not tr.get("anchor_latest"):
+            return tr
+        return {**self._smart_1h_tr(tr), "anchor_latest": True}
 
     def _smart_1h_tr(self, tr: dict | None) -> dict:
         """Anchor every relative preset (1h/1d/7d/30d/1m/2m/3m/6m) to the most
