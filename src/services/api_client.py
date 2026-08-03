@@ -203,9 +203,29 @@ def _new_http_transport() -> httpx.HTTPTransport:
 # 8s and returning empty — which never caches, so warm==cold and the UI shows zeros.
 # Connect stays short so a truly-unreachable backend still fails fast. Tunable via env.
 _INTERACTIVE_READ_TIMEOUT = float(os.getenv("API_INTERACTIVE_READ_TIMEOUT", "20") or "20")
+
+# Two different waits, deliberately two different numbers.
+#
+# _SHARED_RESULT_WAIT_SECONDS is the cross-pod half: how long a pod that lost the
+# `SET NX` lock waits for the winning pod to publish its result, and the TTL that
+# lock is held for. It has to outlast one fetch, or the lock expires while its
+# holder is still fetching and a second pod starts the same query — the stampede
+# this lock exists to prevent.
+#
+# _INFLIGHT_WAIT_SECONDS is the in-process half: how long a follower thread waits
+# on the leader's Event. It has to outlast the *leader*, and the leader's path is
+# not one fetch — a leader that loses the cross-pod lock first spends
+# _SHARED_RESULT_WAIT_SECONDS waiting for the other pod, and then fetches anyway
+# when nothing arrives. Both were one shared number, so followers expired exactly
+# one fetch before the leader returned, and returned the empty fallback instead:
+# fabricated zeros, rendered as data, replaced by the real values on the next
+# callback. That replacement is what users describe as the page going and coming
+# back. Waiting is not a cost here — the leader calls ev.set() the moment it has
+# an answer, so these are ceilings for the pathological case, not delays.
+_SHARED_RESULT_WAIT_SECONDS = max(25.0, _INTERACTIVE_READ_TIMEOUT + 5.0)
 _INFLIGHT_WAIT_SECONDS = float(os.getenv("API_INFLIGHT_WAIT_SECONDS", "0") or "0")
 if _INFLIGHT_WAIT_SECONDS <= 0:
-    _INFLIGHT_WAIT_SECONDS = max(25.0, _INTERACTIVE_READ_TIMEOUT + 5.0)
+    _INFLIGHT_WAIT_SECONDS = _SHARED_RESULT_WAIT_SECONDS + _INTERACTIVE_READ_TIMEOUT + 5.0
 _INTERACTIVE_TIMEOUT = httpx.Timeout(
     _INTERACTIVE_READ_TIMEOUT, connect=5.0, read=_INTERACTIVE_READ_TIMEOUT,
     write=_INTERACTIVE_READ_TIMEOUT, pool=5.0,
@@ -726,10 +746,10 @@ def _api_cache_get_with_stale(
 
     # Per-process leader. Try the cross-pod lock so only ONE pod fetches this key;
     # other pods wait for its result in the shared cache (kills the stampede).
-    got_lock = _api_response_cache.try_acquire(cache_key, _INFLIGHT_WAIT_SECONDS)
+    got_lock = _api_response_cache.try_acquire(cache_key, _SHARED_RESULT_WAIT_SECONDS)
     try:
         if not got_lock:
-            if _wait_for_shared_result(cache_key, _INFLIGHT_WAIT_SECONDS):
+            if _wait_for_shared_result(cache_key, _SHARED_RESULT_WAIT_SECONDS):
                 hit, _ = _cache_load(cache_key)
                 if hit is not None:
                     return _clone(hit)
