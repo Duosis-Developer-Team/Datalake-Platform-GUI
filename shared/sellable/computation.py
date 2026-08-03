@@ -261,6 +261,100 @@ def apply_storage_ratio_cap(
     return out
 
 
+def _package_units_from_track(
+    cpu_qty: float | None,
+    ram_qty: float | None,
+    ratio: ResourceRatio,
+) -> float | None:
+    """min(CPU packages, RAM packages) for one sellable track; None if no track qty."""
+    candidates: list[float] = []
+    if cpu_qty is not None and ratio.cpu_per_unit > 0:
+        candidates.append(max(float(cpu_qty), 0.0) / ratio.cpu_per_unit)
+    if ram_qty is not None and ratio.ram_gb_per_unit > 0:
+        candidates.append(max(float(ram_qty), 0.0) / ratio.ram_gb_per_unit)
+    if not candidates:
+        return None
+    return max(min(candidates), 0.0)
+
+
+def apply_storage_dual_track_ratio_caps(
+    panels: Iterable[PanelResult],
+    ratio: ResourceRatio,
+) -> list[PanelResult]:
+    """Project storage Alloc/Max/Ort tracks from compute dual-track package counts.
+
+    ``apply_storage_ratio_cap`` only uses ``sellable_constrained`` (typically the
+    Alloc track). Inventory shows three tracks on CPU/RAM; storage must mirror
+    each track × ``storage_gb_per_unit`` (capped by pool raw), or Ort/Max look
+    wrongly zero / flat while compute still has headroom on those tracks.
+    """
+    panel_list = list(panels)
+    by_kind = _split_by_kind(panel_list)
+    cpu_p = by_kind.get("cpu")
+    ram_p = by_kind.get("ram")
+    sto_p = by_kind.get("storage")
+    if sto_p is None or ratio.storage_gb_per_unit <= 0:
+        return panel_list
+    if cpu_p is None and ram_p is None:
+        return panel_list
+
+    raw = max(float(sto_p.sellable_raw or 0.0), 0.0)
+    n_alloc = _package_units_from_track(
+        cpu_p.sellable_allocation if cpu_p else None,
+        ram_p.sellable_allocation if ram_p else None,
+        ratio,
+    )
+    n_max = _package_units_from_track(
+        cpu_p.sellable_max_util if cpu_p else None,
+        ram_p.sellable_max_util if ram_p else None,
+        ratio,
+    )
+    n_avg = _package_units_from_track(
+        cpu_p.sellable_avg_util if cpu_p else None,
+        ram_p.sellable_avg_util if ram_p else None,
+        ratio,
+    )
+    # No dual-track qtys on compute → leave storage as ratio-cap left it.
+    if n_alloc is None and n_max is None and n_avg is None:
+        return panel_list
+
+    def _cap(n: float | None) -> float | None:
+        if n is None:
+            return None
+        return min(raw, n * ratio.storage_gb_per_unit)
+
+    sto_alloc = _cap(n_alloc)
+    sto_max = _cap(n_max)
+    sto_avg = _cap(n_avg)
+    # Primary constrained stays Alloc when present, else previous constrained.
+    if sto_alloc is not None:
+        new_constrained = sto_alloc
+    else:
+        new_constrained = min(float(sto_p.sellable_constrained or 0.0), raw)
+
+    out: list[PanelResult] = []
+    for p in panel_list:
+        if p.resource_kind != "storage":
+            out.append(p)
+            continue
+        out.append(
+            replace(
+                p,
+                sellable_constrained=new_constrained,
+                sellable_allocation=sto_alloc,
+                sellable_max_util=sto_max,
+                sellable_avg_util=sto_avg,
+                ratio_bound=True,
+                constraint_reason=(
+                    "ratio_bound"
+                    if p.constraint_reason in ("none", "", "compute_bottleneck")
+                    else p.constraint_reason
+                ),
+            )
+        )
+    return out
+
+
 def annotate_panel_constraint_metadata(panels: Iterable[PanelResult]) -> list[PanelResult]:
     """Populate constraint_reason on CPU/RAM panels for UI badges."""
     out: list[PanelResult] = []

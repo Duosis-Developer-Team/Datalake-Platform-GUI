@@ -446,6 +446,7 @@ from shared.licensing import os_sql
 from shared.sellable.computation import (
     StorageInTripleOverride,
     annotate_panel_constraint_metadata,
+    apply_storage_dual_track_ratio_caps,
     apply_storage_ratio_cap,
     apply_threshold,
     apply_utilization_gate,
@@ -2776,6 +2777,10 @@ SELECT _tot, _alloc FROM latest
                 cap_storage = True
             if cap_storage:
                 new_group = apply_storage_ratio_cap(new_group, ratio)
+                # Mirror Alloc/Max/Ort package counts onto deferred storage so
+                # inventory triad tracks stay ratio-consistent with compute.
+                if coupling_mode == "merged" and fam in _HOST_COMPUTE_ONLY_FAMILIES:
+                    new_group = apply_storage_dual_track_ratio_caps(new_group, ratio)
             if coupling_mode != "auto":
                 label = "merged with compute" if coupling_mode == "merged" else "separate from compute"
                 for p in new_group:

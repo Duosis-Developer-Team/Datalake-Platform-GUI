@@ -42,6 +42,10 @@ def test_prepare_and_filter_product_matching_rows():
     assert prepared["infra_total_fmt"] == "20.0"
     assert prepared["infra_used_fmt"] == "5.0"
     assert prepared["in_registry_fmt"] == "yes"
+    assert prepared["match_approved"] is True
+    assert "Matched" in prepared["match_status"]
+    assert "Matched via Loki" in prepared["notes"]
+    assert "nutanix_vm_metrics" in prepared["notes"]
 
     only_cap = filter_product_matching_rows(rows, "capacity", None)
     assert len(only_cap) == 1

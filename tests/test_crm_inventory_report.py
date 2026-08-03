@@ -478,7 +478,7 @@ def test_unit_price_missing_shows_dash():
     assert row["unit_price_fmt"] == "—"
 
 
-def test_header_money_badges_crm_sold_and_sellable_tracks():
+def test_header_money_badges_crm_sold_and_sellable_interval():
     badges = _header_money_badges(
         [
             _sample_row(
@@ -490,8 +490,8 @@ def test_header_money_badges_crm_sold_and_sellable_tracks():
                 panel_key="virt_classic_ram",
                 crm_sold_tl=5000.0,
                 potential_tl_alloc=3000.0,
-                potential_tl_max=0.0,
-                potential_tl_avg=0.0,
+                potential_tl_max=4000.0,
+                potential_tl_avg=5000.0,
             ),
         ],
         profile="dual_track",
@@ -499,9 +499,13 @@ def test_header_money_badges_crm_sold_and_sellable_tracks():
     labels = [getattr(b, "children", None) or str(b) for b in badges]
     joined = " ".join(str(x) for x in labels)
     assert "CRM Sold" in joined
-    assert "Sellable Alloc" in joined
-    assert "Sellable Max" in joined
-    assert "Sellable Ort." in joined
+    assert "Sellable" in joined
+    assert "Sellable Alloc" not in joined
+    assert "Sellable Max" not in joined
+    assert "Sellable Ort." not in joined
+    # Σmin = 27000+3000=30000; Σmax = 45000+5000=50000
+    assert "30,000 TL" in joined
+    assert "50,000 TL" in joined
 
 
 def test_header_money_badges_hides_zero_sellable_tracks():
@@ -514,7 +518,8 @@ def test_header_money_badges_hides_zero_sellable_tracks():
     assert "CRM Sold" in labels
     assert "Sellable Alloc" not in labels
     assert "Sellable Max" not in labels
-
+    # Zero-only tracks → no Sellable interval chip
+    assert labels.count("Sellable") == 0 or "Sellable 0" not in labels
 
 def test_prepare_service_row_netbackup_total_is_capacity_only():
     """NetBackup Total is pool usable qty only; Transfer holds PreDedup."""

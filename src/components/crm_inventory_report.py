@@ -92,7 +92,7 @@ _FLAT_EXTRA_COLUMN = {"name": "Family", "id": "family_label"}
 
 _FLAT_VIEW_FAMILY = "dual_track"
 
-INVENTORY_REPORT_SCHEMA_VERSION = "inventory-sellable-interval-v4"
+INVENTORY_REPORT_SCHEMA_VERSION = "inventory-final-polish-v5"
 
 _LEFT_COLS = frozenset({
     "service_label", "display_unit", "family_label", "product_name", "resource_unit",
@@ -360,7 +360,11 @@ def _fmt_sellable_tl_interval(lo: float | None, hi: float | None) -> str:
 
 
 def _fill_replication_storage_tracks(row: dict[str, Any]) -> dict[str, Any]:
-    """When replication storage triad is missing, fill from constrained / sellable_qty."""
+    """When replication storage triad is missing, fill from post-cap constrained only.
+
+    Never re-inflate from a raw pool headroom larger than ``sellable_qty`` /
+    constrained under merged coupling — that broke ratio parity in the UI.
+    """
     family = str(row.get("family") or "")
     is_repl = family.startswith("backup_veeam_replication") or family.startswith(
         "backup_zerto_replication"
@@ -371,7 +375,12 @@ def _fill_replication_storage_tracks(row: dict[str, Any]) -> dict[str, Any]:
     )
     if not (is_repl and is_storage):
         return row
-    if row.get("sellable_alloc_qty") is not None:
+    # Prefer explicit dual tracks from BE (Alloc/Max/Ort already ratio-projected).
+    if (
+        row.get("sellable_alloc_qty") is not None
+        or row.get("sellable_max_qty") is not None
+        or row.get("sellable_avg_qty") is not None
+    ):
         return row
     qty = row.get("sellable_qty")
     if qty is None:
@@ -812,13 +821,17 @@ def _header_money_badges(panels: list[dict[str, Any]], *, profile: str) -> list[
             )
         return badges
 
-    is_replication_group = profile == "replication" or any(
-        str(p.get("family") or "").startswith("backup_veeam_replication")
-        or str(p.get("family") or "").startswith("backup_zerto_replication")
-        for p in panels
+    use_interval = (
+        profile in ("dual_track", "allocation_only", "replication")
+        or any(
+            str(p.get("sellable_profile") or "") in ("dual_track", "allocation_only")
+            or str(p.get("family") or "").startswith("backup_veeam_replication")
+            or str(p.get("family") or "").startswith("backup_zerto_replication")
+            or str(p.get("family") or "") in _INVENTORY_VIRT_FAMILIES
+            for p in panels
+        )
     )
-    # Replication header: one Sellable min–max TL chip (Σ of per-row track mins/maxes).
-    if is_replication_group:
+    if use_interval:
         sum_lo = 0.0
         sum_hi = 0.0
         any_bound = False
@@ -841,56 +854,39 @@ def _header_money_badges(panels: list[dict[str, Any]], *, profile: str) -> list[
             )
         return badges
 
-    alloc_tl = _sum_tl_field(panels, "potential_tl_alloc")
-    max_tl = _sum_tl_field(panels, "potential_tl_max")
-    avg_tl = _sum_tl_field(panels, "potential_tl_avg")
-    has_dual = any(
-        p.get("sellable_alloc_qty") is not None
-        or p.get("sellable_max_qty") is not None
-        or p.get("sellable_avg_qty") is not None
-        or str(p.get("sellable_profile") or "") in ("dual_track", "allocation_only")
-        for p in panels
-    )
-    if has_dual or alloc_tl > 0 or max_tl > 0 or avg_tl > 0:
-        if alloc_tl > 0:
-            badges.append(
-                dmc.Badge(
-                    f"Sellable Alloc {shared.fmt_tl(alloc_tl)}",
-                    color="indigo",
-                    variant="light",
-                    size="sm",
-                )
+    pot = _family_potential_tl(panels)
+    if pot > 0:
+        badges.append(
+            dmc.Badge(
+                f"Sellable {shared.fmt_tl(pot)}",
+                color="indigo",
+                variant="light",
+                size="sm",
             )
-        if max_tl > 0:
-            badges.append(
-                dmc.Badge(
-                    f"Sellable Max {shared.fmt_tl(max_tl)}",
-                    color="violet",
-                    variant="light",
-                    size="sm",
-                )
-            )
-        if avg_tl > 0:
-            badges.append(
-                dmc.Badge(
-                    f"Sellable Ort. {shared.fmt_tl(avg_tl)}",
-                    color="cyan",
-                    variant="light",
-                    size="sm",
-                )
-            )
-    else:
-        pot = _family_potential_tl(panels)
-        if pot > 0:
-            badges.append(
-                dmc.Badge(
-                    f"Sellable {shared.fmt_tl(pot)}",
-                    color="indigo",
-                    variant="light",
-                    size="sm",
-                )
-            )
+        )
     return badges
+
+
+def _family_free_tooltip(*, profile: str, family_key: str) -> str:
+    if profile == "backup_netbackup" or family_key in ("image_backup", "application_backup"):
+        return _NETBACKUP_FREE_TOOLTIP
+    return _FREE_COLUMN_TOOLTIP
+
+
+def _header_info_icon(label: str) -> Any:
+    return dmc.Tooltip(
+        label=label,
+        multiline=True,
+        w=280,
+        withArrow=True,
+        children=dmc.ThemeIcon(
+            DashIconify(icon="solar:info-circle-bold-duotone", width=14),
+            variant="light",
+            color="gray",
+            size="sm",
+            radius="xl",
+        ),
+    )
 
 
 def _family_sellable_profile(family: dict[str, Any], panels: list[dict[str, Any]]) -> str:
@@ -933,27 +929,11 @@ def build_family_accordion(
         badges.extend(_header_money_badges(filtered, profile=profile))
         if issues:
             badges.append(dmc.Badge(f"{issues} issues", color="red", variant="light", size="sm"))
-        # NetBackup Free column: info tooltip on the group title area.
         control_children: list[Any] = [
             dmc.Text(title, fw=600, size="sm"),
             *badges,
+            _header_info_icon(_family_free_tooltip(profile=profile, family_key=family_key)),
         ]
-        if profile == "backup_netbackup" or family_key in ("image_backup", "application_backup"):
-            control_children.append(
-                dmc.Tooltip(
-                    label=_NETBACKUP_FREE_TOOLTIP,
-                    multiline=True,
-                    w=280,
-                    withArrow=True,
-                    children=dmc.ThemeIcon(
-                        DashIconify(icon="solar:info-circle-bold-duotone", width=14),
-                        variant="light",
-                        color="gray",
-                        size="sm",
-                        radius="xl",
-                    ),
-                )
-            )
         items.append(
             dmc.AccordionItem(
                 value=f"fam-{idx}",
@@ -1069,8 +1049,24 @@ def prepare_product_matching_row(row: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         sold_fmt = str(sold_qty or "")
 
-    tables = row.get("infra_tables") or []
-    columns = row.get("infra_columns") or []
+    tables = [str(t) for t in (row.get("infra_tables") or []) if t]
+    columns = [str(c) for c in (row.get("infra_columns") or []) if c]
+    usage = str(row.get("usage_source") or "").strip()
+    rule = str(row.get("matching_rule") or "").strip()
+    notes = str(row.get("notes") or "").strip()
+    status = str(row.get("match_status") or "documented")
+    approved = bool(row.get("match_approved")) or (
+        status == "capacity" and bool(tables or columns)
+    )
+    if not notes and approved:
+        via = usage or rule or "infra binding"
+        target = ".".join(tables[:1] + columns[:1]) if (tables or columns) else "panel"
+        if tables and columns:
+            target = f"{tables[0]}.{columns[0]}"
+        elif tables:
+            target = tables[0]
+        notes = f"Matched via {via} → {target}"
+
     infra_total = row.get("infra_total")
     infra_used = row.get("infra_used")
     try:
@@ -1081,18 +1077,29 @@ def prepare_product_matching_row(row: dict[str, Any]) -> dict[str, Any]:
         infra_used_fmt = "—" if infra_used is None else f"{float(infra_used):,.1f}"
     except (TypeError, ValueError):
         infra_used_fmt = str(infra_used or "—")
+
+    if approved:
+        status_fmt = "Matched (capacity)"
+    elif status == "capacity":
+        status_fmt = "capacity"
+    else:
+        status_fmt = status or "—"
+
     return {
         **row,
         "crm_sold_fmt": sold_fmt,
-        "infra_tables_fmt": ", ".join(str(t) for t in tables) if tables else "—",
-        "infra_columns_fmt": ", ".join(str(c) for c in columns) if columns else "—",
+        "infra_tables_fmt": ", ".join(tables) if tables else "—",
+        "infra_columns_fmt": ", ".join(columns) if columns else "—",
         "panel_key": row.get("panel_key") or "—",
-        "matching_rule": row.get("matching_rule") or "—",
-        "usage_source": row.get("usage_source") or "—",
+        "matching_rule": rule or "—",
+        "usage_source": usage or "—",
         "infra_total_fmt": infra_total_fmt,
         "infra_used_fmt": infra_used_fmt,
         "in_registry_fmt": "yes" if row.get("in_registry") else "no",
-        "notes": row.get("notes") or "",
+        "notes": notes,
+        "match_status": status_fmt if approved else status,
+        "match_approved": approved,
+        "match_status_raw": status,
     }
 
 
@@ -1192,10 +1199,20 @@ def build_product_matching_section(
                             {
                                 "if": {"filter_query": '{match_status} = "capacity"'},
                                 "backgroundColor": "#F0FDF4",
+                                "color": "#166534",
+                            },
+                            {
+                                "if": {
+                                    "filter_query": '{match_status} contains "Matched"'
+                                },
+                                "backgroundColor": "#DCFCE7",
+                                "color": "#166534",
+                                "fontWeight": "600",
                             },
                             {
                                 "if": {"filter_query": "{match_approved} = true"},
                                 "backgroundColor": "#DCFCE7",
+                                "color": "#166534",
                             },
                             {
                                 "if": {

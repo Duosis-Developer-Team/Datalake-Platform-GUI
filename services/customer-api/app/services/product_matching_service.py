@@ -250,6 +250,15 @@ class ProductMatchingService:
                 and (tables or columns)
             ):
                 row["match_approved"] = True
+            if not row["notes"] and row.get("match_approved"):
+                via = row["usage_source"] or row["matching_rule"] or "infra binding"
+                if tables and columns:
+                    target = f"{tables[0]}.{columns[0]}"
+                elif tables:
+                    target = tables[0]
+                else:
+                    target = str(panel_key or "panel")
+                row["notes"] = f"Matched via {via} → {target}"
         return row
 
     @staticmethod

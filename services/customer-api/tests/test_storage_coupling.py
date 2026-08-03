@@ -517,3 +517,32 @@ def test_replication_merged_caps_storage_by_compute_ratio():
     notes = " ".join(_storage_of(merged).notes)
     assert "storage coupling" in notes
     assert "merged" in notes
+
+
+def test_replication_merged_dual_track_storage_mirrors_avg_when_alloc_zero():
+    """When Alloc/Max are gated to 0 but Ort has packages, storage Ort follows ratio."""
+    from shared.sellable.computation import apply_storage_dual_track_ratio_caps
+
+    fam = "backup_veeam_replication_classic"
+    panels = _repl_panels(cpu=10.0, ram=40.0, storage=50000.0)
+    for p in panels:
+        if p.resource_kind == "cpu":
+            p.sellable_allocation = 0.0
+            p.sellable_max_util = 0.0
+            p.sellable_avg_util = 141.0
+            p.sellable_constrained = 0.0
+        elif p.resource_kind == "ram":
+            p.sellable_allocation = 0.0
+            p.sellable_max_util = 0.0
+            p.sellable_avg_util = 564.0
+            p.sellable_constrained = 0.0
+        else:
+            p.sellable_raw = 50000.0
+            p.sellable_constrained = 0.0
+    ratio = ResourceRatio(
+        family=fam, cpu_per_unit=1.0, ram_gb_per_unit=4.0, storage_gb_per_unit=50.0,
+    )
+    out = apply_storage_dual_track_ratio_caps(panels, ratio)
+    sto = _storage_of(out)
+    assert sto.sellable_allocation == pytest.approx(0.0)
+    assert sto.sellable_avg_util == pytest.approx(7050.0)
