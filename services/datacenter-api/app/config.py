@@ -9,7 +9,12 @@ class Settings(BaseSettings):
     db_pass: str = ""
     redis_host: str = "localhost"
     redis_port: int = 6379
-    redis_db: int = 0
+    # db 0 is the GUI's (REDIS_URL=redis://redis:6379/0). Sharing it meant an
+    # admin cache refresh here — which flushes with a bare "*" — wiped the GUI's
+    # dl:fecache:* keys as well. Own database, like customer-api (1) and
+    # crm-engine (2). The default has to be safe on its own: the k8s manifests
+    # do not set REDIS_DB.
+    redis_db: int = 3
     redis_password: str = ""
     redis_socket_timeout: int = 5
     cache_ttl_seconds: int = 1200

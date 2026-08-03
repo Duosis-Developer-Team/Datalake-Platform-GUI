@@ -88,16 +88,27 @@ def test_page_renders_counts_and_rows():
 
 
 def test_page_renders_when_the_backend_is_down():
-    # An orphan report must never take the page down: build_layout swallows the
-    # failure and still renders (empty), rather than raising into the router.
+    """An orphan report must never take the page down: build_layout swallows the
+    failure and still renders, rather than raising into the router.
+
+    One assertion reversed here (P0-4). This used to require "Toplam eşleşmeyen"
+    — the KPI strip — to render during the outage, which meant rendering it as
+    zero. That is the headline an operator acts on: "0 unmapped, 0 orphans" is
+    how they learn the mapping backlog is clear, and inventing it while
+    customer-api is unreachable told them the opposite of the truth. The page
+    still renders, still keeps its chrome, and still never raises; the body is
+    now a notice saying the data could not be fetched.
+    """
+    from src.components.degraded_notice import DEGRADED_NOTICE_ID
     from src.pages import unmapped_resources as page
 
     with patch("src.services.api_client.get_unmapped_resources",
                side_effect=RuntimeError("customer-api down")), \
          patch.object(page, "can_write_alias_rules", return_value=True):
         out = str(page.build_layout({"preset": "7d"}))
-    assert "Müşterilere dön" in out
-    assert "Toplam eşleşmeyen" in out
+    assert "Müşterilere dön" in out, "page chrome survives; the router was not handed an exception"
+    assert DEGRADED_NOTICE_ID in out
+    assert "Toplam eşleşmeyen" not in out, "a fabricated zero backlog is worse than no number"
 
 
 def test_alias_gap_rows_offer_an_action_and_orphans_do_not():

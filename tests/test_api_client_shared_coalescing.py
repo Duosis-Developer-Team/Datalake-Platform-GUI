@@ -3,6 +3,8 @@ tries the shared lock; if another pod holds it (is already fetching), this pod
 waits for that pod's result in the shared cache instead of firing the same slow
 query — killing the cross-pod stampede.
 """
+import time
+
 import pytest
 
 from src.services import api_client as api
@@ -21,7 +23,7 @@ def _isolated_backend():
 def test_leader_waits_for_other_pod_result_instead_of_fetching(monkeypatch):
     monkeypatch.setattr(api, "_SWR_TTL_SECONDS", 300.0)
     # Another pod holds the shared lock.
-    monkeypatch.setattr(api._api_response_cache, "try_acquire", lambda k, ttl: False)
+    monkeypatch.setattr(api._api_response_cache, "try_acquire", lambda k, ttl: None)
 
     calls = {"n": 0}
 
@@ -29,8 +31,12 @@ def test_leader_waits_for_other_pod_result_instead_of_fetching(monkeypatch):
         if k != "mk":
             return None  # ts / other keys
         calls["n"] += 1
-        # miss at the top, then the other pod's result appears during the poll
-        return None if calls["n"] == 1 else {"v": "from_other_pod"}
+        if calls["n"] == 1:
+            return None  # miss at the top
+        # ...then the other pod's result appears during the poll. Stamped, the
+        # way _cache_store writes it: P2-6 made the wait hold out for a *fresh*
+        # entry, and an unstamped one reads as stale everywhere in this module.
+        return {api._SWR_STAMP: time.time(), "value": {"v": "from_other_pod"}}
 
     monkeypatch.setattr(api._api_response_cache, "get", fake_get)
 
@@ -49,4 +55,4 @@ def test_global_leader_with_lock_fetches_and_releases(monkeypatch):
     out = api._api_cache_get_with_stale("mk2", lambda: {"v": "mine"}, {})
     assert out == {"v": "mine"}
     # lock released after fetch -> re-acquirable
-    assert cache_service.try_acquire("mk2", ttl=30) is True
+    assert cache_service.try_acquire("mk2", ttl=30)

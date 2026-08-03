@@ -58,6 +58,7 @@ def test_update_net_interface_table_returns_footer_and_page_count():
             "",
             0,
             "50",
+            True,
             {"preset": "last_7d"},
             "/datacenter/DC13",
         )
@@ -89,6 +90,7 @@ def test_update_net_interface_table_page_count_for_multiple_pages():
             "",
             0,
             "50",
+            True,
             {"preset": "last_7d"},
             "/datacenter/DC13",
         )

@@ -131,7 +131,25 @@ def cache_delete_prefix(prefix: str) -> None:
             _memory_cache.pop(k, None)
 
 
+# db 0 is the GUI's namespace (REDIS_URL=redis://redis:6379/0). This service owns
+# db 3; see app/config.py.
+_GUI_REDIS_DB = 0
+
+
 def cache_flush_pattern(pattern: str) -> None:
+    """SCAN+DELETE every matching key, then drop the in-process cache.
+
+    A bare `*` walks the whole database, so it is only safe while this service
+    has one to itself. If REDIS_DB is ever pointed back at the GUI's db, refuse:
+    the alternative is silently wiping the front end's dl:fecache:* keys on every
+    operator cache refresh.
+    """
+    if (pattern or "").strip() in ("", "*") and settings.redis_db == _GUI_REDIS_DB:
+        raise ValueError(
+            "refusing a bare '*' flush on Redis db 0 — that database belongs to the GUI. "
+            "Set REDIS_DB to this service's own database (3) or flush a scoped prefix."
+        )
+
     redis_client = get_redis_client()
     if redis_client:
         try:

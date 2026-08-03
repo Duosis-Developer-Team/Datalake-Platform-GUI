@@ -18,8 +18,9 @@ def _inventory_payload(panel_count: int = 2) -> dict:
 
 
 def _set_with_age(key: str, value: dict, age_seconds: float) -> None:
-    cache_service.set(key, value)
-    cache_service.set(api._fetched_ts_key(key), time.time() - age_seconds)
+    from tests.conftest import seed_cache_entry
+
+    seed_cache_entry(key, value, age_seconds=age_seconds)
 
 
 def test_inventory_fresh_entry_served_without_refetch(monkeypatch):

@@ -13,10 +13,10 @@ def test_get_cache_as_of_returns_none_when_unknown():
     assert api.get_cache_as_of("api:never") is None
 
 
-def test_get_cache_as_of_returns_walltime_after_mark():
+def test_get_cache_as_of_returns_walltime_after_a_write():
     cache_service.clear()
     before = time.time()
-    api._mark_fetched("api:x")
+    api._cache_store("api:x", {"v": 1})
     ts = api.get_cache_as_of("api:x")
     assert ts is not None
     assert before <= ts <= time.time() + 1

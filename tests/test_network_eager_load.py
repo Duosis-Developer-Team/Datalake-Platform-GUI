@@ -99,7 +99,10 @@ def test_build_dc_view_eager_fetches_network_payloads(monkeypatch):
     assert "filters" in call_log
     assert "port_summary" in call_log
     assert "p95" in call_log
-    assert "iface_table" in call_log
+    # The interface table is deliberately not among them any more: it is the
+    # expensive half of the tab and now waits for its switch. See
+    # test_net_interface_table_toggle.
+    assert "iface_table" not in call_log
 
 
 def test_build_dc_view_skips_network_payload_when_no_devices(monkeypatch):

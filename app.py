@@ -3,6 +3,7 @@ import json
 import math
 import logging
 import os
+import random
 import threading
 import time as time_module
 from urllib.parse import parse_qs
@@ -108,6 +109,7 @@ def _register_frontend_deployment() -> None:
 _register_frontend_deployment()
 
 from src.auth.routes import auth_bp
+from src.auth import dash_gate
 from src.auth.middleware import register_middleware
 
 server.register_blueprint(auth_bp)
@@ -227,6 +229,42 @@ def _warm_worker_local_customer_availability_cache() -> None:
 threading.Thread(target=_warm_worker_local_customer_availability_cache, daemon=True).start()
 
 
+_INITIAL_WARM_JITTER_SECONDS = (5.0, 30.0)
+
+
+def _common_warm_interval_seconds() -> int:
+    try:
+        return int(os.environ.get("APP_COMMON_WARM_INTERVAL_SECONDS", "240") or "240")
+    except ValueError:
+        return 240
+
+
+def _initial_warm_delay_seconds() -> float:
+    """How long a worker waits before its *first* warm_common().
+
+    Every gunicorn worker runs the warm loop and they all start together, so
+    without a stagger they contend for the same cross-process fetch lock and the
+    losers block for _INFLIGHT_WAIT_SECONDS before finding the leader's result.
+    A few seconds of jitter keeps them out of each other's way.
+
+    APP_WARM_JITTER_SECONDS overrides the ceiling; 0 warms immediately, which is
+    what a single-worker deployment wants. The delay is never longer than the
+    warm interval itself — a longer one would just skip warms.
+    """
+    low, high = _INITIAL_WARM_JITTER_SECONDS
+    override = (os.environ.get("APP_WARM_JITTER_SECONDS") or "").strip()
+    if override:
+        try:
+            high = max(0.0, float(override))
+        except ValueError:
+            pass  # malformed: keep the default window rather than warming blind
+        else:
+            low = min(low, high)
+    high = min(high, float(_common_warm_interval_seconds()))
+    low = min(low, high)
+    return random.uniform(low, high)
+
+
 def _periodic_common_warm() -> None:
     """User-independent periodic warm: keep the shared aggregate cache (overview,
     datacenters, availability SLA) hot even with no logged-in session, and pick up
@@ -234,7 +272,8 @@ def _periodic_common_warm() -> None:
     the result."""
     from src.services.app_background_warm import warm_common
 
-    interval = int(os.environ.get("APP_COMMON_WARM_INTERVAL_SECONDS", "240") or "240")
+    interval = _common_warm_interval_seconds()
+    time_module.sleep(_initial_warm_delay_seconds())
     while True:
         try:
             warm_common()
@@ -250,12 +289,12 @@ def _background_warm_enabled() -> bool:
     return os.environ.get("APP_DISABLE_BACKGROUND_WARM", "").strip().lower() in ("", "0", "false")
 
 
-# _periodic_common_warm calls warm_common() immediately, before its first sleep.
-# That means simply importing this module starts a background caller of
-# warm_common() for the rest of the process — in a test session, that caller
-# can race a test that monkeypatches warm_common's internals (e.g.
-# tests/test_warm_common.py), landing an extra call mid-assertion. Production
-# never sets APP_DISABLE_BACKGROUND_WARM, so production behaviour is unchanged.
+# Importing this module starts a background caller of warm_common() for the rest
+# of the process — in a test session, that caller can race a test that
+# monkeypatches warm_common's internals (e.g. tests/test_warm_common.py),
+# landing an extra call mid-assertion. The startup jitter makes that race less
+# likely but does not remove it, so the env guard stays. Production never sets
+# APP_DISABLE_BACKGROUND_WARM, so production behaviour is unchanged.
 if _background_warm_enabled():
     threading.Thread(target=_periodic_common_warm, daemon=True).start()
 
@@ -428,6 +467,12 @@ app.layout = dmc.MantineProvider(
         build_chatbot_shell(),
     ],
 )
+
+# Everything in the static layout above is the app shell: an unauthenticated
+# browser is allowed to run those callbacks so it can boot far enough to render
+# the login form (main-content.children). Page callbacks are denied until a
+# session exists — see src/auth/dash_gate.py.
+dash_gate.set_shell_component_ids(dash_gate.collect_component_ids(app.layout))
 
 # Chatbot widget callbacks (toggle panel, sync page context, send message).
 register_chatbot_callbacks(app)
@@ -2697,6 +2742,7 @@ def update_net_kpis_and_charts(top_scope, switch_role, manufacturer, device_name
     dash.Input("net-interface-search", "value"),
     dash.Input("net-interface-table", "page_current"),
     dash.Input("net-interface-page-size", "value"),
+    dash.Input("net-interface-table-toggle", "checked"),
     dash.State("app-time-range", "data"),
     dash.State("url", "pathname"),
 )
@@ -2708,6 +2754,7 @@ def update_net_interface_table(
     search_value,
     page_current,
     page_size_sel,
+    table_enabled,
     time_range,
     pathname,
 ):
@@ -2717,6 +2764,19 @@ def update_net_interface_table(
     top_scope = top_scope or "overview"
     if not _net_scope_is_interface_panel(top_scope):
         return [], dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    # This callback has no prevent_initial_call, so it runs on every render of
+    # the Network tab whether or not anyone wants the table. With the switch off
+    # it must come back without a query — that skip is the entire saving.
+    if not table_enabled:
+        return (
+            [],
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dc_view._NET_TABLE_OFF_HINT,
+        )
 
     triggered_id = _net_interface_table_triggered_id()
 

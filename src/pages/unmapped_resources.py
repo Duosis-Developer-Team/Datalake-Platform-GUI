@@ -14,7 +14,14 @@ from dash import dash_table, dcc, html
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 
+from src.components.degraded_notice import build_degraded_notice
 from src.services import api_client as api
+
+# Shape of an unmapped-resources payload with nothing in it. Used only to build
+# the degraded fallback when the call raises outright — api_client marks its own.
+_EMPTY_UNMAPPED_BODY = {
+    "rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0, "ambiguous_count": 0,
+}
 from src.utils.time_range import default_time_range
 
 logger = logging.getLogger(__name__)
@@ -236,8 +243,13 @@ def build_body(tr: dict | None = None, active_tab: str | None = None) -> list:
     try:
         data = api.get_unmapped_resources(tr)
     except Exception:
-        data = {"rows": [], "total": 0, "alias_gap_count": 0, "orphan_count": 0,
-                "ambiguous_count": 0}
+        data = api._degraded_fallback(_EMPTY_UNMAPPED_BODY)
+
+    if api.is_degraded(data):
+        # "0 alias gaps, 0 orphans" is the headline an operator acts on — it is
+        # the signal that the mapping backlog is clear. Inventing it during an
+        # outage is worse than showing nothing.
+        return [build_degraded_notice()]
 
     rows = data.get("rows") or []
     total = int(data.get("total") or 0)
