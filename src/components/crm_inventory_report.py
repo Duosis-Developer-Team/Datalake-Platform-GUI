@@ -32,7 +32,6 @@ _REPLICATION_COLUMNS = [
     {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
     {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
     {"name": "Sellable (Ort.)", "id": "sellable_avg_fmt"},
-    {"name": "Sellable min–max", "id": "sellable_range_fmt"},
 ]
 
 _VIRT_BASE_COLUMNS = [
@@ -93,7 +92,7 @@ _FLAT_EXTRA_COLUMN = {"name": "Family", "id": "family_label"}
 
 _FLAT_VIEW_FAMILY = "dual_track"
 
-INVENTORY_REPORT_SCHEMA_VERSION = "inventory-free-unsold-v3"
+INVENTORY_REPORT_SCHEMA_VERSION = "inventory-sellable-interval-v4"
 
 _LEFT_COLS = frozenset({
     "service_label", "display_unit", "family_label", "product_name", "resource_unit",
@@ -321,7 +320,87 @@ def _fmt_crm_sold_block(row: dict[str, Any], unit: str, crm_sold_tl: Any) -> str
     return f"{qty_line}\n{sub_line}\n{tl_line}"
 
 
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_sellable_tl_tracks(row: dict[str, Any]) -> list[float]:
+    """Non-null potential TL values among Alloc / Max util / Ort tracks."""
+    tracks: list[float] = []
+    for key in ("potential_tl_alloc", "potential_tl_max", "potential_tl_avg"):
+        v = _as_float(row.get(key))
+        if v is not None:
+            tracks.append(v)
+    return tracks
+
+
+def _row_sellable_tl_bounds(row: dict[str, Any]) -> tuple[float | None, float | None]:
+    tracks = _row_sellable_tl_tracks(row)
+    if not tracks:
+        pot = _as_float(row.get("potential_tl"))
+        if pot is None:
+            return None, None
+        return pot, pot
+    return min(tracks), max(tracks)
+
+
+def _fmt_sellable_tl_interval(lo: float | None, hi: float | None) -> str:
+    if lo is None and hi is None:
+        return "—"
+    if lo is None:
+        return shared.fmt_tl(hi)
+    if hi is None or abs(lo - hi) < 1e-9:
+        return shared.fmt_tl(lo)
+    return f"{shared.fmt_tl(lo)} – {shared.fmt_tl(hi)}"
+
+
+def _fill_replication_storage_tracks(row: dict[str, Any]) -> dict[str, Any]:
+    """When replication storage triad is missing, fill from constrained / sellable_qty."""
+    family = str(row.get("family") or "")
+    is_repl = family.startswith("backup_veeam_replication") or family.startswith(
+        "backup_zerto_replication"
+    )
+    kind = str(row.get("resource_kind") or row.get("display_unit") or "").lower()
+    is_storage = kind in ("storage", "gb", "tb") or str(row.get("panel_key") or "").endswith(
+        "_storage"
+    )
+    if not (is_repl and is_storage):
+        return row
+    if row.get("sellable_alloc_qty") is not None:
+        return row
+    qty = row.get("sellable_qty")
+    if qty is None:
+        qty = row.get("sellable_constrained")
+    qty_f = _as_float(qty)
+    if qty_f is None:
+        return row
+    out = dict(row)
+    out["sellable_alloc_qty"] = qty_f
+    if out.get("sellable_max_qty") is None:
+        out["sellable_max_qty"] = qty_f
+    if out.get("sellable_avg_qty") is None:
+        out["sellable_avg_qty"] = qty_f
+    price = _as_float(out.get("unit_price_tl"))
+    if price is not None and price > 0 and bool(out.get("has_price")):
+        tl = qty_f * price
+        if out.get("potential_tl_alloc") is None:
+            out["potential_tl_alloc"] = tl
+        if out.get("potential_tl_max") is None:
+            out["potential_tl_max"] = tl
+        if out.get("potential_tl_avg") is None:
+            out["potential_tl_avg"] = tl
+        if out.get("potential_tl") is None:
+            out["potential_tl"] = tl
+    return out
+
+
 def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
+    row = _fill_replication_storage_tracks(row)
     unit = str(row.get("display_unit") or "")
     status = str(row.get("status") or "no_usage")
     data_quality = str(row.get("data_quality") or "")
@@ -374,6 +453,12 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         free_mode == "physical"
         or family in _PHYSICAL_FREE_FAMILIES
     )
+    # Unsold fallback when API/cache omits unsold_qty: Total − CRM Sold.
+    if has_infra and unsold_display_qty is None:
+        total_f = _as_float(row.get("total"))
+        crm_f = _as_float(row.get("crm_sold_qty")) or 0.0
+        if total_f is not None:
+            unsold_display_qty = max(total_f - crm_f, 0.0)
     # Free = infra empty. Physical panels prefer CRM-sold implied unit price
     # (catalog free_tl / unit_price_tl can be mis-scaled for NetBackup / S3).
     free_tl = row.get("free_tl")
@@ -489,16 +574,6 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "sellable_avg_fmt": shared.fmt_qty_tl_block(
             sellable_avg_qty, unit, potential_tl_avg,
         ) if profile == "dual_track" or is_replication else "—\n—",
-        "sellable_range_fmt": (
-            f"{_fmt_qty(row.get('sellable_min_qty'), unit)}\n"
-            f"– {_fmt_qty(row.get('sellable_max_qty'), unit)}"
-            if is_replication and has_infra
-            and (
-                row.get("sellable_min_qty") is not None
-                or row.get("sellable_max_qty") is not None
-            )
-            else "—\n—"
-        ),
         "unit_price_fmt": _fmt_unit_price(unit_price_display, unit),
         "status": status,
         "data_quality": data_quality,
@@ -706,7 +781,7 @@ def _sum_tl_field(panels: list[dict[str, Any]], key: str) -> float:
 
 
 def _header_money_badges(panels: list[dict[str, Any]], *, profile: str) -> list[Any]:
-    """CRM Sold + Sellable track chips for the accordion control."""
+    """CRM Sold + Sellable chips for the accordion control."""
     badges: list[Any] = []
     crm_tl = _family_crm_tl(panels)
     badges.append(
@@ -730,6 +805,35 @@ def _header_money_badges(panels: list[dict[str, Any]], *, profile: str) -> list[
             badges.append(
                 dmc.Badge(
                     f"Sellable {shared.fmt_tl(sellable_tl)}",
+                    color="indigo",
+                    variant="light",
+                    size="sm",
+                )
+            )
+        return badges
+
+    is_replication_group = profile == "replication" or any(
+        str(p.get("family") or "").startswith("backup_veeam_replication")
+        or str(p.get("family") or "").startswith("backup_zerto_replication")
+        for p in panels
+    )
+    # Replication header: one Sellable min–max TL chip (Σ of per-row track mins/maxes).
+    if is_replication_group:
+        sum_lo = 0.0
+        sum_hi = 0.0
+        any_bound = False
+        for p in panels:
+            filled = _fill_replication_storage_tracks(p)
+            lo, hi = _row_sellable_tl_bounds(filled)
+            if lo is None and hi is None:
+                continue
+            any_bound = True
+            sum_lo += float(lo if lo is not None else hi or 0.0)
+            sum_hi += float(hi if hi is not None else lo or 0.0)
+        if any_bound and (sum_lo > 0 or sum_hi > 0):
+            badges.append(
+                dmc.Badge(
+                    f"Sellable {_fmt_sellable_tl_interval(sum_lo, sum_hi)}",
                     color="indigo",
                     variant="light",
                     size="sm",

@@ -927,6 +927,8 @@ def _sellable_track_fields(
             "potential_tl_alloc": None,
             "potential_tl_max": None,
             "potential_tl_avg": None,
+            "sellable_tl_min": None,
+            "sellable_tl_max": None,
         }
     unit_price = float(panel.unit_price_tl or 0.0)
     used = float(panel.allocated or 0.0)
@@ -937,19 +939,23 @@ def _sellable_track_fields(
     if max_qty is None and panel.resource_kind == "ram" and panel.sellable_effective is not None:
         max_qty = panel.sellable_effective
     avg_qty = panel.sellable_avg_util
-    # Replication storage has no host dual tracks — surface constrained as the triad.
+    # Replication storage has no host dual tracks — surface constrained as the triad
+    # (including 0.0 so the UI shows 0, not em-dash).
     if (
         panel.family in _REPLICATION_ALLOCATION_FAMILIES
         and (panel.resource_kind or "").lower() == "storage"
-        and panel.sellable_constrained is not None
     ):
-        constrained = float(panel.sellable_constrained)
-        if alloc_qty is None:
-            alloc_qty = constrained
-        if max_qty is None:
-            max_qty = constrained
-        if avg_qty is None:
-            avg_qty = constrained
+        constrained = panel.sellable_constrained
+        if constrained is None and panel.sellable_effective is not None:
+            constrained = panel.sellable_effective
+        if constrained is not None:
+            constrained_f = float(constrained)
+            if alloc_qty is None:
+                alloc_qty = constrained_f
+            if max_qty is None:
+                max_qty = constrained_f
+            if avg_qty is None:
+                avg_qty = constrained_f
     # Replication: triad TL = qty × price (not IBM alternate min/max from Potential Sales).
     if panel.family in _REPLICATION_ALLOCATION_FAMILIES and panel.has_price:
         potential_tl_alloc = (
@@ -971,6 +977,12 @@ def _sellable_track_fields(
     used_tl = None
     if not hide_used and panel.has_price:
         used_tl = compute_potential_tl(used, unit_price)
+    # Row-level sellable TL bounds for inventory header interval aggregation.
+    track_tls = [
+        v for v in (potential_tl_alloc, potential_tl_max, potential_tl_avg) if v is not None
+    ]
+    sellable_tl_min = min(track_tls) if track_tls else None
+    sellable_tl_max = max(track_tls) if track_tls else None
     return {
         "unit_price_tl": unit_price if panel.has_price else None,
         "used_tl": used_tl,
@@ -981,6 +993,8 @@ def _sellable_track_fields(
         "potential_tl_alloc": potential_tl_alloc,
         "potential_tl_max": potential_tl_max,
         "potential_tl_avg": potential_tl_avg,
+        "sellable_tl_min": sellable_tl_min,
+        "sellable_tl_max": sellable_tl_max,
     }
 
 
@@ -1546,6 +1560,8 @@ class InventoryOverviewService:
             "potential_tl_alloc": None,
             "potential_tl_max": None,
             "potential_tl_avg": None,
+            "sellable_tl_min": None,
+            "sellable_tl_max": None,
         }
         if family_key in _REPLICATION_RATIO_SURFACE_FAMILIES:
             mode = self._sellable.resolve_storage_coupling(
