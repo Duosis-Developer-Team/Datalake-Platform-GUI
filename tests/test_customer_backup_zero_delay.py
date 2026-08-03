@@ -70,6 +70,24 @@ def test_apply_customer_backup_category_maps_veeam_to_replication():
     assert raised
 
 
+def test_tab_veeam_uses_metrics_grid_not_undefined_kpi_strip():
+    """Regression: NameError _kpi_strip when opening Customer Backup Replication."""
+    out = cv._tab_veeam(
+        {
+            "veeam": {
+                "session_types": [{"type": "Replica", "count": 2}],
+                "session_type_buckets": {"replica": [{"type": "Replica", "count": 2}], "backup": []},
+            }
+        },
+        {"veeam_defined_sessions": 5},
+        crm_eff_panel=None,
+    )
+    assert out is not None
+    text = str(out)
+    assert "Defined sessions" in text
+    assert "Session types" in text
+
+
 def test_render_backup_tab_cache_miss_returns_preparing_shell():
     with patch.object(cv.api, "peek_customer_resources", return_value=None), \
          patch("src.services.app_background_warm.trigger_customer_view_warm") as warm:

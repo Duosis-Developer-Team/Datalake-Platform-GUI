@@ -1692,16 +1692,24 @@ def _tab_veeam(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div
         ],
     )
 
-    return dmc.Stack(
-        gap="md",
-        children=[
-            _kpi_strip(
-                [
-                    (defined, "Defined sessions", f"{defined:,}", "material-symbols:backup-outline", "indigo"),
-                    (len(veeam_types), "Session types", f"{len(veeam_types):,}", "material-symbols:list-alt-outline", "teal"),
-                ]
+    # Same KPI helper as Zerto/NetBackup tabs (_kpi_strip was a typo / never defined).
+    kpi_v = _build_metrics_grid(
+        [
+            (defined, "Defined sessions", f"{defined:,}", "material-symbols:backup-outline", "indigo"),
+            (
+                len(veeam_types),
+                "Session types",
+                f"{len(veeam_types):,}",
+                "material-symbols:list-alt-outline",
+                "teal",
             ),
-            crm_eff_panel,
+        ],
+        cols=2,
+    )
+    head_v = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
+    body_v = head_v + ([kpi_v] if kpi_v is not None else [])
+    body_v.extend(
+        [
             mode_tabs,
             dmc.Text("All session types", fw=600, size="sm"),
             html.Table(
@@ -1709,14 +1717,18 @@ def _tab_veeam(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div
                 children=[
                     html.Thead(html.Tr([html.Th("Type"), html.Th("Count")])),
                     html.Tbody(
-                        [html.Tr([html.Td(r.get("type")), html.Td(r.get("count", 0))]) for r in veeam_types]
+                        [
+                            html.Tr([html.Td(r.get("type")), html.Td(r.get("count", 0))])
+                            for r in veeam_types
+                        ]
                         if veeam_types
                         else [html.Tr([html.Td("No session types", colSpan=2)])]
                     ),
                 ],
             ),
-        ],
+        ]
     )
+    return dmc.Stack(gap="md", children=body_v)
 
 
 def _tab_zerto(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div | None = None):
