@@ -80,7 +80,7 @@ class TestGetHyperconvStorageVm(unittest.TestCase):
     def setUp(self):
         cache.clear()
 
-    def test_merges_vmware_and_nutanix_allocation(self):
+    def test_prefers_nutanix_sot_over_vmware_mirror(self):
         svc = _make_service()
         cursor = MagicMock()
         svc._compute_vmware_vm_allocation = MagicMock(
@@ -111,12 +111,14 @@ class TestGetHyperconvStorageVm(unittest.TestCase):
         svc._compute_nutanix_vm_allocation.assert_called_once_with(
             cursor, "AZ11", ["PRISM-AZ11-SSD"]
         )
-        self.assertEqual(result["cpu_alloc_ghz_vm"], 1596.0)
-        self.assertEqual(result["cpu_alloc_ghz_sales"], 798.0)
-        self.assertEqual(result["mem_alloc_gb_vm"], 1896.0)
-        self.assertEqual(result["stor_provisioned_gb"], 92046.0)
-        self.assertEqual(result["cpu_alloc_hosts_resolved"], 5)
+        # Nutanix SoT only — VMware mirror must not double-count (ADR-0032 #35).
+        self.assertEqual(result["cpu_alloc_ghz_vm"], 1586.0)
+        self.assertEqual(result["cpu_alloc_ghz_sales"], 793.0)
+        self.assertEqual(result["mem_alloc_gb_vm"], 1864.0)
+        self.assertEqual(result["stor_provisioned_gb"], 91946.0)
+        self.assertEqual(result["cpu_alloc_hosts_resolved"], 3)
         self.assertEqual(result["cpu_alloc_hosts_fallback_default"], 1)
+        svc._compute_vmware_vm_allocation.assert_not_called()
 
 
 class TestHyperconvMetricsFilteredStorageVm(unittest.TestCase):

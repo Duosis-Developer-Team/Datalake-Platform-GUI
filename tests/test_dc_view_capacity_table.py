@@ -84,8 +84,9 @@ class TestCapacityResourceTable:
         source = Path(__file__).resolve().parents[1].joinpath("src", "pages", "dc_view.py").read_text(
             encoding="utf-8"
         )
-        assert "cluster-level peak RAM usage" in source.lower()
+        assert "cluster-level peak usage" in source.lower()
         assert "max(allocation%, peak%)" in source
+        assert "avg utilization" in source.lower()
         assert "overcommit" in source.lower()
 
     def test_renders_three_body_rows(self):
@@ -111,7 +112,7 @@ class TestCapacityResourceTable:
         tbody = table.children[0].children[1]
         assert len(tbody.children) == 3
 
-    def test_table_has_five_columns_including_bar(self):
+    def test_table_has_six_columns_including_avg_util_and_bar(self):
         rows = _build_compute_capacity_rows(
             cpu_cap=100.0,
             cpu_alloc_ghz=120.0,
@@ -129,10 +130,14 @@ class TestCapacityResourceTable:
             stor_alloc_vm_pct=50.0,
             stor_pct=20.0,
         )
+        assert rows[0]["avg_util"][1] == 40.0
+        assert rows[1]["avg_util"][1] == 55.0
         table = _capacity_resource_table(rows)
-        header_row = table.children[0].children[0].children[0]
-        assert len(header_row.children) == 5
-        assert header_row.children[2].children == "Physical allocation"
+        # Thead(html.Tr([...])) → children is the Tr, not a one-element list.
+        header_row = table.children[0].children[0].children
+        assert len(header_row.children) == 6
+        assert "Physical allocation" in str(header_row.children[2])
+        assert "Avg utilization" in str(header_row.children[4])
 
 
 class TestCpuAllocationGaugeBlock:

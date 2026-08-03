@@ -140,10 +140,17 @@ def host_raw_headroom(
     _ = effective_ghz_per_unit
     cpu_track = _normalize_cpu_track(cpu_track)
     ram_track = _normalize_ram_track(ram_track)
+
+    def _phantom_alloc(alloc: float) -> bool:
+        """VM inventory present but allocation missing → unknown, not idle."""
+        return int(host.get("vm_count") or 0) > 0 and float(alloc or 0.0) <= 0.0
+
     if resource == "cpu":
         if cpu_track == "physical":
             cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
             alloc = float(host.get("cpu_alloc_ghz_physical") or host.get("cpu_alloc_phys") or 0.0)
+            if _phantom_alloc(alloc):
+                return 0.0
             util = float(host.get("cpu_used_pct") or host.get("cpu_util_pct") or 0.0)
             return apply_utilization_gate(cap, alloc, util, threshold_pct)
         if cpu_track == "max":
@@ -167,6 +174,8 @@ def host_raw_headroom(
             )
         cap = float(host.get("cpu_cap_ghz") or host.get("cpu_total") or 0.0)
         alloc = float(host.get("cpu_alloc_ghz") or host.get("cpu_alloc") or 0.0)
+        if _phantom_alloc(alloc):
+            return 0.0
         util = float(host.get("cpu_used_pct") or host.get("cpu_util_pct") or 0.0)
         return apply_utilization_gate(cap, alloc, util, threshold_pct)
 
@@ -193,6 +202,8 @@ def host_raw_headroom(
             )
         cap = float(host.get("mem_cap_gb") or host.get("ram_total") or 0.0)
         alloc = float(host.get("mem_alloc_gb") or host.get("ram_alloc") or 0.0)
+        if _phantom_alloc(alloc):
+            return 0.0
         util = float(host.get("mem_used_pct") or host.get("ram_util_pct") or 0.0)
         return apply_utilization_gate(cap, alloc, util, threshold_pct)
 

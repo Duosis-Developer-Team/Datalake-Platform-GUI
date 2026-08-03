@@ -352,6 +352,7 @@ services:
       # Must match datacenter-api default_time_range (7) so sellable hits the
       # same keys the DC view populates.
       SELLABLE_REDIS_WINDOW_DAYS: ${SELLABLE_REDIS_WINDOW_DAYS:-7}
+      INVENTORY_OVERVIEW_CACHE_TTL: ${INVENTORY_OVERVIEW_CACHE_TTL:-3600}
       WEBUI_DB_HOST: ${WEBUI_DB_HOST:-webui-db}
       WEBUI_DB_PORT: ${WEBUI_DB_PORT:-5432}
       WEBUI_DB_NAME: ${WEBUI_DB_NAME:-bulutwebui}

@@ -123,8 +123,7 @@ def _potential_sales_display(
     """Format Potential Sales headline + tooltip (min–max TL range)."""
     if loading:
         return "Calculating…", "—"
-    lo = float(tl_min or 0.0)
-    hi = float(tl_max or 0.0)
+    lo, hi = sorted((float(tl_min or 0.0), float(tl_max or 0.0)))
     short = fmt_tl_range(lo, hi)
     if abs(hi - lo) > 1e-6:
         full = f"{lo:,.0f} – {hi:,.0f} TL"
@@ -298,6 +297,7 @@ def _dc_sellable_ribbon(
         headline_tl, lo, hi = _merge_platform_range_with_colo(
             float(virt_tl or 0.0), lo_in, hi_in, colocation_tl=colo_tl,
         )
+        lo, hi = sorted((float(lo), float(hi)))
         pot_short = fmt_tl_range(lo, hi)
         pot_full = (
             f"{lo:,.0f} – {hi:,.0f} TL"

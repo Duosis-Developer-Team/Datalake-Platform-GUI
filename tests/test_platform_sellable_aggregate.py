@@ -115,6 +115,29 @@ def test_platform_total_virt_replication_kind_dedupe():
     assert total == pytest.approx(70.0)
 
 
+def test_platform_total_potential_range_always_orders_band():
+    """Inverted dual-track mins/maxes must still yield lo <= hi after aggregation."""
+    panels = [
+        {
+            "family": "virt_hyperconverged",
+            "resource_kind": "cpu",
+            "potential_tl": 462076.0,
+            "potential_tl_min": 462076.0,
+            "potential_tl_max": 59713.0,
+        },
+        {
+            "family": "backup_veeam_replication",
+            "resource_kind": "storage",
+            "potential_tl": 100.0,
+            "potential_tl_min": 80.0,
+            "potential_tl_max": 120.0,
+        },
+    ]
+    total, lo, hi = psa.platform_total_potential_range(panels)
+    assert lo <= hi
+    assert total == lo or lo <= total <= hi
+
+
 def test_collect_backup_sellable_panels_fetches_all_families():
     seen: list[str] = []
 

@@ -29,7 +29,7 @@ def refresh_cache(request: Request) -> dict:
     inventory_warmed = False
     if inventory is not None:
         try:
-            inventory.warm_inventory_cache(dc_code="*")
+            inventory.warm_inventory_cache(dc_code="*", force_recompute=True)
             inventory_warmed = True
         except Exception:  # noqa: BLE001
             logger.exception("Inventory overview warm failed during admin refresh")

@@ -116,6 +116,28 @@ def test_build_layout_content_renders_from_payload():
 
 
 def test_fill_callback_does_not_listen_to_time_range():
-    cb = crm_inventory_overview._fill_crm_inventory_content
-    input_components = {inp.component_id for inp in cb.inputs}
-    assert input_components == {"url"}
+    import inspect
+
+    params = list(inspect.signature(crm_inventory_overview._fill_crm_inventory_content).parameters)
+    assert params == ["pathname", "visible_sections"]
+
+
+def test_build_layout_content_shows_stale_banner():
+    payload = _fake_payload()
+    payload["stale"] = True
+    layout = crm_inventory_overview.build_layout_content(payload)
+    text = str(layout)
+    assert "Showing last known inventory data" in text
+
+
+def test_fill_callback_shows_warming_alert_for_empty_payload():
+    warming = {
+        "dc_code": "*",
+        "summary": {},
+        "panels": [],
+        "families": [],
+        "error": "inventory_warming",
+    }
+    with patch.object(crm_inventory_overview.api, "get_crm_inventory_overview", return_value=warming):
+        result = crm_inventory_overview._fill_crm_inventory_content("/crm/inventory-overview", None)
+    assert "Inventory warming" in str(result)
