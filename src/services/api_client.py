@@ -222,7 +222,17 @@ _INTERACTIVE_READ_TIMEOUT = float(os.getenv("API_INTERACTIVE_READ_TIMEOUT", "20"
 # callback. That replacement is what users describe as the page going and coming
 # back. Waiting is not a cost here — the leader calls ev.set() the moment it has
 # an answer, so these are ceilings for the pathological case, not delays.
+#
+# _SHARED_LOCK_TTL_SECONDS is the lease on that lock, and it is deliberately a
+# third number rather than a reuse of the wait. The wait is "how long am I
+# willing to sit here"; the lease is "how long may the holder be presumed alive".
+# Set to the wait, they expire together: the lease could lapse at the instant the
+# fetch it protects returns, letting a second worker start the same query. The
+# lease only needs to outlast one fetch — if the holder dies mid-fetch, waiters
+# still give up on their own budget and fetch, so a longer lease costs
+# coalescing, never progress.
 _SHARED_RESULT_WAIT_SECONDS = max(25.0, _INTERACTIVE_READ_TIMEOUT + 5.0)
+_SHARED_LOCK_TTL_SECONDS = _SHARED_RESULT_WAIT_SECONDS + 10.0
 _INFLIGHT_WAIT_SECONDS = float(os.getenv("API_INFLIGHT_WAIT_SECONDS", "0") or "0")
 if _INFLIGHT_WAIT_SECONDS <= 0:
     _INFLIGHT_WAIT_SECONDS = _SHARED_RESULT_WAIT_SECONDS + _INTERACTIVE_READ_TIMEOUT + 5.0
@@ -760,12 +770,31 @@ def _prefer_stale_over_empty_fetch(
 
 
 def _wait_for_shared_result(cache_key: str, timeout: float) -> bool:
-    """Poll the shared cache for another pod's in-flight fetch result. Returns
-    True as soon as the key appears, False on timeout."""
+    """Poll the shared cache for another worker's in-flight fetch result. Returns
+    True as soon as a *fresh* entry appears, False on timeout.
+
+    Freshness is the whole condition, not a refinement of it. This is only ever
+    called by a caller that already loaded the key and rejected what it found as
+    stale — so a poll for "any entry" succeeded on its first iteration, on that
+    same rejected entry, and handed back the payload the freshness check had
+    just thrown out. With one worker that was invisible. With two behind one
+    Redis it means the worker that fetched answers with the new numbers and the
+    worker that lost the lock answers with the old ones, and which one a request
+    gets is down to the round-robin: the page changes value on reload with
+    nothing to explain it.
+    """
     deadline = time.time() + timeout
     while True:
-        if _cache_load(cache_key)[0] is not None:
+        value, age = _cache_load(cache_key)
+        if value is not None and _age_is_fresh(age):
             return True
+        if not _api_response_cache.is_locked(cache_key):
+            # The holder let go without publishing anything, so its fetch failed
+            # (or its worker died). Sitting out the rest of the budget would add
+            # the full wait to every request for as long as the backend is down —
+            # which is when a page most needs to render at all. Give up now and
+            # let the caller try for itself.
+            return False
         if time.time() >= deadline:
             return False
         time.sleep(0.15)
@@ -802,12 +831,14 @@ def _api_cache_get_with_stale(
 
     # Per-process leader. Try the cross-pod lock so only ONE pod fetches this key;
     # other pods wait for its result in the shared cache (kills the stampede).
-    got_lock = _api_response_cache.try_acquire(cache_key, _SHARED_RESULT_WAIT_SECONDS)
+    lock_token = _api_response_cache.try_acquire(cache_key, _SHARED_LOCK_TTL_SECONDS)
     try:
-        if not got_lock:
+        if not lock_token:
             if _wait_for_shared_result(cache_key, _SHARED_RESULT_WAIT_SECONDS):
-                hit, _ = _cache_load(cache_key)
-                if hit is not None:
+                hit, age = _cache_load(cache_key)
+                # Re-checked rather than trusted: the entry can age out between
+                # the poll that saw it and this load.
+                if hit is not None and _age_is_fresh(age):
                     return _clone(hit)
             # No result before timeout — fetch ourselves as a fallback.
         t0 = time.time()
@@ -830,8 +861,8 @@ def _api_cache_get_with_stale(
                 return _clone(hit)
             return _degraded_fallback(empty_fallback)
     finally:
-        if got_lock:
-            _api_response_cache.release(cache_key)
+        if lock_token:
+            _api_response_cache.release(cache_key, lock_token)
         with _inflight_lock:
             _inflight.pop(cache_key, None)
         ev.set()

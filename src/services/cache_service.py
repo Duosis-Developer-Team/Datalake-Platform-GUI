@@ -25,8 +25,19 @@ import os
 import pickle
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from typing import Any, Optional
+
+
+def new_lock_token() -> str:
+    """A value that identifies one lock holder.
+
+    Locks are released by compare-and-delete, so the token has to be unique
+    across every worker and every acquisition — otherwise a holder whose lease
+    expired mid-fetch can pass the ownership check and free somebody else's lock.
+    """
+    return uuid.uuid4().hex
 
 logger = logging.getLogger(__name__)
 
@@ -53,21 +64,29 @@ class InProcessBackend:
         self._max_size = max_size
         self._cache: "OrderedDict[str, Any]" = OrderedDict()
         self._lock = threading.RLock()
-        self._locks: dict[str, float] = {}  # lock_key -> expiry epoch
+        self._locks: dict[str, tuple[float, str]] = {}  # lock_key -> (expiry epoch, token)
 
-    def try_acquire(self, lock_key: str, ttl: float) -> bool:
-        """Atomic acquire: True if the lock was free (per-process), else False."""
+    def try_acquire(self, lock_key: str, ttl: float) -> Optional[str]:
+        """Atomic acquire. Returns the holder's token, or None if already held."""
         with self._lock:
             now = time.time()
-            exp = self._locks.get(lock_key)
-            if exp is not None and exp > now:
-                return False
-            self._locks[lock_key] = now + ttl
-            return True
+            held = self._locks.get(lock_key)
+            if held is not None and held[0] > now:
+                return None
+            token = new_lock_token()
+            self._locks[lock_key] = (now + ttl, token)
+            return token
 
-    def release(self, lock_key: str) -> None:
+    def release(self, lock_key: str, token: str) -> None:
         with self._lock:
-            self._locks.pop(lock_key, None)
+            held = self._locks.get(lock_key)
+            if held is not None and held[1] == token:
+                self._locks.pop(lock_key, None)
+
+    def is_locked(self, lock_key: str) -> bool:
+        with self._lock:
+            held = self._locks.get(lock_key)
+            return held is not None and held[0] > time.time()
 
     def get(self, key: str) -> Optional[Any]:
         with self._lock:
@@ -195,20 +214,68 @@ class RedisBackend:
     def stats(self) -> dict:
         return {"backend": "redis", "namespace": self._ns, "current_size": self.size()}
 
-    def try_acquire(self, lock_key: str, ttl: float) -> bool:
-        """Atomic cross-pod acquire via SET NX EX. On a Redis error, act as the
-        leader (return True) so the caller fetches rather than blocking forever."""
+    def try_acquire(self, lock_key: str, ttl: float) -> Optional[str]:
+        """Atomic cross-pod acquire via SET NX EX. Returns the holder's token, or
+        None if another holder has it.
+
+        On a Redis error the caller becomes the leader (a token is returned) so
+        it fetches rather than blocking forever on a lock nobody can grant.
+        """
+        token = new_lock_token()
         try:
-            return bool(self._r.set(self._k("__lock__:" + lock_key), b"1", nx=True, ex=int(max(1, ttl))))
+            ok = self._r.set(
+                self._k("__lock__:" + lock_key),
+                token.encode(),
+                nx=True,
+                ex=int(max(1, ttl)),
+            )
+            return token if ok else None
         except Exception as exc:
             logger.warning("Redis lock acquire failed for %s: %s", lock_key, exc)
-            return True
+            return token
 
-    def release(self, lock_key: str) -> None:
+    def release(self, lock_key: str, token: str) -> None:
+        """Delete the lock only if `token` still holds it.
+
+        An unconditional DELETE is the classic broken release: a holder whose
+        lease expired mid-fetch would delete whichever holder came after it,
+        admitting a third fetcher to a key that is supposed to be single-flighted.
+
+        The compare and the delete have to be one atomic step — a plain GET/DEL
+        pair can be preempted between the two calls, which is the same bug with a
+        smaller window. WATCH does that: if the key changes between the GET and
+        the EXEC (expired, then re-acquired by someone else), EXEC aborts and we
+        leave their lock alone. Chosen over EVAL because it needs no scripting
+        support on the server.
+        """
+        redis_key = self._k("__lock__:" + lock_key)
+        expected = token.encode()
         try:
-            self._r.delete(self._k("__lock__:" + lock_key))
+            with self._r.pipeline() as pipe:
+                pipe.watch(redis_key)
+                if pipe.get(redis_key) != expected:
+                    pipe.unwatch()
+                    return  # not ours anymore; whoever holds it now gets to keep it
+                pipe.multi()
+                pipe.delete(redis_key)
+                pipe.execute()
         except Exception as exc:
+            # Includes WatchError — the key changed under us, so it is no longer
+            # ours to delete and doing nothing is the correct outcome.
             logger.warning("Redis lock release failed for %s: %s", lock_key, exc)
+
+    def is_locked(self, lock_key: str) -> bool:
+        """Whether someone currently holds this lock.
+
+        Errors report True. This answer is used to decide whether to keep
+        waiting, and an unknown that read as False would release every waiter at
+        once the moment Redis wobbled — the stampede the lock exists to prevent.
+        """
+        try:
+            return bool(self._r.exists(self._k("__lock__:" + lock_key)))
+        except Exception as exc:
+            logger.warning("Redis lock probe failed for %s: %s", lock_key, exc)
+            return True
 
 
 def make_backend_from_env(env: Optional[dict] = None) -> Any:
@@ -318,15 +385,24 @@ def clear() -> None:
     logger.info("Cache cleared.")
 
 
-def try_acquire(lock_key: str, ttl: float) -> bool:
+def try_acquire(lock_key: str, ttl: float) -> Optional[str]:
     """Atomic single-flight lock (shared across pods when the backend is Redis).
-    True => caller is the leader and should fetch; False => someone else holds it."""
+
+    Returns the holder's token — truthy, so `if try_acquire(...)` reads the same
+    as it did when this returned a bool — or None when someone else holds it.
+    Pass the token back to release(); it is what proves the lock is still yours.
+    """
     return _backend.try_acquire(lock_key, ttl)
 
 
-def release(lock_key: str) -> None:
-    """Release a lock acquired via try_acquire."""
-    _backend.release(lock_key)
+def release(lock_key: str, token: str) -> None:
+    """Release a lock acquired via try_acquire, if `token` still holds it."""
+    _backend.release(lock_key, token)
+
+
+def is_locked(lock_key: str) -> bool:
+    """Whether a single-flight lock is currently held (by anyone, including us)."""
+    return _backend.is_locked(lock_key)
 
 
 def cached(key_fn):
