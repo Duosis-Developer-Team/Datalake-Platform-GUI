@@ -240,6 +240,35 @@ WHERE collection_time BETWEEN %s AND %s
 ORDER BY id, collection_time DESC
 """
 
+# Fallback when jobs_states collection has stalled for a Veeam console (e.g. DC13
+# stopped writing jobs_states in Feb 2026 while sessions kept flowing). Latest
+# session per job_id, excluding infrastructure/config noise types.
+# Params: (start_ts, end_ts)
+VEEAM_UNIQUE_JOBS_FROM_SESSIONS_LATEST = """
+SELECT DISTINCT ON (COALESCE(NULLIF(job_id, ''), id))
+    creation_time AS collection_time,
+    COALESCE(NULLIF(job_id, ''), id) AS id,
+    name,
+    session_type AS type,
+    COALESCE(NULLIF(state, ''), result_result, 'Unknown') AS status,
+    result_result AS last_result,
+    COALESCE(end_time, creation_time) AS last_run,
+    NULL::integer AS objects_count,
+    id AS session_id,
+    platform_name AS workload,
+    source_ip
+FROM public.raw_veeam_sessions
+WHERE creation_time BETWEEN %s AND %s
+  AND COALESCE(session_type, '') NOT IN (
+        'ConfigurationResynchronize',
+        'ConfigurationBackup',
+        'SecurityComplianceAnalyzer',
+        'MalwareDetection',
+        'Infrastructure'
+      )
+ORDER BY COALESCE(NULLIF(job_id, ''), id), creation_time DESC
+"""
+
 # Zerto unique VPGs (latest per VPG id).
 # Params: (start_ts, end_ts)
 ZERTO_UNIQUE_VPGS_LATEST = """

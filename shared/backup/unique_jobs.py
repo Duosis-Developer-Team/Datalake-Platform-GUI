@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from shared.backup.policy_classification import classify_netbackup_policy
+from shared.backup.dc_attribution import annotate_unique_job_dc
 
 VENDOR_VEEAM = "veeam"
 VENDOR_ZERTO = "zerto"
@@ -84,9 +85,10 @@ def normalize_unique_job_row(row: dict) -> dict:
 
     Non-destructive — every other field keeps its original casing/value. A
     missing ``status`` key is added as ``"unknown"`` so downstream grouping
-    never has to special-case its absence.
+    never has to special-case its absence. Also annotates ``dc`` when a
+    site/host label embeds a DC code.
     """
-    out = dict(row)
+    out = annotate_unique_job_dc(row)
     out[_STATUS_FIELD] = _normalize_status(out.get(_STATUS_FIELD))
     return out
 

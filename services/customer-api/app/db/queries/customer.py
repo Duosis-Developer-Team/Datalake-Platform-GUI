@@ -555,6 +555,25 @@ GROUP BY COALESCE(NULLIF(platform_name, ''), 'Unknown')
 ORDER BY "Defined Session Count" DESC
 """
 
+# Params: (start_ts, end_ts, vpg_name_patterns[], start_ts, end_ts)
+# Protected VM names for VPGs whose name matches the customer's backup_zerto patterns.
+CUSTOMER_ZERTO_VM_NAMES = """
+WITH customer_vpgs AS (
+    SELECT DISTINCT id
+    FROM public.raw_zerto_vpg_metrics
+    WHERE collection_timestamp BETWEEN %s AND %s
+      AND name ILIKE ANY(%s)
+)
+SELECT DISTINCT ON (COALESCE(NULLIF(TRIM(m.vm_name), ''), NULLIF(TRIM(m.name), '')))
+    COALESCE(NULLIF(TRIM(m.vm_name), ''), NULLIF(TRIM(m.name), '')) AS vm_name
+FROM public.raw_zerto_vm_metrics m
+WHERE m.collection_timestamp BETWEEN %s AND %s
+  AND m.vpg_identifier IN (SELECT id FROM customer_vpgs)
+  AND COALESCE(NULLIF(TRIM(m.vm_name), ''), NULLIF(TRIM(m.name), '')) IS NOT NULL
+ORDER BY COALESCE(NULLIF(TRIM(m.vm_name), ''), NULLIF(TRIM(m.name), '')),
+         m.collection_timestamp DESC
+"""
+
 # Params: (start_ts, end_ts, name_patterns[])
 CUSTOMER_ZERTO_PROTECTED_VMS = """
 WITH ranked_records AS (

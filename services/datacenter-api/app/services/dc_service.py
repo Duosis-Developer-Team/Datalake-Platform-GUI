@@ -6063,6 +6063,17 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
                         dc = ip_to_dc.get(str(mapped.get("source_ip") or ""))
                         if dc and dc.upper() == dc_upper:
                             rows.append(mapped)
+                    # jobs_states collector can stall per console while sessions
+                    # keep flowing (observed: DC13 jobs_states ended 2026-02-17).
+                    if not rows:
+                        raw_fb = self._run_rows(
+                            cur, bq.VEEAM_UNIQUE_JOBS_FROM_SESSIONS_LATEST, (start_ts, end_ts)
+                        )
+                        for r in raw_fb or []:
+                            mapped = self._map_veeam_unique_row(r)
+                            dc = ip_to_dc.get(str(mapped.get("source_ip") or ""))
+                            if dc and dc.upper() == dc_upper:
+                                rows.append(mapped)
                 elif vendor == "zerto":
                     raw = self._run_rows(cur, bq.ZERTO_UNIQUE_VPGS_LATEST, (start_ts, end_ts))
                     for r in raw or []:
@@ -6098,7 +6109,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         vendor_key = (vendor or "").strip().lower()
         tr = time_range or default_time_range()
         start_ts, end_ts = time_range_to_bounds(tr)
-        key = f"dc_{vendor_key}_unique_jobs:{dc_code}:{tr.get('start', '')}:{tr.get('end', '')}"
+        key = f"dc_{vendor_key}_unique_jobs:sess-fb-v1:{dc_code}:{tr.get('start', '')}:{tr.get('end', '')}"
 
         def factory():
             try:
